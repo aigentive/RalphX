@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use chrono::Utc;
 use serde::Deserialize;
 use tauri::State;
@@ -7,7 +9,8 @@ use crate::commands::agent_sidebar_commands::{
     attention_state_fingerprint, managed_team_activity_for_conversation,
     normalized_supervision_status, publication_state_for_workspace,
 };
-use crate::commands::unified_chat_commands::agent_workspace_response_for_state;
+use crate::commands::unified_chat_commands::agent_workspace_response_with_pr_supervision_for_state;
+use crate::commands::ExecutionState;
 use crate::domain::entities::{AgentConversationMute, ChatConversationId};
 
 #[derive(Debug, Deserialize)]
@@ -21,14 +24,16 @@ pub struct SetAgentConversationMutedInput {
 pub async fn set_agent_conversation_muted(
     input: SetAgentConversationMutedInput,
     state: State<'_, AppState>,
+    execution_state: State<'_, Arc<ExecutionState>>,
 ) -> Result<(), String> {
-    set_agent_conversation_muted_for_app_state(input, state.inner()).await
+    set_agent_conversation_muted_for_app_state(input, state.inner(), execution_state.inner()).await
 }
 
 #[doc(hidden)]
 pub async fn set_agent_conversation_muted_for_app_state(
     input: SetAgentConversationMutedInput,
     state: &AppState,
+    execution_state: &Arc<ExecutionState>,
 ) -> Result<(), String> {
     let conversation_id = ChatConversationId::from_string(input.conversation_id);
     if !input.muted {
@@ -55,7 +60,14 @@ pub async fn set_agent_conversation_muted_for_app_state(
         .await
         .map_err(|error| error.to_string())?
     {
-        Some(workspace) => Some(agent_workspace_response_for_state(state, workspace).await?),
+        Some(workspace) => Some(
+            agent_workspace_response_with_pr_supervision_for_state(
+                state,
+                execution_state,
+                workspace,
+            )
+            .await?,
+        ),
         None => None,
     };
     let latest_run = state

@@ -1,7 +1,7 @@
 use std::{path::PathBuf, sync::Arc, time::Instant};
 
+use ralphx_events::EventSink;
 use serde::Deserialize;
-use tauri::{Emitter, Runtime};
 
 use crate::application::agent_conversation_workspace::{
     agent_name_for_workspace_mode,
@@ -138,14 +138,14 @@ pub struct AgentConversationStartResult {
     pub send_result: SendResult,
 }
 
-pub struct AgentConversationStartDeps<'a, R: Runtime + 'static> {
+pub struct AgentConversationStartDeps<'a> {
     pub state: &'a AppState,
     pub execution_state: &'a Arc<ApplicationExecutionState>,
-    pub app_handle: tauri::AppHandle<R>,
+    pub events: Arc<dyn EventSink>,
 }
 
-pub struct AgentConversationStartService<'a, R: Runtime + 'static> {
-    deps: AgentConversationStartDeps<'a, R>,
+pub struct AgentConversationStartService<'a> {
+    deps: AgentConversationStartDeps<'a>,
 }
 
 const PERSONA_BINDING_PROJECT_CONTEXT_ERROR: &str =

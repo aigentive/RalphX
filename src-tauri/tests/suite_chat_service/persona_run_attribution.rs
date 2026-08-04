@@ -28,9 +28,9 @@ async fn project_scope_mismatch_forces_negative_attribution_even_if_caller_marks
     persona.skipped_reason = Some("project_scope_mismatch");
     persona.block.clear();
 
-    record_persona_run_attribution::<tauri::test::MockRuntime>(
+    record_persona_run_attribution(
         &state.agent_run_repo,
-        None,
+        state.events.as_ref(),
         &conversation_id,
         &run.id.as_str(),
         AgentHarnessKind::Codex,
@@ -77,9 +77,9 @@ async fn persona_recording_leaves_terminal_pre_spawn_runs_unattributed() {
                 .expect("pre-spawn cancellation should persist");
         }
 
-        record_persona_run_attribution::<tauri::test::MockRuntime>(
+        record_persona_run_attribution(
             &state.agent_run_repo,
-            None,
+            state.events.as_ref(),
             &conversation_id,
             &run.id.as_str(),
             AgentHarnessKind::Codex,
@@ -112,9 +112,9 @@ async fn persona_recording_replaces_missing_or_empty_negative_reason_with_unknow
             .await
             .expect("persona run should persist");
 
-        record_persona_run_attribution::<tauri::test::MockRuntime>(
+        record_persona_run_attribution(
             &state.agent_run_repo,
-            None,
+            state.events.as_ref(),
             &conversation_id,
             &run.id.as_str(),
             AgentHarnessKind::Codex,

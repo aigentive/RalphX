@@ -14,10 +14,7 @@ use super::chat_service_replay::{
 use super::chat_service_streaming::process_stream_background;
 use super::streaming_state_cache::StreamingStateCache;
 use crate::application::persona_resolver::resolve_persona_for_send;
-use crate::application::verification_event_emitters::{
-    emit_verification_status_changed, event_sink_from_app_handle,
-};
-use crate::application::AppState;
+use crate::application::runtime_factory::ChatRuntimeFactoryDeps;
 use crate::domain::agents::{AgentHarnessKind, ProviderSessionRef};
 use crate::domain::entities::VerificationStatus;
 use crate::domain::entities::{
@@ -33,22 +30,14 @@ use crate::domain::services::{
     clear_verification_snapshot, load_current_verification_snapshot_or_default,
 };
 use crate::error::{AppError, AppResult};
-use tauri::{Manager, Runtime};
+use ralphx_events::EventSink;
 
-async fn provider_env_for_harness<R: Runtime>(
-    app_handle: Option<&tauri::AppHandle<R>>,
+async fn provider_env_for_harness(
     agent_provider_settings_repo: &Option<Arc<dyn AgentProviderSettingsRepository>>,
     harness: AgentHarnessKind,
 ) -> Result<HashMap<String, String>, AppError> {
-    let app_state_provider_repo = app_handle
-        .and_then(|handle| handle.try_state::<AppState>())
-        .map(|app_state| Arc::clone(&app_state.agent_provider_settings_repo));
-    let provider_repo = agent_provider_settings_repo
-        .as_ref()
-        .map(Arc::clone)
-        .or(app_state_provider_repo);
     crate::application::provider_env_file::load_provider_custom_env_file_for_harness(
-        provider_repo.as_ref(),
+        agent_provider_settings_repo.as_ref(),
         harness,
     )
     .await
@@ -88,20 +77,12 @@ fn session_recovery_provider_block_error(
     }
 }
 
-async fn session_recovery_provider_decision<R: Runtime>(
-    app_handle: Option<&tauri::AppHandle<R>>,
+async fn session_recovery_provider_decision(
     agent_provider_settings_repo: &Option<Arc<dyn AgentProviderSettingsRepository>>,
     recovery_harness: AgentHarnessKind,
     context_type: ChatContextType,
 ) -> Result<SessionRecoveryProviderDecision, SessionRecoveryProviderBlock> {
-    let app_state_provider_repo = app_handle
-        .and_then(|handle| handle.try_state::<AppState>())
-        .map(|app_state| Arc::clone(&app_state.agent_provider_settings_repo));
-    let provider_repo = agent_provider_settings_repo
-        .as_ref()
-        .map(Arc::clone)
-        .or(app_state_provider_repo);
-    let Some(provider_repo) = provider_repo else {
+    let Some(provider_repo) = agent_provider_settings_repo.as_ref() else {
         return if super::uses_execution_slot(context_type) {
             Err(SessionRecoveryProviderBlock::MissingProviderSettings)
         } else {
@@ -117,13 +98,10 @@ async fn session_recovery_provider_decision<R: Runtime>(
     .await
     .map_err(SessionRecoveryProviderBlock::Disabled)?;
 
-    let provider_env = provider_env_for_harness(
-        app_handle,
-        &Some(Arc::clone(&provider_repo)),
-        recovery_harness,
-    )
-    .await
-    .map_err(|error| SessionRecoveryProviderBlock::Env(error.to_string()))?;
+    let provider_env =
+        provider_env_for_harness(&Some(Arc::clone(&provider_repo)), recovery_harness)
+            .await
+            .map_err(|error| SessionRecoveryProviderBlock::Env(error.to_string()))?;
 
     Ok(SessionRecoveryProviderDecision::ApplyEnv(provider_env))
 }
@@ -149,9 +127,68 @@ async fn session_recovery_provider_decision<R: Runtime>(
 /// # Returns
 /// - `Ok(new_session_id)`: Recovery succeeded, new session ID
 /// - `Err(AppError)`: Recovery failed
+#[cfg(feature = "test-utils")]
 #[allow(clippy::too_many_arguments)]
 #[doc(hidden)]
-pub async fn attempt_session_recovery<R: Runtime>(
+pub async fn attempt_session_recovery_for_test(
+    conversation_id: &ChatConversationId,
+    conversation: &ChatConversation,
+    harness: AgentHarnessKind,
+    context_type: ChatContextType,
+    context_id: &str,
+    new_message: &str,
+    cli_path: &Path,
+    plugin_dir: &Path,
+    working_directory: &Path,
+    resolved_project_id: Option<String>,
+    chat_message_repo: Arc<dyn ChatMessageRepository>,
+    conversation_repo: Arc<dyn ChatConversationRepository>,
+    chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
+    artifact_repo: Arc<dyn ArtifactRepository>,
+    ideation_session_repo: Option<Arc<dyn IdeationSessionRepository>>,
+    task_proposal_repo: Option<Arc<dyn TaskProposalRepository>>,
+    agent_run_repo: Arc<dyn AgentRunRepository>,
+    agent_run_id: &str,
+    agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
+    persona_feature_enabled: bool,
+    agent_name_override_set: bool,
+    old_session_id: &str,
+    runtime_state: Option<&crate::application::AppState>,
+    events: &dyn EventSink,
+) -> AppResult<String> {
+    let runtime_factory_deps = runtime_state.map(ChatRuntimeFactoryDeps::from_app_state);
+    attempt_session_recovery(
+        conversation_id,
+        conversation,
+        harness,
+        context_type,
+        context_id,
+        new_message,
+        cli_path,
+        plugin_dir,
+        working_directory,
+        resolved_project_id,
+        chat_message_repo,
+        conversation_repo,
+        chat_attachment_repo,
+        artifact_repo,
+        ideation_session_repo,
+        task_proposal_repo,
+        agent_run_repo,
+        agent_run_id,
+        agent_provider_settings_repo,
+        persona_feature_enabled,
+        agent_name_override_set,
+        old_session_id,
+        runtime_factory_deps.as_ref(),
+        events,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+#[doc(hidden)]
+pub(crate) async fn attempt_session_recovery(
     conversation_id: &ChatConversationId,
     conversation: &ChatConversation,
     harness: AgentHarnessKind,
@@ -174,7 +211,8 @@ pub async fn attempt_session_recovery<R: Runtime>(
     persona_feature_enabled: bool,
     agent_name_override_set: bool,
     old_session_id: &str,
-    app_handle: Option<&tauri::AppHandle<R>>,
+    runtime_factory_deps: Option<&ChatRuntimeFactoryDeps>,
+    events: &dyn EventSink,
 ) -> AppResult<String> {
     let recovery_start = std::time::Instant::now();
     let requested_conversation_id = conversation_id.as_str();
@@ -250,7 +288,7 @@ pub async fn attempt_session_recovery<R: Runtime>(
             context_id,
             ideation_session_repo.as_ref(),
             task_proposal_repo.as_ref(),
-            app_handle,
+            events,
         )
         .await
     } else {
@@ -267,8 +305,8 @@ pub async fn attempt_session_recovery<R: Runtime>(
     );
     let builder_draft = if conversation.is_persona_builder() {
         if let Some(draft_id) = conversation.builder_draft_id.as_deref() {
-            let app_state = app_handle
-                .and_then(|handle| handle.try_state::<AppState>())
+            let persona_repo = runtime_factory_deps
+                .and_then(|deps| deps.persona_repo.as_ref())
                 .ok_or_else(|| {
                     AppError::PersonaUnavailable(
                         "[Persona unavailable: PersonaBuilder draft repository is unavailable]"
@@ -276,8 +314,7 @@ pub async fn attempt_session_recovery<R: Runtime>(
                     )
                 })?;
             Some(
-                app_state
-                    .persona_repo
+                persona_repo
                     .get_by_id(&PersonaId::from(draft_id))
                     .await
                     .map_err(|error| {
@@ -301,26 +338,15 @@ pub async fn attempt_session_recovery<R: Runtime>(
         builder_draft.as_ref(),
     );
 
-    let ideation_model_settings_repo = app_handle.map(|handle| {
-        let app_state = handle.state::<AppState>();
-        Arc::clone(&app_state.ideation_model_settings_repo)
-    });
-    let agent_lane_settings_repo = app_handle.map(|handle| {
-        let app_state = handle.state::<AppState>();
-        Arc::clone(&app_state.agent_lane_settings_repo)
-    });
-    let ideation_effort_settings_repo = app_handle.map(|handle| {
-        let app_state = handle.state::<AppState>();
-        Arc::clone(&app_state.ideation_effort_settings_repo)
-    });
-    let task_repo = app_handle.map(|handle| {
-        let app_state = handle.state::<AppState>();
-        Arc::clone(&app_state.task_repo)
-    });
-    let delegated_session_repo = app_handle.map(|handle| {
-        let app_state = handle.state::<AppState>();
-        Arc::clone(&app_state.delegated_session_repo)
-    });
+    let ideation_model_settings_repo = runtime_factory_deps
+        .and_then(|deps| deps.ideation_model_settings_repo.as_ref().map(Arc::clone));
+    let agent_lane_settings_repo = runtime_factory_deps
+        .and_then(|deps| deps.agent_lane_settings_repo.as_ref().map(Arc::clone));
+    let ideation_effort_settings_repo = runtime_factory_deps
+        .and_then(|deps| deps.ideation_effort_settings_repo.as_ref().map(Arc::clone));
+    let task_repo = runtime_factory_deps.map(|deps| Arc::clone(&deps.task_repo));
+    let delegated_session_repo =
+        runtime_factory_deps.and_then(|deps| deps.delegated_session_repo.as_ref().map(Arc::clone));
     let entity_status = if let (Some(ideation_repo), Some(delegated_repo), Some(task_repo)) = (
         ideation_session_repo.as_ref(),
         delegated_session_repo.as_ref(),
@@ -361,7 +387,7 @@ pub async fn attempt_session_recovery<R: Runtime>(
         })
         .flatten();
     chat_service_context::await_required_external_mcp(
-        app_handle,
+        None,
         harness,
         plugin_dir,
         recovery_agent_name,
@@ -374,9 +400,11 @@ pub async fn attempt_session_recovery<R: Runtime>(
         ))
     })?;
     let resolved_persona = if persona_feature_enabled {
-        if let Some(app_state) = app_handle.and_then(|handle| handle.try_state::<AppState>()) {
-            let workspace_mode = app_state
-                .agent_conversation_workspace_repo
+        if let (Some(workspace_repo), Some(persona_repo)) = (
+            runtime_factory_deps.and_then(|deps| deps.agent_conversation_workspace_repo.as_ref()),
+            runtime_factory_deps.and_then(|deps| deps.persona_repo.as_ref()),
+        ) {
+            let workspace_mode = workspace_repo
                 .get_by_conversation_id(&conversation.id)
                 .await
                 .map_err(|error| {
@@ -394,7 +422,7 @@ pub async fn attempt_session_recovery<R: Runtime>(
                     conversation,
                     workspace_mode,
                 ),
-                Arc::clone(&app_state.persona_repo),
+                Arc::clone(persona_repo),
             )
             .await
             .map_err(|error| {
@@ -408,29 +436,29 @@ pub async fn attempt_session_recovery<R: Runtime>(
     };
 
     let persona_for_attribution = resolved_persona.clone();
-    let app_data_dir = app_handle
-        .and_then(|handle| handle.try_state::<AppState>())
-        .map(|state| state.app_paths.app_data_dir().to_path_buf());
-    let spawn_context =
-        if let Some(app_state) = app_handle.and_then(|handle| handle.try_state::<AppState>()) {
-            chat_service_context::resolve_conversation_spawn_context(
-                conversation,
-                conversation.agent_mode,
-                _resolved_project_id.as_deref(),
-                Arc::clone(&app_state.project_repo),
-                working_directory,
-                Some(app_state.app_paths.app_data_dir()),
-                Some(app_state.app_paths.app_data_dir()),
-                Some(Arc::clone(&app_state.conversation_folder_reference_repo)),
-            )
-            .await?
-        } else {
-            chat_service_context::ResolvedConversationSpawnContext::without_app_state(
-                conversation.context_type,
-                conversation.agent_mode,
-                working_directory,
-            )
-        };
+    let app_data_dir =
+        runtime_factory_deps.and_then(|deps| deps.folder_reference_app_data_dir.as_ref());
+    let spawn_context = if let Some(deps) = runtime_factory_deps {
+        chat_service_context::resolve_conversation_spawn_context(
+            conversation,
+            conversation.agent_mode,
+            _resolved_project_id.as_deref(),
+            Arc::clone(&deps.project_repo),
+            working_directory,
+            deps.folder_reference_app_data_dir.as_deref(),
+            deps.folder_reference_app_data_dir.as_deref(),
+            deps.conversation_folder_reference_repo
+                .as_ref()
+                .map(Arc::clone),
+        )
+        .await?
+    } else {
+        chat_service_context::ResolvedConversationSpawnContext::without_app_state(
+            conversation.context_type,
+            conversation.agent_mode,
+            working_directory,
+        )
+    };
 
     // Both noninteractive provider adapters already honor an explicit conversation binding.
     // Materialize the authoritative builder-mode binding for recovery so Claude and Codex use
@@ -441,21 +469,6 @@ pub async fn attempt_session_recovery<R: Runtime>(
     {
         recovery_conversation.bound_agent_name = Some(recovery_agent_name.to_string());
     }
-
-    let agent_runtime_context = if let Some(handle) = app_handle {
-        let state = handle.state::<AppState>();
-        super::compose_agent_runtime_context_from_app_state(
-            &state,
-            &recovery_conversation,
-            recovery_conversation.context_type,
-            entity_status.as_deref(),
-            _resolved_project_id.as_deref(),
-            working_directory,
-        )
-        .await
-    } else {
-        None
-    };
 
     // 4. Spawn fresh provider session with history
     let provider_spawnable = match chat_service_context::build_command_for_harness_with_folder_refs(
@@ -470,7 +483,7 @@ pub async fn attempt_session_recovery<R: Runtime>(
         entity_status.as_deref(),
         _resolved_project_id.as_deref(),
         &spawn_context.folder_roots,
-        app_data_dir.as_deref(),
+        app_data_dir.as_deref().map(std::path::PathBuf::as_path),
         chat_attachment_repo,
         artifact_repo,
         agent_lane_settings_repo,
@@ -481,7 +494,6 @@ pub async fn attempt_session_recovery<R: Runtime>(
         None,
         None,
         false,
-        agent_runtime_context.as_deref(),
         None,
     )
     .await
@@ -495,12 +507,12 @@ pub async fn attempt_session_recovery<R: Runtime>(
         }
     };
     let mut provider_spawnable = provider_spawnable;
-    let handle = app_handle.ok_or_else(|| {
-        AppError::Infrastructure("MCP launch policy service is unavailable".to_string())
-    })?;
-    let app_state = handle.state::<AppState>();
-    let policy = app_state
-        .mcp_policy_service()
+    let policy_service = runtime_factory_deps
+        .and_then(|deps| deps.mcp_policy_service.as_ref())
+        .ok_or_else(|| {
+            AppError::Infrastructure("MCP launch policy service is unavailable".to_string())
+        })?;
+    let policy = policy_service
         .resolve_launch_policy(
             harness,
             _resolved_project_id.as_deref(),
@@ -516,7 +528,6 @@ pub async fn attempt_session_recovery<R: Runtime>(
         .spawnable
         .persona_injection_skipped_reason();
     let provider_env = match session_recovery_provider_decision(
-        app_handle,
         &agent_provider_settings_repo,
         harness,
         context_type,
@@ -545,7 +556,7 @@ pub async fn attempt_session_recovery<R: Runtime>(
     };
     super::record_persona_run_attribution(
         &agent_run_repo,
-        app_handle,
+        events,
         conversation_id,
         agent_run_id,
         harness,
@@ -556,14 +567,16 @@ pub async fn attempt_session_recovery<R: Runtime>(
     .await;
 
     // 5. Process stream to capture new session ID
-    let outcome = match process_stream_background::<tauri::Wry>(
+    let outcome = match process_stream_background(
         child,
         harness,
         context_type,
         context_id,
         conversation_id,
-        Some(working_directory.to_path_buf()),
-        None,                                       // no app_handle, silent recovery
+        Arc::new(ralphx_events::NullEventSink), // no UI delivery for recovery stream
+        runtime_factory_deps
+            .and_then(|deps| deps.plan_verification_completion.as_ref().map(Arc::clone)),
+        runtime_factory_deps.cloned(),
         None,                                       // no activity persistence
         None,                                       // no task repo
         None,                                       // no incremental message update
@@ -637,11 +650,11 @@ pub async fn attempt_session_recovery<R: Runtime>(
 ///
 /// Fetches the ideation session and counts proposals to populate metadata
 /// for enriching the recovery prompt with ideation-specific context.
-async fn build_ideation_recovery_metadata<R: Runtime>(
+async fn build_ideation_recovery_metadata(
     context_id: &str,
     ideation_session_repo: Option<&Arc<dyn IdeationSessionRepository>>,
     task_proposal_repo: Option<&Arc<dyn TaskProposalRepository>>,
-    app_handle: Option<&tauri::AppHandle<R>>,
+    events: &dyn EventSink,
 ) -> Option<IdeationRecoveryMetadata> {
     // Both repositories are required for ideation metadata
     let (session_repo, proposal_repo) = (ideation_session_repo?, task_proposal_repo?);
@@ -720,17 +733,15 @@ async fn build_ideation_recovery_metadata<R: Runtime>(
                 "Verification in-progress reset during session recovery"
             );
             // Emit UI event so the frontend reflects the reset immediately (B2)
-            if let Some(event_sink) = app_handle.and_then(event_sink_from_app_handle) {
-                emit_verification_status_changed(
-                    event_sink.as_ref(),
-                    session_id.as_str(),
-                    VerificationStatus::Unverified,
-                    false,
-                    None,
-                    None,
-                    Some(session.verification_generation),
-                );
-            }
+            crate::application::verification_event_emitters::emit_verification_status_changed(
+                events,
+                session_id.as_str(),
+                VerificationStatus::Unverified,
+                false,
+                None,
+                None,
+                Some(session.verification_generation),
+            );
         }
     }
 

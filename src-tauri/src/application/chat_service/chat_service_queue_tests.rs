@@ -1,4 +1,5 @@
 use super::*;
+use crate::application::AppState;
 use crate::domain::agents::LogicalEffort;
 use crate::domain::entities::ChatAttachmentId;
 use crate::domain::services::{
@@ -486,7 +487,7 @@ async fn provider_switch_queue_without_app_handle_requeues_instead_of_resuming()
         Vec::new(),
     );
 
-    let outcome = process_queued_messages::<tauri::test::MockRuntime>(
+    let outcome = process_queued_messages(
         ChatContextType::Ideation,
         AgentHarnessKind::Claude,
         "session-queued-switch",
@@ -510,6 +511,8 @@ async fn provider_switch_queue_without_app_handle_requeues_instead_of_resuming()
         std::path::Path::new("."),
         std::path::Path::new("."),
         None,
+        None,
+        Arc::clone(&app_state.events),
         None,
         None,
         None,
@@ -572,7 +575,7 @@ async fn missing_completed_owner_requeues_message_without_preflight_failure_run(
         Vec::new(),
     );
 
-    let outcome = process_queued_messages::<tauri::test::MockRuntime>(
+    let outcome = process_queued_messages(
         ChatContextType::Ideation,
         AgentHarnessKind::Codex,
         "plan-session",
@@ -596,6 +599,8 @@ async fn missing_completed_owner_requeues_message_without_preflight_failure_run(
         std::path::Path::new("."),
         std::path::Path::new("."),
         None,
+        None,
+        Arc::clone(&app_state.events),
         None,
         None,
         None,

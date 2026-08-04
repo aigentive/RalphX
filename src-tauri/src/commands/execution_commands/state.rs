@@ -1,5 +1,6 @@
 use super::*;
 use ralphx_events::EventSink;
+use tauri::Emitter;
 
 /// Statuses where an agent is actively running.
 /// Tasks in these states need to be cancelled when stop is called,

@@ -22,7 +22,7 @@ use crate::application::{
     TicketingService, TicketingTicketIdentity, TicketingTransitionOption,
 };
 use crate::commands::unified_chat_commands::{
-    agent_conversation_response_for_state, agent_workspace_response_for_state,
+    agent_conversation_response_for_state, agent_workspace_response_with_pr_supervision_for_state,
     SendAgentMessageResponse, StartAgentConversationResponse,
 };
 use crate::commands::ExecutionState;
@@ -895,7 +895,7 @@ pub async fn start_ralphx_work_from_ticket<R: Runtime + 'static>(
     mut input: StartRalphxWorkFromTicketInput,
     state: State<'_, AppState>,
     execution_state: State<'_, Arc<ExecutionState>>,
-    app: tauri::AppHandle<R>,
+    _app: tauri::AppHandle<R>,
 ) -> Result<StartAgentConversationResponse, String> {
     let provider = input.ticket_ref.provider.clone();
     validate_provider(&provider)?;
@@ -915,7 +915,7 @@ pub async fn start_ralphx_work_from_ticket<R: Runtime + 'static>(
     let mut result = AgentConversationStartService::new(AgentConversationStartDeps {
         state: state.inner(),
         execution_state: execution_state.inner(),
-        app_handle: app,
+        events: Arc::clone(&state.events),
     })
     .start(input.start)
     .await?;
@@ -938,9 +938,14 @@ pub async fn start_ralphx_work_from_ticket<R: Runtime + 'static>(
     result.conversation.title = Some(conversation_title);
 
     let workspace_response = match result.workspace {
-        Some(workspace) => {
-            Some(agent_workspace_response_for_state(state.inner(), workspace).await?)
-        }
+        Some(workspace) => Some(
+            agent_workspace_response_with_pr_supervision_for_state(
+                state.inner(),
+                execution_state.inner(),
+                workspace,
+            )
+            .await?,
+        ),
         None => None,
     };
 

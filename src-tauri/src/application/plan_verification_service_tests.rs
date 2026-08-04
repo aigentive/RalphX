@@ -8,8 +8,8 @@ use crate::application::chat_service::SendQueuePolicy;
 use crate::application::plan_verification_service::{
     admit_automatic_plan_verification, ensure_plan_verification_for_acceptance,
     get_plan_verification_status, request_plan_verification, source_allows_verified_retry,
-    AutomaticPlanVerificationDisposition, PlanVerificationRequestOutcome,
-    PlanVerificationRequestSource, PlanVerificationStatusKind,
+    AutomaticPlanVerificationDisposition, PlanVerificationCompletionAdapter,
+    PlanVerificationRequestOutcome, PlanVerificationRequestSource, PlanVerificationStatusKind,
 };
 use crate::application::AppState;
 use crate::domain::entities::{
@@ -767,4 +767,80 @@ async fn detached_verification_actions_cannot_poison_owner_status_or_admission()
 
     assert_eq!(outcome, PlanVerificationRequestOutcome::Queued);
     assert_eq!(chat.call_count(), 1);
+}
+
+#[tokio::test]
+async fn terminal_adapter_admits_only_the_current_completed_plan_turn() {
+    let state = AppState::new_test();
+    let (_session, conversation, run) = completed_plan_workspace_run(&state, None).await;
+    let chat = mock_chat(&state);
+    let adapter = PlanVerificationCompletionAdapter::from_app_state(&state);
+
+    let disposition = adapter
+        .admit_automatic(&chat, &conversation.id, &run.id, true)
+        .await
+        .expect("explicit terminal adapter should preserve automatic admission");
+
+    assert_eq!(
+        disposition,
+        AutomaticPlanVerificationDisposition::VerificationPending
+    );
+    assert_eq!(
+        chat.call_count(),
+        1,
+        "only one verifier turn may be admitted"
+    );
+}
+
+#[tokio::test]
+async fn terminal_adapter_records_once_and_rejects_stale_verification_authority() {
+    let state = AppState::new_test();
+    let session = session_with_plan(&state).await;
+    let conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(session.project_id.clone()))
+        .await
+        .unwrap();
+    let target = plan_bundle_action_target(&session);
+    let mut authoritative = AgentRun::new(conversation.id.clone());
+    authoritative.action_kind = Some(AgentRunActionKind::VerifyPlan);
+    authoritative.action_context_id = Some(session.id.as_str().to_string());
+    authoritative.action_target_id = Some(target.clone());
+    let authoritative = state.agent_run_repo.create(authoritative).await.unwrap();
+    let authoritative_id = authoritative.id.as_str();
+    let adapter = PlanVerificationCompletionAdapter::from_app_state(&state);
+
+    let first = adapter
+        .complete_verification(&session.id, &authoritative_id)
+        .await
+        .expect("current typed verification run must record proof");
+    let duplicate = adapter
+        .complete_verification(&session.id, &authoritative_id)
+        .await
+        .expect("the same authoritative completion must remain idempotent");
+    assert!(first.newly_recorded);
+    assert!(!duplicate.newly_recorded);
+
+    let mut stale = AgentRun::new(conversation.id);
+    stale.action_kind = Some(AgentRunActionKind::VerifyPlan);
+    stale.action_context_id = Some(session.id.as_str().to_string());
+    stale.action_target_id = Some("superseded-plan-target".to_string());
+    let stale = state.agent_run_repo.create(stale).await.unwrap();
+    let stale_id = stale.id.as_str();
+    let stale_error = adapter
+        .complete_verification(&session.id, &stale_id)
+        .await
+        .expect_err("stale action target must not overwrite current proof");
+    assert!(stale_error.to_string().contains("rejected"));
+    let persisted = state
+        .ideation_session_repo
+        .get_by_id(&session.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        persisted.verified_plan_agent_run_id.as_deref(),
+        Some(authoritative_id.as_str()),
+        "stale completion must leave the first authoritative proof intact"
+    );
 }

@@ -102,8 +102,11 @@ async fn queued_builder_drain_rejects_flag_off_and_flag_on_passes_the_gate() {
         let _listener = app.listen("agent:error", move |event| {
             captured.lock().unwrap().push(event.payload().to_string());
         });
+        let state = app.state::<AppState>();
         process_queued_messages_for_test_with_persona_feature(
-            app.handle().clone(),
+            state.inner(),
+            None,
+            Arc::clone(&state.events),
             ChatContextType::Project,
             AgentHarnessKind::Claude,
             project_id.as_str(),
@@ -174,8 +177,11 @@ async fn queued_builder_conversation_lookup_error_surfaces_without_spawn() {
         captured.lock().unwrap().push(event.payload().to_string());
     });
 
+    let state = app.state::<AppState>();
     let (processed, last_run_id) = process_queued_messages_for_test(
-        app.handle().clone(),
+        state.inner(),
+        None,
+        Arc::clone(&state.events),
         ChatContextType::Project,
         AgentHarnessKind::Claude,
         project.id.as_str(),
@@ -274,8 +280,11 @@ printf '%s\n' '{"type":"result","session_id":"queued-builder-session","is_error"
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("build queued builder enforcement app");
 
+    let state = app.state::<AppState>();
     let (processed, _) = process_queued_messages_for_test(
-        app.handle().clone(),
+        state.inner(),
+        None,
+        Arc::clone(&state.events),
         ChatContextType::Project,
         AgentHarnessKind::Claude,
         project.id.as_str(),

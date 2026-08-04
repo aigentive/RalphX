@@ -20,6 +20,10 @@ fn app_state_chat_factory_dependencies_include_persona_manual_role_defaults_and_
         "background finalizers must retain durable completion-event delivery"
     );
     assert!(
+        deps.plan_verification_completion.is_some(),
+        "chat finalizers must receive typed Plan verification and approval settlement capability"
+    );
+    assert!(
         deps.atlassian_integration_service.is_some(),
         "handler-built chat services must retain Atlassian reference expansion"
     );

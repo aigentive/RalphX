@@ -1613,7 +1613,7 @@ async fn gate1_message_persistence_failure_prevents_untracked_stdin_delivery() {
     });
 
     let error = state
-        .build_chat_service_for_runtime(Some(Arc::new(ExecutionState::new())), Some(handle.clone()))
+        .build_chat_service_with_execution_state(Arc::new(ExecutionState::new()))
         .send_message(
             ChatContextType::Project,
             context_id,

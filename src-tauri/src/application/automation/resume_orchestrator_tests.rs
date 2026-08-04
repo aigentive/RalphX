@@ -4,6 +4,7 @@ use async_trait::async_trait;
 
 use super::reopen_tests::{run, setup_smart_resume_fixture, RecordingRedriver, ReopenFixture};
 use super::resume_orchestrator::resume_automation_smart_with_redriver;
+use crate::application::app_state::ApplicationExecutionState;
 use crate::application::AppState;
 use crate::domain::entities::{
     Automation, AutomationId, AutomationJudgeState, AutomationRunStatus, AutomationStatus,
@@ -299,10 +300,14 @@ async fn resume_automation_smart_reopens_latest_failed_run_despite_exhausted_ret
     seed_prior_failures(&fixture, 2).await;
     let redriver = RecordingRedriver::default();
 
-    let resumed =
-        resume_automation_smart_with_redriver(&fixture.state, &fixture.automation.id, &redriver)
-            .await
-            .expect("reopen should bypass retry-only consecutive failure guard");
+    let resumed = resume_automation_smart_with_redriver(
+        &fixture.state,
+        &fixture.execution_state,
+        &fixture.automation.id,
+        &redriver,
+    )
+    .await
+    .expect("reopen should bypass retry-only consecutive failure guard");
 
     assert_eq!(resumed.status, AutomationStatus::Active);
     let reopened = fixture
@@ -336,6 +341,7 @@ async fn resume_automation_smart_spawns_retry_when_latest_failure_has_no_convers
     .await;
     let resumed = resume_automation_smart_with_redriver(
         &fixture.state,
+        &fixture.execution_state,
         &fixture.automation.id,
         &RecordingRedriver::default(),
     )
@@ -367,6 +373,7 @@ async fn resume_automation_smart_returns_clear_error_when_retry_limit_is_exhaust
     seed_prior_failures(&fixture, 2).await;
     let error = resume_automation_smart_with_redriver(
         &fixture.state,
+        &fixture.execution_state,
         &fixture.automation.id,
         &RecordingRedriver::default(),
     )
@@ -403,6 +410,7 @@ async fn resume_automation_smart_rejects_already_active_automation() {
 
     let error = resume_automation_smart_with_redriver(
         &fixture.state,
+        &fixture.execution_state,
         &fixture.automation.id,
         &RecordingRedriver::default(),
     )
@@ -426,10 +434,14 @@ async fn resume_automation_smart_does_not_reopen_failed_run_for_completed_automa
     .await;
     let redriver = RecordingRedriver::default();
 
-    let error =
-        resume_automation_smart_with_redriver(&fixture.state, &fixture.automation.id, &redriver)
-            .await
-            .expect_err("completed automation must remain terminal");
+    let error = resume_automation_smart_with_redriver(
+        &fixture.state,
+        &fixture.execution_state,
+        &fixture.automation.id,
+        &redriver,
+    )
+    .await
+    .expect_err("completed automation must remain terminal");
 
     assert!(
         matches!(error, AppError::Conflict(ref detail) if detail == "automation is completed and has no work to resume")
@@ -479,6 +491,7 @@ async fn resume_automation_smart_rejects_each_non_resumable_state_without_side_e
 
         let error = resume_automation_smart_with_redriver(
             &fixture.state,
+            &fixture.execution_state,
             &fixture.automation.id,
             &redriver,
         )
@@ -517,6 +530,7 @@ async fn resume_automation_smart_reports_missing_automation_without_creating_sta
 
     let error = resume_automation_smart_with_redriver(
         &state,
+        &Arc::new(ApplicationExecutionState::new()),
         &automation_id,
         &RecordingRedriver::default(),
     )
@@ -578,6 +592,7 @@ async fn resume_automation_smart_contextualizes_every_app_error_variant_from_loa
 
         let error = resume_automation_smart_with_redriver(
             &state,
+            &Arc::new(ApplicationExecutionState::new()),
             &AutomationId::from_string("automation-load-error"),
             &RecordingRedriver::default(),
         )

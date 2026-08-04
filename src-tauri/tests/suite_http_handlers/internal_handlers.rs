@@ -39,6 +39,7 @@ async fn setup_test_state() -> HttpServerState {
         app_state,
         execution_state,
         delegation_service: Default::default(),
+        external_mcp_supervisor: None,
     }
 }
 
@@ -49,7 +50,12 @@ async fn setup_sqlite_apply_state() -> HttpServerState {
         app_state,
         execution_state,
         delegation_service: Default::default(),
+        external_mcp_supervisor: None,
     }
+}
+
+fn test_execution_state() -> Arc<ExecutionState> {
+    Arc::new(ExecutionState::new())
 }
 
 fn make_project(id: &str, name: &str, dir: &str) -> Project {
@@ -157,9 +163,9 @@ async fn test_list_projects_internal_includes_working_directory() {
 // ============================================================================
 
 #[tokio::test]
-async fn test_create_cross_project_session_http_no_app_handle_returns_500() {
-    // AppState::new_test() has no AppHandle. The handler should return 500
-    // with a clear error message in the test environment.
+async fn test_create_cross_project_session_http_without_shell_handle_reaches_session_validation() {
+    // AppState::new_test() has no shell handle. The HTTP boundary must still
+    // use its shared EventSink and reach the domain validation path.
     let state = setup_test_state().await;
 
     let input = CreateCrossProjectSessionInput {
@@ -177,7 +183,7 @@ async fn test_create_cross_project_session_http_no_app_handle_returns_500() {
         .message
         .as_deref()
         .unwrap_or("")
-        .contains("App handle not available"));
+        .contains("Source session not found"));
 }
 
 // ============================================================================
@@ -828,7 +834,13 @@ async fn test_all_foreign_finalize_transitions_session_to_accepted() {
     state.app_state.task_proposal_repo.create(p3).await.unwrap();
 
     // Call finalize_proposals_impl — accessible via the handlers::* glob re-export
-    let result = finalize_proposals_impl(&state.app_state, &session_id, false).await;
+    let result = finalize_proposals_impl(
+        &state.app_state,
+        &test_execution_state(),
+        &session_id,
+        false,
+    )
+    .await;
 
     assert!(
         result.is_ok(),
@@ -910,9 +922,14 @@ async fn test_all_foreign_finalize_ignores_retired_state_when_accept_gate_disabl
     state.app_state.task_proposal_repo.create(p1).await.unwrap();
     state.app_state.task_proposal_repo.create(p2).await.unwrap();
 
-    let result = finalize_proposals_impl(&state.app_state, &session_id, false)
-        .await
-        .expect("retired verifier summary state must not block acceptance");
+    let result = finalize_proposals_impl(
+        &state.app_state,
+        &test_execution_state(),
+        &session_id,
+        false,
+    )
+    .await
+    .expect("retired verifier summary state must not block acceptance");
     assert_eq!(result.session_status, "accepted");
 
     let updated_session = state
@@ -978,7 +995,13 @@ async fn test_all_foreign_finalize_respects_required_exact_verification() {
         .await
         .unwrap();
 
-    let result = finalize_proposals_impl(&state.app_state, session_id.as_str(), false).await;
+    let result = finalize_proposals_impl(
+        &state.app_state,
+        &test_execution_state(),
+        session_id.as_str(),
+        false,
+    )
+    .await;
     assert!(
         matches!(result, Err(AppError::Validation(_))),
         "all-foreign terminal acceptance must require exact proof: {result:?}"
@@ -1041,7 +1064,7 @@ async fn test_migrate_then_finalize_target_session_accepted() {
 
     // finalize_proposals_impl sees all proposals as local → calls apply_proposals_core
     // → session converts to Accepted
-    let response = finalize_proposals_impl(&app_state, &target_id, false)
+    let response = finalize_proposals_impl(&app_state, &test_execution_state(), &target_id, false)
         .await
         .unwrap();
     assert_eq!(

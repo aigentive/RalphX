@@ -1,15 +1,26 @@
 use ralphx_lib::application::AppState;
 use ralphx_lib::commands::ideation_commands::*;
+use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::ideation::VerificationStatus;
 use ralphx_lib::domain::entities::{
     ChatMessage, IdeationSession, IdeationSessionId, IdeationSessionStatus, Priority, Project,
     ProjectId, ProposalCategory, TaskProposal, TaskProposalId,
 };
 use ralphx_lib::domain::ideation::IdeationSettings;
+use std::sync::Arc;
 use tauri::Manager;
 
 fn setup_test_state() -> AppState {
     AppState::new_test()
+}
+
+async fn apply_proposals_core(
+    state: &AppState,
+    input: ApplyProposalsInput,
+) -> ralphx_lib::error::AppResult<ApplyProposalsResult> {
+    let execution_state = Arc::new(ExecutionState::new());
+    ralphx_lib::commands::ideation_commands::apply_proposals_core(state, &execution_state, input)
+        .await
 }
 
 #[tokio::test]

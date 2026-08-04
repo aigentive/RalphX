@@ -9,7 +9,7 @@ use super::{
     process_exit_details, process_stream_background, provider_session_ref_for_harness,
     record_agent_waiting_if_user_attended, resolve_codex_file_change_tool_call_snapshots,
     stream_mode_for_harness, tool_call_block_index, upsert_codex_tool_call_snapshot,
-    ProcessExitDetails, StreamOutcome, StreamingStateCache,
+    ChatEventEmitter, ProcessExitDetails, StreamOutcome, StreamingStateCache,
 };
 use crate::application::chat_service::chat_service_context::create_assistant_message;
 use crate::application::chat_service::chat_service_errors::{ProviderErrorCategory, StreamError};
@@ -40,14 +40,21 @@ use crate::infrastructure::memory::MemoryChatMessageRepository;
 use crate::infrastructure::sqlite::SqliteAgentRunRepository;
 use crate::testing::SqliteTestDb;
 use chrono::{Duration, Utc};
+use ralphx_events::{EventSink, NullEventSink, RecordingEventSink};
 use std::os::unix::process::ExitStatusExt;
 use std::process::Stdio;
-use std::sync::{Arc, Mutex};
-use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
-use tauri::Listener;
+use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
+
+fn null_event_sink() -> Arc<dyn EventSink> {
+    Arc::new(NullEventSink)
+}
+
+fn null_chat_event_emitter() -> ChatEventEmitter {
+    ChatEventEmitter(null_event_sink())
+}
 
 struct FailingTimelineRepository;
 
@@ -122,7 +129,6 @@ async fn chunk_block_index_matches_persisted_block_index_across_interleaved_bloc
         &message_id,
         &blocks,
         ChatTimelineItemStatus::Streaming,
-        None,
     )
     .await;
     let persisted_block_index = persisted
@@ -166,7 +172,6 @@ async fn chunk_block_index_ignores_skipped_empty_text_block() {
         &message_id,
         &blocks,
         ChatTimelineItemStatus::Streaming,
-        None,
     )
     .await;
     let persisted_block_index = persisted
@@ -204,7 +209,6 @@ async fn persist_timeline_snapshot_has_no_item_for_empty_thinking_summary() {
         &message_id,
         &processor.content_blocks,
         ChatTimelineItemStatus::Streaming,
-        None,
     )
     .await;
 
@@ -239,7 +243,6 @@ async fn persist_timeline_snapshot_skips_whitespace_thinking_blocks_without_remo
         &message_id,
         &blocks,
         ChatTimelineItemStatus::Finalized,
-        None,
     )
     .await;
 
@@ -379,16 +382,13 @@ async fn agent_waiting_emits_once_for_user_turn_and_not_for_backend_action() {
         .await
         .expect("create verifier run");
 
-    let app = mock_builder()
-        .manage(state)
-        .build(mock_context(noop_assets()))
-        .expect("build mock app");
-    let handle = app.handle();
+    let runtime_factory_deps =
+        crate::application::runtime_factory::ChatRuntimeFactoryDeps::from_app_state(&state);
     let verifier_run_id = verifier_run.id.as_str();
     let ordinary_run_id = ordinary_run.id.as_str();
     let emitted = [
         record_agent_waiting_if_user_attended(
-            handle,
+            Some(&runtime_factory_deps),
             ChatContextType::Project,
             project_id.as_str(),
             &conversation.id,
@@ -396,7 +396,7 @@ async fn agent_waiting_emits_once_for_user_turn_and_not_for_backend_action() {
         )
         .await,
         record_agent_waiting_if_user_attended(
-            handle,
+            Some(&runtime_factory_deps),
             ChatContextType::Project,
             project_id.as_str(),
             &conversation.id,
@@ -410,12 +410,9 @@ async fn agent_waiting_emits_once_for_user_turn_and_not_for_backend_action() {
 
 #[tokio::test]
 async fn agent_waiting_skips_missing_state_entities_and_background_contexts() {
-    let unmanaged_app = mock_builder()
-        .build(mock_context(noop_assets()))
-        .expect("build unmanaged mock app");
     assert!(
         !record_agent_waiting_if_user_attended(
-            unmanaged_app.handle(),
+            None,
             ChatContextType::Standalone,
             "standalone",
             &ChatConversationId::new(),
@@ -431,16 +428,13 @@ async fn agent_waiting_skips_missing_state_entities_and_background_contexts() {
         .create(ChatConversation::new_project(project_id.clone()))
         .await
         .expect("create conversation");
-    let app = mock_builder()
-        .manage(state)
-        .build(mock_context(noop_assets()))
-        .expect("build managed mock app");
-    let handle = app.handle();
+    let runtime_factory_deps =
+        crate::application::runtime_factory::ChatRuntimeFactoryDeps::from_app_state(&state);
     let missing_run_id = AgentRunId::new().as_str();
 
     assert!(
         !record_agent_waiting_if_user_attended(
-            handle,
+            Some(&runtime_factory_deps),
             ChatContextType::Project,
             project_id.as_str(),
             &ChatConversationId::new(),
@@ -450,7 +444,7 @@ async fn agent_waiting_skips_missing_state_entities_and_background_contexts() {
     );
     assert!(
         record_agent_waiting_if_user_attended(
-            handle,
+            Some(&runtime_factory_deps),
             ChatContextType::Project,
             project_id.as_str(),
             &conversation.id,
@@ -460,7 +454,7 @@ async fn agent_waiting_skips_missing_state_entities_and_background_contexts() {
     );
     assert!(
         !record_agent_waiting_if_user_attended(
-            handle,
+            Some(&runtime_factory_deps),
             ChatContextType::Ideation,
             "missing-session",
             &conversation.id,
@@ -470,7 +464,7 @@ async fn agent_waiting_skips_missing_state_entities_and_background_contexts() {
     );
     assert!(
         !record_agent_waiting_if_user_attended(
-            handle,
+            Some(&runtime_factory_deps),
             ChatContextType::Task,
             "missing-task",
             &conversation.id,
@@ -480,7 +474,7 @@ async fn agent_waiting_skips_missing_state_entities_and_background_contexts() {
     );
     assert!(
         !record_agent_waiting_if_user_attended(
-            handle,
+            Some(&runtime_factory_deps),
             ChatContextType::Merge,
             "merge",
             &conversation.id,
@@ -678,19 +672,15 @@ async fn run_claude_stream_lines(lines: &[&str]) -> Result<StreamOutcome, Stream
     let child = spawn_jsonl_process(lines).await;
     let conversation_id = ChatConversationId::new();
     let context_id = IdeationSessionId::new();
-    let app = mock_builder()
-        .build(mock_context(noop_assets()))
-        .expect("mock app");
-    let app_handle = app.handle().clone();
-
-    process_stream_background::<MockRuntime>(
+    process_stream_background(
         child,
         AgentHarnessKind::Claude,
         ChatContextType::Ideation,
         context_id.as_str(),
         &conversation_id,
-        None::<std::path::PathBuf>,
-        Some(app_handle),
+        null_event_sink(),
+        None,
+        None,
         None,
         None,
         None,
@@ -729,26 +719,17 @@ async fn claude_thinking_stream_emits_settle_payload_through_service_entry() {
     .await;
     let conversation_id = ChatConversationId::new();
     let context_id = IdeationSessionId::new();
-    let app = mock_builder()
-        .build(mock_context(noop_assets()))
-        .expect("mock app");
-    let emitted = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
-    let emitted_for_listener = Arc::clone(&emitted);
-    let _listener = app.listen(events::AGENT_THINKING, move |event| {
-        emitted_for_listener
-            .lock()
-            .expect("thinking event log lock")
-            .push(serde_json::from_str(event.payload()).expect("valid thinking payload"));
-    });
+    let event_sink = RecordingEventSink::new();
 
-    process_stream_background::<MockRuntime>(
+    process_stream_background(
         child,
         AgentHarnessKind::Claude,
         ChatContextType::Ideation,
         context_id.as_str(),
         &conversation_id,
-        None::<std::path::PathBuf>,
-        Some(app.handle().clone()),
+        Arc::new(event_sink.clone()),
+        None,
+        None,
         None,
         None,
         None,
@@ -771,7 +752,12 @@ async fn claude_thinking_stream_emits_settle_payload_through_service_entry() {
     .await
     .expect("thinking stream should complete");
 
-    let emitted = emitted.lock().expect("thinking event log lock");
+    let emitted: Vec<_> = event_sink
+        .events()
+        .into_iter()
+        .filter(|event| event.event == events::AGENT_THINKING)
+        .map(|event| event.payload)
+        .collect();
     assert_eq!(emitted.len(), 4);
     for (seq, (payload, expected_text)) in emitted[..3]
         .iter()
@@ -806,13 +792,14 @@ async fn claude_task_events_cache_lifecycle_defaults_and_stream_sequence() {
     let context_id = IdeationSessionId::new();
     let cache = StreamingStateCache::new();
 
-    let outcome = process_stream_background::<MockRuntime>(
+    let outcome = process_stream_background(
         child,
         AgentHarnessKind::Claude,
         ChatContextType::Ideation,
         context_id.as_str(),
         &conversation_id,
-        None::<std::path::PathBuf>,
+        null_event_sink(),
+        None,
         None,
         None,
         None,
@@ -860,13 +847,14 @@ async fn claude_stream_error_turn_complete_does_not_wait_for_interactive_timeout
 
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(1),
-        process_stream_background::<MockRuntime>(
+        process_stream_background(
             child,
             AgentHarnessKind::Claude,
             ChatContextType::Ideation,
             context_id.as_str(),
             &conversation_id,
-            None::<std::path::PathBuf>,
+            null_event_sink(),
+            None,
             None,
             None,
             None,
@@ -947,13 +935,14 @@ async fn claude_mode_handoff_turn_complete_retires_exact_ipr_without_waiting_for
 
     let outcome = tokio::time::timeout(
         std::time::Duration::from_secs(1),
-        process_stream_background::<MockRuntime>(
+        process_stream_background(
             child,
             AgentHarnessKind::Claude,
             ChatContextType::Project,
             context_id,
             &conversation_id,
-            None::<std::path::PathBuf>,
+            null_event_sink(),
+            None,
             None,
             None,
             None,
@@ -995,13 +984,14 @@ async fn run_codex_stream_lines(lines: &[&str]) -> Result<StreamOutcome, StreamE
     let conversation_id = ChatConversationId::new();
     let context_id = IdeationSessionId::new();
 
-    process_codex_stream_background::<MockRuntime>(
+    process_codex_stream_background(
         child,
         ChatContextType::Ideation,
         context_id.as_str(),
         &conversation_id,
-        None::<std::path::PathBuf>,
-        None::<tauri::AppHandle<MockRuntime>>,
+        null_chat_event_emitter(),
+        None,
+        None,
         None,
         None,
         None,
@@ -1034,13 +1024,14 @@ async fn codex_stream_turn_completed_finishes_without_waiting_for_process_exit()
 
     let outcome = tokio::time::timeout(
         std::time::Duration::from_secs(1),
-        process_codex_stream_background::<MockRuntime>(
+        process_codex_stream_background(
             child,
             ChatContextType::Ideation,
             context_id.as_str(),
             &conversation_id,
-            None::<std::path::PathBuf>,
-            None::<tauri::AppHandle<MockRuntime>>,
+            null_chat_event_emitter(),
+            None,
+            None,
             None,
             None,
             None,
@@ -1125,13 +1116,14 @@ async fn codex_empty_nonzero_terminal_exit_is_typed_as_no_output() {
     let conversation_id = ChatConversationId::new();
     let context_id = IdeationSessionId::new();
 
-    let result = process_codex_stream_background::<MockRuntime>(
+    let result = process_codex_stream_background(
         child,
         ChatContextType::Ideation,
         context_id.as_str(),
         &conversation_id,
-        None::<std::path::PathBuf>,
-        None::<tauri::AppHandle<MockRuntime>>,
+        null_chat_event_emitter(),
+        None,
+        None,
         None,
         None,
         None,
@@ -1173,13 +1165,14 @@ async fn codex_empty_success_terminal_exit_is_typed_as_no_output() {
     let conversation_id = ChatConversationId::new();
     let context_id = IdeationSessionId::new();
 
-    let result = process_codex_stream_background::<MockRuntime>(
+    let result = process_codex_stream_background(
         child,
         ChatContextType::Ideation,
         context_id.as_str(),
         &conversation_id,
-        None::<std::path::PathBuf>,
-        None::<tauri::AppHandle<MockRuntime>>,
+        null_chat_event_emitter(),
+        None,
+        None,
         None,
         None,
         None,
@@ -1226,13 +1219,14 @@ async fn codex_owned_cancellation_outranks_empty_terminal_exit() {
         terminal_cancellation.cancel();
     });
 
-    let result = process_codex_stream_background::<MockRuntime>(
+    let result = process_codex_stream_background(
         child,
         ChatContextType::Ideation,
         context_id.as_str(),
         &conversation_id,
-        None::<std::path::PathBuf>,
-        None::<tauri::AppHandle<MockRuntime>>,
+        null_chat_event_emitter(),
+        None,
+        None,
         None,
         None,
         None,
@@ -1265,13 +1259,14 @@ async fn codex_stdin_notice_only_exit_is_typed_as_no_output_with_details() {
     let conversation_id = ChatConversationId::new();
     let context_id = IdeationSessionId::new();
 
-    let result = process_codex_stream_background::<MockRuntime>(
+    let result = process_codex_stream_background(
         child,
         ChatContextType::Ideation,
         context_id.as_str(),
         &conversation_id,
-        None::<std::path::PathBuf>,
-        None::<tauri::AppHandle<MockRuntime>>,
+        null_chat_event_emitter(),
+        None,
+        None,
         None,
         None,
         None,
@@ -1330,13 +1325,14 @@ async fn codex_event_msg_agent_messages_persist_to_task_execution_transcript() {
     ])
     .await;
 
-    let outcome = process_codex_stream_background::<MockRuntime>(
+    let outcome = process_codex_stream_background(
         child,
         ChatContextType::TaskExecution,
         task_id.as_str(),
         &conversation_id,
-        None::<std::path::PathBuf>,
-        None::<tauri::AppHandle<MockRuntime>>,
+        null_chat_event_emitter(),
+        None,
+        None,
         None,
         None,
         Some(state.chat_message_repo.clone()),
@@ -1433,13 +1429,14 @@ async fn codex_reasoning_persists_as_thinking_without_entering_response_text() {
     ])
     .await;
 
-    let outcome = process_codex_stream_background::<MockRuntime>(
+    let outcome = process_codex_stream_background(
         child,
         ChatContextType::Ideation,
         context_id.as_str(),
         &conversation_id,
-        None::<std::path::PathBuf>,
-        None::<tauri::AppHandle<MockRuntime>>,
+        null_chat_event_emitter(),
+        None,
+        None,
         None,
         None,
         Some(state.chat_message_repo.clone()),
@@ -1489,17 +1486,7 @@ async fn live_codex_exec_json_reasoning_persists_as_thinking_blocks() {
         .create(pre_assistant)
         .await
         .expect("seed assistant message");
-    let app = mock_builder()
-        .build(mock_context(noop_assets()))
-        .expect("mock app");
-    let emitted = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
-    let emitted_for_listener = Arc::clone(&emitted);
-    let _listener = app.listen(events::AGENT_THINKING, move |event| {
-        emitted_for_listener
-            .lock()
-            .expect("thinking event log lock")
-            .push(serde_json::from_str(event.payload()).expect("valid thinking payload"));
-    });
+    let event_sink = RecordingEventSink::new();
 
     let child = spawn_jsonl_process(&[
         r#"{"type":"thread.started","thread_id":"019fb273-ea3a-7b02-b139-aa5bd7df9a1c"}"#,
@@ -1511,13 +1498,14 @@ async fn live_codex_exec_json_reasoning_persists_as_thinking_blocks() {
     ])
     .await;
 
-    let outcome = process_codex_stream_background::<MockRuntime>(
+    let outcome = process_codex_stream_background(
         child,
         ChatContextType::Ideation,
         context_id.as_str(),
         &conversation_id,
-        None::<std::path::PathBuf>,
-        Some(app.handle().clone()),
+        ChatEventEmitter(Arc::new(event_sink.clone())),
+        None,
+        None,
         None,
         None,
         Some(state.chat_message_repo.clone()),
@@ -1569,7 +1557,12 @@ async fn live_codex_exec_json_reasoning_persists_as_thinking_blocks() {
         outcome.content_blocks.last(),
         Some(ContentBlockItem::Text { text }) if text == "Total lines: 5"
     ));
-    let emitted = emitted.lock().expect("thinking event log lock");
+    let emitted: Vec<_> = event_sink
+        .events()
+        .into_iter()
+        .filter(|event| event.event == events::AGENT_THINKING)
+        .map(|event| event.payload)
+        .collect();
     assert_eq!(emitted.len(), 3);
     assert_eq!(emitted[2]["text"], "");
     assert_eq!(emitted[2]["block_index"], 1);
@@ -1654,25 +1647,21 @@ async fn claude_stream_turn_complete_persists_assistant_blocks_to_timeline() {
         .await
         .expect("seed pre-assistant message");
 
-    let app = mock_builder()
-        .build(mock_context(noop_assets()))
-        .expect("mock app");
-    let app_handle = app.handle().clone();
-
     let child = spawn_jsonl_process(&[
         r#"{"type":"assistant","message":{"content":[{"type":"text","text":"It is a Tauri desktop app called RalphX."}]},"session_id":"sess-1"}"#,
         r#"{"type":"result","session_id":"sess-1","is_error":false,"result":"It is a Tauri desktop app called RalphX.","cost_usd":0.0}"#,
     ])
     .await;
 
-    process_stream_background::<MockRuntime>(
+    process_stream_background(
         child,
         AgentHarnessKind::Claude,
         ChatContextType::Ideation,
         context_id.as_str(),
         &conversation_id,
-        None::<std::path::PathBuf>,
-        Some(app_handle),
+        null_event_sink(),
+        None,
+        None,
         None,
         None,
         Some(state.chat_message_repo.clone()),
@@ -1767,13 +1756,14 @@ async fn claude_text_only_in_flight_stream_persists_timeline_snapshot_before_fin
         let pre_assistant_id = pre_assistant_id.clone();
 
         async move {
-            process_stream_background::<MockRuntime>(
+            process_stream_background(
                 child,
                 AgentHarnessKind::Claude,
                 ChatContextType::Ideation,
                 context_id.as_str(),
                 &conversation_id,
-                None::<std::path::PathBuf>,
+                null_event_sink(),
+                None,
                 None,
                 None,
                 None,
@@ -1872,13 +1862,14 @@ async fn claude_multi_turn_stream_persists_combined_usage_to_canonical_run() {
     ])
     .await;
 
-    process_stream_background::<MockRuntime>(
+    process_stream_background(
         child,
         AgentHarnessKind::Claude,
         ChatContextType::Ideation,
         context_id.as_str(),
         &conversation_id,
-        None::<std::path::PathBuf>,
+        null_event_sink(),
+        None,
         None,
         None,
         None,
@@ -1963,7 +1954,6 @@ async fn persist_timeline_snapshot_writes_ordered_blocks_and_finalizes_them() {
         &message_id,
         &streaming_blocks,
         ChatTimelineItemStatus::Streaming,
-        None,
     )
     .await;
     assert_eq!(streaming_items.len(), 4);
@@ -1999,7 +1989,6 @@ async fn persist_timeline_snapshot_writes_ordered_blocks_and_finalizes_them() {
         &message_id,
         &blocks,
         ChatTimelineItemStatus::Finalized,
-        None,
     )
     .await;
     assert_eq!(finalized_items.len(), 3);
@@ -2025,84 +2014,6 @@ async fn persist_timeline_snapshot_writes_ordered_blocks_and_finalizes_them() {
         .items
         .iter()
         .all(|item| item.finalized_at.is_some()));
-}
-
-#[tokio::test]
-async fn persist_timeline_snapshot_attributes_blocks_to_the_active_run() {
-    let state = AppState::new_test();
-    let conversation_id = ChatConversationId::new();
-    let message_id = Some("assistant-message-run-attribution".to_string());
-    let run_id = AgentRunId::new().as_str();
-    let blocks = vec![
-        ContentBlockItem::Text {
-            text: "Attributed to the active run".to_string(),
-        },
-        ContentBlockItem::ToolUse {
-            id: Some("tool-attribution".to_string()),
-            name: "bash".to_string(),
-            arguments: serde_json::json!({ "command": "cargo test" }),
-            result: Some(serde_json::json!("ok")),
-            parent_tool_use_id: None,
-            diff_context: None,
-        },
-    ];
-
-    let items = persist_timeline_snapshot(
-        &Some(state.chat_timeline_repo.clone()),
-        &conversation_id.as_str(),
-        &message_id,
-        &blocks,
-        ChatTimelineItemStatus::Finalized,
-        Some(run_id.as_str()),
-    )
-    .await;
-
-    assert!(!items.is_empty());
-    assert!(items
-        .iter()
-        .all(|item| item.run_id.as_ref().map(|id| id.as_str()) == Some(run_id.clone())));
-
-    let page = state
-        .chat_timeline_repo
-        .get_page(&conversation_id, 10, None)
-        .await
-        .expect("load timeline page");
-    assert!(!page.items.is_empty());
-    assert!(page
-        .items
-        .iter()
-        .all(|item| item.run_id.as_ref().map(|id| id.as_str()) == Some(run_id.clone())));
-}
-
-#[tokio::test]
-async fn persist_timeline_snapshot_without_run_leaves_run_id_null() {
-    let state = AppState::new_test();
-    let conversation_id = ChatConversationId::new();
-    let message_id = Some("assistant-message-no-run-attribution".to_string());
-    let blocks = vec![ContentBlockItem::Text {
-        text: "No active run in scope".to_string(),
-    }];
-
-    let items = persist_timeline_snapshot(
-        &Some(state.chat_timeline_repo.clone()),
-        &conversation_id.as_str(),
-        &message_id,
-        &blocks,
-        ChatTimelineItemStatus::Finalized,
-        None,
-    )
-    .await;
-
-    assert!(!items.is_empty());
-    assert!(items.iter().all(|item| item.run_id.is_none()));
-
-    let page = state
-        .chat_timeline_repo
-        .get_page(&conversation_id, 10, None)
-        .await
-        .expect("load timeline page");
-    assert!(!page.items.is_empty());
-    assert!(page.items.iter().all(|item| item.run_id.is_none()));
 }
 
 #[tokio::test]
@@ -2135,7 +2046,6 @@ async fn persist_timeline_snapshot_keeps_raw_payloads_only_for_full_fidelity_too
         &message_id,
         &blocks,
         ChatTimelineItemStatus::Finalized,
-        None,
     )
     .await;
 
@@ -2192,7 +2102,6 @@ async fn persist_timeline_snapshot_preserves_streaming_block_order_and_kind_when
         &message_id,
         &blocks,
         ChatTimelineItemStatus::Streaming,
-        None,
     )
     .await;
     let streaming_projection = streaming_items
@@ -2213,7 +2122,6 @@ async fn persist_timeline_snapshot_preserves_streaming_block_order_and_kind_when
         &message_id,
         &blocks,
         ChatTimelineItemStatus::Finalized,
-        None,
     )
     .await;
 
@@ -2263,7 +2171,6 @@ async fn persist_timeline_snapshot_returns_empty_when_any_item_write_fails() {
         &message_id,
         &blocks,
         ChatTimelineItemStatus::Finalized,
-        None,
     )
     .await;
 
@@ -2327,7 +2234,6 @@ async fn timeline_persistence_helpers_ignore_missing_repo_or_message_identity() 
         &Some("assistant-message-missing-repo".to_string()),
         &blocks,
         ChatTimelineItemStatus::Streaming,
-        None,
     )
     .await;
     let missing_message_items = persist_timeline_snapshot(
@@ -2336,7 +2242,6 @@ async fn timeline_persistence_helpers_ignore_missing_repo_or_message_identity() 
         &None,
         &blocks,
         ChatTimelineItemStatus::Streaming,
-        None,
     )
     .await;
     assert!(missing_repo_items.is_empty());
@@ -2506,13 +2411,14 @@ async fn codex_cumulative_capture_requires_persisted_session_attribution() {
     .await;
     let repo: Arc<dyn AgentRunRepository> = repo_impl.clone();
 
-    process_codex_stream_background::<MockRuntime>(
+    process_codex_stream_background(
         child,
         ChatContextType::Ideation,
         conversation.context_id.as_str(),
         &conversation.id,
-        None::<std::path::PathBuf>,
-        None::<tauri::AppHandle<MockRuntime>>,
+        null_chat_event_emitter(),
+        None,
+        None,
         None,
         None,
         None,
@@ -3801,22 +3707,18 @@ async fn run_debounce_stream(
         state.chat_timeline_repo.clone(),
     ));
 
-    let app = mock_builder()
-        .build(mock_context(noop_assets()))
-        .expect("mock app");
-    let app_handle = app.handle().clone();
-
     let borrowed: Vec<&str> = lines.iter().map(String::as_str).collect();
     let child = spawn_jsonl_process(&borrowed).await;
 
-    process_stream_background::<MockRuntime>(
+    process_stream_background(
         child,
         AgentHarnessKind::Claude,
         ChatContextType::Ideation,
         context_id.as_str(),
         &conversation_id,
-        None::<std::path::PathBuf>,
-        Some(app_handle),
+        null_event_sink(),
+        None,
+        None,
         None,
         None,
         Some(state.chat_message_repo.clone()),
@@ -3989,7 +3891,6 @@ async fn debounce_flush_never_wipes_durable_rows_while_text_is_still_in_flight()
         &[],
         &[],
         ChatTimelineItemStatus::Streaming,
-        None,
     )
     .await;
 

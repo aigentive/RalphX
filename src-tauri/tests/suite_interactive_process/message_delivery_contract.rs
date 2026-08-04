@@ -129,8 +129,11 @@ async fn old_queued_user_message_survives_exit_cleanup_and_drains() {
         .manage(state)
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("app");
+    let state = app.state::<AppState>();
     let (processed, _) = process_queued_messages_for_test(
-        app.handle().clone(),
+        state.inner(),
+        None,
+        Arc::clone(&state.events),
         ChatContextType::Project,
         AgentHarnessKind::Claude,
         project.id.as_str(),
@@ -171,8 +174,11 @@ async fn missing_completed_owner_replays_fresh_without_queued_preflight_failure(
     let _listener = app.listen("agent:error", move |event| {
         captured.lock().unwrap().push(event.payload().to_string())
     });
+    let state = app.state::<AppState>();
     let (processed, run_id) = process_queued_messages_for_test(
-        app.handle().clone(),
+        state.inner(),
+        None,
+        Arc::clone(&state.events),
         ChatContextType::Project,
         AgentHarnessKind::Claude,
         project.id.as_str(),
@@ -236,8 +242,11 @@ async fn continuation_resolution_error_restores_queue_front_and_emits_error() {
     let _queue_sent_listener = app.listen("agent:queue_sent", move |event| {
         captured.lock().unwrap().push(event.payload().to_string())
     });
+    let state = app.state::<AppState>();
     let (processed, run_id) = process_queued_messages_for_test(
-        app.handle().clone(),
+        state.inner(),
+        None,
+        Arc::clone(&state.events),
         ChatContextType::Project,
         AgentHarnessKind::Claude,
         project.id.as_str(),
@@ -300,8 +309,11 @@ async fn replayed_message_is_delivered_exactly_once_on_reentry() {
     let _queue_sent_listener = app.listen("agent:queue_sent", move |event| {
         captured.lock().unwrap().push(event.payload().to_string())
     });
+    let state = app.state::<AppState>();
     let first = process_queued_messages_for_test(
-        app.handle().clone(),
+        state.inner(),
+        None,
+        Arc::clone(&state.events),
         ChatContextType::Project,
         AgentHarnessKind::Claude,
         project.id.as_str(),
@@ -311,7 +323,9 @@ async fn replayed_message_is_delivered_exactly_once_on_reentry() {
     )
     .await;
     let second = process_queued_messages_for_test(
-        app.handle().clone(),
+        state.inner(),
+        None,
+        Arc::clone(&state.events),
         ChatContextType::Project,
         AgentHarnessKind::Claude,
         project.id.as_str(),
@@ -363,8 +377,11 @@ async fn recovered_stdin_turn_drains_without_duplicate_user_message_row() {
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("app");
 
+    let state = app.state::<AppState>();
     let (processed, _) = process_queued_messages_for_test(
-        app.handle().clone(),
+        state.inner(),
+        None,
+        Arc::clone(&state.events),
         ChatContextType::Project,
         AgentHarnessKind::Claude,
         project.id.as_str(),
@@ -474,7 +491,7 @@ async fn stopping_exact_interactive_owner_requeues_pending_turn_and_publishes_ba
         captured.lock().unwrap().push(event.payload().to_string())
     });
     let state = app.state::<AppState>();
-    let service = state.build_chat_service_for_runtime(None, Some(app.handle().clone()));
+    let service = state.build_chat_service();
 
     assert!(!service
         .stop_agent(ChatContextType::Project, &conversation.id.as_str())

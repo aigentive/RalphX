@@ -3931,7 +3931,7 @@ async fn start_agent_conversation_with_ticket_default_base_preserves_base_and_us
     let result = AgentConversationStartService::new(AgentConversationStartDeps {
         state: app.state::<AppState>().inner(),
         execution_state: app.state::<Arc<ExecutionState>>().inner(),
-        app_handle: app.handle().clone(),
+        events: Arc::clone(&app.state::<AppState>().events),
     })
     .start(StartAgentConversationInput {
         project_id: Some(project_id.as_str().to_string()),
@@ -4017,7 +4017,7 @@ async fn clickup_ticket_start_reuses_unique_existing_branch_without_isolation() 
     let result = AgentConversationStartService::new(AgentConversationStartDeps {
         state: app.state::<AppState>().inner(),
         execution_state: app.state::<Arc<ExecutionState>>().inner(),
-        app_handle: app.handle().clone(),
+        events: Arc::clone(&app.state::<AppState>().events),
     })
     .start(StartAgentConversationInput {
         project_id: Some(project_id.to_string()),
@@ -4085,7 +4085,7 @@ async fn start_agent_conversation_persists_team_intent_for_new_project_conversat
     let result = AgentConversationStartService::new(AgentConversationStartDeps {
         state: app.state::<AppState>().inner(),
         execution_state: app.state::<Arc<ExecutionState>>().inner(),
-        app_handle: app.handle().clone(),
+        events: Arc::clone(&app.state::<AppState>().events),
     })
     .start(StartAgentConversationInput {
         project_id: Some(project_id.as_str().to_string()),
@@ -4167,7 +4167,7 @@ async fn untouched_start_resolves_the_current_complete_role_default_at_launch() 
     let result = AgentConversationStartService::new(AgentConversationStartDeps {
         state: app.state::<AppState>().inner(),
         execution_state: app.state::<Arc<ExecutionState>>().inner(),
-        app_handle: app.handle().clone(),
+        events: Arc::clone(&app.state::<AppState>().events),
     })
     .start(StartAgentConversationInput {
         project_id: Some(project_id.as_str().to_string()),
@@ -4235,7 +4235,7 @@ async fn start_agent_conversation_updates_seeded_project_team_coordination_mode(
     let result = AgentConversationStartService::new(AgentConversationStartDeps {
         state: app.state::<AppState>().inner(),
         execution_state: app.state::<Arc<ExecutionState>>().inner(),
-        app_handle: app.handle().clone(),
+        events: Arc::clone(&app.state::<AppState>().events),
     })
     .start(StartAgentConversationInput {
         project_id: Some(project_id.as_str().to_string()),

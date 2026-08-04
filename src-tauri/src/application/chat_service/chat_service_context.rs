@@ -9,7 +9,6 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
-use tauri::{Manager, Runtime};
 
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
@@ -90,8 +89,8 @@ pub const SESSION_HISTORY_ARTIFACT_THRESHOLD_BYTES: usize = 2000;
 /// Preview budget for long history messages that have a full artifact reference.
 pub const SESSION_HISTORY_PREVIEW_BYTES: usize = 500;
 
-pub async fn await_required_external_mcp<R: Runtime>(
-    app_handle: Option<&tauri::AppHandle<R>>,
+pub async fn await_required_external_mcp(
+    external_mcp: Option<&Arc<crate::infrastructure::ExternalMcpSupervisor>>,
     provider: AgentHarnessKind,
     plugin_dir: &Path,
     agent_name: &str,
@@ -105,21 +104,9 @@ pub async fn await_required_external_mcp<R: Runtime>(
     )? {
         return Ok(());
     }
-    let handle = app_handle.ok_or_else(|| {
+    let external_mcp = external_mcp.ok_or_else(|| {
         "External MCP transport requires the managed application runtime".to_string()
     })?;
-    let Some(external_mcp) = handle.try_state::<crate::infrastructure::ExternalMcpHandle>() else {
-        #[cfg(any(test, feature = "test-utils"))]
-        {
-            return Ok(());
-        }
-        #[cfg(not(any(test, feature = "test-utils")))]
-        {
-            return Err(
-                "External MCP transport is not managed by the application runtime".to_string(),
-            );
-        }
-    };
     external_mcp
         .await_ready(std::time::Duration::from_secs(
             external_mcp_config().startup_timeout_secs,

@@ -11,6 +11,9 @@ use crate::domain::entities::{
     VerificationStatus,
 };
 use chrono::Utc;
+use std::sync::Arc;
+
+use crate::application::app_state::ApplicationExecutionState as ExecutionState;
 
 async fn state_with_durable_pipeline_workspace(
     mode: AgentConversationWorkspaceMode,
@@ -241,7 +244,8 @@ async fn native_finalize_rejects_durably_owned_tasks_pipeline_without_transient_
     let (state, session) =
         state_with_durable_pipeline_workspace(AgentConversationWorkspaceMode::Tasks, "tasks").await;
 
-    let error = finalize_proposals_impl(&state, session.id.as_str(), false)
+    let execution_state = Arc::new(ExecutionState::new());
+    let error = finalize_proposals_impl(&state, &execution_state, session.id.as_str(), false)
         .await
         .unwrap_err();
 
@@ -255,9 +259,10 @@ async fn native_finalize_rejects_durably_owned_tasks_pipeline_without_transient_
         .unwrap()
         .is_empty());
 
-    let external_route_error = finalize_proposals_impl(&state, session.id.as_str(), true)
-        .await
-        .unwrap_err();
+    let external_route_error =
+        finalize_proposals_impl(&state, &execution_state, session.id.as_str(), true)
+            .await
+            .unwrap_err();
     assert!(external_route_error
         .to_string()
         .contains("waiting for the user to choose Start Tasks"));
@@ -268,7 +273,8 @@ async fn native_finalize_rejects_durable_tasks_pipeline_after_leaving_tasks_mode
     let (state, session) =
         state_with_durable_pipeline_workspace(AgentConversationWorkspaceMode::Chat, "chat").await;
 
-    let error = finalize_proposals_impl(&state, session.id.as_str(), false)
+    let execution_state = Arc::new(ExecutionState::new());
+    let error = finalize_proposals_impl(&state, &execution_state, session.id.as_str(), false)
         .await
         .unwrap_err();
 

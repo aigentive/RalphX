@@ -69,6 +69,7 @@ impl Drop for StandaloneFlagOverrideReset {
 
 pub(super) fn persona_flag_override_chat_service(state: &AppState) -> AppChatService {
     AppChatService::new(
+        Arc::clone(&state.events),
         Arc::clone(&state.chat_message_repo),
         Arc::clone(&state.chat_attachment_repo),
         Arc::clone(&state.artifact_repo),
@@ -175,10 +176,7 @@ pub(super) async fn send_persona_attribution_fixture(
 
     let service = app
         .state::<AppState>()
-        .build_chat_service_for_runtime::<tauri::test::MockRuntime>(
-            None,
-            Some(app.handle().clone()),
-        )
+        .build_chat_service()
         .with_persona_feature_enabled(true)
         .with_cli_path(cli_path)
         .with_working_directory(&project_directory);

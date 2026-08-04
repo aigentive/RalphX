@@ -36,10 +36,7 @@ async fn standalone_chat_fresh_send_accepts_codex_override() {
         .expect("build standalone Codex app");
     let service = app
         .state::<AppState>()
-        .build_chat_service_for_runtime::<tauri::test::MockRuntime>(
-            None,
-            Some(app.handle().clone()),
-        )
+        .build_chat_service()
         .with_persona_feature_enabled(true)
         .with_working_directory(temp.path());
     let context_id = conversation.id.as_str();
@@ -115,10 +112,7 @@ async fn standalone_chat_fresh_send_accepts_claude_override() {
         .expect("build standalone Claude app");
     let service = app
         .state::<AppState>()
-        .build_chat_service_for_runtime::<tauri::test::MockRuntime>(
-            None,
-            Some(app.handle().clone()),
-        )
+        .build_chat_service()
         .with_persona_feature_enabled(true)
         .with_working_directory(temp.path());
     let context_id = conversation.id.as_str();
@@ -238,8 +232,11 @@ async fn standalone_chat_queue_accepts_codex_override() {
         captured.lock().unwrap().push(event.payload().to_string());
     });
 
+    let state = app.state::<AppState>();
     let (processed, last_run_id) = process_queued_messages_for_test(
-        app.handle().clone(),
+        state.inner(),
+        None,
+        Arc::clone(&state.events),
         ChatContextType::Standalone,
         AgentHarnessKind::Codex,
         &context_id,
@@ -345,8 +342,11 @@ async fn standalone_chat_queue_accepts_claude_override() {
         captured.lock().unwrap().push(event.payload().to_string());
     });
 
+    let state = app.state::<AppState>();
     let (processed, last_run_id) = process_queued_messages_for_test(
-        app.handle().clone(),
+        state.inner(),
+        None,
+        Arc::clone(&state.events),
         ChatContextType::Standalone,
         AgentHarnessKind::Claude,
         &context_id,
@@ -432,8 +432,11 @@ async fn standalone_chat_queue_rejects_caller_context_downgrade_without_spawning
         captured.lock().unwrap().push(event.payload().to_string());
     });
 
+    let state = app.state::<AppState>();
     let (processed, last_run_id) = process_queued_messages_for_test(
-        app.handle().clone(),
+        state.inner(),
+        None,
+        Arc::clone(&state.events),
         ChatContextType::Project,
         AgentHarnessKind::Claude,
         context_id,
@@ -491,8 +494,11 @@ async fn standalone_chat_queue_missing_authoritative_conversation_fails_without_
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("build orphaned queue app");
 
+    let state = app.state::<AppState>();
     let (processed, last_run_id) = process_queued_messages_for_test(
-        app.handle().clone(),
+        state.inner(),
+        None,
+        Arc::clone(&state.events),
         ChatContextType::Standalone,
         AgentHarnessKind::Codex,
         &context_id,

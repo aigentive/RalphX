@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -15,6 +14,7 @@ use crate::application::agent_conversation_start_service::{
 use crate::application::agent_workspace_bridge::{
     dispatch_agent_workspace_bridge_events_once_with_deps, AgentWorkspaceBridgeDeps,
 };
+use crate::application::automation::api::automation_event_emitter_for_state;
 use crate::application::automation::integration_pr::GithubAutomationIntegrationPrPublisher;
 use crate::application::automation::merged_run_finalizer::AppStateAutomationMergedRunFinalizer;
 use crate::application::automation::plan_gate::{
@@ -29,7 +29,6 @@ use crate::application::automation::scheduler::{
     GithubAutomationSignalChecker, HarnessAutomationJudgeInvoker,
     HarnessAutomationPlanJudgeInvoker,
 };
-use crate::application::automation::transition::TauriAutomationEventEmitter;
 use crate::application::chat_service::{ChatService, SendCallerContext, SendMessageOptions};
 use crate::application::harness_runtime_registry::resolve_default_external_mcp_bootstrap;
 use crate::application::plan_artifact_approval::DbPlanArtifactApprovalWriter;
@@ -47,9 +46,8 @@ use crate::domain::repositories::{
 };
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::sqlite::SqlitePlanArtifactApprovalRepository;
-use crate::infrastructure::{ExternalMcpHandle, ExternalMcpSupervisor};
+use crate::infrastructure::ExternalMcpSupervisor;
 use crate::utils::backend_endpoint::backend_http_port;
-use tauri::Manager;
 use tokio::time::MissedTickBehavior;
 use tracing::{info, warn};
 
@@ -71,22 +69,16 @@ pub(crate) fn external_mcp_startup_timeout(
     Duration::from_secs(config.startup_timeout_secs)
 }
 
-pub struct AgentConversationAutomationRunStarter<R: tauri::Runtime + 'static> {
+pub struct AgentConversationAutomationRunStarter {
     state: AppState,
     execution_state: Arc<ExecutionState>,
-    app_handle: tauri::AppHandle<R>,
 }
 
-impl<R: tauri::Runtime + 'static> AgentConversationAutomationRunStarter<R> {
-    pub fn new(
-        state: AppState,
-        execution_state: Arc<ExecutionState>,
-        app_handle: tauri::AppHandle<R>,
-    ) -> Self {
+impl AgentConversationAutomationRunStarter {
+    pub fn new(state: AppState, execution_state: Arc<ExecutionState>) -> Self {
         Self {
             state,
             execution_state,
-            app_handle,
         }
     }
 }
@@ -94,18 +86,12 @@ impl<R: tauri::Runtime + 'static> AgentConversationAutomationRunStarter<R> {
 #[cfg(test)]
 pub(crate) fn automation_run_starter_for_test(
     state: AppState,
-) -> AgentConversationAutomationRunStarter<tauri::test::MockRuntime> {
-    AgentConversationAutomationRunStarter::new(
-        state,
-        Arc::new(ExecutionState::new()),
-        crate::testing::create_mock_app_handle(),
-    )
+) -> AgentConversationAutomationRunStarter {
+    AgentConversationAutomationRunStarter::new(state, Arc::new(ExecutionState::new()))
 }
 
 #[async_trait]
-impl<R: tauri::Runtime + 'static> AutomationRunStarter
-    for AgentConversationAutomationRunStarter<R>
-{
+impl AutomationRunStarter for AgentConversationAutomationRunStarter {
     async fn start_run(
         &self,
         request: AutomationRunStartRequest,
@@ -114,7 +100,7 @@ impl<R: tauri::Runtime + 'static> AutomationRunStarter
         let result = AgentConversationStartService::new(AgentConversationStartDeps {
             state: &self.state,
             execution_state: &self.execution_state,
-            app_handle: self.app_handle.clone(),
+            events: Arc::clone(&self.state.events),
         })
         .start(start_input)
         .await
@@ -126,50 +112,34 @@ impl<R: tauri::Runtime + 'static> AutomationRunStarter
     }
 }
 
-pub struct AgentConversationAutomationRunResumer<R: tauri::Runtime + 'static> {
+pub struct AgentConversationAutomationRunResumer {
     state: AppState,
     execution_state: Arc<ExecutionState>,
-    app_handle: tauri::AppHandle<R>,
 }
 
-impl<R: tauri::Runtime + 'static> AgentConversationAutomationRunResumer<R> {
-    pub fn new(
-        state: AppState,
-        execution_state: Arc<ExecutionState>,
-        app_handle: tauri::AppHandle<R>,
-    ) -> Self {
+impl AgentConversationAutomationRunResumer {
+    pub fn new(state: AppState, execution_state: Arc<ExecutionState>) -> Self {
         Self {
             state,
             execution_state,
-            app_handle,
         }
     }
 
-    fn chat_service(&self) -> crate::application::AppChatService<R> {
+    fn chat_service(&self) -> crate::application::AppChatService {
         let chat_deps = ChatRuntimeFactoryDeps::from_app_state(&self.state);
-        build_chat_service_from_deps(
-            Some(self.app_handle.clone()),
-            Some(Arc::clone(&self.execution_state)),
-            &chat_deps,
-        )
+        build_chat_service_from_deps(Some(Arc::clone(&self.execution_state)), &chat_deps)
     }
 }
 
 #[cfg(test)]
 pub(crate) fn automation_run_resumer_for_test(
     state: AppState,
-) -> AgentConversationAutomationRunResumer<tauri::test::MockRuntime> {
-    AgentConversationAutomationRunResumer::new(
-        state,
-        Arc::new(ExecutionState::new()),
-        crate::testing::create_mock_app_handle(),
-    )
+) -> AgentConversationAutomationRunResumer {
+    AgentConversationAutomationRunResumer::new(state, Arc::new(ExecutionState::new()))
 }
 
 #[async_trait]
-impl<R: tauri::Runtime + 'static> AutomationRunResumer
-    for AgentConversationAutomationRunResumer<R>
-{
+impl AutomationRunResumer for AgentConversationAutomationRunResumer {
     async fn is_agent_running(&self, conversation_id: &ChatConversationId) -> AppResult<bool> {
         let context_id = conversation_id.as_str();
         Ok(self
@@ -253,11 +223,7 @@ pub struct AgentConversationAutomationPlanVerificationStarter {
 }
 
 impl AgentConversationAutomationPlanVerificationStarter {
-    pub fn new<R: tauri::Runtime + 'static>(
-        state: AppState,
-        execution_state: Arc<ExecutionState>,
-        _app_handle: tauri::AppHandle<R>,
-    ) -> Self {
+    pub fn new(state: AppState, execution_state: Arc<ExecutionState>) -> Self {
         Self {
             state,
             execution_state,
@@ -463,11 +429,7 @@ pub fn spawn_watchdog(
     });
 }
 
-pub fn spawn_automation_scheduler(
-    state: AppState,
-    execution_state: Arc<ExecutionState>,
-    app_handle: tauri::AppHandle,
-) {
+pub fn spawn_automation_scheduler(state: AppState, execution_state: Arc<ExecutionState>) {
     let registry = global_automation_scheduler_registry();
     if !registry.try_start_loop() {
         tracing::debug!("Automation scheduler already started; skipping duplicate spawn");
@@ -476,12 +438,10 @@ pub fn spawn_automation_scheduler(
     let starter = Arc::new(AgentConversationAutomationRunStarter::new(
         state.clone(),
         Arc::clone(&execution_state),
-        app_handle.clone(),
     ));
     let resumer = Arc::new(AgentConversationAutomationRunResumer::new(
         state.clone(),
         Arc::clone(&execution_state),
-        app_handle.clone(),
     ));
     let signal_checker = Arc::new(GithubAutomationSignalChecker::new(
         state.github_service.clone(),
@@ -498,9 +458,8 @@ pub fn spawn_automation_scheduler(
         Arc::new(AgentConversationAutomationPlanVerificationStarter::new(
             state.clone(),
             Arc::clone(&execution_state),
-            app_handle.clone(),
         ));
-    let event_emitter = Arc::new(TauriAutomationEventEmitter::new(app_handle.clone()));
+    let event_emitter = automation_event_emitter_for_state(&state);
     let merged_run_finalizer = Arc::new(AppStateAutomationMergedRunFinalizer::new(state.clone()));
 
     let scheduler = AutomationScheduler::new(
@@ -624,7 +583,6 @@ pub(crate) fn spawn_agent_workspace_bridge_dispatcher(
     bridge_deps: AgentWorkspaceBridgeDeps,
     chat_deps: ChatRuntimeFactoryDeps,
     execution_state: Arc<ExecutionState>,
-    app_handle: tauri::AppHandle,
 ) {
     if !try_start_recurring_service("agent_workspace_bridge_dispatcher") {
         tracing::debug!(
@@ -638,11 +596,8 @@ pub(crate) fn spawn_agent_workspace_bridge_dispatcher(
 
         loop {
             interval.tick().await;
-            let chat_service = build_chat_service_from_deps(
-                Some(app_handle.clone()),
-                Some(Arc::clone(&execution_state)),
-                &chat_deps,
-            );
+            let chat_service =
+                build_chat_service_from_deps(Some(Arc::clone(&execution_state)), &chat_deps);
             match dispatch_agent_workspace_bridge_events_once_with_deps(&bridge_deps, &chat_service)
                 .await
             {
@@ -669,7 +624,9 @@ pub(crate) fn spawn_agent_workspace_bridge_dispatcher(
 }
 
 pub async fn maybe_start_external_mcp(
-    app_handle: tauri::AppHandle,
+    create_supervisor: impl FnOnce(
+        crate::infrastructure::agents::claude::ExternalMcpConfig,
+    ) -> Option<Arc<ExternalMcpSupervisor>>,
     wait_for_backend_ready: impl Fn(
         u16,
         Duration,
@@ -707,20 +664,9 @@ pub async fn maybe_start_external_mcp(
                 "Backend ready, starting external MCP server"
             );
             let supervisor_started_at = std::time::Instant::now();
-            let app_data_dir = app_handle
-                .path()
-                .app_data_dir()
-                .unwrap_or_else(|_| PathBuf::from("."));
-            let supervisor = Arc::new(ExternalMcpSupervisor::new(
-                bootstrap.config,
-                app_handle.clone(),
-                app_data_dir,
-            ));
-            let handle = app_handle.state::<ExternalMcpHandle>();
-            if handle.set(Arc::clone(&supervisor)).is_err() {
-                warn!("ExternalMcpHandle already initialized");
+            let Some(supervisor) = create_supervisor(bootstrap.config) else {
                 return;
-            }
+            };
             match Arc::clone(&supervisor)
                 .start(bootstrap.node_path, bootstrap.entry_path)
                 .await

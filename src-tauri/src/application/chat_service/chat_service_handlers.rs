@@ -7,24 +7,24 @@
 // - handle_stream_error: error classification, stale session recovery retry,
 //   agent run failure recording, message finalization, and fallback task transitions
 
+use ralphx_events::{emit_serialized, EventSink};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use crate::application::git_service::GitService;
 use crate::application::notification_service::NotificationService;
 use crate::application::persona_resolver::resolve_persona_for_send;
 use crate::application::question_state::QuestionState;
 use crate::application::runtime_factory::{
-    build_task_scheduler_with_fallback, build_transition_service_with_fallback, RuntimeFactoryDeps,
+    build_task_scheduler_from_deps, build_transition_service_from_deps, ChatRuntimeFactoryDeps,
+    RuntimeFactoryDeps,
 };
 use crate::application::task_diff_base::ensure_task_has_non_empty_captured_diff;
 use crate::application::task_notification_producer::TaskPipelineNotificationProducer;
 use crate::application::task_scheduler_service::TaskSchedulerService;
 use crate::application::task_transition_service::TaskTransitionService;
-use crate::application::AppState;
 use crate::application::InteractiveProcessRegistry;
 use crate::commands::{execution_commands::AGENT_ACTIVE_STATUSES, ExecutionState};
 use crate::domain::agents::AgentHarnessKind;
@@ -180,21 +180,12 @@ async fn mark_cancelled_stream_as_cancelled(
     }
 }
 
-async fn provider_env_for_harness<R: Runtime>(
-    app_handle: &Option<AppHandle<R>>,
+async fn provider_env_for_harness(
     agent_provider_settings_repo: &Option<Arc<dyn AgentProviderSettingsRepository>>,
     harness: AgentHarnessKind,
 ) -> Result<HashMap<String, String>, String> {
-    let app_state_provider_repo = app_handle
-        .as_ref()
-        .and_then(|handle| handle.try_state::<AppState>())
-        .map(|app_state| Arc::clone(&app_state.agent_provider_settings_repo));
-    let provider_repo = agent_provider_settings_repo
-        .as_ref()
-        .map(Arc::clone)
-        .or(app_state_provider_repo);
     crate::application::provider_env_file::load_provider_custom_env_file_for_harness(
-        provider_repo.as_ref(),
+        agent_provider_settings_repo.as_ref(),
         harness,
     )
     .await
@@ -213,8 +204,7 @@ enum RecoveryRetryProviderBlock {
     MissingProviderSettings,
 }
 
-async fn recovery_retry_provider_decision<R: Runtime>(
-    app_handle: &Option<AppHandle<R>>,
+async fn recovery_retry_provider_decision(
     agent_provider_settings_repo: &Option<Arc<dyn AgentProviderSettingsRepository>>,
     recovery_harness: AgentHarnessKind,
     context_type: ChatContextType,
@@ -235,25 +225,23 @@ async fn recovery_retry_provider_decision<R: Runtime>(
     .await
     .map_err(RecoveryRetryProviderBlock::Disabled)?;
 
-    let provider_env =
-        provider_env_for_harness(app_handle, agent_provider_settings_repo, recovery_harness)
-            .await
-            .map_err(RecoveryRetryProviderBlock::Env)?;
+    let provider_env = provider_env_for_harness(agent_provider_settings_repo, recovery_harness)
+        .await
+        .map_err(RecoveryRetryProviderBlock::Env)?;
 
     Ok(RecoveryRetryProviderDecision::ApplyEnv(provider_env))
 }
 
-async fn recovery_retry_spawnable_with_provider_gate<R: Runtime>(
-    app_handle: &Option<AppHandle<R>>,
+async fn recovery_retry_spawnable_with_provider_gate(
     agent_provider_settings_repo: &Option<Arc<dyn AgentProviderSettingsRepository>>,
     recovery_harness: AgentHarnessKind,
     context_type: ChatContextType,
     project_id: Option<&str>,
     working_directory: &Path,
+    runtime_factory_deps: Option<&ChatRuntimeFactoryDeps>,
     mut provider_spawnable: chat_service_context::ProviderSpawnableCommand,
 ) -> Result<Option<crate::infrastructure::agents::claude::SpawnableCommand>, String> {
     let provider_env = match recovery_retry_provider_decision(
-        app_handle,
         agent_provider_settings_repo,
         recovery_harness,
         context_type,
@@ -264,12 +252,12 @@ async fn recovery_retry_spawnable_with_provider_gate<R: Runtime>(
         Ok(RecoveryRetryProviderDecision::AllowWithoutProviderSettings) => None,
         Err(_) => return Ok(None),
     };
-    let Some(handle) = app_handle.as_ref() else {
+    let Some(policy_service) =
+        runtime_factory_deps.and_then(|deps| deps.mcp_policy_service.as_ref())
+    else {
         return Ok(None);
     };
-    let app_state = handle.state::<AppState>();
-    let policy = match app_state
-        .mcp_policy_service()
+    let policy = match policy_service
         .resolve_launch_policy(recovery_harness, project_id, Some(working_directory))
         .await
     {
@@ -294,48 +282,48 @@ async fn recovery_retry_spawnable_with_provider_gate<R: Runtime>(
 }
 
 #[derive(Clone, Copy)]
-struct RecoveryRetryProviderGate<'a, R: Runtime> {
-    app_handle: &'a Option<AppHandle<R>>,
+struct RecoveryRetryProviderGate<'a> {
     agent_provider_settings_repo: &'a Option<Arc<dyn AgentProviderSettingsRepository>>,
     recovery_harness: AgentHarnessKind,
     context_type: ChatContextType,
     project_id: Option<&'a str>,
     working_directory: &'a Path,
+    runtime_factory_deps: Option<&'a ChatRuntimeFactoryDeps>,
 }
 
-impl<'a, R: Runtime> RecoveryRetryProviderGate<'a, R> {
+impl<'a> RecoveryRetryProviderGate<'a> {
     fn new(
-        app_handle: &'a Option<AppHandle<R>>,
         agent_provider_settings_repo: &'a Option<Arc<dyn AgentProviderSettingsRepository>>,
         recovery_harness: AgentHarnessKind,
         context_type: ChatContextType,
         project_id: Option<&'a str>,
         working_directory: &'a Path,
+        runtime_factory_deps: Option<&'a ChatRuntimeFactoryDeps>,
     ) -> Self {
         Self {
-            app_handle,
             agent_provider_settings_repo,
             recovery_harness,
             context_type,
             project_id,
             working_directory,
+            runtime_factory_deps,
         }
     }
 }
 
-async fn resolve_recovery_retry_spawnable<R: Runtime>(
+async fn resolve_recovery_retry_spawnable(
     retry_provider_spawnable: Result<chat_service_context::ProviderSpawnableCommand, String>,
-    provider_gate: RecoveryRetryProviderGate<'_, R>,
+    provider_gate: RecoveryRetryProviderGate<'_>,
 ) -> Result<Option<crate::infrastructure::agents::claude::SpawnableCommand>, String> {
     match retry_provider_spawnable {
         Ok(provider_spawnable) => {
             recovery_retry_spawnable_with_provider_gate(
-                provider_gate.app_handle,
                 provider_gate.agent_provider_settings_repo,
                 provider_gate.recovery_harness,
                 provider_gate.context_type,
                 provider_gate.project_id,
                 provider_gate.working_directory,
+                provider_gate.runtime_factory_deps,
                 provider_spawnable,
             )
             .await
@@ -359,28 +347,31 @@ struct RecoveryRetryAppRepos {
 }
 
 impl RecoveryRetryAppRepos {
-    fn from_app_handle<R: Runtime>(app_handle: &Option<AppHandle<R>>) -> Self {
-        let Some(handle) = app_handle else {
+    fn from_runtime_factory_deps(runtime_factory_deps: Option<&ChatRuntimeFactoryDeps>) -> Self {
+        let Some(deps) = runtime_factory_deps else {
             return Self::default();
         };
-        let app_state = handle.state::<AppState>();
         Self {
-            ideation_effort_settings_repo: Some(Arc::clone(
-                &app_state.ideation_effort_settings_repo,
-            )),
-            ideation_model_settings_repo: Some(Arc::clone(&app_state.ideation_model_settings_repo)),
-            delegated_session_repo: Some(Arc::clone(&app_state.delegated_session_repo)),
+            ideation_effort_settings_repo: deps
+                .ideation_effort_settings_repo
+                .as_ref()
+                .map(Arc::clone),
+            ideation_model_settings_repo: deps
+                .ideation_model_settings_repo
+                .as_ref()
+                .map(Arc::clone),
+            delegated_session_repo: deps.delegated_session_repo.as_ref().map(Arc::clone),
         }
     }
 }
 
-async fn recovery_retry_folder_refs_context<R: Runtime>(
-    app_handle: &Option<AppHandle<R>>,
+async fn recovery_retry_folder_refs_context(
+    runtime_factory_deps: Option<&ChatRuntimeFactoryDeps>,
     conversation: &ChatConversation,
     project_id: Option<&str>,
     working_directory: &Path,
 ) -> Result<(Option<String>, Vec<PathBuf>), String> {
-    let Some(handle) = app_handle else {
+    let Some(deps) = runtime_factory_deps else {
         tracing::warn!(
             conversation_id = conversation.id.as_str(),
             reason = chat_service_context::FOLDER_REFS_SKIPPED_CONTEXT_UNAVAILABLE,
@@ -388,24 +379,25 @@ async fn recovery_retry_folder_refs_context<R: Runtime>(
         );
         return Ok((None, Vec::new()));
     };
-    let app_state = handle.state::<AppState>();
     let resolved = chat_service_context::resolve_conversation_spawn_context(
         conversation,
         conversation.agent_mode,
         project_id,
-        Arc::clone(&app_state.project_repo),
+        Arc::clone(&deps.project_repo),
         working_directory,
-        Some(app_state.app_paths.app_data_dir()),
-        Some(app_state.app_paths.app_data_dir()),
-        Some(Arc::clone(&app_state.conversation_folder_reference_repo)),
+        deps.folder_reference_app_data_dir.as_deref(),
+        deps.folder_reference_app_data_dir.as_deref(),
+        deps.conversation_folder_reference_repo
+            .as_ref()
+            .map(Arc::clone),
     )
     .await
     .map_err(|error| error.to_string())?;
     Ok((resolved.folder_refs_block, resolved.folder_roots))
 }
 
-async fn resolve_recovery_retry_persona<R: Runtime>(
-    app_handle: &Option<AppHandle<R>>,
+async fn resolve_recovery_retry_persona(
+    runtime_factory_deps: Option<&ChatRuntimeFactoryDeps>,
     feature_enabled: bool,
     conversation: &ChatConversation,
     context_type: ChatContextType,
@@ -414,14 +406,16 @@ async fn resolve_recovery_retry_persona<R: Runtime>(
     if !feature_enabled {
         return Ok(None);
     }
-    let Some(handle) = app_handle else {
+    let Some(deps) = runtime_factory_deps else {
         return Ok(None);
     };
-    let Some(app_state) = handle.try_state::<AppState>() else {
+    let Some(workspace_repo) = deps.agent_conversation_workspace_repo.as_ref() else {
         return Ok(None);
     };
-    let workspace_mode = app_state
-        .agent_conversation_workspace_repo
+    let Some(persona_repo) = deps.persona_repo.as_ref() else {
+        return Ok(None);
+    };
+    let workspace_mode = workspace_repo
         .get_by_conversation_id(&conversation.id)
         .await
         .map_err(|error| format!("Persona workspace lookup failed: {error}"))?
@@ -437,7 +431,7 @@ async fn resolve_recovery_retry_persona<R: Runtime>(
             conversation,
             workspace_mode,
         ),
-        Arc::clone(&app_state.persona_repo),
+        Arc::clone(persona_repo),
     )
     .await
     .map_err(|error| error.to_string())
@@ -458,39 +452,36 @@ fn queue_verification_auto_continue(
     queued
 }
 
-pub(super) async fn handle_verification_child_completion<R: Runtime>(
+pub(super) async fn handle_verification_child_completion(
     child_id: &IdeationSessionId,
     parent_id: &IdeationSessionId,
     ideation_session_repo: &Arc<dyn IdeationSessionRepository>,
     conversation_repo: &Arc<dyn ChatConversationRepository>,
     chat_message_repo: &Arc<dyn ChatMessageRepository>,
     message_queue: &Arc<MessageQueue>,
-    app_handle: &Option<AppHandle<R>>,
+    queued_message_repo: Option<&Arc<dyn crate::domain::repositories::QueuedMessageRepository>>,
+    _events: &dyn EventSink,
     verification_child_registry: &Option<
         Arc<super::verification_child_process_registry::VerificationChildProcessRegistry>,
     >,
 ) {
-    let reconcile_result = crate::application::reconciliation::verification_reconciliation::reconcile_verification_on_child_complete(
+    let reconcile_result = crate::application::reconciliation::verification_reconciliation::reconcile_verification_on_child_complete::<tauri::Wry>(
         parent_id,
         child_id,
         ideation_session_repo,
-        app_handle.as_ref(),
+        None,
     )
     .await;
 
     match reconcile_result {
         Some(ReconcileVerificationChildCompletion::Terminal(result)) => {
-            let queued_message_repo = app_handle.as_ref().map(|handle| {
-                let app_state = handle.state::<AppState>();
-                Arc::clone(&app_state.queued_message_repo)
-            });
             verification_handoff::maybe_inject_verification_result_message(
                 parent_id,
                 &result,
                 conversation_repo,
                 chat_message_repo,
                 message_queue,
-                queued_message_repo.as_ref(),
+                queued_message_repo,
             )
             .await;
 
@@ -508,14 +499,9 @@ pub(super) async fn handle_verification_child_completion<R: Runtime>(
                 child_id,
                 request.continuation_message,
             );
-            if let Some(handle) = app_handle.as_ref() {
-                let app_state = handle.state::<AppState>();
+            if let Some(repo) = queued_message_repo {
                 let key = QueueKey::new(ChatContextType::Ideation, child_id.as_str());
-                if let Err(error) = app_state
-                    .queued_message_repo
-                    .enqueue_front(&key, &queued)
-                    .await
-                {
+                if let Err(error) = repo.enqueue_front(&key, &queued).await {
                     tracing::warn!(
                         context_id = child_id.as_str(),
                         queued_message_id = queued.id.as_str(),
@@ -750,8 +736,10 @@ enum ExecutionCompletionAction {
     Failed,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct RuntimeSupportRepos {
+    events: Arc<dyn EventSink>,
+    chat_runtime_deps: Option<ChatRuntimeFactoryDeps>,
     execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
     agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
     agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
@@ -774,6 +762,8 @@ impl RuntimeSupportRepos {
         validation_run_repo: &Option<Arc<dyn ValidationRunRepository>>,
     ) -> Self {
         Self {
+            events: Arc::new(ralphx_events::NullEventSink),
+            chat_runtime_deps: None,
             execution_settings_repo: execution_settings_repo.as_ref().map(Arc::clone),
             agent_lane_settings_repo: agent_lane_settings_repo.as_ref().map(Arc::clone),
             agent_provider_settings_repo: agent_provider_settings_repo.as_ref().map(Arc::clone),
@@ -793,6 +783,19 @@ impl RuntimeSupportRepos {
     ) -> Self {
         self.external_events_repo = external_events_repo.as_ref().map(Arc::clone);
         self.webhook_publisher = webhook_publisher.as_ref().map(Arc::clone);
+        self
+    }
+
+    fn with_runtime_factory_deps(mut self, deps: Option<&ChatRuntimeFactoryDeps>) -> Self {
+        if let Some(deps) = deps {
+            self.events = Arc::clone(&deps.events);
+            self.chat_runtime_deps = Some(deps.clone());
+        }
+        self
+    }
+
+    fn with_events(mut self, events: Arc<dyn EventSink>) -> Self {
+        self.events = events;
         self
     }
 }
@@ -815,8 +818,7 @@ fn execution_completion_action(
     }
 }
 
-fn build_transition_service<R: Runtime>(
-    app_handle: &Option<AppHandle<R>>,
+fn build_transition_service(
     task_repo: Arc<dyn TaskRepository>,
     task_dependency_repo: Arc<dyn TaskDependencyRepository>,
     project_repo: Arc<dyn ProjectRepository>,
@@ -834,7 +836,6 @@ fn build_transition_service<R: Runtime>(
     runtime_support: RuntimeSupportRepos,
 ) -> TaskTransitionService {
     let deps = build_runtime_factory_deps(
-        app_handle,
         task_repo,
         task_dependency_repo,
         project_repo,
@@ -850,12 +851,11 @@ fn build_transition_service<R: Runtime>(
         memory_event_repo,
         runtime_support,
     );
-    build_transition_service_with_fallback(app_handle, execution_state, &deps)
+    build_transition_service_from_deps(None, execution_state, &deps)
 }
 
 #[allow(clippy::too_many_arguments)]
-fn build_task_scheduler_service<R: Runtime>(
-    app_handle: &Option<AppHandle<R>>,
+fn build_task_scheduler_service(
     project_repo: Arc<dyn ProjectRepository>,
     task_repo: Arc<dyn TaskRepository>,
     task_dependency_repo: Arc<dyn TaskDependencyRepository>,
@@ -873,7 +873,6 @@ fn build_task_scheduler_service<R: Runtime>(
     runtime_support: RuntimeSupportRepos,
 ) -> TaskSchedulerService {
     let deps = build_runtime_factory_deps(
-        app_handle,
         task_repo,
         task_dependency_repo,
         project_repo,
@@ -889,12 +888,11 @@ fn build_task_scheduler_service<R: Runtime>(
         memory_event_repo,
         runtime_support,
     );
-    build_task_scheduler_with_fallback(app_handle, execution_state, &deps)
+    build_task_scheduler_from_deps(None, execution_state, &deps)
 }
 
 #[allow(clippy::too_many_arguments)]
-fn build_runtime_factory_deps<R: Runtime>(
-    app_handle: &Option<AppHandle<R>>,
+fn build_runtime_factory_deps(
     task_repo: Arc<dyn TaskRepository>,
     task_dependency_repo: Arc<dyn TaskDependencyRepository>,
     project_repo: Arc<dyn ProjectRepository>,
@@ -925,6 +923,8 @@ fn build_runtime_factory_deps<R: Runtime>(
         running_agent_registry,
         memory_event_repo,
     )
+    .with_events(Arc::clone(&runtime_support.events))
+    .with_chat_runtime_deps_option(runtime_support.chat_runtime_deps.clone())
     .with_runtime_support(
         runtime_support.execution_settings_repo,
         runtime_support.agent_lane_settings_repo,
@@ -940,16 +940,11 @@ fn build_runtime_factory_deps<R: Runtime>(
         runtime_support.external_events_repo,
         runtime_support.webhook_publisher,
     )
-    .with_agent_conversation_workspace_repo(
-        app_handle
-            .as_ref()
-            .and_then(|handle| handle.try_state::<AppState>())
-            .map(|app_state| Arc::clone(&app_state.agent_conversation_workspace_repo)),
-    )
+    .with_agent_conversation_workspace_repo(None)
 }
 
 #[allow(clippy::too_many_arguments)]
-fn build_recovery_retry_background_context<R: Runtime>(
+fn build_recovery_retry_background_context(
     retry_child: tokio::process::Child,
     recovery_harness: AgentHarnessKind,
     context_type: ChatContextType,
@@ -973,12 +968,6 @@ fn build_recovery_retry_background_context<R: Runtime>(
     execution_settings_repo: &Option<Arc<dyn ExecutionSettingsRepository>>,
     agent_lane_settings_repo: &Option<Arc<dyn AgentLaneSettingsRepository>>,
     agent_provider_settings_repo: &Option<Arc<dyn AgentProviderSettingsRepository>>,
-    ideation_effort_settings_repo: &Option<
-        Arc<dyn crate::domain::repositories::IdeationEffortSettingsRepository>,
-    >,
-    ideation_model_settings_repo: &Option<
-        Arc<dyn crate::domain::repositories::IdeationModelSettingsRepository>,
-    >,
     task_proposal_repo: &Option<Arc<dyn TaskProposalRepository>>,
     activity_event_repo: &Arc<dyn ActivityEventRepository>,
     memory_event_repo: &Arc<dyn MemoryEventRepository>,
@@ -987,7 +976,8 @@ fn build_recovery_retry_background_context<R: Runtime>(
     execution_state: &Option<Arc<ExecutionState>>,
     question_state: &Option<Arc<QuestionState>>,
     plan_branch_repo: &Option<Arc<dyn PlanBranchRepository>>,
-    app_handle: &Option<AppHandle<R>>,
+    events: Arc<dyn EventSink>,
+    runtime_factory_deps: Option<ChatRuntimeFactoryDeps>,
     run_chain_id: Option<String>,
     persona_feature_enabled: bool,
     agent_name_override_set: bool,
@@ -1003,7 +993,7 @@ fn build_recovery_retry_background_context<R: Runtime>(
     verification_child_registry: &Option<
         Arc<super::verification_child_process_registry::VerificationChildProcessRegistry>,
     >,
-) -> super::chat_service_send_background::BackgroundRunContext<R> {
+) -> super::chat_service_send_background::BackgroundRunContext {
     use super::chat_service_send_background::{BackgroundRunContext, BackgroundRunRepos};
 
     BackgroundRunContext {
@@ -1033,26 +1023,14 @@ fn build_recovery_retry_background_context<R: Runtime>(
             execution_settings_repo: execution_settings_repo.clone(),
             agent_lane_settings_repo: agent_lane_settings_repo.clone(),
             agent_provider_settings_repo: agent_provider_settings_repo.clone(),
-            ideation_effort_settings_repo: ideation_effort_settings_repo.clone(),
-            ideation_model_settings_repo: ideation_model_settings_repo.clone(),
-            agent_conversation_workspace_repo: None,
-            agent_conversation_jira_issue_repo: app_handle
-                .as_ref()
-                .and_then(|handle| handle.try_state::<crate::application::AppState>())
-                .map(|app_state| Arc::clone(&app_state.agent_conversation_jira_issue_repo)),
-            agent_conversation_linear_issue_repo: app_handle
-                .as_ref()
-                .and_then(|handle| handle.try_state::<crate::application::AppState>())
-                .map(|app_state| Arc::clone(&app_state.agent_conversation_linear_issue_repo)),
-            agent_conversation_granola_note_repo: app_handle
-                .as_ref()
-                .and_then(|handle| handle.try_state::<crate::application::AppState>())
-                .map(|app_state| Arc::clone(&app_state.agent_conversation_granola_note_repo)),
             task_proposal_repo: task_proposal_repo.clone(),
             activity_event_repo: Arc::clone(activity_event_repo),
             memory_event_repo: Arc::clone(memory_event_repo),
             notification_service: None,
             message_queue: Arc::clone(message_queue),
+            queued_message_repo: runtime_factory_deps
+                .as_ref()
+                .and_then(|deps| deps.queued_message_repo.as_ref().map(Arc::clone)),
             running_agent_registry: Arc::clone(running_agent_registry),
             task_step_repo: task_step_repo.clone(),
             validation_run_repo: validation_run_repo.as_ref().map(Arc::clone),
@@ -1063,7 +1041,11 @@ fn build_recovery_retry_background_context<R: Runtime>(
         execution_state: execution_state.clone(),
         question_state: question_state.clone(),
         plan_branch_repo: plan_branch_repo.clone(),
-        app_handle: app_handle.clone(),
+        events,
+        plan_verification_completion: runtime_factory_deps
+            .as_ref()
+            .and_then(|deps| deps.plan_verification_completion.as_ref().map(Arc::clone)),
+        runtime_factory_deps,
         run_chain_id,
         is_retry_attempt: true,
         persona_feature_enabled,
@@ -1114,15 +1096,21 @@ fn incomplete_review_action(
     }
 }
 
-pub(super) async fn apply_system_wide_provider_pause<R: Runtime>(
-    app_handle: &Option<AppHandle<R>>,
+pub(super) async fn apply_system_wide_provider_pause(
+    runtime_factory_deps: Option<&ChatRuntimeFactoryDeps>,
+    execution_state: Option<&Arc<ExecutionState>>,
+    events: Arc<dyn EventSink>,
     category: &super::ProviderErrorCategory,
     message: &str,
     retry_after: &Option<String>,
     source_context_type: ChatContextType,
     source_context_id: &str,
 ) -> bool {
-    let Some(handle) = app_handle else {
+    let (Some(deps), Some(execution_state), Some(app_state_repo)) = (
+        runtime_factory_deps,
+        execution_state,
+        runtime_factory_deps.and_then(|deps| deps.app_state_repo.as_ref()),
+    ) else {
         return false;
     };
 
@@ -1138,10 +1126,7 @@ pub(super) async fn apply_system_wide_provider_pause<R: Runtime>(
         return false;
     }
 
-    let app_state = handle.state::<AppState>();
-    let execution_state = handle.state::<Arc<ExecutionState>>();
-
-    match app_state.app_state_repo.get().await {
+    match app_state_repo.get().await {
         Ok(settings) if settings.execution_halt_mode == ExecutionHaltMode::Paused => {
             tracing::info!(
                 category = %category,
@@ -1157,14 +1142,13 @@ pub(super) async fn apply_system_wide_provider_pause<R: Runtime>(
 
     execution_state.pause();
     apply_global_rate_limit_backpressure(
-        &Some(Arc::clone(execution_state.inner())),
+        &Some(Arc::clone(execution_state)),
         retry_after,
         &source_context,
         source_context_id,
     );
 
-    let pause_committed = match app_state
-        .app_state_repo
+    let pause_committed = match app_state_repo
         .set_execution_halt_mode(ExecutionHaltMode::Paused)
         .await
     {
@@ -1175,18 +1159,45 @@ pub(super) async fn apply_system_wide_provider_pause<R: Runtime>(
         }
     };
 
-    app_state.running_agent_registry.stop_all().await;
-    app_state.interactive_process_registry.clear().await;
+    deps.running_agent_registry.stop_all().await;
+    if let Some(registry) = deps.interactive_process_registry.as_ref() {
+        registry.clear().await;
+    }
 
-    let transition_service = app_state
-        .build_transition_service_with_execution_state(Arc::clone(execution_state.inner()));
+    let runtime_support = RuntimeSupportRepos::new(
+        &deps.execution_settings_repo,
+        &deps.agent_lane_settings_repo,
+        &deps.agent_provider_settings_repo,
+        &deps.plan_branch_repo,
+        &deps.interactive_process_registry,
+        &deps.task_step_repo,
+        &deps.validation_run_repo,
+    )
+    .with_runtime_factory_deps(Some(deps));
+    let transition_service = build_transition_service(
+        Arc::clone(&deps.task_repo),
+        Arc::clone(&deps.task_dependency_repo),
+        Arc::clone(&deps.project_repo),
+        Arc::clone(&deps.artifact_repo),
+        Arc::clone(&deps.chat_message_repo),
+        Arc::clone(&deps.chat_attachment_repo),
+        Arc::clone(&deps.conversation_repo),
+        Arc::clone(&deps.agent_run_repo),
+        Arc::clone(&deps.ideation_session_repo),
+        Arc::clone(&deps.activity_event_repo),
+        Arc::clone(&deps.message_queue),
+        Arc::clone(&deps.running_agent_registry),
+        Arc::clone(execution_state),
+        Arc::clone(&deps.memory_event_repo),
+        runtime_support,
+    );
 
     let paused_at = chrono::Utc::now().to_rfc3339();
     // The pause timestamp is generated once per successful global-pause authority commit.
     // Persist it on the source task before using it as the global notification instance key.
     if pause_committed {
         let source_task_id = TaskId::from_string(source_context_id.to_string());
-        match app_state.task_repo.get_by_id(&source_task_id).await {
+        match deps.task_repo.get_by_id(&source_task_id).await {
             Ok(Some(source_task)) => {
                 let source_pause_reason = super::PauseReason::ProviderError {
                     category: category.clone(),
@@ -1202,17 +1213,18 @@ pub(super) async fn apply_system_wide_provider_pause<R: Runtime>(
                     source_pause_reason.write_to_task_metadata(source_task.metadata.as_deref()),
                 );
                 source_task_with_pause.touch();
-                match app_state.task_repo.update(&source_task_with_pause).await {
+                match deps.task_repo.update(&source_task_with_pause).await {
                     Ok(()) => {
-                        app_state
-                            .notification_service()
-                            .record(
-                                TaskPipelineNotificationProducer::provider_paused_notification(
-                                    &paused_at,
-                                    &category.to_string(),
-                                ),
-                            )
-                            .await;
+                        if let Some(notification_service) = deps.notification_service.as_ref() {
+                            notification_service
+                                .record(
+                                    TaskPipelineNotificationProducer::provider_paused_notification(
+                                        &paused_at,
+                                        &category.to_string(),
+                                    ),
+                                )
+                                .await;
+                        }
                     }
                     Err(error) => tracing::warn!(
                         source_context_id,
@@ -1232,7 +1244,7 @@ pub(super) async fn apply_system_wide_provider_pause<R: Runtime>(
             ),
         }
     }
-    let projects = match app_state.project_repo.get_all().await {
+    let projects = match deps.project_repo.get_all().await {
         Ok(projects) => projects,
         Err(error) => {
             tracing::error!(error = %error, "Failed to load projects for provider-triggered pause");
@@ -1241,7 +1253,7 @@ pub(super) async fn apply_system_wide_provider_pause<R: Runtime>(
     };
 
     for project in projects {
-        let tasks = match app_state.task_repo.get_by_project(&project.id).await {
+        let tasks = match deps.task_repo.get_by_project(&project.id).await {
             Ok(tasks) => tasks,
             Err(error) => {
                 tracing::warn!(
@@ -1272,7 +1284,7 @@ pub(super) async fn apply_system_wide_provider_pause<R: Runtime>(
             updated_task.metadata =
                 Some(pause_reason.write_to_task_metadata(updated_task.metadata.as_deref()));
             updated_task.touch();
-            let _ = app_state.task_repo.update(&updated_task).await;
+            let _ = deps.task_repo.update(&updated_task).await;
 
             if let Err(error) = transition_service
                 .transition_task(&task.id, InternalStatus::Paused)
@@ -1287,7 +1299,7 @@ pub(super) async fn apply_system_wide_provider_pause<R: Runtime>(
         }
     }
 
-    let _ = handle.emit(
+    events.emit(
         "execution:status_changed",
         serde_json::json!({
             "isPaused": execution_state.is_paused(),
@@ -1404,10 +1416,10 @@ fn terminal_timeline_content_blocks(
     }
 }
 
-async fn finalize_assistant_message_with_terminal_tool_state<R: Runtime>(
+async fn finalize_assistant_message_with_terminal_tool_state(
     chat_message_repo: &Arc<dyn ChatMessageRepository>,
     chat_timeline_repo: &Option<Arc<dyn ChatTimelineRepository>>,
-    app_handle: Option<&AppHandle<R>>,
+    events: &dyn EventSink,
     event_ctx: &EventContextPayload,
     conversation_id: &ChatConversationId,
     message_id: &str,
@@ -1433,7 +1445,7 @@ async fn finalize_assistant_message_with_terminal_tool_state<R: Runtime>(
     .await;
     let _ = super::chat_service_send_background::finalize_assistant_message(
         chat_message_repo,
-        app_handle,
+        events,
         event_ctx,
         message_id,
         role,
@@ -1561,7 +1573,7 @@ async fn disarm_armed_delegation_park_after_terminal_parent<R: Runtime>(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn handle_stream_success<R: Runtime>(
+pub(super) async fn handle_stream_success(
     agent_run_id: &str,
     context_type: ChatContextType,
     context_id: &str,
@@ -1590,7 +1602,8 @@ pub(super) async fn handle_stream_success<R: Runtime>(
     execution_settings_repo: &Option<Arc<dyn ExecutionSettingsRepository>>,
     agent_lane_settings_repo: &Option<Arc<dyn AgentLaneSettingsRepository>>,
     agent_provider_settings_repo: &Option<Arc<dyn AgentProviderSettingsRepository>>,
-    app_handle: &Option<AppHandle<R>>,
+    events: &Arc<dyn EventSink>,
+    runtime_factory_deps: Option<&ChatRuntimeFactoryDeps>,
     interactive_process_registry: &Option<Arc<InteractiveProcessRegistry>>,
     review_repo: &Option<Arc<dyn ReviewRepository>>,
     verification_child_registry: &Option<
@@ -1606,6 +1619,7 @@ pub(super) async fn handle_stream_success<R: Runtime>(
         task_step_repo,
         validation_run_repo,
     )
+    .with_runtime_factory_deps(runtime_factory_deps)
     .with_completion_event_delivery(external_events_repo, webhook_publisher);
 
     // Successful turn completion is the steady state for a parked coordinator. Keep any
@@ -1663,7 +1677,6 @@ pub(super) async fn handle_stream_success<R: Runtime>(
 
                     // Create scheduler for auto-scheduling next Ready task
                     let scheduler_svc = build_task_scheduler_service(
-                        app_handle,
                         Arc::clone(project_repo),
                         Arc::clone(task_repo),
                         Arc::clone(task_dependency_repo),
@@ -1686,7 +1699,6 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                     let task_scheduler: Arc<dyn TaskScheduler> = scheduler_concrete;
 
                     let transition_service = build_transition_service(
-                        app_handle,
                         Arc::clone(task_repo),
                         Arc::clone(task_dependency_repo),
                         Arc::clone(project_repo),
@@ -1979,7 +1991,6 @@ pub(super) async fn handle_stream_success<R: Runtime>(
 
                         // Transition to Escalated (no scheduler needed)
                         let transition_service = build_transition_service(
-                            app_handle,
                             Arc::clone(task_repo),
                             Arc::clone(task_dependency_repo),
                             Arc::clone(project_repo),
@@ -2083,7 +2094,8 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                 execution_state: exec_state,
                 execution_settings_repo: execution_settings_repo.as_ref(),
                 plan_branch_repo,
-                app_handle: app_handle.as_ref(),
+                events,
+                runtime_factory_deps,
                 interactive_process_registry,
             };
             super::chat_service_merge::attempt_merge_auto_complete(&merge_ctx).await;
@@ -2109,7 +2121,8 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                             conversation_repo,
                             chat_message_repo,
                             message_queue,
-                            app_handle,
+                            runtime_factory_deps.and_then(|deps| deps.queued_message_repo.as_ref()),
+                            events.as_ref(),
                             verification_child_registry,
                         )
                         .await;
@@ -2286,7 +2299,7 @@ async fn load_current_task_execution_attempt(
 /// Returns `true` if recovery was successful and a retry was spawned (caller should return early).
 /// Returns `false` if normal error handling was performed.
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn handle_stream_error<R: Runtime + 'static>(
+pub(super) async fn handle_stream_error(
     error: &str,
     stream_error: Option<&StreamError>,
     context_type: ChatContextType,
@@ -2327,7 +2340,11 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
     execution_settings_repo: &Option<Arc<dyn ExecutionSettingsRepository>>,
     agent_lane_settings_repo: &Option<Arc<dyn AgentLaneSettingsRepository>>,
     agent_provider_settings_repo: &Option<Arc<dyn AgentProviderSettingsRepository>>,
-    app_handle: &Option<AppHandle<R>>,
+    events: Arc<dyn EventSink>,
+    _plan_verification_completion: Option<
+        &Arc<crate::application::plan_verification_service::PlanVerificationCompletionAdapter>,
+    >,
+    runtime_factory_deps: Option<&ChatRuntimeFactoryDeps>,
     agent_name: Option<&str>,
     run_chain_id: Option<String>,
     interactive_process_registry: &Option<Arc<InteractiveProcessRegistry>>,
@@ -2350,6 +2367,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
         task_step_repo,
         validation_run_repo,
     )
+    .with_events(Arc::clone(&events))
+    .with_runtime_factory_deps(runtime_factory_deps)
     .with_completion_event_delivery(external_events_repo, webhook_publisher);
     let conversation_provider_session_ref =
         conversation.and_then(|conv| conv.provider_session_ref());
@@ -2427,7 +2446,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                 execution_settings_repo,
                 agent_lane_settings_repo,
                 agent_provider_settings_repo,
-                app_handle,
+                &events,
+                runtime_factory_deps,
                 interactive_process_registry,
                 review_repo,
                 verification_child_registry,
@@ -2444,20 +2464,19 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                 turns_finalized,
                 "[LIFECYCLE] Cancelled+turns_finalized>0 — emitting run_completed (success path)"
             );
-            if let Some(ref handle) = app_handle {
-                let _ = handle.emit(
-                    "agent:run_completed",
-                    AgentRunCompletedPayload::with_provider_session_and_run_id(
-                        Some(agent_run_id.to_string()),
-                        conversation_id.as_str().to_string(),
-                        context_type.to_string(),
-                        context_id.to_string(),
-                        stored_provider_harness,
-                        stored_provider_session_id.clone(),
-                        run_chain_id.clone(),
-                    ),
-                );
-            }
+            let _ = emit_serialized(
+                events.as_ref(),
+                "agent:run_completed",
+                &AgentRunCompletedPayload::with_provider_session_and_run_id(
+                    Some(agent_run_id.to_string()),
+                    conversation_id.as_str().to_string(),
+                    context_type.to_string(),
+                    context_id.to_string(),
+                    stored_provider_harness,
+                    stored_provider_session_id.clone(),
+                    run_chain_id.clone(),
+                ),
+            );
             return false;
         }
 
@@ -2513,7 +2532,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                 execution_settings_repo,
                 agent_lane_settings_repo,
                 agent_provider_settings_repo,
-                app_handle,
+                &events,
+                runtime_factory_deps,
                 interactive_process_registry,
                 review_repo,
                 verification_child_registry,
@@ -2521,20 +2541,19 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
             .await;
 
             // Emit run_completed to reset frontend from "generating" → "idle".
-            if let Some(ref handle) = app_handle {
-                let _ = handle.emit(
-                    "agent:run_completed",
-                    AgentRunCompletedPayload::with_provider_session_and_run_id(
-                        Some(agent_run_id.to_string()),
-                        conversation_id.as_str().to_string(),
-                        context_type.to_string(),
-                        context_id.to_string(),
-                        stored_provider_harness,
-                        stored_provider_session_id.clone(),
-                        run_chain_id.clone(),
-                    ),
-                );
-            }
+            let _ = emit_serialized(
+                events.as_ref(),
+                "agent:run_completed",
+                &AgentRunCompletedPayload::with_provider_session_and_run_id(
+                    Some(agent_run_id.to_string()),
+                    conversation_id.as_str().to_string(),
+                    context_type.to_string(),
+                    context_id.to_string(),
+                    stored_provider_harness,
+                    stored_provider_session_id.clone(),
+                    run_chain_id.clone(),
+                ),
+            );
             return false;
         }
 
@@ -2591,7 +2610,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
         finalize_assistant_message_with_terminal_tool_state(
             chat_message_repo,
             chat_timeline_repo,
-            app_handle.as_ref(),
+            events.as_ref(),
             event_ctx,
             &conversation_id,
             pre_assistant_msg_id,
@@ -2604,25 +2623,23 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
         )
         .await;
 
-        if let Some(ref handle) = app_handle {
-            let _ = handle.emit(
-                "agent:stopped",
-                serde_json::json!({
-                    "conversation_id": conversation_id.as_str(),
-                    "agent_run_id": agent_run_id,
-                    "context_type": context_type.to_string(),
-                    "context_id": context_id,
-                }),
-            );
-        }
+        events.emit(
+            "agent:stopped",
+            serde_json::json!({
+                "conversation_id": conversation_id.as_str(),
+                "agent_run_id": agent_run_id,
+                "context_type": context_type.to_string(),
+                "context_id": context_id,
+            }),
+        );
 
         // Path C: Reset verification state when a verification child is stopped by user
         if context_type == ChatContextType::Ideation {
             let child_id = IdeationSessionId::from_string(context_id.to_string());
-            crate::application::reconciliation::verification_reconciliation::reset_verification_on_child_error(
+            crate::application::reconciliation::verification_reconciliation::reset_verification_on_child_error::<tauri::Wry>(
                 &child_id,
                 ideation_session_repo,
-                app_handle.as_ref(),
+                None,
                 "user_stopped",
             )
             .await;
@@ -2693,7 +2710,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                     persona_feature_enabled,
                     agent_name_override_set,
                     &session_id,
-                    app_handle.as_ref(),
+                    runtime_factory_deps,
+                    events.as_ref(),
                 )
                 .await
                 {
@@ -2706,15 +2724,13 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                         );
 
                         // Emit non-blocking banner event
-                        if let Some(ref handle) = app_handle {
-                            let _ = handle.emit(
-                                "agent:session_recovered",
-                                serde_json::json!({
-                                    "conversation_id": conversation_id.as_str(),
-                                    "message": "Session restored from local history"
-                                }),
-                            );
-                        }
+                        events.emit(
+                            "agent:session_recovered",
+                            serde_json::json!({
+                                "conversation_id": conversation_id.as_str(),
+                                "message": "Session restored from local history"
+                            }),
+                        );
 
                         // Retry send with fresh session (set is_retry=true)
                         let mut retry_conv = conv.clone();
@@ -2724,13 +2740,14 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                 provider_session_id: new_session_id.clone(),
                             },
                         );
-                        let retry_app_repos = RecoveryRetryAppRepos::from_app_handle(app_handle);
+                        let retry_app_repos =
+                            RecoveryRetryAppRepos::from_runtime_factory_deps(runtime_factory_deps);
                         let retry_agent_lane_settings_repo =
                             agent_lane_settings_repo.as_ref().map(Arc::clone);
                         let retry_agent_provider_settings_repo =
                             agent_provider_settings_repo.as_ref().map(Arc::clone);
                         let retry_persona = resolve_recovery_retry_persona(
-                            app_handle,
+                            runtime_factory_deps,
                             persona_feature_enabled,
                             conv,
                             conv.context_type,
@@ -2742,7 +2759,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                             .ok()
                             .and_then(|persona| persona.clone());
                         let retry_folder_refs = recovery_retry_folder_refs_context(
-                            app_handle,
+                            runtime_factory_deps,
                             conv,
                             resolved_project_id.as_deref(),
                             working_directory,
@@ -2752,7 +2769,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                         let retry_agent_name =
                             super::chat_service_helpers::resolve_agent(&context_type, None);
                         let external_readiness = chat_service_context::await_required_external_mcp(
-                            app_handle.as_ref(),
+                            None,
                             recovery_harness,
                             plugin_dir,
                             retry_agent_name,
@@ -2840,12 +2857,12 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                             )),
                         };
                         let retry_provider_gate = RecoveryRetryProviderGate::new(
-                            app_handle,
                             &retry_agent_provider_settings_repo,
                             recovery_harness,
                             conv.context_type,
                             resolved_project_id.as_deref(),
                             working_directory,
+                            runtime_factory_deps,
                         );
                         let retry_spawnable = match resolve_recovery_retry_spawnable(
                             retry_provider_spawnable,
@@ -2867,7 +2884,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                             if let Ok(retry_child) = spawnable.spawn().await {
                                 super::record_persona_run_attribution(
                                     agent_run_repo,
-                                    app_handle.as_ref(),
+                                    events.as_ref(),
                                     &conversation_id,
                                     agent_run_id,
                                     recovery_harness,
@@ -2904,8 +2921,6 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                         execution_settings_repo,
                                         &retry_agent_lane_settings_repo,
                                         &retry_agent_provider_settings_repo,
-                                        &retry_app_repos.ideation_effort_settings_repo,
-                                        &retry_app_repos.ideation_model_settings_repo,
                                         task_proposal_repo,
                                         activity_event_repo,
                                         memory_event_repo,
@@ -2914,7 +2929,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                         execution_state,
                                         question_state,
                                         plan_branch_repo,
-                                        app_handle,
+                                        Arc::clone(&events),
+                                        runtime_factory_deps.cloned(),
                                         run_chain_id.clone(),
                                         persona_feature_enabled,
                                         agent_name_override_set,
@@ -3018,7 +3034,6 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
 
             if completion_proven {
                 let transition_service = build_transition_service(
-                    app_handle,
                     Arc::clone(task_repo),
                     Arc::clone(task_dependency_repo),
                     Arc::clone(project_repo),
@@ -3052,7 +3067,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                     finalize_assistant_message_with_terminal_tool_state(
                         chat_message_repo,
                         chat_timeline_repo,
-                        app_handle.as_ref(),
+                        events.as_ref(),
                         event_ctx,
                         &conversation_id,
                         pre_assistant_msg_id,
@@ -3065,10 +3080,11 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                     )
                     .await;
 
-                    if let Some(ref handle) = app_handle {
-                        let _ = handle.emit(
+                    {
+                        let _ = emit_serialized(
+                            events.as_ref(),
                             "agent:run_completed",
-                            AgentRunCompletedPayload::with_provider_session_and_run_id(
+                            &AgentRunCompletedPayload::with_provider_session_and_run_id(
                                 Some(agent_run_id.to_string()),
                                 conversation_id.as_str().to_string(),
                                 context_type.to_string(),
@@ -3123,7 +3139,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                 finalize_assistant_message_with_terminal_tool_state(
                     chat_message_repo,
                     chat_timeline_repo,
-                    app_handle.as_ref(),
+                    events.as_ref(),
                     event_ctx,
                     &conversation_id,
                     pre_assistant_msg_id,
@@ -3154,10 +3170,10 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
     if context_type == ChatContextType::Ideation {
         let child_id = IdeationSessionId::from_string(context_id.to_string());
         if let Some(ReconcileVerificationChildCompletion::AutoContinue(request)) =
-            crate::application::reconciliation::verification_reconciliation::reset_verification_on_child_error(
+            crate::application::reconciliation::verification_reconciliation::reset_verification_on_child_error::<tauri::Wry>(
                 &child_id,
                 ideation_session_repo,
-                app_handle.as_ref(),
+                None,
                 "agent_error",
             )
             .await
@@ -3180,7 +3196,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
             finalize_assistant_message_with_terminal_tool_state(
                 chat_message_repo,
                 chat_timeline_repo,
-                app_handle.as_ref(),
+                events.as_ref(),
                 event_ctx,
                 &conversation_id,
                 pre_assistant_msg_id,
@@ -3225,7 +3241,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
     finalize_assistant_message_with_terminal_tool_state(
         chat_message_repo,
         chat_timeline_repo,
-        app_handle.as_ref(),
+        events.as_ref(),
         event_ctx,
         &conversation_id,
         pre_assistant_msg_id,
@@ -3245,7 +3261,9 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
     }) = stream_error
     {
         let pause_applied = apply_system_wide_provider_pause(
-            app_handle,
+            runtime_factory_deps,
+            execution_state.as_ref(),
+            Arc::clone(&events),
             category,
             message,
             retry_after,
@@ -3264,14 +3282,11 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                     None,
                     Some(effective_harness),
                 );
-                if let Some(handle) = app_handle.as_ref() {
-                    let app_state = handle.state::<AppState>();
+                if let Some(repo) =
+                    runtime_factory_deps.and_then(|deps| deps.queued_message_repo.as_ref())
+                {
                     let key = QueueKey::new(context_type, context_id);
-                    if let Err(error) = app_state
-                        .queued_message_repo
-                        .enqueue_back(&key, &queued)
-                        .await
-                    {
+                    if let Err(error) = repo.enqueue_back(&key, &queued).await {
                         tracing::warn!(
                             %context_type,
                             context_id,
@@ -3499,8 +3514,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                 }
 
                                 // Emit provider error event for frontend
-                                if let Some(ref handle) = app_handle {
-                                    let _ = handle.emit(
+                                {
+                                    events.emit(
                                         "task:provider_error_paused",
                                         serde_json::json!({
                                             "task_id": task_id.as_str(),
@@ -3567,7 +3582,6 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                     };
 
                     let transition_service = build_transition_service(
-                        app_handle,
                         Arc::clone(task_repo),
                         Arc::clone(task_dependency_repo),
                         Arc::clone(project_repo),
@@ -3619,8 +3633,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                 "Worker failed and fallback transition retry also failed — task may be stuck"
                             );
                             // Emit event so reconciliation can pick it up
-                            if let Some(ref handle) = app_handle {
-                                let _ = handle.emit(
+                            {
+                                events.emit(
                                     "task:recovery_failed",
                                     serde_json::json!({
                                         "task_id": task_id.as_str(),
@@ -3834,7 +3848,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                     execution_state: exec_state,
                     execution_settings_repo: execution_settings_repo.as_ref(),
                     plan_branch_repo,
-                    app_handle: app_handle.as_ref(),
+                    events: &events,
+                    runtime_factory_deps,
                     interactive_process_registry,
                 };
                 super::chat_service_merge::attempt_merge_auto_complete(&merge_ctx).await;
@@ -3931,7 +3946,6 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
 
                     // Transition to Escalated
                     let transition_service = build_transition_service(
-                        app_handle,
                         Arc::clone(task_repo),
                         Arc::clone(task_dependency_repo),
                         Arc::clone(project_repo),
@@ -3997,10 +4011,11 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
     // Emit error event AFTER all state transitions are complete so the UI reflects
     // the final task state (Failed/Escalated/etc.) rather than showing idle while
     // the backend is still processing the error state change.
-    if let Some(ref handle) = app_handle {
-        let _ = handle.emit(
+    {
+        let _ = emit_serialized(
+            events.as_ref(),
             "agent:error",
-            AgentErrorPayload {
+            &AgentErrorPayload {
                 conversation_id: Some(conversation_id.as_str().to_string()),
                 context_type: context_type.to_string(),
                 context_id: context_id.to_string(),

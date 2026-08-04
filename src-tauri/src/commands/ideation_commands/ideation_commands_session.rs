@@ -3,7 +3,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tauri::{Emitter, State};
+use ralphx_events::emit_serialized;
+use tauri::State;
 
 use ralphx_domain::entities::EventType;
 
@@ -60,7 +61,7 @@ pub(crate) async fn get_ideation_agent_workspace_for_app_state(
 /// Generic over Runtime to enable unit testing with MockRuntime.
 #[doc(hidden)]
 pub async fn create_ideation_session_impl<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+    _app: &tauri::AppHandle<R>,
     state: &AppState,
     input: CreateSessionInput,
 ) -> Result<IdeationSessionResponse, String> {
@@ -110,7 +111,11 @@ pub async fn create_ideation_session_impl<R: tauri::Runtime>(
         "sessionId": created.id.to_string(),
         "projectId": created.project_id.to_string(),
     });
-    let _ = app.emit("ideation:session_created", &payload_json);
+    let _ = emit_serialized(
+        state.events.as_ref(),
+        "ideation:session_created",
+        &payload_json,
+    );
 
     // Layer 2: persist to external_events table (non-fatal)
     if let Err(e) = state
@@ -258,7 +263,7 @@ pub async fn list_ideation_sessions(
 pub async fn archive_ideation_session(
     id: String,
     state: State<'_, AppState>,
-    app: tauri::AppHandle,
+    _app: tauri::AppHandle,
 ) -> Result<(), String> {
     let session_id = IdeationSessionId::from_string(id.clone());
 
@@ -282,7 +287,7 @@ pub async fn archive_ideation_session(
         Arc::clone(&state.task_repo),
         Arc::clone(&state.project_repo),
         Arc::clone(&state.running_agent_registry),
-        Some(app.clone()),
+        Arc::clone(&state.events),
     )
     .with_interactive_process_registry(Arc::clone(&state.interactive_process_registry));
 
@@ -357,7 +362,7 @@ pub async fn archive_ideation_session(
 pub async fn delete_ideation_session(
     id: String,
     state: State<'_, AppState>,
-    app: tauri::AppHandle,
+    _app: tauri::AppHandle,
 ) -> Result<(), String> {
     let session_id = IdeationSessionId::from_string(id.clone());
 
@@ -381,7 +386,7 @@ pub async fn delete_ideation_session(
         Arc::clone(&state.task_repo),
         Arc::clone(&state.project_repo),
         Arc::clone(&state.running_agent_registry),
-        Some(app.clone()),
+        Arc::clone(&state.events),
     )
     .with_interactive_process_registry(Arc::clone(&state.interactive_process_registry));
     let report = cleanup_service
@@ -449,7 +454,7 @@ pub async fn delete_ideation_session(
 pub async fn reopen_ideation_session(
     id: String,
     state: State<'_, AppState>,
-    app: tauri::AppHandle,
+    _app: tauri::AppHandle,
 ) -> Result<(), String> {
     use crate::application::session_reopen_service::SessionReopenService;
     use crate::application::task_cleanup_service::TaskCleanupService;
@@ -471,7 +476,7 @@ pub async fn reopen_ideation_session(
         Arc::clone(&state.task_repo),
         Arc::clone(&state.project_repo),
         Arc::clone(&state.running_agent_registry),
-        Some(app.clone()),
+        Arc::clone(&state.events),
     )
     .with_interactive_process_registry(Arc::clone(&state.interactive_process_registry));
     let found = stop_cleanup.stop_ideation_session_agent(&id).await;
@@ -486,7 +491,7 @@ pub async fn reopen_ideation_session(
         Arc::clone(&state.task_repo),
         Arc::clone(&state.project_repo),
         Arc::clone(&state.running_agent_registry),
-        Some(app.clone()),
+        Arc::clone(&state.events),
     )
     .with_interactive_process_registry(Arc::clone(&state.interactive_process_registry));
 
@@ -506,16 +511,18 @@ pub async fn reopen_ideation_session(
         .map_err(|e| e.to_string())?;
 
     // Emit events for real-time UI updates
-    let _ = app.emit(
+    let _ = emit_serialized(
+        state.events.as_ref(),
         "ideation:session_reopened",
-        serde_json::json!({
+        &serde_json::json!({
             "sessionId": id,
             "projectId": project_id_str,
         }),
     );
-    let _ = app.emit(
+    let _ = emit_serialized(
+        state.events.as_ref(),
         "task:list_changed",
-        serde_json::json!({
+        &serde_json::json!({
             "projectId": project_id_str,
         }),
     );
@@ -533,7 +540,7 @@ pub async fn update_ideation_session_title(
     id: String,
     title: Option<String>,
     state: State<'_, AppState>,
-    app: tauri::AppHandle,
+    _app: tauri::AppHandle,
 ) -> Result<IdeationSessionResponse, String> {
     let session_id = IdeationSessionId::from_string(id.clone());
 
@@ -553,9 +560,10 @@ pub async fn update_ideation_session_title(
         .ok_or_else(|| format!("Session not found after update: {}", id))?;
 
     // Emit event for real-time UI updates
-    let _ = app.emit(
+    let _ = emit_serialized(
+        state.events.as_ref(),
         "ideation:session_title_updated",
-        serde_json::json!({
+        &serde_json::json!({
             "sessionId": id,
             "title": title,
         }),

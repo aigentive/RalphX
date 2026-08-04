@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use ralphx_events::RecordingEventSink;
 use ralphx_lib::application::builder_attachment_materializer::materialize_builder_attachment;
 use ralphx_lib::application::chat_service::{
     build_command, build_command_for_harness, build_command_with_app_data_dir,
@@ -24,13 +25,11 @@ use ralphx_lib::domain::repositories::{self, *};
 use ralphx_lib::error::AppResult;
 use ralphx_lib::infrastructure::agents::claude::{ContentBlockItem, ToolCall};
 use ralphx_lib::infrastructure::memory::*;
-use ralphx_lib::testing::create_mock_app;
 use std::fs;
 use std::future::Future;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
-use tauri::Listener;
 use tempfile::TempDir;
 
 fn provider_state_home_lock() -> &'static Mutex<()> {
@@ -1645,8 +1644,7 @@ fn create_assistant_message_keeps_delegation_conversation_scope() {
 #[tokio::test]
 async fn finalize_assistant_message_emits_delegated_conversation_id() {
     let state = AppState::new_test();
-    let app = create_mock_app();
-    let handle = app.handle().clone();
+    let events = RecordingEventSink::new();
     let conversation_id = ChatConversationId::new();
     let delegated_conversation_id = conversation_id.as_str();
     let orchestrator_role = MessageRole::Orchestrator.to_string();
@@ -1666,17 +1664,9 @@ async fn finalize_assistant_message_emits_delegated_conversation_id() {
         .await
         .expect("insert delegated assistant message");
 
-    let captured: Arc<Mutex<Option<serde_json::Value>>> = Arc::new(Mutex::new(None));
-    let captured_clone = Arc::clone(&captured);
-    handle.listen("agent:message_created", move |event| {
-        let payload: serde_json::Value =
-            serde_json::from_str(event.payload()).expect("event payload JSON");
-        *captured_clone.lock().expect("capture lock") = Some(payload);
-    });
-
     finalize_assistant_message_for_test(
         &state.chat_message_repo,
-        Some(&handle),
+        &events,
         &delegated_conversation_id,
         &ChatContextType::Delegation.to_string(),
         "delegated-session",
@@ -1688,11 +1678,12 @@ async fn finalize_assistant_message_emits_delegated_conversation_id() {
     )
     .await;
 
-    let payload = captured
-        .lock()
-        .expect("capture lock")
-        .clone()
-        .expect("agent:message_created payload");
+    let payload = events
+        .events()
+        .into_iter()
+        .find(|event| event.event == "agent:message_created")
+        .expect("agent:message_created payload")
+        .payload;
     assert_eq!(
         payload["conversation_id"].as_str(),
         Some(delegated_conversation_id.as_str()),
@@ -1797,9 +1788,9 @@ async fn finalize_structured_assistant_message_splits_verification_transcript_se
         },
     ];
 
-    finalize_structured_assistant_message_for_test::<tauri::Wry>(
+    finalize_structured_assistant_message_for_test(
         &state.chat_message_repo,
-        None,
+        state.events.as_ref(),
         ChatContextType::Ideation,
         context_id.as_str(),
         &conversation_id,
