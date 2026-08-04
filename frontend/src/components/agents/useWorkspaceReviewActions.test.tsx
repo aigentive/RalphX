@@ -235,6 +235,7 @@ describe("useWorkspaceReviewActions", () => {
     "Resolve conflicts and complete or abort the merge or rebase before retrying Workspace Review.";
 
   beforeEach(() => {
+    vi.mocked(chatApi.getAgentWorkspaceReviewStartPreview).mockReset();
     vi.mocked(logger.debug).mockReset();
     for (const mock of Object.values(operationToastMock)) {
       mock.mockReset();
@@ -363,6 +364,64 @@ describe("useWorkspaceReviewActions", () => {
         runtimeOverride: reviewerRuntime,
       });
     });
+    expect(chatApi.getAgentWorkspaceReviewStartPreview).toHaveBeenCalledTimes(1);
+  });
+
+  it("submits the rendered receipt after the preview cache TTL expires", async () => {
+    const renderedPreview = {
+      success: true,
+      target: null,
+      willDisableAutoMerge: true,
+      prNumber: 42,
+      mergeMethod: "squash",
+      restoreAfterPublish: true,
+      confirmation: {
+        targetScope: null,
+        diffFingerprint: "rendered",
+        headSha: null,
+        prNumber: 42,
+        willDisableAutoMerge: true,
+        mergeMethod: "squash",
+        restoreAfterPublish: true,
+      },
+    } satisfies AgentWorkspaceReviewStartPreview;
+    const undisplayedPreview = {
+      ...renderedPreview,
+      prNumber: 43,
+      confirmation: {
+        ...renderedPreview.confirmation,
+        diffFingerprint: "undisplayed",
+        prNumber: 43,
+      },
+    } satisfies AgentWorkspaceReviewStartPreview;
+    vi.mocked(chatApi.getAgentWorkspaceReviewStartPreview)
+      .mockResolvedValueOnce(renderedPreview)
+      .mockResolvedValueOnce(undisplayedPreview);
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    const onStartReview = vi.fn().mockResolvedValue(undefined);
+    const user = userEvent.setup();
+
+    render(<Harness onStartReview={onStartReview} />);
+    await user.click(screen.getByRole("button", { name: "Run review" }));
+    const dialog = await screen.findByRole("alertdialog");
+    await waitFor(() =>
+      expect(
+        within(dialog).getByText(/GitHub auto-merge is enabled on PR #42/),
+      ).toBeInTheDocument(),
+    );
+    now.mockReturnValue(4_000);
+
+    await user.click(within(dialog).getByRole("button", { name: "Start review" }));
+
+    await waitFor(() =>
+      expect(onStartReview).toHaveBeenCalledWith({
+        force: false,
+        confirmation: renderedPreview.confirmation,
+        runtimeOverride: reviewerRuntime,
+      }),
+    );
+    expect(chatApi.getAgentWorkspaceReviewStartPreview).toHaveBeenCalledTimes(1);
+    now.mockRestore();
   });
 
   it("surfaces a preview failure after early intent and starts nothing", async () => {

@@ -36,6 +36,58 @@ struct WorkspaceReviewTimingLayer {
     captured: StdArc<StdMutex<Vec<WorkspaceReviewTimingEvent>>>,
 }
 
+#[derive(Clone, Debug)]
+struct WorkspaceReviewGitLaneEvent {
+    command: String,
+    lane: String,
+}
+
+struct WorkspaceReviewGitLaneLayer {
+    captured: StdArc<StdMutex<Vec<WorkspaceReviewGitLaneEvent>>>,
+}
+
+impl<S: tracing::Subscriber> Layer<S> for WorkspaceReviewGitLaneLayer {
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        #[derive(Default)]
+        struct GitLaneVisitor {
+            command: Option<String>,
+            lane: Option<String>,
+        }
+
+        impl tracing::field::Visit for GitLaneVisitor {
+            fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                match field.name() {
+                    "command" => self.command = Some(value.to_string()),
+                    "lane" => self.lane = Some(value.to_string()),
+                    _ => {}
+                }
+            }
+
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                let value = format!("{value:?}").replace('"', "");
+                match field.name() {
+                    "command" => self.command = Some(value),
+                    "lane" => self.lane = Some(value),
+                    _ => {}
+                }
+            }
+        }
+
+        let mut visitor = GitLaneVisitor::default();
+        event.record(&mut visitor);
+        if let (Some(command), Some(lane)) = (visitor.command, visitor.lane) {
+            self.captured
+                .lock()
+                .expect("git lane capture lock should remain available")
+                .push(WorkspaceReviewGitLaneEvent { command, lane });
+        }
+    }
+}
+
 impl<S: tracing::Subscriber> Layer<S> for WorkspaceReviewTimingLayer {
     fn on_event(
         &self,
@@ -807,6 +859,49 @@ async fn workspace_delta_content_fingerprint_tracks_content_not_head_provenance(
         .expect("changed content should fingerprint");
 
     assert_ne!(changed_fingerprint, uncommitted_fingerprint);
+}
+
+#[tokio::test]
+async fn workspace_review_source_snapshot_fingerprint_uses_background_git_lane() {
+    let (_temp, repo, base_sha) = init_repo();
+    std::fs::write(repo.join("README.md"), "base\nupdated\n")
+        .expect("tracked file should be changed");
+    let target = AgentWorkspaceReviewTarget {
+        scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        base_ref: base_sha,
+        base_sha: None,
+        head_ref: "HEAD".to_string(),
+        head_sha: None,
+        diff_fingerprint: "initial".to_string(),
+        working_directory: repo,
+        source_pull_request_number: None,
+        review_packet: AgentWorkspaceReviewPacket::default(),
+    };
+    let captured = StdArc::new(StdMutex::new(Vec::new()));
+    let subscriber = tracing_subscriber::registry().with(WorkspaceReviewGitLaneLayer {
+        captured: StdArc::clone(&captured),
+    });
+    let _guard = subscriber.set_default();
+
+    workspace_review_source_snapshot_fingerprint(&target)
+        .await
+        .expect("source snapshot should fingerprint");
+
+    let events = captured
+        .lock()
+        .expect("git lane capture lock should remain available");
+    assert!(
+        !events.is_empty(),
+        "fingerprinting must execute git commands"
+    );
+    assert!(
+        events.iter().all(|event| event.lane == "background"),
+        "all source snapshot commands must use the background lane: {events:?}"
+    );
+    assert!(
+        events.iter().any(|event| event.command == "add -A -- ."),
+        "the lane assertion must cover the whole-worktree add: {events:?}"
+    );
 }
 
 #[tokio::test]

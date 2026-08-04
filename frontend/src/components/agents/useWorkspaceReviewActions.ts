@@ -105,6 +105,9 @@ export function useWorkspaceReviewActions({
     promise: Promise<AgentWorkspaceReviewStartPreview>;
     settledAt: number | null;
   } | null>(null);
+  const confirmedPreviewRef = useRef<Promise<AgentWorkspaceReviewStartPreview> | null>(
+    null,
+  );
   const reviewToastRef = useRef<AgentWorkspaceOperationToast | null>(null);
   const startReviewRef = useRef<(force: boolean) => void>(() => undefined);
 
@@ -166,6 +169,7 @@ export function useWorkspaceReviewActions({
   const startReview = useCallback(
     (force: boolean) => {
       if (!conversationId) return;
+      confirmedPreviewRef.current = null;
       void confirmRoleRuntime({
         role: "workspace_reviewer",
         title: "Start Workspace Review?",
@@ -173,7 +177,9 @@ export function useWorkspaceReviewActions({
         confirmText: "Start review",
         pendingText: "Checking review details…",
         prepareDescription: async () => {
-          const preview = await loadReviewPreview();
+          const confirmedPreview = loadReviewPreview();
+          confirmedPreviewRef.current = confirmedPreview;
+          const preview = await confirmedPreview;
           return reviewStartDescription(preview);
         },
         recoverFromPrepareError: (error) => {
@@ -185,7 +191,11 @@ export function useWorkspaceReviewActions({
           startReviewToast("Checking the current review target and auto-merge state");
         },
         onConfirm: async (runtimeOverride) => {
-          const preview = await loadReviewPreview();
+          const confirmedPreview = confirmedPreviewRef.current;
+          if (!confirmedPreview) {
+            throw new Error("Workspace Review preparation did not finish");
+          }
+          const preview = await confirmedPreview;
           const reviewToast = reviewToastRef.current;
           reviewToast?.update({
             detail: "Submitting the current review receipt",
@@ -197,6 +207,9 @@ export function useWorkspaceReviewActions({
             runtimeOverride,
           });
           clearReviewPreview();
+          if (confirmedPreviewRef.current === confirmedPreview) {
+            confirmedPreviewRef.current = null;
+          }
           if (reviewToastRef.current === reviewToast) {
             reviewToastRef.current = null;
           }

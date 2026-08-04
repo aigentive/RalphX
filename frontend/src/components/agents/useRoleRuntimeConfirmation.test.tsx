@@ -96,9 +96,12 @@ function renderWithCachedProviders(ui: ReactElement) {
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   queryClient.setQueryData(harnessProviderKeys.list(false), providerSettings());
-  return renderTestingLibrary(
-    <QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>,
-  );
+  return {
+    queryClient,
+    ...renderTestingLibrary(
+      <QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>,
+    ),
+  };
 }
 
 vi.mock("@/api/manual-role-defaults", () => ({
@@ -240,7 +243,7 @@ describe("useRoleRuntimeConfirmation", () => {
     );
     const user = userEvent.setup();
 
-    renderWithCachedProviders(
+    const { queryClient } = renderWithCachedProviders(
       <Harness onReview={vi.fn()} onRepair={vi.fn()} />,
     );
     await user.click(screen.getByRole("button", { name: "Open review" }));
@@ -257,6 +260,9 @@ describe("useRoleRuntimeConfirmation", () => {
       expect(
         within(dialog).getByRole("button", { name: "Start review" }),
       ).toBeDisabled(),
+    );
+    expect(queryClient.getQueryData(harnessProviderKeys.list(false))).toEqual(
+      providerSettings(false),
     );
   });
 

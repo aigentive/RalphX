@@ -4738,9 +4738,11 @@ pub(crate) async fn workspace_review_source_snapshot_fingerprint(
     match target.scope {
         AgentWorkspaceReviewTargetScope::SelectedSource => Ok(target.diff_fingerprint.clone()),
         AgentWorkspaceReviewTargetScope::WorkspaceDelta => {
-            let trees =
-                workspace_delta_tree_fingerprints(&target.working_directory, &target.base_ref)
-                    .await?;
+            let trees = git_cmd::with_git_command_lane(
+                GitCommandLane::Background,
+                workspace_delta_tree_fingerprints(&target.working_directory, &target.base_ref),
+            )
+            .await?;
             Ok(fingerprint_parts([
                 "workspace_delta_sources_v1",
                 &trees.base_tree,

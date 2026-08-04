@@ -318,6 +318,10 @@ export function useRoleRuntimeConfirmation({
             )
               .then((refreshedProviderSettings) => {
                 if (!controller.isCurrent()) return;
+                queryClient.setQueriesData<AgentProvidersSettingsResponse>(
+                  { queryKey: harnessProviderKeys.all },
+                  refreshedProviderSettings,
+                );
                 controller.update(buildPrepared(refreshedProviderSettings));
               })
               .catch(() => undefined);
