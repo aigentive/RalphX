@@ -1053,7 +1053,11 @@ fn detector_b_is_calibrated_and_floor_enforced() {
         // independently protects the seam omitted by the detector-silent closure.
         // 568 -> 569: `get_remote_agent_conversation_workspace`, the recovery-free workspace
         // hydration twin. Its builder omits repair recovery and the facade blanks host paths.
-        569,
+        // 569 -> 575: Wave B1's four spawn-free resume intent commands plus their two
+        // family-specific poll reads. The four writes are detector-(b) members through the
+        // `remote-execution-resume` / `remote-task-action` surfaces; all six remain silent on
+        // (a)/(c), with the host-owned dispatcher as the only caller of the denied local seams.
+        575,
         "review the detector against the full command census"
     );
     let flagged = spawn_triggering_writers(
@@ -7113,7 +7117,7 @@ fn batch14_closes_the_ratchet_at_zero() {
     use Disposition::*;
 
     const MEMBERS: &[(&str, Disposition)] = &[
-        // --- floor, detector (c) DETECTED (12)
+        // --- floor, detector (c) DETECTED (13)
         ("resume_task", FloorDetected),
         ("retry_branch_update", FloorDetected),
         ("restart_task", FloorDetected),
@@ -7138,8 +7142,8 @@ fn batch14_closes_the_ratchet_at_zero() {
             FloorDetected,
         ),
         ("archive_agent_conversation", FloorDetected),
-        // --- floor, detector (c) MISSED (13)
-        ("resume_execution", FloorHandTraced),
+        ("resume_execution", FloorDetected),
+        // --- floor, detector (c) MISSED (12)
         ("update_execution_settings", FloorHandTraced),
         ("update_global_execution_settings", FloorHandTraced),
         ("reset_agent_conversation_role_default", FloorHandTraced),

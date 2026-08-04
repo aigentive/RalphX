@@ -1357,6 +1357,55 @@ crate::remote_commands! {
         result: fallible,
     },
 
+    "request_remote_execution_resume"
+        => crate::commands::remote_resume_commands::request_remote_execution_resume {
+        class: AgentControl,
+        caps: [SeedsSpawnTriggeringState],
+        params: [(arg input: crate::commands::remote_resume_commands::RequestRemoteExecutionResumeInput), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "request_remote_task_resume"
+        => crate::commands::remote_resume_commands::request_remote_task_resume {
+        class: AgentControl,
+        caps: [SeedsSpawnTriggeringState],
+        params: [(arg input: crate::commands::remote_resume_commands::RequestRemoteTaskResumeInput), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "request_remote_task_restart"
+        => crate::commands::remote_resume_commands::request_remote_task_restart {
+        class: AgentControl,
+        caps: [SeedsSpawnTriggeringState],
+        params: [(arg input: crate::commands::remote_resume_commands::RequestRemoteTaskRestartInput), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "request_remote_group_resume"
+        => crate::commands::remote_resume_commands::request_remote_group_resume {
+        class: AgentControl,
+        caps: [SeedsSpawnTriggeringState],
+        params: [(arg input: crate::commands::remote_resume_commands::RequestRemoteGroupResumeInput), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_remote_execution_resume_request"
+        => crate::commands::remote_resume_commands::get_remote_execution_resume_request {
+        class: Read,
+        caps: [],
+        params: [(arg request_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_remote_task_action_request"
+        => crate::commands::remote_resume_commands::get_remote_task_action_request {
+        class: Read,
+        caps: [],
+        params: [(arg request_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+
     // The client's post-submit poll target for the stop intent. Pure repository read.
     "get_remote_agent_stop_request"
         => crate::commands::remote_agent_stop_commands::get_remote_agent_stop_request {

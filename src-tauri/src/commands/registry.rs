@@ -443,6 +443,12 @@ macro_rules! register_tauri_commands {
             commands::remote_agent_stop_commands::get_remote_agent_stop_request,
             commands::remote_conversation_mode_switch_commands::request_remote_agent_conversation_mode_switch,
             commands::remote_conversation_mode_switch_commands::get_remote_conversation_mode_switch_request,
+            commands::remote_resume_commands::request_remote_execution_resume,
+            commands::remote_resume_commands::request_remote_task_resume,
+            commands::remote_resume_commands::request_remote_task_restart,
+            commands::remote_resume_commands::request_remote_group_resume,
+            commands::remote_resume_commands::get_remote_execution_resume_request,
+            commands::remote_resume_commands::get_remote_task_action_request,
             commands::remote_transcript_commands::list_remote_agent_conversations_page,
             commands::remote_transcript_commands::list_remote_agent_sidebar_conversations,
             // Task context commands

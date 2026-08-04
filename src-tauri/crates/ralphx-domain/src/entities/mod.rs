@@ -58,6 +58,7 @@ pub mod remote_conversation_message_request;
 pub mod remote_conversation_mode_switch_request;
 pub mod remote_conversation_start_request;
 pub mod remote_request_dedup;
+pub mod remote_resume_request;
 pub mod research;
 pub mod review;
 pub mod review_issue;
@@ -283,6 +284,10 @@ pub use remote_conversation_start_request::{
 };
 pub use remote_request_dedup::{
     RemoteAttachment, RemoteDedupOutcomeKind, RemoteRequestDedupRecord,
+};
+pub use remote_resume_request::{
+    RemoteExecutionResumeRequest, RemoteResumeRequestStatus, RemoteTaskAction,
+    RemoteTaskActionRequest,
 };
 pub use research::{
     CustomDepth, ParseResearchDepthPresetError, ParseResearchProcessStatusError, ResearchBrief,

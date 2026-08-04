@@ -1571,6 +1571,15 @@ pub async fn resume_task(
     execution_state: State<'_, Arc<ExecutionState>>,
     app: tauri::AppHandle,
 ) -> Result<TaskResponse, String> {
+    resume_task_for_state(task_id, &state, &execution_state, app).await
+}
+
+pub(crate) async fn resume_task_for_state(
+    task_id: String,
+    state: &AppState,
+    execution_state: &Arc<ExecutionState>,
+    app: tauri::AppHandle,
+) -> Result<TaskResponse, String> {
     let task_id = TaskId::from_string(task_id);
 
     // Get the paused task
@@ -2046,6 +2055,25 @@ pub async fn resume_tasks_in_group(
     project_id: String,
     state: State<'_, AppState>,
     execution_state: State<'_, Arc<ExecutionState>>,
+    app: tauri::AppHandle,
+) -> Result<super::types::BulkResumeResponse, String> {
+    resume_tasks_in_group_for_state(
+        group_kind,
+        group_id,
+        project_id,
+        &state,
+        &execution_state,
+        app,
+    )
+    .await
+}
+
+pub(crate) async fn resume_tasks_in_group_for_state(
+    group_kind: String,
+    group_id: String,
+    project_id: String,
+    state: &AppState,
+    execution_state: &Arc<ExecutionState>,
     app: tauri::AppHandle,
 ) -> Result<super::types::BulkResumeResponse, String> {
     use crate::application::chat_service::PauseReason;

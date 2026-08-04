@@ -574,6 +574,24 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
         ),
     },
     CommandOverride {
+        command: "request_remote_execution_resume",
+        policy: policy(RiskClass::AgentControl, SEEDS_STATE, "seeds-spawn-triggering-state, declared membership resumes-execution-through-host-dispatcher: persists a validated execution-resume intent; spawn_remote_resume_dispatchers is the sole spawner"),
+    },
+    CommandOverride {
+        command: "request_remote_task_resume",
+        policy: policy(RiskClass::AgentControl, SEEDS_STATE, "seeds-spawn-triggering-state, declared membership resumes-task-through-host-dispatcher: persists a validated paused-task intent; spawn_remote_resume_dispatchers is the sole spawner"),
+    },
+    CommandOverride {
+        command: "request_remote_task_restart",
+        policy: policy(RiskClass::AgentControl, SEEDS_STATE, "seeds-spawn-triggering-state, declared membership restarts-task-through-host-dispatcher: persists a validated stopped-or-failed task intent; spawn_remote_resume_dispatchers is the sole spawner"),
+    },
+    CommandOverride {
+        command: "request_remote_group_resume",
+        policy: policy(RiskClass::AgentControl, SEEDS_STATE, "seeds-spawn-triggering-state, declared membership resumes-task-group-through-host-dispatcher: persists a validated group intent; spawn_remote_resume_dispatchers is the sole spawner"),
+    },
+    CommandOverride { command: "get_remote_execution_resume_request", policy: policy(RiskClass::Read, NONE, "pure repository read of one execution-resume intent; propagates read errors") },
+    CommandOverride { command: "get_remote_task_action_request", policy: policy(RiskClass::Read, NONE, "pure repository read of one task-action intent; propagates read errors") },
+    CommandOverride {
         command: "create_task_step",
         policy: policy(
             RiskClass::AgentControl,
@@ -3051,7 +3069,8 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
     process_refusal(
         "resume_task",
         "detector-c: publish_post_merge_branch_update -> run_authorized_mutation -> \
-         build_git_command",
+         build_git_command; request_remote_task_resume is the spawn-free intent twin and \
+         spawn_remote_resume_dispatchers alone calls this host seam",
     ),
     process_refusal(
         "retry_branch_update",
@@ -3063,7 +3082,8 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
     process_refusal(
         "restart_task",
         "detector-c: validate_resume -> GitService::branch_exists -> run_status -> \
-         build_git_command",
+         build_git_command; request_remote_task_restart is the spawn-free intent twin and \
+         spawn_remote_resume_dispatchers alone calls this host seam",
     ),
     process_refusal(
         "recover_task_execution",
@@ -3110,11 +3130,13 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
          GitService::branch_exists; archiving walks and deletes worktrees and branches",
     ),
 
+    // `resume_execution` became detector-(c) visible after Wave B1 extracted the shared
+    // state-only seam and wired the host dispatcher to that same call graph.
     // --- Floor, detector (c) MISSED. Each was reported c=false and each launches anyway. The
     //     hiding mechanism is named per row so a successor can close it deliberately.
     process_refusal(
         "resume_execution",
-        "detector-c-MISS (M2+M3), hand-traced: THREE independent launch chains. (1) \
+        "detector-c after the Wave B1 shared-seam extraction; THREE independent launch chains. (1) \
          execute_entry_actions -> TransitionHandler::on_enter -> enter_executing_state -> \
          send_task_execution_message; (2) try_schedule_ready_tasks transitions a Ready task to \
          Executing into the same spine; (3) four paused-queue relaunchers reach \
@@ -3123,7 +3145,9 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
          resolver. It ALSO fails open at lifecycle.rs:273: the task is transitioned into an \
          agent-active status at :258, then `if let Ok(Some(..))` collapses read error and \
          absence, so entry actions never run, restoring_count is never incremented, and the \
-         capacity guard admits MORE tasks than the cap while the command returns success",
+         capacity guard admits MORE tasks than the cap while the command returns success; \
+         request_remote_execution_resume is the spawn-free intent twin and the host dispatcher \
+         alone calls this seam",
     ),
     process_refusal(
         "update_execution_settings",
@@ -3151,7 +3175,9 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
         "resume_tasks_in_group",
         "detector-c-MISS (M2+M3), hand-traced: mutation.rs:2143/:2161 transition each task back \
          to its PRE-PAUSE status and run execute_entry_actions for it, so the restored status is \
-         Executing/Reviewing/Merging and the on_enter spine spawns the agent",
+         Executing/Reviewing/Merging and the on_enter spine spawns the agent; \
+         request_remote_group_resume is the spawn-free intent twin and the host dispatcher \
+         alone calls this seam",
     ),
     process_refusal(
         "pause_execution_plan",
@@ -4000,6 +4026,22 @@ pub const DECLARED_MEMBERSHIPS: &[(&str, &str)] = &[
         "prepares-workspace-for-later-agent-run",
     ),
     ("resolve_remote_user_question", "steering-question"),
+    (
+        "request_remote_execution_resume",
+        "resumes-execution-through-host-dispatcher",
+    ),
+    (
+        "request_remote_task_resume",
+        "resumes-task-through-host-dispatcher",
+    ),
+    (
+        "request_remote_task_restart",
+        "restarts-task-through-host-dispatcher",
+    ),
+    (
+        "request_remote_group_resume",
+        "resumes-task-group-through-host-dispatcher",
+    ),
 ];
 
 /// Expands the module policy and command overrides into one effective command row.

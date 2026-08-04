@@ -4,6 +4,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { z } from "zod";
 import { TauriVoidSchema } from "@/lib/tauri";
 import {
+  getTransportEnvironmentId,
+  isRemoteEnvironmentId,
+} from "@/lib/remote/active-environment";
+import {
   TaskSchema,
   TaskListSchema,
   TaskListResponseSchema,
@@ -154,6 +158,39 @@ async function typedInvokeWithTransform<TRaw, TResult>(
   return transform(validated);
 }
 
+const RemoteTaskActionIntentSchema = z.object({
+  requestId: z.string(),
+  status: z.enum(["pending", "starting", "completed", "failed", "failedStale"]),
+  errorCode: z.string().nullable().optional(),
+  result: z.unknown().nullable().optional(),
+});
+
+function remoteTaskFacadeEnabled(): boolean {
+  return isRemoteEnvironmentId(getTransportEnvironmentId());
+}
+
+async function remoteTaskAction<TRaw, TResult>(
+  command: "request_remote_task_resume" | "request_remote_task_restart" | "request_remote_group_resume",
+  input: Record<string, unknown>,
+  schema: z.ZodType<TRaw>,
+  transform: (raw: TRaw) => TResult
+): Promise<TResult> {
+  const requested = RemoteTaskActionIntentSchema.parse(await invoke(command, { input }));
+  for (let attempt = 0; attempt < 1800; attempt += 1) {
+    const request = RemoteTaskActionIntentSchema.parse(
+      await invoke("get_remote_task_action_request", { requestId: requested.requestId })
+    );
+    if (request.status === "completed") {
+      return transform(schema.parse(request.result));
+    }
+    if (request.status === "failed" || request.status === "failedStale") {
+      throw new Error(request.errorCode ?? "REMOTE_RESUME_HOST_FAILED");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error("Timed out waiting for the host to resume task work");
+}
+
 // ============================================================================
 // List Schemas
 // ============================================================================
@@ -288,7 +325,9 @@ export const tasksApi = {
    * @returns The resumed task
    */
   resume: (taskId: string): Promise<Task> =>
-    typedInvokeWithTransform("resume_task", { taskId }, TaskSchema, transformTask),
+    remoteTaskFacadeEnabled()
+      ? remoteTaskAction("request_remote_task_resume", { taskId }, TaskSchema, transformTask)
+      : typedInvokeWithTransform("resume_task", { taskId }, TaskSchema, transformTask),
 
   /**
    * Stop a running task
@@ -319,17 +358,12 @@ export const tasksApi = {
     taskId: string,
     force?: boolean,
     note?: string
-  ): Promise<RestartResult> =>
-    typedInvokeWithTransform(
-      "restart_task",
-      {
-        taskId,
-        force: force ?? false,
-        note: note ?? null,
-      },
-      RestartResultSchemaRaw,
-      transformRestartResult
-    ),
+  ): Promise<RestartResult> => {
+    const input = { taskId, force: force ?? false, note: note ?? null };
+    return remoteTaskFacadeEnabled()
+      ? remoteTaskAction("request_remote_task_restart", input, RestartResultSchemaRaw, transformRestartResult)
+      : typedInvokeWithTransform("restart_task", input, RestartResultSchemaRaw, transformRestartResult);
+  },
 
   /**
    * Get count of archived tasks for a project
@@ -529,13 +563,12 @@ export const tasksApi = {
     groupKind: string,
     groupId: string,
     projectId: string
-  ): Promise<BulkResumeResponse> =>
-    typedInvokeWithTransform(
-      "resume_tasks_in_group",
-      { groupKind, groupId, projectId },
-      BulkResumeResponseSchemaRaw,
-      transformBulkResumeResponse
-    ),
+  ): Promise<BulkResumeResponse> => {
+    const input = { groupKind, groupId, projectId };
+    return remoteTaskFacadeEnabled()
+      ? remoteTaskAction("request_remote_group_resume", input, BulkResumeResponseSchemaRaw, transformBulkResumeResponse)
+      : typedInvokeWithTransform("resume_tasks_in_group", input, BulkResumeResponseSchemaRaw, transformBulkResumeResponse);
+  },
 
   /**
    * Pause the current implementation work for one execution plan.

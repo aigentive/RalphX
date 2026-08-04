@@ -101,6 +101,9 @@ pub mod remote_execution_status_commands;
 mod remote_execution_status_commands_tests;
 pub mod remote_host_commands;
 pub mod remote_question_commands;
+pub mod remote_resume_commands;
+#[cfg(test)]
+mod remote_resume_commands_tests;
 #[cfg(test)]
 mod remote_question_commands_tests;
 pub mod remote_transcript_commands;

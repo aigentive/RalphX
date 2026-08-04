@@ -420,6 +420,24 @@ pub const SPAWN_TRIGGERING_STATE_SURFACE: &[StateSurfaceEntry] = &[
         armed_markers: &["RemoteConversationStartStatus::Pending"],
         declared_writers: &[],
     },
+    StateSurfaceEntry {
+        id: "remote-execution-resume",
+        surface: "remote_resume_requests.status where family=execution",
+        armed_value: "Pending",
+        read_by_loops: &["application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@44c46f9b60274b44"],
+        write_markers: &["create_execution_resume_request"],
+        armed_markers: &["RemoteResumeRequestStatus::Pending"],
+        declared_writers: &[],
+    },
+    StateSurfaceEntry {
+        id: "remote-task-action",
+        surface: "remote_resume_requests.status where family=task",
+        armed_value: "Pending",
+        read_by_loops: &["application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@44c46f9b60274b44"],
+        write_markers: &["create_task_action_request"],
+        armed_markers: &["RemoteResumeRequestStatus::Pending"],
+        declared_writers: &[],
+    },
 ];
 
 impl CallGraph {

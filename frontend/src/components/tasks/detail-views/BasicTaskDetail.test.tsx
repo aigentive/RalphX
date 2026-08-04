@@ -8,6 +8,7 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BasicTaskDetail } from "./BasicTaskDetail";
 import type { Task } from "@/types/task";
+import { LOCAL_ENVIRONMENT_ID, useEnvironmentStore } from "@/stores/environmentStore";
 
 vi.mock("@/hooks/useTaskSteps", () => ({
   useTaskSteps: vi.fn(),
@@ -158,6 +159,10 @@ function TestWrapper({ children }: { children: React.ReactNode }) {
 
 describe("BasicTaskDetail", () => {
   beforeEach(() => {
+    useEnvironmentStore.setState({
+      activeEnvironmentId: LOCAL_ENVIRONMENT_ID,
+      environments: [{ id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" }],
+    });
     vi.clearAllMocks();
     mockApiExecutionGetStatus.mockResolvedValue(runningExecutionStatus);
     mockApiExecutionResume.mockResolvedValue({
@@ -646,6 +651,7 @@ describe("BasicTaskDetail", () => {
         expect(mockApiExecutionResume).toHaveBeenCalledWith(task.projectId);
       });
     });
+
   });
 
   describe("restart note textarea", () => {

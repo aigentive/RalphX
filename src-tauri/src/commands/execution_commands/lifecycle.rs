@@ -167,22 +167,33 @@ pub async fn resume_execution(
     execution_state: State<'_, Arc<ExecutionState>>,
     app_state: State<'_, AppState>,
 ) -> Result<ExecutionCommandResponse, String> {
+    resume_execution_for_state(
+        project_id,
+        active_project_state.inner(),
+        execution_state.inner(),
+        app_state.inner(),
+    )
+    .await
+}
+
+pub(crate) async fn resume_execution_for_state(
+    project_id: Option<String>,
+    active_project_state: &Arc<ActiveProjectState>,
+    execution_state: &Arc<ExecutionState>,
+    app_state: &AppState,
+) -> Result<ExecutionCommandResponse, String> {
     let previous_halt_mode = load_execution_halt_mode(&app_state).await?;
 
     // Sync runtime quota with persisted project settings before can_start_task() loops
     let project_id = project_id.map(|id| ProjectId::from_string(id));
-    let (effective_project_id, _max_concurrent) = sync_quota_from_project(
-        project_id,
-        &active_project_state,
-        &execution_state,
-        &app_state,
-    )
-    .await?;
+    let (effective_project_id, _max_concurrent) =
+        sync_quota_from_project(project_id, active_project_state, execution_state, app_state)
+            .await?;
     persist_execution_halt_mode(&app_state, ExecutionHaltMode::Running).await?;
 
     // Build transition service for proper state machine transitions
     let transition_service =
-        app_state.build_transition_service_with_execution_state(Arc::clone(&execution_state));
+        app_state.build_transition_service_with_execution_state(Arc::clone(execution_state));
 
     // Find all Paused tasks (scoped to project if specified) and restore them
     // Note: Stopped tasks are NOT restored - they require manual restart
@@ -313,7 +324,7 @@ pub async fn resume_execution(
 
     // Trigger scheduler to pick up waiting Ready tasks
     let scheduler = Arc::new(app_state.build_task_scheduler_for_runtime(
-        Arc::clone(&execution_state),
+        Arc::clone(execution_state),
         app_state.app_handle.clone(),
     ));
     scheduler.set_self_ref(Arc::clone(&scheduler) as Arc<dyn TaskScheduler>);
@@ -324,7 +335,7 @@ pub async fn resume_execution(
     scheduler.try_schedule_ready_tasks().await;
 
     if app_state.app_handle.is_some() {
-        let execution_state_arc = Arc::clone(execution_state.inner());
+        let execution_state_arc = Arc::clone(execution_state);
         if let Err(error) = resume_paused_workspace_queues_with_chat_service(
             effective_project_id.as_ref(),
             &app_state,
@@ -399,7 +410,7 @@ pub async fn resume_execution(
     }
 
     // Get current status
-    let status = get_execution_status(
+    let status = get_execution_status_for_state(
         effective_project_id.map(|p| p.as_str().to_string()),
         active_project_state,
         execution_state,

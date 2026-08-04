@@ -251,9 +251,6 @@ mod v20260509090000_release_notes_seen_version_tests;
 mod v20260510185257_chat_message_blocks_timeline;
 #[cfg(test)]
 mod v20260510185257_chat_message_blocks_timeline_tests;
-mod v20260730025727_chat_message_blocks_thinking_kind;
-#[cfg(test)]
-mod v20260730025727_chat_message_blocks_thinking_kind_tests;
 mod v20260512093000_startup_local_cleanup_markers;
 #[cfg(test)]
 mod v20260512093000_startup_local_cleanup_markers_tests;
@@ -587,13 +584,13 @@ mod v20260728183000_workspace_review_plan_context_tests;
 mod v20260730000304_chat_message_blocks_created_at_index;
 #[cfg(test)]
 mod v20260730000304_chat_message_blocks_created_at_index_tests;
+mod v20260730025727_chat_message_blocks_thinking_kind;
+#[cfg(test)]
+mod v20260730025727_chat_message_blocks_thinking_kind_tests;
 mod v20260730151837_agent_workspace_repair_ci_rerun_reservations;
 #[cfg(test)]
 mod v20260730151837_agent_workspace_repair_ci_rerun_reservations_tests;
 mod v20260730161032_agent_workspace_pr_autofix_completion_evidence;
-mod v20260802031156_delegate_context_inheritance;
-mod v20260802194326_agent_workspace_repair_explicit_publish_consent;
-mod v20260804073002_jira_link_acceptance_criteria_backfill;
 #[cfg(test)]
 mod v20260730161032_agent_workspace_pr_autofix_completion_evidence_tests;
 mod v20260731023949_agent_run_identity;
@@ -623,15 +620,21 @@ mod v20260801140000_remote_conversation_mode_switch_requests_tests;
 mod v20260801211636_delegation_park_wake_claimed_at;
 #[cfg(test)]
 mod v20260801211636_delegation_park_wake_claimed_at_tests;
-mod v20260802174000_workspace_review_fixer_cycle_cap;
+mod v20260802031156_delegate_context_inheritance;
 #[cfg(test)]
 mod v20260802031156_delegate_context_inheritance_tests;
+mod v20260802174000_workspace_review_fixer_cycle_cap;
 #[cfg(test)]
 mod v20260802174000_workspace_review_fixer_cycle_cap_tests;
+mod v20260802194326_agent_workspace_repair_explicit_publish_consent;
 #[cfg(test)]
 mod v20260802194326_agent_workspace_repair_explicit_publish_consent_tests;
+mod v20260804073002_jira_link_acceptance_criteria_backfill;
 #[cfg(test)]
 mod v20260804073002_jira_link_acceptance_criteria_backfill_tests;
+mod v20260804105225_remote_resume_requests;
+#[cfg(test)]
+mod v20260804105225_remote_resume_requests_tests;
 #[cfg(test)]
 pub(super) fn migrate_scripted_agent_workflows_for_test(conn: &Connection) -> AppResult<()> {
     v20260715194617_scripted_agent_workflows::migrate(conn)
@@ -726,7 +729,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260804073002;
+pub const SCHEMA_VERSION: i64 = 20260804105225;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1991,6 +1994,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260804073002,
         name: "jira_link_acceptance_criteria_backfill",
         migrate: v20260804073002_jira_link_acceptance_criteria_backfill::migrate,
+    },
+    Migration {
+        version: 20260804105225,
+        name: "remote_resume_requests",
+        migrate: v20260804105225_remote_resume_requests::migrate,
     },
 ];
 

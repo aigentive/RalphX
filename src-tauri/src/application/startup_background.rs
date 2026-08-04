@@ -1312,6 +1312,216 @@ pub(crate) async fn drain_one_remote_agent_stop<R: tauri::Runtime + 'static>(
 /// a git worktree and is materially more expensive than a repository read.
 const REMOTE_CONVERSATION_MODE_SWITCH_DISPATCH_INTERVAL: Duration = Duration::from_secs(2);
 /// `Switching` rows older than this at boot are swept to `FailedStale` and NEVER re-driven.
+const REMOTE_RESUME_STALE_LEASE_SECS: i64 = 300;
+
+pub(crate) fn spawn_remote_resume_dispatchers(
+    state: AppState,
+    active_project_state: Arc<crate::commands::ActiveProjectState>,
+    execution_state: Arc<ExecutionState>,
+    app_handle: tauri::AppHandle,
+) {
+    if !try_start_recurring_service("remote_resume_dispatchers") {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        let now = chrono::Utc::now();
+        let cutoff = now - chrono::Duration::seconds(REMOTE_RESUME_STALE_LEASE_SECS);
+        if let Err(error) = state
+            .remote_execution_resume_request_repo
+            .fail_stale(cutoff, now)
+            .await
+        {
+            tracing::error!(%error,"remote execution-resume stale sweep failed");
+        }
+        if let Err(error) = state
+            .remote_task_action_request_repo
+            .fail_stale(cutoff, now)
+            .await
+        {
+            tracing::error!(%error,"remote task-action stale sweep failed");
+        }
+        let mut interval = tokio::time::interval(Duration::from_secs(2));
+        interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            if let Err(error) = dispatch_one_remote_execution_resume(
+                &state,
+                &active_project_state,
+                &execution_state,
+            )
+            .await
+            {
+                tracing::warn!(%error,"remote execution-resume dispatch failed");
+            }
+            if let Err(error) =
+                dispatch_one_remote_task_action(&state, &execution_state, &app_handle).await
+            {
+                tracing::warn!(%error,"remote task-action dispatch failed");
+            }
+        }
+    });
+}
+
+pub(crate) async fn dispatch_one_remote_execution_resume(
+    state: &AppState,
+    active: &Arc<crate::commands::ActiveProjectState>,
+    execution: &Arc<ExecutionState>,
+) -> AppResult<()> {
+    let Some(row) = state
+        .remote_execution_resume_request_repo
+        .claim_pending(chrono::Utc::now())
+        .await?
+    else {
+        return Ok(());
+    };
+    if let Some(project_id) = &row.project_id {
+        if !matches!(state.project_repo.get_by_id(project_id).await, Ok(Some(_))) {
+            state
+                .remote_execution_resume_request_repo
+                .fail(
+                    &row.id,
+                    crate::commands::remote_resume_commands::REMOTE_RESUME_AUTHORITY_CHANGED,
+                    chrono::Utc::now(),
+                )
+                .await?;
+            return Ok(());
+        }
+    }
+    let result = crate::commands::execution_commands::resume_execution_for_state(
+        row.project_id.as_ref().map(|id| id.as_str().to_string()),
+        active,
+        execution,
+        state,
+    )
+    .await;
+    match result {
+        Ok(value) => {
+            state
+                .remote_execution_resume_request_repo
+                .complete(
+                    &row.id,
+                    serde_json::to_value(value).map_err(|error| {
+                        crate::error::AppError::Infrastructure(error.to_string())
+                    })?,
+                    chrono::Utc::now(),
+                )
+                .await?
+        }
+        Err(error) => {
+            tracing::warn!(request_id=%row.id,%error,"remote execution resume host seam failed");
+            state
+                .remote_execution_resume_request_repo
+                .fail(
+                    &row.id,
+                    crate::commands::remote_resume_commands::REMOTE_RESUME_HOST_FAILED,
+                    chrono::Utc::now(),
+                )
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) async fn dispatch_one_remote_task_action(
+    state: &AppState,
+    execution: &Arc<ExecutionState>,
+    app: &tauri::AppHandle,
+) -> AppResult<()> {
+    use crate::domain::entities::{InternalStatus, RemoteTaskAction};
+    let Some(row) = state
+        .remote_task_action_request_repo
+        .claim_pending(chrono::Utc::now())
+        .await?
+    else {
+        return Ok(());
+    };
+    let valid = match row.action {
+        RemoteTaskAction::Resume => match &row.task_id {
+            Some(id) => {
+                matches!(state.task_repo.get_by_id(id).await,Ok(Some(task)) if task.internal_status==InternalStatus::Paused)
+            }
+            None => false,
+        },
+        RemoteTaskAction::Restart => match &row.task_id {
+            Some(id) => {
+                matches!(state.task_repo.get_by_id(id).await,Ok(Some(task)) if matches!(task.internal_status,InternalStatus::Stopped|InternalStatus::Failed))
+            }
+            None => false,
+        },
+        RemoteTaskAction::GroupResume => {
+            matches!(
+                state.project_repo.get_by_id(&row.project_id).await,
+                Ok(Some(_))
+            ) && matches!(
+                row.group_kind.as_deref(),
+                Some("status" | "session" | "uncategorized")
+            )
+        }
+    };
+    if !valid {
+        state
+            .remote_task_action_request_repo
+            .fail(
+                &row.id,
+                crate::commands::remote_resume_commands::REMOTE_RESUME_AUTHORITY_CHANGED,
+                chrono::Utc::now(),
+            )
+            .await?;
+        return Ok(());
+    }
+    let result = match row.action {
+        RemoteTaskAction::Resume => crate::commands::task_commands::resume_task_for_state(
+            row.task_id.expect("validated task id").as_str().to_string(),
+            state,
+            execution,
+            app.clone(),
+        )
+        .await
+        .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string())),
+        RemoteTaskAction::Restart => crate::commands::execution_commands::restart_task_for_state(
+            row.task_id.expect("validated task id").as_str().to_string(),
+            row.force,
+            row.note,
+            state,
+            execution,
+        )
+        .await
+        .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string())),
+        RemoteTaskAction::GroupResume => {
+            crate::commands::task_commands::resume_tasks_in_group_for_state(
+                row.group_kind.expect("validated group kind"),
+                row.group_id.expect("validated group id"),
+                row.project_id.as_str().to_string(),
+                state,
+                execution,
+                app.clone(),
+            )
+            .await
+            .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
+        }
+    };
+    match result {
+        Ok(value) => {
+            state
+                .remote_task_action_request_repo
+                .complete(&row.id, value, chrono::Utc::now())
+                .await?
+        }
+        Err(error) => {
+            tracing::warn!(request_id=%row.id,%error,"remote task action host seam failed");
+            state
+                .remote_task_action_request_repo
+                .fail(
+                    &row.id,
+                    crate::commands::remote_resume_commands::REMOTE_RESUME_HOST_FAILED,
+                    chrono::Utc::now(),
+                )
+                .await?;
+        }
+    }
+    Ok(())
+}
+
 /// Longer than the stop lease because a switch can legitimately take a while: preparing a
 /// worktree for a large repository is the slow path here.
 const REMOTE_CONVERSATION_MODE_SWITCH_STALE_LEASE_SECS: i64 = 600;

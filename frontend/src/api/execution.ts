@@ -85,6 +85,38 @@ async function typedInvokeWithTransform<TRaw, TResult>(
   return transform(validated);
 }
 
+const RemoteResumeIntentSchema = z.object({
+  requestId: z.string(),
+  status: z.enum(["pending", "starting", "completed", "failed", "failedStale"]),
+  errorCode: z.string().nullable().optional(),
+  result: z.unknown().nullable().optional(),
+});
+
+async function remoteExecutionResume(projectId?: string): Promise<ExecutionCommandResponse> {
+  const requested = RemoteResumeIntentSchema.parse(
+    await invoke("request_remote_execution_resume", {
+      input: { projectId: projectId ?? null },
+    })
+  );
+  for (let attempt = 0; attempt < 1800; attempt += 1) {
+    const request = attempt === 0 && requested.status !== "pending"
+      ? requested
+      : RemoteResumeIntentSchema.parse(
+          await invoke("get_remote_execution_resume_request", {
+            requestId: requested.requestId,
+          })
+        );
+    if (request.status === "completed") {
+      return transformExecutionCommand(ExecutionCommandResponseSchema.parse(request.result));
+    }
+    if (request.status === "failed" || request.status === "failedStale") {
+      throw new Error(request.errorCode ?? "REMOTE_RESUME_HOST_FAILED");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error("Timed out waiting for the host to resume execution");
+}
+
 // ============================================================================
 // API Object
 // ============================================================================
@@ -138,12 +170,14 @@ export const executionApi = {
    * @returns Command response with success and current status
    */
   resume: (projectId?: string): Promise<ExecutionCommandResponse> =>
-    typedInvokeWithTransform(
-      "resume_execution",
-      { projectId: projectId ?? null },
-      ExecutionCommandResponseSchema,
-      transformExecutionCommand
-    ),
+    remoteExecutionFacadeEnabled()
+      ? remoteExecutionResume(projectId)
+      : typedInvokeWithTransform(
+          "resume_execution",
+          { projectId: projectId ?? null },
+          ExecutionCommandResponseSchema,
+          transformExecutionCommand
+        ),
 
   /**
    * Stop execution (halts active work and requires manual restart)

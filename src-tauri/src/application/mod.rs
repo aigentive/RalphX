@@ -227,6 +227,8 @@ mod standalone_workspace_path_safety_tests;
 #[cfg(test)]
 mod standalone_workspace_tests;
 pub mod startup_background;
+#[cfg(test)]
+mod startup_remote_resume_tests;
 pub mod startup_bootstrap;
 #[cfg(test)]
 mod startup_bootstrap_tests;

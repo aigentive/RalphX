@@ -12,24 +12,35 @@ pub async fn get_execution_status(
     execution_state: State<'_, Arc<ExecutionState>>,
     app_state: State<'_, AppState>,
 ) -> Result<ExecutionStatusResponse, String> {
+    get_execution_status_for_state(
+        project_id,
+        active_project_state.inner(),
+        execution_state.inner(),
+        app_state.inner(),
+    )
+    .await
+}
+
+pub(crate) async fn get_execution_status_for_state(
+    project_id: Option<String>,
+    active_project_state: &Arc<ActiveProjectState>,
+    execution_state: &Arc<ExecutionState>,
+    app_state: &AppState,
+) -> Result<ExecutionStatusResponse, String> {
     // Sync runtime quota with persisted project settings before returning status
     let project_id = project_id.map(|id| ProjectId::from_string(id));
-    let (effective_project_id, _max_concurrent) = sync_quota_from_project(
-        project_id,
-        &active_project_state,
-        &execution_state,
-        &app_state,
-    )
-    .await?;
+    let (effective_project_id, _max_concurrent) =
+        sync_quota_from_project(project_id, active_project_state, execution_state, app_state)
+            .await?;
 
     // Local status owns runtime maintenance: process inspection prunes stale rows before the
     // shared read, and the computed global count is cached afterward. The remote twin does
     // neither because both are writes and pruning also resolves process-inspection CLIs.
-    prune_stale_execution_registry_entries(&app_state, &execution_state).await;
+    prune_stale_execution_registry_entries(app_state, execution_state).await;
     let computed = compute_execution_status(
         effective_project_id,
-        &execution_state,
-        &app_state,
+        execution_state,
+        app_state,
         IdeationWaitingErrorPolicy::FailOpen,
     )
     .await?;

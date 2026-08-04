@@ -51,6 +51,10 @@ const ANCHORS: &[&str] = &[
     "approve_permission_request",
     "resolve_user_question",
     "resolve_remote_user_question",
+    "request_remote_execution_resume",
+    "request_remote_task_resume",
+    "request_remote_task_restart",
+    "request_remote_group_resume",
     "answer_user_question",
     "unblock_task",
 ];

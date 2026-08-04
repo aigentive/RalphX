@@ -147,6 +147,7 @@ pub mod sqlite_remote_access_repo;
 pub mod sqlite_remote_environment_repo;
 pub mod sqlite_remote_event_log_repo;
 pub mod sqlite_remote_request_dedup_repo;
+pub mod sqlite_remote_resume_request_repo;
 pub mod sqlite_review_issue_repo;
 pub mod sqlite_review_repo;
 pub mod sqlite_review_settings_repo;
@@ -260,6 +261,9 @@ pub use sqlite_remote_event_log_repo::{
     SqliteRemoteEventLogRepository,
 };
 pub use sqlite_remote_request_dedup_repo::SqliteRemoteRequestDedupRepository;
+pub use sqlite_remote_resume_request_repo::{
+    SqliteRemoteExecutionResumeRequestRepository, SqliteRemoteTaskActionRequestRepository,
+};
 pub use sqlite_review_issue_repo::{ReviewIssueRepository, SqliteReviewIssueRepository};
 pub use sqlite_review_repo::SqliteReviewRepository;
 pub use sqlite_review_settings_repo::SqliteReviewSettingsRepository;

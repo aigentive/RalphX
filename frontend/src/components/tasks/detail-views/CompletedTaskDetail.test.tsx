@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { CompletedTaskDetail } from "./CompletedTaskDetail";
 import type { Task } from "@/types/task";
+import { LOCAL_ENVIRONMENT_ID, useEnvironmentStore } from "@/stores/environmentStore";
 
 const { historyState, transitionsState, gitDiffState } = vi.hoisted(() => ({
   historyState: {
@@ -145,6 +146,10 @@ beforeEach(() => {
     { shortSha: "abc1234", message: "feat: add thing", sha: "abc1234" },
     { shortSha: "def5678", message: "chore: refactor", sha: "def5678" },
   ];
+  useEnvironmentStore.setState({
+    activeEnvironmentId: LOCAL_ENVIRONMENT_ID,
+    environments: [{ id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" }],
+  });
 });
 
 describe("CompletedTaskDetail", () => {
@@ -219,6 +224,23 @@ describe("CompletedTaskDetail", () => {
     await waitFor(() => {
       expect(screen.queryByTestId("rerun-dialog")).not.toBeInTheDocument();
     });
+  });
+
+  it("commits the remote rerun but suppresses unavailable execution resume", async () => {
+    useEnvironmentStore.setState({
+      activeEnvironmentId: "remote-1",
+      environments: [{ id: "remote-1", name: "Studio", kind: "remote" }],
+      effectiveScopes: { "remote-1": ["ui:read", "ui:operate", "ui:agent"] },
+      connectionPresentations: {
+        "remote-1": { presentation: "connected", blockedFailure: null, blockedMessage: null },
+      },
+    });
+    render(<CompletedTaskDetail task={task()} />, { wrapper: TestWrapper });
+    fireEvent.click(screen.getByTestId("reopen-task-button"));
+    await act(async () => fireEvent.click(screen.getByTestId("rerun-confirm")));
+    await waitFor(() => expect(moveMock).toHaveBeenCalledWith("task-c-1", "ready", "go"));
+    expect(resumeMock).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.queryByTestId("rerun-dialog")).not.toBeInTheDocument());
   });
 
   it("shows error in rerun dialog when api.tasks.move throws", async () => {

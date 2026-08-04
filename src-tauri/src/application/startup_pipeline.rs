@@ -274,6 +274,18 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     }
 
     // The remote MODE SWITCH dispatcher (WP5a), same always-run placement and the same reason.
+    {
+        let phase_started_at = startup_phase_started("remote_resume_dispatchers_spawn");
+        startup_background::spawn_remote_resume_dispatchers(
+            deps.app_state.clone(),
+            Arc::clone(&deps.active_project_state),
+            Arc::clone(&deps.execution_state),
+            deps.app_handle.clone(),
+        );
+        startup_phase_completed("remote_resume_dispatchers_spawn", phase_started_at);
+    }
+
+    // The remote MODE SWITCH dispatcher (WP5a), same always-run placement and the same reason.
     // Existing remote conversations still rely on this loop to drain switch intents. Note it
     // takes neither the execution state nor the app
     // handle: its switch seam is AppState-only, which is what keeps the process-terminating path

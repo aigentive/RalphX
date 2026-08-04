@@ -82,6 +82,7 @@ pub use lifecycle::{
 };
 pub(crate) use lifecycle::{
     determine_paused_restore_status, prepare_resumed_task_for_entry_actions,
+    resume_execution_for_state,
 };
 
 mod settings;
@@ -105,7 +106,9 @@ pub use status_queries::{
     __tauri_command_name_get_execution_status, __tauri_command_name_get_running_processes,
     get_execution_status, get_running_processes,
 };
-pub(crate) use status_queries::{compute_execution_status, IdeationWaitingErrorPolicy};
+pub(crate) use status_queries::{
+    compute_execution_status, get_execution_status_for_state, IdeationWaitingErrorPolicy,
+};
 
 /// Recover a task execution after a stop request
 ///
@@ -187,6 +190,16 @@ pub async fn restart_task(
     note: Option<String>,
     state: State<'_, AppState>,
     execution_state: State<'_, Arc<ExecutionState>>,
+) -> Result<RestartResult, String> {
+    restart_task_for_state(task_id, force, note, &state, &execution_state).await
+}
+
+pub(crate) async fn restart_task_for_state(
+    task_id: String,
+    force: bool,
+    note: Option<String>,
+    state: &AppState,
+    execution_state: &Arc<ExecutionState>,
 ) -> Result<RestartResult, String> {
     use crate::domain::state_machine::transition_handler::metadata_builder::{
         build_restart_metadata, parse_stop_metadata,

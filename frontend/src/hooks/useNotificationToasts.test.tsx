@@ -168,6 +168,21 @@ describe("useNotificationToasts", () => {
     });
   });
 
+  it("logs mark-read failures without making the dismissed toast interactive again", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(notificationsApi.markRead).mockRejectedValueOnce(new Error("offline"));
+    subscribers.get("notification:created")?.(notification);
+    const view = renderToastContent();
+    fireEvent.click(view.getByRole("button", { name: "Respond" }));
+    await waitFor(() => {
+      expect(consoleError).toHaveBeenCalledWith(
+        "Failed to mark notification read:",
+        expect.any(Error),
+      );
+      expect(toastDismiss).toHaveBeenCalledWith(notification.id);
+    });
+  });
+
   it("resumes a paused automation directly from the toast action", async () => {
     const pausedNotification = {
       ...notification,

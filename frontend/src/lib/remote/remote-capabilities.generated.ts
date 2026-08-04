@@ -674,6 +674,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: [],
     pins: [],
   },
+  "get_remote_execution_resume_request": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
   "get_remote_execution_status": {
     opClass: "read",
     argumentSensitive: false,
@@ -687,6 +693,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     pins: [],
   },
   "get_remote_provider_readiness": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_remote_task_action_request": {
     opClass: "read",
     argumentSensitive: false,
     capabilities: [],
@@ -1200,6 +1212,30 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     opClass: "operate",
     argumentSensitive: false,
     capabilities: [],
+    pins: [],
+  },
+  "request_remote_execution_resume": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["seedsSpawnTriggeringState"],
+    pins: [],
+  },
+  "request_remote_group_resume": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["seedsSpawnTriggeringState"],
+    pins: [],
+  },
+  "request_remote_task_restart": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["seedsSpawnTriggeringState"],
+    pins: [],
+  },
+  "request_remote_task_resume": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["seedsSpawnTriggeringState"],
     pins: [],
   },
   "request_task_changes_for_review": {

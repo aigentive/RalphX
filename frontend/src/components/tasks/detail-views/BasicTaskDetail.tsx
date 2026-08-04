@@ -229,6 +229,7 @@ function AutoRetryingSection({ task, attemptCount }: { task: Task; attemptCount:
  */
 function ActionButtonsCard({ task }: { task: Task }) {
   const restartGate = useAgentGate("taskRestart");
+  const executionResumeGate = useAgentGate("executionResume");
   const queryClient = useQueryClient();
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const [showValidationDialog, setShowValidationDialog] = useState(false);
@@ -297,12 +298,12 @@ function ActionButtonsCard({ task }: { task: Task }) {
         if (result.type === "Blocked") {
           throw new Error(result.warnings.map((warning) => warning.message).join(", "));
         }
-        await resumeExecutionIfStopped(task.projectId);
+        if (!executionResumeGate.gated) await resumeExecutionIfStopped(task.projectId);
         return result;
       } else {
         // Fallback to move-to-ready for other restartable statuses
         const result = await api.tasks.move(taskId, "ready", note);
-        await resumeExecutionIfStopped(task.projectId);
+        if (!executionResumeGate.gated) await resumeExecutionIfStopped(task.projectId);
         return result;
       }
     },
@@ -335,7 +336,7 @@ function ActionButtonsCard({ task }: { task: Task }) {
     try {
       const note = restartNote.trim() || undefined;
       await api.tasks.move(taskId, stopMetadata.stoppedFromStatus, note);
-      await resumeExecutionIfStopped(task.projectId);
+      if (!executionResumeGate.gated) await resumeExecutionIfStopped(task.projectId);
       setRestartNote("");
       setShowValidationDialog(false);
     } catch (error: unknown) {
@@ -346,7 +347,7 @@ function ActionButtonsCard({ task }: { task: Task }) {
       queryClient.invalidateQueries({ queryKey: executionKeys.all });
       setIsResuming(false);
     }
-  }, [queryClient, restartNote, stopMetadata, task.projectId, taskId]);
+  }, [executionResumeGate.gated, queryClient, restartNote, stopMetadata, task.projectId, taskId]);
 
   // Handle go to ready from validation dialog
   const handleGoToReady = useCallback(async () => {
@@ -355,7 +356,7 @@ function ActionButtonsCard({ task }: { task: Task }) {
     try {
       const note = restartNote.trim() || undefined;
       await api.tasks.move(taskId, "ready", note);
-      await resumeExecutionIfStopped(task.projectId);
+      if (!executionResumeGate.gated) await resumeExecutionIfStopped(task.projectId);
       setRestartNote("");
       setShowValidationDialog(false);
     } catch (error: unknown) {
@@ -366,7 +367,7 @@ function ActionButtonsCard({ task }: { task: Task }) {
       queryClient.invalidateQueries({ queryKey: executionKeys.all });
       setIsResuming(false);
     }
-  }, [queryClient, restartNote, task.projectId, taskId]);
+  }, [executionResumeGate.gated, queryClient, restartNote, task.projectId, taskId]);
 
   const handleAction = useCallback(async () => {
     // If task was stopped from a validated state, show validation dialog
@@ -603,12 +604,13 @@ function FreshnessBlockedCard({
   info: FreshnessBlockedInfo;
 }) {
   const moveGate = useAgentGate("taskMove");
+  const executionResumeGate = useAgentGate("executionResume");
   const queryClient = useQueryClient();
 
   const resetMutation = useMutation({
     mutationFn: async () => {
       const result = await api.tasks.move(task.id, "ready");
-      await resumeExecutionIfStopped(task.projectId);
+      if (!executionResumeGate.gated) await resumeExecutionIfStopped(task.projectId);
       return result;
     },
     onSettled: () => {
