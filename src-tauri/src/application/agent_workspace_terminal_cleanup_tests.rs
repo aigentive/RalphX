@@ -492,7 +492,7 @@ async fn terminalize_reports_missing_workspace_without_claiming_cleanup() {
     assert!(outcome
         .message
         .as_deref()
-        .is_some_and(|message| message.contains("disappeared before local cleanup")));
+        .is_some_and(|message| message.contains("disappeared before terminal runtime cleanup")));
 }
 
 #[tokio::test]
