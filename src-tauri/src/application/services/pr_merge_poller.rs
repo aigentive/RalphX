@@ -3018,7 +3018,6 @@ async fn route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
         chat_service,
         None,
         None,
-        None,
     )
     .await
 }
@@ -3520,6 +3519,7 @@ pub(crate) async fn route_ideation_plan_pr_autofix_if_needed(
         None,
         None,
         chat_service,
+        None,
         None,
         None,
     )
