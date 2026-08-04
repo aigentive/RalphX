@@ -927,6 +927,45 @@ async fn foreign_delegation_wake_context_cannot_defer_plan_approval() {
 }
 
 #[tokio::test]
+async fn malformed_delegation_wake_target_cannot_defer_plan_approval() {
+    for action_target_id in [Some("not-a-park-id".to_string()), None] {
+        let state = AppState::new_test();
+        let (session, conversation) = planning_session_with_workspace(&state).await;
+        let mut resumed = AgentRun::new(conversation.id);
+        resumed.action_kind = Some(AgentRunActionKind::DelegationParkWake);
+        resumed.action_context_id = Some(conversation.id.as_str());
+        resumed.action_target_id = action_target_id;
+        let resumed = state.agent_run_repo.create(resumed).await.unwrap();
+        let authority = PlanApprovalPublishAuthority::new(resumed.id, conversation.id);
+
+        reconcile_plan_approval_on_publish(
+            &state,
+            None,
+            "plan-current",
+            std::slice::from_ref(&session),
+            Some(&authority),
+        )
+        .await;
+
+        assert!(
+            !has_deferred_plan_approval(&state, &session.id, "plan-current")
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            state
+                .notification_repo
+                .list(None, None, 20)
+                .await
+                .unwrap()
+                .notifications
+                .len(),
+            1
+        );
+    }
+}
+
+#[tokio::test]
 async fn coverage_regression_pr_autofix_authority_cannot_defer_plan_approval() {
     let state = AppState::new_test();
     let (session, conversation) = planning_session_with_workspace(&state).await;

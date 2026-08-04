@@ -74,6 +74,34 @@ async fn resumed_run_reparks_the_exact_job_from_an_expired_park() {
 }
 
 #[tokio::test]
+async fn resumed_run_reparks_the_exact_job_from_a_woken_park() {
+    let harness = harness();
+    let service = harness.service();
+    let conversation = ChatConversationId::new();
+    let original_run = AgentRunId::new();
+    let delegated_run = AgentRunId::new();
+    let mut prior = park(conversation, original_run, delegated_run);
+    prior.state = DelegationParkState::Woken;
+    harness.parks.insert(prior.clone()).await;
+    let resumed = insert_resumed_run(&harness, &conversation, &prior.id).await;
+    let delegation =
+        FakeDelegationJobs::running("job", &conversation, &original_run, Some(&delegated_run));
+
+    let armed = service
+        .arm(
+            request(conversation, resumed.id, vec!["job".to_string()]),
+            &delegation,
+        )
+        .await
+        .expect("exact backend-resumed ownership from a woken park must re-arm");
+
+    assert_ne!(armed.id, prior.id);
+    assert_eq!(armed.parent_agent_run_id, resumed.id);
+    assert_eq!(armed.state, DelegationParkState::Armed);
+    assert_eq!(armed.jobs[0].delegated_agent_run_id, delegated_run);
+}
+
+#[tokio::test]
 async fn resumed_run_reparks_a_waking_park_and_late_settlement_is_ignored() {
     let harness = harness();
     let service = harness.service();
