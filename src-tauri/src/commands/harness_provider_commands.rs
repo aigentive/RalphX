@@ -6,8 +6,8 @@ use tauri::State;
 
 use crate::application::{
     harness_runtime_registry::{
-        clear_harness_runtime_caches_for_harness, refresh_harness_runtime_probe,
-        refresh_supported_harnesses, HarnessRuntimeProbe,
+        clear_harness_runtime_caches_for_harness, refresh_harness_runtime_probe_with_force,
+        refresh_supported_harnesses_with_force, HarnessRuntimeProbe,
     },
     AppState, AGENT_LANES,
 };
@@ -69,6 +69,8 @@ pub struct AgentProvidersSettingsResponse {
 pub struct GetAgentProviderSettingsInput {
     #[serde(default)]
     pub refresh_runtime: bool,
+    #[serde(default)]
+    pub force_runtime: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -533,6 +535,7 @@ pub(crate) fn snapshot_probes_from_provider_settings(
 async fn read_provider_settings(
     state: &AppState,
     refresh_runtime: bool,
+    force_runtime: bool,
 ) -> Result<AgentProvidersSettingsResponse, String> {
     let started_at = std::time::Instant::now();
     let phase_started_at = std::time::Instant::now();
@@ -545,6 +548,7 @@ async fn read_provider_settings(
         operation = "agent_provider_settings_phase",
         phase = "load_settings",
         refresh_runtime,
+        force_runtime,
         provider_rows = stored.len(),
         elapsed_ms = phase_started_at.elapsed().as_millis() as u64,
         total_elapsed_ms = started_at.elapsed().as_millis() as u64,
@@ -552,7 +556,7 @@ async fn read_provider_settings(
     );
     let phase_started_at = std::time::Instant::now();
     let mut probes = if refresh_runtime {
-        refresh_supported_harnesses()
+        refresh_supported_harnesses_with_force(force_runtime)
     } else {
         snapshot_probes_from_provider_settings(&stored)
     };
@@ -560,6 +564,7 @@ async fn read_provider_settings(
         operation = "agent_provider_settings_phase",
         phase = "resolve_runtime_probes",
         refresh_runtime,
+        force_runtime,
         probe_count = probes.len(),
         elapsed_ms = phase_started_at.elapsed().as_millis() as u64,
         total_elapsed_ms = started_at.elapsed().as_millis() as u64,
@@ -573,6 +578,7 @@ async fn read_provider_settings(
         operation = "agent_provider_settings_phase",
         phase = "overlay_managed_runtime_probes",
         refresh_runtime,
+        force_runtime,
         elapsed_ms = phase_started_at.elapsed().as_millis() as u64,
         total_elapsed_ms = started_at.elapsed().as_millis() as u64,
         "Agent provider settings phase completed"
@@ -583,6 +589,7 @@ async fn read_provider_settings(
         operation = "agent_provider_settings_phase",
         phase = "build_response",
         refresh_runtime,
+        force_runtime,
         provider_rows = response.providers.len(),
         elapsed_ms = phase_started_at.elapsed().as_millis() as u64,
         total_elapsed_ms = started_at.elapsed().as_millis() as u64,
@@ -592,6 +599,7 @@ async fn read_provider_settings(
         operation = "agent_provider_settings_phase",
         phase = "total",
         refresh_runtime,
+        force_runtime,
         provider_rows = response.providers.len(),
         elapsed_ms = started_at.elapsed().as_millis() as u64,
         total_elapsed_ms = started_at.elapsed().as_millis() as u64,
@@ -689,7 +697,8 @@ pub async fn get_agent_provider_settings(
     input: Option<GetAgentProviderSettingsInput>,
     state: State<'_, AppState>,
 ) -> Result<AgentProvidersSettingsResponse, String> {
-    read_provider_settings(&state, input.unwrap_or_default().refresh_runtime).await
+    let input = input.unwrap_or_default();
+    read_provider_settings(&state, input.refresh_runtime, input.force_runtime).await
 }
 
 #[tauri::command]
@@ -718,7 +727,7 @@ pub async fn update_agent_provider_settings(
         {
             probe
         } else {
-            refresh_harness_runtime_probe(provider)
+            refresh_harness_runtime_probe_with_force(provider, true)
         };
         probes.insert(provider, probe);
     }

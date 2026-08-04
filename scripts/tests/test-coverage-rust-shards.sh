@@ -72,13 +72,20 @@ if grep -Fq 'llvm-cov clean --workspace' "${WORKFLOW}"; then
   fail "Coverage workflow must not clean the workspace"
 fi
 
-for shard in 1 2 3 4; do
-  grep -Fq "partition: \"${shard}/4\"" <<< "${rust_lib_job}" \
-    || fail "Rust lib coverage is missing partition ${shard}/4"
+for shard in 1 2; do
+  grep -Fq "partition: \"${shard}/2\"" <<< "${rust_lib_job}" \
+    || fail "Rust lib coverage is missing partition ${shard}/2"
   grep -Fq "artifact_suffix: \"${shard}\"" <<< "${rust_lib_job}" \
     || fail "Rust lib coverage is missing artifact suffix ${shard}"
   grep -Fq "coverage-artifacts/coverage-rust-lib-${shard}/lcov.info" <<< "${publish_job}" \
     || fail "Codecov publishing omits Rust lib coverage shard ${shard}"
+done
+
+for removed_shard in 3 4; do
+  if grep -Fq "artifact_suffix: \"${removed_shard}\"" <<< "${rust_lib_job}" \
+    || grep -Fq "coverage-artifacts/coverage-rust-lib-${removed_shard}/lcov.info" <<< "${publish_job}"; then
+    fail "Rust coverage still references removed shard ${removed_shard}"
+  fi
 done
 
 ipc_invocations="$(grep -Fc 'cargo llvm-cov nextest' <<< "${rust_ipc_job}")"
@@ -114,4 +121,4 @@ for filter in \
     || fail "Rust IPC coverage omits the ${filter} filter"
 done
 
-echo "PASS: Rust coverage uses four lib shards and one consolidated IPC build"
+echo "PASS: Rust coverage uses two lib shards and one consolidated IPC build"

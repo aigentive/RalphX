@@ -213,14 +213,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - partition: "1/4"
+          - partition: "1/2"
             artifact_suffix: "1"
-          - partition: "2/4"
+          - partition: "2/2"
             artifact_suffix: "2"
-          - partition: "3/4"
-            artifact_suffix: "3"
-          - partition: "4/4"
-            artifact_suffix: "4"
     env:
       CARGO_TERM_COLOR: never
       RALPHX_TEST_MODE: "1"
@@ -1011,8 +1007,6 @@ jobs:
             if [[ "${RUN_RUST}" == "true" ]]; then
               [[ -s coverage-artifacts/coverage-rust-lib-1/lcov.info ]] || return 1
               [[ -s coverage-artifacts/coverage-rust-lib-2/lcov.info ]] || return 1
-              [[ -s coverage-artifacts/coverage-rust-lib-3/lcov.info ]] || return 1
-              [[ -s coverage-artifacts/coverage-rust-lib-4/lcov.info ]] || return 1
               [[ -s coverage-artifacts/coverage-rust-ipc/lcov.info ]] || return 1
             fi
             if [[ "${RUN_FRONTEND}" == "true" ]]; then
@@ -1067,7 +1061,7 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           use_pypi: true
           disable_search: true
-          files: coverage-artifacts/coverage-rust-lib-1/lcov.info,coverage-artifacts/coverage-rust-lib-2/lcov.info,coverage-artifacts/coverage-rust-lib-3/lcov.info,coverage-artifacts/coverage-rust-lib-4/lcov.info,coverage-artifacts/coverage-rust-ipc/lcov.info
+          files: coverage-artifacts/coverage-rust-lib-1/lcov.info,coverage-artifacts/coverage-rust-lib-2/lcov.info,coverage-artifacts/coverage-rust-ipc/lcov.info
           flags: rust-lib
           name: rust-lib
           override_commit: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -1082,7 +1076,7 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           use_pypi: true
           disable_search: true
-          files: coverage-artifacts/coverage-rust-lib-1/lcov.info,coverage-artifacts/coverage-rust-lib-2/lcov.info,coverage-artifacts/coverage-rust-lib-3/lcov.info,coverage-artifacts/coverage-rust-lib-4/lcov.info,coverage-artifacts/coverage-rust-ipc/lcov.info
+          files: coverage-artifacts/coverage-rust-lib-1/lcov.info,coverage-artifacts/coverage-rust-lib-2/lcov.info,coverage-artifacts/coverage-rust-ipc/lcov.info
           flags: rust-ipc
           name: rust-ipc
           override_commit: ${{ github.event.pull_request.head.sha || github.sha }}

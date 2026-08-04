@@ -462,7 +462,12 @@ async fn manual_preview_captures_the_target_bound_auto_merge_effect() {
     assert!(preview.confirmation.will_disable_auto_merge);
     assert_eq!(preview.confirmation.merge_method.as_deref(), Some("squash"));
     assert!(!preview.confirmation.restore_after_publish);
-    assert_eq!(github.state().fetch_pr_health_calls, 1);
+    assert_eq!(
+        github.state().fetch_pr_health_calls,
+        0,
+        "manual-start preview must not fetch full PR health"
+    );
+    assert_eq!(github.state().fetch_pr_auto_merge_state_calls, 1);
 }
 
 #[tokio::test]
@@ -3569,7 +3574,8 @@ async fn reconciliation_cancels_interrupted_selected_source_restore_when_target_
         1
     );
 
-    assert_eq!(github.state().fetch_pr_health_calls, 1);
+    assert_eq!(github.state().fetch_pr_health_calls, 0);
+    assert_eq!(github.state().fetch_pr_auto_merge_state_calls, 1);
     assert_eq!(github.state().enable_pr_auto_merge_calls, 0);
     assert!(state
         .agent_conversation_workspace_repo
@@ -3609,7 +3615,8 @@ async fn reconciliation_cancels_interrupted_selected_source_restore_when_target_
         1
     );
 
-    assert_eq!(github.state().fetch_pr_health_calls, 1);
+    assert_eq!(github.state().fetch_pr_health_calls, 0);
+    assert_eq!(github.state().fetch_pr_auto_merge_state_calls, 1);
     assert_eq!(github.state().enable_pr_auto_merge_calls, 0);
     assert!(state
         .agent_conversation_workspace_repo
