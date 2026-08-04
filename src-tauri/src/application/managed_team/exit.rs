@@ -40,6 +40,29 @@ impl TeamExitAction {
 }
 
 impl ManagedTeamService {
+    /// Reuses any durable exit choice before an external writer persists a
+    /// non-Team coordination mode. Callers may continue when no open Team
+    /// session exists, but repository, marker, and exit failures are blocking.
+    pub async fn exit_team_before_coordination_change(
+        &self,
+        task_service: &AgentTaskService,
+        conversation_id: &crate::domain::entities::ChatConversationId,
+    ) -> AppResult<bool> {
+        let Some(session) = self
+            .team_repo
+            .get_open_session_for_conversation(conversation_id)
+            .await?
+        else {
+            return Ok(false);
+        };
+        let action = match session.pending_exit_action.as_deref() {
+            Some(raw) => TeamExitAction::parse(raw)?,
+            None => TeamExitAction::DrainAndClose,
+        };
+        self.exit_team(task_service, &session.id, action).await?;
+        Ok(true)
+    }
+
     /// Marks an exit before cleanup. A retry reads the marker and resumes the
     /// same action; it never changes a durable exit choice mid-flight.
     pub async fn exit_team(
