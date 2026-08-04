@@ -26,17 +26,20 @@ use crate::application::chat_service::{
 use crate::application::git_service::git_cmd::{self, GitCommandLane};
 use crate::application::{AppState, GitService};
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunAction,
-    AgentRunActionKind, AgentRunId, AgentRunStatus, AgentWorkspaceReviewFixerSnapshot,
-    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
-    AgentWorkspaceReviewOutcome, AgentWorkspaceReviewRuntimeState, AgentWorkspaceReviewTargetScope,
-    Artifact, ArtifactContent, ArtifactId, ChatContextType, ChatConversation, ChatConversationId,
-    MessageRole, Project,
+    workspace_review_fixer_status_is_active, AgentConversationWorkspace,
+    AgentConversationWorkspaceMode, AgentRun, AgentRunAction, AgentRunActionKind, AgentRunId,
+    AgentRunStatus, AgentWorkspaceReviewFixerSnapshot, AgentWorkspaceReviewGateStatus,
+    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
+    AgentWorkspaceReviewRuntimeState, AgentWorkspaceReviewTargetScope, Artifact, ArtifactContent,
+    ArtifactId, ChatContextType, ChatConversation, ChatConversationId, MessageRole, Project,
+    WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED, WORKSPACE_REVIEW_FIXER_STATUS_QUEUED,
+    WORKSPACE_REVIEW_FIXER_STATUS_ROUTING, WORKSPACE_REVIEW_FIXER_STATUS_RUNNING,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, QueuedMessageRepository,
     ORPHANED_AGENT_RUN_ON_APP_RESTART,
 };
+use crate::domain::review::ReviewSettings;
 use crate::domain::services::{
     ComposerArtifactReference, ComposerIntegrationReference, ComposerProjectReference,
     ComposerProjectReferenceKind,
@@ -72,11 +75,7 @@ const WORKSPACE_REVIEW_FIXER_INTERRUPTED_ON_STARTUP_ERROR: &str =
     "Workspace Review fixer routing was interrupted when the app restarted";
 const WORKSPACE_REVIEW_FIXER_INVALID_AUTHORITY_ON_STARTUP_ERROR: &str =
     "Workspace Review fixer recovery found invalid attempt authority";
-const WORKSPACE_REVIEW_FIXER_STATUS_ROUTING: &str = "routing";
-const WORKSPACE_REVIEW_FIXER_STATUS_QUEUED: &str = "queued";
-const WORKSPACE_REVIEW_FIXER_STATUS_RUNNING: &str = "running";
 const WORKSPACE_REVIEW_FIXER_STATUS_FAILED: &str = "failed";
-const WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED: &str = "cycle_capped";
 const WORKSPACE_REVIEW_FIXER_SKIPPED_ALREADY_ACTIVE: &str = "fixer_already_active";
 const WORKSPACE_REVIEW_PLAN_CONTEXT_CHANGED_ERROR: &str =
     "The linked plan changed after this Workspace Review. Run Workspace Review again before repairing its findings.";
@@ -2797,11 +2796,57 @@ async fn workspace_review_autofix_blocking_findings_policy(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
 ) -> (bool, i64) {
+    let workspace = match state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&workspace.conversation_id)
+        .await
+    {
+        Ok(Some(workspace)) => workspace,
+        Ok(None) => return (false, 0),
+        Err(error) => {
+            warn!(
+                target: WORKSPACE_REVIEW_LOG_TARGET,
+                operation = "blocking_fixer_workspace_load_failed",
+                conversation_id = %workspace.conversation_id,
+                project_id = %workspace.project_id,
+                branch = %workspace.branch_name,
+                error = %error,
+                "Failed to load current workspace; automatic workspace Review fixer routing is disabled for this completion"
+            );
+            return (false, 0);
+        }
+    };
+    let workspace_override = workspace.review_automation_override;
+    if workspace_override == Some(false) {
+        let effective =
+            ReviewSettings::default().effective_workspace_review_automation(workspace_override);
+        return (effective.autofix_blocking_findings, 0);
+    }
     match state.review_settings_repo.get_settings().await {
-        Ok(settings) => (
-            settings.autofix_workspace_review_blocking_findings,
-            settings.workspace_review_fixer_cycle_cap.max(0),
-        ),
+        Ok(settings) => {
+            let effective = settings.effective_workspace_review_automation(workspace_override);
+            (
+                effective.autofix_blocking_findings,
+                settings.workspace_review_fixer_cycle_cap.max(0),
+            )
+        }
+        Err(error) if workspace_override == Some(true) => {
+            warn!(
+                target: WORKSPACE_REVIEW_LOG_TARGET,
+                operation = "blocking_fixer_autofix_settings_load_failed",
+                conversation_id = %workspace.conversation_id,
+                project_id = %workspace.project_id,
+                branch = %workspace.branch_name,
+                error = %error,
+                "Failed to load Review settings; explicit workspace automation remains enabled with the default cycle cap"
+            );
+            let settings = ReviewSettings::default();
+            let effective = settings.effective_workspace_review_automation(workspace_override);
+            (
+                effective.autofix_blocking_findings,
+                settings.workspace_review_fixer_cycle_cap,
+            )
+        }
         Err(error) => {
             warn!(
                 target: WORKSPACE_REVIEW_LOG_TARGET,
@@ -2815,17 +2860,6 @@ async fn workspace_review_autofix_blocking_findings_policy(
             (false, 0)
         }
     }
-}
-
-fn workspace_review_fixer_status_is_active(status: Option<&str>) -> bool {
-    matches!(
-        status,
-        Some(
-            WORKSPACE_REVIEW_FIXER_STATUS_ROUTING
-                | WORKSPACE_REVIEW_FIXER_STATUS_QUEUED
-                | WORKSPACE_REVIEW_FIXER_STATUS_RUNNING
-        )
-    )
 }
 
 pub async fn start_agent_workspace_review_blocking_fixer(

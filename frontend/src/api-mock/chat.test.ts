@@ -16,6 +16,7 @@ import {
   mockGetConversationTimelinePage,
   mockListAgentSidebarConversations,
   mockPrecomputeAgentConversationWorkspacePrDescription,
+  mockSetAgentConversationWorkspaceReviewAutomation,
   resetMockChatState,
   seedMockAgentConversationWorkspace,
   seedMockConversation,
@@ -318,6 +319,36 @@ describe("mockGetAgentConversationRuntimeStatuses", () => {
         items: [],
       },
     });
+  });
+});
+
+describe("mockSetAgentConversationWorkspaceReviewAutomation", () => {
+  beforeEach(() => {
+    resetMockChatState();
+  });
+
+  it("persists an explicit review automation preference", async () => {
+    const seeded = workspace("review-automation", {
+      reviewAutomationOverride: null,
+    });
+    seedMockAgentConversationWorkspace(seeded);
+
+    await expect(
+      mockSetAgentConversationWorkspaceReviewAutomation(seeded.conversationId, {
+        enabled: true,
+      }),
+    ).resolves.toMatchObject({ reviewAutomationOverride: true });
+    await expect(
+      mockChatApi.getAgentConversationWorkspace(seeded.conversationId),
+    ).resolves.toMatchObject({ reviewAutomationOverride: true });
+  });
+
+  it("rejects a preference update for an unknown workspace", async () => {
+    await expect(
+      mockSetAgentConversationWorkspaceReviewAutomation("missing", {
+        enabled: false,
+      }),
+    ).rejects.toThrow("No mock workspace seeded for missing");
   });
 });
 

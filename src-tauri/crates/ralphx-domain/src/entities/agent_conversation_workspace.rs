@@ -116,6 +116,22 @@ pub enum AgentWorkspaceReviewMonitorStatus {
     Blocked,
 }
 
+pub const WORKSPACE_REVIEW_FIXER_STATUS_ROUTING: &str = "routing";
+pub const WORKSPACE_REVIEW_FIXER_STATUS_QUEUED: &str = "queued";
+pub const WORKSPACE_REVIEW_FIXER_STATUS_RUNNING: &str = "running";
+pub const WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED: &str = "cycle_capped";
+
+pub fn workspace_review_fixer_status_is_active(status: Option<&str>) -> bool {
+    matches!(
+        status,
+        Some(
+            WORKSPACE_REVIEW_FIXER_STATUS_ROUTING
+                | WORKSPACE_REVIEW_FIXER_STATUS_QUEUED
+                | WORKSPACE_REVIEW_FIXER_STATUS_RUNNING
+        )
+    )
+}
+
 /// Response-only classification of whether the current runtime owns Review mutations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -947,6 +963,8 @@ pub struct AgentConversationWorkspace {
     pub auto_publish_paused_pr_autofix_enabled: Option<bool>,
     pub auto_publish_paused_pr_auto_merge_desired: Option<bool>,
     pub pr_autofix_enabled: bool,
+    /// Per-workspace automation choice: None inherits global Review settings.
+    pub review_automation_override: Option<bool>,
     pub pr_auto_merge_desired: bool,
     pub pr_auto_merge_method: String,
     pub pr_auto_merge_current: Option<bool>,
@@ -1006,6 +1024,7 @@ impl AgentConversationWorkspace {
             auto_publish_paused_pr_autofix_enabled: None,
             auto_publish_paused_pr_auto_merge_desired: None,
             pr_autofix_enabled: false,
+            review_automation_override: None,
             pr_auto_merge_desired: false,
             pr_auto_merge_method: DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD.to_string(),
             pr_auto_merge_current: None,
