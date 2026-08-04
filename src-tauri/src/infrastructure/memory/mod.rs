@@ -18,6 +18,7 @@ pub mod memory_agent_remote_conversation_message_request_repo;
 pub mod memory_agent_remote_conversation_mode_switch_request_repo;
 pub mod memory_agent_remote_conversation_start_request_repo;
 pub mod memory_remote_resume_request_repo;
+pub mod memory_remote_plan_approval_request_repo;
 pub mod memory_agent_run_repo;
 pub mod memory_agent_task_repo;
 pub mod memory_team_repo;
@@ -127,6 +128,7 @@ pub use memory_agent_remote_conversation_start_request_repo::MemoryRemoteConvers
 pub use memory_remote_resume_request_repo::{
     MemoryRemoteExecutionResumeRequestRepository, MemoryRemoteTaskActionRequestRepository,
 };
+pub use memory_remote_plan_approval_request_repo::MemoryRemotePlanApprovalRequestRepository;
 pub use memory_manual_role_default_repo::MemoryManualRoleDefaultRepository;
 pub use memory_mcp_policy_repo::MemoryMcpPolicyRepository;
 

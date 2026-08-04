@@ -1316,7 +1316,7 @@ const REMOTE_RESUME_STALE_LEASE_SECS: i64 = 300;
 
 pub(crate) fn spawn_remote_resume_dispatchers(
     state: AppState,
-    active_project_state: Arc<crate::commands::ActiveProjectState>,
+    active_project_state: Arc<crate::application::ActiveProjectState>,
     execution_state: Arc<ExecutionState>,
     app_handle: tauri::AppHandle,
 ) {
@@ -1340,6 +1340,13 @@ pub(crate) fn spawn_remote_resume_dispatchers(
         {
             tracing::error!(%error,"remote task-action stale sweep failed");
         }
+        if let Err(error) = state
+            .remote_plan_approval_request_repo
+            .fail_stale(cutoff, now)
+            .await
+        {
+            tracing::error!(%error, "remote plan-approval stale sweep failed");
+        }
         let mut interval = tokio::time::interval(Duration::from_secs(2));
         interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {
@@ -1358,13 +1365,87 @@ pub(crate) fn spawn_remote_resume_dispatchers(
             {
                 tracing::warn!(%error,"remote task-action dispatch failed");
             }
+            if let Err(error) = dispatch_one_remote_plan_approval(&state).await {
+                tracing::warn!(%error, "remote plan-approval dispatch failed");
+            }
         }
     });
 }
 
+pub(crate) async fn dispatch_one_remote_plan_approval(state: &AppState) -> AppResult<()> {
+    use crate::domain::entities::IdeationSessionStatus;
+    let Some(row) = state
+        .remote_plan_approval_request_repo
+        .claim_pending(chrono::Utc::now())
+        .await?
+    else {
+        return Ok(());
+    };
+    let active = state
+        .ideation_session_repo
+        .get_by_id(&row.session_id)
+        .await?
+        .is_some_and(|session| session.status == IdeationSessionStatus::Active);
+    if !active {
+        state
+            .remote_plan_approval_request_repo
+            .fail(
+                &row.id,
+                crate::application::remote_plan_approval_intent::REMOTE_PLAN_APPROVAL_AUTHORITY_CHANGED,
+                chrono::Utc::now(),
+            )
+            .await?;
+        return Ok(());
+    }
+    match crate::application::plan_artifact_approval::approve_plan_artifact_for_state(
+        state,
+        row.session_id.as_str().to_string(),
+        Some(row.artifact_id),
+        row.blueprint_artifact_id,
+        row.blueprint_artifact_version,
+    )
+    .await
+    {
+        Ok(value) => {
+            state
+                .remote_plan_approval_request_repo
+                .complete(
+                    &row.id,
+                    serialize_remote_dispatch_result_or_null(
+                        value.artifact,
+                        "plan approval",
+                        &row.id,
+                    ),
+                    chrono::Utc::now(),
+                )
+                .await?
+        }
+        Err(crate::error::AppError::Conflict(_)) => state
+            .remote_plan_approval_request_repo
+            .fail(
+                &row.id,
+                crate::application::remote_plan_approval_intent::REMOTE_PLAN_APPROVAL_PLAN_CHANGED,
+                chrono::Utc::now(),
+            )
+            .await?,
+        Err(error) => {
+            tracing::warn!(request_id=%row.id,%error,"remote plan approval host seam failed");
+            state
+                .remote_plan_approval_request_repo
+                .fail(
+                    &row.id,
+                    crate::application::remote_plan_approval_intent::REMOTE_PLAN_APPROVAL_HOST_FAILED,
+                    chrono::Utc::now(),
+                )
+                .await?;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) async fn dispatch_one_remote_execution_resume(
     state: &AppState,
-    active: &Arc<crate::commands::ActiveProjectState>,
+    active: &Arc<crate::application::ActiveProjectState>,
     execution: &Arc<ExecutionState>,
 ) -> AppResult<()> {
     let Some(row) = state
@@ -1380,14 +1461,14 @@ pub(crate) async fn dispatch_one_remote_execution_resume(
                 .remote_execution_resume_request_repo
                 .fail(
                     &row.id,
-                    crate::commands::remote_resume_commands::REMOTE_RESUME_AUTHORITY_CHANGED,
+                    crate::application::remote_resume_intent::REMOTE_RESUME_AUTHORITY_CHANGED,
                     chrono::Utc::now(),
                 )
                 .await?;
             return Ok(());
         }
     }
-    let result = crate::commands::execution_commands::resume_execution_for_state(
+    let result = crate::application::execution_resume::resume_execution_for_state(
         row.project_id.as_ref().map(|id| id.as_str().to_string()),
         active,
         execution,
@@ -1400,9 +1481,7 @@ pub(crate) async fn dispatch_one_remote_execution_resume(
                 .remote_execution_resume_request_repo
                 .complete(
                     &row.id,
-                    serde_json::to_value(value).map_err(|error| {
-                        crate::error::AppError::Infrastructure(error.to_string())
-                    })?,
+                    serialize_remote_dispatch_result_or_null(value, "execution resume", &row.id),
                     chrono::Utc::now(),
                 )
                 .await?
@@ -1413,7 +1492,7 @@ pub(crate) async fn dispatch_one_remote_execution_resume(
                 .remote_execution_resume_request_repo
                 .fail(
                     &row.id,
-                    crate::commands::remote_resume_commands::REMOTE_RESUME_HOST_FAILED,
+                    crate::application::remote_resume_intent::REMOTE_RESUME_HOST_FAILED,
                     chrono::Utc::now(),
                 )
                 .await?;
@@ -1432,15 +1511,17 @@ pub(crate) async fn dispatch_one_remote_task_action(
         return Ok(());
     };
     let result = match row.action {
-        RemoteTaskAction::Resume => crate::commands::task_commands::resume_task_for_state(
-            row.task_id.expect("validated task id").as_str().to_string(),
-            state,
-            execution,
-            app.clone(),
-        )
-        .await
-        .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string())),
-        RemoteTaskAction::Restart => crate::commands::execution_commands::restart_task_for_state(
+        RemoteTaskAction::Resume => {
+            crate::application::task_resume_execution::resume_task_for_state(
+                row.task_id.expect("validated task id").as_str().to_string(),
+                state,
+                execution,
+                app.clone(),
+            )
+            .await
+            .map(|value| serialize_remote_dispatch_result_or_null(value, "task resume", &row.id))
+        }
+        RemoteTaskAction::Restart => crate::application::task_restart::restart_task_for_state(
             row.task_id.expect("validated task id").as_str().to_string(),
             row.force,
             row.note,
@@ -1448,9 +1529,9 @@ pub(crate) async fn dispatch_one_remote_task_action(
             execution,
         )
         .await
-        .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string())),
+        .map(|value| serialize_remote_dispatch_result_or_null(value, "task restart", &row.id)),
         RemoteTaskAction::GroupResume => {
-            crate::commands::task_commands::resume_tasks_in_group_for_state(
+            crate::application::task_resume_execution::resume_tasks_in_group_for_state(
                 row.group_kind.expect("validated group kind"),
                 row.group_id.expect("validated group id"),
                 row.project_id.as_str().to_string(),
@@ -1459,7 +1540,9 @@ pub(crate) async fn dispatch_one_remote_task_action(
                 app.clone(),
             )
             .await
-            .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
+            .map(|value| {
+                serialize_remote_dispatch_result_or_null(value, "task group resume", &row.id)
+            })
         }
     };
     match result {
@@ -1475,13 +1558,29 @@ pub(crate) async fn dispatch_one_remote_task_action(
                 .remote_task_action_request_repo
                 .fail(
                     &row.id,
-                    crate::commands::remote_resume_commands::REMOTE_RESUME_HOST_FAILED,
+                    crate::application::remote_resume_intent::REMOTE_RESUME_HOST_FAILED,
                     chrono::Utc::now(),
                 )
                 .await?;
         }
     }
     Ok(())
+}
+
+fn serialize_remote_dispatch_result_or_null<T: serde::Serialize>(
+    value: T,
+    action: &str,
+    request_id: &str,
+) -> serde_json::Value {
+    serde_json::to_value(value).unwrap_or_else(|error| {
+        tracing::warn!(
+            %request_id,
+            %error,
+            action,
+            "remote host action succeeded but its result could not be serialized"
+        );
+        serde_json::Value::Null
+    })
 }
 
 pub(crate) async fn claim_and_revalidate_remote_task_action(
@@ -1530,7 +1629,7 @@ pub(crate) async fn claim_and_revalidate_remote_task_action(
             .remote_task_action_request_repo
             .fail(
                 &row.id,
-                crate::commands::remote_resume_commands::REMOTE_RESUME_AUTHORITY_CHANGED,
+                crate::application::remote_resume_intent::REMOTE_RESUME_AUTHORITY_CHANGED,
                 chrono::Utc::now(),
             )
             .await?;

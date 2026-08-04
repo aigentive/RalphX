@@ -58,6 +58,7 @@ pub mod remote_conversation_message_request;
 pub mod remote_conversation_mode_switch_request;
 pub mod remote_conversation_start_request;
 pub mod remote_request_dedup;
+pub mod remote_plan_approval_request;
 pub mod remote_resume_request;
 pub mod research;
 pub mod review;
@@ -194,6 +195,7 @@ pub use api_key::{
     PERMISSION_READ, PERMISSION_WRITE,
 };
 pub use app_state::AppSettings;
+pub use remote_plan_approval_request::{RemotePlanApprovalRequest, RemotePlanApprovalRequestStatus};
 pub use artifact::{
     Artifact, ArtifactBucket, ArtifactBucketId, ArtifactContent, ArtifactId, ArtifactMetadata,
     ArtifactRelation, ArtifactRelationId, ArtifactRelationType, ArtifactType,

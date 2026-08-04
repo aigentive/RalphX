@@ -6,12 +6,13 @@ use super::startup_background::{
     claim_and_revalidate_remote_task_action, dispatch_one_remote_execution_resume,
 };
 use super::AppState;
-use crate::commands::remote_resume_commands::{
+use crate::application::remote_resume_intent::{
     request_remote_execution_resume_for_state, request_remote_task_resume_for_state,
     RequestRemoteExecutionResumeInput, RequestRemoteTaskResumeInput,
     REMOTE_RESUME_AUTHORITY_CHANGED,
 };
-use crate::commands::{ActiveProjectState, ExecutionState};
+use crate::application::ActiveProjectState;
+use crate::application::ExecutionState;
 use crate::domain::entities::{InternalStatus, Project, RemoteResumeRequestStatus, Task};
 
 #[tokio::test]

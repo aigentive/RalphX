@@ -63,4 +63,3 @@ pub use mutation::{
     cleanup_tasks_in_group, create_task, inject_task, move_task, pause_task, restore_task,
     resume_task, resume_tasks_in_group, retry_branch_update, stop_task, update_task,
 };
-pub(crate) use mutation::{resume_task_for_state, resume_tasks_in_group_for_state};

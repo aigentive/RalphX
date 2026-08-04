@@ -411,7 +411,7 @@ async fn execution_and_restart_wrappers_match_their_state_seams() {
     )
     .await
     .expect_err("wrapper rejects");
-    let seam_execution = crate::commands::execution_commands::resume_execution_for_state(
+    let seam_execution = crate::application::execution_resume::resume_execution_for_state(
         Some("missing".to_string()),
         &active,
         &execution,

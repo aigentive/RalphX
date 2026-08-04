@@ -102,6 +102,9 @@ mod remote_execution_status_commands_tests;
 pub mod remote_host_commands;
 pub mod remote_question_commands;
 pub mod remote_resume_commands;
+pub mod remote_plan_commands;
+#[cfg(test)]
+mod remote_plan_commands_tests;
 #[cfg(test)]
 mod remote_resume_commands_tests;
 #[cfg(test)]

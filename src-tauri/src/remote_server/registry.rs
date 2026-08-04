@@ -1405,6 +1405,22 @@ crate::remote_commands! {
         call: async,
         result: fallible,
     },
+    "request_remote_plan_approval"
+        => crate::commands::remote_plan_commands::request_remote_plan_approval {
+        class: AgentControl,
+        caps: [SeedsSpawnTriggeringState],
+        params: [(arg input: crate::commands::remote_plan_commands::RequestRemotePlanApprovalInput), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_remote_plan_approval_request"
+        => crate::commands::remote_plan_commands::get_remote_plan_approval_request {
+        class: Read,
+        caps: [],
+        params: [(arg request_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
 
     // The client's post-submit poll target for the stop intent. Pure repository read.
     "get_remote_agent_stop_request"

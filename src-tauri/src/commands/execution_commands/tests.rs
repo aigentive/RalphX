@@ -1,10 +1,13 @@
 use super::*;
 use crate::application::chat_service::{ChatService, MockChatService};
-use crate::commands::execution_commands::lifecycle::{
-    determine_paused_restore_status, prepare_resumed_task_for_entry_actions,
-};
+use crate::application::execution_recovery::restart_transition_target;
+use crate::application::execution_resume::determine_paused_restore_status;
+use crate::application::execution_state::sync_project_quota;
+use crate::application::task_resume_execution::prepare_resumed_task_for_entry_actions;
+use crate::application::TaskTransitionService;
 use crate::domain::entities::{
     artifact::ArtifactId, AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun,
+    IdeationSessionId, IdeationSessionStatus, TaskId,
     AgentRunStatus, ChatContextType, ChatConversation, ChatConversationId, GitMode,
     IdeationAnalysisBaseRefKind, IdeationSession, PlanBranch, PlanBranchId, PlanBranchStatus,
     TaskStep, TaskStepStatus, ValidationCacheDecision, ValidationCommandCategory,

@@ -1293,17 +1293,28 @@ fn the_brake_quota_write_is_dominated_by_the_pause_flag() {
     );
 
     // Structural half: `resume()` is the only way back, and it must be preceded by a re-sync.
+    // The resume seam moved to the application layer in the B1/B2a layering re-home
+    // (`resume_execution_for_state`); the pause/stop command bodies below stayed in
+    // lifecycle.rs. Scan each half where it actually lives.
     let lifecycle = include_str!("../commands/execution_commands/lifecycle.rs");
-    let resume_sites = lifecycle.matches("execution_state.resume()").count();
+    let resume_home = include_str!("../application/execution_resume.rs");
+    assert_eq!(
+        lifecycle.matches("execution_state.resume()").count(),
+        0,
+        "a production caller of ExecutionState::resume reappeared in lifecycle.rs; the sole \
+         ungating path is resume_execution_for_state in application/execution_resume.rs"
+    );
+    let resume_sites = resume_home.matches("execution_state.resume()").count();
     assert_eq!(
         resume_sites, 1,
-        "a second production caller of ExecutionState::resume appeared in lifecycle.rs; the \
-         brake registration assumes exactly one ungating path, which re-syncs the quota first"
+        "a second production caller of ExecutionState::resume appeared in \
+         application/execution_resume.rs; the brake registration assumes exactly one ungating \
+         path, which re-syncs the quota first"
     );
-    let resume_at = lifecycle
+    let resume_at = resume_home
         .find("execution_state.resume()")
         .expect("the resume call site exists");
-    let sync_at = lifecycle
+    let sync_at = resume_home
         .find("sync_quota_from_project")
         .expect("resume_execution re-syncs the quota");
     assert!(

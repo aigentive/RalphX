@@ -8,7 +8,6 @@ use tracing::error;
 
 use super::*;
 use crate::application::verification_event_emitters::emit_verification_status_changed;
-use crate::domain::entities::ideation::PlanArtifactBundle;
 use crate::domain::entities::{
     Artifact, ArtifactBucketId, ArtifactContent, ArtifactId, ArtifactMetadata, ArtifactRelation,
     ArtifactRelationId, ArtifactRelationType, ArtifactType, IdeationSession, IdeationSessionFlow,

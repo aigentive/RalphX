@@ -64,6 +64,7 @@ pub mod remote_conversation_message_request_repository;
 pub mod remote_conversation_mode_switch_request_repository;
 pub mod remote_conversation_start_request_repository;
 pub mod remote_request_dedup_repository;
+pub mod remote_plan_approval_request_repository;
 pub mod remote_resume_request_repository;
 pub mod review_repository;
 pub mod review_settings_repository;
@@ -191,6 +192,7 @@ pub use remote_conversation_start_request_repository::RemoteConversationStartReq
 pub use remote_request_dedup_repository::{
     RemoteAttachmentRepository, RemoteRequestDedupLookup, RemoteRequestDedupRepository,
 };
+pub use remote_plan_approval_request_repository::RemotePlanApprovalRequestRepository;
 pub use remote_resume_request_repository::{
     RemoteExecutionResumeRequestRepository, RemoteTaskActionRequestRepository,
 };

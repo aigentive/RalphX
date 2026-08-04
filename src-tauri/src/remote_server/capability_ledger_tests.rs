@@ -1058,12 +1058,13 @@ fn detector_b_is_calibrated_and_floor_enforced() {
         // `remote-execution-resume` / `remote-task-action` surfaces; all six remain silent on
         // (a)/(c), with the host-owned dispatcher as the only caller of the denied local seams.
         // 575 -> 576: `set_agent_conversation_workspace_review_automation`, main's #965
+        // 576 -> 578: remote plan-approval request twin plus its poll read (Wave B2a).
         // per-conversation Auto Review & Fix override setter, classified at the merge: a clean
         // fail-closed repo write whose response projection reaches CLI resolution through
         // `agent_workspace_response_for_state`'s repair recovery, so its ledger row sits at the
         // process floor (Elevated, PROCESS_AND_SEEDS). A census-count change, not a detector
         // change.
-        576,
+        578,
         "review the detector against the full command census"
     );
     let flagged = spawn_triggering_writers(
@@ -5271,11 +5272,7 @@ fn batch11_closes_the_b4_remainder() {
         // get_harness_availability_for_lanes helper resolve CLI paths; the mechanical floor
         // supersedes the audit refusal, so both moved to Floor and their AuditRefusal rows
         // were retired per batch 9's load-bearing-fact rule.
-        (
-            "get_agent_harness_availability",
-            "ideation_commands",
-            Floor,
-        ),
+        ("get_agent_harness_availability", "ideation_commands", Floor),
         (
             "get_ideation_harness_availability",
             "ideation_commands",

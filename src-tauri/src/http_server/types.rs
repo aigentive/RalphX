@@ -1131,7 +1131,7 @@ pub struct EditPlanArtifactRequest {
     pub caller_session_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ApprovePlanArtifactRequest {
     pub session_id: String,
     #[serde(default)]

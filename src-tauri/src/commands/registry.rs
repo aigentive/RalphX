@@ -449,6 +449,8 @@ macro_rules! register_tauri_commands {
             commands::remote_resume_commands::request_remote_group_resume,
             commands::remote_resume_commands::get_remote_execution_resume_request,
             commands::remote_resume_commands::get_remote_task_action_request,
+            commands::remote_plan_commands::request_remote_plan_approval,
+            commands::remote_plan_commands::get_remote_plan_approval_request,
             commands::remote_transcript_commands::list_remote_agent_conversations_page,
             commands::remote_transcript_commands::list_remote_agent_sidebar_conversations,
             // Task context commands

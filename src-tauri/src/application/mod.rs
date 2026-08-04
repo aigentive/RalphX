@@ -74,6 +74,7 @@ mod agent_workspace_review_unfinished_git_recovery_tests;
 #[cfg(test)]
 mod agent_workspace_review_unfinished_git_tests;
 pub(crate) mod agent_workspace_terminal_cleanup;
+pub mod active_project_state;
 #[cfg(test)]
 mod agent_workspace_terminal_cleanup_tests;
 pub mod app_paths;
@@ -83,6 +84,7 @@ pub mod app_setup;
 #[cfg(test)]
 mod app_setup_tests;
 pub mod app_state;
+pub use active_project_state::ActiveProjectState;
 pub mod apply_service;
 pub mod atlassian_integration_service;
 pub mod attention_service;
@@ -112,6 +114,14 @@ pub(crate) mod dev_dock_icon;
 pub mod diff_service;
 pub mod event_cleanup_service;
 pub mod execution_settings_bootstrap;
+pub mod execution_control;
+pub mod execution_recovery;
+pub(crate) mod execution_resume;
+pub mod execution_running;
+pub mod execution_state;
+pub mod execution_status;
+pub(crate) mod execution_task_navigation;
+pub use execution_state::ExecutionState;
 pub mod external_issue_link_service;
 pub(crate) mod git_artifact_cleanup;
 pub mod git_mutation_recovery;
@@ -204,6 +214,8 @@ pub mod reconciliation;
 pub mod recovery_queue;
 pub mod remote_environment_service;
 pub mod remote_event_relay;
+pub mod remote_plan_approval_intent;
+pub mod remote_resume_intent;
 pub mod resume_validator;
 pub mod review_issue_service;
 pub mod review_service;
@@ -231,6 +243,8 @@ mod standalone_workspace_path_safety_tests;
 mod standalone_workspace_tests;
 pub mod startup_background;
 #[cfg(test)]
+mod startup_remote_plan_tests;
+#[cfg(test)]
 mod startup_remote_resume_tests;
 pub mod startup_bootstrap;
 #[cfg(test)]
@@ -248,6 +262,9 @@ pub mod startup_status;
 pub mod startup_transition_factory;
 pub mod supervisor_service;
 pub mod task_cleanup_service;
+pub mod task_command_types;
+pub(crate) mod task_lifecycle_events;
+pub(crate) mod task_resume_execution;
 pub mod task_context_service;
 pub(crate) mod task_diff_base;
 #[cfg(test)]

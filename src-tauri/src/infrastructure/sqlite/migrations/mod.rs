@@ -641,6 +641,9 @@ mod v20260804073002_jira_link_acceptance_criteria_backfill_tests;
 mod v20260804105225_remote_resume_requests;
 #[cfg(test)]
 mod v20260804105225_remote_resume_requests_tests;
+mod v20260804120000_remote_plan_approval_requests;
+#[cfg(test)]
+mod v20260804120000_remote_plan_approval_requests_tests;
 #[cfg(test)]
 pub(super) fn migrate_scripted_agent_workflows_for_test(conn: &Connection) -> AppResult<()> {
     v20260715194617_scripted_agent_workflows::migrate(conn)
@@ -2015,6 +2018,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260804105225,
         name: "remote_resume_requests",
         migrate: v20260804105225_remote_resume_requests::migrate,
+    },
+    Migration {
+        version: 20260804120000,
+        name: "remote_plan_approval_requests",
+        migrate: v20260804120000_remote_plan_approval_requests::migrate,
     },
 ];
 

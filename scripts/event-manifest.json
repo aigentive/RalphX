@@ -694,7 +694,7 @@
     {
       "name": "execution:queue_changed",
       "file": "src-tauri/src/commands/task_commands/helpers.rs",
-      "line": 55,
+      "line": 57,
       "kind": "method"
     },
     {
@@ -717,6 +717,24 @@
     },
     {
       "name": "execution:status_changed",
+      "file": "src-tauri/src/application/execution_resume.rs",
+      "line": 133,
+      "kind": "method"
+    },
+    {
+      "name": "execution:status_changed",
+      "file": "src-tauri/src/application/execution_state.rs",
+      "line": 560,
+      "kind": "method"
+    },
+    {
+      "name": "execution:status_changed",
+      "file": "src-tauri/src/application/execution_state.rs",
+      "line": 568,
+      "kind": "method"
+    },
+    {
+      "name": "execution:status_changed",
       "file": "src-tauri/src/commands/execution_commands/lifecycle.rs",
       "line": 115,
       "kind": "method"
@@ -724,31 +742,13 @@
     {
       "name": "execution:status_changed",
       "file": "src-tauri/src/commands/execution_commands/lifecycle.rs",
-      "line": 311,
-      "kind": "method"
-    },
-    {
-      "name": "execution:status_changed",
-      "file": "src-tauri/src/commands/execution_commands/lifecycle.rs",
-      "line": 570,
+      "line": 275,
       "kind": "method"
     },
     {
       "name": "execution:status_changed",
       "file": "src-tauri/src/commands/execution_commands/settings.rs",
       "line": 246,
-      "kind": "method"
-    },
-    {
-      "name": "execution:status_changed",
-      "file": "src-tauri/src/commands/execution_commands/state.rs",
-      "line": 602,
-      "kind": "method"
-    },
-    {
-      "name": "execution:status_changed",
-      "file": "src-tauri/src/commands/execution_commands/state.rs",
-      "line": 610,
       "kind": "method"
     },
     {
@@ -1065,9 +1065,9 @@
     },
     {
       "name": "plan_artifact:approved",
-      "file": "src-tauri/src/http_server/handlers/artifacts/approval.rs",
-      "line": 81,
-      "kind": "wrapper"
+      "file": "src-tauri/src/application/plan_artifact_approval.rs",
+      "line": 65,
+      "kind": "method"
     },
     {
       "name": "plan_artifact:created",
@@ -1390,25 +1390,25 @@
     {
       "name": "task:archived",
       "file": "src-tauri/src/commands/task_commands/mutation.rs",
-      "line": 630,
+      "line": 601,
       "kind": "wrapper"
     },
     {
       "name": "task:archived",
       "file": "src-tauri/src/commands/task_commands/mutation.rs",
-      "line": 913,
+      "line": 884,
       "kind": "wrapper"
     },
     {
       "name": "task:archived",
       "file": "src-tauri/src/commands/task_commands/mutation.rs",
-      "line": 2272,
+      "line": 1890,
       "kind": "wrapper"
     },
     {
       "name": "task:cancelled",
       "file": "src-tauri/src/commands/task_commands/mutation.rs",
-      "line": 1526,
+      "line": 1497,
       "kind": "wrapper"
     },
     {
@@ -1420,13 +1420,13 @@
     {
       "name": "task:created",
       "file": "src-tauri/src/commands/task_commands/mutation.rs",
-      "line": 510,
+      "line": 481,
       "kind": "method"
     },
     {
       "name": "task:created",
       "file": "src-tauri/src/commands/task_commands/mutation.rs",
-      "line": 512,
+      "line": 483,
       "kind": "method"
     },
     {
@@ -1455,6 +1455,12 @@
     },
     {
       "name": "task:list_changed",
+      "file": "src-tauri/src/application/task_resume_execution.rs",
+      "line": 341,
+      "kind": "method"
+    },
+    {
+      "name": "task:list_changed",
       "file": "src-tauri/src/commands/ideation_commands/ideation_commands_restart.rs",
       "line": 903,
       "kind": "method"
@@ -1474,31 +1480,25 @@
     {
       "name": "task:list_changed",
       "file": "src-tauri/src/commands/task_commands/mutation.rs",
-      "line": 976,
+      "line": 947,
       "kind": "method"
     },
     {
       "name": "task:list_changed",
       "file": "src-tauri/src/commands/task_commands/mutation.rs",
-      "line": 1546,
+      "line": 1517,
       "kind": "method"
     },
     {
       "name": "task:list_changed",
       "file": "src-tauri/src/commands/task_commands/mutation.rs",
-      "line": 2038,
+      "line": 1800,
       "kind": "method"
     },
     {
       "name": "task:list_changed",
       "file": "src-tauri/src/commands/task_commands/mutation.rs",
-      "line": 2203,
-      "kind": "method"
-    },
-    {
-      "name": "task:list_changed",
-      "file": "src-tauri/src/commands/task_commands/mutation.rs",
-      "line": 2290,
+      "line": 1908,
       "kind": "method"
     },
     {
@@ -1546,19 +1546,19 @@
     {
       "name": "task:paused",
       "file": "src-tauri/src/commands/task_commands/mutation.rs",
-      "line": 1296,
+      "line": 1267,
       "kind": "wrapper"
     },
     {
       "name": "task:paused",
       "file": "src-tauri/src/commands/task_commands/mutation.rs",
-      "line": 1329,
+      "line": 1300,
       "kind": "wrapper"
     },
     {
       "name": "task:paused",
       "file": "src-tauri/src/commands/task_commands/mutation.rs",
-      "line": 2020,
+      "line": 1782,
       "kind": "wrapper"
     },
     {
@@ -1581,32 +1581,32 @@
     },
     {
       "name": "task:restarted",
-      "file": "src-tauri/src/commands/execution_commands.rs",
-      "line": 403,
+      "file": "src-tauri/src/application/task_restart.rs",
+      "line": 675,
       "kind": "method"
     },
     {
       "name": "task:restored",
       "file": "src-tauri/src/commands/task_commands/mutation.rs",
-      "line": 676,
+      "line": 647,
       "kind": "wrapper"
     },
     {
       "name": "task:resumed",
-      "file": "src-tauri/src/commands/task_commands/mutation.rs",
-      "line": 1698,
+      "file": "src-tauri/src/application/task_resume_execution.rs",
+      "line": 122,
       "kind": "wrapper"
     },
     {
       "name": "task:resumed",
-      "file": "src-tauri/src/commands/task_commands/mutation.rs",
-      "line": 1770,
+      "file": "src-tauri/src/application/task_resume_execution.rs",
+      "line": 193,
       "kind": "wrapper"
     },
     {
       "name": "task:resumed",
-      "file": "src-tauri/src/commands/task_commands/mutation.rs",
-      "line": 2193,
+      "file": "src-tauri/src/application/task_resume_execution.rs",
+      "line": 331,
       "kind": "wrapper"
     },
     {
@@ -1696,13 +1696,13 @@
     {
       "name": "task:stopped",
       "file": "src-tauri/src/commands/task_commands/mutation.rs",
-      "line": 1413,
+      "line": 1384,
       "kind": "method"
     },
     {
       "name": "task:stopped",
       "file": "src-tauri/src/commands/task_commands/mutation.rs",
-      "line": 1439,
+      "line": 1410,
       "kind": "method"
     },
     {
