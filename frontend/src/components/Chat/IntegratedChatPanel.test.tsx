@@ -64,6 +64,7 @@ const { useChatMockState, useChatCalls, historyWindowCalls } = vi.hoisted(
       messages: [] as TestMessage[],
       conversation: null as { contextType: string; contextId: string } | null,
       conversations: [] as Array<{ id: string }>,
+      conversationsLoading: false,
       historyData: undefined as
         | {
             conversation: {
@@ -223,7 +224,10 @@ vi.mock("@/hooks/useChat", () => ({
         isLoading: false,
       },
       sendMessage: { mutateAsync: vi.fn(), isPending: false },
-      conversations: { data: useChatMockState.conversations, isLoading: false },
+      conversations: {
+        data: useChatMockState.conversations,
+        isLoading: useChatMockState.conversationsLoading,
+      },
       switchConversation: vi.fn(),
       createConversation: vi.fn(),
     };
@@ -445,6 +449,7 @@ describe("IntegratedChatPanel", () => {
     useChatMockState.messages = [];
     useChatMockState.conversation = null;
     useChatMockState.conversations = [];
+    useChatMockState.conversationsLoading = false;
     useChatMockState.historyData = undefined;
     useChatMockState.timelineData = undefined;
     useChatMockState.timelineHasOlderMessages = false;
@@ -493,6 +498,60 @@ describe("IntegratedChatPanel", () => {
     mockChatPanelContext.streamingContentBlocks = [];
     mockChatPanelContext.streamingTasks = new Map();
     mockChatPanelContext.isFinalizing = false;
+  });
+
+  it("pins the below-transcript chrome inside a constant-height viewport", () => {
+    render(
+      <TestWrapper>
+        <IntegratedChatPanel projectId="project-1" />
+      </TestWrapper>,
+    );
+
+    const chrome = screen.getByTestId("chat-below-transcript-chrome");
+    expect(chrome).toHaveClass("absolute", "inset-x-0", "bottom-0", "z-20");
+    expect(chrome).not.toHaveClass("shrink-0");
+    expect(chrome.parentElement).toHaveClass("relative", "flex-1", "min-h-0");
+  });
+
+  it("reserves the measured composer inset in the empty transcript branch", () => {
+    render(
+      <TestWrapper>
+        <IntegratedChatPanel projectId="project-1" />
+      </TestWrapper>,
+    );
+
+    expect(screen.getByTestId("integrated-chat-messages")).toHaveStyle({
+      paddingBottom: "var(--chat-bottom-inset, 0px)",
+    });
+  });
+
+  it("reserves the measured composer inset in the loading transcript branch", () => {
+    useChatMockState.conversationsLoading = true;
+
+    render(
+      <TestWrapper>
+        <IntegratedChatPanel projectId="project-1" />
+      </TestWrapper>,
+    );
+
+    expect(screen.getByTestId("integrated-chat-messages")).toHaveStyle({
+      paddingBottom: "var(--chat-bottom-inset, 0px)",
+    });
+  });
+
+  it("collapses composer padding when a read-only host renders no composer", () => {
+    render(
+      <TestWrapper>
+        <IntegratedChatPanel
+          projectId="project-1"
+          renderComposer={() => null}
+        />
+      </TestWrapper>,
+    );
+
+    const inputShell = screen.getByTestId("integrated-chat-input-shell");
+    expect(inputShell.lastElementChild).toHaveClass("empty:p-0");
+    expect(inputShell.lastElementChild).toBeEmptyDOMElement();
   });
 
   it("deduplicates question bridges and prioritizes the conversation question", () => {

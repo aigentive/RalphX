@@ -2919,7 +2919,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
             contentWidthClassName={AGENTS_CHAT_CONTENT_WIDTH_CLASS}
             {...{
               inputContainerClassName:
-                "shrink-0 bg-transparent px-4 pb-4 pt-3",
+                "bg-transparent px-4 pb-4 pt-3",
               renderComposer: (composerProps: IntegratedChatComposerRenderProps) => {
               const runForkCommand = async (
                 followup: string,

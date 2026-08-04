@@ -184,10 +184,11 @@ function ScrollToBottomControl({
       data-testid="chat-scroll-to-bottom-control"
       aria-hidden={!visible}
       className={cn(
-        "absolute bottom-4 left-0 right-0 z-10 flex justify-center pointer-events-none",
+        "absolute left-0 right-0 z-10 flex justify-center pointer-events-none",
         visible ? "opacity-100" : "opacity-0",
       )}
       style={{
+        bottom: "calc(var(--chat-bottom-inset, 0px) + 1rem)",
         contain: "layout paint style",
       }}
     >
@@ -978,6 +979,7 @@ interface ChatMessageListProps {
   onLoadOlderMessages?: (() => void | Promise<void>) | undefined;
   initialPaintCoverKey?: string | null | undefined;
   onInitialPaintReady?: ((key: string) => void) | undefined;
+  registerBottomSpacer?: ((element: HTMLElement | null) => void) | undefined;
 }
 
 // ============================================================================
@@ -1015,6 +1017,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       onLoadOlderMessages,
       initialPaintCoverKey = null,
       onInitialPaintReady,
+      registerBottomSpacer,
     },
     ref
   ) {
@@ -1969,9 +1972,18 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
           </ContentShell>
         </div>
       ),
+      Footer: () => (
+        <div
+          ref={registerBottomSpacer}
+          data-testid="chat-transcript-bottom-spacer"
+          aria-hidden
+          style={{ height: 0, flexShrink: 0 }}
+        />
+      ),
     }), [
       contentWidthClassName,
       failedRun, onDismissFailedRun,
+      registerBottomSpacer,
       topInsetClassName,
     ]);
 
@@ -2349,6 +2361,12 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
             visible={shouldShowScrollToBottom}
             onClick={handleScrollToBottomClick}
             onWheel={handleScrollToBottomWheel}
+          />
+          <div
+            ref={registerBottomSpacer}
+            data-testid="chat-transcript-bottom-spacer"
+            aria-hidden
+            style={{ height: 0, flexShrink: 0 }}
           />
         </div>
       );

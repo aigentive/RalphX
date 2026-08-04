@@ -198,6 +198,26 @@ function renderList(overrides: Partial<React.ComponentProps<typeof ChatMessageLi
   return render(<ChatMessageList {...defaultProps} {...overrides} />);
 }
 
+it("renders and registers the transcript bottom spacer after timeline content", () => {
+  const registerBottomSpacer = vi.fn();
+
+  renderList({ registerBottomSpacer });
+
+  const spacer = screen.getByTestId("chat-transcript-bottom-spacer");
+  const transcript = screen.getByTestId("integrated-chat-messages");
+  expect(transcript.lastElementChild).toBe(spacer);
+  expect(spacer).toHaveAttribute("aria-hidden", "true");
+  expect(registerBottomSpacer).toHaveBeenCalledWith(spacer);
+});
+
+it("offsets the scroll-to-bottom control above the measured composer inset", () => {
+  renderList();
+
+  expect(screen.getByTestId("chat-scroll-to-bottom-control")).toHaveStyle({
+    bottom: "calc(var(--chat-bottom-inset, 0px) + 1rem)",
+  });
+});
+
 it("rehydrates one completed-run widget at the end of persisted run rows", () => {
   renderList({ messages: [
     { id: "run-row-1", role: "assistant", content: "first", createdAt: "2026-01-01T12:00:00Z", finalizedAt: "2026-01-01T12:00:10Z", runId: "run-1" },
