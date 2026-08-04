@@ -98,6 +98,44 @@ async fn repair_attempt_round_trip_and_join_preserve_explicit_publish_consent() 
 }
 
 #[tokio::test]
+async fn repair_attempt_round_trip_preserves_base_update_target_commit() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(workspace(conversation_id.clone()))
+        .await
+        .expect("persist workspace");
+    let attempt = repair_attempt(conversation_id.clone());
+    repo.start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+        attempt: attempt.clone(),
+        reason: "initial repair".to_string(),
+        verified_newer_base: false,
+        compatibility_projection: None,
+        events: Vec::new(),
+    })
+    .await
+    .expect("persist repair attempt");
+    let mut checkpoint = attempt;
+    checkpoint.base_update_target_commit = Some("observed-base-tip".to_string());
+    repo.start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+        attempt: checkpoint,
+        reason: "base update reserved".to_string(),
+        verified_newer_base: false,
+        compatibility_projection: None,
+        events: Vec::new(),
+    })
+    .await
+    .expect("join repair checkpoint");
+    assert_eq!(
+        repo.get_current_repair_attempt(&conversation_id)
+            .await
+            .expect("reload repair attempt")
+            .expect("repair attempt exists")
+            .base_update_target_commit
+            .as_deref(),
+        Some("observed-base-tip")
+    );
+}
+
+#[tokio::test]
 async fn joining_with_explicit_publish_consent_upgrades_an_existing_repair_attempt() {
     let (_db, repo, conversation_id) = setup_repo();
     repo.create_or_update(workspace(conversation_id.clone()))

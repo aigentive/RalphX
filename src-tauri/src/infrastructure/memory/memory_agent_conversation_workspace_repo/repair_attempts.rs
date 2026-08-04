@@ -264,6 +264,12 @@ impl AgentWorkspaceRepairRepository for MemoryAgentConversationWorkspaceReposito
             {
                 current.target_base_commit = request.attempt.target_base_commit.clone();
             }
+            if request.attempt.base_update_target_commit.is_some()
+                && request.attempt.base_update_target_commit != current.base_update_target_commit
+            {
+                current.base_update_target_commit =
+                    request.attempt.base_update_target_commit.clone();
+            }
             current.auto_publish_enabled = request.attempt.auto_publish_enabled;
             current.explicit_publish_requested =
                 current.explicit_publish_requested || request.attempt.explicit_publish_requested;

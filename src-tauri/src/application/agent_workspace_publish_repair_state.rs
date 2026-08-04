@@ -70,6 +70,7 @@ pub(crate) const PRE_EXISTING_ON_BASE_REPAIR_REASON: &str = "pr_autofix_pre_exis
 /// Distinct from `PRE_EXISTING_ON_BASE_REPAIR_REASON`: RalphX has not proven anything about the
 /// base branch, only that spending another agent generation on identical evidence is waste.
 pub(crate) const UNCHANGED_HEALTH_REPAIR_REASON: &str = "pr_autofix_unchanged_health";
+pub(crate) use crate::domain::entities::PR_AUTOFIX_BASE_STALE_AFTER_UPDATE_PENDING_REASON as BASE_STALE_AFTER_UPDATE_REPAIR_REASON;
 /// Held because the workflow run RalphX intends to rerun has not finished yet.
 pub(crate) const AWAITING_CI_REPAIR_REASON: &str = "pr_autofix_awaiting_ci";
 pub(crate) const REPAIR_FINGERPRINT_HOLD_STEP: &str = "repair_fingerprint_hold";
@@ -88,6 +89,7 @@ pub(crate) fn is_machine_repair_reason_marker(reason: &str) -> bool {
         NEEDS_HUMAN_REPAIR_REASON
             | PRE_EXISTING_ON_BASE_REPAIR_REASON
             | UNCHANGED_HEALTH_REPAIR_REASON
+            | BASE_STALE_AFTER_UPDATE_REPAIR_REASON
             | AWAITING_CI_REPAIR_REASON
     ) || trimmed.starts_with(
         crate::application::agent_workspace_publish_recovery::AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX,
@@ -618,6 +620,15 @@ pub(crate) fn agent_workspace_repair_is_ci_held(attempt: &AgentWorkspaceRepairAt
             .any(|reason| reason == AWAITING_CI_REPAIR_REASON)
 }
 
+pub(crate) fn agent_workspace_repair_is_base_stale_held(
+    attempt: &AgentWorkspaceRepairAttempt,
+) -> bool {
+    attempt
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == BASE_STALE_AFTER_UPDATE_REPAIR_REASON)
+}
+
 /// True when a held repair has a concrete local head that GitHub has not observed yet.
 ///
 /// Whitespace-only values never grant a re-drive; nonempty head values are compared exactly. A
@@ -682,6 +693,102 @@ pub(crate) async fn reserve_agent_workspace_unchanged_health_hold(
     .await
 }
 
+/// Fence a direct PR branch freshness update before any Git or GitHub mutation. The targeted base
+/// tip is deliberately not persisted yet: a crash after this reservation must not look like an
+/// update that actually ran.
+pub(crate) async fn reserve_agent_workspace_base_update(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    mut attempt: AgentWorkspaceRepairAttempt,
+    observed_base_commit: &str,
+    summary: &str,
+    auto_merge_current: Option<bool>,
+) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
+    if observed_base_commit.trim().is_empty() {
+        return Ok(AgentWorkspaceRepairTransitionOutcome::Stale(attempt));
+    }
+    let expected_phase = attempt.phase;
+    let expected_updated_at = attempt.updated_at;
+    attempt.phase = AgentWorkspaceRepairPhase::Ready;
+    attempt.summary = Some(summary.to_string());
+    attempt.blocker = None;
+    attempt.updated_at = next_transition_at(Some(expected_updated_at));
+    let projection = repair_attempt_projection(&attempt, summary, auto_merge_current);
+    repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Ready,
+            compatibility_projection: Some(projection),
+            events: Vec::new(),
+        })
+        .await
+        .map(repair_attempt_transition_outcome)
+}
+
+/// Record the base tip after the reserved update route has produced a concrete outcome. This
+/// separate CAS prevents a pre-effect crash from tripping the already-updated anti-runaway guard.
+pub(crate) async fn mark_agent_workspace_base_update_target(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    mut attempt: AgentWorkspaceRepairAttempt,
+    observed_base_commit: &str,
+    summary: &str,
+    auto_merge_current: Option<bool>,
+) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
+    if observed_base_commit.trim().is_empty() {
+        return Ok(AgentWorkspaceRepairTransitionOutcome::Stale(attempt));
+    }
+    let expected_phase = attempt.phase;
+    let expected_updated_at = attempt.updated_at;
+    attempt.base_update_target_commit = Some(observed_base_commit.to_string());
+    attempt.summary = Some(summary.to_string());
+    attempt.updated_at = next_transition_at(Some(expected_updated_at));
+    let projection = repair_attempt_projection(&attempt, summary, auto_merge_current);
+    repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Ready,
+            compatibility_projection: Some(projection),
+            events: Vec::new(),
+        })
+        .await
+        .map(repair_attempt_transition_outcome)
+}
+
+/// Hold after a reserved automatic update failed to make GitHub observe the branch as current.
+pub(crate) async fn reserve_agent_workspace_base_stale_hold(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    mut attempt: AgentWorkspaceRepairAttempt,
+    observed_base_commit: &str,
+    summary: &str,
+    auto_merge_current: Option<bool>,
+) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
+    let observed_base_commit = observed_base_commit.trim();
+    let targeted_base_commit = attempt
+        .base_update_target_commit
+        .as_deref()
+        .map(str::trim)
+        .filter(|commit| !commit.is_empty());
+    if observed_base_commit.is_empty() || targeted_base_commit != Some(observed_base_commit) {
+        return Ok(AgentWorkspaceRepairTransitionOutcome::Stale(attempt));
+    }
+    if !agent_workspace_repair_is_base_stale_held(&attempt) {
+        attempt
+            .pending_reasons
+            .push(BASE_STALE_AFTER_UPDATE_REPAIR_REASON.to_string());
+    }
+    transition_agent_workspace_repair_ready_pending_reasons(
+        repair_repo,
+        attempt,
+        summary,
+        auto_merge_current,
+        Vec::new(),
+    )
+    .await
+}
+
 async fn reserve_agent_workspace_repair_health_hold(
     repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
     mut attempt: AgentWorkspaceRepairAttempt,
@@ -695,8 +802,6 @@ async fn reserve_agent_workspace_repair_health_hold(
     let Some(_) = attempt.pr_autofix_health_fingerprint.as_deref() else {
         return Ok(AgentWorkspaceRepairTransitionOutcome::Stale(attempt));
     };
-    let expected_phase = attempt.phase;
-    let expected_updated_at = attempt.updated_at;
     if !attempt
         .pending_reasons
         .iter()
@@ -704,6 +809,47 @@ async fn reserve_agent_workspace_repair_health_hold(
     {
         attempt.pending_reasons.push(hold_reason.to_string());
     }
+    transition_agent_workspace_repair_ready_pending_reasons(
+        repair_repo,
+        attempt,
+        summary,
+        auto_merge_current,
+        events,
+    )
+    .await
+}
+
+pub(crate) async fn release_agent_workspace_base_stale_hold(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    mut attempt: AgentWorkspaceRepairAttempt,
+    summary: &str,
+    auto_merge_current: Option<bool>,
+) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
+    if !agent_workspace_repair_is_base_stale_held(&attempt) {
+        return Ok(AgentWorkspaceRepairTransitionOutcome::Stale(attempt));
+    }
+    attempt
+        .pending_reasons
+        .retain(|reason| reason != BASE_STALE_AFTER_UPDATE_REPAIR_REASON);
+    transition_agent_workspace_repair_ready_pending_reasons(
+        repair_repo,
+        attempt,
+        summary,
+        auto_merge_current,
+        Vec::new(),
+    )
+    .await
+}
+
+async fn transition_agent_workspace_repair_ready_pending_reasons(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    mut attempt: AgentWorkspaceRepairAttempt,
+    summary: &str,
+    auto_merge_current: Option<bool>,
+    events: Vec<AgentConversationWorkspacePublicationEvent>,
+) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
+    let expected_phase = attempt.phase;
+    let expected_updated_at = attempt.updated_at;
     attempt.phase = AgentWorkspaceRepairPhase::Ready;
     attempt.summary = Some(summary.to_string());
     attempt.blocker = None;
