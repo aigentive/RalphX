@@ -5709,15 +5709,20 @@ async fn test_task_execution_provider_error_finalizer_pauses_with_metadata() {
         "provider pause metadata should include the unified pause reason"
     );
 
-    assert!(
-        state
-            .notification_repo
-            .list(None, None, 50)
-            .await
-            .expect("provider pause notification query should succeed")
-            .notifications
-            .is_empty(),
-        "per-task stream finalization must not bypass the global pause producer"
+    let notifications = state
+        .notification_repo
+        .list(None, None, 50)
+        .await
+        .expect("provider pause notification query should succeed")
+        .notifications;
+    assert_eq!(
+        notifications.len(),
+        1,
+        "per-task stream finalization must use the single global pause producer"
+    );
+    assert_eq!(
+        notifications[0].category,
+        NotificationCategory::ProviderPaused
     );
 }
 

@@ -13,10 +13,10 @@ use ralphx_events::RecordingEventSink;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::test::{mock_builder, mock_context, noop_assets};
-use tauri::{Listener, Manager};
+use tauri::Manager;
 use tokio::io::AsyncReadExt;
 
 use ralphx_lib::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
@@ -1576,12 +1576,13 @@ async fn gate1_ownerless_process_falls_through_without_stdin_or_message_side_eff
 #[tokio::test]
 async fn gate1_message_persistence_failure_prevents_untracked_stdin_delivery() {
     let mut seed_state = AppState::new_test();
+    let events = RecordingEventSink::new();
+    seed_state.events = Arc::new(events.clone());
     seed_state.chat_message_repo = Arc::new(FailingChatMessageRepository::new());
     let app = mock_builder()
         .manage(seed_state)
         .build(mock_context(noop_assets()))
         .expect("build mock app");
-    let handle = app.handle().clone();
     let state = app.state::<AppState>();
     let context_id = "project-gate1-message-persistence-failure";
     let (_project_dir, conversation_id, _run_id, interactive_key, mut child) =
@@ -1592,25 +1593,6 @@ async fn gate1_message_persistence_failure_prevents_untracked_stdin_delivery() {
             Some(("sonnet", "claude-sonnet-4-6")),
         )
         .await;
-
-    let run_started_events = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
-    let run_started_listener = Arc::clone(&run_started_events);
-    handle.listen("agent:run_started", move |event| {
-        let payload = serde_json::from_str(event.payload()).expect("run_started payload JSON");
-        run_started_listener
-            .lock()
-            .expect("run_started event lock")
-            .push(payload);
-    });
-    let message_created_events = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
-    let message_created_listener = Arc::clone(&message_created_events);
-    handle.listen("agent:message_created", move |event| {
-        let payload = serde_json::from_str(event.payload()).expect("message_created payload JSON");
-        message_created_listener
-            .lock()
-            .expect("message_created event lock")
-            .push(payload);
-    });
 
     let error = state
         .build_chat_service_with_execution_state(Arc::new(ExecutionState::new()))
@@ -1654,18 +1636,18 @@ async fn gate1_message_persistence_failure_prevents_untracked_stdin_delivery() {
         "a failed user-message create must not create a timeline row"
     );
     assert!(
-        message_created_events
-            .lock()
-            .expect("message_created event lock")
-            .is_empty(),
+        events
+            .events()
+            .iter()
+            .all(|event| event.event != "agent:message_created"),
         "a failed user-message create must not claim the message was persisted"
     );
-    let observed_run_started = run_started_events
-        .lock()
-        .expect("run_started event lock")
-        .clone();
     assert_eq!(
-        observed_run_started.len(),
+        events
+            .events()
+            .iter()
+            .filter(|event| event.event == "agent:run_started")
+            .count(),
         0,
         "an undelivered turn must not emit run_started"
     );

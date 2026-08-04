@@ -9189,6 +9189,7 @@ mod agent_workspace_send_tests {
     use crate::domain::services::{
         ComposerProjectReference, ComposerProjectReferenceKind, RunningAgentKey,
     };
+    use ralphx_events::RecordingEventSink;
     use std::sync::Arc;
 
     #[test]
@@ -9238,20 +9239,9 @@ mod agent_workspace_send_tests {
 
     #[tokio::test]
     async fn hidden_task_runtime_bootstrap_queue_skips_visible_message_queued_event() {
-        use std::sync::{Arc, Mutex};
-        use tauri::Listener;
-
-        let app = crate::testing::create_mock_app();
-        let handle = app.handle().clone();
-        let captured: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
-        let captured_clone = Arc::clone(&captured);
-        handle.listen("agent:message_queued", move |event| {
-            let payload: serde_json::Value =
-                serde_json::from_str(event.payload()).expect("message queued payload");
-            captured_clone.lock().unwrap().push(payload);
-        });
-
-        let state = AppState::new_test();
+        let mut state = AppState::new_test();
+        let events = RecordingEventSink::new();
+        state.events = Arc::new(events.clone());
         let service = state.build_chat_service();
         let visible = service
             .enqueue_pending_send(
@@ -9288,15 +9278,22 @@ mod agent_workspace_send_tests {
             hidden.metadata_override.as_deref()
         ));
 
-        let events = captured.lock().unwrap().clone();
+        let events: Vec<_> = events
+            .events()
+            .into_iter()
+            .filter(|event| event.event == "agent:message_queued")
+            .collect();
         assert_eq!(
             events.len(),
             1,
             "hidden bootstrap messages must not emit visible queued-message events"
         );
-        assert_eq!(events[0]["message_id"].as_str(), Some(visible.id.as_str()));
         assert_eq!(
-            events[0]["content"].as_str(),
+            events[0].payload["message_id"].as_str(),
+            Some(visible.id.as_str())
+        );
+        assert_eq!(
+            events[0].payload["content"].as_str(),
             Some("visible queued task message")
         );
     }

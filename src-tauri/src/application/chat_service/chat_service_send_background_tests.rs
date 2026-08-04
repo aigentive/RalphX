@@ -38,7 +38,7 @@ use ralphx_events::{NullEventSink, RecordingEventSink};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use tauri::{Listener, Manager};
+use tauri::Manager;
 use tokio::io::AsyncWriteExt;
 
 use super::super::chat_service_run_finalization::{
@@ -362,28 +362,13 @@ async fn send_bound_persona_and_capture_pre_spawn_effects(
         .await
         .expect("bound conversation should persist");
     let message_repo = Arc::clone(&state.chat_message_repo);
+    let event_sink = RecordingEventSink::new();
+    state.events = Arc::new(event_sink.clone());
 
     let app = tauri::test::mock_builder()
         .manage(state)
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("mock app");
-    let emitted_events = Arc::new(Mutex::new(Vec::new()));
-    for event_name in [
-        "agent:conversation_created",
-        "agent:message_created",
-        "agent:run_started",
-        "agent:error",
-        "persona:injection_skipped",
-    ] {
-        let event_log = Arc::clone(&emitted_events);
-        let event_name = event_name.to_string();
-        let _ = app.listen(event_name.clone(), move |_| {
-            event_log
-                .lock()
-                .expect("event log lock")
-                .push(event_name.clone());
-        });
-    }
 
     let spawn_marker = project_dir.path().join("spawned");
     let cli_path = project_dir.path().join("fake-claude");
@@ -425,7 +410,11 @@ async fn send_bound_persona_and_capture_pre_spawn_effects(
         .get_by_conversation(&conversation_id)
         .await
         .expect("conversation message lookup");
-    let events = emitted_events.lock().expect("event log lock").clone();
+    let events = event_sink
+        .events()
+        .into_iter()
+        .map(|event| event.event)
+        .collect();
     (error.to_string(), spawn_marker.exists(), messages, events)
 }
 
@@ -1714,6 +1703,8 @@ async fn queue_processing_leaves_messages_pending_when_execution_paused() {
 #[tokio::test]
 async fn queue_processing_records_run_id_before_spawn_failure() {
     let app_state = AppState::new_test();
+    let runtime_factory_deps =
+        crate::application::runtime_factory::ChatRuntimeFactoryDeps::from_app_state(&app_state);
     let message_queue = Arc::clone(&app_state.message_queue);
     let running_agent_registry = Arc::clone(&app_state.running_agent_registry);
     let agent_run_repo = Arc::clone(&app_state.agent_run_repo);
@@ -1767,7 +1758,7 @@ async fn queue_processing_records_run_id_before_spawn_failure() {
         None,
         Arc::new(NullEventSink),
         None,
-        None,
+        Some(runtime_factory_deps),
         None,
         None,
         tokio_util::sync::CancellationToken::new(),
@@ -2213,10 +2204,17 @@ EOF
 
 #[cfg(unix)]
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn queue_processing_success_reconciles_verification_child_completion() {
     use crate::domain::agents::AgentHarnessKind;
 
+    let _spawn_guard = claude_spawn_permission_lock()
+        .lock()
+        .expect("lock poisoned");
+    let _spawn_permission = EnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
     let state = AppState::new_test();
+    let runtime_factory_deps =
+        crate::application::runtime_factory::ChatRuntimeFactoryDeps::from_app_state(&state);
     let message_queue = Arc::clone(&state.message_queue);
     let running_agent_registry = Arc::clone(&state.running_agent_registry);
     let agent_run_repo = Arc::clone(&state.agent_run_repo);
@@ -2317,7 +2315,7 @@ EOF
         false,
         &message_queue,
         None,
-        None,
+        Some(Arc::clone(&state.agent_provider_settings_repo)),
         &running_agent_registry,
         &agent_run_repo,
         &chat_message_repo,
@@ -2334,7 +2332,7 @@ EOF
         None,
         Arc::new(NullEventSink),
         Some(plan_verification_completion),
-        None,
+        Some(runtime_factory_deps),
         None,
         None,
         tokio_util::sync::CancellationToken::new(),
@@ -2365,12 +2363,17 @@ EOF
 }
 
 #[cfg(unix)]
+#[allow(clippy::await_holding_lock)]
 async fn process_queue_resume_persona_block(
     agent_name_override: Option<&str>,
     persona_directive: crate::domain::entities::PersonaDirective,
     archive_before_flush: bool,
     replace_binding_before_flush: bool,
 ) -> (bool, bool) {
+    let _spawn_guard = claude_spawn_permission_lock()
+        .lock()
+        .expect("lock poisoned");
+    let _spawn_permission = EnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
     let mut state = AppState::new_test();
     let persona_repo = Arc::new(MemoryPersonaRepository::new());
     let persona = Persona {
@@ -2501,7 +2504,7 @@ async fn process_queue_resume_persona_block(
         true,
         &message_queue,
         None,
-        None,
+        Some(Arc::clone(&state.agent_provider_settings_repo)),
         &running_agent_registry,
         &agent_run_repo,
         &chat_message_repo,
@@ -2705,6 +2708,8 @@ async fn send_queued_message_now_preserves_suppress_directive_and_agent_override
 #[tokio::test]
 async fn queue_processing_links_selected_attachments_before_spawn_failure() {
     let app_state = AppState::new_test();
+    let runtime_factory_deps =
+        crate::application::runtime_factory::ChatRuntimeFactoryDeps::from_app_state(&app_state);
     let message_queue = Arc::clone(&app_state.message_queue);
     let running_agent_registry = Arc::clone(&app_state.running_agent_registry);
     let agent_run_repo = Arc::clone(&app_state.agent_run_repo);
@@ -2792,7 +2797,7 @@ async fn queue_processing_links_selected_attachments_before_spawn_failure() {
         None,
         Arc::new(NullEventSink),
         None,
-        None,
+        Some(runtime_factory_deps),
         None,
         None,
         tokio_util::sync::CancellationToken::new(),
@@ -2854,6 +2859,8 @@ async fn background_run_drains_queue_after_non_cancelled_silent_exit() {
     use tokio::time::{sleep, timeout, Duration};
 
     let state = AppState::new_test();
+    let runtime_factory_deps =
+        crate::application::runtime_factory::ChatRuntimeFactoryDeps::from_app_state(&state);
     let context_id = IdeationSessionId::new();
     let mut ideation_session = IdeationSession::new(ProjectId::new());
     ideation_session.id = context_id.clone();
@@ -2934,7 +2941,7 @@ async fn background_run_drains_queue_after_non_cancelled_silent_exit() {
         plan_branch_repo: None,
         events: Arc::new(NullEventSink),
         plan_verification_completion: None,
-        runtime_factory_deps: None,
+        runtime_factory_deps: Some(runtime_factory_deps),
         run_chain_id: None,
         is_retry_attempt: false,
         persona_feature_enabled: false,

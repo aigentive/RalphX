@@ -1096,6 +1096,42 @@ fn incomplete_review_action(
     }
 }
 
+fn provider_pause_metadata(
+    task: &Task,
+    category: &super::ProviderErrorCategory,
+    message: &str,
+    retry_after: &Option<String>,
+    paused_at: &str,
+) -> String {
+    let resume_attempts = match super::PauseReason::from_task_metadata(task.metadata.as_deref()) {
+        Some(super::PauseReason::ProviderError {
+            resume_attempts, ..
+        }) => resume_attempts,
+        _ => super::ProviderErrorMetadata::from_task_metadata(task.metadata.as_deref())
+            .map_or(0, |metadata| metadata.resume_attempts),
+    };
+    let provider_error = super::ProviderErrorMetadata {
+        category: category.clone(),
+        message: message.to_string(),
+        retry_after: retry_after.clone(),
+        previous_status: task.internal_status.to_string(),
+        paused_at: paused_at.to_string(),
+        auto_resumable: true,
+        resume_attempts,
+    };
+    let pause_reason = super::PauseReason::ProviderError {
+        category: category.clone(),
+        message: message.to_string(),
+        retry_after: retry_after.clone(),
+        previous_status: task.internal_status.to_string(),
+        paused_at: paused_at.to_string(),
+        auto_resumable: true,
+        resume_attempts,
+    };
+    let with_legacy = provider_error.write_to_task_metadata(task.metadata.as_deref());
+    pause_reason.write_to_task_metadata(Some(&with_legacy))
+}
+
 pub(super) async fn apply_system_wide_provider_pause(
     runtime_factory_deps: Option<&ChatRuntimeFactoryDeps>,
     execution_state: Option<&Arc<ExecutionState>>,
@@ -1199,19 +1235,14 @@ pub(super) async fn apply_system_wide_provider_pause(
         let source_task_id = TaskId::from_string(source_context_id.to_string());
         match deps.task_repo.get_by_id(&source_task_id).await {
             Ok(Some(source_task)) => {
-                let source_pause_reason = super::PauseReason::ProviderError {
-                    category: category.clone(),
-                    message: message.to_string(),
-                    retry_after: retry_after.clone(),
-                    previous_status: source_task.internal_status.to_string(),
-                    paused_at: paused_at.clone(),
-                    auto_resumable: true,
-                    resume_attempts: 0,
-                };
                 let mut source_task_with_pause = source_task.clone();
-                source_task_with_pause.metadata = Some(
-                    source_pause_reason.write_to_task_metadata(source_task.metadata.as_deref()),
-                );
+                source_task_with_pause.metadata = Some(provider_pause_metadata(
+                    &source_task,
+                    category,
+                    message,
+                    retry_after,
+                    &paused_at,
+                ));
                 source_task_with_pause.touch();
                 match deps.task_repo.update(&source_task_with_pause).await {
                     Ok(()) => {
@@ -1270,19 +1301,14 @@ pub(super) async fn apply_system_wide_provider_pause(
                 continue;
             }
 
-            let pause_reason = super::PauseReason::ProviderError {
-                category: category.clone(),
-                message: message.to_string(),
-                retry_after: retry_after.clone(),
-                previous_status: task.internal_status.to_string(),
-                paused_at: paused_at.clone(),
-                auto_resumable: true,
-                resume_attempts: 0,
-            };
-
             let mut updated_task = task.clone();
-            updated_task.metadata =
-                Some(pause_reason.write_to_task_metadata(updated_task.metadata.as_deref()));
+            updated_task.metadata = Some(provider_pause_metadata(
+                &task,
+                category,
+                message,
+                retry_after,
+                &paused_at,
+            ));
             updated_task.touch();
             let _ = deps.task_repo.update(&updated_task).await;
 

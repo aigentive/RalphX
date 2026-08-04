@@ -4,9 +4,6 @@ use std::sync::Arc;
 use crate::application::app_state::ApplicationExecutionState;
 use crate::application::automation::api::automation_transition_service_for_state;
 use crate::application::automation::plan_gate::clear_plan_phase_publication_metadata;
-use crate::application::automation::transition::{
-    AUTOMATION_RUN_UPDATED_EVENT, AUTOMATION_UPDATED_EVENT,
-};
 use crate::application::startup_background::resume_automation_run_with_prompt_via_chat_service;
 use crate::application::AppState;
 use crate::domain::entities::{
@@ -138,7 +135,6 @@ pub(crate) async fn reopen_automation_run_with_redriver(
         )
         .await?;
 
-    emit_reopen_events(state, automation_id, run_id);
     Ok(())
 }
 
@@ -230,24 +226,6 @@ async fn reset_reopen_state(state: &AppState, context: &ReopenContext) -> AppRes
         .set_plan_reminder_count(&context.run.id, 0)
         .await?;
     Ok(())
-}
-
-fn emit_reopen_events(state: &AppState, automation_id: &AutomationId, run_id: &AutomationRunId) {
-    let automation_id = automation_id.as_str();
-    let run_id = run_id.as_str();
-    state.events.emit(
-        AUTOMATION_RUN_UPDATED_EVENT,
-        serde_json::json!({
-            "automation_id": automation_id,
-            "automationId": automation_id,
-            "run_id": run_id,
-            "runId": run_id,
-        }),
-    );
-    state.events.emit(
-        AUTOMATION_UPDATED_EVENT,
-        serde_json::json!({"automation_id": automation_id, "automationId": automation_id}),
-    );
 }
 
 async fn rearm_workspace_review_monitor(

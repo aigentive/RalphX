@@ -3569,21 +3569,14 @@ async fn test_apply_proposals_core_preserves_dependencies() {
 
 #[tokio::test]
 async fn test_create_ideation_session_emits_session_created_event() {
+    use ralphx_events::RecordingEventSink;
     use ralphx_lib::testing::create_mock_app;
-    use std::sync::{Arc, Mutex};
-    use tauri::Listener;
 
     let app = create_mock_app();
     let handle = app.handle().clone();
-    let state = setup_apply_test_state();
-
-    let captured: Arc<Mutex<Option<serde_json::Value>>> = Arc::new(Mutex::new(None));
-    let captured_clone = Arc::clone(&captured);
-
-    handle.listen("ideation:session_created", move |event| {
-        let payload: serde_json::Value = serde_json::from_str(event.payload()).unwrap_or_default();
-        *captured_clone.lock().unwrap() = Some(payload);
-    });
+    let mut state = setup_apply_test_state();
+    let events = RecordingEventSink::new();
+    state.events = Arc::new(events.clone());
 
     let project_id = ProjectId::new();
     let mut project = Project::new("Test Project".to_string(), "/tmp/test".to_string());
@@ -3605,12 +3598,12 @@ async fn test_create_ideation_session_emits_session_created_event() {
     assert_eq!(result.project_id, project_id.to_string());
     assert_eq!(result.title, Some("Test Event Session".to_string()));
 
-    let payload = captured.lock().unwrap().clone();
-    assert!(
-        payload.is_some(),
-        "ideation:session_created event should have been emitted"
-    );
-    let payload = payload.unwrap();
+    let payload = events
+        .events()
+        .into_iter()
+        .find(|event| event.event == "ideation:session_created")
+        .expect("ideation:session_created event should have been emitted")
+        .payload;
     assert_eq!(
         payload["projectId"].as_str().unwrap(),
         project_id.to_string(),

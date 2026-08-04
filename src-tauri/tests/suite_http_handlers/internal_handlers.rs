@@ -167,9 +167,13 @@ async fn test_create_cross_project_session_http_without_shell_handle_reaches_ses
     // AppState::new_test() has no shell handle. The HTTP boundary must still
     // use its shared EventSink and reach the domain validation path.
     let state = setup_test_state().await;
+    let target_project = tempfile::tempdir_in(
+        std::env::current_dir().expect("current workspace for target project"),
+    )
+    .expect("target project directory");
 
     let input = CreateCrossProjectSessionInput {
-        target_project_path: "/tmp/target-project".to_string(),
+        target_project_path: target_project.path().to_string_lossy().into_owned(),
         source_session_id: "nonexistent-session-id".to_string(),
         title: None,
     };
