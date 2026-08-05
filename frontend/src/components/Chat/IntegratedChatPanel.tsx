@@ -1826,7 +1826,7 @@ export function IntegratedChatPanel({
             <div
               ref={chromeRef}
               data-testid="chat-below-transcript-chrome"
-              className="absolute inset-x-0 bottom-0 z-20 flex flex-col justify-end overflow-y-auto"
+              className="absolute inset-x-0 bottom-0 z-20 flex flex-col overflow-y-auto"
               style={{ maxHeight: "min(60%, 100%)" }}
             >
               <div
@@ -1836,18 +1836,12 @@ export function IntegratedChatPanel({
                   surfaceBackground === "transparent"
                     ? {
                         backgroundColor: "var(--bg-base)",
-                        borderTopColor: "var(--border-subtle)",
-                        borderTopStyle: "solid",
-                        borderTopWidth: "1px",
                       }
                     : {
                         backgroundColor:
                           "color-mix(in srgb, var(--bg-surface) 92%, transparent)",
                         backdropFilter: "blur(20px) saturate(180%)",
                         WebkitBackdropFilter: "blur(20px) saturate(180%)",
-                        borderTopColor: "var(--border-subtle)",
-                        borderTopStyle: "solid",
-                        borderTopWidth: "1px",
                       }
                 }
               />
@@ -1904,9 +1898,6 @@ export function IntegratedChatPanel({
                     : {
                         backgroundColor:
                           "color-mix(in srgb, var(--text-primary) 2%, transparent)",
-                        borderTopColor: "var(--border-subtle)",
-                        borderTopStyle: "solid",
-                        borderTopWidth: "1px",
                       }
                 }
               >
@@ -1959,8 +1950,7 @@ export function IntegratedChatPanel({
                   )}
 
                   {/* Chat Input — wrapper padding matches ExecutionControlBar's
-                  outer `p-2` so the top border of the composer aligns with
-                  the top border of the execution bar across the split pane. */}
+                  outer `p-2` so the composer aligns across the split pane. */}
                   <div className="p-2 empty:p-0">
                     {renderComposer ? (
                       renderComposer({

@@ -510,7 +510,24 @@ describe("IntegratedChatPanel", () => {
     const chrome = screen.getByTestId("chat-below-transcript-chrome");
     expect(chrome).toHaveClass("absolute", "inset-x-0", "bottom-0", "z-20");
     expect(chrome).not.toHaveClass("shrink-0");
+    expect(chrome).not.toHaveClass("justify-end");
     expect(chrome.parentElement).toHaveClass("relative", "flex-1", "min-h-0");
+  });
+
+  it("does not draw a divider between the transcript and composer chrome", () => {
+    render(
+      <TestWrapper>
+        <IntegratedChatPanel projectId="project-1" />
+      </TestWrapper>,
+    );
+
+    const chromeBackdrop = screen.getByTestId(
+      "chat-below-transcript-chrome",
+    ).firstElementChild;
+    const inputContainer = screen.getByTestId("chat-input-container");
+
+    expect(chromeBackdrop).not.toHaveStyle({ borderTopWidth: "1px" });
+    expect(inputContainer).not.toHaveStyle({ borderTopWidth: "1px" });
   });
 
   it("reserves the measured composer inset in the empty transcript branch", () => {
