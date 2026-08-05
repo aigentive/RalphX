@@ -1046,6 +1046,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
             context_type,
             &context_id,
             &conversation_id,
+            Some(working_directory.clone()),
             app_handle.clone(),
             Some(Arc::clone(&activity_event_repo)),
             Some(Arc::clone(&task_repo)),

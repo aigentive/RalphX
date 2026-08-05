@@ -82,6 +82,21 @@ impl DelegationParkService {
         }
     }
 
+    /// Disarm every armed park owned by a parent run that has reached a terminal path.
+    ///
+    /// The repository CAS is the authority here: an already-waking park belongs to its claimed
+    /// dispatcher, while an armed park can no longer create a surprise `resume_in_place` turn.
+    /// Delegated jobs are deliberately untouched.
+    pub async fn disarm_armed_for_terminal_parent(
+        park_repo: &dyn DelegationParkRepository,
+        conversation_id: &ChatConversationId,
+        parent_run_id: &AgentRunId,
+    ) -> AppResult<usize> {
+        park_repo
+            .disarm_armed_for_parent_run(conversation_id, parent_run_id)
+            .await
+    }
+
     /// Validate delegate ownership then arm one durable park for the conversation.
     ///
     /// Ownership means every watched job was started by the caller run or is an exact member of

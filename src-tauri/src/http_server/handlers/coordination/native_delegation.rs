@@ -476,6 +476,7 @@ async fn settle_delegation_from_run(
                     }
                 }
                 DelegationParkState::Superseded
+                | DelegationParkState::Disarmed
                 | DelegationParkState::Expired
                 | DelegationParkState::Failed => {}
             }
@@ -1013,6 +1014,7 @@ pub(crate) async fn start_delegate_impl_with_parent_run(
     }
     let reusable_delegated_session =
         preflight_requested_delegated_session(state, &req, &parent).await?;
+    let job_id = uuid::Uuid::new_v4().to_string();
     let launch = NativeDelegationLauncher::new(state)
         .launch(NativeDelegationLaunchRequest {
             caller_agent_name,
@@ -1028,6 +1030,7 @@ pub(crate) async fn start_delegate_impl_with_parent_run(
                 ideation_verification: parent.ideation_verification,
             },
             inherit_context: req.inherit_context,
+            job_id: Some(job_id.clone()),
             caller_agent_run_id: parent_agent_run_id,
             target_agent_name: req.agent_name.clone(),
             reusable_delegated_session,
@@ -1058,7 +1061,6 @@ pub(crate) async fn start_delegate_impl_with_parent_run(
     let approval_policy = launch.approval_policy.clone();
     let sandbox_mode = launch.sandbox_mode.clone();
 
-    let job_id = uuid::Uuid::new_v4().to_string();
     let snapshot = state
         .delegation_service
         .register_running(

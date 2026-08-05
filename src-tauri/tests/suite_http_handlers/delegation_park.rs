@@ -436,6 +436,16 @@ impl DelegationParkRepository for FailingArmedParkReadRepository {
         self.inner.supersede_for_conversation(conversation_id).await
     }
 
+    async fn disarm_armed_for_parent_run(
+        &self,
+        conversation_id: &ChatConversationId,
+        parent_run_id: &AgentRunId,
+    ) -> AppResult<usize> {
+        self.inner
+            .disarm_armed_for_parent_run(conversation_id, parent_run_id)
+            .await
+    }
+
     async fn list_expired(&self, now: chrono::DateTime<Utc>) -> AppResult<Vec<DelegationPark>> {
         self.inner.list_expired(now).await
     }

@@ -149,6 +149,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
+      # Coverage-instrumented lib builds exceed the hosted runner memory limit
+      # when Cargo compiles crates concurrently.
+      CARGO_BUILD_JOBS: "1"
       CARGO_TERM_COLOR: never
       RALPHX_TEST_MODE: "1"
     steps:
