@@ -6,7 +6,7 @@ use super::{
 };
 use crate::application::chat_service::{AppChatService, ChatService, SendMessageOptions};
 use crate::application::interactive_process_registry::{
-    InteractiveProcessKey, InteractiveProcessRegistry,
+    InteractiveProcessKey, InteractiveProcessRegistry, PendingStdinTurn,
 };
 use crate::application::personas::PERSONA_UNAVAILABLE_PREFIX;
 use crate::application::plan_approval_notification_service::{
@@ -2858,6 +2858,28 @@ async fn spawn_claude_jsonl_fixture(lines: &[&str]) -> tokio::process::Child {
     child
 }
 
+async fn spawn_interactive_claude_jsonl_fixture(lines: &[&str]) -> tokio::process::Child {
+    let mut payload = String::new();
+    for line in lines {
+        payload.push_str(line);
+        payload.push('\n');
+    }
+
+    let mut child = tokio::process::Command::new("cat")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn interactive stream fixture");
+    let mut stdin = child.stdin.take().expect("capture fixture stdin");
+    stdin
+        .write_all(payload.as_bytes())
+        .await
+        .expect("write interactive stream fixture");
+    child.stdin = Some(stdin);
+    child
+}
+
 #[tokio::test]
 async fn background_run_drains_queue_after_non_cancelled_silent_exit() {
     use crate::domain::agents::AgentHarnessKind;
@@ -2993,6 +3015,180 @@ async fn background_run_drains_queue_after_non_cancelled_silent_exit() {
     })
     .await
     .expect("background queue processing should drain queued message");
+}
+
+#[tokio::test]
+async fn background_run_suppresses_answered_pending_stdin_turns() {
+    use crate::domain::entities::ChatMessageAttribution;
+    use tokio::time::{sleep, timeout, Duration};
+
+    let state = AppState::new_test();
+    let conversation = ChatConversation::new_project(ProjectId::new());
+    let conversation_id = conversation.id.clone();
+    let context_id = conversation_id.as_str().to_string();
+    state
+        .chat_conversation_repo
+        .create(conversation.clone())
+        .await
+        .expect("seed conversation");
+    let agent_run = state
+        .agent_run_repo
+        .create(AgentRun::new(conversation_id.clone()))
+        .await
+        .expect("seed agent run");
+    let mut assistant = super::super::chat_service_context::create_assistant_message(
+        ChatContextType::Project,
+        &context_id,
+        "already answered",
+        conversation_id.clone(),
+        &[],
+        &[],
+    );
+    assistant.created_at = Utc::now();
+    state
+        .chat_message_repo
+        .create(assistant.clone())
+        .await
+        .expect("seed later assistant evidence");
+
+    let repos = super::BackgroundRunRepos {
+        chat_message_repo: Arc::clone(&state.chat_message_repo),
+        chat_timeline_repo: Some(Arc::clone(&state.chat_timeline_repo)),
+        chat_attachment_repo: Arc::clone(&state.chat_attachment_repo),
+        artifact_repo: Arc::clone(&state.artifact_repo),
+        conversation_repo: Arc::clone(&state.chat_conversation_repo),
+        agent_run_repo: Arc::clone(&state.agent_run_repo),
+        task_repo: Arc::clone(&state.task_repo),
+        task_dependency_repo: Arc::clone(&state.task_dependency_repo),
+        project_repo: Arc::clone(&state.project_repo),
+        ideation_session_repo: Arc::clone(&state.ideation_session_repo),
+        delegated_session_repo: Arc::clone(&state.delegated_session_repo),
+        execution_settings_repo: Some(Arc::clone(&state.execution_settings_repo)),
+        agent_lane_settings_repo: Some(Arc::clone(&state.agent_lane_settings_repo)),
+        agent_provider_settings_repo: Some(Arc::clone(&state.agent_provider_settings_repo)),
+        ideation_effort_settings_repo: None,
+        ideation_model_settings_repo: None,
+        agent_conversation_workspace_repo: Some(Arc::clone(
+            &state.agent_conversation_workspace_repo,
+        )),
+        agent_conversation_jira_issue_repo: Some(Arc::clone(
+            &state.agent_conversation_jira_issue_repo,
+        )),
+        agent_conversation_linear_issue_repo: Some(Arc::clone(
+            &state.agent_conversation_linear_issue_repo,
+        )),
+        agent_conversation_granola_note_repo: Some(Arc::clone(
+            &state.agent_conversation_granola_note_repo,
+        )),
+        task_proposal_repo: Some(Arc::clone(&state.task_proposal_repo)),
+        activity_event_repo: Arc::clone(&state.activity_event_repo),
+        memory_event_repo: Arc::clone(&state.memory_event_repo),
+        notification_service: None,
+        message_queue: Arc::clone(&state.message_queue),
+        running_agent_registry: Arc::clone(&state.running_agent_registry),
+        task_step_repo: Some(Arc::clone(&state.task_step_repo)),
+        validation_run_repo: Some(Arc::clone(&state.validation_run_repo)),
+        external_events_repo: Some(Arc::clone(&state.external_events_repo)),
+        webhook_publisher: None,
+        review_repo: Some(Arc::clone(&state.review_repo)),
+    };
+    let interactive_process_registry = Arc::clone(&state.interactive_process_registry);
+    let message_queue = Arc::clone(&state.message_queue);
+    let app = tauri::test::mock_builder()
+        .manage(state)
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app");
+    let app_handle = app.handle().clone();
+    let mut child = spawn_interactive_claude_jsonl_fixture(&[
+        r#"{"type":"result","session_id":"sess-bg-pending","is_error":false,"result":"complete","cost_usd":0.0}"#,
+    ])
+    .await;
+    let interactive_key = InteractiveProcessKey::new("project", &context_id);
+    let interactive_process_token = interactive_process_registry
+        .register_with_metadata(
+            interactive_key.clone(),
+            child.stdin.take().expect("interactive fixture stdin"),
+            Default::default(),
+        )
+        .await;
+    assert!(
+        interactive_process_registry
+            .push_pending_turn(
+                &interactive_key,
+                interactive_process_token,
+                PendingStdinTurn {
+                    persisted_message_id: "already-answered-turn".to_string(),
+                    content: "do not replay".to_string(),
+                    metadata_override: None,
+                    queued_at: (assistant.created_at - chrono::Duration::seconds(1)).to_rfc3339(),
+                },
+            )
+            .await
+    );
+
+    super::spawn_send_message_background::<tauri::test::MockRuntime>(super::BackgroundRunContext {
+        child,
+        harness: AgentHarnessKind::Claude,
+        context_type: ChatContextType::Project,
+        context_id: context_id.clone(),
+        runtime_context_id: context_id.clone(),
+        conversation_id,
+        agent_run_id: agent_run.id.as_str().to_string(),
+        stored_session_id: None,
+        working_directory: std::env::temp_dir().join("ralphx-bg-pending-stdin-wd"),
+        cli_path: Path::new("/definitely/missing/ralphx-test-cli").to_path_buf(),
+        plugin_dir: std::env::temp_dir().join("ralphx-bg-pending-stdin-plugin"),
+        repos,
+        execution_state: None,
+        question_state: None,
+        plan_branch_repo: None,
+        app_handle: Some(app_handle),
+        run_chain_id: None,
+        is_retry_attempt: false,
+        persona_feature_enabled: false,
+        agent_name_override_set: false,
+        user_message_content: Some("initial prompt".to_string()),
+        turn_metadata: None,
+        conversation: Some(conversation),
+        agent_name: Some("orchestrator".to_string()),
+        assistant_message_attribution: ChatMessageAttribution::default(),
+        persist_conversation_provider_session_ref: true,
+        cancellation_token: tokio_util::sync::CancellationToken::new(),
+        streaming_state_cache: super::StreamingStateCache::new(),
+        interactive_process_registry: Some(interactive_process_registry.clone()),
+        interactive_process_token: Some(interactive_process_token),
+        verification_child_registry: None,
+    });
+
+    timeout(Duration::from_secs(3), async {
+        loop {
+            if !interactive_process_registry
+                .has_process(&interactive_key)
+                .await
+            {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("background exit should remove the interactive process");
+
+    let app_state = app.state::<AppState>();
+    let queue_key = crate::domain::services::QueueKey::new(ChatContextType::Project, &context_id);
+    assert!(
+        app_state
+            .queued_message_repo
+            .list(&queue_key)
+            .await
+            .expect("durable queue")
+            .is_empty(),
+        "later assistant evidence must suppress the recovered turn"
+    );
+    assert!(
+        message_queue.get_queued_with_key(&queue_key).is_empty(),
+        "suppressed recovery must not leave an in-memory retry"
+    );
 }
 
 #[tokio::test]
