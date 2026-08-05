@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ComponentProps } from "react";
@@ -6,7 +6,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AutomationsView } from "./AutomationsView";
 import type { Automation, AutomationRun } from "@/api/automations";
-import { REMOTE_UNAVAILABLE_HINT } from "@/lib/remote/agent-gate";
 import { LOCAL_ENVIRONMENT_ID, useEnvironmentStore } from "@/stores/environmentStore";
 
 const { listAutomationsMock, getAutomationMock, preloadAutomationDetailViewMock } = vi.hoisted(() => ({
@@ -193,7 +192,10 @@ describe("AutomationsView", () => {
     expect(await screen.findByTestId("automations-empty-state")).toBeInTheDocument();
   });
 
-  it("disables new automation remotely before rewriting into chat", async () => {
+  // Wave B4: create_automation_draft has a registered intent twin
+  // (request_remote_automation_draft), so a paired ui:agent client creates drafts like the
+  // host does — the old disabled-remotely presentation is retired.
+  it("enables new automation remotely now that the draft twin registers", async () => {
     useEnvironmentStore.setState({
       activeEnvironmentId: "remote-1",
       environments: [{ id: "remote-1", name: "Studio", kind: "remote" }],
@@ -208,9 +210,9 @@ describe("AutomationsView", () => {
     renderView({ onNewAutomation });
 
     const button = await screen.findByTestId("automations-new-button");
-    expect(button).toBeDisabled();
-    expect(button).toHaveAttribute("title", REMOTE_UNAVAILABLE_HINT);
-    expect(onNewAutomation).not.toHaveBeenCalled();
+    expect(button).toBeEnabled();
+    fireEvent.click(button);
+    expect(onNewAutomation).toHaveBeenCalledTimes(1);
   });
 
   it("renders project-scoped automation rows from the list API", async () => {

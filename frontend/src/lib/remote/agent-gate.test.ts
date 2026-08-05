@@ -243,6 +243,27 @@ describe("affordance mapping", () => {
     }
   });
 
+  it("routes automation creation and run controls through their registered intent twins", () => {
+    expect(AGENT_GATED_AFFORDANCES.automationRunNow).toBe(
+      "request_remote_automation_run",
+    );
+    expect(AGENT_GATED_AFFORDANCES.automationRetryJudge).toBe(
+      "request_remote_automation_run",
+    );
+    expect(AGENT_GATED_AFFORDANCES.automationCreate).toBe(
+      "request_remote_automation_draft",
+    );
+    for (const affordance of [
+      "automationRunNow",
+      "automationRetryJudge",
+      "automationCreate",
+    ] as const) {
+      expect(resolveAffordanceGate(affordance, true, GRANTED).status).toBe(
+        "enabled",
+      );
+    }
+  });
+
   it("keeps post-approval process continuations unavailable remotely", () => {
     expect(resolveAffordanceGate("planDirectImplementation", true, GRANTED).status).toBe(
       "unavailable",

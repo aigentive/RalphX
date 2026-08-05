@@ -182,7 +182,7 @@ export const AGENT_GATED_AFFORDANCES = {
   // authority-reducing pause/stop, matching the task pause/stop precedent below.
   automationPause: "pause_automation",
   automationStop: "stop_automation",
-  automationRunNow: "trigger_automation_run_now",
+  automationRunNow: "request_remote_automation_run",
   automationRestart: "restart_automation",
   automationCancelRun: "cancel_automation_run",
   automationResumeRun: "resume_automation_run",
@@ -190,13 +190,13 @@ export const AGENT_GATED_AFFORDANCES = {
   automationSkipJudge: "skip_automation_judge",
   automationSettingsEdit: "update_automation_settings",
   automationFinalize: "finalize_automation",
-  // These mutation commands remain absent from the remote facade, so their controls
-  // resolve `unavailable` at every remote scope.
-  automationRetryJudge: "retry_automation_judge",
+  automationRetryJudge: "request_remote_automation_run",
+  // Automation deletion remains absent from the remote facade at the D2 floor, so
+  // these controls resolve `unavailable` at every remote scope.
   automationDelete: "delete_automation",
   automationDeleteRun: "delete_automation_run",
   automationSetupEdit: "update_automation_config",
-  automationCreate: "create_automation_draft",
+  automationCreate: "request_remote_automation_draft",
 } as const satisfies Record<string, string>;
 
 export type AgentGatedAffordance = keyof typeof AGENT_GATED_AFFORDANCES;
