@@ -22,6 +22,7 @@ use crate::domain::services::github_service::{PrAnnotationSourceUnavailable, PrD
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::git_runtime_config;
 use crate::infrastructure::tool_paths::resolve_git_cli_path;
+use chrono::Utc;
 use dashmap::DashMap;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -229,6 +230,7 @@ pub async fn get_file_diff_for_state(
 
 #[derive(Clone)]
 struct AgentWorkspaceContext {
+    source: AgentWorkspaceContextSource,
     working_path: PathBuf,
     base_ref: String,
     /// For plan-branch or terminal PR workspaces, the diff target is an explicit ref (not HEAD).
@@ -240,6 +242,18 @@ struct AgentWorkspaceContext {
     supports_worktree_modes: bool,
     /// Present only for explicit repair-mode contexts.
     repair_state: Option<AgentWorkspaceRepairStateResponse>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentWorkspaceContextSource {
+    Worktree,
+    LocalBranch,
+    PlanBranch,
+    PullRequestHead,
+    GithubPatch,
+    TerminalPullRequestHead,
+    RepairWorktree,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -309,6 +323,7 @@ pub struct AgentWorkspaceChangeSummaryResponse {
 #[derive(Clone)]
 struct AgentWorkspaceReviewSnapshot {
     response: AgentWorkspaceReviewResponse,
+    context_source: AgentWorkspaceContextSource,
 }
 
 #[derive(Clone)]
@@ -321,6 +336,15 @@ struct AgentWorkspaceContextCacheEntry {
 struct AgentWorkspaceReviewCacheEntry {
     inserted_at: Instant,
     snapshot: AgentWorkspaceReviewSnapshot,
+}
+
+#[derive(Clone)]
+struct AgentWorkspaceRemoteSnapshot<T> {
+    inserted_at: Instant,
+    captured_at: String,
+    cache_version: String,
+    context_source: AgentWorkspaceContextSource,
+    payload: T,
 }
 
 #[derive(Clone)]
@@ -363,6 +387,10 @@ impl AgentWorkspaceContextMode {
 
 fn agent_workspace_review_cache_ttl() -> Duration {
     Duration::from_millis(git_runtime_config().workspace_review_cache_ttl_ms)
+}
+
+fn remote_workspace_snapshot_ttl() -> Duration {
+    Duration::from_millis(git_runtime_config().remote_workspace_snapshot_ttl_ms)
 }
 
 fn agent_workspace_pr_annotations_cache_ttl() -> Duration {
@@ -465,6 +493,102 @@ fn agent_workspace_review_cache() -> &'static DashMap<String, AgentWorkspaceRevi
     CACHE.get_or_init(DashMap::new)
 }
 
+fn agent_workspace_remote_review_cache(
+) -> &'static DashMap<String, AgentWorkspaceRemoteSnapshot<AgentWorkspaceReviewResponse>> {
+    static CACHE: OnceLock<
+        DashMap<String, AgentWorkspaceRemoteSnapshot<AgentWorkspaceReviewResponse>>,
+    > = OnceLock::new();
+    CACHE.get_or_init(DashMap::new)
+}
+
+fn agent_workspace_remote_summary_cache(
+) -> &'static DashMap<String, AgentWorkspaceRemoteSnapshot<AgentWorkspaceChangeSummaryResponse>> {
+    static CACHE: OnceLock<
+        DashMap<String, AgentWorkspaceRemoteSnapshot<AgentWorkspaceChangeSummaryResponse>>,
+    > = OnceLock::new();
+    CACHE.get_or_init(DashMap::new)
+}
+
+fn current_agent_workspace_cache_version(conversation_id: &ChatConversationId) -> Option<String> {
+    let key = agent_workspace_diff_cache_key(conversation_id)?;
+    agent_workspace_diff_cache_versions()
+        .get(&key)
+        .map(|version| version.clone())
+}
+
+fn store_remote_workspace_snapshot<T: Clone>(
+    cache: &DashMap<String, AgentWorkspaceRemoteSnapshot<T>>,
+    conversation_id: &ChatConversationId,
+    context_source: AgentWorkspaceContextSource,
+    payload: &T,
+) {
+    if remote_workspace_snapshot_ttl().is_zero() {
+        return;
+    }
+    let Some(key) = agent_workspace_diff_cache_key(conversation_id) else {
+        return;
+    };
+    let Some(cache_version) = current_agent_workspace_cache_version(conversation_id) else {
+        return;
+    };
+    cache.insert(
+        key,
+        AgentWorkspaceRemoteSnapshot {
+            inserted_at: Instant::now(),
+            captured_at: Utc::now().to_rfc3339(),
+            cache_version,
+            context_source,
+            payload: payload.clone(),
+        },
+    );
+}
+
+fn read_remote_workspace_snapshot<T: Clone>(
+    cache: &DashMap<String, AgentWorkspaceRemoteSnapshot<T>>,
+    conversation_id: &ChatConversationId,
+) -> Option<(T, String, String, AgentWorkspaceContextSource)> {
+    let key = agent_workspace_diff_cache_key(conversation_id)?;
+    let current_version = current_agent_workspace_cache_version(conversation_id)?;
+    let entry = cache.get(&key)?;
+    if entry.inserted_at.elapsed() <= remote_workspace_snapshot_ttl()
+        && entry.cache_version == current_version
+    {
+        return Some((
+            entry.payload.clone(),
+            entry.captured_at.clone(),
+            entry.cache_version.clone(),
+            entry.context_source,
+        ));
+    }
+    drop(entry);
+    cache.remove(&key);
+    None
+}
+
+#[doc(hidden)]
+pub fn get_agent_workspace_review_snapshot(
+    conversation_id: &ChatConversationId,
+) -> Option<(
+    AgentWorkspaceReviewResponse,
+    String,
+    String,
+    AgentWorkspaceContextSource,
+)> {
+    read_remote_workspace_snapshot(agent_workspace_remote_review_cache(), conversation_id)
+}
+
+#[doc(hidden)]
+pub fn get_agent_workspace_change_summary_snapshot(
+    conversation_id: &ChatConversationId,
+) -> Option<(
+    AgentWorkspaceChangeSummaryResponse,
+    String,
+    String,
+    AgentWorkspaceContextSource,
+)> {
+    read_remote_workspace_snapshot(agent_workspace_remote_summary_cache(), conversation_id)
+}
+
 fn agent_workspace_review_locks() -> &'static DashMap<String, Arc<tokio::sync::Mutex<()>>> {
     static LOCKS: OnceLock<DashMap<String, Arc<tokio::sync::Mutex<()>>>> = OnceLock::new();
     LOCKS.get_or_init(DashMap::new)
@@ -534,6 +658,8 @@ fn cached_agent_workspace_review(
     }
     drop(entry);
     agent_workspace_review_cache().remove(&key);
+    agent_workspace_remote_review_cache().remove(&key);
+    agent_workspace_remote_summary_cache().remove(&key);
     None
 }
 
@@ -677,6 +803,7 @@ async fn get_agent_workspace_context(
                 resolve_merge_base(&project_path, &base_branch, &plan_branch.branch_name)
                     .unwrap_or(base_branch);
             return Ok(AgentWorkspaceContext {
+                source: AgentWorkspaceContextSource::PlanBranch,
                 working_path: project_path,
                 base_ref: merge_base,
                 diff_target: Some(plan_branch.branch_name.clone()),
@@ -703,6 +830,7 @@ async fn get_agent_workspace_context(
             )
             .await?;
             Ok(AgentWorkspaceContext {
+                source: AgentWorkspaceContextSource::Worktree,
                 working_path: worktree_path,
                 base_ref: review_base,
                 diff_target: None,
@@ -763,6 +891,7 @@ async fn resolve_agent_workspace_local_branch_context(
     .await?;
 
     Ok(Some(AgentWorkspaceContext {
+        source: AgentWorkspaceContextSource::LocalBranch,
         working_path: project_path,
         base_ref: review_base,
         diff_target: Some(workspace.branch_name.clone()),
@@ -798,6 +927,7 @@ async fn resolve_agent_workspace_pr_head_context(
             .await?;
 
     Ok(Some(AgentWorkspaceContext {
+        source: AgentWorkspaceContextSource::PullRequestHead,
         working_path: project_path,
         base_ref: review_base,
         diff_target: Some(pr_head_ref),
@@ -839,6 +969,7 @@ async fn resolve_agent_workspace_github_patch_context(
     }
 
     Ok(Some(AgentWorkspaceContext {
+        source: AgentWorkspaceContextSource::GithubPatch,
         working_path: project_path,
         base_ref: base_commit.to_string(),
         diff_target: Some(format!("github-pr-diff/{pr_number}")),
@@ -879,6 +1010,7 @@ async fn get_terminal_agent_workspace_pr_context(
     let base_ref =
         resolve_merge_base(&repo_path, &base_ref_source, &head_ref).unwrap_or(base_ref_source);
     Ok(Some(AgentWorkspaceContext {
+        source: AgentWorkspaceContextSource::TerminalPullRequestHead,
         working_path: repo_path,
         base_ref,
         diff_target: Some(head_ref),
@@ -932,6 +1064,7 @@ async fn get_agent_workspace_repair_context(
     }
 
     Ok(AgentWorkspaceContext {
+        source: AgentWorkspaceContextSource::RepairWorktree,
         working_path: worktree_path,
         base_ref: base_commit,
         diff_target: None,
@@ -1091,8 +1224,9 @@ pub async fn get_agent_conversation_workspace_change_summary_for_state(
     conversation_id: &ChatConversationId,
 ) -> AppResult<AgentWorkspaceChangeSummaryResponse> {
     let (ctx, _) = get_agent_workspace_context_cached(app_state, conversation_id).await?;
-    if !ctx.supports_worktree_modes {
-        return Ok(AgentWorkspaceChangeSummaryResponse {
+    let context_source = ctx.source;
+    let response = if !ctx.supports_worktree_modes {
+        AgentWorkspaceChangeSummaryResponse {
             supports_worktree_modes: false,
             staged: AgentWorkspaceChangeSummaryBucketResponse {
                 file_count: 0,
@@ -1106,28 +1240,35 @@ pub async fn get_agent_conversation_workspace_change_summary_for_state(
             },
             conflicted: None,
             repair_state: None,
-        });
-    }
-
-    let working_path = ctx.working_path.to_string_lossy().to_string();
-    tokio::task::spawn_blocking(move || {
-        let diff_service = DiffService::new();
-        let staged = diff_service.get_staged_file_changes(&working_path)?;
-        let unstaged = diff_service.get_unstaged_file_changes(&working_path)?;
-        Ok(AgentWorkspaceChangeSummaryResponse {
-            supports_worktree_modes: true,
-            staged: summarize_agent_workspace_file_changes(&staged),
-            unstaged: summarize_agent_workspace_file_changes(&unstaged),
-            conflicted: None,
-            repair_state: None,
+        }
+    } else {
+        let working_path = ctx.working_path.to_string_lossy().to_string();
+        tokio::task::spawn_blocking(move || {
+            let diff_service = DiffService::new();
+            let staged = diff_service.get_staged_file_changes(&working_path)?;
+            let unstaged = diff_service.get_unstaged_file_changes(&working_path)?;
+            Ok::<_, AppError>(AgentWorkspaceChangeSummaryResponse {
+                supports_worktree_modes: true,
+                staged: summarize_agent_workspace_file_changes(&staged),
+                unstaged: summarize_agent_workspace_file_changes(&unstaged),
+                conflicted: None,
+                repair_state: None,
+            })
         })
-    })
-    .await
-    .map_err(|error| {
-        AppError::Infrastructure(format!(
-            "agent workspace change summary task failed: {error}"
-        ))
-    })?
+        .await
+        .map_err(|error| {
+            AppError::Infrastructure(format!(
+                "agent workspace change summary task failed: {error}"
+            ))
+        })??
+    };
+    store_remote_workspace_snapshot(
+        agent_workspace_remote_summary_cache(),
+        conversation_id,
+        context_source,
+        &response,
+    );
+    Ok(response)
 }
 
 #[tauri::command]
@@ -1467,6 +1608,12 @@ async fn get_agent_conversation_workspace_review_cached(
 ) -> AppResult<(AgentWorkspaceReviewSnapshot, AgentWorkspaceDiffCacheStatus)> {
     ensure_agent_workspace_diff_cache_current(app_state, conversation_id).await?;
     if let Some(snapshot) = cached_agent_workspace_review(conversation_id) {
+        store_remote_workspace_snapshot(
+            agent_workspace_remote_review_cache(),
+            conversation_id,
+            snapshot.context_source,
+            &snapshot.response,
+        );
         return Ok((snapshot, AgentWorkspaceDiffCacheStatus::Hit));
     }
     let Some(key) = agent_workspace_diff_cache_key(conversation_id) else {
@@ -1485,12 +1632,19 @@ async fn get_agent_conversation_workspace_review_cached(
     let snapshot =
         get_agent_conversation_workspace_review_for_state(app_state, conversation_id).await?;
     store_agent_workspace_review(conversation_id, &snapshot);
+    store_remote_workspace_snapshot(
+        agent_workspace_remote_review_cache(),
+        conversation_id,
+        snapshot.context_source,
+        &snapshot.response,
+    );
     Ok((snapshot, AgentWorkspaceDiffCacheStatus::Miss))
 }
 
 async fn get_agent_workspace_review_for_context(
     ctx: AgentWorkspaceContext,
 ) -> AppResult<AgentWorkspaceReviewSnapshot> {
+    let context_source = ctx.source;
     let working_path = ctx.working_path.to_string_lossy().to_string();
     let base_ref = ctx.base_ref.clone();
     let head_ref = ctx
@@ -1511,6 +1665,7 @@ async fn get_agent_workspace_review_for_context(
             }
         }
         return Ok(AgentWorkspaceReviewSnapshot {
+            context_source,
             response: AgentWorkspaceReviewResponse {
                 changes,
                 commits: Vec::new(),
@@ -1562,6 +1717,7 @@ async fn get_agent_workspace_review_for_context(
 
     let (changes, commits) = tokio::try_join!(changes_fut, commits_fut)?;
     Ok(AgentWorkspaceReviewSnapshot {
+        context_source,
         response: AgentWorkspaceReviewResponse {
             changes,
             commits: commits.into_iter().map(CommitInfoResponse::from).collect(),
@@ -3071,6 +3227,7 @@ mod tests {
 
     fn sample_review_snapshot(sha: &str) -> AgentWorkspaceReviewSnapshot {
         AgentWorkspaceReviewSnapshot {
+            context_source: AgentWorkspaceContextSource::Worktree,
             response: AgentWorkspaceReviewResponse {
                 changes: vec![FileChange {
                     path: "src/lib.rs".to_string(),
@@ -3121,6 +3278,7 @@ mod tests {
         invalidate_agent_workspace_diff_caches(&conversation_id);
 
         let context = AgentWorkspaceContext {
+            source: AgentWorkspaceContextSource::Worktree,
             working_path: PathBuf::from("/tmp/agent-workspace-review-cache"),
             base_ref: "base-sha".to_string(),
             diff_target: Some("feature/review-cache".to_string()),
@@ -3179,6 +3337,7 @@ mod tests {
     fn agent_workspace_diff_cache_stores_skip_uncacheable_ids() {
         let conversation_id = ChatConversationId::from_string(uuid::Uuid::nil().to_string());
         let context = AgentWorkspaceContext {
+            source: AgentWorkspaceContextSource::Worktree,
             working_path: PathBuf::from("/tmp/uncacheable-agent-workspace"),
             base_ref: "base-sha".to_string(),
             diff_target: None,
@@ -3242,6 +3401,7 @@ mod tests {
         let conversation_id = test_conversation_id();
         let state = AppState::new_test();
         let context = AgentWorkspaceContext {
+            source: AgentWorkspaceContextSource::Worktree,
             working_path: PathBuf::from("/tmp/pre-resolved-agent-workspace"),
             base_ref: "base-sha".to_string(),
             diff_target: None,
@@ -3559,6 +3719,7 @@ mod tests {
             &conversation_id,
             AgentWorkspaceContextMode::Strict,
             &AgentWorkspaceContext {
+                source: AgentWorkspaceContextSource::Worktree,
                 working_path: worktree_path,
                 base_ref: workspace
                     .base_commit
@@ -3744,6 +3905,7 @@ mod tests {
             &conversation_id,
             AgentWorkspaceContextMode::Strict,
             &AgentWorkspaceContext {
+                source: AgentWorkspaceContextSource::Worktree,
                 working_path: worktree_path,
                 base_ref: "HEAD".to_string(),
                 diff_target: Some("agent-branch".to_string()),
@@ -3995,6 +4157,7 @@ new file mode 100644
         let (_temp_dir, repo, base) = create_review_repo();
 
         let snapshot = get_agent_workspace_review_for_context(AgentWorkspaceContext {
+            source: AgentWorkspaceContextSource::Worktree,
             working_path: repo,
             base_ref: base,
             diff_target: None,
@@ -4033,6 +4196,7 @@ new file mode 100644
         run_git(&repo, &["checkout", "main"]);
 
         let snapshot = get_agent_workspace_review_for_context(AgentWorkspaceContext {
+            source: AgentWorkspaceContextSource::Worktree,
             working_path: repo,
             base_ref: base,
             diff_target: Some("feature/target-review".to_string()),
@@ -4550,6 +4714,7 @@ new file mode 100644
             &conversation_id,
             AgentWorkspaceContextMode::Strict,
             &AgentWorkspaceContext {
+                source: AgentWorkspaceContextSource::Worktree,
                 working_path: worktree_path,
                 base_ref: "HEAD".to_string(),
                 diff_target: Some("agent-branch".to_string()),

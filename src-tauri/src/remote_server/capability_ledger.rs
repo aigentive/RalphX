@@ -170,6 +170,7 @@ pub const MODULE_DEFAULTS: &[ModuleDefault] = &[
         "diagnostics may spawn provider CLIs",
     ),
     elevated_default("diff_commands", PROCESS, "diff getters may spawn git"),
+    agent_default("remote_diff_commands"),
     agent_default("execution_commands"),
     denied_default(
         "external_mcp_commands",
@@ -556,6 +557,22 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
             RiskClass::Read,
             NONE,
             "pure repository read of one coherent host-built MCP catalog snapshot; no provider readiness or catalog discovery carrier",
+        ),
+    },
+    CommandOverride {
+        command: "get_remote_agent_conversation_workspace_change_summary",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "snapshot-only in-memory read of a host-captured workspace change summary; no DiffService, GitService, or CLI resolver carrier",
+        ),
+    },
+    CommandOverride {
+        command: "get_remote_agent_conversation_workspace_review",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "snapshot-only in-memory read of host-captured workspace changes and commits; no DiffService, GitService, or CLI resolver carrier",
         ),
     },
     CommandOverride {

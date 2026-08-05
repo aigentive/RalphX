@@ -59,9 +59,11 @@ describe("MCP catalog remote routing", () => {
 
     const catalog = await mcpPolicyApi.get({ projectId: null, provider: "codex" });
 
+    // The REAL remote_invoke wire shape (network-invoke.ts): a struct param named `input`
+    // carrying {id, requestId, cmd, args} — not a `request` wrapper with a `command` key.
     expect(primitiveInvoke).toHaveBeenCalledWith("remote_invoke", {
-      request: expect.objectContaining({
-        command: "get_remote_mcp_catalog",
+      input: expect.objectContaining({
+        cmd: "get_remote_mcp_catalog",
         args: { input: { projectId: null, provider: "codex" } },
       }),
     });
@@ -86,8 +88,10 @@ describe("MCP catalog remote routing", () => {
 
     await mcpPolicyApi.get({ projectId: null, provider: "codex" });
 
-    expect(primitiveInvoke).toHaveBeenCalledWith("get_mcp_catalog", {
-      input: { projectId: null, provider: "codex" },
-    });
+    // The invoke seam passes an optional third schema argument; assert command + payload
+    // rather than the whole tuple, which would pin that arity by accident.
+    const [command, args] = primitiveInvoke.mock.calls[0] ?? [];
+    expect(command).toBe("get_mcp_catalog");
+    expect(args).toEqual({ input: { projectId: null, provider: "codex" } });
   });
 });

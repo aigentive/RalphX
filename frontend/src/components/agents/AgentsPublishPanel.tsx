@@ -156,6 +156,19 @@ const PUBLISH_PIPELINE_EVENT_STEPS = new Set([
   "published",
 ]);
 
+function formatSnapshotAge(capturedAt: string): string {
+  const elapsedSeconds = Math.max(
+    0,
+    Math.round((Date.now() - new Date(capturedAt).getTime()) / 1_000),
+  );
+  if (elapsedSeconds < 60) return "just now";
+  const elapsedMinutes = Math.round(elapsedSeconds / 60);
+  if (elapsedMinutes < 60) return `${elapsedMinutes}m ago`;
+  const elapsedHours = Math.round(elapsedMinutes / 60);
+  if (elapsedHours < 24) return `${elapsedHours}h ago`;
+  return `${Math.round(elapsedHours / 24)}d ago`;
+}
+
 function hasPublishReadinessAction(
   freshness: { recommendedActions?: readonly string[] | undefined } | null | undefined,
   action: string,
@@ -765,7 +778,16 @@ export function AgentPublishPanel({
   const isPublicationEventsLoading =
     Boolean(conversationId) &&
     (!canHydratePublishFacts || publicationEventsQuery.isLoading);
-  const hasNoDetectedChanges = reviewQuery.isSuccess && changes.length === 0;
+  const hasNoDetectedChanges =
+    reviewQuery.isSuccess && reviewQuery.data != null && changes.length === 0;
+  const snapshotCapturedAt =
+    reviewQuery.data?.snapshotCapturedAt ??
+    changeSummaryQuery.data?.snapshotCapturedAt;
+  const snapshotUnavailable =
+    reviewQuery.isSuccess &&
+    changeSummaryQuery.isSuccess &&
+    reviewQuery.data === null &&
+    changeSummaryQuery.data === null;
   const isManagedByTaskPipeline = isPipelineOwnedWorkspace && !isPipelinePrAutomationWorkspace;
   useEffect(() => {
     if (
@@ -1939,6 +1961,15 @@ export function AgentPublishPanel({
               borderColor: "var(--border-subtle)",
             }}
           >
+            {snapshotCapturedAt ? (
+              <p className="px-3 pt-3 text-xs text-[var(--text-muted)]">
+                Changes as of {formatSnapshotAge(snapshotCapturedAt)} (host snapshot)
+              </p>
+            ) : snapshotUnavailable ? (
+              <p className="px-3 pt-3 text-xs text-[var(--text-muted)]">
+                The host has not captured workspace changes yet. Open this workspace on the host to capture them.
+              </p>
+            ) : null}
             <AgentsPublishInlineDiffs
               key={`${conversationId ?? "missing"}:${terminalPublicationStatus ?? "active"}`}
               conversationId={conversationId ?? ""}

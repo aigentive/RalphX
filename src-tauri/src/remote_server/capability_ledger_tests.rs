@@ -1085,7 +1085,9 @@ fn detector_b_is_calibrated_and_floor_enforced() {
         // 597 -> 598: Wave C3's `get_remote_mcp_catalog` snapshot twin. It is a pure
         // repository read and its source-level carrier assertion proves both live provider
         // eligibility and provider catalog discovery stay outside the closure.
-        598,
+        // 598 -> 600: Wave C4a's two snapshot-only Changes reads. Both carry no git/process
+        // authority by construction; the source-level remote-diff carrier assertion is the proof.
+        600,
         "review the detector against the full command census"
     );
     let flagged = spawn_triggering_writers(
@@ -1717,6 +1719,27 @@ fn the_spawn_free_remote_mcp_policy_module_carries_no_authority_carriers() {
         assert!(
             !code.contains(carrier),
             "`remote_mcp_policy_commands` mentions `{carrier}` outside comments"
+        );
+    }
+}
+
+#[test]
+fn the_spawn_free_remote_diff_module_carries_no_authority_carriers() {
+    let sources = load_production_sources();
+    let (_, module) = sources
+        .iter()
+        .find(|(file, _)| file == "commands/remote_diff_commands.rs")
+        .expect("the spawn-free remote diff module must exist");
+    let code = module
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(code.contains("pub async fn get_remote_agent_conversation_workspace_review"));
+    for carrier in ["DiffService", "GitService", "resolve_git_cli_path"] {
+        assert!(
+            !code.contains(carrier),
+            "`remote_diff_commands` mentions `{carrier}` outside comments"
         );
     }
 }

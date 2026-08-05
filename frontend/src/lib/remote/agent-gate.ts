@@ -83,6 +83,11 @@ export const REMOTE_UNAVAILABLE_HINT =
  * signal, and several affordances are legitimately unavailable today.
  */
 export const AGENT_GATED_AFFORDANCES = {
+  // Changes hydration uses snapshot-only twins. Older hosts omit these rows, so Changes
+  // availability derives from manifest absence instead of attempting the git-backed locals.
+  workspaceChangesSummary:
+    "get_remote_agent_conversation_workspace_change_summary",
+  workspaceChangesReview: "get_remote_agent_conversation_workspace_review",
   // Refresh launches provider discovery on the host and is intentionally absent remotely.
   // The catalog read itself routes through the registered spawn-free snapshot twin.
   mcpCatalogRefresh: "refresh_mcp_catalog",

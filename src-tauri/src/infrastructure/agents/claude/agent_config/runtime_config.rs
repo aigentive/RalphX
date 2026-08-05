@@ -634,6 +634,9 @@ pub struct GitRuntimeConfig {
     pub workspace_freshness_cache_ttl_ms: u64,
     /// Short TTL for agent workspace review context and payload cache, in milliseconds.
     pub workspace_review_cache_ttl_ms: u64,
+    /// Long TTL for spawn-free remote workspace snapshots, in milliseconds.
+    #[serde(default = "default_remote_workspace_snapshot_ttl_ms")]
+    pub remote_workspace_snapshot_ttl_ms: u64,
     /// Short TTL for precomputed agent workspace PR descriptions, in milliseconds.
     pub workspace_pr_description_cache_ttl_ms: u64,
     /// Short TTL for live GitHub PR annotation payloads, in milliseconds.
@@ -691,6 +694,7 @@ impl Default for GitRuntimeConfig {
             provider_probe_cache_ttl_secs: 300,
             workspace_freshness_cache_ttl_ms: 2_000,
             workspace_review_cache_ttl_ms: 2_000,
+            remote_workspace_snapshot_ttl_ms: 86_400_000,
             workspace_pr_description_cache_ttl_ms: 300_000,
             workspace_pr_annotations_cache_ttl_ms: 30_000,
             workspace_pr_annotations_check_run_fetch_limit: 10,
@@ -710,6 +714,10 @@ impl Default for GitRuntimeConfig {
             step_0b_kill_timeout_secs: 5,
         }
     }
+}
+
+fn default_remote_workspace_snapshot_ttl_ms() -> u64 {
+    86_400_000
 }
 
 fn default_agent_workspace_pr_reconciliation_cache_ttl_ms() -> u64 {
@@ -1219,6 +1227,10 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
     env_u64!(
         cfg.git.workspace_review_cache_ttl_ms,
         "RALPHX_GIT_WORKSPACE_REVIEW_CACHE_TTL_MS"
+    );
+    env_u64!(
+        cfg.git.remote_workspace_snapshot_ttl_ms,
+        "RALPHX_GIT_REMOTE_WORKSPACE_SNAPSHOT_TTL_MS"
     );
     env_u64!(
         cfg.git.workspace_pr_description_cache_ttl_ms,

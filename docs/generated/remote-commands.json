@@ -1568,7 +1568,7 @@
       "authorityBearing": false,
       "enclosingFunction": "commands/diff_commands.rs:::::get_agent_conversation_workspace_change_summary_for_state",
       "file": "commands/diff_commands.rs",
-      "id": "commands/diff_commands.rs::commands/diff_commands.rs:::::get_agent_conversation_workspace_change_summary_for_state@914c4ae1da44d23a",
+      "id": "commands/diff_commands.rs::commands/diff_commands.rs:::::get_agent_conversation_workspace_change_summary_for_state@12968b3b82dcf471",
       "kind": "spawn_blocking",
       "readSurface": [],
       "sinksReached": []
@@ -3304,6 +3304,24 @@
       "pins": [],
       "scopeConfined": false,
       "target": "crate::commands::remote_mcp_policy_commands::get_remote_mcp_catalog"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_remote_agent_conversation_workspace_change_summary",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::remote_diff_commands::get_remote_agent_conversation_workspace_change_summary"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_remote_agent_conversation_workspace_review",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::remote_diff_commands::get_remote_agent_conversation_workspace_review"
     },
     {
       "argumentSensitive": false,
@@ -9340,6 +9358,24 @@
       "command": "get_remote_mcp_catalog",
       "module": "remote_mcp_policy_commands",
       "reason": "pure repository read of one coherent host-built MCP catalog snapshot; no provider readiness or catalog discovery carrier",
+      "registered": true,
+      "v1Resolution": "registerable"
+    },
+    {
+      "capabilities": [],
+      "class": "read",
+      "command": "get_remote_agent_conversation_workspace_change_summary",
+      "module": "remote_diff_commands",
+      "reason": "snapshot-only in-memory read of a host-captured workspace change summary; no DiffService, GitService, or CLI resolver carrier",
+      "registered": true,
+      "v1Resolution": "registerable"
+    },
+    {
+      "capabilities": [],
+      "class": "read",
+      "command": "get_remote_agent_conversation_workspace_review",
+      "module": "remote_diff_commands",
+      "reason": "snapshot-only in-memory read of host-captured workspace changes and commits; no DiffService, GitService, or CLI resolver carrier",
       "registered": true,
       "v1Resolution": "registerable"
     },

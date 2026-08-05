@@ -1935,6 +1935,28 @@ crate::remote_commands! {
         result: fallible,
     },
 
+    // Changes hydration is snapshot-only: host-local reads populate these entries while
+    // already inspecting git; paired reads never populate or refresh them.
+    "get_remote_agent_conversation_workspace_change_summary"
+        => crate::commands::remote_diff_commands::get_remote_agent_conversation_workspace_change_summary {
+        class: Read,
+        caps: [],
+        params: [
+            (arg conversation_id: String),
+        ],
+        call: async,
+        result: infallible,
+    },
+    "get_remote_agent_conversation_workspace_review"
+        => crate::commands::remote_diff_commands::get_remote_agent_conversation_workspace_review {
+        class: Read,
+        caps: [],
+        params: [
+            (arg conversation_id: String),
+        ],
+        call: async,
+        result: infallible,
+    },
     // The workspace shell's two boot reads. Without them a connected client has no project
     // list and no provider answer, so it renders first-run onboarding over a populated host.
     "list_remote_projects"

@@ -100,6 +100,9 @@ pub mod remote_conversation_message_commands;
 pub mod remote_conversation_mode_switch_commands;
 pub mod remote_conversation_start_commands;
 pub mod remote_device_commands;
+pub mod remote_diff_commands;
+#[cfg(test)]
+mod remote_diff_commands_tests;
 pub mod remote_environment_commands;
 pub mod remote_execution_settings_commands;
 pub mod remote_execution_status_commands;

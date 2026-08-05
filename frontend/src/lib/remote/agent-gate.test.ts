@@ -336,9 +336,19 @@ describe("affordance mapping", () => {
       AGENT_GATED_AFFORDANCES
     ) as Array<keyof typeof AGENT_GATED_AFFORDANCES>) {
       const state = resolveAffordanceGate(affordance, true, WITHOUT_UI_AGENT);
-      const expected = (DEFAULT_PAIRING_BRAKES as readonly string[]).includes(
-        affordance
-      )
+      // Derive the expectation from the MANIFEST's own class rather than a hand-kept list:
+      // `read` and `operate` ops are usable on a default pairing, `agentControl` is not, and
+      // an op the host does not expose at all is `unavailable`. Hardcoding the exceptions
+      // meant every new read-class affordance failed this test for being correct.
+      const op = REMOTE_FACADE_OPS[AGENT_GATED_AFFORDANCES[affordance]];
+      // An argument-sensitive op (today `update_task`) is operate-class overall while some of
+      // its FIELDS still require ui:agent, so it legitimately resolves `gated` — the field
+      // gate is the whole point of that classification.
+      const usableWithoutUiAgent =
+        op?.opClass === "read" ||
+        (op?.opClass === "operate" && !op.argumentSensitive) ||
+        (DEFAULT_PAIRING_BRAKES as readonly string[]).includes(affordance);
+      const expected = usableWithoutUiAgent
         ? ["enabled", "unavailable"]
         : ["gated", "unavailable"];
       expect(expected, affordance).toContain(state.status);

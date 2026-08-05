@@ -250,6 +250,8 @@ git:
   workspace_freshness_cache_ttl_ms: 2000 # Env: RALPHX_GIT_WORKSPACE_FRESHNESS_CACHE_TTL_MS
   # diff_commands.rs — short backend TTL for workspace review context/payload reuse
   workspace_review_cache_ttl_ms: 2000 # Env: RALPHX_GIT_WORKSPACE_REVIEW_CACHE_TTL_MS
+  # diff_commands.rs — long TTL for spawn-free paired-device workspace snapshots
+  remote_workspace_snapshot_ttl_ms: 86400000 # Env: RALPHX_GIT_REMOTE_WORKSPACE_SNAPSHOT_TTL_MS
   # agent_workspace_pr_description.rs — short backend TTL for precomputed publish PR descriptions
   workspace_pr_description_cache_ttl_ms: 300000 # Env: RALPHX_GIT_WORKSPACE_PR_DESCRIPTION_CACHE_TTL_MS
   # diff_commands.rs — short backend TTL for live GitHub PR annotation payload reuse

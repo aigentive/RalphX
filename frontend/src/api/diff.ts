@@ -10,6 +10,8 @@ import {
   TaskCommitsResponseSchema,
   AgentWorkspaceChangeSummaryResponseSchema,
   AgentWorkspaceReviewResponseSchema,
+  RemoteAgentWorkspaceChangeSummaryResponseSchema,
+  RemoteAgentWorkspaceReviewResponseSchema,
   PrDiffAnnotationsResponseSchema,
   WorkspaceReviewHunkAnnotationsResponseSchema,
   RangeFetchResponseSchema,
@@ -40,6 +42,10 @@ import type {
   RangeLine,
 } from "./diff.types";
 import { backendFetch } from "./backend";
+import {
+  getTransportEnvironmentId,
+  isRemoteEnvironmentId,
+} from "@/lib/remote/active-environment";
 
 // Re-export types for convenience
 export type {
@@ -83,6 +89,8 @@ export {
   AgentWorkspaceRepairStateSchema,
   AgentWorkspaceChangeSummaryResponseSchema,
   AgentWorkspaceReviewResponseSchema,
+  RemoteAgentWorkspaceChangeSummaryResponseSchema,
+  RemoteAgentWorkspaceReviewResponseSchema,
   DiffLineKindSchema,
   DiffLineSchema,
   DiffHunkSchema,
@@ -224,23 +232,69 @@ export const diffApi = {
 
   getAgentConversationWorkspaceReview: (
     conversationId: string
-  ): Promise<AgentWorkspaceReview> =>
-    typedInvokeWithTransform(
-      "get_agent_conversation_workspace_review",
+  ): Promise<AgentWorkspaceReview | null> => {
+    if (!isRemoteEnvironmentId(getTransportEnvironmentId())) {
+      return typedInvokeWithTransform(
+        "get_agent_conversation_workspace_review",
+        { conversationId },
+        AgentWorkspaceReviewResponseSchema,
+        transformAgentWorkspaceReview
+      );
+    }
+    return typedInvokeWithTransform(
+      "get_remote_agent_conversation_workspace_review",
       { conversationId },
-      AgentWorkspaceReviewResponseSchema,
-      transformAgentWorkspaceReview
-    ),
+      RemoteAgentWorkspaceReviewResponseSchema,
+      (envelope) =>
+        envelope.snapshot === null
+          ? null
+          : {
+              ...transformAgentWorkspaceReview(envelope.snapshot),
+              ...(envelope.captured_at !== null && {
+                snapshotCapturedAt: envelope.captured_at,
+              }),
+              ...(envelope.cache_version !== null && {
+                snapshotCacheVersion: envelope.cache_version,
+              }),
+              ...(envelope.context_source !== null && {
+                snapshotContextSource: envelope.context_source,
+              }),
+            }
+    );
+  },
 
   getAgentConversationWorkspaceChangeSummary: (
     conversationId: string
-  ): Promise<AgentWorkspaceChangeSummary> =>
-    typedInvokeWithTransform(
-      "get_agent_conversation_workspace_change_summary",
+  ): Promise<AgentWorkspaceChangeSummary | null> => {
+    if (!isRemoteEnvironmentId(getTransportEnvironmentId())) {
+      return typedInvokeWithTransform(
+        "get_agent_conversation_workspace_change_summary",
+        { conversationId },
+        AgentWorkspaceChangeSummaryResponseSchema,
+        transformAgentWorkspaceChangeSummary
+      );
+    }
+    return typedInvokeWithTransform(
+      "get_remote_agent_conversation_workspace_change_summary",
       { conversationId },
-      AgentWorkspaceChangeSummaryResponseSchema,
-      transformAgentWorkspaceChangeSummary
-    ),
+      RemoteAgentWorkspaceChangeSummaryResponseSchema,
+      (envelope) =>
+        envelope.snapshot === null
+          ? null
+          : {
+              ...transformAgentWorkspaceChangeSummary(envelope.snapshot),
+              ...(envelope.captured_at !== null && {
+                snapshotCapturedAt: envelope.captured_at,
+              }),
+              ...(envelope.cache_version !== null && {
+                snapshotCacheVersion: envelope.cache_version,
+              }),
+              ...(envelope.context_source !== null && {
+                snapshotContextSource: envelope.context_source,
+              }),
+            }
+    );
+  },
 
   getAgentConversationWorkspaceRepairChangeSummary: (
     conversationId: string

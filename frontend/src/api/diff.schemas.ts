@@ -215,3 +215,27 @@ export const AgentWorkspaceChangeSummaryResponseSchema = z.object({
   conflicted: AgentWorkspaceConflictSummarySchema.optional(),
   repair_state: AgentWorkspaceRepairStateSchema.optional(),
 });
+
+export const AgentWorkspaceContextSourceSchema = z.enum([
+  "worktree",
+  "local_branch",
+  "plan_branch",
+  "pull_request_head",
+  "github_patch",
+  "terminal_pull_request_head",
+  "repair_worktree",
+]);
+
+export const RemoteAgentWorkspaceReviewResponseSchema = z.object({
+  snapshot: AgentWorkspaceReviewResponseSchema.nullable(),
+  captured_at: z.string().nullable(),
+  cache_version: z.string().nullable(),
+  context_source: AgentWorkspaceContextSourceSchema.nullable(),
+});
+
+export const RemoteAgentWorkspaceChangeSummaryResponseSchema = z.object({
+  snapshot: AgentWorkspaceChangeSummaryResponseSchema.nullable(),
+  captured_at: z.string().nullable(),
+  cache_version: z.string().nullable(),
+  context_source: AgentWorkspaceContextSourceSchema.nullable(),
+});

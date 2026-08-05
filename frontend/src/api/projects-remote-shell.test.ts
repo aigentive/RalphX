@@ -150,7 +150,30 @@ describe("workspace shell read routing", () => {
     expect(project.name).toBe("RalphX");
   });
 
-  it("preserves the path-free GitHub capability kind and durable PR setting", async () => {
+  it("preserves the path-free GitHub capability snapshot and durable PR setting", async () => {
+    useRemoteEnvironment();
+    remoteOk({
+      ...RAW_PROJECT,
+      github_pr_enabled: true,
+      repository_capability_snapshot: {
+        kind: "github",
+        has_remote: true,
+        inspected_at: "2026-08-05T18:00:00+00:00",
+        // The host omits `message` when there is none (serde skip_serializing_if), so a
+        // realistic success payload has no key here at all — not an explicit null.
+      },
+    });
+
+    const project = await projectsApi.get("project-1");
+
+    expect(project.githubPrEnabled).toBe(true);
+    expect(project.repositoryCapability?.kind).toBe("github");
+  });
+
+  // Wave C2 retired `repository_capability_kind`: the host derived it from the
+  // github_pr_enabled USER PREFERENCE, so it asserted a capability nothing had inspected.
+  // An older host still sending it must not be believed.
+  it("refuses to trust the retired preference-derived capability field", async () => {
     useRemoteEnvironment();
     remoteOk({
       ...RAW_PROJECT,
@@ -160,8 +183,7 @@ describe("workspace shell read routing", () => {
 
     const project = await projectsApi.get("project-1");
 
-    expect(project.githubPrEnabled).toBe(true);
-    expect(project.repositoryCapability?.kind).toBe("github");
+    expect(project.repositoryCapability?.kind).toBe("notInspected");
   });
 
   it("reports not-inspected when the remote twin omits the capability kind", async () => {
