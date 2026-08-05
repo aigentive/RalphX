@@ -428,6 +428,10 @@ async fn full_packet_does_not_join_identity_only_context() {
         .target
         .expect("identity target should exist");
 
+    assert_eq!(
+        identity.review_packet,
+        crate::application::agent_workspace_review::AgentWorkspaceReviewPacket::default()
+    );
     assert_eq!(identity.diff_fingerprint, full.diff_fingerprint);
     assert_eq!(full.review_packet.summary.files_changed, 64);
     assert_eq!(full.review_packet.changed_files.len(), 64);
