@@ -1482,6 +1482,166 @@ async fn gate1_project_agent_conversation_delivers_exact_stream_json_to_live_cla
 }
 
 #[tokio::test]
+async fn verify_plan_retirement_after_settled_burst_does_not_requeue() {
+    let _allow_spawn =
+        crate::support::env::EnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    let (_runtime_plugin_guard, _generated_plugin_root) =
+        configure_runtime_plugin_dirs_for_gate1_persona_test();
+    let temp = tempfile::tempdir().expect("test tempdir");
+    let capture = temp.path().join("fresh-verify-plan-cli");
+    let cli_path = write_capturing_claude_cli(temp.path(), &capture);
+    ralphx_lib::testing::seed_available_harness_probes_for_test_at(
+        cli_path.to_str().expect("UTF-8 CLI path"),
+    );
+
+    let app = mock_builder()
+        .manage(AppState::new_test())
+        .build(mock_context(noop_assets()))
+        .expect("build mock app");
+    let queued_events = Arc::new(Mutex::new(Vec::new()));
+    let captured_events = Arc::clone(&queued_events);
+    let _listener = app.listen("agent:message_queued", move |event| {
+        captured_events
+            .lock()
+            .expect("queued event lock")
+            .push(event.payload().to_string());
+    });
+    let state = app.state::<AppState>();
+    let context_id = "project-gate1-verify-plan-settled-burst";
+    let (project_dir, conversation_id, retired_run_id, interactive_key, mut child) =
+        setup_live_project_continuation(
+            &state,
+            context_id,
+            None,
+            Some(("sonnet", "claude-sonnet-4-6")),
+        )
+        .await;
+    initialize_git_project(project_dir.path());
+    let retired_owner = state
+        .interactive_process_registry
+        .capture_owner(&interactive_key)
+        .await
+        .expect("live IPR owner");
+    let service = state
+        .build_chat_service_for_runtime(
+            Some(Arc::new(ExecutionState::new())),
+            Some(app.handle().clone()),
+        )
+        .with_cli_path(cli_path)
+        .with_plugin_dir(runtime_plugin_dir_for_gate1_persona_test())
+        .with_working_directory(temp.path());
+
+    for message in ["first delivered burst turn", "second delivered burst turn"] {
+        let result = service
+            .send_message(
+                ChatContextType::Project,
+                context_id,
+                message,
+                SendMessageOptions {
+                    conversation_id_override: Some(conversation_id),
+                    model_override: Some("sonnet".to_string()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("Gate 1 burst delivery");
+        assert!(!result.was_queued);
+        assert_eq!(result.agent_run_id, retired_run_id);
+    }
+
+    // This is the owner-scoped ledger and idle transition performed by a
+    // finalized assistant turn before the Verify Plan send observes the entry.
+    assert_eq!(
+        state
+            .interactive_process_registry
+            .settle_delivered_turns_if_owner(&interactive_key, retired_owner.token)
+            .await
+            .len(),
+        2,
+        "one finalized assistant turn settles the delivered burst"
+    );
+    assert!(matches!(
+        state
+            .interactive_process_registry
+            .complete_turn_if_owner(
+                &interactive_key,
+                retired_owner.token,
+                &retired_run_id,
+            )
+            .await,
+        ralphx_lib::application::interactive_process_registry::InteractiveProcessTurnCompleteDisposition::KeepAlive
+    ));
+
+    let verify_plan_result = service
+        .send_message(
+            ChatContextType::Project,
+            context_id,
+            "start fresh Verify Plan run",
+            SendMessageOptions {
+                conversation_id_override: Some(conversation_id),
+                metadata: Some(format!(
+                    r#"{{"ralphx_action_kind":"verify_plan","ralphx_action_context_id":"{}","ralphx_action_target_id":"plan-artifact"}}"#,
+                    conversation_id.as_str(),
+                )),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("Verify Plan send must retire the idle owner and launch fresh");
+
+    assert!(!verify_plan_result.was_queued);
+    assert_ne!(verify_plan_result.agent_run_id, retired_run_id);
+    let replacement_owner = state
+        .interactive_process_registry
+        .capture_owner(&interactive_key)
+        .await
+        .expect("fresh Verify Plan IPR owner");
+    assert_ne!(replacement_owner.token, retired_owner.token);
+    assert_eq!(
+        replacement_owner.agent_run_id, verify_plan_result.agent_run_id,
+        "the old IPR owner must be replaced by the fresh Verify Plan owner"
+    );
+    assert_eq!(
+        state
+            .running_agent_registry
+            .get(&RunningAgentKey::new("project", conversation_id.as_str()))
+            .await
+            .expect("fresh Verify Plan running registration")
+            .agent_run_id,
+        verify_plan_result.agent_run_id,
+        "retiring the old owner must unregister its run before fresh launch"
+    );
+
+    let queue_key = QueueKey::new(ChatContextType::Project, conversation_id.as_str());
+    assert!(
+        state
+            .queued_message_repo
+            .list(&queue_key)
+            .await
+            .expect("durable queue")
+            .is_empty(),
+        "settled stdin turns must not be durably requeued during Verify Plan retirement"
+    );
+    assert!(
+        state
+            .message_queue
+            .get_queued_with_key(&queue_key)
+            .is_empty(),
+        "settled stdin turns must not be retained in the in-memory queue"
+    );
+    assert!(
+        queued_events.lock().expect("queued event lock").is_empty(),
+        "Verify Plan retirement must not publish phantom queued-message events"
+    );
+
+    state
+        .interactive_process_registry
+        .remove(&interactive_key)
+        .await;
+    let _ = child.wait().await;
+}
+
+#[tokio::test]
 async fn gate1_ownerless_process_falls_through_without_stdin_or_message_side_effects() {
     let events = RecordingEventSink::new();
     let mut state = AppState::new_test();
