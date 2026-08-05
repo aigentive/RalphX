@@ -47,6 +47,9 @@ import {
   type ChatScrollControllerDeps,
 } from "./scroll/controller";
 import {
+  recordChatScrollTrace,
+} from "./scroll/diagnostics";
+import {
   buildLiveTranscriptRows,
   isLiveThinkingGroupKey,
   liveToolGroupKey,
@@ -184,10 +187,11 @@ function ScrollToBottomControl({
       data-testid="chat-scroll-to-bottom-control"
       aria-hidden={!visible}
       className={cn(
-        "absolute bottom-4 left-0 right-0 z-10 flex justify-center pointer-events-none",
+        "absolute left-0 right-0 z-10 flex justify-center pointer-events-none",
         visible ? "opacity-100" : "opacity-0",
       )}
       style={{
+        bottom: "calc(var(--chat-bottom-inset, 0px) + 1rem)",
         contain: "layout paint style",
       }}
     >
@@ -978,6 +982,7 @@ interface ChatMessageListProps {
   onLoadOlderMessages?: (() => void | Promise<void>) | undefined;
   initialPaintCoverKey?: string | null | undefined;
   onInitialPaintReady?: ((key: string) => void) | undefined;
+  registerBottomSpacer?: ((element: HTMLElement | null) => void) | undefined;
 }
 
 // ============================================================================
@@ -1015,6 +1020,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       onLoadOlderMessages,
       initialPaintCoverKey = null,
       onInitialPaintReady,
+      registerBottomSpacer,
     },
     ref
   ) {
@@ -1034,7 +1040,10 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     const conversationLastUserMessageIdRef = useRef<string | null>(lastUserMessageId);
     const conversationAgentRunningRef = useRef(isAgentRunning);
     const scrollerElRef = useRef<HTMLElement | null>(null);
+    const conversationIdRef = useRef(conversationId ?? null);
     const scrollerResizeObserverRef = useRef<ResizeObserver | null>(null);
+    const bottomSpacerResizeObserverRef = useRef<ResizeObserver | null>(null);
+    const bottomSpacerHeightRef = useRef<number | null>(null);
     const lastRenderedRowResizeObserverRef = useRef<ResizeObserver | null>(null);
     const lastRenderedRowHeightRef = useRef<number | null>(null);
     const previousTotalListHeightRef = useRef<number>(-1);
@@ -1056,6 +1065,10 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     const transcriptRootRef = useRef<HTMLDivElement | null>(null);
     const initialPaintReadyFrameRef = useRef<number | null>(null);
     const initialPaintReadyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    useLayoutEffect(() => {
+      conversationIdRef.current = conversationId ?? null;
+    }, [conversationId]);
 
     useEffect(() => {
       if (expandedToolGroupConversationRef.current === conversationId) {
@@ -1105,13 +1118,63 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       requestFrame: (callback) => requestAnimationFrame(callback),
       cancelFrame: (frame) => cancelAnimationFrame(frame),
       onVisualBottomChange: setIsVisuallyAtBottom,
-      debugLog: (event, detail) => logger.debug(`[ChatScroll] ${event}`, detail),
+      debugLog: (event, detail) => {
+        logger.debug(`[ChatScroll] ${event}`, detail);
+        recordChatScrollTrace({
+          conversationId: conversationIdRef.current,
+          source: "controller",
+          event,
+          state: typeof detail.state === "string" ? detail.state : null,
+          element: scrollerElRef.current,
+          detail,
+        });
+      },
     }));
     const [scrollController] = useState<ChatScrollController>(() =>
       createChatScrollController({
         ...scrollControllerDeps,
       }),
     );
+
+    const disconnectBottomSpacerResizeObserver = useCallback(() => {
+      bottomSpacerResizeObserverRef.current?.disconnect();
+      bottomSpacerResizeObserverRef.current = null;
+      bottomSpacerHeightRef.current = null;
+    }, []);
+
+    const handleBottomSpacerRef = useCallback((element: HTMLElement | null) => {
+      disconnectBottomSpacerResizeObserver();
+      registerBottomSpacer?.(element);
+      if (!element || typeof ResizeObserver === "undefined") {
+        return;
+      }
+
+      const observer = new ResizeObserver((entries) => {
+        const entry = entries.find(({ target }) => target === element);
+        if (!entry) {
+          return;
+        }
+
+        const previousHeight = bottomSpacerHeightRef.current;
+        const nextHeight = entry.contentRect.height;
+        bottomSpacerHeightRef.current = nextHeight;
+        recordChatScrollTrace({
+          conversationId: conversationIdRef.current,
+          source: "layout",
+          event: "bottom-spacer-resize",
+          element: scrollerElRef.current,
+          detail: { previousHeight, nextHeight },
+        });
+        if (
+          previousHeight !== null
+          && Math.abs(nextHeight - previousHeight) > VISUAL_BOTTOM_EPSILON_PX
+        ) {
+          scrollController.notifyContentGrowth();
+        }
+      });
+      observer.observe(element);
+      bottomSpacerResizeObserverRef.current = observer;
+    }, [disconnectBottomSpacerResizeObserver, registerBottomSpacer, scrollController]);
 
     const disconnectLastRenderedRowResizeObserver = useCallback(() => {
       lastRenderedRowResizeObserverRef.current?.disconnect();
@@ -1134,9 +1197,16 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         const previousHeight = lastRenderedRowHeightRef.current;
         const nextHeight = entry.contentRect.height;
         lastRenderedRowHeightRef.current = nextHeight;
+        recordChatScrollTrace({
+          conversationId: conversationIdRef.current,
+          source: "layout",
+          event: "last-row-resize",
+          element: scrollerElRef.current,
+          detail: { previousHeight, nextHeight },
+        });
         if (
-          previousHeight !== null
-          && nextHeight > previousHeight + VISUAL_BOTTOM_EPSILON_PX
+          previousHeight === null
+          || nextHeight > previousHeight + VISUAL_BOTTOM_EPSILON_PX
         ) {
           scrollController.notifyContentGrowth();
         }
@@ -1145,21 +1215,25 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       lastRenderedRowResizeObserverRef.current = observer;
     }, [disconnectLastRenderedRowResizeObserver, scrollController]);
 
-    const toggleThinkingGroup = useCallback((groupKey: string) => {
+    const toggleThinkingGroup = useCallback((
+      groupKey: string,
+      toggleElement?: HTMLElement | null,
+    ) => {
+      scrollController.captureAnchor(toggleElement ?? undefined);
       setThinkingIntentByGroupKey((current) => {
         const next = new Map(current);
         const isExpanded = current.get(groupKey) !== "collapsed";
         next.set(groupKey, isExpanded ? "collapsed" : "expanded");
         return next;
       });
-    }, []);
+    }, [scrollController]);
 
     const toggleToolCallGroup = useCallback((groupKey: string, toggleElement?: HTMLElement | null) => {
-      scrollController?.captureAnchor(toggleElement ?? undefined);
       if (isThinkingGroupKey(groupKey)) {
-        toggleThinkingGroup(groupKey);
+        toggleThinkingGroup(groupKey, toggleElement);
         return;
       }
+      scrollController.captureAnchor(toggleElement ?? undefined);
       setExpandedToolGroupKeys((current) => {
         const next = new Set(current);
         if (next.has(groupKey)) {
@@ -1582,8 +1656,8 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     }, [lastItemIndex]);
 
     useLayoutEffect(() => {
-      scrollController?.restoreAnchor();
-    }, [expandedToolGroupKeys, scrollController]);
+      scrollController.restoreAnchor();
+    }, [expandedToolGroupKeys, scrollController, thinkingIntentByGroupKey]);
 
     const updateScrollableOverflow = useCallback((element: HTMLElement) => {
       setHasScrollableOverflow(
@@ -1595,6 +1669,13 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       const previousHeight = previousTotalListHeightRef.current;
       previousTotalListHeightRef.current = height;
       const scroller = scrollerElRef.current;
+      recordChatScrollTrace({
+        conversationId: conversationIdRef.current,
+        source: "layout",
+        event: "virtuoso-total-height",
+        element: scroller,
+        detail: { previousHeight, height },
+      });
       if (scroller) {
         updateScrollableOverflow(scroller);
       }
@@ -1651,6 +1732,8 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         previous.removeEventListener("pointerdown", handleScrollerPointerDown);
         previous.removeEventListener("pointerup", handleScrollerPointerUp);
         previous.removeEventListener("pointercancel", handleScrollerPointerUp);
+        window.removeEventListener("pointerup", handleScrollerPointerUp);
+        window.removeEventListener("pointercancel", handleScrollerPointerUp);
         previous.removeEventListener("keydown", handleScrollerKeyDown);
         disconnectScrollerResizeObserver();
         scrollController?.detach();
@@ -1674,11 +1757,19 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       el.addEventListener("pointerdown", handleScrollerPointerDown, { passive: true });
       el.addEventListener("pointerup", handleScrollerPointerUp, { passive: true });
       el.addEventListener("pointercancel", handleScrollerPointerUp, { passive: true });
+      window.addEventListener("pointerup", handleScrollerPointerUp, { passive: true });
+      window.addEventListener("pointercancel", handleScrollerPointerUp, { passive: true });
       el.addEventListener("keydown", handleScrollerKeyDown);
       scrollController?.attach(el);
       if (typeof ResizeObserver !== "undefined") {
         const observer = new ResizeObserver(() => {
           updateScrollableOverflow(el);
+          recordChatScrollTrace({
+            conversationId: conversationIdRef.current,
+            source: "layout",
+            event: "scroller-resize",
+            element: el,
+          });
           scrollController?.notifyContainerResize();
         });
         observer.observe(el);
@@ -1699,9 +1790,11 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
 
     useEffect(() => () => {
       scrollController.detach();
+      disconnectBottomSpacerResizeObserver();
       disconnectScrollerResizeObserver();
       disconnectLastRenderedRowResizeObserver();
     }, [
+      disconnectBottomSpacerResizeObserver,
       disconnectLastRenderedRowResizeObserver,
       disconnectScrollerResizeObserver,
       scrollController,
@@ -1969,9 +2062,18 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
           </ContentShell>
         </div>
       ),
+      Footer: () => (
+        <div
+          ref={handleBottomSpacerRef}
+          data-testid="chat-transcript-bottom-spacer"
+          aria-hidden
+          style={{ height: 0, flexShrink: 0 }}
+        />
+      ),
     }), [
       contentWidthClassName,
       failedRun, onDismissFailedRun,
+      handleBottomSpacerRef,
       topInsetClassName,
     ]);
 
@@ -2012,7 +2114,12 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
           return null;
         }
         return (
-          <div className="px-3 pb-3 w-full relative" style={contentContainerStyle}>
+          <div
+            ref={isLastVisibleTimelineItem ? handleLastRenderedRowRef : undefined}
+            className="px-3 pb-3 w-full relative"
+            data-chat-last-rendered-row={isLastVisibleTimelineItem ? "true" : undefined}
+            style={contentContainerStyle}
+          >
             <ContentShell className={contentWidthClassName}>
               {footerContent}
             </ContentShell>
@@ -2213,6 +2320,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
                   expandedToolGroupKeys={expandedToolGroupKeys}
                   isThinkingGroupExpanded={isThinkingGroupExpanded}
                   contentWidthClassName={contentWidthClassName}
+                  rowRef={index === lastVisibleTimelineIndex ? handleLastRenderedRowRef : undefined}
                   onToggleToolCallGroup={toggleToolCallGroup}
                   renderStreamingToolCallBlock={renderStreamingToolCallBlock}
                 />
@@ -2223,7 +2331,13 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
                 return null;
               }
               return (
-                <div key="streaming-live" className="px-3 pb-3 w-full relative" style={contentContainerStyle}>
+                <div
+                  key="streaming-live"
+                  ref={index === lastVisibleTimelineIndex ? handleLastRenderedRowRef : undefined}
+                  className="px-3 pb-3 w-full relative"
+                  data-chat-last-rendered-row={index === lastVisibleTimelineIndex ? "true" : undefined}
+                  style={contentContainerStyle}
+                >
                   <ContentShell className={contentWidthClassName}>
                     {footerContent}
                   </ContentShell>
@@ -2349,6 +2463,12 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
             visible={shouldShowScrollToBottom}
             onClick={handleScrollToBottomClick}
             onWheel={handleScrollToBottomWheel}
+          />
+          <div
+            ref={handleBottomSpacerRef}
+            data-testid="chat-transcript-bottom-spacer"
+            aria-hidden
+            style={{ height: 0, flexShrink: 0 }}
           />
         </div>
       );
