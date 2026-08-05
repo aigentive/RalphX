@@ -93,6 +93,7 @@ vi.mock("react-virtuoso", async () => {
 
   type VirtuosoProps = Record<string, unknown> & {
     components?: {
+      Footer?: React.ComponentType;
       Header?: React.ComponentType;
       Scroller?: React.ForwardRefExoticComponent<
         React.ComponentPropsWithoutRef<"div"> & React.RefAttributes<HTMLDivElement>
@@ -109,6 +110,7 @@ vi.mock("react-virtuoso", async () => {
     const elementRef = React.useRef<HTMLDivElement | null>(null);
     const data = props.data ?? [];
     const Scroller = props.components?.Scroller ?? "div";
+    const Footer = props.components?.Footer;
     const Header = props.components?.Header;
     const { rangeChanged, scrollerRef } = props;
 
@@ -151,6 +153,7 @@ vi.mock("react-virtuoso", async () => {
             </div>
           ))}
         </div>
+        {Footer ? <Footer /> : null}
       </Scroller>
     );
   });
@@ -601,6 +604,75 @@ describe("ChatMessageList controller integration", () => {
     expect(scrollWrites).not.toHaveBeenCalled();
     expect(scroller.scrollTop).toBe(200);
     expect(screen.getByTestId("chat-scroll-to-bottom-control")).toHaveAttribute("aria-hidden", "false");
+  });
+
+  it("re-pins for composer spacer resizes only while the reader is following", () => {
+    const resizeObservers: Array<{
+      callback: ResizeObserverCallback;
+      targets: Set<Element>;
+    }> = [];
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        private readonly record: (typeof resizeObservers)[number];
+
+        constructor(callback: ResizeObserverCallback) {
+          this.record = { callback, targets: new Set() };
+          resizeObservers.push(this.record);
+        }
+
+        disconnect(): void {
+          this.record.targets.clear();
+        }
+
+        observe(target: Element): void {
+          this.record.targets.add(target);
+        }
+
+        unobserve(target: Element): void {
+          this.record.targets.delete(target);
+        }
+      },
+    );
+    renderList();
+    const scroller = primeAtBottom();
+    const spacer = screen.getByTestId("chat-transcript-bottom-spacer");
+    const spacerObserver = resizeObservers.find(({ targets }) => targets.has(spacer));
+    expect(spacerObserver).toBeDefined();
+    const resizeSpacer = (height: number) => {
+      spacerObserver?.callback(
+        [{ contentRect: { height }, target: spacer } as ResizeObserverEntry],
+        {} as ResizeObserver,
+      );
+    };
+
+    act(() => resizeSpacer(40));
+    scrollWrites.mockClear();
+    setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_040, scrollTop: 500 });
+    act(() => resizeSpacer(80));
+    flushAnimationFrames();
+
+    expect(scroller.scrollTop).toBe(540);
+    expect(scrollWrites).toHaveBeenCalledWith(expect.objectContaining({ top: 540 }));
+
+    scrollWrites.mockClear();
+    setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_000, scrollTop: 540 });
+    act(() => resizeSpacer(40));
+    flushAnimationFrames();
+
+    expect(scroller.scrollTop).toBe(500);
+    expect(scrollWrites).toHaveBeenCalledWith(expect.objectContaining({ top: 500 }));
+
+    setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_000, scrollTop: 200 });
+    fireEvent.wheel(scroller, { deltaY: -80 });
+    fireEvent.scroll(scroller);
+    scrollWrites.mockClear();
+    setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_080, scrollTop: 200 });
+    act(() => resizeSpacer(120));
+    flushAnimationFrames();
+
+    expect(scroller.scrollTop).toBe(200);
+    expect(scrollWrites).not.toHaveBeenCalled();
   });
 
   it("leaves controller follow state untouched for a prepend epoch", () => {

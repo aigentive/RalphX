@@ -378,7 +378,7 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
         cancelIntentAndFree("pointer-scroll");
         return;
       }
-      if (movedUp && state !== "free" && !isWithinActiveIntent(element)) {
+      if (movedUp && state === "pinned" && !isWithinActiveIntent(element)) {
         cancelIntentAndFree("scroll-away");
         return;
       }

@@ -1038,6 +1038,8 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     const conversationAgentRunningRef = useRef(isAgentRunning);
     const scrollerElRef = useRef<HTMLElement | null>(null);
     const scrollerResizeObserverRef = useRef<ResizeObserver | null>(null);
+    const bottomSpacerResizeObserverRef = useRef<ResizeObserver | null>(null);
+    const bottomSpacerHeightRef = useRef<number | null>(null);
     const lastRenderedRowResizeObserverRef = useRef<ResizeObserver | null>(null);
     const lastRenderedRowHeightRef = useRef<number | null>(null);
     const previousTotalListHeightRef = useRef<number>(-1);
@@ -1115,6 +1117,39 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         ...scrollControllerDeps,
       }),
     );
+
+    const disconnectBottomSpacerResizeObserver = useCallback(() => {
+      bottomSpacerResizeObserverRef.current?.disconnect();
+      bottomSpacerResizeObserverRef.current = null;
+      bottomSpacerHeightRef.current = null;
+    }, []);
+
+    const handleBottomSpacerRef = useCallback((element: HTMLElement | null) => {
+      disconnectBottomSpacerResizeObserver();
+      registerBottomSpacer?.(element);
+      if (!element || typeof ResizeObserver === "undefined") {
+        return;
+      }
+
+      const observer = new ResizeObserver((entries) => {
+        const entry = entries.find(({ target }) => target === element);
+        if (!entry) {
+          return;
+        }
+
+        const previousHeight = bottomSpacerHeightRef.current;
+        const nextHeight = entry.contentRect.height;
+        bottomSpacerHeightRef.current = nextHeight;
+        if (
+          previousHeight !== null
+          && Math.abs(nextHeight - previousHeight) > VISUAL_BOTTOM_EPSILON_PX
+        ) {
+          scrollController.notifyContentGrowth();
+        }
+      });
+      observer.observe(element);
+      bottomSpacerResizeObserverRef.current = observer;
+    }, [disconnectBottomSpacerResizeObserver, registerBottomSpacer, scrollController]);
 
     const disconnectLastRenderedRowResizeObserver = useCallback(() => {
       lastRenderedRowResizeObserverRef.current?.disconnect();
@@ -1706,9 +1741,11 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
 
     useEffect(() => () => {
       scrollController.detach();
+      disconnectBottomSpacerResizeObserver();
       disconnectScrollerResizeObserver();
       disconnectLastRenderedRowResizeObserver();
     }, [
+      disconnectBottomSpacerResizeObserver,
       disconnectLastRenderedRowResizeObserver,
       disconnectScrollerResizeObserver,
       scrollController,
@@ -1978,7 +2015,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       ),
       Footer: () => (
         <div
-          ref={registerBottomSpacer}
+          ref={handleBottomSpacerRef}
           data-testid="chat-transcript-bottom-spacer"
           aria-hidden
           style={{ height: 0, flexShrink: 0 }}
@@ -1987,7 +2024,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     }), [
       contentWidthClassName,
       failedRun, onDismissFailedRun,
-      registerBottomSpacer,
+      handleBottomSpacerRef,
       topInsetClassName,
     ]);
 
@@ -2367,7 +2404,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
             onWheel={handleScrollToBottomWheel}
           />
           <div
-            ref={registerBottomSpacer}
+            ref={handleBottomSpacerRef}
             data-testid="chat-transcript-bottom-spacer"
             aria-hidden
             style={{ height: 0, flexShrink: 0 }}

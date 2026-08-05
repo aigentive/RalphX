@@ -597,6 +597,24 @@ describe("ChatScrollController", () => {
     expect(harness.scrollCalls).toHaveLength(2);
   });
 
+  it("does not mistake an upward virtualizer correction during return for user-away intent", () => {
+    const harness = createHarness(createElement({ scrollTop: 300 }));
+    attach(harness);
+    harness.controller.notifyWheel(-1, false);
+    harness.element.setGeometry({ scrollTop: 300 });
+    harness.scrollCalls.length = 0;
+
+    harness.controller.scrollToBottomClicked();
+    harness.flushNextFrame();
+    harness.element.setGeometry({ scrollHeight: 1_300, scrollTop: 420 });
+    harness.controller.notifyScroll();
+    harness.flushFrames();
+
+    expect(harness.controller.getState()).toBe("pinned");
+    expect(harness.element.scrollTop).toBe(800);
+    expect(harness.scrollCalls.length).toBeGreaterThanOrEqual(2);
+  });
+
   it("waits through changing prepend compensation before treating later growth as followable", () => {
     const harness = createHarness();
     attach(harness);
