@@ -1,7 +1,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import ignore from "ignore";
 import picomatch from "picomatch";
+import { createExclusionCounters, formatExclusionNotes, recordExclusion, } from "./filesystem/exclusions.js";
+import { collectFileMatches, MAX_GREP_CONTEXT_LINES, } from "./filesystem/grep-matching.js";
+import { DEFAULT_MAX_READ_LINES, formatReadHeader, MAX_READ_LINES_CAP, readLineWindow, } from "./filesystem/read-window.js";
+import { buildDirectoryScan, walkFiles, } from "./filesystem/traversal.js";
 import { getPrimaryFilesystemRoot, normalizePathLike, resolveEnforcedFilesystemPath, } from "./path-policy.js";
 const DEFAULT_MAX_READ_BYTES = 64 * 1024;
 const MAX_READ_BYTES_CAP = 256 * 1024;
@@ -25,7 +28,7 @@ export const FILESYSTEM_TOOL_NAMES = [
 export const FILESYSTEM_TOOLS = [
     {
         name: "fs_read_file",
-        description: "Read a local text file. Use this for direct source inspection without shell access. Absolute paths are accepted; relative paths resolve from the current MCP working directory.",
+        description: "Read a local text file, optionally a bounded line window at any offset. Absolute paths are accepted; relative paths resolve from the current MCP working directory.",
         inputSchema: {
             type: "object",
             properties: {
@@ -41,9 +44,13 @@ export const FILESYSTEM_TOOLS = [
                     type: "integer",
                     description: "Optional 1-based inclusive end line. Defaults to EOF.",
                 },
+                max_lines: {
+                    type: "integer",
+                    description: `Maximum number of lines to return (default ${DEFAULT_MAX_READ_LINES}, hard cap ${MAX_READ_LINES_CAP}). Use with start_line for a bounded window anywhere in a large file.`,
+                },
                 max_bytes: {
                     type: "integer",
-                    description: `Optional byte cap for the read (default ${DEFAULT_MAX_READ_BYTES}, hard cap ${MAX_READ_BYTES_CAP}).`,
+                    description: `Byte cap on the returned window, not on how far into the file the read may start (default ${DEFAULT_MAX_READ_BYTES}, hard cap ${MAX_READ_BYTES_CAP}).`,
                 },
             },
             required: ["path"],
@@ -52,6 +59,11 @@ export const FILESYSTEM_TOOLS = [
                     path: "src-tauri/src/http_server/handlers/coordination/mod.rs",
                     start_line: 1,
                     end_line: 80,
+                },
+                {
+                    path: "frontend/src/components/AgentsSidebar.tsx",
+                    start_line: 2699,
+                    max_lines: 60,
                 },
             ],
         },
@@ -127,7 +139,7 @@ export const FILESYSTEM_TOOLS = [
                 },
                 max_results: {
                     type: "integer",
-                    description: `Maximum number of matching lines to return (default ${DEFAULT_MAX_GREP_RESULTS}, hard cap ${MAX_GREP_RESULTS_CAP}).`,
+                    description: `Maximum matching lines in content mode, or matching files in other output modes (default ${DEFAULT_MAX_GREP_RESULTS}, hard cap ${MAX_GREP_RESULTS_CAP}). Context lines do not count toward this cap.`,
                 },
                 max_file_bytes: {
                     type: "integer",
@@ -136,6 +148,15 @@ export const FILESYSTEM_TOOLS = [
                 max_depth: {
                     type: "integer",
                     description: `Maximum directory traversal depth (default ${DEFAULT_MAX_DEPTH}).`,
+                },
+                context_lines: {
+                    type: "integer",
+                    description: `Lines of context before and after each match (default 0, hard cap ${MAX_GREP_CONTEXT_LINES}). Context lines use "path-N- text"; matches use "path:N: text".`,
+                },
+                output_mode: {
+                    type: "string",
+                    enum: ["content", "files_with_matches", "count"],
+                    description: "content (default) returns matching lines; files_with_matches returns one path per matching file; count returns path:count per file.",
                 },
             },
             required: ["pattern"],
@@ -232,157 +253,6 @@ async function resolveReadOnlyExistingPath(inputPath, filesystemEnforced, basePa
         safePath,
     };
 }
-function formatPathForIgnore(relativePath, isDirectory) {
-    if (relativePath === ".") {
-        return isDirectory ? "./" : ".";
-    }
-    return isDirectory ? `${relativePath}/` : relativePath;
-}
-function hasHiddenSegment(relativePath) {
-    return relativePath
-        .split("/")
-        .filter((segment) => segment.length > 0 && segment !== "." && segment !== "..")
-        .some((segment) => segment.startsWith("."));
-}
-function stripTrailingWhitespace(line) {
-    return line.replace(/\s+$/, "");
-}
-function convertIgnoreLineToRootPatterns(line, relativeDir) {
-    let raw = stripTrailingWhitespace(line);
-    if (raw.length === 0) {
-        return [];
-    }
-    if (raw.startsWith("\\#")) {
-        raw = raw.slice(1);
-    }
-    else if (raw.startsWith("#")) {
-        return [];
-    }
-    let negated = false;
-    if (raw.startsWith("\\!")) {
-        raw = raw.slice(1);
-    }
-    else if (raw.startsWith("!")) {
-        negated = true;
-        raw = raw.slice(1);
-    }
-    raw = raw.trim();
-    if (raw.length === 0) {
-        return [];
-    }
-    const directoryOnly = raw.endsWith("/");
-    raw = raw.replace(/^\/+/, "").replace(/\/+$/, "").replace(/\\/g, "/");
-    if (raw.length === 0) {
-        return [];
-    }
-    const prefix = relativeDir === "." ? "" : `${relativeDir}/`;
-    const rootedPattern = raw.includes("/") ? `${prefix}${raw}` : `${prefix}**/${raw}`;
-    const patterns = directoryOnly ? [rootedPattern, `${rootedPattern}/**`] : [rootedPattern];
-    return patterns.map((pattern) => (negated ? `!${pattern}` : pattern));
-}
-async function loadDirectoryIgnorePatterns(absoluteDir, relativeDir) {
-    const ignoreFiles = [".gitignore", ".ignore"];
-    const patterns = [];
-    for (const ignoreFile of ignoreFiles) {
-        const absolutePath = path.resolve(absoluteDir, ignoreFile);
-        try {
-            const content = await fs.readFile(absolutePath, "utf8");
-            for (const line of content.split(/\r?\n/)) {
-                patterns.push(...convertIgnoreLineToRootPatterns(line, relativeDir));
-            }
-        }
-        catch (error) {
-            const code = typeof error === "object" &&
-                error !== null &&
-                "code" in error &&
-                typeof error.code === "string"
-                ? error.code
-                : undefined;
-            if (code !== "ENOENT") {
-                throw error;
-            }
-        }
-    }
-    return patterns;
-}
-async function buildDirectoryScan(absoluteDir, relativeDir, inheritedIgnorePatterns, options) {
-    const effectiveIgnorePatterns = options.respectGitignore
-        ? [
-            ...inheritedIgnorePatterns,
-            ...(await loadDirectoryIgnorePatterns(absoluteDir, relativeDir)),
-        ]
-        : inheritedIgnorePatterns;
-    const ignoreMatcher = ignore().add(effectiveIgnorePatterns);
-    const dirEntries = await fs.readdir(absoluteDir, { withFileTypes: true });
-    dirEntries.sort((a, b) => a.name.localeCompare(b.name));
-    const entries = [];
-    for (const dirent of dirEntries) {
-        const absolutePath = path.resolve(absoluteDir, dirent.name);
-        const relativePath = relativeDir === "."
-            ? dirent.name
-            : `${relativeDir}/${dirent.name}`;
-        if (!options.includeHidden && hasHiddenSegment(relativePath)) {
-            continue;
-        }
-        if (options.respectGitignore &&
-            ignoreMatcher.ignores(formatPathForIgnore(relativePath, dirent.isDirectory()))) {
-            continue;
-        }
-        entries.push({ absolutePath, relativePath, dirent });
-    }
-    return { ignoreMatcher, effectiveIgnorePatterns, entries };
-}
-function ensureWalkBudget(context) {
-    if (context.visitedEntries > context.options.maxWalkEntries) {
-        throw new Error(`Traversal budget exceeded (${context.options.maxWalkEntries} entries). Narrow base_path or file_pattern.`);
-    }
-}
-async function walkFiles(root, options, onFile) {
-    const context = {
-        root,
-        options,
-        visitedEntries: 0,
-    };
-    const queue = [
-        {
-            absoluteDir: root,
-            relativeDir: ".",
-            inheritedIgnorePatterns: [],
-            depth: 0,
-        },
-    ];
-    let queueIndex = 0;
-    while (queueIndex < queue.length) {
-        const current = queue[queueIndex];
-        queueIndex += 1;
-        const scan = await buildDirectoryScan(current.absoluteDir, current.relativeDir, current.inheritedIgnorePatterns, options);
-        for (const entry of scan.entries) {
-            context.visitedEntries += 1;
-            ensureWalkBudget(context);
-            if (entry.dirent.isSymbolicLink()) {
-                continue;
-            }
-            if (entry.dirent.isDirectory()) {
-                if (current.depth < options.maxDepth) {
-                    queue.push({
-                        absoluteDir: entry.absolutePath,
-                        relativeDir: entry.relativePath,
-                        inheritedIgnorePatterns: scan.effectiveIgnorePatterns,
-                        depth: current.depth + 1,
-                    });
-                }
-                continue;
-            }
-            if (!entry.dirent.isFile()) {
-                continue;
-            }
-            const shouldContinue = await onFile(entry, context);
-            if (!shouldContinue) {
-                return;
-            }
-        }
-    }
-}
 function readOnlyTraversalOptions(args) {
     return {
         includeHidden: getBooleanArg(args, "include_hidden", false),
@@ -427,20 +297,27 @@ async function handleReadFile(args, filesystemEnforced) {
     if (!stat.isFile()) {
         throw new Error(`Path "${requestedPath}" is not a file.`);
     }
-    const { content, truncated } = await readTextFile(safePath, maxBytes);
-    const lines = content.split("\n");
-    const totalLines = lines.length;
     const startLine = clampPositive(getIntegerArg(args, "start_line", 1), 1);
-    const requestedEndLine = getIntegerArg(args, "end_line", totalLines);
-    const endLine = Math.min(Math.max(requestedEndLine, startLine), totalLines);
-    const slice = lines.slice(startLine - 1, endLine);
-    const numbered = slice
-        .map((line, index) => `${startLine + index}| ${line}`)
+    const rawEndLine = getIntegerArg(args, "end_line", 0);
+    const endLine = rawEndLine > 0 ? Math.max(rawEndLine, startLine) : undefined;
+    const maxLines = clampPositive(getIntegerArg(args, "max_lines", DEFAULT_MAX_READ_LINES), DEFAULT_MAX_READ_LINES, MAX_READ_LINES_CAP);
+    const window = await readLineWindow(safePath, {
+        startLine,
+        ...(endLine !== undefined && { endLine }),
+        maxLines,
+        maxBytes,
+    });
+    const numbered = window.lines
+        .map((line, index) => `${window.windowStart + index}| ${line}`)
         .join("\n");
     const response = [
-        `FILE: ${displayPath}`,
-        `LINES: ${startLine}-${endLine}/${totalLines}`,
-        truncated ? `TRUNCATED: true (max_bytes=${maxBytes})` : "TRUNCATED: false",
+        ...formatReadHeader(window, {
+            displayPath,
+            startLine,
+            ...(endLine !== undefined && { endLine }),
+            maxLines,
+            maxBytes,
+        }),
         "",
         numbered,
     ].join("\n");
@@ -459,14 +336,23 @@ async function handleListDir(args, filesystemEnforced) {
     const directoriesOnly = getBooleanArg(args, "directories_only", false);
     const maxEntries = clampPositive(getIntegerArg(args, "max_entries", DEFAULT_MAX_LIST_ENTRIES), DEFAULT_MAX_LIST_ENTRIES, MAX_LIST_ENTRIES_CAP);
     const relativeRoot = ".";
-    const scan = await buildDirectoryScan(safePath, relativeRoot, [], { ...options, maxWalkEntries: maxEntries });
+    const counters = createExclusionCounters();
+    const scan = await buildDirectoryScan(safePath, relativeRoot, [], { ...options, maxWalkEntries: maxEntries }, counters);
     const lines = [];
     for (const entry of scan.entries) {
         if (entry.dirent.isSymbolicLink()) {
+            recordExclusion(counters, "symlink");
             continue;
         }
         if (directoriesOnly && !entry.dirent.isDirectory()) {
             continue;
+        }
+        if (!entry.dirent.isDirectory() && !entry.dirent.isFile()) {
+            continue;
+        }
+        if (lines.length >= maxEntries) {
+            counters.entryCapReached = true;
+            break;
         }
         if (entry.dirent.isDirectory()) {
             lines.push(`DIR  ${path.basename(entry.relativePath)}/`);
@@ -475,9 +361,6 @@ async function handleListDir(args, filesystemEnforced) {
             const entryStat = await fs.stat(entry.absolutePath);
             lines.push(`FILE ${path.basename(entry.relativePath)} (${formatByteSize(entryStat.size)})`);
         }
-        if (lines.length >= maxEntries) {
-            break;
-        }
     }
     const response = [
         `DIRECTORY: ${displayPath}`,
@@ -485,6 +368,7 @@ async function handleListDir(args, filesystemEnforced) {
         `DIRECTORIES_ONLY: ${directoriesOnly}`,
         `INCLUDE_HIDDEN: ${options.includeHidden}`,
         `RESPECT_GITIGNORE: ${options.respectGitignore}`,
+        ...formatExclusionNotes(counters, { maxEntries }),
         "",
         ...lines,
     ].join("\n");
@@ -509,12 +393,14 @@ async function handleGlob(args, filesystemEnforced) {
         dot: options.includeHidden,
     });
     const matches = [];
-    await walkFiles(safeRoot, options, async ({ relativePath }) => {
+    const counters = createExclusionCounters();
+    await walkFiles(safeRoot, options, counters, async ({ relativePath }) => {
         if (matcher(relativePath)) {
-            matches.push(relativePath);
             if (matches.length >= maxResults) {
+                counters.resultCapReached = true;
                 return false;
             }
+            matches.push(relativePath);
         }
         return true;
     });
@@ -524,6 +410,10 @@ async function handleGlob(args, filesystemEnforced) {
         `MATCHES: ${matches.length}`,
         `INCLUDE_HIDDEN: ${options.includeHidden}`,
         `RESPECT_GITIGNORE: ${options.respectGitignore}`,
+        ...formatExclusionNotes(counters, {
+            maxResults,
+            maxDepth: options.maxDepth,
+        }),
         "",
         ...matches,
     ].join("\n");
@@ -543,6 +433,15 @@ async function handleGrep(args, filesystemEnforced) {
     const options = readOnlyTraversalOptions(args);
     const maxResults = clampPositive(getIntegerArg(args, "max_results", DEFAULT_MAX_GREP_RESULTS), DEFAULT_MAX_GREP_RESULTS, MAX_GREP_RESULTS_CAP);
     const maxFileBytes = clampPositive(getIntegerArg(args, "max_file_bytes", DEFAULT_MAX_FILE_BYTES_FOR_SEARCH), DEFAULT_MAX_FILE_BYTES_FOR_SEARCH, MAX_FILE_BYTES_FOR_SEARCH_CAP);
+    const contextLines = Math.min(clampNonNegative(getIntegerArg(args, "context_lines", 0), 0), MAX_GREP_CONTEXT_LINES);
+    const rawOutputMode = getStringArg(args, "output_mode") ?? "content";
+    const outputMode = [
+        "content",
+        "files_with_matches",
+        "count",
+    ].includes(rawOutputMode)
+        ? rawOutputMode
+        : "content";
     const { displayPath: displayRoot, safePath: safeRoot } = await resolveReadOnlyExistingPath(basePath, filesystemEnforced);
     const rootStat = await fs.stat(safeRoot);
     if (!rootStat.isDirectory()) {
@@ -556,34 +455,40 @@ async function handleGrep(args, filesystemEnforced) {
         : null;
     const literalNeedle = caseSensitive ? pattern : pattern.toLowerCase();
     const matches = [];
-    await walkFiles(safeRoot, options, async ({ absolutePath, relativePath }) => {
+    const counters = createExclusionCounters();
+    let emittedMatches = 0;
+    const isMatch = (line) => {
+        if (regex) {
+            regex.lastIndex = 0;
+            const matched = regex.test(line);
+            regex.lastIndex = 0;
+            return matched;
+        }
+        return (caseSensitive ? line : line.toLowerCase()).includes(literalNeedle);
+    };
+    await walkFiles(safeRoot, options, counters, async ({ absolutePath, relativePath }) => {
         if (!fileMatcher(relativePath)) {
             return true;
         }
         const stat = await fs.stat(absolutePath);
         if (stat.size > maxFileBytes) {
+            recordExclusion(counters, "oversize", relativePath);
             return true;
         }
         const { content } = await readTextFile(absolutePath, maxFileBytes);
-        const lines = content.split("\n");
-        for (let index = 0; index < lines.length; index += 1) {
-            const line = lines[index] ?? "";
-            const matched = regex
-                ? regex.test(line)
-                : (caseSensitive ? line : line.toLowerCase()).includes(literalNeedle);
-            if (!matched) {
-                if (regex) {
-                    regex.lastIndex = 0;
-                }
-                continue;
-            }
-            matches.push(`${relativePath}:${index + 1}: ${line}`);
-            if (regex) {
-                regex.lastIndex = 0;
-            }
-            if (matches.length >= maxResults) {
-                return false;
-            }
+        const collected = collectFileMatches({
+            relativePath,
+            lines: content.split("\n"),
+            isMatch,
+            contextLines,
+            outputMode,
+            remainingMatches: maxResults - emittedMatches,
+        });
+        matches.push(...collected.output);
+        emittedMatches += collected.matchCount;
+        if (collected.capReached) {
+            counters.resultCapReached = true;
+            return false;
         }
         return true;
     });
@@ -591,9 +496,15 @@ async function handleGrep(args, filesystemEnforced) {
         `ROOT: ${displayRoot}`,
         `PATTERN: ${pattern}`,
         `FILE_PATTERN: ${filePattern}`,
-        `MATCHES: ${matches.length}`,
+        `OUTPUT_MODE: ${outputMode}`,
+        `MATCHES: ${emittedMatches}`,
         `INCLUDE_HIDDEN: ${options.includeHidden}`,
         `RESPECT_GITIGNORE: ${options.respectGitignore}`,
+        ...formatExclusionNotes(counters, {
+            maxResults,
+            maxFileBytes,
+            maxDepth: options.maxDepth,
+        }),
         "",
         ...matches,
     ].join("\n");
