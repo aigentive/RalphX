@@ -438,15 +438,6 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
         }
         return;
       }
-      if (
-        state === "returning"
-        && atBottom
-        && hasActiveBottomIntent()
-        && !pinNeedsIndexAlignment
-      ) {
-        settleBottomIntent("scroll");
-        return;
-      }
       if (hasActiveBottomIntent() && !isWithinActiveIntent(element)) {
         schedulePin("scroll-intent-correction", "auto", false);
       }

@@ -145,6 +145,21 @@ describe("ChatScrollController", () => {
     expect(harness.element.scrollTop).toBe(800);
   });
 
+  it("keeps a queued content-growth pin through a stale bottom scroll event", () => {
+    const harness = createHarness();
+    attach(harness);
+    harness.scrollCalls.length = 0;
+
+    harness.controller.notifyContentGrowth();
+    harness.controller.notifyScroll();
+    harness.element.setGeometry({ scrollHeight: 1_077 });
+    harness.flushFrames();
+
+    expect(harness.controller.getState()).toBe("pinned");
+    expect(harness.scrollCalls).toHaveLength(0);
+    expect(harness.element.scrollTop).toBe(577);
+  });
+
   it("keeps pinned growth alive through delayed virtualizer measurement", () => {
     const harness = createHarness();
     attach(harness);
@@ -732,7 +747,7 @@ describe("ChatScrollController", () => {
     expect(harness.controller.getState()).toBe("pinned");
   });
 
-  it("settles a returning intent when a scroll event confirms the moving true bottom", () => {
+  it("keeps a returning intent alive through late geometry after a bottom scroll", () => {
     const harness = createHarness(createElement({
       clientHeight: 1_102,
       scrollHeight: 1_923,
@@ -750,16 +765,17 @@ describe("ChatScrollController", () => {
     harness.element.setGeometry({ scrollHeight: 1_903, scrollTop: 801 });
     harness.controller.notifyScroll();
 
-    expect(harness.controller.getState()).toBe("pinned");
-    expect(harness.pendingFrames()).toBe(0);
+    expect(harness.controller.getState()).toBe("returning");
+    expect(harness.pendingFrames()).toBeGreaterThan(0);
 
-    // A transient next-frame measurement must not resurrect a correction for
-    // the already-acknowledged semantic bottom intent.
+    // The next-frame measurement materializes another part of the tail after
+    // the native scroll event briefly reported the old true bottom.
     harness.element.setGeometry({ scrollHeight: 1_923, scrollTop: 801 });
     harness.flushFrames();
 
-    expect(harness.element.directWrites).toBe(writesAfterInitialPin);
-    expect(harness.debugEvents).not.toEqual(expect.arrayContaining([
+    expect(harness.element.directWrites).toBeGreaterThan(writesAfterInitialPin);
+    expect(harness.element.scrollTop).toBe(821);
+    expect(harness.debugEvents).toEqual(expect.arrayContaining([
       {
         event: "pin",
         detail: expect.objectContaining({ reason: "returning-settle" }),
