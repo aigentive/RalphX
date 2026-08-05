@@ -1716,7 +1716,7 @@ describe("chat api", () => {
           source: "pr_autofix",
           stage: "held",
           status: "held",
-          hold_reason: "pr_autofix_pre_existing_on_base",
+          hold_reason: "pr_autofix_unchanged_health",
           summary: "RalphX is waiting for the CI rerun.",
           blocker: null,
           automatic_continuation: false,
@@ -1731,7 +1731,44 @@ describe("chat api", () => {
     expect(result[0]?.maintenanceOperation).toMatchObject({
       stage: "held",
       status: "held",
-      holdReason: "pr_autofix_pre_existing_on_base",
+      holdReason: "pr_autofix_unchanged_health",
+    });
+  });
+
+  it("degrades an unknown maintenance hold reason without dropping workspace data", async () => {
+    mockInvoke.mockResolvedValueOnce([
+      {
+        ...planSeedWorkspaceResponse(),
+        mode: "edit",
+        publication_pr_number: 993,
+        maintenance_operation: {
+          operation_id: "maintenance-future-hold",
+          generation: 4,
+          source: "pr_autofix",
+          stage: "held",
+          status: "held",
+          hold_reason: "some_future_reason",
+          summary: "RalphX is waiting for a future repair condition.",
+          blocker: null,
+          automatic_continuation: false,
+          started_at: "2026-01-24T10:00:00Z",
+          updated_at: "2026-01-24T10:01:00Z",
+        },
+      },
+    ]);
+
+    const result = await listAgentConversationWorkspacesByProject("project-1");
+
+    expect(result[0]).toMatchObject({
+      conversationId: "conversation-plan",
+      mode: "edit",
+      publicationPrNumber: 993,
+      maintenanceOperation: {
+        operationId: "maintenance-future-hold",
+        stage: "held",
+        status: "held",
+        holdReason: null,
+      },
     });
   });
 
@@ -1878,6 +1915,19 @@ describe("chat api", () => {
                 publication_pr_url: "https://github.com/acme/demo/pull/123",
                 publication_pr_status: "merged",
                 publication_push_status: "published",
+                maintenance_operation: {
+                  operation_id: "maintenance-held",
+                  generation: 3,
+                  source: "pr_autofix",
+                  stage: "held",
+                  status: "held",
+                  hold_reason: "pr_autofix_unchanged_health",
+                  summary: "RalphX is waiting for PR health to change.",
+                  blocker: null,
+                  automatic_continuation: false,
+                  started_at: "2026-01-24T10:00:00Z",
+                  updated_at: "2026-01-24T10:01:00Z",
+                },
                 status: "active",
                 created_at: "2026-01-24T10:00:00Z",
                 updated_at: "2026-01-24T10:01:00Z",
@@ -1937,6 +1987,12 @@ describe("chat api", () => {
           parkedDelegateCount: 2,
           actionVerb: "Merged",
           isMuted: false,
+          workspace: {
+            maintenanceOperation: {
+              status: "held",
+              holdReason: "pr_autofix_unchanged_health",
+            },
+          },
         },
       ],
     });

@@ -2195,6 +2195,26 @@ describe("AgentsArtifactPane", () => {
     useChatStore.getState().setActiveConversation("project:project-1", null);
   });
 
+  it("shows a retryable workspace error instead of silently hiding workspace tabs", async () => {
+    const onRetryActiveWorkspace = vi.fn();
+
+    renderPane("plan", null, vi.fn(), false, conversation(), {
+      activeWorkspaceError: new Error("workspace response failed validation"),
+      onRetryActiveWorkspace,
+    });
+
+    expect(
+      await screen.findByText(
+        "Workspace details couldn’t load. Some tabs may be unavailable.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Retry workspace load" }),
+    );
+    expect(onRetryActiveWorkspace).toHaveBeenCalledOnce();
+  });
+
   it("keeps one workspace toolbar fixed between the tabs and scrolling content", async () => {
     const user = userEvent.setup();
     renderControlledPane("publish", workspace({ mode: "edit" }));

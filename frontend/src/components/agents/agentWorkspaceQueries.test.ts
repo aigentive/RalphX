@@ -1,21 +1,66 @@
 import { QueryClient } from "@tanstack/react-query";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { chatApi } from "@/api/chat";
 import type {
   AgentWorkspacePrReviewAction,
   AgentWorkspacePrReviewContext,
   AgentWorkspacePrReviewMonitor,
 } from "@/api/chat";
+import { logger } from "@/lib/logger";
 
 import { conversationWorkspaceFixture } from "./agentsTestFixtures";
 import {
   agentWorkspaceKeys,
   canInspectAgentWorkspaceFreshness,
   invalidateWorkspaceQueries,
+  preflightAgentWorkspaceFreshness,
   refreshWorkspaceReviewContext,
   prReviewContextForConversation,
   resolveWorkspaceReviewOwnerConversationId,
 } from "./agentWorkspaceQueries";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+describe("preflightAgentWorkspaceFreshness", () => {
+  it("logs workspace load failures with the owning conversation", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const error = new Error("workspace payload was invalid");
+    vi.spyOn(chatApi, "getAgentConversationWorkspace").mockRejectedValueOnce(
+      error,
+    );
+    const logError = vi.spyOn(logger, "error").mockImplementation(() => {});
+
+    await preflightAgentWorkspaceFreshness(queryClient, "conversation-1");
+
+    expect(logError).toHaveBeenCalledWith(
+      "Failed to preload agent workspace",
+      { conversationId: "conversation-1", error },
+    );
+  });
+
+  it("keeps freshness prefetch failures quiet for mounted views to own", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    vi.spyOn(chatApi, "getAgentConversationWorkspace").mockResolvedValueOnce(
+      conversationWorkspaceFixture({ mode: "edit" }),
+    );
+    vi.spyOn(
+      chatApi,
+      "getAgentConversationWorkspaceFreshness",
+    ).mockRejectedValueOnce(new Error("freshness unavailable"));
+    const logError = vi.spyOn(logger, "error").mockImplementation(() => {});
+
+    await preflightAgentWorkspaceFreshness(queryClient, "conversation-1");
+
+    expect(logError).not.toHaveBeenCalled();
+  });
+});
 
 describe("canInspectAgentWorkspaceFreshness", () => {
   it("inspects active plan workspaces but keeps missing workspaces ineligible", () => {

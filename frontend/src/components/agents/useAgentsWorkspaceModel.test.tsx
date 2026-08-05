@@ -1,4 +1,4 @@
-import { renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -402,5 +402,38 @@ describe("useAgentsWorkspaceModel", () => {
         exhausted: true,
       }),
     );
+  });
+
+  it("exposes workspace load failures and retries through the owning query", async () => {
+    const error = new Error("workspace response failed validation");
+    getAgentConversationWorkspaceMock.mockRejectedValueOnce(error);
+    const hydratedWorkspace = conversationWorkspaceFixture({ mode: "edit" });
+    const { result } = renderHook(
+      () =>
+        useAgentsWorkspaceModel({
+          activeConversation: projectConversation(),
+          modelRegistry: AGENT_MODEL_CATALOG,
+          optimisticWorkspacesByConversationId: {},
+          runtimeByConversationId: {},
+          selectedConversationId: "conversation-1",
+          workspaceReviewerRuntime: null,
+        }),
+      { wrapper: wrapper() },
+    );
+
+    await waitFor(() =>
+      expect(result.current.activeWorkspaceError).toBe(error),
+    );
+    expect(result.current.activeWorkspace).toBeNull();
+
+    getAgentConversationWorkspaceMock.mockResolvedValueOnce(hydratedWorkspace);
+    await act(async () => {
+      await result.current.retryActiveWorkspace();
+    });
+
+    await waitFor(() =>
+      expect(result.current.activeWorkspace).toBe(hydratedWorkspace),
+    );
+    expect(result.current.activeWorkspaceError).toBeNull();
   });
 });

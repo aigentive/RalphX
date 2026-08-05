@@ -172,11 +172,13 @@ export function useAgentsWorkspaceModel({
     activeConversationMode,
     activeConversationModeLocked,
     activeWorkspace,
+    activeWorkspaceError: conversationWorkspaceQuery.error ?? null,
     activeWorkspaceFreshness,
     activeWorkspaceFingerprintSpend,
     focusedWorkspaceReviewServiceTier,
     normalizedActiveRuntime,
     publishShortcutLabel,
+    retryActiveWorkspace: conversationWorkspaceQuery.refetch,
     terminalArchivedReason,
     terminalUnavailableReason,
   };
