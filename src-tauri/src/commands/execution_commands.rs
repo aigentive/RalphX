@@ -9,9 +9,7 @@ use crate::application::chat_service::ChatService;
 use crate::application::reconciliation::UserRecoveryAction;
 pub(crate) use crate::application::task_restart::restart_task_for_state;
 use crate::application::AppState;
-use crate::domain::entities::{
-    app_state::ExecutionHaltMode, InternalStatus, ProjectId,
-};
+use crate::domain::entities::{app_state::ExecutionHaltMode, InternalStatus, ProjectId};
 use crate::domain::execution::ExecutionSettings;
 use crate::domain::state_machine::services::TaskScheduler;
 

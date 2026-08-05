@@ -3300,6 +3300,15 @@
       "argumentSensitive": false,
       "capabilities": [],
       "class": "read",
+      "command": "get_remote_mcp_catalog",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::remote_mcp_policy_commands::get_remote_mcp_catalog"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
       "command": "list_remote_projects",
       "pins": [],
       "scopeConfined": false,
@@ -8294,7 +8303,7 @@
       "class": "elevated",
       "command": "get_mcp_catalog",
       "module": "mcp_policy_commands",
-      "reason": "detector-c: build_catalog -> discover_provider_catalog -> resolve_codex_catalog_cli_path -> resolve_codex_cli, and the Codex branch then runs discover_native_mcp_servers_via_app_server against that CLI path. A READ by intent that launches the Codex app-server to answer; the floor is absolute and does not care which",
+      "reason": "detector-c: build_catalog -> discover_provider_catalog -> resolve_codex_catalog_cli_path -> resolve_codex_cli, and the Codex branch then runs discover_native_mcp_servers_via_app_server against that CLI path. A READ by intent that launches the Codex app-server to answer; the floor is absolute and does not care which. Remote readers use the spawn-free get_remote_mcp_catalog snapshot twin",
       "registered": false,
       "v1Resolution": "host-denied-spawns-process"
     },
@@ -8305,7 +8314,7 @@
       "class": "elevated",
       "command": "refresh_mcp_catalog",
       "module": "mcp_policy_commands",
-      "reason": "detector-c: the SAME build_catalog chain as get_mcp_catalog, reached with an explicit provider rather than an optional one",
+      "reason": "detector-c: the SAME build_catalog chain as get_mcp_catalog, reached with an explicit provider rather than an optional one. Remote readers use the spawn-free get_remote_mcp_catalog snapshot twin; refresh remains host-local",
       "registered": false,
       "v1Resolution": "host-denied-spawns-process"
     },
@@ -8316,7 +8325,7 @@
       "class": "elevated",
       "command": "retry_legacy_mcp_registration_repair",
       "module": "mcp_policy_commands",
-      "reason": "detector-c: ensure_mutation_ready -> resolve_provider_management_eligibility -> refresh_harness_runtime_probe -> resolved_harness_binary_path -> find_claude_cli — the #976 probe-cache path made this command detector-visible, so the row moved from the hand-traced miss to a measured refusal. The ORIGINAL launch it was refused for is still invisible: it runs `claude mcp remove ralphx -s user` through tokio::process::Command::new at infrastructure/agents/claude/mcp_registration_repair.rs, via retry_reserved_claude_registration_repair -> reconcile_reserved_claude_registration -> {resolve_claude_cleanup_cli, remove_reserved_user_registration}, and two mechanisms still hide that path: resolve_claude_cleanup_cli reaches find_claude_cli only by passing it to spawn_blocking as a bare function VALUE, which creates no call edge, and remove_reserved_user_registration spawns an already-resolved path, naming no resolver for the sink model to match. batch13_detector_gap_is_measured_not_inherited pins both mechanisms as still-open root-level gaps",
+      "reason": "detector-c: ensure_mutation_ready -> resolve_provider_management_eligibility -> refresh_harness_runtime_probe -> resolved_harness_binary_path -> find_claude_cli — the #976 probe-cache path made this command detector-visible, so the row moved from the hand-traced miss to a measured refusal. The ORIGINAL launch it was refused for is still invisible: it runs `claude mcp remove ralphx -s user` through tokio::process::Command::new at infrastructure/agents/claude/mcp_registration_repair.rs, via retry_reserved_claude_registration_repair -> reconcile_reserved_claude_registration -> {resolve_claude_cleanup_cli, remove_reserved_user_registration}, and two mechanisms still hide that path: resolve_claude_cleanup_cli reaches find_claude_cli only by passing it to spawn_blocking as a bare function VALUE, which creates no call edge, and remove_reserved_user_registration spawns an already-resolved path, naming no resolver for the sink model to match. batch13_detector_gap_is_measured_not_inherited pins both mechanisms as still-open root-level gaps. Remote MCP settings use the spawn-free get_remote_mcp_catalog snapshot twin and leave repair unavailable",
       "registered": false,
       "v1Resolution": "host-denied-spawns-process"
     },
@@ -9328,9 +9337,18 @@
     {
       "capabilities": [],
       "class": "read",
+      "command": "get_remote_mcp_catalog",
+      "module": "remote_mcp_policy_commands",
+      "reason": "pure repository read of one coherent host-built MCP catalog snapshot; no provider readiness or catalog discovery carrier",
+      "registered": true,
+      "v1Resolution": "registerable"
+    },
+    {
+      "capabilities": [],
+      "class": "read",
       "command": "list_remote_projects",
       "module": "remote_workspace_commands",
-      "reason": "pure repository read of project rows; the repository-capability inspection that classes `list_projects` Elevated is absent by construction",
+      "reason": "pure repository reads of project rows plus stored repository-capability snapshots; performs no live inspection and propagates read errors",
       "registered": true,
       "v1Resolution": "registerable"
     },
@@ -9339,7 +9357,7 @@
       "class": "read",
       "command": "get_remote_project",
       "module": "remote_workspace_commands",
-      "reason": "pure repository read of one project row through the same projection as `list_remote_projects`; the repository-capability inspection that classes `get_project` Elevated is absent by construction; propagates read errors",
+      "reason": "pure repository reads of one project row plus its stored repository-capability snapshot through the same projection as `list_remote_projects`; performs no live inspection and propagates read errors",
       "registered": true,
       "v1Resolution": "registerable"
     },

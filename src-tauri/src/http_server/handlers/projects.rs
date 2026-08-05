@@ -353,6 +353,11 @@ pub async fn register_project_external(
     let response_created_at = project.created_at.to_rfc3339();
     let response_worktree_parent_directory = project.worktree_parent_directory.clone();
     let response_github_pr_enabled = project.github_pr_enabled;
+    let cached_repository_capability =
+        crate::infrastructure::git_auth::cached_repository_capability(
+            &project,
+            &repository_capability,
+        );
     let key_id = validated_key.key_id.clone();
 
     // 8. Atomic DB transaction: INSERT project + INSERT OR IGNORE api_key_projects
@@ -380,6 +385,15 @@ pub async fn register_project_external(
                 message: Some("Failed to save project".to_string()),
             }
         })?;
+
+    if let Err(error) = state
+        .app_state
+        .project_repository_capability_repo
+        .upsert(&cached_repository_capability)
+        .await
+    {
+        tracing::warn!(project_id = %response_id, %error, "failed to cache repository capability");
+    }
 
     // 9. Audit log
     tracing::info!(

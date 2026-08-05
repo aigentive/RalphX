@@ -1082,7 +1082,10 @@ fn detector_b_is_calibrated_and_floor_enforced() {
         // 594 -> 597: Wave B5c's archive request, fork request, and shared lifecycle poll read.
         // Both writes are detector-(b) members through the `remote-conversation-lifecycle`
         // surface; all three remain silent on the direct spawn/process detectors.
-        597,
+        // 597 -> 598: Wave C3's `get_remote_mcp_catalog` snapshot twin. It is a pure
+        // repository read and its source-level carrier assertion proves both live provider
+        // eligibility and provider catalog discovery stay outside the closure.
+        598,
         "review the detector against the full command census"
     );
     let flagged = spawn_triggering_writers(
@@ -1686,6 +1689,34 @@ fn the_spawn_free_remote_workspace_module_carries_no_authority_carriers() {
             "`remote_workspace_commands` mentions `{carrier}`. The whole contract of this \
              module is that the spawn/steer authority carriers are absent by construction, \
              which is what lets its commands sit at `ui:read` with no capability."
+        );
+    }
+}
+
+#[test]
+fn the_spawn_free_remote_mcp_policy_module_carries_no_authority_carriers() {
+    let sources = load_production_sources();
+    let (_, module) = sources
+        .iter()
+        .find(|(file, _)| file == "commands/remote_mcp_policy_commands.rs")
+        .expect("the spawn-free remote MCP policy module must exist");
+    let code = module
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(code.contains("pub async fn get_remote_mcp_catalog"));
+    for carrier in [
+        "AppHandle",
+        "ExecutionState",
+        "create_chat_service",
+        "build_chat_service",
+        "resolve_provider_management_eligibility",
+        "discover_provider_catalog",
+    ] {
+        assert!(
+            !code.contains(carrier),
+            "`remote_mcp_policy_commands` mentions `{carrier}` outside comments"
         );
     }
 }

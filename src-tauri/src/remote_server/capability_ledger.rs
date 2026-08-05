@@ -251,6 +251,7 @@ pub const MODULE_DEFAULTS: &[ModuleDefault] = &[
     // module cannot spawn (no AppHandle, no ExecutionState, no ChatService), but a future
     // member must still earn its own row rather than inherit a narrow one.
     agent_default("remote_transcript_commands"),
+    agent_default("remote_mcp_policy_commands"),
     // Same construction and the same conservative default again: the module cannot spawn (no
     // AppHandle, no ExecutionState, no chat service), but a future member must still earn its
     // own row rather than inherit the shell reads' narrow one.
@@ -549,6 +550,14 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
     // TERMINATES processes; it starts nothing), so it takes no `SeedsSpawnTriggeringState` and
     // no `SPAWN_TRIGGERING_STATE_SURFACE` row — see the module doc for why the surface table
     // would have been a false entry.
+    CommandOverride {
+        command: "get_remote_mcp_catalog",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "pure repository read of one coherent host-built MCP catalog snapshot; no provider readiness or catalog discovery carrier",
+        ),
+    },
     CommandOverride {
         command: "request_remote_agent_stop",
         policy: policy(
@@ -1441,7 +1450,7 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
         policy: policy(
             RiskClass::Read,
             NONE,
-            "pure repository read of project rows; the repository-capability inspection that classes `list_projects` Elevated is absent by construction",
+            "pure repository reads of project rows plus stored repository-capability snapshots; performs no live inspection and propagates read errors",
         ),
     },
     CommandOverride {
@@ -1449,7 +1458,7 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
         policy: policy(
             RiskClass::Read,
             NONE,
-            "pure repository read of one project row through the same projection as `list_remote_projects`; the repository-capability inspection that classes `get_project` Elevated is absent by construction; propagates read errors",
+            "pure repository reads of one project row plus its stored repository-capability snapshot through the same projection as `list_remote_projects`; performs no live inspection and propagates read errors",
         ),
     },
     CommandOverride {
@@ -3061,12 +3070,14 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
         "detector-c: build_catalog -> discover_provider_catalog -> resolve_codex_catalog_cli_path \
          -> resolve_codex_cli, and the Codex branch then runs \
          discover_native_mcp_servers_via_app_server against that CLI path. A READ by intent that \
-         launches the Codex app-server to answer; the floor is absolute and does not care which",
+         launches the Codex app-server to answer; the floor is absolute and does not care which. \
+         Remote readers use the spawn-free get_remote_mcp_catalog snapshot twin",
     ),
     process_refusal(
         "refresh_mcp_catalog",
         "detector-c: the SAME build_catalog chain as get_mcp_catalog, reached with an explicit \
-         provider rather than an optional one",
+         provider rather than an optional one. Remote readers use the spawn-free \
+         get_remote_mcp_catalog snapshot twin; refresh remains host-local",
     ),
     process_refusal(
         "retry_legacy_mcp_registration_repair",
@@ -3083,7 +3094,8 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
          passing it to spawn_blocking as a bare function VALUE, which creates no call edge, and \
          remove_reserved_user_registration spawns an already-resolved path, naming no resolver \
          for the sink model to match. batch13_detector_gap_is_measured_not_inherited pins both \
-         mechanisms as still-open root-level gaps",
+         mechanisms as still-open root-level gaps. Remote MCP settings use the spawn-free \
+         get_remote_mcp_catalog snapshot twin and leave repair unavailable",
     ),
     // Same #976 root cause as the MCP override block, reached through the availability helper
     // instead of the mutation guard. Their batch-11 FailOpenUntilFixed findings (the

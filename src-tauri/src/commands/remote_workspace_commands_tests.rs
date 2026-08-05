@@ -15,7 +15,7 @@ use crate::application::AppState;
 use crate::domain::agents::{
     AgentHarnessKind, AgentProviderCliManagementMode, AgentProviderSettings, LogicalEffort,
 };
-use crate::domain::entities::Project;
+use crate::domain::entities::{Project, ProjectRepositoryCapability};
 use crate::infrastructure::memory::{
     MemoryAgentProviderSettingsRepository, MemoryProjectRepository,
 };
@@ -198,17 +198,90 @@ async fn single_project_projection_matches_the_list_projection_field_for_field()
         .expect("project exists");
 
     assert_eq!(listed, vec![fetched.clone()]);
-    // Absent BY CONSTRUCTION: `repository_capability` is the field whose computation is the
-    // spawn carrier the twin exists to drop.
+    // Never inspected is a real absence, not a preference-derived fabrication.
     let value = serde_json::to_value(&fetched).expect("serializes");
     let object = value.as_object().expect("object");
     assert!(!object.contains_key("repository_capability"));
     assert!(!object.contains_key("repositoryCapability"));
-    assert_eq!(object["repository_capability_kind"], "github");
+    assert_eq!(
+        object["repository_capability_snapshot"],
+        serde_json::Value::Null
+    );
     assert!(!object.contains_key("fetch_url"));
     assert!(!object.contains_key("push_url"));
     assert!(!object.keys().any(|key| key.contains("worktree")));
     assert_eq!(object["working_directory"], "/host/code/ralphx");
+}
+
+#[tokio::test]
+async fn project_snapshot_is_real_stale_safe_and_preference_independent() {
+    let mut project = sentinel_project();
+    let id = project.id.clone();
+    project.github_pr_enabled = false;
+    let state = state_with_projects(vec![project.clone()]);
+    state
+        .project_repository_capability_repo
+        .upsert(&ProjectRepositoryCapability {
+            project_id: id.clone(),
+            kind: "github".to_string(),
+            fetch_url: Some("secret-fetch".to_string()),
+            push_url: Some("secret-push".to_string()),
+            message: None,
+            inspected_at: chrono::Utc::now(),
+            working_directory: project.working_directory.clone(),
+        })
+        .await
+        .expect("seed snapshot");
+
+    let false_view = get_remote_project_for_app_state(&state, id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        false_view
+            .repository_capability_snapshot
+            .as_ref()
+            .unwrap()
+            .kind,
+        "github"
+    );
+    assert!(
+        false_view
+            .repository_capability_snapshot
+            .as_ref()
+            .unwrap()
+            .has_remote
+    );
+    let serialized = serde_json::to_string(&false_view).unwrap();
+    assert!(!serialized.contains("secret-fetch"));
+    assert!(!serialized.contains("secret-push"));
+
+    project.github_pr_enabled = true;
+    state
+        .project_repo
+        .update(&project)
+        .await
+        .expect("toggle preference");
+    let true_view = get_remote_project_for_app_state(&state, id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        true_view.repository_capability_snapshot,
+        false_view.repository_capability_snapshot
+    );
+
+    project.working_directory = "/moved/repo".to_string();
+    state
+        .project_repo
+        .update(&project)
+        .await
+        .expect("move project");
+    let stale_view = get_remote_project_for_app_state(&state, id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(stale_view.repository_capability_snapshot.is_none());
 }
 
 #[tokio::test]

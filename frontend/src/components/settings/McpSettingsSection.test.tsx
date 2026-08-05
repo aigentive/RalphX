@@ -28,7 +28,7 @@ if (!HTMLElement.prototype.scrollIntoView) {
 const testState = vi.hoisted(() => ({
   providers: [] as Array<Record<string, unknown>>,
   defaultProvider: null as string | null,
-  catalog: undefined as Record<string, unknown> | undefined,
+  catalog: undefined as Record<string, unknown> | null | undefined,
   openModal: vi.fn(),
   updateServer: vi.fn().mockResolvedValue(undefined),
   updateTool: vi.fn().mockResolvedValue(undefined),
@@ -150,6 +150,20 @@ describe("McpSettingsSection", () => {
     expect(testState.openModal).toHaveBeenCalledWith("settings", {
       section: "providers",
     });
+  });
+
+  it("explains an absent host snapshot without claiming that no servers exist", () => {
+    testState.providers = [provider("codex", true, true)];
+    testState.defaultProvider = "codex";
+    testState.catalog = null;
+
+    render(<McpSettingsSection />);
+
+    expect(screen.getByText("MCP catalog has not been captured yet")).toBeInTheDocument();
+    expect(
+      screen.getByText("Open MCP settings on the host once to build this catalog, then return here."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("No MCP servers found")).not.toBeInTheDocument();
   });
 
   it("selects the eligible default provider and locks required internal servers", async () => {

@@ -91,9 +91,8 @@ use crate::application::agent_workspace_pr_supervision_recovery::{
 };
 use crate::application::agent_workspace_publish_lease::{
     begin_publish_operation_scope, publish_operation_lease_is_live,
-    publish_operation_lease_token_for_scope,
-    spawn_publish_operation_lease_heartbeat_for_scope, stop_publish_operation_lease_heartbeat,
-    PublishOperationScopeGuard,
+    publish_operation_lease_token_for_scope, spawn_publish_operation_lease_heartbeat_for_scope,
+    stop_publish_operation_lease_heartbeat, PublishOperationScopeGuard,
 };
 use crate::application::agent_workspace_publish_recovery::{
     agent_workspace_repair_owns_unpublished_publish_continuation, pr_autofix_fingerprint_spend,
@@ -101,8 +100,8 @@ use crate::application::agent_workspace_publish_recovery::{
 };
 use crate::application::agent_workspace_publish_repair_state::{
     classify_agent_workspace_repair_delivery, last_human_repair_reason,
-    reserve_agent_workspace_repair_dispatch,
-    resume_current_agent_workspace_repair_publish, resume_ready_agent_workspace_repair_for_publish,
+    reserve_agent_workspace_repair_dispatch, resume_current_agent_workspace_repair_publish,
+    resume_ready_agent_workspace_repair_for_publish,
     settle_agent_workspace_repair_dispatch_outcome, start_or_join_agent_workspace_repair,
     AgentWorkspaceRepairDispatchOutcome, AgentWorkspaceRepairDispatchSettlement,
     AgentWorkspaceRepairPublishResumeOutcome, AgentWorkspaceRepairStartOutcome,
@@ -181,8 +180,8 @@ use crate::domain::services::pr_publish_service::{
 use crate::domain::services::{
     normalize_title_with_jira_key, primary_jira_key_from_composer_metadata,
     AgentWorkspacePrPublisher, ComposerArtifactReference, ComposerExcerptReference,
-    ComposerIntegrationReference, ComposerProjectReference, ComposerSelectionSnapshot,
-    QueueKey, QueuedMessage, RunningAgentKey, RunningAgentRegistry,
+    ComposerIntegrationReference, ComposerProjectReference, ComposerSelectionSnapshot, QueueKey,
+    QueuedMessage, RunningAgentKey, RunningAgentRegistry,
 };
 use crate::domain::state_machine::transition_handler::get_trigger_origin;
 use crate::error::AppError;
@@ -4629,7 +4628,11 @@ pub async fn list_queued_agent_messages_for_state(
     let memory = state.message_queue.get_queued(context_type, context_id);
     let mut seen: HashSet<String> = durable.iter().map(|message| message.id.clone()).collect();
     let mut merged = durable;
-    merged.extend(memory.into_iter().filter(|message| seen.insert(message.id.clone())));
+    merged.extend(
+        memory
+            .into_iter()
+            .filter(|message| seen.insert(message.id.clone())),
+    );
     Ok(visible_queued_message_responses(merged))
 }
 
@@ -9383,10 +9386,8 @@ async fn mark_agent_workspace_publish_status(
         push_status,
         "refreshed" | "pushed" | "failed" | "no_changes"
     ) {
-        let owned_token = publish_operation_lease_token_for_scope(
-            &current.conversation_id,
-            operation_scope,
-        );
+        let owned_token =
+            publish_operation_lease_token_for_scope(&current.conversation_id, operation_scope);
         if let Some(token) = owned_token.as_deref() {
             let release = state
                 .agent_conversation_workspace_repo
@@ -10193,13 +10194,7 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
     {
         let push_status = "failed";
         if let Err(release_error) =
-            settle_agent_workspace_publish_lease_status(
-                state,
-                workspace,
-                push_status,
-                None,
-            )
-            .await
+            settle_agent_workspace_publish_lease_status(state, workspace, push_status, None).await
         {
             tracing::warn!(
                 conversation_id = %workspace.conversation_id,
@@ -10267,13 +10262,8 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
         "failed"
     };
     if let Err(release_error) =
-        settle_agent_workspace_publish_lease_status(
-            state,
-            workspace,
-            lease_settlement_status,
-            None,
-        )
-        .await
+        settle_agent_workspace_publish_lease_status(state, workspace, lease_settlement_status, None)
+            .await
     {
         tracing::warn!(
             conversation_id = %workspace.conversation_id,

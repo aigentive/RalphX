@@ -2,10 +2,10 @@
 // Database connection management, migrations, and repository implementations
 
 pub mod connection;
-pub mod db_connection;
 pub mod database_maintenance;
 #[cfg(test)]
 mod database_maintenance_tests;
+pub mod db_connection;
 pub mod migrations;
 pub mod sqlite_active_plan_repo;
 pub mod sqlite_activity_event_repo;
@@ -32,25 +32,6 @@ pub mod sqlite_agent_task_repo;
 #[cfg(test)]
 mod sqlite_agent_task_repo_tests;
 pub mod sqlite_agent_workflow_repo;
-pub mod sqlite_team_repo;
-pub(crate) mod sqlite_team_support;
-pub mod sqlite_team_coordination_transition_repo;
-pub mod sqlite_team_run_binding_repo;
-pub mod sqlite_team_message_repo;
-pub mod sqlite_team_wake_batch_repo;
-pub mod sqlite_team_workspace_reservation_repo;
-#[cfg(test)]
-mod sqlite_team_repo_tests;
-#[cfg(test)]
-mod sqlite_team_coordination_transition_repo_tests;
-#[cfg(test)]
-mod sqlite_team_run_binding_repo_tests;
-#[cfg(test)]
-mod sqlite_team_message_repo_tests;
-#[cfg(test)]
-mod sqlite_team_wake_batch_repo_tests;
-#[cfg(test)]
-mod sqlite_team_workspace_reservation_repo_tests;
 #[cfg(test)]
 mod sqlite_agent_workflow_repo_tests;
 pub mod sqlite_api_key_repo;
@@ -112,6 +93,7 @@ pub mod sqlite_ideation_settings_repo;
 pub mod sqlite_linear_integration_settings_repo;
 pub mod sqlite_linear_webhook_store;
 pub mod sqlite_manual_role_default_repo;
+pub mod sqlite_mcp_catalog_snapshot_repo;
 pub mod sqlite_mcp_policy_repo;
 pub mod sqlite_memory_archive_job_repository;
 #[cfg(test)]
@@ -140,21 +122,22 @@ pub mod sqlite_plan_branch_repo;
 pub mod sqlite_plan_selection_stats_repo;
 pub mod sqlite_process_repo;
 pub mod sqlite_project_repo;
+pub mod sqlite_project_repository_capability_repo;
 pub mod sqlite_proposal_dependency_repo;
 pub mod sqlite_question_repo;
 pub mod sqlite_queued_message_repo;
 pub mod sqlite_remote_access_repo;
+pub mod sqlite_remote_automation_draft_request_repo;
+pub mod sqlite_remote_automation_run_request_repo;
+pub mod sqlite_remote_conversation_lifecycle_request_repo;
 pub mod sqlite_remote_environment_repo;
 pub mod sqlite_remote_event_log_repo;
-pub mod sqlite_remote_request_dedup_repo;
-pub mod sqlite_remote_resume_request_repo;
-pub mod sqlite_remote_plan_approval_request_repo;
 pub mod sqlite_remote_finalize_decision_request_repo;
-pub mod sqlite_remote_automation_run_request_repo;
-pub mod sqlite_remote_automation_draft_request_repo;
-pub mod sqlite_remote_conversation_lifecycle_request_repo;
+pub mod sqlite_remote_plan_approval_request_repo;
 pub mod sqlite_remote_plan_edit_request_repo;
 pub mod sqlite_remote_queued_send_request_repo;
+pub mod sqlite_remote_request_dedup_repo;
+pub mod sqlite_remote_resume_request_repo;
 pub mod sqlite_review_issue_repo;
 pub mod sqlite_review_repo;
 pub mod sqlite_review_settings_repo;
@@ -165,6 +148,25 @@ pub mod sqlite_task_proposal_repo;
 pub mod sqlite_task_qa_repo;
 pub mod sqlite_task_repo;
 pub mod sqlite_task_step_repo;
+pub mod sqlite_team_coordination_transition_repo;
+#[cfg(test)]
+mod sqlite_team_coordination_transition_repo_tests;
+pub mod sqlite_team_message_repo;
+#[cfg(test)]
+mod sqlite_team_message_repo_tests;
+pub mod sqlite_team_repo;
+#[cfg(test)]
+mod sqlite_team_repo_tests;
+pub mod sqlite_team_run_binding_repo;
+#[cfg(test)]
+mod sqlite_team_run_binding_repo_tests;
+pub(crate) mod sqlite_team_support;
+pub mod sqlite_team_wake_batch_repo;
+#[cfg(test)]
+mod sqlite_team_wake_batch_repo_tests;
+pub mod sqlite_team_workspace_reservation_repo;
+#[cfg(test)]
+mod sqlite_team_workspace_reservation_repo_tests;
 pub mod sqlite_ticket_canonical_branch_repo;
 pub mod sqlite_ticketing_status_catalog_repo;
 pub mod sqlite_ui_feature_flag_overrides_repo;
@@ -177,6 +179,8 @@ pub mod sqlite_webhook_registration_repo;
 pub mod sqlite_workflow_repo;
 pub mod sqlite_workspace_review_runtime_settings_repo;
 pub mod state_machine_repository;
+
+pub use sqlite_project_repository_capability_repo::SqliteProjectRepositoryCapabilityRepository;
 
 // Re-export commonly used items
 pub use connection::{
@@ -198,6 +202,9 @@ pub use sqlite_agent_remote_conversation_message_request_repo::SqliteRemoteConve
 pub use sqlite_agent_remote_conversation_mode_switch_request_repo::SqliteRemoteConversationModeSwitchRequestRepository;
 pub use sqlite_agent_remote_conversation_start_request_repo::SqliteRemoteConversationStartRequestRepository;
 pub use sqlite_manual_role_default_repo::SqliteManualRoleDefaultRepository;
+pub use sqlite_mcp_catalog_snapshot_repo::SqliteMcpCatalogSnapshotRepository;
+#[cfg(test)]
+mod sqlite_mcp_catalog_snapshot_repo_tests;
 pub use sqlite_mcp_policy_repo::SqliteMcpPolicyRepository;
 
 #[cfg(test)]
@@ -208,12 +215,6 @@ pub use sqlite_agent_provider_settings_repo::SqliteAgentProviderSettingsReposito
 pub use sqlite_agent_run_repo::SqliteAgentRunRepository;
 pub use sqlite_agent_task_repo::SqliteAgentTaskRepository;
 pub use sqlite_agent_workflow_repo::SqliteAgentWorkflowRepository;
-pub use sqlite_team_repo::SqliteTeamRepository;
-pub use sqlite_team_coordination_transition_repo::SqliteTeamCoordinationTransitionRepository;
-pub use sqlite_team_run_binding_repo::SqliteTeamRunBindingRepository;
-pub use sqlite_team_message_repo::SqliteTeamMessageRepository;
-pub use sqlite_team_wake_batch_repo::SqliteTeamWakeBatchRepository;
-pub use sqlite_team_workspace_reservation_repo::SqliteTeamWorkspaceReservationRepository;
 pub use sqlite_api_key_repo::SqliteApiKeyRepository;
 pub use sqlite_app_state_repo::SqliteAppStateRepository;
 pub use sqlite_artifact_bucket_repo::SqliteArtifactBucketRepository;
@@ -262,22 +263,22 @@ pub use sqlite_proposal_dependency_repo::SqliteProposalDependencyRepository;
 pub use sqlite_question_repo::SqliteQuestionRepository;
 pub use sqlite_queued_message_repo::SqliteQueuedMessageRepository;
 pub use sqlite_remote_access_repo::SqliteRemoteAccessRepository;
+pub use sqlite_remote_automation_draft_request_repo::SqliteRemoteAutomationDraftRequestRepository;
+pub use sqlite_remote_automation_run_request_repo::SqliteRemoteAutomationRunRequestRepository;
+pub use sqlite_remote_conversation_lifecycle_request_repo::SqliteRemoteConversationLifecycleRequestRepository;
 pub use sqlite_remote_environment_repo::SqliteRemoteEnvironmentRepository;
 pub use sqlite_remote_event_log_repo::{
     RemoteEventLogStore, RemoteEventRow, RemotePruneOutcome, RemotePruneRequest,
     SqliteRemoteEventLogRepository,
 };
+pub use sqlite_remote_finalize_decision_request_repo::SqliteRemoteFinalizeDecisionRequestRepository;
+pub use sqlite_remote_plan_approval_request_repo::SqliteRemotePlanApprovalRequestRepository;
+pub use sqlite_remote_plan_edit_request_repo::SqliteRemotePlanEditRequestRepository;
+pub use sqlite_remote_queued_send_request_repo::SqliteRemoteQueuedSendRequestRepository;
 pub use sqlite_remote_request_dedup_repo::SqliteRemoteRequestDedupRepository;
 pub use sqlite_remote_resume_request_repo::{
     SqliteRemoteExecutionResumeRequestRepository, SqliteRemoteTaskActionRequestRepository,
 };
-pub use sqlite_remote_plan_approval_request_repo::SqliteRemotePlanApprovalRequestRepository;
-pub use sqlite_remote_finalize_decision_request_repo::SqliteRemoteFinalizeDecisionRequestRepository;
-pub use sqlite_remote_automation_run_request_repo::SqliteRemoteAutomationRunRequestRepository;
-pub use sqlite_remote_automation_draft_request_repo::SqliteRemoteAutomationDraftRequestRepository;
-pub use sqlite_remote_conversation_lifecycle_request_repo::SqliteRemoteConversationLifecycleRequestRepository;
-pub use sqlite_remote_plan_edit_request_repo::SqliteRemotePlanEditRequestRepository;
-pub use sqlite_remote_queued_send_request_repo::SqliteRemoteQueuedSendRequestRepository;
 pub use sqlite_review_issue_repo::{ReviewIssueRepository, SqliteReviewIssueRepository};
 pub use sqlite_review_repo::SqliteReviewRepository;
 pub use sqlite_review_settings_repo::SqliteReviewSettingsRepository;
@@ -288,6 +289,12 @@ pub use sqlite_task_proposal_repo::SqliteTaskProposalRepository;
 pub use sqlite_task_qa_repo::SqliteTaskQARepository;
 pub use sqlite_task_repo::SqliteTaskRepository;
 pub use sqlite_task_step_repo::SqliteTaskStepRepository;
+pub use sqlite_team_coordination_transition_repo::SqliteTeamCoordinationTransitionRepository;
+pub use sqlite_team_message_repo::SqliteTeamMessageRepository;
+pub use sqlite_team_repo::SqliteTeamRepository;
+pub use sqlite_team_run_binding_repo::SqliteTeamRunBindingRepository;
+pub use sqlite_team_wake_batch_repo::SqliteTeamWakeBatchRepository;
+pub use sqlite_team_workspace_reservation_repo::SqliteTeamWorkspaceReservationRepository;
 pub use sqlite_ticket_canonical_branch_repo::SqliteTicketCanonicalBranchRepository;
 pub use sqlite_ticketing_status_catalog_repo::SqliteTicketingStatusCatalogRepository;
 pub use sqlite_ui_feature_flag_overrides_repo::SqliteUiFeatureFlagOverridesRepository;

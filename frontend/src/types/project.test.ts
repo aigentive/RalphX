@@ -66,7 +66,11 @@ describe("ProjectSchema", () => {
     expect(project.repositoryCapability).toEqual({ kind: "notInspected" });
   });
 
-  it("never fabricates an empty URL from an absent legacy capability payload", () => {
+  // Wave C2 deleted `repository_capability_kind` from the wire: the host derived it from the
+  // github_pr_enabled USER PREFERENCE, so it asserted "github" or "inspection failed" with no
+  // inspection behind either. A client must therefore not trust the legacy field if an older
+  // host still sends it — an unverifiable claim reads as not-inspected, and no URL is invented.
+  it("refuses to trust the retired, preference-derived capability field", () => {
     const project = transformProject(
       ProjectSchema.parse({
         ...validProject,
@@ -74,11 +78,7 @@ describe("ProjectSchema", () => {
       }),
     );
 
-    expect(project.repositoryCapability).toEqual({
-      kind: "github",
-      fetchUrl: null,
-      pushUrl: null,
-    });
+    expect(project.repositoryCapability).toEqual({ kind: "notInspected" });
     expect(JSON.stringify(project.repositoryCapability)).not.toContain('""');
   });
 

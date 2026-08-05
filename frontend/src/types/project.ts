@@ -94,9 +94,14 @@ export const ProjectResponseSchema = z.object({
   analyzed_at: z.string().nullish(),
   github_pr_enabled: z.boolean().default(false),
   repository_capability: RepositoryCapabilityResponseSchema.optional(),
-  repository_capability_kind: z
-    .enum(["local_only", "github", "other_remote", "inspection_failed"])
-    .optional(),
+  repository_capability_snapshot: z
+    .object({
+      kind: z.enum(["local_only", "github", "other_remote", "inspection_failed"]),
+      has_remote: z.boolean(),
+      inspected_at: z.string().datetime({ offset: true }),
+      message: z.string().optional(),
+    })
+    .nullish(),
   // Accept RFC3339 timestamps with offset (e.g., +00:00) not just Z
   created_at: z.string().datetime({ offset: true }),
   updated_at: z.string().datetime({ offset: true }),
@@ -180,8 +185,19 @@ export function transformProject(
     githubPrEnabled: response.github_pr_enabled,
     repositoryCapability: response.repository_capability
       ? transformRepositoryCapability(response.repository_capability)
-      : response.repository_capability_kind === "github"
-        ? { kind: "github", fetchUrl: null, pushUrl: null }
+      : response.repository_capability_snapshot
+        ? response.repository_capability_snapshot.kind === "github"
+          ? { kind: "github", fetchUrl: null, pushUrl: null }
+          : response.repository_capability_snapshot.kind === "other_remote"
+            ? { kind: "otherRemote", fetchUrl: null, pushUrl: null }
+            : response.repository_capability_snapshot.kind === "local_only"
+              ? { kind: "localOnly" }
+              : {
+                  kind: "inspectionFailed",
+                  message:
+                    response.repository_capability_snapshot.message ??
+                    "Repository inspection failed",
+                }
         : UNKNOWN_REPOSITORY_CAPABILITY,
     createdAt: response.created_at,
     updatedAt: response.updated_at,

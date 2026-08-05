@@ -156,9 +156,8 @@ async fn prune_batch_honors_limit_and_is_idempotent() {
 #[tokio::test]
 async fn from_db_constructor_prunes_same_as_from_shared() {
     let db = SqliteTestDb::new("chat-payload-retention-from-db");
-    let repo = SqliteChatPayloadRetentionRepository::from_db(DbConnection::from_shared(
-        db.shared_conn(),
-    ));
+    let repo =
+        SqliteChatPayloadRetentionRepository::from_db(DbConnection::from_shared(db.shared_conn()));
     let now = Utc::now();
     seed_payload(
         &db,

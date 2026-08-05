@@ -170,10 +170,32 @@ impl ProjectResponse {
     }
 }
 
-async fn project_response(project: Project) -> ProjectResponse {
+async fn persist_repository_capability(
+    state: &AppState,
+    project: &Project,
+    capability: &RepositoryCapability,
+) {
+    if let Err(error) = state
+        .project_repository_capability_repo
+        .upsert(&crate::infrastructure::git_auth::cached_repository_capability(project, capability))
+        .await
+    {
+        tracing::warn!(project_id = %project.id, %error, "failed to cache repository capability");
+    }
+}
+
+#[doc(hidden)]
+pub(crate) async fn project_response(
+    project: Project,
+    state: &AppState,
+) -> Result<ProjectResponse, String> {
     let repository_capability =
         inspect_repository_capability(Path::new(&project.working_directory)).await;
-    ProjectResponse::from_project_and_capability(project, repository_capability)
+    persist_repository_capability(state, &project, &repository_capability).await;
+    Ok(ProjectResponse::from_project_and_capability(
+        project,
+        repository_capability,
+    ))
 }
 
 /// Legacy test seam for the previous command-local initializer. Production
@@ -220,7 +242,7 @@ pub async fn list_projects(state: State<'_, AppState>) -> Result<Vec<ProjectResp
         .map_err(|e| e.to_string())?;
     let mut responses = Vec::with_capacity(projects.len());
     for project in projects {
-        responses.push(project_response(project).await);
+        responses.push(project_response(project, state.inner()).await?);
     }
     Ok(responses)
 }
@@ -238,7 +260,7 @@ pub async fn get_project(
         .await
         .map_err(|e| e.to_string())?;
     Ok(match project {
-        Some(project) => Some(project_response(project).await),
+        Some(project) => Some(project_response(project, state.inner()).await?),
         None => None,
     })
 }
@@ -287,7 +309,8 @@ pub async fn create_project(
     )
     .await;
 
-    Ok(project_response(created).await)
+    persist_repository_capability(state.inner(), &created, &repository_capability).await;
+    project_response(created, state.inner()).await
 }
 
 /// Update an existing project
@@ -353,7 +376,7 @@ pub async fn update_project(
         .await
         .map_err(|e| e.to_string())?;
 
-    Ok(project_response(project).await)
+    project_response(project, state.inner()).await
 }
 
 /// Archive a project (soft delete).
@@ -390,7 +413,7 @@ pub async fn archive_project(
 
     app.emit("project:archived", archived.id.as_str()).ok();
 
-    Ok(project_response(archived).await)
+    project_response(archived, state.inner()).await
 }
 
 /// Delete a project
@@ -531,7 +554,7 @@ pub async fn update_custom_analysis(
         .await
         .map_err(|e| e.to_string())?;
 
-    Ok(project_response(project).await)
+    project_response(project, state.inner()).await
 }
 
 /// Get the default branch for a git repository
@@ -1233,7 +1256,10 @@ pub(super) async fn update_github_pr_enabled_with_app<R: tauri::Runtime + 'stati
         .ok_or_else(|| format!("Project not found: {}", pid.as_str()))?;
 
     if enabled {
-        match inspect_repository_capability(Path::new(&project.working_directory)).await {
+        let repository_capability =
+            inspect_repository_capability(Path::new(&project.working_directory)).await;
+        persist_repository_capability(state.inner(), &project, &repository_capability).await;
+        match repository_capability {
             RepositoryCapability::Github { .. } => {}
             RepositoryCapability::LocalOnly | RepositoryCapability::OtherRemote { .. } => {
                 return Err(

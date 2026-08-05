@@ -1921,6 +1921,20 @@ crate::remote_commands! {
         result: fallible,
     },
 
+    // Snapshot-only MCP catalog read. The local catalog commands remain below the absolute
+    // process floor because they probe provider readiness and may launch Codex app-server.
+    "get_remote_mcp_catalog"
+        => crate::commands::remote_mcp_policy_commands::get_remote_mcp_catalog {
+        class: Read,
+        caps: [],
+        params: [
+            (arg input: crate::commands::remote_mcp_policy_commands::RemoteMcpCatalogInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+
     // The workspace shell's two boot reads. Without them a connected client has no project
     // list and no provider answer, so it renders first-run onboarding over a populated host.
     "list_remote_projects"

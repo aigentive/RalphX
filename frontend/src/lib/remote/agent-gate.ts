@@ -83,6 +83,9 @@ export const REMOTE_UNAVAILABLE_HINT =
  * signal, and several affordances are legitimately unavailable today.
  */
 export const AGENT_GATED_AFFORDANCES = {
+  // Refresh launches provider discovery on the host and is intentionally absent remotely.
+  // The catalog read itself routes through the registered spawn-free snapshot twin.
+  mcpCatalogRefresh: "refresh_mcp_catalog",
   // Repository capability is re-inspected by this command. It is intentionally absent
   // remotely until that host-side operation has a reviewed facade twin; absence is the signal.
   repositorySettingsPrToggle: "update_github_pr_enabled",

@@ -6,8 +6,6 @@ pub mod agent_composer_commands;
 pub mod agent_conversation_mute_commands;
 #[cfg(test)]
 mod agent_conversation_mute_commands_tests;
-#[cfg(test)]
-mod agent_workspace_dispatch_contract_tests;
 pub mod agent_issue_report_commands;
 #[cfg(test)]
 mod agent_issue_report_commands_tests;
@@ -24,6 +22,8 @@ mod agent_workspace_auto_publish_tests;
 pub(crate) mod agent_workspace_auto_review;
 #[cfg(test)]
 mod agent_workspace_auto_review_tests;
+#[cfg(test)]
+mod agent_workspace_dispatch_contract_tests;
 pub mod api_key_commands;
 pub mod artifact_commands;
 pub mod atlassian_commands;
@@ -87,14 +87,17 @@ mod question_commands_tests;
 pub mod registry;
 pub mod release_notes_commands;
 pub mod remote_agent_stop_commands;
+pub mod remote_automation_commands;
+#[cfg(test)]
+mod remote_automation_commands_tests;
 pub mod remote_chat_commands;
 #[cfg(test)]
 mod remote_chat_commands_tests;
-pub mod remote_conversation_message_commands;
-pub mod remote_conversation_mode_switch_commands;
 pub mod remote_conversation_lifecycle_commands;
 #[cfg(test)]
 mod remote_conversation_lifecycle_commands_tests;
+pub mod remote_conversation_message_commands;
+pub mod remote_conversation_mode_switch_commands;
 pub mod remote_conversation_start_commands;
 pub mod remote_device_commands;
 pub mod remote_environment_commands;
@@ -103,24 +106,24 @@ pub mod remote_execution_status_commands;
 #[cfg(test)]
 mod remote_execution_status_commands_tests;
 pub mod remote_host_commands;
+pub mod remote_ideation_commands;
+#[cfg(test)]
+mod remote_ideation_commands_tests;
+pub mod remote_mcp_policy_commands;
+#[cfg(test)]
+mod remote_mcp_policy_commands_tests;
+pub mod remote_plan_commands;
+#[cfg(test)]
+mod remote_plan_commands_tests;
 pub mod remote_question_commands;
+#[cfg(test)]
+mod remote_question_commands_tests;
 pub mod remote_queue_commands;
 #[cfg(test)]
 mod remote_queue_commands_tests;
 pub mod remote_resume_commands;
-pub mod remote_plan_commands;
-pub mod remote_automation_commands;
-#[cfg(test)]
-mod remote_automation_commands_tests;
-pub mod remote_ideation_commands;
-#[cfg(test)]
-mod remote_plan_commands_tests;
-#[cfg(test)]
-mod remote_ideation_commands_tests;
 #[cfg(test)]
 mod remote_resume_commands_tests;
-#[cfg(test)]
-mod remote_question_commands_tests;
 pub mod remote_transcript_commands;
 #[cfg(test)]
 mod remote_transcript_commands_tests;
@@ -420,10 +423,9 @@ pub use unified_chat_commands::{
     get_agent_conversation_summary, get_agent_conversation_timeline_page,
     get_agent_conversation_workspace, get_agent_conversation_workspace_freshness,
     get_agent_message_tool_call_detail, get_agent_run_attribution, get_agent_run_attributions,
-    get_agent_run_status_unified,
-    get_agent_running_states, get_agent_timeline_item_tool_call_detail, get_queued_agent_messages,
-    is_agent_running, is_chat_service_available,
-    list_agent_conversation_workspace_publication_events,
+    get_agent_run_status_unified, get_agent_running_states,
+    get_agent_timeline_item_tool_call_detail, get_queued_agent_messages, is_agent_running,
+    is_chat_service_available, list_agent_conversation_workspace_publication_events,
     list_agent_conversation_workspaces_by_project, list_agent_conversations,
     list_agent_conversations_page, precompute_agent_conversation_workspace_pr_description,
     publish_agent_conversation_workspace, queue_agent_message,

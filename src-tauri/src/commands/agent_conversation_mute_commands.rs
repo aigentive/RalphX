@@ -7,10 +7,10 @@ use crate::commands::agent_sidebar_commands::{
     attention_state_fingerprint, managed_team_activity_for_conversation,
     normalized_supervision_status, publication_state_for_workspace,
 };
+use crate::commands::unified_chat_commands::AgentConversationWorkspaceResponse;
 use crate::commands::unified_chat_commands::{
     agent_workspace_response_for_state, agent_workspace_response_without_repair_recovery_for_state,
 };
-use crate::commands::unified_chat_commands::AgentConversationWorkspaceResponse;
 use crate::domain::entities::{
     AgentConversationMute, AgentConversationWorkspace, ChatConversation, ChatConversationId,
 };
@@ -70,9 +70,9 @@ pub async fn set_agent_conversation_muted_for_state_without_repair_recovery(
         return Ok(());
     };
     let workspace = match target.workspace {
-        Some(workspace) => {
-            Some(agent_workspace_response_without_repair_recovery_for_state(state, workspace).await?)
-        }
+        Some(workspace) => Some(
+            agent_workspace_response_without_repair_recovery_for_state(state, workspace).await?,
+        ),
         None => None,
     };
     finish_agent_conversation_mute(state, target.conversation, workspace).await

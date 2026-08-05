@@ -7,13 +7,12 @@ use crate::application::task_resume_execution::prepare_resumed_task_for_entry_ac
 use crate::application::TaskTransitionService;
 use crate::domain::entities::{
     artifact::ArtifactId, AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun,
-    IdeationSessionId, IdeationSessionStatus, TaskId,
     AgentRunStatus, ChatContextType, ChatConversation, ChatConversationId, GitMode,
-    IdeationAnalysisBaseRefKind, IdeationSession, PlanBranch, PlanBranchId, PlanBranchStatus,
-    TaskStep, TaskStepStatus, ValidationCacheDecision, ValidationCommandCategory,
-    ValidationCommandResult, ValidationCommandSource, ValidationCommandStatus,
-    ValidationContextType, ValidationPurpose, ValidationRun, ValidationRunMode,
-    ValidationRunStatus,
+    IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionId, IdeationSessionStatus,
+    PlanBranch, PlanBranchId, PlanBranchStatus, TaskId, TaskStep, TaskStepStatus,
+    ValidationCacheDecision, ValidationCommandCategory, ValidationCommandResult,
+    ValidationCommandSource, ValidationCommandStatus, ValidationContextType, ValidationPurpose,
+    ValidationRun, ValidationRunMode, ValidationRunStatus,
 };
 use crate::domain::services::{QueueKey, QueuedMessage, RunningAgentKey};
 use crate::utils::path_safety::validate_absolute_non_root_path;

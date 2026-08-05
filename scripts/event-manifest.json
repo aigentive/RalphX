@@ -46,7 +46,7 @@
     {
       "name": "agent:conversation_created",
       "file": "src-tauri/src/commands/unified_chat_commands/mod.rs",
-      "line": 2325,
+      "line": 2324,
       "kind": "method"
     },
     {
@@ -58,7 +58,7 @@
     {
       "name": "agent:conversation_forked",
       "file": "src-tauri/src/commands/unified_chat_commands/mod.rs",
-      "line": 2333,
+      "line": 2332,
       "kind": "method"
     },
     {
@@ -592,25 +592,25 @@
     {
       "name": "agent:workspace_changed",
       "file": "src-tauri/src/commands/unified_chat_commands/mod.rs",
-      "line": 1028,
+      "line": 1027,
       "kind": "method"
     },
     {
       "name": "agent:workspace_changed",
       "file": "src-tauri/src/commands/unified_chat_commands/mod.rs",
-      "line": 4481,
+      "line": 4480,
       "kind": "method"
     },
     {
       "name": "agent:workspace_changed",
       "file": "src-tauri/src/commands/unified_chat_commands/mod.rs",
-      "line": 6874,
+      "line": 6877,
       "kind": "method"
     },
     {
       "name": "agent:workspace_changed",
       "file": "src-tauri/src/commands/unified_chat_commands/mod.rs",
-      "line": 6954,
+      "line": 6957,
       "kind": "method"
     },
     {
@@ -772,7 +772,7 @@
     {
       "name": "gh-auth:login_prompt",
       "file": "src-tauri/src/commands/project_commands.rs",
-      "line": 999,
+      "line": 1022,
       "kind": "method"
     },
     {
@@ -1138,13 +1138,13 @@
     {
       "name": "project:analysis_failed",
       "file": "src-tauri/src/commands/project_commands.rs",
-      "line": 652,
+      "line": 675,
       "kind": "method"
     },
     {
       "name": "project:archived",
       "file": "src-tauri/src/commands/project_commands.rs",
-      "line": 391,
+      "line": 414,
       "kind": "method"
     },
     {

@@ -7,6 +7,7 @@ import type {
   McpServer,
 } from "@/api/mcp-policy";
 import type { Harness } from "@/api/ideation-harness";
+import { AgentGateTooltip } from "@/components/remote/AgentGateTooltip";
 import { Button } from "@/components/ui/button";
 import {
   Collapsible,
@@ -23,6 +24,7 @@ import {
 } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
+import { useAgentGate } from "@/hooks/useAgentGate";
 import { useMcpPolicy } from "@/hooks/useMcpPolicy";
 import { selectActiveProject, useProjectStore } from "@/stores/projectStore";
 import { useUiStore } from "@/stores/uiStore";
@@ -223,6 +225,7 @@ export function McpSettingsSection() {
   const [provider, setProvider] = useState<Harness | null>(null);
   const [exactServer, setExactServer] = useState("");
   const [exactTool, setExactTool] = useState("");
+  const refreshGate = useAgentGate("mcpCatalogRefresh");
   const focusedServerId =
     typeof modalContext?.["serverId"] === "string"
       ? modalContext["serverId"]
@@ -323,17 +326,23 @@ export function McpSettingsSection() {
                     ))}
                   </SelectContent>
                 </Select>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  aria-label={`Refresh ${providerLabel(provider)} MCP catalog`}
-                  disabled={policy.isFetching}
-                  onClick={() => void run(() => policy.refreshProvider(provider))}
-                >
-                  <RefreshCw className={`mr-1.5 h-4 w-4 ${policy.isFetching ? "animate-spin" : ""}`} />
-                  Refresh
-                </Button>
+                <AgentGateTooltip gated={refreshGate.gated} reason={refreshGate.reason}>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    aria-label={`Refresh ${providerLabel(provider)} MCP catalog`}
+                    disabled={policy.isFetching || refreshGate.gated}
+                    onClick={() => {
+                      if (!refreshGate.gated) {
+                        void run(() => policy.refreshProvider(provider));
+                      }
+                    }}
+                  >
+                    <RefreshCw className={`mr-1.5 h-4 w-4 ${policy.isFetching ? "animate-spin" : ""}`} />
+                    Refresh
+                  </Button>
+                </AgentGateTooltip>
               </div>
             )}
           </div>
@@ -348,7 +357,9 @@ export function McpSettingsSection() {
           )}
           {policy.catalog?.probeStale && (
             <p role="status" className="text-xs text-[var(--status-warning)]">
-              Provider readiness result is stale. Refresh before relying on this catalog.
+              {refreshGate.gated
+                ? "This is a host-captured catalog, not a live provider probe. Open MCP settings on the host to refresh it."
+                : "Provider readiness result is stale. Refresh before relying on this catalog."}
             </p>
           )}
           {Object.entries(policy.catalog?.providerDiagnostics ?? {}).map(([providerName, diagnostic]) => (
@@ -390,6 +401,23 @@ export function McpSettingsSection() {
             !policy.isLoading &&
             !policy.error &&
             eligibleProviders.length > 0 &&
+            policy.catalog === null && (
+              <div className="rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-5 text-center">
+                <ServerCog className="mx-auto h-6 w-6 text-[var(--text-muted)]" />
+                <h4 className="mt-2 text-sm font-semibold text-[var(--text-primary)]">
+                  MCP catalog has not been captured yet
+                </h4>
+                <p className="mx-auto mt-1 max-w-md text-xs text-[var(--text-muted)]">
+                  Open MCP settings on the host once to build this catalog, then return here.
+                </p>
+              </div>
+            )}
+          {ready &&
+            !policy.isLoading &&
+            !policy.error &&
+            eligibleProviders.length > 0 &&
+            policy.catalog !== null &&
+            policy.catalog !== undefined &&
             servers.length === 0 && (
               <div className="rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-5 text-center">
                 <ServerCog className="mx-auto h-6 w-6 text-[var(--text-muted)]" />

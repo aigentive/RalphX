@@ -30,8 +30,9 @@
 //! shares [`project_view`] with the list twin, so the single-project answer cannot drift from
 //! the list answer's field set.
 //!
-//! Full `repositoryCapability` is absent by construction. The projection carries only a
-//! coarse kind derived from durable row state, never repository paths or remote URLs.
+//! Full `repositoryCapability` is absent by construction. The projection carries a stored
+//! capability snapshot, never repository paths or remote URLs. URL exposure is deferred pending
+//! an owner decision; widening later requires only adding the approved field here.
 //!
 //! `workingDirectory` IS carried (owner decision, 2026-07-30). It is a stored string, and the
 //! authority problem was the act of inspecting that path — never the act of returning it. The
@@ -82,13 +83,21 @@ pub struct RemoteProjectView {
     pub merge_validation_mode: String,
     pub merge_strategy: String,
     pub github_pr_enabled: bool,
-    /// Coarse repository capability with no path or remote URL payload.
-    pub repository_capability_kind: Option<String>,
+    pub repository_capability_snapshot: Option<RemoteRepositoryCapabilitySnapshot>,
     pub detected_analysis: Option<String>,
     pub custom_analysis: Option<String>,
     pub analyzed_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct RemoteRepositoryCapabilitySnapshot {
+    pub kind: String,
+    pub has_remote: bool,
+    pub inspected_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 /// Whether this host is ready to run agents, as two scalars.
@@ -127,15 +136,31 @@ pub async fn list_remote_projects_for_app_state(
         .get_all()
         .await
         .map_err(|error| error.to_string())?;
-    Ok(projects.into_iter().map(project_view).collect())
+    let mut views = Vec::with_capacity(projects.len());
+    for project in projects {
+        views.push(project_view(state, project).await?);
+    }
+    Ok(views)
 }
 
 /// The single projection both project twins return.
 ///
 /// Shared rather than duplicated so the one-project answer can never carry a field the list
 /// answer drops (or vice versa) — the field set IS the security boundary here.
-fn project_view(project: Project) -> RemoteProjectView {
-    RemoteProjectView {
+async fn project_view(state: &AppState, project: Project) -> Result<RemoteProjectView, String> {
+    let snapshot = state
+        .project_repository_capability_repo
+        .get(&project.id)
+        .await
+        .map_err(|error| error.to_string())?
+        .filter(|row| row.working_directory == project.working_directory)
+        .map(|row| RemoteRepositoryCapabilitySnapshot {
+            kind: row.kind,
+            has_remote: row.push_url.is_some(),
+            inspected_at: row.inspected_at.to_rfc3339(),
+            message: row.message,
+        });
+    Ok(RemoteProjectView {
         id: project.id.to_string(),
         name: project.name,
         working_directory: project.working_directory,
@@ -145,21 +170,14 @@ fn project_view(project: Project) -> RemoteProjectView {
         merge_validation_mode: project.merge_validation_mode.to_string(),
         merge_strategy: project.merge_strategy.to_string(),
         github_pr_enabled: project.github_pr_enabled,
-        repository_capability_kind: Some(
-            if project.github_pr_enabled {
-                "github"
-            } else {
-                "inspection_failed"
-            }
-            .to_string(),
-        ),
+        repository_capability_snapshot: snapshot,
         detected_analysis: project.detected_analysis,
         custom_analysis: project.custom_analysis,
         // Already RFC3339 text on the entity, unlike the two timestamps below.
         analyzed_at: project.analyzed_at,
         created_at: project.created_at.to_rfc3339(),
         updated_at: project.updated_at.to_rfc3339(),
-    }
+    })
 }
 
 /// Reads one project without inspecting its repository.
@@ -186,7 +204,10 @@ pub async fn get_remote_project_for_app_state(
         .get_by_id(&ProjectId::from_string(id.to_string()))
         .await
         .map_err(|error| error.to_string())?;
-    Ok(project.map(project_view))
+    match project {
+        Some(project) => Ok(Some(project_view(state, project).await?)),
+        None => Ok(None),
+    }
 }
 
 /// Reports whether the host has a usable provider, without probing one.

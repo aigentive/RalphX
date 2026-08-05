@@ -67,6 +67,11 @@ export const RawMcpCatalogSchema = z.object({
   servers: z.array(RawMcpServerSchema),
 });
 
+export const RawRemoteMcpCatalogSchema = z.object({
+  snapshot: RawMcpCatalogSchema.nullable(),
+  captured_at: z.string().nullable(),
+});
+
 export const McpMutationResponseSchema = z.object({ changed: z.boolean() });
 
 export type RawMcpCatalog = z.infer<typeof RawMcpCatalogSchema>;
