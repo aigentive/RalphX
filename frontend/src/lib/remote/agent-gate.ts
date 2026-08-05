@@ -190,12 +190,12 @@ export const AGENT_GATED_AFFORDANCES = {
   automationSkipJudge: "skip_automation_judge",
   automationSettingsEdit: "update_automation_settings",
   automationFinalize: "finalize_automation",
-  // These mutation commands/routes are intentionally absent from the remote facade;
-  // their controls therefore resolve `unavailable` at every remote scope.
+  // These mutation commands remain absent from the remote facade, so their controls
+  // resolve `unavailable` at every remote scope.
   automationRetryJudge: "retry_automation_judge",
   automationDelete: "delete_automation",
   automationDeleteRun: "delete_automation_run",
-  automationSetupEdit: "update_automation",
+  automationSetupEdit: "update_automation_config",
   automationCreate: "create_automation_draft",
 } as const satisfies Record<string, string>;
 

@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use tauri::State;
 
@@ -24,6 +25,7 @@ use crate::application::automation::reopen::reopen_automation_run;
 use crate::application::automation::resume_orchestrator::resume_automation_smart;
 use crate::application::automation::service::{
     AutomationService, CreateAutomationDraftInput as ServiceCreateDraftInput,
+    UpdateAutomationConfigInput as ServiceUpdateConfigInput,
     UpdateAutomationSettingsInput as ServiceUpdateSettingsInput,
 };
 use crate::application::AppState;
@@ -82,6 +84,74 @@ pub struct UpdateAutomationSettingsInput {
     pub pr_merge_mode: Option<String>,
     #[serde(default)]
     pub plan_deep_verification: Option<bool>,
+}
+
+pub const REMOTE_AUTOMATION_CONFIG_LOOKUP_FAILED: &str = "REMOTE_AUTOMATION_CONFIG_LOOKUP_FAILED";
+pub const REMOTE_AUTOMATION_CONFIG_NOT_FOUND: &str = "REMOTE_AUTOMATION_CONFIG_NOT_FOUND";
+pub const REMOTE_AUTOMATION_CONFIG_VERSION_CONFLICT: &str =
+    "REMOTE_AUTOMATION_CONFIG_VERSION_CONFLICT";
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateAutomationSettingsPatchInput {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub max_runs: Option<i64>,
+    #[serde(default)]
+    pub max_consecutive_failures: Option<i64>,
+    #[serde(default)]
+    pub plan_approval_mode: Option<String>,
+    #[serde(default)]
+    pub pr_merge_mode: Option<String>,
+    #[serde(default)]
+    pub plan_deep_verification: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateAutomationConfigPatchInput {
+    #[serde(default)]
+    pub goal_prompt: Option<String>,
+    #[serde(default)]
+    pub first_run_prompt: Option<String>,
+    #[serde(default)]
+    pub provider_harness: Option<String>,
+    #[serde(default)]
+    pub model_id: Option<String>,
+    #[serde(default)]
+    pub logical_effort: Option<String>,
+    #[serde(default)]
+    pub run_mode: Option<String>,
+    #[serde(default)]
+    pub base_ref_kind: Option<String>,
+    #[serde(default)]
+    pub base_ref: Option<String>,
+    #[serde(default)]
+    pub base_display_name: Option<String>,
+    #[serde(default)]
+    pub goal_items_json: Option<String>,
+    #[serde(default)]
+    pub chain_mode: Option<String>,
+    #[serde(default)]
+    pub completion_signal: Option<String>,
+    #[serde(default)]
+    pub setup_analysis_summary: Option<String>,
+    #[serde(default)]
+    pub spec_artifact_id: Option<String>,
+    #[serde(default)]
+    pub spec_content: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateAutomationConfigInput {
+    pub automation_id: String,
+    pub expected_updated_at: DateTime<Utc>,
+    #[serde(default)]
+    pub settings: Option<UpdateAutomationSettingsPatchInput>,
+    #[serde(default)]
+    pub config: Option<UpdateAutomationConfigPatchInput>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -293,6 +363,74 @@ pub async fn update_automation_settings(
         .await
         .map(AutomationResponse::from)
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn update_automation_config(
+    input: UpdateAutomationConfigInput,
+    state: State<'_, AppState>,
+) -> Result<AutomationResponse, String> {
+    update_automation_config_for_state(&state, input).await
+}
+
+#[doc(hidden)]
+pub async fn update_automation_config_for_state(
+    state: &AppState,
+    input: UpdateAutomationConfigInput,
+) -> Result<AutomationResponse, String> {
+    let id = parse_automation_id(&input.automation_id)?;
+    let current = state
+        .automation_repo
+        .get_by_id(&id)
+        .await
+        .map_err(|_| REMOTE_AUTOMATION_CONFIG_LOOKUP_FAILED.to_string())?
+        .ok_or_else(|| REMOTE_AUTOMATION_CONFIG_NOT_FOUND.to_string())?;
+    if current.updated_at != input.expected_updated_at {
+        return Err(REMOTE_AUTOMATION_CONFIG_VERSION_CONFLICT.to_string());
+    }
+
+    let service = automation_service(state);
+    let mut updated = current;
+    if let Some(settings) = input.settings {
+        let plan_approval_mode = parse_plan_approval_mode(settings.plan_approval_mode)?;
+        let pr_merge_mode = parse_pr_merge_mode(settings.pr_merge_mode)?;
+        updated = service
+            .update_settings(ServiceUpdateSettingsInput {
+                id: id.clone(),
+                name: settings.name,
+                max_runs: settings.max_runs,
+                max_consecutive_failures: settings.max_consecutive_failures,
+                plan_approval_mode,
+                pr_merge_mode,
+                plan_deep_verification: settings.plan_deep_verification,
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    if let Some(config) = input.config {
+        updated = service
+            .update_config(ServiceUpdateConfigInput {
+                id,
+                goal_prompt: config.goal_prompt,
+                first_run_prompt: config.first_run_prompt,
+                provider_harness: config.provider_harness,
+                model_id: config.model_id,
+                logical_effort: config.logical_effort,
+                run_mode: config.run_mode,
+                base_ref_kind: config.base_ref_kind,
+                base_ref: config.base_ref,
+                base_display_name: config.base_display_name,
+                goal_items_json: config.goal_items_json,
+                chain_mode: config.chain_mode,
+                completion_signal: config.completion_signal,
+                setup_analysis_summary: config.setup_analysis_summary,
+                spec_artifact_id: config.spec_artifact_id,
+                spec_content: config.spec_content,
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(AutomationResponse::from(updated))
 }
 
 #[tauri::command]

@@ -128,12 +128,6 @@ export const GATE_CALLSITE_INDIRECTIONS: readonly {
     reason: "Presentational input; send dispatches through the `onSend` prop the host owns.",
   },
   {
-    file: "src/components/agents/AgentsAutomationPanel.tsx",
-    affordance: "automationSetupEdit",
-    reason:
-      "Setup edits post through `automationsApi.setupAgent.updateAutomation`, whose `update_automation` route name is computed inside `postAutomationJson` — invisible to the literal reach walk.",
-  },
-  {
     file: "src/components/agents/AgentsStartComposer.tsx",
     affordance: "startConversation",
     reason:

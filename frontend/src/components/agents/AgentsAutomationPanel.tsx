@@ -756,8 +756,13 @@ export function AgentsAutomationPanel({
       input,
     }: {
       conversationId: string;
-      input: Parameters<typeof automationsApi.setupAgent.updateAutomation>[1];
-    }) => automationsApi.setupAgent.updateAutomation(conversationId, input),
+      input: Parameters<typeof automationsApi.setupAgent.updateAutomation>[2];
+    }) =>
+      automationsApi.setupAgent.updateAutomation(
+        conversationId,
+        automation,
+        input,
+      ),
     onSuccess: invalidate,
     onError: () => toast.error("Failed to update automation setup"),
   });

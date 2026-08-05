@@ -219,8 +219,9 @@ pub use atlassian_commands::{
 pub use automation_commands::{
     create_automation_draft, get_automation, list_automations, pause_automation,
     restart_automation, resume_automation, retry_automation_judge, retry_automation_plan_judge,
-    stop_automation, update_automation_settings, AutomationIdInput, CreateAutomationDraftInput,
-    ListAutomationsInput, PauseAutomationInput, UpdateAutomationSettingsInput,
+    stop_automation, update_automation_config, update_automation_settings, AutomationIdInput,
+    CreateAutomationDraftInput, ListAutomationsInput, PauseAutomationInput,
+    UpdateAutomationConfigInput, UpdateAutomationSettingsInput,
 };
 pub use chat_attachment_commands::{
     delete_chat_attachment, link_attachments_to_message, list_conversation_attachments,

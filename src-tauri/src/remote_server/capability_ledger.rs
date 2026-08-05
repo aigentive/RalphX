@@ -2591,6 +2591,18 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
              their own — the run has to already exist and reach that gate",
         ),
     },
+    CommandOverride {
+        command: "update_automation_config",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "batch-12 audit: direct spawn-free automation setup patch using the same validated \
+             settings-then-config service flow as the setup HTTP route. The twin requires an \
+             exact expected_updated_at match before either write, so stale remote clients fail \
+             closed without mutating the row; these fields only configure a later run and do \
+             not arm the automation scheduler",
+        ),
+    },
     //
     // The four arming writes: each flips `automations.status` to Active, the armed value the
     // `automation-active` state surface names and `spawn_automation_scheduler` scans.

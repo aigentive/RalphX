@@ -4,6 +4,10 @@ import {
   typedInvokeWithTransform,
 } from "@/lib/tauri";
 import { backendFetch } from "@/api/backend";
+import {
+  getTransportEnvironmentId,
+  isRemoteEnvironmentId,
+} from "@/lib/remote/active-environment";
 import { sourcePullRequestInvokeInput } from "./chat";
 
 import {
@@ -103,6 +107,17 @@ export {
 } from "./automations.transforms";
 
 const CALLER_SESSION_ID_HEADER = "x-ralphx-caller-session-id";
+const REMOTE_AUTOMATION_CONFIG_VERSION_CONFLICT =
+  "REMOTE_AUTOMATION_CONFIG_VERSION_CONFLICT";
+
+export class AutomationConfigVersionConflictError extends Error {
+  readonly errorCode = REMOTE_AUTOMATION_CONFIG_VERSION_CONFLICT;
+
+  constructor() {
+    super("Automation changed — reload");
+    this.name = "AutomationConfigVersionConflictError";
+  }
+}
 
 function createDraftArgs(input: CreateAutomationDraftInput): {
   projectId: string;
@@ -323,17 +338,108 @@ export const automationsApi = {
         transformAutomationDetail,
       ),
 
-    updateAutomation: (
+    updateAutomation: async (
       callerConversationId: string,
+      automation: Automation,
       input: UpdateAutomationSetupInput,
-    ): Promise<Automation> =>
-      postAutomationJson(
+    ): Promise<Automation> => {
+      const transformed = transformUpdateAutomationSetupInput(input);
+      if (isRemoteEnvironmentId(getTransportEnvironmentId())) {
+        const hasSettings =
+          input.name !== undefined ||
+          input.maxRuns !== undefined ||
+          input.maxConsecutiveFailures !== undefined;
+        const hasConfig =
+          input.goalPrompt !== undefined ||
+          input.firstRunPrompt !== undefined ||
+          input.providerHarness !== undefined ||
+          input.modelId !== undefined ||
+          input.logicalEffort !== undefined ||
+          input.runMode !== undefined ||
+          input.baseRefKind !== undefined ||
+          input.baseRef !== undefined ||
+          input.baseDisplayName !== undefined ||
+          input.goalItemsJson !== undefined ||
+          input.chainMode !== undefined ||
+          input.completionSignal !== undefined ||
+          input.setupAnalysisSummary !== undefined ||
+          input.specArtifactId !== undefined;
+        try {
+          return await typedInvokeWithTransform(
+            "update_automation_config",
+            {
+              input: {
+                automationId: automation.id,
+                expectedUpdatedAt: automation.updatedAt,
+                ...(hasSettings && {
+                  settings: {
+                    ...(input.name !== undefined && { name: input.name }),
+                    ...(input.maxRuns !== undefined && { maxRuns: input.maxRuns }),
+                    ...(input.maxConsecutiveFailures !== undefined && {
+                      maxConsecutiveFailures: input.maxConsecutiveFailures,
+                    }),
+                  },
+                }),
+                ...(hasConfig && {
+                  config: {
+                    ...(input.goalPrompt !== undefined && {
+                      goalPrompt: input.goalPrompt,
+                    }),
+                    ...(input.firstRunPrompt !== undefined && {
+                      firstRunPrompt: input.firstRunPrompt,
+                    }),
+                    ...(input.providerHarness !== undefined && {
+                      providerHarness: input.providerHarness,
+                    }),
+                    ...(input.modelId !== undefined && { modelId: input.modelId }),
+                    ...(input.logicalEffort !== undefined && {
+                      logicalEffort: input.logicalEffort,
+                    }),
+                    ...(input.runMode !== undefined && { runMode: input.runMode }),
+                    ...(input.baseRefKind !== undefined && {
+                      baseRefKind: input.baseRefKind,
+                    }),
+                    ...(input.baseRef !== undefined && { baseRef: input.baseRef }),
+                    ...(input.baseDisplayName !== undefined && {
+                      baseDisplayName: input.baseDisplayName,
+                    }),
+                    ...(input.goalItemsJson !== undefined && {
+                      goalItemsJson: input.goalItemsJson,
+                    }),
+                    ...(input.chainMode !== undefined && {
+                      chainMode: input.chainMode,
+                    }),
+                    ...(input.completionSignal !== undefined && {
+                      completionSignal: input.completionSignal,
+                    }),
+                    ...(input.setupAnalysisSummary !== undefined && {
+                      setupAnalysisSummary: input.setupAnalysisSummary,
+                    }),
+                    ...(input.specArtifactId !== undefined && {
+                      specArtifactId: input.specArtifactId,
+                    }),
+                  },
+                }),
+              },
+            },
+            AutomationSchema,
+            transformAutomation,
+          );
+        } catch (error) {
+          if (String(error).includes(REMOTE_AUTOMATION_CONFIG_VERSION_CONFLICT)) {
+            throw new AutomationConfigVersionConflictError();
+          }
+          throw error;
+        }
+      }
+      return postAutomationJson(
         "update_automation",
         callerConversationId,
         AutomationSchema,
         transformAutomation,
-        transformUpdateAutomationSetupInput(input),
-      ),
+        transformed,
+      );
+    },
 
     finalizeAutomation: (callerConversationId: string): Promise<Automation> =>
       postAutomationJson(

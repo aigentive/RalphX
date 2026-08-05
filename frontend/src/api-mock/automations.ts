@@ -249,6 +249,7 @@ export const mockAutomationsApi = {
 
     updateAutomation: async (
       _callerConversationId: string,
+      _automation: Automation,
       input: UpdateAutomationSetupInput,
     ): Promise<Automation> =>
       mockAutomation({

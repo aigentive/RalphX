@@ -3067,6 +3067,16 @@ crate::remote_commands! {
         call: async,
         result: fallible,
     },
+    "update_automation_config" => crate::commands::automation_commands::update_automation_config {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [
+            (arg input: crate::commands::automation_commands::UpdateAutomationConfigInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
     // The four arming writes. Each flips `automations.status` to Active — the armed value
     // `spawn_automation_scheduler` scans. Only `resume_automation_run` carries
     // `SeedsSpawnTriggeringState`: that capability is defined as detector-(b) EVIDENCE by

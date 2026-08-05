@@ -4354,6 +4354,17 @@
         "agentControl"
       ],
       "class": "agentControl",
+      "command": "update_automation_config",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::automation_commands::update_automation_config"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
       "command": "restart_automation",
       "pins": [],
       "scopeConfined": false,
@@ -5658,6 +5669,17 @@
       "command": "update_automation_settings",
       "module": "automation_commands",
       "reason": "batch-12 audit: one settings patch; plan_approval_mode and pr_merge_mode are both `parse()`-validated and rejected on a miss. These knobs govern whether a LATER run auto-approves a plan or auto-merges a PR, but they seed no scanned surface value on their own — the run has to already exist and reach that gate",
+      "registered": true,
+      "v1Resolution": "registerable"
+    },
+    {
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "update_automation_config",
+      "module": "automation_commands",
+      "reason": "batch-12 audit: direct spawn-free automation setup patch using the same validated settings-then-config service flow as the setup HTTP route. The twin requires an exact expected_updated_at match before either write, so stale remote clients fail closed without mutating the row; these fields only configure a later run and do not arm the automation scheduler",
       "registered": true,
       "v1Resolution": "registerable"
     },

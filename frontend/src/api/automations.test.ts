@@ -1,7 +1,18 @@
 import { invoke } from "@tauri-apps/api/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { automationsApi } from "./automations";
+const environment = vi.hoisted(() => ({ remote: false }));
+
+vi.mock("@/lib/remote/active-environment", () => ({
+  getTransportEnvironmentId: () => (environment.remote ? "remote-1" : "local"),
+  isRemoteEnvironmentId: (id: string) => id !== "local",
+}));
+
+import {
+  AutomationConfigVersionConflictError,
+  automationsApi,
+  transformAutomation,
+} from "./automations";
 import { backendApiUrl } from "./backend";
 
 const fetchMock = vi.fn();
@@ -108,6 +119,7 @@ function jsonResponse(body: unknown, init: ResponseInit = {}) {
 
 describe("automationsApi", () => {
   beforeEach(() => {
+    environment.remote = false;
     vi.mocked(invoke).mockReset();
     fetchMock.mockReset();
     vi.stubGlobal("fetch", fetchMock);
@@ -425,16 +437,20 @@ describe("automationsApi", () => {
     fetchMock.mockResolvedValue(jsonResponse(automationResponse({ name: "Updated" })));
 
     await expect(
-      automationsApi.setupAgent.updateAutomation("conversation-setup-1", {
-        name: "Updated",
-        maxRuns: 9,
-        providerHarness: "codex",
-        modelId: "gpt-5.5",
-        logicalEffort: "xhigh",
-        runMode: "plan",
-        goalItemsJson:
-          '[{"id":"phase-1","title":"Build shared context model","status":"pending"}]',
-      }),
+      automationsApi.setupAgent.updateAutomation(
+        "conversation-setup-1",
+        transformAutomation(automationResponse()),
+        {
+          name: "Updated",
+          maxRuns: 9,
+          providerHarness: "codex",
+          modelId: "gpt-5.5",
+          logicalEffort: "xhigh",
+          runMode: "plan",
+          goalItemsJson:
+            '[{"id":"phase-1","title":"Build shared context model","status":"pending"}]',
+        },
+      ),
     ).resolves.toEqual(
       expect.objectContaining({
         name: "Updated",
@@ -461,6 +477,57 @@ describe("automationsApi", () => {
     });
     const [, init] = fetchMock.mock.calls[0]!;
     expect(JSON.parse(String((init as RequestInit).body))).not.toHaveProperty("id");
+  });
+
+  it("uses the direct version-guarded command for remote setup edits", async () => {
+    environment.remote = true;
+    vi.mocked(invoke).mockResolvedValue(automationResponse({ name: "Updated" }));
+    const loaded = transformAutomation(automationResponse());
+
+    await automationsApi.setupAgent.updateAutomation(
+      "conversation-setup-1",
+      loaded,
+      {
+        name: "Updated",
+        maxRuns: 9,
+        providerHarness: "codex",
+        modelId: "gpt-5.5",
+      },
+    );
+
+    expect(invoke).toHaveBeenCalledWith("update_automation_config", {
+      input: {
+        automationId: "automation-1",
+        expectedUpdatedAt: "2026-07-05T00:00:01Z",
+        settings: { name: "Updated", maxRuns: 9 },
+        config: { providerHarness: "codex", modelId: "gpt-5.5" },
+      },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("surfaces remote automation version conflicts as a typed reload error", async () => {
+    environment.remote = true;
+    vi.mocked(invoke).mockRejectedValue(
+      "REMOTE_AUTOMATION_CONFIG_VERSION_CONFLICT",
+    );
+
+    await expect(
+      automationsApi.setupAgent.updateAutomation(
+        "conversation-setup-1",
+        transformAutomation(automationResponse()),
+        { name: "Updated" },
+      ),
+    ).rejects.toEqual(
+      expect.objectContaining({
+        name: "AutomationConfigVersionConflictError",
+        message: "Automation changed — reload",
+        errorCode: "REMOTE_AUTOMATION_CONFIG_VERSION_CONFLICT",
+      }),
+    );
+    expect(new AutomationConfigVersionConflictError()).toBeInstanceOf(
+      AutomationConfigVersionConflictError,
+    );
   });
 
   it("uses setup-agent finalize with only injected caller identity", async () => {

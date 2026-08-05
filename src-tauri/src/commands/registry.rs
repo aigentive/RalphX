@@ -79,6 +79,7 @@ macro_rules! register_tauri_commands {
             commands::automation_commands::get_automation,
             commands::automation_commands::create_automation_draft,
             commands::automation_commands::update_automation_settings,
+            commands::automation_commands::update_automation_config,
             commands::automation_commands::pause_automation,
             commands::automation_commands::resume_automation,
             commands::automation_commands::finalize_automation,

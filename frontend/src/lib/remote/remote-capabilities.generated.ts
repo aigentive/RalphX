@@ -1484,6 +1484,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: ["mutatesAgentConsumedContent"],
     pins: [],
   },
+  "update_automation_config": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["agentControl"],
+    pins: [],
+  },
   "update_automation_settings": {
     opClass: "agentControl",
     argumentSensitive: false,
