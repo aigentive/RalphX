@@ -1,7 +1,8 @@
 use chrono::Utc;
 
 use super::remote_automation_commands::{
-    request_remote_automation_run_for_state, RequestRemoteAutomationRunInput,
+    request_remote_automation_draft_for_state, request_remote_automation_run_for_state,
+    RequestRemoteAutomationDraftInput, RequestRemoteAutomationRunInput,
     REMOTE_AUTOMATION_RUN_ALREADY_SETTLED, REMOTE_AUTOMATION_RUN_AUTHORITY_CHANGED,
     REMOTE_AUTOMATION_RUN_NOT_FOUND, REMOTE_AUTOMATION_RUN_PLAN_GATE_PAUSED,
 };
@@ -10,7 +11,8 @@ use crate::application::AppState;
 use crate::domain::entities::{
     Automation, AutomationId, AutomationJudgeState, AutomationPlanApprovalMode,
     AutomationPlanJudgeState, AutomationPrMergeMode, AutomationPromptAuthor, AutomationRun,
-    AutomationRunId, AutomationRunStatus, AutomationStatus, ProjectId, RemoteAutomationRunKind,
+    AutomationRunId, AutomationRunStatus, AutomationStatus, Project, ProjectId,
+    RemoteAutomationRunKind,
 };
 
 fn automation(id: &str, status: AutomationStatus) -> Automation {
@@ -47,6 +49,83 @@ fn automation(id: &str, status: AutomationStatus) -> Automation {
         created_at: now,
         updated_at: now,
     }
+}
+
+fn draft_input(project_id: &str, name: &str) -> RequestRemoteAutomationDraftInput {
+    RequestRemoteAutomationDraftInput {
+        project_id: project_id.into(),
+        name: name.into(),
+        authoring_mode: "reviewed".into(),
+        base_ref_kind: "project_default".into(),
+        base_branch_mode: "isolated".into(),
+        base_branch: None,
+    }
+}
+
+#[tokio::test]
+async fn draft_request_validates_before_persist_and_requires_project() {
+    let state = AppState::new_test();
+    let mut input = draft_input("missing", "Nightly");
+    assert!(
+        request_remote_automation_draft_for_state(&state, input.clone())
+            .await
+            .is_err()
+    );
+    input.authoring_mode = "invalid".into();
+    assert!(request_remote_automation_draft_for_state(&state, input)
+        .await
+        .is_err());
+    let mut input = draft_input("missing", "Nightly");
+    input.base_ref_kind = "invalid".into();
+    assert!(request_remote_automation_draft_for_state(&state, input)
+        .await
+        .is_err());
+    let mut input = draft_input("missing", "Nightly");
+    input.base_branch_mode = "invalid".into();
+    assert!(request_remote_automation_draft_for_state(&state, input)
+        .await
+        .is_err());
+    assert!(
+        request_remote_automation_draft_for_state(&state, draft_input("missing", "  "))
+            .await
+            .is_err()
+    );
+    assert!(state
+        .remote_automation_draft_request_repo
+        .claim_pending(Utc::now())
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn draft_request_deduplicates_same_name_and_allows_independent_names() {
+    let state = AppState::new_test();
+    let project = Project::new("Remote drafts".into(), "/tmp/remote-drafts".into());
+    state.project_repo.create(project.clone()).await.unwrap();
+    let first = request_remote_automation_draft_for_state(
+        &state,
+        draft_input(project.id.as_str(), "Nightly"),
+    )
+    .await
+    .unwrap();
+    let duplicate = request_remote_automation_draft_for_state(
+        &state,
+        draft_input(project.id.as_str(), "Nightly"),
+    )
+    .await
+    .unwrap();
+    let independent = request_remote_automation_draft_for_state(
+        &state,
+        draft_input(project.id.as_str(), "Weekly"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(duplicate.request_id, first.request_id);
+    assert_eq!(duplicate.automation_id, first.automation_id);
+    assert!(duplicate.deduplicated);
+    assert_ne!(independent.request_id, first.request_id);
+    assert_ne!(independent.automation_id, first.automation_id);
 }
 
 fn run(automation_id: &AutomationId, judge_state: AutomationJudgeState) -> AutomationRun {

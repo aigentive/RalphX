@@ -89,6 +89,7 @@ pub mod apply_service;
 pub mod atlassian_integration_service;
 pub mod attention_service;
 pub mod automation;
+pub mod automation_draft_creation;
 pub mod branch_update_executor;
 #[cfg(test)]
 mod branch_update_executor_tests;
@@ -224,8 +225,11 @@ pub mod remote_queue_send_intent;
 mod startup_remote_queue_send_tests;
 pub mod remote_finalize_decision_intent;
 pub mod remote_automation_run_intent;
+pub mod remote_automation_draft_intent;
 #[cfg(test)]
 mod startup_remote_automation_run_tests;
+#[cfg(test)]
+mod startup_remote_automation_draft_tests;
 pub mod remote_resume_intent;
 pub mod resume_validator;
 pub mod review_issue_service;

@@ -1548,6 +1548,15 @@ pub(crate) fn spawn_remote_resume_dispatchers(
         {
             tracing::error!(%error, "remote automation run stale sweep failed");
         }
+        // `Starting` draft rows are never retried: replaying a lost claim is a
+        // double-conversation factory and can also create a second automation/worktree branch.
+        if let Err(error) = state
+            .remote_automation_draft_request_repo
+            .fail_stale(cutoff, now)
+            .await
+        {
+            tracing::error!(%error, "remote automation draft stale sweep failed");
+        }
         let mut interval = tokio::time::interval(Duration::from_secs(2));
         interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {
@@ -1579,6 +1588,9 @@ pub(crate) fn spawn_remote_resume_dispatchers(
             }
             if let Err(error) = dispatch_one_remote_automation_run(&state).await {
                 tracing::warn!(%error, "remote automation run dispatch failed");
+            }
+            if let Err(error) = dispatch_one_remote_automation_draft(&state).await {
+                tracing::warn!(%error, "remote automation draft dispatch failed");
             }
             if let Err(error) =
                 dispatch_one_remote_finalize_decision(&state, &execution_state, Some(&app_handle))
@@ -1743,6 +1755,87 @@ pub(crate) async fn dispatch_one_remote_automation_run(state: &AppState) -> AppR
         Err(crate::error::AppError::Validation(message)) if message.contains(crate::application::automation::plan_gate::AUTOMATION_PLAN_GATE_TRIGGER_RUN_NOW_ERROR_CODE) => state.remote_automation_run_request_repo.fail(&row.id, REMOTE_AUTOMATION_RUN_PLAN_GATE_PAUSED, None, chrono::Utc::now()).await?,
         Err(error @ (crate::error::AppError::Database(_) | crate::error::AppError::Infrastructure(_))) => return Err(error),
         Err(error) => { tracing::warn!(request_id=%row.id,%error,"remote automation run host seam failed"); state.remote_automation_run_request_repo.fail(&row.id, REMOTE_AUTOMATION_RUN_HOST_FAILED, None, chrono::Utc::now()).await?; }
+    }
+    Ok(())
+}
+
+pub(crate) async fn dispatch_one_remote_automation_draft(state: &AppState) -> AppResult<()> {
+    use crate::application::automation_draft_creation::{
+        create_automation_draft_with_id_for_state, CreateAutomationDraftInput,
+    };
+    use crate::application::remote_automation_draft_intent::{
+        REMOTE_AUTOMATION_DRAFT_HOST_FAILED, REMOTE_AUTOMATION_DRAFT_PROJECT_NOT_FOUND,
+    };
+    use crate::domain::entities::{AutomationId, ProjectId};
+
+    let Some(row) = state
+        .remote_automation_draft_request_repo
+        .claim_pending(chrono::Utc::now())
+        .await?
+    else {
+        return Ok(());
+    };
+    let project_id = ProjectId::from_string(row.project_id.clone());
+    if state.project_repo.get_by_id(&project_id).await?.is_none() {
+        state
+            .remote_automation_draft_request_repo
+            .fail(
+                &row.id,
+                REMOTE_AUTOMATION_DRAFT_PROJECT_NOT_FOUND,
+                chrono::Utc::now(),
+            )
+            .await?;
+        return Ok(());
+    }
+    let automation_id = AutomationId::from_string(row.automation_id.clone());
+    if state
+        .automation_repo
+        .get_by_id(&automation_id)
+        .await?
+        .is_some()
+    {
+        state
+            .remote_automation_draft_request_repo
+            .complete(
+                &row.id,
+                serde_json::json!({"automationId": row.automation_id}),
+                chrono::Utc::now(),
+            )
+            .await?;
+        return Ok(());
+    }
+    let input = CreateAutomationDraftInput {
+        project_id: row.project_id,
+        name: Some(row.name),
+        authoring_mode: Some(row.authoring_mode),
+        base_ref_kind: Some(row.base_ref_kind),
+        base_branch_mode: Some(row.base_branch_mode),
+        base_ref: row.base_branch,
+        base_display_name: None,
+        base_source_pull_request: None,
+    };
+    match create_automation_draft_with_id_for_state(input, Some(automation_id), state).await {
+        Ok(result) => {
+            state
+                .remote_automation_draft_request_repo
+                .complete(
+                    &row.id,
+                    serde_json::json!({"automationId": result.automation.id}),
+                    chrono::Utc::now(),
+                )
+                .await?;
+        }
+        Err(error) => {
+            tracing::warn!(request_id=%row.id,%error,"remote automation draft host seam failed");
+            state
+                .remote_automation_draft_request_repo
+                .fail(
+                    &row.id,
+                    REMOTE_AUTOMATION_DRAFT_HOST_FAILED,
+                    chrono::Utc::now(),
+                )
+                .await?;
+        }
     }
     Ok(())
 }

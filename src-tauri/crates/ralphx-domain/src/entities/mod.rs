@@ -55,6 +55,7 @@ pub mod project;
 pub mod remote_access;
 pub mod remote_agent_stop_request;
 pub mod remote_automation_run_request;
+pub mod remote_automation_draft_request;
 pub mod remote_conversation_message_request;
 pub mod remote_conversation_mode_switch_request;
 pub mod remote_conversation_start_request;
@@ -205,6 +206,9 @@ pub use remote_finalize_decision_request::{
 };
 pub use remote_automation_run_request::{
     RemoteAutomationRunKind, RemoteAutomationRunRequest, RemoteAutomationRunRequestStatus,
+};
+pub use remote_automation_draft_request::{
+    RemoteAutomationDraftRequest, RemoteAutomationDraftRequestStatus,
 };
 pub use remote_plan_edit_request::{RemotePlanEditRequest, RemotePlanEditRequestStatus};
 pub use remote_queued_send_request::{RemoteQueuedSendRequest, RemoteQueuedSendRequestStatus};

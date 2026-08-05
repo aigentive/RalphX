@@ -650,6 +650,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: [],
     pins: [],
   },
+  "get_remote_automation_draft_request": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
   "get_remote_automation_run_request": {
     opClass: "read",
     argumentSensitive: false,
@@ -1242,6 +1248,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     opClass: "operate",
     argumentSensitive: false,
     capabilities: [],
+    pins: [],
+  },
+  "request_remote_automation_draft": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["seedsSpawnTriggeringState","mutatesAgentConsumedContent"],
     pins: [],
   },
   "request_remote_automation_run": {

@@ -428,6 +428,8 @@ macro_rules! register_tauri_commands {
             commands::remote_queue_commands::get_remote_queued_message_send_request,
             commands::remote_automation_commands::request_remote_automation_run,
             commands::remote_automation_commands::get_remote_automation_run_request,
+            commands::remote_automation_commands::request_remote_automation_draft,
+            commands::remote_automation_commands::get_remote_automation_draft_request,
             // Spawn-free remote chat send (facade-registrable; see remote_chat_commands)
             commands::remote_chat_commands::send_remote_chat_message,
             // Spawn-free remote conversation reads (see remote_transcript_commands)
