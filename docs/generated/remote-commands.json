@@ -608,6 +608,13 @@
       "scope": "ui:operate"
     },
     {
+      "command": "cancel_remote_queued_agent_message",
+      "direction": "authority-reducing",
+      "kind": "command",
+      "rationale": "commands/remote_queue_commands.rs validates an active Project conversation and only removes the named queued turn from durable storage and memory; it cannot create content, start, resume, steer, or dispatch an agent",
+      "scope": "ui:operate"
+    },
+    {
       "command": "deny_permission_request",
       "direction": "authority-reducing",
       "kind": "command",
@@ -3264,6 +3271,24 @@
       "pins": [],
       "scopeConfined": false,
       "target": "crate::commands::remote_transcript_commands::list_remote_agent_conversations_page"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "list_remote_queued_agent_messages",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::remote_queue_commands::list_remote_queued_agent_messages"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "operate",
+      "command": "cancel_remote_queued_agent_message",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::remote_queue_commands::cancel_remote_queued_agent_message"
     },
     {
       "argumentSensitive": false,
@@ -8985,6 +9010,24 @@
       "v1Resolution": "registerable"
     },
     {
+      "capabilities": [],
+      "class": "read",
+      "command": "list_remote_queued_agent_messages",
+      "module": "remote_queue_commands",
+      "reason": "spawn-free AppState-only queue read; validates a live Project conversation, propagates durable repository errors, merges durable-first, and filters hidden recovery rows",
+      "registered": true,
+      "v1Resolution": "registerable"
+    },
+    {
+      "capabilities": [],
+      "class": "operate",
+      "command": "cancel_remote_queued_agent_message",
+      "module": "remote_queue_commands",
+      "reason": "authority-reducing queue removal after live Project-conversation validation; durable-first deletion prevents restart resurrection and cannot add or dispatch agent-consumed content",
+      "registered": true,
+      "v1Resolution": "registerable"
+    },
+    {
       "capabilities": [
         "mutatesAgentConsumedContent"
       ],
@@ -9449,9 +9492,9 @@
     },
     {
       "auditRefusal": {
-        "batch": "8",
-        "finding": "same create_chat_service shape at unified_chat_commands/mod.rs:4263",
-        "reason": "constructs-spawn-capable-service"
+        "batch": "8, resolved B3a",
+        "finding": "Wave B3a split the corrected unified_chat_commands/mod.rs:4516 carrier seam; list_remote_queued_agent_messages is the registered spawn-free answer through list_queued_agent_messages_for_state, while the local command deliberately keeps its ChatService path, so registering both names would duplicate one query",
+        "reason": "seam-resolved-via-remote-twin"
       },
       "capabilities": [
         "agentControl"

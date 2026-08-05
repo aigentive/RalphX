@@ -128,6 +128,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: ["agentControl"],
     pins: [],
   },
+  "cancel_remote_queued_agent_message": {
+    opClass: "operate",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
   "cancel_tasks_in_group": {
     opClass: "agentControl",
     argumentSensitive: false,
@@ -1035,6 +1041,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     pins: [],
   },
   "list_remote_projects": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "list_remote_queued_agent_messages": {
     opClass: "read",
     argumentSensitive: false,
     capabilities: [],

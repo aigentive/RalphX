@@ -182,7 +182,7 @@ use crate::domain::services::{
     normalize_title_with_jira_key, primary_jira_key_from_composer_metadata,
     AgentWorkspacePrPublisher, ComposerArtifactReference, ComposerExcerptReference,
     ComposerIntegrationReference, ComposerProjectReference, ComposerSelectionSnapshot,
-    QueuedMessage, RunningAgentKey, RunningAgentRegistry,
+    QueueKey, QueuedMessage, RunningAgentKey, RunningAgentRegistry,
 };
 use crate::domain::state_machine::transition_handler::get_trigger_origin;
 use crate::error::AppError;
@@ -4549,6 +4549,47 @@ pub async fn delete_queued_agent_message(
         .delete_queued_message(context_type, &context_id, &message_id)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Pure-`&AppState` seam for reading queued messages without constructing spawn authority.
+pub async fn list_queued_agent_messages_for_state(
+    state: &AppState,
+    context_type: ChatContextType,
+    context_id: &str,
+) -> Result<Vec<QueuedMessageResponse>, String> {
+    let key = QueueKey::new(context_type, context_id);
+    let durable = state
+        .queued_message_repo
+        .list(&key)
+        .await
+        .map_err(|error| error.to_string())?;
+    let memory = state.message_queue.get_queued(context_type, context_id);
+    let mut seen: HashSet<String> = durable.iter().map(|message| message.id.clone()).collect();
+    let mut merged = durable;
+    merged.extend(memory.into_iter().filter(|message| seen.insert(message.id.clone())));
+    Ok(visible_queued_message_responses(merged))
+}
+
+/// Pure-`&AppState` seam for removing a queued message without constructing spawn authority.
+///
+/// Durable storage is deleted first. Reversing this order could return an error after removing
+/// only the memory copy, allowing the still-durable row to resurrect after restart.
+pub async fn delete_queued_agent_message_for_state(
+    state: &AppState,
+    context_type: ChatContextType,
+    context_id: &str,
+    message_id: &str,
+) -> Result<bool, String> {
+    let key = QueueKey::new(context_type, context_id);
+    let durable_deleted = state
+        .queued_message_repo
+        .delete(&key, message_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let memory_deleted = state
+        .message_queue
+        .delete(context_type, context_id, message_id);
+    Ok(durable_deleted || memory_deleted)
 }
 
 /// Send a queued message immediately, interrupting the active provider process.

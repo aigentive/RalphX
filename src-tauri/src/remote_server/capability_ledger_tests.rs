@@ -1070,7 +1070,8 @@ fn detector_b_is_calibrated_and_floor_enforced() {
         // same shape through the `remote-finalize-decision` surface; the host-owned dispatcher
         // is the only caller of the re-homed apply seam.
         // 580 -> 582: remote plan-artifact edit intent plus its poll read (Wave B2c).
-        582,
+        // 582 -> 584: spawn-free remote queued-message list + authority-reducing delete (B3a).
+        584,
         "review the detector against the full command census"
     );
     let flagged = spawn_triggering_writers(
@@ -3676,6 +3677,33 @@ fn the_spawn_free_remote_read_module_carries_no_authority_carriers() {
     }
 }
 
+#[test]
+fn the_spawn_free_remote_queue_module_carries_no_authority_carriers() {
+    let sources = load_production_sources();
+    let (_, module) = sources
+        .iter()
+        .find(|(file, _)| file == "commands/remote_queue_commands.rs")
+        .expect("the spawn-free remote queue module must exist");
+    let code = module
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(code.contains("pub async fn list_remote_queued_agent_messages"));
+    assert!(code.contains("pub async fn cancel_remote_queued_agent_message"));
+    for carrier in [
+        "AppHandle",
+        "ExecutionState",
+        "create_chat_service",
+        "build_chat_service",
+    ] {
+        assert!(
+            !code.contains(carrier),
+            "`remote_queue_commands` must not carry `{carrier}`"
+        );
+    }
+}
+
 /// WP2 — the spawn-free STOP module's contract, checked mechanically rather than in prose.
 ///
 /// `stop_agent` is unregistered because `AppChatService::stop_agent` reaches
@@ -4144,7 +4172,6 @@ fn the_b2_getter_refusals_are_pinned() {
         // content argument does not hold them back on its own: the registered
         // `get_remote_agent_conversation` twin already serves the same tool blocks at `ui:read`,
         // truncated. Pinned by `wp3_tool_call_detail_reads_are_registered_reviewed_read_rows`.
-        "get_queued_agent_messages",
         // `list_conversation_folder_references` sat here on "host path disclosure: returns
         // absolute directories from the operator's machine". WP4 (a) registered it at `ui:read`
         // on the SAME owner ruling that lets `list_remote_projects` carry `working_directory`:
@@ -4841,16 +4868,13 @@ fn b2_detector_clean_members_refused_on_their_own_findings() {
 
     // --- Reads that construct spawn-capable machinery to serve a read.
     //
-    // Both take `execution_state` and `tauri::AppHandle` and call `create_chat_service`
-    // (`unified_chat_commands/mod.rs:9657`, `:4263`) purely to reach one getter. The service
+    // Both originally took `execution_state` and `tauri::AppHandle` and called
+    // `create_chat_service` purely to reach one getter. The service
     // is not USED to steer, but exposing the command hands a read-scoped caller a constructed
     // steer surface, and the read-only seam that would fix this does not exist yet. Contrast
     // `list_agent_conversations`, whose `_for_app_state` seam was extracted for exactly this
     // reason and which IS registered above.
-    for (command, module) in [
-        ("get_agent_run_status_unified", "unified_chat_commands"),
-        ("get_queued_agent_messages", "unified_chat_commands"),
-    ] {
+    for (command, module) in [("get_agent_run_status_unified", "unified_chat_commands")] {
         let row = policy_for(command, module).expect("ledgered");
         assert_ne!(
             row.class,
@@ -4862,6 +4886,11 @@ fn b2_detector_clean_members_refused_on_their_own_findings() {
             "`{command}` must not register"
         );
     }
+
+    let queued = audit_refusal_for("get_queued_agent_messages").expect("twin refusal");
+    assert_eq!(queued.reason, AuditRefusalReason::SeamResolvedViaRemoteTwin);
+    assert!(find_spec("get_queued_agent_messages").is_none());
+    assert!(find_spec("list_remote_queued_agent_messages").is_some());
 
     // --- Already answered by a different seam, so registering the local name would DUPLICATE
     // a deliberate architectural decision rather than extend the facade.
@@ -7573,4 +7602,3 @@ fn zz_temp_probe_loop_ids() {
         }
     }
 }
-

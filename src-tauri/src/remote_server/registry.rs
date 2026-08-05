@@ -1947,6 +1947,29 @@ crate::remote_commands! {
         call: async,
         result: fallible,
     },
+    "list_remote_queued_agent_messages"
+        => crate::commands::remote_queue_commands::list_remote_queued_agent_messages {
+        class: Read,
+        caps: [],
+        params: [
+            (arg conversation_id: String),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "cancel_remote_queued_agent_message"
+        => crate::commands::remote_queue_commands::cancel_remote_queued_agent_message {
+        class: Operate,
+        caps: [],
+        params: [
+            (arg conversation_id: String),
+            (arg message_id: String),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
     // The Agents-sidebar inbox read. Registered through the recovery-free `_for_app_state` seam
     // and the `worktree_path`-blanking facade twin, NOT the local `list_agent_sidebar_conversations`
     // (which schedules PR-supervision recovery and reaches the git CLI resolver — detector (c)).
@@ -2434,8 +2457,9 @@ crate::remote_commands! {
     // `agent_workspace_response_for_state`.
     //
     // Deliberately NOT here, each on its own finding: `list_agent_composer_skills` is
-    // fail-open; `get_agent_run_status_unified` and `get_queued_agent_messages` build a
-    // spawn-capable chat service to serve a read; `list_conversation_folder_references`
+    // fail-open; `get_agent_run_status_unified` builds a spawn-capable chat service to serve a
+    // read; the local queue getter is retired behind its registered spawn-free remote twin;
+    // `list_conversation_folder_references`
     // returns `AppError`, which is not `Serialize`; and `list_agent_conversations` /
     // `list_agent_conversations_page` stay refused because batch 5 already answered them
     // with the registered `list_remote_agent_conversations*` twins in

@@ -238,6 +238,7 @@ pub const MODULE_DEFAULTS: &[ModuleDefault] = &[
     // ChatService), but the default stays conservative: a future member must earn a
     // narrower row rather than inherit one.
     agent_default("remote_chat_commands"),
+    agent_default("remote_queue_commands"),
     // Same construction and the same conservative default as `remote_chat_commands`: the module
     // takes no AppHandle/ExecutionState/ChatService, so it cannot spawn, but a future member must
     // still earn its own row rather than inherit the start command's.
@@ -1453,6 +1454,28 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
             RiskClass::Read,
             NONE,
             "pure repository read of a context's conversation metadata; no spawn carrier; propagates read errors",
+        ),
+    },
+    CommandOverride {
+        command: "list_remote_queued_agent_messages",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "spawn-free AppState-only queue read; validates a live Project conversation, propagates durable repository errors, merges durable-first, and filters hidden recovery rows",
+        ),
+    },
+    // Named `cancel_`, not `delete_`, deliberately: the P-17c deny surface blanket-denies the
+    // `delete_` prefix as the entity-deletion floor (owner decision D2). This op is not an
+    // entity deletion — it withdraws a not-yet-consumed queued turn, the same
+    // authority-REDUCING direction as request_remote_agent_stop, and the twin-naming rule
+    // says a twin is named for what its closure does. If D2 is ever revisited, this row is
+    // the place to re-argue the boundary.
+    CommandOverride {
+        command: "cancel_remote_queued_agent_message",
+        policy: policy(
+            RiskClass::Operate,
+            NONE,
+            "authority-reducing queue removal after live Project-conversation validation; durable-first deletion prevents restart resurrection and cannot add or dispatch agent-consumed content",
         ),
     },
     CommandOverride {
@@ -3561,9 +3584,12 @@ pub const AUDIT_REFUSALS: &[AuditRefusal] = &[
     },
     AuditRefusal {
         command: "get_queued_agent_messages",
-        reason: AuditRefusalReason::ConstructsSpawnCapableService,
-        finding: "same create_chat_service shape at unified_chat_commands/mod.rs:4263",
-        batch: "8",
+        reason: AuditRefusalReason::SeamResolvedViaRemoteTwin,
+        finding: "Wave B3a split the corrected unified_chat_commands/mod.rs:4516 carrier seam; \
+                  list_remote_queued_agent_messages is the registered spawn-free answer through \
+                  list_queued_agent_messages_for_state, while the local command deliberately \
+                  keeps its ChatService path, so registering both names would duplicate one query",
+        batch: "8, resolved B3a",
     },
     // --- Answered by a registered remote twin through a deliberately split seam.
     AuditRefusal {
@@ -3834,6 +3860,13 @@ pub const AUTHORITY_REDUCING_EXEMPTIONS: &[AuthorityReducingExemption] = &[
         direction: "authority-reducing",
         scope: "ui:operate",
         rationale: "commands/remote_agent_stop_commands.rs persists one conversation-scoped stop intent and nothing else; the only reader is application/startup_background.rs::drain_one_remote_agent_stop, which calls ChatService::stop_agent and can therefore only END an agent run — there is no path from the row to a start, resume, or content write, and the row names no process",
+    },
+    AuthorityReducingExemption {
+        subject: "cancel_remote_queued_agent_message",
+        kind: "command",
+        direction: "authority-reducing",
+        scope: "ui:operate",
+        rationale: "commands/remote_queue_commands.rs validates an active Project conversation and only removes the named queued turn from durable storage and memory; it cannot create content, start, resume, steer, or dispatch an agent",
     },
     AuthorityReducingExemption {
         subject: "deny_permission_request",
