@@ -528,6 +528,14 @@ impl ChatTimelineRepository for FailingTimelineRepository {
         Ok(Vec::new())
     }
 
+    async fn latest_assistant_activity_at_for_conversation(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _assistant_role: MessageRole,
+    ) -> AppResult<Option<chrono::DateTime<Utc>>> {
+        Err(AppError::Infrastructure("timeline read failed".to_string()))
+    }
+
     async fn delete_message_items_except_block_indices(
         &self,
         _message_id: &ChatMessageId,
@@ -903,7 +911,7 @@ async fn claude_stream_error_turn_complete_does_not_wait_for_interactive_timeout
 }
 
 #[tokio::test]
-async fn error_turn_complete_with_persisted_output_does_not_requeue_pending_stdin() {
+async fn error_turn_complete_with_persisted_output_leaves_pending_stdin_for_recovery() {
     let mut child = spawn_interactive_jsonl_process_that_stays_alive(
         concat!(
             r#"{"type":"assistant","message":{"content":[{"type":"text","text":"partial assistant output"}]},"session_id":"sess-error-recovery"}"#,
@@ -958,11 +966,6 @@ async fn error_turn_complete_with_persisted_output_does_not_requeue_pending_stdi
         .manage(state)
         .build(mock_context(noop_assets()))
         .expect("mock app");
-    let queued_events = Arc::new(Mutex::new(Vec::new()));
-    let captured = Arc::clone(&queued_events);
-    let _listener = app.listen("agent:message_queued", move |event| {
-        captured.lock().unwrap().push(event.payload().to_string());
-    });
     let app_state = app.state::<AppState>();
 
     let error = process_stream_background::<MockRuntime>(
@@ -1003,18 +1006,11 @@ async fn error_turn_complete_with_persisted_output_does_not_requeue_pending_stdi
         .expect("assistant read")
         .expect("assistant persisted");
     assert_eq!(persisted.content, "partial assistant output");
-    let queue_key = QueueKey::new(ChatContextType::Project, context_id);
-    assert!(app_state
-        .queued_message_repo
-        .list(&queue_key)
+    let mut removed = interactive_registry
+        .remove(&InteractiveProcessKey::new("project", context_id))
         .await
-        .expect("durable queue")
-        .is_empty());
-    assert!(app_state
-        .message_queue
-        .get_queued_with_key(&queue_key)
-        .is_empty());
-    assert!(queued_events.lock().unwrap().is_empty());
+        .expect("pending stdin remains for the stream-exit recovery path");
+    assert_eq!(removed.take_pending_stdin_turns().len(), 1);
 }
 
 #[tokio::test]
@@ -3823,6 +3819,16 @@ impl ChatTimelineRepository for CountingTimelineRepository {
         *self.snapshot_calls.lock().expect("snapshot counter") += 1;
         self.inner
             .delete_message_items_except_block_indices(message_id, retained_block_indices)
+            .await
+    }
+
+    async fn latest_assistant_activity_at_for_conversation(
+        &self,
+        conversation_id: &ChatConversationId,
+        assistant_role: MessageRole,
+    ) -> AppResult<Option<chrono::DateTime<Utc>>> {
+        self.inner
+            .latest_assistant_activity_at_for_conversation(conversation_id, assistant_role)
             .await
     }
 

@@ -1,6 +1,10 @@
 use super::*;
 use crate::domain::agents::LogicalEffort;
-use crate::domain::entities::{ChatAttachmentId, ChatContextType, ChatConversationId};
+use crate::domain::entities::{
+    ChatAttachmentId, ChatContextType, ChatConversationId, ChatTimelineItem, ChatTimelineItemKind,
+    MessageRole,
+};
+use crate::domain::repositories::ChatTimelineRepository;
 use crate::domain::services::{
     ComposerArtifactReference, ComposerExcerptReference, ComposerIntegrationReference,
     ComposerProjectReference, ComposerProjectReferenceKind,
@@ -19,25 +23,113 @@ fn recovered_pending_turn(queued_at: String) -> PendingStdinTurn {
     }
 }
 
+struct TimelineReadFailureRepository {
+    inner: Arc<dyn ChatTimelineRepository>,
+}
+
+#[async_trait::async_trait]
+impl ChatTimelineRepository for TimelineReadFailureRepository {
+    async fn upsert_item(
+        &self,
+        item: ChatTimelineItem,
+    ) -> crate::error::AppResult<ChatTimelineItem> {
+        self.inner.upsert_item(item).await
+    }
+
+    async fn get_by_id(
+        &self,
+        id: &crate::domain::entities::ChatTimelineItemId,
+    ) -> crate::error::AppResult<Option<ChatTimelineItem>> {
+        self.inner.get_by_id(id).await
+    }
+
+    async fn get_page(
+        &self,
+        conversation_id: &ChatConversationId,
+        limit: u32,
+        before_sequence: Option<i64>,
+    ) -> crate::error::AppResult<crate::domain::entities::ChatTimelinePage> {
+        self.inner
+            .get_page(conversation_id, limit, before_sequence)
+            .await
+    }
+
+    async fn count_by_conversation(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> crate::error::AppResult<u32> {
+        self.inner.count_by_conversation(conversation_id).await
+    }
+
+    async fn get_by_conversation(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> crate::error::AppResult<Vec<ChatTimelineItem>> {
+        self.inner.get_by_conversation(conversation_id).await
+    }
+
+    async fn latest_assistant_activity_at_for_conversation(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _assistant_role: MessageRole,
+    ) -> crate::error::AppResult<Option<chrono::DateTime<Utc>>> {
+        Err(crate::error::AppError::Infrastructure(
+            "timeline evidence unavailable".to_string(),
+        ))
+    }
+
+    async fn delete_message_items_except_block_indices(
+        &self,
+        message_id: &crate::domain::entities::ChatMessageId,
+        retained_block_indices: Vec<i64>,
+    ) -> crate::error::AppResult<()> {
+        self.inner
+            .delete_message_items_except_block_indices(message_id, retained_block_indices)
+            .await
+    }
+
+    async fn mark_message_items_finalized(
+        &self,
+        message_id: &crate::domain::entities::ChatMessageId,
+    ) -> crate::error::AppResult<()> {
+        self.inner.mark_message_items_finalized(message_id).await
+    }
+}
+
 #[tokio::test]
-async fn requeue_pending_stdin_turns_suppresses_later_assistant_evidence() {
+async fn requeue_pending_stdin_turns_suppresses_later_assistant_activity() {
     let state = AppState::new_test();
     let conversation_id = ChatConversationId::new();
     let mut assistant = super::chat_service_context::create_assistant_message(
         ChatContextType::Project,
         "recovery-context",
         "I already handled that.",
-        conversation_id,
+        conversation_id.clone(),
         &[],
         &[],
     );
-    assistant.created_at = Utc::now();
-    let queued_at = (assistant.created_at - Duration::seconds(1)).to_rfc3339();
+    assistant.created_at = Utc::now() - Duration::seconds(2);
+    let queued_at = (assistant.created_at + Duration::seconds(1)).to_rfc3339();
+    let activity_at = assistant.created_at + Duration::seconds(2);
+    let assistant_id = assistant.id.clone();
     state
         .chat_message_repo
         .create(assistant)
         .await
         .expect("assistant evidence");
+    let mut activity = ChatTimelineItem::for_message_block(
+        assistant_id,
+        conversation_id.clone(),
+        0,
+        MessageRole::Orchestrator,
+        ChatTimelineItemKind::Text,
+    );
+    activity.updated_at = activity_at;
+    state
+        .chat_timeline_repo
+        .upsert_item(activity)
+        .await
+        .expect("assistant activity evidence");
 
     let app = tauri::test::mock_builder()
         .manage(state)
@@ -60,6 +152,7 @@ async fn requeue_pending_stdin_turns_suppresses_later_assistant_evidence() {
         vec![recovered_pending_turn(queued_at)],
         Some(AnsweredTurnEvidence {
             chat_message_repo: &state.chat_message_repo,
+            chat_timeline_repo: &state.chat_timeline_repo,
             conversation_id: &conversation_id,
         }),
     )
@@ -114,6 +207,72 @@ async fn requeue_pending_stdin_turns_retains_unparseable_timestamp() {
         vec![recovered_pending_turn("not-a-timestamp".to_string())],
         Some(AnsweredTurnEvidence {
             chat_message_repo: &state.chat_message_repo,
+            chat_timeline_repo: &state.chat_timeline_repo,
+            conversation_id: &conversation_id,
+        }),
+    )
+    .await;
+
+    let key = QueueKey::new(ChatContextType::Project, "recovery-context");
+    assert_eq!(
+        state
+            .queued_message_repo
+            .list(&key)
+            .await
+            .expect("durable queue")
+            .len(),
+        1
+    );
+    assert_eq!(state.message_queue.get_queued_with_key(&key).len(), 1);
+    assert_eq!(events.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn requeue_pending_stdin_turns_retains_turn_when_timeline_evidence_fails() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let mut assistant = super::chat_service_context::create_assistant_message(
+        ChatContextType::Project,
+        "recovery-context",
+        "I already handled that.",
+        conversation_id.clone(),
+        &[],
+        &[],
+    );
+    assistant.created_at = Utc::now() - Duration::seconds(2);
+    let queued_at = (assistant.created_at + Duration::seconds(1)).to_rfc3339();
+    state
+        .chat_message_repo
+        .create(assistant)
+        .await
+        .expect("assistant evidence");
+    let failing_timeline_repo: Arc<dyn ChatTimelineRepository> =
+        Arc::new(TimelineReadFailureRepository {
+            inner: Arc::clone(&state.chat_timeline_repo),
+        });
+
+    let app = tauri::test::mock_builder()
+        .manage(state)
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app");
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&events);
+    let _listener = app.listen("agent:message_queued", move |event| {
+        captured.lock().unwrap().push(event.payload().to_string());
+    });
+
+    let state = app.state::<AppState>();
+    requeue_pending_stdin_turns(
+        Some(&state.queued_message_repo),
+        &state.message_queue,
+        Some(app.handle()),
+        ChatContextType::Project,
+        "recovery-context",
+        Some(conversation_id.as_str()),
+        vec![recovered_pending_turn(queued_at)],
+        Some(AnsweredTurnEvidence {
+            chat_message_repo: &state.chat_message_repo,
+            chat_timeline_repo: &failing_timeline_repo,
             conversation_id: &conversation_id,
         }),
     )

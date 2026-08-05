@@ -1094,12 +1094,13 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                 (
                     Arc::clone(&app_state.queued_message_repo),
                     Arc::clone(&app_state.chat_message_repo),
+                    Arc::clone(&app_state.chat_timeline_repo),
                 )
             });
             super::chat_service_queue::requeue_pending_stdin_turns(
                 recovery_repositories
                     .as_ref()
-                    .map(|(queued_message_repo, _)| queued_message_repo),
+                    .map(|(queued_message_repo, _, _)| queued_message_repo),
                 &message_queue,
                 app_handle.as_ref(),
                 context_type,
@@ -1107,9 +1108,12 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                 Some(conversation_id.as_str()),
                 pending_turns,
                 recovery_repositories.as_ref().map(
-                    |(_, chat_message_repo)| super::chat_service_queue::AnsweredTurnEvidence {
+                    |(_, chat_message_repo, chat_timeline_repo)| {
+                        super::chat_service_queue::AnsweredTurnEvidence {
                         chat_message_repo,
+                        chat_timeline_repo,
                         conversation_id: &conversation_id,
+                    }
                     },
                 ),
             )

@@ -2725,6 +2725,7 @@ pub async fn process_stream_background<R: Runtime>(
                                     pending_turns,
                                     Some(super::chat_service_queue::AnsweredTurnEvidence {
                                         chat_message_repo: &state.chat_message_repo,
+                                        chat_timeline_repo: &state.chat_timeline_repo,
                                         conversation_id,
                                     }),
                                 )

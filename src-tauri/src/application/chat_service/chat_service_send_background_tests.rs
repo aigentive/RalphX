@@ -3042,7 +3042,7 @@ async fn background_run_suppresses_answered_pending_stdin_turns() {
         &[],
         &[],
     );
-    assistant.created_at = Utc::now();
+    assistant.created_at = Utc::now() - chrono::Duration::seconds(2);
     state
         .chat_message_repo
         .create(assistant.clone())
@@ -3097,8 +3097,17 @@ async fn background_run_suppresses_answered_pending_stdin_turns() {
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("mock app");
     let app_handle = app.handle().clone();
+    let queued_events = Arc::new(Mutex::new(Vec::new()));
+    let captured_events = Arc::clone(&queued_events);
+    let _listener = app.listen("agent:message_queued", move |event| {
+        captured_events
+            .lock()
+            .expect("queued event log")
+            .push(event.payload().to_string());
+    });
     let mut child = spawn_interactive_claude_jsonl_fixture(&[
-        r#"{"type":"result","session_id":"sess-bg-pending","is_error":false,"result":"complete","cost_usd":0.0}"#,
+        r#"{"type":"assistant","message":{"content":[{"type":"text","text":"handled after the pending message"}]},"session_id":"sess-bg-pending"}"#,
+        r#"{"type":"result","session_id":"sess-bg-pending","is_error":true,"errors":["fixture failure"],"result":"failed","cost_usd":0.0}"#,
     ])
     .await;
     let interactive_key = InteractiveProcessKey::new("project", &context_id);
@@ -3118,7 +3127,7 @@ async fn background_run_suppresses_answered_pending_stdin_turns() {
                     persisted_message_id: "already-answered-turn".to_string(),
                     content: "do not replay".to_string(),
                     metadata_override: None,
-                    queued_at: (assistant.created_at - chrono::Duration::seconds(1)).to_rfc3339(),
+                    queued_at: (assistant.created_at + chrono::Duration::seconds(1)).to_rfc3339(),
                 },
             )
             .await
@@ -3186,6 +3195,10 @@ async fn background_run_suppresses_answered_pending_stdin_turns() {
     assert!(
         message_queue.get_queued_with_key(&queue_key).is_empty(),
         "suppressed recovery must not leave an in-memory retry"
+    );
+    assert!(
+        queued_events.lock().expect("queued event log").is_empty(),
+        "suppressed recovery must not publish a queued-message event"
     );
 }
 

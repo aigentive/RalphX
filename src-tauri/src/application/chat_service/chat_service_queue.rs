@@ -338,6 +338,7 @@ fn emit_backend_message_queued<R: Runtime>(
 /// Transcript evidence used to suppress recovery of an already-answered turn.
 pub(crate) struct AnsweredTurnEvidence<'a> {
     pub chat_message_repo: &'a Arc<dyn ChatMessageRepository>,
+    pub chat_timeline_repo: &'a Arc<dyn ChatTimelineRepository>,
     pub conversation_id: &'a ChatConversationId,
 }
 
@@ -352,21 +353,31 @@ pub(crate) async fn requeue_pending_stdin_turns<R: Runtime>(
     evidence: Option<AnsweredTurnEvidence<'_>>,
 ) {
     let answered_at = if let Some(evidence) = evidence {
-        match evidence
-            .chat_message_repo
-            .get_recent_by_conversation_paginated(evidence.conversation_id, 20, 0)
-            .await
-        {
-            Ok(messages) => messages
+        let assistant_role = get_assistant_role(&context_type);
+        match tokio::try_join!(
+            evidence
+                .chat_message_repo
+                .get_recent_by_conversation_paginated(evidence.conversation_id, 20, 0),
+            evidence
+                .chat_timeline_repo
+                .latest_assistant_activity_at_for_conversation(
+                    evidence.conversation_id,
+                    assistant_role,
+                )
+        ) {
+            Ok((messages, timeline_activity_at)) => messages
                 .into_iter()
-                .filter(|message| message.role == get_assistant_role(&context_type))
-                .next_back()
-                .map(|message| message.created_at),
+                .filter(|message| message.role == assistant_role)
+                .map(|message| message.created_at)
+                .max()
+                .into_iter()
+                .chain(timeline_activity_at)
+                .max(),
             Err(error) => {
                 tracing::warn!(
                     conversation_id = %evidence.conversation_id,
                     error = %error,
-                    "[QUEUE] Could not read transcript evidence for recovered stdin turns"
+                    "[QUEUE] Could not read assistant activity evidence for recovered stdin turns"
                 );
                 None
             }
@@ -398,7 +409,7 @@ pub(crate) async fn requeue_pending_stdin_turns<R: Runtime>(
                 queued_message_id = %turn.persisted_message_id,
                 persisted_message_id = %turn.persisted_message_id,
                 queued_at = %turn.queued_at,
-                assistant_created_at = %answered_at.to_rfc3339(),
+                assistant_activity_at = %answered_at.to_rfc3339(),
                 "[QUEUE] Suppressed recovered stdin turn with later assistant evidence"
             );
             false

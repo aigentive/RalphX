@@ -2138,12 +2138,17 @@ impl<R: Runtime> AppChatService<R> {
             queue_context_id,
             conversation_id,
             turns,
-            evidence_conversation_id.as_ref().map(|conversation_id| {
-                chat_service_queue::AnsweredTurnEvidence {
-                    chat_message_repo: &self.chat_message_repo,
-                    conversation_id,
-                }
-            }),
+            evidence_conversation_id
+                .as_ref()
+                .and_then(|conversation_id| {
+                    self.chat_timeline_repo.as_ref().map(|chat_timeline_repo| {
+                        chat_service_queue::AnsweredTurnEvidence {
+                            chat_message_repo: &self.chat_message_repo,
+                            chat_timeline_repo,
+                            conversation_id,
+                        }
+                    })
+                }),
         )
         .await;
     }
