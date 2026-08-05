@@ -54,6 +54,7 @@ interface AgentsArtifactPaneRegionProps {
   conversationId: string;
   conversation: AgentConversation;
   workspace: AgentConversationWorkspace | null;
+  activeWorkspaceError: Error | null;
   activeWorkspaceFreshness: AgentConversationWorkspaceFreshness | undefined;
   projectBaseBranch: string | null;
   focusedIdeationSession: FocusedArtifactIdeationSession | null;
@@ -73,6 +74,7 @@ interface AgentsArtifactPaneRegionProps {
   ) => void;
   onShowTab: (tab: AgentArtifactTab) => void;
   onOpenPublish: () => void;
+  onRetryActiveWorkspace: () => void;
   onOpenAutomation?: (automationId: string) => void;
   onTaskModeChange: (mode: AgentTaskArtifactMode) => void;
   onPublishWorkspace: (conversationId: string) => Promise<void>;
@@ -119,6 +121,7 @@ export function AgentsArtifactPaneRegion({
   conversationId,
   conversation,
   workspace,
+  activeWorkspaceError,
   activeWorkspaceFreshness,
   projectBaseBranch,
   focusedIdeationSession,
@@ -132,6 +135,7 @@ export function AgentsArtifactPaneRegion({
   onHideTab,
   onShowTab,
   onOpenPublish,
+  onRetryActiveWorkspace,
   onOpenAutomation,
   onTaskModeChange,
   onPublishWorkspace,
@@ -198,6 +202,7 @@ export function AgentsArtifactPaneRegion({
                   <LazyAgentsArtifactPane
                     conversation={conversation}
                     workspace={workspace}
+                    activeWorkspaceError={activeWorkspaceError}
                     activeWorkspaceFreshness={activeWorkspaceFreshness}
                     projectBaseBranch={projectBaseBranch}
                     focusedIdeationSession={focusedIdeationSession}
@@ -209,6 +214,7 @@ export function AgentsArtifactPaneRegion({
                     onHideTab={onHideTab}
                     onShowTab={onShowTab}
                     onOpenPublish={onOpenPublish}
+                    onRetryActiveWorkspace={onRetryActiveWorkspace}
                     {...(onOpenAutomation ? { onOpenAutomation } : {})}
                     onTaskModeChange={onTaskModeChange}
                     onPublishWorkspace={onPublishWorkspace}

@@ -10,8 +10,7 @@ use super::{AgentRunId, ChatConversationId};
 macro_rules! repair_string_enum {
     ($name:ident { $($variant:ident => $wire:literal),+ $(,)? }) => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-        #[serde(rename_all = "snake_case")]
-        pub enum $name { $($variant),+ }
+        pub enum $name { $(#[serde(rename = $wire)] $variant),+ }
 
         impl $name {
             pub fn as_str(self) -> &'static str {

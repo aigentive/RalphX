@@ -1,6 +1,7 @@
 import type { QueryClient } from "@tanstack/react-query";
 
 import { chatApi } from "@/api/chat";
+import { logger } from "@/lib/logger";
 import type {
   AgentConversationWorkspace,
   AgentConversationWorkspaceFreshnessScope,
@@ -332,26 +333,37 @@ export async function preflightAgentWorkspaceFreshness(
 
   pendingFreshnessPreflights.add(conversationId);
   try {
-    const workspace = await queryClient.fetchQuery({
-      queryKey: agentWorkspaceKeys.workspace(conversationId),
-      queryFn: () => chatApi.getAgentConversationWorkspace(conversationId),
-      staleTime: AGENT_WORKSPACE_STALE_MS,
-    });
+    let workspace: AgentConversationWorkspace | null;
+    try {
+      workspace = await queryClient.fetchQuery({
+        queryKey: agentWorkspaceKeys.workspace(conversationId),
+        queryFn: () => chatApi.getAgentConversationWorkspace(conversationId),
+        staleTime: AGENT_WORKSPACE_STALE_MS,
+      });
+    } catch (error) {
+      logger.error("Failed to preload agent workspace", {
+        conversationId,
+        error,
+      });
+      return;
+    }
 
     if (!canInspectAgentWorkspaceFreshness(workspace)) {
       return;
     }
 
-    await queryClient.prefetchQuery({
-      queryKey: agentWorkspaceKeys.scopedFreshness(conversationId, "local"),
-      queryFn: () =>
-        chatApi.getAgentConversationWorkspaceFreshness(conversationId, {
-          scope: "local",
-        }),
-      staleTime: AGENT_WORKSPACE_FRESHNESS_STALE_MS,
-    });
-  } catch {
-    // Mounted workspace views handle user-visible freshness errors.
+    try {
+      await queryClient.prefetchQuery({
+        queryKey: agentWorkspaceKeys.scopedFreshness(conversationId, "local"),
+        queryFn: () =>
+          chatApi.getAgentConversationWorkspaceFreshness(conversationId, {
+            scope: "local",
+          }),
+        staleTime: AGENT_WORKSPACE_FRESHNESS_STALE_MS,
+      });
+    } catch {
+      // Mounted workspace views handle user-visible freshness errors.
+    }
   } finally {
     pendingFreshnessPreflights.delete(conversationId);
   }
