@@ -93,6 +93,11 @@ export const GrepWidget = React.memo(function GrepWidget({
       alwaysExpanded={fileCount <= 3}
     >
       <FileList files={parsed.paths} />
+      {parsed.note && (
+        <div style={{ fontSize: 10, color: colors.textMuted, paddingTop: 4 }}>
+          {parsed.note}
+        </div>
+      )}
     </WidgetCard>
   );
 });

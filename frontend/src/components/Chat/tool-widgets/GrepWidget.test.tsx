@@ -271,6 +271,27 @@ describe("GrepWidget", () => {
       expect(screen.getByText("no results")).toBeInTheDocument();
       expect(screen.queryByText(/realpath/)).toBeInTheDocument();
     });
+
+    it("renders diagnostics below non-empty results instead of as file paths", () => {
+      render(
+        <GrepWidget
+          toolCall={makeGrepCall({
+            result: [
+              "ROOT: /workspace/project",
+              "MATCHES: 1",
+              "NOTE: result cap reached (max_results=1); more matches exist.",
+              "src/app.ts:10: needle",
+            ].join("\n"),
+          })}
+        />,
+      );
+
+      expect(screen.getByText("src/app.ts")).toBeInTheDocument();
+      expect(
+        screen.getByText("result cap reached (max_results=1); more matches exist."),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/^NOTE:/)).not.toBeInTheDocument();
+    });
   });
 
   describe("compact mode", () => {

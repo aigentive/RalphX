@@ -194,6 +194,36 @@ describe("ReadWidget", () => {
       expect(screen.queryByText(/TRUNCATED:/)).not.toBeInTheDocument();
     });
 
+    it("strips the unambiguous fs_read_file line range header", () => {
+      render(
+        <ReadWidget
+          toolCall={makeReadCall({
+            arguments: {
+              path: "frontend/src/components/AgentsSidebar.tsx",
+              start_line: 2699,
+              end_line: 2730,
+            },
+            result: [
+              {
+                type: "text",
+                text: [
+                  "FILE: /workspace/project/frontend/src/components/AgentsSidebar.tsx",
+                  "LINES: 2699-2730 of 4775",
+                  "TRUNCATED: false",
+                  "",
+                  "2699| const first = true;",
+                  "2700| const second = true;",
+                ].join("\n"),
+              },
+            ],
+          })}
+        />,
+      );
+
+      expect(screen.getByText("const first = true;")).toBeInTheDocument();
+      expect(screen.queryByText(/LINES:/)).not.toBeInTheDocument();
+    });
+
     it("parses persisted full MCP wrapper results", () => {
       render(
         <ReadWidget
