@@ -83,6 +83,9 @@ export const REMOTE_UNAVAILABLE_HINT =
  * signal, and several affordances are legitimately unavailable today.
  */
 export const AGENT_GATED_AFFORDANCES = {
+  // Repository capability is re-inspected by this command. It is intentionally absent
+  // remotely until that host-side operation has a reviewed facade twin; absence is the signal.
+  repositorySettingsPrToggle: "update_github_pr_enabled",
   // Both send affordances resolve through the spawn-free facade command, NOT
   // `send_agent_message`. That command reaches a process-launch sink and stays
   // unregistered by ruling, so pointing the gate at it would render chat send

@@ -26,6 +26,10 @@ vi.mock("@/hooks/useGitHubConnectionStatus", () => ({
   useGitHubConnectionStatus: vi.fn(),
 }));
 
+vi.mock("@/hooks/useAgentGate", () => ({
+  useAgentGate: () => ({ status: "enabled", gated: false, reason: null }),
+}));
+
 // `GitAuthRepairPanel` reads the bus through `useEventBus()` rather than raw `listen`, so
 // rendering it needs a bus in context. Mocked like the other hooks here — mounting the real
 // EventProvider would pull in every global listener this unit test has no business running.
@@ -511,6 +515,20 @@ describe("RepositorySettingsSection", () => {
 
     const toggle = screen.getByTestId("github-pr-enabled");
     expect(toggle).toBeDisabled();
+  });
+
+  it("renders an honest not-inspected capability without a fabricated URL", () => {
+    mockProjectCapability({
+      githubPrEnabled: false,
+      repositoryCapability: { kind: "notInspected" },
+    });
+
+    render(<RepositorySettingsSection />, { wrapper: createWrapper() });
+
+    expect(screen.getByTestId("github-pr-enabled")).toBeDisabled();
+    expect(screen.getByText("The host has not inspected this repository yet.")).toBeInTheDocument();
+    expect(screen.getByText("Not inspected yet")).toBeInTheDocument();
+    expect(screen.getByText("—")).toBeInTheDocument();
   });
 
   it("commits base branch on blur and shows success toast", async () => {

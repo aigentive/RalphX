@@ -28,13 +28,21 @@ interface PlanReviewTimeline {
 }
 
 export function CommitSummaryCard({ taskId }: CommitSummaryCardProps) {
-  const { commits, isLoadingHistory } = useGitDiff({ taskId });
+  const { commits, historyError, isLoadingHistory } = useGitDiff({ taskId });
 
   if (isLoadingHistory) {
     return (
       <div className="flex items-center justify-center py-4">
         <Loader2 className="w-5 h-5 animate-spin text-text-primary/30" />
       </div>
+    );
+  }
+
+  if (historyError) {
+    return (
+      <p className="text-[0.8125rem] text-text-primary/50 italic">
+        Commit history could not be loaded. It may be available only on the host.
+      </p>
     );
   }
 

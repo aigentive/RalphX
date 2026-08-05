@@ -60,13 +60,26 @@ describe("ProjectSchema", () => {
     });
   });
 
-  it("fails closed when a legacy response has no repository capability", () => {
+  it("reports a legacy response with no repository capability as not inspected", () => {
     const project = transformProject(ProjectSchema.parse(validProject));
 
+    expect(project.repositoryCapability).toEqual({ kind: "notInspected" });
+  });
+
+  it("never fabricates an empty URL from an absent legacy capability payload", () => {
+    const project = transformProject(
+      ProjectSchema.parse({
+        ...validProject,
+        repository_capability_kind: "github",
+      }),
+    );
+
     expect(project.repositoryCapability).toEqual({
-      kind: "inspectionFailed",
-      message: expect.stringMatching(/capability is unavailable/i),
+      kind: "github",
+      fetchUrl: null,
+      pushUrl: null,
     });
+    expect(JSON.stringify(project.repositoryCapability)).not.toContain('""');
   });
 
   it("derives workspace publishing from persisted PR authority, capability, and preference", () => {

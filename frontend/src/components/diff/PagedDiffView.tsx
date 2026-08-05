@@ -21,6 +21,7 @@ import type {
   WorkspaceReviewHunkAnnotation,
 } from "@/api/diff";
 import { Button } from "@/components/ui/button";
+import { isRemoteTransportError } from "@/lib/remote/transport-errors";
 import {
   annotationsForLine,
   buildAnnotationIndex,
@@ -323,22 +324,31 @@ export function PagedDiffView({
   }, [hasExplicitInlineScrollParent, rowCount, scrollContainer]);
 
   if (initialError && !hasAnyPage) {
+    const isUnavailable =
+      isRemoteTransportError(initialError) &&
+      initialError.code === "REMOTE_COMMAND_UNAVAILABLE";
     return (
       <div
         data-testid="paged-diff-error"
         className="flex flex-col items-center gap-2 py-6 text-xs"
         style={{ color: "var(--text-muted)" }}
       >
-        <p>Could not load diff rows.</p>
-        <button
-          type="button"
-          aria-label="Retry loading diff rows"
-          className="rounded px-2 py-1 text-xs hover:bg-[var(--bg-hover)]"
-          style={{ color: "var(--text-secondary)" }}
-          onClick={() => void loadPage(0)}
-        >
-          Retry
-        </button>
+        <p>
+          {isUnavailable
+            ? "This diff is available only on the host."
+            : "Could not load diff rows."}
+        </p>
+        {!isUnavailable && (
+          <button
+            type="button"
+            aria-label="Retry loading diff rows"
+            className="rounded px-2 py-1 text-xs hover:bg-[var(--bg-hover)]"
+            style={{ color: "var(--text-secondary)" }}
+            onClick={() => void loadPage(0)}
+          >
+            Retry
+          </button>
+        )}
       </div>
     );
   }

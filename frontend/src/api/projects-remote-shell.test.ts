@@ -164,13 +164,13 @@ describe("workspace shell read routing", () => {
     expect(project.repositoryCapability?.kind).toBe("github");
   });
 
-  it("fails closed when the remote twin omits the capability kind", async () => {
+  it("reports not-inspected when the remote twin omits the capability kind", async () => {
     useRemoteEnvironment();
     remoteOk(RAW_PROJECT);
 
     const project = await projectsApi.get("project-1");
 
-    expect(project.repositoryCapability?.kind).toBe("inspectionFailed");
+    expect(project.repositoryCapability?.kind).toBe("notInspected");
   });
 
   it("keeps calling the local get_project on the local environment", async () => {

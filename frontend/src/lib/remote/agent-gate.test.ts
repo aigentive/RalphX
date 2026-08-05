@@ -431,6 +431,19 @@ describe("inert exemption list", () => {
 // ---------------------------------------------------------------------------
 
 describe("resolveAffordanceGate", () => {
+  it("keeps repository PR settings local and derives remote unavailability from absence", () => {
+    expect(AGENT_GATED_AFFORDANCES.repositorySettingsPrToggle).toBe(
+      "update_github_pr_enabled",
+    );
+    expect(REMOTE_FACADE_OPS.update_github_pr_enabled).toBeUndefined();
+    expect(
+      resolveAffordanceGate("repositorySettingsPrToggle", true, GRANTED).status,
+    ).toBe("unavailable");
+    expect(
+      resolveAffordanceGate("repositorySettingsPrToggle", false, null).status,
+    ).toBe("enabled");
+  });
+
   it("never gates a local environment, even for an unavailable op", () => {
     expect(resolveAffordanceGate("taskResume", false, null).status).toBe("enabled");
     expect(resolveAffordanceGate("chatSend", false, null).status).toBe("enabled");

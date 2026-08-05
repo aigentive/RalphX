@@ -18,6 +18,7 @@ import type {
   PrDiffAnnotation,
   WorkspaceReviewHunkAnnotation,
 } from "@/api/diff";
+import { RemoteTransportError } from "@/lib/remote/transport-errors";
 
 // ── Mock diffApi ─────────────────────────────────────────────────────────
 const mockGetRange = vi.fn();
@@ -912,6 +913,49 @@ describe("SimpleDiffView", () => {
       await user.click(screen.getByRole("button", { name: /show 6 unchanged lines/i }));
       await waitFor(() => expect(screen.getByTestId("gap-error")).toBeInTheDocument());
       expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
+    });
+
+    it("shows host-only copy without Retry when range fetching is unavailable", async () => {
+      mockGetRange.mockRejectedValue(
+        new RemoteTransportError({
+          code: "REMOTE_COMMAND_UNAVAILABLE",
+          message: "Command is not registered",
+          environmentId: "remote-1",
+          command: "get_agent_conversation_workspace_file_content_range",
+        }),
+      );
+      const user = userEvent.setup();
+      const hunks: DiffHunk[] = [
+        makeHunk({ oldStart: 1, oldLines: 3, newStart: 1, newLines: 3 }),
+        makeHunk({
+          oldStart: 10,
+          oldLines: 3,
+          newStart: 10,
+          newLines: 3,
+          header: "@@ -10,3 +10,3 @@",
+          lines: [
+            makeDiffLine({
+              kind: "addition",
+              content: "later",
+              oldLineNum: null,
+              newLineNum: 10,
+            }),
+          ],
+        }),
+      ];
+
+      render(
+        <SimpleDiffView
+          hunks={hunks}
+          oldTotalLines={15}
+          newTotalLines={15}
+          {...rangeProps}
+        />,
+      );
+
+      await user.click(screen.getByRole("button", { name: /show 6 unchanged lines/i }));
+      expect(await screen.findByText(/available only on the host/i)).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /retry/i })).not.toBeInTheDocument();
     });
 
     it("retry button re-fires range fetch after error", async () => {

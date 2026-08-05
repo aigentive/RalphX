@@ -21,21 +21,22 @@ export const RepositoryCapabilityResponseSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("github"),
     fetch_url: z.string().nullable(),
-    push_url: z.string(),
+    push_url: z.string().nullable(),
   }),
   z.object({
     kind: z.literal("other_remote"),
     fetch_url: z.string().nullable(),
-    push_url: z.string(),
+    push_url: z.string().nullable(),
   }),
   z.object({ kind: z.literal("inspection_failed"), message: z.string() }),
 ]);
 
 export type RepositoryCapability =
   | { kind: "localOnly" }
-  | { kind: "github"; fetchUrl: string | null; pushUrl: string }
-  | { kind: "otherRemote"; fetchUrl: string | null; pushUrl: string }
-  | { kind: "inspectionFailed"; message: string };
+  | { kind: "github"; fetchUrl: string | null; pushUrl: string | null }
+  | { kind: "otherRemote"; fetchUrl: string | null; pushUrl: string | null }
+  | { kind: "inspectionFailed"; message: string }
+  | { kind: "notInspected" };
 
 export type ProjectWorkspacePublishMode =
   | { kind: "persistedPr" }
@@ -43,11 +44,8 @@ export type ProjectWorkspacePublishMode =
   | { kind: "localCommit"; guidance: string }
   | { kind: "unavailable"; guidance: string };
 
-const UNKNOWN_REPOSITORY_CAPABILITY_MESSAGE =
-  "Repository capability is unavailable. Refresh the project before starting a PR workflow.";
 const UNKNOWN_REPOSITORY_CAPABILITY: RepositoryCapability = {
-  kind: "inspectionFailed",
-  message: UNKNOWN_REPOSITORY_CAPABILITY_MESSAGE,
+  kind: "notInspected",
 };
 
 export function transformRepositoryCapability(
@@ -180,15 +178,11 @@ export function transformProject(
     customAnalysis: response.custom_analysis ?? null,
     analyzedAt: response.analyzed_at ?? null,
     githubPrEnabled: response.github_pr_enabled,
-    repositoryCapability: transformRepositoryCapability(
-      response.repository_capability ??
-        (response.repository_capability_kind === "github"
-          ? { kind: "github", fetch_url: null, push_url: "" }
-          : {
-              kind: "inspection_failed",
-              message: UNKNOWN_REPOSITORY_CAPABILITY_MESSAGE,
-            }),
-    ),
+    repositoryCapability: response.repository_capability
+      ? transformRepositoryCapability(response.repository_capability)
+      : response.repository_capability_kind === "github"
+        ? { kind: "github", fetchUrl: null, pushUrl: null }
+        : UNKNOWN_REPOSITORY_CAPABILITY,
     createdAt: response.created_at,
     updatedAt: response.updated_at,
   };
