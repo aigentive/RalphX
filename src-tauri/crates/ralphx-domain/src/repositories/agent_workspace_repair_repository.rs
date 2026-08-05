@@ -16,6 +16,10 @@ pub struct AgentWorkspaceRepairCompatibilityProjection {
     pub pr_supervision_summary: Option<String>,
     pub pr_supervision_updated_at: Option<DateTime<Utc>>,
     pub pr_auto_merge_current: Option<bool>,
+    /// Optional preference changes that must commit in the same transaction as the repair CAS.
+    /// `None` preserves the existing workspace preference.
+    pub pr_autofix_enabled: Option<bool>,
+    pub pr_auto_merge_desired: Option<bool>,
     pub base_commit: Option<String>,
 }
 

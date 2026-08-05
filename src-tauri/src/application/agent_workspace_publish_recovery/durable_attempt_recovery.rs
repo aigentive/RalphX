@@ -10,7 +10,7 @@ use super::StalePublishRepairRecoveryOutcome;
 use crate::application::agent_conversation_workspace::resolve_effective_agent_conversation_workspace_path;
 use crate::application::agent_workspace_pr_autofix_attempt::load_latest_exact_pr_autofix_run_for_pr;
 use crate::application::agent_workspace_publish_repair_state::{
-    agent_workspace_repair_dispatch_is_due, agent_workspace_repair_is_health_held,
+    agent_workspace_repair_dispatch_is_due, agent_workspace_repair_hold_reason,
     block_agent_workspace_repair_completion, block_agent_workspace_repair_needs_human,
     classify_agent_workspace_repair_delivery, continue_agent_workspace_repair_at_boundary,
     inspect_agent_workspace_repair_completion, last_human_repair_reason,
@@ -31,8 +31,8 @@ use crate::application::{AppState, GitService};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspacePublicationEvent, AgentRunId,
     AgentRunStatus, AgentWorkspaceRepairAttempt, AgentWorkspaceRepairAttemptId,
-    AgentWorkspaceRepairContinuation, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
-    ChatContextType, GitTargetLeaseOwner,
+    AgentWorkspaceRepairContinuation, AgentWorkspaceRepairOperationHoldReason,
+    AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource, ChatContextType, GitTargetLeaseOwner,
 };
 use crate::domain::entities::{
     NewNotification, NotificationCategory, NotificationSeverity, NotificationTarget,
@@ -529,48 +529,53 @@ async fn retry_safe_ready_agent_workspace_repair_publish(
         return Ok(DurableRepairRecoveryOutcome::Noop);
     }
     let (held_head_redrive_authorized, held_head_redrive_marker, held_repair_head) =
-        if agent_workspace_repair_is_health_held(&current) {
-            // A health hold normally survives recovery. The one exception is a concrete repair head
-            // GitHub has not seen: without publishing it, the health evidence can never change. The
-            // successor evaluator resolves the workspace/project/path/GitHub evidence fail-closed.
-            let workspace = match state
-                .agent_conversation_workspace_repo
-                .get_by_conversation_id(&current.conversation_id)
-                .await
-            {
-                Ok(Some(workspace)) => workspace,
-                Ok(None) => return Ok(DurableRepairRecoveryOutcome::Noop),
-                Err(error) => {
-                    tracing::warn!(
-                        conversation_id = current.conversation_id.as_str(),
-                        attempt_id = current.id.as_str(),
-                        %error,
-                        "Could not read workspace evidence for held repair publish re-drive"
-                    );
+        match agent_workspace_repair_hold_reason(&current) {
+            Some(
+                AgentWorkspaceRepairOperationHoldReason::UnchangedHealth
+                | AgentWorkspaceRepairOperationHoldReason::PreExistingOnBase,
+            ) => {
+                // A health hold normally survives recovery. The one exception is a concrete repair head
+                // GitHub has not seen: without publishing it, the health evidence can never change. The
+                // successor evaluator resolves the workspace/project/path/GitHub evidence fail-closed.
+                let workspace = match state
+                    .agent_conversation_workspace_repo
+                    .get_by_conversation_id(&current.conversation_id)
+                    .await
+                {
+                    Ok(Some(workspace)) => workspace,
+                    Ok(None) => return Ok(DurableRepairRecoveryOutcome::Noop),
+                    Err(error) => {
+                        tracing::warn!(
+                            conversation_id = current.conversation_id.as_str(),
+                            attempt_id = current.id.as_str(),
+                            %error,
+                            "Could not read workspace evidence for held repair publish re-drive"
+                        );
+                        return Ok(DurableRepairRecoveryOutcome::Noop);
+                    }
+                };
+                if !matches!(
+                    evaluate_pr_autofix_successor(state, &current, &workspace).await,
+                    PrAutofixSuccessorDecision::RedrivePublish
+                ) {
                     return Ok(DurableRepairRecoveryOutcome::Noop);
                 }
-            };
-            if !matches!(
-                evaluate_pr_autofix_successor(state, &current, &workspace).await,
-                PrAutofixSuccessorDecision::RedrivePublish
-            ) {
-                return Ok(DurableRepairRecoveryOutcome::Noop);
+                let Some(head) = current.repair_head_commit.as_deref().map(str::trim) else {
+                    return Ok(DurableRepairRecoveryOutcome::Noop);
+                };
+                if head.is_empty() {
+                    return Ok(DurableRepairRecoveryOutcome::Noop);
+                }
+                let marker = format!("{PR_AUTOFIX_HEAD_REDRIVE_REASON_PREFIX}{head}");
+                (
+                    true,
+                    (!agent_workspace_repair_owns_unpublished_publish_continuation(&current))
+                        .then_some(marker),
+                    Some(head.to_string()),
+                )
             }
-            let Some(head) = current.repair_head_commit.as_deref().map(str::trim) else {
-                return Ok(DurableRepairRecoveryOutcome::Noop);
-            };
-            if head.is_empty() {
-                return Ok(DurableRepairRecoveryOutcome::Noop);
-            }
-            let marker = format!("{PR_AUTOFIX_HEAD_REDRIVE_REASON_PREFIX}{head}");
-            (
-                true,
-                (!agent_workspace_repair_owns_unpublished_publish_continuation(&current))
-                    .then_some(marker),
-                Some(head.to_string()),
-            )
-        } else {
-            (false, None, None)
+            Some(_) => return Ok(DurableRepairRecoveryOutcome::Noop),
+            None => (false, None, None),
         };
 
     let redrive_authorized = match current.continuation {
@@ -2190,6 +2195,8 @@ fn legacy_projection(
         pr_supervision_summary: Some(summary.to_string()),
         pr_supervision_updated_at: Some(attempt.updated_at),
         pr_auto_merge_current: None,
+        pr_autofix_enabled: None,
+        pr_auto_merge_desired: None,
         base_commit: attempt.target_base_commit.clone(),
     }
 }

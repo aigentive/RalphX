@@ -1891,6 +1891,9 @@ export const chatApi = {
   updateAgentConversationWorkspaceFromBase,
   precomputeAgentConversationWorkspacePrDescription,
   publishAgentConversationWorkspace,
+  recheckAgentConversationWorkspacePrHealth,
+  retryAgentConversationWorkspacePrAutofixOverride,
+  stopAgentConversationWorkspacePrAutofixForFailure,
   commitAgentConversationWorkspaceLocally,
   setAgentConversationWorkspaceAutoPublish,
   setAgentConversationWorkspacePrSupervision,
@@ -2093,12 +2096,17 @@ export type AgentWorkspaceMaintenanceOperationStage =
   | "reviewing"
   | "publishing"
   | "ready"
-  | "blocked";
+  | "blocked"
+  | "held";
 export type AgentWorkspaceMaintenanceOperationStatus =
   | "active"
   | "ready"
-  | "blocked";
+  | "blocked"
+  | "held";
 export type AgentWorkspaceMaintenanceOperationHoldReason =
+  | "pr_autofix_unchanged_health"
+  | "pr_autofix_pre_existing_on_base"
+  | "pr_autofix_ci_rerun_pending"
   | "base_stale"
   | "health_evidence"
   | "publish_redrive";
@@ -2114,6 +2122,12 @@ export interface AgentWorkspaceMaintenanceOperation {
   blocker: string | null;
   automaticContinuation: boolean;
   startedAt: string;
+  updatedAt: string;
+}
+
+export interface AgentWorkspaceRepairHoldActionInput {
+  attemptId: string;
+  generation: number;
   updatedAt: string;
 }
 
@@ -2693,10 +2707,18 @@ export const AgentWorkspaceMaintenanceOperationResponseSchema = z.object({
     "publishing",
     "ready",
     "blocked",
+    "held",
   ]),
-  status: z.enum(["active", "ready", "blocked"]),
+  status: z.enum(["active", "ready", "blocked", "held"]),
   hold_reason: z
-    .enum(["base_stale", "health_evidence", "publish_redrive"])
+    .enum([
+      "pr_autofix_unchanged_health",
+      "pr_autofix_pre_existing_on_base",
+      "pr_autofix_ci_rerun_pending",
+      "base_stale",
+      "health_evidence",
+      "publish_redrive",
+    ])
     .nullable()
     .optional()
     .default(null),
@@ -4539,6 +4561,36 @@ export async function publishAgentConversationWorkspace(
     PublishAgentConversationWorkspaceResponseSchema,
   );
   return transformPublishAgentConversationWorkspaceResponse(raw);
+}
+
+export async function recheckAgentConversationWorkspacePrHealth(
+  conversationId: string,
+): Promise<void> {
+  await typedInvoke("recheck_pr_health", { conversationId }, z.null());
+}
+
+export async function retryAgentConversationWorkspacePrAutofixOverride(
+  conversationId: string,
+  input: AgentWorkspaceRepairHoldActionInput,
+): Promise<AgentConversationWorkspace> {
+  const raw = await typedInvoke(
+    "retry_pr_autofix_override",
+    { input: { conversationId, ...input } },
+    AgentConversationWorkspaceResponseSchema,
+  );
+  return transformAgentConversationWorkspace(raw);
+}
+
+export async function stopAgentConversationWorkspacePrAutofixForFailure(
+  conversationId: string,
+  input: AgentWorkspaceRepairHoldActionInput,
+): Promise<AgentConversationWorkspace> {
+  const raw = await typedInvoke(
+    "stop_pr_autofix_for_failure",
+    { input: { conversationId, ...input } },
+    AgentConversationWorkspaceResponseSchema,
+  );
+  return transformAgentConversationWorkspace(raw);
 }
 
 export async function commitAgentConversationWorkspaceLocally(

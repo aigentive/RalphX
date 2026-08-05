@@ -48,6 +48,7 @@ export class AgentsPublishPage extends BasePage {
   readonly reviewWalkthroughDone: Locator;
   readonly reviewWalkthroughRestart: Locator;
   readonly publishConfirm: Locator;
+  readonly holdCard: Locator;
   readonly reviewWalkthroughUnreviewedFile: Locator;
   readonly reviewWalkthroughUnreviewedCode: Locator;
 
@@ -86,6 +87,7 @@ export class AgentsPublishPage extends BasePage {
     this.reviewWalkthroughDone = page.getByTestId("publish-review-walkthrough-done");
     this.reviewWalkthroughRestart = page.getByTestId("publish-review-walkthrough-restart");
     this.publishConfirm = page.getByTestId("agents-publish-confirm");
+    this.holdCard = page.getByTestId("agents-publish-hold-card");
     this.reviewWalkthroughUnreviewedFile = page.getByText(
       "frontend/tests/visual/views/agents/no-findings.ts",
       { exact: true },
@@ -230,6 +232,47 @@ export class AgentsPublishPage extends BasePage {
         },
       });
     }, REPAIR_CONVERSATION_ID);
+  }
+
+  async openHeldRepairScenario() {
+    await this.openRepairPendingScenario();
+    await this.page.evaluate(async (conversationId) => {
+      const { seedMockAgentConversationWorkspace } = await import("/src/api-mock/chat");
+      const queryKey = ["agents", "conversation-workspace", conversationId];
+      const workspace = window.__queryClient?.getQueryData<Record<string, unknown>>(
+        queryKey,
+      );
+      if (!workspace || !window.__queryClient) {
+        throw new Error("Expected workspace query fixture");
+      }
+      const heldWorkspace = {
+        ...workspace,
+        publicationPushStatus: "refreshed",
+        prSupervisionStatus: "held",
+        maintenanceOperation: {
+          operationId: "maintenance-held-visual-1",
+          generation: 2,
+          source: "pr_autofix",
+          stage: "held",
+          status: "held",
+          holdReason: "pr_autofix_unchanged_health",
+          summary: "The fixer made no changes.",
+          blocker: null,
+          automaticContinuation: false,
+          startedAt: "2026-08-02T10:00:00Z",
+          updatedAt: "2026-08-02T10:01:00Z",
+        },
+        prAutofixFingerprintSpend: {
+          generations: 2,
+          minutes: 18,
+          budgetMinutes: 45,
+          isExhausted: false,
+        },
+      };
+      seedMockAgentConversationWorkspace(heldWorkspace);
+      window.__queryClient.setQueryData(queryKey, heldWorkspace);
+    }, REPAIR_CONVERSATION_ID);
+    await expect(this.holdCard).toBeVisible();
   }
 
   async openMergedPublishScenario() {
