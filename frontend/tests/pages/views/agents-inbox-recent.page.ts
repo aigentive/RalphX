@@ -1,9 +1,11 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
+import {
+  seedRecentInboxScenario,
+  type RecentInboxScenario,
+} from "../../fixtures/agents-inbox-recent.fixtures";
 import { setupApp } from "../../fixtures/setup.fixtures";
 import { BasePage } from "../base.page";
-
-type RecentInboxScenario = "populated" | "empty-needs";
 
 const SETTLE_TIMEOUT_MS = 30_000;
 
@@ -11,31 +13,49 @@ export class AgentsInboxRecentPage extends BasePage {
   readonly sidebar: Locator;
   readonly recentScroller: Locator;
   readonly recentChip: Locator;
+  readonly doneChip: Locator;
   readonly needsGroup: Locator;
   readonly workingGroup: Locator;
   readonly needsHeader: Locator;
   readonly workingHeader: Locator;
   readonly needsPager: Locator;
   readonly workingPager: Locator;
-  readonly needsEmpty: Locator;
+  readonly needsEmptyStrip: Locator;
+  readonly zeroCard: Locator;
+  readonly staleEmpty: Locator;
+  readonly doneEmpty: Locator;
+  readonly zeroPrimary: Locator;
+  readonly zeroSecondary: Locator;
+  readonly backToRecent: Locator;
+  readonly clearSearch: Locator;
+  readonly stalePrimary: Locator;
 
   constructor(page: Page) {
     super(page);
     this.sidebar = page.getByTestId("agents-sidebar");
     this.recentScroller = page.getByTestId("agents-sidebar-session-list-inbox-recent");
     this.recentChip = page.getByTestId("agents-inbox-lane-chip-recent");
+    this.doneChip = page.getByTestId("agents-inbox-lane-chip-done");
     this.needsGroup = page.getByTestId("agents-inbox-recent-group-needs");
     this.workingGroup = page.getByTestId("agents-inbox-recent-group-working");
     this.needsHeader = page.getByTestId("agents-inbox-recent-group-header-needs");
     this.workingHeader = page.getByTestId("agents-inbox-recent-group-header-working");
     this.needsPager = page.getByTestId("agents-inbox-recent-pager-needs");
     this.workingPager = page.getByTestId("agents-inbox-recent-pager-working");
-    this.needsEmpty = page.getByTestId("agents-inbox-lane-empty-needs");
+    this.needsEmptyStrip = page.getByTestId("agents-inbox-lane-empty-needs");
+    this.zeroCard = page.getByTestId("agents-inbox-lane-empty-recent");
+    this.staleEmpty = page.getByTestId("agents-inbox-lane-empty-stale");
+    this.doneEmpty = page.getByTestId("agents-inbox-lane-empty-done");
+    this.zeroPrimary = this.zeroCard.getByRole("button", { name: "New agent" });
+    this.zeroSecondary = this.zeroCard.getByRole("button", { name: /Review \d+ done/ });
+    this.backToRecent = page.getByRole("button", { name: "Back to Recent" });
+    this.clearSearch = this.zeroCard.getByRole("button", { name: "Clear search" });
+    this.stalePrimary = this.staleEmpty.getByRole("button", { name: "New agent" });
   }
 
   async open(scenario: RecentInboxScenario): Promise<void> {
     await setupApp(this.page);
-    await this.seedScenario(scenario);
+    await seedRecentInboxScenario(this.page, scenario);
     await this.page.evaluate(() => window.__queryClient?.invalidateQueries());
     await this.page.getByTestId("nav-agents").click();
     await expect(this.sidebar).toBeVisible();
@@ -43,8 +63,55 @@ export class AgentsInboxRecentPage extends BasePage {
     await this.page.getByRole("radio", { name: "Inbox" }).click();
     await this.page.keyboard.press("Escape");
     await expect(this.recentChip).toHaveAttribute("aria-selected", "true", { timeout: SETTLE_TIMEOUT_MS });
+
+    if (scenario === "zero") {
+      await this.waitForZeroCard();
+      return;
+    }
+
     await expect(this.recentScroller).toBeVisible({ timeout: SETTLE_TIMEOUT_MS });
     await this.waitForGroupsSettled();
+
+    if (scenario === "filtered-zero") {
+      await this.page.getByTestId("agents-search-toggle").click();
+      await this.page.getByTestId("agents-search-input").fill("no matching conversation");
+      await this.waitForZeroCard();
+      return;
+    }
+    if (scenario === "stale-zero") {
+      await this.selectLane("stale");
+      await expect(this.staleEmpty).toBeVisible({ timeout: SETTLE_TIMEOUT_MS });
+    }
+    if (scenario === "done-zero") {
+      await this.selectLane("done");
+      await expect(this.doneEmpty).toBeVisible({ timeout: SETTLE_TIMEOUT_MS });
+    }
+  }
+  async selectLane(filter: "recent" | "stale" | "done"): Promise<void> {
+    const chip = this.page.getByTestId(`agents-inbox-lane-chip-${filter}`);
+    await chip.click();
+    await expect(chip).toHaveAttribute("aria-selected", "true");
+    await this.page.evaluate(() => new Promise<void>((resolve) => {
+      window.requestAnimationFrame(() => window.setTimeout(resolve, 0));
+    }));
+  }
+
+  async waitForZeroCard(): Promise<void> {
+    await expect(this.zeroCard).toBeVisible({ timeout: SETTLE_TIMEOUT_MS });
+  }
+
+  async setSidebarWidth(width: number): Promise<void> {
+    await this.sidebar.evaluate((sidebar, nextWidth) => {
+      sidebar.style.width = `${nextWidth}px`;
+      sidebar.style.maxWidth = `${nextWidth}px`;
+    }, width);
+  }
+
+  async expectZeroCardFits(): Promise<void> {
+    const fits = await this.zeroCard.evaluate(
+      (card) => card.scrollWidth <= card.clientWidth,
+    );
+    expect(fits).toBe(true);
   }
 
   // A group renders neither rows nor its empty line until its lane query
@@ -79,63 +146,5 @@ export class AgentsInboxRecentPage extends BasePage {
     await expect(
       this.needsGroup.getByText("Needs you: review 1"),
     ).not.toBeInViewport();
-  }
-
-  private async seedScenario(scenario: RecentInboxScenario): Promise<void> {
-    await this.page.evaluate(async (seededScenario) => {
-      const projectId = "project-mock-1";
-      const now = new Date().toISOString();
-      const { mockStartAgentConversation, seedMockAgentConversationWorkspace, seedMockConversation } =
-        await import("/src/api-mock/chat");
-
-      window.__mockChatApi?.reset();
-      const seedConversation = async (id: string, title: string, working: boolean) => {
-        seedMockConversation({
-          id,
-          contextType: "project",
-          contextId: projectId,
-          claudeSessionId: null,
-          providerSessionId: `thread-${id}`,
-          providerHarness: "codex",
-          upstreamProvider: "openai",
-          providerProfile: null,
-          agentMode: "edit",
-          automationId: null,
-          automationRunId: null,
-          coordinationMode: "solo",
-          title,
-          messageCount: 0,
-          lastMessageAt: now,
-          createdAt: now,
-          updatedAt: now,
-          archivedAt: null,
-        }, []);
-        const result = await mockStartAgentConversation({
-          projectId,
-          content: "Seed Recent inbox visual state",
-          conversationId: id,
-          providerHarness: "codex",
-          modelId: "gpt-5.4",
-          mode: "edit",
-          base: { kind: "current_branch", ref: "main", displayName: "main" },
-        });
-        if (working && result.workspace) {
-          seedMockAgentConversationWorkspace({
-            ...result.workspace,
-            prSupervisionStatus: "monitoring",
-          });
-        }
-      };
-
-      const needsCount = seededScenario === "populated" ? 10 : 0;
-      await Promise.all([
-        ...Array.from({ length: needsCount }, (_, index) =>
-          seedConversation(`recent-needs-${index + 1}`, `Needs you: review ${index + 1}`, false),
-        ),
-        ...Array.from({ length: 3 }, (_, index) =>
-          seedConversation(`recent-working-${index + 1}`, `Working: supervised PR ${index + 1}`, true),
-        ),
-      ]);
-    }, scenario);
   }
 }
