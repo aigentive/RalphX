@@ -2018,7 +2018,7 @@ crate::remote_commands! {
     "request_remote_automation_draft"
         => crate::commands::remote_automation_commands::request_remote_automation_draft {
         class: AgentControl,
-        caps: [SeedsSpawnTriggeringState, MutatesAgentConsumedContent],
+        caps: [MutatesAgentConsumedContent, SeedsSpawnTriggeringState],
         params: [
             (arg project_id: String),
             (arg name: String),

@@ -1253,7 +1253,7 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
   "request_remote_automation_draft": {
     opClass: "agentControl",
     argumentSensitive: false,
-    capabilities: ["seedsSpawnTriggeringState","mutatesAgentConsumedContent"],
+    capabilities: ["mutatesAgentConsumedContent","seedsSpawnTriggeringState"],
     pins: [],
   },
   "request_remote_automation_run": {

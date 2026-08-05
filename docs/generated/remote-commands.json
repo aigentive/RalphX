@@ -3339,8 +3339,8 @@
     {
       "argumentSensitive": false,
       "capabilities": [
-        "seedsSpawnTriggeringState",
-        "mutatesAgentConsumedContent"
+        "mutatesAgentConsumedContent",
+        "seedsSpawnTriggeringState"
       ],
       "class": "agentControl",
       "command": "request_remote_automation_draft",
