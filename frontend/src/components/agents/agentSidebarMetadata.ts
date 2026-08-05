@@ -117,6 +117,9 @@ function getSidebarSupervisionLabel(
   if (supervisionStatus === "blocked") {
     return "blocked";
   }
+  if (supervisionStatus === "held" || supervisionStatus === "paused") {
+    return "paused";
+  }
   if (
     supervisionStatus === "waiting" ||
     supervisionStatus === "waiting_for_checks"

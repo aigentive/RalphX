@@ -28,10 +28,11 @@ use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRun,
     AgentRunActionKind, AgentRunStatus, AgentWorkspaceRepairAttempt,
-    AgentWorkspaceRepairContinuation, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
-    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
-    AgentWorkspaceReviewOutcome, ArtifactId, ChatConversationId, IdeationAnalysisBaseRefKind,
-    IdeationSessionId, PlanBranch, PlanBranchId, PlanBranchStatus, Project, ProjectId, TaskId,
+    AgentWorkspaceRepairContinuation, AgentWorkspaceRepairOperationHoldReason,
+    AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource, AgentWorkspaceReviewGateStatus,
+    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
+    ArtifactId, ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch,
+    PlanBranchId, PlanBranchStatus, Project, ProjectId, TaskId,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, AgentWorkspaceRepairRepository,
@@ -442,7 +443,7 @@ async fn scheduled_recovery_claims_conversation_once_until_background_task_finis
         },
         conversation_id,
         AgentWorkspacePrSupervisionRecoveryTrigger::WorkspaceLoad,
-        false,
+        true,
     );
 
     wait_for_sync_state_calls(&github, 1).await;
@@ -1132,6 +1133,108 @@ async fn settled_durable_repair_boundaries_recover_pr_supervision() {
         assert_eq!(github.state().check_pr_sync_state_calls, 1);
         assert_eq!(github.state().fetch_pr_health_calls, 1);
     }
+}
+
+#[tokio::test]
+async fn startup_recovery_preserves_held_pr_autofix_attempt() {
+    let (_temp_dir, project, mut workspace, _head_sha) =
+        setup_recovery_workspace("pr-supervision-durable-held").await;
+    let conversation_id = workspace.conversation_id.clone();
+    workspace.pr_supervision_status = Some("held".to_string());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("seed workspace");
+    let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
+    let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = workspace_repo.clone();
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        conversation_id.clone(),
+        AgentWorkspaceRepairSource::PrAutofix,
+        AgentWorkspaceRepairContinuation::ResumePrSupervision,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+    attempt.phase = AgentWorkspaceRepairPhase::Ready;
+    attempt.ci_rerun_count = 1;
+    attempt.ci_rerun_fingerprint = Some("ci-rerun:257".to_string());
+    let durable_attempt = match repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt,
+            reason: "CI rerun reserved".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("seed held repair")
+    {
+        StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(attempt) => attempt,
+        outcome => panic!("expected a held repair, got {outcome:?}"),
+    };
+
+    let mut durable_state = AppState::new_test();
+    durable_state.agent_conversation_workspace_repo = workspace_repo.clone();
+    durable_state.agent_workspace_repair_repo = repair_repo.clone();
+    durable_state.agent_run_repo = agent_run_repo.clone();
+    let github = Arc::new(MockGithubService::new());
+    let mut deps = recovery_deps(
+        Arc::clone(&workspace_repo),
+        Arc::new(MemoryProjectRepository::with_projects(vec![project])),
+        Arc::clone(&github),
+        Arc::clone(&agent_run_repo),
+    );
+    deps.durable_recovery_state = Some(Arc::new(durable_state));
+
+    let outcome = recover_agent_workspace_pr_supervision(
+        deps,
+        conversation_id.clone(),
+        AgentWorkspacePrSupervisionRecoveryTrigger::Startup,
+    )
+    .await
+    .expect("held repair recovery should be a no-op");
+
+    assert_eq!(
+        outcome,
+        AgentWorkspacePrSupervisionRecoveryOutcome::Skipped("durable_repair_held")
+    );
+    let current = repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("read held attempt")
+        .expect("held attempt remains current");
+    assert_eq!(current.id, durable_attempt.id);
+    assert!(current.is_unsettled());
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Ready);
+    assert_eq!(
+        current.operation_snapshot().hold_reason,
+        Some(AgentWorkspaceRepairOperationHoldReason::CiRerunPending)
+    );
+    let current_workspace = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("read workspace")
+        .expect("workspace remains current");
+    assert_eq!(
+        current_workspace.pr_supervision_status.as_deref(),
+        Some("held")
+    );
+    assert!(workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("read publication events")
+        .is_empty());
+    assert!(agent_run_repo
+        .get_by_conversation(&conversation_id)
+        .await
+        .expect("read agent runs")
+        .is_empty());
+    assert_eq!(github.state().check_pr_sync_state_calls, 0);
+    assert_eq!(github.state().fetch_pr_health_calls, 0);
 }
 
 #[tokio::test]

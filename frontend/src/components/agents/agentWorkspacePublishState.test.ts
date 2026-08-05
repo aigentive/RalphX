@@ -232,19 +232,39 @@ describe("maintenance operation presentation", () => {
       maintenanceOperation: {
         ...maintenanceOperation,
         source: "pr_autofix",
-        stage: "ready",
-        status: "ready",
-        holdReason: "health_evidence",
+        stage: "held",
+        status: "held",
+        holdReason: "pr_autofix_unchanged_health",
         automaticContinuation: false,
       },
     });
 
     expect(canResumeAgentWorkspacePublish(held)).toBe(false);
     expect(getAgentWorkspaceMaintenancePresentation(held)).toMatchObject({
-      title: "Holding — waiting for new CI evidence",
-      action: "none",
+      title: "Repair paused — waiting for new CI evidence",
+      action: "hold",
       busy: false,
-      automaticContinuation: "RalphX will continue when the PR evidence changes.",
+      automaticContinuation: null,
+    });
+  });
+
+  it("presents a reserved CI rerun as held without enabling publish", () => {
+    const held = workspace({
+      maintenanceOperation: {
+        ...maintenanceOperation,
+        source: "pr_autofix",
+        stage: "held",
+        status: "held",
+        holdReason: "pr_autofix_ci_rerun_pending",
+        automaticContinuation: false,
+      },
+    });
+
+    expect(canResumeAgentWorkspacePublish(held)).toBe(false);
+    expect(getAgentWorkspaceMaintenancePresentation(held)).toMatchObject({
+      title: "Repair paused — waiting for CI rerun",
+      action: "hold",
+      busy: false,
     });
   });
 
@@ -276,20 +296,42 @@ describe("maintenance operation presentation", () => {
       maintenanceOperation: {
         ...maintenanceOperation,
         source: "pr_autofix",
-        stage: "ready",
-        status: "ready",
-        holdReason: "publish_redrive",
-        automaticContinuation: false,
+        stage: "publishing",
+        status: "active",
+        holdReason: null,
+        automaticContinuation: true,
       },
     });
 
     expect(canResumeAgentWorkspacePublish(redriving)).toBe(false);
     expect(getAgentWorkspaceMaintenancePresentation(redriving)).toMatchObject({
-      title: "Pushing rebased branch…",
+      title: "Publishing workspace",
       action: "none",
       busy: true,
-      automaticContinuation: "RalphX is resuming publication automatically.",
+      automaticContinuation: "Will continue automatically.",
     });
+  });
+
+  it("explains that a pre-existing base failure cannot be fixed on the PR branch", () => {
+    const held = workspace({
+      maintenanceOperation: {
+        ...maintenanceOperation,
+        source: "pr_autofix",
+        stage: "held",
+        status: "held",
+        holdReason: "pr_autofix_pre_existing_on_base",
+        automaticContinuation: false,
+      },
+    });
+
+    expect(getAgentWorkspaceMaintenancePresentation(held)).toMatchObject({
+      title: "Repair paused — failure exists on the base branch",
+      action: "hold",
+      busy: false,
+    });
+    expect(getAgentWorkspaceMaintenancePresentation(held)?.summary).toContain(
+      "fixing it on this PR branch would not help",
+    );
   });
 
   it("does not let stale maintenance data mask a terminal pull request", () => {

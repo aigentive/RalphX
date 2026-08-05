@@ -69,6 +69,12 @@ fn apply_compatibility_projection(
     workspace.pr_supervision_summary = projection.pr_supervision_summary.clone();
     workspace.pr_supervision_updated_at = projection.pr_supervision_updated_at;
     workspace.pr_auto_merge_current = projection.pr_auto_merge_current;
+    if let Some(pr_autofix_enabled) = projection.pr_autofix_enabled {
+        workspace.pr_autofix_enabled = pr_autofix_enabled;
+    }
+    if let Some(pr_auto_merge_desired) = projection.pr_auto_merge_desired {
+        workspace.pr_auto_merge_desired = pr_auto_merge_desired;
+    }
     workspace.base_commit = projection.base_commit.clone();
     workspace.updated_at = updated_at;
 }

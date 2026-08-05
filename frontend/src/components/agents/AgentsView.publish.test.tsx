@@ -56,6 +56,8 @@ const {
   listAgentConversationWorkspacePublicationEventsMock,
   preloadAgentsArtifactPaneMock,
   publishAgentConversationWorkspaceMock,
+  recheckAgentConversationWorkspacePrHealthMock,
+  retryAgentConversationWorkspacePrAutofixOverrideMock,
   realPublishPanelState,
   sendAgentMessageMock,
   toastDismissMock,
@@ -976,6 +978,101 @@ describe("AgentsView publish", () => {
         "conversation-1",
       ),
     );
+  });
+
+  it("renders held repair controls instead of zero-change facts", async () => {
+    configurePublishPane({
+      workspace: {
+        publicationPrNumber: 78,
+        maintenanceOperation: {
+          operationId: "maintenance-held",
+          generation: 2,
+          source: "pr_autofix",
+          stage: "held",
+          status: "held",
+          holdReason: "pr_autofix_unchanged_health",
+          summary: "The fixer made no changes.",
+          blocker: null,
+          automaticContinuation: false,
+          startedAt: "2026-08-02T10:00:00Z",
+          updatedAt: "2026-08-02T10:01:00Z",
+        },
+        prAutofixFingerprintSpend: {
+          generations: 2,
+          minutes: 18,
+          budgetMinutes: 45,
+          isExhausted: false,
+        },
+      },
+      changes: [],
+    });
+
+    const actionbar = await openPublishPane();
+    const card = await screen.findByTestId("agents-publish-hold-card");
+    expect(card).toHaveTextContent("Nothing is running");
+    expect(within(card).getByRole("button", { name: "Re-check PR health" })).toBeEnabled();
+    expect(
+      within(actionbar).getByTestId("agents-publish-recheck-pr-health"),
+    ).toBeEnabled();
+    expect(within(actionbar).queryByTestId("agents-publish-change-facts")).not.toBeInTheDocument();
+
+    fireEvent.click(within(card).getByRole("button", { name: "Re-check PR health" }));
+    await waitFor(() =>
+      expect(recheckAgentConversationWorkspacePrHealthMock).toHaveBeenCalledWith(
+        "conversation-1",
+      ),
+    );
+    fireEvent.click(within(card).getByRole("button", { name: /Retry repair anyway/i }));
+    await waitFor(() =>
+      expect(retryAgentConversationWorkspacePrAutofixOverrideMock).toHaveBeenCalledWith(
+        "conversation-1",
+        {
+          attemptId: "maintenance-held",
+          generation: 2,
+          updatedAt: "2026-08-02T10:01:00Z",
+        },
+      ),
+    );
+  });
+
+  it("lets terminal PR state override stale held maintenance data", async () => {
+    configurePublishPane({
+      workspace: {
+        publicationPushStatus: "pushed",
+        publicationPrNumber: 78,
+        publicationPrStatus: "merged",
+        maintenanceOperation: {
+          operationId: "maintenance-held-after-merge",
+          generation: 2,
+          source: "pr_autofix",
+          stage: "held",
+          status: "held",
+          holdReason: "pr_autofix_unchanged_health",
+          summary: "Stale repair hold.",
+          blocker: null,
+          automaticContinuation: false,
+          startedAt: "2026-08-02T10:00:00Z",
+          updatedAt: "2026-08-02T10:01:00Z",
+        },
+      },
+      changes: [],
+    });
+
+    const actionbar = await openPublishPane();
+    expect(
+      within(actionbar).getByRole("heading", { name: "Pull Request Merged" }),
+    ).toBeInTheDocument();
+    expect(within(actionbar).getByTestId("agents-publish-confirm")).toBeDisabled();
+    expect(screen.queryByTestId("agents-publish-hold-card")).not.toBeInTheDocument();
+    expect(
+      within(actionbar).queryByTestId("agents-publish-recheck-pr-health"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Retry repair anyway/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Stop auto-repair/i })).not.toBeInTheDocument();
+    expect(within(actionbar).queryByTestId("agents-publish-actions-menu")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-publish-hold-commit-publish"),
+    ).not.toBeInTheDocument();
   });
 
   it("rebases directly onto a merged pull request's resolved base", async () => {

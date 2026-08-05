@@ -20,16 +20,17 @@ use crate::application::agent_workspace_publish_repair_state::{
     is_machine_repair_reason_marker, last_human_repair_reason,
     mark_agent_workspace_base_update_target, reconcile_active_agent_workspace_repair,
     release_agent_workspace_base_stale_hold,
-    reopen_agent_workspace_repair_after_validation_failure, repair_event_authorizes_active_run,
-    reserve_agent_workspace_base_stale_hold, reserve_agent_workspace_base_update,
-    reserve_agent_workspace_ci_await, reserve_agent_workspace_ci_rerun,
-    reserve_agent_workspace_pre_existing_on_base,
+    reopen_agent_workspace_repair_after_validation_failure, repair_attempt_projection,
+    repair_event_authorizes_active_run, reserve_agent_workspace_base_stale_hold,
+    reserve_agent_workspace_base_update, reserve_agent_workspace_ci_await,
+    reserve_agent_workspace_ci_rerun, reserve_agent_workspace_pre_existing_on_base,
     reserve_agent_workspace_repair_completion_validation, reserve_agent_workspace_repair_dispatch,
-    resume_current_agent_workspace_repair_publish, settle_agent_workspace_repair_dispatch_outcome,
-    settle_agent_workspace_repair_failure, start_or_join_agent_workspace_repair,
-    start_or_join_agent_workspace_repair_without_projection,
-    terminal_run_authorizes_repair_recovery, transition_agent_workspace_repair_attempt,
-    validate_agent_workspace_repair_target_lease, AgentWorkspaceRepairDispatchOutcome,
+    resume_current_agent_workspace_repair_publish, retry_agent_workspace_pr_autofix_hold_override,
+    settle_agent_workspace_repair_dispatch_outcome, settle_agent_workspace_repair_failure,
+    start_or_join_agent_workspace_repair, start_or_join_agent_workspace_repair_without_projection,
+    stop_agent_workspace_pr_autofix_for_hold, terminal_run_authorizes_repair_recovery,
+    transition_agent_workspace_repair_attempt, validate_agent_workspace_repair_target_lease,
+    AgentWorkspacePrAutofixHoldActionOutcome, AgentWorkspaceRepairDispatchOutcome,
     AgentWorkspaceRepairDispatchSettlement, AgentWorkspaceRepairPublishResumeOutcome,
     AgentWorkspaceRepairStartOutcome, AgentWorkspaceRepairStartRequest,
     AgentWorkspaceRepairTransitionOutcome, DurableRepairWorkspaceReviewStartFuture,
@@ -153,16 +154,64 @@ fn ci_held_predicate_recognizes_rerun_reservations_and_await_holds() {
         None,
         chrono::Utc::now(),
     );
+    attempt.phase = AgentWorkspaceRepairPhase::Ready;
 
     assert!(!agent_workspace_repair_is_ci_held(&attempt));
     attempt.ci_rerun_count = 1;
+    assert!(
+        !agent_workspace_repair_is_ci_held(&attempt),
+        "a rerun count without its fingerprint is not a projected CI hold"
+    );
+    attempt.ci_rerun_fingerprint = Some("ci-rerun:123".to_string());
     assert!(agent_workspace_repair_is_ci_held(&attempt));
 
     attempt.ci_rerun_count = 0;
+    attempt.ci_rerun_fingerprint = None;
     attempt
         .pending_reasons
         .push(AWAITING_CI_REPAIR_REASON.to_string());
     assert!(agent_workspace_repair_is_ci_held(&attempt));
+}
+
+#[test]
+fn compatibility_projection_marks_only_stationary_ready_repairs_as_held() {
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        ChatConversationId::from_string("repair-projection-hold"),
+        AgentWorkspaceRepairSource::PrAutofix,
+        AgentWorkspaceRepairContinuation::ResumePrSupervision,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+    attempt.phase = AgentWorkspaceRepairPhase::Ready;
+    attempt.pending_reasons = vec![UNCHANGED_HEALTH_REPAIR_REASON.to_string()];
+    assert_eq!(
+        repair_attempt_projection(&attempt, "held", Some(false))
+            .pr_supervision_status
+            .as_deref(),
+        Some("held")
+    );
+
+    attempt.pending_reasons = vec!["pr_autofix_head_redrive:local-head".to_string()];
+    assert_eq!(
+        repair_attempt_projection(&attempt, "redrive", Some(false))
+            .pr_supervision_status
+            .as_deref(),
+        Some("paused"),
+        "active publish redrive must never project a held supervision status"
+    );
+
+    attempt.pending_reasons.clear();
+    assert_eq!(
+        repair_attempt_projection(&attempt, "ready", Some(false))
+            .pr_supervision_status
+            .as_deref(),
+        Some("paused"),
+        "genuine Ready remains publishable"
+    );
 }
 
 fn repair_workspace(conversation_id: ChatConversationId) -> AgentConversationWorkspace {
@@ -3364,6 +3413,202 @@ async fn reserve_pre_existing_on_base_settles_to_ready_with_marker() {
         settled.blocker.is_none(),
         "Ready phase must not carry a blocker"
     );
+    assert_eq!(
+        workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace projection lookup")
+            .expect("workspace exists")
+            .pr_supervision_status
+            .as_deref(),
+        Some("held")
+    );
+}
+
+#[tokio::test]
+async fn held_pr_autofix_retry_starts_one_fenced_successor_with_carryover_evidence() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let repair_repo = Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>;
+    let conversation_id = ChatConversationId::from_string("held-pr-autofix-retry");
+    let mut workspace = repair_workspace(conversation_id.clone());
+    workspace.auto_publish_enabled = true;
+    workspace.pr_autofix_enabled = true;
+    workspace.pr_auto_merge_desired = true;
+    workspace.pr_auto_merge_current = Some(false);
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("persist workspace");
+
+    let mut attempt = start_or_join_agent_workspace_repair(
+        Arc::clone(&repair_repo),
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        repair_start_request(
+            conversation_id.clone(),
+            AgentWorkspaceRepairSource::PrAutofix,
+            AgentWorkspaceRepairContinuation::ResumePrSupervision,
+            "held PR autofix",
+        ),
+    )
+    .await
+    .expect("start repair")
+    .into_attempt();
+    attempt.pr_autofix_dispatch_head_commit = Some("held-head".to_string());
+    attempt.pr_autofix_health_fingerprint = Some("checks:held-fingerprint".to_string());
+    let held = match reserve_agent_workspace_pre_existing_on_base(
+        Arc::clone(&repair_repo),
+        attempt,
+        "failure already exists on base",
+        Some(false),
+    )
+    .await
+    .expect("reserve held repair")
+    {
+        AgentWorkspaceRepairTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("held transition must apply, got {outcome:?}"),
+    };
+
+    let outcome = retry_agent_workspace_pr_autofix_hold_override(
+        Arc::clone(&repair_repo),
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        &conversation_id,
+        &held.id,
+        held.generation,
+        held.updated_at,
+    )
+    .await
+    .expect("retry held repair");
+    let AgentWorkspacePrAutofixHoldActionOutcome::Applied(successor) = outcome else {
+        panic!("exact retry must start a successor");
+    };
+    assert_eq!(successor.generation, held.generation + 1);
+    assert_eq!(successor.phase, AgentWorkspaceRepairPhase::Requested);
+    assert!(!successor.explicit_publish_requested);
+    assert_eq!(
+        successor.pr_autofix_dispatch_head_commit.as_deref(),
+        Some("held-head")
+    );
+    assert_eq!(
+        successor.pr_autofix_health_fingerprint.as_deref(),
+        Some("checks:held-fingerprint")
+    );
+    assert!(successor.operation_snapshot().hold_reason.is_none());
+
+    let replay = retry_agent_workspace_pr_autofix_hold_override(
+        Arc::clone(&repair_repo),
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        &conversation_id,
+        &held.id,
+        held.generation,
+        held.updated_at,
+    )
+    .await
+    .expect("replayed retry should be rejected without side effects");
+    assert!(matches!(
+        replay,
+        AgentWorkspacePrAutofixHoldActionOutcome::Stale(_)
+    ));
+    assert_eq!(
+        repair_repo
+            .list_repair_attempts_for_conversation(&conversation_id)
+            .await
+            .expect("list repair generations")
+            .len(),
+        2,
+        "a replayed retry must not spend another generation"
+    );
+}
+
+#[tokio::test]
+async fn held_pr_autofix_stop_is_exact_and_disables_automation() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let repair_repo = Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>;
+    let conversation_id = ChatConversationId::from_string("held-pr-autofix-stop");
+    let mut workspace = repair_workspace(conversation_id.clone());
+    workspace.auto_publish_enabled = true;
+    workspace.pr_autofix_enabled = true;
+    workspace.pr_auto_merge_desired = true;
+    workspace.pr_auto_merge_current = Some(true);
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("persist workspace");
+
+    let mut attempt = start_or_join_agent_workspace_repair(
+        Arc::clone(&repair_repo),
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        repair_start_request(
+            conversation_id.clone(),
+            AgentWorkspaceRepairSource::PrAutofix,
+            AgentWorkspaceRepairContinuation::ResumePrSupervision,
+            "held PR autofix",
+        ),
+    )
+    .await
+    .expect("start repair")
+    .into_attempt();
+    attempt.pr_autofix_health_fingerprint = Some("checks:stop-fingerprint".to_string());
+    let held = match reserve_agent_workspace_pre_existing_on_base(
+        Arc::clone(&repair_repo),
+        attempt,
+        "failure already exists on base",
+        Some(true),
+    )
+    .await
+    .expect("reserve held repair")
+    {
+        AgentWorkspaceRepairTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("held transition must apply, got {outcome:?}"),
+    };
+
+    let stale = stop_agent_workspace_pr_autofix_for_hold(
+        Arc::clone(&repair_repo),
+        &conversation_id,
+        &held.id,
+        held.generation,
+        held.updated_at + chrono::Duration::microseconds(1),
+    )
+    .await
+    .expect("stale stop should be rejected");
+    assert!(matches!(
+        stale,
+        AgentWorkspacePrAutofixHoldActionOutcome::Stale(_)
+    ));
+    let before = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup")
+        .expect("workspace exists");
+    assert!(before.pr_autofix_enabled);
+    assert!(before.pr_auto_merge_desired);
+    assert_eq!(before.pr_auto_merge_current, Some(true));
+
+    let outcome = stop_agent_workspace_pr_autofix_for_hold(
+        Arc::clone(&repair_repo),
+        &conversation_id,
+        &held.id,
+        held.generation,
+        held.updated_at,
+    )
+    .await
+    .expect("stop held repair");
+    assert!(matches!(
+        outcome,
+        AgentWorkspacePrAutofixHoldActionOutcome::Applied(_)
+    ));
+    let stopped = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup")
+        .expect("workspace exists");
+    assert!(!stopped.pr_autofix_enabled);
+    assert!(!stopped.pr_auto_merge_desired);
+    assert_eq!(stopped.pr_auto_merge_current, Some(false));
+    assert!(repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("current repair lookup")
+        .is_none());
 }
 
 #[tokio::test]
@@ -3596,6 +3841,16 @@ async fn reserve_ci_rerun_increments_count_and_settles_to_ready() {
     assert_eq!(rerun.ci_rerun_count, 1);
     assert_eq!(rerun.ci_rerun_fingerprint.as_deref(), Some("fp-ci-abc"));
     assert!(rerun.blocker.is_none());
+    assert_eq!(
+        workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace projection lookup")
+            .expect("workspace exists")
+            .pr_supervision_status
+            .as_deref(),
+        Some("held")
+    );
 }
 
 #[tokio::test]

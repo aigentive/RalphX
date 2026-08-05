@@ -3,7 +3,11 @@ import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
-import { chatApi, type AgentConversationWorkspace } from "@/api/chat";
+import {
+  chatApi,
+  type AgentConversationWorkspace,
+  type AgentConversationWorkspacePublicationEvent,
+} from "@/api/chat";
 import type { SettingsSectionId } from "@/components/settings/settings-registry";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -47,6 +51,12 @@ type ReviewAutomationResultOverride = {
   sourceWorkspaceUpdatedAt: string | null;
   workspace: AgentConversationWorkspace;
 };
+
+const PR_AUTOFIX_LEDGER_STEPS = new Set([
+  "repair_fingerprint_hold",
+  "repair_budget_exhausted",
+  "repair_sent",
+]);
 
 function PublishSwitchInfoTooltip({
   label,
@@ -102,6 +112,7 @@ export function AgentsPublishAutomationTab({
   canConfigurePrSupervision,
   hasUncommittedChanges,
   terminalPrLabel,
+  publicationEvents,
   onSnapshotChange,
 }: {
   workspace: AgentConversationWorkspace;
@@ -110,6 +121,7 @@ export function AgentsPublishAutomationTab({
   canConfigurePrSupervision: boolean;
   hasUncommittedChanges: boolean;
   terminalPrLabel: string;
+  publicationEvents: AgentConversationWorkspacePublicationEvent[];
   onSnapshotChange: (snapshot: AgentsPublishAutomationSnapshot) => void;
 }) {
   const queryClient = useQueryClient();
@@ -310,6 +322,14 @@ export function AgentsPublishAutomationTab({
     reviewAutomationOverride,
   } = snapshot;
   const canConfigureAutoPublish = canConfigurePrSupervision;
+  const prAutofixLedger = useMemo(
+    () =>
+      publicationEvents.filter((event) =>
+        PR_AUTOFIX_LEDGER_STEPS.has(event.step),
+      ),
+    [publicationEvents],
+  );
+  const prAutofixSpend = workspace.prAutofixFingerprintSpend;
 
   const updatePrSupervisionPreferences = (next: {
     autoFixEnabled: boolean;
@@ -530,6 +550,35 @@ export function AgentsPublishAutomationTab({
             </PublishSwitchInfoTooltip>
           </div>
         </div>
+        {(prAutofixSpend || prAutofixLedger.length > 0) && (
+          <div className="rounded-lg p-3" style={cardStyle}>
+            <div className="text-[0.625rem] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
+              Autofix repair budget
+            </div>
+            {prAutofixSpend && (
+              <div
+                className="mt-1 text-xs font-medium text-[var(--text-primary)]"
+                data-testid="agents-pr-autofix-budget"
+              >
+                {prAutofixSpend.minutes} / {prAutofixSpend.budgetMinutes} min ·{" "}
+                {prAutofixSpend.generations} generations
+                {prAutofixSpend.isExhausted
+                  ? " · Repair budget exhausted"
+                  : ""}
+              </div>
+            )}
+            {prAutofixLedger.length > 0 && (
+              <ul
+                className="mt-2 space-y-1 text-[0.6875rem] text-[var(--text-secondary)]"
+                data-testid="agents-pr-autofix-ledger"
+              >
+                {prAutofixLedger.map((event) => (
+                  <li key={event.id}>{event.summary}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
       </div>
       <ConfirmationDialog {...confirmationDialogProps} />
     </>

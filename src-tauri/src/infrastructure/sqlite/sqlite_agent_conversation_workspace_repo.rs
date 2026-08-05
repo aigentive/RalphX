@@ -2677,6 +2677,43 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
             .await
     }
 
+    async fn update_pr_supervision_preferences_preserving_status(
+        &self,
+        conversation_id: &ChatConversationId,
+        autofix_enabled: bool,
+        auto_merge_desired: bool,
+        auto_merge_method: &str,
+    ) -> AppResult<()> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let auto_merge_method = auto_merge_method.trim().to_string();
+        let auto_merge_method = if auto_merge_method.is_empty() {
+            DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD.to_string()
+        } else {
+            auto_merge_method
+        };
+        let now = Utc::now().to_rfc3339();
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "UPDATE agent_conversation_workspaces
+                     SET pr_autofix_enabled = ?2,
+                         pr_auto_merge_desired = ?3,
+                         pr_auto_merge_method = ?4,
+                         updated_at = ?5
+                     WHERE conversation_id = ?1",
+                    rusqlite::params![
+                        conversation_id,
+                        autofix_enabled,
+                        auto_merge_desired,
+                        auto_merge_method,
+                        now
+                    ],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
     async fn update_pr_auto_merge_state(
         &self,
         conversation_id: &ChatConversationId,

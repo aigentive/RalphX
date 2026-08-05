@@ -94,6 +94,7 @@ import {
   type PublishWorkspaceDialogPhase,
 } from "./AgentsPublishWorkspaceDialog";
 import { AgentsPublishInlineDiffs } from "./AgentsPublishInlineDiffs";
+import { AgentsPublishHoldCard } from "./AgentsPublishHoldCard";
 import { AgentsPublishRepairState } from "./AgentsPublishRepairState";
 import {
   blocksAgentWorkspaceGitInspection,
@@ -195,6 +196,21 @@ function pipelineStatusFromPublicationEvent(
     return null;
   }
   return event.step === "published" ? "pushed" : event.step;
+}
+
+function heldRepairActionInput(workspace: AgentConversationWorkspace | null) {
+  const operation = workspace?.maintenanceOperation;
+  if (
+    !operation ||
+    operation.stage !== "held"
+  ) {
+    throw new Error("This repair hold is no longer current. Refresh and try again.");
+  }
+  return {
+    attemptId: operation.operationId,
+    generation: operation.generation,
+    updatedAt: operation.updatedAt,
+  };
 }
 
 function workspaceReviewAutoMergeGuardSummary(
@@ -361,6 +377,7 @@ export function AgentPublishPanel({
   }, [conversationId]);
   const maintenancePresentation = getAgentWorkspaceMaintenancePresentation(workspace);
   const fingerprintSpend = getAgentWorkspacePrAutofixFingerprintSpendPresentation(workspace);
+  const isHeld = maintenancePresentation?.action === "hold";
   const isMaintenanceActive = isAgentWorkspaceMaintenanceActive(workspace);
   const blocksGitInspection = blocksAgentWorkspaceGitInspection(workspace);
   const isPublishingWorkspace =
@@ -641,6 +658,50 @@ export function AgentPublishPanel({
         error instanceof Error ? error.message : "Failed to close pull request",
       );
     },
+  });
+  const heldRepairMutationOptions = {
+    onError: (error: Error) => {
+      toast.error(error.message);
+    },
+  };
+  const recheckPrHealthMutation = useMutation<void, Error>({
+    mutationFn: () => chatApi.recheckAgentConversationWorkspacePrHealth(conversationId!),
+    onSuccess: async () => {
+      if (conversationId) {
+        await invalidateWorkspaceQueries(queryClient, conversationId);
+      }
+    },
+    ...heldRepairMutationOptions,
+  });
+  const retryPrAutofixMutation = useMutation<AgentConversationWorkspace, Error>({
+    mutationFn: () =>
+      chatApi.retryAgentConversationWorkspacePrAutofixOverride(
+        conversationId!,
+        heldRepairActionInput(workspace),
+      ),
+    onSuccess: async (updatedWorkspace) => {
+      queryClient.setQueryData(
+        agentWorkspaceKeys.workspace(updatedWorkspace.conversationId),
+        updatedWorkspace,
+      );
+      await invalidateWorkspaceQueries(queryClient, updatedWorkspace.conversationId);
+    },
+    ...heldRepairMutationOptions,
+  });
+  const stopPrAutofixMutation = useMutation<AgentConversationWorkspace, Error>({
+    mutationFn: () =>
+      chatApi.stopAgentConversationWorkspacePrAutofixForFailure(
+        conversationId!,
+        heldRepairActionInput(workspace),
+      ),
+    onSuccess: async (updatedWorkspace) => {
+      queryClient.setQueryData(
+        agentWorkspaceKeys.workspace(updatedWorkspace.conversationId),
+        updatedWorkspace,
+      );
+      await invalidateWorkspaceQueries(queryClient, updatedWorkspace.conversationId);
+    },
+    ...heldRepairMutationOptions,
   });
   const commitLocallyMutation = useMutation({
     mutationFn: async () => {
@@ -1314,6 +1375,17 @@ export function AgentPublishPanel({
       onConfirm: () => commitLocallyMutation.mutateAsync(),
     });
   };
+  const confirmStopHeldRepair = () => {
+    void confirm({
+      title: "Stop auto-repair for this failure?",
+      description:
+        "RalphX will stop autofix for this failure and leave GitHub auto-merge off. You can re-enable automation later from the Automation tab.",
+      confirmText: "Stop auto-repair",
+      pendingText: "Stopping...",
+      variant: "destructive",
+      onConfirm: () => stopPrAutofixMutation.mutateAsync(),
+    });
+  };
   const handleConfirmPublishWorkspace = () => {
     const publishConversationId = workspace.conversationId;
     setPublishDialogState({
@@ -1407,12 +1479,27 @@ export function AgentPublishPanel({
         <section className="sticky top-0 z-20">
           <AgentsPublishActionBar
             presentation={publishPresentation}
-            changeFacts={publishChangeFacts}
+            changeFacts={isHeld ? null : publishChangeFacts}
             automationStatus={publishAutomationStatus}
             liveAnnouncement={maintenanceLiveAnnouncement}
             primaryAction={
               <>
-              {maintenancePresentation?.action === "none" ? (
+                {maintenancePresentation?.action === "hold" ? (
+                  <Button
+                    type="button"
+                    className={primaryActionClassName}
+                    onClick={() => recheckPrHealthMutation.mutate()}
+                    disabled={recheckPrHealthMutation.isPending}
+                    data-testid="agents-publish-recheck-pr-health"
+                  >
+                    {recheckPrHealthMutation.isPending ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <ListChecks className="h-3.5 w-3.5" />
+                    )}
+                    Re-check PR health
+                  </Button>
+                ) : maintenancePresentation?.action === "none" ? (
                 <Button
                   type="button"
                   variant="ghost"
@@ -1605,13 +1692,13 @@ export function AgentPublishPanel({
                     ? "Base unavailable"
                     : publishButtonLabel}
                 </Button>
-              )}
+                )}
               </>
             }
             overflowAction={
               <>
-              {canClosePr && (
-                <DropdownMenu>
+                {(canClosePr || isHeld) && (
+                  <DropdownMenu>
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <DropdownMenuTrigger asChild>
@@ -1634,6 +1721,15 @@ export function AgentPublishPanel({
                     <TooltipContent>Publish actions</TooltipContent>
                   </Tooltip>
                   <DropdownMenuContent align="end" className="min-w-[160px]">
+                    {isHeld && (
+                      <DropdownMenuItem
+                        onClick={confirmPublishWorkspace}
+                        disabled={publishDisabled}
+                        data-testid="agents-publish-hold-commit-publish"
+                      >
+                        Commit &amp; Publish
+                      </DropdownMenuItem>
+                    )}
                     <DropdownMenuItem
                       data-testid="agents-close-pr"
                       onSelect={(event) => {
@@ -1646,8 +1742,8 @@ export function AgentPublishPanel({
                       Close PR
                     </DropdownMenuItem>
                   </DropdownMenuContent>
-                </DropdownMenu>
-              )}
+                  </DropdownMenu>
+                )}
               </>
             }
           />
@@ -1930,6 +2026,19 @@ export function AgentPublishPanel({
             canHydratePublishFacts={canHydratePublishFacts}
             focusRequest={publishFocusRequest}
           />
+        ) : isHeld ? (
+          <AgentsPublishHoldCard
+            workspace={workspace}
+            onOpenChecks={() => onSubTabChange("checks")}
+            onRecheck={() => recheckPrHealthMutation.mutate()}
+            onRetry={() => retryPrAutofixMutation.mutate()}
+            onStop={confirmStopHeldRepair}
+            isPending={
+              recheckPrHealthMutation.isPending ||
+              retryPrAutofixMutation.isPending ||
+              stopPrAutofixMutation.isPending
+            }
+          />
         ) : inlineDiffsCandidate && !baseBlocked ? (
           <section
             className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border"
@@ -2032,6 +2141,7 @@ export function AgentPublishPanel({
                   freshness?.hasUncommittedChanges,
                 )}
                 terminalPrLabel={terminalPrLabel}
+                publicationEvents={publicationEvents}
                 onSnapshotChange={setAutomationSnapshot}
               />
             </TabsContent>
