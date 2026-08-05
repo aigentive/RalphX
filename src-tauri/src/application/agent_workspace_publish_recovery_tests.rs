@@ -34,8 +34,8 @@ use crate::application::agent_workspace_publish_repair_state::{
     held_repair_has_unpublished_head, reserve_agent_workspace_repair_dispatch,
     start_or_join_agent_workspace_repair, AgentWorkspaceRepairDispatchOutcome,
     AgentWorkspaceRepairStartOutcome, AgentWorkspaceRepairStartRequest,
-    MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES, NEEDS_HUMAN_REPAIR_REASON,
-    PRE_EXISTING_ON_BASE_REPAIR_REASON, UNCHANGED_HEALTH_REPAIR_REASON,
+    BASE_STALE_AFTER_UPDATE_REPAIR_REASON, MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES,
+    NEEDS_HUMAN_REPAIR_REASON, PRE_EXISTING_ON_BASE_REPAIR_REASON, UNCHANGED_HEALTH_REPAIR_REASON,
 };
 use crate::application::agent_workspace_review::{
     resolve_review_target, AgentWorkspaceReviewPacket, AgentWorkspaceReviewTarget,
@@ -2184,6 +2184,118 @@ async fn ready_automatic_repair_within_grace_remains_untouched() {
         .pending_reasons
         .iter()
         .any(|reason| reason.starts_with("auto_retry_ready_repair:")));
+}
+
+#[tokio::test]
+async fn ready_ci_and_base_stale_holds_remain_untouched_by_recovery() {
+    for (suffix, hold_kind) in [(126, "ci_rerun"), (127, "base_stale")] {
+        let state = AppState::new_test();
+        let conversation_id = conversation_id(suffix);
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(needs_agent_workspace(conversation_id.clone()))
+            .await
+            .expect("seed stationary hold workspace");
+        state
+            .agent_workspace_repair_repo
+            .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+                attempt: AgentWorkspaceRepairAttempt::new(
+                    conversation_id.clone(),
+                    AgentWorkspaceRepairSource::PrAutofix,
+                    AgentWorkspaceRepairContinuation::ResumePrSupervision,
+                    "main",
+                    false,
+                    true,
+                    false,
+                    None,
+                    chrono::Utc::now(),
+                ),
+                reason: format!("seed {hold_kind} recovery hold"),
+                verified_newer_base: false,
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("start stationary hold repair");
+        let ready = park_repair_attempt_ready_after(
+            &state,
+            &conversation_id,
+            AgentWorkspaceRepairPhase::Requested,
+            61,
+        )
+        .await;
+        let expected_updated_at = ready.updated_at;
+        let mut held = ready;
+        match hold_kind {
+            "ci_rerun" => {
+                held.ci_rerun_count = 1;
+                held.ci_rerun_fingerprint = Some("ci-rerun:held:126".to_string());
+            }
+            "base_stale" => held
+                .pending_reasons
+                .push(BASE_STALE_AFTER_UPDATE_REPAIR_REASON.to_string()),
+            _ => unreachable!(),
+        }
+        held.updated_at += chrono::Duration::microseconds(1);
+        let held = match state
+            .agent_workspace_repair_repo
+            .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+                attempt: held,
+                expected_phase: AgentWorkspaceRepairPhase::Ready,
+                expected_updated_at,
+                next_phase: AgentWorkspaceRepairPhase::Ready,
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("persist stationary Ready hold")
+        {
+            AgentWorkspaceRepairAttemptTransitionOutcome::Applied(held) => held,
+            outcome => panic!("stationary Ready hold must persist, got {outcome:?}"),
+        };
+        let events_before = state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("list pre-recovery publication events");
+
+        assert_eq!(
+            recover_agent_workspace_repair_attempts_for_state(&state)
+                .await
+                .expect("recover stationary Ready hold"),
+            0
+        );
+
+        let current = state
+            .agent_workspace_repair_repo
+            .get_current_repair_attempt(&conversation_id)
+            .await
+            .expect("reload stationary hold")
+            .expect("stationary hold remains current");
+        assert_eq!(
+            current, held,
+            "{hold_kind} recovery must not mutate the attempt"
+        );
+        assert!(!current
+            .pending_reasons
+            .iter()
+            .any(|reason| reason.starts_with(AUTO_RETRY_READY_REPAIR_REASON_PREFIX)));
+        assert!(state
+            .agent_workspace_repair_repo
+            .get_open_repair_effect(&current.id)
+            .await
+            .expect("inspect stationary hold effects")
+            .is_none());
+        assert_eq!(
+            state
+                .agent_conversation_workspace_repo
+                .list_publication_events(&conversation_id)
+                .await
+                .expect("list post-recovery publication events"),
+            events_before,
+            "{hold_kind} recovery must not emit continuation events"
+        );
+    }
 }
 
 #[tokio::test]

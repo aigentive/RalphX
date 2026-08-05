@@ -39,6 +39,7 @@ pub struct MockGithubState {
     pub fetch_pr_review_thread_result: Option<AppResult<PrReviewThread>>,
     pub fetch_github_connection_status_result: Option<AppResult<GithubConnectionStatus>>,
     pub fetch_pr_health_result: Option<AppResult<PrHealth>>,
+    pub fetch_pr_health_delay_ms: u64,
     /// `None` leaves the trait default (unknown base state); `Some` overrides it.
     pub list_branch_check_conclusions_result: Option<AppResult<Option<Vec<PrHealthCheck>>>>,
     pub rerun_failed_workflow_result: Option<AppResult<()>>,
@@ -557,12 +558,15 @@ impl GithubServiceTrait for MockGithubService {
     }
 
     async fn fetch_pr_health(&self, working_dir: &Path, pr_number: i64) -> AppResult<PrHealth> {
-        let configured = {
+        let (delay_ms, configured) = {
             let mut s = self.state.lock().expect("lock poisoned");
             s.fetch_pr_health_calls += 1;
             s.last_fetch_pr_health_number = Some(pr_number);
-            s.fetch_pr_health_result.take()
+            (s.fetch_pr_health_delay_ms, s.fetch_pr_health_result.take())
         };
+        if delay_ms > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+        }
         if let Some(result) = configured {
             return result;
         }

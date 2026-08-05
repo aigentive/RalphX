@@ -29,8 +29,9 @@ use super::{
     precompute_agent_conversation_workspace_pr_description_for_app_state,
     preview_tool_payloads_for_message, project_plan_branch_publication_into_workspace_response,
     publication_event_status_for_push_status, publication_event_summary_for_push_status,
-    publish_agent_conversation_workspace_for_app_state, resolve_agent_workspace_pr_metadata_target,
-    restore_agent_conversation, retarget_existing_workspace_pr_base_if_needed,
+    publish_agent_conversation_workspace_for_app_state, recheck_pr_health_for_state,
+    resolve_agent_workspace_pr_metadata_target, restore_agent_conversation,
+    retarget_existing_workspace_pr_base_if_needed,
     retry_blocked_agent_workspace_repair_for_explicit_user_action,
     schedule_external_pr_reconciliation_for_conversation_id,
     schedule_external_pr_reconciliation_for_workspace,
@@ -121,7 +122,7 @@ use crate::domain::services::github_generated_markdown::{
     RALPHX_MANAGED_PR_BODY_START,
 };
 use crate::domain::services::github_service::PrDetail;
-use crate::domain::services::github_service::{PrAutoMergeRequest, PrHealth};
+use crate::domain::services::github_service::{PrAutoMergeRequest, PrHealth, PrHealthCheck};
 use crate::domain::services::{
     GithubServiceTrait, MemoryRunningAgentRegistry, PrBranchMatch, PrMergeStateStatus,
     PrMergeableState, PrStatus as GithubPrStatus, PrSyncState, RunningAgentKey,
@@ -2919,6 +2920,12 @@ async fn pr_supervision_enable_marks_draft_ready_and_enables_auto_merge() {
         .create_or_update(workspace.clone())
         .await
         .expect("workspace should persist");
+    seed_command_pr_autofix_health_hold(
+        &state,
+        &workspace.conversation_id,
+        "checks:toggle-enable-success",
+    )
+    .await;
 
     let response = set_agent_conversation_workspace_pr_supervision_for_state(
         workspace.conversation_id.as_str(),
@@ -2936,10 +2943,7 @@ async fn pr_supervision_enable_marks_draft_ready_and_enables_auto_merge() {
     assert!(response.pr_auto_merge_desired);
     assert_eq!(response.pr_auto_merge_method, "rebase");
     assert_eq!(response.pr_auto_merge_current, Some(true));
-    assert_eq!(
-        response.pr_supervision_status.as_deref(),
-        Some("monitoring")
-    );
+    assert_eq!(response.pr_supervision_status.as_deref(), Some("held"));
     assert!(response
         .pr_supervision_summary
         .as_deref()
@@ -3336,6 +3340,12 @@ async fn pr_supervision_enable_records_waiting_when_auto_merge_enable_fails() {
         .create_or_update(workspace.clone())
         .await
         .expect("workspace should persist");
+    seed_command_pr_autofix_health_hold(
+        &state,
+        &workspace.conversation_id,
+        "checks:toggle-enable-failure",
+    )
+    .await;
 
     let response = set_agent_conversation_workspace_pr_supervision_for_state(
         workspace.conversation_id.as_str(),
@@ -3352,7 +3362,7 @@ async fn pr_supervision_enable_records_waiting_when_auto_merge_enable_fails() {
     assert!(response.pr_autofix_enabled);
     assert!(response.pr_auto_merge_desired);
     assert_eq!(response.pr_auto_merge_current, Some(false));
-    assert_eq!(response.pr_supervision_status.as_deref(), Some("waiting"));
+    assert_eq!(response.pr_supervision_status.as_deref(), Some("held"));
     assert!(response
         .pr_supervision_summary
         .as_deref()
@@ -3639,6 +3649,26 @@ async fn pr_supervision_disable_records_waiting_when_auto_merge_disable_fails() 
         .create_or_update(workspace.clone())
         .await
         .expect("workspace should persist");
+    seed_command_pr_autofix_health_hold(
+        &state,
+        &workspace.conversation_id,
+        "checks:toggle-disable-failure",
+    )
+    .await;
+    let mut held_workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&workspace.conversation_id)
+        .await
+        .expect("held workspace lookup")
+        .expect("held workspace exists");
+    held_workspace.pr_autofix_enabled = true;
+    held_workspace.pr_auto_merge_desired = true;
+    held_workspace.pr_auto_merge_current = Some(true);
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(held_workspace)
+        .await
+        .expect("held disable fixture should persist");
 
     let response = set_agent_conversation_workspace_pr_supervision_for_state(
         workspace.conversation_id.as_str(),
@@ -3655,7 +3685,7 @@ async fn pr_supervision_disable_records_waiting_when_auto_merge_disable_fails() 
     assert!(!response.pr_autofix_enabled);
     assert!(!response.pr_auto_merge_desired);
     assert_eq!(response.pr_auto_merge_current, Some(true));
-    assert_eq!(response.pr_supervision_status.as_deref(), Some("waiting"));
+    assert_eq!(response.pr_supervision_status.as_deref(), Some("held"));
     assert!(response
         .pr_supervision_summary
         .as_deref()
@@ -4957,6 +4987,269 @@ async fn wait_for_pr_sync_state_calls(github: &MockGithubService, expected: u32)
         "expected at least {expected} PR sync-state lookups, got {}",
         github.state().check_pr_sync_state_calls
     );
+}
+
+fn command_failing_pr_health(check_name: &str, run_id: i64) -> PrHealth {
+    let mut health = command_test_pr_health(false);
+    health.sync_state.head_ref_oid = Some(format!("head-{run_id}"));
+    health.sync_state.base_ref_oid = Some("base-current".to_string());
+    health.checks.push(PrHealthCheck {
+        name: check_name.to_string(),
+        status: Some("completed".to_string()),
+        conclusion: Some("failure".to_string()),
+        details_url: Some(format!(
+            "https://github.com/owner/repo/actions/runs/{run_id}"
+        )),
+    });
+    health
+}
+
+async fn seed_command_pr_autofix_health_hold(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    fingerprint: &str,
+) -> AgentWorkspaceRepairAttempt {
+    let mut workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await
+        .expect("workspace lookup")
+        .expect("workspace exists");
+    workspace.auto_publish_enabled = true;
+    workspace.pr_autofix_enabled = true;
+    workspace.pr_auto_merge_desired = false;
+    workspace.pr_auto_merge_current = Some(false);
+    workspace.publication_push_status = Some("refreshed".to_string());
+    workspace.pr_supervision_status = Some("held".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("held workspace should persist");
+
+    let started = state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                conversation_id.clone(),
+                AgentWorkspaceRepairSource::PrAutofix,
+                AgentWorkspaceRepairContinuation::ResumePrSupervision,
+                workspace.base_ref,
+                false,
+                true,
+                false,
+                None,
+                chrono::Utc::now(),
+            ),
+            reason: "seed held PR health for command test".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("held attempt should start");
+    let StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(started) = started else {
+        panic!("first held attempt should start");
+    };
+    let mut held = started.clone();
+    held.phase = AgentWorkspaceRepairPhase::Ready;
+    held.pr_autofix_health_fingerprint = Some(fingerprint.to_string());
+    held.pending_reasons = vec![
+        crate::application::agent_workspace_publish_repair_state::UNCHANGED_HEALTH_REPAIR_REASON
+            .to_string(),
+    ];
+    held.updated_at += chrono::Duration::microseconds(1);
+    match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: held,
+            expected_phase: started.phase,
+            expected_updated_at: started.updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Ready,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("held attempt should persist")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(held) => held,
+        outcome => panic!("held attempt transition should apply, got {outcome:?}"),
+    }
+}
+
+#[tokio::test]
+async fn recheck_pr_health_awaits_unchanged_held_health_without_spending() {
+    let github = Arc::new(MockGithubService::new());
+    let (_temp, state, conversation_id, github) =
+        setup_publish_command_state("held-recheck-unchanged", true, Some(985), github).await;
+    let health = command_failing_pr_health("Rust IPC Contracts", 1001);
+    let fingerprint =
+        crate::application::services::pr_merge_poller::classify_agent_workspace_pr_autofix_issue(
+            985, &health,
+        )
+        .expect("failing health should classify")
+        .classification;
+    let held = seed_command_pr_autofix_health_hold(&state, &conversation_id, &fingerprint).await;
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    let chat = Arc::new(MockChatService::with_agent_run_repo(Arc::clone(
+        &state.agent_run_repo,
+    )));
+
+    assert!(!recheck_pr_health_for_state(
+        conversation_id.as_str(),
+        &state,
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("unchanged health recheck should succeed"));
+
+    assert_eq!(github.state().fetch_pr_health_calls, 1);
+    assert!(chat.get_sent_messages().await.is_empty());
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("held attempt should reload")
+        .expect("held attempt remains current");
+    assert_eq!(current.id, held.id);
+    assert_eq!(current.generation, held.generation);
+    assert_eq!(current.updated_at, held.updated_at);
+}
+
+#[tokio::test]
+async fn recheck_pr_health_settles_changed_hold_and_runs_normal_dispatch() {
+    let github = Arc::new(MockGithubService::new());
+    let (_temp, state, conversation_id, github) =
+        setup_publish_command_state("held-recheck-changed", true, Some(985), github).await;
+    let original = command_failing_pr_health("Rust IPC Contracts", 1002);
+    let fingerprint =
+        crate::application::services::pr_merge_poller::classify_agent_workspace_pr_autofix_issue(
+            985, &original,
+        )
+        .expect("original health should classify")
+        .classification;
+    let held = seed_command_pr_autofix_health_hold(&state, &conversation_id, &fingerprint).await;
+    github.state().fetch_pr_health_result =
+        Some(Ok(command_failing_pr_health("Rust Clippy", 1003)));
+    let chat = Arc::new(MockChatService::with_agent_run_repo(Arc::clone(
+        &state.agent_run_repo,
+    )));
+
+    assert!(recheck_pr_health_for_state(
+        conversation_id.as_str(),
+        &state,
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("changed health should dispatch"));
+
+    assert_eq!(github.state().fetch_pr_health_calls, 1);
+    assert_eq!(chat.get_sent_messages().await.len(), 1);
+    let settled = state
+        .agent_workspace_repair_repo
+        .get_repair_attempt(&held.id)
+        .await
+        .expect("old attempt lookup")
+        .expect("old attempt remains durable");
+    assert!(settled.settled_at.is_some());
+    let successor = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("successor lookup")
+        .expect("changed health starts a successor");
+    assert_eq!(successor.generation, held.generation + 1);
+    assert_eq!(successor.phase, AgentWorkspaceRepairPhase::Repairing);
+}
+
+#[tokio::test]
+async fn recheck_pr_health_failure_preserves_attempt_and_automation_preferences() {
+    let github = Arc::new(MockGithubService::new());
+    let (_temp, state, conversation_id, github) =
+        setup_publish_command_state("held-recheck-failure", true, Some(985), github).await;
+    let original = command_failing_pr_health("Rust IPC Contracts", 1004);
+    let fingerprint =
+        crate::application::services::pr_merge_poller::classify_agent_workspace_pr_autofix_issue(
+            985, &original,
+        )
+        .expect("original health should classify")
+        .classification;
+    let held = seed_command_pr_autofix_health_hold(&state, &conversation_id, &fingerprint).await;
+    let workspace_before = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    github.state().fetch_pr_health_result = Some(Err(AppError::Infrastructure(
+        "GitHub health unavailable".to_string(),
+    )));
+    let chat = Arc::new(MockChatService::new());
+
+    assert!(recheck_pr_health_for_state(
+        conversation_id.as_str(),
+        &state,
+        chat as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .is_err());
+
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.id, held.id);
+    assert_eq!(current.updated_at, held.updated_at);
+    let workspace_after = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        workspace_after.pr_autofix_enabled,
+        workspace_before.pr_autofix_enabled
+    );
+    assert_eq!(
+        workspace_after.pr_auto_merge_desired,
+        workspace_before.pr_auto_merge_desired
+    );
+    assert_eq!(
+        workspace_after.pr_auto_merge_current,
+        workspace_before.pr_auto_merge_current
+    );
+}
+
+#[tokio::test]
+async fn concurrent_recheck_pr_health_commands_share_one_health_fetch() {
+    let github = Arc::new(MockGithubService::new());
+    let (_temp, state, conversation_id, github) =
+        setup_publish_command_state("held-recheck-coalesced", true, Some(985), github).await;
+    let health = command_failing_pr_health("Rust IPC Contracts", 1005);
+    let fingerprint =
+        crate::application::services::pr_merge_poller::classify_agent_workspace_pr_autofix_issue(
+            985, &health,
+        )
+        .expect("health should classify")
+        .classification;
+    seed_command_pr_autofix_health_hold(&state, &conversation_id, &fingerprint).await;
+    {
+        let mut github_state = github.state();
+        github_state.fetch_pr_health_result = Some(Ok(health));
+        github_state.fetch_pr_health_delay_ms = 50;
+    }
+    let state = Arc::new(state);
+    let chat: Arc<dyn crate::application::chat_service::ChatService> =
+        Arc::new(MockChatService::new());
+    let first = recheck_pr_health_for_state(conversation_id.as_str(), &state, Arc::clone(&chat));
+    let second = recheck_pr_health_for_state(conversation_id.as_str(), &state, Arc::clone(&chat));
+
+    let (first, second) = tokio::join!(first, second);
+    assert!(!first.expect("first recheck"));
+    assert!(!second.expect("second recheck"));
+    assert_eq!(github.state().fetch_pr_health_calls, 1);
 }
 
 #[tokio::test]

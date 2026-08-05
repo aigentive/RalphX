@@ -956,8 +956,9 @@ async fn review_pr_public_auto_merge_sync_rejects_before_health_fetch() {
     workspace.publication_pr_number = Some(101);
     workspace.pr_auto_merge_desired = true;
     let conversation_id = workspace.conversation_id.clone();
-    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
-        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let repository = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> = repository.clone();
+    let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = repository;
     workspace_repo
         .create_or_update(workspace.clone())
         .await
@@ -970,6 +971,7 @@ async fn review_pr_public_auto_merge_sync_rejects_before_health_fetch() {
         101,
         &workspace,
         Arc::clone(&workspace_repo),
+        repair_repo,
     )
     .await
     .expect_err("Review PR auto-merge synchronization should fail closed");
@@ -981,6 +983,190 @@ async fn review_pr_public_auto_merge_sync_rejects_before_health_fetch() {
         .await
         .expect("events should list")
         .is_empty());
+}
+
+#[tokio::test]
+async fn auto_merge_sync_preserves_held_repair_status_while_updating_remote_state() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let conversation_id = ChatConversationId::from_string("held-auto-merge-sync");
+    let mut workspace = supervised_workspace(
+        &conversation_id.as_str(),
+        "project-held-auto-merge-sync",
+        worktree.path(),
+    );
+    workspace.pr_auto_merge_desired = true;
+    workspace.pr_supervision_status = Some("held".to_string());
+    workspace.pr_supervision_summary = Some("Repair is held for a decision.".to_string());
+
+    let repository = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    repository
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+    reserve_health_held_attempt(
+        repository.as_ref(),
+        &conversation_id,
+        "checks:held-auto-merge-sync",
+        crate::application::agent_workspace_publish_repair_state::UNCHANGED_HEALTH_REPAIR_REASON,
+    )
+    .await;
+
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(open_pr_health("held-head")));
+
+    let current = super::sync_agent_workspace_auto_merge_preference_for_workspace(
+        github as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &workspace,
+        repository.clone(),
+        repository.clone(),
+    )
+    .await
+    .expect("auto-merge synchronization should succeed");
+
+    assert!(current);
+    let refreshed = repository
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should remain");
+    assert_eq!(refreshed.pr_auto_merge_current, Some(true));
+    assert_eq!(refreshed.pr_supervision_status.as_deref(), Some("held"));
+    assert_eq!(
+        refreshed.pr_supervision_summary.as_deref(),
+        Some("GitHub auto-merge is enabled; RalphX is monitoring PR health.")
+    );
+}
+
+#[tokio::test]
+async fn supervision_write_fails_closed_when_repair_authority_lookup_fails() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let conversation_id = ChatConversationId::from_string("repair-authority-error");
+    let mut workspace = supervised_workspace(
+        &conversation_id.as_str(),
+        "project-repair-authority-error",
+        worktree.path(),
+    );
+    workspace.pr_auto_merge_current = Some(false);
+    workspace.pr_supervision_status = Some("held".to_string());
+    workspace.pr_supervision_summary = Some("Repair owns this projection.".to_string());
+
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+    let before = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed");
+
+    let preference_error = super::update_agent_workspace_pr_supervision_preferences(
+        workspace_repo.as_ref(),
+        &LookupErrorRepairRepository,
+        &conversation_id,
+        true,
+        true,
+        "squash",
+    )
+    .await
+    .expect_err("repair authority lookup failure must block preference writes");
+    assert!(preference_error
+        .to_string()
+        .contains("repair authority lookup failed"));
+    assert_eq!(
+        workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed"),
+        before
+    );
+
+    let error = super::update_agent_workspace_pr_supervision_state(
+        workspace_repo.as_ref(),
+        Some(&LookupErrorRepairRepository),
+        &conversation_id,
+        Some(true),
+        Some("monitoring"),
+        Some("Poller tried to overwrite repair state."),
+    )
+    .await
+    .expect_err("repair authority lookup failure must block the write");
+
+    assert!(error.to_string().contains("repair authority lookup failed"));
+    assert_eq!(
+        workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed"),
+        before
+    );
+}
+
+#[tokio::test]
+async fn settled_repair_releases_supervision_status_to_the_poller() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let conversation_id = ChatConversationId::from_string("settled-repair-writer-release");
+    let mut workspace = supervised_workspace(
+        &conversation_id.as_str(),
+        "project-settled-repair-writer-release",
+        worktree.path(),
+    );
+    workspace.pr_supervision_status = Some("held".to_string());
+    let repository = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    repository
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    let held = reserve_health_held_attempt(
+        repository.as_ref(),
+        &conversation_id,
+        "checks:settled-writer-release",
+        crate::application::agent_workspace_publish_repair_state::UNCHANGED_HEALTH_REPAIR_REASON,
+    )
+    .await;
+    let settlement = repository
+        .settle_repair_attempt(
+            crate::domain::repositories::SettleAgentWorkspaceRepairAttempt {
+                attempt_id: held.id,
+                generation: held.generation,
+                expected_phase: AgentWorkspaceRepairPhase::Ready,
+                expected_updated_at: held.updated_at,
+                outcome: crate::domain::entities::AgentWorkspaceRepairOutcome::Succeeded,
+                settled_at: Utc::now(),
+                compatibility_projection: None,
+                events: Vec::new(),
+            },
+        )
+        .await
+        .expect("held repair settlement should persist");
+    assert!(matches!(
+        settlement,
+        crate::domain::repositories::SettleAgentWorkspaceRepairAttemptOutcome::Applied(_)
+    ));
+
+    super::update_agent_workspace_pr_supervision_state(
+        repository.as_ref(),
+        Some(repository.as_ref()),
+        &conversation_id,
+        Some(true),
+        Some("monitoring"),
+        Some("RalphX is monitoring PR health."),
+    )
+    .await
+    .expect("settled repair should release poller ownership");
+
+    let refreshed = repository
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup")
+        .expect("workspace exists");
+    assert_eq!(refreshed.pr_auto_merge_current, Some(true));
+    assert_eq!(
+        refreshed.pr_supervision_status.as_deref(),
+        Some("monitoring")
+    );
 }
 
 fn watching_review_monitor(
@@ -4963,6 +5149,7 @@ async fn agent_workspace_auto_merge_sync_enables_draft_pr_and_records_state() {
         &workspace,
         &health,
         Arc::clone(&workspace_repo),
+        None,
     )
     .await
     .expect("auto-merge sync should succeed");
@@ -5015,6 +5202,7 @@ async fn agent_workspace_auto_merge_sync_records_enable_failure_as_waiting() {
         &workspace,
         &open_pr_health("auto-enable-failure-head"),
         Arc::clone(&workspace_repo),
+        None,
     )
     .await
     .expect("auto-merge sync should not fail on GitHub enable errors");
@@ -5064,6 +5252,7 @@ async fn agent_workspace_auto_merge_sync_disables_remote_auto_merge() {
         &workspace,
         &health,
         Arc::clone(&workspace_repo),
+        None,
     )
     .await
     .expect("auto-merge sync should succeed");
@@ -10478,5 +10667,126 @@ impl AgentConversationWorkspaceRepository for WorkspaceLookupErrorRepository {
 
     async fn delete(&self, _conversation_id: &ChatConversationId) -> AppResult<()> {
         Err(repo_error())
+    }
+}
+
+struct LookupErrorRepairRepository;
+
+#[async_trait]
+impl AgentWorkspaceRepairRepository for LookupErrorRepairRepository {
+    async fn get_current_repair_attempt(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentWorkspaceRepairAttempt>> {
+        Err(AppError::Infrastructure(
+            "repair authority lookup failed".to_string(),
+        ))
+    }
+
+    async fn get_latest_repair_attempt_for_conversation(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentWorkspaceRepairAttempt>> {
+        unreachable!()
+    }
+
+    async fn get_repair_attempt(
+        &self,
+        _attempt_id: &crate::domain::entities::AgentWorkspaceRepairAttemptId,
+    ) -> AppResult<Option<AgentWorkspaceRepairAttempt>> {
+        unreachable!()
+    }
+
+    async fn get_repair_attempt_for_run(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _run_id: &crate::domain::entities::AgentRunId,
+    ) -> AppResult<Option<AgentWorkspaceRepairAttempt>> {
+        unreachable!()
+    }
+
+    async fn list_recoverable_repair_attempts(
+        &self,
+    ) -> AppResult<Vec<AgentWorkspaceRepairAttempt>> {
+        unreachable!()
+    }
+
+    async fn list_repair_attempts_for_conversation(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<Vec<AgentWorkspaceRepairAttempt>> {
+        unreachable!()
+    }
+
+    async fn start_or_join_repair_attempt(
+        &self,
+        _request: crate::domain::repositories::StartOrJoinAgentWorkspaceRepairAttempt,
+    ) -> AppResult<crate::domain::repositories::StartOrJoinAgentWorkspaceRepairAttemptOutcome> {
+        unreachable!()
+    }
+
+    async fn bind_repair_attempt_run(
+        &self,
+        _request: crate::domain::repositories::BindAgentWorkspaceRepairAttemptRun,
+    ) -> AppResult<crate::domain::repositories::AgentWorkspaceRepairAttemptTransitionOutcome> {
+        unreachable!()
+    }
+
+    async fn transition_repair_attempt(
+        &self,
+        _request: crate::domain::repositories::AgentWorkspaceRepairAttemptTransition,
+    ) -> AppResult<crate::domain::repositories::AgentWorkspaceRepairAttemptTransitionOutcome> {
+        unreachable!()
+    }
+
+    async fn settle_repair_attempt(
+        &self,
+        _request: crate::domain::repositories::SettleAgentWorkspaceRepairAttempt,
+    ) -> AppResult<crate::domain::repositories::SettleAgentWorkspaceRepairAttemptOutcome> {
+        unreachable!()
+    }
+
+    async fn settle_and_start_repair_successor(
+        &self,
+        _request: crate::domain::repositories::SettleAndStartAgentWorkspaceRepairSuccessor,
+    ) -> AppResult<crate::domain::repositories::SettleAndStartAgentWorkspaceRepairSuccessorOutcome>
+    {
+        unreachable!()
+    }
+
+    async fn create_repair_effect(
+        &self,
+        _request: crate::domain::repositories::CreateAgentWorkspaceRepairEffect,
+    ) -> AppResult<crate::domain::repositories::CreateAgentWorkspaceRepairEffectOutcome> {
+        unreachable!()
+    }
+
+    async fn get_repair_effect_by_idempotency_key(
+        &self,
+        _idempotency_key: &str,
+    ) -> AppResult<Option<crate::domain::entities::AgentWorkspaceRepairEffect>> {
+        unreachable!()
+    }
+
+    async fn get_open_repair_effect(
+        &self,
+        _attempt_id: &crate::domain::entities::AgentWorkspaceRepairAttemptId,
+    ) -> AppResult<Option<crate::domain::entities::AgentWorkspaceRepairEffect>> {
+        unreachable!()
+    }
+
+    async fn complete_repair_effect(
+        &self,
+        _request: crate::domain::repositories::CompleteAgentWorkspaceRepairEffect,
+    ) -> AppResult<crate::domain::repositories::CompleteAgentWorkspaceRepairEffectOutcome> {
+        unreachable!()
+    }
+
+    async fn import_legacy_repair_attempt(
+        &self,
+        _request: crate::domain::repositories::ImportLegacyAgentWorkspaceRepairAttempt,
+    ) -> AppResult<crate::domain::repositories::ImportLegacyAgentWorkspaceRepairAttemptOutcome>
+    {
+        unreachable!()
     }
 }

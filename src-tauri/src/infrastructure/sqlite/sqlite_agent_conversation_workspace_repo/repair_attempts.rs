@@ -380,7 +380,9 @@ fn apply_compatibility_projection(
              pr_supervision_updated_at = ?5,
              pr_auto_merge_current = ?6,
              base_commit = ?7,
-             updated_at = ?8
+             pr_autofix_enabled = COALESCE(?8, pr_autofix_enabled),
+             pr_auto_merge_desired = COALESCE(?9, pr_auto_merge_desired),
+             updated_at = ?10
          WHERE conversation_id = ?1",
         rusqlite::params![
             conversation_id.as_str(),
@@ -392,6 +394,8 @@ fn apply_compatibility_projection(
                 .map(|value| value.to_rfc3339()),
             projection.pr_auto_merge_current,
             projection.base_commit,
+            projection.pr_autofix_enabled,
+            projection.pr_auto_merge_desired,
             updated_at.to_rfc3339(),
         ],
     )?;

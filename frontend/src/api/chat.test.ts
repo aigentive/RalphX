@@ -39,6 +39,9 @@ import {
   listAgentConversationWorkspacesByProject,
   listAgentSidebarConversations,
   updateAgentConversationWorkspaceFromBase,
+  recheckAgentConversationWorkspacePrHealth,
+  retryAgentConversationWorkspacePrAutofixOverride,
+  stopAgentConversationWorkspacePrAutofixForFailure,
   commitAgentConversationWorkspaceLocally,
   precomputeAgentConversationWorkspacePrDescription,
   setAgentConversationWorkspaceAutoPublish,
@@ -1703,7 +1706,7 @@ describe("chat api", () => {
     ).toBeNull();
   });
 
-  it("transforms a typed repair hold reason", async () => {
+  it("transforms a typed held maintenance operation", async () => {
     mockInvoke.mockResolvedValueOnce([
       {
         ...planSeedWorkspaceResponse(),
@@ -1711,10 +1714,10 @@ describe("chat api", () => {
           operation_id: "maintenance-held",
           generation: 3,
           source: "pr_autofix",
-          stage: "ready",
-          status: "ready",
-          hold_reason: "health_evidence",
-          summary: "RalphX is holding the repair on identical CI evidence.",
+          stage: "held",
+          status: "held",
+          hold_reason: "pr_autofix_pre_existing_on_base",
+          summary: "RalphX is waiting for the CI rerun.",
           blocker: null,
           automatic_continuation: false,
           started_at: "2026-01-24T10:00:00Z",
@@ -1725,7 +1728,58 @@ describe("chat api", () => {
 
     const result = await listAgentConversationWorkspacesByProject("project-1");
 
-    expect(result[0]?.maintenanceOperation?.holdReason).toBe("health_evidence");
+    expect(result[0]?.maintenanceOperation).toMatchObject({
+      stage: "held",
+      status: "held",
+      holdReason: "pr_autofix_pre_existing_on_base",
+    });
+  });
+
+  it("keeps legacy maintenance payloads without a hold reason compatible", () => {
+    expect(
+      AgentConversationWorkspaceResponseSchema.parse({
+        ...planSeedWorkspaceResponse(),
+        maintenance_operation: {
+          operation_id: "maintenance-ready",
+          generation: 1,
+          source: "base_update",
+          stage: "ready",
+          status: "ready",
+          summary: "Base updated.",
+          blocker: null,
+          automatic_continuation: false,
+          started_at: "2026-01-24T10:00:00Z",
+          updated_at: "2026-01-24T10:01:00Z",
+        },
+      }).maintenance_operation?.hold_reason,
+    ).toBeNull();
+  });
+
+  it("sends the current repair version for hold actions", async () => {
+    const input = {
+      attemptId: "repair-attempt-1",
+      generation: 2,
+      updatedAt: "2026-08-02T10:01:00Z",
+    };
+    mockInvoke.mockResolvedValue(planSeedWorkspaceResponse());
+
+    await retryAgentConversationWorkspacePrAutofixOverride("conversation-1", input);
+    expect(mockInvoke).toHaveBeenLastCalledWith("retry_pr_autofix_override", {
+      input: { conversationId: "conversation-1", ...input },
+    });
+
+    await stopAgentConversationWorkspacePrAutofixForFailure("conversation-1", input);
+    expect(mockInvoke).toHaveBeenLastCalledWith("stop_pr_autofix_for_failure", {
+      input: { conversationId: "conversation-1", ...input },
+    });
+
+    mockInvoke.mockResolvedValue(null);
+    await expect(
+      recheckAgentConversationWorkspacePrHealth("conversation-1"),
+    ).resolves.toBeUndefined();
+    expect(mockInvoke).toHaveBeenLastCalledWith("recheck_pr_health", {
+      conversationId: "conversation-1",
+    });
   });
 
   it("rejects an unknown maintenance operation stage", () => {

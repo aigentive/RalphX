@@ -146,15 +146,20 @@ repair_string_enum!(AgentWorkspaceRepairOperationStage {
     Publishing => "publishing",
     Ready => "ready",
     Blocked => "blocked",
+    Held => "held",
 });
 
 repair_string_enum!(AgentWorkspaceRepairOperationStatus {
     Active => "active",
     Ready => "ready",
     Blocked => "blocked",
+    Held => "held",
 });
 
 repair_string_enum!(AgentWorkspaceRepairOperationHoldReason {
+    UnchangedHealth => "pr_autofix_unchanged_health",
+    PreExistingOnBase => "pr_autofix_pre_existing_on_base",
+    CiRerunPending => "pr_autofix_ci_rerun_pending",
     BaseStale => "base_stale",
     HealthEvidence => "health_evidence",
     PublishRedrive => "publish_redrive",
@@ -265,55 +270,72 @@ impl AgentWorkspaceRepairAttempt {
     }
 
     pub fn operation_snapshot(&self) -> AgentWorkspaceRepairOperationSnapshot {
-        let stage = match self.phase {
-            AgentWorkspaceRepairPhase::Requested | AgentWorkspaceRepairPhase::Dispatching => {
-                AgentWorkspaceRepairOperationStage::UpdatingBase
-            }
-            AgentWorkspaceRepairPhase::Repairing => AgentWorkspaceRepairOperationStage::Repairing,
-            AgentWorkspaceRepairPhase::Validating => AgentWorkspaceRepairOperationStage::Validating,
-            AgentWorkspaceRepairPhase::AwaitingReview => {
-                AgentWorkspaceRepairOperationStage::Reviewing
-            }
-            AgentWorkspaceRepairPhase::ContinuationPending
-            | AgentWorkspaceRepairPhase::Continuing => {
-                AgentWorkspaceRepairOperationStage::Publishing
-            }
-            AgentWorkspaceRepairPhase::Ready => AgentWorkspaceRepairOperationStage::Ready,
-            AgentWorkspaceRepairPhase::Blocked => AgentWorkspaceRepairOperationStage::Blocked,
-        };
-        let status = match self.phase {
-            AgentWorkspaceRepairPhase::Ready => AgentWorkspaceRepairOperationStatus::Ready,
-            AgentWorkspaceRepairPhase::Blocked => AgentWorkspaceRepairOperationStatus::Blocked,
-            _ => AgentWorkspaceRepairOperationStatus::Active,
-        };
-        let hold_reason = if self.phase == AgentWorkspaceRepairPhase::Ready
-            && self.source == AgentWorkspaceRepairSource::PrAutofix
-        {
-            if self
+        let publish_redrive = self.phase == AgentWorkspaceRepairPhase::Ready
+            && self
                 .pending_reasons
                 .iter()
-                .any(|reason| reason.starts_with(PR_AUTOFIX_HEAD_REDRIVE_PENDING_REASON_PREFIX))
-            {
-                Some(AgentWorkspaceRepairOperationHoldReason::PublishRedrive)
-            } else if self
+                .any(|reason| reason.starts_with(PR_AUTOFIX_HEAD_REDRIVE_PENDING_REASON_PREFIX));
+        let hold_reason = if self.phase == AgentWorkspaceRepairPhase::Ready && !publish_redrive {
+            if self
                 .pending_reasons
                 .iter()
                 .any(|reason| reason == PR_AUTOFIX_BASE_STALE_AFTER_UPDATE_PENDING_REASON)
             {
                 Some(AgentWorkspaceRepairOperationHoldReason::BaseStale)
-            } else if self.pending_reasons.iter().any(|reason| {
-                matches!(
-                    reason.as_str(),
-                    PR_AUTOFIX_PRE_EXISTING_ON_BASE_PENDING_REASON
-                        | PR_AUTOFIX_UNCHANGED_HEALTH_PENDING_REASON
-                )
-            }) {
-                Some(AgentWorkspaceRepairOperationHoldReason::HealthEvidence)
             } else {
-                None
+                self.pending_reasons
+                    .iter()
+                    .find_map(|reason| {
+                        AgentWorkspaceRepairOperationHoldReason::from_str(reason).ok()
+                    })
+                    .or_else(|| {
+                        ((self.ci_rerun_count > 0 && self.ci_rerun_fingerprint.is_some())
+                            || self
+                                .pending_reasons
+                                .iter()
+                                .any(|reason| reason == "pr_autofix_awaiting_ci"))
+                        .then_some(AgentWorkspaceRepairOperationHoldReason::CiRerunPending)
+                    })
             }
         } else {
             None
+        };
+        let stage = if publish_redrive {
+            AgentWorkspaceRepairOperationStage::Publishing
+        } else if hold_reason.is_some() {
+            AgentWorkspaceRepairOperationStage::Held
+        } else {
+            match self.phase {
+                AgentWorkspaceRepairPhase::Requested | AgentWorkspaceRepairPhase::Dispatching => {
+                    AgentWorkspaceRepairOperationStage::UpdatingBase
+                }
+                AgentWorkspaceRepairPhase::Repairing => {
+                    AgentWorkspaceRepairOperationStage::Repairing
+                }
+                AgentWorkspaceRepairPhase::Validating => {
+                    AgentWorkspaceRepairOperationStage::Validating
+                }
+                AgentWorkspaceRepairPhase::AwaitingReview => {
+                    AgentWorkspaceRepairOperationStage::Reviewing
+                }
+                AgentWorkspaceRepairPhase::ContinuationPending
+                | AgentWorkspaceRepairPhase::Continuing => {
+                    AgentWorkspaceRepairOperationStage::Publishing
+                }
+                AgentWorkspaceRepairPhase::Ready => AgentWorkspaceRepairOperationStage::Ready,
+                AgentWorkspaceRepairPhase::Blocked => AgentWorkspaceRepairOperationStage::Blocked,
+            }
+        };
+        let status = if publish_redrive {
+            AgentWorkspaceRepairOperationStatus::Active
+        } else if hold_reason.is_some() {
+            AgentWorkspaceRepairOperationStatus::Held
+        } else {
+            match self.phase {
+                AgentWorkspaceRepairPhase::Ready => AgentWorkspaceRepairOperationStatus::Ready,
+                AgentWorkspaceRepairPhase::Blocked => AgentWorkspaceRepairOperationStatus::Blocked,
+                _ => AgentWorkspaceRepairOperationStatus::Active,
+            }
         };
 
         AgentWorkspaceRepairOperationSnapshot {

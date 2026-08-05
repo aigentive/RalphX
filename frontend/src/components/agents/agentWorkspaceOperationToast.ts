@@ -99,6 +99,7 @@ export function maintenanceOperationToastLabel(stage: string): string {
   if (stage === "reviewing") return "Workspace Review in progress";
   if (stage === "publishing") return "Publishing workspace";
   if (stage === "ready") return "Base updated — ready to publish";
+  if (stage === "held") return "Repair paused";
   if (stage === "blocked") return "Repair blocked";
   return "Continuing workspace operation";
 }

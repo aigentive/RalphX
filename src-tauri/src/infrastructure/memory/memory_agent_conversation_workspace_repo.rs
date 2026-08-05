@@ -1368,6 +1368,27 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         Ok(())
     }
 
+    async fn update_pr_supervision_preferences_preserving_status(
+        &self,
+        conversation_id: &ChatConversationId,
+        autofix_enabled: bool,
+        auto_merge_desired: bool,
+        auto_merge_method: &str,
+    ) -> AppResult<()> {
+        if let Some(workspace) = self.workspaces.write().await.get_mut(conversation_id) {
+            workspace.pr_autofix_enabled = autofix_enabled;
+            workspace.pr_auto_merge_desired = auto_merge_desired;
+            let method = auto_merge_method.trim();
+            workspace.pr_auto_merge_method = if method.is_empty() {
+                DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD.to_string()
+            } else {
+                method.to_string()
+            };
+            workspace.updated_at = Utc::now();
+        }
+        Ok(())
+    }
+
     async fn update_pr_auto_merge_state(
         &self,
         conversation_id: &ChatConversationId,

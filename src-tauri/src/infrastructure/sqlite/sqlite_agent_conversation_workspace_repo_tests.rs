@@ -4398,6 +4398,38 @@ async fn pr_supervision_preferences_round_trip() {
 }
 
 #[tokio::test]
+async fn pr_supervision_preferences_can_preserve_repair_owned_status() {
+    let (_db, repo, conversation_id) = setup_repo();
+    let mut workspace = make_workspace(conversation_id.clone());
+    workspace.pr_supervision_status = Some("held".to_string());
+    workspace.pr_supervision_summary = Some("Repair owns this projection.".to_string());
+    repo.create_or_update(workspace).await.unwrap();
+
+    repo.update_pr_supervision_preferences_preserving_status(
+        &conversation_id,
+        true,
+        true,
+        "rebase",
+    )
+    .await
+    .unwrap();
+
+    let updated = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should exist");
+    assert!(updated.pr_autofix_enabled);
+    assert!(updated.pr_auto_merge_desired);
+    assert_eq!(updated.pr_auto_merge_method, "rebase");
+    assert_eq!(updated.pr_supervision_status.as_deref(), Some("held"));
+    assert_eq!(
+        updated.pr_supervision_summary.as_deref(),
+        Some("Repair owns this projection.")
+    );
+}
+
+#[tokio::test]
 async fn auto_publish_preferences_round_trip() {
     let (_db, repo, conversation_id) = setup_repo();
     let mut workspace = make_workspace(conversation_id.clone());

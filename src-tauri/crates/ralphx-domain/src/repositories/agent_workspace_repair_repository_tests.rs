@@ -90,6 +90,8 @@ fn compatibility_projection_keeps_workspace_projection_and_events_explicit() {
         pr_supervision_summary: Some("Repairing base update".to_string()),
         pr_supervision_updated_at: Some(Utc::now()),
         pr_auto_merge_current: None,
+        pr_autofix_enabled: None,
+        pr_auto_merge_desired: None,
         base_commit: None,
     };
 

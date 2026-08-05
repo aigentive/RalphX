@@ -288,6 +288,8 @@ async fn concurrent_legacy_import_loses_to_durable_generation_without_projection
                 pr_supervision_summary: Some("must not replay".to_string()),
                 pr_supervision_updated_at: Some(Utc::now()),
                 pr_auto_merge_current: Some(true),
+                pr_autofix_enabled: Some(false),
+                pr_auto_merge_desired: Some(false),
                 base_commit: Some("legacy-base".to_string()),
             }),
             events: vec![legacy_event],
@@ -393,6 +395,9 @@ async fn repair_attempt_cas_effect_and_successor_share_one_sqlite_transaction_bo
     repo.create_or_update(workspace(conversation_id.clone()))
         .await
         .expect("persist workspace");
+    repo.update_pr_supervision_preferences(&conversation_id, true, true, "merge")
+        .await
+        .expect("enable repair automation preferences");
 
     let started = match repo
         .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
@@ -426,6 +431,8 @@ async fn repair_attempt_cas_effect_and_successor_share_one_sqlite_transaction_bo
                 pr_supervision_summary: None,
                 pr_supervision_updated_at: None,
                 pr_auto_merge_current: None,
+                pr_autofix_enabled: None,
+                pr_auto_merge_desired: None,
                 base_commit: None,
             }),
             events: vec![stale_event],
@@ -449,6 +456,13 @@ async fn repair_attempt_cas_effect_and_successor_share_one_sqlite_transaction_bo
             .phase,
         AgentWorkspaceRepairPhase::Requested
     );
+    let after_stale = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load workspace after stale cas")
+        .expect("workspace exists");
+    assert!(after_stale.pr_autofix_enabled);
+    assert!(after_stale.pr_auto_merge_desired);
 
     let mut dispatching = started.clone();
     dispatching.phase = AgentWorkspaceRepairPhase::Dispatching;
@@ -466,6 +480,8 @@ async fn repair_attempt_cas_effect_and_successor_share_one_sqlite_transaction_bo
                 pr_supervision_summary: Some("Updating base".to_string()),
                 pr_supervision_updated_at: Some(dispatching.updated_at),
                 pr_auto_merge_current: Some(false),
+                pr_autofix_enabled: Some(false),
+                pr_auto_merge_desired: Some(false),
                 base_commit: Some("base-2".to_string()),
             }),
             events: vec![applied_event.clone()],
@@ -476,15 +492,17 @@ async fn repair_attempt_cas_effect_and_successor_share_one_sqlite_transaction_bo
         applied,
         AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_)
     ));
+    let projected_workspace = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load workspace")
+        .expect("workspace exists");
     assert_eq!(
-        repo.get_by_conversation_id(&conversation_id)
-            .await
-            .expect("load workspace")
-            .expect("workspace exists")
-            .publication_push_status
-            .as_deref(),
+        projected_workspace.publication_push_status.as_deref(),
         Some("repairing")
     );
+    assert!(!projected_workspace.pr_autofix_enabled);
+    assert!(!projected_workspace.pr_auto_merge_desired);
     assert_eq!(
         repo.list_publication_events(&conversation_id)
             .await
@@ -643,6 +661,8 @@ async fn repair_attempt_cas_effect_and_successor_share_one_sqlite_transaction_bo
                     pr_supervision_summary: None,
                     pr_supervision_updated_at: None,
                     pr_auto_merge_current: None,
+                    pr_autofix_enabled: None,
+                    pr_auto_merge_desired: None,
                     base_commit: None,
                 }),
                 events: Vec::new(),
@@ -730,6 +750,8 @@ async fn repair_attempt_cas_effect_and_successor_share_one_sqlite_transaction_bo
         pr_supervision_summary: Some("Retry requested".to_string()),
         pr_supervision_updated_at: Some(successor.updated_at),
         pr_auto_merge_current: None,
+        pr_autofix_enabled: None,
+        pr_auto_merge_desired: None,
         base_commit: None,
     };
     let started_successor = repo
