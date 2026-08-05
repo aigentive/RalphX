@@ -62,6 +62,8 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { useIsRemoteEnvironment } from "@/hooks/useActiveEnvironment";
+import { useAgentGate } from "@/hooks/useAgentGate";
 import { useConfirmation } from "@/hooks/useConfirmation";
 import {
   prKeys,
@@ -287,6 +289,9 @@ export function AgentPublishPanel({
   isReviewTabRunning?: boolean;
 }) {
   const queryClient = useQueryClient();
+  const isRemoteEnvironment = useIsRemoteEnvironment();
+  const publishGate = useAgentGate("workspacePublish");
+  const closePrGate = useAgentGate("workspaceClosePr");
   const [reviewOpen, setReviewOpen] = useState(false);
   const [commitFiles, setCommitFiles] = useState<DiffViewerFileChange[]>([]);
   const [isLoadingCommitFiles, setIsLoadingCommitFiles] = useState(false);
@@ -977,6 +982,7 @@ export function AgentPublishPanel({
       shouldShowAutoMergeDeferred);
   const publishDisabled =
     !onPublishWorkspace ||
+    publishGate.gated ||
     isManagedByTaskPipeline ||
     effectivePublishing ||
     isAutomationPreferenceSaving ||
@@ -1307,6 +1313,9 @@ export function AgentPublishPanel({
     });
   };
   const confirmClosePr = () => {
+    if (closePrGate.gated) {
+      return;
+    }
     void confirm({
       title: "Close pull request?",
       description: `This will close ${terminalPrLabel} for ${branch}. The workspace files and conversation history will remain available.`,
@@ -1317,7 +1326,7 @@ export function AgentPublishPanel({
     });
   };
   const confirmPublishWorkspace = () => {
-    if (!onPublishWorkspace || publishDisabled) {
+    if (!onPublishWorkspace || publishDisabled || publishGate.gated) {
       return;
     }
     setPublishDialogState({
@@ -1434,7 +1443,7 @@ export function AgentPublishPanel({
             liveAnnouncement={maintenanceLiveAnnouncement}
             primaryAction={
               <>
-              {maintenancePresentation?.action === "none" ? (
+                {maintenancePresentation?.action === "none" ? (
                 <Button
                   type="button"
                   variant="ghost"
@@ -1451,7 +1460,12 @@ export function AgentPublishPanel({
                   type="button"
                   className={primaryActionClassName}
                   onClick={confirmPublishWorkspace}
-                  disabled={!onPublishWorkspace || isManagedByTaskPipeline}
+                  disabled={
+                    !onPublishWorkspace ||
+                    isManagedByTaskPipeline ||
+                    publishGate.gated
+                  }
+                  title={publishGate.reason ?? undefined}
                   data-testid="agents-publish-retry-maintenance"
                 >
                   <AlertTriangle className="h-3.5 w-3.5" />
@@ -1462,7 +1476,12 @@ export function AgentPublishPanel({
                   type="button"
                   className={primaryActionClassName}
                   onClick={confirmPublishWorkspace}
-                  disabled={!onPublishWorkspace || isManagedByTaskPipeline}
+                  disabled={
+                    !onPublishWorkspace ||
+                    isManagedByTaskPipeline ||
+                    publishGate.gated
+                  }
+                  title={publishGate.reason ?? undefined}
                   data-testid="agents-publish-resume-maintenance"
                 >
                   <GitPullRequestArrow className="h-3.5 w-3.5" />
@@ -1614,6 +1633,7 @@ export function AgentPublishPanel({
                   }
                   onClick={confirmPublishWorkspace}
                   disabled={publishDisabled}
+                  title={publishGate.reason ?? undefined}
                   data-testid="agents-publish-confirm"
                 >
                   {isPublishingThisWorkspace ? (
@@ -1627,49 +1647,69 @@ export function AgentPublishPanel({
                     ? "Base unavailable"
                     : publishButtonLabel}
                 </Button>
-              )}
+                )}
+                {publishGate.gated && publishGate.reason ? (
+                  <span
+                    className="text-xs text-[var(--text-muted)]"
+                    data-testid="agents-publish-host-only-hint"
+                  >
+                    {publishGate.reason}
+                  </span>
+                ) : null}
               </>
             }
             overflowAction={
               <>
-              {canClosePr && (
-                <DropdownMenu>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <DropdownMenuTrigger asChild>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          className="h-9 w-7 p-0 border-0 bg-transparent hover:bg-[var(--bg-hover)]"
-                          disabled={isClosingPr || effectivePublishing}
-                          aria-label="Publish actions"
-                          data-testid="agents-publish-actions-menu"
-                        >
-                          {isClosingPr ? (
-                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                          ) : (
-                            <MoreVertical className="h-3.5 w-3.5" />
-                          )}
-                        </Button>
-                      </DropdownMenuTrigger>
-                    </TooltipTrigger>
-                    <TooltipContent>Publish actions</TooltipContent>
-                  </Tooltip>
-                  <DropdownMenuContent align="end" className="min-w-[160px]">
-                    <DropdownMenuItem
-                      data-testid="agents-close-pr"
-                      onSelect={(event) => {
-                        event.preventDefault();
-                        confirmClosePr();
-                      }}
-                      disabled={isClosingPr || effectivePublishing}
-                    >
-                      <XCircle className="h-3.5 w-3.5" />
-                      Close PR
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              )}
+                {canClosePr && closePrGate.gated ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className="h-9 gap-2 px-3 text-xs"
+                    disabled
+                    title={closePrGate.reason ?? undefined}
+                    data-testid="agents-close-pr"
+                  >
+                    <XCircle className="h-3.5 w-3.5" />
+                    Close PR
+                  </Button>
+                ) : canClosePr ? (
+                  <DropdownMenu>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            className="h-9 w-7 p-0 border-0 bg-transparent hover:bg-[var(--bg-hover)]"
+                            disabled={isClosingPr || effectivePublishing}
+                            aria-label="Publish actions"
+                            data-testid="agents-publish-actions-menu"
+                          >
+                            {isClosingPr ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <MoreVertical className="h-3.5 w-3.5" />
+                            )}
+                          </Button>
+                        </DropdownMenuTrigger>
+                      </TooltipTrigger>
+                      <TooltipContent>Publish actions</TooltipContent>
+                    </Tooltip>
+                    <DropdownMenuContent align="end" className="min-w-[160px]">
+                      <DropdownMenuItem
+                        data-testid="agents-close-pr"
+                        onSelect={(event) => {
+                          event.preventDefault();
+                          confirmClosePr();
+                        }}
+                        disabled={isClosingPr || effectivePublishing}
+                      >
+                        <XCircle className="h-3.5 w-3.5" />
+                        Close PR
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                ) : null}
               </>
             }
           />
@@ -1970,28 +2010,33 @@ export function AgentPublishPanel({
                 The host has not captured workspace changes yet. Open this workspace on the host to capture them.
               </p>
             ) : null}
-            <AgentsPublishInlineDiffs
-              key={`${conversationId ?? "missing"}:${terminalPublicationStatus ?? "active"}`}
-              conversationId={conversationId ?? ""}
-              review={reviewQuery.data ?? null}
-              commits={commits}
-              isLoading={Boolean(conversationId) && (!canHydratePublishFacts || reviewQuery.isLoading)}
-              annotations={prAnnotations}
-              hunkAnnotations={workspaceReviewHunkAnnotations}
-              error={reviewQuery.error}
-              onOpenInDialog={() => setReviewOpen(true)}
-              focusRequest={publishFocusRequest}
-              liveSummary={changeSummaryQuery.data ?? null}
-              {...(inlineDiffDefaultMode !== undefined && {
-                defaultMode: inlineDiffDefaultMode,
-              })}
-              {...(cumulativeModeLabel !== undefined && {
-                cumulativeModeLabel,
-              })}
-              {...(isPublishCurrent && {
-                workspaceChangeLabel: "Published changes",
-              })}
-            />
+            {!isRemoteEnvironment || !snapshotUnavailable ? (
+              <AgentsPublishInlineDiffs
+                key={`${conversationId ?? "missing"}:${terminalPublicationStatus ?? "active"}`}
+                conversationId={conversationId ?? ""}
+                review={reviewQuery.data ?? null}
+                commits={commits}
+                isLoading={
+                  Boolean(conversationId) &&
+                  (!canHydratePublishFacts || reviewQuery.isLoading)
+                }
+                annotations={prAnnotations}
+                hunkAnnotations={workspaceReviewHunkAnnotations}
+                error={reviewQuery.error}
+                onOpenInDialog={() => setReviewOpen(true)}
+                focusRequest={publishFocusRequest}
+                liveSummary={changeSummaryQuery.data ?? null}
+                {...(inlineDiffDefaultMode !== undefined && {
+                  defaultMode: inlineDiffDefaultMode,
+                })}
+                {...(cumulativeModeLabel !== undefined && {
+                  cumulativeModeLabel,
+                })}
+                {...(isPublishCurrent && {
+                  workspaceChangeLabel: "Published changes",
+                })}
+              />
+            ) : null}
           </section>
         ) : null}
 

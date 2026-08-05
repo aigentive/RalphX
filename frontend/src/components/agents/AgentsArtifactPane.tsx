@@ -2370,7 +2370,6 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
                 tasksSurfaceCapabilities={tasksSurfaceCapabilities}
                 conversation={conversation}
                 workspace={scopedWorkspace}
-                isRemoteEnvironment={isRemoteEnvironment}
                 conversationId={conversationId}
                 activeWorkspaceFreshness={scopedLocalFreshness}
                 conversationTitle={conversation?.title ?? null}
@@ -2527,7 +2526,6 @@ type ArtifactContentProps = {
   tasksSurfaceCapabilities: TasksSurfaceCapabilities;
   conversation: AgentConversation | null;
   workspace: AgentConversationWorkspace | null;
-  isRemoteEnvironment: boolean;
   conversationId: string | null;
   activeWorkspaceFreshness: AgentConversationWorkspaceFreshness | undefined;
   conversationTitle: string | null;
@@ -2624,7 +2622,6 @@ function ArtifactContent({
   tasksSurfaceCapabilities,
   conversation,
   workspace,
-  isRemoteEnvironment,
   conversationId,
   activeWorkspaceFreshness,
   conversationTitle,
@@ -2773,9 +2770,6 @@ function ArtifactContent({
   }
 
   if (activeTab === "publish") {
-    if (isRemoteEnvironment) {
-      return <RemoteHostOnlyNotice subject="Workspace publishing and pull requests" />;
-    }
     return (
       <AgentPublishPanel
         workspace={workspace}

@@ -33,6 +33,7 @@ import type {
 } from "@/api/automations";
 import type { ManualRoleRuntimeSelection } from "@/api/manual-role-defaults.types";
 import { buildStoreKey } from "@/lib/chat-context-registry";
+import { REMOTE_UNAVAILABLE_HINT } from "@/lib/remote/agent-gate";
 import {
   useAgentSessionStore,
   type AgentArtifactTab,
@@ -6737,6 +6738,106 @@ describe("AgentsArtifactPane", () => {
     ).toBeInTheDocument();
     expect(screen.getByTestId("agents-publish-pane")).toBeInTheDocument();
     expect(screen.getByText("PR #90")).toBeInTheDocument();
+  });
+
+  it("renders registered remote publish reads while leaving publish and close-PR unavailable", async () => {
+    const publish = vi.fn().mockResolvedValue(undefined);
+    useEnvironmentStore.setState({
+      activeEnvironmentId: "remote-1",
+      environments: [{ id: "remote-1", name: "Studio", kind: "remote" }],
+      effectiveScopes: { "remote-1": ["ui:read", "ui:operate", "ui:agent"] },
+      connectionPresentations: {
+        "remote-1": {
+          presentation: "connected",
+          blockedFailure: null,
+          blockedMessage: null,
+        },
+      },
+    });
+    getWorkspaceReviewMock.mockResolvedValue({
+      changes: [
+        {
+          path: "frontend/src/App.tsx",
+          status: "modified",
+          additions: 4,
+          deletions: 1,
+          isGenerated: false,
+        },
+      ],
+      commits: [
+        {
+          sha: "abcdef1234567890",
+          shortSha: "abcdef1",
+          message: "fix: keep publish reads visible",
+          author: "RalphX",
+          authoredAt: "2026-08-06T10:00:00Z",
+        },
+      ],
+      baseRef: "main",
+      headRef: "ralphx/demo/agent-conversation-1",
+      snapshotCapturedAt: "2026-08-06T10:00:00Z",
+    });
+
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        publicationPrNumber: 78,
+        publicationPrUrl: "https://github.com/mock/project/pull/78",
+        publicationPrStatus: "open",
+        publicationPushStatus: "pushed",
+      }),
+      publish,
+    );
+
+    expect(
+      screen.queryByText(
+        "Workspace publishing and pull requests are available on the host only.",
+      ),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("agents-publish-pane")).toBeInTheDocument();
+    expect(screen.getByText("PR #78")).toBeInTheDocument();
+    expect(
+      await screen.findByText(/Changes as of .* \(host snapshot\)/),
+    ).toBeInTheDocument();
+
+    const publishButton = screen.getByTestId("agents-publish-confirm");
+    const closePrButton = screen.getByTestId("agents-close-pr");
+    expect(publishButton).toBeDisabled();
+    expect(publishButton).toHaveAttribute("title", REMOTE_UNAVAILABLE_HINT);
+    expect(closePrButton).toBeDisabled();
+    expect(closePrButton).toHaveAttribute("title", REMOTE_UNAVAILABLE_HINT);
+    expect(screen.getByTestId("agents-publish-host-only-hint")).toHaveTextContent(
+      REMOTE_UNAVAILABLE_HINT,
+    );
+    fireEvent.click(publishButton);
+    fireEvent.click(closePrButton);
+    expect(publish).not.toHaveBeenCalled();
+    expect(closeWorkspacePrMock).not.toHaveBeenCalled();
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  });
+
+  it("renders the registered remote not-yet-captured snapshot copy", async () => {
+    useEnvironmentStore.setState({
+      activeEnvironmentId: "remote-1",
+      environments: [{ id: "remote-1", name: "Studio", kind: "remote" }],
+      effectiveScopes: { "remote-1": ["ui:read", "ui:operate", "ui:agent"] },
+      connectionPresentations: {},
+    });
+    getWorkspaceReviewMock.mockResolvedValue(null);
+    getWorkspaceChangeSummaryMock.mockResolvedValue(null);
+
+    renderPane("publish", workspace({ mode: "edit" }), vi.fn());
+
+    expect(
+      await screen.findByText(
+        "The host has not captured workspace changes yet. Open this workspace on the host to capture them.",
+        {},
+        deferredHydrationTimeout,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("inline-diffs-empty")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("inline-diffs-error")).not.toBeInTheDocument();
   });
 
   it("allows Commit & Publish for linked pipeline-owned ideation PRs", async () => {

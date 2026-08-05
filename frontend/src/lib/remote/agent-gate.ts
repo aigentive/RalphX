@@ -191,6 +191,11 @@ export const AGENT_GATED_AFFORDANCES = {
   // registered, so an existing reference still renders and can still be detached.
   folderReferenceAdd: "add_conversation_folder_reference",
   folderReferenceRemove: "remove_conversation_folder_reference",
+  // Publishing and closing a PR both reach host processes and remain unregistered.
+  // Paired clients still render the registered workspace/review snapshot reads; only
+  // these two controls resolve unavailable from manifest absence.
+  workspacePublish: "publish_agent_conversation_workspace",
+  workspaceClosePr: "close_agent_workspace_pr",
   // Wave B3c wires the B3a/B3b spawn-free queue twins. Edit shares the cancel row because its
   // first, deciding step is cancel; its already-registered send half remains unchanged.
   queuedMessageDelete: "cancel_remote_queued_agent_message",

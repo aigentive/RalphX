@@ -68,6 +68,7 @@ export const GATE_WIRED_FILES: readonly string[] = [
   "src/components/agents/AgentComposerSurface.tsx",
   "src/components/agents/AgentsActiveConversationPanel.tsx",
   "src/components/agents/AgentsArtifactPane.tsx",
+  "src/components/agents/AgentsPublishPanel.tsx",
   "src/components/agents/AgentsChatHeader.tsx",
   "src/components/agents/AgentsSidebar.tsx",
   "src/components/agents/AgentsStartComposer.tsx",
