@@ -6,9 +6,10 @@ use chrono::{Duration, Utc};
 use super::*;
 use crate::domain::agents::ProviderSessionRef;
 use crate::domain::entities::{
-    AgentRun, AgentRunUsage, ChatMessage, ChatMessageAttribution, ChatMessageId, DelegationParkId,
-    DelegationParkJob, DelegationParkState, DelegationWakePolicy, IdeationSessionId, ProjectId,
-    TaskId,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunUsage,
+    ChatMessage, ChatMessageAttribution, ChatMessageId, DelegationParkId, DelegationParkJob,
+    DelegationParkState, DelegationWakePolicy, IdeationAnalysisBaseRefKind, IdeationSession,
+    IdeationSessionId, ProjectId, TaskId,
 };
 use crate::domain::repositories::ChatMessageRepository;
 use crate::error::{AppError, AppResult};
@@ -231,6 +232,61 @@ async fn sidebar_list_does_not_hydrate_conversation_transcripts() {
             .iter()
             .any(|row| row.conversation.id == conversation.id.as_str())
     }));
+}
+
+#[tokio::test]
+async fn sidebar_list_does_not_hydrate_non_plan_workspace_mode_lock() {
+    let state = AppState::new_test();
+    let project = state
+        .project_repo
+        .create(Project::new(
+            "sidebar-workspace-summary".to_string(),
+            "/tmp/sidebar-workspace-summary".to_string(),
+        ))
+        .await
+        .unwrap();
+    let conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project.id.clone()))
+        .await
+        .unwrap();
+    let ideation_session = state
+        .ideation_session_repo
+        .create(IdeationSession::new(project.id.clone()))
+        .await
+        .unwrap();
+    let mut workspace = AgentConversationWorkspace::new(
+        conversation.id,
+        project.id.clone(),
+        AgentConversationWorkspaceMode::Ideation,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("Project default (main)".to_string()),
+        None,
+        format!("ralphx/sidebar/{}", conversation.id),
+        format!("/tmp/sidebar-workspaces/{}", conversation.id),
+    );
+    workspace.linked_ideation_session_id = Some(ideation_session.id);
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap();
+
+    let response =
+        list_agent_sidebar_conversations_for_app_state(sidebar_input(&project.id), &state)
+            .await
+            .expect("sidebar should use the persisted non-plan workspace summary");
+    let workspace = response
+        .groups
+        .iter()
+        .flat_map(|group| &group.rows)
+        .find(|row| row.conversation.id == conversation.id.as_str())
+        .and_then(|row| row.workspace.as_ref())
+        .expect("sidebar row should retain its persisted workspace");
+
+    assert!(!workspace.mode_switch_locked);
+    assert!(workspace.mode_switch_lock_reason.is_none());
 }
 
 #[tokio::test]
