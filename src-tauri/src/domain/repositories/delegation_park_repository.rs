@@ -117,6 +117,20 @@ pub trait DelegationParkRepository: Send + Sync {
         error: Option<&str>,
     ) -> AppResult<()>;
 
+    /// CAS-disarm parks still armed for a terminal parent run.
+    ///
+    /// A wake already claimed by another worker is intentionally preserved: its dispatcher owns
+    /// the transition and must re-check its own state before delivery.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the compare-and-swap cannot be persisted.
+    async fn disarm_armed_for_parent_run(
+        &self,
+        conversation_id: &ChatConversationId,
+        parent_run_id: &AgentRunId,
+    ) -> AppResult<usize>;
+
     /// Supersede all armed or waking parks for a parent conversation.
     ///
     /// # Errors

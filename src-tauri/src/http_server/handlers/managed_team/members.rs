@@ -316,6 +316,7 @@ pub async fn assign_managed_team_member(
                 ideation_verification: false,
             },
             inherit_context: true,
+            job_id: None,
             caller_agent_run_id: Some(authority.run_id.as_str()),
             target_agent_name: plan.member.canonical_agent_name.clone(),
             reusable_delegated_session: Some(delegated.clone()),

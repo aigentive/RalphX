@@ -442,6 +442,21 @@ pub async fn attempt_session_recovery<R: Runtime>(
         recovery_conversation.bound_agent_name = Some(recovery_agent_name.to_string());
     }
 
+    let agent_runtime_context = if let Some(handle) = app_handle {
+        let state = handle.state::<AppState>();
+        super::compose_agent_runtime_context_from_app_state(
+            &state,
+            &recovery_conversation,
+            recovery_conversation.context_type,
+            entity_status.as_deref(),
+            _resolved_project_id.as_deref(),
+            working_directory,
+        )
+        .await
+    } else {
+        None
+    };
+
     // 4. Spawn fresh provider session with history
     let provider_spawnable = match chat_service_context::build_command_for_harness_with_folder_refs(
         harness,
@@ -466,6 +481,7 @@ pub async fn attempt_session_recovery<R: Runtime>(
         None,
         None,
         false,
+        agent_runtime_context.as_deref(),
         None,
     )
     .await
@@ -546,6 +562,7 @@ pub async fn attempt_session_recovery<R: Runtime>(
         context_type,
         context_id,
         conversation_id,
+        Some(working_directory.to_path_buf()),
         None,                                       // no app_handle, silent recovery
         None,                                       // no activity persistence
         None,                                       // no task repo
