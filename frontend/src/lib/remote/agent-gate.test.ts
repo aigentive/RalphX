@@ -109,26 +109,13 @@ describe("capability model derivation", () => {
     }
   });
 
-  it("maps file diff affordances to their manifest-derived snapshot twins", () => {
-    const expected = {
-      workspaceFileDiff: "get_remote_agent_conversation_workspace_file_diff",
-      workspaceCommitFileDiff:
-        "get_remote_agent_conversation_workspace_commit_file_diff",
-      workspaceCumulativeFileDiff:
-        "get_remote_agent_conversation_workspace_cumulative_file_diff",
-      workspaceFileDiffPage:
-        "get_remote_agent_conversation_workspace_file_diff_page",
-    } as const;
-
-    for (const [affordance, command] of Object.entries(expected)) {
-      expect(
-        AGENT_GATED_AFFORDANCES[
-          affordance as keyof typeof AGENT_GATED_AFFORDANCES
-        ],
-      ).toBe(command);
-      expect(REMOTE_FACADE_OPS[command]?.opClass, command).toBe("read");
-    }
-  });
+  // Wave C4b added gate rows for the four file-diff snapshot twins, but no production
+  // surface ever consumed them: the diff views derive unavailability from the snapshot
+  // envelope (a null snapshot means the host has not captured it) and from the
+  // REMOTE_COMMAND_UNAVAILABLE transport error, which is what an older host without the
+  // twins produces. The op-consistency guard correctly flagged them as dead rows in Wave E,
+  // so they were removed rather than kept as a second, unused availability mechanism. The
+  // manifest classification itself is still pinned by the derivation tests above.
 
   it("treats an unregistered command as unavailable, not scope-forbidden", () => {
     // Derived from ABSENCE. These three are detector-c process-launch rejections
@@ -480,14 +467,32 @@ describe("resolveAffordanceGate", () => {
     expect(resolveAffordanceGate("chatSend", false, null).status).toBe("enabled");
   });
 
-  it("reports an unregistered op as unavailable regardless of scopes", () => {
-    // The load-bearing distinction: granting ui:agent does NOT make it appear, so
-    // the copy must not send the user to a host switch.
-    for (const scopes of [null, WITHOUT_UI_AGENT, GRANTED]) {
-      const state = resolveAffordanceGate("taskResume", true, scopes);
-      expect(state.status).toBe("unavailable");
-      expect(state.reason).toBe(REMOTE_UNAVAILABLE_HINT);
-      expect(state.reason).not.toBe(AGENT_CONTROL_DISABLED_HINT);
+  it("reaches every registered resume/restart twin with ui:agent", () => {
+    for (const affordance of [
+      "taskResume",
+      "taskRestart",
+      "groupResume",
+      "executionResume",
+    ] as const) {
+      expect(resolveAffordanceGate(affordance, true, GRANTED)).toEqual({
+        status: "enabled",
+        gated: false,
+        reason: null,
+      });
+    }
+  });
+
+  it("derives all execution-plan controls as unavailable from manifest absence", () => {
+    for (const affordance of [
+      "executionPlanPause",
+      "executionPlanResume",
+      "executionPlanStop",
+    ] as const) {
+      expect(resolveAffordanceGate(affordance, true, GRANTED)).toEqual({
+        status: "unavailable",
+        gated: true,
+        reason: REMOTE_UNAVAILABLE_HINT,
+      });
     }
   });
 

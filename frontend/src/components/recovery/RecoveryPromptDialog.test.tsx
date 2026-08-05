@@ -63,6 +63,8 @@ describe("RecoveryPromptDialog", () => {
       activeEnvironmentId: "remote-1",
       environments: [{ id: "remote-1", name: "Studio", kind: "remote" }],
     });
+    // Wave E1 clears device-local dialog state on environment change; rehydrate B5d's host prompt.
+    useUiStore.setState({ recoveryPrompt: prompt, recoveryPromptSurface: "task_detail" });
     resolveRecoveryPrompt.mockResolvedValue(false);
     render(<RecoveryPromptDialog taskId={taskId} surface="task_detail" />);
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
@@ -75,6 +77,8 @@ describe("RecoveryPromptDialog", () => {
       activeEnvironmentId: "remote-1",
       environments: [{ id: "remote-1", name: "Studio", kind: "remote" }],
     });
+    // Wave E1 clears device-local dialog state on environment change; rehydrate B5d's host prompt.
+    useUiStore.setState({ recoveryPrompt: prompt, recoveryPromptSurface: "task_detail" });
     resolveRecoveryPrompt.mockRejectedValue({
       outcome: "commandError",
       error: "REMOTE_RESUME_AUTHORITY_CHANGED",

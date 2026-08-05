@@ -84,7 +84,7 @@ export function GroupContextMenuItems({
   onArchiveAll,
   confirm,
 }: GroupContextMenuItemsProps) {
-  const agentGate = useAgentGate("taskResume");
+  const agentGate = useAgentGate("groupResume");
   const cancelAction = GROUP_ACTIONS.cancelAll;
   const pauseAction = GROUP_ACTIONS.pauseAll;
   const resumeAction = GROUP_ACTIONS.resumeAll;

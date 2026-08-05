@@ -275,7 +275,7 @@ describe("Agents CompletedTaskDetail", () => {
     expect(await screen.findByText("scheduler resume unavailable")).toBeInTheDocument();
   });
 
-  it("commits a remote-agent rerun without invoking unavailable execution resume", async () => {
+  it("resumes execution after a remote-agent rerun through the reachable twin", async () => {
     setDetailViewEnvironment("remote-agent");
     render(<CompletedTaskDetail task={task()} />, { wrapper: TestWrapper });
     fireEvent.click(screen.getByTestId("reopen-task-button"));
@@ -283,7 +283,7 @@ describe("Agents CompletedTaskDetail", () => {
     await waitFor(() =>
       expect(moveTask).toHaveBeenCalledWith("task-1", "ready", "Review new changes"),
     );
-    expect(resumeExecution).not.toHaveBeenCalled();
+    expect(resumeExecution).toHaveBeenCalledWith("project-1");
     await waitFor(() => expect(screen.queryByTestId("confirm-rerun")).not.toBeInTheDocument());
   });
 });

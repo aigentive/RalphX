@@ -134,13 +134,13 @@ describe("useAgentGate read-only fold (Decision 4)", () => {
     expect(result.current.reason).toMatch(/reconnecting/i);
   });
 
-  it("keeps `unavailable` over read-only — reconnecting will not add the op", () => {
-    // `taskResume` fronts an unregistered op: it is unreachable remotely, and no amount
-    // of waiting for the connection changes that.
+  it("folds a reachable resume twin into read-only while reconnecting", () => {
     seed({ presentation: "reconnecting" });
     const { result } = renderHook(() => useAgentGate("taskResume"));
 
-    expect(result.current.status).toBe("unavailable");
+    expect(result.current.status).toBe("read_only");
+    expect(result.current.gated).toBe(true);
+    expect(result.current.reason).toMatch(/reconnecting/i);
   });
 
   it("leaves the local environment fully enabled", () => {

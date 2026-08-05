@@ -155,7 +155,7 @@ export function PermissionDialog() {
   useEffect(() => {
     hydratingRef.current = true;
 
-    api.permission.getPendingPermissions().then((pending) => {
+    api.permission.listPendingPermissionGates().then((pending) => {
       // Snapshot IDs from hydration response
       const snapshotIds = new Set(pending.map((r) => r.request_id));
 
@@ -188,8 +188,22 @@ export function PermissionDialog() {
       hydratingRef.current = false;
     }).catch((err) => {
       console.error("Failed to hydrate pending permissions:", err);
-      hydratingRef.current = false;
+      const buffered = pendingEventsRef.current;
       pendingEventsRef.current = [];
+      for (const event of buffered) {
+        if (event.type === "permission:request") {
+          setRequests((previous) =>
+            previous.some((request) => request.request_id === event.payload.request_id)
+              ? previous
+              : [...previous, event.payload]
+          );
+        } else {
+          setRequests((previous) =>
+            previous.filter((request) => request.request_id !== event.payload.request_id)
+          );
+        }
+      }
+      hydratingRef.current = false;
     });
   }, []);
 
@@ -246,7 +260,7 @@ export function PermissionDialog() {
       const requestId = event instanceof CustomEvent && typeof event.detail?.requestId === "string"
         ? event.detail.requestId
         : undefined;
-      void api.permission.getPendingPermissions().then((pending) => {
+      void api.permission.listPendingPermissionGates().then((pending) => {
         setRequests((previous) => {
           const merged = [...previous, ...pending.filter((request) => !previous.some((known) => known.request_id === request.request_id))];
           if (!requestId) return merged;
@@ -314,7 +328,7 @@ export function PermissionDialog() {
       requestsRef.current.map((request) => request.request_id)
     );
     void api.permission
-      .getPendingPermissions()
+      .listPendingPermissionGates()
       .then((pending) => {
         setRequests((previous) =>
           applyAuthoritativePermissionSnapshot(previous, pending, preCallIds, null)

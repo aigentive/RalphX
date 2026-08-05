@@ -48,7 +48,6 @@ import { api } from "@/lib/tauri";
 import { toast } from "sonner";
 
 const mockResolveRequest = vi.mocked(api.permission.resolveRequest);
-const mockGetPendingPermissions = vi.mocked(api.permission.getPendingPermissions);
 const mockListPendingGates = vi.mocked(api.permission.listPendingPermissionGates);
 const mockToastError = vi.mocked(toast.error);
 const mockToastInfo = vi.mocked(toast.info);
@@ -95,7 +94,6 @@ describe("PermissionDialog", () => {
 
     mockResolveRequest.mockResolvedValue(undefined);
     // Default: no pending permissions on mount
-    mockGetPendingPermissions.mockResolvedValue([]);
     mockListPendingGates.mockResolvedValue([]);
   });
 
@@ -654,9 +652,9 @@ describe("PermissionDialog", () => {
   // Hydration (D7)
   // ============================================================================
 
-  it("hydration seeds queue on mount from getPendingPermissions", async () => {
+  it("hydration seeds queue on mount from the registered pending-gates read", async () => {
     const pending = [makeRequest({ request_id: "hydrated-1" })];
-    mockGetPendingPermissions.mockResolvedValue(pending);
+    mockListPendingGates.mockResolvedValue(pending);
 
     render(<PermissionDialog />);
 
@@ -665,12 +663,12 @@ describe("PermissionDialog", () => {
     await waitFor(() => {
       expect(screen.getByText("Permission Required")).toBeInTheDocument();
     });
-    expect(mockGetPendingPermissions).toHaveBeenCalledOnce();
+    expect(mockListPendingGates).toHaveBeenCalledOnce();
   });
 
   it("hydration deduplicates: request arriving via event before hydration resolves is not shown twice", async () => {
     let resolveHydration!: (value: PermissionRequest[]) => void;
-    mockGetPendingPermissions.mockImplementation(
+    mockListPendingGates.mockImplementation(
       () => new Promise<PermissionRequest[]>((r) => { resolveHydration = r; })
     );
 
@@ -695,11 +693,30 @@ describe("PermissionDialog", () => {
     expect(screen.queryByText("+1 more permission request(s) waiting")).not.toBeInTheDocument();
   });
 
+  it("preserves a buffered permission request when strict hydration fails", async () => {
+    let rejectHydration!: (reason: unknown) => void;
+    mockListPendingGates.mockImplementation(
+      () => new Promise<PermissionRequest[]>((_, reject) => { rejectHydration = reject; })
+    );
+    render(<PermissionDialog />);
+    emitEvent("permission:request", makeRequest({
+      request_id: "buffered-after-read-error",
+      tool_input: { command: "keep buffered" },
+    }));
+
+    await act(async () => {
+      rejectHydration(new Error("pending read failed"));
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText("keep buffered")).toBeInTheDocument();
+  });
+
   it("hydration race guard buffers permission:expired during hydration and replays — skips toast for pre-expired requests", async () => {
     // Hydration returns req-known (snapshot), but req-gone was already expired before snapshot
     const req = makeRequest({ request_id: "req-known" });
     let resolveHydration!: (value: PermissionRequest[]) => void;
-    mockGetPendingPermissions.mockImplementation(
+    mockListPendingGates.mockImplementation(
       () => new Promise<PermissionRequest[]>((r) => { resolveHydration = r; })
     );
 
@@ -727,10 +744,10 @@ describe("PermissionDialog", () => {
     const user = userEvent.setup();
     const selected = makeRequest({ request_id: "from-notification", tool_input: { command: "selected command" } });
     const pending = makeRequest({ request_id: "from-backend", tool_name: "Read", tool_input: { file_path: "/tmp/pending" } });
-    mockGetPendingPermissions.mockResolvedValueOnce([]).mockResolvedValueOnce([pending, selected]);
+    mockListPendingGates.mockResolvedValueOnce([]).mockResolvedValueOnce([pending, selected]);
 
     render(<PermissionDialog />);
-    await waitFor(() => expect(mockGetPendingPermissions).toHaveBeenCalledOnce());
+    await waitFor(() => expect(mockListPendingGates).toHaveBeenCalledOnce());
     emitEvent("permission:request", makeRequest({ request_id: "already-visible", tool_input: { command: "existing command" } }));
     await waitFor(() => expect(screen.getByText("existing command")).toBeInTheDocument());
 
@@ -740,7 +757,7 @@ describe("PermissionDialog", () => {
     });
 
     await waitFor(() => expect(screen.getByText("selected command")).toBeInTheDocument());
-    expect(mockGetPendingPermissions).toHaveBeenCalledTimes(2);
+    expect(mockListPendingGates).toHaveBeenCalledTimes(2);
     expect(screen.getByText("+2 more permission request(s) waiting")).toBeInTheDocument();
 
     await user.click(screen.getByText("Hide"));
@@ -826,6 +843,7 @@ describe("PermissionDialog", () => {
     it("ignores a BACKGROUND environment's connect (SCOPE negative)", async () => {
       render(<PermissionDialog />);
       await act(async () => { await Promise.resolve(); });
+      mockListPendingGates.mockClear();
       emitEvent("permission:request", makeRequest({ request_id: "live", tool_input: { command: "still pending" } }));
       await waitFor(() => expect(screen.getByText("still pending")).toBeInTheDocument());
 
@@ -910,9 +928,9 @@ describe("PermissionDialog", () => {
         }));
         await waitFor(() => expect(screen.getByText("maybe applied")).toBeInTheDocument());
 
-        mockGetPendingPermissions.mockClear();
+        mockListPendingGates.mockClear();
         // The host already applied it — the refetch is what settles that.
-        mockGetPendingPermissions.mockResolvedValue([]);
+        mockListPendingGates.mockResolvedValue([]);
         mockResolveRequest.mockRejectedValue(
           new RemoteTransportError({
             code,
@@ -924,7 +942,7 @@ describe("PermissionDialog", () => {
         await user.click(screen.getByText("Allow"));
 
         await waitFor(() =>
-          expect(mockGetPendingPermissions).toHaveBeenCalledTimes(1)
+          expect(mockListPendingGates).toHaveBeenCalledTimes(1)
         );
         expect(mockResolveRequest).toHaveBeenCalledTimes(1);
         // "please retry" is the advice that invites the forbidden blind re-send.
@@ -946,8 +964,8 @@ describe("PermissionDialog", () => {
       emitEvent("permission:request", pending);
       await waitFor(() => expect(screen.getByText("never landed")).toBeInTheDocument());
 
-      mockGetPendingPermissions.mockClear();
-      mockGetPendingPermissions.mockResolvedValue([pending]);
+      mockListPendingGates.mockClear();
+      mockListPendingGates.mockResolvedValue([pending]);
       mockResolveRequest.mockRejectedValue(
         new RemoteTransportError({
           code: "REMOTE_TIMEOUT_UNKNOWN",
@@ -959,7 +977,7 @@ describe("PermissionDialog", () => {
       await user.click(screen.getByText("Allow"));
 
       await waitFor(() =>
-        expect(mockGetPendingPermissions).toHaveBeenCalledTimes(1)
+        expect(mockListPendingGates).toHaveBeenCalledTimes(1)
       );
       expect(mockResolveRequest).toHaveBeenCalledTimes(1);
       expect(screen.getByText("never landed")).toBeInTheDocument();
@@ -976,8 +994,8 @@ describe("PermissionDialog", () => {
       }));
       await waitFor(() => expect(screen.getByText("state unknown")).toBeInTheDocument());
 
-      mockGetPendingPermissions.mockClear();
-      mockGetPendingPermissions.mockRejectedValue(new Error("unreadable"));
+      mockListPendingGates.mockClear();
+      mockListPendingGates.mockRejectedValue(new Error("unreadable"));
       mockResolveRequest.mockRejectedValue(
         new RemoteTransportError({
           code: "REMOTE_TIMEOUT_UNKNOWN",
@@ -989,7 +1007,7 @@ describe("PermissionDialog", () => {
       await user.click(screen.getByText("Allow"));
 
       await waitFor(() =>
-        expect(mockGetPendingPermissions).toHaveBeenCalledTimes(1)
+        expect(mockListPendingGates).toHaveBeenCalledTimes(1)
       );
       expect(mockResolveRequest).toHaveBeenCalledTimes(1);
       expect(screen.getByText("state unknown")).toBeInTheDocument();

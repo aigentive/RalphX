@@ -88,18 +88,6 @@ export const AGENT_GATED_AFFORDANCES = {
   ticketingAssociationsRead: "get_ticket_associations",
   ticketingConversationRead: "get_conversation_ticket",
   ticketingRefresh: "refresh_tickets",
-  // Changes hydration uses snapshot-only twins. Older hosts omit these rows, so Changes
-  // availability derives from manifest absence instead of attempting the git-backed locals.
-  workspaceChangesSummary:
-    "get_remote_agent_conversation_workspace_change_summary",
-  workspaceChangesReview: "get_remote_agent_conversation_workspace_review",
-  workspaceFileDiff: "get_remote_agent_conversation_workspace_file_diff",
-  workspaceCommitFileDiff:
-    "get_remote_agent_conversation_workspace_commit_file_diff",
-  workspaceCumulativeFileDiff:
-    "get_remote_agent_conversation_workspace_cumulative_file_diff",
-  workspaceFileDiffPage:
-    "get_remote_agent_conversation_workspace_file_diff_page",
   // Refresh launches provider discovery on the host and is intentionally absent remotely.
   // The catalog read itself routes through the registered spawn-free snapshot twin.
   mcpCatalogRefresh: "refresh_mcp_catalog",
@@ -169,20 +157,23 @@ export const AGENT_GATED_AFFORDANCES = {
   taskMove: "move_task",
   // Task-level stop is registered as agentControl, so remotes without ui:agent must not invoke it.
   taskStop: "stop_task",
-  // Restart is absent on older/current hosts and therefore resolves unavailable remotely.
-  taskRestart: "restart_task",
+  // Resume/restart route through the registered spawn-free intent twins. Older hosts omit
+  // these rows, so availability still derives from manifest absence.
+  taskRestart: "request_remote_task_restart",
   taskApprove: "approve_task_for_review",
-  taskResume: "resume_task",
+  taskResume: "request_remote_task_resume",
+  groupResume: "request_remote_group_resume",
   recoveryPromptResolve: "request_remote_recovery_prompt_resolution",
   taskUnblock: "unblock_task",
   // Merge recovery commands are not registered on the remote facade.
   mergeRetry: "retry_merge",
   mergeResolveConflict: "resolve_merge_conflict",
-  // Reviewing feedback and execution resume remain local-only command surfaces.
+  // Reviewing feedback remains local-only; execution resume uses its registered intent twin.
   taskRequestChangesFromReviewing: "request_task_changes_from_reviewing",
-  executionResume: "resume_execution",
-  executionPause: "pause_execution",
-  executionStop: "stop_execution",
+  executionResume: "request_remote_execution_resume",
+  executionPlanPause: "pause_execution_plan",
+  executionPlanResume: "resume_execution_plan",
+  executionPlanStop: "stop_execution_plan",
   applyProposals: "apply_proposals_to_kanban",
   taskEditContent: "update_task",
   stepCreate: "create_task_step",

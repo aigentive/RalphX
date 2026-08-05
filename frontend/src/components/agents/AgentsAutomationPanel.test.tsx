@@ -403,7 +403,7 @@ describe("AgentsAutomationPanel", () => {
     expect(useAutomationEventsMock).not.toHaveBeenCalled();
   });
 
-  it("gates Run now by its unavailable op while Resume follows agent-control scope", () => {
+  it("enables registered Run now while Resume follows agent-control scope", () => {
     useEnvironmentStore.setState({
       activeEnvironmentId: "remote-1",
       environments: [{ id: "remote-1", name: "Studio", kind: "remote" }],
@@ -426,8 +426,9 @@ describe("AgentsAutomationPanel", () => {
 
     const { unmount } = renderPanel();
 
-    expect(screen.getByRole("button", { name: "Run now" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Run now" })).toHaveAttribute("title", REMOTE_UNAVAILABLE_HINT);
+    // Wave B4 registered request_remote_automation_run, so Run now is reachable with ui:agent.
+    expect(screen.getByRole("button", { name: "Run now" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Run now" })).not.toHaveAttribute("title");
 
     unmount();
     useAutomationDetailMock.mockReturnValue({
@@ -1275,8 +1276,12 @@ describe("AgentsAutomationPanel", () => {
 
     fireEvent.click(screen.getByTestId("agents-automation-run-mode-plan"));
 
+    // Wave D1 routes draft edits through update_automation_config with the current config envelope.
     await waitFor(() =>
-      expect(updateAutomationSetupMock).toHaveBeenCalledWith("conversation-setup", {
+      expect(updateAutomationSetupMock).toHaveBeenCalledWith("conversation-setup", expect.objectContaining({
+        id: "automation-1",
+        setupConversationId: "conversation-setup",
+      }), {
         runMode: "plan",
         completionSignal: "agent_completed",
       }),
@@ -1292,7 +1297,7 @@ describe("AgentsAutomationPanel", () => {
     });
 
     await waitFor(() =>
-      expect(updateAutomationSetupMock).toHaveBeenCalledWith("conversation-setup", {
+      expect(updateAutomationSetupMock).toHaveBeenCalledWith("conversation-setup", expect.any(Object), {
         providerHarness: "claude",
         modelId: "sonnet",
         logicalEffort: "medium",
@@ -1309,7 +1314,7 @@ describe("AgentsAutomationPanel", () => {
     });
 
     await waitFor(() =>
-      expect(updateAutomationSetupMock).toHaveBeenCalledWith("conversation-setup", {
+      expect(updateAutomationSetupMock).toHaveBeenCalledWith("conversation-setup", expect.any(Object), {
         providerHarness: "codex",
         modelId: "gpt-5.5",
         logicalEffort: "high",

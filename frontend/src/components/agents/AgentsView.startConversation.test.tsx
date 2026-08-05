@@ -4473,9 +4473,14 @@ describe("AgentsView start conversation", () => {
         },
       }),
     );
+    // Wave D1 sends automation setup changes through update_automation_config's full config envelope.
     await waitFor(() =>
       expect(updateAutomationSetupMock).toHaveBeenCalledWith(
         "automation-setup-conversation",
+        expect.objectContaining({
+          id: "automation-setup-flow",
+          setupConversationId: "automation-setup-conversation",
+        }),
         {
           providerHarness: "codex",
           modelId: "gpt-5.5",

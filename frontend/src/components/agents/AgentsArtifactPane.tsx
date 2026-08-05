@@ -2997,9 +2997,9 @@ function AgentPlanPanel({
   const planApproveGate = useAgentGate("planApprove");
   const planDirectImplementationGate = useAgentGate("planDirectImplementation");
   const planTaskPipelineGate = useAgentGate("planTaskPipeline");
-  const executionPauseGate = useAgentGate("executionPause");
-  const executionResumeGate = useAgentGate("executionResume");
-  const executionStopGate = useAgentGate("executionStop");
+  const executionPauseGate = useAgentGate("executionPlanPause");
+  const executionResumeGate = useAgentGate("executionPlanResume");
+  const executionStopGate = useAgentGate("executionPlanStop");
   const generatedPlanBundleTabsId = useId();
   const planBundleTabsId = `agents-plan-bundle-${generatedPlanBundleTabsId.replace(
     /:/g,

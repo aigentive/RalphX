@@ -25,7 +25,10 @@ vi.mock("@/api/ideation", () => ({
       list: vi.fn(),
       create: vi.fn(),
       update: vi.fn(),
-      delete: vi.fn(),
+      // Wave D renamed delete_task_proposal -> archive_task_proposal: the body always
+      // archived, so the api surface is `archive`. The mock key must follow or every
+      // assertion resolves against undefined.
+      archive: vi.fn(),
       reorder: vi.fn(),
     },
   },

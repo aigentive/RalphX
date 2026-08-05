@@ -242,21 +242,29 @@ describe("ExecutionControlBar", () => {
       expect(screen.getByTestId("pause-toggle-button")).toBeDisabled();
     });
 
-    it("disables only the remote resume direction and never calls its handler", () => {
+    it("keeps remote Start/Resume reachable and omits host-only copy", () => {
       const onPauseToggle = vi.fn();
       useEnvironmentStore.setState({
         activeEnvironmentId: "remote-1",
         environments: [{ id: "remote-1", name: "Studio", kind: "remote" }],
         effectiveScopes: { "remote-1": ["ui:read", "ui:operate", "ui:agent"] },
+        connectionPresentations: {
+          "remote-1": {
+            presentation: "connected",
+            blockedFailure: null,
+            blockedMessage: null,
+          },
+        },
       });
       const { rerender } = renderBar({ isPaused: true, haltMode: "paused", onPauseToggle });
-      expect(screen.getByTestId("pause-toggle-button")).toBeDisabled();
+      expect(screen.getByTestId("pause-toggle-button")).toBeEnabled();
       fireEvent.click(screen.getByTestId("pause-toggle-button"));
-      expect(onPauseToggle).not.toHaveBeenCalled();
+      expect(onPauseToggle).toHaveBeenCalledOnce();
+      expect(screen.queryByText(/runs only on the host/i)).not.toBeInTheDocument();
 
       rerender(<ExecutionControlBar projectId="proj-1" runningCount={1} maxConcurrent={10} queuedCount={0} mergingCount={0} hasAttentionMerges={false} mergePipelineData={null} isPaused={false} onPauseToggle={onPauseToggle} onStop={vi.fn()} />);
       fireEvent.click(screen.getByTestId("pause-toggle-button"));
-      expect(onPauseToggle).toHaveBeenCalledOnce();
+      expect(onPauseToggle).toHaveBeenCalledTimes(2);
     });
   });
 

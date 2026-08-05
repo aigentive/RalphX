@@ -482,7 +482,12 @@ describe("ChatInput", () => {
       expect(onEditLastQueued).toHaveBeenCalled();
     });
 
-    it("does not enter queued edit from ArrowUp when remote editing is unavailable", async () => {
+    // Wave B3 registered the queue twins, so `queuedMessageEdit` (backed by
+    // cancel_remote_queued_agent_message, authority-reducing at ui:operate) is REACHABLE on a
+    // paired client. This test used to assert the opposite; it now pins the capability rather
+    // than the old refusal, and the unavailable path is covered where the op is genuinely
+    // absent from the manifest.
+    it("enters queued edit from ArrowUp on a paired client now that the queue twins are registered", async () => {
       useEnvironmentStore.setState({
         activeEnvironmentId: "remote-studio",
         environments: [
@@ -511,7 +516,7 @@ describe("ChatInput", () => {
       screen.getByTestId("chat-input-textarea").focus();
       await user.keyboard("{ArrowUp}");
 
-      expect(onEditLastQueued).not.toHaveBeenCalled();
+      expect(onEditLastQueued).toHaveBeenCalled();
     });
 
     it("does NOT call onEditLastQueued when Up arrow pressed with text in input", async () => {

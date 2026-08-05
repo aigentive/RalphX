@@ -226,7 +226,7 @@ describe("CompletedTaskDetail", () => {
     });
   });
 
-  it("commits the remote rerun but suppresses unavailable execution resume", async () => {
+  it("resumes execution after the remote rerun through the reachable twin", async () => {
     useEnvironmentStore.setState({
       activeEnvironmentId: "remote-1",
       environments: [{ id: "remote-1", name: "Studio", kind: "remote" }],
@@ -239,7 +239,7 @@ describe("CompletedTaskDetail", () => {
     fireEvent.click(screen.getByTestId("reopen-task-button"));
     await act(async () => fireEvent.click(screen.getByTestId("rerun-confirm")));
     await waitFor(() => expect(moveMock).toHaveBeenCalledWith("task-c-1", "ready", "go"));
-    expect(resumeMock).not.toHaveBeenCalled();
+    expect(resumeMock).toHaveBeenCalledWith("proj-1");
     await waitFor(() => expect(screen.queryByTestId("rerun-dialog")).not.toBeInTheDocument());
   });
 

@@ -41,6 +41,10 @@ import { usePlanStore } from "@/stores/planStore";
 import { useChatStore } from "@/stores/chatStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { useUiStore } from "@/stores/uiStore";
+import {
+  LOCAL_ENVIRONMENT_ID,
+  useEnvironmentStore,
+} from "@/stores/environmentStore";
 import { createTestQueryClient } from "@/test/store-utils";
 import { chatKeys } from "@/hooks/useChat";
 import { reviewSettingsKeys } from "@/hooks/useReviewSettings";
@@ -1704,6 +1708,12 @@ describe("AgentsArtifactPane", () => {
     tasksEnabledRef.current = true;
     useProjectStore.getState().setProjects([agentProjectFixture]);
     useProjectStore.getState().selectProject(agentProjectFixture.id);
+    useEnvironmentStore.setState({
+      activeEnvironmentId: LOCAL_ENVIRONMENT_ID,
+      environments: [{ id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" }],
+      effectiveScopes: {},
+      connectionPresentations: {},
+    });
     useChatStore.setState({ activeConversationIds: {} });
     getWorkspaceChangesMock.mockResolvedValue([
       {
@@ -8429,6 +8439,67 @@ describe("AgentsArtifactPane", () => {
       }),
     );
     expect(toastSuccessMock).toHaveBeenCalledWith("Plan resumed");
+  });
+
+  it("renders unregistered execution-plan controls unavailable remotely without opening confirmation", async () => {
+    const user = userEvent.setup();
+    useEnvironmentStore.setState({
+      activeEnvironmentId: "remote-1",
+      environments: [{ id: "remote-1", name: "Studio", kind: "remote" }],
+      effectiveScopes: { "remote-1": ["ui:read", "ui:operate", "ui:agent"] },
+      connectionPresentations: {
+        "remote-1": {
+          presentation: "connected",
+          blockedFailure: null,
+          blockedMessage: null,
+        },
+      },
+    });
+    usePlanStore.setState({
+      activePlanByProject: { "project-1": "session-1" },
+      activeExecutionPlanIdByProject: { "project-1": "exec-current" },
+    });
+    useTasksMock.mockReturnValue({
+      data: [
+        task({
+          id: "task-current",
+          executionPlanId: "exec-current",
+          internalStatus: "executing",
+        }),
+      ],
+      isLoading: false,
+      isFetching: false,
+    });
+    getIdeationSessionMock.mockResolvedValue(
+      ideationSessionResponse({
+        status: "accepted",
+        acceptanceStatus: "accepted",
+        convertedAt: "2026-04-23T10:00:00Z",
+      }),
+    );
+    getSessionPlanMock.mockResolvedValue(approvedPlanArtifact());
+
+    renderPane(
+      "plan",
+      workspace({
+        mode: "ideation",
+        linkedIdeationSessionId: "session-1",
+        linkedPlanBranchId: "plan-branch-1",
+      }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    const pause = await screen.findByTestId("plan-lifecycle-pause-button");
+    const stop = screen.getByTestId("plan-lifecycle-stop-button");
+    expect(pause).toBeDisabled();
+    expect(stop).toBeDisabled();
+    await user.click(pause);
+    await user.click(stop);
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    expect(pauseExecutionPlanMock).not.toHaveBeenCalled();
+    expect(stopExecutionPlanMock).not.toHaveBeenCalled();
   });
 
   it("reports restart implementation failures from the confirmation action", async () => {

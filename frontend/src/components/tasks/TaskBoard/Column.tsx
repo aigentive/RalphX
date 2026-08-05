@@ -181,7 +181,8 @@ function formatColumnHeaderCount(
 }
 
 export function Column({ column, projectId, showArchived, showMergeTasks, isOver, isInvalid, onTaskSelect, hiddenTaskId, searchTasks, matchCount, groups, isLast = false, ideationSessionId, executionPlanId, isCollapsed = false, onToggleCollapse, cardDisplayMode = "default", readOnly = false }: ColumnProps) {
-  const agentGate = useAgentGate("taskResume");
+  // Wave B1 registered the group-resume twin; Resume All must gate that group operation.
+  const agentGate = useAgentGate("groupResume");
   const { setNodeRef } = useDroppable({ id: column.id, disabled: readOnly });
   const sentinelRef = useRef<HTMLDivElement>(null);
   const { active } = useDndContext();

@@ -244,6 +244,8 @@ vi.mock("@/api/chat", () => ({
     listConversations: vi.fn().mockResolvedValue([]),
     getConversationStats: vi.fn().mockResolvedValue(null),
     getAgentRunStatus: vi.fn().mockResolvedValue(null),
+    // Wave B3 added queue hydration; keep this flag-off test on the local queue path.
+    getQueuedAgentMessages: vi.fn().mockResolvedValue([]),
     sendAgentMessage: vi.fn(),
   },
   stopAgent: vi.fn(),

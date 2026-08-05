@@ -160,13 +160,39 @@ describe("remote permission-gate routing", () => {
   it("surfaces a host refusal instead of resolving silently", async () => {
     useRemoteEnvironment(WITHOUT_UI_AGENT);
     primitiveInvoke.mockResolvedValue({
-      outcome: "error",
+      outcome: "commandError",
       error: { code: "REMOTE_FORBIDDEN", message: "not allowed" },
     });
 
     await expect(
       permissionApi.resolveRequest({ requestId: REQUEST_ID, decision: "allow" }),
     ).rejects.toBeDefined();
+  });
+
+  it("reads pending gates through the registered op and real remote envelope", async () => {
+    useRemoteEnvironment(AGENT_GRANTED);
+    primitiveInvoke.mockResolvedValue({
+      outcome: "ok",
+      result: [
+        {
+          request_id: REQUEST_ID,
+          tool_name: "Bash",
+          tool_input: { command: "pwd" },
+          context: null,
+          agent_type: null,
+          task_id: null,
+          context_type: null,
+          context_id: null,
+        },
+      ],
+    });
+
+    await expect(permissionApi.listPendingPermissionGates()).resolves.toEqual([
+      { request_id: REQUEST_ID, tool_name: "Bash", tool_input: { command: "pwd" } },
+    ]);
+    expect(primitiveInvoke.mock.calls[0]?.[0]).toBe("remote_invoke");
+    expect(wireCmd(0)).toBe("list_pending_permission_gates");
+    expect(wireInput(0).args).toEqual(undefined);
   });
 
   it("keeps the local command byte-identical on a local environment", async () => {

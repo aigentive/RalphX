@@ -338,6 +338,7 @@ describe("every gated affordance row is consumed by a production surface", () =>
   );
 
   it("has no dead row outside the quarantine", () => {
+    // Wave E1's expanded file manifest exposes stale Wave C/D affordance rows as real dead rows.
     const unexpected = deadRows.filter(
       (affordance) => !quarantined.has(`dead-row:${affordance}`)
     );
@@ -385,6 +386,7 @@ describe("a resolved affordance names the op its file invokes", () => {
   });
 
   it("has no wrong-op gate outside the quarantine", () => {
+    // Wave E1's expanded file manifest distinguishes real Wave B1/C indirections from wrong ops.
     const unexpected = mismatches
       .map((pair) => `op-mismatch:${pair.file}::${pair.affordance}`)
       .filter((id) => !quarantined.has(id));
