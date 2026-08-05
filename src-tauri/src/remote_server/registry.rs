@@ -1970,6 +1970,30 @@ crate::remote_commands! {
         call: async,
         result: fallible,
     },
+    "request_remote_queued_message_send"
+        => crate::commands::remote_queue_commands::request_remote_queued_message_send {
+        class: AgentControl,
+        caps: [SeedsSpawnTriggeringState],
+        params: [
+            (arg conversation_id: String),
+            (arg queued_message_id: String),
+            (arg expected_active_run_id: Option<String>),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "get_remote_queued_message_send_request"
+        => crate::commands::remote_queue_commands::get_remote_queued_message_send_request {
+        class: Read,
+        caps: [],
+        params: [
+            (arg request_id: String),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
     // The Agents-sidebar inbox read. Registered through the recovery-free `_for_app_state` seam
     // and the `worktree_path`-blanking facade twin, NOT the local `list_agent_sidebar_conversations`
     // (which schedules PR-supervision recovery and reaches the git CLI resolver — detector (c)).

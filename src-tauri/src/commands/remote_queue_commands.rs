@@ -21,7 +21,7 @@ pub struct CancelRemoteQueuedAgentMessageResponse {
     pub deleted: bool,
 }
 
-async fn validate_remote_queue_conversation(
+pub(crate) async fn validate_remote_queue_conversation(
     state: &AppState,
     conversation_id: &str,
 ) -> Result<ChatConversationId, String> {
@@ -42,6 +42,34 @@ async fn validate_remote_queue_conversation(
         return Err(REMOTE_QUEUE_CONVERSATION_NOT_PROJECT.to_string());
     }
     Ok(conversation.id)
+}
+
+pub use crate::application::remote_queue_send_intent::*;
+
+#[tauri::command]
+pub async fn request_remote_queued_message_send(
+    conversation_id: String,
+    queued_message_id: String,
+    expected_active_run_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<RemoteQueuedSendIntentResponse, String> {
+    request_remote_queued_message_send_for_state(
+        &state,
+        RequestRemoteQueuedMessageSendInput {
+            conversation_id,
+            queued_message_id,
+            expected_active_run_id,
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn get_remote_queued_message_send_request(
+    request_id: String,
+    state: State<'_, AppState>,
+) -> Result<RemoteQueuedSendRequestView, String> {
+    get_remote_queued_message_send_request_for_state(&state, request_id).await
 }
 
 #[tauri::command]

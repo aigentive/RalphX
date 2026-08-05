@@ -1071,7 +1071,8 @@ fn detector_b_is_calibrated_and_floor_enforced() {
         // is the only caller of the re-homed apply seam.
         // 580 -> 582: remote plan-artifact edit intent plus its poll read (Wave B2c).
         // 582 -> 584: spawn-free remote queued-message list + authority-reducing delete (B3a).
-        584,
+        // 584 -> 586: queued-message SEND-NOW intent request + poll read (Wave B3b).
+        586,
         "review the detector against the full command census"
     );
     let flagged = spawn_triggering_writers(
@@ -7587,18 +7588,4 @@ fn merged_commands_pin_host_log_amplification_and_workspace_recovery_funnel() {
         "detector (c) no longer sees the recovery funnel; re-trace the command before changing \
          or retaining its process-floor disposition"
     );
-}
-
-#[test]
-fn zz_temp_probe_loop_ids() {
-    let graph = CallGraph::build(&load_production_sources());
-    for root in graph.loop_roots.iter() {
-        if root.id.contains("mode_switch") {
-            println!(
-                "PROBE id={} arming={}",
-                root.id,
-                closure_is_arming(&graph.loop_closure(root))
-            );
-        }
-    }
 }

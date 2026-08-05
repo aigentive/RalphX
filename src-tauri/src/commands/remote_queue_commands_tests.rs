@@ -260,6 +260,55 @@ async fn list_and_delete_refuse_missing_conversations() {
 }
 
 #[tokio::test]
+async fn remote_queue_send_rejects_absent_entry_before_persisting() {
+    let state = AppState::new_test();
+    let conversation = seed_project_conversation(&state).await;
+    let error = request_remote_queued_message_send_for_state(
+        &state,
+        RequestRemoteQueuedMessageSendInput {
+            conversation_id: conversation.id.as_str(),
+            queued_message_id: "missing".into(),
+            expected_active_run_id: None,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error, REMOTE_QUEUE_SEND_ENTRY_GONE);
+}
+
+#[tokio::test]
+async fn remote_queue_send_deduplicates_same_entry_but_allows_independent_entry() {
+    let state = AppState::new_test();
+    let conversation = seed_project_conversation(&state).await;
+    for id in ["first", "second"] {
+        state.message_queue.queue_back_existing(
+            ChatContextType::Project,
+            conversation.id.as_str(),
+            message(id, id, None),
+        );
+    }
+    let input = |id: &str| RequestRemoteQueuedMessageSendInput {
+        conversation_id: conversation.id.as_str(),
+        queued_message_id: id.into(),
+        expected_active_run_id: None,
+    };
+    let first = request_remote_queued_message_send_for_state(&state, input("first"))
+        .await
+        .unwrap();
+    let duplicate = request_remote_queued_message_send_for_state(&state, input("first"))
+        .await
+        .unwrap();
+    let second = request_remote_queued_message_send_for_state(&state, input("second"))
+        .await
+        .unwrap();
+    assert!(!first.deduplicated);
+    assert!(duplicate.deduplicated);
+    assert_eq!(duplicate.request_id, first.request_id);
+    assert_ne!(second.request_id, first.request_id);
+    assert!(!second.deduplicated);
+}
+
+#[tokio::test]
 async fn list_and_delete_refuse_archived_conversations_without_touching_queue() {
     let state = AppState::new_test();
     let conversation = seed_project_conversation(&state).await;

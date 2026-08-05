@@ -536,6 +536,7 @@
     "refresh_agent_conversation_granola_note",
     "validate_granola_integration_settings",
     "resolve_user_question",
+    "request_remote_queued_message_send",
     "request_remote_agent_conversation_start",
     "request_remote_agent_conversation_message",
     "request_remote_agent_conversation_mode_switch",
@@ -1167,13 +1168,14 @@
       "authorityBearing": true,
       "enclosingFunction": "application/startup_background.rs:::::spawn_remote_resume_dispatchers",
       "file": "application/startup_background.rs",
-      "id": "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@ae03f3974e0d290a",
+      "id": "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@885a6ae1e7fcee15",
       "kind": "async_runtime::spawn",
       "readSurface": [
         "remote-execution-resume",
         "remote-task-action",
         "remote-plan-approval",
-        "remote-finalize-decision"
+        "remote-finalize-decision",
+        "remote-queued-send"
       ],
       "sinksReached": [
         "apply_corrective_transition",
@@ -3289,6 +3291,26 @@
       "pins": [],
       "scopeConfined": false,
       "target": "crate::commands::remote_queue_commands::cancel_remote_queued_agent_message"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "seedsSpawnTriggeringState"
+      ],
+      "class": "agentControl",
+      "command": "request_remote_queued_message_send",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::remote_queue_commands::request_remote_queued_message_send"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_remote_queued_message_send_request",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::remote_queue_commands::get_remote_queued_message_send_request"
     },
     {
       "argumentSensitive": false,
@@ -9029,6 +9051,26 @@
     },
     {
       "capabilities": [
+        "seedsSpawnTriggeringState"
+      ],
+      "class": "agentControl",
+      "command": "request_remote_queued_message_send",
+      "module": "remote_queue_commands",
+      "reason": "seeds-spawn-triggering-state: persists an id-only queued SEND-NOW intent; the host dispatcher alone resolves the payload and executes the kill-and-launch seam",
+      "registered": true,
+      "v1Resolution": "registerable"
+    },
+    {
+      "capabilities": [],
+      "class": "read",
+      "command": "get_remote_queued_message_send_request",
+      "module": "remote_queue_commands",
+      "reason": "pure repository read of one queued SEND-NOW intent; propagates missing and read failures distinctly",
+      "registered": true,
+      "v1Resolution": "registerable"
+    },
+    {
+      "capabilities": [
         "mutatesAgentConsumedContent"
       ],
       "class": "agentControl",
@@ -11349,7 +11391,7 @@
       "armedValue": "Pending",
       "id": "remote-execution-resume",
       "readByLoops": [
-        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@ae03f3974e0d290a"
+        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@885a6ae1e7fcee15"
       ],
       "surface": "remote_resume_requests.status where family=execution",
       "writers": [
@@ -11360,7 +11402,7 @@
       "armedValue": "Pending",
       "id": "remote-task-action",
       "readByLoops": [
-        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@ae03f3974e0d290a"
+        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@885a6ae1e7fcee15"
       ],
       "surface": "remote_resume_requests.status where family=task",
       "writers": [
@@ -11373,7 +11415,7 @@
       "armedValue": "Pending",
       "id": "remote-plan-approval",
       "readByLoops": [
-        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@ae03f3974e0d290a"
+        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@885a6ae1e7fcee15"
       ],
       "surface": "remote_plan_approval_requests.status",
       "writers": [
@@ -11384,11 +11426,22 @@
       "armedValue": "Pending",
       "id": "remote-finalize-decision",
       "readByLoops": [
-        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@ae03f3974e0d290a"
+        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@885a6ae1e7fcee15"
       ],
       "surface": "remote_finalize_decision_requests.status",
       "writers": [
         "request_remote_ideation_finalize_decision"
+      ]
+    },
+    {
+      "armedValue": "Pending",
+      "id": "remote-queued-send",
+      "readByLoops": [
+        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@885a6ae1e7fcee15"
+      ],
+      "surface": "remote_queued_send_requests.status",
+      "writers": [
+        "request_remote_queued_message_send"
       ]
     }
   ],

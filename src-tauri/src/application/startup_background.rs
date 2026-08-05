@@ -30,7 +30,9 @@ use crate::application::automation::scheduler::{
     HarnessAutomationPlanJudgeInvoker,
 };
 use crate::application::automation::transition::TauriAutomationEventEmitter;
-use crate::application::chat_service::{ChatService, SendCallerContext, SendMessageOptions};
+use crate::application::chat_service::{
+    ChatService, ChatServiceError, SendCallerContext, SendMessageOptions,
+};
 use crate::application::harness_runtime_registry::resolve_default_external_mcp_bootstrap;
 use crate::application::plan_artifact_approval::DbPlanArtifactApprovalWriter;
 use crate::application::plan_verification_service::{
@@ -1314,6 +1316,174 @@ const REMOTE_CONVERSATION_MODE_SWITCH_DISPATCH_INTERVAL: Duration = Duration::fr
 /// `Switching` rows older than this at boot are swept to `FailedStale` and NEVER re-driven.
 const REMOTE_RESUME_STALE_LEASE_SECS: i64 = 300;
 
+/// Claims and drains at most one queued SEND-NOW intent. A stale/lost claim is never replayed:
+/// re-driving it could kill a second provider and launch a duplicate second turn.
+pub(crate) async fn dispatch_one_remote_queued_send<R: tauri::Runtime + 'static>(
+    state: &AppState,
+    execution_state: &Arc<ExecutionState>,
+    app_handle: &tauri::AppHandle<R>,
+) -> AppResult<()> {
+    use crate::application::remote_queue_send_intent::*;
+    use crate::domain::services::QueueKey;
+    let Some(row) = state
+        .remote_queued_send_request_repo
+        .claim_pending(chrono::Utc::now())
+        .await?
+    else {
+        return Ok(());
+    };
+    let conversation_id = ChatConversationId::from_string(row.conversation_id.clone());
+    let Some(conversation) = state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await?
+    else {
+        state
+            .remote_queued_send_request_repo
+            .fail(
+                &row.id,
+                REMOTE_QUEUE_SEND_CONVERSATION_NOT_FOUND,
+                None,
+                chrono::Utc::now(),
+            )
+            .await?;
+        return Ok(());
+    };
+    if conversation.is_archived() {
+        state
+            .remote_queued_send_request_repo
+            .fail(
+                &row.id,
+                REMOTE_QUEUE_SEND_CONVERSATION_ARCHIVED,
+                None,
+                chrono::Utc::now(),
+            )
+            .await?;
+        return Ok(());
+    }
+    if conversation.context_type != ChatContextType::Project {
+        state
+            .remote_queued_send_request_repo
+            .fail(
+                &row.id,
+                REMOTE_QUEUE_SEND_CONVERSATION_NOT_PROJECT,
+                None,
+                chrono::Utc::now(),
+            )
+            .await?;
+        return Ok(());
+    }
+    if let Some(expected) = row.expected_active_run_id.as_deref() {
+        let active = state
+            .agent_run_repo
+            .get_active_for_conversation(&conversation_id)
+            .await?;
+        if active.as_ref().map(|run| run.id.as_str()).as_deref() != Some(expected) {
+            state
+                .remote_queued_send_request_repo
+                .fail(
+                    &row.id,
+                    REMOTE_QUEUE_SEND_RUN_CHANGED,
+                    None,
+                    chrono::Utc::now(),
+                )
+                .await?;
+            return Ok(());
+        }
+    }
+    let key = QueueKey::new(ChatContextType::Project, row.conversation_id.clone());
+    let mut queued = state.queued_message_repo.list(&key).await?;
+    queued.extend(
+        state
+            .message_queue
+            .get_queued(ChatContextType::Project, &row.conversation_id),
+    );
+    let Some(entry) = queued
+        .into_iter()
+        .find(|entry| entry.id == row.queued_message_id)
+    else {
+        state
+            .remote_queued_send_request_repo
+            .fail(
+                &row.id,
+                REMOTE_QUEUE_SEND_ENTRY_GONE,
+                None,
+                chrono::Utc::now(),
+            )
+            .await?;
+        return Ok(());
+    };
+    if let Some(provider) = entry.harness_override {
+        let enabled = state
+            .agent_provider_settings_repo
+            .list()
+            .await
+            .map_err(|error| AppError::Infrastructure(error.to_string()))?
+            .iter()
+            .any(|stored| stored.provider == provider && stored.enabled);
+        if !enabled {
+            state
+                .remote_queued_send_request_repo
+                .fail(
+                    &row.id,
+                    REMOTE_QUEUE_SEND_PROVIDER_DISABLED,
+                    None,
+                    chrono::Utc::now(),
+                )
+                .await?;
+            return Ok(());
+        }
+    }
+    let service = build_chat_service_from_deps(
+        Some(app_handle.clone()),
+        Some(Arc::clone(execution_state)),
+        &ChatRuntimeFactoryDeps::from_app_state(state),
+    );
+    match service
+        .send_queued_message_now(
+            ChatContextType::Project,
+            &row.conversation_id,
+            &row.queued_message_id,
+        )
+        .await
+    {
+        Ok(sent) => {
+            state
+                .remote_queued_send_request_repo
+                .complete(
+                    &row.id,
+                    serde_json::json!({"runId":sent.agent_run_id}),
+                    chrono::Utc::now(),
+                )
+                .await?
+        }
+        Err(ChatServiceError::ContextNotFound(_)) => {
+            state
+                .remote_queued_send_request_repo
+                .fail(
+                    &row.id,
+                    REMOTE_QUEUE_SEND_ALREADY_SENT,
+                    Some(serde_json::json!({"benign":true,"rehydrateQueue":true})),
+                    chrono::Utc::now(),
+                )
+                .await?
+        }
+        Err(error) => {
+            state
+                .remote_queued_send_request_repo
+                .fail(
+                    &row.id,
+                    REMOTE_QUEUE_SEND_HOST_FAILED,
+                    Some(serde_json::json!({"restoredToFront":true,"rehydrateQueue":true})),
+                    chrono::Utc::now(),
+                )
+                .await?;
+            tracing::warn!(%error,request_id=%row.id,"remote queued SEND-NOW host dispatch failed");
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn spawn_remote_resume_dispatchers(
     state: AppState,
     active_project_state: Arc<crate::application::ActiveProjectState>,
@@ -1364,6 +1534,13 @@ pub(crate) fn spawn_remote_resume_dispatchers(
         {
             tracing::error!(%error, "remote plan-edit stale sweep failed");
         }
+        if let Err(error) = state
+            .remote_queued_send_request_repo
+            .fail_stale(cutoff, now)
+            .await
+        {
+            tracing::error!(%error, "remote queued SEND-NOW stale sweep failed");
+        }
         let mut interval = tokio::time::interval(Duration::from_secs(2));
         interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {
@@ -1387,6 +1564,11 @@ pub(crate) fn spawn_remote_resume_dispatchers(
             }
             if let Err(error) = dispatch_one_remote_plan_edit(&state).await {
                 tracing::warn!(%error, "remote plan-edit dispatch failed");
+            }
+            if let Err(error) =
+                dispatch_one_remote_queued_send(&state, &execution_state, &app_handle).await
+            {
+                tracing::warn!(%error, "remote queued SEND-NOW dispatch failed");
             }
             if let Err(error) =
                 dispatch_one_remote_finalize_decision(&state, &execution_state, Some(&app_handle))

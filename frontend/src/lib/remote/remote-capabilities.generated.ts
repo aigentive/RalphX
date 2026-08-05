@@ -710,6 +710,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: [],
     pins: [],
   },
+  "get_remote_queued_message_send_request": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
   "get_remote_task_action_request": {
     opClass: "read",
     argumentSensitive: false,
@@ -1260,6 +1266,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     opClass: "agentControl",
     argumentSensitive: false,
     capabilities: ["mutatesAgentConsumedContent"],
+    pins: [],
+  },
+  "request_remote_queued_message_send": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["seedsSpawnTriggeringState"],
     pins: [],
   },
   "request_remote_task_restart": {

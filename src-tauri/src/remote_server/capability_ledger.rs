@@ -521,6 +521,18 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
             "pure repository read of one message-intent row; no spawn carrier; propagates read errors",
         ),
     },
+    CommandOverride {
+        command: "request_remote_queued_message_send",
+        policy: policy(
+            RiskClass::AgentControl,
+            SEEDS_STATE,
+            "seeds-spawn-triggering-state: persists an id-only queued SEND-NOW intent; the host dispatcher alone resolves the payload and executes the kill-and-launch seam",
+        ),
+    },
+    CommandOverride {
+        command: "get_remote_queued_message_send_request",
+        policy: policy(RiskClass::Read, NONE, "pure repository read of one queued SEND-NOW intent; propagates missing and read failures distinctly"),
+    },
     // --- WP2: the spawn-free STOP pair.
     //
     // `stop_agent` itself is `host-denied-spawns-process` (AppChatService::stop_agent reaches

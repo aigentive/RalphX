@@ -219,6 +219,9 @@ pub mod remote_environment_service;
 pub mod remote_event_relay;
 pub mod remote_plan_approval_intent;
 pub mod remote_plan_edit_intent;
+pub mod remote_queue_send_intent;
+#[cfg(test)]
+mod startup_remote_queue_send_tests;
 pub mod remote_finalize_decision_intent;
 pub mod remote_resume_intent;
 pub mod resume_validator;
