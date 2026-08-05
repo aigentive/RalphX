@@ -71,6 +71,15 @@ export default defineConfig(async ({ mode }) => {
     : {};
 
   return {
+    // Native Tauri dev and web-mode Playwright can run concurrently from the
+    // same checkout. Separate their pre-bundles so either server can rebuild or
+    // shut down without invalidating the other's optimized dependency hashes.
+    // dev-fresh already clears the shared parent directory before launch.
+    cacheDir: path.resolve(
+      __dirname,
+      "./node_modules/.vite",
+      isWebMode ? "web" : "native",
+    ),
     define: {
       // UI debug logging is opt-in via shell env, e.g. DEBUG=true npm run tauri dev
       __UI_DEBUG__: JSON.stringify(process.env.DEBUG === "true"),
