@@ -4,6 +4,7 @@
 // Handles background stream processing and event emission.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -60,6 +61,53 @@ use super::{
 };
 use crate::utils::truncate_str;
 use crate::AppState;
+
+fn schedule_branch_status_refresh<R: Runtime>(
+    app_handle: Option<&AppHandle<R>>,
+    conversation_id: &ChatConversationId,
+    working_directory: Option<&std::path::Path>,
+) {
+    let (Some(handle), Some(working_directory)) = (app_handle, working_directory) else {
+        return;
+    };
+    let state = handle.state::<AppState>();
+    let workspace_repo = Arc::clone(&state.agent_conversation_workspace_repo);
+    let cache = state.pr_poller_registry.branch_status_cache();
+    let conversation_id = conversation_id.clone();
+    let working_directory = working_directory.to_path_buf();
+    if !cache.claim_refresh(&working_directory) {
+        return;
+    }
+
+    tokio::spawn(async move {
+        let base_ref = match workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+        {
+            Ok(workspace) => workspace.map(|workspace| workspace.base_ref),
+            Err(error) => {
+                tracing::warn!(
+                    conversation_id = %conversation_id.as_str(),
+                    error = %error,
+                    "failed to resolve workspace for runtime branch-status refresh"
+                );
+                None
+            }
+        };
+        let refresh_result = cache
+            .refresh_local(&working_directory, base_ref.as_deref())
+            .await;
+        cache.finish_refresh(&working_directory);
+        if let Err(error) = refresh_result {
+            tracing::warn!(
+                conversation_id = %conversation_id.as_str(),
+                working_directory = %working_directory.display(),
+                error = %error,
+                "runtime branch-status refresh failed"
+            );
+        }
+    });
+}
 
 /// Returns the index `persist_timeline_snapshot` will assign to the text block
 /// this chunk belongs to.
@@ -1295,6 +1343,7 @@ pub async fn process_stream_background<R: Runtime>(
     context_type: ChatContextType,
     context_id: &str,
     conversation_id: &ChatConversationId,
+    working_directory: Option<PathBuf>,
     app_handle: Option<AppHandle<R>>,
     activity_event_repo: Option<Arc<dyn ActivityEventRepository>>,
     task_repo: Option<Arc<dyn TaskRepository>>,
@@ -1324,6 +1373,7 @@ pub async fn process_stream_background<R: Runtime>(
             context_type,
             context_id,
             conversation_id,
+            working_directory,
             app_handle,
             activity_event_repo,
             task_repo,
@@ -2259,6 +2309,11 @@ pub async fn process_stream_background<R: Runtime>(
                         // Captured in processor.finish()
                     }
                     StreamEvent::TurnComplete { session_id } => {
+                        schedule_branch_status_refresh(
+                            app_handle.as_ref(),
+                            conversation_id,
+                            working_directory.as_deref(),
+                        );
                         flush_streaming_persistence_if_dirty(
                             &mut streaming_persistence_dirty,
                             &mut last_streaming_persisted_at,
@@ -3574,6 +3629,7 @@ async fn process_codex_stream_background<R: Runtime>(
     context_type: ChatContextType,
     context_id: &str,
     conversation_id: &ChatConversationId,
+    working_directory: Option<PathBuf>,
     app_handle: Option<AppHandle<R>>,
     activity_event_repo: Option<Arc<dyn ActivityEventRepository>>,
     task_repo: Option<Arc<dyn TaskRepository>>,
@@ -4152,6 +4208,11 @@ async fn process_codex_stream_background<R: Runtime>(
             }
 
             if event.event_type == "turn.completed" {
+                schedule_branch_status_refresh(
+                    app_handle.as_ref(),
+                    conversation_id,
+                    working_directory.as_deref(),
+                );
                 codex_turn_completed = true;
                 let _ = child.start_kill();
                 break;

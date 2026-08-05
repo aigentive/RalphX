@@ -178,6 +178,7 @@ async fn build_standalone_codex_noninteractive_resume_command(
         None,
         false,
         None,
+        None,
     )
     .await
     .expect("standalone Codex noninteractive resume command should build")

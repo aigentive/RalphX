@@ -381,3 +381,49 @@ async fn partial_settlement_keeps_an_all_settled_park_armed() {
     assert!(updated.jobs[1].settled_status.is_none());
     assert!(harness.chat.get_sent_messages().await.is_empty());
 }
+
+#[tokio::test]
+async fn terminal_parent_disarm_prevents_a_later_delegate_completion_from_waking_it() {
+    let harness = harness();
+    let (conversation, parent, delegate) = insert_parent_and_delegate(&harness).await;
+    let mut armed = park(conversation.clone(), parent.id, delegate.id);
+    armed.jobs[0].settled_status = None;
+    harness.parks.insert(armed.clone()).await;
+
+    assert_eq!(
+        super::DelegationParkService::disarm_armed_for_terminal_parent(
+            harness.parks.as_ref(),
+            &conversation,
+            &parent.id,
+        )
+        .await
+        .unwrap(),
+        1
+    );
+
+    harness
+        .service()
+        .note_job_settled(&delegate.id, "completed")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        harness.parks.get(&armed.id).await.unwrap().unwrap().state,
+        DelegationParkState::Disarmed
+    );
+    assert!(
+        harness.chat.get_sent_messages().await.is_empty(),
+        "a disarmed parent must not receive resume_in_place after its delegate settles"
+    );
+    assert_eq!(
+        harness
+            .runs
+            .get_by_id(&delegate.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        crate::domain::entities::AgentRunStatus::Completed,
+        "disarming the parent park must not alter the delegate's terminal run"
+    );
+}
