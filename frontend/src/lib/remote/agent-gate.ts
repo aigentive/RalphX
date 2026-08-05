@@ -150,6 +150,7 @@ export const AGENT_GATED_AFFORDANCES = {
   taskRestart: "restart_task",
   taskApprove: "approve_task_for_review",
   taskResume: "resume_task",
+  recoveryPromptResolve: "request_remote_recovery_prompt_resolution",
   taskUnblock: "unblock_task",
   // Merge recovery commands are not registered on the remote facade.
   mergeRetry: "retry_merge",

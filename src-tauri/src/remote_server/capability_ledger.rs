@@ -618,6 +618,10 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
         command: "request_remote_group_resume",
         policy: policy(RiskClass::AgentControl, SEEDS_STATE, "seeds-spawn-triggering-state, declared membership resumes-task-group-through-host-dispatcher: persists a validated group intent; spawn_remote_resume_dispatchers is the sole spawner"),
     },
+    CommandOverride {
+        command: "request_remote_recovery_prompt_resolution",
+        policy: policy(RiskClass::AgentControl, SEEDS_STATE, "seeds-spawn-triggering-state, declared membership resolves-recovery-through-host-dispatcher: persists a status-and-live-marker validated recovery intent; Restart may execute entry actions and Failed+Restart deletes worktree/branch before resetting retry authority; spawn_remote_resume_dispatchers is the sole dispatcher"),
+    },
     CommandOverride { command: "get_remote_execution_resume_request", policy: policy(RiskClass::Read, NONE, "pure repository read of one execution-resume intent; propagates read errors") },
     CommandOverride { command: "get_remote_task_action_request", policy: policy(RiskClass::Read, NONE, "pure repository read of one task-action intent; propagates read errors") },
     CommandOverride { command: "request_remote_plan_approval", policy: policy(RiskClass::AgentControl, SEEDS_STATE, "seeds-spawn-triggering-state, declared membership approves-plan-through-host-dispatcher: persists a validated plan-approval intent; host approval can fan a Codex complexity assessor when tasks_enabled; spawn_remote_resume_dispatchers is the sole dispatcher") },
@@ -4137,6 +4141,10 @@ pub const DECLARED_MEMBERSHIPS: &[(&str, &str)] = &[
     (
         "request_remote_group_resume",
         "resumes-task-group-through-host-dispatcher",
+    ),
+    (
+        "request_remote_recovery_prompt_resolution",
+        "resolves-recovery-through-host-dispatcher",
     ),
 ];
 

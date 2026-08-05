@@ -358,6 +358,7 @@ pub struct AppState {
     pub remote_plan_edit_request_repo: Arc<dyn RemotePlanEditRequestRepository>,
     pub remote_queued_send_request_repo: Arc<dyn RemoteQueuedSendRequestRepository>,
     pub remote_task_action_request_repo: Arc<dyn RemoteTaskActionRequestRepository>,
+    pub recovery_prompt_tracker: Arc<crate::application::reconciliation::RecoveryPromptTracker>,
     /// Per-ticket canonical branch that all conversations for a ticket base off of
     pub ticket_canonical_branch_repo: Arc<dyn TicketCanonicalBranchRepository>,
     /// Startup orphan agent-worktree cleanup backoff markers
@@ -1808,6 +1809,9 @@ impl AppState {
             remote_task_action_request_repo: Arc::new(
                 SqliteRemoteTaskActionRequestRepository::from_shared(Arc::clone(&shared_conn)),
             ),
+            recovery_prompt_tracker: Arc::new(
+                crate::application::reconciliation::RecoveryPromptTracker::default(),
+            ),
             ticket_canonical_branch_repo: Arc::new(
                 SqliteTicketCanonicalBranchRepository::from_shared(Arc::clone(&shared_conn)),
             ),
@@ -2132,6 +2136,9 @@ impl AppState {
             remote_task_action_request_repo: Arc::new(
                 MemoryRemoteTaskActionRequestRepository::default(),
             ),
+            recovery_prompt_tracker: Arc::new(
+                crate::application::reconciliation::RecoveryPromptTracker::default(),
+            ),
             ticket_canonical_branch_repo: Arc::new(MemoryTicketCanonicalBranchRepository::new()),
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 MemoryOrphanWorktreeCleanupMarkerRepository::new(),
@@ -2374,6 +2381,9 @@ impl AppState {
             ),
             remote_task_action_request_repo: Arc::new(
                 MemoryRemoteTaskActionRequestRepository::default(),
+            ),
+            recovery_prompt_tracker: Arc::new(
+                crate::application::reconciliation::RecoveryPromptTracker::default(),
             ),
             ticket_canonical_branch_repo: Arc::new(MemoryTicketCanonicalBranchRepository::new()),
             orphan_worktree_cleanup_marker_repo: Arc::new(
@@ -2642,6 +2652,9 @@ impl AppState {
             remote_task_action_request_repo: Arc::new(
                 SqliteRemoteTaskActionRequestRepository::from_shared(Arc::clone(&shared_conn)),
             ),
+            recovery_prompt_tracker: Arc::new(
+                crate::application::reconciliation::RecoveryPromptTracker::default(),
+            ),
             ticket_canonical_branch_repo: Arc::new(
                 SqliteTicketCanonicalBranchRepository::from_shared(Arc::clone(&shared_conn)),
             ),
@@ -2866,6 +2879,9 @@ impl AppState {
             ),
             remote_task_action_request_repo: Arc::new(
                 MemoryRemoteTaskActionRequestRepository::default(),
+            ),
+            recovery_prompt_tracker: Arc::new(
+                crate::application::reconciliation::RecoveryPromptTracker::default(),
             ),
             ticket_canonical_branch_repo: Arc::new(MemoryTicketCanonicalBranchRepository::new()),
             orphan_worktree_cleanup_marker_repo: Arc::new(

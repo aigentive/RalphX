@@ -7,8 +7,9 @@ use super::startup_background::{
 };
 use super::AppState;
 use crate::application::remote_resume_intent::{
-    request_remote_execution_resume_for_state, request_remote_task_resume_for_state,
-    RequestRemoteExecutionResumeInput, RequestRemoteTaskResumeInput,
+    request_remote_execution_resume_for_state, request_remote_recovery_prompt_resolution_for_state,
+    request_remote_task_resume_for_state, RequestRemoteExecutionResumeInput,
+    RequestRemoteRecoveryPromptResolutionInput, RequestRemoteTaskResumeInput,
     REMOTE_RESUME_AUTHORITY_CHANGED,
 };
 use crate::application::ActiveProjectState;
@@ -49,6 +50,65 @@ async fn execution_dispatch_executes_once_and_persists_terminal_result() {
         .expect("read")
         .expect("row");
     assert_eq!(after_reentry, completed);
+}
+
+#[tokio::test]
+async fn recovery_claim_reproves_status_and_prompt_marker_before_host_effects() {
+    let state = AppState::new_test();
+    let project = state
+        .project_repo
+        .create(Project::new(
+            "Recovery race".into(),
+            "/tmp/recovery-race".into(),
+        ))
+        .await
+        .expect("seed project");
+    let mut task = Task::new(project.id, "Recovery race".into());
+    task.internal_status = InternalStatus::Executing;
+    let task = state.task_repo.create(task).await.expect("seed task");
+    state
+        .recovery_prompt_tracker
+        .insert_if_absent(task.id.as_str(), task.internal_status, "prompt".into())
+        .await;
+    let requested = request_remote_recovery_prompt_resolution_for_state(
+        &state,
+        RequestRemoteRecoveryPromptResolutionInput {
+            task_id: task.id.as_str().to_string(),
+            action: crate::domain::entities::RemoteRecoveryAction::Cancel,
+        },
+    )
+    .await
+    .expect("request");
+    state
+        .recovery_prompt_tracker
+        .remove(task.id.as_str(), task.internal_status)
+        .await;
+
+    assert!(claim_and_revalidate_remote_task_action(&state)
+        .await
+        .expect("claim")
+        .is_none());
+    let row = state
+        .remote_task_action_request_repo
+        .get(&requested.request_id)
+        .await
+        .expect("read")
+        .expect("row");
+    assert_eq!(row.status, RemoteResumeRequestStatus::Failed);
+    assert_eq!(
+        row.error_code.as_deref(),
+        Some(REMOTE_RESUME_AUTHORITY_CHANGED)
+    );
+    assert_eq!(
+        state
+            .task_repo
+            .get_by_id(&task.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .internal_status,
+        InternalStatus::Executing
+    );
 }
 
 #[tokio::test]

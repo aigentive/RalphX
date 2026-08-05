@@ -458,6 +458,7 @@ macro_rules! register_tauri_commands {
             commands::remote_resume_commands::request_remote_task_resume,
             commands::remote_resume_commands::request_remote_task_restart,
             commands::remote_resume_commands::request_remote_group_resume,
+            commands::remote_resume_commands::request_remote_recovery_prompt_resolution,
             commands::remote_resume_commands::get_remote_execution_resume_request,
             commands::remote_resume_commands::get_remote_task_action_request,
             commands::remote_plan_commands::request_remote_plan_approval,

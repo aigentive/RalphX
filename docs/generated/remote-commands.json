@@ -546,6 +546,7 @@
     "request_remote_task_resume",
     "request_remote_task_restart",
     "request_remote_group_resume",
+    "request_remote_recovery_prompt_resolution",
     "request_remote_plan_approval",
     "request_remote_ideation_finalize_decision",
     "start_agent_conversation",
@@ -1187,6 +1188,7 @@
         "send_message",
         "spawn_ready_task_scheduler_if_needed",
         "transition_task",
+        "transition_task_corrective_with_exit",
         "transition_task_with_metadata",
         "try_schedule_ready_tasks",
         "write_message"
@@ -2334,6 +2336,10 @@
     {
       "command": "request_remote_group_resume",
       "reason": "resumes-task-group-through-host-dispatcher"
+    },
+    {
+      "command": "request_remote_recovery_prompt_resolution",
+      "reason": "resolves-recovery-through-host-dispatcher"
     }
   ],
   "facade_ops": [
@@ -2901,6 +2907,17 @@
       "pins": [],
       "scopeConfined": false,
       "target": "crate::commands::remote_resume_commands::request_remote_group_resume"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "seedsSpawnTriggeringState"
+      ],
+      "class": "agentControl",
+      "command": "request_remote_recovery_prompt_resolution",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::remote_resume_commands::request_remote_recovery_prompt_resolution"
     },
     {
       "argumentSensitive": false,
@@ -9454,6 +9471,17 @@
       "v1Resolution": "registerable"
     },
     {
+      "capabilities": [
+        "seedsSpawnTriggeringState"
+      ],
+      "class": "agentControl",
+      "command": "request_remote_recovery_prompt_resolution",
+      "module": "remote_resume_commands",
+      "reason": "seeds-spawn-triggering-state, declared membership resolves-recovery-through-host-dispatcher: persists a status-and-live-marker validated recovery intent; Restart may execute entry actions and Failed+Restart deletes worktree/branch before resetting retry authority; spawn_remote_resume_dispatchers is the sole dispatcher",
+      "registered": true,
+      "v1Resolution": "registerable"
+    },
+    {
       "capabilities": [],
       "class": "read",
       "command": "get_remote_execution_resume_request",
@@ -11555,6 +11583,7 @@
       "surface": "remote_resume_requests.status where family=task",
       "writers": [
         "request_remote_group_resume",
+        "request_remote_recovery_prompt_resolution",
         "request_remote_task_restart",
         "request_remote_task_resume"
       ]

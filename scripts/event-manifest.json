@@ -1210,7 +1210,7 @@
     {
       "name": "recovery:prompt",
       "file": "src-tauri/src/application/reconciliation/events.rs",
-      "line": 399,
+      "line": 397,
       "kind": "method"
     },
     {

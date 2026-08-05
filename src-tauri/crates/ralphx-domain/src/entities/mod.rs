@@ -310,8 +310,8 @@ pub use remote_request_dedup::{
     RemoteAttachment, RemoteDedupOutcomeKind, RemoteRequestDedupRecord,
 };
 pub use remote_resume_request::{
-    RemoteExecutionResumeRequest, RemoteResumeRequestStatus, RemoteTaskAction,
-    RemoteTaskActionRequest,
+    RemoteExecutionResumeRequest, RemoteRecoveryAction, RemoteResumeRequestStatus,
+    RemoteTaskAction, RemoteTaskActionRequest,
 };
 pub use research::{
     CustomDepth, ParseResearchDepthPresetError, ParseResearchProcessStatusError, ResearchBrief,

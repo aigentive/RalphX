@@ -57,6 +57,7 @@ pub enum RemoteTaskAction {
     Resume,
     Restart,
     GroupResume,
+    ResolveRecoveryPrompt,
 }
 
 impl RemoteTaskAction {
@@ -65,6 +66,7 @@ impl RemoteTaskAction {
             Self::Resume => "resume",
             Self::Restart => "restart",
             Self::GroupResume => "groupResume",
+            Self::ResolveRecoveryPrompt => "resolveRecoveryPrompt",
         }
     }
 }
@@ -77,7 +79,36 @@ impl FromStr for RemoteTaskAction {
             "resume" => Ok(Self::Resume),
             "restart" => Ok(Self::Restart),
             "groupResume" => Ok(Self::GroupResume),
+            "resolveRecoveryPrompt" => Ok(Self::ResolveRecoveryPrompt),
             other => Err(format!("invalid RemoteTaskAction: {other}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RemoteRecoveryAction {
+    Restart,
+    Cancel,
+}
+
+impl RemoteRecoveryAction {
+    pub fn as_db_str(self) -> &'static str {
+        match self {
+            Self::Restart => "restart",
+            Self::Cancel => "cancel",
+        }
+    }
+}
+
+impl FromStr for RemoteRecoveryAction {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "restart" => Ok(Self::Restart),
+            "cancel" => Ok(Self::Cancel),
+            other => Err(format!("invalid RemoteRecoveryAction: {other}")),
         }
     }
 }
@@ -104,6 +135,7 @@ pub struct RemoteTaskActionRequest {
     pub group_id: Option<String>,
     pub force: bool,
     pub note: Option<String>,
+    pub recovery_action: Option<RemoteRecoveryAction>,
     pub status: RemoteResumeRequestStatus,
     pub error_code: Option<String>,
     pub result: Option<serde_json::Value>,

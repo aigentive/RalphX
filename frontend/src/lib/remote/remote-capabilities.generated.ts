@@ -1298,6 +1298,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: ["seedsSpawnTriggeringState"],
     pins: [],
   },
+  "request_remote_recovery_prompt_resolution": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["seedsSpawnTriggeringState"],
+    pins: [],
+  },
   "request_remote_task_restart": {
     opClass: "agentControl",
     argumentSensitive: false,

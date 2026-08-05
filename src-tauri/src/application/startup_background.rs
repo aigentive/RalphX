@@ -1503,6 +1503,8 @@ pub(crate) fn spawn_remote_resume_dispatchers(
         {
             tracing::error!(%error,"remote execution-resume stale sweep failed");
         }
+        // Task-action claims are terminal after the lease. Recovery Restart can delete a
+        // worktree and branch, so replaying a lost claim would repeat a destructive effect.
         if let Err(error) = state
             .remote_task_action_request_repo
             .fail_stale(cutoff, now)
@@ -2120,6 +2122,55 @@ pub(crate) async fn dispatch_one_remote_task_action(
                 serialize_remote_dispatch_result_or_null(value, "task group resume", &row.id)
             })
         }
+        RemoteTaskAction::ResolveRecoveryPrompt => {
+            let task_id = row.task_id.as_ref().expect("validated task id");
+            // Revalidation already proved the task existed, but this is a SECOND read and a
+            // deletion can land between the two. `expect` here would panic inside the shared
+            // dispatcher task and take every remote intent queue down with it until restart,
+            // so a vanished task settles as the same benign no-op a local answer produces.
+            let Some(task) = state.task_repo.get_by_id(task_id).await? else {
+                return state
+                    .remote_task_action_request_repo
+                    .complete(
+                        &row.id,
+                        serde_json::json!({"applied": false, "benign": true}),
+                        chrono::Utc::now(),
+                    )
+                    .await;
+            };
+            if !state
+                .recovery_prompt_tracker
+                .contains(task_id.as_str(), task.internal_status)
+                .await
+            {
+                return state
+                    .remote_task_action_request_repo
+                    .complete(
+                        &row.id,
+                        serde_json::json!({"applied": false, "benign": true}),
+                        chrono::Utc::now(),
+                    )
+                    .await;
+            }
+            let action = match row.recovery_action.expect("validated recovery action") {
+                crate::domain::entities::RemoteRecoveryAction::Restart => {
+                    crate::application::reconciliation::UserRecoveryAction::Restart
+                }
+                crate::domain::entities::RemoteRecoveryAction::Cancel => {
+                    crate::application::reconciliation::UserRecoveryAction::Cancel
+                }
+            };
+            let reconciler = crate::application::execution_recovery::build_reconciler_for_recovery(
+                state,
+                Arc::clone(execution),
+                app.clone(),
+            );
+            let applied = reconciler.apply_user_recovery_action(&task, action).await;
+            Ok(serde_json::json!({
+                "applied": applied,
+                "benign": !applied,
+            }))
+        }
     };
     match result {
         Ok(value) => {
@@ -2199,6 +2250,21 @@ pub(crate) async fn claim_and_revalidate_remote_task_action(
                     Some("status" | "session" | "uncategorized")
                 )
         }
+        RemoteTaskAction::ResolveRecoveryPrompt => match &row.task_id {
+            Some(id) => match state.task_repo.get_by_id(id).await? {
+                Some(task) => {
+                    crate::application::remote_resume_intent::recovery_prompt_status_is_actionable(
+                        task.internal_status,
+                    ) && row.recovery_action.is_some()
+                        && state
+                            .recovery_prompt_tracker
+                            .contains(id.as_str(), task.internal_status)
+                            .await
+                }
+                None => false,
+            },
+            None => false,
+        },
     };
     if !valid {
         state

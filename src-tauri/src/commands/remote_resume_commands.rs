@@ -40,6 +40,14 @@ pub async fn request_remote_group_resume(
 }
 
 #[tauri::command]
+pub async fn request_remote_recovery_prompt_resolution(
+    input: RequestRemoteRecoveryPromptResolutionInput,
+    state: State<'_, AppState>,
+) -> Result<RemoteResumeIntentResponse, String> {
+    request_remote_recovery_prompt_resolution_for_state(&state, input).await
+}
+
+#[tauri::command]
 pub async fn get_remote_execution_resume_request(
     request_id: String,
     state: State<'_, AppState>,

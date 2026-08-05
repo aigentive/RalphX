@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::application::AppState;
 use crate::domain::entities::{
-    InternalStatus, ProjectId, RemoteExecutionResumeRequest, RemoteResumeRequestStatus,
-    RemoteTaskAction, RemoteTaskActionRequest, TaskId,
+    InternalStatus, ProjectId, RemoteExecutionResumeRequest, RemoteRecoveryAction,
+    RemoteResumeRequestStatus, RemoteTaskAction, RemoteTaskActionRequest, TaskId,
 };
 
 pub const REMOTE_RESUME_LOOKUP_FAILED: &str = "REMOTE_RESUME_LOOKUP_FAILED";
@@ -13,6 +13,7 @@ pub const REMOTE_RESUME_PROJECT_NOT_FOUND: &str = "REMOTE_RESUME_PROJECT_NOT_FOU
 pub const REMOTE_RESUME_TASK_NOT_FOUND: &str = "REMOTE_RESUME_TASK_NOT_FOUND";
 pub const REMOTE_RESUME_TASK_NOT_PAUSED: &str = "REMOTE_RESUME_TASK_NOT_PAUSED";
 pub const REMOTE_RESTART_TASK_NOT_RESTARTABLE: &str = "REMOTE_RESTART_TASK_NOT_RESTARTABLE";
+pub const REMOTE_RECOVERY_PROMPT_NOT_ACTIONABLE: &str = "REMOTE_RECOVERY_PROMPT_NOT_ACTIONABLE";
 pub const REMOTE_RESUME_INVALID_GROUP: &str = "REMOTE_RESUME_INVALID_GROUP";
 pub const REMOTE_RESUME_ENQUEUE_FAILED: &str = "REMOTE_RESUME_ENQUEUE_FAILED";
 pub const REMOTE_RESUME_REQUEST_NOT_FOUND: &str = "REMOTE_RESUME_REQUEST_NOT_FOUND";
@@ -46,6 +47,27 @@ pub struct RequestRemoteGroupResumeInput {
     pub group_kind: String,
     pub group_id: String,
     pub project_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestRemoteRecoveryPromptResolutionInput {
+    pub task_id: String,
+    pub action: RemoteRecoveryAction,
+}
+
+pub(crate) fn recovery_prompt_status_is_actionable(status: InternalStatus) -> bool {
+    matches!(
+        status,
+        InternalStatus::Executing
+            | InternalStatus::ReExecuting
+            | InternalStatus::PendingMerge
+            | InternalStatus::Reviewing
+            | InternalStatus::Merging
+            | InternalStatus::QaRefining
+            | InternalStatus::QaTesting
+            | InternalStatus::Failed
+    )
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -158,6 +180,11 @@ async fn validated_task(
         {
             return Err(REMOTE_RESTART_TASK_NOT_RESTARTABLE.to_string())
         }
+        RemoteTaskAction::ResolveRecoveryPrompt
+            if !recovery_prompt_status_is_actionable(task.internal_status) =>
+        {
+            return Err(REMOTE_RECOVERY_PROMPT_NOT_ACTIONABLE.to_string())
+        }
         _ => {}
     }
     Ok((task_id, task.project_id))
@@ -214,6 +241,7 @@ pub async fn request_remote_task_resume_for_state(
             None,
             false,
             None,
+            None,
         ),
     )
     .await
@@ -235,6 +263,7 @@ pub async fn request_remote_task_restart_for_state(
             None,
             input.force,
             input.note,
+            None,
         ),
     )
     .await
@@ -271,6 +300,46 @@ pub async fn request_remote_group_resume_for_state(
             Some(input.group_id),
             false,
             None,
+            None,
+        ),
+    )
+    .await
+}
+
+pub async fn request_remote_recovery_prompt_resolution_for_state(
+    state: &AppState,
+    input: RequestRemoteRecoveryPromptResolutionInput,
+) -> Result<RemoteResumeIntentResponse, String> {
+    let (task_id, project_id) = validated_task(
+        state,
+        input.task_id,
+        RemoteTaskAction::ResolveRecoveryPrompt,
+    )
+    .await?;
+    let task = state
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .map_err(|_| REMOTE_RESUME_LOOKUP_FAILED.to_string())?
+        .ok_or_else(|| REMOTE_RESUME_TASK_NOT_FOUND.to_string())?;
+    if !state
+        .recovery_prompt_tracker
+        .contains(task.id.as_str(), task.internal_status)
+        .await
+    {
+        return Err(REMOTE_RECOVERY_PROMPT_NOT_ACTIONABLE.to_string());
+    }
+    persist_task(
+        state,
+        new_task_row(
+            RemoteTaskAction::ResolveRecoveryPrompt,
+            Some(task_id),
+            project_id,
+            None,
+            None,
+            false,
+            None,
+            Some(input.action),
         ),
     )
     .await
@@ -284,6 +353,7 @@ fn new_task_row(
     group_id: Option<String>,
     force: bool,
     note: Option<String>,
+    recovery_action: Option<RemoteRecoveryAction>,
 ) -> RemoteTaskActionRequest {
     let now = chrono::Utc::now();
     RemoteTaskActionRequest {
@@ -295,6 +365,7 @@ fn new_task_row(
         group_id,
         force,
         note,
+        recovery_action,
         status: RemoteResumeRequestStatus::Pending,
         error_code: None,
         result: None,

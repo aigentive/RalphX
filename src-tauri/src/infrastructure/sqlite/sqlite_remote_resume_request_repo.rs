@@ -6,8 +6,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 use tokio::sync::Mutex;
 
 use crate::domain::entities::{
-    ProjectId, RemoteExecutionResumeRequest, RemoteResumeRequestStatus, RemoteTaskAction,
-    RemoteTaskActionRequest, TaskId,
+    ProjectId, RemoteExecutionResumeRequest, RemoteRecoveryAction, RemoteResumeRequestStatus,
+    RemoteTaskAction, RemoteTaskActionRequest, TaskId,
 };
 use crate::domain::repositories::{
     RemoteExecutionResumeRequestRepository, RemoteTaskActionRequestRepository,
@@ -19,7 +19,7 @@ use crate::infrastructure::sqlite::DbConnection;
 #[path = "sqlite_remote_resume_request_repo_tests.rs"]
 mod tests;
 
-const COLUMNS: &str = "id, action, task_id, project_id, group_kind, group_id, force_restart, note, status, error_code, result_json, claimed_at, created_at, updated_at";
+const COLUMNS: &str = "id, action, task_id, project_id, group_kind, group_id, force_restart, note, recovery_action, status, error_code, result_json, claimed_at, created_at, updated_at";
 
 fn parse_time(value: &str, index: usize) -> rusqlite::Result<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(value)
@@ -36,7 +36,7 @@ fn parse_time(value: &str, index: usize) -> rusqlite::Result<DateTime<Utc>> {
 fn parse_status(value: String) -> rusqlite::Result<RemoteResumeRequestStatus> {
     RemoteResumeRequestStatus::from_str(&value).map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(
-            8,
+            9,
             rusqlite::types::Type::Text,
             Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, error)),
         )
@@ -48,7 +48,7 @@ fn parse_result(value: Option<String>) -> rusqlite::Result<Option<serde_json::Va
         .map(|json| {
             serde_json::from_str(&json).map_err(|error| {
                 rusqlite::Error::FromSqlConversionFailure(
-                    10,
+                    11,
                     rusqlite::types::Type::Text,
                     Box::new(error),
                 )
@@ -67,9 +67,9 @@ fn execution_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RemoteExecutionRes
         status: parse_status(row.get("status")?)?,
         error_code: row.get("error_code")?,
         result: parse_result(row.get("result_json")?)?,
-        claimed_at: claimed.map(|value| parse_time(&value, 11)).transpose()?,
-        created_at: parse_time(&row.get::<_, String>("created_at")?, 12)?,
-        updated_at: parse_time(&row.get::<_, String>("updated_at")?, 13)?,
+        claimed_at: claimed.map(|value| parse_time(&value, 12)).transpose()?,
+        created_at: parse_time(&row.get::<_, String>("created_at")?, 13)?,
+        updated_at: parse_time(&row.get::<_, String>("updated_at")?, 14)?,
     })
 }
 
@@ -93,12 +93,23 @@ fn task_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RemoteTaskActionRequest
         group_id: row.get("group_id")?,
         force: row.get::<_, i64>("force_restart")? != 0,
         note: row.get("note")?,
+        recovery_action: row
+            .get::<_, Option<String>>("recovery_action")?
+            .map(|value| RemoteRecoveryAction::from_str(&value))
+            .transpose()
+            .map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    8,
+                    rusqlite::types::Type::Text,
+                    Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, error)),
+                )
+            })?,
         status: parse_status(row.get("status")?)?,
         error_code: row.get("error_code")?,
         result: parse_result(row.get("result_json")?)?,
-        claimed_at: claimed.map(|value| parse_time(&value, 11)).transpose()?,
-        created_at: parse_time(&row.get::<_, String>("created_at")?, 12)?,
-        updated_at: parse_time(&row.get::<_, String>("updated_at")?, 13)?,
+        claimed_at: claimed.map(|value| parse_time(&value, 12)).transpose()?,
+        created_at: parse_time(&row.get::<_, String>("created_at")?, 13)?,
+        updated_at: parse_time(&row.get::<_, String>("updated_at")?, 14)?,
     })
 }
 
@@ -203,7 +214,7 @@ impl RemoteTaskActionRequestRepository for SqliteRemoteTaskActionRequestReposito
         r: RemoteTaskActionRequest,
     ) -> AppResult<RemoteTaskActionRequest> {
         let stored = r.clone();
-        self.db.run(move|c|{c.execute("INSERT INTO remote_resume_requests(id,family,action,task_id,project_id,group_kind,group_id,force_restart,note,status,error_code,result_json,claimed_at,created_at,updated_at)VALUES(?1,'task',?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",params![r.id,r.action.as_db_str(),r.task_id.as_ref().map(TaskId::as_str),r.project_id.as_str(),r.group_kind,r.group_id,r.force as i64,r.note,r.status.as_db_str(),r.error_code,r.result.map(|v|v.to_string()),r.claimed_at.map(|v|v.to_rfc3339()),r.created_at.to_rfc3339(),r.updated_at.to_rfc3339()])?;Ok(())}).await?;
+        self.db.run(move|c|{c.execute("INSERT INTO remote_resume_requests(id,family,action,task_id,project_id,group_kind,group_id,force_restart,note,recovery_action,status,error_code,result_json,claimed_at,created_at,updated_at)VALUES(?1,'task',?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",params![r.id,r.action.as_db_str(),r.task_id.as_ref().map(TaskId::as_str),r.project_id.as_str(),r.group_kind,r.group_id,r.force as i64,r.note,r.recovery_action.map(RemoteRecoveryAction::as_db_str),r.status.as_db_str(),r.error_code,r.result.map(|v|v.to_string()),r.claimed_at.map(|v|v.to_rfc3339()),r.created_at.to_rfc3339(),r.updated_at.to_rfc3339()])?;Ok(())}).await?;
         Ok(stored)
     }
     async fn get(&self, id: &str) -> AppResult<Option<RemoteTaskActionRequest>> {

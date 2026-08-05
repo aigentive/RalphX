@@ -1413,6 +1413,14 @@ crate::remote_commands! {
         call: async,
         result: fallible,
     },
+    "request_remote_recovery_prompt_resolution"
+        => crate::commands::remote_resume_commands::request_remote_recovery_prompt_resolution {
+        class: AgentControl,
+        caps: [SeedsSpawnTriggeringState],
+        params: [(arg input: crate::commands::remote_resume_commands::RequestRemoteRecoveryPromptResolutionInput), (app_state)],
+        call: async,
+        result: fallible,
+    },
     "get_remote_execution_resume_request"
         => crate::commands::remote_resume_commands::get_remote_execution_resume_request {
         class: Read,

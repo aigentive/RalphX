@@ -1204,6 +1204,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
             interactive_process_registry: Arc::clone(&interactive_process_registry),
             review_repo: Arc::clone(&review_repo),
             notification_service: app_state.notification_service(),
+            recovery_prompt_tracker: Arc::clone(&app_state.recovery_prompt_tracker),
             app_handle: app_handle.clone(),
         },
     ));

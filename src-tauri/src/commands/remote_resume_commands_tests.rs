@@ -391,6 +391,72 @@ async fn restart_and_group_are_distinct_actions_in_one_task_queue() {
 }
 
 #[tokio::test]
+async fn recovery_resolution_requires_actionable_status_and_live_marker_then_deduplicates() {
+    let state = AppState::new_test();
+    let mut task = seed_task(&state, InternalStatus::Ready).await;
+    let rejected = request_remote_recovery_prompt_resolution_for_state(
+        &state,
+        RequestRemoteRecoveryPromptResolutionInput {
+            task_id: task.id.as_str().to_string(),
+            action: crate::domain::entities::RemoteRecoveryAction::Restart,
+        },
+    )
+    .await
+    .expect_err("ready is not recovery-actionable");
+    assert_eq!(rejected, REMOTE_RECOVERY_PROMPT_NOT_ACTIONABLE);
+
+    task.internal_status = InternalStatus::Executing;
+    state.task_repo.update(&task).await.expect("update status");
+    let missing_marker = request_remote_recovery_prompt_resolution_for_state(
+        &state,
+        RequestRemoteRecoveryPromptResolutionInput {
+            task_id: task.id.as_str().to_string(),
+            action: crate::domain::entities::RemoteRecoveryAction::Restart,
+        },
+    )
+    .await
+    .expect_err("marker is required");
+    assert_eq!(missing_marker, REMOTE_RECOVERY_PROMPT_NOT_ACTIONABLE);
+
+    assert!(
+        state
+            .recovery_prompt_tracker
+            .insert_if_absent(task.id.as_str(), task.internal_status, "prompt".into())
+            .await
+    );
+    let first = request_remote_recovery_prompt_resolution_for_state(
+        &state,
+        RequestRemoteRecoveryPromptResolutionInput {
+            task_id: task.id.as_str().to_string(),
+            action: crate::domain::entities::RemoteRecoveryAction::Restart,
+        },
+    )
+    .await
+    .expect("persist recovery intent");
+    let duplicate = request_remote_recovery_prompt_resolution_for_state(
+        &state,
+        RequestRemoteRecoveryPromptResolutionInput {
+            task_id: task.id.as_str().to_string(),
+            action: crate::domain::entities::RemoteRecoveryAction::Cancel,
+        },
+    )
+    .await
+    .expect("deduplicate by task and kind");
+    assert_eq!(duplicate.request_id, first.request_id);
+    assert!(duplicate.deduplicated);
+    let stored = state
+        .remote_task_action_request_repo
+        .get(&first.request_id)
+        .await
+        .expect("read")
+        .expect("row");
+    assert_eq!(
+        stored.recovery_action,
+        Some(crate::domain::entities::RemoteRecoveryAction::Restart)
+    );
+}
+
+#[tokio::test]
 async fn execution_and_restart_wrappers_match_their_state_seams() {
     let state = AppState::new_test();
     let task = seed_task(&state, InternalStatus::Ready).await;

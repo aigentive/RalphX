@@ -1076,7 +1076,10 @@ fn detector_b_is_calibrated_and_floor_enforced() {
         // 587 -> 589: automation run-now/retry-judge intent twin request + poll (Wave B4b).
         // 589 -> 591: automation create-draft intent twin request + poll (Wave B4c).
         // 591 -> 593: direct spawn-free mute + persona lifecycle twins (Wave B5b).
-        593,
+        // 593 -> 594: recovery-prompt resolution intent (Wave B5d), reusing the existing
+        // remote-task-action surface and host dispatcher; the command itself only validates
+        // live prompt authority and persists the destructive-capable host action for later.
+        594,
         "review the detector against the full command census"
     );
     let flagged = spawn_triggering_writers(
@@ -7593,4 +7596,3 @@ fn merged_commands_pin_host_log_amplification_and_workspace_recovery_funnel() {
          or retaining its process-floor disposition"
     );
 }
-
