@@ -1173,8 +1173,8 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         const nextHeight = entry.contentRect.height;
         lastRenderedRowHeightRef.current = nextHeight;
         if (
-          previousHeight !== null
-          && nextHeight > previousHeight + VISUAL_BOTTOM_EPSILON_PX
+          previousHeight === null
+          || nextHeight > previousHeight + VISUAL_BOTTOM_EPSILON_PX
         ) {
           scrollController.notifyContentGrowth();
         }
@@ -2065,7 +2065,12 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
           return null;
         }
         return (
-          <div className="px-3 pb-3 w-full relative" style={contentContainerStyle}>
+          <div
+            ref={isLastVisibleTimelineItem ? handleLastRenderedRowRef : undefined}
+            className="px-3 pb-3 w-full relative"
+            data-chat-last-rendered-row={isLastVisibleTimelineItem ? "true" : undefined}
+            style={contentContainerStyle}
+          >
             <ContentShell className={contentWidthClassName}>
               {footerContent}
             </ContentShell>
@@ -2266,6 +2271,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
                   expandedToolGroupKeys={expandedToolGroupKeys}
                   isThinkingGroupExpanded={isThinkingGroupExpanded}
                   contentWidthClassName={contentWidthClassName}
+                  rowRef={index === lastVisibleTimelineIndex ? handleLastRenderedRowRef : undefined}
                   onToggleToolCallGroup={toggleToolCallGroup}
                   renderStreamingToolCallBlock={renderStreamingToolCallBlock}
                 />
@@ -2276,7 +2282,13 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
                 return null;
               }
               return (
-                <div key="streaming-live" className="px-3 pb-3 w-full relative" style={contentContainerStyle}>
+                <div
+                  key="streaming-live"
+                  ref={index === lastVisibleTimelineIndex ? handleLastRenderedRowRef : undefined}
+                  className="px-3 pb-3 w-full relative"
+                  data-chat-last-rendered-row={index === lastVisibleTimelineIndex ? "true" : undefined}
+                  style={contentContainerStyle}
+                >
                   <ContentShell className={contentWidthClassName}>
                     {footerContent}
                   </ContentShell>

@@ -3,10 +3,10 @@ import { expect, type Locator, type Page } from "@playwright/test";
 import { BasePage } from "../base.page";
 
 export class AgentsChatPage extends BasePage {
+  readonly bottomSpacer: Locator;
   readonly chrome: Locator;
   readonly composer: Locator;
   readonly composerInput: Locator;
-  readonly lastRenderedRow: Locator;
   readonly messages: Locator;
   readonly panel: Locator;
   readonly scroller: Locator;
@@ -14,13 +14,11 @@ export class AgentsChatPage extends BasePage {
 
   constructor(page: Page) {
     super(page);
+    this.bottomSpacer = page.getByTestId("chat-transcript-bottom-spacer");
     this.chrome = page.getByTestId("chat-below-transcript-chrome");
     this.composer = page.getByTestId("agents-conversation-composer");
     this.composerInput = this.composer.locator("textarea");
     this.messages = page.getByTestId("integrated-chat-messages");
-    this.lastRenderedRow = this.messages.locator(
-      "[data-chat-last-rendered-row='true']",
-    );
     this.panel = page.getByTestId("integrated-chat-panel");
     this.scroller = this.messages.locator('[data-chat-virtuoso-scroller="true"]');
     this.scrollToBottomButton = page.getByTestId("chat-scroll-to-bottom-button");

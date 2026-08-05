@@ -141,6 +141,37 @@ describe("ChatScrollController", () => {
     expect(harness.element.scrollTop).toBe(800);
   });
 
+  it("keeps pinned growth alive through delayed virtualizer measurement", () => {
+    const harness = createHarness();
+    attach(harness);
+    harness.scrollCalls.length = 0;
+
+    harness.controller.notifyContentGrowth();
+    harness.flushNextFrame();
+    harness.element.setGeometry({ scrollHeight: 1_200 });
+    harness.flushFrames();
+
+    expect(harness.controller.getState()).toBe("pinned");
+    expect(harness.scrollCalls).toHaveLength(1);
+    expect(harness.element.scrollTop).toBe(700);
+  });
+
+  it("corrects a deferred virtualizer footer offset without replaying item alignment", () => {
+    const harness = createHarness();
+    attach(harness);
+    harness.scrollCalls.length = 0;
+    harness.element.setGeometry({ scrollHeight: 1_200 });
+
+    harness.controller.notifyContentGrowth();
+    harness.flushNextFrame();
+    harness.element.setGeometry({ scrollTop: 637 });
+    harness.controller.notifyScroll();
+    harness.flushFrames();
+
+    expect(harness.element.scrollTop).toBe(700);
+    expect(harness.scrollCalls).toHaveLength(1);
+  });
+
   it("absorbs a short programmatic-pin replay instead of treating it as an away scroll", () => {
     const harness = createHarness();
     attach(harness);
@@ -163,7 +194,7 @@ describe("ChatScrollController", () => {
     harness.flushFrames();
 
     expect(harness.controller.getState()).toBe("pinned");
-    expect(harness.scrollCalls).toEqual([{ index: 9, align: "end", behavior: "auto" }]);
+    expect(harness.scrollCalls).toHaveLength(0);
     expect(harness.element.scrollTop).toBe(700);
   });
 
@@ -178,7 +209,7 @@ describe("ChatScrollController", () => {
     harness.flushFrames();
 
     expect(harness.controller.getState()).toBe("pinned");
-    expect(harness.scrollCalls).toHaveLength(2);
+    expect(harness.scrollCalls).toHaveLength(1);
     expect(harness.element.scrollTop).toBe(700);
   });
 
@@ -593,7 +624,6 @@ describe("ChatScrollController", () => {
     expect(harness.controller.getState()).toBe("returning");
     expect(harness.scrollCalls).toEqual([
       { index: 9, align: "end", behavior: "auto" },
-      { index: 9, align: "end", behavior: "auto" },
     ]);
     expect(harness.element.scrollTop).toBe(800);
   });
@@ -612,7 +642,7 @@ describe("ChatScrollController", () => {
 
     expect(harness.element.scrollTop).toBe(800);
     expect(harness.controller.getState()).toBe("pinned");
-    expect(harness.scrollCalls).toHaveLength(2);
+    expect(harness.scrollCalls).toHaveLength(1);
   });
 
   it("does not mistake an upward virtualizer correction during return for user-away intent", () => {
@@ -630,7 +660,7 @@ describe("ChatScrollController", () => {
 
     expect(harness.controller.getState()).toBe("pinned");
     expect(harness.element.scrollTop).toBe(800);
-    expect(harness.scrollCalls.length).toBeGreaterThanOrEqual(2);
+    expect(harness.scrollCalls).toHaveLength(1);
   });
 
   it("waits through changing prepend compensation before treating later growth as followable", () => {

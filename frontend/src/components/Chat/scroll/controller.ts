@@ -80,6 +80,7 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
   let visualBottom: boolean | null = null;
   let pinBehavior: "auto" | "smooth" = "auto";
   let pinReasons: string[] = [];
+  let pinNeedsIndexAlignment = false;
   let suppressFreeBottomReentry = false;
   let detached = false;
 
@@ -114,6 +115,7 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
     cancelFrame(pinFrame);
     pinFrame = null;
     pinReasons = [];
+    pinNeedsIndexAlignment = false;
   };
 
   const cancelSettle = (): void => {
@@ -200,36 +202,49 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
         }
         return;
       }
-      schedulePin("returning-settle", "auto");
+      schedulePin("returning-settle", "auto", false);
     });
   };
 
-  const performPin = (reason: string, behavior: "auto" | "smooth"): void => {
+  const performPin = (
+    reason: string,
+    behavior: "auto" | "smooth",
+    alignLastItem = true,
+  ): void => {
     if (detached || state === "free" || prependEpoch || zeroSizeEpoch) return;
     const element = getElement();
     beginBottomIntent();
-    deps.scrollToIndex({ index: deps.getLastIndex(), align: "end", behavior });
+    if (alignLastItem) {
+      deps.scrollToIndex({ index: deps.getLastIndex(), align: "end", behavior });
+    }
     if (element) {
       const target = scrollToTrueBottom(element, behavior);
       previousScrollTop = element.scrollTop;
-      debug("pin", { behavior, reason, target });
+      debug("pin", { alignLastItem, behavior, reason, target });
     } else {
-      debug("pin", { behavior, reason, target: null });
+      debug("pin", { alignLastItem, behavior, reason, target: null });
     }
     updateVisualBottom();
     scheduleReturningSettle();
   };
 
-  const schedulePin = (reason: string, behavior: "auto" | "smooth"): void => {
+  const schedulePin = (
+    reason: string,
+    behavior: "auto" | "smooth",
+    alignLastItem = true,
+  ): void => {
     if (detached || state === "free" || prependEpoch || zeroSizeEpoch) return;
     pinBehavior = behavior;
     pinReasons.push(reason);
+    pinNeedsIndexAlignment ||= alignLastItem;
     if (pinFrame !== null) return;
     pinFrame = deps.requestFrame(() => {
       pinFrame = null;
       const reasons = pinReasons;
+      const shouldAlignLastItem = pinNeedsIndexAlignment;
       pinReasons = [];
-      performPin(reasons.join(","), pinBehavior);
+      pinNeedsIndexAlignment = false;
+      performPin(reasons.join(","), pinBehavior, shouldAlignLastItem);
     });
   };
 
@@ -399,7 +414,7 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
         return;
       }
       if (hasActiveBottomIntent() && !isWithinActiveIntent(element)) {
-        schedulePin("scroll-intent-correction", "auto");
+        schedulePin("scroll-intent-correction", "auto", false);
       }
       scheduleReturningSettle();
     },
@@ -411,7 +426,7 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
         return;
       }
       updateVisualBottom();
-      if (state !== "free") schedulePin("content-growth", "auto");
+      if (state !== "free") startReturningBottomIntent("content-growth", "auto");
     },
 
     notifyContainerResize() {
@@ -431,7 +446,7 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
       updateVisualBottom();
       if (state !== "free" && !prependEpoch) {
         cancelPendingPin();
-        performPin("container-resize", "auto");
+        performPin("container-resize", "auto", false);
       }
     },
 

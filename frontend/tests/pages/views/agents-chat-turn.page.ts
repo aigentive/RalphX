@@ -13,7 +13,16 @@ export class AgentsChatTurnPage {
   ) {}
 
   async expectAtTrueBottom(): Promise<void> {
-    await expect.poll(() => this.bottomError()).toBeLessThanOrEqual(2);
+    await expect.poll(
+      async () => (await this.bottomMetrics()).scrollError,
+      { message: "scroll offset should reach the true scrollHeight bottom" },
+    )
+      .toBeLessThanOrEqual(2);
+    await expect.poll(
+      async () => (await this.bottomMetrics()).composerInsetError,
+      { message: "bottom spacer should align with the pinned composer" },
+    )
+      .toBeLessThanOrEqual(2);
   }
 
   async send(content: string): Promise<void> {
@@ -21,14 +30,6 @@ export class AgentsChatTurnPage {
     await this.chat.composerInput.press("Enter");
     await expect(this.chat.composerInput).toHaveValue("");
     await expect(this.page.getByText(content, { exact: true })).toBeVisible();
-  }
-
-  async returnToBottom(): Promise<void> {
-    if (await this.bottomError() <= 2) return;
-    await expect(this.chat.scrollToBottomButton).toBeVisible();
-    await expect(this.chat.scrollToBottomButton).toBeEnabled();
-    await this.chat.scrollToBottomButton.evaluate((button: HTMLButtonElement) => button.click());
-    await this.expectAtTrueBottom();
   }
 
   async start(): Promise<void> {
@@ -119,29 +120,31 @@ export class AgentsChatTurnPage {
     }, { eventName: event, eventPayload: payload });
   }
 
-  private async bottomError(): Promise<number> {
-    const [{ clientHeight, scrollHeight, scrollTop }, lastRow, typing, chrome] = await Promise.all([
+  private async bottomMetrics(): Promise<{
+    scrollError: number;
+    composerInsetError: number;
+  }> {
+    const [{ clientHeight, scrollHeight, scrollTop }, spacer, chrome] = await Promise.all([
       this.chat.geometry(),
-      this.chat.lastRenderedRow.evaluateAll(([element]) => {
+      this.chat.bottomSpacer.evaluateAll(([element]) => {
         if (!element) return null;
-        const { bottom } = element.getBoundingClientRect();
-        return { bottom };
-      }),
-      this.chat.messages.getByTestId("chat-typing-indicator").evaluateAll(([element]) => {
-        if (!element) return null;
-        const { bottom } = element.getBoundingClientRect();
-        return { bottom };
+        const { top } = element.getBoundingClientRect();
+        return { top };
       }),
       this.chat.chrome.evaluate((element) => {
         const { top } = element.getBoundingClientRect();
         return { top };
       }),
     ]);
-    const tail = typing ?? lastRow;
-    if (!tail || !chrome) return Number.POSITIVE_INFINITY;
-    return Math.max(
-      Math.abs(scrollHeight - clientHeight - scrollTop),
-      Math.max(0, tail.bottom - chrome.top),
-    );
+    if (!spacer || !chrome) {
+      return {
+        scrollError: Number.POSITIVE_INFINITY,
+        composerInsetError: Number.POSITIVE_INFINITY,
+      };
+    }
+    return {
+      scrollError: Math.abs(scrollHeight - clientHeight - scrollTop),
+      composerInsetError: Math.abs(spacer.top - chrome.top),
+    };
   }
 }

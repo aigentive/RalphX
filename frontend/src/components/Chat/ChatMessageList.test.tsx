@@ -606,6 +606,65 @@ describe("ChatMessageList controller integration", () => {
     expect(screen.getByTestId("chat-scroll-to-bottom-control")).toHaveAttribute("aria-hidden", "false");
   });
 
+  it("pins when a newly mounted streaming tail reports its first measured height", () => {
+    const resizeObservers: Array<{
+      callback: ResizeObserverCallback;
+      targets: Set<Element>;
+    }> = [];
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        private readonly record: (typeof resizeObservers)[number];
+
+        constructor(callback: ResizeObserverCallback) {
+          this.record = { callback, targets: new Set() };
+          resizeObservers.push(this.record);
+        }
+
+        disconnect(): void {
+          this.record.targets.clear();
+        }
+
+        observe(target: Element): void {
+          this.record.targets.add(target);
+        }
+
+        unobserve(target: Element): void {
+          this.record.targets.delete(target);
+        }
+      },
+    );
+    renderList({
+      isAgentRunning: true,
+      streamingContentBlocks: [{ type: "text", text: "new streaming tail" }],
+    });
+    const scroller = primeAtBottom();
+    const lastRow = screen.getByTestId("integrated-chat-messages").querySelector(
+      '[data-chat-last-rendered-row="true"]',
+    );
+    expect(lastRow).toBeInstanceOf(HTMLElement);
+
+    const lastRowObserver = resizeObservers.find(({ targets }) =>
+      lastRow ? targets.has(lastRow) : false,
+    );
+    expect(lastRowObserver).toBeDefined();
+    setScrollerGeometry(scroller, {
+      clientHeight: 500,
+      scrollHeight: 1_100,
+      scrollTop: 500,
+    });
+    act(() => {
+      lastRowObserver?.callback(
+        [{ contentRect: { height: 160 }, target: lastRow } as ResizeObserverEntry],
+        {} as ResizeObserver,
+      );
+    });
+    flushAnimationFrames();
+
+    expect(scrollWrites).toHaveBeenCalledWith(expect.objectContaining({ top: 600 }));
+    expect(scroller.scrollTop).toBe(600);
+  });
+
   it("re-pins for composer spacer resizes only while the reader is following", () => {
     const resizeObservers: Array<{
       callback: ResizeObserverCallback;

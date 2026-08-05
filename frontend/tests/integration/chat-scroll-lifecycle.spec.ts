@@ -15,16 +15,17 @@ test.describe("existing conversation bottom follow", () => {
     await setupApp(page);
   });
 
-  test("stays at the true bottom through an optimistic send and complete agent turn", async ({ page }) => {
-    const conversationId = "existing-conversation-turn";
+  test("stays at the true bottom through an optimistic send and complete agent turn", async ({ page }, testInfo) => {
+    const executionId = `${testInfo.workerIndex}-${testInfo.repeatEachIndex}`;
+    const conversationId = `existing-conversation-turn-${executionId}`;
     const chat = new AgentsChatPage(page);
-    const turn = new AgentsChatTurnPage(page, chat, conversationId, "run-bottom-follow");
+    const turn = new AgentsChatTurnPage(page, chat, conversationId, `run-bottom-follow-${executionId}`);
     await chat.open();
     await chat.seedConversation(conversationId, false, 12);
 
     const initial = await chat.geometry();
     expect(initial.scrollHeight).toBeGreaterThan(initial.clientHeight);
-    await turn.returnToBottom();
+    await turn.expectAtTrueBottom();
 
     await turn.send("Follow this new turn all the way to the real bottom.");
     await turn.expectAtTrueBottom();
