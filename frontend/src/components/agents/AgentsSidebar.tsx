@@ -14,11 +14,13 @@ import {
   BellOff,
   ArrowDownUp,
   Check,
+  CheckCheck,
   CircleOff,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   Folder,
+  Clock,
   GitBranch,
   GitFork,
   GitPullRequest,
@@ -30,6 +32,7 @@ import {
   Plus,
   RotateCcw,
   Search,
+  SearchX,
   SlidersHorizontal,
   Sparkles,
   WandSparkles,
@@ -121,6 +124,11 @@ import {
   PUBLICATION_STATE_OPTIONS,
 } from "./agentSidebarMetadata";
 import {
+  AgentsInboxGroupEmptyStrip,
+  AgentsInboxZeroCard,
+} from "./AgentsInboxEmptyState";
+import {
+  AGENT_SIDEBAR_INBOX_FILTERED_EMPTY,
   AGENT_SIDEBAR_INBOX_FILTERS,
   AGENT_SIDEBAR_RECENT_GROUPS,
   describeInboxLaneCount,
@@ -130,6 +138,7 @@ import {
   laneForInboxFilter,
   shouldEscalateAge,
   summarizeInboxLaneCounts,
+  type AgentSidebarInboxEmptyState,
   type AgentSidebarInboxFilter,
   type AgeEscalation,
 } from "./agentSidebarInboxLanes";
@@ -909,6 +918,7 @@ export function AgentsSidebar({
 }: AgentsSidebarProps) {
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const handleClearSearch = useCallback(() => setSearchQuery(""), []);
   const [isSearchFocused, setIsSearchFocused] = useState(false);
   const [inboxLaneCounts, setInboxLaneCounts] = useState<
     Record<AgentSidebarAttentionLane, number>
@@ -1366,6 +1376,8 @@ export function AgentsSidebar({
             searchQuery={normalizedSearch}
             selectedPublicationStates={selectedPublicationStates}
             laneCounts={inboxLaneCounts}
+            onCreateAgent={onCreateAgent}
+            onClearSearch={handleClearSearch}
             onLaneCountChange={handleInboxLaneCountChange}
             onArchiveConversation={onArchiveConversation}
             onAutoRenameConversation={onAutoRenameConversation}
@@ -2547,13 +2559,27 @@ function PublicationStateGroup({
   );
 }
 
+function hasActiveInboxFilters(
+  searchQuery: string,
+  selectedPublicationStates: AgentSidebarPublicationState[]
+): boolean {
+  return (
+    searchQuery.length > 0 ||
+    selectedPublicationStates.length !== PUBLICATION_STATE_OPTIONS.length
+  );
+}
+
 interface InboxLaneGroupsProps extends PublicationStateGroupsProps {
   laneCounts: Record<AgentSidebarAttentionLane, number>;
+  onCreateAgent: () => void;
+  onClearSearch: () => void;
   onLaneCountChange: (lane: AgentSidebarAttentionLane, total: number) => void;
 }
 
 function InboxLaneGroups({
   laneCounts,
+  onCreateAgent,
+  onClearSearch,
   onLaneCountChange,
   ...props
 }: InboxLaneGroupsProps) {
@@ -2675,18 +2701,24 @@ function InboxLaneGroups({
       >
         <RecentInboxLane
           isActive={resolvedActiveLane === "recent"}
+          doneCount={laneCounts.done}
+          onClearSearch={onClearSearch}
+          onCreateAgent={onCreateAgent}
           onLaneCountChange={onLaneCountChange}
+          onSelectLane={selectLane}
           {...props}
         />
-        {AGENT_SIDEBAR_INBOX_FILTERS.map(({ filter, emptyLabel }) => {
+        {AGENT_SIDEBAR_INBOX_FILTERS.map(({ filter, emptyState }) => {
           const lane = laneForInboxFilter(filter);
           return lane ? (
             <InboxLane
               key={lane}
               lane={lane}
-              emptyLabel={emptyLabel}
+              emptyState={emptyState}
               isActive={filter === resolvedActiveLane}
+              onClearSearch={onClearSearch}
               onLaneCountChange={onLaneCountChange}
+              onSelectLane={selectLane}
               {...props}
             />
           ) : null;
@@ -2697,8 +2729,12 @@ function InboxLaneGroups({
 }
 
 interface RecentInboxLaneProps extends PublicationStateGroupsProps {
+  doneCount: number;
   isActive: boolean;
+  onClearSearch: () => void;
+  onCreateAgent: () => void;
   onLaneCountChange: (lane: AgentSidebarAttentionLane, total: number) => void;
+  onSelectLane: (lane: AgentSidebarInboxFilter) => void;
 }
 
 // Recent is a frontend grouping over the existing `needs` and `working` lane
@@ -2706,8 +2742,12 @@ interface RecentInboxLaneProps extends PublicationStateGroupsProps {
 // The scroller moves up here, out of the row panels: two `fillAvailableHeight`
 // panels stacked would be two nested scrollers.
 function RecentInboxLane({
+  doneCount,
   isActive,
+  onClearSearch,
+  onCreateAgent,
   onLaneCountChange,
+  onSelectLane,
   projects,
   isSidebarVisible,
   pinnedConversationIdList,
@@ -2798,6 +2838,7 @@ function RecentInboxLane({
   const isWorkingSettled = !workingQuery.isPending && !workingQuery.isLoading;
   const needsRowCount = needsQuery.group.rows.length;
   const workingRowCount = workingQuery.group.rows.length;
+  const isFiltered = hasActiveInboxFilters(searchQuery, selectedPublicationStates);
 
   // A lane that has not settled reports no count: a transient 0 would blink the
   // Recent chip, which sums both lanes.
@@ -2856,14 +2897,30 @@ function RecentInboxLane({
     isNeedsSettled &&
     isWorkingSettled
   ) {
+    const emptyState = isFiltered
+      ? AGENT_SIDEBAR_INBOX_FILTERED_EMPTY
+      : AGENT_SIDEBAR_INBOX_FILTERS[0].emptyState;
     return (
-      <div
-        className="px-2 py-1 text-xs"
-        style={{ color: "var(--text-muted)" }}
-        data-testid="agents-inbox-lane-empty-recent"
-      >
-        Nothing waiting on you
-      </div>
+      <AgentsInboxZeroCard
+        testId="agents-inbox-lane-empty-recent"
+        tone={emptyState.tone}
+        icon={isFiltered ? SearchX : CheckCheck}
+        headline={emptyState.headline}
+        subline={emptyState.subline}
+        {...(!isFiltered && {
+          primaryAction: { label: "New agent", onClick: onCreateAgent },
+        })}
+        {...(isFiltered && searchQuery.length > 0
+          ? { secondaryAction: { label: "Clear search", onClick: onClearSearch } }
+          : !isFiltered && doneCount > 0
+            ? {
+                secondaryAction: {
+                  label: `Review ${doneCount} done`,
+                  onClick: () => onSelectLane("done"),
+                },
+              }
+            : {})}
+      />
     );
   }
 
@@ -2901,13 +2958,10 @@ function RecentInboxLane({
               </span>
             </div>
             {query.group.total === 0 && isSettled ? (
-              <div
-                className="px-2 py-1 text-xs"
-                style={{ color: "var(--text-muted)" }}
-                data-testid={`agents-inbox-lane-empty-${descriptor.lane}`}
-              >
-                {descriptor.emptyLabel}
-              </div>
+              <AgentsInboxGroupEmptyStrip
+                testId={`agents-inbox-lane-empty-${descriptor.lane}`}
+                label={descriptor.emptyLabel}
+              />
             ) : (
               <AgentSidebarConversationRowsPanel
                 rows={query.group.rows}
@@ -2987,6 +3041,10 @@ function RecentInboxPager({
   isFetchingNextPage: boolean;
   onFetchNextPage: () => Promise<unknown>;
 }) {
+  if (total === 0) {
+    return null;
+  }
+
   // Exhausted keeps the line rather than removing it, so the group's height
   // does not change under the cursor on the last page.
   if (!hasNextPage || remaining <= 0) {
@@ -3017,9 +3075,11 @@ function RecentInboxPager({
 
 interface InboxLaneProps extends PublicationStateGroupsProps {
   lane: AgentSidebarAttentionLane;
-  emptyLabel: string;
+  emptyState: AgentSidebarInboxEmptyState;
   isActive: boolean;
+  onClearSearch: () => void;
   onLaneCountChange: (lane: AgentSidebarAttentionLane, total: number) => void;
+  onSelectLane: (lane: AgentSidebarInboxFilter) => void;
 }
 
 // Single-lane filters — Stale and Done. Every lane keeps its own query so the
@@ -3028,9 +3088,11 @@ interface InboxLaneProps extends PublicationStateGroupsProps {
 // grouped path in RecentInboxLane instead.
 function InboxLane({
   lane,
-  emptyLabel,
+  emptyState,
   isActive,
+  onClearSearch,
   onLaneCountChange,
+  onSelectLane,
   projects,
   isSidebarVisible,
   pinnedConversationIdList,
@@ -3094,6 +3156,7 @@ function InboxLane({
   });
   const totalConversationCount = groupQuery.group.total;
   const isGroupQuerySettled = !groupQuery.isPending && !groupQuery.isLoading;
+  const isFiltered = hasActiveInboxFilters(searchQuery, selectedPublicationStates);
 
   const handleViewportRowCapacityChange = useCallback((rowCapacity: number) => {
     const nextPageSize = Math.min(
@@ -3120,14 +3183,23 @@ function InboxLane({
   }
 
   if (totalConversationCount === 0 && isGroupQuerySettled) {
+    const resolvedEmptyState = isFiltered
+      ? AGENT_SIDEBAR_INBOX_FILTERED_EMPTY
+      : emptyState;
+    const secondaryAction = isFiltered
+      ? searchQuery.length > 0
+        ? { label: "Clear search", onClick: onClearSearch }
+        : undefined
+      : { label: "Back to Recent", onClick: () => onSelectLane("recent") };
     return (
-      <div
-        className="px-2 py-1 text-xs"
-        style={{ color: "var(--text-muted)" }}
-        data-testid={`agents-inbox-lane-empty-${lane}`}
-      >
-        {emptyLabel}
-      </div>
+      <AgentsInboxZeroCard
+        testId={`agents-inbox-lane-empty-${lane}`}
+        tone={resolvedEmptyState.tone}
+        icon={isFiltered ? SearchX : lane === "stale" ? Clock : Archive}
+        headline={resolvedEmptyState.headline}
+        subline={resolvedEmptyState.subline}
+        {...(secondaryAction ? { secondaryAction } : {})}
+      />
     );
   }
 

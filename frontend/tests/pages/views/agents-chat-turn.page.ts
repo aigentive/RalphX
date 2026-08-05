@@ -29,7 +29,7 @@ export class AgentsChatTurnPage {
     await this.chat.composerInput.fill(content);
     await this.chat.composerInput.press("Enter");
     await expect(this.chat.composerInput).toHaveValue("");
-    await expect(this.page.getByText(content, { exact: true })).toBeVisible();
+    await this.expectLastRenderedContent(content);
   }
 
   async start(): Promise<void> {
@@ -110,7 +110,11 @@ export class AgentsChatTurnPage {
         }],
       },
     });
-    await expect(this.page.getByText(content, { exact: true })).toBeVisible();
+    await this.expectLastRenderedContent(content);
+  }
+
+  private async expectLastRenderedContent(content: string): Promise<void> {
+    await expect(this.chat.lastRenderedRow.filter({ hasText: content })).toBeVisible();
   }
 
   private async emit(event: string, payload: unknown): Promise<void> {

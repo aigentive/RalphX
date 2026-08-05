@@ -15,12 +15,16 @@ export class AgentsChatPage extends BasePage {
 
   constructor(page: Page) {
     super(page);
-    this.bottomSpacer = page.getByTestId("chat-transcript-bottom-spacer");
     this.chrome = page.getByTestId("chat-below-transcript-chrome");
     this.composer = page.getByTestId("agents-conversation-composer");
     this.composerInput = this.composer.locator("textarea");
     this.messages = page.getByTestId("integrated-chat-messages");
-    this.lastRenderedRow = this.messages.locator('[data-chat-last-rendered-row="true"]');
+    this.bottomSpacer = this.messages
+      .getByTestId("chat-transcript-bottom-spacer")
+      .filter({ visible: true });
+    this.lastRenderedRow = this.messages
+      .locator('[data-chat-last-rendered-row="true"]')
+      .filter({ visible: true });
     this.panel = page.getByTestId("integrated-chat-panel");
     this.scroller = this.messages.locator('[data-chat-virtuoso-scroller="true"]');
     this.scrollToBottomButton = page.getByTestId("chat-scroll-to-bottom-button");

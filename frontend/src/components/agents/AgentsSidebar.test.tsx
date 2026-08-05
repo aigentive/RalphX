@@ -5162,7 +5162,7 @@ describe("AgentsSidebar", () => {
 
     expect(screen.getByTestId("agents-inbox-recent-group-needs")).toHaveTextContent("Needs you");
     expect(screen.getByTestId("agents-inbox-recent-group-working")).toHaveTextContent("Working");
-    expect(screen.getByTestId("agents-inbox-lane-empty-working")).toHaveTextContent("Nothing working");
+    expect(screen.getByTestId("agents-inbox-lane-empty-working")).toHaveTextContent("Nothing running");
     expect(screen.getByTestId("agents-inbox-recent-pager-needs")).toHaveTextContent("All 1 shown");
   });
 
@@ -5277,6 +5277,8 @@ describe("AgentsSidebar", () => {
     const view = renderSidebar();
 
     expect(screen.queryByTestId("agents-inbox-lane-empty-recent")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agents-inbox-recent-pager-needs")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agents-inbox-recent-pager-working")).not.toBeInTheDocument();
 
     conversationsByProject.set("project-1", { data: [], isLoading: false });
     view.rerender(
@@ -5288,30 +5290,116 @@ describe("AgentsSidebar", () => {
     expect(screen.getByTestId("agents-inbox-lane-empty-recent")).toBeInTheDocument();
   });
 
-  it("keeps zero-count inbox chips selectable and shows Recent's empty copy", async () => {
+  it("keeps zero-count inbox chips selectable and shows tier-specific empty copy", async () => {
     const user = userEvent.setup();
+    const onCreateAgent = vi.fn();
     useAgentSessionStore.setState({ sidebarGroupBy: "inbox" });
 
-    renderSidebar();
+    renderSidebar([project()], { onCreateAgent });
 
     expect(screen.getByTestId("agents-inbox-lane-chip-recent")).toHaveAttribute(
       "aria-selected",
       "true"
     );
     expect(screen.getByTestId("agents-inbox-lane-empty-recent")).toHaveTextContent(
-      "Nothing waiting on you"
+      "Inbox zero"
     );
+    expect(
+      within(screen.getByTestId("agents-inbox-lane-empty-recent")).getByRole(
+        "button",
+        { name: "New agent" }
+      )
+    ).toBeInTheDocument();
+    await user.click(
+      within(screen.getByTestId("agents-inbox-lane-empty-recent")).getByRole(
+        "button",
+        { name: "New agent" }
+      )
+    );
+    expect(onCreateAgent).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("button", { name: /Review \d+ done/ })).not.toBeInTheDocument();
 
     await user.click(screen.getByTestId("agents-inbox-lane-chip-stale"));
 
     await waitFor(() => {
       expect(screen.getByTestId("agents-inbox-lane-empty-stale")).toHaveTextContent(
-        "Nothing stale"
+        "Nothing has gone stale"
       );
     });
     expect(
+      within(screen.getByTestId("agents-inbox-lane-empty-stale")).queryByRole(
+        "button",
+        { name: "New agent" }
+      )
+    ).not.toBeInTheDocument();
+    expect(
       screen.queryByTestId("agents-inbox-lane-empty-recent")
     ).not.toBeInTheDocument();
+  });
+
+  it("wires the Recent zero secondary action to the live Done count", async () => {
+    const doneConversations = [
+      conversation({ id: "conversation-done-1", title: "Done one" }),
+      conversation({ id: "conversation-done-2", title: "Done two" }),
+    ];
+    for (const value of doneConversations) {
+      inboxLaneByConversationId.set(value.id, { lane: "done", actionVerb: "Merged" });
+    }
+    conversationsByProject.set("project-1", { data: doneConversations, isLoading: false });
+    useAgentSessionStore.setState({ sidebarGroupBy: "inbox" });
+
+    renderSidebar();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("agents-inbox-lane-chip-done")).toHaveTextContent("2");
+    });
+
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "Review 2 done" }));
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("agents-inbox-lane-chip-done")).toHaveAttribute(
+        "aria-selected",
+        "true"
+      );
+    });
+  });
+
+  it("returns from a calm tier empty state through the existing lane selector", async () => {
+    const user = userEvent.setup();
+    useAgentSessionStore.setState({ sidebarGroupBy: "inbox" });
+    renderSidebar();
+
+    await user.click(screen.getByTestId("agents-inbox-lane-chip-stale"));
+    await waitFor(() => {
+      expect(useAgentSessionStore.getState().sidebarInboxActiveLane).toBe("stale");
+    });
+    await user.click(await screen.findByRole("button", { name: "Back to Recent" }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("agents-inbox-lane-chip-recent")).toHaveAttribute(
+        "aria-selected",
+        "true"
+      );
+    });
+  });
+
+  it("shows a quiet filtered zero state and clears text search from its action", async () => {
+    const user = userEvent.setup();
+    useAgentSessionStore.setState({ sidebarGroupBy: "inbox" });
+    renderSidebar();
+
+    await user.click(screen.getByTestId("agents-search-toggle"));
+    fireEvent.change(screen.getByTestId("agents-search-input"), {
+      target: { value: "no inbox result" },
+    });
+
+    const emptyState = await screen.findByTestId("agents-inbox-lane-empty-recent");
+    await waitFor(() => expect(emptyState).toHaveTextContent("No matches"));
+    expect(emptyState).not.toHaveTextContent("Inbox zero");
+
+    await user.click(within(emptyState).getByRole("button", { name: "Clear search" }));
+    await waitFor(() => expect(emptyState).toHaveTextContent("Inbox zero"));
   });
 
   it("repaints the selected lane chip before persisting the selection", async () => {
