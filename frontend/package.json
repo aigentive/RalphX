@@ -14,6 +14,7 @@
     "test": "vitest",
     "test:run": "vitest run",
     "test:check-warnings": "./scripts/check-vitest-warnings.sh",
+    "test:integration:chat-scroll": "playwright test tests/integration/chat-scroll-lifecycle.spec.ts --workers=1",
     "test:visual": "playwright test tests/visual --workers=1",
     "test:docs-capture": "playwright test --project=docs-capture --workers=1",
     "test:docs-capture:update": "playwright test --project=docs-capture --workers=1 --update-snapshots=all",

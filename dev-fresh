@@ -28,7 +28,7 @@ Usage: ./dev-fresh [--from-prod-db]
 
 From repo root:
 1. verifies Tauri JS/Rust packages are on the same major/minor release
-2. repairs missing or invalid frontend/MCP runtime installs with `npm ci` when safe
+2. repairs missing or invalid installs and materializes symlinked MCP dependencies with `npm ci`
 3. when run from a linked git worktree, refreshes src-tauri/ralphx.db from the primary checkout
 4. sanitizes copied runtime process ownership and disables startup recovery for the seeded snapshot
 5. rebuilds MCP runtime TypeScript outputs
@@ -50,8 +50,8 @@ Options:
 Equivalent to:
   verify frontend/package-lock.json vs src-tauri/Cargo.lock Tauri major/minor versions
   cd frontend && npm ci   # only when node_modules is missing or invalid
-  cd plugins/app/ralphx-mcp-server && npm ci   # only when node_modules is missing or invalid
-  cd plugins/app/ralphx-external-mcp && npm ci # only when node_modules is missing or invalid
+  cd plugins/app/ralphx-mcp-server && npm ci   # when node_modules is missing, invalid, or symlinked
+  cd plugins/app/ralphx-external-mcp && npm ci # when node_modules is missing, invalid, or symlinked
   copy the primary checkout's src-tauri/ralphx.db into this worktree when applicable
   clear copied running-agent/process ownership from the worktree snapshot
   rebuild both MCP runtime packages
@@ -139,6 +139,13 @@ EOF
 ensure_package_install() {
   local package_dir="$1"
   local label="$2"
+
+  if [[ -L "$package_dir/node_modules" ]]; then
+    echo "dev-fresh: $label/node_modules is a symlink and cannot be packaged as a Tauri resource."
+    rm "$package_dir/node_modules"
+    repair_package_install "$package_dir" "$label" "$label/node_modules must be materialized in this checkout."
+    return
+  fi
 
   if [[ ! -d "$package_dir" ]]; then
     echo "dev-fresh: $label runtime dir not found: $package_dir" >&2
@@ -734,6 +741,10 @@ start_tauri_dev() {
   rm -f "$launch_log"
   return "$dev_status"
 }
+
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+  return 0
+fi
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
