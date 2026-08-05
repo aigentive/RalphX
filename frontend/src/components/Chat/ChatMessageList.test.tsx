@@ -9,6 +9,7 @@
 
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { logger } from "@/lib/logger";
 import {
   ChatMessageList,
   type ChatMessageData,
@@ -985,6 +986,27 @@ describe("ChatMessageList controller integration", () => {
 
     expect(screen.getByTestId("chat-scroll-to-bottom-control")).toHaveAttribute("aria-hidden", "false");
     expect(scrollWrites).not.toHaveBeenCalled();
+  });
+
+  it("ends a pointer session released outside the scroller and removes the window listener", () => {
+    const debugSpy = vi.spyOn(logger, "debug");
+    const { unmount } = renderList();
+    const scroller = primeAtBottom();
+
+    fireEvent.pointerDown(scroller);
+    fireEvent.pointerUp(window);
+    setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_000, scrollTop: 220 });
+    fireEvent.scroll(scroller);
+    flushAnimationFrames();
+
+    expect(screen.getByTestId("chat-scroll-to-bottom-control")).toHaveAttribute("aria-hidden", "true");
+    expect(scrollWrites).toHaveBeenCalledWith(expect.objectContaining({ top: 500 }));
+
+    unmount();
+    debugSpy.mockClear();
+    fireEvent.pointerUp(window);
+
+    expect(debugSpy).not.toHaveBeenCalled();
   });
 
   it("re-pins a following transcript after its scroller resize observer reports growth", () => {

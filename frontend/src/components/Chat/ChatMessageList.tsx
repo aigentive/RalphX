@@ -1732,6 +1732,8 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         previous.removeEventListener("pointerdown", handleScrollerPointerDown);
         previous.removeEventListener("pointerup", handleScrollerPointerUp);
         previous.removeEventListener("pointercancel", handleScrollerPointerUp);
+        window.removeEventListener("pointerup", handleScrollerPointerUp);
+        window.removeEventListener("pointercancel", handleScrollerPointerUp);
         previous.removeEventListener("keydown", handleScrollerKeyDown);
         disconnectScrollerResizeObserver();
         scrollController?.detach();
@@ -1755,6 +1757,8 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       el.addEventListener("pointerdown", handleScrollerPointerDown, { passive: true });
       el.addEventListener("pointerup", handleScrollerPointerUp, { passive: true });
       el.addEventListener("pointercancel", handleScrollerPointerUp, { passive: true });
+      window.addEventListener("pointerup", handleScrollerPointerUp, { passive: true });
+      window.addEventListener("pointercancel", handleScrollerPointerUp, { passive: true });
       el.addEventListener("keydown", handleScrollerKeyDown);
       scrollController?.attach(el);
       if (typeof ResizeObserver !== "undefined") {
