@@ -233,6 +233,17 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
     });
   };
 
+  const startReturningBottomIntent = (
+    reason: string,
+    behavior: "auto" | "smooth",
+  ): void => {
+    cancelJumpSettle();
+    cancelSettle();
+    setState("returning");
+    beginBottomIntent();
+    schedulePin(reason, behavior);
+  };
+
   const schedulePrependSettle = (): void => {
     cancelFrame(prependFrame);
     prependFrame = deps.requestFrame(() => {
@@ -378,10 +389,6 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
         cancelIntentAndFree("pointer-scroll");
         return;
       }
-      if (movedUp && state === "pinned" && !isWithinActiveIntent(element)) {
-        cancelIntentAndFree("scroll-away");
-        return;
-      }
       const atBottom = updateVisualBottom();
       if (state === "free") {
         if (atBottom && !suppressFreeBottomReentry) {
@@ -445,27 +452,15 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
         debug("pin-ignored-free", { reason });
         return;
       }
-      schedulePin(reason, behavior);
+      startReturningBottomIntent(reason, behavior);
     },
 
     pinForUserIntent(reason, behavior) {
-      if (state === "pinned") {
-        schedulePin(reason, behavior);
-        return;
-      }
-      cancelJumpSettle();
-      cancelSettle();
-      setState("returning");
-      beginBottomIntent();
-      schedulePin(reason, behavior);
+      startReturningBottomIntent(reason, behavior);
     },
 
     scrollToBottomClicked() {
-      cancelJumpSettle();
-      cancelSettle();
-      setState("returning");
-      beginBottomIntent();
-      schedulePin("scroll-to-bottom-click", "auto");
+      startReturningBottomIntent("scroll-to-bottom-click", "auto");
     },
 
     forwardWheel(deltaX, deltaY) {

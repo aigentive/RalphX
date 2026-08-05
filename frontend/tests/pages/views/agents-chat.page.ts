@@ -31,8 +31,8 @@ export class AgentsChatPage extends BasePage {
     await expect(this.page.getByTestId("agents-view")).toBeVisible();
   }
 
-  async seedConversation(conversationId: string, empty = false): Promise<void> {
-    await this.page.evaluate(async ({ id, isEmpty }) => {
+  async seedConversation(conversationId: string, empty = false, messagePairs = 1): Promise<void> {
+    await this.page.evaluate(async ({ id, isEmpty, pairCount }) => {
       const projectId = "project-mock-1";
       const createdAt = "2026-08-04T12:00:00.000Z";
       const conversation = {
@@ -41,7 +41,8 @@ export class AgentsChatPage extends BasePage {
         upstreamProvider: "openai", providerProfile: null, agentMode: "edit",
         automationId: null, automationRunId: null, coordinationMode: "solo",
         title: isEmpty ? "Empty composer inset" : "Composer inset behavior",
-        messageCount: 0, lastMessageAt: null, createdAt, updatedAt: createdAt,
+        messageCount: isEmpty ? 0 : pairCount * 2,
+        lastMessageAt: isEmpty ? null : createdAt, createdAt, updatedAt: createdAt,
         archivedAt: null,
       };
       const message = (suffix: string, role: "user" | "assistant", content: string) => ({
@@ -57,10 +58,10 @@ export class AgentsChatPage extends BasePage {
         outputTokens: null, cacheCreationTokens: null, cacheReadTokens: null,
         estimatedUsd: null, createdAt,
       });
-      const messages = isEmpty ? [] : [
-        message("user", "user", "Please verify the composer stays stable while it grows."),
-        message("assistant", "assistant", "The transcript is ready for inset verification."),
-      ];
+      const messages = isEmpty ? [] : Array.from({ length: pairCount }, (_, index) => [
+        message(`user-${index}`, "user", `Existing request ${index + 1}: verify the transcript remains stable while new content arrives.`),
+        message(`assistant-${index}`, "assistant", `Existing response ${index + 1}: the virtualized history is ready for bottom-follow verification.`),
+      ]).flat();
       const chat = await import("/src/api-mock/chat");
       chat.seedMockConversation(conversation, messages);
       await chat.mockStartAgentConversation({
@@ -104,7 +105,7 @@ export class AgentsChatPage extends BasePage {
       await queryClient.refetchQueries({
         queryKey: ["agents", "sidebar-conversations", "inbox"], type: "active",
       });
-    }, { id: conversationId, isEmpty: empty });
+    }, { id: conversationId, isEmpty: empty, pairCount: messagePairs });
 
     const row = this.page.getByTestId(`agents-session-${conversationId}`);
     await expect(row).toBeVisible();

@@ -45,7 +45,10 @@ test.describe("pinned chat composer inset", () => {
       return geometry.scrollHeight - geometry.clientHeight - geometry.scrollTop;
     }).toBeLessThanOrEqual(1);
 
-    await chat.scroller.evaluate((element) => element.scrollTo({ top: 0 }));
+    await chat.scroller.hover();
+    await page.mouse.wheel(0, -1000);
+    await expect.poll(async () => (await chat.geometry()).scrollTop)
+      .toBeLessThan(10);
     const freeBefore = await chat.geometry();
     await chat.growComposer();
     await expect.poll(async () => (await chat.geometry()).scrollTop)

@@ -153,17 +153,33 @@ describe("ChatScrollController", () => {
     expect(harness.element.scrollTop).toBe(800);
   });
 
-  it("unfollows an unattributed upward scrollbar drag without scheduling a correction", () => {
+  it("keeps following an unattributed upward virtualizer correction while pinned", () => {
     const harness = createHarness();
     attach(harness);
     harness.scrollCalls.length = 0;
-    harness.element.setGeometry({ scrollTop: 300 });
+    harness.element.setGeometry({ scrollHeight: 1200, scrollTop: 450 });
 
     harness.controller.notifyScroll();
     harness.flushFrames();
 
-    expect(harness.controller.getState()).toBe("free");
-    expect(harness.scrollCalls).toHaveLength(0);
+    expect(harness.controller.getState()).toBe("pinned");
+    expect(harness.scrollCalls).toEqual([{ index: 9, align: "end", behavior: "auto" }]);
+    expect(harness.element.scrollTop).toBe(700);
+  });
+
+  it("keeps a pinned request alive through delayed tail materialization", () => {
+    const harness = createHarness();
+    attach(harness);
+    harness.scrollCalls.length = 0;
+
+    harness.controller.requestPin("streaming-started", "auto");
+    harness.flushNextFrame();
+    harness.element.setGeometry({ scrollHeight: 1200 });
+    harness.flushFrames();
+
+    expect(harness.controller.getState()).toBe("pinned");
+    expect(harness.scrollCalls).toHaveLength(2);
+    expect(harness.element.scrollTop).toBe(700);
   });
 
   it("keeps following a re-measure correction that lands at the new true bottom", () => {
@@ -445,7 +461,9 @@ describe("ChatScrollController", () => {
   it("does not synchronously overwrite a smooth bottom pin", () => {
     const harness = createHarness();
     attach(harness);
-    const scrollTo = vi.fn();
+    const scrollTo = vi.fn(({ top }: ScrollToOptions) => {
+      if (typeof top === "number") harness.element.setGeometry({ scrollTop: top });
+    });
     harness.element.scrollTo = scrollTo;
     const directWritesBeforePin = harness.element.directWrites;
 
