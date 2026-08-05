@@ -7,8 +7,8 @@ use tauri::State;
 use crate::application::agent_workspace_publish_recovery::is_blocked_and_not_auto_retryable;
 use crate::application::AppState;
 use crate::commands::unified_chat_commands::{
-    agent_conversation_response_for_state, agent_workspace_response_for_state,
-    AgentConversationResponse, AgentConversationWorkspaceResponse,
+    agent_workspace_response_for_state, AgentConversationResponse,
+    AgentConversationWorkspaceResponse,
 };
 use crate::domain::entities::{
     AgentRunStatus, ChatContextType, ChatConversation, ChatConversationId, DelegationPark, Project,
@@ -319,7 +319,14 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
         let mut workspace_by_conversation_id = HashMap::new();
         for workspace in workspaces {
             let conversation_id = workspace.conversation_id;
-            let response = agent_workspace_response_for_state(state, workspace).await?;
+            // Sidebar rows need persisted publication metadata, not active-conversation
+            // recovery, repair-spend, or mode-lock hydration. Plan-linked workspaces keep
+            // the richer projection because their publication state is owned by PlanBranch.
+            let response = if workspace.linked_plan_branch_id.is_some() {
+                agent_workspace_response_for_state(state, workspace).await?
+            } else {
+                AgentConversationWorkspaceResponse::from(workspace)
+            };
             workspace_by_conversation_id.insert(conversation_id, response);
         }
 
@@ -420,7 +427,10 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
                 .automation_id
                 .as_ref()
                 .map(|automation_id| automation_id.as_str().to_string());
-            let conversation = agent_conversation_response_for_state(state, conversation).await?;
+            // Runtime/persona attribution is hydrated by the active conversation surface.
+            // Doing it for every sidebar candidate turns a small summary query into a full
+            // transcript scan and makes one old transcript read failure hide all rows.
+            let conversation = AgentConversationResponse::from(conversation);
             rows.push(SidebarConversationRow {
                 conversation_id,
                 project_id: project_id_string.clone(),
@@ -522,7 +532,7 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
         let is_pinned = pinned_conversation_ids.contains(&conversation.id.as_str());
         let is_priority = priority_conversation_ids.contains(&conversation.id.as_str());
         let conversation_id = conversation.id;
-        let conversation = agent_conversation_response_for_state(state, conversation).await?;
+        let conversation = AgentConversationResponse::from(conversation);
         has_no_project_rows = true;
         rows.push(SidebarConversationRow {
             conversation_id,
