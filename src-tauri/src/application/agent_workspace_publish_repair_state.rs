@@ -626,35 +626,40 @@ pub(crate) async fn block_agent_workspace_repair_needs_human(
 /// re-drive the existing publish continuation once when GitHub proves a validated local repair
 /// head is still unpublished; neither path may buy another fixer generation or settle on a timer.
 pub(crate) fn agent_workspace_repair_is_health_held(attempt: &AgentWorkspaceRepairAttempt) -> bool {
-    matches!(
-        agent_workspace_repair_hold_reason(attempt),
-        Some(
-            AgentWorkspaceRepairOperationHoldReason::PreExistingOnBase
-                | AgentWorkspaceRepairOperationHoldReason::UnchangedHealth
-        )
-    )
+    attempt.pending_reasons.iter().any(|reason| {
+        reason == PRE_EXISTING_ON_BASE_REPAIR_REASON || reason == UNCHANGED_HEALTH_REPAIR_REASON
+    })
 }
 
 pub(crate) fn agent_workspace_repair_is_ci_held(attempt: &AgentWorkspaceRepairAttempt) -> bool {
-    matches!(
-        agent_workspace_repair_hold_reason(attempt),
-        Some(AgentWorkspaceRepairOperationHoldReason::CiRerunPending)
-    )
+    (attempt.ci_rerun_count > 0 && attempt.ci_rerun_fingerprint.is_some())
+        || attempt
+            .pending_reasons
+            .iter()
+            .any(|reason| reason == AWAITING_CI_REPAIR_REASON)
 }
 
 pub(crate) fn agent_workspace_repair_is_base_stale_held(
     attempt: &AgentWorkspaceRepairAttempt,
 ) -> bool {
-    matches!(
-        agent_workspace_repair_hold_reason(attempt),
-        Some(AgentWorkspaceRepairOperationHoldReason::BaseStale)
-    )
+    attempt
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == BASE_STALE_AFTER_UPDATE_REPAIR_REASON)
 }
 
 pub(crate) fn agent_workspace_repair_hold_reason(
     attempt: &AgentWorkspaceRepairAttempt,
 ) -> Option<AgentWorkspaceRepairOperationHoldReason> {
-    attempt.operation_snapshot().hold_reason
+    if agent_workspace_repair_is_base_stale_held(attempt) {
+        return Some(AgentWorkspaceRepairOperationHoldReason::BaseStale);
+    }
+    attempt.operation_snapshot().hold_reason.or_else(|| {
+        attempt
+            .pending_reasons
+            .iter()
+            .find_map(|reason| reason.parse().ok())
+    })
 }
 
 /// True when a held repair has a concrete local head that GitHub has not observed yet.

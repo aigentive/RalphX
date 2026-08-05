@@ -93,7 +93,7 @@ test.describe("Agents terminal publish history", () => {
     const actionbar = page.getByTestId("agents-publish-actionbar");
     await expect(
       actionbar.getByRole("heading", {
-        name: "Holding — waiting for new CI evidence",
+        name: "Repair paused — waiting for new CI evidence",
       }),
     ).toBeVisible();
     await expect(

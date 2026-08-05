@@ -5247,8 +5247,8 @@ async fn concurrent_recheck_pr_health_commands_share_one_health_fetch() {
     let second = recheck_pr_health_for_state(conversation_id.as_str(), &state, Arc::clone(&chat));
 
     let (first, second) = tokio::join!(first, second);
-    assert_eq!(first.expect("first recheck"), false);
-    assert_eq!(second.expect("second recheck"), false);
+    assert!(!first.expect("first recheck"));
+    assert!(!second.expect("second recheck"));
     assert_eq!(github.state().fetch_pr_health_calls, 1);
 }
 
