@@ -1811,13 +1811,6 @@ async fn compose_agent_runtime_context_from_app_state(
     .with_linked_plan_snapshot_resolver(linked_plan_snapshot_resolver_from_app_state(
         state.clone(),
     ));
-    if let Some(workspace) = workspace.as_ref() {
-        deps.schedule_branch_status_refresh_if_due(
-            working_directory,
-            Some(workspace.base_ref.as_str()),
-        );
-    }
-
     compose_agent_runtime_context(
         &AgentRuntimeContextScope {
             conversation_id: &conversation.id,
@@ -4020,14 +4013,6 @@ impl<R: Runtime> AppChatService<R> {
                 None
             }
         };
-
-        if let Some(workspace) = workspace.as_ref() {
-            self.agent_runtime_context_deps
-                .schedule_branch_status_refresh_if_due(
-                    working_directory,
-                    Some(workspace.base_ref.as_str()),
-                );
-        }
 
         Ok(compose_agent_runtime_context(
             &AgentRuntimeContextScope {

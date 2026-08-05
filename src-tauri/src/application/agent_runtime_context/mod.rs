@@ -125,24 +125,6 @@ impl AgentRuntimeContextDeps {
         self
     }
 
-    pub(crate) fn schedule_branch_status_refresh_if_due(
-        &self,
-        workspace_path: &Path,
-        base_ref: Option<&str>,
-    ) {
-        let Some(cache) = self.branch_status_cache.as_ref() else {
-            return;
-        };
-        cache.schedule_refresh_if_due(
-            workspace_path.to_path_buf(),
-            base_ref.map(str::to_string),
-            chrono::Duration::seconds(
-                crate::infrastructure::agents::claude::git_runtime_config()
-                    .agent_runtime_branch_status_refresh_secs as i64,
-            ),
-        );
-    }
-
     #[cfg(test)]
     pub(crate) fn with_budget(mut self, budget: Duration) -> Self {
         self.budget = budget;

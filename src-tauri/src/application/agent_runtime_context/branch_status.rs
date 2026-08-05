@@ -69,33 +69,6 @@ impl BranchStatusCache {
         self.refreshes_in_flight.remove(workspace_path);
     }
 
-    pub(crate) fn schedule_refresh_if_due(
-        &self,
-        workspace_path: PathBuf,
-        base_ref: Option<String>,
-        refresh_after: Duration,
-    ) {
-        if !self.refresh_due(&workspace_path, Utc::now(), refresh_after)
-            || !self.claim_refresh(&workspace_path)
-        {
-            return;
-        }
-        let cache = self.clone();
-        tokio::spawn(async move {
-            let refresh_result = cache
-                .refresh_local(&workspace_path, base_ref.as_deref())
-                .await;
-            cache.finish_refresh(&workspace_path);
-            if let Err(error) = refresh_result {
-                tracing::warn!(
-                    workspace_path = %workspace_path.display(),
-                    error = %error,
-                    "scheduled runtime branch-status refresh failed"
-                );
-            }
-        });
-    }
-
     pub(crate) fn observe_pr_sync(
         &self,
         workspace_path: &Path,
