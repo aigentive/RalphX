@@ -1079,7 +1079,10 @@ fn detector_b_is_calibrated_and_floor_enforced() {
         // 593 -> 594: recovery-prompt resolution intent (Wave B5d), reusing the existing
         // remote-task-action surface and host dispatcher; the command itself only validates
         // live prompt authority and persists the destructive-capable host action for later.
-        594,
+        // 594 -> 597: Wave B5c's archive request, fork request, and shared lifecycle poll read.
+        // Both writes are detector-(b) members through the `remote-conversation-lifecycle`
+        // surface; all three remain silent on the direct spawn/process detectors.
+        597,
         "review the detector against the full command census"
     );
     let flagged = spawn_triggering_writers(

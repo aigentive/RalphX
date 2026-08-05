@@ -1559,6 +1559,15 @@ pub(crate) fn spawn_remote_resume_dispatchers(
         {
             tracing::error!(%error, "remote automation draft stale sweep failed");
         }
+        // Never retry: a half-run archive may have deleted a worktree/branch, while replaying a
+        // fork can create a second worktree for the same user intent.
+        if let Err(error) = state
+            .remote_conversation_lifecycle_request_repo
+            .fail_stale(cutoff, now)
+            .await
+        {
+            tracing::error!(%error, "remote conversation lifecycle stale sweep failed");
+        }
         let mut interval = tokio::time::interval(Duration::from_secs(2));
         interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {
@@ -1593,6 +1602,9 @@ pub(crate) fn spawn_remote_resume_dispatchers(
             }
             if let Err(error) = dispatch_one_remote_automation_draft(&state).await {
                 tracing::warn!(%error, "remote automation draft dispatch failed");
+            }
+            if let Err(error) = dispatch_one_remote_conversation_lifecycle(&state).await {
+                tracing::warn!(%error, "remote conversation lifecycle dispatch failed");
             }
             if let Err(error) =
                 dispatch_one_remote_finalize_decision(&state, &execution_state, Some(&app_handle))
@@ -1837,6 +1849,148 @@ pub(crate) async fn dispatch_one_remote_automation_draft(state: &AppState) -> Ap
                     chrono::Utc::now(),
                 )
                 .await?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) async fn dispatch_one_remote_conversation_lifecycle(state: &AppState) -> AppResult<()> {
+    use crate::application::agent_conversation_archive::{
+        archive_agent_conversation_for_state, workspace_allows_pr_closure,
+    };
+    use crate::application::agent_conversation_fork::{
+        fork_agent_conversation_with_id, validate_forkable_parent,
+    };
+    use crate::application::remote_conversation_lifecycle_intent::*;
+    use crate::domain::entities::{
+        AgentConversationWorkspaceMode, ChatContextType, ChatConversationId,
+        RemoteConversationLifecycleKind,
+    };
+    let Some(row) = state
+        .remote_conversation_lifecycle_request_repo
+        .claim_pending(chrono::Utc::now())
+        .await?
+    else {
+        return Ok(());
+    };
+    let parent_id = ChatConversationId::from_string(&row.conversation_id);
+    let Some(conversation) = state.chat_conversation_repo.get_by_id(&parent_id).await? else {
+        state
+            .remote_conversation_lifecycle_request_repo
+            .fail(&row.id, NOT_FOUND, chrono::Utc::now())
+            .await?;
+        return Ok(());
+    };
+    if conversation.context_type != ChatContextType::Project {
+        state
+            .remote_conversation_lifecycle_request_repo
+            .fail(&row.id, NOT_PROJECT, chrono::Utc::now())
+            .await?;
+        return Ok(());
+    }
+    match row.kind {
+        RemoteConversationLifecycleKind::Archive => {
+            if conversation.is_archived() {
+                state.remote_conversation_lifecycle_request_repo.complete(&row.id,serde_json::json!({"archived":false,"reason":"already archived","code":ALREADY_ARCHIVED,"benign":true}),chrono::Utc::now()).await?;
+                return Ok(());
+            }
+            if row.close_pull_request {
+                if let Some(w) = state
+                    .agent_conversation_workspace_repo
+                    .get_by_conversation_id(&parent_id)
+                    .await?
+                {
+                    if !workspace_allows_pr_closure(&w) {
+                        state
+                            .remote_conversation_lifecycle_request_repo
+                            .fail(&row.id, PR_CLOSURE_FORBIDDEN, chrono::Utc::now())
+                            .await?;
+                        return Ok(());
+                    }
+                }
+            }
+            match archive_agent_conversation_for_state(&parent_id, state, row.close_pull_request)
+                .await
+            {
+                Ok(_) => {
+                    state
+                        .remote_conversation_lifecycle_request_repo
+                        .complete(
+                            &row.id,
+                            serde_json::json!({"archived":true}),
+                            chrono::Utc::now(),
+                        )
+                        .await?
+                }
+                // The legacy archive seam returns a string and therefore cannot preserve the
+                // typed repository/infrastructure distinction. Fail closed: propagate every
+                // post-claim seam error and leave Starting for the no-retry stale sweep rather
+                // than falsely settling a possibly half-run archive as an ordinary host error.
+                Err(error) => return Err(AppError::Infrastructure(error)),
+            }
+        }
+        RemoteConversationLifecycleKind::Fork => {
+            if validate_forkable_parent(state, &conversation)
+                .await
+                .is_err()
+            {
+                state
+                    .remote_conversation_lifecycle_request_repo
+                    .fail(&row.id, PARENT_NOT_FORKABLE, chrono::Utc::now())
+                    .await?;
+                return Ok(());
+            }
+            let mode = state
+                .agent_conversation_workspace_repo
+                .get_by_conversation_id(&parent_id)
+                .await?
+                .as_ref()
+                .map(|w| w.mode)
+                .or(conversation.agent_mode);
+            if mode == Some(AgentConversationWorkspaceMode::Tasks) {
+                state
+                    .remote_conversation_lifecycle_request_repo
+                    .fail(&row.id, PARENT_NOT_FORKABLE, chrono::Utc::now())
+                    .await?;
+                return Ok(());
+            }
+            let child = row.allocated_conversation_id.clone().ok_or_else(|| {
+                AppError::Database("fork lifecycle request has no allocated child id".into())
+            })?;
+            let child_id = ChatConversationId::from_string(&child);
+            if state
+                .chat_conversation_repo
+                .get_by_id(&child_id)
+                .await?
+                .is_some()
+            {
+                state.remote_conversation_lifecycle_request_repo.complete(&row.id,serde_json::json!({"conversationId":child,"code":CHILD_EXISTS,"benign":true}),chrono::Utc::now()).await?;
+                return Ok(());
+            }
+            match fork_agent_conversation_with_id(state, &parent_id, child_id).await {
+                Ok(result) => {
+                    state.events.emit("agent:conversation_created",serde_json::json!({"conversationId":result.conversation.id.as_str(),"contextType":result.conversation.context_type.to_string(),"contextId":result.conversation.context_id}));
+                    state.events.emit("agent:conversation_forked",serde_json::json!({"parentConversationId":parent_id.as_str(),"conversationId":result.conversation.id.as_str(),"contextType":result.conversation.context_type.to_string(),"contextId":result.conversation.context_id}));
+                    state
+                        .remote_conversation_lifecycle_request_repo
+                        .complete(
+                            &row.id,
+                            serde_json::json!({"conversationId":child}),
+                            chrono::Utc::now(),
+                        )
+                        .await?
+                }
+                Err(error @ (AppError::Database(_) | AppError::Infrastructure(_))) => {
+                    return Err(error)
+                }
+                Err(error) => {
+                    tracing::warn!(request_id=%row.id,%error,"remote fork host seam failed");
+                    state
+                        .remote_conversation_lifecycle_request_repo
+                        .fail(&row.id, HOST_FAILED, chrono::Utc::now())
+                        .await?
+                }
+            }
         }
     }
     Ok(())

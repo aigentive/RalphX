@@ -79,15 +79,15 @@ use crate::domain::repositories::{
     PlanSelectionStatsRepository, ProcessRepository, ProjectRepository,
     ProposalDependencyRepository, QueuedMessageRepository, RemoteAgentStopRequestRepository,
     RemoteAutomationDraftRequestRepository, RemoteAutomationRunRequestRepository,
-    RemoteConversationMessageRequestRepository, RemoteConversationModeSwitchRequestRepository,
-    RemoteConversationStartRequestRepository, RemoteExecutionResumeRequestRepository,
-    RemoteFinalizeDecisionRequestRepository, RemotePlanApprovalRequestRepository,
-    RemotePlanEditRequestRepository, RemoteQueuedSendRequestRepository,
-    RemoteTaskActionRequestRepository, ReviewRepository, ReviewSettingsRepository,
-    SessionLinkRepository, TaskDependencyRepository, TaskProposalRepository, TaskQARepository,
-    TaskRepository, TaskStepRepository, TicketCanonicalBranchRepository,
-    UiFeatureFlagOverridesRepository, ValidationRunRepository, WebhookRegistrationRepository,
-    WorkflowRepository, WorkspaceReviewRuntimeSettingsRepository,
+    RemoteConversationLifecycleRequestRepository, RemoteConversationMessageRequestRepository,
+    RemoteConversationModeSwitchRequestRepository, RemoteConversationStartRequestRepository,
+    RemoteExecutionResumeRequestRepository, RemoteFinalizeDecisionRequestRepository,
+    RemotePlanApprovalRequestRepository, RemotePlanEditRequestRepository,
+    RemoteQueuedSendRequestRepository, RemoteTaskActionRequestRepository, ReviewRepository,
+    ReviewSettingsRepository, SessionLinkRepository, TaskDependencyRepository,
+    TaskProposalRepository, TaskQARepository, TaskRepository, TaskStepRepository,
+    TicketCanonicalBranchRepository, UiFeatureFlagOverridesRepository, ValidationRunRepository,
+    WebhookRegistrationRepository, WorkflowRepository, WorkspaceReviewRuntimeSettingsRepository,
 };
 use crate::domain::services::{
     GithubServiceTrait, MemoryRunningAgentRegistry, MessageQueue, RunningAgentRegistry,
@@ -120,7 +120,8 @@ use crate::infrastructure::memory::{
     MemoryPlanSelectionStatsRepository, MemoryProcessRepository, MemoryProjectRepository,
     MemoryProposalDependencyRepository, MemoryQuestionRepository, MemoryQueuedMessageRepository,
     MemoryRemoteAgentStopRequestRepository, MemoryRemoteAutomationDraftRequestRepository,
-    MemoryRemoteAutomationRunRequestRepository, MemoryRemoteConversationMessageRequestRepository,
+    MemoryRemoteAutomationRunRequestRepository, MemoryRemoteConversationLifecycleRequestRepository,
+    MemoryRemoteConversationMessageRequestRepository,
     MemoryRemoteConversationModeSwitchRequestRepository,
     MemoryRemoteConversationStartRequestRepository, MemoryRemoteExecutionResumeRequestRepository,
     MemoryRemoteFinalizeDecisionRequestRepository, MemoryRemotePlanApprovalRequestRepository,
@@ -164,6 +165,7 @@ use crate::infrastructure::sqlite::{
     SqliteProjectRepository, SqliteProposalDependencyRepository, SqliteQuestionRepository,
     SqliteQueuedMessageRepository, SqliteRemoteAgentStopRequestRepository,
     SqliteRemoteAutomationDraftRequestRepository, SqliteRemoteAutomationRunRequestRepository,
+    SqliteRemoteConversationLifecycleRequestRepository,
     SqliteRemoteConversationMessageRequestRepository,
     SqliteRemoteConversationModeSwitchRequestRepository,
     SqliteRemoteConversationStartRequestRepository, SqliteRemoteExecutionResumeRequestRepository,
@@ -355,6 +357,8 @@ pub struct AppState {
     pub remote_finalize_decision_request_repo: Arc<dyn RemoteFinalizeDecisionRequestRepository>,
     pub remote_automation_run_request_repo: Arc<dyn RemoteAutomationRunRequestRepository>,
     pub remote_automation_draft_request_repo: Arc<dyn RemoteAutomationDraftRequestRepository>,
+    pub remote_conversation_lifecycle_request_repo:
+        Arc<dyn RemoteConversationLifecycleRequestRepository>,
     pub remote_plan_edit_request_repo: Arc<dyn RemotePlanEditRequestRepository>,
     pub remote_queued_send_request_repo: Arc<dyn RemoteQueuedSendRequestRepository>,
     pub remote_task_action_request_repo: Arc<dyn RemoteTaskActionRequestRepository>,
@@ -1800,6 +1804,11 @@ impl AppState {
             remote_automation_draft_request_repo: Arc::new(
                 SqliteRemoteAutomationDraftRequestRepository::from_shared(Arc::clone(&shared_conn)),
             ),
+            remote_conversation_lifecycle_request_repo: Arc::new(
+                SqliteRemoteConversationLifecycleRequestRepository::from_shared(Arc::clone(
+                    &shared_conn,
+                )),
+            ),
             remote_plan_edit_request_repo: Arc::new(
                 SqliteRemotePlanEditRequestRepository::from_shared(Arc::clone(&shared_conn)),
             ),
@@ -2127,6 +2136,9 @@ impl AppState {
             remote_automation_draft_request_repo: Arc::new(
                 MemoryRemoteAutomationDraftRequestRepository::default(),
             ),
+            remote_conversation_lifecycle_request_repo: Arc::new(
+                MemoryRemoteConversationLifecycleRequestRepository::default(),
+            ),
             remote_plan_edit_request_repo: Arc::new(
                 MemoryRemotePlanEditRequestRepository::default(),
             ),
@@ -2372,6 +2384,9 @@ impl AppState {
             ),
             remote_automation_draft_request_repo: Arc::new(
                 MemoryRemoteAutomationDraftRequestRepository::default(),
+            ),
+            remote_conversation_lifecycle_request_repo: Arc::new(
+                MemoryRemoteConversationLifecycleRequestRepository::default(),
             ),
             remote_plan_edit_request_repo: Arc::new(
                 MemoryRemotePlanEditRequestRepository::default(),
@@ -2643,6 +2658,11 @@ impl AppState {
             remote_automation_draft_request_repo: Arc::new(
                 SqliteRemoteAutomationDraftRequestRepository::from_shared(Arc::clone(&shared_conn)),
             ),
+            remote_conversation_lifecycle_request_repo: Arc::new(
+                SqliteRemoteConversationLifecycleRequestRepository::from_shared(Arc::clone(
+                    &shared_conn,
+                )),
+            ),
             remote_plan_edit_request_repo: Arc::new(
                 SqliteRemotePlanEditRequestRepository::from_shared(Arc::clone(&shared_conn)),
             ),
@@ -2870,6 +2890,9 @@ impl AppState {
             ),
             remote_automation_draft_request_repo: Arc::new(
                 MemoryRemoteAutomationDraftRequestRepository::default(),
+            ),
+            remote_conversation_lifecycle_request_repo: Arc::new(
+                MemoryRemoteConversationLifecycleRequestRepository::default(),
             ),
             remote_plan_edit_request_repo: Arc::new(
                 MemoryRemotePlanEditRequestRepository::default(),

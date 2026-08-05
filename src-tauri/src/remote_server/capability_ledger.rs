@@ -3530,6 +3530,9 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
              by the next turn",
         ),
     },
+    CommandOverride { command: "request_remote_conversation_archive", policy: policy(RiskClass::AgentControl, SEEDS_STATE, "spawn-free twin persists a host archive lifecycle intent") },
+    CommandOverride { command: "request_remote_conversation_fork", policy: policy(RiskClass::AgentControl, CONTENT_AND_SEEDS, "spawn-free twin preallocates a child id and persists a host fork lifecycle intent") },
+    CommandOverride { command: "get_remote_conversation_lifecycle_request", policy: policy(RiskClass::Read, NONE, "pure lifecycle intent repository read") },
     process_refusal(
         "set_agent_conversation_muted",
         "detector-c, hand-traced: the mute=true path calls agent_workspace_response_for_state, \

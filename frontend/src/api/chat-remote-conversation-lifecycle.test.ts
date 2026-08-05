@@ -11,11 +11,31 @@ vi.mock("#tauri-core-primitive", async (importOriginal) => {
   return { ...actual, invoke: primitiveInvoke };
 });
 
-import { setAgentConversationMuted } from "@/api/chat";
+import {
+  archiveConversation,
+  forkAgentConversation,
+  setAgentConversationMuted,
+} from "@/api/chat";
 import { switchConversationPersona } from "@/hooks/usePersonas";
 import { LOCAL_ENVIRONMENT_ID, useEnvironmentStore } from "@/stores/environmentStore";
 
 const REMOTE_ID = "env-remote";
+const NOW = "2026-08-05T12:00:00Z";
+
+function conversation(id: string, archivedAt: string | null = null) {
+  return {
+    id,
+    context_type: "project",
+    context_id: "project-1",
+    claude_session_id: null,
+    title: id,
+    message_count: 0,
+    last_message_at: null,
+    created_at: NOW,
+    updated_at: NOW,
+    archived_at: archivedAt,
+  };
+}
 
 function useRemoteEnvironment(): void {
   useEnvironmentStore.setState({
@@ -127,5 +147,115 @@ describe("remote conversation lifecycle routing", () => {
     await expect(
       switchConversationPersona({ conversationId: "conversation-1", personaId: null }),
     ).rejects.toThrow("Cannot change persona while the agent is running");
+  });
+
+  it("treats the real ALREADY_ARCHIVED command-error envelope as benign", async () => {
+    useRemoteEnvironment();
+    primitiveInvoke.mockImplementation(async (_command, payload) => {
+      const cmd = (payload as { input: { cmd: string } }).input.cmd;
+      if (cmd === "request_remote_conversation_archive") {
+        return {
+          outcome: "commandError",
+          error: "REMOTE_CONVERSATION_LIFECYCLE_ALREADY_ARCHIVED",
+        };
+      }
+      if (cmd === "get_remote_agent_conversation") {
+        return {
+          outcome: "ok",
+          result: { conversation: conversation("conversation-1", NOW), messages: [] },
+        };
+      }
+      throw new Error(`unexpected remote command ${cmd}`);
+    });
+
+    await expect(
+      archiveConversation("conversation-1", { closePullRequest: false }),
+    ).resolves.toMatchObject({ conversation: { id: "conversation-1" } });
+  });
+
+  it("resolves a benign CHILD_EXISTS completion with the preallocated child id", async () => {
+    useRemoteEnvironment();
+    primitiveInvoke.mockImplementation(async (_command, payload) => {
+      const cmd = (payload as { input: { cmd: string } }).input.cmd;
+      if (cmd === "request_remote_conversation_fork") {
+        return {
+          outcome: "ok",
+          result: {
+            requestId: "request-1",
+            allocatedConversationId: "conversation-child",
+            status: "pending",
+            deduplicated: false,
+            createdAt: NOW,
+          },
+        };
+      }
+      if (cmd === "get_remote_conversation_lifecycle_request") {
+        return {
+          outcome: "ok",
+          result: {
+            requestId: "request-1",
+            kind: "fork",
+            conversationId: "conversation-parent",
+            allocatedConversationId: "conversation-child",
+            status: "completed",
+            errorCode: null,
+            result: {
+              conversationId: "conversation-child",
+              code: "REMOTE_CONVERSATION_LIFECYCLE_CHILD_EXISTS",
+              benign: true,
+            },
+            createdAt: NOW,
+            updatedAt: NOW,
+          },
+        };
+      }
+      if (cmd === "get_remote_agent_conversation") {
+        const conversationId = (payload as { input: { args: { conversationId: string } } })
+          .input.args.conversationId;
+        return {
+          outcome: "ok",
+          result: { conversation: conversation(conversationId), messages: [] },
+        };
+      }
+      throw new Error(`unexpected remote command ${cmd}`);
+    });
+
+    await expect(forkAgentConversation("conversation-parent")).resolves.toMatchObject({
+      conversation: { id: "conversation-child" },
+    });
+  });
+
+  it("keeps local archive and fork on their original commands", async () => {
+    primitiveInvoke.mockImplementation(async (command) => {
+      if (command === "archive_agent_conversation") {
+        return {
+          conversation: conversation("conversation-1", NOW),
+          cleanup: {
+            runtime_shutdown_succeeded: true,
+            cleanup_claim: "not_claimed",
+            local_cleanup: "cleaned",
+            message: null,
+          },
+        };
+      }
+      if (command === "fork_agent_conversation") {
+        return {
+          parent_conversation: conversation("conversation-parent"),
+          conversation: conversation("conversation-child"),
+          workspace: null,
+          provider_session_forked: false,
+          copied_message_count: 0,
+          copied_timeline_item_count: 0,
+        };
+      }
+      throw new Error(`unexpected local command ${command}`);
+    });
+
+    await archiveConversation("conversation-1", { closePullRequest: false });
+    await forkAgentConversation("conversation-parent");
+    expect(primitiveInvoke.mock.calls.map(([command]) => command)).toEqual([
+      "archive_agent_conversation",
+      "fork_agent_conversation",
+    ]);
   });
 });

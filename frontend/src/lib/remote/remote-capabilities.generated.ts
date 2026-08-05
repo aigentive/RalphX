@@ -662,6 +662,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: [],
     pins: [],
   },
+  "get_remote_conversation_lifecycle_request": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
   "get_remote_conversation_message_request": {
     opClass: "read",
     argumentSensitive: false,
@@ -1260,6 +1266,18 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     opClass: "agentControl",
     argumentSensitive: false,
     capabilities: ["seedsSpawnTriggeringState"],
+    pins: [],
+  },
+  "request_remote_conversation_archive": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["seedsSpawnTriggeringState"],
+    pins: [],
+  },
+  "request_remote_conversation_fork": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["mutatesAgentConsumedContent","seedsSpawnTriggeringState"],
     pins: [],
   },
   "request_remote_execution_resume": {

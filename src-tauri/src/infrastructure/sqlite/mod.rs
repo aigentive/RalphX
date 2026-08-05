@@ -152,6 +152,7 @@ pub mod sqlite_remote_plan_approval_request_repo;
 pub mod sqlite_remote_finalize_decision_request_repo;
 pub mod sqlite_remote_automation_run_request_repo;
 pub mod sqlite_remote_automation_draft_request_repo;
+pub mod sqlite_remote_conversation_lifecycle_request_repo;
 pub mod sqlite_remote_plan_edit_request_repo;
 pub mod sqlite_remote_queued_send_request_repo;
 pub mod sqlite_review_issue_repo;
@@ -274,6 +275,7 @@ pub use sqlite_remote_plan_approval_request_repo::SqliteRemotePlanApprovalReques
 pub use sqlite_remote_finalize_decision_request_repo::SqliteRemoteFinalizeDecisionRequestRepository;
 pub use sqlite_remote_automation_run_request_repo::SqliteRemoteAutomationRunRequestRepository;
 pub use sqlite_remote_automation_draft_request_repo::SqliteRemoteAutomationDraftRequestRepository;
+pub use sqlite_remote_conversation_lifecycle_request_repo::SqliteRemoteConversationLifecycleRequestRepository;
 pub use sqlite_remote_plan_edit_request_repo::SqliteRemotePlanEditRequestRepository;
 pub use sqlite_remote_queued_send_request_repo::SqliteRemoteQueuedSendRequestRepository;
 pub use sqlite_review_issue_repo::{ReviewIssueRepository, SqliteReviewIssueRepository};

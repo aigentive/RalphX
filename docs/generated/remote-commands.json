@@ -542,6 +542,8 @@
     "request_remote_agent_conversation_start",
     "request_remote_agent_conversation_message",
     "request_remote_agent_conversation_mode_switch",
+    "request_remote_conversation_archive",
+    "request_remote_conversation_fork",
     "request_remote_execution_resume",
     "request_remote_task_resume",
     "request_remote_task_restart",
@@ -1171,9 +1173,10 @@
       "authorityBearing": true,
       "enclosingFunction": "application/startup_background.rs:::::spawn_remote_resume_dispatchers",
       "file": "application/startup_background.rs",
-      "id": "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@45b243a3c702d4bf",
+      "id": "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@2130ab982b84bb8a",
       "kind": "async_runtime::spawn",
       "readSurface": [
+        "remote-conversation-lifecycle",
         "remote-execution-resume",
         "remote-task-action",
         "remote-plan-approval",
@@ -2863,6 +2866,38 @@
       "pins": [],
       "scopeConfined": false,
       "target": "crate::commands::remote_conversation_lifecycle_commands::switch_remote_agent_conversation_persona"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "seedsSpawnTriggeringState"
+      ],
+      "class": "agentControl",
+      "command": "request_remote_conversation_archive",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::remote_conversation_lifecycle_commands::request_remote_conversation_archive"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "mutatesAgentConsumedContent",
+        "seedsSpawnTriggeringState"
+      ],
+      "class": "agentControl",
+      "command": "request_remote_conversation_fork",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::remote_conversation_lifecycle_commands::request_remote_conversation_fork"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_remote_conversation_lifecycle_request",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::remote_conversation_lifecycle_commands::get_remote_conversation_lifecycle_request"
     },
     {
       "argumentSensitive": false,
@@ -9431,6 +9466,38 @@
         "seedsSpawnTriggeringState"
       ],
       "class": "agentControl",
+      "command": "request_remote_conversation_archive",
+      "module": "remote_conversation_lifecycle_commands",
+      "reason": "spawn-free twin persists a host archive lifecycle intent",
+      "registered": true,
+      "v1Resolution": "registerable"
+    },
+    {
+      "capabilities": [
+        "mutatesAgentConsumedContent",
+        "seedsSpawnTriggeringState"
+      ],
+      "class": "agentControl",
+      "command": "request_remote_conversation_fork",
+      "module": "remote_conversation_lifecycle_commands",
+      "reason": "spawn-free twin preallocates a child id and persists a host fork lifecycle intent",
+      "registered": true,
+      "v1Resolution": "registerable"
+    },
+    {
+      "capabilities": [],
+      "class": "read",
+      "command": "get_remote_conversation_lifecycle_request",
+      "module": "remote_conversation_lifecycle_commands",
+      "reason": "pure lifecycle intent repository read",
+      "registered": true,
+      "v1Resolution": "registerable"
+    },
+    {
+      "capabilities": [
+        "seedsSpawnTriggeringState"
+      ],
+      "class": "agentControl",
       "command": "request_remote_execution_resume",
       "module": "remote_resume_commands",
       "reason": "seeds-spawn-triggering-state, declared membership resumes-execution-through-host-dispatcher: persists a validated execution-resume intent; spawn_remote_resume_dispatchers is the sole spawner",
@@ -11565,9 +11632,21 @@
     },
     {
       "armedValue": "Pending",
+      "id": "remote-conversation-lifecycle",
+      "readByLoops": [
+        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@2130ab982b84bb8a"
+      ],
+      "surface": "remote_conversation_lifecycle_requests.status",
+      "writers": [
+        "request_remote_conversation_archive",
+        "request_remote_conversation_fork"
+      ]
+    },
+    {
+      "armedValue": "Pending",
       "id": "remote-execution-resume",
       "readByLoops": [
-        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@45b243a3c702d4bf"
+        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@2130ab982b84bb8a"
       ],
       "surface": "remote_resume_requests.status where family=execution",
       "writers": [
@@ -11578,7 +11657,7 @@
       "armedValue": "Pending",
       "id": "remote-task-action",
       "readByLoops": [
-        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@45b243a3c702d4bf"
+        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@2130ab982b84bb8a"
       ],
       "surface": "remote_resume_requests.status where family=task",
       "writers": [
@@ -11592,7 +11671,7 @@
       "armedValue": "Pending",
       "id": "remote-plan-approval",
       "readByLoops": [
-        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@45b243a3c702d4bf"
+        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@2130ab982b84bb8a"
       ],
       "surface": "remote_plan_approval_requests.status",
       "writers": [
@@ -11603,7 +11682,7 @@
       "armedValue": "Pending",
       "id": "remote-finalize-decision",
       "readByLoops": [
-        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@45b243a3c702d4bf"
+        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@2130ab982b84bb8a"
       ],
       "surface": "remote_finalize_decision_requests.status",
       "writers": [
@@ -11614,7 +11693,7 @@
       "armedValue": "Pending",
       "id": "remote-queued-send",
       "readByLoops": [
-        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@45b243a3c702d4bf"
+        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@2130ab982b84bb8a"
       ],
       "surface": "remote_queued_send_requests.status",
       "writers": [
@@ -11625,7 +11704,7 @@
       "armedValue": "Pending",
       "id": "remote-automation-run",
       "readByLoops": [
-        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@45b243a3c702d4bf"
+        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@2130ab982b84bb8a"
       ],
       "surface": "remote_automation_run_requests.status",
       "writers": [
@@ -11636,7 +11715,7 @@
       "armedValue": "Pending",
       "id": "remote-automation-draft",
       "readByLoops": [
-        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@45b243a3c702d4bf"
+        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@2130ab982b84bb8a"
       ],
       "surface": "remote_automation_draft_requests.status",
       "writers": [

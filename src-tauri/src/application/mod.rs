@@ -226,6 +226,9 @@ mod startup_remote_queue_send_tests;
 pub mod remote_finalize_decision_intent;
 pub mod remote_automation_run_intent;
 pub mod remote_automation_draft_intent;
+pub mod remote_conversation_lifecycle_intent;
+#[cfg(test)]
+mod startup_remote_conversation_lifecycle_tests;
 #[cfg(test)]
 mod startup_remote_automation_run_tests;
 #[cfg(test)]

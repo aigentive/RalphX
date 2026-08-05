@@ -1810,6 +1810,41 @@ const ArchiveConversationResponseSchema = z.object({
   }),
 });
 
+const RemoteConversationLifecycleStatusSchema = z.enum([
+  "pending", "starting", "completed", "failed", "failedStale",
+]);
+const RemoteConversationLifecycleIntentSchema = z.object({
+  requestId: z.string(),
+  allocatedConversationId: z.string().nullable(),
+  status: RemoteConversationLifecycleStatusSchema,
+  deduplicated: z.boolean(),
+  createdAt: z.string(),
+}).strict();
+const RemoteConversationLifecycleRequestSchema = z.object({
+  requestId: z.string(),
+  kind: z.enum(["archive", "fork"]),
+  conversationId: z.string(),
+  allocatedConversationId: z.string().nullable(),
+  status: RemoteConversationLifecycleStatusSchema,
+  errorCode: z.string().nullable(),
+  result: z.record(z.string(), z.unknown()).nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+}).strict();
+
+async function pollRemoteConversationLifecycle(requestId: string) {
+  for (let attempt = 0; attempt < 240; attempt += 1) {
+    const request = await typedInvoke(
+      "get_remote_conversation_lifecycle_request",
+      { requestId },
+      RemoteConversationLifecycleRequestSchema,
+    );
+    if (["completed", "failed", "failedStale"].includes(request.status)) return request;
+    await new Promise((resolve) => setTimeout(resolve, 750));
+  }
+  throw new Error("Timed out waiting for the host conversation operation");
+}
+
 export interface ArchiveConversationResult {
   conversation: ChatConversation;
   cleanup: {
@@ -1824,6 +1859,24 @@ export async function archiveConversation(
   conversationId: string,
   options: { closePullRequest: boolean },
 ): Promise<ArchiveConversationResult> {
+  if (isRemoteEnvironmentId(getTransportEnvironmentId())) {
+    let intent: z.infer<typeof RemoteConversationLifecycleIntentSchema>;
+    try {
+      intent = await typedInvoke(
+        "request_remote_conversation_archive",
+        { input: { conversationId, closePullRequest: options.closePullRequest } },
+        RemoteConversationLifecycleIntentSchema,
+      );
+    } catch (error) {
+      if (error !== "REMOTE_CONVERSATION_LIFECYCLE_ALREADY_ARCHIVED") throw error;
+      const { conversation } = await getConversation(conversationId);
+      return { conversation, cleanup: { runtimeShutdownSucceeded: true, cleanupClaim: "not_claimed", localCleanup: "cleaned", message: null } };
+    }
+    const request = await pollRemoteConversationLifecycle(intent.requestId);
+    if (request.status !== "completed") throw new Error(request.errorCode ?? `Archive ${request.status}`);
+    const { conversation } = await getConversation(conversationId);
+    return { conversation, cleanup: { runtimeShutdownSucceeded: true, cleanupClaim: "not_claimed", localCleanup: "cleaned", message: null } };
+  }
   const raw = await typedInvoke(
     "archive_agent_conversation",
     { conversationId, closePullRequest: options.closePullRequest },
@@ -5118,6 +5171,21 @@ export async function startAgentConversation(
 export async function forkAgentConversation(
   conversationId: string,
 ): Promise<ForkAgentConversationResult> {
+  if (isRemoteEnvironmentId(getTransportEnvironmentId())) {
+    const intent = await typedInvoke(
+      "request_remote_conversation_fork",
+      { input: { conversationId } },
+      RemoteConversationLifecycleIntentSchema,
+    );
+    const request = await pollRemoteConversationLifecycle(intent.requestId);
+    if (request.status !== "completed") throw new Error(request.errorCode ?? `Fork ${request.status}`);
+    const childId = request.allocatedConversationId ?? intent.allocatedConversationId;
+    if (!childId) throw new Error("Fork completed without an allocated conversation id");
+    const [{ conversation: parentConversation }, { conversation }] = await Promise.all([
+      getConversation(conversationId), getConversation(childId),
+    ]);
+    return { parentConversation, conversation, workspace: null, providerSessionForked: false, copiedMessageCount: 0, copiedTimelineItemCount: 0 };
+  }
   const raw = await typedInvoke(
     "fork_agent_conversation",
     {

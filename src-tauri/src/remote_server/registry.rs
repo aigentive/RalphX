@@ -1381,6 +1381,31 @@ crate::remote_commands! {
         result: fallible,
     },
 
+    "request_remote_conversation_archive"
+        => crate::commands::remote_conversation_lifecycle_commands::request_remote_conversation_archive {
+        class: AgentControl,
+        caps: [SeedsSpawnTriggeringState],
+        params: [(arg input: crate::application::remote_conversation_lifecycle_intent::RequestRemoteConversationArchiveInput), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "request_remote_conversation_fork"
+        => crate::commands::remote_conversation_lifecycle_commands::request_remote_conversation_fork {
+        class: AgentControl,
+        caps: [MutatesAgentConsumedContent, SeedsSpawnTriggeringState],
+        params: [(arg input: crate::application::remote_conversation_lifecycle_intent::RequestRemoteConversationForkInput), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_remote_conversation_lifecycle_request"
+        => crate::commands::remote_conversation_lifecycle_commands::get_remote_conversation_lifecycle_request {
+        class: Read,
+        caps: [],
+        params: [(arg request_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+
     "request_remote_execution_resume"
         => crate::commands::remote_resume_commands::request_remote_execution_resume {
         class: AgentControl,

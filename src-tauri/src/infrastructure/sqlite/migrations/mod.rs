@@ -658,6 +658,9 @@ mod v20260805160000_remote_automation_draft_requests;
 #[cfg(test)]
 mod v20260805160000_remote_automation_draft_requests_tests;
 mod v20260805170000_remote_recovery_action;
+mod v20260805180000_remote_conversation_lifecycle_requests;
+#[cfg(test)]
+mod v20260805180000_remote_conversation_lifecycle_requests_tests;
 #[cfg(test)]
 mod v20260805170000_remote_recovery_action_tests;
 #[cfg(test)]
@@ -756,7 +759,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260805170000;
+pub const SCHEMA_VERSION: i64 = 20260805180000;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -2071,6 +2074,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260805170000,
         name: "remote_recovery_action",
         migrate: v20260805170000_remote_recovery_action::migrate,
+    },
+    Migration {
+        version: 20260805180000,
+        name: "remote_conversation_lifecycle_requests",
+        migrate: v20260805180000_remote_conversation_lifecycle_requests::migrate,
     },
 ];
 

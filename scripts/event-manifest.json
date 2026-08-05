@@ -39,8 +39,20 @@
     },
     {
       "name": "agent:conversation_created",
+      "file": "src-tauri/src/application/startup_background.rs",
+      "line": 1972,
+      "kind": "method"
+    },
+    {
+      "name": "agent:conversation_created",
       "file": "src-tauri/src/commands/unified_chat_commands/mod.rs",
       "line": 2325,
+      "kind": "method"
+    },
+    {
+      "name": "agent:conversation_forked",
+      "file": "src-tauri/src/application/startup_background.rs",
+      "line": 1973,
       "kind": "method"
     },
     {

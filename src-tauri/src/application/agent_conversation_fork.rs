@@ -38,6 +38,14 @@ pub async fn fork_agent_conversation(
     state: &AppState,
     parent_conversation_id: &ChatConversationId,
 ) -> AppResult<AgentConversationForkResult> {
+    fork_agent_conversation_with_id(state, parent_conversation_id, ChatConversationId::new()).await
+}
+
+pub async fn fork_agent_conversation_with_id(
+    state: &AppState,
+    parent_conversation_id: &ChatConversationId,
+    child_conversation_id: ChatConversationId,
+) -> AppResult<AgentConversationForkResult> {
     let parent_conversation = state
         .chat_conversation_repo
         .get_by_id(parent_conversation_id)
@@ -74,6 +82,7 @@ pub async fn fork_agent_conversation(
     }
 
     let mut child_conversation = ChatConversation::new_project(project_id.clone());
+    child_conversation.id = child_conversation_id;
     child_conversation.parent_conversation_id = Some(parent_conversation.id.as_str().to_string());
     child_conversation.set_title(forked_conversation_title(
         parent_conversation.title.as_deref(),
@@ -153,7 +162,7 @@ pub async fn fork_agent_conversation(
     })
 }
 
-async fn validate_forkable_parent(
+pub(crate) async fn validate_forkable_parent(
     state: &AppState,
     parent_conversation: &ChatConversation,
 ) -> AppResult<()> {
