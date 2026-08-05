@@ -104,6 +104,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: ["agentControl"],
     pins: [],
   },
+  "archive_task_proposal": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["mutatesAgentConsumedContent"],
+    pins: [],
+  },
   "assess_all_priorities": {
     opClass: "agentControl",
     argumentSensitive: false,
@@ -405,6 +411,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     pins: [],
   },
   "get_child_sessions": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_conversation_ticket": {
     opClass: "read",
     argumentSensitive: false,
     capabilities: [],
@@ -944,6 +956,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: [],
     pins: [],
   },
+  "get_ticket_associations": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
   "get_ui_feature_flags": {
     opClass: "read",
     argumentSensitive: false,
@@ -1148,6 +1166,18 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: [],
     pins: [],
   },
+  "list_ticketing_providers": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "list_ticketing_status_catalog": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
   "mark_all_notifications_read": {
     opClass: "agentControl",
     argumentSensitive: false,
@@ -1230,6 +1260,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     opClass: "agentControl",
     argumentSensitive: false,
     capabilities: ["agentControl"],
+    pins: [],
+  },
+  "refresh_tickets": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
     pins: [],
   },
   "reject_review": {

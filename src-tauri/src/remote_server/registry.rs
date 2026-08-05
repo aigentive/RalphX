@@ -2423,6 +2423,49 @@ crate::remote_commands! {
         call: async,
         result: fallible,
     },
+    "archive_task_proposal" => crate::commands::ideation_commands::archive_task_proposal {
+        class: AgentControl,
+        caps: [MutatesAgentConsumedContent],
+        params: [(arg id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+
+    "list_ticketing_providers" => crate::commands::ticketing_commands::list_ticketing_providers {
+        class: Read,
+        caps: [],
+        params: [(arg project_id: Option<String>), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "list_ticketing_status_catalog" => crate::commands::ticketing_commands::list_ticketing_status_catalog {
+        class: Read,
+        caps: [],
+        params: [(arg provider: String), (arg scope_kind: String), (arg scope_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_ticket_associations" => crate::commands::ticketing_commands::get_ticket_associations {
+        class: Read,
+        caps: [],
+        params: [(arg provider: String), (arg ticket_ref: crate::commands::ticketing_commands::TicketRefInput), (arg project_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_conversation_ticket" => crate::commands::ticketing_commands::get_conversation_ticket {
+        class: Read,
+        caps: [],
+        params: [(arg conversation_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "refresh_tickets" => crate::commands::ticketing_commands::refresh_tickets {
+        class: Read,
+        caps: [],
+        params: [(arg provider: String), (arg container_id: Option<String>)],
+        call: sync,
+        result: fallible,
+    },
 
     // Declared membership: authorising a live tool call is not inferable from a transition or
     // process sink, so it is declared. Same target fn as `deny_permission_request`, opposite

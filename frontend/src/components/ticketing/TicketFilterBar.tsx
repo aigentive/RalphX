@@ -14,6 +14,7 @@ import { hasActiveTicketFilters, UNASSIGNED_ASSIGNEE } from "./ticketing-read-st
 import { statusColor } from "./ticketing-status-presentation";
 
 interface TicketFilterBarProps {
+  refreshDisabled?: boolean | undefined;
   containers: TicketingContainer[];
   columns: TicketingColumn[];
   assigneeOptions: string[];
@@ -70,6 +71,7 @@ function ViewModeButton({
 }
 
 export function TicketFilterBar({
+  refreshDisabled = false,
   containers,
   columns,
   assigneeOptions,
@@ -287,7 +289,7 @@ export function TicketFilterBar({
             type="button"
             aria-label="Refresh tickets"
             className="grid h-9 w-9 place-items-center rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
-            disabled={isRefreshing}
+          disabled={isRefreshing || refreshDisabled}
             onClick={onRefresh}
             style={{
               backgroundColor: "var(--bg-elevated)",

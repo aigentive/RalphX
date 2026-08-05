@@ -1,7 +1,7 @@
 /**
  * ProposalWidget — Compact card for proposal CRUD tool calls
  *
- * Handles: create_task_proposal, update_task_proposal, delete_task_proposal
+ * Handles: create_task_proposal, update_task_proposal, archive_task_proposal
  *
  * Design:
  * - create: title + category badge + "Created" indicator

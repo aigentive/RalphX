@@ -559,12 +559,12 @@ describe("ideationApi.proposals", () => {
   });
 
   describe("delete", () => {
-    it("should call delete_task_proposal with id", async () => {
+    it("should call archive_task_proposal with id", async () => {
       mockInvoke.mockResolvedValue(undefined);
 
-      await ideationApi.proposals.delete("proposal-1");
+      await ideationApi.proposals.archive("proposal-1");
 
-      expect(mockInvoke).toHaveBeenCalledWith("delete_task_proposal", {
+      expect(mockInvoke).toHaveBeenCalledWith("archive_task_proposal", {
         id: "proposal-1",
       });
     });

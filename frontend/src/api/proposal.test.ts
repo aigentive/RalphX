@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   createTaskProposal,
   updateTaskProposal,
-  deleteTaskProposal,
+  archiveTaskProposal,
   reorderProposals,
   assessProposalPriority,
   assessAllPriorities,
@@ -194,17 +194,17 @@ describe("updateTaskProposal", () => {
   });
 });
 
-describe("deleteTaskProposal", () => {
+describe("archiveTaskProposal", () => {
   beforeEach(() => {
     mockInvoke.mockReset();
   });
 
-  it("should call delete_task_proposal with proposalId", async () => {
+  it("should call archive_task_proposal with proposalId", async () => {
     mockInvoke.mockResolvedValue(undefined);
 
-    await deleteTaskProposal("proposal-1");
+    await archiveTaskProposal("proposal-1");
 
-    expect(mockInvoke).toHaveBeenCalledWith("delete_task_proposal", {
+    expect(mockInvoke).toHaveBeenCalledWith("archive_task_proposal", {
       id: "proposal-1",
     });
   });
@@ -212,7 +212,7 @@ describe("deleteTaskProposal", () => {
   it("should propagate errors", async () => {
     mockInvoke.mockRejectedValue(new Error("Proposal not found"));
 
-    await expect(deleteTaskProposal("nonexistent")).rejects.toThrow(
+    await expect(archiveTaskProposal("nonexistent")).rejects.toThrow(
       "Proposal not found"
     );
   });
@@ -495,7 +495,7 @@ describe("proposalApi namespace", () => {
   it("should export all functions", () => {
     expect(proposalApi.createTaskProposal).toBe(createTaskProposal);
     expect(proposalApi.updateTaskProposal).toBe(updateTaskProposal);
-    expect(proposalApi.deleteTaskProposal).toBe(deleteTaskProposal);
+    expect(proposalApi.archiveTaskProposal).toBe(archiveTaskProposal);
     expect(proposalApi.reorderProposals).toBe(reorderProposals);
     expect(proposalApi.assessProposalPriority).toBe(assessProposalPriority);
     expect(proposalApi.assessAllPriorities).toBe(assessAllPriorities);

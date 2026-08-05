@@ -292,7 +292,7 @@ pub use ideation_commands::{
     analyze_dependencies, apply_proposals_to_kanban, archive_ideation_session,
     assess_all_priorities, assess_proposal_priority, count_session_messages,
     create_ideation_session, create_task_proposal, delete_chat_message, delete_ideation_session,
-    delete_session_messages, delete_task_proposal, get_agent_harness_availability,
+    delete_session_messages, archive_task_proposal, get_agent_harness_availability,
     get_agent_lane_settings, get_blocked_tasks, get_ideation_harness_availability,
     get_ideation_session, get_ideation_session_with_data, get_project_messages,
     get_proposal_dependencies, get_proposal_dependents, get_recent_session_messages,

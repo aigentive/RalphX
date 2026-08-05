@@ -514,7 +514,7 @@
     "save_metrics_config",
     "create_ideation_session",
     "create_cross_project_session",
-    "delete_task_proposal",
+    "archive_task_proposal",
     "apply_proposals_to_kanban",
     "restart_ideation_implementation",
     "send_orchestrator_message",
@@ -3719,6 +3719,62 @@
       "pins": [],
       "scopeConfined": false,
       "target": "crate::commands::ideation_commands::update_task_proposal"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "mutatesAgentConsumedContent"
+      ],
+      "class": "agentControl",
+      "command": "archive_task_proposal",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ideation_commands::archive_task_proposal"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "list_ticketing_providers",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ticketing_commands::list_ticketing_providers"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "list_ticketing_status_catalog",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ticketing_commands::list_ticketing_status_catalog"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_ticket_associations",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ticketing_commands::get_ticket_associations"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_conversation_ticket",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ticketing_commands::get_conversation_ticket"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "refresh_tickets",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ticketing_commands::refresh_tickets"
     },
     {
       "argumentSensitive": false,
@@ -7909,14 +7965,14 @@
     },
     {
       "capabilities": [
-        "deletesEntity"
+        "mutatesAgentConsumedContent"
       ],
-      "class": "denied",
-      "command": "delete_task_proposal",
+      "class": "agentControl",
+      "command": "archive_task_proposal",
       "module": "ideation_commands",
-      "reason": "deletes a durable entity",
-      "registered": false,
-      "v1Resolution": "host-denied"
+      "reason": "content-surface: archives a worker-consumed task proposal",
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -11281,15 +11337,13 @@
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "class": "elevated",
+      "capabilities": [],
+      "class": "read",
       "command": "list_ticketing_providers",
       "module": "ticketing_commands",
-      "reason": "ticket integration credential/network surface",
-      "registered": false,
-      "v1Resolution": "v1-deferred"
+      "reason": "audited local settings-repository reads; response summaries omit token_secret_ref and no provider call is made",
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -11314,15 +11368,13 @@
       "v1Resolution": "v1-deferred"
     },
     {
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "class": "elevated",
+      "capabilities": [],
+      "class": "read",
       "command": "list_ticketing_status_catalog",
       "module": "ticketing_commands",
-      "reason": "ticket integration credential/network surface",
-      "registered": false,
-      "v1Resolution": "v1-deferred"
+      "reason": "audited local status-catalog repository read; no sync, provider call, credential reference, or write",
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -11391,48 +11443,42 @@
       "v1Resolution": "v1-deferred"
     },
     {
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "class": "elevated",
+      "capabilities": [],
+      "class": "read",
       "command": "get_ticket_associations",
       "module": "ticketing_commands",
-      "reason": "ticket integration credential/network surface",
-      "registered": false,
-      "v1Resolution": "v1-deferred"
+      "reason": "audited local link-repository and persisted PR-branch-summary reads; no provider call or credential reference",
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "class": "elevated",
+      "capabilities": [],
+      "class": "read",
       "command": "get_conversation_ticket",
       "module": "ticketing_commands",
-      "reason": "ticket integration credential/network surface",
-      "registered": false,
-      "v1Resolution": "v1-deferred"
+      "reason": "audited local conversation-link repository reads; response contains ticket identity only and no credential reference",
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
-        "touchesCredentials"
+        "spawnsProcess"
       ],
       "class": "elevated",
       "command": "start_ralphx_work_from_ticket",
       "module": "ticketing_commands",
-      "reason": "ticket integration credential/network surface",
+      "reason": "detector-c, hand-traced: AgentConversationStartService::start reaches the agent conversation process launch chain",
       "registered": false,
-      "v1Resolution": "v1-deferred"
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "class": "elevated",
+      "capabilities": [],
+      "class": "read",
       "command": "refresh_tickets",
       "module": "ticketing_commands",
-      "reason": "ticket integration credential/network surface",
-      "registered": false,
-      "v1Resolution": "v1-deferred"
+      "reason": "audited capability-free clock response; validates provider and returns now_string without state, network, or credential access",
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [

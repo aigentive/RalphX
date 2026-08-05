@@ -10,8 +10,8 @@
 ## 1. Scan state
 
 ```
-PASS: remote transport drift — 615 invoke command name(s), 0 dynamic, 0 seam bypasses; 284 manifest-classified; 0 unclassified (P-11 COMPLETE — permanent zero).
-      P-11 census: all 615 names have a reviewed disposition — 279 remote-registered, 33 reason-coded local-only, 51 plugin-local (prefix rule), 252 manifest-classified only, 0 unclassified, 0 suppressions.
+PASS: remote transport drift — 615 invoke command name(s), 0 dynamic, 0 seam bypasses; 278 manifest-classified; 0 unclassified (P-11 COMPLETE — permanent zero).
+      P-11 census: all 615 names have a reviewed disposition — 285 remote-registered, 33 reason-coded local-only, 51 plugin-local (prefix rule), 246 manifest-classified only, 0 unclassified, 0 suppressions.
       Tauri plugin surface: 51 plugin: command name(s) across 7 imported @tauri-apps/plugin-* package(s), 0 reviewed host-targeted exception(s).
 ```
 
@@ -20,12 +20,12 @@ PASS: remote transport drift — 615 invoke command name(s), 0 dynamic, 0 seam b
 | Invoke command names on the transport | 615 | drift scan (AST over `frontend/src` + imported `@tauri-apps/plugin-*`) |
 | Dynamic / unresolvable expressions | 0 | drift scan — must stay 0 |
 | Transport seam bypasses | 0 | drift scan — must stay 0 |
-| Remote-registered (`remote_commands!`) | 278 | `docs/generated/remote-commands.json` |
+| Remote-registered (`remote_commands!`) | 284 | `docs/generated/remote-commands.json` |
 | Reason-coded local-only rows | 34 | `frontend/src/lib/remote/local-only-commands.ts` |
 | `plugin:` names classified by the prefix rule | 51 | `PLUGIN_COMMAND_PREFIX` in `local-only-commands.ts` |
 | `plugin:` host-targeted exceptions | 0 | `HOST_TARGETED_PLUGIN_COMMANDS` — reviewed, currently empty |
 | Ledger rows (exhaustive over `generate_handler!`) | 604 | `docs/generated/remote-commands.json` |
-| Manifest-classified (host-denied / v1-deferred) | 284 | `v1Resolution` in `docs/generated/remote-commands.json` |
+| Manifest-classified (host-denied / v1-deferred) | 278 | `v1Resolution` in `docs/generated/remote-commands.json` |
 | **Unclassified — the 3.1 gap** | **0** | `scripts/remote-transport-drift-baseline.json` |
 
 ## 2. What the gap is made of
@@ -41,7 +41,7 @@ Routing each name mechanically through the ledger splits it into very different 
 | v1-audit-refused (per-command finding) | 0 | the class/capability pair would admit a v1 scope, but a recorded audit found a property of the command AS IT STANDS that no v1 scope can accommodate — fail-open, spawn-capable machinery built to serve a read, an unrenderable transport shape, or a registered remote twin that already answers the query. Never used for arming/steering/write refusals: the facade serves 16 `agentControl` ops, so those stay register-candidates |
 | orphan invoke (no local handler) | 0 | invoked by the frontend but absent from `generate_handler!` and from the ledger — it cannot be registered remotely because it does not exist locally either |
 
-**284 invoked names now resolve through the manifest** — host-side commands the facade denies or defers, classified by their ledger row's `v1Resolution` rather than by a registration or a client-local reason (phase-doc key point 6). B0 landed that mechanism and the gap fell 419 → 0 with zero registrations. **The baseline is now empty**: batches B1–B7, D1–D3, R1, A1 and the 3.1-b registration batches resolved every remaining name.
+**278 invoked names now resolve through the manifest** — host-side commands the facade denies or defers, classified by their ledger row's `v1Resolution` rather than by a registration or a client-local reason (phase-doc key point 6). B0 landed that mechanism and the gap fell 419 → 0 with zero registrations. **The baseline is now empty**: batches B1–B7, D1–D3, R1, A1 and the 3.1-b registration batches resolved every remaining name.
 
 **0 names are registration candidates** — the gap is closed. The rejection subset this section predicted was real and large: detector (c) refused ledgered-`AgentControl` commands whose process authority the manifest could not see (`resume_task`, `apply_proposals_to_kanban`, `set_agent_conversation_workspace_auto_publish`), and PR 3.1-b batch 14 additionally hand-traced THIRTEEN launches detector (c) could not see at all — `Command::new(<resolved path>)` names no resolver, which is how every agent launch in the codebase is written. Detector silence was never sufficient evidence to register.
 
@@ -144,7 +144,7 @@ Ordering logic: **B0 first** (nothing is measurable without the third dispositio
 **Work:**
 
 - Expect a non-empty detector-(c) rejection subset; record each rejection in the manifest disposition rather than downgrading the class.
-- `delete_task_proposal` is Denied (deletesEntity) — it stays a manifest disposition inside this batch.
+- CORRECTED (Wave D1): `archive_task_proposal` honestly names the archive-only body, inherits the ideation agent default, and is registered at `ui:agent`; the old `delete_` prefix floor no longer misclassifies it.
 - DONE (PR 3.1-b batch 11): the B4 remainder is dispositioned — 19 reads registered at `ui:read`, 14 writers at `ui:agent`, 7 `v1-audit-refused`, 12 `host-denied-spawns-process`. `agent_plan_commands`, `methodology_commands` and `workflow_commands` are fully classified and no longer appear in this batch's module list.
 - READ FIRST — batch 11 hand-traced all twelve detector-(c) hits instead of accepting the probe boolean, and correctly established that all twelve reach a real `Command::new`, so the floor excluded none. `activate_agent_task_pipeline` and `activate_agent_plan_direct_implementation` reach it ONLY through the stale-publish repair probe and are recorded as NARROW, which batch 12 re-confirmed by reconstructing the edge chain.
 - CORRECTION (PR 3.1-b batch 12) — batch 11 also recorded TWO scanner errors as fact, and NEITHER reproduces. `resolve_manual_role_spawn_settings` and `find_node_cli_path`/`ensure_resolved_node_bin_in_path`/`resolved_node_bin_dir` are all launch-free by the engine's own measurement, so the engine agreed with the hand trace all along. The `codex`/`node` tokens batch 11 called artifacts riding on a git command are REAL, and arrive through `CodexCliClient::spawn_agent -> build_codex_internal_mcp_overrides -> find_node_binary`. Do not inherit the artifact claim. The genuine over-attribution is a third mechanism: callees resolve by BARE NAME, so `conn.execute(..)` binds to `AgentWorkflowRunner::execute`. It is pinned by `batch12_detector_attribution_limits_are_measured_not_assumed` and deliberately not fixed — narrowing resolution removes edges, and edges are what the floor is measured from.

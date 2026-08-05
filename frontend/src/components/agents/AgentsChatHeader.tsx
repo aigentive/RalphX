@@ -49,6 +49,7 @@ import { formatBranchDisplay } from "@/lib/branch-utils";
 import { withAlpha } from "@/lib/theme-colors";
 import { cn } from "@/lib/utils";
 import { useConversationTicket } from "@/hooks/useTicketing";
+import { useAgentGate } from "@/hooks/useAgentGate";
 import { useChatStore } from "@/stores/chatStore";
 import type { AgentArtifactTab } from "@/stores/agentSessionStore";
 import type { ModelDisplay } from "@/types/chat-conversation";
@@ -419,8 +420,9 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
   const isSending = useChatStore((state) =>
     conversationStoreKey ? state.isSending[conversationStoreKey] ?? false : false,
   );
+  const conversationTicketGate = useAgentGate("ticketingConversationRead");
   const conversationTicketQuery = useConversationTicket(conversation?.id, {
-    enabled: Boolean(conversation),
+    enabled: Boolean(conversation) && !conversationTicketGate.gated,
   });
   const linkedTicket = conversationTicketQuery.data ?? null;
   const isAgentActive = isSending || agentStatus === "generating";

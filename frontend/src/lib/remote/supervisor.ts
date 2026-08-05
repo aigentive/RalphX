@@ -121,6 +121,8 @@ export class ConnectAttemptError extends Error {
 /** The descriptor fields the version/identity gate reads (§3.2). */
 export interface EnvironmentDescriptorView {
   readonly environmentId: string;
+  readonly appVersion: string;
+  readonly platform: string;
   readonly protocolVersion: number;
   readonly minClientProtocol: number;
 }

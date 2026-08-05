@@ -280,7 +280,7 @@ macro_rules! register_tauri_commands {
             commands::ideation_commands::get_task_proposal,
             commands::ideation_commands::list_session_proposals,
             commands::ideation_commands::update_task_proposal,
-            commands::ideation_commands::delete_task_proposal,
+            commands::ideation_commands::archive_task_proposal,
             commands::ideation_commands::toggle_proposal_selection,
             commands::ideation_commands::set_proposal_selection,
             commands::ideation_commands::reorder_proposals,

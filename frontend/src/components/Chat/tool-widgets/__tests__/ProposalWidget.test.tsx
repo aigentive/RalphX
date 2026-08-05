@@ -64,7 +64,7 @@ describe("ProposalWidget", () => {
 
   it("shows title with strikethrough for delete when title is in MCP-wrapped result", () => {
     const toolCall = makeToolCall({
-      name: "delete_task_proposal",
+      name: "archive_task_proposal",
       arguments: { proposal_id: "p1" },
       result: mcpWrap({ id: "p1", title: "Deleted Proposal" }),
     });

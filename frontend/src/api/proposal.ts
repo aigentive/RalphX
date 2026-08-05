@@ -286,11 +286,11 @@ export async function updateTaskProposal(
 }
 
 /**
- * Delete a task proposal
+ * Archive a task proposal
  * @param proposalId The proposal ID
  */
-export async function deleteTaskProposal(proposalId: string): Promise<void> {
-  await invoke("delete_task_proposal", { id: proposalId });
+export async function archiveTaskProposal(proposalId: string): Promise<void> {
+  await invoke("archive_task_proposal", { id: proposalId });
 }
 
 /**
@@ -403,7 +403,7 @@ export async function applyProposalsToKanban(
 export const proposalApi = {
   createTaskProposal,
   updateTaskProposal,
-  deleteTaskProposal,
+  archiveTaskProposal,
   reorderProposals,
   assessProposalPriority,
   assessAllPriorities,

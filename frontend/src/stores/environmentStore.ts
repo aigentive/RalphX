@@ -27,7 +27,7 @@ import {
   LOCAL_ENVIRONMENT_ID,
   setTransportEnvironmentId,
 } from "@/lib/remote/active-environment";
-import type { AttemptFailure } from "@/lib/remote/supervisor";
+import type { AttemptFailure, EnvironmentDescriptorView } from "@/lib/remote/supervisor";
 import type { SupervisorPresentation } from "@/lib/remote/supervisor-transition-table";
 
 export { LOCAL_ENVIRONMENT_ID };
@@ -116,6 +116,8 @@ interface EnvironmentState {
    * last-confirmed set (Fixed Decision 2).
    */
   effectiveScopes: Record<string, readonly string[] | null>;
+  /** Live descriptor facts only. Persisting these would lie as soon as the host upgrades. */
+  hostDescriptors: Record<string, Pick<EnvironmentDescriptorView, "appVersion" | "platform">>;
   /**
    * Per-environment notification tally OBSERVED while an environment is in the
    * background (PR 3.3, §6.4).
@@ -154,6 +156,8 @@ interface EnvironmentState {
   ) => void;
   /** Composition-root only: adopts a scope set the supervisor has CONFIRMED. */
   setEffectiveScopes: (id: string, scopes: readonly string[]) => void;
+  /** Composition-root only: refreshes live host facts on every connect attempt. */
+  setHostDescriptor: (id: string, descriptor: EnvironmentDescriptorView) => void;
   /** Composition-root only: forgets a scope set (quiesce / registry removal). */
   clearEffectiveScopes: (id: string) => void;
   /** Composition-root only: forgets a presentation (quiesce / registry removal). */
@@ -179,6 +183,7 @@ export const useEnvironmentStore = create<EnvironmentState>((set, get) => ({
   connectionStates: { [LOCAL_ENVIRONMENT_ID]: "connected" },
   connectionPresentations: {},
   effectiveScopes: {},
+  hostDescriptors: {},
   notificationBadges: {},
 
   setActiveEnvironment: async (id) => {
@@ -222,6 +227,12 @@ export const useEnvironmentStore = create<EnvironmentState>((set, get) => ({
           effectiveScopes[id] = scopes;
         }
       }
+      const hostDescriptors: EnvironmentState["hostDescriptors"] = {};
+      for (const [id, descriptor] of Object.entries(state.hostDescriptors)) {
+        if (knownIds.has(id) && id !== LOCAL_ENVIRONMENT_ID) {
+          hostDescriptors[id] = descriptor;
+        }
+      }
       // Same reasoning as the scopes above: a re-added row can reuse an id, and
       // inheriting the old presentation would paint a removed environment's last
       // "connected" over a connection that has never been attempted.
@@ -250,6 +261,7 @@ export const useEnvironmentStore = create<EnvironmentState>((set, get) => ({
         connectionStates,
         connectionPresentations,
         effectiveScopes,
+        hostDescriptors,
         notificationBadges,
         // A removed environment cannot stay active; Rust already fell back to
         // local when the row died, so the mirror follows.
@@ -308,6 +320,16 @@ export const useEnvironmentStore = create<EnvironmentState>((set, get) => ({
     if (id === LOCAL_ENVIRONMENT_ID) return; // local is never scope-limited
     set((state) => ({
       effectiveScopes: { ...state.effectiveScopes, [id]: [...scopes] },
+    }));
+  },
+
+  setHostDescriptor: (id, descriptor) => {
+    if (id === LOCAL_ENVIRONMENT_ID) return;
+    set((state) => ({
+      hostDescriptors: {
+        ...state.hostDescriptors,
+        [id]: { appVersion: descriptor.appVersion, platform: descriptor.platform },
+      },
     }));
   },
 

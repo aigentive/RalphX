@@ -166,10 +166,10 @@ export const TOOL_CALL_WIDGETS: ToolCallWidgetRegistry = {
   // Proposal CRUD tools → ProposalWidget
   "create_task_proposal": ProposalWidget,
   "update_task_proposal": ProposalWidget,
-  "delete_task_proposal": ProposalWidget,
+  "archive_task_proposal": ProposalWidget,
   "mcp__ralphx__create_task_proposal": ProposalWidget,
   "mcp__ralphx__update_task_proposal": ProposalWidget,
-  "mcp__ralphx__delete_task_proposal": ProposalWidget,
+  "mcp__ralphx__archive_task_proposal": ProposalWidget,
   // Ideation session tools → IdeationWidget
   "mcp__ralphx__create_plan_artifact": IdeationWidget,
   "mcp__ralphx__update_plan_artifact": IdeationWidget,

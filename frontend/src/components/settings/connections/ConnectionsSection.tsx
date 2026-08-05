@@ -94,6 +94,7 @@ export function ConnectionsSection() {
 }
 
 function ConnectionsPanel() {
+  const hostDescriptors = useEnvironmentStore((state) => state.hostDescriptors);
   const hydrated = usePaintBoundaryHydration();
   const [environments, setEnvironments] = useState<
     RemoteEnvironmentSummary[] | null
@@ -233,6 +234,7 @@ function ConnectionsPanel() {
             <ul className="space-y-2" data-testid="connections-list">
               {environments.map((environment) => {
                 const presentation = presentRow(environment);
+                const hostDescriptor = hostDescriptors[environment.id];
                 return (
                   <li
                     key={environment.id}
@@ -256,6 +258,11 @@ function ConnectionsPanel() {
                           ariaLabel={`Copy ${environment.name} address`}
                           testId={`connections-url-${environment.id}`}
                         />
+                        {hostDescriptor?.appVersion && hostDescriptor.platform && (
+                          <p className="mt-1 text-xs text-[var(--text-muted)]">
+                            {hostDescriptor.platform} · RalphX {hostDescriptor.appVersion}
+                          </p>
+                        )}
                       </div>
                       <StatusPill
                         tone={presentation.tone}

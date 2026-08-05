@@ -34,6 +34,8 @@ const HOST_ENV = "host-env-abc";
 
 const DESCRIPTOR: EnvironmentDescriptorView = {
   environmentId: HOST_ENV,
+  appVersion: "1.2.3",
+  platform: "macos-aarch64",
   protocolVersion: 1,
   minClientProtocol: 1,
 };

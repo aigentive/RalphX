@@ -16,6 +16,7 @@ const { supervisors } = vi.hoisted(() => ({
   supervisors: [] as Array<{
     deps: {
       environmentId: string;
+      fetchDescriptor: () => Promise<unknown>;
       refreshScopes: () => Promise<readonly string[]>;
       applyScopes: (scopes: readonly string[]) => void;
       openStream: () => Promise<unknown>;

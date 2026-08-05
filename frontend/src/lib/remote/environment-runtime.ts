@@ -121,6 +121,8 @@ function parseDescriptor(value: unknown): EnvironmentDescriptorView {
   if (
     record === null ||
     typeof record.environmentId !== "string" ||
+    typeof record.appVersion !== "string" ||
+    typeof record.platform !== "string" ||
     typeof record.protocolVersion !== "number" ||
     typeof record.minClientProtocol !== "number"
   ) {
@@ -128,6 +130,8 @@ function parseDescriptor(value: unknown): EnvironmentDescriptorView {
   }
   return {
     environmentId: record.environmentId,
+    appVersion: record.appVersion,
+    platform: record.platform,
     protocolVersion: record.protocolVersion,
     minClientProtocol: record.minClientProtocol,
   };
@@ -464,7 +468,9 @@ export function initializeEnvironmentRuntime(): () => void {
           if (!response.ok) {
             throw new Error(`Descriptor request failed with HTTP ${response.status}.`);
           }
-          return parseDescriptor(await response.json());
+          const descriptor = parseDescriptor(await response.json());
+          useEnvironmentStore.getState().setHostDescriptor(environmentId, descriptor);
+          return descriptor;
         } catch (reason: unknown) {
           recordConnectionEvent(
             environmentId,

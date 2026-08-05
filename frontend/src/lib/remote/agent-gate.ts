@@ -83,6 +83,11 @@ export const REMOTE_UNAVAILABLE_HINT =
  * signal, and several affordances are legitimately unavailable today.
  */
 export const AGENT_GATED_AFFORDANCES = {
+  ticketingProvidersRead: "list_ticketing_providers",
+  ticketingStatusCatalogRead: "list_ticketing_status_catalog",
+  ticketingAssociationsRead: "get_ticket_associations",
+  ticketingConversationRead: "get_conversation_ticket",
+  ticketingRefresh: "refresh_tickets",
   // Changes hydration uses snapshot-only twins. Older hosts omit these rows, so Changes
   // availability derives from manifest absence instead of attempting the git-backed locals.
   workspaceChangesSummary:

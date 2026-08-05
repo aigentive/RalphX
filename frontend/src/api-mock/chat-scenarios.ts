@@ -481,7 +481,7 @@ const chatScenarioFixtures: Record<MockChatScenarioName, MockChatScenario> = {
             {
               type: "tool_use",
               id: "proposal-delete-1",
-              name: "mcp__ralphx__delete_task_proposal",
+              name: "mcp__ralphx__archive_task_proposal",
               arguments: { proposal_id: "proposal-delete-1" },
               result: [
                 {

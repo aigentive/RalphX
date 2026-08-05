@@ -314,6 +314,30 @@ pub const MODULE_DEFAULTS: &[ModuleDefault] = &[
 
 /// Narrow decisions which differ from their module default.
 pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
+    read_row(
+        "list_ticketing_providers",
+        "audited local settings-repository reads; response summaries omit token_secret_ref and no provider call is made",
+    ),
+    read_row(
+        "list_ticketing_status_catalog",
+        "audited local status-catalog repository read; no sync, provider call, credential reference, or write",
+    ),
+    read_row(
+        "get_ticket_associations",
+        "audited local link-repository and persisted PR-branch-summary reads; no provider call or credential reference",
+    ),
+    read_row(
+        "get_conversation_ticket",
+        "audited local conversation-link repository reads; response contains ticket identity only and no credential reference",
+    ),
+    read_row(
+        "refresh_tickets",
+        "audited capability-free clock response; validates provider and returns now_string without state, network, or credential access",
+    ),
+    process_refusal(
+        "start_ralphx_work_from_ticket",
+        "detector-c, hand-traced: AgentConversationStartService::start reaches the agent conversation process launch chain",
+    ),
     CommandOverride {
         command: "inject_task",
         policy: policy(
@@ -738,6 +762,18 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
             RiskClass::AgentControl,
             MUTATES_CONTENT,
             "content-surface: updates worker-consumed task proposal",
+        ),
+    },
+    // Renamed from `delete_task_proposal` in Wave D: the body calls `archive_proposal_impl`
+    // and has always archived rather than deleted, so the old name only ever earned it the
+    // `delete_` prefix floor. Same content capability as its update sibling — archiving a
+    // proposal changes what a worker subsequently reads.
+    CommandOverride {
+        command: "archive_task_proposal",
+        policy: policy(
+            RiskClass::AgentControl,
+            MUTATES_CONTENT,
+            "content-surface: archives a worker-consumed task proposal",
         ),
     },
     CommandOverride {

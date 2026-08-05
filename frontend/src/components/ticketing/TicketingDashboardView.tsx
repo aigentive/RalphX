@@ -41,6 +41,7 @@ import {
   useUpdateTicketingStatusPresentation,
 } from "@/hooks/useTicketing";
 import { useConversations } from "@/hooks/useChat";
+import { useAgentGate } from "@/hooks/useAgentGate";
 import { useProjects } from "@/hooks/useProjects";
 import {
   getValidTicketingProviders,
@@ -790,8 +791,14 @@ export function TicketingDashboardView({
   const lastAutoSyncedStatusScope = useRef<string | null>(null);
 
   const queryClient = useQueryClient();
+  const providersReadGate = useAgentGate("ticketingProvidersRead");
+  const statusCatalogReadGate = useAgentGate("ticketingStatusCatalogRead");
+  const associationsReadGate = useAgentGate("ticketingAssociationsRead");
+  const refreshGate = useAgentGate("ticketingRefresh");
   const projectsQuery = useProjects();
-  const providersQuery = useTicketingProviders(projectId, { enabled: Boolean(projectId) });
+  const providersQuery = useTicketingProviders(projectId, {
+    enabled: Boolean(projectId) && !providersReadGate.gated,
+  });
   const providers = useMemo(() => providersQuery.data ?? [], [providersQuery.data]);
   const validProviders = useMemo(
     () => getValidTicketingProviders(providers),
@@ -1044,11 +1051,14 @@ export function TicketingDashboardView({
   });
   const associationsQuery = useTicketAssociations(
     detailInput ? { ...detailInput, projectId } : null,
-    { enabled: Boolean(detailInput && projectId) },
+    { enabled: Boolean(detailInput && projectId) && !associationsReadGate.gated },
   );
   const refreshTickets = useRefreshTickets();
   const statusCatalogQuery = useTicketingStatusCatalog(statusCatalogScope, {
-    enabled: statusManagerOpen && Boolean(statusCatalogScope && readableProvider),
+    enabled:
+      statusManagerOpen &&
+      Boolean(statusCatalogScope && readableProvider) &&
+      !statusCatalogReadGate.gated,
   });
   const refreshStatusCatalog = useRefreshTicketingStatusCatalog();
   const updateStatusPresentationMutation = useUpdateTicketingStatusPresentation();
@@ -1325,7 +1335,7 @@ export function TicketingDashboardView({
   }
 
   function handleRefresh() {
-    if (!activeProvider) {
+    if (!activeProvider || refreshGate.gated) {
       return;
     }
     refreshTickets.mutate({
@@ -1669,6 +1679,7 @@ export function TicketingDashboardView({
         filters={filters}
         viewMode={viewMode}
         isRefreshing={refreshTickets.isPending || ticketsQuery.isFetching}
+        refreshDisabled={refreshGate.gated}
         onContainerChange={(containerId) => {
           setContainerId(containerId);
           if (activeProvider === "clickup" && containerId !== filterBarContainerId) {

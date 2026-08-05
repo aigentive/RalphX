@@ -482,11 +482,11 @@ export const ideationApi = {
     },
 
     /**
-     * Delete a proposal
+     * Archive a proposal
      * @param proposalId The proposal ID
      */
-    delete: async (proposalId: string): Promise<void> => {
-      await invoke("delete_task_proposal", { id: proposalId });
+    archive: async (proposalId: string): Promise<void> => {
+      await invoke("archive_task_proposal", { id: proposalId });
     },
 
     /**
