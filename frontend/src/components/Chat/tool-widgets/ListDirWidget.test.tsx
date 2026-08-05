@@ -94,6 +94,36 @@ describe("ListDirWidget", () => {
     expect(screen.getByText("README.md")).toBeInTheDocument();
   });
 
+  it("renders exclusion notes without listing them as directory entries", () => {
+    render(
+      <ListDirWidget
+        toolCall={makeListDirCall({
+          result: {
+            content: [
+              {
+                type: "text",
+                text: [
+                  "DIRECTORY: /workspace/project",
+                  "ENTRIES: 1",
+                  "NOTE: 2 hidden paths skipped. Set include_hidden=true to include them.",
+                  "",
+                  "FILE visible.ts (12 B)",
+                ].join("\n"),
+              },
+            ],
+            structured_content: null,
+          },
+        })}
+      />,
+    );
+
+    expect(screen.getByText("visible.ts (12 B)")).toBeInTheDocument();
+    expect(
+      screen.getByText("2 hidden paths skipped. Set include_hidden=true to include them."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/^NOTE:/)).not.toBeInTheDocument();
+  });
+
   it("routes prefixed fs_list_dir through ToolCallIndicator instead of generic Calling", async () => {
     render(<ToolCallIndicator toolCall={makeListDirCall()} />);
 
