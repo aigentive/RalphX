@@ -45,20 +45,6 @@ impl BranchStatusCache {
         self.entries.insert(workspace_path.to_path_buf(), snapshot);
     }
 
-    pub(crate) fn refresh_due(
-        &self,
-        workspace_path: &Path,
-        now: DateTime<Utc>,
-        refresh_after: Duration,
-    ) -> bool {
-        self.snapshot(workspace_path)
-            .map(|snapshot| {
-                !snapshot.dirty_known
-                    || now.signed_duration_since(snapshot.dirty_as_of) >= refresh_after
-            })
-            .unwrap_or(true)
-    }
-
     pub(crate) fn claim_refresh(&self, workspace_path: &Path) -> bool {
         self.refreshes_in_flight
             .insert(workspace_path.to_path_buf(), ())

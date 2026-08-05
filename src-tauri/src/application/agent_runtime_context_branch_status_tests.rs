@@ -112,12 +112,6 @@ fn pr_observation_records_relation_without_inventing_commit_counts() {
     assert_eq!(snapshot.base_ref.as_deref(), Some("main"));
     assert_eq!(snapshot.behind_base, None);
     assert_eq!(snapshot.ahead_of_base, None);
-    assert!(cache.refresh_due(
-        Path::new("/tmp/pr-observed-workspace"),
-        observed_at + Duration::seconds(10),
-        Duration::seconds(30),
-    ));
-
     let rendered = render_branch_status(
         &cache,
         Path::new("/tmp/pr-observed-workspace"),
