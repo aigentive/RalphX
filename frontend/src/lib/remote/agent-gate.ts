@@ -172,24 +172,11 @@ export const AGENT_GATED_AFFORDANCES = {
   // registered, so an existing reference still renders and can still be detached.
   folderReferenceAdd: "add_conversation_folder_reference",
   folderReferenceRemove: "remove_conversation_folder_reference",
-  // Dropping and rewriting a turn that is already sitting in the host's queue. Both name
-  // `delete_queued_agent_message`, which the host does NOT expose remotely, so both resolve
-  // `unavailable` — derived from absence, as always.
-  //
-  // Edit shares the delete row because delete is the step that decides it: the edit path is
-  // delete-then-send, and its send half (`send_remote_chat_message`) IS registered. That
-  // asymmetry was the bug — the delete failed, was swallowed, the local chip vanished anyway,
-  // and the send went out regardless, so the agent received BOTH the original queued turn and
-  // the rewritten one. An affordance whose first step cannot land is unavailable as a whole,
-  // whatever its second step can do.
-  //
-  // Unavailable rather than gated: no `ui:agent` grant reaches an unregistered op, so pointing
-  // the user at a host switch would point at nothing. Spawn-free queue twins
-  // (`get/delete/update_queued_agent_message`) are the real fix and need host registrations.
-  queuedMessageDelete: "delete_queued_agent_message",
-  queuedMessageEdit: "delete_queued_agent_message",
-  // Unavailable until a spawn-free queue twin registers; Phase 6 is the candidate owner.
-  queuedMessageSendNow: "send_queued_agent_message_now",
+  // Wave B3c wires the B3a/B3b spawn-free queue twins. Edit shares the cancel row because its
+  // first, deciding step is cancel; its already-registered send half remains unchanged.
+  queuedMessageDelete: "cancel_remote_queued_agent_message",
+  queuedMessageEdit: "cancel_remote_queued_agent_message",
+  queuedMessageSendNow: "request_remote_queued_message_send",
   automationResume: "resume_automation",
   // Automation lifecycle controls are host-classified `agentControl`, including
   // authority-reducing pause/stop, matching the task pause/stop precedent below.

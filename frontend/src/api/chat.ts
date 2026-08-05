@@ -1896,18 +1896,18 @@ const ComposerSelectionSnapshotSchema = z.object({
   content: z.string(),
 });
 
-const QueuedMessageResponseSchema = z.object({
+export const QueuedMessageResponseSchema = z.object({
   id: z.string(),
   content: z.string(),
   created_at: z.string(),
   is_editing: z.boolean(),
-  composer_selection_snapshot: ComposerSelectionSnapshotSchema.optional(),
+  composer_selection_snapshot: ComposerSelectionSnapshotSchema.nullish(),
   attachment_ids: z.array(z.string()).optional().default([]),
 });
 
 type RawQueuedMessage = z.infer<typeof QueuedMessageResponseSchema>;
 
-function transformQueuedMessage(raw: RawQueuedMessage): QueuedMessageResponse {
+export function transformQueuedMessage(raw: RawQueuedMessage): QueuedMessageResponse {
   const selection = raw.composer_selection_snapshot;
   return {
     id: raw.id,
@@ -2012,8 +2012,11 @@ export const chatApi = {
   startAgentTaskPipeline,
   sendAgentMessage,
   getQueuedAgentMessages,
+  listRemoteQueuedAgentMessages,
   deleteQueuedAgentMessage,
+  cancelRemoteQueuedAgentMessage,
   sendQueuedAgentMessageNow,
+  sendRemoteQueuedAgentMessageNow,
   // Agent lifecycle
   isChatServiceAvailable,
   stopAgent,
@@ -5828,6 +5831,156 @@ export async function getQueuedAgentMessages(
     z.array(QueuedMessageResponseSchema),
   );
   return raw.map(transformQueuedMessage);
+}
+
+export async function listRemoteQueuedAgentMessages(
+  conversationId: string,
+): Promise<QueuedMessageResponse[]> {
+  const raw = await typedInvoke(
+    "list_remote_queued_agent_messages",
+    { conversationId },
+    z.array(QueuedMessageResponseSchema),
+  );
+  return raw.map(transformQueuedMessage);
+}
+
+export async function cancelRemoteQueuedAgentMessage(
+  conversationId: string,
+  messageId: string,
+): Promise<boolean> {
+  const response = await typedInvoke(
+    "cancel_remote_queued_agent_message",
+    { conversationId, messageId },
+    z.object({ deleted: z.boolean() }).strict(),
+  );
+  return response.deleted;
+}
+
+const RemoteQueuedMessageSendStatusSchema = z.enum([
+  "pending",
+  "starting",
+  "completed",
+  "failed",
+  "failedStale",
+]);
+const RemoteQueuedMessageSendResultSchema = z
+  .object({
+    benign: z.boolean().optional(),
+    rehydrateQueue: z.boolean().optional(),
+    restoredToFront: z.boolean().optional(),
+    runId: z.string().optional(),
+  })
+  .passthrough();
+const RequestRemoteQueuedMessageSendResponseSchema = z
+  .object({
+    requestId: z.string(),
+    status: RemoteQueuedMessageSendStatusSchema,
+    deduplicated: z.boolean(),
+    createdAt: z.string(),
+  })
+  .strict();
+const GetRemoteQueuedMessageSendRequestResponseSchema = z
+  .object({
+    requestId: z.string(),
+    status: RemoteQueuedMessageSendStatusSchema,
+    errorCode: z.string().nullable(),
+    result: RemoteQueuedMessageSendResultSchema.nullable(),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+  })
+  .strict();
+
+export interface RemoteQueuedMessageSendOutcome {
+  status: "completed" | "alreadySent";
+  runId: string | null;
+  rehydrateQueue: boolean;
+}
+
+export class RemoteQueuedMessageSendError extends Error {
+  readonly errorCode: string | null;
+  readonly restoredToFront: boolean;
+  readonly rehydrateQueue: boolean;
+
+  constructor(
+    errorCode: string | null,
+    result: z.infer<typeof RemoteQueuedMessageSendResultSchema> | null,
+  ) {
+    super(errorCode ?? "The host could not send the queued message");
+    this.name = "RemoteQueuedMessageSendError";
+    this.errorCode = errorCode;
+    this.restoredToFront = result?.restoredToFront === true;
+    this.rehydrateQueue = result?.rehydrateQueue === true;
+  }
+}
+
+const REMOTE_QUEUED_SEND_POLL_INTERVAL_MS = 400;
+const REMOTE_QUEUED_SEND_MAX_POLLS = 60;
+
+export async function sendRemoteQueuedAgentMessageNow(
+  conversationId: string,
+  queuedMessageId: string,
+  expectedActiveRunId?: string,
+): Promise<RemoteQueuedMessageSendOutcome> {
+  let requested: z.infer<typeof RequestRemoteQueuedMessageSendResponseSchema>;
+  try {
+    requested = await typedInvoke(
+      "request_remote_queued_message_send",
+      {
+        conversationId,
+        queuedMessageId,
+        expectedActiveRunId: expectedActiveRunId ?? null,
+      },
+      RequestRemoteQueuedMessageSendResponseSchema,
+    );
+  } catch (error) {
+    if (error instanceof RemoteTransportError) throw error;
+    const errorCode =
+      typeof error === "string"
+        ? error
+        : error instanceof Error
+          ? error.message
+          : null;
+    throw new RemoteQueuedMessageSendError(errorCode, null);
+  }
+  let request: z.infer<typeof GetRemoteQueuedMessageSendRequestResponseSchema> = {
+    requestId: requested.requestId,
+    status: requested.status,
+    errorCode: null,
+    result: null,
+    createdAt: requested.createdAt,
+    updatedAt: requested.createdAt,
+  };
+  for (let attempt = 0; attempt < REMOTE_QUEUED_SEND_MAX_POLLS; attempt += 1) {
+    if (["completed", "failed", "failedStale"].includes(request.status)) break;
+    await new Promise((resolve) =>
+      setTimeout(resolve, REMOTE_QUEUED_SEND_POLL_INTERVAL_MS),
+    );
+    request = await typedInvoke(
+      "get_remote_queued_message_send_request",
+      { requestId: requested.requestId },
+      GetRemoteQueuedMessageSendRequestResponseSchema,
+    );
+  }
+  if (!["completed", "failed", "failedStale"].includes(request.status)) {
+    throw new Error(
+      "Timed out waiting for the host to send the queued message. Refresh to check its state.",
+    );
+  }
+  if (request.status === "completed") {
+    return {
+      status: "completed",
+      runId: request.result?.runId ?? null,
+      rehydrateQueue: request.result?.rehydrateQueue === true,
+    };
+  }
+  if (request.errorCode === "REMOTE_QUEUE_SEND_ALREADY_SENT") {
+    return {
+      status: "alreadySent",
+      runId: null,
+      rehydrateQueue: request.result?.rehydrateQueue === true,
+    };
+  }
+  throw new RemoteQueuedMessageSendError(request.errorCode, request.result);
 }
 
 /**

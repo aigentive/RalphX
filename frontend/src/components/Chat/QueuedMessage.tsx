@@ -68,11 +68,8 @@ export interface QueuedMessageProps {
 // ============================================================================
 
 export function QueuedMessage({ message, onEdit, onDelete, onSendNow }: QueuedMessageProps) {
-  // `delete_queued_agent_message` is not a facade op, so both of these resolve `unavailable`
-  // on a paired device. Rendering the buttons anyway is what made a "deleted" turn still
-  // arrive and an "edited" one arrive twice — the control looked live, the host never dropped
-  // the original. Send now is also an unregistered queue mutation, so all three are hidden
-  // with the gate's shared hint until spawn-free queue twins register.
+  // The B3 queue twins make these controls available on current paired hosts. Keep all three
+  // gates as capability absence remains the compatibility signal for an older host.
   const deleteGate = useAgentGate("queuedMessageDelete");
   const editGate = useAgentGate("queuedMessageEdit");
   const sendNowGate = useAgentGate("queuedMessageSendNow");

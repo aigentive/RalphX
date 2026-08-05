@@ -38,25 +38,49 @@ vi.mock("@tanstack/react-query", () => ({
 const mockActions = {
   queueMessage: vi.fn(),
   deleteQueuedMessage: vi.fn(),
+  setQueuedMessages: vi.fn(),
   startEditingQueuedMessage: vi.fn(),
   setActiveConversation: vi.fn(),
   setAgentRunning: vi.fn(),
   setSending: vi.fn(),
+  activeAgentRunIds: { "task:task-1": "run-active" },
 };
 vi.mock("@/stores/chatStore", () => ({
   useChatStore: (selector: (state: typeof mockActions) => unknown) => selector(mockActions),
+  selectActiveAgentRunId: (storeKey: string) =>
+    (state: typeof mockActions) => state.activeAgentRunIds[storeKey as keyof typeof state.activeAgentRunIds],
 }));
 
 const mockSendAgentMessage = vi.fn();
 const mockDeleteQueuedAgentMessage = vi.fn();
 const mockSendQueuedAgentMessageNow = vi.fn();
+const mockCancelRemoteQueuedAgentMessage = vi.fn();
+const mockSendRemoteQueuedAgentMessageNow = vi.fn();
+const mockListRemoteQueuedAgentMessages = vi.fn();
 vi.mock("@/api/chat", () => ({
+  RemoteQueuedMessageSendError: class RemoteQueuedMessageSendError extends Error {
+    errorCode: string | null;
+    restoredToFront: boolean;
+    rehydrateQueue: boolean;
+    constructor(errorCode: string | null, result: { restoredToFront?: boolean; rehydrateQueue?: boolean } | null) {
+      super(errorCode ?? "failed");
+      this.errorCode = errorCode;
+      this.restoredToFront = result?.restoredToFront === true;
+      this.rehydrateQueue = result?.rehydrateQueue === true;
+    }
+  },
   chatApi: {
     sendAgentMessage: (...args: unknown[]) => mockSendAgentMessage(...args),
     deleteQueuedAgentMessage: (...args: unknown[]) =>
       mockDeleteQueuedAgentMessage(...args),
     sendQueuedAgentMessageNow: (...args: unknown[]) =>
       mockSendQueuedAgentMessageNow(...args),
+    cancelRemoteQueuedAgentMessage: (...args: unknown[]) =>
+      mockCancelRemoteQueuedAgentMessage(...args),
+    sendRemoteQueuedAgentMessageNow: (...args: unknown[]) =>
+      mockSendRemoteQueuedAgentMessageNow(...args),
+    listRemoteQueuedAgentMessages: (...args: unknown[]) =>
+      mockListRemoteQueuedAgentMessages(...args),
   },
   stopAgent: vi.fn(),
 }));
@@ -102,13 +126,20 @@ function hostRefusal(): RemoteTransportError {
     code: "REMOTE_COMMAND_UNAVAILABLE",
     message: "not registered on this host",
     environmentId: REMOTE_ID,
-    cmd: "delete_queued_agent_message",
+    cmd: "cancel_remote_queued_agent_message",
   });
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
   mockDeleteQueuedAgentMessage.mockResolvedValue(undefined);
+  mockCancelRemoteQueuedAgentMessage.mockResolvedValue(true);
+  mockSendRemoteQueuedAgentMessageNow.mockResolvedValue({
+    status: "completed",
+    runId: "run-next",
+    rehydrateQueue: false,
+  });
+  mockListRemoteQueuedAgentMessages.mockResolvedValue([]);
   mockSendAgentMessage.mockResolvedValue({
     conversationId: "conv-1",
     agentRunId: "run-1",
@@ -126,7 +157,7 @@ afterEach(() => {
 describe("remote delete — host first, local state follows", () => {
   it("keeps the chip when the host refuses the delete", async () => {
     setTransportEnvironmentId(REMOTE_ID);
-    mockDeleteQueuedAgentMessage.mockRejectedValueOnce(hostRefusal());
+    mockCancelRemoteQueuedAgentMessage.mockRejectedValueOnce(hostRefusal());
     const result = setup();
 
     await act(async () => {
@@ -141,7 +172,7 @@ describe("remote delete — host first, local state follows", () => {
   it("calls the host BEFORE touching local state", async () => {
     setTransportEnvironmentId(REMOTE_ID);
     const order: string[] = [];
-    mockDeleteQueuedAgentMessage.mockImplementationOnce(async () => {
+    mockCancelRemoteQueuedAgentMessage.mockImplementationOnce(async () => {
       order.push("host");
     });
     mockActions.deleteQueuedMessage.mockImplementationOnce(() => {
@@ -158,7 +189,7 @@ describe("remote delete — host first, local state follows", () => {
 
   it("surfaces the gate's own copy for a typed transport code", async () => {
     setTransportEnvironmentId(REMOTE_ID);
-    mockDeleteQueuedAgentMessage.mockRejectedValueOnce(hostRefusal());
+    mockCancelRemoteQueuedAgentMessage.mockRejectedValueOnce(hostRefusal());
     const result = setup();
 
     await act(async () => {
@@ -184,12 +215,25 @@ describe("remote delete — host first, local state follows", () => {
     expect(mockActions.deleteQueuedMessage).toHaveBeenCalledWith(STORE_KEY, MESSAGE_ID);
     expect(mockToastError).not.toHaveBeenCalled();
   });
+
+  it("drops the chip and shows the already-sent presentation when deleted is false", async () => {
+    setTransportEnvironmentId(REMOTE_ID);
+    mockCancelRemoteQueuedAgentMessage.mockResolvedValueOnce(false);
+    const result = setup();
+
+    await act(async () => {
+      await result.current.handleDeleteQueuedMessage(MESSAGE_ID);
+    });
+
+    expect(mockActions.deleteQueuedMessage).toHaveBeenCalledWith(STORE_KEY, MESSAGE_ID);
+    expect(mockToastWarning).toHaveBeenCalledWith("Message already sent");
+  });
 });
 
 describe("remote edit — a failed delete must not become a second turn", () => {
   it("does not send the rewrite when the host kept the original queued", async () => {
     setTransportEnvironmentId(REMOTE_ID);
-    mockDeleteQueuedAgentMessage.mockRejectedValueOnce(hostRefusal());
+    mockCancelRemoteQueuedAgentMessage.mockRejectedValueOnce(hostRefusal());
     const result = setup();
 
     await act(async () => {
@@ -205,7 +249,7 @@ describe("remote edit — a failed delete must not become a second turn", () => 
 
   it("leaves the composer's sending flag untouched on an aborted edit", async () => {
     setTransportEnvironmentId(REMOTE_ID);
-    mockDeleteQueuedAgentMessage.mockRejectedValueOnce(hostRefusal());
+    mockCancelRemoteQueuedAgentMessage.mockRejectedValueOnce(hostRefusal());
     const result = setup();
 
     await act(async () => {
@@ -224,9 +268,77 @@ describe("remote edit — a failed delete must not become a second turn", () => 
       await result.current.handleEditQueuedMessage(MESSAGE_ID, "rewritten");
     });
 
-    expect(mockDeleteQueuedAgentMessage).toHaveBeenCalledTimes(1);
+    expect(mockCancelRemoteQueuedAgentMessage).toHaveBeenCalledTimes(1);
     expect(mockActions.deleteQueuedMessage).toHaveBeenCalledWith(STORE_KEY, MESSAGE_ID);
     expect(mockSendAgentMessage).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("remote send now — host intent settlement", () => {
+  it("treats ALREADY_SENT as benign", async () => {
+    setTransportEnvironmentId(REMOTE_ID);
+    mockSendRemoteQueuedAgentMessageNow.mockResolvedValueOnce({
+      status: "alreadySent",
+      runId: null,
+      rehydrateQueue: false,
+    });
+    const result = setup();
+
+    await act(async () => {
+      await result.current.handleSendQueuedMessageNow(MESSAGE_ID, "queued");
+    });
+
+    expect(mockToastWarning).toHaveBeenCalledWith("Message already sent");
+    expect(mockToastError).not.toHaveBeenCalled();
+    expect(mockSendRemoteQueuedAgentMessageNow).toHaveBeenCalledWith(
+      "task-1",
+      MESSAGE_ID,
+      "run-active",
+    );
+  });
+
+  it("surfaces RUN_CHANGED with refresh guidance", async () => {
+    setTransportEnvironmentId(REMOTE_ID);
+    const { RemoteQueuedMessageSendError } = await import("@/api/chat");
+    mockSendRemoteQueuedAgentMessageNow.mockRejectedValueOnce(
+      new RemoteQueuedMessageSendError("REMOTE_QUEUE_SEND_RUN_CHANGED", null),
+    );
+    const result = setup();
+
+    await act(async () => {
+      await result.current.handleSendQueuedMessageNow(MESSAGE_ID, "queued");
+    });
+
+    expect(mockToastError).toHaveBeenCalledWith("The agent moved on — refresh");
+  });
+
+  it("rehydrates only when HOST_FAILED restored the entry to the front", async () => {
+    setTransportEnvironmentId(REMOTE_ID);
+    const { RemoteQueuedMessageSendError } = await import("@/api/chat");
+    mockSendRemoteQueuedAgentMessageNow.mockRejectedValueOnce(
+      new RemoteQueuedMessageSendError("REMOTE_QUEUE_SEND_HOST_FAILED", {
+        restoredToFront: true,
+        rehydrateQueue: true,
+      }),
+    );
+    const result = setup();
+
+    await act(async () => {
+      await result.current.handleSendQueuedMessageNow(MESSAGE_ID, "queued");
+    });
+    expect(mockListRemoteQueuedAgentMessages).toHaveBeenCalledWith("task-1");
+
+    vi.clearAllMocks();
+    mockSendRemoteQueuedAgentMessageNow.mockRejectedValueOnce(
+      new RemoteQueuedMessageSendError("REMOTE_QUEUE_SEND_HOST_FAILED", {
+        restoredToFront: false,
+        rehydrateQueue: true,
+      }),
+    );
+    await act(async () => {
+      await result.current.handleSendQueuedMessageNow(MESSAGE_ID, "queued");
+    });
+    expect(mockListRemoteQueuedAgentMessages).not.toHaveBeenCalled();
   });
 });
 

@@ -11,8 +11,8 @@
 import { useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { useChatStore } from "@/stores/chatStore";
-import { chatApi, stopAgent } from "@/api/chat";
+import { selectActiveAgentRunId, useChatStore } from "@/stores/chatStore";
+import { chatApi, RemoteQueuedMessageSendError, stopAgent } from "@/api/chat";
 import { recoverTaskExecution } from "@/api/recovery";
 import {
   addOptimisticUserMessageToConversationCache,
@@ -118,11 +118,33 @@ export function useChatActions({
   const queryClient = useQueryClient();
   const queueMessage = useChatStore((s) => s.queueMessage);
   const deleteQueuedMessage = useChatStore((s) => s.deleteQueuedMessage);
+  const setQueuedMessages = useChatStore((s) => s.setQueuedMessages);
   const startEditingQueuedMessage = useChatStore((s) => s.startEditingQueuedMessage);
   const setActiveConversation = useChatStore((s) => s.setActiveConversation);
   const setAgentRunning = useChatStore((s) => s.setAgentRunning);
   const setSending = useChatStore((s) => s.setSending);
+  const activeAgentRunId = useChatStore(selectActiveAgentRunId(storeContextKey));
   const backendQueueContextId = queueContextId ?? contextId;
+
+  const hydrateRemoteQueue = useCallback(async () => {
+    const messages = await chatApi.listRemoteQueuedAgentMessages(
+      backendQueueContextId,
+    );
+    setQueuedMessages(
+      storeContextKey,
+      messages.map((message) => ({
+        id: message.id,
+        content: message.content,
+        createdAt: message.createdAt,
+        isEditing: message.isEditing,
+        source: "backend" as const,
+        attachmentIds: [...(message.attachmentIds ?? [])],
+        ...(message.composerSelectionSnapshot
+          ? { composerSelectionSnapshot: message.composerSelectionSnapshot }
+          : {}),
+      })),
+    );
+  }, [backendQueueContextId, setQueuedMessages, storeContextKey]);
 
   const reportSendFailure = useCallback((err: unknown) => {
     const message = extractErrorMessage(err, "The agent runtime could not start.");
@@ -524,17 +546,19 @@ export function useChatActions({
       // `handleSendQueuedMessageNow`, which already keeps local state truthful on failure.
       if (isRemoteEnvironmentId(getTransportEnvironmentId())) {
         try {
-          await chatApi.deleteQueuedAgentMessage(
-            contextType,
+          const deleted = await chatApi.cancelRemoteQueuedAgentMessage(
             backendQueueContextId,
             messageId,
           );
+          deleteQueuedMessage(storeContextKey, messageId);
+          if (!deleted) {
+            toast.warning("Message already sent");
+          }
         } catch (err) {
           // The chip stays: it is describing a turn that really is still queued.
           reportQueueMutationFailure("Couldn't delete the queued message", err);
           return;
         }
-        deleteQueuedMessage(storeContextKey, messageId);
         return;
       }
 
@@ -565,6 +589,52 @@ export function useChatActions({
       attachmentIds?: string[],
       selectionSnapshot?: ComposerSelectionSnapshot,
     ) => {
+      if (isRemoteEnvironmentId(getTransportEnvironmentId())) {
+        deleteQueuedMessage(storeContextKey, messageId);
+        setSending(storeContextKey, true);
+        try {
+          const outcome = await chatApi.sendRemoteQueuedAgentMessageNow(
+            backendQueueContextId,
+            messageId,
+            activeAgentRunId,
+          );
+          if (outcome.status === "alreadySent") {
+            toast.warning("Message already sent");
+          } else {
+            setAgentRunning(storeContextKey, true);
+          }
+          if (outcome.rehydrateQueue) {
+            await hydrateRemoteQueue();
+          }
+        } catch (err) {
+          const hostWillRehydrate =
+            err instanceof RemoteQueuedMessageSendError &&
+            err.restoredToFront &&
+            err.rehydrateQueue;
+          if (
+            err instanceof RemoteQueuedMessageSendError &&
+            err.errorCode === "REMOTE_QUEUE_SEND_RUN_CHANGED"
+          ) {
+            toast.error("The agent moved on — refresh");
+          } else {
+            reportQueueMutationFailure("Couldn't send the queued message", err);
+          }
+          if (hostWillRehydrate) {
+            await hydrateRemoteQueue();
+          } else if (content) {
+            queueAcceptedMessage(
+              content,
+              messageId,
+              attachmentIds,
+              selectionSnapshot,
+            );
+          }
+        } finally {
+          setSending(storeContextKey, false);
+        }
+        return;
+      }
+
       deleteQueuedMessage(storeContextKey, messageId);
       setSending(storeContextKey, true);
 
@@ -603,6 +673,8 @@ export function useChatActions({
     },
     [
       backendQueueContextId,
+      activeAgentRunId,
+      hydrateRemoteQueue,
       contextType,
       deleteQueuedMessage,
       queueAcceptedMessage,
@@ -628,11 +700,15 @@ export function useChatActions({
       // leave the queue exactly as the host still has it.
       if (isRemoteEnvironmentId(getTransportEnvironmentId())) {
         try {
-          await chatApi.deleteQueuedAgentMessage(
-            contextType,
+          const deleted = await chatApi.cancelRemoteQueuedAgentMessage(
             backendQueueContextId,
             messageId,
           );
+          if (!deleted) {
+            deleteQueuedMessage(storeContextKey, messageId);
+            toast.warning("Message already sent");
+            return;
+          }
         } catch (err) {
           reportQueueMutationFailure("Couldn't edit the queued message", err);
           return;

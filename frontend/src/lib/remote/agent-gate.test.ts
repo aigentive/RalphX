@@ -280,7 +280,16 @@ describe("affordance mapping", () => {
   // Whole-scheduler pause/stop joined 2026-08-04: both ops are registered `operate`
   // (authority-reducing — they halt work, never start it), so their affordances must stay
   // usable on a default pairing exactly like the per-conversation stop brake.
-  const DEFAULT_PAIRING_BRAKES = ["agentStop", "executionPause", "executionStop"] as const;
+  // Queued-message cancel joined 2026-08-05 (Wave B3): cancel_remote_queued_agent_message
+  // withdraws a not-yet-consumed turn — the same authority-reducing direction — and edit
+  // rides the same op for its delete half.
+  const DEFAULT_PAIRING_BRAKES = [
+    "agentStop",
+    "executionPause",
+    "executionStop",
+    "queuedMessageDelete",
+    "queuedMessageEdit",
+  ] as const;
 
   it("resolves every affordance to a defined state without ui:agent", () => {
     for (const affordance of Object.keys(

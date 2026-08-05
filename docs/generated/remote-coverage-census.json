@@ -3,7 +3,7 @@
   "generatedBy": "scripts/generate-remote-coverage-census.mjs",
   "purpose": "PR 3.1 work manifest: every P-11-unclassified invoke command name, grouped into module-scoped work batches with a recommended registration order. A census and a plan — it registers nothing and decides no final class.",
   "scan": {
-    "invokedCommands": 593,
+    "invokedCommands": 597,
     "dynamicExpressions": 0,
     "seamBypasses": 0,
     "manifestClassified": 284,
@@ -12,10 +12,10 @@
     "pluginPackages": 7,
     "pluginHostTargetedExceptions": 0,
     "pluginLocal": 51,
-    "line": "PASS: remote transport drift — 593 invoke command name(s), 0 dynamic, 0 seam bypasses; 284 manifest-classified; 0 unclassified (P-11 COMPLETE — permanent zero).\n      P-11 census: all 593 names have a reviewed disposition — 257 remote-registered, 33 reason-coded local-only, 51 plugin-local (prefix rule), 252 manifest-classified only, 0 unclassified, 0 suppressions.\n      Tauri plugin surface: 51 plugin: command name(s) across 7 imported @tauri-apps/plugin-* package(s), 0 reviewed host-targeted exception(s)."
+    "line": "PASS: remote transport drift — 597 invoke command name(s), 0 dynamic, 0 seam bypasses; 284 manifest-classified; 0 unclassified (P-11 COMPLETE — permanent zero).\n      P-11 census: all 597 names have a reviewed disposition — 261 remote-registered, 33 reason-coded local-only, 51 plugin-local (prefix rule), 252 manifest-classified only, 0 unclassified, 0 suppressions.\n      Tauri plugin surface: 51 plugin: command name(s) across 7 imported @tauri-apps/plugin-* package(s), 0 reviewed host-targeted exception(s)."
   },
   "totals": {
-    "invokedCommandNames": 593,
+    "invokedCommandNames": 597,
     "remoteRegistered": 260,
     "localOnlyRows": 34,
     "pluginCommandNames": 51,

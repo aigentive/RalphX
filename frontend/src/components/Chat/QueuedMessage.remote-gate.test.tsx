@@ -1,5 +1,5 @@
 /**
- * Phase 1 — the queued-message edit/delete controls are honest on a paired device.
+ * Wave B3c — queued-message controls use the registered remote twins on paired clients.
  *
  * `delete_queued_agent_message` is not a facade op, so both affordances resolve
  * `unavailable` from ABSENCE. Rendering them anyway is what let a "deleted" turn still be
@@ -18,7 +18,6 @@ import { QueuedMessage } from "./QueuedMessage";
 import {
   AGENT_GATED_AFFORDANCES,
   REMOTE_FACADE_OPS,
-  REMOTE_UNAVAILABLE_HINT,
 } from "@/lib/remote/agent-gate";
 import { LOCAL_ENVIRONMENT_ID, useEnvironmentStore } from "@/stores/environmentStore";
 import type { QueuedMessage as QueuedMessageType } from "@/stores/chatStore";
@@ -77,39 +76,27 @@ beforeEach(() => {
 });
 
 describe("queued-message affordances on a paired device", () => {
-  it("renders neither edit nor delete, and says why", () => {
+  it("renders edit and delete when the host exposes their twin", () => {
     useRemoteEnvironment();
     renderQueued();
 
-    expect(screen.queryByTestId("queued-message-edit")).toBeNull();
-    expect(screen.queryByTestId("queued-message-delete")).toBeNull();
-    expect(
-      screen.getByTestId("queued-message-unavailable-hint"),
-    ).toHaveTextContent(REMOTE_UNAVAILABLE_HINT);
+    expect(screen.getByTestId("queued-message-edit")).toBeInTheDocument();
+    expect(screen.getByTestId("queued-message-delete")).toBeInTheDocument();
+    expect(screen.queryByTestId("queued-message-unavailable-hint")).toBeNull();
   });
 
-  it("uses the shared hint constant, not a per-surface phrasing", () => {
-    useRemoteEnvironment();
-    renderQueued();
-
-    // Copy discipline: the two existing constants only.
-    expect(screen.getByTestId("queued-message-unavailable-hint").textContent).toBe(
-      REMOTE_UNAVAILABLE_HINT,
-    );
-  });
-
-  it("stays hidden with a fully granted scope set — this is absence, not scope", () => {
+  it("stays visible with a fully granted scope set", () => {
     useRemoteEnvironment(["ui:read", "ui:operate", "ui:agent"]);
     renderQueued();
 
-    expect(screen.queryByTestId("queued-message-delete")).toBeNull();
+    expect(screen.getByTestId("queued-message-delete")).toBeInTheDocument();
   });
 
-  it("hides Send now remotely because its queue mutation is unavailable", () => {
+  it("shows Send now remotely when its intent twin is available", () => {
     useRemoteEnvironment();
     renderQueued(vi.fn());
 
-    expect(screen.queryByTestId("queued-message-send-now")).toBeNull();
+    expect(screen.getByTestId("queued-message-send-now")).toBeInTheDocument();
   });
 
   it("still shows the queued turn itself — hiding it would hide real state", () => {
@@ -132,18 +119,20 @@ describe("queued-message affordances on a paired device", () => {
   });
 });
 
-describe("the gate rows are derived from absence", () => {
-  it("names the op the callsite invokes, and the host does not expose it", () => {
+describe("the gate rows are derived from the generated manifest", () => {
+  it("names the registered twin each callsite invokes", () => {
     expect(AGENT_GATED_AFFORDANCES.queuedMessageDelete).toBe(
-      "delete_queued_agent_message",
+      "cancel_remote_queued_agent_message",
     );
     // Edit shares the row because delete is the step that decides it: the edit path is
     // delete-then-send, and a swallowed delete plus an unconditional send is the double turn.
     expect(AGENT_GATED_AFFORDANCES.queuedMessageEdit).toBe(
-      "delete_queued_agent_message",
+      "cancel_remote_queued_agent_message",
     );
-    expect(REMOTE_FACADE_OPS["delete_queued_agent_message"]).toBeUndefined();
-    expect(AGENT_GATED_AFFORDANCES.queuedMessageSendNow).toBe("send_queued_agent_message_now");
-    expect(REMOTE_FACADE_OPS["send_queued_agent_message_now"]).toBeUndefined();
+    expect(REMOTE_FACADE_OPS["cancel_remote_queued_agent_message"]).toBeDefined();
+    expect(AGENT_GATED_AFFORDANCES.queuedMessageSendNow).toBe(
+      "request_remote_queued_message_send",
+    );
+    expect(REMOTE_FACADE_OPS["request_remote_queued_message_send"]).toBeDefined();
   });
 });

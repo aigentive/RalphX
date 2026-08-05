@@ -28,13 +28,16 @@ vi.mock("@tanstack/react-query", () => ({
 const mockActions = {
   queueMessage: vi.fn(),
   deleteQueuedMessage: vi.fn(),
+  setQueuedMessages: vi.fn(),
   startEditingQueuedMessage: vi.fn(),
   setActiveConversation: vi.fn(),
   setAgentRunning: vi.fn(),
   setSending: vi.fn(),
+  activeAgentRunIds: {},
 };
 vi.mock("@/stores/chatStore", () => ({
   useChatStore: (selector: (state: typeof mockActions) => unknown) => selector(mockActions),
+  selectActiveAgentRunId: () => () => undefined,
 }));
 
 const mockSendAgentMessage = vi.fn();
@@ -43,10 +46,12 @@ const mockSendQueuedAgentMessageNow = vi.fn();
 const mockStopAgent = vi.fn();
 
 vi.mock("@/api/chat", () => ({
+  RemoteQueuedMessageSendError: class RemoteQueuedMessageSendError extends Error {},
   chatApi: {
     sendAgentMessage: (...args: unknown[]) => mockSendAgentMessage(...args),
     deleteQueuedAgentMessage: (...args: unknown[]) => mockDeleteQueuedAgentMessage(...args),
     sendQueuedAgentMessageNow: (...args: unknown[]) => mockSendQueuedAgentMessageNow(...args),
+    listRemoteQueuedAgentMessages: vi.fn(),
   },
   stopAgent: (...args: unknown[]) => mockStopAgent(...args),
 }));

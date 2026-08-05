@@ -2,12 +2,21 @@ import { renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { chatApi } from "@/api/chat";
 import { logger } from "@/lib/logger";
+import { RemoteTransportError } from "@/lib/remote/transport-errors";
+import {
+  resetTransportEnvironmentId,
+  setTransportEnvironmentId,
+} from "@/lib/remote/active-environment";
 import { useChatStore } from "@/stores/chatStore";
-import { useQueuedMessagesHydration } from "./useQueuedMessagesHydration";
+import {
+  loadQueuedMessagesForHydration,
+  useQueuedMessagesHydration,
+} from "./useQueuedMessagesHydration";
 
 vi.mock("@/api/chat", () => ({
   chatApi: {
     getQueuedAgentMessages: vi.fn(),
+    listRemoteQueuedAgentMessages: vi.fn(),
   },
 }));
 
@@ -20,6 +29,8 @@ vi.mock("@/lib/logger", () => ({
 describe("useQueuedMessagesHydration", () => {
   beforeEach(() => {
     vi.mocked(chatApi.getQueuedAgentMessages).mockReset();
+    vi.mocked(chatApi.listRemoteQueuedAgentMessages).mockReset();
+    resetTransportEnvironmentId();
     vi.mocked(logger.debug).mockReset();
     useChatStore.setState({
       messages: {},
@@ -105,6 +116,50 @@ describe("useQueuedMessagesHydration", () => {
     );
 
     expect(chatApi.getQueuedAgentMessages).not.toHaveBeenCalled();
+  });
+
+  it("hydrates a remote project conversation through the list twin", async () => {
+    setTransportEnvironmentId("env-remote");
+    vi.mocked(chatApi.listRemoteQueuedAgentMessages).mockResolvedValue([
+      {
+        id: "queued-remote",
+        content: "Remote turn",
+        createdAt: "2026-08-05T09:30:00Z",
+        isEditing: false,
+        attachmentIds: [],
+      },
+    ]);
+
+    renderHook(() =>
+      useQueuedMessagesHydration({
+        contextType: "project",
+        contextId: "conversation-remote",
+        storeContextKey: "project:conversation-remote",
+      }),
+    );
+
+    await waitFor(() => {
+      expect(chatApi.listRemoteQueuedAgentMessages).toHaveBeenCalledWith(
+        "conversation-remote",
+      );
+    });
+    expect(chatApi.getQueuedAgentMessages).not.toHaveBeenCalled();
+  });
+
+  it("preserves a typed remote hydration failure instead of converting it to an empty list", async () => {
+    setTransportEnvironmentId("env-remote");
+    const error = new RemoteTransportError({
+      code: "REMOTE_COMMAND_UNAVAILABLE",
+      message: "host lacks the list twin",
+      environmentId: "env-remote",
+      cmd: "list_remote_queued_agent_messages",
+    });
+    vi.mocked(chatApi.listRemoteQueuedAgentMessages).mockRejectedValueOnce(error);
+
+    await expect(
+      loadQueuedMessagesForHydration("project", "conversation-remote"),
+    ).rejects.toBe(error);
+    expect(logger.debug).not.toHaveBeenCalled();
   });
 
   it("logs and leaves state unchanged when hydration fails", async () => {
