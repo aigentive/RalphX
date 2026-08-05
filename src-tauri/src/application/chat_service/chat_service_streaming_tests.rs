@@ -979,7 +979,6 @@ async fn error_turn_complete_with_persisted_output_does_not_requeue_pending_stdi
         Some(Arc::clone(&app_state.chat_timeline_repo)),
         Some(pre_assistant_id.clone()),
         None,
-        None,
         CancellationToken::new(),
         StreamingStateCache::new(),
         None,
