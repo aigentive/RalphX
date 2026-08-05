@@ -88,7 +88,14 @@ export default defineConfig(async ({ mode }) => {
       react(),
       tailwindcss(),
       checker({
-        typescript: true,
+        // Keep the long-running checker inside the active worktree even when
+        // node_modules is repaired while dev-fresh remains running. Bare
+        // module resolution can otherwise retain React types from the primary
+        // checkout and report incompatible duplicate Ref types after HMR.
+        typescript: {
+          root: __dirname,
+          tsconfigPath: "tsconfig.json",
+        },
         overlay: {
           initialIsOpen: false,
           position: "br",

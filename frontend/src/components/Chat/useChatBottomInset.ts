@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef } from "react";
 
+import { recordChatScrollTrace } from "./scroll/diagnostics";
+
 export interface ChatBottomInset {
   chromeRef: (element: HTMLElement | null) => void;
   containerRef: (element: HTMLElement | null) => void;
@@ -30,7 +32,15 @@ export function useChatBottomInset(): ChatBottomInset {
       return;
     }
 
+    const previousInsetPx = lastInsetPxRef.current;
     lastInsetPxRef.current = insetPx;
+    recordChatScrollTrace({
+      conversationId: null,
+      source: "layout",
+      event: "chrome-inset-write",
+      element: null,
+      detail: { previousInsetPx, insetPx },
+    });
     if (spacerElRef.current) {
       spacerElRef.current.style.height = `${insetPx}px`;
     }

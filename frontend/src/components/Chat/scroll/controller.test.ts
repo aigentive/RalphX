@@ -21,6 +21,7 @@ interface TestHarness {
   scrollCalls: Array<{ index: number; align: "start" | "end"; behavior: "auto" | "smooth" }>;
   states: string[];
   visualBottom: boolean[];
+  debugEvents: Array<{ event: string; detail: Record<string, unknown> }>;
 }
 
 function createElement({
@@ -72,8 +73,10 @@ function createHarness(element = createElement()): TestHarness {
   const scrollCalls: TestHarness["scrollCalls"] = [];
   const states: string[] = [];
   const visualBottom: boolean[] = [];
+  const debugEvents: TestHarness["debugEvents"] = [];
   const deps: ChatScrollControllerDeps = {
     cancelFrame: (id) => frames.delete(id),
+    debugLog: (event, detail) => debugEvents.push({ event, detail }),
     getLastIndex: () => 9,
     getScrollElement: () => element,
     onStateChange: (state) => states.push(state),
@@ -106,6 +109,7 @@ function createHarness(element = createElement()): TestHarness {
     scrollCalls,
     states,
     visualBottom,
+    debugEvents,
   };
 }
 
@@ -137,7 +141,7 @@ describe("ChatScrollController", () => {
 
     expect(harness.pendingFrames()).toBe(1);
     harness.flushFrames();
-    expect(harness.scrollCalls).toHaveLength(1);
+    expect(harness.scrollCalls).toHaveLength(0);
     expect(harness.element.scrollTop).toBe(800);
   });
 
@@ -152,7 +156,7 @@ describe("ChatScrollController", () => {
     harness.flushFrames();
 
     expect(harness.controller.getState()).toBe("pinned");
-    expect(harness.scrollCalls).toHaveLength(1);
+    expect(harness.scrollCalls).toHaveLength(0);
     expect(harness.element.scrollTop).toBe(700);
   });
 
@@ -169,7 +173,7 @@ describe("ChatScrollController", () => {
     harness.flushFrames();
 
     expect(harness.element.scrollTop).toBe(700);
-    expect(harness.scrollCalls).toHaveLength(1);
+    expect(harness.scrollCalls).toHaveLength(0);
   });
 
   it("absorbs a short programmatic-pin replay instead of treating it as an away scroll", () => {
@@ -250,6 +254,41 @@ describe("ChatScrollController", () => {
     expect(harness.visualBottom).toContain(false);
   });
 
+  it("reports input and geometry-relevant controller state through the debug seam", () => {
+    const harness = createHarness();
+    attach(harness);
+    harness.debugEvents.length = 0;
+    harness.element.setGeometry({ scrollTop: 300 });
+
+    harness.controller.notifyWheel(-40, false);
+    harness.controller.notifyScroll();
+
+    expect(harness.debugEvents).toEqual(expect.arrayContaining([
+      {
+        event: "wheel",
+        detail: expect.objectContaining({
+          state: "pinned",
+          activeIntent: "bottom",
+          deltaY: -40,
+          isNestedScrollableTarget: false,
+        }),
+      },
+      {
+        event: "away-input",
+        detail: expect.objectContaining({ state: "free", source: "wheel" }),
+      },
+      {
+        event: "scroll",
+        detail: expect.objectContaining({
+          state: "free",
+          current: 300,
+          priorScrollTop: 500,
+          movedUp: true,
+        }),
+      },
+    ]));
+  });
+
   it("re-follows only when a free reader reaches the true visual bottom", () => {
     const harness = createHarness();
     attach(harness);
@@ -328,7 +367,7 @@ describe("ChatScrollController", () => {
 
     harness.controller.notifyContentGrowth();
     harness.flushFrames();
-    expect(harness.scrollCalls).toHaveLength(1);
+    expect(harness.scrollCalls).toHaveLength(0);
   });
 
   it("keeps pinned through a post-prepend Virtuoso clamp at the new true bottom", () => {
@@ -376,7 +415,7 @@ describe("ChatScrollController", () => {
     harness.controller.notifyContentGrowth();
     harness.flushFrames();
 
-    expect(harness.scrollCalls).toHaveLength(1);
+    expect(harness.scrollCalls).toHaveLength(0);
     expect(harness.element.scrollTop).toBe(1_100);
   });
 
@@ -663,6 +702,71 @@ describe("ChatScrollController", () => {
     expect(harness.scrollCalls).toHaveLength(1);
   });
 
+  it("settles a delayed Virtuoso alignment correction without reissuing item alignment", () => {
+    const harness = createHarness(createElement({
+      clientHeight: 1_102,
+      scrollHeight: 1_880,
+      scrollTop: 598,
+    }));
+    attach(harness);
+    harness.controller.notifyWheel(-1, false);
+    harness.element.setGeometry({ scrollTop: 598 });
+    harness.controller.notifyScroll();
+    harness.scrollCalls.length = 0;
+
+    harness.controller.scrollToBottomClicked();
+    harness.flushNextFrame();
+    expect(harness.scrollCalls).toHaveLength(1);
+    expect(harness.element.scrollTop).toBe(778);
+
+    // Replay the captured ordering: the queued Virtuoso item alignment lands
+    // using stale geometry, then its measurement reports content growth.
+    harness.element.setGeometry({ scrollHeight: 1_860, scrollTop: 598 });
+    harness.controller.notifyScroll();
+    harness.element.setGeometry({ scrollHeight: 1_931, scrollTop: 609 });
+    harness.controller.notifyContentGrowth();
+    harness.flushFrames();
+
+    expect(harness.scrollCalls).toHaveLength(1);
+    expect(harness.element.scrollTop).toBe(829);
+    expect(harness.controller.getState()).toBe("pinned");
+  });
+
+  it("settles a returning intent when a scroll event confirms the moving true bottom", () => {
+    const harness = createHarness(createElement({
+      clientHeight: 1_102,
+      scrollHeight: 1_923,
+      scrollTop: 821,
+    }));
+    attach(harness);
+    harness.debugEvents.length = 0;
+
+    harness.controller.notifyContentGrowth();
+    harness.flushNextFrame();
+    const writesAfterInitialPin = harness.element.directWrites;
+
+    // The virtualizer renormalizes its trailing geometry, moving scrollTop by
+    // the same amount. This scroll event still acknowledges the true bottom.
+    harness.element.setGeometry({ scrollHeight: 1_903, scrollTop: 801 });
+    harness.controller.notifyScroll();
+
+    expect(harness.controller.getState()).toBe("pinned");
+    expect(harness.pendingFrames()).toBe(0);
+
+    // A transient next-frame measurement must not resurrect a correction for
+    // the already-acknowledged semantic bottom intent.
+    harness.element.setGeometry({ scrollHeight: 1_923, scrollTop: 801 });
+    harness.flushFrames();
+
+    expect(harness.element.directWrites).toBe(writesAfterInitialPin);
+    expect(harness.debugEvents).not.toEqual(expect.arrayContaining([
+      {
+        event: "pin",
+        detail: expect.objectContaining({ reason: "returning-settle" }),
+      },
+    ]));
+  });
+
   it("waits through changing prepend compensation before treating later growth as followable", () => {
     const harness = createHarness();
     attach(harness);
@@ -677,7 +781,7 @@ describe("ChatScrollController", () => {
     harness.controller.notifyContentGrowth();
     harness.flushFrames();
 
-    expect(harness.scrollCalls).toHaveLength(1);
+    expect(harness.scrollCalls).toHaveLength(0);
     expect(harness.element.scrollTop).toBe(900);
   });
 

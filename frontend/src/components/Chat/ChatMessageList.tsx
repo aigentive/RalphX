@@ -47,6 +47,9 @@ import {
   type ChatScrollControllerDeps,
 } from "./scroll/controller";
 import {
+  recordChatScrollTrace,
+} from "./scroll/diagnostics";
+import {
   buildLiveTranscriptRows,
   isLiveThinkingGroupKey,
   liveToolGroupKey,
@@ -1037,6 +1040,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     const conversationLastUserMessageIdRef = useRef<string | null>(lastUserMessageId);
     const conversationAgentRunningRef = useRef(isAgentRunning);
     const scrollerElRef = useRef<HTMLElement | null>(null);
+    const conversationIdRef = useRef(conversationId ?? null);
     const scrollerResizeObserverRef = useRef<ResizeObserver | null>(null);
     const bottomSpacerResizeObserverRef = useRef<ResizeObserver | null>(null);
     const bottomSpacerHeightRef = useRef<number | null>(null);
@@ -1061,6 +1065,10 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     const transcriptRootRef = useRef<HTMLDivElement | null>(null);
     const initialPaintReadyFrameRef = useRef<number | null>(null);
     const initialPaintReadyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    useLayoutEffect(() => {
+      conversationIdRef.current = conversationId ?? null;
+    }, [conversationId]);
 
     useEffect(() => {
       if (expandedToolGroupConversationRef.current === conversationId) {
@@ -1110,7 +1118,17 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       requestFrame: (callback) => requestAnimationFrame(callback),
       cancelFrame: (frame) => cancelAnimationFrame(frame),
       onVisualBottomChange: setIsVisuallyAtBottom,
-      debugLog: (event, detail) => logger.debug(`[ChatScroll] ${event}`, detail),
+      debugLog: (event, detail) => {
+        logger.debug(`[ChatScroll] ${event}`, detail);
+        recordChatScrollTrace({
+          conversationId: conversationIdRef.current,
+          source: "controller",
+          event,
+          state: typeof detail.state === "string" ? detail.state : null,
+          element: scrollerElRef.current,
+          detail,
+        });
+      },
     }));
     const [scrollController] = useState<ChatScrollController>(() =>
       createChatScrollController({
@@ -1140,6 +1158,13 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         const previousHeight = bottomSpacerHeightRef.current;
         const nextHeight = entry.contentRect.height;
         bottomSpacerHeightRef.current = nextHeight;
+        recordChatScrollTrace({
+          conversationId: conversationIdRef.current,
+          source: "layout",
+          event: "bottom-spacer-resize",
+          element: scrollerElRef.current,
+          detail: { previousHeight, nextHeight },
+        });
         if (
           previousHeight !== null
           && Math.abs(nextHeight - previousHeight) > VISUAL_BOTTOM_EPSILON_PX
@@ -1172,6 +1197,13 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         const previousHeight = lastRenderedRowHeightRef.current;
         const nextHeight = entry.contentRect.height;
         lastRenderedRowHeightRef.current = nextHeight;
+        recordChatScrollTrace({
+          conversationId: conversationIdRef.current,
+          source: "layout",
+          event: "last-row-resize",
+          element: scrollerElRef.current,
+          detail: { previousHeight, nextHeight },
+        });
         if (
           previousHeight === null
           || nextHeight > previousHeight + VISUAL_BOTTOM_EPSILON_PX
@@ -1637,6 +1669,13 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       const previousHeight = previousTotalListHeightRef.current;
       previousTotalListHeightRef.current = height;
       const scroller = scrollerElRef.current;
+      recordChatScrollTrace({
+        conversationId: conversationIdRef.current,
+        source: "layout",
+        event: "virtuoso-total-height",
+        element: scroller,
+        detail: { previousHeight, height },
+      });
       if (scroller) {
         updateScrollableOverflow(scroller);
       }
@@ -1721,6 +1760,12 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       if (typeof ResizeObserver !== "undefined") {
         const observer = new ResizeObserver(() => {
           updateScrollableOverflow(el);
+          recordChatScrollTrace({
+            conversationId: conversationIdRef.current,
+            source: "layout",
+            event: "scroller-resize",
+            element: el,
+          });
           scrollController?.notifyContainerResize();
         });
         observer.observe(el);
