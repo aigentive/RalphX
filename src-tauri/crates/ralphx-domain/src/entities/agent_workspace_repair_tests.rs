@@ -1,10 +1,115 @@
 use chrono::Utc;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 
 use super::*;
 
 fn conversation_id() -> ChatConversationId {
     ChatConversationId::from_string("5b46a460-1699-47e6-a687-71305f4e5674")
 }
+
+fn assert_serde_wire_contract<T>(value: T, wire: &str)
+where
+    T: Copy + DeserializeOwned + PartialEq + Serialize + std::fmt::Debug + std::str::FromStr,
+    T::Err: std::fmt::Debug,
+{
+    assert_eq!(
+        serde_json::to_value(value).expect("serialize repair enum"),
+        serde_json::json!(wire)
+    );
+    assert_eq!(
+        serde_json::from_value::<T>(serde_json::json!(wire)).expect("deserialize repair enum"),
+        value
+    );
+    assert_eq!(
+        wire.parse::<T>().expect("parse repair enum wire value"),
+        value
+    );
+}
+
+macro_rules! repair_enum_wire_contract_test {
+    ($test_name:ident, [$($variant:path => $wire:literal),+ $(,)?]) => {
+        #[test]
+        fn $test_name() {
+            $(assert_serde_wire_contract($variant, $wire);)+
+        }
+    };
+}
+
+repair_enum_wire_contract_test!(repair_source_serde_matches_wire_contract, [
+    AgentWorkspaceRepairSource::BaseUpdate => "base_update",
+    AgentWorkspaceRepairSource::Publish => "publish",
+    AgentWorkspaceRepairSource::PrConflict => "pr_conflict",
+    AgentWorkspaceRepairSource::PrAutofix => "pr_autofix",
+    AgentWorkspaceRepairSource::Legacy => "legacy",
+]);
+
+repair_enum_wire_contract_test!(repair_phase_serde_matches_wire_contract, [
+    AgentWorkspaceRepairPhase::Requested => "requested",
+    AgentWorkspaceRepairPhase::Dispatching => "dispatching",
+    AgentWorkspaceRepairPhase::Repairing => "repairing",
+    AgentWorkspaceRepairPhase::Validating => "validating",
+    AgentWorkspaceRepairPhase::AwaitingReview => "awaiting_review",
+    AgentWorkspaceRepairPhase::ContinuationPending => "continuation_pending",
+    AgentWorkspaceRepairPhase::Continuing => "continuing",
+    AgentWorkspaceRepairPhase::Ready => "ready",
+    AgentWorkspaceRepairPhase::Blocked => "blocked",
+]);
+
+repair_enum_wire_contract_test!(repair_continuation_serde_matches_wire_contract, [
+    AgentWorkspaceRepairContinuation::UpdateOnly => "update_only",
+    AgentWorkspaceRepairContinuation::Publish => "publish",
+    AgentWorkspaceRepairContinuation::ResumePrSupervision => "resume_pr_supervision",
+    AgentWorkspaceRepairContinuation::Manual => "manual",
+]);
+
+repair_enum_wire_contract_test!(repair_outcome_serde_matches_wire_contract, [
+    AgentWorkspaceRepairOutcome::Succeeded => "succeeded",
+    AgentWorkspaceRepairOutcome::Superseded => "superseded",
+    AgentWorkspaceRepairOutcome::Failed => "failed",
+    AgentWorkspaceRepairOutcome::Cancelled => "cancelled",
+]);
+
+repair_enum_wire_contract_test!(repair_effect_kind_serde_matches_wire_contract, [
+    AgentWorkspaceRepairEffectKind::PushBranch => "push_branch",
+    AgentWorkspaceRepairEffectKind::CreatePr => "create_pr",
+    AgentWorkspaceRepairEffectKind::UpdatePr => "update_pr",
+    AgentWorkspaceRepairEffectKind::RestoreAutoMerge => "restore_auto_merge",
+]);
+
+repair_enum_wire_contract_test!(repair_effect_status_serde_matches_wire_contract, [
+    AgentWorkspaceRepairEffectStatus::Pending => "pending",
+    AgentWorkspaceRepairEffectStatus::InFlight => "in_flight",
+    AgentWorkspaceRepairEffectStatus::Observed => "observed",
+    AgentWorkspaceRepairEffectStatus::Failed => "failed",
+]);
+
+repair_enum_wire_contract_test!(repair_operation_stage_serde_matches_wire_contract, [
+    AgentWorkspaceRepairOperationStage::UpdatingBase => "updating_base",
+    AgentWorkspaceRepairOperationStage::Repairing => "repairing",
+    AgentWorkspaceRepairOperationStage::Validating => "validating",
+    AgentWorkspaceRepairOperationStage::Reviewing => "reviewing",
+    AgentWorkspaceRepairOperationStage::Publishing => "publishing",
+    AgentWorkspaceRepairOperationStage::Ready => "ready",
+    AgentWorkspaceRepairOperationStage::Blocked => "blocked",
+    AgentWorkspaceRepairOperationStage::Held => "held",
+]);
+
+repair_enum_wire_contract_test!(repair_operation_status_serde_matches_wire_contract, [
+    AgentWorkspaceRepairOperationStatus::Active => "active",
+    AgentWorkspaceRepairOperationStatus::Ready => "ready",
+    AgentWorkspaceRepairOperationStatus::Blocked => "blocked",
+    AgentWorkspaceRepairOperationStatus::Held => "held",
+]);
+
+repair_enum_wire_contract_test!(repair_hold_reason_serde_matches_wire_contract, [
+    AgentWorkspaceRepairOperationHoldReason::UnchangedHealth => "pr_autofix_unchanged_health",
+    AgentWorkspaceRepairOperationHoldReason::PreExistingOnBase => "pr_autofix_pre_existing_on_base",
+    AgentWorkspaceRepairOperationHoldReason::CiRerunPending => "pr_autofix_ci_rerun_pending",
+    AgentWorkspaceRepairOperationHoldReason::BaseStale => "base_stale",
+    AgentWorkspaceRepairOperationHoldReason::HealthEvidence => "health_evidence",
+    AgentWorkspaceRepairOperationHoldReason::PublishRedrive => "publish_redrive",
+]);
 
 #[test]
 fn repair_enums_are_closed_snake_case_wire_contracts() {
@@ -260,6 +365,33 @@ fn stationary_ready_repair_holds_project_distinct_typed_identities() {
     ] {
         assert_eq!(reason.as_str().parse(), Ok(reason));
     }
+}
+
+#[test]
+fn repair_operation_snapshot_serializes_hold_reason_with_canonical_wire_value() {
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        conversation_id(),
+        AgentWorkspaceRepairSource::PrAutofix,
+        AgentWorkspaceRepairContinuation::ResumePrSupervision,
+        "origin/main",
+        false,
+        true,
+        false,
+        None,
+        Utc::now(),
+    );
+    attempt.phase = AgentWorkspaceRepairPhase::Ready;
+    attempt
+        .pending_reasons
+        .push("pr_autofix_unchanged_health".to_string());
+
+    let serialized = serde_json::to_value(attempt.operation_snapshot())
+        .expect("serialize repair operation snapshot");
+
+    assert_eq!(
+        serialized.get("hold_reason"),
+        Some(&serde_json::json!("pr_autofix_unchanged_health"))
+    );
 }
 
 #[test]

@@ -33,6 +33,8 @@ vi.mock("@/api/chat", async (importOriginal) => {
       archiveConversation: vi.fn(),
       forkAgentConversation: vi.fn(),
       getConversation: vi.fn(),
+      getConversationSummary: vi.fn(),
+      getAgentConversationWorkspace: vi.fn(),
       spawnConversationSessionNamer: vi.fn(),
     },
     setAgentConversationMuted: vi.fn(),
@@ -232,6 +234,7 @@ function renderActions(
 describe("useAgentConversationActions", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(chatApi.getAgentConversationWorkspace).mockResolvedValue(null);
   });
 
   it("opens a project-locked Persona Builder for a project conversation", () => {
@@ -275,6 +278,136 @@ describe("useAgentConversationActions", () => {
 
     expect(args.setStartConversationDraft).not.toHaveBeenCalled();
     expect(args.clearAgentConversationSelection).not.toHaveBeenCalled();
+  });
+
+  it("paints a lean selection immediately while hydrating runtime and persona data", async () => {
+    const leanConversation: AgentConversation = {
+      ...createConversation({ id: "conversation-lean" }),
+      projectId: "project-1",
+      ideationSessionId: null,
+    };
+    const hydratedConversation: AgentConversation = {
+      ...leanConversation,
+      providerHarness: "codex",
+      logicalModel: "gpt-5.5",
+      effectiveModelId: "gpt-5.5",
+      logicalEffort: "high",
+      effectiveEffort: "high",
+      lastRunPersonaSlug: "careful-reviewer",
+    };
+    let resolveHydration!: (conversation: AgentConversation) => void;
+    vi.mocked(chatApi.getConversationSummary).mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveHydration = resolve;
+      }),
+    );
+    const { queryClient, result } = renderActions();
+
+    act(() => {
+      result.current.handleSidebarSelectConversation(
+        "project-1",
+        leanConversation,
+      );
+    });
+
+    expect(chatApi.getConversationSummary).toHaveBeenCalledWith(
+      "conversation-lean",
+    );
+    expect(
+      queryClient.getQueryData(
+        chatKeys.conversationSummary("conversation-lean"),
+      ),
+    ).toBe(leanConversation);
+    expect(
+      queryClient.getQueryState(
+        chatKeys.conversationSummary("conversation-lean"),
+      )?.dataUpdatedAt,
+    ).toBe(0);
+
+    resolveHydration(hydratedConversation);
+
+    await vi.waitFor(() =>
+      expect(
+        queryClient.getQueryData(
+          chatKeys.conversationSummary("conversation-lean"),
+        ),
+      ).toEqual(hydratedConversation),
+    );
+    expect(
+      queryClient.getQueryData<AgentConversation>(
+        chatKeys.conversationSummary("conversation-lean"),
+      ),
+    ).toMatchObject({
+      logicalModel: "gpt-5.5",
+      logicalEffort: "high",
+      lastRunPersonaSlug: "careful-reviewer",
+    });
+  });
+
+  it("never replaces an existing hydrated summary with a lean sidebar row", () => {
+    const leanConversation: AgentConversation = {
+      ...createConversation({ id: "conversation-cached" }),
+      projectId: "project-1",
+      ideationSessionId: null,
+    };
+    const hydratedConversation: AgentConversation = {
+      ...leanConversation,
+      providerHarness: "codex",
+      logicalModel: "gpt-5.5",
+      effectiveModelId: "gpt-5.5",
+      logicalEffort: "high",
+      effectiveEffort: "high",
+      lastRunPersonaSlug: "careful-reviewer",
+    };
+    const queryClient = createQueryClient();
+    queryClient.setQueryData(
+      chatKeys.conversationSummary("conversation-cached"),
+      hydratedConversation,
+    );
+    vi.mocked(chatApi.getConversationSummary).mockReturnValueOnce(
+      new Promise(() => {}),
+    );
+    const { result } = renderActions(queryClient);
+
+    act(() => {
+      result.current.handleSidebarSelectConversation(
+        "project-1",
+        leanConversation,
+      );
+    });
+
+    expect(
+      queryClient.getQueryData(
+        chatKeys.conversationSummary("conversation-cached"),
+      ),
+    ).toBe(hydratedConversation);
+  });
+
+  it("preserves a settled null summary instead of treating it as an empty cache", () => {
+    const leanConversation: AgentConversation = {
+      ...createConversation({ id: "conversation-missing" }),
+      projectId: "project-1",
+      ideationSessionId: null,
+    };
+    const queryClient = createQueryClient();
+    queryClient.setQueryData(
+      chatKeys.conversationSummary("conversation-missing"),
+      null,
+    );
+    const { result } = renderActions(queryClient);
+
+    act(() => {
+      result.current.handleSidebarSelectConversation(
+        "project-1",
+        leanConversation,
+      );
+    });
+
+    expect(
+      queryClient.getQueryData(
+        chatKeys.conversationSummary("conversation-missing"),
+      ),
+    ).toBeNull();
   });
 
   it("hydrates local state, workspace cache, selection, and runtime after forking", async () => {

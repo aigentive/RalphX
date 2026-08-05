@@ -29,6 +29,7 @@ interface AgentsConversationSideRegionsProps {
   activeConversation: AgentConversation | null;
   activeProjectBaseBranch: string | null;
   activeWorkspace: AgentConversationWorkspace | null;
+  activeWorkspaceError: Error | null;
   activeWorkspaceFreshness: AgentConversationWorkspaceFreshness | undefined;
   artifactWidthCss: string;
   chatDockElement: HTMLDivElement | null;
@@ -85,6 +86,7 @@ interface AgentsConversationSideRegionsProps {
   ) => void;
   onOpenAutomation?: (automationId: string) => void;
   onOpenPublish: () => void;
+  onRetryActiveWorkspace: () => void;
   onPublishWorkspace: (conversationId: string) => Promise<void>;
   onResizeReset: (event: ReactMouseEvent) => void;
   onResizeStart: (event: ReactMouseEvent) => void;
@@ -96,6 +98,7 @@ export function AgentsConversationSideRegions({
   activeConversation,
   activeProjectBaseBranch,
   activeWorkspace,
+  activeWorkspaceError,
   activeWorkspaceFreshness,
   artifactWidthCss,
   chatDockElement,
@@ -124,6 +127,7 @@ export function AgentsConversationSideRegions({
   onFocusTaskRuntime,
   onOpenAutomation,
   onOpenPublish,
+  onRetryActiveWorkspace,
   onPublishWorkspace,
   onResizeReset,
   onResizeStart,
@@ -151,6 +155,7 @@ export function AgentsConversationSideRegions({
           conversationId={selectedConversationId}
           conversation={activeConversation}
           workspace={activeWorkspace}
+          activeWorkspaceError={activeWorkspaceError}
           activeWorkspaceFreshness={activeWorkspaceFreshness}
           projectBaseBranch={activeProjectBaseBranch}
           focusedIdeationSession={focusedIdeationSession}
@@ -166,6 +171,7 @@ export function AgentsConversationSideRegions({
           }
           onShowTab={(tab) => showArtifactTab(selectedConversationId, tab)}
           onOpenPublish={onOpenPublish}
+          onRetryActiveWorkspace={onRetryActiveWorkspace}
           onTaskModeChange={(mode) =>
             setArtifactTaskMode(selectedConversationId, mode)
           }

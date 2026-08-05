@@ -2721,7 +2721,8 @@ export const AgentWorkspaceMaintenanceOperationResponseSchema = z.object({
     ])
     .nullable()
     .optional()
-    .default(null),
+    .default(null)
+    .catch(null),
   summary: z.string().nullable(),
   blocker: z.string().nullable(),
   automatic_continuation: z.boolean(),
