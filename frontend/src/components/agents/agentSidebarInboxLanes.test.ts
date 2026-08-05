@@ -19,9 +19,33 @@ const DAY_MS = 24 * HOUR_MS;
 describe("AGENT_SIDEBAR_INBOX_FILTERS", () => {
   it("uses Recent, Stale, and Done as the top-level inbox filters", () => {
     expect(AGENT_SIDEBAR_INBOX_FILTERS).toEqual([
-      { filter: "recent", label: "Recent", emptyLabel: "Nothing recent" },
-      { filter: "stale", label: "Stale", emptyLabel: "Nothing stale" },
-      { filter: "done", label: "Done", emptyLabel: "Nothing done" },
+      {
+        filter: "recent",
+        label: "Recent",
+        emptyState: {
+          headline: "Inbox zero",
+          subline: "Nothing needs you, nothing is running. Good moment to start the next thing.",
+          tone: "win",
+        },
+      },
+      {
+        filter: "stale",
+        label: "Stale",
+        emptyState: {
+          headline: "Nothing has gone stale",
+          subline: "Threads move here after two days without activity. Nothing is drifting.",
+          tone: "calm",
+        },
+      },
+      {
+        filter: "done",
+        label: "Done",
+        emptyState: {
+          headline: "Nothing finished yet",
+          subline: "Merged and closed conversations collect here once work lands.",
+          tone: "calm",
+        },
+      },
     ]);
   });
 });
@@ -30,7 +54,7 @@ describe("AGENT_SIDEBAR_RECENT_GROUPS", () => {
   it("keeps Needs you and Working together in recency order", () => {
     expect(AGENT_SIDEBAR_RECENT_GROUPS).toEqual([
       { lane: "needs", label: "Needs you", emptyLabel: "Nothing needs you" },
-      { lane: "working", label: "Working", emptyLabel: "Nothing working" },
+      { lane: "working", label: "Working", emptyLabel: "Nothing running" },
     ]);
   });
 });
