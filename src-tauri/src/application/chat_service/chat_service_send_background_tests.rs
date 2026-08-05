@@ -2865,19 +2865,17 @@ async fn spawn_interactive_claude_jsonl_fixture(lines: &[&str]) -> tokio::proces
         payload.push('\n');
     }
 
-    let mut child = tokio::process::Command::new("cat")
+    // Emit the terminal response without consuming stdin. The background runner
+    // owns that piped handle through the interactive-process registry, so a
+    // `cat` fixture would wait forever for its own cleanup to close stdin.
+    tokio::process::Command::new("printf")
+        .arg("%s")
+        .arg(payload)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .expect("spawn interactive stream fixture");
-    let mut stdin = child.stdin.take().expect("capture fixture stdin");
-    stdin
-        .write_all(payload.as_bytes())
-        .await
-        .expect("write interactive stream fixture");
-    child.stdin = Some(stdin);
-    child
+        .expect("spawn interactive stream fixture")
 }
 
 #[tokio::test]
