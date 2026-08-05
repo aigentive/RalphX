@@ -1855,6 +1855,14 @@ export async function setAgentConversationMuted(
   conversationId: string,
   muted: boolean,
 ): Promise<void> {
+  if (isRemoteEnvironmentId(getTransportEnvironmentId())) {
+    await typedInvoke(
+      "set_remote_agent_conversation_muted",
+      { input: { conversationId, muted } },
+      z.null(),
+    );
+    return;
+  }
   await typedInvoke(
     "set_agent_conversation_muted",
     { input: { conversationId, muted } },

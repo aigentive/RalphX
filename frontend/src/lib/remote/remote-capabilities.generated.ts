@@ -1430,6 +1430,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: ["agentControl"],
     pins: [],
   },
+  "set_remote_agent_conversation_muted": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
   "skip_automation_judge": {
     opClass: "agentControl",
     argumentSensitive: false,
@@ -1476,6 +1482,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     opClass: "agentControl",
     argumentSensitive: false,
     capabilities: ["agentControl"],
+    pins: [],
+  },
+  "switch_remote_agent_conversation_persona": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["mutatesAgentConsumedContent"],
     pins: [],
   },
   "unarchive_persona": {

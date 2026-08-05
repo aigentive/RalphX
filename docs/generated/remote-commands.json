@@ -2840,6 +2840,26 @@
     },
     {
       "argumentSensitive": false,
+      "capabilities": [],
+      "class": "agentControl",
+      "command": "set_remote_agent_conversation_muted",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::remote_conversation_lifecycle_commands::set_remote_agent_conversation_muted"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "mutatesAgentConsumedContent"
+      ],
+      "class": "agentControl",
+      "command": "switch_remote_agent_conversation_persona",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::remote_conversation_lifecycle_commands::switch_remote_agent_conversation_persona"
+    },
+    {
+      "argumentSensitive": false,
       "capabilities": [
         "seedsSpawnTriggeringState"
       ],
@@ -9370,6 +9390,26 @@
       "v1Resolution": "registerable"
     },
     {
+      "capabilities": [],
+      "class": "agentControl",
+      "command": "set_remote_agent_conversation_muted",
+      "module": "remote_conversation_lifecycle_commands",
+      "reason": "spawn-free direct twin: writes mute metadata after projecting workspace state through the recovery-free response builder",
+      "registered": true,
+      "v1Resolution": "registerable"
+    },
+    {
+      "capabilities": [
+        "mutatesAgentConsumedContent"
+      ],
+      "class": "agentControl",
+      "command": "switch_remote_agent_conversation_persona",
+      "module": "remote_conversation_lifecycle_commands",
+      "reason": "spawn-free direct twin: rejects running agents and changes prompt content consumed by the next turn",
+      "registered": true,
+      "v1Resolution": "registerable"
+    },
+    {
       "capabilities": [
         "seedsSpawnTriggeringState"
       ],
@@ -9614,7 +9654,7 @@
       "class": "elevated",
       "command": "switch_agent_conversation_persona",
       "module": "unified_chat_commands",
-      "reason": "detector-c-MISS (M1+M2+M3), hand-traced: constructs the chat service and calls stop_agent, reaching kill_process -> Command::new(resolve_pkill_cli_path()) plus a raw SIGTERM that names no binary at all",
+      "reason": "detector-c-MISS (M1+M2+M3), hand-traced: constructs the chat service and calls stop_agent, reaching kill_process -> Command::new(resolve_pkill_cli_path()) plus a raw SIGTERM that names no binary at all; switch_remote_agent_conversation_persona is the spawn-free twin",
       "registered": false,
       "v1Resolution": "host-denied-spawns-process"
     },
@@ -9728,7 +9768,7 @@
       "class": "elevated",
       "command": "set_agent_conversation_muted",
       "module": "agent_conversation_mute_commands",
-      "reason": "detector-c, hand-traced: the mute=true path calls agent_workspace_response_for_state, which schedules PR supervision recovery; recover_agent_workspace_pr_supervision can reach GitService::get_head_sha and can resume agent repair/publication work before the mute metadata row is written",
+      "reason": "detector-c, hand-traced: the mute=true path calls agent_workspace_response_for_state, which schedules PR supervision recovery; recover_agent_workspace_pr_supervision can reach GitService::get_head_sha and can resume agent repair/publication work before the mute metadata row is written; set_remote_agent_conversation_muted is the spawn-free twin",
       "registered": false,
       "v1Resolution": "host-denied-spawns-process"
     },

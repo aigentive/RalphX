@@ -127,8 +127,9 @@ export const AGENT_GATED_AFFORDANCES = {
   planTaskPipeline: "start_agent_task_pipeline",
   conversationFork: "fork_agent_conversation",
   conversationArchive: "archive_agent_conversation",
-  conversationMute: "set_agent_conversation_muted",
-  personaSwitch: "switch_agent_conversation_persona",
+  conversationUnarchive: "restore_agent_conversation",
+  conversationMute: "set_remote_agent_conversation_muted",
+  personaSwitch: "switch_remote_agent_conversation_persona",
   attachmentUpload: "upload_chat_attachment",
   permissionApprove: "approve_permission_request",
   // Answering the MCP `ask_user_question` gate uses the registered, spawn-free remote twin.

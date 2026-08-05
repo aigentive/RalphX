@@ -452,6 +452,8 @@ macro_rules! register_tauri_commands {
             commands::remote_agent_stop_commands::get_remote_agent_stop_request,
             commands::remote_conversation_mode_switch_commands::request_remote_agent_conversation_mode_switch,
             commands::remote_conversation_mode_switch_commands::get_remote_conversation_mode_switch_request,
+            commands::remote_conversation_lifecycle_commands::set_remote_agent_conversation_muted,
+            commands::remote_conversation_lifecycle_commands::switch_remote_agent_conversation_persona,
             commands::remote_resume_commands::request_remote_execution_resume,
             commands::remote_resume_commands::request_remote_task_resume,
             commands::remote_resume_commands::request_remote_task_restart,

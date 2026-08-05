@@ -7,6 +7,10 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { z } from "zod";
 import { chatKeys } from "@/hooks/useChat";
+import {
+  getTransportEnvironmentId,
+  isRemoteEnvironmentId,
+} from "@/lib/remote/active-environment";
 import { personaArtifactKeys } from "@/hooks/personaArtifactQueries";
 import {
   PersonaOverlayPreviewSchema,
@@ -162,6 +166,10 @@ export async function deletePersonaDraft(id: string): Promise<void> {
 export async function switchConversationPersona(
   input: SwitchConversationPersonaInput,
 ): Promise<void> {
+  if (isRemoteEnvironmentId(getTransportEnvironmentId())) {
+    await invoke<unknown>("switch_remote_agent_conversation_persona", { input });
+    return;
+  }
   await invoke<unknown>("switch_agent_conversation_persona", { input });
 }
 

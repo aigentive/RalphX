@@ -1357,6 +1357,30 @@ crate::remote_commands! {
         result: fallible,
     },
 
+    "set_remote_agent_conversation_muted"
+        => crate::commands::remote_conversation_lifecycle_commands::set_remote_agent_conversation_muted {
+        class: AgentControl,
+        caps: [],
+        params: [
+            (arg input: crate::commands::agent_conversation_mute_commands::SetAgentConversationMutedInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+
+    "switch_remote_agent_conversation_persona"
+        => crate::commands::remote_conversation_lifecycle_commands::switch_remote_agent_conversation_persona {
+        class: AgentControl,
+        caps: [MutatesAgentConsumedContent],
+        params: [
+            (arg input: crate::commands::unified_chat_commands::SwitchAgentConversationPersonaInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+
     "request_remote_execution_resume"
         => crate::commands::remote_resume_commands::request_remote_execution_resume {
         class: AgentControl,

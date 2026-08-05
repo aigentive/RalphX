@@ -3289,7 +3289,8 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
         "switch_agent_conversation_persona",
         "detector-c-MISS (M1+M2+M3), hand-traced: constructs the chat service and calls \
          stop_agent, reaching kill_process -> Command::new(resolve_pkill_cli_path()) plus a raw \
-         SIGTERM that names no binary at all",
+         SIGTERM that names no binary at all; switch_remote_agent_conversation_persona is the \
+         spawn-free twin",
     ),
     process_refusal(
         "send_queued_agent_message_now",
@@ -3507,12 +3508,30 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
              through the host tracing/file-log pipeline",
         ),
     },
+    CommandOverride {
+        command: "set_remote_agent_conversation_muted",
+        policy: policy(
+            RiskClass::AgentControl,
+            NONE,
+            "spawn-free direct twin: writes mute metadata after projecting workspace state through \
+             the recovery-free response builder",
+        ),
+    },
+    CommandOverride {
+        command: "switch_remote_agent_conversation_persona",
+        policy: policy(
+            RiskClass::AgentControl,
+            MUTATES_CONTENT,
+            "spawn-free direct twin: rejects running agents and changes prompt content consumed \
+             by the next turn",
+        ),
+    },
     process_refusal(
         "set_agent_conversation_muted",
         "detector-c, hand-traced: the mute=true path calls agent_workspace_response_for_state, \
          which schedules PR supervision recovery; recover_agent_workspace_pr_supervision can \
          reach GitService::get_head_sha and can resume agent repair/publication work before the \
-         mute metadata row is written",
+         mute metadata row is written; set_remote_agent_conversation_muted is the spawn-free twin",
     ),
 ];
 

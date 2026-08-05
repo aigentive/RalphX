@@ -3618,13 +3618,48 @@ pub async fn switch_agent_conversation_persona_for_state_stopping_running_agent(
 }
 
 #[doc(hidden)]
+pub async fn switch_agent_conversation_persona_for_state_rejecting_running_agent(
+    input: SwitchAgentConversationPersonaInput,
+    state: &AppState,
+) -> Result<SwitchAgentConversationPersonaResponse, String> {
+    switch_agent_conversation_persona_for_state_with_running_policy(
+        input,
+        state,
+        None,
+        agent_personas_enabled(),
+        ui_feature_flags_config().persona_switch_forces_fresh_provider_session,
+        true,
+    )
+    .await
+}
+
+#[doc(hidden)]
 pub async fn switch_agent_conversation_persona_for_state_with_provider_session_reset(
     input: SwitchAgentConversationPersonaInput,
     state: &AppState,
     chat_service: &dyn ChatService,
     force_fresh_provider_session: bool,
 ) -> Result<SwitchAgentConversationPersonaResponse, String> {
-    if !agent_personas_enabled() {
+    switch_agent_conversation_persona_for_state_with_running_policy(
+        input,
+        state,
+        Some(chat_service),
+        agent_personas_enabled(),
+        force_fresh_provider_session,
+        false,
+    )
+    .await
+}
+
+async fn switch_agent_conversation_persona_for_state_with_running_policy(
+    input: SwitchAgentConversationPersonaInput,
+    state: &AppState,
+    chat_service: Option<&dyn ChatService>,
+    personas_enabled: bool,
+    force_fresh_provider_session: bool,
+    reject_running_agent: bool,
+) -> Result<SwitchAgentConversationPersonaResponse, String> {
+    if !personas_enabled {
         return Err(crate::error::AppError::FeatureDisabled(format!(
             "{PERSONA_FEATURE_DISABLED_PREFIX} agent personas feature is disabled]"
         ))
@@ -3663,7 +3698,11 @@ pub async fn switch_agent_conversation_persona_for_state_with_provider_session_r
         conversation.id.as_str(),
     );
     if state.running_agent_registry.is_running(&running_key).await {
+        if reject_running_agent {
+            return Err(PERSONA_SWITCH_AGENT_RUNNING_ERROR.to_string());
+        }
         let stopped = chat_service
+            .expect("the local persona switch supplies its stop service")
             .stop_agent(ChatContextType::Project, &conversation.id.as_str())
             .await
             .map_err(|error| error.to_string())?;
@@ -3685,6 +3724,12 @@ pub async fn switch_agent_conversation_persona_for_state_with_provider_session_r
         )
         .await
         .map_err(|error| error.to_string())?;
+    // The remote Reject policy intentionally does not roll back the binding if a run starts
+    // after the first check. The local stop policy has the equivalent TOCTOU window; stopping
+    // remains the explicit request_remote_agent_stop action, never a persona-dropdown effect.
+    if reject_running_agent && state.running_agent_registry.is_running(&running_key).await {
+        return Err(PERSONA_SWITCH_AGENT_RUNNING_ERROR.to_string());
+    }
     if force_fresh_provider_session {
         state
             .chat_conversation_repo
@@ -3703,6 +3748,24 @@ pub async fn switch_agent_conversation_persona_for_state_with_provider_session_r
     Ok(SwitchAgentConversationPersonaResponse {
         conversation: agent_conversation_response_for_state(state, conversation).await?,
     })
+}
+
+#[doc(hidden)]
+pub async fn switch_agent_conversation_persona_for_state_rejecting_running_agent_with_flags(
+    input: SwitchAgentConversationPersonaInput,
+    state: &AppState,
+    personas_enabled: bool,
+    force_fresh_provider_session: bool,
+) -> Result<SwitchAgentConversationPersonaResponse, String> {
+    switch_agent_conversation_persona_for_state_with_running_policy(
+        input,
+        state,
+        None,
+        personas_enabled,
+        force_fresh_provider_session,
+        true,
+    )
+    .await
 }
 
 #[doc(hidden)]

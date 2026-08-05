@@ -243,6 +243,25 @@ describe("affordance mapping", () => {
     }
   });
 
+  it("routes conversation lifecycle affordances through registered direct twins", () => {
+    expect(AGENT_GATED_AFFORDANCES.conversationMute).toBe(
+      "set_remote_agent_conversation_muted",
+    );
+    expect(AGENT_GATED_AFFORDANCES.personaSwitch).toBe(
+      "switch_remote_agent_conversation_persona",
+    );
+    expect(AGENT_GATED_AFFORDANCES.conversationUnarchive).toBe(
+      "restore_agent_conversation",
+    );
+    for (const affordance of [
+      "conversationMute",
+      "personaSwitch",
+      "conversationUnarchive",
+    ] as const) {
+      expect(resolveAffordanceGate(affordance, true, GRANTED).status).toBe("enabled");
+    }
+  });
+
   it("routes automation creation and run controls through their registered intent twins", () => {
     expect(AGENT_GATED_AFFORDANCES.automationRunNow).toBe(
       "request_remote_automation_run",

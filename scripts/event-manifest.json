@@ -586,19 +586,19 @@
     {
       "name": "agent:workspace_changed",
       "file": "src-tauri/src/commands/unified_chat_commands/mod.rs",
-      "line": 4418,
+      "line": 4481,
       "kind": "method"
     },
     {
       "name": "agent:workspace_changed",
       "file": "src-tauri/src/commands/unified_chat_commands/mod.rs",
-      "line": 6811,
+      "line": 6874,
       "kind": "method"
     },
     {
       "name": "agent:workspace_changed",
       "file": "src-tauri/src/commands/unified_chat_commands/mod.rs",
-      "line": 6891,
+      "line": 6954,
       "kind": "method"
     },
     {
