@@ -25,9 +25,9 @@ use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentRunId, AgentWorkspaceRepairAttempt,
     AgentWorkspaceRepairCompletionAuthority, AgentWorkspaceRepairContinuation,
-    AgentWorkspaceRepairOperationHoldReason, AgentWorkspaceRepairOutcome,
-    AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource, AgentWorkspaceReviewGateStatus,
-    ChatConversationId, GitTargetIdentity, GitTargetLeaseOwner,
+    AgentWorkspaceRepairOperationHoldReason, AgentWorkspaceRepairOperationRecoveryAction,
+    AgentWorkspaceRepairOutcome, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
+    AgentWorkspaceReviewGateStatus, ChatConversationId, GitTargetIdentity, GitTargetLeaseOwner,
 };
 use crate::domain::repositories::{
     AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, AgentConversationWorkspaceRepository,
@@ -72,6 +72,7 @@ pub(crate) const PUBLICATION_EFFECT_ATTENTION_RETRIED_STEP: &str =
 /// A deliberately small cap: transient runner failures must not create an unbounded CI loop.
 pub(crate) const MAX_AGENT_WORKSPACE_CI_RERUN_RETRIES: u32 = 3;
 pub(crate) const NEEDS_HUMAN_REPAIR_REASON: &str = "pr_autofix_needs_human";
+const CONTINUATION_OPEN_EFFECT_ATTENTION_REASON_PREFIX: &str = "continuation_open_effect_";
 pub(crate) const PRE_EXISTING_ON_BASE_REPAIR_REASON: &str = "pr_autofix_pre_existing_on_base";
 /// Held because GitHub still reports the exact failure the previous generation was dispatched for.
 /// Distinct from `PRE_EXISTING_ON_BASE_REPAIR_REASON`: RalphX has not proven anything about the
@@ -351,6 +352,59 @@ pub(crate) fn repair_attempt_projection(
     }
 }
 
+/// Backend-owned admission projection shared by workspace responses and explicit retry commands.
+pub(crate) fn agent_workspace_repair_operation_recovery_action(
+    attempt: &AgentWorkspaceRepairAttempt,
+) -> AgentWorkspaceRepairOperationRecoveryAction {
+    if !attempt.is_unsettled() {
+        return AgentWorkspaceRepairOperationRecoveryAction::None;
+    }
+    match attempt.phase {
+        AgentWorkspaceRepairPhase::Ready
+            if matches!(
+                attempt.continuation,
+                AgentWorkspaceRepairContinuation::Publish
+                    | AgentWorkspaceRepairContinuation::ResumePrSupervision
+            ) && attempt.operation_snapshot().hold_reason.is_none() =>
+        {
+            AgentWorkspaceRepairOperationRecoveryAction::ResumePublish
+        }
+        AgentWorkspaceRepairPhase::Blocked
+            if attempt.continuation != AgentWorkspaceRepairContinuation::Manual
+                && attempt.next_dispatch_at.is_none()
+                && !attempt
+                    .pending_reasons
+                    .iter()
+                    .any(|reason| reason == NEEDS_HUMAN_REPAIR_REASON)
+                && !attempt.pending_reasons.iter().any(|reason| {
+                    reason.starts_with(CONTINUATION_OPEN_EFFECT_ATTENTION_REASON_PREFIX)
+                }) =>
+        {
+            AgentWorkspaceRepairOperationRecoveryAction::RetryRepair
+        }
+        _ => AgentWorkspaceRepairOperationRecoveryAction::None,
+    }
+}
+
+/// Applies the durable-effect guard shared by response projection and explicit retry admission.
+/// A blocked generation with an open external effect must be reconciled, never superseded by a
+/// user retry that could duplicate its push or pull-request handoff.
+pub(crate) async fn load_agent_workspace_repair_operation_recovery_action(
+    repair_repo: &dyn AgentWorkspaceRepairRepository,
+    attempt: &AgentWorkspaceRepairAttempt,
+) -> AppResult<AgentWorkspaceRepairOperationRecoveryAction> {
+    let recovery_action = agent_workspace_repair_operation_recovery_action(attempt);
+    if recovery_action == AgentWorkspaceRepairOperationRecoveryAction::RetryRepair
+        && repair_repo
+            .get_open_repair_effect(&attempt.id)
+            .await?
+            .is_some()
+    {
+        return Ok(AgentWorkspaceRepairOperationRecoveryAction::None);
+    }
+    Ok(recovery_action)
+}
+
 fn start_attempt_from_workspace(
     workspace: &AgentConversationWorkspace,
     request: &AgentWorkspaceRepairStartRequest,
@@ -575,10 +629,33 @@ pub(crate) async fn transition_agent_workspace_repair_attempt(
 pub(crate) async fn block_agent_workspace_repair_completion(
     repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
     branch_update_repo: Arc<dyn BranchUpdateRepository>,
+    attempt: AgentWorkspaceRepairAttempt,
+    summary: &str,
+    blocker: &str,
+    auto_merge_current: Option<bool>,
+) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
+    block_agent_workspace_repair_completion_with_projection(
+        repair_repo,
+        branch_update_repo,
+        attempt,
+        summary,
+        blocker,
+        auto_merge_current,
+        None,
+    )
+    .await
+}
+
+/// Blocks the current generation while preserving independently proven compatibility authority.
+/// Only receipt-aware callers may override the default failed/blocked projection.
+pub(crate) async fn block_agent_workspace_repair_completion_with_projection(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    branch_update_repo: Arc<dyn BranchUpdateRepository>,
     mut attempt: AgentWorkspaceRepairAttempt,
     summary: &str,
     blocker: &str,
     auto_merge_current: Option<bool>,
+    projection_status: Option<(&str, &str)>,
 ) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
     let expected_phase = attempt.phase;
     let expected_updated_at = attempt.updated_at;
@@ -586,7 +663,11 @@ pub(crate) async fn block_agent_workspace_repair_completion(
     attempt.summary = Some(summary.to_string());
     attempt.blocker = Some(blocker.to_string());
     attempt.updated_at = next_transition_at(Some(attempt.updated_at));
-    let projection = repair_attempt_projection(&attempt, blocker, auto_merge_current);
+    let mut projection = repair_attempt_projection(&attempt, blocker, auto_merge_current);
+    if let Some((publication_push_status, pr_supervision_status)) = projection_status {
+        projection.publication_push_status = Some(publication_push_status.to_string());
+        projection.pr_supervision_status = Some(pr_supervision_status.to_string());
+    }
     let outcome = repair_repo
         .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
             attempt,

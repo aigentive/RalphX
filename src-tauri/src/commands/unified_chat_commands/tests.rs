@@ -4008,6 +4008,13 @@ async fn existing_pr_auto_publish_enable_keeps_ready_projection_when_handoff_can
         Some(crate::domain::entities::AgentWorkspaceRepairOperationStatus::Ready),
         "response must not report a successful continuation after target reacquisition fails"
     );
+    assert_eq!(
+        response
+            .maintenance_operation
+            .as_ref()
+            .map(|operation| operation.recovery_action),
+        Some(crate::domain::entities::AgentWorkspaceRepairOperationRecoveryAction::ResumePublish)
+    );
 
     let event_count = state
         .agent_conversation_workspace_repo

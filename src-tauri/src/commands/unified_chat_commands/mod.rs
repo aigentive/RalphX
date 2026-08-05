@@ -150,8 +150,7 @@ use crate::application::services::pr_auto_merge_status::{
 };
 use crate::application::services::pr_merge_poller::{
     sync_agent_workspace_auto_merge_preference_for_workspace,
-    update_agent_workspace_pr_supervision_preferences,
-    update_agent_workspace_pr_supervision_state,
+    update_agent_workspace_pr_supervision_preferences, update_agent_workspace_pr_supervision_state,
 };
 use crate::application::session_namer_agent::{spawn_session_namer_agent, SessionNamerTarget};
 use crate::application::{AppChatService, AppState, ChatService, SendResult};
@@ -1151,15 +1150,26 @@ pub(crate) async fn agent_workspace_response_without_repair_recovery_for_state(
     let mut response = AgentConversationWorkspaceResponse::from(workspace);
     response.mode_switch_locked = mode_lock.locked;
     response.mode_switch_lock_reason = mode_lock.reason;
-    response.maintenance_operation = state
+    let current_repair_attempt = state
         .agent_workspace_repair_repo
         .get_current_repair_attempt(&ChatConversationId::from_string(
             response.conversation_id.clone(),
         ))
         .await
         .map_err(|error| error.to_string())?
-        .filter(|attempt| attempt.is_unsettled())
-        .map(|attempt| attempt.operation_snapshot());
+        .filter(|attempt| attempt.is_unsettled());
+    response.maintenance_operation = match current_repair_attempt {
+        Some(attempt) => {
+            let recovery_action = crate::application::agent_workspace_publish_repair_state::load_agent_workspace_repair_operation_recovery_action(
+                state.agent_workspace_repair_repo.as_ref(),
+                &attempt,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+            Some(attempt.operation_snapshot_with_recovery_action(recovery_action))
+        }
+        None => None,
+    };
     // Purely informational. A failed cost query must degrade this one field rather than fail the
     // whole workspace payload the Agents surface depends on.
     response.pr_autofix_fingerprint_spend = match pr_autofix_fingerprint {
@@ -10037,7 +10047,15 @@ where
     else {
         return false;
     };
-    if attempt.phase != AgentWorkspaceRepairPhase::Blocked {
+    let recovery_action = crate::application::agent_workspace_publish_repair_state::load_agent_workspace_repair_operation_recovery_action(
+        state.agent_workspace_repair_repo.as_ref(),
+        &attempt,
+    )
+    .await;
+    if !matches!(
+        recovery_action,
+        Ok(crate::domain::entities::AgentWorkspaceRepairOperationRecoveryAction::RetryRepair)
+    ) {
         return false;
     }
     let Ok(Some(project)) = state.project_repo.get_by_id(&workspace.project_id).await else {

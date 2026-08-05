@@ -27,6 +27,9 @@ use crate::application::agent_workspace_publish_repair_state::{
     ORPHANED_REPAIR_DISPATCH_RESCUE_GRACE_SECS,
 };
 use crate::application::chat_service::{ChatService, SendMessageOptions, SendQueuePolicy};
+use crate::application::publish_resilience::{
+    reconcile_blocked_agent_workspace_repair_pr_handoff, BlockedRepairPrHandoffReconciliation,
+};
 use crate::application::{AppState, GitService};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspacePublicationEvent, AgentRunId,
@@ -488,6 +491,15 @@ async fn reconcile_agent_workspace_repair_attempt(
             retry_safe_ready_agent_workspace_repair_publish(state, current).await
         }
         AgentWorkspaceRepairPhase::Blocked => {
+            match reconcile_blocked_agent_workspace_repair_pr_handoff(state, &current).await? {
+                BlockedRepairPrHandoffReconciliation::Recovered => {
+                    return Ok(DurableRepairRecoveryOutcome::Continued);
+                }
+                BlockedRepairPrHandoffReconciliation::Stale => {
+                    return Ok(DurableRepairRecoveryOutcome::Stale);
+                }
+                BlockedRepairPrHandoffReconciliation::NotRecoverable => {}
+            }
             release_repair_lease_if_settled_boundary(state, &current).await?;
             retry_safe_blocked_agent_workspace_repair(state, current).await
         }

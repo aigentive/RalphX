@@ -1540,7 +1540,7 @@ export function AgentPublishPanel({
                     )}
                     Re-check PR health
                   </Button>
-                ) : maintenancePresentation?.action === "none" ? (
+                ) : maintenancePresentation?.action === "none" && maintenancePresentation.busy ? (
                 <Button
                   type="button"
                   variant="ghost"
@@ -1552,7 +1552,7 @@ export function AgentPublishPanel({
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
                   {maintenancePresentation.title}
                 </Button>
-              ) : maintenancePresentation?.action === "retry" ? (
+              ) : maintenancePresentation?.action === "none" ? null : maintenancePresentation?.action === "retry" ? (
                 <Button
                   type="button"
                   className={primaryActionClassName}
