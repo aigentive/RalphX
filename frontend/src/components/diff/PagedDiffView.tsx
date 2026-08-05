@@ -64,6 +64,19 @@ function pageOffsetForIndex(index: number, pageSize: number): number {
   return Math.floor(Math.max(0, index) / pageSize) * pageSize;
 }
 
+function formatSnapshotAge(capturedAt: string): string {
+  const elapsedSeconds = Math.max(
+    0,
+    Math.round((Date.now() - new Date(capturedAt).getTime()) / 1_000),
+  );
+  if (elapsedSeconds < 60) return "just now";
+  const elapsedMinutes = Math.round(elapsedSeconds / 60);
+  if (elapsedMinutes < 60) return `${elapsedMinutes}m ago`;
+  const elapsedHours = Math.round(elapsedMinutes / 60);
+  if (elapsedHours < 24) return `${elapsedHours}h ago`;
+  return `${Math.round(elapsedHours / 24)}d ago`;
+}
+
 function pageOffsetsForRange(range: ListRange, pageSize: number): number[] {
   const start = pageOffsetForIndex(range.startIndex, pageSize);
   const end = pageOffsetForIndex(range.endIndex, pageSize);
@@ -140,6 +153,8 @@ export function PagedDiffView({
     () => initialTotalRows ?? null
   );
   const [initialError, setInitialError] = useState<Error | null>(null);
+  const [snapshotUnavailable, setSnapshotUnavailable] = useState(false);
+  const [snapshotCapturedAt, setSnapshotCapturedAt] = useState<string | null>(null);
   const [isInitialLoading, setIsInitialLoading] = useState(true);
   const [inlineScrollContainer, setInlineScrollContainer] =
     useState<ScrollContainer | null>(null);
@@ -215,9 +230,14 @@ export function PagedDiffView({
         if (generation !== generationRef.current) {
           return;
         }
+        if (page === null) {
+          setSnapshotUnavailable(true);
+          return;
+        }
         pagesRef.current.set(page.offset, page);
         setPages(new Map(pagesRef.current));
         setTotalRows(page.totalRows);
+        setSnapshotCapturedAt(page.snapshotCapturedAt ?? null);
         setInitialError(null);
       } catch (error) {
         if (generation === generationRef.current && offset === 0) {
@@ -243,6 +263,8 @@ export function PagedDiffView({
     setPages(new Map());
     setTotalRows(initialTotalRowsRef.current ?? null);
     setInitialError(null);
+    setSnapshotUnavailable(false);
+    setSnapshotCapturedAt(null);
     setIsInitialLoading(true);
     if (!hasExplicitInlineScrollParent) {
       setInlineScrollContainer(null);
@@ -349,6 +371,18 @@ export function PagedDiffView({
             Retry
           </button>
         )}
+      </div>
+    );
+  }
+
+  if (snapshotUnavailable) {
+    return (
+      <div
+        data-testid="paged-diff-snapshot-unavailable"
+        className="flex items-center justify-center px-3 py-6 text-xs"
+        style={{ color: "var(--text-muted)" }}
+      >
+        The host has not captured this file diff yet. Open this file on the host to capture it.
       </div>
     );
   }
@@ -500,6 +534,11 @@ export function PagedDiffView({
         data-wrap-lines={wrapLines}
         style={{ backgroundColor: "var(--bg-base)" }}
       >
+        {snapshotCapturedAt ? (
+          <p className="px-3 pt-2 text-xs" style={{ color: "var(--text-muted)" }}>
+            Diff as of {formatSnapshotAge(snapshotCapturedAt)} (host snapshot)
+          </p>
+        ) : null}
         <div
           className="px-3 py-2 border-b"
           style={{ borderColor: "var(--overlay-weak)" }}

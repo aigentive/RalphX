@@ -878,7 +878,7 @@ export function AgentsPublishInlineDiffs({
     const map = new Map<string, DiffPageSummary>();
     pageSummaryFiles.forEach((file, idx) => {
       const page = pageSummaryQueries[idx]?.data;
-      if (page !== undefined) {
+      if (page != null) {
         map.set(file.path, {
           totalRows: page.totalRows,
           isBinary: page.isBinary,
@@ -1028,6 +1028,8 @@ export function AgentsPublishInlineDiffs({
         map.set(file.path, "loading");
       } else if (q.isError) {
         map.set(file.path, "error");
+      } else if (q.data === null) {
+        map.set(file.path, "snapshot-missing");
       } else if (q.data !== undefined) {
         map.set(file.path, q.data);
       }

@@ -2107,6 +2107,9 @@ export function AgentPublishPanel({
                         conversationId,
                         filePath,
                       );
+                  if (diff === null) {
+                    return null;
+                  }
                   return {
                     filePath: diff.filePath,
                     hunks: diff.hunks,

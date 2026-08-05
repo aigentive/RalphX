@@ -650,6 +650,30 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: [],
     pins: [],
   },
+  "get_remote_agent_conversation_workspace_commit_file_diff": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_remote_agent_conversation_workspace_cumulative_file_diff": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_remote_agent_conversation_workspace_file_diff": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_remote_agent_conversation_workspace_file_diff_page": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
   "get_remote_agent_conversation_workspace_review": {
     opClass: "read",
     argumentSensitive: false,

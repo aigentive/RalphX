@@ -1087,7 +1087,9 @@ fn detector_b_is_calibrated_and_floor_enforced() {
         // eligibility and provider catalog discovery stay outside the closure.
         // 598 -> 600: Wave C4a's two snapshot-only Changes reads. Both carry no git/process
         // authority by construction; the source-level remote-diff carrier assertion is the proof.
-        600,
+        // 600 -> 604: Wave C4b's four file-level snapshot reads. Exact path/ref/page keys make
+        // them inert reads of host-captured content; none reaches git or a process seam.
+        604,
         "review the detector against the full command census"
     );
     let flagged = spawn_triggering_writers(
@@ -1736,6 +1738,12 @@ fn the_spawn_free_remote_diff_module_carries_no_authority_carriers() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(code.contains("pub async fn get_remote_agent_conversation_workspace_review"));
+    assert!(code.contains("pub async fn get_remote_agent_conversation_workspace_file_diff"));
+    assert!(code.contains("pub async fn get_remote_agent_conversation_workspace_commit_file_diff"));
+    assert!(
+        code.contains("pub async fn get_remote_agent_conversation_workspace_cumulative_file_diff")
+    );
+    assert!(code.contains("pub async fn get_remote_agent_conversation_workspace_file_diff_page"));
     for carrier in ["DiffService", "GitService", "resolve_git_cli_path"] {
         assert!(
             !code.contains(carrier),

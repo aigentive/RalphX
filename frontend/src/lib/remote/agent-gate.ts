@@ -88,6 +88,13 @@ export const AGENT_GATED_AFFORDANCES = {
   workspaceChangesSummary:
     "get_remote_agent_conversation_workspace_change_summary",
   workspaceChangesReview: "get_remote_agent_conversation_workspace_review",
+  workspaceFileDiff: "get_remote_agent_conversation_workspace_file_diff",
+  workspaceCommitFileDiff:
+    "get_remote_agent_conversation_workspace_commit_file_diff",
+  workspaceCumulativeFileDiff:
+    "get_remote_agent_conversation_workspace_cumulative_file_diff",
+  workspaceFileDiffPage:
+    "get_remote_agent_conversation_workspace_file_diff_page",
   // Refresh launches provider discovery on the host and is intentionally absent remotely.
   // The catalog read itself routes through the registered spawn-free snapshot twin.
   mcpCatalogRefresh: "refresh_mcp_catalog",

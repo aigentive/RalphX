@@ -6,8 +6,10 @@
 
 use serde::Serialize;
 
+use crate::application::{DiffRefKind, FileDiff, FileDiffPage};
 use crate::commands::diff_commands::{
-    get_agent_workspace_change_summary_snapshot, get_agent_workspace_review_snapshot,
+    get_agent_workspace_change_summary_snapshot, get_agent_workspace_file_diff_page_snapshot,
+    get_agent_workspace_file_diff_snapshot, get_agent_workspace_review_snapshot,
     AgentWorkspaceChangeSummaryResponse, AgentWorkspaceContextSource, AgentWorkspaceReviewResponse,
 };
 use crate::domain::entities::ChatConversationId;
@@ -57,4 +59,62 @@ pub async fn get_remote_agent_conversation_workspace_review(
 ) -> RemoteWorkspaceSnapshotResponse<AgentWorkspaceReviewResponse> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
     envelope(get_agent_workspace_review_snapshot(&conversation_id))
+}
+
+#[tauri::command]
+pub async fn get_remote_agent_conversation_workspace_file_diff(
+    conversation_id: String,
+    file_path: String,
+) -> RemoteWorkspaceSnapshotResponse<FileDiff> {
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    envelope(get_agent_workspace_file_diff_snapshot(
+        &conversation_id,
+        &file_path,
+        "head",
+    ))
+}
+
+#[tauri::command]
+pub async fn get_remote_agent_conversation_workspace_commit_file_diff(
+    conversation_id: String,
+    commit_sha: String,
+    file_path: String,
+) -> RemoteWorkspaceSnapshotResponse<FileDiff> {
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    envelope(get_agent_workspace_file_diff_snapshot(
+        &conversation_id,
+        &file_path,
+        &format!("commit:{commit_sha}"),
+    ))
+}
+
+#[tauri::command]
+pub async fn get_remote_agent_conversation_workspace_cumulative_file_diff(
+    conversation_id: String,
+    file_path: String,
+) -> RemoteWorkspaceSnapshotResponse<FileDiff> {
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    envelope(get_agent_workspace_file_diff_snapshot(
+        &conversation_id,
+        &file_path,
+        "cumulative_head",
+    ))
+}
+
+#[tauri::command]
+pub async fn get_remote_agent_conversation_workspace_file_diff_page(
+    conversation_id: String,
+    file_path: String,
+    ref_kind: DiffRefKind,
+    offset: usize,
+    limit: usize,
+) -> RemoteWorkspaceSnapshotResponse<FileDiffPage> {
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    envelope(get_agent_workspace_file_diff_page_snapshot(
+        &conversation_id,
+        &file_path,
+        &ref_kind,
+        offset,
+        limit,
+    ))
 }

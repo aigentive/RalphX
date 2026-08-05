@@ -12,6 +12,8 @@ import {
   AgentWorkspaceReviewResponseSchema,
   RemoteAgentWorkspaceChangeSummaryResponseSchema,
   RemoteAgentWorkspaceReviewResponseSchema,
+  RemoteAgentWorkspaceFileDiffPageResponseSchema,
+  RemoteAgentWorkspaceFileDiffResponseSchema,
   PrDiffAnnotationsResponseSchema,
   WorkspaceReviewHunkAnnotationsResponseSchema,
   RangeFetchResponseSchema,
@@ -91,6 +93,8 @@ export {
   AgentWorkspaceReviewResponseSchema,
   RemoteAgentWorkspaceChangeSummaryResponseSchema,
   RemoteAgentWorkspaceReviewResponseSchema,
+  RemoteAgentWorkspaceFileDiffPageResponseSchema,
+  RemoteAgentWorkspaceFileDiffResponseSchema,
   DiffLineKindSchema,
   DiffLineSchema,
   DiffHunkSchema,
@@ -329,13 +333,30 @@ export const diffApi = {
   getAgentConversationWorkspaceFileDiff: (
     conversationId: string,
     filePath: string
-  ): Promise<FileDiff> =>
-    typedInvokeWithTransform(
-      "get_agent_conversation_workspace_file_diff",
+  ): Promise<FileDiff | null> => {
+    if (!isRemoteEnvironmentId(getTransportEnvironmentId())) {
+      return typedInvokeWithTransform(
+        "get_agent_conversation_workspace_file_diff",
+        { conversationId, filePath },
+        FileDiffSchema,
+        transformFileDiff
+      );
+    }
+    return typedInvokeWithTransform(
+      "get_remote_agent_conversation_workspace_file_diff",
       { conversationId, filePath },
-      FileDiffSchema,
-      transformFileDiff
-    ),
+      RemoteAgentWorkspaceFileDiffResponseSchema,
+      (envelope) =>
+        envelope.snapshot === null
+          ? null
+          : {
+              ...transformFileDiff(envelope.snapshot),
+              ...(envelope.captured_at !== null && { snapshotCapturedAt: envelope.captured_at }),
+              ...(envelope.cache_version !== null && { snapshotCacheVersion: envelope.cache_version }),
+              ...(envelope.context_source !== null && { snapshotContextSource: envelope.context_source }),
+            }
+    );
+  },
 
   getAgentConversationWorkspaceCommits: (
     conversationId: string
@@ -362,13 +383,30 @@ export const diffApi = {
     conversationId: string,
     commitSha: string,
     filePath: string
-  ): Promise<FileDiff> =>
-    typedInvokeWithTransform(
-      "get_agent_conversation_workspace_commit_file_diff",
+  ): Promise<FileDiff | null> => {
+    if (!isRemoteEnvironmentId(getTransportEnvironmentId())) {
+      return typedInvokeWithTransform(
+        "get_agent_conversation_workspace_commit_file_diff",
+        { conversationId, commitSha, filePath },
+        FileDiffSchema,
+        transformFileDiff
+      );
+    }
+    return typedInvokeWithTransform(
+      "get_remote_agent_conversation_workspace_commit_file_diff",
       { conversationId, commitSha, filePath },
-      FileDiffSchema,
-      transformFileDiff
-    ),
+      RemoteAgentWorkspaceFileDiffResponseSchema,
+      (envelope) =>
+        envelope.snapshot === null
+          ? null
+          : {
+              ...transformFileDiff(envelope.snapshot),
+              ...(envelope.captured_at !== null && { snapshotCapturedAt: envelope.captured_at }),
+              ...(envelope.cache_version !== null && { snapshotCacheVersion: envelope.cache_version }),
+              ...(envelope.context_source !== null && { snapshotContextSource: envelope.context_source }),
+            }
+    );
+  },
 
   getAgentConversationWorkspaceStagedFileChanges: (
     conversationId: string
@@ -478,13 +516,30 @@ export const diffApi = {
   getAgentConversationWorkspaceCumulativeFileDiff: (
     conversationId: string,
     filePath: string
-  ): Promise<FileDiff> =>
-    typedInvokeWithTransform(
-      "get_agent_conversation_workspace_cumulative_file_diff",
+  ): Promise<FileDiff | null> => {
+    if (!isRemoteEnvironmentId(getTransportEnvironmentId())) {
+      return typedInvokeWithTransform(
+        "get_agent_conversation_workspace_cumulative_file_diff",
+        { conversationId, filePath },
+        FileDiffSchema,
+        transformFileDiff
+      );
+    }
+    return typedInvokeWithTransform(
+      "get_remote_agent_conversation_workspace_cumulative_file_diff",
       { conversationId, filePath },
-      FileDiffSchema,
-      transformFileDiff
-    ),
+      RemoteAgentWorkspaceFileDiffResponseSchema,
+      (envelope) =>
+        envelope.snapshot === null
+          ? null
+          : {
+              ...transformFileDiff(envelope.snapshot),
+              ...(envelope.captured_at !== null && { snapshotCapturedAt: envelope.captured_at }),
+              ...(envelope.cache_version !== null && { snapshotCacheVersion: envelope.cache_version }),
+              ...(envelope.context_source !== null && { snapshotContextSource: envelope.context_source }),
+            }
+    );
+  },
 
   /**
    * Fetch a bounded page of flattened diff rows for one agent workspace file.
@@ -497,8 +552,24 @@ export const diffApi = {
     refKind: DiffRefKind;
     offset: number;
     limit: number;
-  }): Promise<FileDiffPage> => {
+  }): Promise<FileDiffPage | null> => {
     const { conversationId, path, refKind, offset, limit } = args;
+    if (isRemoteEnvironmentId(getTransportEnvironmentId())) {
+      return typedInvokeWithTransform(
+        "get_remote_agent_conversation_workspace_file_diff_page",
+        { conversationId, filePath: path, refKind, offset, limit },
+        RemoteAgentWorkspaceFileDiffPageResponseSchema,
+        (envelope) =>
+          envelope.snapshot === null
+            ? null
+            : {
+                ...transformFileDiffPage(envelope.snapshot),
+                ...(envelope.captured_at !== null && { snapshotCapturedAt: envelope.captured_at }),
+                ...(envelope.cache_version !== null && { snapshotCacheVersion: envelope.cache_version }),
+                ...(envelope.context_source !== null && { snapshotContextSource: envelope.context_source }),
+              }
+      );
+    }
     const endpoint = `agent-workspaces/${encodeURIComponent(conversationId)}/file-diff-page`;
     const params = new URLSearchParams({
       path,

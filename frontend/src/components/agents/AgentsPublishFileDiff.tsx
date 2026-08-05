@@ -35,7 +35,7 @@ import {
   requiresExplicitDiffHydration,
 } from "./inlineDiffGuards";
 
-export type DiffState = FileDiff | "loading" | "error" | undefined;
+export type DiffState = FileDiff | "loading" | "error" | "snapshot-missing" | undefined;
 export type ConflictDiffState = ConflictDiff | "loading" | "error" | undefined;
 export type DiffPageSummary = Pick<FileDiffPage, "totalRows" | "isBinary">;
 
@@ -120,7 +120,10 @@ export function AgentsPublishFileDiff({
   onShowAnyway,
   isFocusTarget = false,
 }: AgentsPublishFileDiffProps) {
-  const diffData = diff !== "loading" && diff !== "error" ? diff : undefined;
+  const diffData =
+    diff !== "loading" && diff !== "error" && diff !== "snapshot-missing"
+      ? diff
+      : undefined;
   const conflictDiffData =
     conflictDiff !== "loading" && conflictDiff !== "error" ? conflictDiff : undefined;
   const showExplicitPlaceholder =
@@ -409,6 +412,15 @@ export function AgentsPublishFileDiff({
                 </div>
               )}
 
+              {diff === "snapshot-missing" && !usePagedDiff && (
+                <SimpleDiffView
+                  hunks={[]}
+                  oldTotalLines={0}
+                  newTotalLines={0}
+                  snapshotUnavailable
+                />
+              )}
+
               {usePagedDiff && (
                 <PagedDiffView
                   key={[
@@ -444,6 +456,7 @@ export function AgentsPublishFileDiff({
                   stickyGutter={false}
                   annotations={annotations}
                   hunkAnnotations={hunkAnnotations}
+                  snapshotCapturedAt={diffData.snapshotCapturedAt}
                 />
               )}
 

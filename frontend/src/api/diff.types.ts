@@ -51,6 +51,9 @@ export interface FileDiff {
   oldTotalLines: number;
   newTotalLines: number;
   isBinary: boolean;
+  snapshotCapturedAt?: string;
+  snapshotCacheVersion?: string;
+  snapshotContextSource?: AgentWorkspaceContextSource;
 }
 
 export interface ConflictDiff {
@@ -84,6 +87,9 @@ export interface FileDiffPage {
   oldTotalLines: number;
   newTotalLines: number;
   isBinary: boolean;
+  snapshotCapturedAt?: string;
+  snapshotCacheVersion?: string;
+  snapshotContextSource?: AgentWorkspaceContextSource;
 }
 
 // ── GitHub PR annotation types ─────────────────────────────────────────────

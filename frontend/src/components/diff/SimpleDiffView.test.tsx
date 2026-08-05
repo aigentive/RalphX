@@ -167,6 +167,22 @@ function makeHunkAnnotation(
 }
 
 describe("SimpleDiffView", () => {
+  it("renders uncaptured host snapshot copy without an error or empty diff", () => {
+    render(
+      <SimpleDiffView
+        hunks={[]}
+        oldTotalLines={0}
+        newTotalLines={0}
+        snapshotUnavailable
+      />,
+    );
+
+    expect(screen.getByTestId("simple-diff-snapshot-unavailable")).toHaveTextContent(
+      "The host has not captured this file diff yet",
+    );
+    expect(screen.queryByText(/could not load/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /retry/i })).not.toBeInTheDocument();
+  });
   beforeEach(() => {
     vi.clearAllMocks();
   });

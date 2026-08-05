@@ -109,6 +109,27 @@ describe("capability model derivation", () => {
     }
   });
 
+  it("maps file diff affordances to their manifest-derived snapshot twins", () => {
+    const expected = {
+      workspaceFileDiff: "get_remote_agent_conversation_workspace_file_diff",
+      workspaceCommitFileDiff:
+        "get_remote_agent_conversation_workspace_commit_file_diff",
+      workspaceCumulativeFileDiff:
+        "get_remote_agent_conversation_workspace_cumulative_file_diff",
+      workspaceFileDiffPage:
+        "get_remote_agent_conversation_workspace_file_diff_page",
+    } as const;
+
+    for (const [affordance, command] of Object.entries(expected)) {
+      expect(
+        AGENT_GATED_AFFORDANCES[
+          affordance as keyof typeof AGENT_GATED_AFFORDANCES
+        ],
+      ).toBe(command);
+      expect(REMOTE_FACADE_OPS[command]?.opClass, command).toBe("read");
+    }
+  });
+
   it("treats an unregistered command as unavailable, not scope-forbidden", () => {
     // Derived from ABSENCE. These three are detector-c process-launch rejections
     // today; the assertion is about the mechanism, not the names.

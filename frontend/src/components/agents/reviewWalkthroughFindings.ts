@@ -16,7 +16,7 @@ import type {
   ReviewWalkthroughHunkStatus,
 } from "./ReviewWalkthrough";
 
-type DiffState = FileDiff | "loading" | "error" | undefined;
+type DiffState = FileDiff | "loading" | "error" | "snapshot-missing" | undefined;
 
 interface BuildReviewWalkthroughFindingsOptions {
   files: FileChange[];
@@ -28,7 +28,9 @@ interface BuildReviewWalkthroughFindingsOptions {
 }
 
 function loadedDiff(diff: DiffState): FileDiff | undefined {
-  return diff !== "loading" && diff !== "error" ? diff : undefined;
+  return diff !== "loading" && diff !== "error" && diff !== "snapshot-missing"
+    ? diff
+    : undefined;
 }
 
 /**

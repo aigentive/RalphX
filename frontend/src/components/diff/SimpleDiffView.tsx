@@ -47,6 +47,8 @@ export interface SimpleDiffViewProps {
   conversationId?: string | undefined;
   filePath?: string | undefined;
   refKind?: DiffRefKind | undefined;
+  snapshotUnavailable?: boolean | undefined;
+  snapshotCapturedAt?: string | undefined;
   /** Own the vertical scroll container. Inline virtualized callers disable this. */
   scrollContainer?: boolean | undefined;
   /** GitHub review/check annotations already filtered to this file. */
@@ -63,6 +65,19 @@ export interface SimpleDiffViewProps {
   showContextGaps?: boolean | undefined;
   /** Disable per-row sticky line-number gutters for WebKit-sensitive embedded diffs. */
   stickyGutter?: boolean | undefined;
+}
+
+function formatSnapshotAge(capturedAt: string): string {
+  const elapsedSeconds = Math.max(
+    0,
+    Math.round((Date.now() - new Date(capturedAt).getTime()) / 1_000),
+  );
+  if (elapsedSeconds < 60) return "just now";
+  const elapsedMinutes = Math.round(elapsedSeconds / 60);
+  if (elapsedMinutes < 60) return `${elapsedMinutes}m ago`;
+  const elapsedHours = Math.round(elapsedMinutes / 60);
+  if (elapsedHours < 24) return `${elapsedHours}h ago`;
+  return `${Math.round(elapsedHours / 24)}d ago`;
 }
 
 type GapState = "loading" | { error: unknown } | RangeLine[];
@@ -276,6 +291,8 @@ export function SimpleDiffView({
   conversationId,
   filePath,
   refKind,
+  snapshotUnavailable = false,
+  snapshotCapturedAt,
   scrollContainer = true,
   annotations = [],
   density = "standard",
@@ -414,6 +431,20 @@ export function SimpleDiffView({
         style={{ color: "var(--text-muted)" }}
       >
         <p className="text-sm">Binary file — diff not shown</p>
+      </div>
+    );
+  }
+
+  // An uncaptured snapshot also has zero hunks, so this MUST come before the empty-state
+  // return below — otherwise absence renders as the claim "No changes".
+  if (snapshotUnavailable) {
+    return (
+      <div
+        data-testid="simple-diff-snapshot-unavailable"
+        className="flex items-center justify-center px-3 py-6 text-xs"
+        style={{ color: "var(--text-muted)" }}
+      >
+        The host has not captured this file diff yet. Open this file on the host to capture it.
       </div>
     );
   }
@@ -738,6 +769,12 @@ export function SimpleDiffView({
 
   // ── Main render ────────────────────────────────────────────────────────
 
+  const snapshotAgeLabel = snapshotCapturedAt ? (
+    <p className="px-3 pt-2 text-xs" style={{ color: "var(--text-muted)" }}>
+      Diff as of {formatSnapshotAge(snapshotCapturedAt)} (host snapshot)
+    </p>
+  ) : null;
+
   if (shouldVirtualizeRows) {
     return (
       <div className={scrollContainer ? "h-full overflow-hidden" : "w-full overflow-hidden"}>
@@ -752,6 +789,7 @@ export function SimpleDiffView({
           data-testid="simple-diff-virtualized"
           style={{ backgroundColor: "var(--bg-base)" }}
         >
+          {snapshotAgeLabel}
           {showWrapToggle && (
             <div
               className="px-3 py-2 border-b"
@@ -791,6 +829,7 @@ export function SimpleDiffView({
         data-wrap-lines={wrapLines}
         style={{ backgroundColor: "var(--bg-base)" }}
       >
+        {snapshotAgeLabel}
         {showWrapToggle && (
           <div
             className="px-3 py-2 border-b"

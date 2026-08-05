@@ -83,4 +83,115 @@ describe("remote workspace diff snapshots", () => {
       diffApi.getAgentConversationWorkspaceChangeSummary("conversation-1"),
     ).resolves.toBeNull();
   });
+
+  it.each([
+    {
+      call: () =>
+        diffApi.getAgentConversationWorkspaceFileDiff("conversation-1", "src/main.rs"),
+      cmd: "get_remote_agent_conversation_workspace_file_diff",
+      args: { conversationId: "conversation-1", filePath: "src/main.rs" },
+    },
+    {
+      call: () =>
+        diffApi.getAgentConversationWorkspaceCommitFileDiff(
+          "conversation-1",
+          "abc123",
+          "src/main.rs",
+        ),
+      cmd: "get_remote_agent_conversation_workspace_commit_file_diff",
+      args: {
+        conversationId: "conversation-1",
+        commitSha: "abc123",
+        filePath: "src/main.rs",
+      },
+    },
+    {
+      call: () =>
+        diffApi.getAgentConversationWorkspaceCumulativeFileDiff(
+          "conversation-1",
+          "src/main.rs",
+        ),
+      cmd: "get_remote_agent_conversation_workspace_cumulative_file_diff",
+      args: { conversationId: "conversation-1", filePath: "src/main.rs" },
+    },
+  ])("routes $cmd through the real remote envelope and preserves absence", async ({ call, cmd, args }) => {
+    primitiveInvoke.mockResolvedValue({
+      outcome: "ok",
+      result: {
+        snapshot: null,
+        captured_at: null,
+        cache_version: null,
+        context_source: null,
+      },
+    });
+
+    await expect(call()).resolves.toBeNull();
+    const [transportCommand, transportArgs] = primitiveInvoke.mock.calls.at(-1) ?? [];
+    expect(transportCommand).toBe("remote_invoke");
+    expect(transportArgs).toEqual({
+      input: expect.objectContaining({ cmd, args }),
+    });
+  });
+
+  it("routes exact page coordinates and returns capture metadata with the page", async () => {
+    primitiveInvoke.mockResolvedValue({
+      outcome: "ok",
+      result: {
+        snapshot: {
+          file_path: "src/main.rs",
+          language: "rust",
+          rows: [],
+          offset: 200,
+          limit: 100,
+          next_offset: null,
+          total_rows: 200,
+          old_total_lines: 10,
+          new_total_lines: 10,
+          is_binary: false,
+        },
+        captured_at: "2026-08-05T18:01:00+00:00",
+        cache_version: "workspace-version-1",
+        context_source: "worktree",
+      },
+    });
+
+    const page = await diffApi.getAgentConversationWorkspaceFileDiffPage({
+      conversationId: "conversation-1",
+      path: "src/main.rs",
+      refKind: { kind: "commit", sha: "abc123" },
+      offset: 200,
+      limit: 100,
+    });
+
+    const [transportCommand, transportArgs] = primitiveInvoke.mock.calls.at(-1) ?? [];
+    expect(transportCommand).toBe("remote_invoke");
+    expect(transportArgs).toEqual({
+      input: expect.objectContaining({
+        cmd: "get_remote_agent_conversation_workspace_file_diff_page",
+        args: {
+          conversationId: "conversation-1",
+          filePath: "src/main.rs",
+          refKind: { kind: "commit", sha: "abc123" },
+          offset: 200,
+          limit: 100,
+        },
+      }),
+    });
+    expect(page).toMatchObject({
+      offset: 200,
+      limit: 100,
+      snapshotCapturedAt: "2026-08-05T18:01:00+00:00",
+    });
+  });
+
+  it("preserves an unwrapped commandError from the real remote envelope", async () => {
+    primitiveInvoke.mockResolvedValue({
+      outcome: "commandError",
+      error: "file snapshot read failed",
+    });
+
+    await expect(
+      diffApi.getAgentConversationWorkspaceFileDiff("conversation-1", "src/main.rs"),
+    ).rejects.toThrow("file snapshot read failed");
+  });
 });

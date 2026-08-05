@@ -576,6 +576,38 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
         ),
     },
     CommandOverride {
+        command: "get_remote_agent_conversation_workspace_file_diff",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "snapshot-only in-memory read of one host-captured workspace file diff; no DiffService, GitService, or CLI resolver carrier",
+        ),
+    },
+    CommandOverride {
+        command: "get_remote_agent_conversation_workspace_commit_file_diff",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "snapshot-only in-memory read of one host-captured commit file diff; no DiffService, GitService, or CLI resolver carrier",
+        ),
+    },
+    CommandOverride {
+        command: "get_remote_agent_conversation_workspace_cumulative_file_diff",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "snapshot-only in-memory read of one host-captured cumulative file diff; no DiffService, GitService, or CLI resolver carrier",
+        ),
+    },
+    CommandOverride {
+        command: "get_remote_agent_conversation_workspace_file_diff_page",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "snapshot-only in-memory read keyed by host-captured file page range and ref scope; no DiffService, GitService, or CLI resolver carrier",
+        ),
+    },
+    CommandOverride {
         command: "request_remote_agent_stop",
         policy: policy(
             RiskClass::Operate,

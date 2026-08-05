@@ -239,3 +239,17 @@ export const RemoteAgentWorkspaceChangeSummaryResponseSchema = z.object({
   cache_version: z.string().nullable(),
   context_source: AgentWorkspaceContextSourceSchema.nullable(),
 });
+
+export const RemoteAgentWorkspaceFileDiffResponseSchema = z.object({
+  snapshot: FileDiffSchema.nullable(),
+  captured_at: z.string().nullable(),
+  cache_version: z.string().nullable(),
+  context_source: AgentWorkspaceContextSourceSchema.nullable(),
+});
+
+export const RemoteAgentWorkspaceFileDiffPageResponseSchema = z.object({
+  snapshot: FileDiffPageSchema.nullable(),
+  captured_at: z.string().nullable(),
+  cache_version: z.string().nullable(),
+  context_source: AgentWorkspaceContextSourceSchema.nullable(),
+});

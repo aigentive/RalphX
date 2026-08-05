@@ -509,6 +509,40 @@ fn agent_workspace_remote_summary_cache(
     CACHE.get_or_init(DashMap::new)
 }
 
+fn agent_workspace_remote_file_diff_cache(
+) -> &'static DashMap<String, AgentWorkspaceRemoteSnapshot<FileDiff>> {
+    static CACHE: OnceLock<DashMap<String, AgentWorkspaceRemoteSnapshot<FileDiff>>> =
+        OnceLock::new();
+    CACHE.get_or_init(DashMap::new)
+}
+
+fn agent_workspace_remote_file_diff_page_cache(
+) -> &'static DashMap<String, AgentWorkspaceRemoteSnapshot<FileDiffPage>> {
+    static CACHE: OnceLock<DashMap<String, AgentWorkspaceRemoteSnapshot<FileDiffPage>>> =
+        OnceLock::new();
+    CACHE.get_or_init(DashMap::new)
+}
+
+fn agent_workspace_file_snapshot_key(
+    conversation_id: &ChatConversationId,
+    file_path: &str,
+    scope: &str,
+) -> Option<String> {
+    agent_workspace_diff_cache_key(conversation_id)
+        .map(|conversation| format!("{conversation}\0{scope}\0{file_path}"))
+}
+
+fn agent_workspace_diff_ref_scope(ref_kind: &DiffRefKind) -> String {
+    match ref_kind {
+        DiffRefKind::Head => "head".to_string(),
+        DiffRefKind::Staged => "staged".to_string(),
+        DiffRefKind::Unstaged => "unstaged".to_string(),
+        DiffRefKind::Commit { sha } => format!("commit:{sha}"),
+        DiffRefKind::CumulativeBase => "cumulative_base".to_string(),
+        DiffRefKind::CumulativeHead => "cumulative_head".to_string(),
+    }
+}
+
 fn current_agent_workspace_cache_version(conversation_id: &ChatConversationId) -> Option<String> {
     let key = agent_workspace_diff_cache_key(conversation_id)?;
     agent_workspace_diff_cache_versions()
@@ -565,6 +599,59 @@ fn read_remote_workspace_snapshot<T: Clone>(
     None
 }
 
+fn store_remote_workspace_file_snapshot<T: Clone>(
+    cache: &DashMap<String, AgentWorkspaceRemoteSnapshot<T>>,
+    conversation_id: &ChatConversationId,
+    file_path: &str,
+    scope: &str,
+    context_source: AgentWorkspaceContextSource,
+    payload: &T,
+) {
+    if remote_workspace_snapshot_ttl().is_zero() {
+        return;
+    }
+    let Some(key) = agent_workspace_file_snapshot_key(conversation_id, file_path, scope) else {
+        return;
+    };
+    let Some(cache_version) = current_agent_workspace_cache_version(conversation_id) else {
+        return;
+    };
+    cache.insert(
+        key,
+        AgentWorkspaceRemoteSnapshot {
+            inserted_at: Instant::now(),
+            captured_at: Utc::now().to_rfc3339(),
+            cache_version,
+            context_source,
+            payload: payload.clone(),
+        },
+    );
+}
+
+fn read_remote_workspace_file_snapshot<T: Clone>(
+    cache: &DashMap<String, AgentWorkspaceRemoteSnapshot<T>>,
+    conversation_id: &ChatConversationId,
+    file_path: &str,
+    scope: &str,
+) -> Option<(T, String, String, AgentWorkspaceContextSource)> {
+    let key = agent_workspace_file_snapshot_key(conversation_id, file_path, scope)?;
+    let current_version = current_agent_workspace_cache_version(conversation_id)?;
+    let entry = cache.get(&key)?;
+    if entry.inserted_at.elapsed() <= remote_workspace_snapshot_ttl()
+        && entry.cache_version == current_version
+    {
+        return Some((
+            entry.payload.clone(),
+            entry.captured_at.clone(),
+            entry.cache_version.clone(),
+            entry.context_source,
+        ));
+    }
+    drop(entry);
+    cache.remove(&key);
+    None
+}
+
 #[doc(hidden)]
 pub fn get_agent_workspace_review_snapshot(
     conversation_id: &ChatConversationId,
@@ -587,6 +674,40 @@ pub fn get_agent_workspace_change_summary_snapshot(
     AgentWorkspaceContextSource,
 )> {
     read_remote_workspace_snapshot(agent_workspace_remote_summary_cache(), conversation_id)
+}
+
+#[doc(hidden)]
+pub fn get_agent_workspace_file_diff_snapshot(
+    conversation_id: &ChatConversationId,
+    file_path: &str,
+    scope: &str,
+) -> Option<(FileDiff, String, String, AgentWorkspaceContextSource)> {
+    read_remote_workspace_file_snapshot(
+        agent_workspace_remote_file_diff_cache(),
+        conversation_id,
+        file_path,
+        scope,
+    )
+}
+
+#[doc(hidden)]
+pub fn get_agent_workspace_file_diff_page_snapshot(
+    conversation_id: &ChatConversationId,
+    file_path: &str,
+    ref_kind: &DiffRefKind,
+    offset: usize,
+    limit: usize,
+) -> Option<(FileDiffPage, String, String, AgentWorkspaceContextSource)> {
+    let scope = format!(
+        "page:{}:{offset}:{limit}",
+        agent_workspace_diff_ref_scope(ref_kind)
+    );
+    read_remote_workspace_file_snapshot(
+        agent_workspace_remote_file_diff_page_cache(),
+        conversation_id,
+        file_path,
+        &scope,
+    )
 }
 
 fn agent_workspace_review_locks() -> &'static DashMap<String, Arc<tokio::sync::Mutex<()>>> {
@@ -739,6 +860,33 @@ pub(crate) fn invalidate_agent_workspace_diff_caches(conversation_id: &ChatConve
         AgentWorkspaceContextMode::Repair.cache_key_suffix()
     ));
     agent_workspace_review_cache().remove(&key);
+    agent_workspace_remote_review_cache().remove(&key);
+    agent_workspace_remote_summary_cache().remove(&key);
+    let file_snapshot_prefix = format!("{key}\0");
+    let file_diff_keys = agent_workspace_remote_file_diff_cache()
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .key()
+                .starts_with(&file_snapshot_prefix)
+                .then(|| entry.key().clone())
+        })
+        .collect::<Vec<_>>();
+    for snapshot_key in file_diff_keys {
+        agent_workspace_remote_file_diff_cache().remove(&snapshot_key);
+    }
+    let page_keys = agent_workspace_remote_file_diff_page_cache()
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .key()
+                .starts_with(&file_snapshot_prefix)
+                .then(|| entry.key().clone())
+        })
+        .collect::<Vec<_>>();
+    for snapshot_key in page_keys {
+        agent_workspace_remote_file_diff_page_cache().remove(&snapshot_key);
+    }
     let annotation_prefix = format!("{key}:");
     let annotation_keys = agent_workspace_pr_annotations_cache()
         .iter()
@@ -1812,6 +1960,7 @@ pub async fn get_agent_conversation_workspace_file_diff(
     let result: AppResult<(FileDiff, AgentWorkspaceDiffCacheStatus)> = async {
         let (ctx, cache_status) =
             get_agent_workspace_context_cached(app_state.inner(), &conversation_id).await?;
+        let context_source = ctx.source;
         let working_path = ctx.working_path.to_string_lossy().to_string();
         let diff_service = DiffService::new();
         let diff = if let Some(patch) = &ctx.patch_diff {
@@ -1826,6 +1975,14 @@ pub async fn get_agent_conversation_workspace_file_diff(
                 ctx.supports_worktree_modes,
             )
         }?;
+        store_remote_workspace_file_snapshot(
+            agent_workspace_remote_file_diff_cache(),
+            &conversation_id,
+            &file_path,
+            "head",
+            context_source,
+            &diff,
+        );
         Ok((diff, cache_status))
     }
     .await;
@@ -1971,6 +2128,7 @@ pub async fn get_agent_conversation_workspace_commit_file_diff(
     let result: AppResult<(FileDiff, AgentWorkspaceDiffCacheStatus)> = async {
         let (ctx, cache_status) =
             get_agent_workspace_context_cached(app_state.inner(), &conversation_id).await?;
+        let context_source = ctx.source;
         let head_ref = ctx.diff_target.as_deref().unwrap_or("HEAD");
         ensure_agent_workspace_commit_in_range(
             &conversation_id,
@@ -1992,6 +2150,14 @@ pub async fn get_agent_conversation_workspace_commit_file_diff(
         } else {
             diff_service.get_commit_file_diff(&commit_sha, &file_path, &working_path)
         }?;
+        store_remote_workspace_file_snapshot(
+            agent_workspace_remote_file_diff_cache(),
+            &conversation_id,
+            &file_path,
+            &format!("commit:{commit_sha}"),
+            context_source,
+            &diff,
+        );
         Ok((diff, cache_status))
     }
     .await;
@@ -2324,8 +2490,18 @@ pub async fn get_agent_conversation_workspace_cumulative_file_diff_for_state(
     file_path: String,
 ) -> AppResult<FileDiff> {
     let (ctx, _) = get_agent_workspace_context_cached(app_state, conversation_id).await?;
+    let context_source = ctx.source;
     if let Some(patch) = ctx.patch_diff {
-        return DiffService::new().get_file_diff_from_unified_diff(&patch, &file_path);
+        let diff = DiffService::new().get_file_diff_from_unified_diff(&patch, &file_path)?;
+        store_remote_workspace_file_snapshot(
+            agent_workspace_remote_file_diff_cache(),
+            conversation_id,
+            &file_path,
+            "cumulative_head",
+            context_source,
+            &diff,
+        );
+        return Ok(diff);
     }
     let working_path = ctx.working_path.to_string_lossy().to_string();
     let base_ref = ctx.base_ref.clone();
@@ -2333,12 +2509,22 @@ pub async fn get_agent_conversation_workspace_cumulative_file_diff_for_state(
         .diff_target
         .clone()
         .unwrap_or_else(|| "HEAD".to_string());
-    tokio::task::spawn_blocking(move || {
+    let snapshot_file_path = file_path.clone();
+    let diff = tokio::task::spawn_blocking(move || {
         let diff_service = DiffService::new();
         diff_service.get_file_diff_between_refs(&file_path, &working_path, &base_ref, &head_ref)
     })
     .await
-    .map_err(|e| AppError::Infrastructure(format!("cumulative file diff task failed: {e}")))?
+    .map_err(|e| AppError::Infrastructure(format!("cumulative file diff task failed: {e}")))??;
+    store_remote_workspace_file_snapshot(
+        agent_workspace_remote_file_diff_cache(),
+        conversation_id,
+        &snapshot_file_path,
+        "cumulative_head",
+        context_source,
+        &diff,
+    );
+    Ok(diff)
 }
 
 #[doc(hidden)]
@@ -2351,6 +2537,7 @@ pub async fn get_agent_conversation_workspace_file_diff_page_for_state(
     limit: usize,
 ) -> AppResult<FileDiffPage> {
     let (ctx, _) = get_agent_workspace_context_cached(app_state, conversation_id).await?;
+    let context_source = ctx.source;
 
     if matches!(ref_kind, DiffRefKind::CumulativeBase) {
         return Err(AppError::Validation(
@@ -2383,8 +2570,13 @@ pub async fn get_agent_conversation_workspace_file_diff_page_for_state(
     let diff_target = ctx.diff_target.clone();
     let patch_diff = ctx.patch_diff.clone();
     let supports_worktree_modes = ctx.supports_worktree_modes;
+    let snapshot_file_path = file_path.clone();
+    let snapshot_scope = format!(
+        "page:{}:{offset}:{limit}",
+        agent_workspace_diff_ref_scope(&ref_kind)
+    );
 
-    tokio::task::spawn_blocking(move || {
+    let page = tokio::task::spawn_blocking(move || {
         let diff_service = DiffService::new();
         let diff = match ref_kind {
             DiffRefKind::Head => {
@@ -2434,7 +2626,16 @@ pub async fn get_agent_conversation_workspace_file_diff_page_for_state(
         DiffService::page_file_diff(diff, offset, limit)
     })
     .await
-    .map_err(|e| AppError::Infrastructure(format!("file diff page task failed: {e}")))?
+    .map_err(|e| AppError::Infrastructure(format!("file diff page task failed: {e}")))??;
+    store_remote_workspace_file_snapshot(
+        agent_workspace_remote_file_diff_page_cache(),
+        conversation_id,
+        &snapshot_file_path,
+        &snapshot_scope,
+        context_source,
+        &page,
+    );
+    Ok(page)
 }
 
 // =========================================================================

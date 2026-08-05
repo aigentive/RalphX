@@ -176,6 +176,24 @@ describe("PagedDiffView", () => {
     );
   });
 
+  it("renders uncaptured host snapshot copy without retry or empty-diff copy", async () => {
+    mockGetDiffPage.mockResolvedValueOnce(null);
+
+    render(
+      <PagedDiffView
+        conversationId="conv-remote"
+        filePath="src/Uncaptured.tsx"
+        refKind={{ kind: "head" }}
+      />,
+    );
+
+    expect(
+      await screen.findByTestId("paged-diff-snapshot-unavailable"),
+    ).toHaveTextContent("The host has not captured this file diff yet");
+    expect(screen.queryByText("No changes")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /retry/i })).not.toBeInTheDocument();
+  });
+
   afterEach(() => {
     vi.unstubAllGlobals();
   });

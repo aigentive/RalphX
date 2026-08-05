@@ -3327,6 +3327,42 @@
       "argumentSensitive": false,
       "capabilities": [],
       "class": "read",
+      "command": "get_remote_agent_conversation_workspace_file_diff",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::remote_diff_commands::get_remote_agent_conversation_workspace_file_diff"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_remote_agent_conversation_workspace_commit_file_diff",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::remote_diff_commands::get_remote_agent_conversation_workspace_commit_file_diff"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_remote_agent_conversation_workspace_cumulative_file_diff",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::remote_diff_commands::get_remote_agent_conversation_workspace_cumulative_file_diff"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_remote_agent_conversation_workspace_file_diff_page",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::remote_diff_commands::get_remote_agent_conversation_workspace_file_diff_page"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
       "command": "list_remote_projects",
       "pins": [],
       "scopeConfined": false,
@@ -9367,6 +9403,42 @@
       "command": "get_remote_agent_conversation_workspace_change_summary",
       "module": "remote_diff_commands",
       "reason": "snapshot-only in-memory read of a host-captured workspace change summary; no DiffService, GitService, or CLI resolver carrier",
+      "registered": true,
+      "v1Resolution": "registerable"
+    },
+    {
+      "capabilities": [],
+      "class": "read",
+      "command": "get_remote_agent_conversation_workspace_commit_file_diff",
+      "module": "remote_diff_commands",
+      "reason": "snapshot-only in-memory read of one host-captured commit file diff; no DiffService, GitService, or CLI resolver carrier",
+      "registered": true,
+      "v1Resolution": "registerable"
+    },
+    {
+      "capabilities": [],
+      "class": "read",
+      "command": "get_remote_agent_conversation_workspace_cumulative_file_diff",
+      "module": "remote_diff_commands",
+      "reason": "snapshot-only in-memory read of one host-captured cumulative file diff; no DiffService, GitService, or CLI resolver carrier",
+      "registered": true,
+      "v1Resolution": "registerable"
+    },
+    {
+      "capabilities": [],
+      "class": "read",
+      "command": "get_remote_agent_conversation_workspace_file_diff",
+      "module": "remote_diff_commands",
+      "reason": "snapshot-only in-memory read of one host-captured workspace file diff; no DiffService, GitService, or CLI resolver carrier",
+      "registered": true,
+      "v1Resolution": "registerable"
+    },
+    {
+      "capabilities": [],
+      "class": "read",
+      "command": "get_remote_agent_conversation_workspace_file_diff_page",
+      "module": "remote_diff_commands",
+      "reason": "snapshot-only in-memory read keyed by host-captured file page range and ref scope; no DiffService, GitService, or CLI resolver carrier",
       "registered": true,
       "v1Resolution": "registerable"
     },

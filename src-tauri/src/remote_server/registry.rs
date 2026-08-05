@@ -1957,6 +1957,54 @@ crate::remote_commands! {
         call: async,
         result: infallible,
     },
+    "get_remote_agent_conversation_workspace_file_diff"
+        => crate::commands::remote_diff_commands::get_remote_agent_conversation_workspace_file_diff {
+        class: Read,
+        caps: [],
+        params: [
+            (arg conversation_id: String),
+            (arg file_path: String),
+        ],
+        call: async,
+        result: infallible,
+    },
+    "get_remote_agent_conversation_workspace_commit_file_diff"
+        => crate::commands::remote_diff_commands::get_remote_agent_conversation_workspace_commit_file_diff {
+        class: Read,
+        caps: [],
+        params: [
+            (arg conversation_id: String),
+            (arg commit_sha: String),
+            (arg file_path: String),
+        ],
+        call: async,
+        result: infallible,
+    },
+    "get_remote_agent_conversation_workspace_cumulative_file_diff"
+        => crate::commands::remote_diff_commands::get_remote_agent_conversation_workspace_cumulative_file_diff {
+        class: Read,
+        caps: [],
+        params: [
+            (arg conversation_id: String),
+            (arg file_path: String),
+        ],
+        call: async,
+        result: infallible,
+    },
+    "get_remote_agent_conversation_workspace_file_diff_page"
+        => crate::commands::remote_diff_commands::get_remote_agent_conversation_workspace_file_diff_page {
+        class: Read,
+        caps: [],
+        params: [
+            (arg conversation_id: String),
+            (arg file_path: String),
+            (arg ref_kind: crate::application::DiffRefKind),
+            (arg offset: usize),
+            (arg limit: usize),
+        ],
+        call: async,
+        result: infallible,
+    },
     // The workspace shell's two boot reads. Without them a connected client has no project
     // list and no provider answer, so it renders first-run onboarding over a populated host.
     "list_remote_projects"
