@@ -119,10 +119,12 @@ export const AGENT_GATED_AFFORDANCES = {
   // and unavailable against an older host that predates the registration — derived from
   // absence, never hardcoded.
   conversationModeSwitch: "request_remote_agent_conversation_mode_switch",
-  planApprove: "approve_plan_artifact",
-  planArtifactEdit: "update_plan_artifact",
-  ideationAcceptFinalize: "ideation/sessions/:sessionId/accept-finalize",
-  ideationRejectFinalize: "ideation/sessions/:sessionId/reject-finalize",
+  planApprove: "request_remote_plan_approval",
+  planArtifactEdit: "request_remote_plan_artifact_edit",
+  ideationAcceptFinalize: "request_remote_ideation_finalize_decision",
+  ideationRejectFinalize: "request_remote_ideation_finalize_decision",
+  planDirectImplementation: "activate_agent_plan_direct_implementation",
+  planTaskPipeline: "start_agent_task_pipeline",
   conversationFork: "fork_agent_conversation",
   conversationArchive: "archive_agent_conversation",
   conversationMute: "set_agent_conversation_muted",

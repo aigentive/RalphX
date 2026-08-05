@@ -143,19 +143,19 @@ export const GATE_CALLSITE_INDIRECTIONS: readonly {
     file: "src/components/Ideation/FinalizeConfirmationDialog.tsx",
     affordance: "ideationAcceptFinalize",
     reason:
-      "Accept dispatches through `ideationApi.acceptFinalize`, whose route path is a template literal in `api/ideation.ts` — invisible to the literal reach walk.",
+      "Accept dispatches through `ideationApi.acceptance.accept`; its remote twin is selected inside `api/ideation.ts`, beyond the component reach walk.",
   },
   {
     file: "src/components/Ideation/FinalizeConfirmationDialog.tsx",
     affordance: "ideationRejectFinalize",
     reason:
-      "Reject dispatches through `ideationApi.rejectFinalize`, whose route path is a template literal in `api/ideation.ts` — invisible to the literal reach walk.",
+      "Reject dispatches through `ideationApi.acceptance.reject`; its remote twin is selected inside `api/ideation.ts`, beyond the component reach walk.",
   },
   {
     file: "src/hooks/useIdeationEvents.ts",
     affordance: "ideationAcceptFinalize",
     reason:
-      "The event-driven accept dispatches through `ideationApi.acceptFinalize`; the route path is a template literal in `api/ideation.ts` — invisible to the literal reach walk.",
+      "The event-driven accept dispatches through `ideationApi.acceptance.accept`; its remote twin is selected inside `api/ideation.ts`, beyond the hook reach walk.",
   },
   {
     file: "src/components/agents/AgentComposerSurface.tsx",

@@ -24,6 +24,7 @@ import { proposalKeys } from "./useProposals";
 import type { Unsubscribe } from "@/lib/event-bus";
 import { logger } from "@/lib/logger";
 import { useAgentGate } from "@/hooks/useAgentGate";
+import { isRemoteEnvironmentActive } from "@/hooks/useActiveEnvironment";
 
 /**
  * Schema for session title updated event payload
@@ -336,7 +337,11 @@ export function useIdeationEvents() {
         const { sessionId } = parsed.data;
 
         // Check auto-accept: global or per-session — if on, bypass dialog entirely
-        if (autoAcceptPlans || autoAcceptSessions.has(sessionId)) {
+        // R5: a paired client must not launder the human finalize-confirmation gate via auto-accept.
+        if (
+          !isRemoteEnvironmentActive() &&
+          (autoAcceptPlans || autoAcceptSessions.has(sessionId))
+        ) {
           if (acceptFinalizeGate.gated) {
             logger.warn("[IdeationEvents] Auto-accept skipped because finalize acceptance is unavailable:", acceptFinalizeGate.reason);
             enqueuePendingConfirmation(sessionId);

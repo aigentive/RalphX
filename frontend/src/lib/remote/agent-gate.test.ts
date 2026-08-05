@@ -222,6 +222,36 @@ describe("affordance mapping", () => {
     }
   });
 
+  it("routes plan and finalize affordances through their registered intent twins", () => {
+    expect(AGENT_GATED_AFFORDANCES.planApprove).toBe("request_remote_plan_approval");
+    expect(AGENT_GATED_AFFORDANCES.planArtifactEdit).toBe(
+      "request_remote_plan_artifact_edit",
+    );
+    expect(AGENT_GATED_AFFORDANCES.ideationAcceptFinalize).toBe(
+      "request_remote_ideation_finalize_decision",
+    );
+    expect(AGENT_GATED_AFFORDANCES.ideationRejectFinalize).toBe(
+      "request_remote_ideation_finalize_decision",
+    );
+    for (const affordance of [
+      "planApprove",
+      "planArtifactEdit",
+      "ideationAcceptFinalize",
+      "ideationRejectFinalize",
+    ] as const) {
+      expect(resolveAffordanceGate(affordance, true, GRANTED).status).toBe("enabled");
+    }
+  });
+
+  it("keeps post-approval process continuations unavailable remotely", () => {
+    expect(resolveAffordanceGate("planDirectImplementation", true, GRANTED).status).toBe(
+      "unavailable",
+    );
+    expect(resolveAffordanceGate("planTaskPipeline", true, GRANTED).status).toBe(
+      "unavailable",
+    );
+  });
+
   it("names facade ops, not the underlying command, for pinned splits", () => {
     // `resolve_permission_request` is split by the facade into two pinned ops; an
     // affordance naming the raw command would gate deny along with approve.

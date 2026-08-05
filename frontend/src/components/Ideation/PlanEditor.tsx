@@ -16,8 +16,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Card } from "@/components/ui/card";
-import { backendFetch } from "@/api/backend";
-import { ArtifactResponseSchema, transformArtifactResponse } from "@/api/artifact";
+import { artifactApi, RemotePlanIntentError } from "@/api/artifact";
 import type { Artifact } from "@/types/artifact";
 import { PlanTemplateSelector } from "./PlanTemplateSelector";
 
@@ -182,30 +181,23 @@ export function PlanEditor({ plan, onSave, onCancel, isNewPlan = false }: PlanEd
       // This plan route creates a new version, repoints sessions/proposals, resets
       // verification, and emits plan events. `update_artifact` only mutates one row
       // in place, so its superficially similar id/content shape is not compatible.
-      const response = await backendFetch("update_plan_artifact", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          artifact_id: plan.id,
-          content,
-        }),
+      const updatedPlan = await artifactApi.updatePlanArtifact({
+        artifactId: plan.id,
+        content,
+        expectedVersion: plan.metadata.version,
       });
-
-      if (!response.ok) {
-        if (response.status === 409) {
-          toast.error("Plan is frozen — verification agent is actively working. Wait for the current round to complete.");
-          return;
-        }
-        throw new Error(`Failed to update plan: ${response.statusText}`);
-      }
-
-      const data = ArtifactResponseSchema.parse(await response.json());
-      const updatedPlan: Artifact = transformArtifactResponse(data);
 
       onSave(updatedPlan);
     } catch (err) {
+      if (
+        err instanceof RemotePlanIntentError &&
+        err.errorCode === "REMOTE_PLAN_EDIT_FROZEN"
+      ) {
+        toast.error(
+          "Plan is frozen — verification agent is actively working. Wait for the current round to complete.",
+        );
+        return;
+      }
       setError(err instanceof Error ? err.message : "Failed to save plan");
     } finally {
       setIsSaving(false);

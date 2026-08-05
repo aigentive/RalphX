@@ -3,6 +3,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { z } from "zod";
 import { backendFetch } from "@/api/backend";
+import {
+  getTransportEnvironmentId,
+  isRemoteEnvironmentId,
+} from "@/lib/remote/active-environment";
 import { IdeationSettingsResponseSchema } from "../types/ideation-config";
 import type { IdeationSettings } from "../types/ideation-config";
 import {
@@ -109,6 +113,76 @@ function toVerificationStatusResponse(
     completedAt: raw.completed_at,
     error: raw.error,
   };
+}
+
+const RemoteFinalizeIntentSchema = z.object({
+  requestId: z.string(),
+  status: z.enum([
+    "pending",
+    "starting",
+    "completed",
+    "failed",
+    "failedStale",
+  ]),
+  errorCode: z.string().nullable().optional(),
+  result: z.unknown().nullable().optional(),
+  createdAt: z.string(),
+  updatedAt: z.string().optional(),
+  deduplicated: z.boolean().optional(),
+});
+
+export class RemoteFinalizeIntentError extends Error {
+  readonly errorCode: string;
+
+  constructor(errorCode: string) {
+    super(
+      errorCode === "REMOTE_FINALIZE_NOT_PENDING"
+        ? "No longer awaiting confirmation"
+        : errorCode,
+    );
+    this.name = "RemoteFinalizeIntentError";
+    this.errorCode = errorCode;
+  }
+}
+
+function remoteIdeationFacadeEnabled(): boolean {
+  return isRemoteEnvironmentId(getTransportEnvironmentId());
+}
+
+async function remoteFinalizeDecision(
+  sessionId: string,
+  decision: "accept" | "reject",
+): Promise<{ status: string; sessionId: string }> {
+  const requested = RemoteFinalizeIntentSchema.parse(
+    await invoke("request_remote_ideation_finalize_decision", {
+      input: { sessionId, decision },
+    }),
+  );
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    const request = RemoteFinalizeIntentSchema.parse(
+      await invoke("get_remote_ideation_finalize_request", {
+        requestId: requested.requestId,
+      }),
+    );
+    if (request.status === "completed") {
+      if (decision === "reject") {
+        const result = z
+          .object({ status: z.string(), sessionId: z.string() })
+          .parse(request.result);
+        return result;
+      }
+      return { status: "accepted", sessionId };
+    }
+    if (request.status === "failed" || request.status === "failedStale") {
+      throw new RemoteFinalizeIntentError(
+        request.errorCode ?? "REMOTE_FINALIZE_HOST_FAILED",
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  throw new Error(
+    "Timed out waiting for the host to settle the finalize decision",
+  );
 }
 
 // ============================================================================
@@ -690,6 +764,9 @@ export const ideationApi = {
      * Atomically transitions acceptance_status Pending → Accepted, then creates tasks.
      */
     accept: async (sessionId: string): Promise<{ status: string; sessionId: string }> => {
+      if (remoteIdeationFacadeEnabled()) {
+        return remoteFinalizeDecision(sessionId, "accept");
+      }
       const res = await backendFetch(
         `ideation/sessions/${sessionId}/accept-finalize`,
         {
@@ -711,6 +788,9 @@ export const ideationApi = {
      * Resets acceptance_status to null, allowing the agent to re-finalize.
      */
     reject: async (sessionId: string): Promise<{ status: string; sessionId: string }> => {
+      if (remoteIdeationFacadeEnabled()) {
+        return remoteFinalizeDecision(sessionId, "reject");
+      }
       const res = await backendFetch(
         `ideation/sessions/${sessionId}/reject-finalize`,
         {

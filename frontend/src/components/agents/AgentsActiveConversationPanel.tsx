@@ -34,7 +34,7 @@ import type {
 } from "@/api/chat";
 import { chatApi } from "@/api/chat";
 import { manualRoleDefaultsApi } from "@/api/manual-role-defaults";
-import { artifactApi } from "@/api/artifact";
+import { artifactApi, RemotePlanIntentError } from "@/api/artifact";
 import {
   automationsApi,
   type Automation,
@@ -876,6 +876,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   // carrying the reason instead of a control whose every click ends in a refusal.
   const modeSwitchGate = useAgentGate("conversationModeSwitch");
   const planApproveGate = useAgentGate("planApprove");
+  const planDirectImplementationGate = useAgentGate("planDirectImplementation");
+  const planTaskPipelineGate = useAgentGate("planTaskPipeline");
   const conversationForkGate = useAgentGate("conversationFork");
   const ideationSettingsQuery = useIdeationSettings();
   const tasksEnabled =
@@ -2079,6 +2081,14 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       toast.success("Plan approved");
     } catch (err) {
       console.error("Failed to approve plan:", err);
+      if (
+        err instanceof RemotePlanIntentError &&
+        err.errorCode === "REMOTE_PLAN_APPROVAL_PLAN_CHANGED"
+      ) {
+        await queryClient.invalidateQueries({
+          queryKey: ["agents", "session-plan", planApprovalSessionId],
+        });
+      }
       toast.error(err instanceof Error ? err.message : "Failed to approve plan");
     } finally {
       setIsApprovingPlan(false);
@@ -2091,7 +2101,11 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     queryClient,
   ]);
   const handleCreatePlanProposals = useCallback(() => {
-    if (!planApprovalSessionId || !canCreatePlanProposals) {
+    if (
+      planTaskPipelineGate.gated ||
+      !planApprovalSessionId ||
+      !canCreatePlanProposals
+    ) {
       return;
     }
     let workspaceActivationCompleted = activeWorkspace?.mode === "tasks";
@@ -2129,11 +2143,13 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     onConversationModeSwitched,
     onFocusIdeationSessionForConversation,
     planApprovalSessionId,
+    planTaskPipelineGate.gated,
     queryClient,
     confirmCreateProposals,
   ]);
   const handleImplementPlanDirectly = useCallback(() => {
     if (
+      planDirectImplementationGate.gated ||
       !planApprovalSessionId ||
       !activeProjectId ||
       !activeWorkspace?.conversationId ||
@@ -2191,6 +2207,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     canImplementPlanDirectly,
     onConversationModeSwitched,
     planApprovalSessionId,
+    planDirectImplementationGate.gated,
     queryClient,
     modelRegistry,
     confirmImplementDirectly,
@@ -2331,7 +2348,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                 planComplexityQuery.data?.recommendedAction !==
                 "create_proposals"),
             isPending: isImplementingPlanDirectly,
-            disabled: isPlanRecommendationPending,
+            disabled:
+              isPlanRecommendationPending ||
+              planDirectImplementationGate.gated,
             onClick: () => {
               void handleImplementPlanDirectly();
             },
@@ -2347,7 +2366,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
             planComplexityQuery.data?.recommendedAction ===
             "create_proposals",
           isPending: isCreatingPlanProposals,
-          disabled: isPlanRecommendationPending,
+          disabled:
+            isPlanRecommendationPending || planTaskPipelineGate.gated,
           onClick: () => {
             void handleCreatePlanProposals();
           },
@@ -2381,6 +2401,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     isStartingPlanVerification,
     planApprovalArtifact,
     planApprovalSessionId,
+    planDirectImplementationGate.gated,
+    planTaskPipelineGate.gated,
     planComplexityQuery.data?.recommendedAction,
     tasksEnabled,
     planVerificationInProgress,
@@ -3073,12 +3095,19 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                     onPreloadPublishPane={onPreloadArtifacts}
                   />
                   {shouldShowPlanComposerCta && (
-                    <PlanComposerCtaRow
-                      hint={planComposerHint}
-                      actions={planComposerCtaActions}
-                      viewPlanAction={planComposerViewPlanAction}
-                      suppressDetails={!tasksEnabled && isPlanApproved}
-                    />
+                    <>
+                      {(planDirectImplementationGate.status === "unavailable" ||
+                        planTaskPipelineGate.status === "unavailable") &&
+                        isPlanApproved && (
+                          <RemoteHostOnlyNotice subject="Plan implementation continuations" />
+                        )}
+                      <PlanComposerCtaRow
+                        hint={planComposerHint}
+                        actions={planComposerCtaActions}
+                        viewPlanAction={planComposerViewPlanAction}
+                        suppressDetails={!tasksEnabled && isPlanApproved}
+                      />
+                    </>
                   )}
                   {shouldShowAutomationComposerCta && (
                     <PlanComposerCtaRow
