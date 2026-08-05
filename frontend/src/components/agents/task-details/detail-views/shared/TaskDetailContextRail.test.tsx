@@ -18,6 +18,7 @@ function contextModel(): TaskDetailContextModel {
     taskContext: null,
     planBranch: null,
     isLoading: false,
+    isUnavailable: false,
     planArtifactId: null,
     sessionId: null,
     branch: null,
@@ -37,5 +38,10 @@ describe("TaskContextRail", () => {
     expect(screen.queryByText("Task Validation")).not.toBeInTheDocument();
     expect(screen.queryByText("Validation")).not.toBeInTheDocument();
   });
-});
 
+  it("renders unavailable plan context instead of hiding the surface", () => {
+    render(<TaskContextRail model={{ ...contextModel(), isUnavailable: true }} />);
+
+    expect(screen.getByText("Plan, branch, and merge details could not be loaded.")).toBeInTheDocument();
+  });
+});

@@ -42,6 +42,7 @@ export interface MessageAttachment {
 export interface MessageAttachmentsProps {
   /** Array of attachments to display */
   attachments: MessageAttachment[];
+  availability?: "available" | "unavailable";
   /** Callback when attachment is clicked (optional - can be placeholder for v1) */
   onClick?: (id: string, filePath: string | undefined) => void;
   /** Side to align the sent-message attachment group within the chat row. */
@@ -126,12 +127,24 @@ interface AttachmentPreviewEntry {
 
 export function MessageAttachments({
   attachments,
+  availability = "available",
   onClick,
   align = "start",
 }: MessageAttachmentsProps) {
   const [failedPreviewIds, setFailedPreviewIds] = useState<Set<string>>(() => new Set());
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
   const isRemoteEnvironment = useIsRemoteEnvironment();
+
+  if (availability === "unavailable") {
+    return (
+      <div
+        data-testid="message-attachments-unavailable"
+        className={cn("mb-2 text-xs text-text-primary/45", align === "end" && "text-right")}
+      >
+        Attachments are on the host.
+      </div>
+    );
+  }
 
   if (attachments.length === 0) {
     return null;

@@ -65,7 +65,8 @@ describe("useMessageAttachments", () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
     expect(listAttachments).toHaveBeenCalledWith("message-1");
-    expect(result.current.data?.get("timeline-item-1")).toEqual([
+    expect(result.current.data?.unavailableMessageIds.size).toBe(0);
+    expect(result.current.data?.attachments.get("timeline-item-1")).toEqual([
       {
         id: "attachment-1",
         fileName: "Screenshot.png",
@@ -74,5 +75,34 @@ describe("useMessageAttachments", () => {
         fileSize: 1024,
       },
     ]);
+  });
+
+  it("keeps a failed host attachment read distinct from a known-empty result", async () => {
+    vi.spyOn(chatApi, "listMessageAttachments").mockRejectedValue({
+      outcome: "commandError",
+      error: "REMOTE_COMMAND_UNAVAILABLE",
+    });
+
+    const { result } = renderHook(
+      () => useMessageAttachments([userMessage()], "conversation-1"),
+      { wrapper: createWrapper() },
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data?.unavailableMessageIds).toEqual(new Set(["message-1"]));
+    expect(result.current.data?.attachments.size).toBe(0);
+  });
+
+  it("reports a successful empty attachment read as available", async () => {
+    vi.spyOn(chatApi, "listMessageAttachments").mockResolvedValue([]);
+
+    const { result } = renderHook(
+      () => useMessageAttachments([userMessage()], "conversation-1"),
+      { wrapper: createWrapper() },
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data?.unavailableMessageIds.size).toBe(0);
+    expect(result.current.data?.attachments.size).toBe(0);
   });
 });

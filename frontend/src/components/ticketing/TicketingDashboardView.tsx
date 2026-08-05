@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, ListOrdered, RefreshCw, RotateCcw } from "lucide-react";
+import { toast } from "sonner";
 
 import { atlassianApi } from "@/api/atlassian";
 import { linearApi } from "@/api/linear";
@@ -1381,7 +1382,9 @@ export function TicketingDashboardView({
   function handleQuickAssign(ticket: TicketSummary) {
     void ticketingMutations
       .assignToMe({ provider: ticket.ref.provider, ticketRef: ticket.ref, projectId })
-      .catch(() => undefined);
+      .catch((error: unknown) => {
+        toast.error(error instanceof Error ? error.message : "Failed to assign ticket");
+      });
   }
 
   async function handleAddComment(bodyMarkdown: string) {
@@ -1425,7 +1428,9 @@ export function TicketingDashboardView({
           transition,
         });
       })
-      .catch(() => undefined);
+      .catch((error: unknown) => {
+        toast.error(error instanceof Error ? error.message : "Failed to move ticket");
+      });
   }
 
   useEffect(() => {

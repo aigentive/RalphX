@@ -950,12 +950,7 @@ function AppContent({ backgroundSettled }: { backgroundSettled: boolean }) {
   }, []);
 
   const handleFetchBranches = useCallback(async (workingDirectory: string): Promise<string[]> => {
-    try {
-      const branches = await getGitBranches(workingDirectory);
-      return branches;
-    } catch {
-      return [];
-    }
+    return getGitBranches(workingDirectory);
   }, []);
 
   const handleDetectDefaultBranch = useCallback(async (workingDirectory: string): Promise<string> => {

@@ -13,6 +13,11 @@ import type { MessageAttachment } from "@/components/Chat/MessageAttachments";
 
 const MESSAGE_ATTACHMENTS_QUERY_VERSION = "preview-v2";
 
+export interface MessageAttachmentsResult {
+  attachments: Map<string, MessageAttachment[]>;
+  unavailableMessageIds: Set<string>;
+}
+
 /**
  * Transform ChatAttachmentResponse from backend to MessageAttachment for UI
  */
@@ -74,6 +79,7 @@ export function useMessageAttachments(
     ],
     queryFn: async () => {
       const attachmentsMap = new Map<string, MessageAttachment[]>();
+      const unavailableMessageIds = new Set<string>();
 
       await Promise.all(
         userMessageAttachmentTargets.map(async (target) => {
@@ -83,12 +89,15 @@ export function useMessageAttachments(
               attachmentsMap.set(target.renderMessageId, attachments.map(transformAttachment));
             }
           } catch {
-            // Silently ignore — attachment fetching is optional
+            unavailableMessageIds.add(target.renderMessageId);
           }
         })
       );
 
-      return attachmentsMap;
+      return {
+        attachments: attachmentsMap,
+        unavailableMessageIds,
+      } satisfies MessageAttachmentsResult;
     },
     enabled:
       !!conversationId &&

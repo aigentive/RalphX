@@ -14,6 +14,15 @@ const { getBulkWorkspacePublicationStatesMock } = vi.hoisted(() => ({
   getBulkWorkspacePublicationStatesMock: vi.fn(),
 }));
 
+const { toastErrorMock, toastDismissMock } = vi.hoisted(() => ({
+  toastErrorMock: vi.fn(),
+  toastDismissMock: vi.fn(),
+}));
+
+vi.mock("sonner", () => ({
+  toast: { error: toastErrorMock, dismiss: toastDismissMock },
+}));
+
 vi.mock("@/api/chat", () => ({
   chatApi: {
     getBulkWorkspacePublicationStates: getBulkWorkspacePublicationStatesMock,
@@ -27,6 +36,33 @@ function conversation(id: string): AgentConversation {
 describe("useAgentSidebarPublicationPolling", () => {
   beforeEach(() => {
     getBulkWorkspacePublicationStatesMock.mockReset();
+    toastErrorMock.mockReset();
+    toastDismissMock.mockReset();
+  });
+
+  it("surfaces a failed publication read instead of silently freezing badges", async () => {
+    const queryClient = createTestQueryClient();
+    getBulkWorkspacePublicationStatesMock.mockRejectedValueOnce({
+      outcome: "commandError",
+      error: "REMOTE_INTERNAL_ERROR: publication state unavailable",
+    });
+
+    renderHook(
+      () =>
+        useAgentSidebarPublicationPolling(
+          [conversation("conv-failed")],
+          true,
+          new Map([["conv-failed", workspacePublicationFingerprint("active", null)]]),
+        ),
+      { wrapper: createWrapper(queryClient) },
+    );
+
+    await waitFor(() =>
+      expect(toastErrorMock).toHaveBeenCalledWith(
+        "Pull request status could not be refreshed.",
+        { id: "agent-sidebar-publication-poll-error" },
+      ),
+    );
   });
 
   it("invalidates workspace publish caches when sidebar publication state changes", async () => {

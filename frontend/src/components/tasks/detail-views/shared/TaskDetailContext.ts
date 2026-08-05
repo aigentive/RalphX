@@ -40,6 +40,7 @@ export interface TaskDetailContextModel {
   taskContext: TaskContext | null;
   planBranch: PlanBranch | null;
   isLoading: boolean;
+  isUnavailable: boolean;
   planArtifactId: string | null;
   sessionId: string | null;
   branch: BranchSummary | null;
@@ -155,13 +156,13 @@ export function useTaskDetailContextData(
 ): TaskDetailContextModel {
   const taskContextQuery = useQuery({
     queryKey: ["task-detail-context", "task-context", task.id] as const,
-    queryFn: async () => taskContextApi.getTaskContext(task.id).catch(() => null),
+    queryFn: () => taskContextApi.getTaskContext(task.id),
     staleTime: 30_000,
   });
 
   const projectPlanBranchesQuery = useQuery({
     queryKey: ["task-detail-context", "project-plan-branches", task.projectId] as const,
-    queryFn: async () => planBranchApi.getByProject(task.projectId).catch(() => []),
+    queryFn: () => planBranchApi.getByProject(task.projectId),
     staleTime: 10_000,
     refetchInterval: viewMode.kind === "current" ? 15_000 : false,
   });
@@ -188,6 +189,7 @@ export function useTaskDetailContextData(
       taskContext,
       planBranch,
       isLoading: taskContextQuery.isLoading || projectPlanBranchesQuery.isLoading,
+      isUnavailable: taskContextQuery.isError || projectPlanBranchesQuery.isError,
       planArtifactId: planArtifactId ?? null,
       sessionId: sessionId ?? null,
       branch: buildBranchSummary(task, planBranch),
@@ -201,6 +203,8 @@ export function useTaskDetailContextData(
       planBranch,
       taskContextQuery.isLoading,
       projectPlanBranchesQuery.isLoading,
+      taskContextQuery.isError,
+      projectPlanBranchesQuery.isError,
       planArtifactId,
       sessionId,
     ]

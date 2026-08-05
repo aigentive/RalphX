@@ -36,6 +36,13 @@ describe("MessageAttachments", () => {
     expect(container.firstChild).toBeNull();
   });
 
+  it("shows host attachment availability instead of an empty claim", () => {
+    render(<MessageAttachments attachments={[]} availability="unavailable" />);
+
+    expect(screen.getByText("Attachments are on the host.")).toBeInTheDocument();
+    expect(screen.queryByTestId("attachment-chip")).not.toBeInTheDocument();
+  });
+
   it("should render image previews and file chips for mixed attachments", () => {
     render(<MessageAttachments attachments={mockAttachments} />);
 

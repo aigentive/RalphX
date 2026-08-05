@@ -101,6 +101,53 @@ describe("ProjectCreationWizard", () => {
       renderWizard();
       expect(screen.getByTestId("advanced-settings-trigger")).toBeInTheDocument();
     });
+
+    it("reports failed branch reads instead of claiming that no branches exist", async () => {
+      const user = userEvent.setup();
+      renderWizard({
+        onBrowseFolder: vi.fn().mockResolvedValue("/Users/dev/remote-project"),
+        onFetchBranches: vi.fn().mockRejectedValue({
+          outcome: "commandError",
+          error: "REMOTE_COMMAND_UNAVAILABLE",
+        }),
+        onDetectDefaultBranch: vi.fn().mockRejectedValue({
+          outcome: "commandError",
+          error: "REMOTE_COMMAND_UNAVAILABLE",
+        }),
+      });
+
+      await user.click(screen.getByTestId("browse-button"));
+
+      expect(await screen.findByText("The default branch could not be detected.")).toBeInTheDocument();
+      await user.click(screen.getByTestId("base-branch-select"));
+      expect(screen.getByText("Branches could not be loaded")).toBeInTheDocument();
+      expect(screen.queryByText("No branches available")).not.toBeInTheDocument();
+    });
+
+    it("keeps the genuine empty-branch state", async () => {
+      const user = userEvent.setup();
+      const onFetchBranches = vi.fn().mockResolvedValue([]);
+      renderWizard({
+        onBrowseFolder: vi.fn().mockResolvedValue("/Users/dev/empty-project"),
+        onFetchBranches,
+        onDetectDefaultBranch: vi.fn().mockResolvedValue("main"),
+      });
+
+      await user.click(screen.getByTestId("browse-button"));
+      await waitFor(() => expect(onFetchBranches).toHaveBeenCalled());
+
+      // A genuinely empty branch list is NOT an error: the inline failure hint must stay
+      // absent, and the select keeps its placeholder. (The "No branches available" item
+      // lives inside the Radix dropdown content, which jsdom does not render on click —
+      // asserting through it would test the library, not this behaviour.)
+      expect(screen.queryByText("Branches could not be loaded")).not.toBeInTheDocument();
+      // Detection still succeeded ("main"), so the trigger shows it: an empty branch LIST
+      // does not mean the default branch is unknown.
+      expect(screen.getByTestId("base-branch-select")).toHaveTextContent("main");
+      expect(
+        screen.queryByText("The default branch could not be detected."),
+      ).not.toBeInTheDocument();
+    });
   });
 
   // ==========================================================================

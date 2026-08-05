@@ -108,6 +108,8 @@ export function ProjectCreationWizard({
   const [isNameManuallySet, setIsNameManuallySet] = useState(false);
   // Track previously inferred name to compare against
   const [lastInferredName, setLastInferredName] = useState("");
+  const [branchesUnavailable, setBranchesUnavailable] = useState(false);
+  const [defaultBranchUnavailable, setDefaultBranchUnavailable] = useState(false);
 
   // Validate form
   const errors = useMemo(() => validateForm(form), [form]);
@@ -131,10 +133,14 @@ export function ProjectCreationWizard({
 
       try {
         // Fetch branches and detect default branch in parallel
-        const [fetchedBranches, detectedDefault] = await Promise.all([
+        const [branchesResult, defaultResult] = await Promise.allSettled([
           onFetchBranches?.(form.workingDirectory) ?? Promise.resolve([]),
-          onDetectDefaultBranch?.(form.workingDirectory).catch(() => null) ?? Promise.resolve(null),
+          onDetectDefaultBranch?.(form.workingDirectory) ?? Promise.resolve(null),
         ]);
+        const fetchedBranches = branchesResult.status === "fulfilled" ? branchesResult.value : [];
+        const detectedDefault = defaultResult.status === "fulfilled" ? defaultResult.value : null;
+        setBranchesUnavailable(branchesResult.status === "rejected");
+        setDefaultBranchUnavailable(defaultResult.status === "rejected");
 
         if (fetchedBranches.length > 0) {
           setBranches(fetchedBranches);
@@ -404,7 +410,11 @@ export function ProjectCreationWizard({
                     />
                   </SelectTrigger>
                   <SelectContent className="bg-[var(--bg-elevated)] border-[var(--border-subtle)]">
-                    {branches.length === 0 ? (
+                    {branchesUnavailable ? (
+                      <SelectItem value="_unavailable" disabled>
+                        Branches could not be loaded
+                      </SelectItem>
+                    ) : branches.length === 0 ? (
                       <SelectItem value="_none" disabled>
                         No branches available
                       </SelectItem>
@@ -417,6 +427,19 @@ export function ProjectCreationWizard({
                     )}
                   </SelectContent>
                 </Select>
+                {branchesUnavailable && (
+                  // Inline, not only inside the dropdown: a failed read must be visible
+                  // WITHOUT the user opening the select to discover it. The disabled item
+                  // above stays for anyone who does open it.
+                  <p className="text-xs text-[var(--status-warning)]">
+                    Branches could not be loaded
+                  </p>
+                )}
+                {defaultBranchUnavailable && (
+                  <p className="text-xs text-[var(--status-warning)]">
+                    The default branch could not be detected.
+                  </p>
+                )}
                 {(touched.baseBranch || submitted) && errors.baseBranch && (
                   <p
                     data-testid="base-branch-select-error"

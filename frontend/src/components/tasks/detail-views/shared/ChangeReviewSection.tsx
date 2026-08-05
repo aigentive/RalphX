@@ -89,7 +89,11 @@ export function ChangeReviewSection({
   const { data: planBranch, isLoading: isLoadingPlanBranch } = usePlanBranchForTask(taskId, {
     enabled: isPlanMerge,
   });
-  const { data: planTimeline, isLoading: isLoadingPlanTimeline } = useQuery<PlanReviewTimeline>({
+  const {
+    data: planTimeline,
+    isLoading: isLoadingPlanTimeline,
+    isError: isPlanTimelineError,
+  } = useQuery<PlanReviewTimeline>({
     queryKey: [
       "plan-review-timeline",
       planBranch?.projectId,
@@ -110,9 +114,7 @@ export function ChangeReviewSection({
         taskPage.tasks.map((task) => [task.id, task.title])
       );
       const histories = await Promise.all(
-        taskPage.tasks.map(async (task) =>
-          api.reviews.getTaskStateHistory(task.id).catch(() => [])
-        )
+        taskPage.tasks.map((task) => api.reviews.getTaskStateHistory(task.id))
       );
       const planHistory = histories
         .flat()
@@ -163,6 +165,10 @@ export function ChangeReviewSection({
           <div className="flex items-center justify-center py-4">
             <Loader2 className="w-5 h-5 animate-spin text-text-primary/30" />
           </div>
+        ) : isPlanMerge && isPlanTimelineError ? (
+          <p className="text-[0.8125rem] text-text-primary/50 italic">
+            Review history could not be loaded.
+          </p>
         ) : isPlanMerge && !hasReviewHistory ? (
           <p className="text-[0.8125rem] text-text-primary/50 italic">
             No internal plan review records available

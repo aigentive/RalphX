@@ -269,7 +269,7 @@ export function useResetAndReaccept() {
       // Fetch existing plan branch BEFORE reopen (reopen deletes the record)
       const planArtifactId = useIdeationStore.getState().planArtifact?.id;
       const existingPlanBranch = planArtifactId
-        ? await planBranchApi.getByPlan(planArtifactId).catch(() => null)
+        ? await planBranchApi.getByPlan(planArtifactId)
         : null;
 
       // Step 1: Reopen (deletes tasks, cleans git, resets to Active)
