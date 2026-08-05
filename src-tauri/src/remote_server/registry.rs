@@ -1994,6 +1994,27 @@ crate::remote_commands! {
         call: async,
         result: fallible,
     },
+    "request_remote_automation_run"
+        => crate::commands::remote_automation_commands::request_remote_automation_run {
+        class: AgentControl,
+        caps: [SeedsSpawnTriggeringState],
+        params: [
+            (arg automation_id: String),
+            (arg kind: crate::domain::entities::RemoteAutomationRunKind),
+            (arg expected_run_id: Option<String>),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "get_remote_automation_run_request"
+        => crate::commands::remote_automation_commands::get_remote_automation_run_request {
+        class: Read,
+        caps: [],
+        params: [(arg request_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
     // The Agents-sidebar inbox read. Registered through the recovery-free `_for_app_state` seam
     // and the `worktree_path`-blanking facade twin, NOT the local `list_agent_sidebar_conversations`
     // (which schedules PR-supervision recovery and reaches the git CLI resolver — detector (c)).

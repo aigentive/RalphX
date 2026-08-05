@@ -223,6 +223,9 @@ pub mod remote_queue_send_intent;
 #[cfg(test)]
 mod startup_remote_queue_send_tests;
 pub mod remote_finalize_decision_intent;
+pub mod remote_automation_run_intent;
+#[cfg(test)]
+mod startup_remote_automation_run_tests;
 pub mod remote_resume_intent;
 pub mod resume_validator;
 pub mod review_issue_service;

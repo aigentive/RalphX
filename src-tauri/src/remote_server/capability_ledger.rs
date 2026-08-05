@@ -626,6 +626,8 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
     CommandOverride { command: "get_remote_plan_edit_request", policy: policy(RiskClass::Read, NONE, "pure repository read of one plan-edit intent; propagates missing and read failures distinctly") },
     CommandOverride { command: "request_remote_ideation_finalize_decision", policy: policy(RiskClass::AgentControl, SEEDS_STATE, "seeds-spawn-triggering-state, declared membership records accept-or-reject finalize intent; host accept creates tasks and arms the ready scheduler; spawn_remote_resume_dispatchers is the sole dispatcher") },
     CommandOverride { command: "get_remote_ideation_finalize_request", policy: policy(RiskClass::Read, NONE, "pure repository read of one finalize-decision intent; propagates read errors") },
+    CommandOverride { command: "request_remote_automation_run", policy: policy(RiskClass::AgentControl, SEEDS_STATE, "seeds-spawn-triggering-state, declared membership runs-automation-now-through-host-dispatcher: persists a validated run-now or retry-judge intent; spawn_remote_resume_dispatchers is the sole dispatcher") },
+    CommandOverride { command: "get_remote_automation_run_request", policy: policy(RiskClass::Read, NONE, "pure repository read of one automation-run intent; propagates read errors") },
     CommandOverride {
         command: "create_task_step",
         policy: policy(

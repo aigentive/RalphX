@@ -1541,6 +1541,13 @@ pub(crate) fn spawn_remote_resume_dispatchers(
         {
             tracing::error!(%error, "remote queued SEND-NOW stale sweep failed");
         }
+        if let Err(error) = state
+            .remote_automation_run_request_repo
+            .fail_stale(cutoff, now)
+            .await
+        {
+            tracing::error!(%error, "remote automation run stale sweep failed");
+        }
         let mut interval = tokio::time::interval(Duration::from_secs(2));
         interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {
@@ -1569,6 +1576,9 @@ pub(crate) fn spawn_remote_resume_dispatchers(
                 dispatch_one_remote_queued_send(&state, &execution_state, &app_handle).await
             {
                 tracing::warn!(%error, "remote queued SEND-NOW dispatch failed");
+            }
+            if let Err(error) = dispatch_one_remote_automation_run(&state).await {
+                tracing::warn!(%error, "remote automation run dispatch failed");
             }
             if let Err(error) =
                 dispatch_one_remote_finalize_decision(&state, &execution_state, Some(&app_handle))
@@ -1650,6 +1660,89 @@ pub(crate) async fn dispatch_one_remote_plan_edit(state: &AppState) -> AppResult
                 .fail(&row.id, REMOTE_PLAN_EDIT_HOST_FAILED, chrono::Utc::now())
                 .await?
         }
+    }
+    Ok(())
+}
+
+pub(crate) async fn dispatch_one_remote_automation_run(state: &AppState) -> AppResult<()> {
+    use crate::application::remote_automation_run_intent::*;
+    use crate::domain::entities::{AutomationId, AutomationJudgeState, RemoteAutomationRunKind};
+    let Some(row) = state
+        .remote_automation_run_request_repo
+        .claim_pending(chrono::Utc::now())
+        .await?
+    else {
+        return Ok(());
+    };
+    let automation_id = AutomationId::from_string(row.automation_id.clone());
+    let Some(automation) = state.automation_repo.get_by_id(&automation_id).await? else {
+        state
+            .remote_automation_run_request_repo
+            .fail(
+                &row.id,
+                REMOTE_AUTOMATION_RUN_NOT_FOUND,
+                None,
+                chrono::Utc::now(),
+            )
+            .await?;
+        return Ok(());
+    };
+    if let Err(code) = validate_automation_status(&automation) {
+        state
+            .remote_automation_run_request_repo
+            .fail(&row.id, &code, None, chrono::Utc::now())
+            .await?;
+        return Ok(());
+    }
+    let latest = state
+        .automation_run_repo
+        .latest_for_automation(&automation_id)
+        .await?;
+    if let Some(expected) = row.expected_run_id.as_deref() {
+        if latest.as_ref().map(|run| run.id.as_str()).as_deref() != Some(expected) {
+            state
+                .remote_automation_run_request_repo
+                .fail(
+                    &row.id,
+                    REMOTE_AUTOMATION_RUN_RUN_CHANGED,
+                    None,
+                    chrono::Utc::now(),
+                )
+                .await?;
+            return Ok(());
+        }
+    }
+    if row.kind == RemoteAutomationRunKind::RetryJudge
+        && latest
+            .as_ref()
+            .is_none_or(|run| run.judge_state != AutomationJudgeState::Failed)
+    {
+        state.remote_automation_run_request_repo.complete(&row.id, serde_json::json!({"scheduled":false,"reason":"latest judge is not failed","code":REMOTE_AUTOMATION_RUN_ALREADY_SETTLED,"benign":true}), chrono::Utc::now()).await?;
+        return Ok(());
+    }
+    let outcome = match row.kind {
+        RemoteAutomationRunKind::RunNow => {
+            crate::application::automation::actions::trigger_automation_run_now_for_state(
+                &automation_id,
+                state,
+            )
+            .await
+        }
+        RemoteAutomationRunKind::RetryJudge => {
+            crate::application::automation::actions::retry_automation_judge_for_state(
+                &automation_id,
+                state,
+            )
+            .await
+        }
+    };
+    match outcome {
+        Ok(outcome) if outcome.scheduled => state.remote_automation_run_request_repo.complete(&row.id, serde_json::json!({"scheduled":true}), chrono::Utc::now()).await?,
+        Ok(outcome) if outcome.reason.as_deref() == Some("run in flight") => state.remote_automation_run_request_repo.complete(&row.id, serde_json::json!({"scheduled":false,"reason":outcome.reason,"code":REMOTE_AUTOMATION_RUN_RUN_IN_FLIGHT,"benign":true}), chrono::Utc::now()).await?,
+        Ok(outcome) => state.remote_automation_run_request_repo.fail(&row.id, REMOTE_AUTOMATION_RUN_HOST_FAILED, Some(serde_json::json!({"scheduled":false,"reason":outcome.reason})), chrono::Utc::now()).await?,
+        Err(crate::error::AppError::Validation(message)) if message.contains(crate::application::automation::plan_gate::AUTOMATION_PLAN_GATE_TRIGGER_RUN_NOW_ERROR_CODE) => state.remote_automation_run_request_repo.fail(&row.id, REMOTE_AUTOMATION_RUN_PLAN_GATE_PAUSED, None, chrono::Utc::now()).await?,
+        Err(error @ (crate::error::AppError::Database(_) | crate::error::AppError::Infrastructure(_))) => return Err(error),
+        Err(error) => { tracing::warn!(request_id=%row.id,%error,"remote automation run host seam failed"); state.remote_automation_run_request_repo.fail(&row.id, REMOTE_AUTOMATION_RUN_HOST_FAILED, None, chrono::Utc::now()).await?; }
     }
     Ok(())
 }

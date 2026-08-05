@@ -20,6 +20,7 @@ pub mod memory_agent_remote_conversation_start_request_repo;
 pub mod memory_remote_resume_request_repo;
 pub mod memory_remote_plan_approval_request_repo;
 pub mod memory_remote_finalize_decision_request_repo;
+pub mod memory_remote_automation_run_request_repo;
 pub mod memory_remote_plan_edit_request_repo;
 pub mod memory_remote_queued_send_request_repo;
 pub mod memory_agent_run_repo;
@@ -133,6 +134,7 @@ pub use memory_remote_resume_request_repo::{
 };
 pub use memory_remote_plan_approval_request_repo::MemoryRemotePlanApprovalRequestRepository;
 pub use memory_remote_finalize_decision_request_repo::MemoryRemoteFinalizeDecisionRequestRepository;
+pub use memory_remote_automation_run_request_repo::MemoryRemoteAutomationRunRequestRepository;
 pub use memory_remote_plan_edit_request_repo::MemoryRemotePlanEditRequestRepository;
 pub use memory_remote_queued_send_request_repo::MemoryRemoteQueuedSendRequestRepository;
 pub use memory_manual_role_default_repo::MemoryManualRoleDefaultRepository;

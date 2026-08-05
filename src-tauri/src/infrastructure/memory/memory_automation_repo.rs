@@ -320,6 +320,8 @@ pub struct MemoryAutomationRunRepository {
     published_run_error_updates: AtomicUsize,
     #[cfg(test)]
     failed_find_run_conversation_ids: Mutex<HashSet<String>>,
+    #[cfg(test)]
+    fail_next_latest_lookup: AtomicBool,
 }
 
 impl MemoryAutomationRunRepository {
@@ -335,6 +337,8 @@ impl MemoryAutomationRunRepository {
             published_run_error_updates: AtomicUsize::new(0),
             #[cfg(test)]
             failed_find_run_conversation_ids: Mutex::new(HashSet::new()),
+            #[cfg(test)]
+            fail_next_latest_lookup: AtomicBool::new(false),
         }
     }
 
@@ -361,6 +365,11 @@ impl MemoryAutomationRunRepository {
             .lock()
             .unwrap()
             .insert(conversation_id.as_str());
+    }
+
+    #[cfg(test)]
+    pub fn fail_next_latest_lookup(&self) {
+        self.fail_next_latest_lookup.store(true, Ordering::SeqCst);
     }
 
     fn has_conflicting_open_run(runs: &[AutomationRun], candidate: &AutomationRun) -> bool {
@@ -429,6 +438,12 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
         &self,
         automation_id: &AutomationId,
     ) -> AppResult<Option<AutomationRun>> {
+        #[cfg(test)]
+        if self.fail_next_latest_lookup.swap(false, Ordering::SeqCst) {
+            return Err(AppError::Database(
+                "configured latest automation run lookup failure".to_string(),
+            ));
+        }
         Ok(self
             .runs
             .read()

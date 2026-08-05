@@ -60,6 +60,7 @@ pub mod project_repository;
 pub mod proposal_dependency_repository;
 pub mod remote_access_repository;
 pub mod remote_agent_stop_request_repository;
+pub mod remote_automation_run_request_repository;
 pub mod remote_conversation_message_request_repository;
 pub mod remote_conversation_mode_switch_request_repository;
 pub mod remote_conversation_start_request_repository;
@@ -197,6 +198,7 @@ pub use remote_request_dedup_repository::{
 };
 pub use remote_plan_approval_request_repository::RemotePlanApprovalRequestRepository;
 pub use remote_finalize_decision_request_repository::RemoteFinalizeDecisionRequestRepository;
+pub use remote_automation_run_request_repository::RemoteAutomationRunRequestRepository;
 pub use remote_plan_edit_request_repository::RemotePlanEditRequestRepository;
 pub use remote_queued_send_request_repository::RemoteQueuedSendRequestRepository;
 pub use remote_resume_request_repository::{

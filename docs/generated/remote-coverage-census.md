@@ -20,11 +20,11 @@ PASS: remote transport drift — 598 invoke command name(s), 0 dynamic, 0 seam b
 | Invoke command names on the transport | 598 | drift scan (AST over `frontend/src` + imported `@tauri-apps/plugin-*`) |
 | Dynamic / unresolvable expressions | 0 | drift scan — must stay 0 |
 | Transport seam bypasses | 0 | drift scan — must stay 0 |
-| Remote-registered (`remote_commands!`) | 261 | `docs/generated/remote-commands.json` |
+| Remote-registered (`remote_commands!`) | 263 | `docs/generated/remote-commands.json` |
 | Reason-coded local-only rows | 34 | `frontend/src/lib/remote/local-only-commands.ts` |
 | `plugin:` names classified by the prefix rule | 51 | `PLUGIN_COMMAND_PREFIX` in `local-only-commands.ts` |
 | `plugin:` host-targeted exceptions | 0 | `HOST_TARGETED_PLUGIN_COMMANDS` — reviewed, currently empty |
-| Ledger rows (exhaustive over `generate_handler!`) | 587 | `docs/generated/remote-commands.json` |
+| Ledger rows (exhaustive over `generate_handler!`) | 589 | `docs/generated/remote-commands.json` |
 | Manifest-classified (host-denied / v1-deferred) | 284 | `v1Resolution` in `docs/generated/remote-commands.json` |
 | **Unclassified — the 3.1 gap** | **0** | `scripts/remote-transport-drift-baseline.json` |
 

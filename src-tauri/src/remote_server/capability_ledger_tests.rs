@@ -1073,7 +1073,8 @@ fn detector_b_is_calibrated_and_floor_enforced() {
         // 582 -> 584: spawn-free remote queued-message list + authority-reducing delete (B3a).
         // 584 -> 586: queued-message SEND-NOW intent request + poll read (Wave B3b).
         // 586 -> 587: direct spawn-free automation setup edit twin (Wave B4a).
-        587,
+        // 587 -> 589: automation run-now/retry-judge intent twin request + poll (Wave B4b).
+        589,
         "review the detector against the full command census"
     );
     let flagged = spawn_triggering_writers(
