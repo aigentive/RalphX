@@ -978,6 +978,82 @@ describe("ChatMessageList controller integration", () => {
     );
   });
 
+  it("restores the captured at-bottom anchor while toggling a persisted thinking group", () => {
+    const thinkingMessages: ChatMessageData[] = [
+      ...messages(1),
+      {
+        id: "thinking-1",
+        role: "assistant",
+        content: "",
+        createdAt: new Date(2026, 0, 1, 12, 1).toISOString(),
+        contentBlocks: [{ type: "thinking", text: "First thought", durationMs: 1_000 }],
+        timelineSequence: 10,
+      },
+      {
+        id: "thinking-2",
+        role: "assistant",
+        content: "",
+        createdAt: new Date(2026, 0, 1, 12, 2).toISOString(),
+        contentBlocks: [{ type: "thinking", text: "Second thought", durationMs: 2_000 }],
+        timelineSequence: 11,
+      },
+    ];
+    renderList({ messages: thinkingMessages });
+    primeAtBottom();
+    scrollWrites.mockClear();
+    harness.scrollToIndex.mockClear();
+
+    const toggle = screen.getByTestId("thinking-group-toggle");
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(toggle);
+    flushAnimationFrames();
+
+    expect(screen.getByTestId("thinking-group-toggle")).toHaveAttribute("aria-expanded", "false");
+    expect(harness.scrollToIndex).toHaveBeenCalledWith(
+      expect.objectContaining({ index: 2, align: "end" }),
+    );
+  });
+
+  it("preserves a free reader's anchor while collapsing a persisted thinking group", () => {
+    const thinkingMessages: ChatMessageData[] = [
+      ...messages(1),
+      {
+        id: "thinking-1",
+        role: "assistant",
+        content: "",
+        createdAt: new Date(2026, 0, 1, 12, 1).toISOString(),
+        contentBlocks: [{ type: "thinking", text: "First thought", durationMs: 1_000 }],
+        timelineSequence: 10,
+      },
+      {
+        id: "thinking-2",
+        role: "assistant",
+        content: "",
+        createdAt: new Date(2026, 0, 1, 12, 2).toISOString(),
+        contentBlocks: [{ type: "thinking", text: "Second thought", durationMs: 2_000 }],
+        timelineSequence: 11,
+      },
+    ];
+    renderList({ messages: thinkingMessages });
+    const scroller = primeAtBottom();
+    setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_000, scrollTop: 300 });
+    fireEvent.wheel(scroller, { deltaY: -80 });
+    fireEvent.scroll(scroller);
+
+    const toggle = screen.getByTestId("thinking-group-toggle");
+    scroller.getBoundingClientRect = () => new DOMRect(0, 0, 100, 500);
+    toggle.getBoundingClientRect = () => new DOMRect(
+      0,
+      toggle.getAttribute("aria-expanded") === "true" ? 120 : 60,
+      100,
+      24,
+    );
+    fireEvent.click(toggle);
+
+    expect(scroller.scrollTop).toBe(240);
+    expect(screen.getByTestId("chat-scroll-to-bottom-control")).toHaveAttribute("aria-hidden", "false");
+  });
+
   it("keeps persisted delegated cards promoted while generic tool details are collapsed", () => {
     const activityMessages: ChatMessageData[] = [
       {

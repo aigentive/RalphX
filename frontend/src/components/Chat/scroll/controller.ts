@@ -67,6 +67,7 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
   let capturedAnchor: CapturedAnchor | null = null;
   let pinFrame: number | null = null;
   let settleFrame: number | null = null;
+  let returningSettleFrameCount = 0;
   let jumpSettleFrame: number | null = null;
   let jumpSettleScrollTop: number | null = null;
   let jumpSettleFrameCount = 0;
@@ -118,6 +119,7 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
   const cancelSettle = (): void => {
     cancelFrame(settleFrame);
     settleFrame = null;
+    returningSettleFrameCount = 0;
   };
 
   const cancelJumpSettle = (): void => {
@@ -185,11 +187,17 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
       settleFrame = null;
       const element = getElement();
       if (!element || state !== "returning" || prependEpoch || zeroSizeEpoch) return;
+      returningSettleFrameCount += 1;
       if (isWithinActiveIntent(element)) {
-        setState("pinned");
-        beginBottomIntent();
-        updateVisualBottom();
-        debug("bottom-intent-settled");
+        if (returningSettleFrameCount >= MAX_SETTLE_FRAMES) {
+          returningSettleFrameCount = 0;
+          setState("pinned");
+          beginBottomIntent();
+          updateVisualBottom();
+          debug("bottom-intent-settled");
+        } else {
+          scheduleReturningSettle();
+        }
         return;
       }
       schedulePin("returning-settle", "auto");
@@ -446,6 +454,7 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
         return;
       }
       cancelJumpSettle();
+      cancelSettle();
       setState("returning");
       beginBottomIntent();
       schedulePin(reason, behavior);
@@ -453,6 +462,7 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
 
     scrollToBottomClicked() {
       cancelJumpSettle();
+      cancelSettle();
       setState("returning");
       beginBottomIntent();
       schedulePin("scroll-to-bottom-click", "auto");

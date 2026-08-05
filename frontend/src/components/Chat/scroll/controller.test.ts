@@ -580,6 +580,23 @@ describe("ChatScrollController", () => {
     expect(harness.element.scrollTop).toBe(800);
   });
 
+  it("keeps a manual bottom return alive through a delayed virtualizer measurement", () => {
+    const harness = createHarness(createElement({ scrollTop: 100 }));
+    attach(harness);
+    harness.controller.notifyWheel(-1, false);
+    harness.scrollCalls.length = 0;
+
+    harness.controller.scrollToBottomClicked();
+    harness.flushNextFrame();
+    harness.flushNextFrame();
+    harness.element.setGeometry({ scrollHeight: 1_300 });
+    harness.flushFrames();
+
+    expect(harness.element.scrollTop).toBe(800);
+    expect(harness.controller.getState()).toBe("pinned");
+    expect(harness.scrollCalls).toHaveLength(2);
+  });
+
   it("waits through changing prepend compensation before treating later growth as followable", () => {
     const harness = createHarness();
     attach(harness);

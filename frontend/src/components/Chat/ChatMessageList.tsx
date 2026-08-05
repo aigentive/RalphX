@@ -1148,21 +1148,25 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       lastRenderedRowResizeObserverRef.current = observer;
     }, [disconnectLastRenderedRowResizeObserver, scrollController]);
 
-    const toggleThinkingGroup = useCallback((groupKey: string) => {
+    const toggleThinkingGroup = useCallback((
+      groupKey: string,
+      toggleElement?: HTMLElement | null,
+    ) => {
+      scrollController.captureAnchor(toggleElement ?? undefined);
       setThinkingIntentByGroupKey((current) => {
         const next = new Map(current);
         const isExpanded = current.get(groupKey) !== "collapsed";
         next.set(groupKey, isExpanded ? "collapsed" : "expanded");
         return next;
       });
-    }, []);
+    }, [scrollController]);
 
     const toggleToolCallGroup = useCallback((groupKey: string, toggleElement?: HTMLElement | null) => {
-      scrollController?.captureAnchor(toggleElement ?? undefined);
       if (isThinkingGroupKey(groupKey)) {
-        toggleThinkingGroup(groupKey);
+        toggleThinkingGroup(groupKey, toggleElement);
         return;
       }
+      scrollController.captureAnchor(toggleElement ?? undefined);
       setExpandedToolGroupKeys((current) => {
         const next = new Set(current);
         if (next.has(groupKey)) {
@@ -1585,8 +1589,8 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     }, [lastItemIndex]);
 
     useLayoutEffect(() => {
-      scrollController?.restoreAnchor();
-    }, [expandedToolGroupKeys, scrollController]);
+      scrollController.restoreAnchor();
+    }, [expandedToolGroupKeys, scrollController, thinkingIntentByGroupKey]);
 
     const updateScrollableOverflow = useCallback((element: HTMLElement) => {
       setHasScrollableOverflow(
