@@ -87,6 +87,7 @@ mod question_commands_tests;
 pub mod registry;
 pub mod release_notes_commands;
 pub mod remote_agent_stop_commands;
+pub mod remote_attachment_commands;
 pub mod remote_automation_commands;
 #[cfg(test)]
 mod remote_automation_commands_tests;

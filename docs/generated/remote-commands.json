@@ -3309,6 +3309,15 @@
       "argumentSensitive": false,
       "capabilities": [],
       "class": "read",
+      "command": "list_remote_message_attachments",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::remote_attachment_commands::list_remote_message_attachments"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
       "command": "get_remote_agent_conversation_workspace_change_summary",
       "pins": [],
       "scopeConfined": false,
@@ -9286,6 +9295,15 @@
       "command": "resolve_remote_user_question",
       "module": "remote_question_commands",
       "reason": "declared membership: steering-question; spawn-free answer twin omits handle_accepted_plan_mode_proposal, create_chat_service, and kick_runtime_handoff, and refuses Plan-mode acceptance fail-closed before committing the claim",
+      "registered": true,
+      "v1Resolution": "registerable"
+    },
+    {
+      "capabilities": [],
+      "class": "read",
+      "command": "list_remote_message_attachments",
+      "module": "remote_attachment_commands",
+      "reason": "audited metadata-only attachment repository read; propagates read errors and projects filename, MIME type, size, and identity while omitting the host file path",
       "registered": true,
       "v1Resolution": "registerable"
     },

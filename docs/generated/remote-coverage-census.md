@@ -3,28 +3,28 @@
 > GENERATED — do not edit by hand. Regenerate: `node scripts/generate-remote-coverage-census.mjs`. Staleness gate: `--check`.
 > This is the PR 3.1-a planning artifact. It registers nothing. Every class here is the ledger's CURRENT value; the per-command hand audit (§3.3) and the P-17 detector run own the final one.
 
-> **P-11 is COMPLETE.** All 615 production invoke command names carry a reviewed disposition: remote-registered, reason-coded local-only, plugin-local by the `plugin:` prefix rule, or manifest-classified (host-denied / v1-deferred / v1-audit-refused). **0 unclassified, 0 dynamic expressions, 0 suppressions.**
+> **P-11 is COMPLETE.** All 616 production invoke command names carry a reviewed disposition: remote-registered, reason-coded local-only, plugin-local by the `plugin:` prefix rule, or manifest-classified (host-denied / v1-deferred / v1-audit-refused). **0 unclassified, 0 dynamic expressions, 0 suppressions.**
 > The inventory spans two source sets: `frontend/src`, plus the 7 `@tauri-apps/plugin-*` packages it imports. The Vite alias redirects `@tauri-apps/api/core` for the whole module graph, node_modules included, so those packages' own 51 `plugin:` command names ride the same transport — see §7.
 > The ratchet baseline `scripts/remote-transport-drift-baseline.json` is now a PERMANENT ZERO — `check-remote-transport-drift.mjs` fails if it is non-empty and refuses `--update-baseline` when unclassified names exist, so the list cannot quietly regrow. The work-batch sections below are kept as the audit record of how the 499 were resolved.
 
 ## 1. Scan state
 
 ```
-PASS: remote transport drift — 615 invoke command name(s), 0 dynamic, 0 seam bypasses; 278 manifest-classified; 0 unclassified (P-11 COMPLETE — permanent zero).
-      P-11 census: all 615 names have a reviewed disposition — 285 remote-registered, 33 reason-coded local-only, 51 plugin-local (prefix rule), 246 manifest-classified only, 0 unclassified, 0 suppressions.
+PASS: remote transport drift — 616 invoke command name(s), 0 dynamic, 0 seam bypasses; 278 manifest-classified; 0 unclassified (P-11 COMPLETE — permanent zero).
+      P-11 census: all 616 names have a reviewed disposition — 286 remote-registered, 33 reason-coded local-only, 51 plugin-local (prefix rule), 246 manifest-classified only, 0 unclassified, 0 suppressions.
       Tauri plugin surface: 51 plugin: command name(s) across 7 imported @tauri-apps/plugin-* package(s), 0 reviewed host-targeted exception(s).
 ```
 
 | Measure | Count | Source |
 |---|---|---|
-| Invoke command names on the transport | 615 | drift scan (AST over `frontend/src` + imported `@tauri-apps/plugin-*`) |
+| Invoke command names on the transport | 616 | drift scan (AST over `frontend/src` + imported `@tauri-apps/plugin-*`) |
 | Dynamic / unresolvable expressions | 0 | drift scan — must stay 0 |
 | Transport seam bypasses | 0 | drift scan — must stay 0 |
-| Remote-registered (`remote_commands!`) | 284 | `docs/generated/remote-commands.json` |
+| Remote-registered (`remote_commands!`) | 285 | `docs/generated/remote-commands.json` |
 | Reason-coded local-only rows | 34 | `frontend/src/lib/remote/local-only-commands.ts` |
 | `plugin:` names classified by the prefix rule | 51 | `PLUGIN_COMMAND_PREFIX` in `local-only-commands.ts` |
 | `plugin:` host-targeted exceptions | 0 | `HOST_TARGETED_PLUGIN_COMMANDS` — reviewed, currently empty |
-| Ledger rows (exhaustive over `generate_handler!`) | 604 | `docs/generated/remote-commands.json` |
+| Ledger rows (exhaustive over `generate_handler!`) | 605 | `docs/generated/remote-commands.json` |
 | Manifest-classified (host-denied / v1-deferred) | 278 | `v1Resolution` in `docs/generated/remote-commands.json` |
 | **Unclassified — the 3.1 gap** | **0** | `scripts/remote-transport-drift-baseline.json` |
 
@@ -272,7 +272,7 @@ Ordering logic: **B0 first** (nothing is measurable without the third dispositio
 
 **Retired by `B0`.** Every member left the P-11 ratchet as manifest-classified, so this batch has no registration work. NOT closed: the attachment names leave the ratchet, but remote attachment RENDERING is a fetch route, not an invoke command, and §5.3's `ChatAttachmentGallery.tsx` gap plus the 1.5-C endpoint dependency are untouched by B0.
 
-**Why here:** 2.6-a shipped the honest interim: under a remote environment `getImagePreviewSrc()` returns `null` and every attachment renders as a placeholder card, because `convertFileSrc` mints an `asset://` URL for a path on the CLIENT's filesystem while `attachment.filePath` names a file on the HOST. The comment at `MessageAttachments.tsx:92-94` defers the real fix to 3.1. The three attachment commands are Denied (`writesArbitraryPath` / `deletesEntity`) and stay dispositions — the rendering work is a FETCH-path change, not a command registration, which is exactly 3.1 open question 4 and needs an explicit call.
+**Why here:** 2.6-a shipped the honest interim: under a remote environment `getImagePreviewSrc()` returns `null`, because `convertFileSrc` mints an `asset://` URL for a path on the CLIENT's filesystem while attachment content lives on the HOST. Wave E6 adds the metadata-only `list_remote_message_attachments` read twin and deliberately omits `filePath`, so paired clients can render filename/MIME/size cards with the existing host-content affordance. Upload, delete, and attachment bytes remain unavailable remotely.
 
 **Work:**
 
@@ -280,7 +280,7 @@ Ordering logic: **B0 first** (nothing is measurable without the third dispositio
 - Branch preview-source resolution on env kind in BOTH renderers — `MessageAttachments.tsx:115` and `ChatAttachmentGallery.tsx:97` (2.6 only hardened the first; the gallery still calls `convertFileSrc` unconditionally, which is a live gap this census surfaces).
 - Route the remote branch through the scoped endpoint under `ui:read` with a binary-safe body and 2.7's response-header envelope; never through JSON `/invoke` (C-16).
 - Resolve open question 4 explicitly: extending the §3.5 fetch-route remount allowlist rides 3.1, or it is a separate change against P-1's checked-in allowlist. Record the call.
-- Disposition the three commands through the manifest (upload/delete are `writesArbitraryPath` fs sinks; `list_message_attachments` is denied by module).
+- Register the path-free `list_remote_message_attachments` metadata twin; keep upload/delete and byte fetch outside this slice.
 
 **Gate:** A remote attachment renders through the scoped endpoint; a local one still uses `convertFileSrc`; P-1 route-allowlist equality still holds; the three commands are manifest-disposed with zero local-only rows.
 
@@ -359,7 +359,7 @@ Ordering logic: **B0 first** (nothing is measurable without the third dispositio
 
 **Open question.** Phase-3 open question 4 applies verbatim: attachment rendering is a FETCH route, not an invoke command, and the source does not say whether extending the §3.5 remount allowlist rides 3.1 or requires a separate change against P-1's checked-in allowlist. A1 must record the call before it writes a route.
 
-**Command side.** The three attachment COMMANDS in the gap (`upload_chat_attachment`, `delete_chat_attachment`, `list_message_attachments`) are all ledgered `denied` (`writesArbitraryPath` / `deletesEntity`) and stay manifest dispositions — no registration, and specifically no local-only rows.
+**Command side.** The local attachment commands remain ledgered dispositions: upload/delete retain their filesystem authority and `list_message_attachments` remains denied by its mixed-authority module default. Wave E6 registers the commands-resident, path-free `list_remote_message_attachments` twin at `read`; it serves metadata only, while bytes remain a later binary-envelope slice.
 
 ## 6. Reconciliation
 

@@ -1935,6 +1935,19 @@ crate::remote_commands! {
         result: fallible,
     },
 
+    // Metadata only: the response type has no host path and this slice serves no bytes.
+    "list_remote_message_attachments"
+        => crate::commands::remote_attachment_commands::list_remote_message_attachments {
+        class: Read,
+        caps: [],
+        params: [
+            (arg message_id: String),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+
     // Changes hydration is snapshot-only: host-local reads populate these entries while
     // already inspecting git; paired reads never populate or refresh them.
     "get_remote_agent_conversation_workspace_change_summary"

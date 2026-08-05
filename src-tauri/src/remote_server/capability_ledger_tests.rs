@@ -1,6 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use chrono::Utc;
 use ralphx_remote_protocol::{class_permits, AuditRefusalReason, Capability, RiskClass};
+
+use crate::commands::remote_attachment_commands::list_remote_message_attachments_for_state;
+use crate::domain::entities::{
+    ChatAttachment, ChatAttachmentId, ChatConversationId, ChatMessageId,
+};
 
 use super::authority_audit::{
     agent_consumed_content_writers, closure_is_arming, parse_registered_commands, repo_root,
@@ -1089,7 +1095,11 @@ fn detector_b_is_calibrated_and_floor_enforced() {
         // authority by construction; the source-level remote-diff carrier assertion is the proof.
         // 600 -> 604: Wave C4b's four file-level snapshot reads. Exact path/ref/page keys make
         // them inert reads of host-captured content; none reaches git or a process seam.
-        604,
+        // 604 -> 605: Wave E6's `list_remote_message_attachments`. A pure attachment-repository
+        // read whose response omits the host `file_path`; it carries no ChatAttachmentService,
+        // storage path, AppHandle or ExecutionState, proved by the module's carrier-absence
+        // assertion. Attachment BYTES remain host-only.
+        605,
         "review the detector against the full command census"
     );
     let flagged = spawn_triggering_writers(
@@ -1723,6 +1733,68 @@ fn the_spawn_free_remote_mcp_policy_module_carries_no_authority_carriers() {
             "`remote_mcp_policy_commands` mentions `{carrier}` outside comments"
         );
     }
+}
+
+#[test]
+fn the_remote_attachment_module_carries_no_authority_carriers() {
+    let sources = load_production_sources();
+    let (_, module) = sources
+        .iter()
+        .find(|(file, _)| file == "commands/remote_attachment_commands.rs")
+        .expect("the remote attachment module must exist");
+    let code = module
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(code.contains("pub async fn list_remote_message_attachments"));
+    for carrier in [
+        "ChatAttachmentService",
+        "attachment_storage_path",
+        "AppHandle",
+        "ExecutionState",
+        "file_path",
+    ] {
+        assert!(
+            !code.contains(carrier),
+            "`remote_attachment_commands` mentions `{carrier}` outside comments"
+        );
+    }
+}
+
+#[tokio::test]
+async fn remote_attachment_metadata_projects_the_card_fields_without_the_host_path() {
+    let state = crate::application::AppState::new_test();
+    let message_id = ChatMessageId::from_string("10000000-0000-0000-0000-000000000001");
+    state
+        .chat_attachment_repo
+        .create(ChatAttachment {
+            id: ChatAttachmentId::from_string("20000000-0000-0000-0000-000000000002"),
+            conversation_id: ChatConversationId::from_string(
+                "30000000-0000-0000-0000-000000000003",
+            ),
+            message_id: Some(message_id.clone()),
+            file_name: "diagram.png".to_string(),
+            file_path: "/Users/host/private/diagram.png".to_string(),
+            mime_type: Some("image/png".to_string()),
+            file_size: 4096,
+            created_at: Utc::now(),
+        })
+        .await
+        .unwrap();
+
+    let response = list_remote_message_attachments_for_state(&state, message_id.as_str())
+        .await
+        .unwrap();
+    let wire = serde_json::to_value(&response).unwrap();
+
+    assert_eq!(response.len(), 1);
+    assert_eq!(wire[0]["id"], "20000000-0000-0000-0000-000000000002");
+    assert_eq!(wire[0]["fileName"], "diagram.png");
+    assert_eq!(wire[0]["mimeType"], "image/png");
+    assert_eq!(wire[0]["fileSize"], 4096);
+    assert!(wire[0].get("filePath").is_none());
+    assert!(!wire.to_string().contains("/Users/host/private"));
 }
 
 #[test]

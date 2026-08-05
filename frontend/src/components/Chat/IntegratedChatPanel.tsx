@@ -350,6 +350,7 @@ export function IntegratedChatPanel({
   onQuestionAnswered,
 }: IntegratedChatPanelProps) {
   const attachmentUploadGate = useAgentGate("attachmentUpload");
+  const attachmentMetadataReadGate = useAgentGate("attachmentMetadataRead");
   const bus = useEventBus();
   const queryClient = useQueryClient();
   const { data: featureFlags } = useFeatureFlags();
@@ -1774,6 +1775,7 @@ export function IntegratedChatPanel({
                     : null
                 }
                 onInitialPaintReady={handleTranscriptInitialPaintReady}
+                attachmentMetadataReadAvailable={!attachmentMetadataReadGate.gated}
                 firstItemIndex={primaryTranscriptWindow.loadedStartIndex}
                 failedRun={failedRunProp}
                 onDismissFailedRun={setDismissedErrorId}

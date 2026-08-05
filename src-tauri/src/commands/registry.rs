@@ -422,6 +422,7 @@ macro_rules! register_tauri_commands {
             commands::question_commands::get_pending_questions,
             commands::question_commands::list_pending_question_gates,
             commands::remote_question_commands::resolve_remote_user_question,
+            commands::remote_attachment_commands::list_remote_message_attachments,
             commands::remote_queue_commands::list_remote_queued_agent_messages,
             commands::remote_queue_commands::cancel_remote_queued_agent_message,
             commands::remote_queue_commands::request_remote_queued_message_send,

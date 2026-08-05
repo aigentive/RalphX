@@ -119,7 +119,9 @@ describe("ProjectCreationWizard", () => {
       await user.click(screen.getByTestId("browse-button"));
 
       expect(await screen.findByText("The default branch could not be detected.")).toBeInTheDocument();
-      await user.click(screen.getByTestId("base-branch-select"));
+      // Asserted WITHOUT opening the select: a failed branch read must be visible inline.
+      // (Clicking a Radix trigger in jsdom also throws hasPointerCapture, so opening it
+      // would add an unhandled error while testing the library rather than this behaviour.)
       expect(screen.getByText("Branches could not be loaded")).toBeInTheDocument();
       expect(screen.queryByText("No branches available")).not.toBeInTheDocument();
     });

@@ -142,6 +142,9 @@ export const AGENT_GATED_AFFORDANCES = {
   conversationMute: "set_remote_agent_conversation_muted",
   personaSwitch: "switch_remote_agent_conversation_persona",
   attachmentUpload: "upload_chat_attachment",
+  // Metadata uses the path-free read twin. Older hosts omit the row, so the transcript keeps
+  // the honest unknown state from manifest absence instead of trying the local path-bearing op.
+  attachmentMetadataRead: "list_remote_message_attachments",
   permissionApprove: "approve_permission_request",
   // Answering the MCP `ask_user_question` gate uses the registered, spawn-free remote twin.
   // It is `agentControl`, so a remote needs `ui:agent`; older hosts without the manifest row

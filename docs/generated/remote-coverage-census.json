@@ -3,7 +3,7 @@
   "generatedBy": "scripts/generate-remote-coverage-census.mjs",
   "purpose": "PR 3.1 work manifest: every P-11-unclassified invoke command name, grouped into module-scoped work batches with a recommended registration order. A census and a plan — it registers nothing and decides no final class.",
   "scan": {
-    "invokedCommands": 615,
+    "invokedCommands": 616,
     "dynamicExpressions": 0,
     "seamBypasses": 0,
     "manifestClassified": 278,
@@ -12,17 +12,17 @@
     "pluginPackages": 7,
     "pluginHostTargetedExceptions": 0,
     "pluginLocal": 51,
-    "line": "PASS: remote transport drift — 615 invoke command name(s), 0 dynamic, 0 seam bypasses; 278 manifest-classified; 0 unclassified (P-11 COMPLETE — permanent zero).\n      P-11 census: all 615 names have a reviewed disposition — 285 remote-registered, 33 reason-coded local-only, 51 plugin-local (prefix rule), 246 manifest-classified only, 0 unclassified, 0 suppressions.\n      Tauri plugin surface: 51 plugin: command name(s) across 7 imported @tauri-apps/plugin-* package(s), 0 reviewed host-targeted exception(s)."
+    "line": "PASS: remote transport drift — 616 invoke command name(s), 0 dynamic, 0 seam bypasses; 278 manifest-classified; 0 unclassified (P-11 COMPLETE — permanent zero).\n      P-11 census: all 616 names have a reviewed disposition — 286 remote-registered, 33 reason-coded local-only, 51 plugin-local (prefix rule), 246 manifest-classified only, 0 unclassified, 0 suppressions.\n      Tauri plugin surface: 51 plugin: command name(s) across 7 imported @tauri-apps/plugin-* package(s), 0 reviewed host-targeted exception(s)."
   },
   "totals": {
-    "invokedCommandNames": 615,
-    "remoteRegistered": 284,
+    "invokedCommandNames": 616,
+    "remoteRegistered": 285,
     "localOnlyRows": 34,
     "pluginCommandNames": 51,
     "pluginPackages": 7,
     "pluginLocal": 51,
     "pluginHostTargetedExceptions": 0,
-    "ledgerRows": 604,
+    "ledgerRows": 605,
     "unclassified": 0,
     "assignedToBatches": 0,
     "batches": 14
@@ -327,7 +327,7 @@
       "id": "A1",
       "order": 13,
       "title": "Chat attachments — disposition + remote rendering (deferred from 2.6/review-4)",
-      "rationale": "2.6-a shipped the honest interim: under a remote environment `getImagePreviewSrc()` returns `null` and every attachment renders as a placeholder card, because `convertFileSrc` mints an `asset://` URL for a path on the CLIENT's filesystem while `attachment.filePath` names a file on the HOST. The comment at `MessageAttachments.tsx:92-94` defers the real fix to 3.1. The three attachment commands are Denied (`writesArbitraryPath` / `deletesEntity`) and stay dispositions — the rendering work is a FETCH-path change, not a command registration, which is exactly 3.1 open question 4 and needs an explicit call.",
+      "rationale": "2.6-a shipped the honest interim: under a remote environment `getImagePreviewSrc()` returns `null`, because `convertFileSrc` mints an `asset://` URL for a path on the CLIENT's filesystem while attachment content lives on the HOST. Wave E6 adds the metadata-only `list_remote_message_attachments` read twin and deliberately omits `filePath`, so paired clients can render filename/MIME/size cards with the existing host-content affordance. Upload, delete, and attachment bytes remain unavailable remotely.",
       "retiredBy": "B0",
       "retiredNote": "NOT closed: the attachment names leave the ratchet, but remote attachment RENDERING is a fetch route, not an invoke command, and §5.3's `ChatAttachmentGallery.tsx` gap plus the 1.5-C endpoint dependency are untouched by B0.",
       "work": [
@@ -335,7 +335,7 @@
         "Branch preview-source resolution on env kind in BOTH renderers — `MessageAttachments.tsx:115` and `ChatAttachmentGallery.tsx:97` (2.6 only hardened the first; the gallery still calls `convertFileSrc` unconditionally, which is a live gap this census surfaces).",
         "Route the remote branch through the scoped endpoint under `ui:read` with a binary-safe body and 2.7's response-header envelope; never through JSON `/invoke` (C-16).",
         "Resolve open question 4 explicitly: extending the §3.5 fetch-route remount allowlist rides 3.1, or it is a separate change against P-1's checked-in allowlist. Record the call.",
-        "Disposition the three commands through the manifest (upload/delete are `writesArbitraryPath` fs sinks; `list_message_attachments` is denied by module)."
+        "Register the path-free `list_remote_message_attachments` metadata twin; keep upload/delete and byte fetch outside this slice."
       ],
       "gate": "A remote attachment renders through the scoped endpoint; a local one still uses `convertFileSrc`; P-1 route-allowlist equality still holds; the three commands are manifest-disposed with zero local-only rows.",
       "commandCount": 0,
@@ -432,7 +432,7 @@
       ],
       "newGapFoundByThisCensus": "2.6 hardened only ONE of the two renderers. `ChatAttachmentGallery.tsx:97` still calls `convertFileSrc(attachment.filePath)` with no env-kind branch, so the gallery surface renders broken images under a remote environment where `MessageAttachments` renders placeholders. A1 must fix both, and the 2.6 negative test (`host-affordance-gating.test.tsx`, which asserts `convertFileSrc` was NOT called) should be extended to cover the gallery.",
       "openQuestion": "Phase-3 open question 4 applies verbatim: attachment rendering is a FETCH route, not an invoke command, and the source does not say whether extending the §3.5 remount allowlist rides 3.1 or requires a separate change against P-1's checked-in allowlist. A1 must record the call before it writes a route.",
-      "commandSide": "The three attachment COMMANDS in the gap (`upload_chat_attachment`, `delete_chat_attachment`, `list_message_attachments`) are all ledgered `denied` (`writesArbitraryPath` / `deletesEntity`) and stay manifest dispositions — no registration, and specifically no local-only rows."
+      "commandSide": "The local attachment commands remain ledgered dispositions: upload/delete retain their filesystem authority and `list_message_attachments` remains denied by its mixed-authority module default. Wave E6 registers the commands-resident, path-free `list_remote_message_attachments` twin at `read`; it serves metadata only, while bytes remain a later binary-envelope slice."
     }
   }
 }

@@ -386,13 +386,13 @@ why: "LANDED (PR 3.1-b batch B0). The drift scan used to admit two answers — r
       "NOT closed: the attachment names leave the ratchet, but remote attachment RENDERING is a fetch route, not an invoke command, and §5.3's `ChatAttachmentGallery.tsx` gap plus the 1.5-C endpoint dependency are untouched by B0.",
     title: "Chat attachments — disposition + remote rendering (deferred from 2.6/review-4)",
     modules: ["chat_attachment_commands"],
-    why: "2.6-a shipped the honest interim: under a remote environment `getImagePreviewSrc()` returns `null` and every attachment renders as a placeholder card, because `convertFileSrc` mints an `asset://` URL for a path on the CLIENT's filesystem while `attachment.filePath` names a file on the HOST. The comment at `MessageAttachments.tsx:92-94` defers the real fix to 3.1. The three attachment commands are Denied (`writesArbitraryPath` / `deletesEntity`) and stay dispositions — the rendering work is a FETCH-path change, not a command registration, which is exactly 3.1 open question 4 and needs an explicit call.",
+    why: "2.6-a shipped the honest interim: under a remote environment `getImagePreviewSrc()` returns `null`, because `convertFileSrc` mints an `asset://` URL for a path on the CLIENT's filesystem while attachment content lives on the HOST. Wave E6 adds the metadata-only `list_remote_message_attachments` read twin and deliberately omits `filePath`, so paired clients can render filename/MIME/size cards with the existing host-content affordance. Upload, delete, and attachment bytes remain unavailable remotely.",
     work: [
       "Blocked on 1.5-C: `/remote/v1/attachments/{id}` does not exist on this base (no `attachments` route in `remote_server/`). Do not start A1 until the 1.5 lane lands it.",
       "Branch preview-source resolution on env kind in BOTH renderers — `MessageAttachments.tsx:115` and `ChatAttachmentGallery.tsx:97` (2.6 only hardened the first; the gallery still calls `convertFileSrc` unconditionally, which is a live gap this census surfaces).",
       "Route the remote branch through the scoped endpoint under `ui:read` with a binary-safe body and 2.7's response-header envelope; never through JSON `/invoke` (C-16).",
       "Resolve open question 4 explicitly: extending the §3.5 fetch-route remount allowlist rides 3.1, or it is a separate change against P-1's checked-in allowlist. Record the call.",
-      "Disposition the three commands through the manifest (upload/delete are `writesArbitraryPath` fs sinks; `list_message_attachments` is denied by module).",
+      "Register the path-free `list_remote_message_attachments` metadata twin; keep upload/delete and byte fetch outside this slice.",
     ],
     gate: "A remote attachment renders through the scoped endpoint; a local one still uses `convertFileSrc`; P-1 route-allowlist equality still holds; the three commands are manifest-disposed with zero local-only rows.",
   },
@@ -724,7 +724,7 @@ const RESOLVED_ITEMS = {
     openQuestion:
       "Phase-3 open question 4 applies verbatim: attachment rendering is a FETCH route, not an invoke command, and the source does not say whether extending the §3.5 remount allowlist rides 3.1 or requires a separate change against P-1's checked-in allowlist. A1 must record the call before it writes a route.",
     commandSide:
-      "The three attachment COMMANDS in the gap (`upload_chat_attachment`, `delete_chat_attachment`, `list_message_attachments`) are all ledgered `denied` (`writesArbitraryPath` / `deletesEntity`) and stay manifest dispositions — no registration, and specifically no local-only rows.",
+      "The local attachment commands remain ledgered dispositions: upload/delete retain their filesystem authority and `list_message_attachments` remains denied by its mixed-authority module default. Wave E6 registers the commands-resident, path-free `list_remote_message_attachments` twin at `read`; it serves metadata only, while bytes remain a later binary-envelope slice.",
   },
 };
 

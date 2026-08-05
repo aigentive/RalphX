@@ -2084,6 +2084,7 @@ export const chatApi = {
   isAgentRunning,
   // Attachments
   listMessageAttachments,
+  listRemoteMessageAttachments,
   // Active state
   getConversationActiveState,
   // Child session
@@ -6592,6 +6593,8 @@ export interface ChatAttachmentResponse {
   createdAt: string;
 }
 
+export type RemoteChatAttachmentResponse = Omit<ChatAttachmentResponse, "filePath">;
+
 const ChatAttachmentResponseSchema = z.object({
   id: z.string(),
   conversationId: z.string(),
@@ -6616,5 +6619,16 @@ export async function listMessageAttachments(
     "list_message_attachments",
     { messageId },
     z.array(ChatAttachmentResponseSchema),
+  );
+}
+
+/** List host attachment metadata without exposing a host filesystem path. */
+export async function listRemoteMessageAttachments(
+  messageId: string,
+): Promise<RemoteChatAttachmentResponse[]> {
+  return typedInvoke(
+    "list_remote_message_attachments",
+    { messageId },
+    z.array(ChatAttachmentResponseSchema.omit({ filePath: true })),
   );
 }

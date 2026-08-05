@@ -235,6 +235,7 @@ pub const MODULE_DEFAULTS: &[ModuleDefault] = &[
     // module takes no AppHandle/ExecutionState/ChatService, so it cannot terminate anything, but
     // a future member must still earn its own row rather than inherit the stop pair's.
     agent_default("remote_agent_stop_commands"),
+    agent_default("remote_attachment_commands"),
     // The module is spawn-free by construction (no AppHandle, no ExecutionState, no
     // ChatService), but the default stays conservative: a future member must earn a
     // narrower row rather than inherit one.
@@ -581,6 +582,14 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
             RiskClass::Read,
             NONE,
             "pure repository read of one coherent host-built MCP catalog snapshot; no provider readiness or catalog discovery carrier",
+        ),
+    },
+    CommandOverride {
+        command: "list_remote_message_attachments",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "audited metadata-only attachment repository read; propagates read errors and projects filename, MIME type, size, and identity while omitting the host file path",
         ),
     },
     CommandOverride {

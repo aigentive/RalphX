@@ -979,6 +979,7 @@ interface ChatMessageListProps {
   onLoadOlderMessages?: (() => void | Promise<void>) | undefined;
   initialPaintCoverKey?: string | null | undefined;
   onInitialPaintReady?: ((key: string) => void) | undefined;
+  attachmentMetadataReadAvailable?: boolean;
 }
 
 // ============================================================================
@@ -1016,6 +1017,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       onLoadOlderMessages,
       initialPaintCoverKey = null,
       onInitialPaintReady,
+      attachmentMetadataReadAvailable = true,
     },
     ref
   ) {
@@ -1290,6 +1292,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
 
     const { data: attachmentResult } = useMessageAttachments(messages, conversationId, {
       enabled: !shouldShowInitialPaintCover,
+      metadataReadAvailable: attachmentMetadataReadAvailable,
     });
     const attachmentsMap = attachmentResult?.attachments;
     const unavailableAttachmentMessageIds = attachmentResult?.unavailableMessageIds;
