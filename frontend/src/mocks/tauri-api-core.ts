@@ -27,6 +27,7 @@ import {
   mockListConversationsPage,
   mockPublishAgentConversationWorkspace,
   mockReconcileAgentConversationWorkspacePublication,
+  mockSendAgentMessage,
   mockSetAgentConversationMuted,
   mockStartAgentConversation,
   mockSwitchAgentConversationMode,
@@ -2882,6 +2883,39 @@ const commandHandlers: Record<
         queued_as_pending: result.sendResult.queuedAsPending,
         queued_message_id: result.sendResult.queuedMessageId,
       },
+    };
+  },
+  send_agent_message: async (args) => {
+    const input = args.input as {
+      contextType: ContextType;
+      contextId: string;
+      content: string;
+      attachmentIds?: string[];
+      conversationId?: string;
+      providerHarness?: string;
+      modelOverride?: string;
+      logicalEffort?: string;
+    };
+    const result = await mockSendAgentMessage(
+      input.contextType,
+      input.contextId,
+      input.content,
+      input.attachmentIds,
+      undefined,
+      {
+        ...(input.conversationId ? { conversationId: input.conversationId } : {}),
+        ...(input.providerHarness ? { providerHarness: input.providerHarness } : {}),
+        ...(input.modelOverride ? { modelId: input.modelOverride } : {}),
+        ...(input.logicalEffort ? { logicalEffort: input.logicalEffort } : {}),
+      },
+    );
+    return {
+      conversation_id: result.conversationId,
+      agent_run_id: result.agentRunId,
+      is_new_conversation: result.isNewConversation,
+      was_queued: result.wasQueued,
+      queued_as_pending: result.queuedAsPending,
+      queued_message_id: result.queuedMessageId,
     };
   },
   switch_agent_conversation_mode: async (args) => {

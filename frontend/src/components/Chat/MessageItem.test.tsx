@@ -263,6 +263,27 @@ describe("MessageItem - Attachment Integration", () => {
     expect(screen.queryByText(/Second thought/)).not.toBeInTheDocument();
   });
 
+  it("forwards the clicked thinking toggle as the scroll anchor", async () => {
+    const user = userEvent.setup();
+    const onToggleContentThinkingGroup = vi.fn();
+    renderMessageItem(
+      <MessageItem
+        {...makeMessageItemProps({ role: "assistant", content: "" })}
+        contentBlocks={[{ type: "thinking", text: "Anchored thought" }]}
+        contentThinkingGroupKeyPrefix="message-1"
+        onToggleContentThinkingGroup={onToggleContentThinkingGroup}
+      />,
+    );
+
+    const toggle = screen.getByTestId("thinking-group-toggle");
+    await user.click(toggle);
+
+    expect(onToggleContentThinkingGroup).toHaveBeenCalledWith(
+      "message-1:content-thinking-group:0",
+      toggle,
+    );
+  });
+
   it("keeps thinking adjacent across hidden child tool calls but splits it at visible tools", () => {
     const childToolUseId = "child-thinking-tool";
     const hiddenChildContentBlocks = [
