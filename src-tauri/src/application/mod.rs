@@ -188,6 +188,7 @@ pub mod plan_approval_notification_service;
 #[cfg(test)]
 mod plan_approval_notification_service_tests;
 pub(crate) mod plan_artifact_approval;
+pub(crate) mod plan_artifact_edit;
 pub(crate) mod plan_complexity_assessment;
 pub(crate) mod plan_pr_description;
 pub mod plan_ranking;
@@ -217,6 +218,7 @@ pub mod recovery_queue;
 pub mod remote_environment_service;
 pub mod remote_event_relay;
 pub mod remote_plan_approval_intent;
+pub mod remote_plan_edit_intent;
 pub mod remote_finalize_decision_intent;
 pub mod remote_resume_intent;
 pub mod resume_validator;
@@ -247,6 +249,8 @@ mod standalone_workspace_tests;
 pub mod startup_background;
 #[cfg(test)]
 mod startup_remote_plan_tests;
+#[cfg(test)]
+mod startup_remote_plan_edit_tests;
 #[cfg(test)]
 mod startup_remote_finalize_tests;
 #[cfg(test)]

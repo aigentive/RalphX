@@ -1069,7 +1069,8 @@ fn detector_b_is_calibrated_and_floor_enforced() {
         // 578 -> 580: remote ideation finalize-decision twin plus its poll read (Wave B2b),
         // same shape through the `remote-finalize-decision` surface; the host-owned dispatcher
         // is the only caller of the re-homed apply seam.
-        580,
+        // 580 -> 582: remote plan-artifact edit intent plus its poll read (Wave B2c).
+        582,
         "review the detector against the full command census"
     );
     let flagged = spawn_triggering_writers(
@@ -7572,3 +7573,4 @@ fn zz_temp_probe_loop_ids() {
         }
     }
 }
+

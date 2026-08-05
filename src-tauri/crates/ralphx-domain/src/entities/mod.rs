@@ -60,6 +60,7 @@ pub mod remote_conversation_start_request;
 pub mod remote_request_dedup;
 pub mod remote_plan_approval_request;
 pub mod remote_finalize_decision_request;
+pub mod remote_plan_edit_request;
 pub mod remote_resume_request;
 pub mod research;
 pub mod review;
@@ -200,6 +201,7 @@ pub use remote_plan_approval_request::{RemotePlanApprovalRequest, RemotePlanAppr
 pub use remote_finalize_decision_request::{
     RemoteFinalizeDecision, RemoteFinalizeDecisionRequest, RemoteFinalizeDecisionRequestStatus,
 };
+pub use remote_plan_edit_request::{RemotePlanEditRequest, RemotePlanEditRequestStatus};
 pub use artifact::{
     Artifact, ArtifactBucket, ArtifactBucketId, ArtifactContent, ArtifactId, ArtifactMetadata,
     ArtifactRelation, ArtifactRelationId, ArtifactRelationType, ArtifactType,

@@ -1,7 +1,7 @@
 use super::remote_plan_commands::*;
 use crate::application::AppState;
 use crate::domain::entities::{
-    IdeationSession, IdeationSessionFlow, IdeationSessionStatus, ProjectId,
+    Artifact, ArtifactType, IdeationSession, IdeationSessionFlow, IdeationSessionStatus, ProjectId,
 };
 
 async fn planning_session(state: &AppState) -> IdeationSession {
@@ -13,6 +13,68 @@ async fn planning_session(state: &AppState) -> IdeationSession {
         .create(session)
         .await
         .expect("seed session")
+}
+
+#[tokio::test]
+async fn remote_plan_edit_request_rejects_version_drift_and_deduplicates_only_identical_edits() {
+    let state = AppState::new_sqlite_test();
+    let session = planning_session(&state).await;
+    let artifact = state
+        .artifact_repo
+        .create(Artifact::new_inline(
+            "Plan",
+            ArtifactType::Specification,
+            "old",
+            "test",
+        ))
+        .await
+        .expect("artifact");
+    state
+        .ideation_session_repo
+        .update_plan_artifact_id(&session.id, Some(artifact.id.to_string()))
+        .await
+        .expect("link");
+    let make = |content: &str, expected_version| RequestRemotePlanEditInput {
+        artifact_id: artifact.id.to_string(),
+        content: content.to_string(),
+        expected_version,
+    };
+    assert_eq!(
+        request_remote_plan_edit_for_state(&state, make("new", artifact.metadata.version + 1))
+            .await
+            .expect_err("stale token"),
+        REMOTE_PLAN_EDIT_VERSION_CONFLICT
+    );
+    assert!(
+        state
+            .remote_plan_edit_request_repo
+            .find_unsettled_for_artifact(artifact.id.as_str())
+            .await
+            .expect("read")
+            .is_none(),
+        "validation must persist last"
+    );
+    let first = request_remote_plan_edit_for_state(&state, make("new", artifact.metadata.version))
+        .await
+        .expect("persist");
+    let duplicate =
+        request_remote_plan_edit_for_state(&state, make("new", artifact.metadata.version))
+            .await
+            .expect("dedupe");
+    assert_eq!(first.request_id, duplicate.request_id);
+    assert!(duplicate.deduplicated);
+    assert_eq!(
+        request_remote_plan_edit_for_state(&state, make("different", artifact.metadata.version))
+            .await
+            .expect_err("conflicting content"),
+        REMOTE_PLAN_EDIT_AUTHORITY_CHANGED
+    );
+    assert_eq!(
+        get_remote_plan_edit_request_for_state(&state, "missing".into())
+            .await
+            .expect_err("missing poll"),
+        REMOTE_PLAN_EDIT_REQUEST_NOT_FOUND
+    );
 }
 fn input(session: &IdeationSession, artifact: &str) -> RequestRemotePlanApprovalInput {
     RequestRemotePlanApprovalInput {

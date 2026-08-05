@@ -1357,6 +1357,13 @@ pub(crate) fn spawn_remote_resume_dispatchers(
         {
             tracing::error!(%error, "remote finalize-decision stale sweep failed");
         }
+        if let Err(error) = state
+            .remote_plan_edit_request_repo
+            .fail_stale(cutoff, now)
+            .await
+        {
+            tracing::error!(%error, "remote plan-edit stale sweep failed");
+        }
         let mut interval = tokio::time::interval(Duration::from_secs(2));
         interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {
@@ -1378,6 +1385,9 @@ pub(crate) fn spawn_remote_resume_dispatchers(
             if let Err(error) = dispatch_one_remote_plan_approval(&state).await {
                 tracing::warn!(%error, "remote plan-approval dispatch failed");
             }
+            if let Err(error) = dispatch_one_remote_plan_edit(&state).await {
+                tracing::warn!(%error, "remote plan-edit dispatch failed");
+            }
             if let Err(error) =
                 dispatch_one_remote_finalize_decision(&state, &execution_state, Some(&app_handle))
                     .await
@@ -1386,6 +1396,80 @@ pub(crate) fn spawn_remote_resume_dispatchers(
             }
         }
     });
+}
+
+pub(crate) async fn dispatch_one_remote_plan_edit(state: &AppState) -> AppResult<()> {
+    use crate::application::remote_plan_edit_intent::*;
+    use crate::infrastructure::sqlite::SqliteArtifactRepository as ArtifactRepo;
+    let Some(row) = state
+        .remote_plan_edit_request_repo
+        .claim_pending(chrono::Utc::now())
+        .await?
+    else {
+        return Ok(());
+    };
+    let id = row.artifact_id.clone();
+    let artifact = state
+        .db
+        .run(move |conn| {
+            let latest = ArtifactRepo::resolve_latest_sync(conn, &id)?;
+            ArtifactRepo::get_by_id_sync(conn, &latest)?
+                .ok_or_else(|| crate::error::AppError::NotFound(latest))
+        })
+        .await?;
+    if artifact.metadata.version != row.expected_version {
+        state
+            .remote_plan_edit_request_repo
+            .fail(
+                &row.id,
+                REMOTE_PLAN_EDIT_VERSION_CONFLICT,
+                chrono::Utc::now(),
+            )
+            .await?;
+        return Ok(());
+    }
+    match crate::application::plan_artifact_edit::update_plan_artifact_for_state(
+        state,
+        row.artifact_id,
+        row.content,
+        None,
+        None,
+    )
+    .await
+    {
+        Ok(result) => {
+            state
+                .remote_plan_edit_request_repo
+                .complete(
+                    &row.id,
+                    serialize_remote_dispatch_result_or_null(
+                        result.artifact,
+                        "plan artifact edit",
+                        &row.id,
+                    ),
+                    chrono::Utc::now(),
+                )
+                .await?
+        }
+        Err(crate::error::AppError::Conflict(_)) => {
+            state
+                .remote_plan_edit_request_repo
+                .fail(&row.id, REMOTE_PLAN_EDIT_FROZEN, chrono::Utc::now())
+                .await?
+        }
+        Err(
+            error @ (crate::error::AppError::Database(_)
+            | crate::error::AppError::Infrastructure(_)),
+        ) => return Err(error),
+        Err(error) => {
+            tracing::warn!(request_id=%row.id,%error,"remote plan edit host seam failed");
+            state
+                .remote_plan_edit_request_repo
+                .fail(&row.id, REMOTE_PLAN_EDIT_HOST_FAILED, chrono::Utc::now())
+                .await?
+        }
+    }
+    Ok(())
 }
 
 pub(crate) async fn dispatch_one_remote_finalize_decision(

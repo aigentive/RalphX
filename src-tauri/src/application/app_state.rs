@@ -81,11 +81,11 @@ use crate::domain::repositories::{
     RemoteConversationMessageRequestRepository, RemoteConversationModeSwitchRequestRepository,
     RemoteConversationStartRequestRepository, RemoteExecutionResumeRequestRepository,
     RemoteFinalizeDecisionRequestRepository, RemotePlanApprovalRequestRepository,
-    RemoteTaskActionRequestRepository, ReviewRepository, ReviewSettingsRepository,
-    SessionLinkRepository, TaskDependencyRepository, TaskProposalRepository, TaskQARepository,
-    TaskRepository, TaskStepRepository, TicketCanonicalBranchRepository,
-    UiFeatureFlagOverridesRepository, ValidationRunRepository, WebhookRegistrationRepository,
-    WorkflowRepository, WorkspaceReviewRuntimeSettingsRepository,
+    RemotePlanEditRequestRepository, RemoteTaskActionRequestRepository, ReviewRepository,
+    ReviewSettingsRepository, SessionLinkRepository, TaskDependencyRepository,
+    TaskProposalRepository, TaskQARepository, TaskRepository, TaskStepRepository,
+    TicketCanonicalBranchRepository, UiFeatureFlagOverridesRepository, ValidationRunRepository,
+    WebhookRegistrationRepository, WorkflowRepository, WorkspaceReviewRuntimeSettingsRepository,
 };
 use crate::domain::services::{
     GithubServiceTrait, MemoryRunningAgentRegistry, MessageQueue, RunningAgentRegistry,
@@ -121,10 +121,11 @@ use crate::infrastructure::memory::{
     MemoryRemoteConversationModeSwitchRequestRepository,
     MemoryRemoteConversationStartRequestRepository, MemoryRemoteExecutionResumeRequestRepository,
     MemoryRemoteFinalizeDecisionRequestRepository, MemoryRemotePlanApprovalRequestRepository,
-    MemoryRemoteTaskActionRequestRepository, MemoryReviewIssueRepository, MemoryReviewRepository,
-    MemoryReviewSettingsRepository, MemorySecretStore, MemorySessionLinkRepository,
-    MemoryTaskDependencyRepository, MemoryTaskProposalRepository, MemoryTaskQARepository,
-    MemoryTaskRepository, MemoryTaskStepRepository, MemoryTicketCanonicalBranchRepository,
+    MemoryRemotePlanEditRequestRepository, MemoryRemoteTaskActionRequestRepository,
+    MemoryReviewIssueRepository, MemoryReviewRepository, MemoryReviewSettingsRepository,
+    MemorySecretStore, MemorySessionLinkRepository, MemoryTaskDependencyRepository,
+    MemoryTaskProposalRepository, MemoryTaskQARepository, MemoryTaskRepository,
+    MemoryTaskStepRepository, MemoryTicketCanonicalBranchRepository,
     MemoryTicketingStatusCatalogRepository, MemoryUiFeatureFlagOverridesRepository,
     MemoryValidationRunRepository, MemoryWebhookRegistrationRepository, MemoryWorkflowRepository,
     MemoryWorkspaceReviewRuntimeSettingsRepository,
@@ -163,10 +164,11 @@ use crate::infrastructure::sqlite::{
     SqliteRemoteConversationModeSwitchRequestRepository,
     SqliteRemoteConversationStartRequestRepository, SqliteRemoteExecutionResumeRequestRepository,
     SqliteRemoteFinalizeDecisionRequestRepository, SqliteRemotePlanApprovalRequestRepository,
-    SqliteRemoteTaskActionRequestRepository, SqliteReviewIssueRepository, SqliteReviewRepository,
-    SqliteReviewSettingsRepository, SqliteRunningAgentRegistry, SqliteSessionLinkRepository,
-    SqliteTaskDependencyRepository, SqliteTaskProposalRepository, SqliteTaskQARepository,
-    SqliteTaskRepository, SqliteTaskStepRepository, SqliteTicketCanonicalBranchRepository,
+    SqliteRemotePlanEditRequestRepository, SqliteRemoteTaskActionRequestRepository,
+    SqliteReviewIssueRepository, SqliteReviewRepository, SqliteReviewSettingsRepository,
+    SqliteRunningAgentRegistry, SqliteSessionLinkRepository, SqliteTaskDependencyRepository,
+    SqliteTaskProposalRepository, SqliteTaskQARepository, SqliteTaskRepository,
+    SqliteTaskStepRepository, SqliteTicketCanonicalBranchRepository,
     SqliteTicketingStatusCatalogRepository, SqliteUiFeatureFlagOverridesRepository,
     SqliteValidationRunRepository, SqliteWebhookRegistrationRepository, SqliteWorkflowRepository,
     SqliteWorkspaceReviewRuntimeSettingsRepository,
@@ -347,6 +349,7 @@ pub struct AppState {
         Arc<dyn RemoteExecutionResumeRequestRepository>,
     pub remote_plan_approval_request_repo: Arc<dyn RemotePlanApprovalRequestRepository>,
     pub remote_finalize_decision_request_repo: Arc<dyn RemoteFinalizeDecisionRequestRepository>,
+    pub remote_plan_edit_request_repo: Arc<dyn RemotePlanEditRequestRepository>,
     pub remote_task_action_request_repo: Arc<dyn RemoteTaskActionRequestRepository>,
     /// Per-ticket canonical branch that all conversations for a ticket base off of
     pub ticket_canonical_branch_repo: Arc<dyn TicketCanonicalBranchRepository>,
@@ -1783,6 +1786,9 @@ impl AppState {
                     &shared_conn,
                 )),
             ),
+            remote_plan_edit_request_repo: Arc::new(
+                SqliteRemotePlanEditRequestRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
             remote_task_action_request_repo: Arc::new(
                 SqliteRemoteTaskActionRequestRepository::from_shared(Arc::clone(&shared_conn)),
             ),
@@ -2095,6 +2101,9 @@ impl AppState {
             remote_finalize_decision_request_repo: Arc::new(
                 MemoryRemoteFinalizeDecisionRequestRepository::default(),
             ),
+            remote_plan_edit_request_repo: Arc::new(
+                MemoryRemotePlanEditRequestRepository::default(),
+            ),
             remote_task_action_request_repo: Arc::new(
                 MemoryRemoteTaskActionRequestRepository::default(),
             ),
@@ -2325,6 +2334,9 @@ impl AppState {
             ),
             remote_finalize_decision_request_repo: Arc::new(
                 MemoryRemoteFinalizeDecisionRequestRepository::default(),
+            ),
+            remote_plan_edit_request_repo: Arc::new(
+                MemoryRemotePlanEditRequestRepository::default(),
             ),
             remote_task_action_request_repo: Arc::new(
                 MemoryRemoteTaskActionRequestRepository::default(),
@@ -2581,6 +2593,9 @@ impl AppState {
                     &shared_conn,
                 )),
             ),
+            remote_plan_edit_request_repo: Arc::new(
+                SqliteRemotePlanEditRequestRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
             remote_task_action_request_repo: Arc::new(
                 SqliteRemoteTaskActionRequestRepository::from_shared(Arc::clone(&shared_conn)),
             ),
@@ -2793,6 +2808,9 @@ impl AppState {
             ),
             remote_finalize_decision_request_repo: Arc::new(
                 MemoryRemoteFinalizeDecisionRequestRepository::default(),
+            ),
+            remote_plan_edit_request_repo: Arc::new(
+                MemoryRemotePlanEditRequestRepository::default(),
             ),
             remote_task_action_request_repo: Arc::new(
                 MemoryRemoteTaskActionRequestRepository::default(),

@@ -1,6 +1,5 @@
 use super::*;
 use rusqlite::OptionalExtension;
-use std::collections::HashSet;
 
 pub(super) const CALLER_SESSION_ID_HEADER: &str = "x-ralphx-caller-session-id";
 pub(super) const PLAN_APPROVAL_DRAFT: &str = "draft";
@@ -215,26 +214,6 @@ pub(super) fn resolve_caller_session_id(
         .or_else(|| body_caller_session_id.map(ToOwned::to_owned))
 }
 
-#[derive(Debug, Clone)]
-pub(super) struct ArtifactMutationAuthority {
-    pub(super) agent_run_id: String,
-    pub(super) conversation_id: String,
-}
-
-impl ArtifactMutationAuthority {
-    fn plan_approval_authority(
-        &self,
-    ) -> Option<crate::application::plan_approval_notification_service::PlanApprovalPublishAuthority>
-    {
-        Some(
-            crate::application::plan_approval_notification_service::PlanApprovalPublishAuthority::new(
-                self.agent_run_id.parse().ok()?,
-                self.conversation_id.parse().ok()?,
-            ),
-        )
-    }
-}
-
 pub(super) fn resolve_artifact_mutation_authority(
     headers: &axum::http::HeaderMap,
 ) -> Option<ArtifactMutationAuthority> {
@@ -259,7 +238,13 @@ pub(super) async fn reconcile_plan_notifications(
     sessions: &[IdeationSession],
     mutation_authority: Option<&ArtifactMutationAuthority>,
 ) {
-    let publish_authority = mutation_authority.and_then(|value| value.plan_approval_authority());
+    let publish_authority = mutation_authority.and_then(|value| {
+        crate::application::plan_approval_notification_service::PlanApprovalPublishAuthority::new(
+            value.agent_run_id.parse().ok()?,
+            value.conversation_id.parse().ok()?,
+        )
+        .into()
+    });
     crate::application::plan_approval_notification_service::reconcile_plan_approval_on_publish(
         &state.app_state,
         None,
@@ -301,258 +286,4 @@ pub(super) fn delete_current_bundle_relation_sync(
         rusqlite::params![bundle.overview_id.as_str(), blueprint_id.as_str()],
     )?;
     Ok(())
-}
-
-pub(super) fn retarget_verification_authority_sync(
-    conn: &Connection,
-    authority: Option<&ArtifactMutationAuthority>,
-    session_id: &str,
-    old_target: Option<&str>,
-    updated_session: &IdeationSession,
-) -> Result<(), AppError> {
-    let (Some(authority), Some(old_target)) = (authority, old_target) else {
-        return Ok(());
-    };
-    let bundle = updated_session
-        .plan_artifact_bundle()
-        .ok_or_else(|| AppError::Validation("Plan bundle became incomplete".to_string()))?;
-    let new_target = bundle.action_target_id();
-    let retargeted = conn.execute(
-        "UPDATE agent_runs
-         SET action_target_id = ?1
-         WHERE id = ?2
-           AND conversation_id = ?3
-           AND status = 'running'
-           AND action_kind = 'verify_plan'
-           AND action_context_id = ?4
-           AND action_target_id = ?5",
-        rusqlite::params![
-            new_target,
-            authority.agent_run_id,
-            authority.conversation_id,
-            session_id,
-            old_target,
-        ],
-    )?;
-    if retargeted == 1 {
-        conn.execute(
-            "UPDATE deferred_plan_approval_notifications
-             SET artifact_id = ?1, plan_target_id = ?2,
-                 created_at = datetime('now')
-             WHERE session_id = ?3
-               AND COALESCE(plan_target_id, artifact_id) = ?4",
-            rusqlite::params![
-                bundle.overview_id.as_str(),
-                new_target,
-                session_id,
-                old_target,
-            ],
-        )?;
-    }
-    Ok(())
-}
-
-#[doc(hidden)]
-pub async fn check_verification_freeze(
-    owning_sessions: &[IdeationSession],
-    caller_session_id: Option<&str>,
-    running_registry: &dyn RunningAgentRegistry,
-    session_repo: &dyn IdeationSessionRepository,
-) -> Result<(), AppError> {
-    for session in owning_sessions {
-        let verification_in_progress = session_repo
-            .get_verification_status(&session.id)
-            .await?
-            .map(|(_, in_progress)| in_progress)
-            .unwrap_or(session.verification_in_progress);
-
-        if !verification_in_progress {
-            continue;
-        }
-
-        let children = session_repo.get_verification_children(&session.id).await?;
-        for child in &children {
-            if Some(child.id.as_str()) == caller_session_id {
-                continue;
-            }
-
-            let running_key = RunningAgentKey::new("ideation", child.id.as_str());
-            if running_registry.is_running(&running_key).await {
-                return Err(AppError::Conflict(format!(
-                    "Plan is frozen — verification agent is actively working \
-                     (child session: {}). Wait for the verification round to \
-                     complete before editing.",
-                    child.id.as_str()
-                )));
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Shared core for both update_plan_artifact and edit_plan_artifact.
-///
-/// Takes the resolved artifact + new content, creates a new version,
-/// batch-updates sessions/proposals, resets verification, and returns
-/// data needed for event emission.
-///
-/// This helper handles only the transaction. Both update and edit handlers
-/// leave any later automatic verification to the acceptance boundary. The transaction handles:
-///   - Create new version (version + 1, previous_version_id = old.id)
-///   - Batch-update sessions pointing to old → new
-///   - Batch-update proposals (preserve plan_version_at_creation)
-///   - Conditional verification reset (CAS: only if in_progress=0)
-///
-/// The caller is responsible for emitting events:
-///   - plan_artifact:updated { previous_artifact_id: old.id, new_artifact_id: new.id, session_id }
-///   - plan:proposals_may_need_update (only if linked proposals exist)
-///
-/// Returns a tuple containing:
-///   - created artifact, old artifact id, owning sessions, linked proposal ids,
-///     and legacy-reset result.
-pub(super) fn finalize_plan_update(
-    conn: &Connection,
-    old_artifact: &Artifact,
-    new_content: String,
-    authority: Option<&ArtifactMutationAuthority>,
-) -> Result<(Artifact, String, Vec<IdeationSession>, Vec<String>, bool), AppError> {
-    let old_id = old_artifact.id.as_str().to_string();
-
-    let new_artifact = Artifact {
-        id: ArtifactId::new(),
-        artifact_type: old_artifact.artifact_type.clone(),
-        name: old_artifact.name.clone(),
-        content: ArtifactContent::Inline { text: new_content },
-        metadata: ArtifactMetadata::new(&old_artifact.metadata.created_by)
-            .with_version(old_artifact.metadata.version + 1),
-        derived_from: vec![],
-        bucket_id: old_artifact.bucket_id.clone(),
-        archived_at: None,
-    };
-    let created = ArtifactRepo::create_with_previous_version_sync(conn, new_artifact, &old_id)?;
-
-    let mut owning_sessions = SessionRepo::get_by_plan_artifact_id_sync(conn, &old_id)?;
-    let is_blueprint = owning_sessions.is_empty();
-    if is_blueprint {
-        owning_sessions = SessionRepo::get_by_plan_blueprint_artifact_id_sync(conn, &old_id)?;
-    }
-    if owning_sessions
-        .iter()
-        .any(|session| session.plan_contract_version == 1)
-    {
-        return Err(AppError::Validation(
-            "Legacy plans cannot be revised one document at a time. Generate the overview and blueprint together in the planning conversation."
-                .to_string(),
-        ));
-    }
-    let old_targets: Vec<(String, String)> = owning_sessions
-        .iter()
-        .filter_map(|session| {
-            session
-                .plan_artifact_bundle()
-                .map(|bundle| (session.id.to_string(), bundle.action_target_id()))
-        })
-        .collect();
-    let session_ids: Vec<String> = owning_sessions
-        .iter()
-        .map(|s| s.id.as_str().to_string())
-        .collect();
-    if is_blueprint {
-        for session_id in &session_ids {
-            SessionRepo::update_plan_blueprint_artifact_id_sync(
-                conn,
-                session_id,
-                created.id.as_str(),
-            )?;
-        }
-    } else {
-        SessionRepo::batch_update_artifact_id_sync(conn, &session_ids, created.id.as_str())?;
-    }
-
-    let mut refreshed_relations = HashSet::new();
-    for session_id in &session_ids {
-        let updated_session = SessionRepo::get_by_id_sync(conn, session_id)?
-            .ok_or_else(|| AppError::NotFound(format!("Session {session_id} not found")))?;
-        let Some(bundle) = updated_session.plan_artifact_bundle() else {
-            continue;
-        };
-        if bundle.contract_version != 2 {
-            continue;
-        }
-        let relation_key = (
-            bundle.overview_id.to_string(),
-            bundle
-                .blueprint_id
-                .as_ref()
-                .expect("complete v2 bundle has a blueprint")
-                .to_string(),
-        );
-        if !refreshed_relations.insert(relation_key.clone()) {
-            continue;
-        }
-        conn.execute(
-            "DELETE FROM artifact_relations
-             WHERE relation_type = 'related_to'
-               AND ((from_artifact_id = ?1 AND to_artifact_id = ?2)
-                 OR (from_artifact_id = ?2 AND to_artifact_id = ?1))",
-            rusqlite::params![old_id, relation_key.0],
-        )?;
-        conn.execute(
-            "DELETE FROM artifact_relations
-             WHERE relation_type = 'related_to'
-               AND ((from_artifact_id = ?1 AND to_artifact_id = ?2)
-                 OR (from_artifact_id = ?2 AND to_artifact_id = ?1))",
-            rusqlite::params![old_id, relation_key.1],
-        )?;
-        ArtifactRepo::add_relation_sync(
-            conn,
-            ArtifactRelation::new(
-                ArtifactId::from_string(relation_key.0),
-                ArtifactId::from_string(relation_key.1),
-                ArtifactRelationType::RelatedTo,
-            ),
-        )?;
-    }
-
-    if let Some(authority) = authority {
-        for (session_id, old_target) in &old_targets {
-            let updated_session = SessionRepo::get_by_id_sync(conn, session_id)?
-                .ok_or_else(|| AppError::NotFound(format!("Session {session_id} not found")))?;
-            retarget_verification_authority_sync(
-                conn,
-                Some(authority),
-                session_id,
-                Some(old_target),
-                &updated_session,
-            )?;
-        }
-    }
-
-    let linked_proposals = if is_blueprint {
-        ProposalRepo::get_by_blueprint_artifact_id_sync(conn, &old_id)?
-    } else {
-        ProposalRepo::get_by_plan_artifact_id_sync(conn, &old_id)?
-    };
-    let linked_proposal_ids: Vec<String> =
-        linked_proposals.iter().map(|p| p.id.to_string()).collect();
-
-    if is_blueprint {
-        ProposalRepo::batch_update_blueprint_artifact_id_sync(conn, &old_id, created.id.as_str())?;
-    } else {
-        ProposalRepo::batch_update_artifact_id_sync(conn, &old_id, created.id.as_str())?;
-    }
-
-    let verification_reset = if let Some(session) = owning_sessions.first() {
-        SessionRepo::reset_verification_sync(conn, session.id.as_str())?
-    } else {
-        false
-    };
-
-    Ok((
-        created,
-        old_id,
-        owning_sessions,
-        linked_proposal_ids,
-        verification_reset,
-    ))
 }

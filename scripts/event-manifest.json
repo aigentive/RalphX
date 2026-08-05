@@ -1059,6 +1059,12 @@
     },
     {
       "name": "plan:proposals_may_need_update",
+      "file": "src-tauri/src/application/plan_artifact_edit.rs",
+      "line": 324,
+      "kind": "method"
+    },
+    {
+      "name": "plan:proposals_may_need_update",
       "file": "src-tauri/src/http_server/handlers/artifacts/events.rs",
       "line": 55,
       "kind": "wrapper"
@@ -1074,6 +1080,12 @@
       "file": "src-tauri/src/http_server/handlers/artifacts/create.rs",
       "line": 164,
       "kind": "wrapper"
+    },
+    {
+      "name": "plan_artifact:updated",
+      "file": "src-tauri/src/application/plan_artifact_edit.rs",
+      "line": 322,
+      "kind": "method"
     },
     {
       "name": "plan_artifact:updated",

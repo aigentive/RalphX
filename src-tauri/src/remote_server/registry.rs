@@ -1421,6 +1421,22 @@ crate::remote_commands! {
         call: async,
         result: fallible,
     },
+    "request_remote_plan_artifact_edit"
+        => crate::commands::remote_plan_commands::request_remote_plan_artifact_edit {
+        class: AgentControl,
+        caps: [MutatesAgentConsumedContent],
+        params: [(arg input: crate::commands::remote_plan_commands::RequestRemotePlanEditInput), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_remote_plan_edit_request"
+        => crate::commands::remote_plan_commands::get_remote_plan_edit_request {
+        class: Read,
+        caps: [],
+        params: [(arg request_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
     "request_remote_ideation_finalize_decision"
         => crate::commands::remote_ideation_commands::request_remote_ideation_finalize_decision {
         class: AgentControl,
