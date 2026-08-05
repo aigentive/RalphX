@@ -153,6 +153,41 @@ async fn coordinator_team_state_keeps_the_session_header_when_no_members_are_liv
 }
 
 #[tokio::test]
+async fn coordinator_team_state_renders_each_live_member_lifecycle_status() {
+    let conversation_id = ChatConversationId::from_string("lifecycle-coordinator");
+    let team_repo = Arc::new(MemoryTeamRepository::new());
+    team_repo
+        .ensure_session(session(conversation_id.clone()))
+        .await
+        .expect("team should persist");
+    let cases = [
+        (TeamMemberStatus::Provisioning, "provisioning"),
+        (TeamMemberStatus::Idle, "idle"),
+        (TeamMemberStatus::AwaitingInput, "awaiting_input"),
+        (TeamMemberStatus::AwaitingApproval, "awaiting_approval"),
+        (TeamMemberStatus::Stopping, "stopping"),
+        (TeamMemberStatus::Suspended, "suspended"),
+        (TeamMemberStatus::Failed, "failed"),
+    ];
+    for (index, (status, _)) in cases.iter().enumerate() {
+        team_repo
+            .create_member(member(index, *status))
+            .await
+            .expect("member should persist");
+    }
+
+    let rendered = compose_agent_runtime_context(&scope(&conversation_id), &deps(team_repo))
+        .await
+        .expect("live member states should render");
+
+    for (index, (_, expected_status)) in cases.iter().enumerate() {
+        assert!(rendered.contains(&format!(
+            "name=\"Member {index}\" status=\"{expected_status}\""
+        )));
+    }
+}
+
+#[tokio::test]
 async fn team_state_is_omitted_for_non_coordinator_conversations() {
     let conversation_id = ChatConversationId::from_string("coordinator");
     let team_repo = Arc::new(MemoryTeamRepository::new());
