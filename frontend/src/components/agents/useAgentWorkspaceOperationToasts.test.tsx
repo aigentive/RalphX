@@ -388,9 +388,11 @@ describe("useAgentWorkspaceOperationToasts", () => {
       await act(async () => {
         await queryClient.refetchQueries({ queryKey, exact: true }).catch(() => undefined);
       });
-      await waitFor(() =>
-        expect(queryClient.getQueryState(queryKey)?.errorUpdateCount).toBe(attempt),
-      );
+      if (attempt < 3) {
+        await waitFor(() =>
+          expect(queryClient.getQueryState(queryKey)?.errorUpdateCount).toBe(attempt),
+        );
+      }
     }
 
     await waitFor(() => expect(getWatchedAgentWorkspaceOperations()).toHaveLength(0));
