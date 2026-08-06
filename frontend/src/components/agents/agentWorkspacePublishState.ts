@@ -177,6 +177,8 @@ const HOLD_SUMMARIES = {
     "RalphX is waiting for GitHub to report new PR health evidence before retrying.",
   publish_redrive:
     "RalphX is resuming publication for the rebased branch.",
+  publication_effect_attention:
+    "RalphX pushed a repair but could not confirm it reached GitHub. Retry publication to make RalphX try again.",
 };
 
 export function getAgentWorkspacePrAutofixFingerprintSpendPresentation(
@@ -204,6 +206,17 @@ export function getAgentWorkspaceHoldPresentation(
   const operation = getAgentWorkspaceMaintenanceOperation(workspace);
   if (operation?.stage !== "held") {
     return null;
+  }
+  if (operation.holdReason === "publication_effect_attention") {
+    return {
+      agentStatus: "Nothing is running",
+      generationVerdict:
+        operation.summary ??
+        HOLD_SUMMARIES.publication_effect_attention,
+      title: "Repair paused — publish not confirmed",
+      waitingOnLabel: "Confirmation the push reached GitHub",
+      waitingOn: HOLD_SUMMARIES.publication_effect_attention,
+    };
   }
   const holdSummary = operation.holdReason
     ? HOLD_SUMMARIES[operation.holdReason]

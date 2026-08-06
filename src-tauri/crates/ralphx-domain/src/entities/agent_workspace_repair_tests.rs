@@ -109,6 +109,7 @@ repair_enum_wire_contract_test!(repair_hold_reason_serde_matches_wire_contract, 
     AgentWorkspaceRepairOperationHoldReason::BaseStale => "base_stale",
     AgentWorkspaceRepairOperationHoldReason::HealthEvidence => "health_evidence",
     AgentWorkspaceRepairOperationHoldReason::PublishRedrive => "publish_redrive",
+    AgentWorkspaceRepairOperationHoldReason::PublicationEffectAttention => "publication_effect_attention",
 ]);
 
 #[test]
@@ -296,6 +297,56 @@ fn repair_operation_snapshots_project_every_terminal_and_active_stage() {
 }
 
 #[test]
+fn continuation_phase_publication_effect_attention_marker_holds_snapshot() {
+    let now = Utc::now();
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        conversation_id(),
+        AgentWorkspaceRepairSource::Publish,
+        AgentWorkspaceRepairContinuation::Publish,
+        "origin/main",
+        false,
+        true,
+        false,
+        None,
+        now,
+    );
+
+    for phase in [
+        AgentWorkspaceRepairPhase::ContinuationPending,
+        AgentWorkspaceRepairPhase::Continuing,
+    ] {
+        attempt.phase = phase;
+        attempt.pending_reasons =
+            vec![CONTINUATION_OPEN_EFFECT_ATTENTION_PENDING_REASON.to_string()];
+
+        let snapshot = attempt.operation_snapshot();
+        assert_eq!(
+            snapshot.stage,
+            AgentWorkspaceRepairOperationStage::Held,
+            "{phase}"
+        );
+        assert_eq!(
+            snapshot.status,
+            AgentWorkspaceRepairOperationStatus::Held,
+            "{phase}"
+        );
+        assert_eq!(
+            snapshot.hold_reason,
+            Some(AgentWorkspaceRepairOperationHoldReason::PublicationEffectAttention),
+            "{phase}"
+        );
+        assert!(!snapshot.automatic_continuation, "{phase}");
+    }
+
+    assert_eq!(
+        AgentWorkspaceRepairOperationHoldReason::PublicationEffectAttention
+            .as_str()
+            .parse(),
+        Ok(AgentWorkspaceRepairOperationHoldReason::PublicationEffectAttention)
+    );
+}
+
+#[test]
 fn stationary_ready_repair_holds_project_distinct_typed_identities() {
     let now = Utc::now();
     let mut attempt = AgentWorkspaceRepairAttempt::new(
@@ -431,6 +482,72 @@ fn ready_blocked_and_publish_redrive_keep_their_non_hold_identity() {
     assert_eq!(blocked.stage, AgentWorkspaceRepairOperationStage::Blocked);
     assert_eq!(blocked.status, AgentWorkspaceRepairOperationStatus::Blocked);
     assert_eq!(blocked.hold_reason, None);
+}
+
+#[test]
+fn remote_matches_recorded_precondition_covers_absent_and_matching_oid_shapes() {
+    let now = Utc::now();
+    let mut effect = AgentWorkspaceRepairEffect::new(
+        AgentWorkspaceRepairAttemptId::from_string("repair-attempt-1"),
+        AgentWorkspaceRepairEffectKind::PushBranch,
+        "push:repair-attempt-1",
+        now,
+    );
+
+    effect.expected_remote_absent = true;
+    effect.expected_remote_oid = None;
+    assert!(effect.remote_matches_recorded_precondition(None));
+    assert!(!effect.remote_matches_recorded_precondition(Some("abc123")));
+
+    effect.expected_remote_absent = false;
+    effect.expected_remote_oid = Some("abc123".to_string());
+    assert!(effect.remote_matches_recorded_precondition(Some("abc123")));
+    assert!(!effect.remote_matches_recorded_precondition(Some("def456")));
+    assert!(!effect.remote_matches_recorded_precondition(None));
+}
+
+#[test]
+fn has_exact_remote_oid_proof_requires_unambiguous_intended_and_expected_shapes() {
+    let now = Utc::now();
+    let mut effect = AgentWorkspaceRepairEffect::new(
+        AgentWorkspaceRepairAttemptId::from_string("repair-attempt-1"),
+        AgentWorkspaceRepairEffectKind::PushBranch,
+        "push:repair-attempt-1",
+        now,
+    );
+
+    assert!(!effect.has_exact_remote_oid_proof(), "no intended OID yet");
+
+    effect.intended_head_oid = Some("head-oid".to_string());
+    assert!(
+        !effect.has_exact_remote_oid_proof(),
+        "neither expected_remote_absent nor expected_remote_oid is set"
+    );
+
+    effect.expected_remote_absent = true;
+    assert!(effect.has_exact_remote_oid_proof());
+
+    effect.expected_remote_oid = Some("origin-oid".to_string());
+    assert!(
+        !effect.has_exact_remote_oid_proof(),
+        "expected_remote_absent with an expected_remote_oid is ambiguous"
+    );
+
+    effect.expected_remote_absent = false;
+    assert!(effect.has_exact_remote_oid_proof());
+
+    effect.expected_remote_oid = Some("   ".to_string());
+    assert!(
+        !effect.has_exact_remote_oid_proof(),
+        "whitespace-only expected_remote_oid is treated as missing"
+    );
+
+    effect.expected_remote_oid = Some("origin-oid".to_string());
+    effect.intended_head_oid = Some("   ".to_string());
+    assert!(
+        !effect.has_exact_remote_oid_proof(),
+        "whitespace-only intended_head_oid is treated as missing"
+    );
 }
 
 #[test]

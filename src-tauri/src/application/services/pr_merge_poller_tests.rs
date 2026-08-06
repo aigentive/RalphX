@@ -21,6 +21,10 @@ use super::{AgentWorkspacePrPollerStart, PrPollerRegistry, RateLimitState};
 use crate::application::agent_conversation_workspace::{
     agent_conversation_branch_name, resolve_agent_conversation_workspace_path,
 };
+use crate::application::agent_workspace_publish_recovery::{
+    CONTINUATION_OPEN_EFFECT_ATTENTION_REASON, CONTINUATION_OPEN_EFFECT_EVIDENCE_REASON_PREFIX,
+    CONTINUATION_OPEN_EFFECT_REARMED_STEP,
+};
 use crate::application::agent_workspace_publish_repair_state::{
     agent_workspace_repair_is_base_stale_held, agent_workspace_repair_is_ci_held,
     current_agent_workspace_repair_claim_for_completion,
@@ -34,7 +38,9 @@ use crate::application::chat_service::MockChatService;
 use crate::application::git_service::GitService;
 use crate::application::interactive_notification_producer::pr_review_notification_key;
 use crate::application::notification_service::{NoopNotificationEventEmitter, NotificationService};
+use crate::application::publish_resilience::try_acquire_agent_workspace_repair_publish_continuation_guard;
 use crate::application::AppState;
+use crate::application::ChatService;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort};
 use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus as DbPrStatus};
 use crate::domain::entities::{
@@ -10789,4 +10795,826 @@ impl AgentWorkspaceRepairRepository for LookupErrorRepairRepository {
     {
         unreachable!()
     }
+}
+
+/// Test-only repository decorator that races a concurrent writer into the exact CAS window the
+/// evidence re-arm step uses, proving a CAS loser makes no write and returns `Ok(false)`.
+struct RaceEvidenceRearmCheckpointRepo {
+    inner: Arc<dyn AgentWorkspaceRepairRepository>,
+    race_next_evidence_marker: AtomicBool,
+}
+
+impl RaceEvidenceRearmCheckpointRepo {
+    fn new(inner: Arc<dyn AgentWorkspaceRepairRepository>) -> Self {
+        Self {
+            inner,
+            race_next_evidence_marker: AtomicBool::new(true),
+        }
+    }
+}
+
+#[async_trait]
+impl AgentWorkspaceRepairRepository for RaceEvidenceRearmCheckpointRepo {
+    async fn get_current_repair_attempt(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentWorkspaceRepairAttempt>> {
+        self.inner.get_current_repair_attempt(conversation_id).await
+    }
+
+    async fn get_latest_repair_attempt_for_conversation(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentWorkspaceRepairAttempt>> {
+        self.inner
+            .get_latest_repair_attempt_for_conversation(conversation_id)
+            .await
+    }
+
+    async fn get_repair_attempt(
+        &self,
+        attempt_id: &AgentWorkspaceRepairAttemptId,
+    ) -> AppResult<Option<AgentWorkspaceRepairAttempt>> {
+        self.inner.get_repair_attempt(attempt_id).await
+    }
+
+    async fn get_repair_attempt_for_run(
+        &self,
+        conversation_id: &ChatConversationId,
+        run_id: &crate::domain::entities::AgentRunId,
+    ) -> AppResult<Option<AgentWorkspaceRepairAttempt>> {
+        self.inner
+            .get_repair_attempt_for_run(conversation_id, run_id)
+            .await
+    }
+
+    async fn list_recoverable_repair_attempts(
+        &self,
+    ) -> AppResult<Vec<AgentWorkspaceRepairAttempt>> {
+        self.inner.list_recoverable_repair_attempts().await
+    }
+
+    async fn list_repair_attempts_for_conversation(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Vec<AgentWorkspaceRepairAttempt>> {
+        self.inner
+            .list_repair_attempts_for_conversation(conversation_id)
+            .await
+    }
+
+    async fn start_or_join_repair_attempt(
+        &self,
+        request: StartOrJoinAgentWorkspaceRepairAttempt,
+    ) -> AppResult<StartOrJoinAgentWorkspaceRepairAttemptOutcome> {
+        self.inner.start_or_join_repair_attempt(request).await
+    }
+
+    async fn bind_repair_attempt_run(
+        &self,
+        request: BindAgentWorkspaceRepairAttemptRun,
+    ) -> AppResult<AgentWorkspaceRepairAttemptTransitionOutcome> {
+        self.inner.bind_repair_attempt_run(request).await
+    }
+
+    async fn transition_repair_attempt(
+        &self,
+        request: AgentWorkspaceRepairAttemptTransition,
+    ) -> AppResult<AgentWorkspaceRepairAttemptTransitionOutcome> {
+        if request
+            .attempt
+            .pending_reasons
+            .iter()
+            .any(|reason| reason.starts_with(CONTINUATION_OPEN_EFFECT_EVIDENCE_REASON_PREFIX))
+            && self.race_next_evidence_marker.swap(false, Ordering::SeqCst)
+        {
+            let current = self
+                .inner
+                .get_current_repair_attempt(&request.attempt.conversation_id)
+                .await?
+                .expect("evidence re-arm checkpoint needs a current attempt");
+            let mut winning_attempt = current.clone();
+            winning_attempt.summary = Some("concurrent checkpoint writer".to_string());
+            winning_attempt.updated_at += chrono::Duration::microseconds(1);
+            let outcome = self
+                .inner
+                .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+                    attempt: winning_attempt.clone(),
+                    expected_phase: current.phase,
+                    expected_updated_at: current.updated_at,
+                    next_phase: current.phase,
+                    compatibility_projection: None,
+                    events: Vec::new(),
+                })
+                .await?;
+            assert!(matches!(
+                outcome,
+                AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_)
+            ));
+            return Ok(AgentWorkspaceRepairAttemptTransitionOutcome::Stale(
+                winning_attempt,
+            ));
+        }
+        self.inner.transition_repair_attempt(request).await
+    }
+
+    async fn settle_repair_attempt(
+        &self,
+        request: SettleAgentWorkspaceRepairAttempt,
+    ) -> AppResult<SettleAgentWorkspaceRepairAttemptOutcome> {
+        self.inner.settle_repair_attempt(request).await
+    }
+
+    async fn settle_and_start_repair_successor(
+        &self,
+        request: SettleAndStartAgentWorkspaceRepairSuccessor,
+    ) -> AppResult<SettleAndStartAgentWorkspaceRepairSuccessorOutcome> {
+        self.inner.settle_and_start_repair_successor(request).await
+    }
+
+    async fn create_repair_effect(
+        &self,
+        request: CreateAgentWorkspaceRepairEffect,
+    ) -> AppResult<CreateAgentWorkspaceRepairEffectOutcome> {
+        self.inner.create_repair_effect(request).await
+    }
+
+    async fn get_repair_effect_by_idempotency_key(
+        &self,
+        idempotency_key: &str,
+    ) -> AppResult<Option<AgentWorkspaceRepairEffect>> {
+        self.inner
+            .get_repair_effect_by_idempotency_key(idempotency_key)
+            .await
+    }
+
+    async fn get_open_repair_effect(
+        &self,
+        attempt_id: &AgentWorkspaceRepairAttemptId,
+    ) -> AppResult<Option<AgentWorkspaceRepairEffect>> {
+        self.inner.get_open_repair_effect(attempt_id).await
+    }
+
+    async fn complete_repair_effect(
+        &self,
+        request: CompleteAgentWorkspaceRepairEffect,
+    ) -> AppResult<CompleteAgentWorkspaceRepairEffectOutcome> {
+        self.inner.complete_repair_effect(request).await
+    }
+
+    async fn import_legacy_repair_attempt(
+        &self,
+        request: ImportLegacyAgentWorkspaceRepairAttempt,
+    ) -> AppResult<ImportLegacyAgentWorkspaceRepairAttemptOutcome> {
+        self.inner.import_legacy_repair_attempt(request).await
+    }
+}
+
+fn evidence_health(head: &str, base: &str, merge_state: Option<PrMergeStateStatus>) -> PrHealth {
+    let mut health = open_pr_health(head);
+    health.sync_state.base_ref_oid = Some(base.to_string());
+    health.sync_state.merge_state_status = merge_state;
+    health
+}
+
+async fn seed_poller_escalated_open_effect_continuation(
+    label: &str,
+    initial_pending_reasons: Vec<String>,
+) -> (
+    AppState,
+    AgentConversationWorkspace,
+    AgentWorkspaceRepairAttempt,
+) {
+    let worktree = tempfile::tempdir().expect("escalated continuation worktree");
+    let worktree_path = worktree.keep();
+    let mut workspace = supervised_workspace(
+        &format!("escalated-open-effect-{label}"),
+        &format!("project-escalated-open-effect-{label}"),
+        &worktree_path,
+    );
+    init_repair_dispatch_repo(&worktree_path, &workspace.branch_name);
+    workspace.base_commit = Some("base-before-escalation".to_string());
+    workspace.auto_publish_enabled = true;
+
+    let mut project = Project::new(
+        "Escalated open effect poller".to_string(),
+        worktree_path.to_string_lossy().to_string(),
+    );
+    project.id = workspace.project_id.clone();
+    project.base_branch = Some("main".to_string());
+    project.github_pr_enabled = true;
+
+    let state = AppState::new_test();
+    state
+        .project_repo
+        .create(project)
+        .await
+        .expect("escalated continuation project should persist");
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("escalated continuation workspace should persist");
+
+    let started = state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                workspace.conversation_id.clone(),
+                AgentWorkspaceRepairSource::Publish,
+                AgentWorkspaceRepairContinuation::Publish,
+                "main",
+                false,
+                true,
+                false,
+                None,
+                chrono::Utc::now(),
+            ),
+            reason: "seed poller escalated open effect continuation".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("start escalated continuation fixture");
+    let StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(mut attempt) = started else {
+        panic!("escalated continuation fixture must start");
+    };
+
+    let identity = GitService::canonical_target_identity(
+        std::path::Path::new(&workspace.worktree_path),
+        &workspace.branch_name,
+    )
+    .await
+    .expect("resolve escalated continuation target identity");
+    let owner = GitTargetLeaseOwner::agent_workspace_repair(attempt.id.as_str());
+    let AcquireGitTargetLeaseOutcome::Acquired { fencing_epoch } = state
+        .branch_update_repo
+        .acquire_target_lease(AcquireGitTargetLease {
+            identity: identity.clone(),
+            owner,
+        })
+        .await
+        .expect("acquire escalated continuation fixture lease")
+    else {
+        panic!("escalated continuation fixture lease must be newly acquired");
+    };
+
+    let expected_updated_at = attempt.updated_at;
+    attempt.phase = AgentWorkspaceRepairPhase::ContinuationPending;
+    attempt.git_common_dir = Some(identity.git_common_dir().to_string_lossy().into_owned());
+    attempt.target_ref = Some(identity.full_ref().to_string());
+    attempt.target_identity_version = Some(AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION);
+    attempt.target_lease_epoch = Some(fencing_epoch);
+    attempt.pending_reasons = initial_pending_reasons;
+    attempt.updated_at += chrono::Duration::microseconds(1);
+    let attempt = match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase: AgentWorkspaceRepairPhase::Requested,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::ContinuationPending,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("escalated continuation checkpoint should persist")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("escalated continuation checkpoint must apply, got {outcome:?}"),
+    };
+
+    (state, workspace, attempt)
+}
+
+#[tokio::test]
+async fn escalated_continuation_rearms_when_pr_head_changes() {
+    let health_before = evidence_health("head-before", "base-before-escalation", None);
+    let health_after = evidence_health("head-after", "base-before-escalation", None);
+    let (state, workspace, attempt) = seed_poller_escalated_open_effect_continuation(
+        "head-change",
+        vec![CONTINUATION_OPEN_EFFECT_ATTENTION_REASON.to_string()],
+    )
+    .await;
+    let identity_before =
+        super::agent_workspace_pr_evidence_identity(&health_before, &workspace, 101);
+    let identity_after =
+        super::agent_workspace_pr_evidence_identity(&health_after, &workspace, 101);
+    assert_ne!(identity_before, identity_after);
+    let mut seeded = attempt.clone();
+    seeded.pending_reasons.push(format!(
+        "{CONTINUATION_OPEN_EFFECT_EVIDENCE_REASON_PREFIX}{identity_before}"
+    ));
+    let expected_updated_at = seeded.updated_at;
+    seeded.updated_at += chrono::Duration::microseconds(1);
+    let attempt = match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: seeded,
+            expected_phase: AgentWorkspaceRepairPhase::ContinuationPending,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::ContinuationPending,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("seed prior evidence marker")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("seeding prior evidence marker must apply, got {outcome:?}"),
+    };
+
+    state
+        .notification_service()
+        .record(NewNotification {
+            project_id: Some(workspace.project_id.to_string()),
+            category: NotificationCategory::TaskBlocked,
+            severity: NotificationSeverity::ActionRequired,
+            title: "Workspace repair effect needs attention".to_string(),
+            body: Some("pre-existing escalation notification".to_string()),
+            target: NotificationTarget::none(),
+            dedupe_key: Some(format!(
+                "repair_open_effect:{}:{}",
+                workspace.conversation_id, attempt.id
+            )),
+        })
+        .await;
+
+    let workspace_repo = Arc::clone(&state.agent_conversation_workspace_repo);
+    let _busy_guard =
+        try_acquire_agent_workspace_repair_publish_continuation_guard(&workspace.conversation_id)
+            .expect("hold publish continuation guard for deterministic re-arm reconciliation");
+
+    let rearmed = super::re_arm_escalated_open_effect_continuation(
+        &state,
+        &workspace_repo,
+        &workspace.conversation_id,
+        101,
+        &health_after,
+    )
+    .await
+    .expect("re-arm on changed PR head must not fail");
+    assert!(
+        rearmed,
+        "changed PR evidence must re-arm and drive a non-noop reconciliation pass"
+    );
+
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&workspace.conversation_id)
+        .await
+        .expect("reload re-armed attempt")
+        .expect("re-armed attempt remains current");
+    assert!(!current
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == CONTINUATION_OPEN_EFFECT_ATTENTION_REASON));
+    assert!(!current.pending_reasons.iter().any(|reason| reason
+        == &format!("{CONTINUATION_OPEN_EFFECT_EVIDENCE_REASON_PREFIX}{identity_before}")));
+    assert!(current.pending_reasons.iter().any(|reason| reason
+        == &format!("{CONTINUATION_OPEN_EFFECT_EVIDENCE_REASON_PREFIX}{identity_after}")));
+
+    let events = state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&workspace.conversation_id)
+        .await
+        .expect("list re-arm events");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.step == CONTINUATION_OPEN_EFFECT_REARMED_STEP)
+            .count(),
+        1
+    );
+
+    let notifications = state
+        .notification_repo
+        .list(None, None, 20)
+        .await
+        .expect("list re-arm notifications");
+    let resolved = notifications
+        .notifications
+        .iter()
+        .find(|notification| {
+            notification
+                .dedupe_key
+                .as_deref()
+                .is_some_and(|key| key.starts_with("repair_open_effect:"))
+        })
+        .expect("pre-existing escalation notification remains listed");
+    assert!(
+        resolved.read_at.is_some(),
+        "re-arm must settle the pre-existing open-effect attention notification"
+    );
+}
+
+#[tokio::test]
+async fn escalated_continuation_rearm_is_idempotent_for_unchanged_evidence() {
+    let health = evidence_health("head-unchanged", "base-before-escalation", None);
+    let (state, workspace, attempt) = seed_poller_escalated_open_effect_continuation(
+        "idempotent",
+        vec![CONTINUATION_OPEN_EFFECT_ATTENTION_REASON.to_string()],
+    )
+    .await;
+    let identity = super::agent_workspace_pr_evidence_identity(&health, &workspace, 101);
+    let mut seeded = attempt;
+    seeded.pending_reasons.push(format!(
+        "{CONTINUATION_OPEN_EFFECT_EVIDENCE_REASON_PREFIX}{identity}"
+    ));
+    let expected_updated_at = seeded.updated_at;
+    seeded.updated_at += chrono::Duration::microseconds(1);
+    let seeded_attempt = match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: seeded,
+            expected_phase: AgentWorkspaceRepairPhase::ContinuationPending,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::ContinuationPending,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("seed unchanged evidence marker")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("seeding unchanged evidence marker must apply, got {outcome:?}"),
+    };
+
+    let workspace_repo = Arc::clone(&state.agent_conversation_workspace_repo);
+    for attempt_number in 1..=2 {
+        let rearmed = super::re_arm_escalated_open_effect_continuation(
+            &state,
+            &workspace_repo,
+            &workspace.conversation_id,
+            101,
+            &health,
+        )
+        .await
+        .expect("re-arm on unchanged PR evidence must not fail");
+        assert!(
+            !rearmed,
+            "unchanged PR evidence must never re-arm (pass {attempt_number})"
+        );
+    }
+
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&workspace.conversation_id)
+        .await
+        .expect("reload unchanged attempt")
+        .expect("unchanged attempt remains current");
+    assert_eq!(current.updated_at, seeded_attempt.updated_at);
+    assert_eq!(current.pending_reasons, seeded_attempt.pending_reasons);
+
+    let events = state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&workspace.conversation_id)
+        .await
+        .expect("list unchanged-evidence events");
+    assert!(!events
+        .iter()
+        .any(|event| event.step == CONTINUATION_OPEN_EFFECT_REARMED_STEP));
+}
+
+#[tokio::test]
+async fn escalated_continuation_rearms_when_merge_state_changes_with_head_unchanged() {
+    let health_before = evidence_health(
+        "head-merge-state",
+        "base-before-escalation",
+        Some(PrMergeStateStatus::Clean),
+    );
+    let health_after = evidence_health(
+        "head-merge-state",
+        "base-before-escalation",
+        Some(PrMergeStateStatus::Unstable),
+    );
+    let (state, workspace, attempt) = seed_poller_escalated_open_effect_continuation(
+        "merge-state-change",
+        vec![CONTINUATION_OPEN_EFFECT_ATTENTION_REASON.to_string()],
+    )
+    .await;
+    let identity_before =
+        super::agent_workspace_pr_evidence_identity(&health_before, &workspace, 101);
+    let identity_after =
+        super::agent_workspace_pr_evidence_identity(&health_after, &workspace, 101);
+    assert_ne!(identity_before, identity_after);
+    let mut seeded = attempt;
+    seeded.pending_reasons.push(format!(
+        "{CONTINUATION_OPEN_EFFECT_EVIDENCE_REASON_PREFIX}{identity_before}"
+    ));
+    let expected_updated_at = seeded.updated_at;
+    seeded.updated_at += chrono::Duration::microseconds(1);
+    match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: seeded,
+            expected_phase: AgentWorkspaceRepairPhase::ContinuationPending,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::ContinuationPending,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("seed merge-state evidence marker")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_) => {}
+        outcome => panic!("seeding merge-state evidence marker must apply, got {outcome:?}"),
+    }
+
+    let workspace_repo = Arc::clone(&state.agent_conversation_workspace_repo);
+    let _busy_guard =
+        try_acquire_agent_workspace_repair_publish_continuation_guard(&workspace.conversation_id)
+            .expect("hold publish continuation guard for deterministic re-arm reconciliation");
+    let rearmed = super::re_arm_escalated_open_effect_continuation(
+        &state,
+        &workspace_repo,
+        &workspace.conversation_id,
+        101,
+        &health_after,
+    )
+    .await
+    .expect("re-arm on merge-state-only change must not fail");
+    assert!(
+        rearmed,
+        "a merge-state-only change must count as new evidence"
+    );
+
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&workspace.conversation_id)
+        .await
+        .expect("reload merge-state re-armed attempt")
+        .expect("merge-state re-armed attempt remains current");
+    assert!(current.pending_reasons.iter().any(|reason| reason
+        == &format!("{CONTINUATION_OPEN_EFFECT_EVIDENCE_REASON_PREFIX}{identity_after}")));
+}
+
+#[tokio::test]
+async fn escalated_continuation_rearms_when_workspace_base_commit_advances() {
+    let health = evidence_health("head-base-advance", "base-before-escalation", None);
+    let (state, workspace, attempt) = seed_poller_escalated_open_effect_continuation(
+        "base-advance",
+        vec![CONTINUATION_OPEN_EFFECT_ATTENTION_REASON.to_string()],
+    )
+    .await;
+    let identity_before = super::agent_workspace_pr_evidence_identity(&health, &workspace, 101);
+    let mut seeded = attempt;
+    seeded.pending_reasons.push(format!(
+        "{CONTINUATION_OPEN_EFFECT_EVIDENCE_REASON_PREFIX}{identity_before}"
+    ));
+    let expected_updated_at = seeded.updated_at;
+    seeded.updated_at += chrono::Duration::microseconds(1);
+    match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: seeded,
+            expected_phase: AgentWorkspaceRepairPhase::ContinuationPending,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::ContinuationPending,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("seed base-commit evidence marker")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_) => {}
+        outcome => panic!("seeding base-commit evidence marker must apply, got {outcome:?}"),
+    }
+
+    let mut advanced_workspace = workspace.clone();
+    advanced_workspace.base_commit = Some("base-after-advance".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(advanced_workspace.clone())
+        .await
+        .expect("advance workspace base_commit");
+    let identity_after =
+        super::agent_workspace_pr_evidence_identity(&health, &advanced_workspace, 101);
+    assert_ne!(identity_before, identity_after);
+
+    let workspace_repo = Arc::clone(&state.agent_conversation_workspace_repo);
+    let _busy_guard =
+        try_acquire_agent_workspace_repair_publish_continuation_guard(&workspace.conversation_id)
+            .expect("hold publish continuation guard for deterministic re-arm reconciliation");
+    let rearmed = super::re_arm_escalated_open_effect_continuation(
+        &state,
+        &workspace_repo,
+        &workspace.conversation_id,
+        101,
+        &health,
+    )
+    .await
+    .expect("re-arm on workspace base_commit advance must not fail");
+    assert!(
+        rearmed,
+        "an advanced workspace base_commit must count as new evidence even with unchanged PR health"
+    );
+
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&workspace.conversation_id)
+        .await
+        .expect("reload base-advance re-armed attempt")
+        .expect("base-advance re-armed attempt remains current");
+    assert!(current.pending_reasons.iter().any(|reason| reason
+        == &format!("{CONTINUATION_OPEN_EFFECT_EVIDENCE_REASON_PREFIX}{identity_after}")));
+}
+
+#[tokio::test]
+async fn non_escalated_continuation_pending_attempt_is_untouched_by_rearm() {
+    let health = evidence_health("head-non-escalated", "base-before-escalation", None);
+    let (state, workspace, attempt) =
+        seed_poller_escalated_open_effect_continuation("non-escalated", Vec::new()).await;
+    let workspace_repo = Arc::clone(&state.agent_conversation_workspace_repo);
+
+    let rearmed = super::re_arm_escalated_open_effect_continuation(
+        &state,
+        &workspace_repo,
+        &workspace.conversation_id,
+        101,
+        &health,
+    )
+    .await
+    .expect("re-arm on a non-escalated continuation must not fail");
+    assert!(
+        !rearmed,
+        "a continuation without the open-effect attention marker must never be re-armed"
+    );
+
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&workspace.conversation_id)
+        .await
+        .expect("reload non-escalated attempt")
+        .expect("non-escalated attempt remains current");
+    assert_eq!(current.updated_at, attempt.updated_at);
+    assert!(current.pending_reasons.is_empty());
+}
+
+#[tokio::test]
+async fn ready_phase_held_attempt_is_untouched_by_rearm() {
+    let mut health = open_pr_health("remote-held-head");
+    health.sync_state.base_ref_oid = Some("base-before-hold".to_string());
+    health.checks.push(PrHealthCheck {
+        name: "Rust tests".to_string(),
+        status: Some("completed".to_string()),
+        conclusion: Some("failure".to_string()),
+        details_url: None,
+    });
+    let (state, workspace, held, _github) = seed_poller_held_unpublished_head(
+        AgentWorkspaceRepairContinuation::Manual,
+        "base-before-hold",
+        &health,
+    )
+    .await;
+    let workspace_repo = Arc::clone(&state.agent_conversation_workspace_repo);
+
+    let rearmed = super::re_arm_escalated_open_effect_continuation(
+        &state,
+        &workspace_repo,
+        &workspace.conversation_id,
+        101,
+        &health,
+    )
+    .await
+    .expect("re-arm on a Ready-phase held attempt must not fail");
+    assert!(
+        !rearmed,
+        "a Ready-phase held attempt must not be stolen by the open-effect re-arm path"
+    );
+
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&workspace.conversation_id)
+        .await
+        .expect("reload Ready-phase held attempt")
+        .expect("Ready-phase held attempt remains current");
+    assert_eq!(current.id, held.id);
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Ready);
+}
+
+#[tokio::test]
+async fn escalated_continuation_rearm_cas_loser_makes_no_write() {
+    let health_before = evidence_health("head-cas-loser", "base-before-escalation", None);
+    let health_after = evidence_health("head-cas-loser-changed", "base-before-escalation", None);
+    let (state, workspace, attempt) = seed_poller_escalated_open_effect_continuation(
+        "cas-loser",
+        vec![CONTINUATION_OPEN_EFFECT_ATTENTION_REASON.to_string()],
+    )
+    .await;
+    let identity_before =
+        super::agent_workspace_pr_evidence_identity(&health_before, &workspace, 101);
+    let mut seeded = attempt;
+    seeded.pending_reasons.push(format!(
+        "{CONTINUATION_OPEN_EFFECT_EVIDENCE_REASON_PREFIX}{identity_before}"
+    ));
+    let expected_updated_at = seeded.updated_at;
+    seeded.updated_at += chrono::Duration::microseconds(1);
+    match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: seeded,
+            expected_phase: AgentWorkspaceRepairPhase::ContinuationPending,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::ContinuationPending,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("seed CAS-loser evidence marker")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_) => {}
+        outcome => panic!("seeding CAS-loser evidence marker must apply, got {outcome:?}"),
+    }
+
+    let inner_repair_repo = Arc::clone(&state.agent_workspace_repair_repo);
+    let mut raced_state = state;
+    raced_state.agent_workspace_repair_repo = Arc::new(RaceEvidenceRearmCheckpointRepo::new(
+        Arc::clone(&inner_repair_repo),
+    ));
+    let workspace_repo = Arc::clone(&raced_state.agent_conversation_workspace_repo);
+
+    let rearmed = super::re_arm_escalated_open_effect_continuation(
+        &raced_state,
+        &workspace_repo,
+        &workspace.conversation_id,
+        101,
+        &health_after,
+    )
+    .await
+    .expect("a CAS-loser re-arm attempt must not surface as an error");
+    assert!(
+        !rearmed,
+        "losing the CAS race must never report a successful re-arm"
+    );
+
+    let current = inner_repair_repo
+        .get_current_repair_attempt(&workspace.conversation_id)
+        .await
+        .expect("reload CAS-loser attempt")
+        .expect("CAS-loser attempt remains current");
+    assert_eq!(
+        current.summary.as_deref(),
+        Some("concurrent checkpoint writer")
+    );
+    assert!(current
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == CONTINUATION_OPEN_EFFECT_ATTENTION_REASON));
+    assert!(!current.pending_reasons.iter().any(|reason| reason
+        .starts_with(CONTINUATION_OPEN_EFFECT_EVIDENCE_REASON_PREFIX)
+        && reason
+            != &format!("{CONTINUATION_OPEN_EFFECT_EVIDENCE_REASON_PREFIX}{identity_before}")));
+}
+
+#[tokio::test]
+async fn recheck_pr_health_stays_unreachable_for_an_escalated_continuation_publication_effect_hold()
+{
+    let (state, workspace, _attempt) = seed_poller_escalated_open_effect_continuation(
+        "recheck-guard",
+        vec![CONTINUATION_OPEN_EFFECT_ATTENTION_REASON.to_string()],
+    )
+    .await;
+
+    let chat_service: Arc<dyn ChatService> = Arc::new(MockChatService::new());
+    let result = super::recheck_agent_workspace_pr_health_once(
+        &state,
+        &workspace.conversation_id,
+        chat_service,
+    )
+    .await;
+
+    match result {
+        Err(AppError::Conflict(message)) => {
+            assert_eq!(message, "The PR repair hold is no longer current")
+        }
+        other => panic!(
+            "an escalated ContinuationPending/Continuing publication-effect hold must stay \
+             unreachable through the held-PR-health recheck command, got {other:?}"
+        ),
+    }
+}
+
+#[test]
+fn pr_merge_state_status_evidence_token_distinguishes_other_payloads() {
+    let a = super::pr_merge_state_status_evidence_token(Some(&PrMergeStateStatus::Other(
+        "a".to_string(),
+    )));
+    let b = super::pr_merge_state_status_evidence_token(Some(&PrMergeStateStatus::Other(
+        "b".to_string(),
+    )));
+    assert_ne!(a, b, "distinct Other(..) payloads must never collide");
+}
+
+#[test]
+fn pr_merge_state_status_evidence_token_other_clean_does_not_collide_with_unit_clean() {
+    let other_clean = super::pr_merge_state_status_evidence_token(Some(
+        &PrMergeStateStatus::Other("clean".to_string()),
+    ));
+    let unit_clean = super::pr_merge_state_status_evidence_token(Some(&PrMergeStateStatus::Clean));
+    assert_ne!(
+        other_clean, unit_clean,
+        "Other(\"clean\") must never collide with the unit Clean token"
+    );
 }
