@@ -4141,6 +4141,7 @@ async fn test_handle_stream_error_cancelled_terminalizes_existing_timeline_block
         &Some(pre_assistant_message_id.clone()),
         &content_blocks,
         ChatTimelineItemStatus::Streaming,
+        None,
     )
     .await;
     assert!(initial_items
@@ -4231,6 +4232,111 @@ async fn test_handle_stream_error_cancelled_terminalizes_existing_timeline_block
         .result_json
         .as_deref()
         .is_some_and(|result| result.contains("stopped")));
+}
+
+#[tokio::test]
+async fn test_handle_stream_error_stopped_attributes_timeline_blocks_to_run_id() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let context_id = ProjectId::new().as_str().to_string();
+    let run_id = AgentRunId::new().as_str();
+    let content_blocks = vec![ContentBlockItem::Text {
+        text: "Partial response before stop".to_string(),
+    }];
+    let pre_assistant_message =
+        crate::application::chat_service::chat_service_context::create_assistant_message(
+            ChatContextType::Project,
+            &context_id,
+            "Partial response before stop",
+            conversation_id.clone(),
+            &[],
+            &content_blocks,
+        );
+    let pre_assistant_message_id = pre_assistant_message.id.as_str().to_string();
+    state
+        .chat_message_repo
+        .create(pre_assistant_message)
+        .await
+        .expect("insert pre-assistant message");
+
+    let event_ctx = crate::application::chat_service::event_context(
+        &conversation_id,
+        &ChatContextType::Project,
+        &context_id,
+    );
+    let cancelled = StreamError::Cancelled {
+        turns_finalized: 0,
+        completion_tool_called: false,
+    };
+    let recovery_spawned = handle_stream_error::<MockRuntime>(
+        "cancelled",
+        Some(&cancelled),
+        ChatContextType::Project,
+        &context_id,
+        conversation_id.clone(),
+        run_id.as_str(),
+        &pre_assistant_message_id,
+        &event_ctx,
+        None,
+        crate::domain::agents::AgentHarnessKind::Codex,
+        false,
+        None,
+        None,
+        None,
+        std::path::Path::new("/tmp/codex"),
+        std::path::Path::new("/tmp/plugin"),
+        std::path::Path::new("/tmp"),
+        &state.chat_message_repo,
+        &Some(state.chat_timeline_repo.clone()),
+        &state.chat_attachment_repo,
+        &state.artifact_repo,
+        &state.chat_conversation_repo,
+        &state.agent_run_repo,
+        &state.task_repo,
+        &state.task_dependency_repo,
+        &state.project_repo,
+        &state.ideation_session_repo,
+        &None,
+        &state.activity_event_repo,
+        &state.message_queue,
+        &state.running_agent_registry,
+        &state.memory_event_repo,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<tauri::AppHandle<MockRuntime>>,
+        None,
+        None,
+        &None,
+        &None,
+        &None,
+        &None,
+    )
+    .await;
+
+    assert!(!recovery_spawned);
+    let page = state
+        .chat_timeline_repo
+        .get_page(&conversation_id, 10, None)
+        .await
+        .expect("load timeline page");
+    let assistant_items: Vec<_> = page
+        .items
+        .iter()
+        .filter(|item| {
+            item.message_id
+                .as_ref()
+                .is_some_and(|id| id.as_str() == pre_assistant_message_id)
+        })
+        .collect();
+    assert!(!assistant_items.is_empty());
+    assert!(assistant_items
+        .iter()
+        .all(|item| item.status == ChatTimelineItemStatus::Finalized));
+    assert!(assistant_items
+        .iter()
+        .all(|item| item.run_id.as_ref().map(|id| id.as_str()) == Some(run_id.clone())));
 }
 
 /// Sub-branch A: Cancelled { turns_finalized: 1, completion_tool_called: true }

@@ -1773,6 +1773,7 @@ export function IntegratedChatPanel({
                 ref={virtuosoRef}
                 messages={sortedMessages}
                 conversationId={effectiveConversationId}
+                contextKey={storeContextKey}
                 initialPaintCoverKey={
                   transcriptPaintCoverConversationId ===
                   transcriptConversationId

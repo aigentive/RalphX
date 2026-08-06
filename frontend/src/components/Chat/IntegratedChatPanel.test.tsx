@@ -160,6 +160,24 @@ const {
 // Mocks
 // ============================================================================
 
+// Spy on ChatMessageList's props while delegating to the real implementation,
+// so prop-forwarding tests can assert without breaking transcript-content tests.
+const { chatMessageListPropsCalls } = vi.hoisted(() => ({
+  chatMessageListPropsCalls: [] as Array<Record<string, unknown>>,
+}));
+
+vi.mock("./ChatMessageList", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./ChatMessageList")>();
+  const React = await import("react");
+  const ChatMessageList = React.forwardRef<unknown, Record<string, unknown>>(
+    function ChatMessageListSpy(props, ref) {
+      chatMessageListPropsCalls.push(props);
+      return React.createElement(actual.ChatMessageList, { ...props, ref });
+    },
+  );
+  return { ...actual, ChatMessageList };
+});
+
 // Mock Tauri event system (already in setup.ts but ensure coverage)
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(() => Promise.resolve(() => {})),
@@ -457,6 +475,7 @@ describe("IntegratedChatPanel", () => {
     historyWindowCalls.length = 0;
     mockQuestionStates.clear();
     mockQuestionInputParams.length = 0;
+    chatMessageListPropsCalls.length = 0;
 
     // Reset stores
     act(() => {
@@ -2349,6 +2368,39 @@ describe("IntegratedChatPanel", () => {
       expect(
         screen.getByText("Existing conversation content"),
       ).toBeInTheDocument();
+    });
+
+    it("forwards storeContextKey to ChatMessageList as contextKey", async () => {
+      mockChatPanelContext.storeContextKey = "project:conv-1";
+      mockChatPanelContext.currentContextType = "project";
+      mockChatPanelContext.currentContextId = "conv-1";
+      mockChatPanelContext.activeConversationId = "conv-1";
+      useChatMockState.conversations = [{ id: "conv-1" }];
+      useChatMockState.conversation = {
+        contextType: "project",
+        contextId: "conv-1",
+      };
+      useChatMockState.messages = [
+        {
+          id: "msg-1",
+          role: "user",
+          content: "Existing conversation content",
+          createdAt: "2026-04-23T09:00:00Z",
+          toolCalls: null,
+          contentBlocks: null,
+        },
+      ];
+
+      render(
+        <TestWrapper>
+          <IntegratedChatPanel projectId="project-1" />
+        </TestWrapper>,
+      );
+
+      await waitFor(() => expect(chatMessageListPropsCalls.length).toBeGreaterThan(0));
+      const lastCall =
+        chatMessageListPropsCalls[chatMessageListPropsCalls.length - 1];
+      expect(lastCall?.contextKey).toBe(mockChatPanelContext.storeContextKey);
     });
   });
 
