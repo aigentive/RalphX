@@ -5367,11 +5367,11 @@ async fn test_routed_delegate_start_accepts_a_live_parent_run_outranked_by_a_new
     let caller = state
         .app_state
         .agent_run_repo
-        .create(AgentRun::new(parent_conversation.id.clone()))
+        .create(AgentRun::new(parent_conversation.id))
         .await
         .expect("create caller run");
 
-    let mut ghost = AgentRun::new(parent_conversation.id.clone());
+    let mut ghost = AgentRun::new(parent_conversation.id);
     ghost.started_at = caller.started_at + chrono::Duration::seconds(60);
     let ghost = state
         .app_state
