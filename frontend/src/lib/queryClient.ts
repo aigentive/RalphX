@@ -4,9 +4,21 @@
  * Configures the QueryClient with sensible defaults for the Tauri app.
  */
 
-import { QueryClient } from "@tanstack/react-query";
+import { MutationCache, QueryClient } from "@tanstack/react-query";
+import type { QueryKey } from "@tanstack/react-query";
 
 import { getTransportEnvironmentId } from "@/lib/remote/active-environment";
+import { isRemoteTransportError } from "@/lib/remote/transport-errors";
+
+interface RalphxMutationMeta extends Record<string, unknown> {
+  readonly unknownOutcomeQueryKeys?: readonly QueryKey[];
+}
+
+declare module "@tanstack/react-query" {
+  interface Register {
+    mutationMeta: RalphxMutationMeta;
+  }
+}
 
 /**
  * Default stale time for queries (5 minutes)
@@ -24,7 +36,30 @@ const DEFAULT_RETRY = 1;
  * Create and configure the QueryClient
  */
 export function createQueryClient(): QueryClient {
-  return new QueryClient({
+  let queryClient: QueryClient;
+  const mutationCache = new MutationCache({
+    onError: async (error, _variables, _onMutateResult, mutation) => {
+      if (!isRemoteTransportError(error) || !error.isUnknownOutcome) {
+        return;
+      }
+
+      const queryKeys = mutation.options.meta?.unknownOutcomeQueryKeys;
+      if (queryKeys === undefined) {
+        await queryClient.invalidateQueries();
+      } else {
+        await Promise.all(
+          queryKeys.map((queryKey) =>
+            queryClient.invalidateQueries({ queryKey }),
+          ),
+        );
+      }
+
+      // Components own user-facing copy; messaging here would duplicate their UI.
+    },
+  });
+
+  queryClient = new QueryClient({
+    mutationCache,
     defaultOptions: {
       queries: {
         // How long data is considered fresh (5 minutes)
@@ -48,6 +83,7 @@ export function createQueryClient(): QueryClient {
       },
     },
   });
+  return queryClient;
 }
 
 /**
