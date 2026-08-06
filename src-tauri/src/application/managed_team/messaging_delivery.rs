@@ -2,9 +2,10 @@
 
 use chrono::Utc;
 
+use crate::application::managed_team::lifecycle::advance_binding_status;
 use crate::application::managed_team::{render_team_origin_message, ManagedTeamService};
 use crate::domain::entities::{
-    ChatContextType, TeamMessage, TeamMessageActorKind, TeamMessageDelivery,
+    AgentRunStatus, ChatContextType, TeamMessage, TeamMessageActorKind, TeamMessageDelivery,
     TeamMessageDeliveryStatus, TeamRunBindingStatus, TeamRunTriggerKind, TeamSessionId,
     TeamWakeBatch, TeamWakeBatchId, TeamWakeBatchStatus, TeamWakeRecipientKind,
 };
@@ -64,7 +65,15 @@ impl ManagedTeamService {
                             "Team coordinator conversation was not found".to_string(),
                         )
                     })?;
-                QueueKey::new(conversation.context_type, conversation.context_id)
+                // A Project conversation's `context_id` is the *project* id
+                // (enforced by `ensure_team`), but the coordinator's turn-end
+                // drain keys its queue by `runtime_context_id`, which for a
+                // Project send carrying `conversation_id_override` is the
+                // *conversation* id. Keying by `context_id` here would park
+                // the settlement message on a queue nothing drains, silently
+                // losing it. Same convention as `question_commands.rs` and
+                // `plan_verification_service.rs`.
+                QueueKey::new(conversation.context_type, conversation.id.as_str())
             }
             TeamMessageActorKind::Member => {
                 let member_id = delivery.recipient_member_id.as_ref().ok_or_else(|| {
@@ -169,6 +178,60 @@ impl ManagedTeamService {
         }
     }
 
+    /// Terminalizes wake run bindings whose coordinator run has already ended.
+    ///
+    /// A coordinator wake binding is created at `Planned` by
+    /// `claim_next_actionable_wake_batch` and advanced to `Running` once the
+    /// wake send is accepted, but nothing terminalizes it afterwards: the
+    /// coordinator's run finishes through the generic chat-service
+    /// finalization path, which knows nothing about Team bindings, and the
+    /// member settlement hook (`settle_member_assignment`) only ever fires for
+    /// member runs. Without this reconciliation every *successful* wake would
+    /// permanently consume automatic-wake budget, so a Team would stop waking
+    /// for good after `automatic_wake_limit` successes.
+    ///
+    /// The agent-run row is the authority. A run that is still `Running`, or
+    /// whose row is not visible yet (the send may still be in flight against a
+    /// preallocated id), is left alone — a read must never manufacture budget.
+    /// Repo errors propagate rather than being read as "the run ended".
+    async fn reconcile_wake_run_bindings(&self, team_id: &TeamSessionId) -> AppResult<()> {
+        for binding in self.run_binding_repo.list_for_team(team_id).await? {
+            if binding.trigger_kind != TeamRunTriggerKind::WakeBatch
+                || !matches!(
+                    binding.status,
+                    TeamRunBindingStatus::Planned
+                        | TeamRunBindingStatus::Launching
+                        | TeamRunBindingStatus::Running
+                )
+            {
+                continue;
+            }
+            let Some(run) = self.agent_run_repo.get_by_id(&binding.agent_run_id).await? else {
+                continue;
+            };
+            let next = match run.status {
+                AgentRunStatus::Running => continue,
+                AgentRunStatus::Completed => TeamRunBindingStatus::Terminal,
+                AgentRunStatus::Failed => TeamRunBindingStatus::Failed,
+                AgentRunStatus::Cancelled => TeamRunBindingStatus::Cancelled,
+            };
+            let expected_version = binding.version;
+            let mut resolved = binding;
+            if !advance_binding_status(&mut resolved, next, Utc::now()) {
+                continue;
+            }
+            resolved.version = expected_version + 1;
+            let binding_id = resolved.id.clone();
+            // A lost CAS means a concurrent dispatcher/exit already settled the
+            // binding, which is the same end state this pass wanted.
+            let _ = self
+                .run_binding_repo
+                .transition(&binding_id, expected_version, resolved)
+                .await?;
+        }
+        Ok(())
+    }
+
     pub(super) async fn schedule_coordinator_wakes(
         &self,
         queued: &[(TeamMessage, TeamMessageDelivery)],
@@ -194,6 +257,7 @@ impl ManagedTeamService {
                 );
                 continue;
             }
+            self.reconcile_wake_run_bindings(&session.id).await?;
             let bindings = self.run_binding_repo.list_for_team(&session.id).await?;
             let running_count = bindings
                 .iter()

@@ -9,13 +9,15 @@ use crate::application::managed_team::{
     ManagedTeamMessageTarget, ManagedTeamService,
 };
 use crate::domain::entities::{
-    AgentRun, AgentTaskAssignmentId, ChatConversation, CoordinationMode, ProjectId,
-    TeamMessageKind, TeamRunBindingStatus, TeamSession, TeamWakeBatchStatus,
+    AgentRun, AgentTaskAssignmentId, ChatContextType, ChatConversation, CoordinationMode,
+    ProjectId, TeamMessageKind, TeamRunBindingStatus, TeamRunTriggerKind, TeamSession,
+    TeamWakeBatchStatus,
 };
 use crate::domain::repositories::{
-    AgentRunRepository, ChatConversationRepository, TeamMessageRepository,
+    AgentRunRepository, ChatConversationRepository, QueuedMessageRepository, TeamMessageRepository,
     TeamRunBindingRepository, TeamWakeBatchRepository, UiFeatureFlagOverridesRepository,
 };
+use crate::domain::services::QueueKey;
 use crate::infrastructure::agents::claude::delegation_config;
 use crate::infrastructure::memory::{
     MemoryAgentRunRepository, MemoryChatConversationRepository, MemoryQueuedMessageRepository,
@@ -31,6 +33,7 @@ struct Harness {
     wake_batch_repo: Arc<MemoryTeamWakeBatchRepository>,
     agent_runs: Arc<MemoryAgentRunRepository>,
     conversations: Arc<MemoryChatConversationRepository>,
+    queued_messages: Arc<MemoryQueuedMessageRepository>,
     overrides_repo: Arc<MemoryUiFeatureFlagOverridesRepository>,
     chat: Arc<MockChatService>,
     events: Arc<RecordingEventSink>,
@@ -54,6 +57,7 @@ fn build_harness() -> Harness {
     let message_repo = Arc::new(MemoryTeamMessageRepository::new());
     let conversations = Arc::new(MemoryChatConversationRepository::new());
     let agent_runs = Arc::new(MemoryAgentRunRepository::new());
+    let queued_messages = Arc::new(MemoryQueuedMessageRepository::new());
     let overrides_repo = Arc::new(MemoryUiFeatureFlagOverridesRepository::new());
     let events = Arc::new(RecordingEventSink::new());
     let chat = Arc::new(MockChatService::with_agent_run_repo(
@@ -68,7 +72,8 @@ fn build_harness() -> Harness {
         Arc::clone(&run_binding_repo) as Arc<dyn TeamRunBindingRepository>,
         Arc::clone(&message_repo) as Arc<dyn TeamMessageRepository>,
         Arc::clone(&wake_batch_repo) as Arc<dyn TeamWakeBatchRepository>,
-        Arc::new(MemoryQueuedMessageRepository::new()),
+        Arc::clone(&queued_messages)
+            as Arc<dyn crate::domain::repositories::QueuedMessageRepository>,
         Arc::clone(&conversations) as Arc<dyn ChatConversationRepository>,
         Arc::clone(&agent_runs) as Arc<dyn AgentRunRepository>,
         Arc::new(MemoryTeamWorkspaceReservationRepository::new()),
@@ -81,6 +86,7 @@ fn build_harness() -> Harness {
         wake_batch_repo,
         agent_runs,
         conversations,
+        queued_messages,
         overrides_repo,
         chat,
         events,
@@ -452,5 +458,194 @@ async fn two_concurrent_dispatchers_produce_exactly_one_coordinator_turn() {
         harness.chat.get_sent_messages().await.len(),
         1,
         "exactly one coordinator turn must be produced per wake batch under concurrent dispatch"
+    );
+}
+
+#[tokio::test]
+async fn coordinator_delivery_queues_under_the_conversation_scoped_key() {
+    // A Project conversation's `context_id` is the *project* id, but the
+    // coordinator's turn-end drain keys its queue by `runtime_context_id`,
+    // which is the *conversation* id for Project sends carrying
+    // `conversation_id_override`. Keying the delivery by `context_id` would
+    // park the settlement message on a queue nothing ever drains, so a
+    // mid-turn coordinator would silently lose it.
+    let harness = build_harness();
+    let team = ready_team(&harness, 20).await;
+    queue_one_coordinator_wake(&harness, &team).await;
+
+    let conversation_key = QueueKey::new(
+        ChatContextType::Project,
+        team.coordinator_conversation_id.as_str(),
+    );
+    let project_key = QueueKey::new(ChatContextType::Project, "project-1");
+
+    let on_conversation = harness
+        .queued_messages
+        .list(&conversation_key)
+        .await
+        .unwrap();
+    assert_eq!(
+        on_conversation.len(),
+        1,
+        "the coordinator delivery must land on the queue the turn-end drain reads"
+    );
+    assert!(on_conversation[0].content.contains("<team_message"));
+
+    assert!(
+        harness
+            .queued_messages
+            .list(&project_key)
+            .await
+            .unwrap()
+            .is_empty(),
+        "nothing drains the project-scoped queue for a coordinator conversation"
+    );
+}
+
+#[tokio::test]
+async fn successful_dispatch_marks_the_wake_binding_running() {
+    // The wake binding is created at `Planned`. Nothing terminalizes a
+    // coordinator binding on the success path, and only `Running -> Terminal`
+    // is a legal transition, so leaving it at `Planned` is what let a
+    // successful wake permanently consume automatic-wake budget.
+    let harness = build_harness();
+    let team = ready_team(&harness, 21).await;
+    queue_one_coordinator_wake(&harness, &team).await;
+
+    harness
+        .dispatcher()
+        .dispatch_pending_wakes(&team.id)
+        .await
+        .unwrap();
+
+    let wake_binding = harness
+        .run_binding_repo
+        .list_for_team(&team.id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|binding| binding.trigger_kind == TeamRunTriggerKind::WakeBatch)
+        .expect("claim must record a coordinator wake run binding");
+    assert_eq!(
+        wake_binding.status,
+        TeamRunBindingStatus::Running,
+        "an accepted wake send must move its binding off Planned"
+    );
+    assert!(
+        wake_binding.launched_at.is_some(),
+        "laddering through Launching must stamp launched_at"
+    );
+}
+
+#[tokio::test]
+async fn wake_message_only_carries_messages_addressed_to_the_coordinator() {
+    // A wake batch EXTENDS across coordinator deliveries, so its
+    // `first..=last` window is a Team-wide sequence range that also spans
+    // member-targeted traffic and the coordinator's own outbound messages.
+    // `list_messages_after` returns all of them; re-injecting them would feed
+    // the coordinator its own instructions back as new input.
+    let harness = build_harness();
+    let team = ready_team(&harness, 22).await;
+
+    let member = harness
+        .managed_team
+        .add_member(
+            &team.id,
+            ManagedTeamMemberSpec {
+                name: "Worker".to_string(),
+                canonical_agent_name: "ralphx-general-worker".to_string(),
+                role_summary: "test member".to_string(),
+                harness: None,
+                logical_model: None,
+                logical_effort: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let assignment_id = AgentTaskAssignmentId("assignment-fold".to_string());
+    let mut binding = crate::testing::team_fixtures::member_run_binding(
+        "binding-fold",
+        team.id.as_str(),
+        910,
+        member.id.as_str(),
+        member.generation,
+    );
+    binding.assignment_id = Some(assignment_id.clone());
+    binding.conversation_id = team.coordinator_conversation_id;
+    harness.run_binding_repo.create(binding).await.unwrap();
+
+    let member_result = |content: &str, key: &str| ManagedTeamMessageRequest {
+        team_id: team.id.clone(),
+        sender: ManagedTeamMessageSender::System {
+            assignment_id: assignment_id.clone(),
+        },
+        target: ManagedTeamMessageTarget::Coordinator,
+        kind: TeamMessageKind::Result,
+        content: content.to_string(),
+        idempotency_key: key.to_string(),
+    };
+
+    // Opens the wake batch at this sequence.
+    harness
+        .managed_team
+        .send_team_message(member_result("first member result", "result-1"))
+        .await
+        .unwrap();
+
+    // Coordinator -> member instruction. Lands INSIDE the batch window below,
+    // but must never be echoed back to its own author.
+    harness
+        .managed_team
+        .send_team_message(ManagedTeamMessageRequest {
+            team_id: team.id.clone(),
+            sender: ManagedTeamMessageSender::Coordinator {
+                conversation_id: team.coordinator_conversation_id,
+                source_run_id: None,
+            },
+            target: ManagedTeamMessageTarget::MemberName(member.name.clone()),
+            kind: TeamMessageKind::Instruction,
+            content: "coordinator instruction to member".to_string(),
+            idempotency_key: "instruction-1".to_string(),
+        })
+        .await
+        .unwrap();
+
+    // Extends the batch across the instruction above.
+    harness
+        .managed_team
+        .send_team_message(member_result("second member result", "result-2"))
+        .await
+        .unwrap();
+
+    let queued = harness
+        .wake_batch_repo
+        .list_queued_for_team(&team.id, 10)
+        .await
+        .unwrap();
+    assert_eq!(queued.len(), 1, "the deliveries must share one wake batch");
+    assert!(
+        queued[0].last_message_sequence - queued[0].first_message_sequence >= 2,
+        "the batch window must span the member-targeted instruction for this test to bite"
+    );
+
+    harness
+        .dispatcher()
+        .dispatch_pending_wakes(&team.id)
+        .await
+        .unwrap();
+
+    let sent = harness.chat.get_sent_messages().await;
+    assert_eq!(sent.len(), 1, "exactly one wake must be dispatched");
+    assert!(sent[0].contains("first member result"));
+    assert!(sent[0].contains("second member result"));
+    assert!(
+        !sent[0].contains("coordinator instruction to member"),
+        "member-targeted, coordinator-authored traffic must not be re-injected"
+    );
+    assert!(
+        sent[0].contains("Team update (2 messages)."),
+        "the wake header must count only coordinator-addressed messages, got: {}",
+        sent[0]
     );
 }

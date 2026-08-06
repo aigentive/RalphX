@@ -14,10 +14,12 @@ use std::sync::Arc;
 use crate::application::chat_service::{
     ChatService, SendCallerContext, SendMessageOptions, SendQueuePolicy,
 };
+use crate::application::managed_team::lifecycle::advance_binding_status;
 use crate::application::managed_team::render_team_origin_message;
 use crate::domain::entities::{
-    AgentRunActionKind, AgentRunId, ChatConversation, TeamRunBindingStatus, TeamSession,
-    TeamSessionId, TeamWakeBatch, TeamWakeBatchStatus,
+    AgentRunActionKind, AgentRunId, ChatConversation, TeamMessage, TeamMessageActorKind,
+    TeamMessageEnvelopeTarget, TeamRunBindingStatus, TeamSession, TeamSessionId, TeamWakeBatch,
+    TeamWakeBatchStatus,
 };
 use crate::domain::repositories::{AgentRunRepository, ChatConversationRepository};
 use crate::error::{AppError, AppResult};
@@ -33,6 +35,21 @@ const TEAM_WAKE_FAILED_EVENT: &str = "team:needs_attention";
 /// leave several queued batches behind; the bound keeps recovery from looping
 /// on a Team whose batches keep re-queueing.
 const STARTUP_DRAIN_MAX_BATCHES_PER_TEAM: usize = 8;
+
+/// True when the coordinator is an actual recipient of `message`.
+///
+/// A wake batch is claimed for a coordinator-addressed delivery, but its
+/// `first..=last` sequence range is a Team-wide window: `list_messages_after`
+/// also returns member-targeted traffic and the coordinator's own outbound
+/// messages. Re-injecting those would feed the coordinator its own instructions
+/// (and other members' mail) back as new input.
+fn addressed_to_coordinator(message: &TeamMessage) -> bool {
+    message.sender_kind != TeamMessageActorKind::Coordinator
+        && matches!(
+            message.target_kind,
+            TeamMessageEnvelopeTarget::Coordinator | TeamMessageEnvelopeTarget::Broadcast
+        )
+}
 
 /// Application service that turns durably claimed `TeamWakeBatch` rows into a
 /// hidden resume-in-place coordinator turn.
@@ -129,6 +146,12 @@ impl ManagedTeamWakeDispatcher {
         // `project_delivery` already enqueued the settlement message onto the
         // coordinator's durable `QueueKey`, so a mid-turn coordinator drains it
         // at turn end. Dispatching here too would produce a duplicate turn.
+        //
+        // This is only safe because `project_delivery` keys that queue by the
+        // coordinator's *conversation* id, which is exactly the
+        // `runtime_context_id` the turn-end drain reads. Re-keying it by
+        // `context_id` (the project id) would silently strand the message and
+        // turn the cancellation below into lost work.
         if self
             .agent_run_repo
             .get_active_for_conversation(&session.coordinator_conversation_id)
@@ -179,7 +202,11 @@ impl ManagedTeamWakeDispatcher {
 
         let (conversation, content, options) =
             match self.prepare_wake(&session, &running, &planned_run_id).await {
-                Ok(prepared) => prepared,
+                // Nothing in the batch's range is addressed to the coordinator,
+                // so there is no turn to run. Settle rather than fail: the batch
+                // was handled correctly and must release its wake budget.
+                Ok(None) => return self.settle_batch(&running).await,
+                Ok(Some(prepared)) => prepared,
                 Err(error) => return self.fail_batch(&running, &error.to_string()).await,
             };
 
@@ -220,7 +247,7 @@ impl ManagedTeamWakeDispatcher {
         session: &TeamSession,
         batch: &TeamWakeBatch,
         planned_run_id: &AgentRunId,
-    ) -> AppResult<(ChatConversation, String, SendMessageOptions)> {
+    ) -> AppResult<Option<(ChatConversation, String, SendMessageOptions)>> {
         let conversation = self
             .conversation_repo
             .get_by_id(&session.coordinator_conversation_id)
@@ -235,7 +262,9 @@ impl ManagedTeamWakeDispatcher {
             .agent_run_repo
             .get_latest_for_conversation(&session.coordinator_conversation_id)
             .await?;
-        let content = self.build_wake_message(batch).await?;
+        let Some(content) = self.build_wake_message(batch).await? else {
+            return Ok(None);
+        };
         let options = SendMessageOptions {
             preallocated_agent_run_id: Some(planned_run_id.clone()),
             // `persist_hidden_marker` selects chat-service's canonical MessageRole::System
@@ -266,17 +295,25 @@ impl ManagedTeamWakeDispatcher {
             caller_context: SendCallerContext::DrainService,
             ..Default::default()
         };
-        Ok((conversation, content, options))
+        Ok(Some((conversation, content, options)))
     }
 
-    async fn build_wake_message(&self, batch: &TeamWakeBatch) -> AppResult<String> {
+    /// Renders the wake payload, or `None` when the batch's sequence range
+    /// holds nothing the coordinator should actually read.
+    async fn build_wake_message(&self, batch: &TeamWakeBatch) -> AppResult<Option<String>> {
         let span = batch.last_message_sequence - batch.first_message_sequence + 1;
         let limit = u32::try_from(span).unwrap_or(u32::MAX);
-        let messages = self
+        let messages: Vec<_> = self
             .managed_team
             .message_repo
             .list_messages_after(&batch.team_id, batch.first_message_sequence - 1, limit)
-            .await?;
+            .await?
+            .into_iter()
+            .filter(addressed_to_coordinator)
+            .collect();
+        if messages.is_empty() {
+            return Ok(None);
+        }
         let mut lines = Vec::with_capacity(messages.len());
         for message in &messages {
             let sender_name = match message.sender_member_id.as_ref() {
@@ -290,12 +327,12 @@ impl ManagedTeamWakeDispatcher {
             };
             lines.push(render_team_origin_message(message, sender_name.as_deref()));
         }
-        Ok(format!(
+        Ok(Some(format!(
             "Team update ({} message{}).\n{}\n\nContinue coordination from this turn.",
             messages.len(),
             if messages.len() == 1 { "" } else { "s" },
             lines.join("\n")
-        ))
+        )))
     }
 
     /// Persists one retry attempt on the still-`Running` batch. Returns the
@@ -341,7 +378,53 @@ impl ManagedTeamWakeDispatcher {
                 settled,
             )
             .await?;
+        // The wake send was accepted, so the preallocated coordinator run is
+        // now live: move its binding off `Planned` to the status that actually
+        // describes it. This is what later lets the run-ended reconciliation in
+        // `messaging_delivery.rs` reach `Terminal` (only `Running -> Terminal`
+        // is legal) instead of leaving the binding consuming wake budget for
+        // the life of the Team. `Running` still satisfies Team authority, so a
+        // coordinator woken this way keeps its Team tools.
+        self.advance_run_binding_to_running(&batch.team_id, batch.planned_agent_run_id.as_ref())
+            .await;
         Ok(())
+    }
+
+    /// Best-effort `Planned -> Launching -> Running` advance for a dispatched
+    /// wake binding. Failures are non-fatal: the wake itself already
+    /// succeeded, and the run-ended reconciliation can still ladder the
+    /// binding to a terminal status from `Planned`.
+    async fn advance_run_binding_to_running(
+        &self,
+        team_id: &TeamSessionId,
+        planned_agent_run_id: Option<&AgentRunId>,
+    ) {
+        let Some(run_id) = planned_agent_run_id else {
+            return;
+        };
+        let Ok(Some(binding)) = self
+            .managed_team
+            .run_binding_repo
+            .get_by_agent_run_id(run_id)
+            .await
+        else {
+            return;
+        };
+        if binding.team_id != *team_id {
+            return;
+        }
+        let expected_version = binding.version;
+        let mut running = binding;
+        if !advance_binding_status(&mut running, TeamRunBindingStatus::Running, Utc::now()) {
+            return;
+        }
+        running.version = expected_version + 1;
+        let binding_id = running.id.clone();
+        let _ = self
+            .managed_team
+            .run_binding_repo
+            .transition(&binding_id, expected_version, running)
+            .await;
     }
 
     async fn fail_batch(&self, batch: &TeamWakeBatch, error_message: &str) -> AppResult<()> {
