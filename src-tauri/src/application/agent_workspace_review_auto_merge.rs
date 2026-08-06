@@ -8,9 +8,11 @@ use tracing::{info, warn};
 use crate::application::agent_conversation_workspace::resolve_valid_agent_conversation_workspace_path;
 use crate::application::agent_workspace_review::{
     apply_current_target_to_monitor, load_current_workspace_review_eligible,
-    load_or_create_monitor, lock_workspace_review_lifecycle, resolve_review_target,
-    resolve_review_target_for_user, start_agent_workspace_review_unlocked_with_revalidated_target,
+    load_or_create_monitor, lock_workspace_review_lifecycle, resolve_review_target_for_user,
+    resolve_review_target_with_materialization,
+    start_agent_workspace_review_unlocked_with_revalidated_target,
     workspace_review_mode_is_eligible, AgentWorkspaceReviewStart, AgentWorkspaceReviewTarget,
+    AgentWorkspaceReviewTargetMaterialization,
 };
 use crate::application::publish_resilience::count_unpublished_publish_commits;
 use crate::application::{AppState, GitService};
@@ -111,9 +113,19 @@ async fn preview_workspace_review_start(
     );
     let phase_started = Instant::now();
     let target = if user_initiated {
-        resolve_current_target_for_user(state, workspace).await?
+        resolve_current_target_for_user(
+            state,
+            workspace,
+            AgentWorkspaceReviewTargetMaterialization::IdentityOnly,
+        )
+        .await?
     } else {
-        resolve_current_target(state, workspace).await?
+        resolve_current_target_with_materialization(
+            state,
+            workspace,
+            AgentWorkspaceReviewTargetMaterialization::IdentityOnly,
+        )
+        .await?
     };
     log_workspace_review_auto_merge_phase(
         "workspace_review_start_preview_phase",
@@ -1120,24 +1132,38 @@ async fn resolve_current_target(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
 ) -> AppResult<Option<AgentWorkspaceReviewTarget>> {
-    let project = state
-        .project_repo
-        .get_by_id(&workspace.project_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound("Project not found".to_string()))?;
-    resolve_review_target(workspace, &project).await
+    resolve_current_target_with_materialization(
+        state,
+        workspace,
+        AgentWorkspaceReviewTargetMaterialization::FullPacket,
+    )
+    .await
 }
 
-async fn resolve_current_target_for_user(
+async fn resolve_current_target_with_materialization(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
+    materialization: AgentWorkspaceReviewTargetMaterialization,
 ) -> AppResult<Option<AgentWorkspaceReviewTarget>> {
     let project = state
         .project_repo
         .get_by_id(&workspace.project_id)
         .await?
         .ok_or_else(|| AppError::NotFound("Project not found".to_string()))?;
-    resolve_review_target_for_user(workspace, &project).await
+    resolve_review_target_with_materialization(workspace, &project, materialization).await
+}
+
+async fn resolve_current_target_for_user(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    materialization: AgentWorkspaceReviewTargetMaterialization,
+) -> AppResult<Option<AgentWorkspaceReviewTarget>> {
+    let project = state
+        .project_repo
+        .get_by_id(&workspace.project_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Project not found".to_string()))?;
+    resolve_review_target_for_user(workspace, &project, materialization).await
 }
 
 async fn resolve_workspace_working_directory(
