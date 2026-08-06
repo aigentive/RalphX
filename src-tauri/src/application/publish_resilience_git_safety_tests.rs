@@ -1736,6 +1736,7 @@ async fn blocked_existing_pr_preserve_handoff_declines_when_github_is_unavailabl
 // fence is covered by the operation-recovery-action tests. These regressions cover the reachable
 // identity and authority rejections without allowing reconciliation to mutate durable state.
 struct BlockedExistingPrHandoffFixture {
+    _fixture: RepairPushFixture,
     state: AppState,
     identity: crate::domain::entities::GitTargetIdentity,
     workspace: AgentConversationWorkspace,
@@ -1790,6 +1791,7 @@ async fn setup_blocked_existing_pr_preserve_handoff() -> BlockedExistingPrHandof
         .expect("blocked handoff remains current");
 
     BlockedExistingPrHandoffFixture {
+        _fixture: fixture,
         state,
         identity,
         workspace,
