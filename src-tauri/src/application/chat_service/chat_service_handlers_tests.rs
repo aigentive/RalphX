@@ -900,14 +900,10 @@ async fn handle_stream_success_preserves_armed_delegation_park_for_completed_par
         .await
         .expect("arm delegation park");
 
-    let app = mock_builder()
-        .manage(state.clone())
-        .build(mock_context(noop_assets()))
-        .expect("mock app");
-    let app_handle = Some(app.handle().clone());
+    let runtime_deps = ChatRuntimeFactoryDeps::from_app_state(&state);
     let parent_run_id = parent_run.id.as_str();
 
-    handle_stream_success::<MockRuntime>(
+    handle_stream_success(
         &parent_run_id,
         ChatContextType::Project,
         project_id.as_str(),
@@ -931,7 +927,7 @@ async fn handle_stream_success_preserves_armed_delegation_park_for_completed_par
         &None,
         &None,
         &None,
-        &app_handle,
+        &runtime_deps,
         &None,
         &None,
         &None,
