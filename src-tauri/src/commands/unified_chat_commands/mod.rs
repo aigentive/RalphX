@@ -105,12 +105,12 @@ use crate::application::agent_workspace_publish_repair_state::{
     resume_ready_agent_workspace_repair_for_publish,
     retry_agent_workspace_pr_autofix_hold_override,
     retry_agent_workspace_publication_effect as retry_agent_workspace_publication_effect_service,
-    settle_agent_workspace_repair_dispatch_outcome,
-    start_or_join_agent_workspace_repair, stop_agent_workspace_pr_autofix_for_hold,
-    AgentWorkspacePrAutofixHoldActionOutcome, AgentWorkspaceRepairDispatchOutcome,
-    AgentWorkspaceRepairDispatchSettlement, AgentWorkspaceRepairPublishResumeOutcome,
-    AgentWorkspaceRepairStartOutcome, AgentWorkspaceRepairStartRequest,
-    AgentWorkspaceRepairTransitionOutcome, PublishAuthority, DEFERRED_REPAIR_WAIT_TIMEOUT_SECS,
+    settle_agent_workspace_repair_dispatch_outcome, start_or_join_agent_workspace_repair,
+    stop_agent_workspace_pr_autofix_for_hold, AgentWorkspacePrAutofixHoldActionOutcome,
+    AgentWorkspaceRepairDispatchOutcome, AgentWorkspaceRepairDispatchSettlement,
+    AgentWorkspaceRepairPublishResumeOutcome, AgentWorkspaceRepairStartOutcome,
+    AgentWorkspaceRepairStartRequest, AgentWorkspaceRepairTransitionOutcome, PublishAuthority,
+    DEFERRED_REPAIR_WAIT_TIMEOUT_SECS,
 };
 use crate::application::agent_workspace_review::{
     load_workspace_review_publish_blocker, lock_workspace_review_lifecycle,
@@ -4874,7 +4874,10 @@ pub async fn retry_agent_workspace_publication_effect(
     )
     .await
     .map_err(|error| error.to_string())?;
-    if !matches!(outcome, AgentWorkspacePrAutofixHoldActionOutcome::Applied(_)) {
+    if !matches!(
+        outcome,
+        AgentWorkspacePrAutofixHoldActionOutcome::Applied(_)
+    ) {
         return Err(
             "The workspace repair publication-effect hold changed before this action could be applied."
                 .to_string(),
@@ -10052,8 +10055,17 @@ where
         &attempt,
     )
     .await;
-    if !matches!(retry_allowed, Ok(true)) {
-        return false;
+    match retry_allowed {
+        Ok(true) => {}
+        Ok(false) => return false,
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = %workspace.conversation_id,
+                error = %error,
+                "Skipping blocked workspace repair retry: retry admission could not be evaluated"
+            );
+            return false;
+        }
     }
     let Ok(Some(project)) = state.project_repo.get_by_id(&workspace.project_id).await else {
         tracing::warn!(

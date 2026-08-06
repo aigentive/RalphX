@@ -73,8 +73,6 @@ pub(crate) const PUBLICATION_EFFECT_ATTENTION_RETRIED_STEP: &str =
 /// A deliberately small cap: transient runner failures must not create an unbounded CI loop.
 pub(crate) const MAX_AGENT_WORKSPACE_CI_RERUN_RETRIES: u32 = 3;
 pub(crate) const NEEDS_HUMAN_REPAIR_REASON: &str = "pr_autofix_needs_human";
-const CONTINUATION_OPEN_EFFECT_ATTENTION_REASON: &str =
-    "continuation_open_effect_attention_required";
 pub(crate) const PRE_EXISTING_ON_BASE_REPAIR_REASON: &str = "pr_autofix_pre_existing_on_base";
 /// Held because GitHub still reports the exact failure the previous generation was dispatched for.
 /// Distinct from `PRE_EXISTING_ON_BASE_REPAIR_REASON`: RalphX has not proven anything about the
@@ -393,7 +391,10 @@ pub(crate) async fn load_agent_workspace_repair_operation_recovery_action(
         let escalation_recorded = attempt
             .pending_reasons
             .iter()
-            .any(|reason| reason == CONTINUATION_OPEN_EFFECT_ATTENTION_REASON);
+            .any(|reason| {
+                reason
+                    == crate::application::agent_workspace_publish_recovery::CONTINUATION_OPEN_EFFECT_ATTENTION_REASON
+            });
         if effect.kind == AgentWorkspaceRepairEffectKind::CreatePr
             || !escalation_recorded
             || !matches!(
