@@ -193,7 +193,7 @@ async fn wait_for_identity_calculation_gate(
     let gate = IDENTITY_CALCULATION_GATE
         .get()
         .and_then(|gates| lock_unpoisoned(gates).clone())
-        .filter(|gate| gate.worktree_path == PathBuf::from(&workspace.worktree_path));
+        .filter(|gate| gate.worktree_path == *workspace.worktree_path);
     if let Some(gate) = gate {
         gate.owner_started.notify_waiters();
         gate.release.notified().await;
