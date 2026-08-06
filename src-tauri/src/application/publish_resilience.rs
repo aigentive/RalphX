@@ -14,8 +14,7 @@ use crate::domain::entities::{
     AgentWorkspaceRepairContinuation, AgentWorkspaceRepairEffect, AgentWorkspaceRepairEffectKind,
     AgentWorkspaceRepairEffectStatus, AgentWorkspaceRepairOutcome, AgentWorkspaceRepairPhase,
     ChatConversation, ChatConversationId, GitMutationKind, GitTargetIdentity, GitTargetLeaseOwner,
-    GitTargetLeaseOwnerKind,
-    IdeationAnalysisBaseRefKind,
+    GitTargetLeaseOwnerKind, IdeationAnalysisBaseRefKind,
 };
 use crate::domain::repositories::{
     AgentWorkspaceRepairAttemptTransition, AgentWorkspaceRepairAttemptTransitionOutcome,
