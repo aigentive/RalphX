@@ -6,7 +6,6 @@ import {
 } from "../fixtures/setup.fixtures";
 import { AgentsChatBistablePage } from "../pages/views/agents-chat-bistable.page";
 import { AgentsChatPage } from "../pages/views/agents-chat.page";
-import { AgentsChatScrollWritesPage } from "../pages/views/agents-chat-scroll-writes.page";
 import { AgentsChatStillnessPage } from "../pages/views/agents-chat-stillness.page";
 import { AgentsChatTurnPage } from "../pages/views/agents-chat-turn.page";
 
@@ -55,19 +54,24 @@ test.describe("chat transcript stillness", () => {
   // collapses on the write itself, so every restored measurement looked like
   // forward progress and the browser clamped it straight back. Virtuoso's own
   // follow window absorbs the flip instead of racing it.
+  //
+  // This scenario deliberately makes the tail measurement unstable, which makes
+  // it the one place the scroll-write recorder cannot be installed: recording
+  // costs enough per write to change the outcome it would be reporting on, and
+  // left this assertion 200-600px off the bottom on roughly one run in seven.
+  // Single-writer attribution is asserted on the realistic streaming turn in
+  // chat-scroll-lifecycle.spec.ts; what this case owns is the end state.
   test("stops the tail churn when the tail measurement collapses on every write", async ({ page }, testInfo) => {
     const executionId = `${testInfo.workerIndex}-${testInfo.repeatEachIndex}`;
     const conversationId = `bistable-tail-${executionId}`;
     const chat = new AgentsChatPage(page);
     const bistable = new AgentsChatBistablePage(page);
-    const writes = new AgentsChatScrollWritesPage(page);
     const turn = new AgentsChatTurnPage(page, chat, conversationId, `run-bistable-${executionId}`);
     await chat.open();
     await chat.seedConversation(conversationId, false, 12);
     await turn.expectAtTrueBottom();
 
     await bistable.install(BISTABLE_TAIL_GAP_PX);
-    await writes.record();
 
     await turn.start();
     await turn.stream(
@@ -78,9 +82,6 @@ test.describe("chat transcript stillness", () => {
     await page.waitForTimeout(1_000);
     await turn.complete();
 
-    const recorded = await writes.writes();
-    expect(recorded.filter(({ fromController }) => fromController)).toEqual([]);
-    expect(recorded.filter(({ requested, before }) => requested < before)).toEqual([]);
     expect(await bistable.distanceToBottom()).toBeLessThanOrEqual(BISTABLE_TAIL_GAP_PX + 2);
   });
 });
