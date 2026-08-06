@@ -4624,6 +4624,16 @@ async fn resolve_workspace_delta_target(
         return Ok(Some(target));
     }
     let phase_started = Instant::now();
+    let packet_snapshot_before =
+        workspace_delta_tree_fingerprints(&worktree_path, &base_ref).await?;
+    log_workspace_review_phase(
+        "workspace_review_target_phase",
+        workspace,
+        "fingerprint_workspace",
+        phase_started,
+        total_started,
+    );
+    let phase_started = Instant::now();
     let committed_diff_args = [
         "diff",
         "--binary",
@@ -4668,6 +4678,22 @@ async fn resolve_workspace_delta_target(
         phase_started,
         total_started,
     );
+    let phase_started = Instant::now();
+    let packet_snapshot_after =
+        workspace_delta_tree_fingerprints(&worktree_path, &base_ref).await?;
+    log_workspace_review_phase(
+        "workspace_review_target_phase",
+        workspace,
+        "fingerprint_workspace",
+        phase_started,
+        total_started,
+    );
+    if packet_snapshot_before != packet_snapshot_after {
+        return Err(AppError::Conflict(
+            "workspace changed while capturing the Workspace Review packet; retry the review"
+                .to_string(),
+        ));
+    }
     if committed_diff.trim().is_empty()
         && staged_diff.trim().is_empty()
         && unstaged_diff.trim().is_empty()
@@ -4698,15 +4724,6 @@ async fn resolve_workspace_delta_target(
         total_started,
     );
     let phase_started = Instant::now();
-    let fingerprint = workspace_delta_content_fingerprint(&worktree_path, &base_ref).await?;
-    log_workspace_review_phase(
-        "workspace_review_target_phase",
-        workspace,
-        "fingerprint_workspace",
-        phase_started,
-        total_started,
-    );
-    let phase_started = Instant::now();
     let review_packet =
         build_workspace_delta_review_packet(&committed_diff, &staged_diff, &unstaged_diff, &status);
     log_workspace_review_phase(
@@ -4723,7 +4740,11 @@ async fn resolve_workspace_delta_target(
         base_sha,
         head_ref,
         head_sha,
-        diff_fingerprint: fingerprint,
+        diff_fingerprint: fingerprint_parts([
+            "workspace_delta_content_v1",
+            &packet_snapshot_after.base_tree,
+            &packet_snapshot_after.target_tree,
+        ]),
         working_directory: worktree_path,
         source_pull_request_number: None,
         review_packet,
@@ -4747,6 +4768,7 @@ async fn workspace_delta_content_fingerprint(repo: &Path, base_ref: &str) -> App
     ]))
 }
 
+#[derive(PartialEq, Eq)]
 struct WorkspaceDeltaTreeFingerprints {
     base_tree: String,
     head_tree: String,
