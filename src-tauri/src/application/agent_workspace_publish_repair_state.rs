@@ -361,11 +361,11 @@ pub(crate) fn agent_workspace_repair_operation_recovery_action(
     }
     match attempt.phase {
         AgentWorkspaceRepairPhase::Ready
-            if matches!(
-                attempt.continuation,
-                AgentWorkspaceRepairContinuation::Publish
-                    | AgentWorkspaceRepairContinuation::ResumePrSupervision
-            ) && attempt.operation_snapshot().hold_reason.is_none() =>
+            if (attempt.continuation.priority()
+                <= AgentWorkspaceRepairContinuation::Publish.priority()
+                || attempt.continuation
+                    == AgentWorkspaceRepairContinuation::ResumePrSupervision)
+                && attempt.operation_snapshot().hold_reason.is_none() =>
         {
             AgentWorkspaceRepairOperationRecoveryAction::ResumePublish
         }
