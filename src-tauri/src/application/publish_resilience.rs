@@ -12,7 +12,8 @@ use crate::domain::entities::{
     AgentConversationWorkspace, AgentWorkspaceRepairAttempt, AgentWorkspaceRepairContinuation,
     AgentWorkspaceRepairEffect, AgentWorkspaceRepairEffectKind, AgentWorkspaceRepairEffectStatus,
     AgentWorkspaceRepairOutcome, AgentWorkspaceRepairPhase, ChatConversation, ChatConversationId,
-    GitMutationKind, GitTargetIdentity, GitTargetLeaseOwner, IdeationAnalysisBaseRefKind,
+    GitMutationKind, GitTargetIdentity, GitTargetLeaseOwner, GitTargetLeaseOwnerKind,
+    IdeationAnalysisBaseRefKind,
 };
 use crate::domain::repositories::{
     AgentWorkspaceRepairAttemptTransition, AgentWorkspaceRepairAttemptTransitionOutcome,
@@ -896,6 +897,10 @@ pub(crate) enum AgentWorkspaceRepairPushOutcome {
 pub(crate) enum AgentWorkspaceRepairOpenPushEffectReconciliation {
     Observed,
     Pending,
+    /// The remote is exactly at this effect's recorded pre-push state: the intended mutation
+    /// provably never reached the remote, so the effect was terminated as `Failed` and the
+    /// fence is clear.
+    NotApplied,
 }
 
 /// Trusted inputs for a repair-owned branch publication. The caller resolves this target from
@@ -1349,6 +1354,25 @@ pub(crate) async fn reconcile_open_agent_workspace_repair_push_effect(
     if !effect.expected_remote_absent && effect.expected_remote_oid.is_none() {
         return Ok(AgentWorkspaceRepairOpenPushEffectReconciliation::Pending);
     }
+    if !effect.has_exact_remote_oid_proof() {
+        return Ok(AgentWorkspaceRepairOpenPushEffectReconciliation::Pending);
+    }
+    // A live repair-owned mutation claim means a push may be in flight right now; startup claim
+    // recovery (`recover_repair_owned_in_flight_git_mutations`) stays the sole authority in that
+    // window, so this reconciler must not draw any conclusion while the claim is still open.
+    let owner_id = attempt.id.to_string();
+    if state
+        .branch_update_repo
+        .list_in_flight_mutations()
+        .await?
+        .iter()
+        .any(|claim| {
+            claim.owner.kind == GitTargetLeaseOwnerKind::AgentWorkspaceRepair
+                && claim.owner.owner_id == owner_id
+        })
+    {
+        return Ok(AgentWorkspaceRepairOpenPushEffectReconciliation::Pending);
+    }
 
     let workspace = state
         .agent_conversation_workspace_repo
@@ -1407,18 +1431,30 @@ pub(crate) async fn reconcile_open_agent_workspace_repair_push_effect(
     let remote_oid =
         read_remote_ref_oid_without_local_update(&target.path, observed_identity.full_ref())
             .await?;
-    if remote_oid.as_deref() != Some(intended_head_oid.as_str()) {
-        return Ok(AgentWorkspaceRepairOpenPushEffectReconciliation::Pending);
+    if remote_oid.as_deref() == Some(intended_head_oid.as_str()) {
+        observe_agent_workspace_repair_push_effect(
+            state.agent_workspace_repair_repo.as_ref(),
+            attempt,
+            effect,
+            observed_identity.full_ref(),
+            &intended_head_oid,
+        )
+        .await?;
+        return Ok(AgentWorkspaceRepairOpenPushEffectReconciliation::Observed);
     }
-    observe_agent_workspace_repair_push_effect(
-        state.agent_workspace_repair_repo.as_ref(),
-        attempt,
-        effect,
-        observed_identity.full_ref(),
-        &intended_head_oid,
-    )
-    .await?;
-    Ok(AgentWorkspaceRepairOpenPushEffectReconciliation::Observed)
+    if effect.remote_matches_recorded_precondition(remote_oid.as_deref()) {
+        fail_agent_workspace_repair_push_effect(
+            state.agent_workspace_repair_repo.as_ref(),
+            attempt,
+            effect,
+            "repair push remote OID still matches the recorded pre-push state; the push never reached the remote",
+        )
+        .await?;
+        return Ok(AgentWorkspaceRepairOpenPushEffectReconciliation::NotApplied);
+    }
+    // A differing remote OID is proof of nothing (a third party may have advanced the branch);
+    // keep the fence open and let the next recovery pass re-check.
+    Ok(AgentWorkspaceRepairOpenPushEffectReconciliation::Pending)
 }
 
 pub(crate) async fn observe_agent_workspace_repair_push_effect(
@@ -1459,6 +1495,41 @@ pub(crate) async fn observe_agent_workspace_repair_push_effect(
         CompleteAgentWorkspaceRepairEffectOutcome::Stale(_)
         | CompleteAgentWorkspaceRepairEffectOutcome::Missing => Err(AppError::Conflict(
             "workspace repair push receipt lost current attempt authority".to_string(),
+        )),
+    }
+}
+
+pub(crate) async fn fail_agent_workspace_repair_push_effect(
+    repair_repo: &dyn AgentWorkspaceRepairRepository,
+    attempt: &AgentWorkspaceRepairAttempt,
+    mut effect: AgentWorkspaceRepairEffect,
+    reason: &str,
+) -> AppResult<AgentWorkspaceRepairEffect> {
+    let expected_effect_updated_at = effect.updated_at;
+    let expected_effect_status = effect.status;
+    effect.status = AgentWorkspaceRepairEffectStatus::Failed;
+    effect.last_error = Some(reason.to_string());
+    effect.updated_at = next_effect_checkpoint_at(effect.updated_at);
+    match repair_repo
+        .complete_repair_effect(CompleteAgentWorkspaceRepairEffect {
+            attempt_id: attempt.id.clone(),
+            generation: attempt.generation,
+            expected_phase: AgentWorkspaceRepairPhase::Continuing,
+            expected_attempt_updated_at: attempt.updated_at,
+            expected_effect_updated_at,
+            expected_effect_status,
+            effect,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await?
+    {
+        CompleteAgentWorkspaceRepairEffectOutcome::Applied(effect) => Ok(*effect),
+        CompleteAgentWorkspaceRepairEffectOutcome::Stale(_) => Err(AppError::Conflict(
+            "repair push failure lost current attempt authority during recovery".to_string(),
+        )),
+        CompleteAgentWorkspaceRepairEffectOutcome::Missing => Err(AppError::NotFound(
+            "repair push effect disappeared during recovery".to_string(),
         )),
     }
 }

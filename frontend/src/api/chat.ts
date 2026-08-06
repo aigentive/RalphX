@@ -1894,6 +1894,7 @@ export const chatApi = {
   recheckAgentConversationWorkspacePrHealth,
   retryAgentConversationWorkspacePrAutofixOverride,
   stopAgentConversationWorkspacePrAutofixForFailure,
+  retryAgentConversationWorkspacePublicationEffect,
   commitAgentConversationWorkspaceLocally,
   setAgentConversationWorkspaceAutoPublish,
   setAgentConversationWorkspacePrSupervision,
@@ -2109,7 +2110,8 @@ export type AgentWorkspaceMaintenanceOperationHoldReason =
   | "pr_autofix_ci_rerun_pending"
   | "base_stale"
   | "health_evidence"
-  | "publish_redrive";
+  | "publish_redrive"
+  | "publication_effect_attention";
 
 export interface AgentWorkspaceMaintenanceOperation {
   operationId: string;
@@ -2718,6 +2720,7 @@ export const AgentWorkspaceMaintenanceOperationResponseSchema = z.object({
       "base_stale",
       "health_evidence",
       "publish_redrive",
+      "publication_effect_attention",
     ])
     .nullable()
     .optional()
@@ -4588,6 +4591,18 @@ export async function stopAgentConversationWorkspacePrAutofixForFailure(
 ): Promise<AgentConversationWorkspace> {
   const raw = await typedInvoke(
     "stop_pr_autofix_for_failure",
+    { input: { conversationId, ...input } },
+    AgentConversationWorkspaceResponseSchema,
+  );
+  return transformAgentConversationWorkspace(raw);
+}
+
+export async function retryAgentConversationWorkspacePublicationEffect(
+  conversationId: string,
+  input: AgentWorkspaceRepairHoldActionInput,
+): Promise<AgentConversationWorkspace> {
+  const raw = await typedInvoke(
+    "retry_agent_workspace_publication_effect",
     { input: { conversationId, ...input } },
     AgentConversationWorkspaceResponseSchema,
   );

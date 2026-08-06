@@ -416,6 +416,7 @@ macro_rules! register_tauri_commands {
             commands::unified_chat_commands::get_agent_conversation_workspace,
             commands::unified_chat_commands::recheck_pr_health,
             commands::unified_chat_commands::retry_pr_autofix_override,
+            commands::unified_chat_commands::retry_agent_workspace_publication_effect,
             commands::unified_chat_commands::stop_pr_autofix_for_failure,
             commands::unified_chat_commands::set_agent_conversation_workspace_auto_publish,
             commands::unified_chat_commands::set_agent_conversation_workspace_pr_supervision,

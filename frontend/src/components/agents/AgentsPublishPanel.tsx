@@ -703,6 +703,21 @@ export function AgentPublishPanel({
     },
     ...heldRepairMutationOptions,
   });
+  const retryPublicationEffectMutation = useMutation<AgentConversationWorkspace, Error>({
+    mutationFn: () =>
+      chatApi.retryAgentConversationWorkspacePublicationEffect(
+        conversationId!,
+        heldRepairActionInput(workspace),
+      ),
+    onSuccess: async (updatedWorkspace) => {
+      queryClient.setQueryData(
+        agentWorkspaceKeys.workspace(updatedWorkspace.conversationId),
+        updatedWorkspace,
+      );
+      await invalidateWorkspaceQueries(queryClient, updatedWorkspace.conversationId);
+    },
+    ...heldRepairMutationOptions,
+  });
   const commitLocallyMutation = useMutation({
     mutationFn: async () => {
       if (!conversationId || !workspace) {
@@ -2032,11 +2047,13 @@ export function AgentPublishPanel({
             onOpenChecks={() => onSubTabChange("checks")}
             onRecheck={() => recheckPrHealthMutation.mutate()}
             onRetry={() => retryPrAutofixMutation.mutate()}
+            onRetryPublication={() => retryPublicationEffectMutation.mutate()}
             onStop={confirmStopHeldRepair}
             isPending={
               recheckPrHealthMutation.isPending ||
               retryPrAutofixMutation.isPending ||
-              stopPrAutofixMutation.isPending
+              stopPrAutofixMutation.isPending ||
+              retryPublicationEffectMutation.isPending
             }
           />
         ) : inlineDiffsCandidate && !baseBlocked ? (

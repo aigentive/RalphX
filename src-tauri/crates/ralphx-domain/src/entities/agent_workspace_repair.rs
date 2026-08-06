@@ -162,6 +162,7 @@ repair_string_enum!(AgentWorkspaceRepairOperationHoldReason {
     BaseStale => "base_stale",
     HealthEvidence => "health_evidence",
     PublishRedrive => "publish_redrive",
+    PublicationEffectAttention => "publication_effect_attention",
 });
 
 pub const PR_AUTOFIX_PRE_EXISTING_ON_BASE_PENDING_REASON: &str = "pr_autofix_pre_existing_on_base";
@@ -169,6 +170,12 @@ pub const PR_AUTOFIX_UNCHANGED_HEALTH_PENDING_REASON: &str = "pr_autofix_unchang
 pub const PR_AUTOFIX_BASE_STALE_AFTER_UPDATE_PENDING_REASON: &str =
     "pr_autofix_base_stale_after_update";
 pub const PR_AUTOFIX_HEAD_REDRIVE_PENDING_REASON_PREFIX: &str = "pr_autofix_head_redrive:";
+/// Mirrors `CONTINUATION_OPEN_EFFECT_ATTENTION_REASON` owned by
+/// `application::agent_workspace_publish_recovery::durable_attempt_recovery` in the root crate,
+/// which this pure domain crate cannot depend on. Kept as a literal wire-string duplicate rather
+/// than an inverted dependency; the two must stay byte-identical.
+pub const CONTINUATION_OPEN_EFFECT_ATTENTION_PENDING_REASON: &str =
+    "continuation_open_effect_attention_required";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentWorkspaceRepairAttempt {
@@ -296,6 +303,21 @@ impl AgentWorkspaceRepairAttempt {
                         .then_some(AgentWorkspaceRepairOperationHoldReason::CiRerunPending)
                     })
             }
+        } else if matches!(
+            self.phase,
+            AgentWorkspaceRepairPhase::ContinuationPending | AgentWorkspaceRepairPhase::Continuing
+        ) && self
+            .pending_reasons
+            .iter()
+            .any(|reason| reason == CONTINUATION_OPEN_EFFECT_ATTENTION_PENDING_REASON)
+        {
+            // Additive branch: a continuation stuck behind an unresolved publication effect
+            // (push/PR mutation whose outcome is still unproven) needs a distinct manual escape
+            // hatch. This deliberately falls through to the same Held stage/status/
+            // automatic_continuation=false shape as the Ready hold branch below, rather than
+            // preserving the Publishing stage — after Phases 1-2 this state only survives when no
+            // automatic path can fix it, so Held is the accurate signal.
+            Some(AgentWorkspaceRepairOperationHoldReason::PublicationEffectAttention)
         } else {
             None
         };
@@ -409,6 +431,27 @@ impl AgentWorkspaceRepairEffect {
             return Err("repair effect completion cannot predate creation".to_string());
         }
         Ok(())
+    }
+
+    /// True when the remote is still exactly at the pre-push state this effect recorded, which
+    /// proves the intended mutation never reached the remote. Ambiguous shapes return false: a
+    /// missing OID proof is not evidence of anything.
+    pub fn remote_matches_recorded_precondition(&self, remote_oid: Option<&str>) -> bool {
+        (self.expected_remote_absent && remote_oid.is_none())
+            || (!self.expected_remote_absent && remote_oid == self.expected_remote_oid.as_deref())
+    }
+
+    /// True when the effect carries the exact OID proof both reconciliation directions require.
+    pub fn has_exact_remote_oid_proof(&self) -> bool {
+        self.intended_head_oid
+            .as_deref()
+            .is_some_and(|oid| !oid.trim().is_empty())
+            && ((self.expected_remote_absent && self.expected_remote_oid.is_none())
+                || (!self.expected_remote_absent
+                    && self
+                        .expected_remote_oid
+                        .as_deref()
+                        .is_some_and(|oid| !oid.trim().is_empty())))
     }
 }
 
