@@ -15,13 +15,15 @@ use super::publish_resilience::{
     observed_workspace_repair_push_outcome, prepare_agent_workspace_repair_pr_handoff_effect,
     prepare_agent_workspace_repair_push_attempt, push_agent_workspace_repair_branch,
     reconcile_agent_workspace_repair_pr_handoff,
-    reconcile_linked_plan_agent_workspace_repair_pr_handoff, repair_pr_handoff_from_observed_push,
+    reconcile_linked_plan_agent_workspace_repair_pr_handoff,
+    reconcile_open_agent_workspace_repair_push_effect, repair_pr_handoff_from_observed_push,
     retarget_agent_workspace_repair_pr_handoff,
     try_acquire_agent_workspace_repair_publish_continuation_guard,
     verify_agent_workspace_repair_pr_handoff, verify_workspace_repair_push_remote_precondition,
-    AgentWorkspaceRepairPrHandoff, AgentWorkspaceRepairPrHandoffResult,
-    AgentWorkspaceRepairPublishContinuation, AgentWorkspaceRepairPushOutcome,
-    AgentWorkspaceRepairPushRequest, PublishAfterRepairPushError, RepairPrHandoffVerification,
+    AgentWorkspaceRepairOpenPushEffectReconciliation, AgentWorkspaceRepairPrHandoff,
+    AgentWorkspaceRepairPrHandoffResult, AgentWorkspaceRepairPublishContinuation,
+    AgentWorkspaceRepairPushOutcome, AgentWorkspaceRepairPushRequest, PublishAfterRepairPushError,
+    RepairPrHandoffVerification,
 };
 use super::{AppState, GitService};
 use chrono::{Duration, Utc};
@@ -1950,6 +1952,37 @@ async fn startup_recovery_does_not_reacquire_while_a_push_effect_is_open() {
     let fixture = setup_rewritten_workspace_push().await;
     let (mut state, continuing, effect) = state_with_in_flight_repair_push(&fixture).await;
     state.github_service = Some(Arc::new(MockGithubService::new()));
+    // A third party advances the remote past the effect's recorded pre-push precondition, past
+    // the point recovery could ever prove exact-OID proof of either the precondition or the
+    // (never pushed) intended head. This keeps the shape genuinely ambiguous: recovery must not
+    // resolve it as either `Observed` or `NotApplied`.
+    let third_party_clone = tempfile::tempdir().expect("create third-party remote clone");
+    git(
+        third_party_clone.path(),
+        &[
+            "clone",
+            fixture.remote_path.to_str().expect("remote path"),
+            ".",
+        ],
+    );
+    git(
+        third_party_clone.path(),
+        &["config", "user.email", "third-party@example.com"],
+    );
+    git(
+        third_party_clone.path(),
+        &["config", "user.name", "Third Party"],
+    );
+    commit_empty(third_party_clone.path(), "third party concurrent head");
+    git(
+        third_party_clone.path(),
+        &[
+            "push",
+            "--force",
+            "origin",
+            &format!("HEAD:refs/heads/{}", fixture.branch),
+        ],
+    );
     let identity = workspace_target_identity(&fixture).await;
     let owner = GitTargetLeaseOwner::agent_workspace_repair(continuing.id.as_str());
     let fencing_epoch = continuing
@@ -2017,6 +2050,219 @@ async fn startup_recovery_does_not_reacquire_while_a_push_effect_is_open() {
             .expect("lease remains auditable")
             .is_released(),
         "recovery must not reacquire while the external effect remains open"
+    );
+}
+
+#[tokio::test]
+async fn startup_recovery_clears_a_push_effect_that_never_reached_the_remote() {
+    let fixture = setup_rewritten_workspace_push().await;
+    let (mut state, continuing, effect) = state_with_in_flight_repair_push(&fixture).await;
+    state.github_service = Some(Arc::new(MockGithubService::new()));
+    let identity = workspace_target_identity(&fixture).await;
+    let owner = GitTargetLeaseOwner::agent_workspace_repair(continuing.id.as_str());
+    let fencing_epoch = continuing
+        .target_lease_epoch
+        .expect("continuing attempt has a lease epoch");
+    assert!(matches!(
+        state
+            .branch_update_repo
+            .complete_git_mutation(CompleteGitMutation {
+                identity: identity.clone(),
+                owner: owner.clone(),
+                fencing_epoch,
+                claim_id: format!("{}:push", effect.id),
+            })
+            .await
+            .expect("complete the abandoned mutation claim"),
+        crate::domain::repositories::GitAuthorityCasOutcome::Applied { .. }
+    ));
+    assert!(matches!(
+        state
+            .branch_update_repo
+            .release_target_lease(&identity, &owner, fencing_epoch)
+            .await
+            .expect("release stale continuation lease"),
+        crate::domain::repositories::GitAuthorityCasOutcome::Applied { .. }
+    ));
+
+    // Unlike `startup_recovery_does_not_reacquire_while_a_push_effect_is_open`, the remote is left
+    // exactly where the effect recorded its pre-push precondition: no push ever landed. Hold the
+    // continuation guard so this test proves only the fence-clear and lease-reacquire behavior,
+    // not the full push+PR-handoff continuation flow already covered elsewhere in this file.
+    let _busy_guard = try_acquire_agent_workspace_repair_publish_continuation_guard(
+        &fixture.workspace.conversation_id,
+    )
+    .expect("hold continuation guard while proving the not-applied fence clears");
+    recover_agent_workspace_repair_attempts_for_state(&state)
+        .await
+        .expect("clear a push effect that never reached the remote");
+
+    let reloaded_effect = state
+        .agent_workspace_repair_repo
+        .get_repair_effect_by_idempotency_key(&repair_push_effect_idempotency_key(&fixture))
+        .await
+        .expect("reload not-applied push effect")
+        .expect("not-applied push effect remains durable");
+    assert_eq!(
+        reloaded_effect.status,
+        AgentWorkspaceRepairEffectStatus::Failed
+    );
+    assert!(reloaded_effect
+        .last_error
+        .as_deref()
+        .is_some_and(|reason| reason.contains("never reached the remote")));
+    assert!(state
+        .agent_workspace_repair_repo
+        .get_open_repair_effect(&continuing.id)
+        .await
+        .expect("check cleared push effect fence")
+        .is_none());
+
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&fixture.workspace.conversation_id)
+        .await
+        .expect("read reacquired continuation")
+        .expect("reacquired continuation remains current");
+    assert_eq!(current.id, continuing.id);
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Continuing);
+    assert!(
+        current
+            .target_lease_epoch
+            .is_some_and(|epoch| epoch > fencing_epoch),
+        "clearing the fence must actually unblock lease reacquisition: {current:#?}"
+    );
+    assert!(!current
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == "continuation_open_effect_attention_required"));
+}
+
+#[tokio::test]
+async fn push_after_not_applied_effect_uses_a_distinct_key_and_keeps_the_repair_head() {
+    let fixture = setup_rewritten_workspace_push().await;
+    let (mut state, continuing, effect) = state_with_in_flight_repair_push(&fixture).await;
+    let github = Arc::new(MockGithubService::new());
+    state.github_service = Some(github.clone());
+
+    // Record a validated repair head before the fence clears, so proving it survives the retry
+    // (instead of being discarded through the successor ladder) is meaningful.
+    let expected_updated_at = continuing.updated_at;
+    let mut with_head = continuing.clone();
+    with_head.repair_head_commit = Some(fixture.local_head.clone());
+    with_head.updated_at += Duration::microseconds(1);
+    let continuing = match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: with_head,
+            expected_phase: continuing.phase,
+            expected_updated_at,
+            next_phase: continuing.phase,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("record the validated repair head before the fence clears")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("expected repair head checkpoint to apply, got {outcome:?}"),
+    };
+
+    let identity = workspace_target_identity(&fixture).await;
+    let owner = GitTargetLeaseOwner::agent_workspace_repair(continuing.id.as_str());
+    let fencing_epoch = continuing
+        .target_lease_epoch
+        .expect("continuing attempt has a lease epoch");
+    // Complete (but do not release) the abandoned mutation claim: the effect fence clears while
+    // the attempt keeps its exact lease, so the subsequent push below needs no reacquire step.
+    assert!(matches!(
+        state
+            .branch_update_repo
+            .complete_git_mutation(CompleteGitMutation {
+                identity: identity.clone(),
+                owner: owner.clone(),
+                fencing_epoch,
+                claim_id: format!("{}:push", effect.id),
+            })
+            .await
+            .expect("complete the abandoned mutation claim"),
+        crate::domain::repositories::GitAuthorityCasOutcome::Applied { .. }
+    ));
+
+    assert_eq!(
+        reconcile_open_agent_workspace_repair_push_effect(&state, &continuing, effect.clone())
+            .await
+            .expect("reconcile the never-applied push effect"),
+        AgentWorkspaceRepairOpenPushEffectReconciliation::NotApplied
+    );
+    let base_key = repair_push_effect_idempotency_key(&fixture);
+    let closed_effect = state
+        .agent_workspace_repair_repo
+        .get_repair_effect_by_idempotency_key(&base_key)
+        .await
+        .expect("reload the terminated push effect")
+        .expect("terminated push effect remains durable");
+    assert_eq!(
+        closed_effect.status,
+        AgentWorkspaceRepairEffectStatus::Failed
+    );
+    assert!(closed_effect.completed_at.is_some());
+    assert!(state
+        .agent_workspace_repair_repo
+        .get_open_repair_effect(&continuing.id)
+        .await
+        .expect("check the terminated effect no longer holds the attempt's slot")
+        .is_none());
+
+    let started = Arc::new(tokio::sync::Notify::new());
+    github
+        .state()
+        .push_branch_with_expected_remote_oid_lease_started = Some(Arc::clone(&started));
+    let remote_update = tokio::spawn(update_remote_after_push_started(
+        started,
+        fixture.remote_path.clone(),
+        PathBuf::from(&fixture.workspace.worktree_path),
+        fixture.branch.clone(),
+        fixture.local_head.clone(),
+    ));
+    let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+    let retry = push_agent_workspace_repair_branch(
+        &github_trait,
+        Arc::clone(&state.agent_workspace_repair_repo),
+        Arc::clone(&state.branch_update_repo),
+        AgentWorkspaceRepairPushRequest {
+            target_worktree_path: Path::new(&fixture.workspace.worktree_path),
+            target_branch_name: &fixture.branch,
+            attempt: continuing.clone(),
+            expected_phase: AgentWorkspaceRepairPhase::Continuing,
+        },
+    )
+    .await
+    .expect("the retry must create a fresh effect instead of returning Conflict");
+    remote_update.await.expect("remote push should complete");
+    let AgentWorkspaceRepairPushOutcome::Observed {
+        effect: retried_effect,
+        ..
+    } = retry
+    else {
+        panic!("expected the retried push to observe a fresh remote head, got {retry:?}");
+    };
+    assert_eq!(retried_effect.idempotency_key, format!("{base_key}#2"));
+    assert_eq!(
+        retried_effect.intended_head_oid.as_deref(),
+        Some(fixture.local_head.as_str())
+    );
+
+    let current = state
+        .agent_workspace_repair_repo
+        .get_repair_attempt(&continuing.id)
+        .await
+        .expect("reload the attempt after the retried push")
+        .expect("the attempt remains current");
+    assert_ne!(current.phase, AgentWorkspaceRepairPhase::Blocked);
+    assert_eq!(
+        current.repair_head_commit.as_deref(),
+        Some(fixture.local_head.as_str())
     );
 }
 
