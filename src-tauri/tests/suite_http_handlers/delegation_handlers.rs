@@ -202,6 +202,26 @@ impl DelegatedSessionRepository for CompleteSessionOnThirdReadDelegatedSessionRe
             .await
     }
 
+    async fn list_active_by_caller_conversation(
+        &self,
+        caller_conversation_id: &str,
+    ) -> AppResult<Vec<DelegatedSession>> {
+        self.inner
+            .list_active_by_caller_conversation(caller_conversation_id)
+            .await
+    }
+
+    async fn update_job_identity(
+        &self,
+        id: &DelegatedSessionId,
+        job_id: String,
+        parent_agent_run_id: Option<String>,
+    ) -> AppResult<()> {
+        self.inner
+            .update_job_identity(id, job_id, parent_agent_run_id)
+            .await
+    }
+
     async fn update_provider_session_id(
         &self,
         id: &DelegatedSessionId,
@@ -242,6 +262,26 @@ impl DelegatedSessionRepository for RemoveWorkspaceOnRunningDelegatedSessionRepo
     ) -> AppResult<Vec<DelegatedSession>> {
         self.inner
             .get_by_parent_context(parent_context_type, parent_context_id)
+            .await
+    }
+
+    async fn list_active_by_caller_conversation(
+        &self,
+        caller_conversation_id: &str,
+    ) -> AppResult<Vec<DelegatedSession>> {
+        self.inner
+            .list_active_by_caller_conversation(caller_conversation_id)
+            .await
+    }
+
+    async fn update_job_identity(
+        &self,
+        id: &DelegatedSessionId,
+        job_id: String,
+        parent_agent_run_id: Option<String>,
+    ) -> AppResult<()> {
+        self.inner
+            .update_job_identity(id, job_id, parent_agent_run_id)
             .await
     }
 
@@ -1008,7 +1048,7 @@ async fn get_parent_context_rejects_stale_runs_before_reading_messages() {
     assert!(error.1 .0["error"]
         .as_str()
         .unwrap_or_default()
-        .contains("stale or no longer active"));
+        .contains("get_parent_context trusted run has already finished"));
 }
 
 #[tokio::test]
@@ -1624,7 +1664,8 @@ async fn native_delegation_launcher_does_not_create_http_delegation_job_state() 
                 ideation_verification: false,
             },
             inherit_context: false,
-            caller_agent_run_id: None,
+            job_id: Some("persisted-delegation-job".to_string()),
+            caller_agent_run_id: Some("persisted-parent-run".to_string()),
             target_agent_name: "ralphx-general-explorer".to_string(),
             reusable_delegated_session: None,
             task_ref: None,
@@ -1660,6 +1701,14 @@ async fn native_delegation_launcher_does_not_create_http_delegation_job_state() 
     assert_eq!(
         persisted_session.caller_conversation_id.as_deref(),
         Some(parent_conversation.id.as_str().as_str())
+    );
+    assert_eq!(
+        persisted_session.job_id.as_deref(),
+        Some("persisted-delegation-job")
+    );
+    assert_eq!(
+        persisted_session.parent_agent_run_id.as_deref(),
+        Some("persisted-parent-run")
     );
 }
 
@@ -4340,6 +4389,22 @@ async fn delegate_start_reuses_delegated_session_created_under_the_legacy_anchor
     .0;
 
     assert_eq!(started.delegated_session_id, legacy_delegated.id.as_str());
+    let refreshed = state
+        .app_state
+        .delegated_session_repo
+        .get_by_id(&legacy_delegated.id)
+        .await
+        .expect("read reused delegated session")
+        .expect("reused delegated session should remain present");
+    assert_eq!(refreshed.job_id.as_deref(), Some(started.job_id.as_str()));
+    assert_eq!(
+        refreshed.parent_agent_run_id.as_deref(),
+        Some(review_run.id.as_str().as_str())
+    );
+    assert!(
+        refreshed.caller_conversation_id.is_none(),
+        "reuse must preserve the legacy session's original caller authority"
+    );
 }
 
 #[tokio::test]
@@ -5282,7 +5347,56 @@ async fn test_routed_delegate_start_rejects_wrong_conversation_and_stale_parent_
     assert!(stale_error.1 .0["error"]
         .as_str()
         .unwrap_or_default()
-        .contains("is not the active caller run"));
+        .contains("has already finished (status: completed)"));
+}
+
+#[tokio::test]
+async fn test_routed_delegate_start_accepts_a_live_parent_run_outranked_by_a_newer_running_row() {
+    let _env_lock = codex_cli_env_lock().lock().await;
+    let (_fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
+    let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let parent = create_parent_session(&state).await;
+    let parent_conversation = state
+        .app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_ideation(parent.id.clone()))
+        .await
+        .expect("create parent conversation");
+
+    let caller = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(parent_conversation.id))
+        .await
+        .expect("create caller run");
+
+    let mut ghost = AgentRun::new(parent_conversation.id);
+    ghost.started_at = caller.started_at + chrono::Duration::seconds(60);
+    let ghost = state
+        .app_state
+        .agent_run_repo
+        .create(ghost)
+        .await
+        .expect("create ghost run");
+    assert!(ghost.started_at > caller.started_at);
+    assert_ne!(ghost.id, caller.id);
+
+    let mut headers = HeaderMap::new();
+    headers.insert("x-ralphx-agent-run-id", caller.id.as_str().parse().unwrap());
+    let started = start_delegate_with_runtime_context(
+        State(state),
+        headers,
+        Json(routed_delegate_start_request(
+            parent.id.as_str(),
+            &parent_conversation.id.as_str(),
+        )),
+    )
+    .await
+    .expect("live caller outranked by a newer running row must still be accepted")
+    .0;
+
+    assert_eq!(started.parent_agent_run_id, Some(caller.id.as_str()));
 }
 
 #[tokio::test]

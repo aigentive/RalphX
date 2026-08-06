@@ -1416,6 +1416,7 @@ async fn finalize_assistant_message_with_terminal_tool_state<R: Runtime>(
     tool_calls_json: Option<String>,
     content_blocks_json: Option<String>,
     reason: &str,
+    agent_run_id: Option<&str>,
 ) {
     let sealed_tool_calls = seal_unresolved_tool_calls_json(tool_calls_json, reason);
     let sealed_content_blocks = seal_unresolved_content_blocks_json(content_blocks_json, reason);
@@ -1427,6 +1428,7 @@ async fn finalize_assistant_message_with_terminal_tool_state<R: Runtime>(
         &Some(message_id.to_string()),
         &terminal_content_blocks,
         crate::domain::entities::ChatTimelineItemStatus::Finalized,
+        agent_run_id,
     )
     .await;
     let _ = super::chat_service_send_background::finalize_assistant_message(
@@ -1500,6 +1502,64 @@ fn stream_error_recovery_reason_code(
     }
 }
 
+async fn disarm_armed_delegation_park_after_terminal_parent<R: Runtime>(
+    app_handle: &Option<AppHandle<R>>,
+    agent_run_id: &str,
+    terminal_path: &'static str,
+) {
+    let Some(handle) = app_handle.as_ref() else {
+        return;
+    };
+    let Some(state) = handle.try_state::<AppState>() else {
+        return;
+    };
+    let run_id = AgentRunId::from_string(agent_run_id.to_string());
+    let parent_run = match state.agent_run_repo.get_by_id(&run_id).await {
+        Ok(Some(run)) if run.status != AgentRunStatus::Running => run,
+        Ok(Some(_)) => return,
+        Ok(None) => {
+            tracing::warn!(
+                agent_run_id = %run_id,
+                terminal_path,
+                "Could not disarm delegation park because the terminal parent run is missing"
+            );
+            return;
+        }
+        Err(error) => {
+            tracing::warn!(
+                agent_run_id = %run_id,
+                terminal_path,
+                %error,
+                "Could not read parent run before delegation-park disarm"
+            );
+            return;
+        }
+    };
+    match crate::application::delegation_park::DelegationParkService::disarm_armed_for_terminal_parent(
+        state.delegation_park_repo.as_ref(),
+        &parent_run.conversation_id,
+        &run_id,
+    )
+    .await
+    {
+        Ok(0) => {}
+        Ok(count) => tracing::info!(
+            conversation_id = %parent_run.conversation_id,
+            agent_run_id = %run_id,
+            disarmed = count,
+            terminal_path,
+            "Disarmed delegation parks for terminal parent run"
+        ),
+        Err(error) => tracing::warn!(
+            conversation_id = %parent_run.conversation_id,
+            agent_run_id = %run_id,
+            terminal_path,
+            %error,
+            "Failed to disarm delegation parks for terminal parent run"
+        ),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn handle_stream_success<R: Runtime>(
     agent_run_id: &str,
@@ -1547,6 +1607,9 @@ pub(super) async fn handle_stream_success<R: Runtime>(
         validation_run_repo,
     )
     .with_completion_event_delivery(external_events_repo, webhook_publisher);
+
+    // Successful turn completion is the steady state for a parked coordinator. Keep any
+    // armed park so a later delegate settlement can resume the parent conversation.
 
     // Handle task state transition (only for TaskExecution)
     if context_type == ChatContextType::TaskExecution {
@@ -2508,6 +2571,14 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
             task_repo,
         )
         .await;
+        // This path has neither a completed turn nor a successor launched by this handler, so
+        // the parent turn was abandoned and must not be resumed by a later delegate wake.
+        disarm_armed_delegation_park_after_terminal_parent(
+            app_handle,
+            agent_run_id,
+            "stream_cancelled",
+        )
+        .await;
 
         // Update pre-created message — append stop note to any content already flushed
         let (existing_content, existing_tool_calls, existing_content_blocks) =
@@ -2529,6 +2600,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
             existing_tool_calls,
             existing_content_blocks,
             "stopped",
+            Some(agent_run_id),
         )
         .await;
 
@@ -2687,6 +2759,28 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                             None,
                         )
                         .await;
+                        let retry_agent_runtime_context = if let Some(handle) = app_handle {
+                            let state = handle.state::<AppState>();
+                            let entity_status = chat_service_context::get_entity_status_for_resume(
+                                conv.context_type,
+                                &conv.context_id,
+                                Arc::clone(&state.ideation_session_repo),
+                                Arc::clone(&state.delegated_session_repo),
+                                Arc::clone(&state.task_repo),
+                            )
+                            .await;
+                            super::compose_agent_runtime_context_from_app_state(
+                                &state,
+                                conv,
+                                conv.context_type,
+                                entity_status.as_deref(),
+                                resolved_project_id.as_deref(),
+                                working_directory,
+                            )
+                            .await
+                        } else {
+                            None
+                        };
                         let retry_provider_spawnable =
                             match (retry_persona, retry_folder_refs, external_readiness) {
                             (Ok(persona), Ok((folder_refs_block, filesystem_read_roots)), Ok(())) => {
@@ -2732,6 +2826,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                     None,
                                     None,
                                     false,
+                                    retry_agent_runtime_context.as_deref(),
                                     None,
                                 )
                                 .await
@@ -2949,6 +3044,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                     let _ = agent_run_repo
                         .complete(&AgentRunId::from_string(agent_run_id))
                         .await;
+                    // This diagnostic was converted into a proven completion. Preserve any
+                    // armed park just as the ordinary stream-success path does.
                     let (existing_content, existing_tool_calls, existing_content_blocks) =
                         read_existing_message_content(chat_message_repo, pre_assistant_msg_id)
                             .await;
@@ -2964,6 +3061,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                         existing_tool_calls,
                         existing_content_blocks,
                         "validation_complete",
+                        Some(agent_run_id),
                     )
                     .await;
 
@@ -2990,6 +3088,11 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
     // Fail the agent run
     let _ = agent_run_repo
         .fail(&AgentRunId::from_string(agent_run_id), &redacted_error)
+        .await;
+    // Recovery and continuation paths return before this point. Reaching the generic failure
+    // finalizer means no successor run exists, so a later delegate wake must not resume the
+    // failed parent turn.
+    disarm_armed_delegation_park_after_terminal_parent(app_handle, agent_run_id, "stream_error")
         .await;
 
     // Gate B+C: If this is a verification child with an already-terminal parent, suppress
@@ -3029,6 +3132,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                     existing_tool_calls,
                     existing_content_blocks,
                     "verification_parent_resolved",
+                    Some(agent_run_id),
                 )
                 .await;
                 verification_handoff::inject_verification_handoff_if_missing(
@@ -3085,6 +3189,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                 existing_tool_calls,
                 existing_content_blocks,
                 "verification_auto_continue",
+                Some(agent_run_id),
             )
             .await;
 
@@ -3129,6 +3234,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
         existing_tool_calls,
         existing_content_blocks,
         "interrupted",
+        Some(agent_run_id),
     )
     .await;
 

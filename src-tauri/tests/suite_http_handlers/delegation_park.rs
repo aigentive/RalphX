@@ -12,8 +12,8 @@ use ralphx_lib::application::AppState;
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::agents::AgentHarnessKind;
 use ralphx_lib::domain::entities::{
-    AgentRun, AgentRunId, AgentRunStatus, ChatConversation, ChatConversationId, DelegatedSession,
-    DelegationPark, DelegationParkId, DelegationParkState, MessageRole, Project,
+    AgentRun, AgentRunActionKind, AgentRunId, AgentRunStatus, ChatConversation, ChatConversationId,
+    DelegatedSession, DelegationPark, DelegationParkId, DelegationParkState, MessageRole, Project,
 };
 use ralphx_lib::domain::repositories::DelegationParkRepository;
 use ralphx_lib::http_server::handlers::{park_delegate, wait_delegate};
@@ -185,6 +185,54 @@ async fn arm_park(state: &HttpServerState, parent: &ParentContext, job_ids: Vec<
     .expect("park response")
     .0
     .park_id
+}
+
+async fn create_resumed_parent(
+    state: &HttpServerState,
+    parent: &ParentContext,
+    park_id: &DelegationParkId,
+) -> ParentContext {
+    let mut run = AgentRun::new(parent.conversation.id);
+    run.action_kind = Some(AgentRunActionKind::DelegationParkWake);
+    run.action_context_id = Some(parent.conversation.id.as_str());
+    run.action_target_id = Some(park_id.as_str());
+    let run = state
+        .app_state
+        .agent_run_repo
+        .create(run)
+        .await
+        .expect("create backend-stamped resumed run");
+    ParentContext {
+        project: parent.project.clone(),
+        conversation: parent.conversation.clone(),
+        run,
+    }
+}
+
+/// Mirrors a SIGKILL'd/OOM'd process: a `running` row nobody will ever finalize.
+///
+/// `started_at` is written explicitly rather than relying on `AgentRun::new`'s `Utc::now()` stamp,
+/// so the ordering against the caller run (or against a park's `created_at`) is exact instead of
+/// racing wall-clock resolution.
+async fn seed_orphaned_running_run(
+    state: &HttpServerState,
+    conversation_id: ChatConversationId,
+    started_at: DateTime<Utc>,
+) -> AgentRun {
+    let mut orphan = AgentRun::new(conversation_id);
+    orphan.started_at = started_at;
+    let orphan = state
+        .app_state
+        .agent_run_repo
+        .create(orphan)
+        .await
+        .expect("create orphaned running run");
+    assert_eq!(
+        orphan.status,
+        AgentRunStatus::Running,
+        "an orphaned row must stay running; that is what makes it outrank a live caller"
+    );
+    orphan
 }
 
 async fn record_handoff(state: &HttpServerState, parent: &ParentContext, content: &str) {
@@ -414,6 +462,16 @@ impl DelegationParkRepository for FailingArmedParkReadRepository {
         self.inner.supersede_for_conversation(conversation_id).await
     }
 
+    async fn disarm_armed_for_parent_run(
+        &self,
+        conversation_id: &ChatConversationId,
+        parent_run_id: &AgentRunId,
+    ) -> AppResult<usize> {
+        self.inner
+            .disarm_armed_for_parent_run(conversation_id, parent_run_id)
+            .await
+    }
+
     async fn list_expired(&self, now: chrono::DateTime<Utc>) -> AppResult<Vec<DelegationPark>> {
         self.inner.list_expired(now).await
     }
@@ -531,6 +589,161 @@ async fn park_rejects_a_stale_caller_run() {
 }
 
 #[tokio::test]
+async fn park_succeeds_when_an_orphaned_running_run_outranks_the_caller() {
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let parent = create_parent_context(&state).await;
+    let (job_id, _, _) = seed_running_delegation_job(&state, &parent, "orphan-outranked").await;
+    let orphan = seed_orphaned_running_run(
+        &state,
+        parent.conversation.id,
+        parent.run.started_at + chrono::Duration::seconds(60),
+    )
+    .await;
+
+    // In production SQLite this orphan wins `ORDER BY started_at DESC` and the removed recency
+    // heuristic would reject the genuinely live caller with 409. This suite's `agent_run_repo` is
+    // the in-memory double, whose `get_active_for_conversation` returns an arbitrary `HashMap`
+    // match, so the ordering itself is asserted here rather than the double's choice of "active".
+    // `wake_is_dispatched_despite_an_orphaned_running_run` covers the deterministic reproduction.
+    assert!(
+        orphan.started_at > parent.run.started_at,
+        "the orphan must strictly outrank the caller for this regression to be meaningful"
+    );
+    assert_ne!(orphan.id, parent.run.id);
+
+    let response = park_delegate(
+        State(state.clone()),
+        park_headers(&parent),
+        Json(park_request(vec![job_id.clone()])),
+    )
+    .await
+    .expect("a live caller run parks even when an orphaned row outranks it")
+    .0;
+
+    assert!(response.parked);
+    assert_eq!(response.watched_jobs[0].job_id, job_id);
+    assert!(
+        state
+            .app_state
+            .delegation_park_repo
+            .get_armed_for_conversation(&parent.conversation.id)
+            .await
+            .expect("load armed park")
+            .is_some(),
+        "the park must be durably armed, not merely reported as parked"
+    );
+}
+
+#[tokio::test]
+async fn nested_delegate_coordinator_parks_with_an_orphaned_sibling_run() {
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let parent = create_parent_context(&state).await;
+    let (_, delegated_conversation, delegated_run) =
+        seed_running_delegation_job(&state, &parent, "nested-orphan-parent-job").await;
+
+    // The delegate is itself a coordinator: it runs in its own Delegation-context conversation and
+    // has started a sub-delegate of its own.
+    let sub_coordinator = ParentContext {
+        project: parent.project.clone(),
+        conversation: delegated_conversation,
+        run: delegated_run,
+    };
+    let (child_job, _, _) =
+        seed_running_delegation_job(&state, &sub_coordinator, "nested-orphan-child-job").await;
+    let orphan = seed_orphaned_running_run(
+        &state,
+        sub_coordinator.conversation.id,
+        sub_coordinator.run.started_at + chrono::Duration::seconds(60),
+    )
+    .await;
+    assert_ne!(orphan.id, sub_coordinator.run.id);
+
+    let response = park_delegate(
+        State(state.clone()),
+        park_headers(&sub_coordinator),
+        Json(park_request(vec![child_job.clone()])),
+    )
+    .await
+    .expect("a nested sub-coordinator parks despite an orphaned sibling in its own conversation")
+    .0;
+
+    assert!(response.parked);
+    assert_eq!(response.watched_jobs[0].job_id, child_job);
+    assert!(
+        state
+            .app_state
+            .delegation_park_repo
+            .get_armed_for_conversation(&sub_coordinator.conversation.id)
+            .await
+            .expect("load armed park")
+            .is_some(),
+        "run/conversation binding must authorize the delegated conversation directly"
+    );
+}
+
+#[tokio::test]
+async fn wake_is_dispatched_despite_an_orphaned_running_run() {
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let parent = create_parent_context(&state).await;
+    let (job_id, _, delegated_run) =
+        seed_running_delegation_job(&state, &parent, "orphan-wake").await;
+    let park_id =
+        DelegationParkId::from_string(arm_park(&state, &parent, vec![job_id.clone()]).await);
+    let park = state
+        .app_state
+        .delegation_park_repo
+        .get(&park_id)
+        .await
+        .expect("read armed park")
+        .expect("park exists");
+
+    // The coordinator ended its turn after parking, and a ghost row predating the park is the only
+    // remaining `running` row for the conversation.
+    state
+        .app_state
+        .agent_run_repo
+        .complete(&parent.run.id)
+        .await
+        .expect("complete parked coordinator run");
+    let orphan = seed_orphaned_running_run(
+        &state,
+        parent.conversation.id,
+        park.created_at - chrono::Duration::seconds(60),
+    )
+    .await;
+    assert!(
+        orphan.started_at < park.created_at,
+        "a ghost predating the park cannot represent the conversation moving on"
+    );
+
+    state
+        .app_state
+        .agent_run_repo
+        .complete(&delegated_run.id)
+        .await
+        .expect("complete delegate");
+    let settled = wait_delegate(State(state.clone()), Json(wait_request(&job_id)))
+        .await
+        .expect("production settlement")
+        .0;
+    assert_eq!(settled.status, "completed");
+
+    await_hidden_wakes_for_parent(&state, &parent, 1).await;
+    let park = state
+        .app_state
+        .delegation_park_repo
+        .get(&park_id)
+        .await
+        .expect("read park after settlement")
+        .expect("park exists");
+    assert_ne!(
+        park.state,
+        DelegationParkState::Superseded,
+        "an orphaned row predating the park must not silently supersede the wake"
+    );
+}
+
+#[tokio::test]
 async fn park_rejects_a_job_owned_by_another_conversation() {
     let state = build_state(Arc::new(AppState::new_sqlite_test()));
     let parent = create_parent_context(&state).await;
@@ -554,6 +767,155 @@ async fn park_rejects_a_job_owned_by_another_conversation() {
             .expect("read parks")
             .is_none(),
         "rejected foreign ownership must not arm a park"
+    );
+}
+
+#[tokio::test]
+async fn deadline_resumed_run_reparks_the_same_live_job_through_the_handler() {
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let parent = create_parent_context(&state).await;
+    let (job_id, _, delegated_run) =
+        seed_running_delegation_job(&state, &parent, "deadline-repark").await;
+    let prior_id =
+        DelegationParkId::from_string(arm_park(&state, &parent, vec![job_id.clone()]).await);
+    state
+        .app_state
+        .agent_run_repo
+        .complete(&parent.run.id)
+        .await
+        .expect("complete original coordinator run");
+    let prior = state
+        .app_state
+        .delegation_park_repo
+        .get(&prior_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(state
+        .app_state
+        .delegation_park_repo
+        .claim_wake(&prior.id, prior.generation)
+        .await
+        .unwrap());
+    state
+        .app_state
+        .delegation_park_repo
+        .settle(&prior.id, DelegationParkState::Expired, None)
+        .await
+        .unwrap();
+    let resumed = create_resumed_parent(&state, &parent, &prior.id).await;
+
+    let replacement_id =
+        DelegationParkId::from_string(arm_park(&state, &resumed, vec![job_id.clone()]).await);
+    let replacement = state
+        .app_state
+        .delegation_park_repo
+        .get(&replacement_id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_ne!(replacement.id, prior.id);
+    assert_eq!(replacement.parent_agent_run_id, resumed.run.id);
+    assert_eq!(replacement.state, DelegationParkState::Armed);
+    assert_eq!(replacement.jobs[0].job_id, job_id);
+    assert_eq!(replacement.jobs[0].delegated_agent_run_id, delegated_run.id);
+}
+
+#[tokio::test]
+async fn waking_repark_is_monotonic_and_an_ordinary_later_run_is_rejected() {
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let parent = create_parent_context(&state).await;
+    let (job_id, _, _) = seed_running_delegation_job(&state, &parent, "waking-repark").await;
+    let prior_id =
+        DelegationParkId::from_string(arm_park(&state, &parent, vec![job_id.clone()]).await);
+    state
+        .app_state
+        .agent_run_repo
+        .complete(&parent.run.id)
+        .await
+        .expect("complete original coordinator run");
+    let prior = state
+        .app_state
+        .delegation_park_repo
+        .get(&prior_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(state
+        .app_state
+        .delegation_park_repo
+        .claim_wake(&prior.id, prior.generation)
+        .await
+        .unwrap());
+    let resumed = create_resumed_parent(&state, &parent, &prior.id).await;
+    let replacement_id =
+        DelegationParkId::from_string(arm_park(&state, &resumed, vec![job_id.clone()]).await);
+
+    state
+        .app_state
+        .delegation_park_repo
+        .settle(&prior.id, DelegationParkState::Woken, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        state
+            .app_state
+            .delegation_park_repo
+            .get(&prior.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        DelegationParkState::Superseded
+    );
+    assert_eq!(
+        state
+            .app_state
+            .delegation_park_repo
+            .get(&replacement_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        DelegationParkState::Armed
+    );
+
+    state
+        .app_state
+        .agent_run_repo
+        .complete(&resumed.run.id)
+        .await
+        .expect("complete resumed coordinator run");
+    let ordinary = ParentContext {
+        project: parent.project.clone(),
+        conversation: parent.conversation.clone(),
+        run: state
+            .app_state
+            .agent_run_repo
+            .create(AgentRun::new(parent.conversation.id))
+            .await
+            .expect("create ordinary later run"),
+    };
+    let error = park_delegate(
+        State(state.clone()),
+        park_headers(&ordinary),
+        Json(park_request(vec![job_id])),
+    )
+    .await
+    .expect_err("ordinary later run must not inherit delegated work");
+    assert_eq!(error.0, axum::http::StatusCode::BAD_REQUEST);
+    assert_eq!(
+        state
+            .app_state
+            .delegation_park_repo
+            .get_armed_for_conversation(&parent.conversation.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .id,
+        replacement_id,
+        "rejected ordinary run must not mutate the existing armed park"
     );
 }
 
@@ -1206,6 +1568,19 @@ async fn woken_park_past_deadline_stops_blocking_parent_settlement() {
 async fn failed_park_unblocks_parent_settlement() {
     let state = build_state(Arc::new(AppState::new_sqlite_test()));
     let (parent_job, _, _, park_id) = seed_nested_wait_case(&state, "nested-failed").await;
+    let park = state
+        .app_state
+        .delegation_park_repo
+        .get(&park_id)
+        .await
+        .expect("read nested park")
+        .expect("nested park exists");
+    assert!(state
+        .app_state
+        .delegation_park_repo
+        .claim_wake(&park_id, park.generation)
+        .await
+        .expect("claim nested wake"));
     state
         .app_state
         .delegation_park_repo

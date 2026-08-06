@@ -26,16 +26,17 @@ use crate::application::agent_workspace_publish_recovery::{
     settle_redrive_delivery, PrAutofixSuccessorDecision, StalePublishRepairRecoveryOutcome,
     AGENT_WORKSPACE_PUBLISH_REDRIVE_DELIVERING_STATUS,
     AGENT_WORKSPACE_PUBLISH_REDRIVE_PENDING_STATUS, AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX,
-    AUTO_RETRY_READY_REPAIR_REASON_PREFIX, EXHAUSTED_PUBLISH_REDRIVE_CHECKED_REASON_PREFIX,
-    STALE_NEEDS_AGENT_CLASSIFICATION, STALE_REPAIR_BLOCKED_SUMMARY, STALE_REPAIR_RECOVERED_STEP,
-    STALE_TRANSIENT_CLASSIFICATION, STALE_TRANSIENT_RECOVERED_STEP,
+    AUTO_RETRY_READY_REPAIR_REASON_PREFIX, BLOCKED_STREAK_REARMED_REASON_PREFIX,
+    EXHAUSTED_PUBLISH_REDRIVE_CHECKED_REASON_PREFIX, STALE_NEEDS_AGENT_CLASSIFICATION,
+    STALE_REPAIR_BLOCKED_SUMMARY, STALE_REPAIR_RECOVERED_STEP, STALE_TRANSIENT_CLASSIFICATION,
+    STALE_TRANSIENT_RECOVERED_STEP,
 };
 use crate::application::agent_workspace_publish_repair_state::{
     held_repair_has_unpublished_head, reserve_agent_workspace_repair_dispatch,
     start_or_join_agent_workspace_repair, AgentWorkspaceRepairDispatchOutcome,
     AgentWorkspaceRepairStartOutcome, AgentWorkspaceRepairStartRequest,
-    MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES, NEEDS_HUMAN_REPAIR_REASON,
-    PRE_EXISTING_ON_BASE_REPAIR_REASON, UNCHANGED_HEALTH_REPAIR_REASON,
+    BASE_STALE_AFTER_UPDATE_REPAIR_REASON, MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES,
+    NEEDS_HUMAN_REPAIR_REASON, PRE_EXISTING_ON_BASE_REPAIR_REASON, UNCHANGED_HEALTH_REPAIR_REASON,
 };
 use crate::application::agent_workspace_review::{
     resolve_review_target, AgentWorkspaceReviewPacket, AgentWorkspaceReviewTarget,
@@ -54,14 +55,15 @@ use crate::domain::entities::{
     AgentWorkspaceRepairOutcome, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
     AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
     AgentWorkspaceReviewOutcome, AgentWorkspaceReviewTargetScope, ArtifactId, ChatConversation,
-    ChatConversationId, GitTargetIdentity, GitTargetLeaseOwner, IdeationAnalysisBaseRefKind,
-    IdeationSessionId, PlanBranch, Project, ProjectId,
+    ChatConversationId, GitMutationKind, GitTargetIdentity, GitTargetLeaseOwner,
+    IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch, Project, ProjectId,
 };
 use crate::domain::repositories::{
     AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, AgentConversationWorkspaceRepository,
     AgentRunRepository, AgentWorkspaceRepairAttemptTransition,
-    AgentWorkspaceRepairAttemptTransitionOutcome, AgentWorkspaceRepairRepository,
+    AgentWorkspaceRepairAttemptTransitionOutcome, AgentWorkspaceRepairRepository, BeginGitMutation,
     CreateAgentWorkspaceRepairEffect, CreateAgentWorkspaceRepairEffectOutcome,
+    SettleAgentWorkspaceRepairAttempt, SettleAgentWorkspaceRepairAttemptOutcome,
     StartOrJoinAgentWorkspaceRepairAttempt, StartOrJoinAgentWorkspaceRepairAttemptOutcome,
 };
 use crate::infrastructure::memory::{
@@ -2189,6 +2191,118 @@ async fn ready_automatic_repair_within_grace_remains_untouched() {
         .pending_reasons
         .iter()
         .any(|reason| reason.starts_with("auto_retry_ready_repair:")));
+}
+
+#[tokio::test]
+async fn ready_ci_and_base_stale_holds_remain_untouched_by_recovery() {
+    for (suffix, hold_kind) in [(126, "ci_rerun"), (127, "base_stale")] {
+        let state = AppState::new_test();
+        let conversation_id = conversation_id(suffix);
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(needs_agent_workspace(conversation_id.clone()))
+            .await
+            .expect("seed stationary hold workspace");
+        state
+            .agent_workspace_repair_repo
+            .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+                attempt: AgentWorkspaceRepairAttempt::new(
+                    conversation_id.clone(),
+                    AgentWorkspaceRepairSource::PrAutofix,
+                    AgentWorkspaceRepairContinuation::ResumePrSupervision,
+                    "main",
+                    false,
+                    true,
+                    false,
+                    None,
+                    chrono::Utc::now(),
+                ),
+                reason: format!("seed {hold_kind} recovery hold"),
+                verified_newer_base: false,
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("start stationary hold repair");
+        let ready = park_repair_attempt_ready_after(
+            &state,
+            &conversation_id,
+            AgentWorkspaceRepairPhase::Requested,
+            61,
+        )
+        .await;
+        let expected_updated_at = ready.updated_at;
+        let mut held = ready;
+        match hold_kind {
+            "ci_rerun" => {
+                held.ci_rerun_count = 1;
+                held.ci_rerun_fingerprint = Some("ci-rerun:held:126".to_string());
+            }
+            "base_stale" => held
+                .pending_reasons
+                .push(BASE_STALE_AFTER_UPDATE_REPAIR_REASON.to_string()),
+            _ => unreachable!(),
+        }
+        held.updated_at += chrono::Duration::microseconds(1);
+        let held = match state
+            .agent_workspace_repair_repo
+            .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+                attempt: held,
+                expected_phase: AgentWorkspaceRepairPhase::Ready,
+                expected_updated_at,
+                next_phase: AgentWorkspaceRepairPhase::Ready,
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("persist stationary Ready hold")
+        {
+            AgentWorkspaceRepairAttemptTransitionOutcome::Applied(held) => held,
+            outcome => panic!("stationary Ready hold must persist, got {outcome:?}"),
+        };
+        let events_before = state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("list pre-recovery publication events");
+
+        assert_eq!(
+            recover_agent_workspace_repair_attempts_for_state(&state)
+                .await
+                .expect("recover stationary Ready hold"),
+            0
+        );
+
+        let current = state
+            .agent_workspace_repair_repo
+            .get_current_repair_attempt(&conversation_id)
+            .await
+            .expect("reload stationary hold")
+            .expect("stationary hold remains current");
+        assert_eq!(
+            current, held,
+            "{hold_kind} recovery must not mutate the attempt"
+        );
+        assert!(!current
+            .pending_reasons
+            .iter()
+            .any(|reason| reason.starts_with(AUTO_RETRY_READY_REPAIR_REASON_PREFIX)));
+        assert!(state
+            .agent_workspace_repair_repo
+            .get_open_repair_effect(&current.id)
+            .await
+            .expect("inspect stationary hold effects")
+            .is_none());
+        assert_eq!(
+            state
+                .agent_conversation_workspace_repo
+                .list_publication_events(&conversation_id)
+                .await
+                .expect("list post-recovery publication events"),
+            events_before,
+            "{hold_kind} recovery must not emit continuation events"
+        );
+    }
 }
 
 #[tokio::test]
@@ -6908,4 +7022,1070 @@ async fn open_push_effect_reconciliation_requires_persisted_canonical_identity()
         .await
         .expect("verify invalid reconciliation identity did not create an effect")
         .is_none());
+}
+
+#[tokio::test]
+async fn open_push_effect_reconciliation_stays_pending_outside_the_continuing_phase() {
+    let (state, conversation_id, _worktree_parent, _project_dir, _identity, _owner, _epoch) =
+        seed_publish_continuation_with_lease(92).await;
+    let attempt = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load non-continuing reconciliation attempt")
+        .expect("non-continuing reconciliation attempt exists");
+    assert_eq!(
+        attempt.phase,
+        AgentWorkspaceRepairPhase::ContinuationPending
+    );
+    let mut effect = AgentWorkspaceRepairEffect::new(
+        attempt.id.clone(),
+        AgentWorkspaceRepairEffectKind::PushBranch,
+        "non-continuing-phase-bound",
+        chrono::Utc::now(),
+    );
+    effect.status = AgentWorkspaceRepairEffectStatus::InFlight;
+    // Full exact-OID proof: if the `attempt.phase != Continuing` guard were ever widened to skip
+    // termination, this proof alone would be enough to make the effect eligible for `NotApplied`.
+    effect.intended_head_oid = Some("intended-head".to_string());
+    effect.expected_remote_absent = true;
+    let effect = match state
+        .agent_workspace_repair_repo
+        .create_repair_effect(CreateAgentWorkspaceRepairEffect {
+            attempt_id: attempt.id.clone(),
+            generation: attempt.generation,
+            expected_phase: attempt.phase,
+            expected_attempt_updated_at: attempt.updated_at,
+            effect,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("persist non-continuing reconciliation effect")
+    {
+        CreateAgentWorkspaceRepairEffectOutcome::Created(effect) => effect,
+        outcome => {
+            panic!("expected non-continuing reconciliation effect to persist, got {outcome:?}")
+        }
+    };
+
+    assert_eq!(
+        reconcile_open_agent_workspace_repair_push_effect(&state, &attempt, effect.clone())
+            .await
+            .expect("reconciliation outside Continuing phase must not error"),
+        crate::application::publish_resilience::AgentWorkspaceRepairOpenPushEffectReconciliation::Pending
+    );
+    // `complete_repair_effect` CAS carries `expected_phase: Continuing`, so no effect can be
+    // terminated from `ContinuationPending` regardless of remote proof; this proves the bound
+    // rather than assuming it.
+    let reloaded = state
+        .agent_workspace_repair_repo
+        .get_open_repair_effect(&attempt.id)
+        .await
+        .expect("reload non-continuing reconciliation effect")
+        .expect("non-continuing reconciliation effect remains open");
+    assert_eq!(reloaded.status, AgentWorkspaceRepairEffectStatus::InFlight);
+    assert_eq!(reloaded.updated_at, effect.updated_at);
+    assert_eq!(reloaded.completed_at, None);
+}
+
+enum ReconciliationRemoteShape {
+    /// No remote branch exists yet; the effect recorded `expected_remote_absent`.
+    Absent,
+    /// The remote is exactly at the OID the effect recorded as its pre-push precondition.
+    MatchesPrecondition,
+    /// A third party advanced the remote to a state that matches neither the recorded
+    /// pre-push precondition nor the (never pushed) intended post-push head.
+    Unrelated,
+}
+
+/// Builds a `Continuing` repair attempt with a lost target-lease authority and one durable,
+/// still-open `InFlight` push effect whose exact-OID proof and observable remote state are
+/// controlled by `shape`. The returned `TempDir` guards must stay alive for the caller's recovery
+/// call, since the workspace's `origin` remote points into them.
+struct OpenPushEffectReconciliationFixture {
+    state: AppState,
+    conversation_id: ChatConversationId,
+    identity: GitTargetIdentity,
+    _owner: GitTargetLeaseOwner,
+    old_epoch: u64,
+    attempt: AgentWorkspaceRepairAttempt,
+    effect: AgentWorkspaceRepairEffect,
+    // Held only to keep the fixture's real git worktree/project/remote directories alive for the
+    // caller's lifetime; never read directly.
+    _worktree_parent: tempfile::TempDir,
+    _project_dir: tempfile::TempDir,
+    _remote: tempfile::TempDir,
+}
+
+async fn seed_open_push_effect_reconciliation_fixture(
+    suffix: u8,
+    shape: ReconciliationRemoteShape,
+) -> OpenPushEffectReconciliationFixture {
+    let (state, conversation_id, worktree_parent, project_dir, identity, owner, old_epoch) =
+        seed_publish_continuation_with_lease(suffix).await;
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load reconciliation workspace")
+        .expect("reconciliation workspace exists");
+    let worktree_path = std::path::Path::new(&workspace.worktree_path);
+    let remote = tempfile::tempdir().expect("create reconciliation remote");
+    recovery_git(remote.path(), &["init", "--bare"]);
+    recovery_git(
+        worktree_path,
+        &[
+            "remote",
+            "add",
+            "origin",
+            remote.path().to_str().expect("remote path"),
+        ],
+    );
+
+    let pre_push_oid = if matches!(shape, ReconciliationRemoteShape::Absent) {
+        None
+    } else {
+        recovery_git(
+            worktree_path,
+            &["push", "-u", "origin", &workspace.branch_name],
+        );
+        Some(recovery_git(worktree_path, &["rev-parse", "HEAD"]))
+    };
+    recovery_git(
+        worktree_path,
+        &["commit", "--allow-empty", "-m", "repair head"],
+    );
+    let intended_head = recovery_git(worktree_path, &["rev-parse", "HEAD"]);
+    if matches!(shape, ReconciliationRemoteShape::Unrelated) {
+        let concurrent = tempfile::tempdir().expect("create concurrent reconciliation clone");
+        recovery_git(
+            concurrent.path(),
+            &["clone", remote.path().to_str().expect("remote path"), "."],
+        );
+        recovery_git(
+            concurrent.path(),
+            &["config", "user.email", "concurrent@example.com"],
+        );
+        recovery_git(
+            concurrent.path(),
+            &["config", "user.name", "Concurrent Writer"],
+        );
+        recovery_git(
+            concurrent.path(),
+            &["commit", "--allow-empty", "-m", "concurrent head"],
+        );
+        recovery_git(
+            concurrent.path(),
+            &[
+                "push",
+                "--force",
+                "origin",
+                &format!("HEAD:refs/heads/{}", workspace.branch_name),
+            ],
+        );
+    }
+
+    state
+        .branch_update_repo
+        .release_target_lease(&identity, &owner, old_epoch)
+        .await
+        .expect("release reconciliation fixture lease");
+    let mut attempt = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load reconciliation continuation")
+        .expect("reconciliation continuation exists");
+    let expected_updated_at = attempt.updated_at;
+    attempt.phase = AgentWorkspaceRepairPhase::Continuing;
+    attempt.updated_at += chrono::Duration::microseconds(1);
+    let attempt = match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase: AgentWorkspaceRepairPhase::ContinuationPending,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Continuing,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("checkpoint reconciliation continuation")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("reconciliation continuation must apply, got {outcome:?}"),
+    };
+
+    let idempotency_key = format!("reconciliation-fixture-{suffix}");
+    let mut effect = AgentWorkspaceRepairEffect::new(
+        attempt.id.clone(),
+        AgentWorkspaceRepairEffectKind::PushBranch,
+        idempotency_key,
+        chrono::Utc::now(),
+    );
+    effect.status = AgentWorkspaceRepairEffectStatus::InFlight;
+    effect.intended_head_oid = Some(intended_head);
+    match shape {
+        ReconciliationRemoteShape::Absent => effect.expected_remote_absent = true,
+        ReconciliationRemoteShape::MatchesPrecondition | ReconciliationRemoteShape::Unrelated => {
+            effect.expected_remote_oid = pre_push_oid;
+        }
+    }
+    let effect = match state
+        .agent_workspace_repair_repo
+        .create_repair_effect(CreateAgentWorkspaceRepairEffect {
+            attempt_id: attempt.id.clone(),
+            generation: attempt.generation,
+            expected_phase: attempt.phase,
+            expected_attempt_updated_at: attempt.updated_at,
+            effect,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("persist reconciliation fixture effect")
+    {
+        CreateAgentWorkspaceRepairEffectOutcome::Created(effect) => effect,
+        outcome => panic!("expected reconciliation fixture effect to persist, got {outcome:?}"),
+    };
+
+    OpenPushEffectReconciliationFixture {
+        state,
+        conversation_id,
+        identity,
+        _owner: owner,
+        old_epoch,
+        attempt,
+        effect,
+        _worktree_parent: worktree_parent,
+        _project_dir: project_dir,
+        _remote: remote,
+    }
+}
+
+#[tokio::test]
+async fn not_applied_push_effect_clears_the_fence_and_reacquires_the_lease() {
+    let fixture = seed_open_push_effect_reconciliation_fixture(
+        93,
+        ReconciliationRemoteShape::MatchesPrecondition,
+    )
+    .await;
+    let (state, conversation_id, identity, old_epoch, effect) = (
+        fixture.state,
+        fixture.conversation_id,
+        fixture.identity,
+        fixture.old_epoch,
+        fixture.effect,
+    );
+    let _busy_guard =
+        try_acquire_agent_workspace_repair_publish_continuation_guard(&conversation_id)
+            .expect("hold continuation guard while proving the fence clears");
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("reconcile a not-applied push effect"),
+        0
+    );
+
+    let reloaded_effect = state
+        .agent_workspace_repair_repo
+        .get_repair_effect_by_idempotency_key(&effect.idempotency_key)
+        .await
+        .expect("reload not-applied push effect")
+        .expect("not-applied push effect remains durable");
+    assert_eq!(
+        reloaded_effect.status,
+        AgentWorkspaceRepairEffectStatus::Failed
+    );
+    assert!(reloaded_effect
+        .last_error
+        .as_deref()
+        .is_some_and(|reason| reason.contains("never reached the remote")));
+    assert!(state
+        .agent_workspace_repair_repo
+        .get_open_repair_effect(&effect.attempt_id)
+        .await
+        .expect("check not-applied push effect fence")
+        .is_none());
+
+    // The fence clearing must actually unblock: normal reacquire-lease recovery proceeds and the
+    // continuation is re-driven under a fresh epoch, exactly like the already-observed case.
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload not-applied continuation")
+        .expect("not-applied continuation remains current");
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Continuing);
+    assert!(current
+        .target_lease_epoch
+        .is_some_and(|epoch| epoch > old_epoch));
+    assert!(state
+        .branch_update_repo
+        .get_target_lease(&identity)
+        .await
+        .expect("reload not-applied lease")
+        .expect("not-applied lease remains durable")
+        .active_mutation()
+        .is_none());
+
+    let events = state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("list not-applied continuation events");
+    assert!(events
+        .iter()
+        .any(|event| event.step == "continuation_effect_not_applied"));
+    assert!(!events
+        .iter()
+        .any(|event| event.step == "continuation_open_effect_attention_required"));
+    assert!(!current
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == "continuation_open_effect_attention_required"));
+}
+
+#[tokio::test]
+async fn not_applied_push_effect_covers_the_expected_remote_absent_shape() {
+    let fixture =
+        seed_open_push_effect_reconciliation_fixture(94, ReconciliationRemoteShape::Absent).await;
+    let (state, conversation_id, effect) = (fixture.state, fixture.conversation_id, fixture.effect);
+    let _busy_guard =
+        try_acquire_agent_workspace_repair_publish_continuation_guard(&conversation_id)
+            .expect("hold continuation guard for the absent-remote not-applied case");
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("reconcile an absent-remote not-applied push effect"),
+        0
+    );
+
+    let reloaded_effect = state
+        .agent_workspace_repair_repo
+        .get_repair_effect_by_idempotency_key(&effect.idempotency_key)
+        .await
+        .expect("reload absent-remote not-applied push effect")
+        .expect("absent-remote not-applied push effect remains durable");
+    assert_eq!(
+        reloaded_effect.status,
+        AgentWorkspaceRepairEffectStatus::Failed
+    );
+    assert!(state
+        .agent_workspace_repair_repo
+        .get_open_repair_effect(&effect.attempt_id)
+        .await
+        .expect("check absent-remote not-applied push effect fence")
+        .is_none());
+}
+
+#[tokio::test]
+async fn open_push_effect_reconciliation_stays_pending_for_an_unrelated_remote_oid() {
+    let fixture =
+        seed_open_push_effect_reconciliation_fixture(95, ReconciliationRemoteShape::Unrelated)
+            .await;
+    let (state, conversation_id, identity, attempt, effect) = (
+        fixture.state,
+        fixture.conversation_id,
+        fixture.identity,
+        fixture.attempt,
+        fixture.effect,
+    );
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("keep an unrelated-remote push effect fenced"),
+        0
+    );
+
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload unrelated-remote continuation")
+        .expect("unrelated-remote continuation remains current");
+    assert_eq!(current.id, attempt.id);
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Continuing);
+    assert_eq!(current.target_lease_epoch, attempt.target_lease_epoch);
+    assert!(current
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == "continuation_open_effect_recovery:1"));
+    let reloaded_effect = state
+        .agent_workspace_repair_repo
+        .get_repair_effect_by_idempotency_key(&effect.idempotency_key)
+        .await
+        .expect("reload unrelated-remote push effect")
+        .expect("unrelated-remote push effect remains open");
+    assert_eq!(
+        reloaded_effect.status,
+        AgentWorkspaceRepairEffectStatus::InFlight
+    );
+    assert!(state
+        .branch_update_repo
+        .get_target_lease(&identity)
+        .await
+        .expect("reload unrelated-remote lease")
+        .expect("unrelated-remote lease remains durable")
+        .is_released());
+}
+
+#[tokio::test]
+async fn open_push_effect_reconciliation_stays_pending_while_its_mutation_claim_is_in_flight() {
+    let (state, conversation_id, _worktree_parent, _project_dir, identity, owner, real_epoch) =
+        seed_publish_continuation_with_lease(96).await;
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load in-flight-claim reconciliation workspace")
+        .expect("in-flight-claim reconciliation workspace exists");
+    let worktree_path = std::path::Path::new(&workspace.worktree_path);
+    let remote = tempfile::tempdir().expect("create in-flight-claim remote");
+    recovery_git(remote.path(), &["init", "--bare"]);
+    recovery_git(
+        worktree_path,
+        &[
+            "remote",
+            "add",
+            "origin",
+            remote.path().to_str().expect("remote path"),
+        ],
+    );
+    recovery_git(
+        worktree_path,
+        &["push", "-u", "origin", &workspace.branch_name],
+    );
+    let pre_push_oid = recovery_git(worktree_path, &["rev-parse", "HEAD"]);
+    recovery_git(
+        worktree_path,
+        &["commit", "--allow-empty", "-m", "repair head"],
+    );
+    let intended_head = recovery_git(worktree_path, &["rev-parse", "HEAD"]);
+
+    let mut attempt = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load in-flight-claim continuation")
+        .expect("in-flight-claim continuation exists");
+    let expected_updated_at = attempt.updated_at;
+    attempt.phase = AgentWorkspaceRepairPhase::Continuing;
+    // A durable epoch that no longer matches the still-valid, still-owned real lease. This is
+    // what makes `validate_agent_workspace_repair_target_lease` return `Conflict` and enter the
+    // reconciliation branch, without releasing or otherwise disturbing the real lease/claim.
+    attempt.target_lease_epoch = Some(real_epoch + 1);
+    attempt.updated_at += chrono::Duration::microseconds(1);
+    let attempt = match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase: AgentWorkspaceRepairPhase::ContinuationPending,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Continuing,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("checkpoint in-flight-claim continuation")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("in-flight-claim continuation must apply, got {outcome:?}"),
+    };
+
+    let idempotency_key = "in-flight-claim-guard-fixture";
+    let mut effect = AgentWorkspaceRepairEffect::new(
+        attempt.id.clone(),
+        AgentWorkspaceRepairEffectKind::PushBranch,
+        idempotency_key,
+        chrono::Utc::now(),
+    );
+    effect.status = AgentWorkspaceRepairEffectStatus::InFlight;
+    effect.intended_head_oid = Some(intended_head);
+    effect.expected_remote_oid = Some(pre_push_oid);
+    let effect = match state
+        .agent_workspace_repair_repo
+        .create_repair_effect(CreateAgentWorkspaceRepairEffect {
+            attempt_id: attempt.id.clone(),
+            generation: attempt.generation,
+            expected_phase: attempt.phase,
+            expected_attempt_updated_at: attempt.updated_at,
+            effect,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("persist in-flight-claim guard effect")
+    {
+        CreateAgentWorkspaceRepairEffectOutcome::Created(effect) => effect,
+        outcome => panic!("expected in-flight-claim guard effect to persist, got {outcome:?}"),
+    };
+
+    // The real lease (still at `real_epoch`, still owned by this attempt) has a live push claim,
+    // simulating a push that may still be in flight right now.
+    state
+        .branch_update_repo
+        .begin_git_mutation(BeginGitMutation {
+            identity: identity.clone(),
+            owner: owner.clone(),
+            fencing_epoch: real_epoch,
+            claim_id: format!("{}:push", effect.id),
+            kind: GitMutationKind::Push,
+        })
+        .await
+        .expect("reserve in-flight reconciliation claim");
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("keep in-flight-claim continuation fenced"),
+        0
+    );
+
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload in-flight-claim continuation")
+        .expect("in-flight-claim continuation remains current");
+    assert_eq!(current.target_lease_epoch, Some(real_epoch + 1));
+    assert!(current
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == "continuation_open_effect_recovery:1"));
+    let reloaded_effect = state
+        .agent_workspace_repair_repo
+        .get_repair_effect_by_idempotency_key(idempotency_key)
+        .await
+        .expect("reload in-flight-claim guard effect")
+        .expect("in-flight-claim guard effect remains open");
+    assert_eq!(
+        reloaded_effect.status,
+        AgentWorkspaceRepairEffectStatus::InFlight
+    );
+    assert!(
+        state
+            .branch_update_repo
+            .get_target_lease(&identity)
+            .await
+            .expect("reload in-flight-claim guard lease")
+            .expect("in-flight-claim guard lease remains durable")
+            .active_mutation()
+            .is_some(),
+        "recovery must not touch the still-live mutation claim"
+    );
+}
+
+#[tokio::test]
+async fn continuation_recovery_failure_streak_stays_independent_of_the_open_effect_streak() {
+    let fixture = seed_open_push_effect_reconciliation_fixture(
+        97,
+        ReconciliationRemoteShape::MatchesPrecondition,
+    )
+    .await;
+    let (state, conversation_id) = (fixture.state, fixture.conversation_id);
+    {
+        let _busy_guard =
+            try_acquire_agent_workspace_repair_publish_continuation_guard(&conversation_id)
+                .expect("hold continuation guard while clearing the not-applied fence");
+        assert_eq!(
+            recover_agent_workspace_repair_attempts_for_state(&state)
+                .await
+                .expect("clear the not-applied fence before the streak-independence check"),
+            0
+        );
+    }
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload streak-independence continuation")
+        .expect("streak-independence continuation remains current");
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Continuing);
+    assert!(state
+        .agent_workspace_repair_repo
+        .get_open_repair_effect(&current.id)
+        .await
+        .expect("confirm the not-applied fence is clear")
+        .is_none());
+
+    // Break the workspace's project lookup so every following continuation attempt fails for a
+    // generic (non-open-effect) reason, exercising the independent `continuation_recovery_failure:`
+    // streak instead of the open-effect streak the fence-clearing recovery pass just used.
+    let mut workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load streak-independence workspace")
+        .expect("streak-independence workspace exists");
+    workspace.project_id =
+        ProjectId::from_string("missing-streak-independence-project".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("make streak-independence project lookup fail");
+
+    for expected_recovered in [0, 0, 1] {
+        assert_eq!(
+            recover_agent_workspace_repair_attempts_for_state(&state)
+                .await
+                .expect("bound the independent generic continuation recovery streak"),
+            expected_recovered
+        );
+    }
+
+    let blocked = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load streak-independence blocked continuation")
+        .expect("streak-independence blocked continuation remains actionable");
+    assert_eq!(blocked.phase, AgentWorkspaceRepairPhase::Blocked);
+    assert!(blocked
+        .blocker
+        .as_deref()
+        .is_some_and(|blocker| blocker.contains("failed 3 times")));
+    assert!(blocked
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == "continuation_recovery_failure:1"));
+    assert!(!blocked
+        .pending_reasons
+        .iter()
+        .any(|reason| reason.starts_with("continuation_open_effect_recovery:")));
+    assert!(!blocked
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == "continuation_open_effect_attention_required"));
+}
+
+/// Binds a completed run of a given wall-clock cost as the current attempt's reservation, for
+/// exercising the fingerprint-spend budget check.
+async fn seed_completed_run_bound_to_attempt(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    attempt_id: &crate::domain::entities::AgentWorkspaceRepairAttemptId,
+    minutes: i64,
+) {
+    let mut run = AgentRun::new(conversation_id.clone());
+    run.started_at = chrono::Utc::now() - chrono::Duration::minutes(minutes);
+    run.completed_at = Some(chrono::Utc::now());
+    run.status = AgentRunStatus::Completed;
+    let run_id = run.id.clone();
+    state
+        .agent_run_repo
+        .create(run)
+        .await
+        .expect("seed a finished repair run for fingerprint-spend accounting");
+
+    let mut attempt = state
+        .agent_workspace_repair_repo
+        .get_repair_attempt(attempt_id)
+        .await
+        .expect("load attempt to bind spend run")
+        .expect("attempt exists to bind spend run");
+    let expected_phase = attempt.phase;
+    let expected_updated_at = attempt.updated_at;
+    attempt.reserved_agent_run_id = Some(run_id);
+    attempt.updated_at += chrono::Duration::microseconds(1);
+    assert!(matches!(
+        state
+            .agent_workspace_repair_repo
+            .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+                attempt,
+                expected_phase,
+                expected_updated_at,
+                next_phase: expected_phase,
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("bind spend run to attempt"),
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_)
+    ));
+}
+
+#[tokio::test]
+async fn blocked_pr_autofix_streak_rearms_once_on_changed_evidence_within_budget() {
+    let (mut state, conversation_id, _worktree_parent, _project_dir) =
+        seed_pr_autofix_health_workspace(200).await;
+    start_blocked_pr_autofix_generation(&state, &conversation_id).await;
+
+    let old_health = failing_check_pr_health("head-streak-old", "Rust Tests");
+    let old_fingerprint = health_fingerprint(684, &old_health);
+    let blocked = block_pr_autofix_attempt_with_fingerprint(
+        &state,
+        &conversation_id,
+        Some(old_fingerprint.clone()),
+    )
+    .await;
+
+    let expected_updated_at = blocked.updated_at;
+    let mut exhausted = blocked.clone();
+    exhausted
+        .pending_reasons
+        .push(format!("{AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX}3"));
+    exhausted.updated_at += chrono::Duration::microseconds(1);
+    let exhausted = match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: exhausted,
+            expected_phase: AgentWorkspaceRepairPhase::Blocked,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Blocked,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("seed exhausted blocked streak")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("seeding exhausted blocked streak must apply, got {outcome:?}"),
+    };
+
+    let new_health = failing_check_pr_health("head-streak-new", "Lint");
+    let new_fingerprint = health_fingerprint(684, &new_health);
+    assert_ne!(old_fingerprint, new_fingerprint);
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(new_health.clone()));
+    state.github_service =
+        Some(github.clone() as Arc<dyn crate::domain::services::GithubServiceTrait>);
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("first pass resets the exhausted blocked streak"),
+        0,
+        "the re-arm pass itself must not be counted as a successor start"
+    );
+    let rearmed = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload re-armed blocked attempt")
+        .expect("re-armed blocked attempt remains current");
+    assert_eq!(rearmed.id, exhausted.id);
+    assert_eq!(rearmed.phase, AgentWorkspaceRepairPhase::Blocked);
+    assert!(
+        !rearmed
+            .pending_reasons
+            .iter()
+            .any(|reason| reason.starts_with(AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX)),
+        "a successful re-arm must reset the exhausted streak markers: {:?}",
+        rearmed.pending_reasons
+    );
+    assert!(rearmed.pending_reasons.iter().any(
+        |reason| reason == &format!("{BLOCKED_STREAK_REARMED_REASON_PREFIX}{new_fingerprint}")
+    ));
+
+    // The re-arm CAS refreshes `updated_at`, which would otherwise throttle the very next pass
+    // behind the automatic blocked-retry backoff. Age it past that backoff, exactly like a real
+    // poll tick arriving later would.
+    let expected_updated_at = rearmed.updated_at;
+    let mut aged = rearmed.clone();
+    aged.updated_at = chrono::Utc::now() - chrono::Duration::seconds(1_000);
+    assert!(matches!(
+        state
+            .agent_workspace_repair_repo
+            .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+                attempt: aged,
+                expected_phase: AgentWorkspaceRepairPhase::Blocked,
+                expected_updated_at,
+                next_phase: AgentWorkspaceRepairPhase::Blocked,
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("age re-armed attempt past the automatic blocked-retry backoff"),
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_)
+    ));
+
+    // The mock health result is single-use per fetch, and the re-arm pass already consumed the
+    // one seeded above; seed the same evidence again for the pass that evaluates the successor.
+    github.state().fetch_pr_health_result = Some(Ok(new_health));
+
+    // Delivering the successor's dispatch is out of scope here (it needs a real spawnable agent
+    // binary); the load-bearing proof is that the reset streak lets `start_or_join_agent_workspace_repair`
+    // spawn a fresh generation instead of staying parked on the exhausted streak.
+    recover_agent_workspace_repair_attempts_for_state(&state)
+        .await
+        .expect("second pass resumes the normal successor path for the new failure identity");
+    let successor = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload successor attempt")
+        .expect("successor attempt remains current");
+    assert_ne!(
+        successor.generation, rearmed.generation,
+        "with the streak reset, a fresh successor generation must start on the next pass"
+    );
+}
+
+#[tokio::test]
+async fn blocked_pr_autofix_streak_does_not_rearm_when_new_fingerprint_budget_is_exhausted() {
+    let (mut state, conversation_id, _worktree_parent, _project_dir) =
+        seed_pr_autofix_health_workspace(201).await;
+    start_blocked_pr_autofix_generation(&state, &conversation_id).await;
+
+    let old_health = failing_check_pr_health("head-budget-old", "Rust Tests");
+    let old_fingerprint = health_fingerprint(684, &old_health);
+    let new_health = failing_check_pr_health("head-budget-new", "Lint");
+    let new_fingerprint = health_fingerprint(684, &new_health);
+    assert_ne!(old_fingerprint, new_fingerprint);
+
+    // A prior, now-settled generation already spent far more than the default budget on exactly
+    // the failure identity GitHub currently reports.
+    let spent_generation = block_pr_autofix_attempt_with_fingerprint(
+        &state,
+        &conversation_id,
+        Some(new_fingerprint.clone()),
+    )
+    .await;
+    seed_completed_run_bound_to_attempt(&state, &conversation_id, &spent_generation.id, 90).await;
+    let spent_generation = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload spent generation")
+        .expect("spent generation remains current before settlement");
+    assert!(matches!(
+        state
+            .agent_workspace_repair_repo
+            .settle_repair_attempt(SettleAgentWorkspaceRepairAttempt {
+                attempt_id: spent_generation.id.clone(),
+                generation: spent_generation.generation,
+                expected_phase: AgentWorkspaceRepairPhase::Blocked,
+                expected_updated_at: spent_generation.updated_at,
+                outcome: AgentWorkspaceRepairOutcome::Failed,
+                settled_at: chrono::Utc::now(),
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("settle spent generation"),
+        SettleAgentWorkspaceRepairAttemptOutcome::Applied(_)
+    ));
+
+    start_blocked_pr_autofix_generation(&state, &conversation_id).await;
+    let blocked = block_pr_autofix_attempt_with_fingerprint(
+        &state,
+        &conversation_id,
+        Some(old_fingerprint.clone()),
+    )
+    .await;
+    let expected_updated_at = blocked.updated_at;
+    let mut exhausted = blocked.clone();
+    exhausted
+        .pending_reasons
+        .push(format!("{AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX}3"));
+    exhausted.updated_at += chrono::Duration::microseconds(1);
+    let exhausted = match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: exhausted,
+            expected_phase: AgentWorkspaceRepairPhase::Blocked,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Blocked,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("seed second exhausted blocked streak")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("seeding second exhausted blocked streak must apply, got {outcome:?}"),
+    };
+    assert_ne!(exhausted.generation, spent_generation.generation);
+
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(new_health.clone()));
+    let _ = new_health;
+    state.github_service =
+        Some(github.clone() as Arc<dyn crate::domain::services::GithubServiceTrait>);
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("an exhausted new-fingerprint budget must never reset the streak"),
+        0
+    );
+    let still_exhausted = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload still-exhausted attempt")
+        .expect("still-exhausted attempt remains current");
+    assert_eq!(still_exhausted.id, exhausted.id);
+    assert_eq!(still_exhausted.generation, exhausted.generation);
+    assert!(
+        still_exhausted
+            .pending_reasons
+            .iter()
+            .any(|reason| reason == &format!("{AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX}3")),
+        "existing park_exhausted_pr_autofix_budget behavior must be preserved when the new \
+         fingerprint's own budget is exhausted: {:?}",
+        still_exhausted.pending_reasons
+    );
+    assert!(!still_exhausted
+        .pending_reasons
+        .iter()
+        .any(|reason| reason.starts_with(BLOCKED_STREAK_REARMED_REASON_PREFIX)));
+}
+
+#[tokio::test]
+async fn blocked_pr_autofix_streak_does_not_rearm_while_a_repair_head_is_unpublished() {
+    let (mut state, conversation_id, _worktree_parent, _project_dir) =
+        seed_pr_autofix_health_workspace(203).await;
+    start_blocked_pr_autofix_generation(&state, &conversation_id).await;
+
+    let old_health = failing_check_pr_health("head-unpublished-old", "Rust Tests");
+    let old_fingerprint = health_fingerprint(684, &old_health);
+    let blocked = block_pr_autofix_attempt_with_fingerprint(
+        &state,
+        &conversation_id,
+        Some(old_fingerprint.clone()),
+    )
+    .await;
+
+    // A non-empty `repair_head_commit` with its redrive-check marker already recorded falls
+    // through the existing redrive block (`durable_attempt_recovery.rs:923-956`) without a GitHub
+    // read, and the deliberate `!has_unpublished_repair_head` guard must then skip the blocked-
+    // streak re-arm entirely rather than resetting the streak for an unpublished head.
+    let repair_head = "unpublished-repair-head".to_string();
+    let expected_updated_at = blocked.updated_at;
+    let mut exhausted = blocked.clone();
+    exhausted.repair_head_commit = Some(repair_head.clone());
+    exhausted.pending_reasons.extend([
+        format!("{AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX}3"),
+        format!("{EXHAUSTED_PUBLISH_REDRIVE_CHECKED_REASON_PREFIX}{repair_head}"),
+    ]);
+    exhausted.updated_at += chrono::Duration::microseconds(1);
+    let exhausted = match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: exhausted,
+            expected_phase: AgentWorkspaceRepairPhase::Blocked,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Blocked,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("seed exhausted blocked streak with an unpublished repair head")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("seeding exhausted blocked streak must apply, got {outcome:?}"),
+    };
+
+    let new_health = failing_check_pr_health("head-unpublished-new", "Lint");
+    let new_fingerprint = health_fingerprint(684, &new_health);
+    assert_ne!(old_fingerprint, new_fingerprint);
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(new_health));
+    state.github_service =
+        Some(github.clone() as Arc<dyn crate::domain::services::GithubServiceTrait>);
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("recovery pass must not rearm while a repair head is unpublished"),
+        0
+    );
+
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload unpublished-head blocked attempt")
+        .expect("unpublished-head blocked attempt remains current");
+    assert_eq!(current.id, exhausted.id);
+    assert_eq!(
+        current.updated_at, exhausted.updated_at,
+        "the attempt must stay untouched, not just re-converge to the same markers"
+    );
+    assert!(current
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == &format!("{AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX}3")));
+    assert!(!current
+        .pending_reasons
+        .iter()
+        .any(|reason| reason.starts_with(BLOCKED_STREAK_REARMED_REASON_PREFIX)));
+    assert_eq!(
+        github.state().fetch_pr_health_calls,
+        0,
+        "an unpublished repair head must not add an unbounded GitHub read on a parked attempt"
+    );
+}
+
+#[tokio::test]
+async fn blocked_pr_autofix_streak_rearm_guard_prevents_a_second_reset_for_the_same_identity() {
+    let (mut state, conversation_id, _worktree_parent, _project_dir) =
+        seed_pr_autofix_health_workspace(202).await;
+    start_blocked_pr_autofix_generation(&state, &conversation_id).await;
+
+    let old_health = failing_check_pr_health("head-guard-old", "Rust Tests");
+    let old_fingerprint = health_fingerprint(684, &old_health);
+    let new_health = failing_check_pr_health("head-guard-new", "Lint");
+    let new_fingerprint = health_fingerprint(684, &new_health);
+    assert_ne!(old_fingerprint, new_fingerprint);
+
+    let blocked = block_pr_autofix_attempt_with_fingerprint(
+        &state,
+        &conversation_id,
+        Some(old_fingerprint.clone()),
+    )
+    .await;
+    let expected_updated_at = blocked.updated_at;
+    let mut already_rearmed_once = blocked.clone();
+    already_rearmed_once
+        .pending_reasons
+        .push(format!("{AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX}3"));
+    already_rearmed_once.pending_reasons.push(format!(
+        "{BLOCKED_STREAK_REARMED_REASON_PREFIX}{new_fingerprint}"
+    ));
+    already_rearmed_once.updated_at += chrono::Duration::microseconds(1);
+    let seeded = match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: already_rearmed_once,
+            expected_phase: AgentWorkspaceRepairPhase::Blocked,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Blocked,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("seed already-rearmed identity guard")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("seeding already-rearmed identity guard must apply, got {outcome:?}"),
+    };
+
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(new_health));
+    state.github_service =
+        Some(github.clone() as Arc<dyn crate::domain::services::GithubServiceTrait>);
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("re-observing the same evidence must never reset the streak twice"),
+        0
+    );
+    let unchanged = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload guarded attempt")
+        .expect("guarded attempt remains current");
+    assert_eq!(unchanged.id, seeded.id);
+    assert_eq!(unchanged.updated_at, seeded.updated_at);
+    assert_eq!(unchanged.pending_reasons, seeded.pending_reasons);
 }

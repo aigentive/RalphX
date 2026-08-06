@@ -18,7 +18,6 @@ use crate::domain::repositories::{
     ProjectRepository, TaskRepository, UnbindBranchUpdateRun,
 };
 use crate::error::{AppError, AppResult};
-use chrono::{DateTime, Utc};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -428,13 +427,13 @@ async fn recover_repair_owned_git_mutation_claim(
         )
         .await;
     }
-    if exact_repair_push_precondition(&effect, remote_oid.as_deref()) {
+    if effect.remote_matches_recorded_precondition(remote_oid.as_deref()) {
         return complete_repair_claim(state.branch_update_repo.as_ref(), claim, effect.id.as_str())
             .await;
     }
 
     let reason = "repair push remote OID does not match either the recorded pre-push or intended post-push OID";
-    let failed = fail_repair_push_effect(
+    let failed = crate::application::publish_resilience::fail_agent_workspace_repair_push_effect(
         state.agent_workspace_repair_repo.as_ref(),
         &current,
         effect,
@@ -477,17 +476,7 @@ fn validate_repair_push_claim(
     {
         return Err("repair mutation claim does not match its durable push effect".to_string());
     }
-    if effect
-        .intended_head_oid
-        .as_deref()
-        .is_none_or(str::is_empty)
-        || (!effect.expected_remote_absent
-            && effect
-                .expected_remote_oid
-                .as_deref()
-                .is_none_or(str::is_empty))
-        || (effect.expected_remote_absent && effect.expected_remote_oid.is_some())
-    {
+    if !effect.has_exact_remote_oid_proof() {
         return Err("repair push effect is missing exact remote OID proof".to_string());
     }
     if matches!(effect.status, AgentWorkspaceRepairEffectStatus::Failed) {
@@ -519,14 +508,6 @@ async fn read_repair_origin_branch_oid(
         .map(Some)
 }
 
-fn exact_repair_push_precondition(
-    effect: &AgentWorkspaceRepairEffect,
-    remote_oid: Option<&str>,
-) -> bool {
-    (effect.expected_remote_absent && remote_oid.is_none())
-        || (!effect.expected_remote_absent && remote_oid == effect.expected_remote_oid.as_deref())
-}
-
 async fn observe_repair_push_effect(
     repair_repo: &dyn AgentWorkspaceRepairRepository,
     attempt: &AgentWorkspaceRepairAttempt,
@@ -542,7 +523,8 @@ async fn observe_repair_push_effect(
             serde_json::json!({ "remote_ref": remote_ref, "remote_oid": remote_oid }).to_string(),
         );
         effect.last_error = None;
-        effect.updated_at = next_repair_recovery_checkpoint_at(effect.updated_at);
+        effect.updated_at =
+            crate::application::publish_resilience::next_effect_checkpoint_at(effect.updated_at);
         effect.completed_at = Some(effect.updated_at);
     }
     match repair_repo
@@ -566,50 +548,6 @@ async fn observe_repair_push_effect(
         CompleteAgentWorkspaceRepairEffectOutcome::Missing => Err(AppError::NotFound(
             "repair push effect disappeared during recovery".to_string(),
         )),
-    }
-}
-
-async fn fail_repair_push_effect(
-    repair_repo: &dyn AgentWorkspaceRepairRepository,
-    attempt: &AgentWorkspaceRepairAttempt,
-    mut effect: AgentWorkspaceRepairEffect,
-    reason: &str,
-) -> AppResult<AgentWorkspaceRepairEffect> {
-    let expected_effect_updated_at = effect.updated_at;
-    let expected_effect_status = effect.status;
-    effect.status = AgentWorkspaceRepairEffectStatus::Failed;
-    effect.last_error = Some(reason.to_string());
-    effect.updated_at = next_repair_recovery_checkpoint_at(effect.updated_at);
-    match repair_repo
-        .complete_repair_effect(CompleteAgentWorkspaceRepairEffect {
-            attempt_id: attempt.id.clone(),
-            generation: attempt.generation,
-            expected_phase: AgentWorkspaceRepairPhase::Continuing,
-            expected_attempt_updated_at: attempt.updated_at,
-            expected_effect_updated_at,
-            expected_effect_status,
-            effect,
-            compatibility_projection: None,
-            events: Vec::new(),
-        })
-        .await?
-    {
-        CompleteAgentWorkspaceRepairEffectOutcome::Applied(effect) => Ok(*effect),
-        CompleteAgentWorkspaceRepairEffectOutcome::Stale(_) => Err(AppError::Conflict(
-            "repair push failure lost current attempt authority during recovery".to_string(),
-        )),
-        CompleteAgentWorkspaceRepairEffectOutcome::Missing => Err(AppError::NotFound(
-            "repair push effect disappeared during recovery".to_string(),
-        )),
-    }
-}
-
-fn next_repair_recovery_checkpoint_at(previous: DateTime<Utc>) -> DateTime<Utc> {
-    let now = Utc::now();
-    if now > previous {
-        now
-    } else {
-        previous + chrono::Duration::microseconds(1)
     }
 }
 

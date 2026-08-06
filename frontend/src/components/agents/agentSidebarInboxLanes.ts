@@ -15,10 +15,16 @@ export type AgentSidebarInboxLaneDescriptor = Readonly<{
 
 export type AgentSidebarInboxFilter = "recent" | "stale" | "done";
 
+export type AgentSidebarInboxEmptyState = Readonly<{
+  headline: string;
+  subline: string;
+  tone: "win" | "calm";
+}>;
+
 export type AgentSidebarInboxFilterDescriptor = Readonly<{
   filter: AgentSidebarInboxFilter;
   label: string;
-  emptyLabel: string;
+  emptyState: AgentSidebarInboxEmptyState;
 }>;
 
 export type AgeEscalationTone = "normal" | "warn" | "alert";
@@ -32,14 +38,44 @@ export type AgeEscalation = Readonly<{
 // the `needs` and `working` lane queries as two groups in one scroller, so the
 // backend still serves the same four attention lanes.
 export const AGENT_SIDEBAR_INBOX_FILTERS = [
-  { filter: "recent", label: "Recent", emptyLabel: "Nothing recent" },
-  { filter: "stale", label: "Stale", emptyLabel: "Nothing stale" },
-  { filter: "done", label: "Done", emptyLabel: "Nothing done" },
+  {
+    filter: "recent",
+    label: "Recent",
+    emptyState: {
+      headline: "Inbox zero",
+      subline: "Nothing needs you, nothing is running. Good moment to start the next thing.",
+      tone: "win",
+    },
+  },
+  {
+    filter: "stale",
+    label: "Stale",
+    emptyState: {
+      headline: "Nothing has gone stale",
+      subline: "Threads move here after two days without activity. Nothing is drifting.",
+      tone: "calm",
+    },
+  },
+  {
+    filter: "done",
+    label: "Done",
+    emptyState: {
+      headline: "Nothing finished yet",
+      subline: "Merged and closed conversations collect here once work lands.",
+      tone: "calm",
+    },
+  },
 ] as const satisfies readonly AgentSidebarInboxFilterDescriptor[];
+
+export const AGENT_SIDEBAR_INBOX_FILTERED_EMPTY: AgentSidebarInboxEmptyState = {
+  headline: "No matches",
+  subline: "No conversations match the current search and filters.",
+  tone: "calm",
+};
 
 export const AGENT_SIDEBAR_RECENT_GROUPS = [
   { lane: "needs", label: "Needs you", emptyLabel: "Nothing needs you" },
-  { lane: "working", label: "Working", emptyLabel: "Nothing working" },
+  { lane: "working", label: "Working", emptyLabel: "Nothing running" },
 ] as const satisfies readonly AgentSidebarInboxLaneDescriptor[];
 
 export function laneForInboxFilter(

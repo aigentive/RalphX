@@ -19,6 +19,8 @@ import {
 import { useChatStore } from "@/stores/chatStore";
 import { useUiStore } from "@/stores/uiStore";
 import { useAgentArtifactUiStore } from "./agentArtifactUiStore";
+import { resetAgentWorkspaceOperationDismissalsForTests } from "./agentWorkspaceOperationDismissals";
+import { resetAgentWorkspaceOperationRegistryForTests } from "./agentWorkspaceOperationRegistry";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
 import type { AgentPublishSubTabRequest } from "./agentPublishSubTab";
 import { useAgentTerminalStore } from "./agentTerminalStore";
@@ -58,6 +60,9 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   listConversationsMock: vi.fn(),
   listAgentConversationWorkspacePublicationEventsMock: vi.fn(),
   publishAgentConversationWorkspaceMock: vi.fn(),
+  recheckAgentConversationWorkspacePrHealthMock: vi.fn(),
+  retryAgentConversationWorkspacePrAutofixOverrideMock: vi.fn(),
+  stopAgentConversationWorkspacePrAutofixForFailureMock: vi.fn(),
   commitAgentConversationWorkspaceLocallyMock: vi.fn(),
   updateWorkspaceFromBaseMock: vi.fn(),
   setAgentConversationWorkspaceAutoPublishMock: vi.fn(),
@@ -207,6 +212,9 @@ const {
   listConversationsMock,
   listAgentConversationWorkspacePublicationEventsMock,
   publishAgentConversationWorkspaceMock,
+  recheckAgentConversationWorkspacePrHealthMock,
+  retryAgentConversationWorkspacePrAutofixOverrideMock,
+  stopAgentConversationWorkspacePrAutofixForFailureMock,
   commitAgentConversationWorkspaceLocallyMock,
   updateWorkspaceFromBaseMock,
   setAgentConversationWorkspaceAutoPublishMock,
@@ -814,6 +822,12 @@ vi.mock("@/api/chat", () => ({
       listAgentConversationWorkspacePublicationEventsMock(...args),
     publishAgentConversationWorkspace: (...args: unknown[]) =>
       publishAgentConversationWorkspaceMock(...args),
+    recheckAgentConversationWorkspacePrHealth: (...args: unknown[]) =>
+      recheckAgentConversationWorkspacePrHealthMock(...args),
+    retryAgentConversationWorkspacePrAutofixOverride: (...args: unknown[]) =>
+      retryAgentConversationWorkspacePrAutofixOverrideMock(...args),
+    stopAgentConversationWorkspacePrAutofixForFailure: (...args: unknown[]) =>
+      stopAgentConversationWorkspacePrAutofixForFailureMock(...args),
     commitAgentConversationWorkspaceLocally: (...args: unknown[]) =>
       commitAgentConversationWorkspaceLocallyMock(...args),
     updateAgentConversationWorkspaceFromBase: (...args: unknown[]) =>
@@ -1206,7 +1220,7 @@ vi.mock("./AgentsArtifactPane", async () => {
           }
           showReviewTab
           onSubTabChange={() => {}}
-          reviewContent={null}
+          reviewContent={() => null}
         />
       </div>
     ) : (
@@ -1753,6 +1767,8 @@ export function setupAgentsViewTest() {
   artifactPaneRenderMock.mockReset();
   realPublishPanelState.enabled = false;
   realPublishPanelState.reviewContext = null;
+  resetAgentWorkspaceOperationRegistryForTests();
+  resetAgentWorkspaceOperationDismissalsForTests();
   preloadAgentTerminalExperienceMock.mockReset();
   terminalDrawerModuleLoadedMock.mockReset();
   terminalDrawerMountMock.mockReset();

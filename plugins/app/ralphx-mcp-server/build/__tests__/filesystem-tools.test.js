@@ -28,6 +28,14 @@ describe("filesystem tools", () => {
         process.chdir(canonicalDir);
         return canonicalDir;
     }
+    function writeNumberedFile(target, lineCount, lineWidth = 24) {
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        const lines = Array.from({ length: lineCount }, (_, index) => {
+            const prefix = `line ${index + 1} `;
+            return `${prefix}${"x".repeat(Math.max(0, lineWidth - prefix.length))}`;
+        });
+        fs.writeFileSync(target, lines.join("\n"));
+    }
     it("reads a relative file from the current working directory", async () => {
         const root = makeWorkspace();
         const target = path.join(root, "src", "sample.ts");
@@ -40,7 +48,7 @@ describe("filesystem tools", () => {
         }, filesystemNotEnforced);
         const text = result.content[0]?.text ?? "";
         expect(text).toContain(`FILE: ${target}`);
-        expect(text).toContain("LINES: 2-3/4");
+        expect(text).toContain("LINES: 2-3 of 3");
         expect(text).toContain("2| line two");
         expect(text).toContain("3| line three");
     });
@@ -73,11 +81,12 @@ describe("filesystem tools", () => {
         fs.writeFileSync(path.join(root, ".env"), "TOKEN=1\n");
         const result = await handleFilesystemToolCall("fs_list_dir", { path: "." }, filesystemNotEnforced);
         const text = result.content[0]?.text ?? "";
+        const body = text.split("\n\n")[1] ?? "";
         expect(text).toContain("DIR  src/");
         expect(text).toContain("FILE visible.ts");
-        expect(text).not.toContain("dist/");
-        expect(text).not.toContain("secret.log");
-        expect(text).not.toContain(".env");
+        expect(body).not.toContain("dist/");
+        expect(body).not.toContain("secret.log");
+        expect(body).not.toContain(".env");
     });
     it("reads relative paths that resolve outside the workspace", async () => {
         const root = makeWorkspace();
@@ -156,10 +165,11 @@ describe("filesystem tools", () => {
             file_pattern: "**/*.rs",
         }, filesystemNotEnforced);
         const text = result.content[0]?.text ?? "";
+        const body = text.split("\n\n")[1] ?? "";
         expect(text).toContain("FILE_PATTERN: **/*.rs");
         expect(text).toContain("src-tauri/src/main.rs:2:     println!(\"delegate_start\");");
-        expect(text).not.toContain("README.md");
-        expect(text).not.toContain("ignored.rs");
+        expect(body).not.toContain("README.md");
+        expect(body).not.toContain("ignored.rs");
     });
     it("globs within the current working directory", async () => {
         const root = makeWorkspace();
@@ -201,7 +211,184 @@ describe("filesystem tools", () => {
             max_bytes: 128,
         }, filesystemNotEnforced);
         const text = result.content[0]?.text ?? "";
-        expect(text).toContain("TRUNCATED: true");
+        expect(text).toContain("TRUNCATED: true (stopped at max_bytes=128; continue with start_line=2)");
+        expect(text).toContain("LINES: 1-1 of 2");
+    });
+    it("reads a high-offset window from a file larger than max_bytes", async () => {
+        const root = makeWorkspace();
+        writeNumberedFile(path.join(root, "src", "large.ts"), 3200, 40);
+        const result = await handleFilesystemToolCall("fs_read_file", {
+            path: "src/large.ts",
+            start_line: 2845,
+            max_lines: 60,
+            max_bytes: 65_536,
+        }, filesystemNotEnforced);
+        const text = result.content[0]?.text ?? "";
+        expect(text).toMatch(/LINES: 2845-\d+ of 3200/);
+        expect(text).toContain("2845| line 2845 ");
+    });
+    it("reports an unreached end_line and a resume point when max_bytes truncates", async () => {
+        const root = makeWorkspace();
+        writeNumberedFile(path.join(root, "large.ts"), 100, 40);
+        const result = await handleFilesystemToolCall("fs_read_file", {
+            path: "large.ts",
+            start_line: 10,
+            end_line: 80,
+            max_bytes: 100,
+        }, filesystemNotEnforced);
+        const text = result.content[0]?.text ?? "";
+        expect(text).toMatch(/TRUNCATED: true \(stopped at max_bytes=100; requested end_line=80; continue with start_line=\d+\)/);
+    });
+    it("explains when start_line is past EOF", async () => {
+        const root = makeWorkspace();
+        writeNumberedFile(path.join(root, "large.ts"), 3200);
+        const result = await handleFilesystemToolCall("fs_read_file", { path: "large.ts", start_line: 5000 }, filesystemNotEnforced);
+        const text = result.content[0]?.text ?? "";
+        expect(text).toContain("LINES: none of 3200 (start_line=5000 is past end of file)");
+        expect(text).toContain("TRUNCATED: false");
+    });
+    it("explains gitignored glob exclusions and the flag that includes them", async () => {
+        const root = makeWorkspace();
+        const target = path.join(root, "node_modules", "lucide-react", "dist", "search.d.ts");
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.writeFileSync(path.join(root, ".gitignore"), "node_modules/\n");
+        fs.writeFileSync(target, "export type Search = unknown;\n");
+        const excluded = await handleFilesystemToolCall("fs_glob", { pattern: "**/search.d.ts" }, filesystemNotEnforced);
+        const excludedText = excluded.content[0]?.text ?? "";
+        expect(excludedText).toContain("MATCHES: 0");
+        expect(excludedText).toMatch(/NOTE: .*\.gitignore.*node_modules/);
+        expect(excludedText).toContain("respect_gitignore=false");
+        const included = await handleFilesystemToolCall("fs_glob", { pattern: "**/search.d.ts", respect_gitignore: false }, filesystemNotEnforced);
+        expect(included.content[0]?.text).toContain("node_modules/lucide-react/dist/search.d.ts");
+    });
+    it("reports gitignored and hidden entries omitted from a directory listing", async () => {
+        const root = makeWorkspace();
+        fs.writeFileSync(path.join(root, ".gitignore"), "dist/\n");
+        fs.mkdirSync(path.join(root, "dist"));
+        fs.writeFileSync(path.join(root, ".env"), "TOKEN=1\n");
+        fs.writeFileSync(path.join(root, "visible.ts"), "export {};\n");
+        const result = await handleFilesystemToolCall("fs_list_dir", { path: "." }, filesystemNotEnforced);
+        const text = result.content[0]?.text ?? "";
+        expect(text).toMatch(/NOTE: .*excluded by \.gitignore.*hidden path/);
+        expect(text).toContain("respect_gitignore=false");
+        expect(text).toContain("include_hidden=true");
+    });
+    it("reports a list entry cap only when another includable entry exists", async () => {
+        const root = makeWorkspace();
+        fs.writeFileSync(path.join(root, "a.ts"), "export {};\n");
+        fs.writeFileSync(path.join(root, "b.ts"), "export {};\n");
+        const exact = await handleFilesystemToolCall("fs_list_dir", {
+            path: ".",
+            max_entries: 2,
+            include_hidden: true,
+            respect_gitignore: false,
+        }, filesystemNotEnforced);
+        expect(exact.content[0]?.text).not.toContain("entry cap reached");
+        fs.writeFileSync(path.join(root, "c.ts"), "export {};\n");
+        const capped = await handleFilesystemToolCall("fs_list_dir", {
+            path: ".",
+            max_entries: 2,
+            include_hidden: true,
+            respect_gitignore: false,
+        }, filesystemNotEnforced);
+        expect(capped.content[0]?.text).toContain("NOTE: entry cap reached (max_entries=2); more entries exist.");
+    });
+    it("reports when fs_glob reaches max_results", async () => {
+        const root = makeWorkspace();
+        for (const name of ["a.ts", "b.ts", "c.ts"]) {
+            fs.writeFileSync(path.join(root, name), "export {};\n");
+        }
+        const result = await handleFilesystemToolCall("fs_glob", { pattern: "**/*.ts", max_results: 2 }, filesystemNotEnforced);
+        expect(result.content[0]?.text).toContain("NOTE: result cap reached (max_results=2); more matches exist.");
+    });
+    it("does not claim more glob matches when results exactly fill the cap", async () => {
+        const root = makeWorkspace();
+        for (const name of ["a.ts", "b.ts"]) {
+            fs.writeFileSync(path.join(root, name), "export {};\n");
+        }
+        const result = await handleFilesystemToolCall("fs_glob", { pattern: "**/*.ts", max_results: 2, include_hidden: true }, filesystemNotEnforced);
+        expect(result.content[0]?.text).not.toContain("result cap reached");
+    });
+    it("reports files skipped by fs_grep for exceeding max_file_bytes", async () => {
+        const root = makeWorkspace();
+        fs.writeFileSync(path.join(root, "large.ts"), "needle".repeat(100));
+        const result = await handleFilesystemToolCall("fs_grep", { pattern: "needle", max_file_bytes: 20 }, filesystemNotEnforced);
+        const text = result.content[0]?.text ?? "";
+        expect(text).toMatch(/NOTE: .*max_file_bytes=20.*large\.ts/);
+    });
+    it("reports symlinks skipped during recursive traversal", async () => {
+        const root = makeWorkspace();
+        fs.writeFileSync(path.join(root, "target.ts"), "export {};\n");
+        fs.symlinkSync(path.join(root, "target.ts"), path.join(root, "linked.ts"));
+        const result = await handleFilesystemToolCall("fs_glob", { pattern: "**/*.ts" }, filesystemNotEnforced);
+        expect(result.content[0]?.text).toMatch(/NOTE: .*symlink skipped/);
+    });
+    it("reports directories not descended at max_depth", async () => {
+        const root = makeWorkspace();
+        const target = path.join(root, "nested", "deeper", "target.ts");
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.writeFileSync(target, "export {};\n");
+        const result = await handleFilesystemToolCall("fs_glob", { pattern: "**/*.ts", max_depth: 0 }, filesystemNotEnforced);
+        expect(result.content[0]?.text).toContain("1 directory not descended at max_depth=0");
+    });
+    it("returns grep context with distinct prefixes and group separators", async () => {
+        const root = makeWorkspace();
+        fs.writeFileSync(path.join(root, "sample.ts"), ["before one", "needle one", "after one", "gap", "before two", "needle two", "after two"].join("\n"));
+        const result = await handleFilesystemToolCall("fs_grep", { pattern: "needle", context_lines: 1 }, filesystemNotEnforced);
+        const text = result.content[0]?.text ?? "";
+        expect(text).toContain("sample.ts-1- before one");
+        expect(text).toContain("sample.ts:2: needle one");
+        expect(text).toContain("sample.ts-3- after one");
+        expect(text).toMatch(/sample\.ts-3- after one\n--\nsample\.ts-5- before two/);
+    });
+    it("deduplicates overlapping grep context windows", async () => {
+        const root = makeWorkspace();
+        fs.writeFileSync(path.join(root, "sample.ts"), ["before", "needle one", "shared", "needle two", "after"].join("\n"));
+        const result = await handleFilesystemToolCall("fs_grep", { pattern: "needle", context_lines: 2 }, filesystemNotEnforced);
+        const text = result.content[0]?.text ?? "";
+        expect(text.match(/sample\.ts-3- shared/g)).toHaveLength(1);
+        expect(text).not.toContain("\n--\n");
+    });
+    it("returns one bare path per matching file in files_with_matches mode", async () => {
+        const root = makeWorkspace();
+        fs.writeFileSync(path.join(root, "a.ts"), "needle\nneedle\n");
+        fs.writeFileSync(path.join(root, "b.ts"), "needle\n");
+        const result = await handleFilesystemToolCall("fs_grep", { pattern: "needle", output_mode: "files_with_matches" }, filesystemNotEnforced);
+        const text = result.content[0]?.text ?? "";
+        expect(text).toContain("OUTPUT_MODE: files_with_matches");
+        expect(text).toContain("MATCHES: 2");
+        expect(text).toMatch(/\na\.ts\nb\.ts$/);
+        expect(text).not.toContain("a.ts:1:");
+    });
+    it("returns per-file match counts in count mode", async () => {
+        const root = makeWorkspace();
+        fs.writeFileSync(path.join(root, "a.ts"), "needle\nneedle\n");
+        fs.writeFileSync(path.join(root, "b.ts"), "needle\n");
+        const result = await handleFilesystemToolCall("fs_grep", { pattern: "needle", output_mode: "count" }, filesystemNotEnforced);
+        const text = result.content[0]?.text ?? "";
+        expect(text).toContain("OUTPUT_MODE: count");
+        expect(text).toContain("MATCHES: 2");
+        expect(text).toContain("a.ts:2");
+        expect(text).toContain("b.ts:1");
+    });
+    it("reports a grep result cap only after observing an extra match", async () => {
+        const root = makeWorkspace();
+        fs.writeFileSync(path.join(root, "a.ts"), "needle\nneedle\n");
+        const exact = await handleFilesystemToolCall("fs_grep", {
+            pattern: "needle",
+            max_results: 2,
+            include_hidden: true,
+            respect_gitignore: false,
+        }, filesystemNotEnforced);
+        expect(exact.content[0]?.text).not.toContain("result cap reached");
+        fs.writeFileSync(path.join(root, "b.ts"), "needle\n");
+        const capped = await handleFilesystemToolCall("fs_grep", {
+            pattern: "needle",
+            max_results: 2,
+            include_hidden: true,
+            respect_gitignore: false,
+        }, filesystemNotEnforced);
+        expect(capped.content[0]?.text).toContain("NOTE: result cap reached (max_results=2); more matches exist.");
     });
     it("formats tool errors with the relative path resolution root", () => {
         const root = makeWorkspace();

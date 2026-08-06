@@ -1005,6 +1005,7 @@ async fn stream_background_previews_heavy_live_tool_result() {
         ChatContextType::TaskExecution,
         "task-live-preview",
         &conversation_id,
+        None::<std::path::PathBuf>,
         Some(app.handle().clone()),
         None,
         None,

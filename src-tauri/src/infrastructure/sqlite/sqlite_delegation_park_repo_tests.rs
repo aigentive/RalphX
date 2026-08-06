@@ -363,6 +363,7 @@ async fn settle_writes_terminal_state_and_error() {
         Utc::now() + Duration::hours(1),
     );
     repo.arm(park.clone()).await.unwrap();
+    assert!(repo.claim_wake(&park.id, park.generation).await.unwrap());
 
     repo.settle(
         &park.id,
@@ -375,6 +376,78 @@ async fn settle_writes_terminal_state_and_error() {
     let loaded = repo.get(&park.id).await.unwrap().unwrap();
     assert_eq!(loaded.state, DelegationParkState::Failed);
     assert_eq!(loaded.last_error.as_deref(), Some("dispatch failed"));
+}
+
+#[tokio::test]
+async fn disarm_armed_for_parent_run_is_a_compare_and_swap_and_round_trips_storage() {
+    let (_db, repo) = setup();
+    let conversation_id = ChatConversationId::new();
+    let armed = park(conversation_id.clone(), 1, Utc::now() + Duration::hours(1));
+    let mut waking = park(conversation_id.clone(), 2, Utc::now() + Duration::hours(1));
+    waking.parent_agent_run_id = armed.parent_agent_run_id;
+    let unrelated = park(conversation_id.clone(), 3, Utc::now() + Duration::hours(1));
+    repo.arm(armed.clone()).await.unwrap();
+    repo.arm(waking.clone()).await.unwrap();
+    repo.arm(unrelated.clone()).await.unwrap();
+    assert!(repo
+        .claim_wake(&waking.id, waking.generation)
+        .await
+        .unwrap());
+
+    assert_eq!(
+        repo.disarm_armed_for_parent_run(&conversation_id, &armed.parent_agent_run_id)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        repo.disarm_armed_for_parent_run(&conversation_id, &armed.parent_agent_run_id)
+            .await
+            .unwrap(),
+        0,
+        "the same terminal path must not overwrite an already-settled park"
+    );
+    assert_eq!(
+        repo.get(&armed.id).await.unwrap().unwrap().state,
+        DelegationParkState::Disarmed
+    );
+    assert_eq!(
+        repo.get(&waking.id).await.unwrap().unwrap().state,
+        DelegationParkState::Waking,
+        "an already-claimed wake retains its own settlement authority"
+    );
+    assert_eq!(
+        repo.get(&unrelated.id).await.unwrap().unwrap().state,
+        DelegationParkState::Armed,
+        "a different parent run must remain armed"
+    );
+}
+
+#[tokio::test]
+async fn late_settle_does_not_overwrite_a_superseded_park() {
+    let (_db, repo) = setup();
+    let park = park(
+        ChatConversationId::new(),
+        1,
+        Utc::now() + Duration::hours(1),
+    );
+    repo.arm(park.clone()).await.unwrap();
+    assert!(repo.claim_wake(&park.id, park.generation).await.unwrap());
+    assert_eq!(
+        repo.supersede_for_conversation(&park.parent_conversation_id)
+            .await
+            .unwrap(),
+        1
+    );
+
+    repo.settle(&park.id, DelegationParkState::Woken, None)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        repo.get(&park.id).await.unwrap().unwrap().state,
+        DelegationParkState::Superseded
+    );
 }
 
 #[tokio::test]

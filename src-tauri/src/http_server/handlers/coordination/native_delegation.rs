@@ -1,5 +1,8 @@
 use super::*;
 use crate::domain::entities::DelegationParkState;
+use crate::http_server::handlers::trusted_run_authority::{
+    resolve_live_caller_run, TrustedRunRejection,
+};
 
 fn delegated_event_seq() -> u64 {
     u64::try_from(Utc::now().timestamp_millis()).unwrap_or_default()
@@ -476,6 +479,7 @@ async fn settle_delegation_from_run(
                     }
                 }
                 DelegationParkState::Superseded
+                | DelegationParkState::Disarmed
                 | DelegationParkState::Expired
                 | DelegationParkState::Failed => {}
             }
@@ -939,45 +943,78 @@ async fn resolve_trusted_caller_agent_run_id(
         return Ok(None);
     };
     let caller_conversation_id = ChatConversationId::from_string(caller_conversation_id);
-    let active_run = state
-        .app_state
-        .agent_run_repo
-        .get_active_for_conversation(&caller_conversation_id)
-        .await
-        .map_err(|error| {
-            json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to resolve current caller agent run: {error}"),
-            )
-        })?;
 
     let Some(trusted_parent_run_id) = trusted_parent_run_id else {
+        let active_run = state
+            .app_state
+            .agent_run_repo
+            .get_active_for_conversation(&caller_conversation_id)
+            .await
+            .map_err(|error| {
+                json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Failed to resolve current caller agent run: {error}"),
+                )
+            })?;
         return Ok(active_run.map(|run| run.id.as_str()));
     };
-    let trusted_run = state
-        .app_state
-        .agent_run_repo
-        .get_by_id(&AgentRunId::from_string(trusted_parent_run_id.to_string()))
-        .await
-        .map_err(|error| {
+
+    let trusted_run_id = AgentRunId::from_string(trusted_parent_run_id.to_string());
+    let trusted_run = resolve_live_caller_run(
+        &state.app_state.agent_run_repo,
+        &caller_conversation_id,
+        &trusted_run_id,
+    )
+    .await
+    .map_err(|rejection| match rejection {
+        TrustedRunRejection::RunNotFound => {
+            tracing::warn!(
+                conversation_id = %caller_conversation_id,
+                run_id = %trusted_run_id,
+                reason = "run_not_found",
+                "resolve_trusted_caller_agent_run_id rejected"
+            );
+            json_error(StatusCode::NOT_FOUND, "Trusted caller agent run not found")
+        }
+        TrustedRunRejection::ConversationMismatch => {
+            tracing::warn!(
+                conversation_id = %caller_conversation_id,
+                run_id = %trusted_run_id,
+                reason = "conversation_mismatch",
+                "resolve_trusted_caller_agent_run_id rejected"
+            );
+            json_error(
+                StatusCode::BAD_REQUEST,
+                "Trusted caller agent run does not belong to the caller conversation",
+            )
+        }
+        TrustedRunRejection::RunTerminal { status } => {
+            tracing::warn!(
+                conversation_id = %caller_conversation_id,
+                run_id = %trusted_run_id,
+                run_status = %status,
+                reason = "run_terminal",
+                "resolve_trusted_caller_agent_run_id rejected"
+            );
+            json_error(
+                StatusCode::CONFLICT,
+                format!("Trusted caller agent run has already finished (status: {status})"),
+            )
+        }
+        TrustedRunRejection::RepositoryError(error) => {
+            tracing::warn!(
+                conversation_id = %caller_conversation_id,
+                run_id = %trusted_run_id,
+                reason = "repository_error",
+                %error,
+                "resolve_trusted_caller_agent_run_id rejected"
+            );
             json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to validate trusted caller agent run: {error}"),
             )
-        })?
-        .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Trusted caller agent run not found"))?;
-    if trusted_run.conversation_id != caller_conversation_id {
-        return Err(json_error(
-            StatusCode::BAD_REQUEST,
-            "Trusted caller agent run does not belong to the caller conversation",
-        ));
-    }
-    if active_run.as_ref().map(|run| &run.id) != Some(&trusted_run.id) {
-        return Err(json_error(
-            StatusCode::CONFLICT,
-            "Trusted caller agent run is not the active caller run",
-        ));
-    }
+        }
+    })?;
     Ok(Some(trusted_run.id.as_str()))
 }
 
@@ -1013,6 +1050,7 @@ pub(crate) async fn start_delegate_impl_with_parent_run(
     }
     let reusable_delegated_session =
         preflight_requested_delegated_session(state, &req, &parent).await?;
+    let job_id = uuid::Uuid::new_v4().to_string();
     let launch = NativeDelegationLauncher::new(state)
         .launch(NativeDelegationLaunchRequest {
             caller_agent_name,
@@ -1028,6 +1066,7 @@ pub(crate) async fn start_delegate_impl_with_parent_run(
                 ideation_verification: parent.ideation_verification,
             },
             inherit_context: req.inherit_context,
+            job_id: Some(job_id.clone()),
             caller_agent_run_id: parent_agent_run_id,
             target_agent_name: req.agent_name.clone(),
             reusable_delegated_session,
@@ -1058,7 +1097,6 @@ pub(crate) async fn start_delegate_impl_with_parent_run(
     let approval_policy = launch.approval_policy.clone();
     let sandbox_mode = launch.sandbox_mode.clone();
 
-    let job_id = uuid::Uuid::new_v4().to_string();
     let snapshot = state
         .delegation_service
         .register_running(

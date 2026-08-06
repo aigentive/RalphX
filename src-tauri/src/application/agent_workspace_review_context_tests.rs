@@ -1,5 +1,6 @@
 use crate::application::agent_workspace_review_context::{
-    load_agent_workspace_review_presentation_context, AgentWorkspaceReviewContextReadMode,
+    install_identity_calculation_gate, load_agent_workspace_review_presentation_context,
+    AgentWorkspaceReviewContextReadMode,
 };
 use crate::application::AppState;
 use crate::domain::entities::{
@@ -13,6 +14,7 @@ use futures::future::join_all;
 use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
+use std::time::Duration;
 
 fn git(repo: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
@@ -343,4 +345,158 @@ async fn simultaneous_full_packet_requests_join_one_calculation() {
         );
         assert!(context.target.is_some());
     }
+}
+
+#[tokio::test]
+async fn workspace_review_identity_target_matches_full_packet() {
+    let (_temp, repo, state, workspace) = setup_full_context().await;
+    std::fs::write(repo.join("committed.rs"), "pub fn committed() {}\n")
+        .expect("committed file should be written");
+    git(&repo, &["add", "committed.rs"]);
+    git(&repo, &["commit", "-m", "committed workspace change"]);
+    std::fs::write(repo.join("staged.rs"), "pub fn staged() {}\n")
+        .expect("staged file should be written");
+    git(&repo, &["add", "staged.rs"]);
+    std::fs::write(repo.join("README.md"), "base\nunstaged\n")
+        .expect("tracked file should be changed");
+    std::fs::write(repo.join("untracked.rs"), "pub fn untracked() {}\n")
+        .expect("untracked file should be written");
+
+    let identity = load_agent_workspace_review_presentation_context(
+        &state,
+        &workspace,
+        AgentWorkspaceReviewContextReadMode::FullTarget,
+    )
+    .await
+    .expect("identity context should load")
+    .target
+    .expect("identity target should exist");
+    let full = load_agent_workspace_review_presentation_context(
+        &state,
+        &workspace,
+        AgentWorkspaceReviewContextReadMode::FullPacket,
+    )
+    .await
+    .expect("full packet context should load")
+    .target
+    .expect("full packet target should exist");
+
+    assert_eq!(identity.scope, full.scope);
+    assert_eq!(identity.base_ref, full.base_ref);
+    assert_eq!(identity.base_sha, full.base_sha);
+    assert_eq!(identity.head_ref, full.head_ref);
+    assert_eq!(identity.head_sha, full.head_sha);
+    assert_eq!(identity.diff_fingerprint, full.diff_fingerprint);
+    assert_eq!(identity.review_packet, Default::default());
+    assert_eq!(full.review_packet.summary.files_changed, 4);
+    assert_eq!(full.review_packet.changed_files.len(), 4);
+}
+
+#[tokio::test]
+async fn workspace_review_identity_target_matches_full_packet_when_worktree_nets_to_base() {
+    let (_temp, repo, state, workspace) = setup_full_context().await;
+    std::fs::write(repo.join("committed.rs"), "pub fn committed() {}\n")
+        .expect("committed file should be written");
+    git(&repo, &["add", "committed.rs"]);
+    git(&repo, &["commit", "-m", "committed workspace change"]);
+    std::fs::remove_file(repo.join("committed.rs")).expect("committed file should be deleted");
+
+    let identity = load_agent_workspace_review_presentation_context(
+        &state,
+        &workspace,
+        AgentWorkspaceReviewContextReadMode::FullTarget,
+    )
+    .await
+    .expect("identity context should load")
+    .target
+    .expect("identity target should exist");
+    let full = load_agent_workspace_review_presentation_context(
+        &state,
+        &workspace,
+        AgentWorkspaceReviewContextReadMode::FullPacket,
+    )
+    .await
+    .expect("full packet context should load")
+    .target
+    .expect("full packet target should exist");
+
+    assert_eq!(identity.scope, full.scope);
+    assert_eq!(identity.base_ref, full.base_ref);
+    assert_eq!(identity.base_sha, full.base_sha);
+    assert_eq!(identity.head_ref, full.head_ref);
+    assert_eq!(identity.head_sha, full.head_sha);
+    assert_eq!(identity.diff_fingerprint, full.diff_fingerprint);
+    assert_eq!(identity.review_packet, Default::default());
+    assert_eq!(full.review_packet.summary.files_changed, 1);
+    assert_eq!(full.review_packet.changed_files.len(), 1);
+}
+
+#[tokio::test]
+async fn full_packet_does_not_join_identity_only_context() {
+    let (_temp, repo, state, workspace) = setup_full_context().await;
+    for index in 0..64 {
+        std::fs::write(
+            repo.join(format!("changed-{index:02}.rs")),
+            format!("pub fn changed_{index}() {{}}\n"),
+        )
+        .expect("workspace file should be written");
+    }
+    let state = Arc::new(state);
+    let gate = install_identity_calculation_gate(repo.clone());
+    let identity_state = Arc::clone(&state);
+    let identity_workspace = workspace.clone();
+    let identity = tokio::spawn(async move {
+        load_agent_workspace_review_presentation_context(
+            identity_state.as_ref(),
+            &identity_workspace,
+            AgentWorkspaceReviewContextReadMode::FullTarget,
+        )
+        .await
+    });
+    tokio::time::timeout(Duration::from_secs(2), gate.wait_until_owner_started())
+        .await
+        .expect("identity calculation should become the coordinator owner");
+    let full_state = Arc::clone(&state);
+    let full_workspace = workspace.clone();
+    let mut full = tokio::spawn(async move {
+        load_agent_workspace_review_presentation_context(
+            full_state.as_ref(),
+            &full_workspace,
+            AgentWorkspaceReviewContextReadMode::FullPacket,
+        )
+        .await
+    });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), &mut full)
+            .await
+            .is_err(),
+        "full-packet caller must wait for the identity-only owner rather than completing sequentially"
+    );
+    gate.release();
+    let full = tokio::time::timeout(Duration::from_secs(2), full)
+        .await
+        .expect("packet-capable context should settle after the gate releases")
+        .expect("packet task should complete")
+        .expect("packet-capable context should load")
+        .target
+        .expect("full packet target should exist");
+    let identity = identity
+        .await
+        .expect("identity task should complete")
+        .expect("identity context should load")
+        .target
+        .expect("identity target should exist");
+
+    assert_eq!(
+        identity.review_packet,
+        crate::application::agent_workspace_review::AgentWorkspaceReviewPacket::default()
+    );
+    assert_eq!(identity.scope, full.scope);
+    assert_eq!(identity.base_ref, full.base_ref);
+    assert_eq!(identity.base_sha, full.base_sha);
+    assert_eq!(identity.head_ref, full.head_ref);
+    assert_eq!(identity.head_sha, full.head_sha);
+    assert_eq!(identity.diff_fingerprint, full.diff_fingerprint);
+    assert_eq!(full.review_packet.summary.files_changed, 64);
+    assert_eq!(full.review_packet.changed_files.len(), 64);
 }

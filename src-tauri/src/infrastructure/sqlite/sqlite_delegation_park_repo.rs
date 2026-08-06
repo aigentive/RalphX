@@ -368,10 +368,34 @@ impl DelegationParkRepository for SqliteDelegationParkRepo {
         self.db
             .run(move |conn| {
                 conn.execute(
-                    "UPDATE delegation_parks SET state = ?1, last_error = ?2, updated_at = ?3 WHERE id = ?4",
+                    "UPDATE delegation_parks SET state = ?1, last_error = ?2, updated_at = ?3
+                     WHERE id = ?4 AND state = 'waking'",
                     params![state.as_str(), error, updated_at, id],
                 )?;
                 Ok(())
+            })
+            .await
+    }
+
+    async fn disarm_armed_for_parent_run(
+        &self,
+        conversation_id: &ChatConversationId,
+        parent_run_id: &AgentRunId,
+    ) -> AppResult<usize> {
+        let conversation_id = conversation_id.as_str();
+        let parent_run_id = parent_run_id.as_str();
+        let updated_at = Utc::now().to_rfc3339();
+        self.db
+            .run_transaction(move |conn| {
+                conn.execute(
+                    "UPDATE delegation_parks
+                     SET state = 'disarmed', updated_at = ?1
+                     WHERE parent_conversation_id = ?2
+                       AND parent_agent_run_id = ?3
+                       AND state = 'armed'",
+                    params![updated_at, conversation_id, parent_run_id],
+                )
+                .map_err(AppError::from)
             })
             .await
     }

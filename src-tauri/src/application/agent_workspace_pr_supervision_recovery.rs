@@ -263,14 +263,23 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
 
     if let Some(state) = deps.durable_recovery_state.as_deref() {
         workspace = recover_stale_publish_repair_for_workspace_in_state(state, workspace).await?;
-        if state
+        let current_repair_attempt = state
             .agent_workspace_repair_repo
             .get_current_repair_attempt(&conversation_id)
-            .await?
+            .await?;
+        if current_repair_attempt
+            .as_ref()
             .is_some_and(|attempt| is_in_flight_durable_repair_phase(attempt.phase))
         {
             return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
                 "durable_repair_active",
+            ));
+        }
+        if current_repair_attempt.as_ref().is_some_and(|attempt| {
+            attempt.is_unsettled() && attempt.operation_snapshot().hold_reason.is_some()
+        }) {
+            return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
+                "durable_repair_held",
             ));
         }
     } else {

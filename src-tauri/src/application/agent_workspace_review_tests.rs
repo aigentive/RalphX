@@ -2299,8 +2299,63 @@ async fn start_review_blocks_monitor_when_child_chat_send_fails() {
         );
 }
 
+#[test]
+fn full_packet_rejects_workspace_mutation_between_snapshots() {
+    let (_temp, repo, base_sha) = init_repo();
+    committed_workspace_delta(&repo);
+    let project = Project::new(
+        "Workspace Review packet stability".to_string(),
+        repo.to_string_lossy().to_string(),
+    );
+    let workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+    let (reached_tx, reached_rx) = std::sync::mpsc::sync_channel(1);
+    let (resume_tx, resume_rx) = std::sync::mpsc::sync_channel(1);
+    let resolve_task = std::thread::spawn(move || {
+        let subscriber =
+            tracing_subscriber::registry().with(WorkspaceReviewGitWriteTreeGateLayer {
+                completed_write_trees: AtomicUsize::new(0),
+                reached: reached_tx,
+                resume: StdMutex::new(resume_rx),
+            });
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("review target test runtime should build");
+        tracing::subscriber::with_default(subscriber, || {
+            runtime.block_on(resolve_workspace_delta_target(
+                &workspace,
+                AgentWorkspaceReviewTargetMaterialization::FullPacket,
+            ))
+        })
+    });
+
+    reached_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("FullPacket resolution should pause after its initial snapshot");
+    std::fs::write(
+        repo.join("mutated-during-packet.rs"),
+        "pub fn changed() {}\n",
+    )
+    .expect("workspace should mutate while packet reads are gated");
+    resume_tx
+        .send(())
+        .expect("FullPacket resolution should resume after mutation");
+
+    let error = resolve_task
+        .join()
+        .expect("FullPacket resolution task should join")
+        .expect_err("unstable FullPacket capture must fail closed");
+    assert!(matches!(error, AppError::Conflict(_)));
+}
+
 #[tokio::test]
-async fn start_review_reuses_revalidated_target_without_resolving_git_again() {
+async fn confirmed_preview_materializes_full_packet_before_start() {
     let (_temp, repo, base_sha) = init_repo();
     committed_workspace_delta(&repo);
 
@@ -2316,13 +2371,11 @@ async fn start_review_reuses_revalidated_target_without_resolving_git_again() {
         Some(base_sha),
     );
     seed_conversation(&state, &workspace).await;
-    let target = resolve_review_target(&workspace, &project)
+    let mut target = resolve_review_target(&workspace, &project)
         .await
         .expect("target resolution should succeed")
         .expect("workspace delta target should exist");
-
-    let parked_repo = repo.with_extension("parked-after-confirmation");
-    std::fs::rename(&repo, &parked_repo).expect("park confirmed repository");
+    target.review_packet = AgentWorkspaceReviewPacket::default();
 
     let start = start_agent_workspace_review_with_revalidated_target_and_chat_service(
         Arc::clone(&state),
@@ -2333,10 +2386,51 @@ async fn start_review_reuses_revalidated_target_without_resolving_git_again() {
         &chat_service,
     )
     .await
-    .expect("revalidated target should avoid a second git resolution");
+    .expect("confirmed identity should rematerialize a full packet");
 
     assert!(start.started);
-    assert_eq!(chat_service.get_sent_messages().await.len(), 1);
+    let sent_messages = chat_service.get_sent_messages().await;
+    assert_eq!(sent_messages.len(), 1);
+    assert!(sent_messages[0].contains("Review packet: 1 files changed"));
+}
+
+#[tokio::test]
+async fn confirmed_preview_rejects_a_changed_target_before_start() {
+    let (_temp, repo, base_sha) = init_repo();
+    committed_workspace_delta(&repo);
+
+    let agent_client: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let state = Arc::new(AppState::new_test().with_agent_client(agent_client));
+    let chat_service = MockChatService::new();
+    let project = seed_project(&state, &repo).await;
+    let workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+    seed_conversation(&state, &workspace).await;
+    let mut confirmed_target = resolve_review_target(&workspace, &project)
+        .await
+        .expect("preview target resolution should succeed")
+        .expect("preview target should exist");
+    confirmed_target.review_packet = AgentWorkspaceReviewPacket::default();
+    commit_followup_change(&repo);
+
+    let error = start_agent_workspace_review_with_revalidated_target_and_chat_service(
+        Arc::clone(&state),
+        &workspace,
+        true,
+        None,
+        Some(confirmed_target),
+        &chat_service,
+    )
+    .await
+    .expect_err("changed target must invalidate the confirmation");
+
+    assert!(matches!(error, AppError::Conflict(_)));
+    assert!(chat_service.get_sent_messages().await.is_empty());
 }
 
 #[tokio::test]

@@ -508,6 +508,19 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         auto_merge_method: &str,
     ) -> AppResult<()>;
 
+    /// Updates automation preferences without touching the repair-owned supervision projection.
+    async fn update_pr_supervision_preferences_preserving_status(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _autofix_enabled: bool,
+        _auto_merge_desired: bool,
+        _auto_merge_method: &str,
+    ) -> AppResult<()> {
+        Err(crate::error::AppError::Infrastructure(
+            "workspace repository cannot preserve repair-owned supervision status".to_string(),
+        ))
+    }
+
     /// Remembers the failure identity a PR autofix streak exhausted itself against, so a fresh
     /// streak can recognise it instead of re-spending agents on the same evidence. Passing `None`
     /// clears the memory once GitHub reports something different.

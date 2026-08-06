@@ -595,6 +595,7 @@ pub(super) async fn finalize_no_output_assistant_message<R: Runtime>(
     conversation_id: &ChatConversationId,
     message_id: &str,
     role: &str,
+    agent_run_id: Option<&str>,
 ) {
     let placeholder_blocks = vec![
         crate::infrastructure::agents::claude::ContentBlockItem::Text {
@@ -607,6 +608,7 @@ pub(super) async fn finalize_no_output_assistant_message<R: Runtime>(
         &Some(message_id.to_string()),
         &placeholder_blocks,
         crate::domain::entities::ChatTimelineItemStatus::Finalized,
+        agent_run_id,
     )
     .await;
     let _ = finalize_assistant_message(
@@ -696,6 +698,7 @@ pub(super) async fn finalize_structured_assistant_message<R: Runtime>(
     tool_calls: &[crate::infrastructure::agents::claude::ToolCall],
     content_blocks: &[crate::infrastructure::agents::claude::ContentBlockItem],
     split_verification_transcript: bool,
+    agent_run_id: Option<&str>,
 ) -> bool {
     let event_ctx = event_context(conversation_id, &context_type, context_id);
     if split_verification_transcript {
@@ -720,6 +723,7 @@ pub(super) async fn finalize_structured_assistant_message<R: Runtime>(
                     &Some(message_id.to_string()),
                     &first_segment.content_blocks,
                     crate::domain::entities::ChatTimelineItemStatus::Finalized,
+                    agent_run_id,
                 )
                 .await;
                 messages_persisted &= finalize_assistant_message(
@@ -756,6 +760,7 @@ pub(super) async fn finalize_structured_assistant_message<R: Runtime>(
                         &Some(created_message.id.as_str().to_string()),
                         &segment.content_blocks,
                         crate::domain::entities::ChatTimelineItemStatus::Finalized,
+                        agent_run_id,
                     )
                     .await;
                     if let Some(handle) = app_handle {
@@ -794,6 +799,7 @@ pub(super) async fn finalize_structured_assistant_message<R: Runtime>(
         &Some(message_id.to_string()),
         content_blocks,
         crate::domain::entities::ChatTimelineItemStatus::Finalized,
+        agent_run_id,
     )
     .await;
     finalize_assistant_message(
@@ -820,6 +826,7 @@ pub async fn finalize_no_output_assistant_message_for_test<R: Runtime>(
     context_id: &str,
     message_id: &str,
     role: &str,
+    agent_run_id: Option<&str>,
 ) {
     let event_ctx = EventContextPayload {
         conversation_id: conversation_id.as_str().to_string(),
@@ -834,6 +841,7 @@ pub async fn finalize_no_output_assistant_message_for_test<R: Runtime>(
         conversation_id,
         message_id,
         role,
+        agent_run_id,
     )
     .await;
 }
@@ -883,6 +891,7 @@ pub async fn finalize_structured_assistant_message_for_test<R: Runtime>(
     tool_calls: &[ToolCall],
     content_blocks: &[ContentBlockItem],
     split_verification_transcript: bool,
+    agent_run_id: Option<&str>,
 ) {
     let _ = finalize_structured_assistant_message(
         chat_message_repo,
@@ -897,6 +906,7 @@ pub async fn finalize_structured_assistant_message_for_test<R: Runtime>(
         tool_calls,
         content_blocks,
         split_verification_transcript,
+        agent_run_id,
     )
     .await;
 }
@@ -1046,6 +1056,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
             context_type,
             &context_id,
             &conversation_id,
+            Some(working_directory.clone()),
             app_handle.clone(),
             Some(Arc::clone(&activity_event_repo)),
             Some(Arc::clone(&task_repo)),
@@ -1315,6 +1326,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                         &tool_calls,
                         &content_blocks,
                         split_verification_transcript,
+                        Some(agent_run_id.as_str()),
                     )
                     .await
                 } else {
@@ -1330,6 +1342,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                         &conversation_id,
                         &pre_assistant_msg_id,
                         &assistant_role,
+                        Some(agent_run_id.as_str()),
                     )
                     .await;
                     true

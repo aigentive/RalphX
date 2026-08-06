@@ -217,12 +217,37 @@ impl DelegationParkRepository for MemoryDelegationParkRepo {
         state: DelegationParkState,
         error: Option<&str>,
     ) -> AppResult<()> {
-        if let Some(park) = self.parks.write().await.get_mut(id) {
+        if let Some(park) = self
+            .parks
+            .write()
+            .await
+            .get_mut(id)
+            .filter(|park| park.state == DelegationParkState::Waking)
+        {
             park.state = state;
             park.last_error = error.map(str::to_string);
             park.updated_at = Utc::now();
         }
         Ok(())
+    }
+
+    async fn disarm_armed_for_parent_run(
+        &self,
+        conversation_id: &ChatConversationId,
+        parent_run_id: &AgentRunId,
+    ) -> AppResult<usize> {
+        let mut count = 0;
+        for park in self.parks.write().await.values_mut() {
+            if park.parent_conversation_id == *conversation_id
+                && park.parent_agent_run_id == *parent_run_id
+                && park.state == DelegationParkState::Armed
+            {
+                park.state = DelegationParkState::Disarmed;
+                park.updated_at = Utc::now();
+                count += 1;
+            }
+        }
+        Ok(count)
     }
 
     async fn supersede_for_conversation(

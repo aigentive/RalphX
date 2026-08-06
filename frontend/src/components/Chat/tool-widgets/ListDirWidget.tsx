@@ -20,6 +20,7 @@ interface DirectoryEntry {
 
 const DIRECTORY_METADATA_RE =
   /^(DIRECTORY|ENTRIES|DIRECTORIES_ONLY|INCLUDE_HIDDEN|RESPECT_GITIGNORE):/;
+const DIRECTORY_NOTE_RE = /^NOTE:\s*(.+)$/i;
 const DIRECTORY_ERROR_RE = /^ERROR:\s*(.+)$/i;
 
 function extractDirectoryPath(args: unknown): string {
@@ -35,12 +36,20 @@ function parseDirectoryEntries(result: unknown): {
   entries: DirectoryEntry[];
   error?: string;
   empty: boolean;
+  note?: string;
 } {
   const entries: DirectoryEntry[] = [];
+  const noteLines: string[] = [];
   const lines = parseToolResultAsLines(result);
 
   for (const line of lines) {
     if (DIRECTORY_METADATA_RE.test(line)) {
+      continue;
+    }
+
+    const noteMatch = line.match(DIRECTORY_NOTE_RE);
+    if (noteMatch?.[1]) {
+      noteLines.push(noteMatch[1].trim());
       continue;
     }
 
@@ -68,7 +77,11 @@ function parseDirectoryEntries(result: unknown): {
     }
   }
 
-  return { entries, empty: entries.length === 0 };
+  return {
+    entries,
+    empty: entries.length === 0,
+    ...(noteLines.length > 0 && { note: noteLines.join(" ") }),
+  };
 }
 
 function DirectoryEntryIcon({ kind }: { kind: DirectoryEntry["kind"] }) {
@@ -128,7 +141,7 @@ export const ListDirWidget = React.memo(function ListDirWidget({
             fontFamily: parsed.error ? "var(--font-mono)" : undefined,
           }}
         >
-          {parsed.error || "No entries found"}
+          {parsed.error || parsed.note || "No entries found"}
         </span>
       </WidgetCard>
     );
@@ -168,6 +181,11 @@ export const ListDirWidget = React.memo(function ListDirWidget({
           </div>
         ))}
       </div>
+      {parsed.note && (
+        <div style={{ fontSize: 10, color: colors.textMuted, paddingTop: 4 }}>
+          {parsed.note}
+        </div>
+      )}
     </WidgetCard>
   );
 });

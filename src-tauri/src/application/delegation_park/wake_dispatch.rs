@@ -1,7 +1,9 @@
 use std::time::Duration;
 
 use crate::application::chat_service::{SendCallerContext, SendMessageOptions, SendQueuePolicy};
-use crate::domain::entities::{DelegationPark, DelegationParkState, DelegationWakeReason};
+use crate::domain::entities::{
+    AgentRunActionKind, DelegationPark, DelegationParkState, DelegationWakeReason,
+};
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::delegation_config;
 
@@ -30,7 +32,13 @@ impl DelegationParkService {
         reason: DelegationWakeReason,
         settled_state: DelegationParkState,
     ) -> AppResult<()> {
-        if !self.park_repo.claim_wake(&park.id, park.generation).await? {
+        let claimed = self.park_repo.claim_wake(&park.id, park.generation).await?;
+        tracing::info!(
+            park_id = %park.id,
+            claimed,
+            "delegation_park: claim_wake outcome"
+        );
+        if !claimed {
             return Ok(());
         }
 
@@ -45,7 +53,23 @@ impl DelegationParkService {
                 return Err(error);
             }
         };
-        if active_run.is_some_and(|run| run.id != park.parent_agent_run_id) {
+        // A `running` row can be an orphan left behind by a killed process, repaired only at
+        // next app boot. Such a ghost cannot represent the conversation "moving on" if it
+        // predates this park's arm, so only a candidate that both differs from the parent run
+        // AND started after the park was armed is treated as supersession.
+        let supersedes = active_run.as_ref().is_some_and(|run| {
+            run.id != park.parent_agent_run_id && run.started_at > park.created_at
+        });
+        if supersedes {
+            let candidate = active_run.expect("checked by is_some_and above");
+            tracing::info!(
+                park_id = %park.id,
+                park_parent_agent_run_id = %park.parent_agent_run_id,
+                candidate_id = %candidate.id,
+                candidate_started_at = %candidate.started_at,
+                park_created_at = %park.created_at,
+                "delegation_park: superseding wake for a run that postdates the park"
+            );
             self.park_repo
                 .settle(&park.id, DelegationParkState::Superseded, None)
                 .await?;
@@ -136,6 +160,9 @@ impl DelegationParkService {
                     "hidden_from_ui": true,
                     "recovery_context": true,
                     "wake_reason": format!("{reason:?}").to_lowercase(),
+                    "ralphx_action_kind": AgentRunActionKind::DelegationParkWake.to_string(),
+                    "ralphx_action_context_id": park.parent_conversation_id.as_str(),
+                    "ralphx_action_target_id": park.id.as_str(),
                 })
                 .to_string(),
             ),

@@ -64,6 +64,7 @@ const { useChatMockState, useChatCalls, historyWindowCalls } = vi.hoisted(
       messages: [] as TestMessage[],
       conversation: null as { contextType: string; contextId: string } | null,
       conversations: [] as Array<{ id: string }>,
+      conversationsLoading: false,
       historyData: undefined as
         | {
             conversation: {
@@ -159,6 +160,24 @@ const {
 // Mocks
 // ============================================================================
 
+// Spy on ChatMessageList's props while delegating to the real implementation,
+// so prop-forwarding tests can assert without breaking transcript-content tests.
+const { chatMessageListPropsCalls } = vi.hoisted(() => ({
+  chatMessageListPropsCalls: [] as Array<Record<string, unknown>>,
+}));
+
+vi.mock("./ChatMessageList", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./ChatMessageList")>();
+  const React = await import("react");
+  const ChatMessageList = React.forwardRef<unknown, Record<string, unknown>>(
+    function ChatMessageListSpy(props, ref) {
+      chatMessageListPropsCalls.push(props);
+      return React.createElement(actual.ChatMessageList, { ...props, ref });
+    },
+  );
+  return { ...actual, ChatMessageList };
+});
+
 // Mock Tauri event system (already in setup.ts but ensure coverage)
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(() => Promise.resolve(() => {})),
@@ -223,7 +242,10 @@ vi.mock("@/hooks/useChat", () => ({
         isLoading: false,
       },
       sendMessage: { mutateAsync: vi.fn(), isPending: false },
-      conversations: { data: useChatMockState.conversations, isLoading: false },
+      conversations: {
+        data: useChatMockState.conversations,
+        isLoading: useChatMockState.conversationsLoading,
+      },
       switchConversation: vi.fn(),
       createConversation: vi.fn(),
     };
@@ -445,6 +467,7 @@ describe("IntegratedChatPanel", () => {
     useChatMockState.messages = [];
     useChatMockState.conversation = null;
     useChatMockState.conversations = [];
+    useChatMockState.conversationsLoading = false;
     useChatMockState.historyData = undefined;
     useChatMockState.timelineData = undefined;
     useChatMockState.timelineHasOlderMessages = false;
@@ -452,6 +475,7 @@ describe("IntegratedChatPanel", () => {
     historyWindowCalls.length = 0;
     mockQuestionStates.clear();
     mockQuestionInputParams.length = 0;
+    chatMessageListPropsCalls.length = 0;
 
     // Reset stores
     act(() => {
@@ -493,6 +517,77 @@ describe("IntegratedChatPanel", () => {
     mockChatPanelContext.streamingContentBlocks = [];
     mockChatPanelContext.streamingTasks = new Map();
     mockChatPanelContext.isFinalizing = false;
+  });
+
+  it("pins the below-transcript chrome inside a constant-height viewport", () => {
+    render(
+      <TestWrapper>
+        <IntegratedChatPanel projectId="project-1" />
+      </TestWrapper>,
+    );
+
+    const chrome = screen.getByTestId("chat-below-transcript-chrome");
+    expect(chrome).toHaveClass("absolute", "inset-x-0", "bottom-0", "z-20");
+    expect(chrome).not.toHaveClass("shrink-0");
+    expect(chrome).not.toHaveClass("justify-end");
+    expect(chrome.parentElement).toHaveClass("relative", "flex-1", "min-h-0");
+  });
+
+  it("does not draw a divider between the transcript and composer chrome", () => {
+    render(
+      <TestWrapper>
+        <IntegratedChatPanel projectId="project-1" />
+      </TestWrapper>,
+    );
+
+    const chromeBackdrop = screen.getByTestId(
+      "chat-below-transcript-chrome",
+    ).firstElementChild;
+    const inputContainer = screen.getByTestId("chat-input-container");
+
+    expect(chromeBackdrop).not.toHaveStyle({ borderTopWidth: "1px" });
+    expect(inputContainer).not.toHaveStyle({ borderTopWidth: "1px" });
+  });
+
+  it("reserves the measured composer inset in the empty transcript branch", () => {
+    render(
+      <TestWrapper>
+        <IntegratedChatPanel projectId="project-1" />
+      </TestWrapper>,
+    );
+
+    expect(screen.getByTestId("integrated-chat-messages")).toHaveStyle({
+      paddingBottom: "var(--chat-bottom-inset, 0px)",
+    });
+  });
+
+  it("reserves the measured composer inset in the loading transcript branch", () => {
+    useChatMockState.conversationsLoading = true;
+
+    render(
+      <TestWrapper>
+        <IntegratedChatPanel projectId="project-1" />
+      </TestWrapper>,
+    );
+
+    expect(screen.getByTestId("integrated-chat-messages")).toHaveStyle({
+      paddingBottom: "var(--chat-bottom-inset, 0px)",
+    });
+  });
+
+  it("collapses composer padding when a read-only host renders no composer", () => {
+    render(
+      <TestWrapper>
+        <IntegratedChatPanel
+          projectId="project-1"
+          renderComposer={() => null}
+        />
+      </TestWrapper>,
+    );
+
+    const inputShell = screen.getByTestId("integrated-chat-input-shell");
+    expect(inputShell.lastElementChild).toHaveClass("empty:p-0");
+    expect(inputShell.lastElementChild).toBeEmptyDOMElement();
   });
 
   it("deduplicates question bridges and prioritizes the conversation question", () => {
@@ -2273,6 +2368,39 @@ describe("IntegratedChatPanel", () => {
       expect(
         screen.getByText("Existing conversation content"),
       ).toBeInTheDocument();
+    });
+
+    it("forwards storeContextKey to ChatMessageList as contextKey", async () => {
+      mockChatPanelContext.storeContextKey = "project:conv-1";
+      mockChatPanelContext.currentContextType = "project";
+      mockChatPanelContext.currentContextId = "conv-1";
+      mockChatPanelContext.activeConversationId = "conv-1";
+      useChatMockState.conversations = [{ id: "conv-1" }];
+      useChatMockState.conversation = {
+        contextType: "project",
+        contextId: "conv-1",
+      };
+      useChatMockState.messages = [
+        {
+          id: "msg-1",
+          role: "user",
+          content: "Existing conversation content",
+          createdAt: "2026-04-23T09:00:00Z",
+          toolCalls: null,
+          contentBlocks: null,
+        },
+      ];
+
+      render(
+        <TestWrapper>
+          <IntegratedChatPanel projectId="project-1" />
+        </TestWrapper>,
+      );
+
+      await waitFor(() => expect(chatMessageListPropsCalls.length).toBeGreaterThan(0));
+      const lastCall =
+        chatMessageListPropsCalls[chatMessageListPropsCalls.length - 1];
+      expect(lastCall?.contextKey).toBe(mockChatPanelContext.storeContextKey);
     });
   });
 

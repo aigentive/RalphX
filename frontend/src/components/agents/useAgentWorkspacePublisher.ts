@@ -24,13 +24,12 @@ import {
   createAgentWorkspacePublishAttempt,
   readAgentWorkspaceDurablePublishResult,
   readAgentWorkspacePublishBaseline,
-  renderAgentWorkspacePublishResult,
 } from "./agentWorkspacePublishAttempt";
+import { agentWorkspaceOperationErrorDetail } from "./agentWorkspaceOperationToast";
 import {
-  agentWorkspaceOperationErrorDetail,
-  agentWorkspaceMaintenanceOperationToastId,
-  maintenanceOperationToastLabel,
-} from "./agentWorkspaceOperationToast";
+  reportAgentWorkspaceOperationResult,
+  watchAgentWorkspaceOperation,
+} from "./agentWorkspaceOperationRegistry";
 import {
   getAgentWorkspaceTerminalPublicationStatus,
   isAgentWorkspacePublishActive,
@@ -122,7 +121,7 @@ export function useAgentWorkspacePublisher({
           result.workspace,
         );
       }
-      renderAgentWorkspacePublishResult(attempt, result);
+      reportAgentWorkspaceOperationResult(attempt.conversationId, result);
       if (result.kind === "needs_agent") {
         invalidateConversationDataQueries(queryClient, attempt.conversationId);
       }
@@ -188,7 +187,6 @@ export function useAgentWorkspacePublisher({
   useEffect(
     () => () => {
       activeAttemptsRef.current.forEach((attempt) => {
-        attempt.controller.dismiss();
         attempt.resolve();
       });
       activeAttemptsRef.current.clear();
@@ -209,12 +207,20 @@ export function useAgentWorkspacePublisher({
           : optimisticWorkspacesByConversationId[conversationId] ?? null;
       const startedAtMs = Date.now();
       const token = ++nextTokenRef.current;
+      const conversationTitle = conversation?.title?.trim() || null;
+      const projectId = conversation?.projectId ?? workspace?.projectId ?? null;
       const attempt = createAgentWorkspacePublishAttempt({
         conversationId,
-        conversationTitle: conversation?.title?.trim() || null,
-        projectId: conversation?.projectId ?? workspace?.projectId ?? null,
+        projectId,
         startedAtMs,
         token,
+      });
+      watchAgentWorkspaceOperation({
+        conversationId,
+        projectId,
+        conversationTitle,
+        kind: "publish",
+        startedAtMs,
       });
       activeAttemptsRef.current.set(conversationId, attempt);
       setAttemptStates((current) => ({
@@ -256,24 +262,12 @@ export function useAgentWorkspacePublisher({
               agentWorkspaceKeys.workspace(conversationId),
               result.workspace,
             );
-            attempt.controller.update({
-              detail:
-                result.workspace.maintenanceOperation.blocker ??
-                result.workspace.maintenanceOperation.summary,
-              id: agentWorkspaceMaintenanceOperationToastId(
-                conversationId,
-                result.workspace.maintenanceOperation.operationId,
-              ),
-              startedAtMs: new Date(
-                result.workspace.maintenanceOperation.startedAt,
-              ).getTime(),
-              targetConversation: {
-                conversationId: result.workspace.conversationId,
-                projectId: result.workspace.projectId,
-              },
-              title: maintenanceOperationToastLabel(
-                result.workspace.maintenanceOperation.stage,
-              ),
+            watchAgentWorkspaceOperation({
+              conversationId: result.workspace.conversationId,
+              projectId: result.workspace.projectId,
+              conversationTitle: null,
+              kind: "observed",
+              startedAtMs: null,
             });
             return;
           }
@@ -314,24 +308,12 @@ export function useAgentWorkspacePublisher({
               agentWorkspaceKeys.workspace(conversationId),
               refreshedWorkspace,
             );
-            attempt.controller.update({
-              detail:
-                refreshedWorkspace.maintenanceOperation.blocker ??
-                refreshedWorkspace.maintenanceOperation.summary,
-              id: agentWorkspaceMaintenanceOperationToastId(
-                conversationId,
-                refreshedWorkspace.maintenanceOperation.operationId,
-              ),
-              startedAtMs: new Date(
-                refreshedWorkspace.maintenanceOperation.startedAt,
-              ).getTime(),
-              targetConversation: {
-                conversationId: refreshedWorkspace.conversationId,
-                projectId: refreshedWorkspace.projectId,
-              },
-              title: maintenanceOperationToastLabel(
-                refreshedWorkspace.maintenanceOperation.stage,
-              ),
+            watchAgentWorkspaceOperation({
+              conversationId: refreshedWorkspace.conversationId,
+              projectId: refreshedWorkspace.projectId,
+              conversationTitle: null,
+              kind: "observed",
+              startedAtMs: null,
             });
             return;
           }

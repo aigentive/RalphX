@@ -123,6 +123,22 @@ describe("agent sidebar metadata helpers", () => {
       )
     ).toBe("auto-merge");
     expect(
+      getSidebarPublicationLabelForWorkspace(
+        workspace({
+          publicationPushStatus: "needs_agent",
+          prSupervisionStatus: "held",
+        }),
+      ),
+    ).toBe("paused");
+    expect(
+      getSidebarPublicationLabelForWorkspace(
+        workspace({
+          publicationPushStatus: "needs_agent",
+          prSupervisionStatus: "paused",
+        }),
+      ),
+    ).toBe("paused");
+    expect(
       getSidebarPublicationState(
         workspace({
           publicationPushStatus: "pushed",

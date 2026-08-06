@@ -22,6 +22,15 @@ pub(crate) mod agent_plan_context;
 #[cfg(test)]
 mod agent_plan_context_tests;
 pub(crate) mod agent_planning_session_titles;
+pub(crate) mod agent_runtime_context;
+#[cfg(test)]
+mod agent_runtime_context_tests;
+#[cfg(test)]
+mod agent_runtime_context_branch_status_tests;
+#[cfg(test)]
+mod agent_runtime_context_linked_plan_tests;
+#[cfg(test)]
+mod agent_runtime_context_team_tests;
 pub mod agent_task_assignment_recovery;
 pub(crate) mod agent_task_pipeline_service;
 pub mod agent_task_service;
@@ -47,6 +56,9 @@ pub(crate) mod agent_workspace_publish_lease;
 #[cfg(test)]
 mod agent_workspace_publish_lease_tests;
 pub mod agent_workspace_publish_recovery;
+pub(crate) mod agent_workspace_base_staleness;
+#[cfg(test)]
+mod agent_workspace_base_staleness_tests;
 pub(crate) mod agent_workspace_ci_rerun;
 pub(crate) mod agent_workspace_publish_repair_state;
 pub mod agent_workspace_review;

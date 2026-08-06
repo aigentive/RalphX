@@ -12,15 +12,29 @@ interface TestElement extends HTMLElement {
   readonly directWrites: number;
 }
 
-interface TestHarness {
-  element: TestElement;
+/**
+ * A scroller whose trailing measurement collapses whenever a write lands on the
+ * expanded true bottom, and is restored by the next virtualizer re-measure.
+ * This is the bistable geometry captured in production scroll traces.
+ */
+interface BistableElement extends HTMLElement {
+  remeasure(): void;
+  setExpandedHeight(height: number): void;
+  takeScrollEvent(): boolean;
+  readonly directWrites: number;
+}
+
+interface TestHarness<TElement extends HTMLElement = TestElement> {
+  element: TElement;
   controller: ChatScrollController;
   flushFrames(): void;
   flushNextFrame(): void;
   pendingFrames(): number;
   scrollCalls: Array<{ index: number; align: "start" | "end"; behavior: "auto" | "smooth" }>;
+  pinReasons(): string[];
   states: string[];
   visualBottom: boolean[];
+  debugEvents: Array<{ event: string; detail: Record<string, unknown> }>;
 }
 
 function createElement({
@@ -66,14 +80,72 @@ function createElement({
   return element;
 }
 
-function createHarness(element = createElement()): TestHarness {
+function createBistableElement({
+  clientHeight = 891,
+  expandedHeight = 1_416,
+  collapsedGap = 20,
+}: {
+  clientHeight?: number;
+  expandedHeight?: number;
+  collapsedGap?: number;
+} = {}): BistableElement {
+  const element = document.createElement("div") as BistableElement;
+  let expandedTotal = expandedHeight;
+  let expanded = false;
+  let writes = 0;
+  let pendingScrollEvent = false;
+  const totalHeight = (): number => (expanded ? expandedTotal : expandedTotal - collapsedGap);
+  let position = totalHeight() - clientHeight;
+  Object.defineProperties(element, {
+    clientHeight: { configurable: true, get: () => clientHeight },
+    directWrites: { configurable: true, get: () => writes },
+    scrollHeight: { configurable: true, get: totalHeight },
+    scrollTop: {
+      configurable: true,
+      get: () => position,
+      set: (next: number) => {
+        writes += 1;
+        // Landing on the expanded true bottom drops the trailing measurement,
+        // which shrinks the content and clamps the write the browser just made.
+        if (expanded && next >= expandedTotal - clientHeight) {
+          expanded = false;
+          pendingScrollEvent = true;
+        }
+        position = Math.max(0, Math.min(next, totalHeight() - clientHeight));
+      },
+    },
+  });
+  element.scrollTo = ({ top }: ScrollToOptions) => {
+    if (typeof top === "number") element.scrollTop = top;
+  };
+  element.getBoundingClientRect = () => new DOMRect(0, 0, 100, clientHeight);
+  element.remeasure = () => {
+    expanded = true;
+  };
+  element.setExpandedHeight = (height) => {
+    expandedTotal = height;
+    expanded = true;
+  };
+  element.takeScrollEvent = () => {
+    const pending = pendingScrollEvent;
+    pendingScrollEvent = false;
+    return pending;
+  };
+  return element;
+}
+
+function createHarness<TElement extends HTMLElement = TestElement>(
+  element: TElement = createElement() as unknown as TElement,
+): TestHarness<TElement> {
   let nextFrame = 1;
   const frames = new Map<number, () => void>();
-  const scrollCalls: TestHarness["scrollCalls"] = [];
+  const scrollCalls: TestHarness<TElement>["scrollCalls"] = [];
   const states: string[] = [];
   const visualBottom: boolean[] = [];
+  const debugEvents: TestHarness<TElement>["debugEvents"] = [];
   const deps: ChatScrollControllerDeps = {
     cancelFrame: (id) => frames.delete(id),
+    debugLog: (event, detail) => debugEvents.push({ event, detail }),
     getLastIndex: () => 9,
     getScrollElement: () => element,
     onStateChange: (state) => states.push(state),
@@ -103,15 +175,37 @@ function createHarness(element = createElement()): TestHarness {
       queued.forEach((callback) => callback());
     },
     pendingFrames: () => frames.size,
+    pinReasons: () => debugEvents
+      .filter(({ event }) => event === "pin")
+      .map(({ detail }) => String(detail.reason)),
     scrollCalls,
     states,
     visualBottom,
+    debugEvents,
   };
 }
 
-function attach(harness: TestHarness): void {
+function attach(harness: TestHarness<HTMLElement>): void {
   harness.controller.attach(harness.element);
   harness.flushFrames();
+}
+
+/**
+ * Replays the captured feedback loop: a queued frame writes the bottom, the
+ * clamped write emits a native scroll event, and the virtualizer restores its
+ * measurement before the next frame observes the geometry.
+ */
+function runBistableCycles(
+  harness: TestHarness<BistableElement>,
+  element: BistableElement,
+  cycles: number,
+): void {
+  for (let cycle = 0; cycle < cycles; cycle += 1) {
+    harness.flushNextFrame();
+    if (!element.takeScrollEvent()) continue;
+    harness.controller.notifyScroll();
+    element.remeasure();
+  }
 }
 
 describe("ChatScrollController", () => {
@@ -137,8 +231,54 @@ describe("ChatScrollController", () => {
 
     expect(harness.pendingFrames()).toBe(1);
     harness.flushFrames();
-    expect(harness.scrollCalls).toHaveLength(1);
+    expect(harness.scrollCalls).toHaveLength(0);
     expect(harness.element.scrollTop).toBe(800);
+  });
+
+  it("keeps a queued content-growth pin through a stale bottom scroll event", () => {
+    const harness = createHarness();
+    attach(harness);
+    harness.scrollCalls.length = 0;
+
+    harness.controller.notifyContentGrowth();
+    harness.controller.notifyScroll();
+    harness.element.setGeometry({ scrollHeight: 1_077 });
+    harness.flushFrames();
+
+    expect(harness.controller.getState()).toBe("pinned");
+    expect(harness.scrollCalls).toHaveLength(0);
+    expect(harness.element.scrollTop).toBe(577);
+  });
+
+  it("keeps pinned growth alive through delayed virtualizer measurement", () => {
+    const harness = createHarness();
+    attach(harness);
+    harness.scrollCalls.length = 0;
+
+    harness.controller.notifyContentGrowth();
+    harness.flushNextFrame();
+    harness.element.setGeometry({ scrollHeight: 1_200 });
+    harness.flushFrames();
+
+    expect(harness.controller.getState()).toBe("pinned");
+    expect(harness.scrollCalls).toHaveLength(0);
+    expect(harness.element.scrollTop).toBe(700);
+  });
+
+  it("corrects a deferred virtualizer footer offset without replaying item alignment", () => {
+    const harness = createHarness();
+    attach(harness);
+    harness.scrollCalls.length = 0;
+    harness.element.setGeometry({ scrollHeight: 1_200 });
+
+    harness.controller.notifyContentGrowth();
+    harness.flushNextFrame();
+    harness.element.setGeometry({ scrollTop: 637 });
+    harness.controller.notifyScroll();
+    harness.flushFrames();
+
+    expect(harness.element.scrollTop).toBe(700);
+    expect(harness.scrollCalls).toHaveLength(0);
   });
 
   it("absorbs a short programmatic-pin replay instead of treating it as an away scroll", () => {
@@ -153,17 +293,33 @@ describe("ChatScrollController", () => {
     expect(harness.element.scrollTop).toBe(800);
   });
 
-  it("unfollows an unattributed upward scrollbar drag without scheduling a correction", () => {
+  it("keeps following an unattributed upward virtualizer correction while pinned", () => {
     const harness = createHarness();
     attach(harness);
     harness.scrollCalls.length = 0;
-    harness.element.setGeometry({ scrollTop: 300 });
+    harness.element.setGeometry({ scrollHeight: 1200, scrollTop: 450 });
 
     harness.controller.notifyScroll();
     harness.flushFrames();
 
-    expect(harness.controller.getState()).toBe("free");
+    expect(harness.controller.getState()).toBe("pinned");
     expect(harness.scrollCalls).toHaveLength(0);
+    expect(harness.element.scrollTop).toBe(700);
+  });
+
+  it("keeps a pinned request alive through delayed tail materialization", () => {
+    const harness = createHarness();
+    attach(harness);
+    harness.scrollCalls.length = 0;
+
+    harness.controller.requestPin("streaming-started", "auto");
+    harness.flushNextFrame();
+    harness.element.setGeometry({ scrollHeight: 1200 });
+    harness.flushFrames();
+
+    expect(harness.controller.getState()).toBe("pinned");
+    expect(harness.scrollCalls).toHaveLength(1);
+    expect(harness.element.scrollTop).toBe(700);
   });
 
   it("keeps following a re-measure correction that lands at the new true bottom", () => {
@@ -201,6 +357,41 @@ describe("ChatScrollController", () => {
     expect(harness.controller.getState()).toBe("free");
     expect(harness.scrollCalls).toHaveLength(0);
     expect(harness.visualBottom).toContain(false);
+  });
+
+  it("reports input and geometry-relevant controller state through the debug seam", () => {
+    const harness = createHarness();
+    attach(harness);
+    harness.debugEvents.length = 0;
+    harness.element.setGeometry({ scrollTop: 300 });
+
+    harness.controller.notifyWheel(-40, false);
+    harness.controller.notifyScroll();
+
+    expect(harness.debugEvents).toEqual(expect.arrayContaining([
+      {
+        event: "wheel",
+        detail: expect.objectContaining({
+          state: "pinned",
+          activeIntent: "bottom",
+          deltaY: -40,
+          isNestedScrollableTarget: false,
+        }),
+      },
+      {
+        event: "away-input",
+        detail: expect.objectContaining({ state: "free", source: "wheel" }),
+      },
+      {
+        event: "scroll",
+        detail: expect.objectContaining({
+          state: "free",
+          current: 300,
+          priorScrollTop: 500,
+          movedUp: true,
+        }),
+      },
+    ]));
   });
 
   it("re-follows only when a free reader reaches the true visual bottom", () => {
@@ -281,7 +472,7 @@ describe("ChatScrollController", () => {
 
     harness.controller.notifyContentGrowth();
     harness.flushFrames();
-    expect(harness.scrollCalls).toHaveLength(1);
+    expect(harness.scrollCalls).toHaveLength(0);
   });
 
   it("keeps pinned through a post-prepend Virtuoso clamp at the new true bottom", () => {
@@ -329,7 +520,7 @@ describe("ChatScrollController", () => {
     harness.controller.notifyContentGrowth();
     harness.flushFrames();
 
-    expect(harness.scrollCalls).toHaveLength(1);
+    expect(harness.scrollCalls).toHaveLength(0);
     expect(harness.element.scrollTop).toBe(1_100);
   });
 
@@ -445,7 +636,9 @@ describe("ChatScrollController", () => {
   it("does not synchronously overwrite a smooth bottom pin", () => {
     const harness = createHarness();
     attach(harness);
-    const scrollTo = vi.fn();
+    const scrollTo = vi.fn(({ top }: ScrollToOptions) => {
+      if (typeof top === "number") harness.element.setGeometry({ scrollTop: top });
+    });
     harness.element.scrollTo = scrollTo;
     const directWritesBeforePin = harness.element.directWrites;
 
@@ -575,9 +768,109 @@ describe("ChatScrollController", () => {
     expect(harness.controller.getState()).toBe("returning");
     expect(harness.scrollCalls).toEqual([
       { index: 9, align: "end", behavior: "auto" },
-      { index: 9, align: "end", behavior: "auto" },
     ]);
     expect(harness.element.scrollTop).toBe(800);
+  });
+
+  it("keeps a manual bottom return alive through a delayed virtualizer measurement", () => {
+    const harness = createHarness(createElement({ scrollTop: 100 }));
+    attach(harness);
+    harness.controller.notifyWheel(-1, false);
+    harness.scrollCalls.length = 0;
+
+    harness.controller.scrollToBottomClicked();
+    harness.flushNextFrame();
+    harness.flushNextFrame();
+    harness.element.setGeometry({ scrollHeight: 1_300 });
+    harness.flushFrames();
+
+    expect(harness.element.scrollTop).toBe(800);
+    expect(harness.controller.getState()).toBe("pinned");
+    expect(harness.scrollCalls).toHaveLength(1);
+  });
+
+  it("does not mistake an upward virtualizer correction during return for user-away intent", () => {
+    const harness = createHarness(createElement({ scrollTop: 300 }));
+    attach(harness);
+    harness.controller.notifyWheel(-1, false);
+    harness.element.setGeometry({ scrollTop: 300 });
+    harness.scrollCalls.length = 0;
+
+    harness.controller.scrollToBottomClicked();
+    harness.flushNextFrame();
+    harness.element.setGeometry({ scrollHeight: 1_300, scrollTop: 420 });
+    harness.controller.notifyScroll();
+    harness.flushFrames();
+
+    expect(harness.controller.getState()).toBe("pinned");
+    expect(harness.element.scrollTop).toBe(800);
+    expect(harness.scrollCalls).toHaveLength(1);
+  });
+
+  it("settles a delayed Virtuoso alignment correction without reissuing item alignment", () => {
+    const harness = createHarness(createElement({
+      clientHeight: 1_102,
+      scrollHeight: 1_880,
+      scrollTop: 598,
+    }));
+    attach(harness);
+    harness.controller.notifyWheel(-1, false);
+    harness.element.setGeometry({ scrollTop: 598 });
+    harness.controller.notifyScroll();
+    harness.scrollCalls.length = 0;
+
+    harness.controller.scrollToBottomClicked();
+    harness.flushNextFrame();
+    expect(harness.scrollCalls).toHaveLength(1);
+    expect(harness.element.scrollTop).toBe(778);
+
+    // Replay the captured ordering: the queued Virtuoso item alignment lands
+    // using stale geometry, then its measurement reports content growth.
+    harness.element.setGeometry({ scrollHeight: 1_860, scrollTop: 598 });
+    harness.controller.notifyScroll();
+    harness.element.setGeometry({ scrollHeight: 1_931, scrollTop: 609 });
+    harness.controller.notifyContentGrowth();
+    harness.flushFrames();
+
+    expect(harness.scrollCalls).toHaveLength(1);
+    expect(harness.element.scrollTop).toBe(829);
+    expect(harness.controller.getState()).toBe("pinned");
+  });
+
+  it("keeps a returning intent alive through late geometry after a bottom scroll", () => {
+    const harness = createHarness(createElement({
+      clientHeight: 1_102,
+      scrollHeight: 1_923,
+      scrollTop: 821,
+    }));
+    attach(harness);
+    harness.debugEvents.length = 0;
+
+    harness.controller.notifyContentGrowth();
+    harness.flushNextFrame();
+    const writesAfterInitialPin = harness.element.directWrites;
+
+    // The virtualizer renormalizes its trailing geometry, moving scrollTop by
+    // the same amount. This scroll event still acknowledges the true bottom.
+    harness.element.setGeometry({ scrollHeight: 1_903, scrollTop: 801 });
+    harness.controller.notifyScroll();
+
+    expect(harness.controller.getState()).toBe("returning");
+    expect(harness.pendingFrames()).toBeGreaterThan(0);
+
+    // The next-frame measurement materializes another part of the tail after
+    // the native scroll event briefly reported the old true bottom.
+    harness.element.setGeometry({ scrollHeight: 1_923, scrollTop: 801 });
+    harness.flushFrames();
+
+    expect(harness.element.directWrites).toBeGreaterThan(writesAfterInitialPin);
+    expect(harness.element.scrollTop).toBe(821);
+    expect(harness.debugEvents).toEqual(expect.arrayContaining([
+      {
+        event: "pin",
+        detail: expect.objectContaining({ reason: "returning-settle" }),
+      },
+    ]));
   });
 
   it("waits through changing prepend compensation before treating later growth as followable", () => {
@@ -594,7 +887,7 @@ describe("ChatScrollController", () => {
     harness.controller.notifyContentGrowth();
     harness.flushFrames();
 
-    expect(harness.scrollCalls).toHaveLength(1);
+    expect(harness.scrollCalls).toHaveLength(0);
     expect(harness.element.scrollTop).toBe(900);
   });
 
@@ -709,6 +1002,120 @@ describe("ChatScrollController", () => {
 
     expect(harness.element.directWrites).toBe(writesAfterDetach);
     expect(harness.scrollCalls).toHaveLength(0);
+  });
+
+  // Captured in Chromium against real Virtuoso: an appended timeline item and
+  // measurement growth coalesce into one pin, and the surviving item alignment
+  // makes the virtualizer a second, asynchronous scroll writer. Its deferred
+  // write targets the last item's end, which sits above the footer spacer, so
+  // it drags the reader 200-600px back up the transcript.
+  it("drops item alignment from a pin batch that measurement growth joined", () => {
+    const harness = createHarness();
+    attach(harness);
+    harness.scrollCalls.length = 0;
+
+    harness.controller.requestPin("new-timeline-item-appended", "auto");
+    harness.controller.notifyContentGrowth();
+    harness.flushFrames();
+
+    expect(harness.scrollCalls).toHaveLength(0);
+    expect(harness.element.scrollTop).toBe(500);
+  });
+
+  it("keeps item alignment for a pin the virtualizer alone can resolve", () => {
+    const harness = createHarness();
+    attach(harness);
+    harness.scrollCalls.length = 0;
+
+    harness.controller.requestPin("new-timeline-item-appended", "auto");
+    harness.flushFrames();
+
+    expect(harness.scrollCalls).toEqual([{ index: 9, align: "end", behavior: "auto" }]);
+  });
+
+  // The scroller's scrollHeight under-reads by hundreds of pixels while the
+  // virtualizer's rendered range lags the scroll position. The browser already
+  // clamps scrollTop down when content genuinely shrinks, so a bottom pin that
+  // writes a target above the current position is always the transient read.
+  it("never pins to a bottom above the current position", () => {
+    const harness = createHarness();
+    attach(harness);
+    harness.element.setGeometry({ scrollHeight: 1_200 });
+    harness.controller.notifyContentGrowth();
+    harness.flushFrames();
+    expect(harness.element.scrollTop).toBe(700);
+    const writesBefore = harness.element.directWrites;
+
+    harness.element.setGeometry({ scrollHeight: 900 });
+    harness.controller.notifyContentGrowth();
+    harness.flushFrames();
+
+    expect(harness.element.scrollTop).toBe(700);
+    expect(harness.element.directWrites).toBe(writesBefore);
+  });
+
+  // KNOWN OPEN DEFECT — expected to fail. This models the residual case the
+  // controller cannot win: the extent collapses on the write itself, so every
+  // restored measurement is genuine forward progress and the browser clamps it
+  // straight back. Measured in Chromium, this is now the only remaining source
+  // of upward jumps (1-4 per streaming turn, ~300px), and it needs the
+  // virtualizer to stop republishing a stale extent, not another pin rule.
+  it.fails("stops re-pinning a virtualizer whose measurement collapses on every bottom write", () => {
+    const element = createBistableElement();
+    const harness = createHarness(element);
+    attach(harness);
+    harness.debugEvents.length = 0;
+    const writesAfterAttach = element.directWrites;
+
+    // The virtualizer restores its trailing measurement, so the true bottom
+    // moves 20px away from the position the previous clamp left behind.
+    element.remeasure();
+    harness.controller.notifyContentGrowth();
+    runBistableCycles(harness, element, 24);
+
+    expect(harness.pinReasons().length).toBeLessThanOrEqual(4);
+    expect(element.directWrites - writesAfterAttach).toBeLessThanOrEqual(8);
+    expect(harness.pendingFrames()).toBe(0);
+    expect(harness.controller.getState()).toBe("pinned");
+    // The reader is left on the tail of the measurement the scroller settled
+    // into, and the bottom control was last told the transcript is followed.
+    expect(element.scrollTop).toBe(505);
+    expect(harness.visualBottom.at(-1) ?? true).toBe(true);
+  });
+
+  it("stops a pin loop whose true bottom rotates through republished measurements", () => {
+    // Captured in Chromium against real Virtuoso: the pin target cycles through
+    // three previously published bottoms instead of repeating a single one.
+    const heights = [2_665, 3_169, 2_645];
+    const harness = createHarness(createElement({ clientHeight: 891, scrollHeight: heights[0] }));
+    attach(harness);
+    harness.debugEvents.length = 0;
+
+    for (let cycle = 0; cycle < 15; cycle += 1) {
+      harness.element.setGeometry({ scrollHeight: heights[cycle % heights.length] });
+      harness.controller.notifyScroll();
+      harness.flushFrames();
+    }
+
+    expect(harness.pinReasons().length).toBeLessThanOrEqual(8);
+  });
+
+  it("keeps following streaming growth that advances the true bottom every pin", () => {
+    const element = createBistableElement();
+    const harness = createHarness(element);
+    attach(harness);
+    harness.debugEvents.length = 0;
+
+    for (let block = 1; block <= 6; block += 1) {
+      element.setExpandedHeight(1_416 + block * 40);
+      harness.controller.notifyContentGrowth();
+      harness.flushNextFrame();
+      harness.flushNextFrame();
+      if (element.takeScrollEvent()) harness.controller.notifyScroll();
+    }
+
+    expect(harness.pinReasons().length).toBeGreaterThanOrEqual(6);
+    expect(element.scrollTop).toBe(1_416 + 6 * 40 - 20 - 891);
   });
 
   it("ignores stale post-detach prepends so a replacement scroller receives its attach pin", () => {

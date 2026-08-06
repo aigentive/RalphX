@@ -69,6 +69,12 @@ fn apply_compatibility_projection(
     workspace.pr_supervision_summary = projection.pr_supervision_summary.clone();
     workspace.pr_supervision_updated_at = projection.pr_supervision_updated_at;
     workspace.pr_auto_merge_current = projection.pr_auto_merge_current;
+    if let Some(pr_autofix_enabled) = projection.pr_autofix_enabled {
+        workspace.pr_autofix_enabled = pr_autofix_enabled;
+    }
+    if let Some(pr_auto_merge_desired) = projection.pr_auto_merge_desired {
+        workspace.pr_auto_merge_desired = pr_auto_merge_desired;
+    }
     workspace.base_commit = projection.base_commit.clone();
     workspace.updated_at = updated_at;
 }
@@ -119,12 +125,18 @@ fn validate_effect_shape(effect: &AgentWorkspaceRepairEffect) -> AppResult<()> {
                 .can_complete_observed(effect.receipt_json.as_deref(), completed_at)
                 .map_err(AppError::Validation)
         }
-        AgentWorkspaceRepairEffectStatus::Pending
-        | AgentWorkspaceRepairEffectStatus::InFlight
-        | AgentWorkspaceRepairEffectStatus::Failed => {
+        AgentWorkspaceRepairEffectStatus::Pending | AgentWorkspaceRepairEffectStatus::InFlight => {
             if effect.completed_at.is_some() {
                 return Err(AppError::Validation(
-                    "only observed repair effects may have a completion time".to_string(),
+                    "only observed or failed repair effects may have a completion time".to_string(),
+                ));
+            }
+            Ok(())
+        }
+        AgentWorkspaceRepairEffectStatus::Failed => {
+            if effect.receipt_json.is_some() {
+                return Err(AppError::Validation(
+                    "failed repair effects must not carry an observed receipt".to_string(),
                 ));
             }
             Ok(())
@@ -279,6 +291,12 @@ impl AgentWorkspaceRepairRepository for MemoryAgentConversationWorkspaceReposito
                 && request.attempt.target_base_commit != current.target_base_commit
             {
                 current.target_base_commit = request.attempt.target_base_commit.clone();
+            }
+            if request.attempt.base_update_target_commit.is_some()
+                && request.attempt.base_update_target_commit != current.base_update_target_commit
+            {
+                current.base_update_target_commit =
+                    request.attempt.base_update_target_commit.clone();
             }
             current.auto_publish_enabled = request.attempt.auto_publish_enabled;
             current.explicit_publish_requested =

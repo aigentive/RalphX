@@ -184,6 +184,23 @@ async fn pr_review_monitor_enabled_default_fails_closed_for_unsupported_repo() {
 }
 
 #[tokio::test]
+async fn preserving_repair_owned_supervision_status_fails_closed_for_unsupported_repo() {
+    let repo = FallbackOnlyWorkspaceRepository;
+    let conversation_id = ChatConversationId::from_string("fallback-repair-projection");
+
+    let error = repo
+        .update_pr_supervision_preferences_preserving_status(&conversation_id, true, true, "squash")
+        .await
+        .expect_err("unsupported repository must not clobber repair-owned status");
+
+    assert!(matches!(
+        error,
+        AppError::Infrastructure(message)
+            if message.contains("cannot preserve repair-owned supervision status")
+    ));
+}
+
+#[tokio::test]
 async fn supersede_pending_pr_review_actions_default_is_noop() {
     let repo = FallbackOnlyWorkspaceRepository;
     let conversation_id = ChatConversationId::from_string("fallback-actions".to_string());
