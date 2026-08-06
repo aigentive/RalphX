@@ -290,6 +290,16 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         &self,
     ) -> AppResult<Vec<AgentConversationWorkspace>>;
 
+    /// Lists active, open Edit workspaces that have never published (no `publication_pr_number`).
+    ///
+    /// Feeds the unattended base-freshness scan's detection/auto-update candidate set. This is a
+    /// required method (no default `Ok(Vec::new())` body) because a defaulted empty result would
+    /// fail *open*: any implementor that forgot to override it would silently report "nothing
+    /// unpublished" and disable detection entirely.
+    async fn list_active_unpublished_edit_workspaces(
+        &self,
+    ) -> AppResult<Vec<AgentConversationWorkspace>>;
+
     async fn list_active_pr_poller_recovery_workspaces(
         &self,
     ) -> AppResult<Vec<AgentConversationWorkspace>> {

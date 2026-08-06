@@ -1521,6 +1521,12 @@ impl AgentConversationWorkspaceRepository for ControlledWorkspaceRepo {
         self.inner.list_active_direct_published_workspaces().await
     }
 
+    async fn list_active_unpublished_edit_workspaces(
+        &self,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        self.inner.list_active_unpublished_edit_workspaces().await
+    }
+
     async fn list_active_needs_agent_workspaces(
         &self,
     ) -> AppResult<Vec<AgentConversationWorkspace>> {

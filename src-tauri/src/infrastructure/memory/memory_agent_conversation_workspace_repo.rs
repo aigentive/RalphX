@@ -567,6 +567,19 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .collect())
     }
 
+    async fn list_active_unpublished_edit_workspaces(
+        &self,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        Ok(self
+            .workspaces
+            .read()
+            .await
+            .values()
+            .filter(|workspace| is_active_unpublished_edit_workspace(workspace))
+            .cloned()
+            .collect())
+    }
+
     async fn list_active_pr_poller_recovery_workspaces(
         &self,
     ) -> AppResult<Vec<AgentConversationWorkspace>> {
@@ -2883,6 +2896,13 @@ fn is_active_direct_published_workspace(workspace: &AgentConversationWorkspace) 
         && workspace.auto_publish_enabled
         && workspace.has_pr_status_pollable_push_status()
         && !workspace.has_terminal_publication_pr_status()
+}
+
+fn is_active_unpublished_edit_workspace(workspace: &AgentConversationWorkspace) -> bool {
+    workspace.status == AgentConversationWorkspaceStatus::Active
+        && workspace.mode == AgentConversationWorkspaceMode::Edit
+        && workspace.linked_plan_branch_id.is_none()
+        && workspace.publication_pr_number.is_none()
 }
 
 fn is_active_pr_poller_recovery_workspace(workspace: &AgentConversationWorkspace) -> bool {

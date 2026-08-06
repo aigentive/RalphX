@@ -1441,6 +1441,12 @@ impl AgentConversationWorkspaceRepository for WorkspaceLoadErrorRepository {
         Err(repo_error())
     }
 
+    async fn list_active_unpublished_edit_workspaces(
+        &self,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        Ok(Vec::new())
+    }
+
     async fn list_active_needs_agent_workspaces(
         &self,
     ) -> AppResult<Vec<AgentConversationWorkspace>> {

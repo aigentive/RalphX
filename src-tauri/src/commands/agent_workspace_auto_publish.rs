@@ -31,6 +31,7 @@ use crate::application::publish_resilience::{
     inspect_publish_branch_freshness_for_source_after_fetch,
 };
 use crate::application::{AppState, GitService};
+use crate::commands::agent_workspace_repair_reconciliation_scan::start_agent_workspace_repair_reconciliation_scan;
 use crate::commands::unified_chat_commands::{
     install_agent_workspace_repair_publish_continuation,
     publish_agent_conversation_workspace_for_app_state, resolve_agent_workspace_publish_target,
@@ -133,6 +134,7 @@ where
         install_agent_workspace_repair_publish_continuation(state.inner());
     }
     start_agent_workspace_auto_publish_freshness_scan(app_handle.clone());
+    start_agent_workspace_repair_reconciliation_scan(app_handle.clone());
 
     let run_completed_handle = app_handle.clone();
     app_handle.listen_any(AGENT_RUN_COMPLETED, move |event| {

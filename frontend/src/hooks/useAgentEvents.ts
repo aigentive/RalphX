@@ -29,6 +29,7 @@ import { buildStoreKey, parseStoreKey } from "@/lib/chat-context-registry";
 import { buildAgentEventStoreKey } from "@/lib/agent-store-key";
 import { findStoreKeyForContextId } from "@/lib/agent-event-utils";
 import { agentWorkspaceKeys } from "@/components/agents/agentWorkspaceQueries";
+import { watchAgentWorkspaceOperation } from "@/components/agents/agentWorkspaceOperationRegistry";
 import {
   chatKeys,
   invalidateConversationDataQueries,
@@ -361,6 +362,19 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
       return typeof candidate === "string" && candidate.trim()
         ? candidate
         : null;
+    }
+
+    function workspaceChangedProjectId(payload: unknown): string | null {
+      if (!payload || typeof payload !== "object") {
+        return null;
+      }
+      const candidate =
+        "project_id" in payload
+          ? payload.project_id
+          : "projectId" in payload
+            ? payload.projectId
+            : null;
+      return typeof candidate === "string" && candidate.trim() ? candidate : null;
     }
 
     // Reverse lookup: when a child verification session terminates, find any parent that has
@@ -757,6 +771,13 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
       bus.subscribe<unknown>("agent:workspace_changed", (payload) => {
         const conversationId = workspaceChangedConversationId(payload);
         if (conversationId) {
+          watchAgentWorkspaceOperation({
+            conversationId,
+            projectId: workspaceChangedProjectId(payload),
+            conversationTitle: null,
+            kind: "observed",
+            startedAtMs: null,
+          });
           patchWorkspaceChangedModeCaches(
             queryClient,
             conversationId,

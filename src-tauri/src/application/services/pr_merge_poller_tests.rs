@@ -10171,6 +10171,12 @@ impl AgentConversationWorkspaceRepository for SequencedWorkspaceRepository {
         self.inner.list_active_direct_published_workspaces().await
     }
 
+    async fn list_active_unpublished_edit_workspaces(
+        &self,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        self.inner.list_active_unpublished_edit_workspaces().await
+    }
+
     async fn list_active_needs_agent_workspaces(
         &self,
     ) -> AppResult<Vec<AgentConversationWorkspace>> {
@@ -10422,6 +10428,12 @@ impl AgentConversationWorkspaceRepository for ReviewMonitorLookupErrorRepository
         Err(repo_error())
     }
 
+    async fn list_active_unpublished_edit_workspaces(
+        &self,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        Ok(Vec::new())
+    }
+
     async fn list_active_needs_agent_workspaces(
         &self,
     ) -> AppResult<Vec<AgentConversationWorkspace>> {
@@ -10573,6 +10585,12 @@ impl AgentConversationWorkspaceRepository for WorkspaceLookupErrorRepository {
         &self,
     ) -> AppResult<Vec<AgentConversationWorkspace>> {
         Err(repo_error())
+    }
+
+    async fn list_active_unpublished_edit_workspaces(
+        &self,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        Ok(Vec::new())
     }
 
     async fn list_active_needs_agent_workspaces(

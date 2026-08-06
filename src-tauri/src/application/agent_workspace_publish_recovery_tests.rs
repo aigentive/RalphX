@@ -1623,6 +1623,14 @@ wait "$stdin_drain_pid" 2>/dev/null || true
         1,
         "due recovery must settle exactly one delivery event"
     );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.step == "repair_auto_retry_dispatched")
+            .count(),
+        1,
+        "executing a due auto-retry must append exactly one repair_auto_retry_dispatched event (proof obligation 9)"
+    );
 
     assert_eq!(
         recover_stale_agent_workspace_publish_repairs_for_state(&state)

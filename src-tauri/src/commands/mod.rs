@@ -24,6 +24,9 @@ mod agent_workspace_auto_publish_tests;
 pub(crate) mod agent_workspace_auto_review;
 #[cfg(test)]
 mod agent_workspace_auto_review_tests;
+pub(crate) mod agent_workspace_repair_reconciliation_scan;
+#[cfg(test)]
+mod agent_workspace_repair_reconciliation_scan_tests;
 pub mod api_key_commands;
 pub mod artifact_commands;
 pub mod atlassian_commands;

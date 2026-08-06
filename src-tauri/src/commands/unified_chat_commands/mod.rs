@@ -87,6 +87,7 @@ use crate::application::agent_workspace_pr_description::{
 };
 use crate::application::agent_workspace_pr_supervision_recovery::{
     build_agent_workspace_pr_supervision_recovery_deps,
+    schedule_agent_workspace_durable_repair_reconciliation,
     schedule_agent_workspace_pr_supervision_recovery_with_lazy_deps,
     AgentWorkspacePrFixReviewPublishResumer, AgentWorkspacePrSupervisionRecoveryTrigger,
 };
@@ -462,6 +463,7 @@ pub struct AgentConversationWorkspaceResponse {
     pub pr_supervision_status: Option<String>,
     pub pr_supervision_summary: Option<String>,
     pub pr_supervision_updated_at: Option<String>,
+    pub stale_base_detected_at: Option<String>,
     pub status: String,
     pub created_at: String,
     pub updated_at: String,
@@ -570,6 +572,9 @@ impl From<AgentConversationWorkspace> for AgentConversationWorkspaceResponse {
             pr_supervision_summary: workspace.pr_supervision_summary,
             pr_supervision_updated_at: workspace
                 .pr_supervision_updated_at
+                .map(|value| value.to_rfc3339()),
+            stale_base_detected_at: workspace
+                .stale_base_detected_at
                 .map(|value| value.to_rfc3339()),
             status: workspace.status.to_string(),
             created_at: workspace.created_at.to_rfc3339(),
@@ -1241,13 +1246,19 @@ fn schedule_external_pr_reconciliation_for_workspace(
     );
 }
 
-fn schedule_pr_supervision_recovery_for_workspace(
+pub(crate) fn schedule_pr_supervision_recovery_for_workspace(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
     trigger: AgentWorkspacePrSupervisionRecoveryTrigger,
     force: bool,
 ) {
     if state.github_service.is_none() {
+        schedule_agent_workspace_durable_repair_reconciliation(
+            state.clone(),
+            workspace.conversation_id.clone(),
+            trigger,
+            force,
+        );
         return;
     }
     let recovery_state = state.clone();
@@ -1660,7 +1671,7 @@ fn agent_workspace_publish_locks() -> &'static DashMap<String, Arc<tokio::sync::
     LOCKS.get_or_init(DashMap::new)
 }
 
-struct AgentWorkspacePublishGuard {
+pub(crate) struct AgentWorkspacePublishGuard {
     _mutex: tokio::sync::OwnedMutexGuard<()>,
     _operation_scope: PublishOperationScopeGuard,
 }
@@ -1671,7 +1682,7 @@ impl AgentWorkspacePublishGuard {
     }
 }
 
-fn try_acquire_agent_workspace_publish_guard(
+pub(crate) fn try_acquire_agent_workspace_publish_guard(
     conversation_id: &ChatConversationId,
 ) -> Result<AgentWorkspacePublishGuard, String> {
     let lock = agent_workspace_publish_locks()

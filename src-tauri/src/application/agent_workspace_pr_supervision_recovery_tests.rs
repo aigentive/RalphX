@@ -9,13 +9,17 @@ use crate::application::agent_conversation_workspace::{
     resolve_agent_conversation_workspace_path, resolve_linked_plan_branch_agent_worktree_path,
 };
 use crate::application::agent_workspace_pr_supervision_recovery::{
-    pr_supervision_recovery_schedule_skip_reason, recover_agent_workspace_pr_supervision,
+    list_startup_pr_supervision_recovery_batches, pr_supervision_recovery_schedule_skip_reason,
+    recover_agent_workspace_pr_supervision,
     recover_recent_agent_workspace_pr_supervision_on_startup,
+    schedule_agent_workspace_durable_repair_reconciliation,
     schedule_agent_workspace_pr_supervision_recovery,
     schedule_agent_workspace_pr_supervision_recovery_with_lazy_deps,
     AgentWorkspacePrFixReviewPublishResumer, AgentWorkspacePrSupervisionRecoveryDeps,
     AgentWorkspacePrSupervisionRecoveryOutcome, AgentWorkspacePrSupervisionRecoveryTrigger,
+    STARTUP_PR_SUPERVISION_RECOVERY_LIMIT,
 };
+use crate::application::agent_workspace_publish_repair_state::ORPHANED_REPAIR_DISPATCH_RESCUE_GRACE_SECS;
 use crate::application::agent_workspace_review::resolve_review_target;
 use crate::application::chat_service::MockChatService;
 use crate::application::git_service::GitService;
@@ -450,6 +454,301 @@ async fn scheduled_recovery_claims_conversation_once_until_background_task_finis
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     assert_eq!(github.state().check_pr_sync_state_calls, 1);
     assert_eq!(factory_calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn periodic_scan_trigger_as_str_is_periodic_scan() {
+    assert_eq!(
+        AgentWorkspacePrSupervisionRecoveryTrigger::PeriodicScan.as_str(),
+        "periodic_scan"
+    );
+}
+
+fn minimal_active_workspace(
+    conversation_id: ChatConversationId,
+    suffix: &str,
+) -> AgentConversationWorkspace {
+    AgentConversationWorkspace::new(
+        conversation_id,
+        ProjectId::from_string(format!("project-{suffix}")),
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("Project default (main)".to_string()),
+        Some("base-sha".to_string()),
+        format!("ralphx/test/{suffix}"),
+        format!("/tmp/ralphx-test-{suffix}"),
+    )
+}
+
+/// A workspace matching `is_active_direct_pr_supervision_recovery_candidate` purely through repo
+/// fields (no git/filesystem access), so pure-poller startup-cap tests don't need real worktrees.
+fn pure_poller_recovery_candidate_workspace(
+    conversation_id: ChatConversationId,
+    suffix: &str,
+) -> AgentConversationWorkspace {
+    let mut workspace = minimal_active_workspace(conversation_id, suffix);
+    workspace.publication_pr_number = Some(900);
+    workspace.publication_push_status = Some("failed".to_string());
+    workspace.pr_supervision_status = Some("blocked".to_string());
+    workspace.pr_autofix_enabled = true;
+    workspace
+}
+
+/// Seeds a repair attempt whose reservation has no bound run and is already past the
+/// spawn-grace window, so reconciliation settles it as an interrupted delivery through a
+/// purely repo-owned path (no git/filesystem access). This is enough to observe whether a
+/// reconciler entry point actually ran: settlement appends exactly one `repair_sent`/`retrying`
+/// (or a terminal `blocked`) publication event.
+async fn seed_dispatching_repair_attempt(
+    state: &AppState,
+    conversation_id: ChatConversationId,
+) -> AgentWorkspaceRepairAttempt {
+    let started = state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                conversation_id,
+                AgentWorkspaceRepairSource::Publish,
+                AgentWorkspaceRepairContinuation::Publish,
+                "main",
+                false,
+                true,
+                false,
+                None,
+                chrono::Utc::now(),
+            ),
+            reason: "durable reconciliation fixture".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("start repair attempt");
+    let StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(mut attempt) = started else {
+        panic!("first repair attempt must start");
+    };
+    // A Dispatching attempt always carries a canonical target lease in production (set atomically
+    // by `reserve_agent_workspace_repair_dispatch`), and settlement asserts one exists.
+    let target_identity = crate::domain::entities::GitTargetIdentity::new(
+        std::path::PathBuf::from(format!(
+            "/tmp/ralphx-pr-supervision-test-fixture-{}",
+            attempt.conversation_id.as_str()
+        )),
+        "refs/heads/ralphx/test/pr-supervision-fixture",
+    )
+    .expect("valid canonical fixture target identity");
+    let owner =
+        crate::domain::entities::GitTargetLeaseOwner::agent_workspace_repair(attempt.id.as_str());
+    let crate::domain::repositories::AcquireGitTargetLeaseOutcome::Acquired { fencing_epoch } =
+        state
+            .branch_update_repo
+            .acquire_target_lease(crate::domain::repositories::AcquireGitTargetLease {
+                identity: target_identity.clone(),
+                owner,
+            })
+            .await
+            .expect("acquire fixture target lease")
+    else {
+        panic!("fixture target lease acquisition must succeed");
+    };
+    let expected_updated_at = attempt.updated_at;
+    attempt.git_common_dir = Some(
+        target_identity
+            .git_common_dir()
+            .to_string_lossy()
+            .into_owned(),
+    );
+    attempt.target_ref = Some(target_identity.full_ref().to_string());
+    attempt.target_identity_version = Some(
+        crate::application::agent_workspace_publish_repair_state::AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION,
+    );
+    attempt.target_lease_epoch = Some(fencing_epoch);
+    attempt.phase = AgentWorkspaceRepairPhase::Dispatching;
+    attempt.updated_at = chrono::Utc::now()
+        - chrono::Duration::seconds(ORPHANED_REPAIR_DISPATCH_RESCUE_GRACE_SECS + 60);
+    match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(
+            crate::domain::repositories::AgentWorkspaceRepairAttemptTransition {
+                attempt,
+                expected_phase: AgentWorkspaceRepairPhase::Requested,
+                expected_updated_at,
+                next_phase: AgentWorkspaceRepairPhase::Dispatching,
+                compatibility_projection: None,
+                events: Vec::new(),
+            },
+        )
+        .await
+        .expect("seed dispatching repair attempt")
+    {
+        crate::domain::repositories::AgentWorkspaceRepairAttemptTransitionOutcome::Applied(
+            attempt,
+        ) => attempt,
+        outcome => panic!("seeding dispatching attempt must apply, got {outcome:?}"),
+    }
+}
+
+async fn wait_for_repair_publication_event(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    step: &str,
+) {
+    for _ in 0..100 {
+        let events = state
+            .agent_conversation_workspace_repo
+            .list_publication_events(conversation_id)
+            .await
+            .expect("load publication events");
+        if events.iter().any(|event| event.step == step) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("expected a '{step}' publication event within timeout");
+}
+
+/// Proof obligation 3a: a scan tick plus an immediate `WorkspaceLoad` recovery within the TTL
+/// executes the reconciler once, exercised through the new durable-only helper's shared
+/// `claim_recovery`/`IN_FLIGHT_RECOVERIES` dedupe.
+#[tokio::test]
+async fn durable_reconciliation_claims_conversation_once_until_background_task_finishes() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(minimal_active_workspace(
+            conversation_id.clone(),
+            "durable-dedupe",
+        ))
+        .await
+        .expect("seed workspace");
+    seed_dispatching_repair_attempt(&state, conversation_id.clone()).await;
+
+    schedule_agent_workspace_durable_repair_reconciliation(
+        state.clone(),
+        conversation_id.clone(),
+        AgentWorkspacePrSupervisionRecoveryTrigger::WorkspaceLoad,
+        true,
+    );
+    schedule_agent_workspace_durable_repair_reconciliation(
+        state.clone(),
+        conversation_id.clone(),
+        AgentWorkspacePrSupervisionRecoveryTrigger::PeriodicScan,
+        true,
+    );
+
+    wait_for_repair_publication_event(&state, &conversation_id, "repair_sent").await;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let events = state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("load publication events");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.step == "repair_sent")
+            .count(),
+        1,
+        "the in-flight claim must suppress the duplicate concurrent schedule call"
+    );
+}
+
+/// Proof obligation 5: with `STARTUP_PR_SUPERVISION_RECOVERY_LIMIT` + 1 pure-poller candidates
+/// where none is exempt, and a separate workspace with an unsettled durable repair attempt, the
+/// unsettled-repair workspace is recovered even though the pure-poller pool is already full at
+/// the cap, and it is never duplicated into the capped batch.
+#[tokio::test]
+async fn startup_recovery_exempts_unsettled_repair_workspaces_from_the_capped_pure_poller_budget() {
+    let state = AppState::new_test();
+
+    // Candidate listing sorts newest-`updated_at`-first and truncates at the cap, so the
+    // overflow candidate must be seeded oldest to deterministically be the one left out.
+    let overflow_conversation_id = ChatConversationId::new();
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(pure_poller_recovery_candidate_workspace(
+            overflow_conversation_id.clone(),
+            "startup-cap-overflow",
+        ))
+        .await
+        .expect("seed overflow candidate");
+
+    let mut capped_candidate_ids = HashSet::new();
+    for i in 0..STARTUP_PR_SUPERVISION_RECOVERY_LIMIT {
+        let conversation_id = ChatConversationId::new();
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(pure_poller_recovery_candidate_workspace(
+                conversation_id.clone(),
+                &format!("startup-cap-{i}"),
+            ))
+            .await
+            .expect("seed capped candidate");
+        capped_candidate_ids.insert(conversation_id);
+    }
+
+    let exempt_conversation_id = ChatConversationId::new();
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(minimal_active_workspace(
+            exempt_conversation_id.clone(),
+            "startup-cap-exempt",
+        ))
+        .await
+        .expect("seed exempt workspace");
+    seed_dispatching_repair_attempt(&state, exempt_conversation_id.clone()).await;
+
+    let deps = AgentWorkspacePrSupervisionRecoveryDeps {
+        workspace_repo: Arc::clone(&state.agent_conversation_workspace_repo),
+        project_repo: Arc::clone(&state.project_repo),
+        plan_branch_repo: Arc::clone(&state.plan_branch_repo),
+        github: Arc::new(MockGithubService::new()) as Arc<dyn GithubServiceTrait>,
+        pr_poller_registry: None,
+        transition_service: None,
+        chat_service: None,
+        agent_run_repo: Arc::clone(&state.agent_run_repo),
+        app_handle: None,
+        pr_fix_review_publish_resumer: None,
+        durable_recovery_state: Some(Arc::new(state.clone())),
+    };
+
+    let (exempt, capped) = list_startup_pr_supervision_recovery_batches(&deps)
+        .await
+        .expect("list startup recovery batches");
+
+    assert_eq!(
+        exempt.len(),
+        1,
+        "the unsettled repair attempt must produce exactly one uncapped exempt candidate"
+    );
+    assert_eq!(exempt[0].conversation_id, exempt_conversation_id);
+
+    assert_eq!(
+        capped.len(),
+        STARTUP_PR_SUPERVISION_RECOVERY_LIMIT,
+        "the pure-poller batch must stay capped at the startup limit"
+    );
+    assert!(
+        capped
+            .iter()
+            .all(|workspace| capped_candidate_ids.contains(&workspace.conversation_id)),
+        "capped batch must only contain pure-poller candidates"
+    );
+    assert!(
+        !capped
+            .iter()
+            .any(|workspace| workspace.conversation_id == overflow_conversation_id),
+        "the 26th pure-poller candidate must stay capped, not silently recovered"
+    );
+    assert!(
+        !capped
+            .iter()
+            .any(|workspace| workspace.conversation_id == exempt_conversation_id),
+        "the exempt workspace must not be double-counted into the capped batch"
+    );
 }
 
 #[tokio::test]

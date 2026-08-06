@@ -661,6 +661,10 @@ pub struct GitRuntimeConfig {
     /// Cadence for liveness-aware workspace publish recovery.
     #[serde(default = "default_agent_workspace_publish_recovery_interval_secs")]
     pub agent_workspace_publish_recovery_interval_secs: u64,
+    /// Cadence for the periodic durable repair-reconciliation scan (clock-only; reuses the
+    /// existing recovery/reconciler seams and their claim/dedupe TTL).
+    #[serde(default = "default_agent_workspace_repair_reconciliation_scan_interval_secs")]
+    pub agent_workspace_repair_reconciliation_scan_interval_secs: u64,
     /// Seconds between background terminal PR local artifact cleanup passes.
     #[serde(default = "default_terminal_pr_local_cleanup_interval_secs")]
     pub terminal_pr_local_cleanup_interval_secs: u64,
@@ -710,6 +714,7 @@ impl Default for GitRuntimeConfig {
             agent_workspace_publish_lease_stale_secs: 300,
             agent_workspace_publish_lease_heartbeat_interval_secs: 30,
             agent_workspace_publish_recovery_interval_secs: 120,
+            agent_workspace_repair_reconciliation_scan_interval_secs: 60,
             terminal_pr_local_cleanup_interval_secs: 900,
             terminal_pr_local_cleanup_retry_secs: 3_600,
             orphan_worktree_cleanup_marker_retry_secs: 86_400,
@@ -750,6 +755,10 @@ fn default_agent_workspace_publish_lease_heartbeat_interval_secs() -> u64 {
 
 fn default_agent_workspace_publish_recovery_interval_secs() -> u64 {
     120
+}
+
+fn default_agent_workspace_repair_reconciliation_scan_interval_secs() -> u64 {
+    60
 }
 
 fn default_terminal_pr_local_cleanup_interval_secs() -> u64 {
@@ -1284,6 +1293,11 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
     env_u64!(
         cfg.git.agent_workspace_publish_recovery_interval_secs,
         "RALPHX_GIT_AGENT_WORKSPACE_PUBLISH_RECOVERY_INTERVAL_SECS"
+    );
+    env_u64!(
+        cfg.git
+            .agent_workspace_repair_reconciliation_scan_interval_secs,
+        "RALPHX_GIT_AGENT_WORKSPACE_REPAIR_RECONCILIATION_SCAN_INTERVAL_SECS"
     );
     env_u64!(
         cfg.git.terminal_pr_local_cleanup_interval_secs,
