@@ -1603,7 +1603,7 @@ async fn verify_plan_retirement_after_settled_burst_does_not_requeue() {
 
     let interactive_registry = Arc::clone(&state.interactive_process_registry);
     let agent_run_repo = Arc::clone(&state.agent_run_repo);
-    let stream_conversation_id = conversation_id.clone();
+    let stream_conversation_id = conversation_id;
     let stream_interactive_key = interactive_key.clone();
     let stream_run_id = retired_run_id.clone();
     let stream_app_handle = app.handle().clone();
