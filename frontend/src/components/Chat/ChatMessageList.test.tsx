@@ -297,6 +297,7 @@ it("renders exactly one run-attribution widget after a collapsed tool-activity g
   expect(
     toggle.compareDocumentPosition(widget) & Node.DOCUMENT_POSITION_FOLLOWING,
   ).toBeTruthy();
+  expect(widget.closest(".px-3")).not.toBeNull();
 });
 
 it("renders exactly one run-attribution widget when the run's last row is a covered persisted-thinking row", () => {
@@ -328,6 +329,30 @@ it("renders exactly one run-attribution widget when the run's last row is a cove
   expect(
     toggle.compareDocumentPosition(widget) & Node.DOCUMENT_POSITION_FOLLOWING,
   ).toBeTruthy();
+  expect(widget.closest(".px-3")).not.toBeNull();
+});
+
+it("renders exactly one run-attribution widget when the run's last provider row is a group toggle row itself, not a covered member", () => {
+  renderList({ messages: [
+    {
+      id: "toggle-anchor-row",
+      role: "assistant",
+      content: "",
+      createdAt: "2026-01-01T12:00:00Z",
+      timelineSequence: 1,
+      contentBlocks: [{ type: "tool_use", id: "t1", name: "Bash" }],
+      runId: "run-toggle-anchor",
+      finalizedAt: "2026-01-01T12:00:05Z",
+    },
+  ] });
+
+  expect(screen.getAllByTestId("run-attribution-widget")).toHaveLength(1);
+  const toggle = screen.getByTestId("tool-call-group-toggle");
+  const widget = screen.getByTestId("run-attribution-widget");
+  expect(
+    toggle.compareDocumentPosition(widget) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+  expect(widget.closest(".px-3")).not.toBeNull();
 });
 
 it("renders no widget and fetches no attributions when every message lacks a runId", () => {

@@ -406,7 +406,10 @@ describe("run attribution lifecycle chain", () => {
         context_type: "project",
         context_id: PROJECT_ID,
         conversation_id: CONVERSATION_ID,
-        started_at: "2026-07-31T00:01:00Z",
+        // Real-clock timestamp: the typing indicator's elapsed counter runs off
+        // the actual system clock (no fake timers), so the anchor must be close
+        // to "now" for the `/\d+s/` assertion below to hold.
+        started_at: new Date().toISOString(),
         agent_name: "ralphx-workspace-reviewer",
         launch_role: "workspace_reviewer",
       });
@@ -416,6 +419,15 @@ describe("run attribution lifecycle chain", () => {
       expect(screen.getByText("The review is complete.")).toBeInTheDocument();
     });
     expect(screen.queryByTestId("run-attribution-widget")).not.toBeInTheDocument();
+
+    // The live typing indicator proves `TypingIndicator storeKey={contextKey}`
+    // is actually wired through the real panel, with a role verb sourced from
+    // the emitted `agent:run_started` payload, not a hand-passed storeKey.
+    const typingIndicator = await screen.findByTestId("chat-typing-indicator");
+    expect(typingIndicator).toHaveTextContent(/Reviewer working/);
+    await waitFor(() => {
+      expect(screen.getByTestId("chat-typing-indicator")).toHaveTextContent(/Reviewer working for \d+s/);
+    });
 
     // A completion for an unrelated run must not settle this one.
     await act(async () => {
@@ -449,6 +461,9 @@ describe("run attribution lifecycle chain", () => {
     expect(toggle).toHaveAttribute("data-chat-run-attribution-key", RUN_ID);
     expect(toggle).toHaveTextContent("Agent worked for 5s");
     expect(invoke).toHaveBeenCalledWith("get_agent_run_attributions", { runIds: [RUN_ID] });
+    // Settling pins the live-versus-settled handoff: the typing indicator is
+    // gone once the widget takes over.
+    expect(screen.queryByTestId("chat-typing-indicator")).not.toBeInTheDocument();
 
     await act(async () => {
       pendingAttribution.resolve(settledAttribution());

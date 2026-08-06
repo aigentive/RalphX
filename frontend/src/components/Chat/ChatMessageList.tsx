@@ -1418,6 +1418,15 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         />
       );
     }, [resolvedRunAttributionTimingByMessageId, isRunAttributionsPending, isRunAttributionsError, retryRunAttributions]);
+    const renderRunAttributionRow = useCallback((messageId: string, key?: string) => {
+      const widget = renderRunAttribution(messageId);
+      if (!widget) return null;
+      return (
+        <div key={key} className="px-3 w-full" style={contentContainerStyle}>
+          <ContentShell className={contentWidthClassName}>{widget}</ContentShell>
+        </div>
+      );
+    }, [renderRunAttribution, contentWidthClassName]);
     const delegationProjection = useMemo(
       () => projectDelegationTimelineMessages(messages, streamingTasks),
       [messages, streamingTasks],
@@ -2142,15 +2151,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         isCollapsedToolCallGroupCoveredItem(item, expandedToolGroupKeys)
         || isPersistedThinkingGroupCoveredItem(item)
       ) {
-        const widget = renderRunAttribution(item.data.id);
-        if (!widget) return null;
-        return (
-          <div className="px-3 w-full">
-            <ContentShell className={contentWidthClassName}>
-              {widget}
-            </ContentShell>
-          </div>
-        );
+        return renderRunAttributionRow(item.data.id);
       }
       const msg = item.data;
       const senderGroupState =
@@ -2174,7 +2175,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
               contentWidthClassName={contentWidthClassName}
               rowRef={isLastVisibleTimelineItem ? handleLastRenderedRowRef : undefined}
             />
-            {renderRunAttribution(msg.id)}
+            {renderRunAttributionRow(msg.id)}
           </>
         );
       }
@@ -2204,7 +2205,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         return (
           <>
             {groupToggleRow}
-            {renderRunAttribution(msg.id)}
+            {renderRunAttributionRow(msg.id)}
           </>
         );
       }
@@ -2284,6 +2285,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       providerHarness,
       providerSessionId,
       renderRunAttribution,
+      renderRunAttributionRow,
       renderStreamingToolCallBlock,
       streamingMessageCreatedAt,
       streamingTasks,
@@ -2373,15 +2375,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
               isCollapsedToolCallGroupCoveredItem(item, expandedToolGroupKeys)
               || isPersistedThinkingGroupCoveredItem(item)
             ) {
-              const widget = renderRunAttribution(item.data.id);
-              if (!widget) return null;
-              return (
-                <div key={`run-attribution-${item.data.id}`} className="px-3 w-full">
-                  <ContentShell className={contentWidthClassName}>
-                    {widget}
-                  </ContentShell>
-                </div>
-              );
+              return renderRunAttributionRow(item.data.id, `run-attribution-${item.data.id}`);
             }
             const msg = item.data;
             const senderGroupState =
@@ -2405,7 +2399,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
                     onToggle={(event) => toggleToolCallGroup(thinkingGroup.key, event.currentTarget)}
                     contentWidthClassName={contentWidthClassName}
                   />
-                  {renderRunAttribution(msg.id)}
+                  {renderRunAttributionRow(msg.id)}
                 </React.Fragment>
               );
             }
@@ -2430,7 +2424,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
               return (
                 <React.Fragment key={`tool-call-group-${toolCallGroup?.key ?? msg.id}`}>
                   {groupToggleRow}
-                  {renderRunAttribution(msg.id)}
+                  {renderRunAttributionRow(msg.id)}
                 </React.Fragment>
               );
             }
