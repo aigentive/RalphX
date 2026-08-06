@@ -6,6 +6,7 @@ use super::{
     agent_workspace_freshness_cache, agent_workspace_freshness_cache_key,
     agent_workspace_interactive_slot_key, agent_workspace_post_repair_action_from_events,
     agent_workspace_repair_wait_released, agent_workspace_response_for_state,
+    agent_workspace_response_without_repair_recovery_for_state,
     apply_base_resolution_to_publish_target, archive_agent_conversation,
     build_agent_workspace_publish_repair_message_for_target,
     build_agent_workspace_repair_message_for_target, cached_agent_workspace_freshness,
@@ -4651,6 +4652,18 @@ async fn explicit_workspace_repair_retry_prompt_carries_predecessor_blocker_and_
         AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_) => {}
         outcome => panic!("expected enriched blocked repair attempt, got {outcome:?}"),
     }
+    let response =
+        agent_workspace_response_without_repair_recovery_for_state(&state, workspace.clone())
+            .await
+            .expect("needs-human workspace response should project explicit retry");
+    assert_eq!(
+        response
+            .maintenance_operation
+            .as_ref()
+            .map(|operation| operation.recovery_action),
+        Some(crate::domain::entities::AgentWorkspaceRepairOperationRecoveryAction::RetryRepair),
+        "the response must expose the retry control admitted by the command"
+    );
     let service = MockChatService::new();
 
     assert!(

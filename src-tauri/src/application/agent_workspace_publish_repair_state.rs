@@ -372,10 +372,6 @@ pub(crate) fn agent_workspace_repair_operation_recovery_action(
         AgentWorkspaceRepairPhase::Blocked
             if attempt.continuation != AgentWorkspaceRepairContinuation::Manual
                 && attempt.next_dispatch_at.is_none()
-                && !attempt
-                    .pending_reasons
-                    .iter()
-                    .any(|reason| reason == NEEDS_HUMAN_REPAIR_REASON)
                 && !attempt.pending_reasons.iter().any(|reason| {
                     reason.starts_with(CONTINUATION_OPEN_EFFECT_ATTENTION_REASON_PREFIX)
                 }) =>
@@ -405,28 +401,16 @@ pub(crate) async fn load_agent_workspace_repair_operation_recovery_action(
     Ok(recovery_action)
 }
 
-/// Admission guard for a direct user retry of a blocked repair. A user may retry a repair that
-/// was parked for human attention, but never one with a live external effect.
+/// Admission guard for a direct user retry of a blocked repair, using the same backend-owned
+/// recovery-action projection as the workspace response.
 pub(crate) async fn explicit_agent_workspace_repair_retry_allowed(
     repair_repo: &dyn AgentWorkspaceRepairRepository,
     attempt: &AgentWorkspaceRepairAttempt,
 ) -> AppResult<bool> {
-    let retryable = attempt.is_unsettled()
-        && attempt.phase == AgentWorkspaceRepairPhase::Blocked
-        && attempt.continuation != AgentWorkspaceRepairContinuation::Manual
-        && attempt.next_dispatch_at.is_none()
-        && !attempt
-            .pending_reasons
-            .iter()
-            .any(|reason| reason.starts_with(CONTINUATION_OPEN_EFFECT_ATTENTION_REASON_PREFIX));
-    if !retryable {
-        return Ok(false);
-    }
-
-    Ok(repair_repo
-        .get_open_repair_effect(&attempt.id)
-        .await?
-        .is_none())
+    Ok(
+        load_agent_workspace_repair_operation_recovery_action(repair_repo, attempt).await?
+            == AgentWorkspaceRepairOperationRecoveryAction::RetryRepair,
+    )
 }
 
 fn start_attempt_from_workspace(
