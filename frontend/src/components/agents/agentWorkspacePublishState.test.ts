@@ -12,6 +12,7 @@ import {
   getPostBaselinePublicationEvents,
   getAgentWorkspaceEffectiveBaseLabel,
   getAgentWorkspaceDescriptionFailurePresentation,
+  getAgentWorkspaceHoldPresentation,
   getAgentWorkspacePublishReceiptPresentation,
   getAgentWorkspaceMaintenancePresentation,
   getAgentWorkspacePrAutofixFingerprintSpendPresentation,
@@ -334,6 +335,29 @@ describe("maintenance operation presentation", () => {
     );
   });
 
+  it("presents a publication-effect hold as its own reason, not the CI-rerun copy", () => {
+    const held = workspace({
+      maintenanceOperation: {
+        ...maintenanceOperation,
+        source: "publish",
+        stage: "held",
+        status: "held",
+        holdReason: "publication_effect_attention",
+        automaticContinuation: false,
+      },
+    });
+
+    expect(canResumeAgentWorkspacePublish(held)).toBe(false);
+    const presentation = getAgentWorkspaceMaintenancePresentation(held);
+    expect(presentation).toMatchObject({
+      action: "hold",
+      busy: false,
+      automaticContinuation: null,
+    });
+    expect(presentation?.title).not.toBe("Repair paused — waiting for new CI evidence");
+    expect(presentation?.title).not.toMatch(/CI/i);
+  });
+
   it("does not let stale maintenance data mask a terminal pull request", () => {
     const current = workspace({
       maintenanceOperation,
@@ -366,6 +390,53 @@ describe("PR autofix fingerprint spend presentation", () => {
 
   it("omits the indicator when there is no tracked failure fingerprint", () => {
     expect(getAgentWorkspacePrAutofixFingerprintSpendPresentation(workspace())).toBeNull();
+  });
+});
+
+describe("getAgentWorkspaceHoldPresentation", () => {
+  const maintenanceOperation = {
+    operationId: "maintenance-1",
+    generation: 2,
+    source: "publish" as const,
+    stage: "held" as const,
+    status: "held" as const,
+    summary: null,
+    blocker: null,
+    automaticContinuation: false,
+    startedAt: "2026-07-25T10:00:00Z",
+    updatedAt: "2026-07-25T10:01:00Z",
+  };
+
+  it("explains a publication-effect hold in plain product language with no jargon", () => {
+    const presentation = getAgentWorkspaceHoldPresentation(
+      workspace({
+        maintenanceOperation: {
+          ...maintenanceOperation,
+          holdReason: "publication_effect_attention",
+        },
+      }),
+    );
+
+    expect(presentation).not.toBeNull();
+    expect(presentation?.agentStatus).toBe("Nothing is running");
+    expect(presentation?.title).not.toBe("Repair paused — waiting for new CI evidence");
+    expect(presentation?.waitingOn).toMatch(/retry publication/i);
+    expect(presentation?.waitingOn.toLowerCase()).not.toContain("effect fence");
+    expect(presentation?.waitingOn.toLowerCase()).not.toContain("cas");
+    expect(presentation?.waitingOn.toLowerCase()).not.toContain("ci");
+  });
+
+  it("keeps the existing CI-flavoured copy for other hold reasons", () => {
+    const presentation = getAgentWorkspaceHoldPresentation(
+      workspace({
+        maintenanceOperation: {
+          ...maintenanceOperation,
+          holdReason: "pr_autofix_unchanged_health",
+        },
+      }),
+    );
+
+    expect(presentation?.title).toBe("Repair paused — waiting for new CI evidence");
   });
 });
 

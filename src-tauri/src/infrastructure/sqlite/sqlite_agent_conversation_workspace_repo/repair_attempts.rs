@@ -464,12 +464,18 @@ fn validate_repair_effect_shape(effect: &AgentWorkspaceRepairEffect) -> AppResul
                 .can_complete_observed(effect.receipt_json.as_deref(), completed_at)
                 .map_err(AppError::Validation)
         }
-        AgentWorkspaceRepairEffectStatus::Pending
-        | AgentWorkspaceRepairEffectStatus::InFlight
-        | AgentWorkspaceRepairEffectStatus::Failed => {
+        AgentWorkspaceRepairEffectStatus::Pending | AgentWorkspaceRepairEffectStatus::InFlight => {
             if effect.completed_at.is_some() {
                 return Err(AppError::Validation(
-                    "only observed repair effects may have a completion time".to_string(),
+                    "only observed or failed repair effects may have a completion time".to_string(),
+                ));
+            }
+            Ok(())
+        }
+        AgentWorkspaceRepairEffectStatus::Failed => {
+            if effect.receipt_json.is_some() {
+                return Err(AppError::Validation(
+                    "failed repair effects must not carry an observed receipt".to_string(),
                 ));
             }
             Ok(())

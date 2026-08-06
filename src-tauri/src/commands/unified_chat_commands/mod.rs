@@ -103,7 +103,9 @@ use crate::application::agent_workspace_publish_repair_state::{
     classify_agent_workspace_repair_delivery, last_human_repair_reason,
     reserve_agent_workspace_repair_dispatch, resume_current_agent_workspace_repair_publish,
     resume_ready_agent_workspace_repair_for_publish,
-    retry_agent_workspace_pr_autofix_hold_override, settle_agent_workspace_repair_dispatch_outcome,
+    retry_agent_workspace_pr_autofix_hold_override,
+    retry_agent_workspace_publication_effect as retry_agent_workspace_publication_effect_service,
+    settle_agent_workspace_repair_dispatch_outcome,
     start_or_join_agent_workspace_repair, stop_agent_workspace_pr_autofix_for_hold,
     AgentWorkspacePrAutofixHoldActionOutcome, AgentWorkspaceRepairDispatchOutcome,
     AgentWorkspaceRepairDispatchSettlement, AgentWorkspaceRepairPublishResumeOutcome,
@@ -4840,6 +4842,41 @@ pub async fn stop_pr_autofix_for_failure(
     state: State<'_, AppState>,
 ) -> Result<AgentConversationWorkspaceResponse, String> {
     apply_pr_autofix_hold_action(input, state.inner(), false).await
+}
+
+/// Clears a continuation's publication-effect attention hold only when the UI's exact durable
+/// attempt version still owns it, then re-runs the ordinary reconciler.
+#[tauri::command]
+pub async fn retry_agent_workspace_publication_effect(
+    input: AgentWorkspaceRepairHoldActionInput,
+    state: State<'_, AppState>,
+) -> Result<AgentConversationWorkspaceResponse, String> {
+    let conversation_id = ChatConversationId::from_string(input.conversation_id);
+    let updated_at = DateTime::parse_from_rfc3339(&input.updated_at)
+        .map_err(|error| format!("invalid repair updated_at: {error}"))?
+        .with_timezone(&Utc);
+    let outcome = retry_agent_workspace_publication_effect_service(
+        state.inner(),
+        &conversation_id,
+        &AgentWorkspaceRepairAttemptId::from_string(input.attempt_id),
+        input.generation,
+        updated_at,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    if !matches!(outcome, AgentWorkspacePrAutofixHoldActionOutcome::Applied(_)) {
+        return Err(
+            "The workspace repair publication-effect hold changed before this action could be applied."
+                .to_string(),
+        );
+    }
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Agent conversation workspace not found".to_string())?;
+    agent_workspace_response_for_state(state.inner(), workspace).await
 }
 
 async fn apply_pr_autofix_hold_action(
