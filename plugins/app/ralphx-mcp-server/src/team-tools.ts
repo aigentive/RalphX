@@ -104,6 +104,12 @@ export const TEAM_TOOLS: Tool[] = [
       "Read the bounded name, role, and status roster for the caller's current Team. The backend resolves Team membership from trusted runtime context.",
     inputSchema: { type: "object", properties: {}, required: [], additionalProperties: false },
   },
+  {
+    name: "team_status",
+    description:
+      "Read per-member liveness (running state, last activity, latest run) joined to the roster for the caller's current Team. Coordinator-only. The backend resolves Team membership from trusted runtime context.",
+    inputSchema: { type: "object", properties: {}, required: [], additionalProperties: false },
+  },
 ];
 
 const TEAM_TOOL_NAMES = new Set(TEAM_TOOLS.map((tool) => tool.name));
@@ -134,6 +140,8 @@ export async function callTeamTool(
       return callTauri("managed_team/message", body, { headers });
     case "team_roster":
       return callTauriGet("managed_team/member/roster", { headers });
+    case "team_status":
+      return callTauriGet("managed_team/members/status", { headers });
     default:
       throw new Error(`Unsupported Team tool: ${name}`);
   }

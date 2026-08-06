@@ -10,7 +10,10 @@ use crate::domain::entities::{
 
 /// Default number of members allowed to run concurrently in a new Team.
 pub const DEFAULT_TEAM_CONCURRENCY: u32 = 2;
-/// Default cap on automatic coordinator wake-ups per wake batch chain.
+/// Default cap on concurrent in-flight automatic coordinator wake batches
+/// (`Planned`/`Launching`/`Running` `WakeBatch`-triggered run bindings) for a
+/// Team; settled (terminal/failed/cancelled) wake bindings do not count
+/// against this budget.
 pub const DEFAULT_AUTOMATIC_WAKE_LIMIT: u32 = 5;
 
 /// Builds the durable session row for a newly ensured Team.
@@ -112,4 +115,42 @@ pub fn new_member_assignment_run_binding(
         launched_at: None,
         terminal_at: None,
     }
+}
+
+/// Steps `binding` to `target` through the legal intermediate statuses.
+///
+/// `TeamRunBindingStatus` only permits single-step moves along
+/// `Planned -> Launching -> Running -> Terminal` (with `Cancelled`/`Failed`
+/// reachable directly from any live status), so callers that observe a
+/// coordinator run *after the fact* — a successful wake send, or a run that
+/// already ended — cannot express the outcome in one `transition_to`.
+///
+/// Mutates `binding` in memory only; the caller owns version bumping and
+/// persistence. Returns `false` when no legal path exists, leaving `binding`
+/// partially advanced, so callers must treat `false` as "do not persist".
+pub fn advance_binding_status(
+    binding: &mut TeamRunBinding,
+    target: TeamRunBindingStatus,
+    now: chrono::DateTime<Utc>,
+) -> bool {
+    // `Planned -> Launching -> Running -> Terminal` is the longest path, so
+    // four iterations always terminate.
+    for _ in 0..4 {
+        if binding.status == target {
+            return true;
+        }
+        let step = if binding.status.can_transition_to(target) {
+            target
+        } else {
+            match binding.status {
+                TeamRunBindingStatus::Planned => TeamRunBindingStatus::Launching,
+                TeamRunBindingStatus::Launching => TeamRunBindingStatus::Running,
+                _ => return false,
+            }
+        };
+        if binding.transition_to(step, now).is_err() {
+            return false;
+        }
+    }
+    false
 }
