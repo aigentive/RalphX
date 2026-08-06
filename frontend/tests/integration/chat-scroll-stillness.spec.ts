@@ -82,6 +82,14 @@ test.describe("chat transcript stillness", () => {
     await page.waitForTimeout(1_000);
     await turn.complete();
 
-    expect(await bistable.distanceToBottom()).toBeLessThanOrEqual(BISTABLE_TAIL_GAP_PX + 2);
+    // Poll rather than sample: the claim is that the collapsing tail stops
+    // churning and the transcript lands at the bottom, not that it has already
+    // landed at this exact instant. On roughly 1 run in 20 the last correction
+    // is still in flight here and reads 111px, then resolves to 0. A single
+    // sample only looked stable while a remount bug was silently rebuilding the
+    // transcript pinned at the bottom (AgentWorkspaceFileLinkProvider).
+    await expect
+      .poll(() => bistable.distanceToBottom())
+      .toBeLessThanOrEqual(BISTABLE_TAIL_GAP_PX + 2);
   });
 });

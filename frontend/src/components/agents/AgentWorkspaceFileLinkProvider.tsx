@@ -107,10 +107,13 @@ export function AgentWorkspaceFileLinkProvider({
     [openPath, opening?.path, opening?.targetId, preferredTargetId, targets, workspace],
   );
 
-  if (!value) {
-    return <>{children}</>;
-  }
-
+  // Always the same element type at this position. Returning a bare fragment
+  // for the no-workspace case swapped the type whenever a workspace appeared or
+  // disappeared, and React tears down and rebuilds the whole chat subtree on
+  // that swap: a fresh transcript mounts pinned at the bottom, so a reader
+  // parked mid-history was yanked down every time a run completed and the
+  // workspace query re-resolved. Consumers already treat a null value as "no
+  // workspace", so the two branches were never semantically different.
   return (
     <MessageFileLinkContext.Provider value={value}>
       {children}

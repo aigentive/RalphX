@@ -146,7 +146,11 @@ test.describe("existing conversation bottom follow", () => {
     };
   };
 
-  test("leaves a reader who scrolled away where they are while the turn streams", async ({ page }, testInfo) => {
+  // Run completion used to yank this reader to the bottom, and not through the
+  // scroll layer: `AgentWorkspaceFileLinkProvider` swapped between a bare
+  // fragment and a context provider as the workspace query resolved, which
+  // remounted the whole chat subtree, and a fresh transcript mounts pinned.
+  test("leaves a reader who scrolled away where they are", async ({ page }, testInfo) => {
     const executionId = `${testInfo.workerIndex}-${testInfo.repeatEachIndex}`;
     const conversationId = `reader-parked-${executionId}`;
     const chat = new AgentsChatPage(page);
@@ -165,38 +169,13 @@ test.describe("existing conversation bottom follow", () => {
       );
       await expectStillParked(`streaming block ${sequence}`);
     }
-  });
 
-  // Known defect, deterministic at 12 of 12 runs: finishing a run yanks a parked
-  // reader to the bottom. Nothing in the scroll layer does it. Instrumented
-  // mount tracing shows `IntegratedChatPanel` unmounting and remounting twice
-  // while `AgentsActiveConversationPanel` stays mounted and the panel key never
-  // changes, so a fresh transcript mounts pinned at the bottom by design and
-  // the reader's `free` state dies with the old instance. The teardown lives in
-  // the Agents panel composition, above anything this suite owns.
-  //
-  // `test.fail()` keeps the expectation asserted rather than deleted: when the
-  // remount is fixed this test reports "expected to fail but passed" and should
-  // be folded back into the streaming case above.
-  test.fail("leaves a reader who scrolled away where they are when the run completes", async ({ page }, testInfo) => {
-    const executionId = `${testInfo.workerIndex}-${testInfo.repeatEachIndex}`;
-    const conversationId = `reader-parked-complete-${executionId}`;
-    const chat = new AgentsChatPage(page);
-    const turn = new AgentsChatTurnPage(page, chat, conversationId, `run-parked-complete-${executionId}`);
-    await chat.open();
-    await chat.seedConversation(conversationId, false, 12);
-    await turn.expectAtTrueBottom();
-    const expectStillParked = await parkReaderAboveTail(chat);
-
-    await turn.start();
-    await turn.stream(
-      `Streaming block 1. ${"Measured virtualized content keeps growing. ".repeat(18)}`,
-      1,
-    );
     await turn.complete();
     await expectStillParked("run completion", false);
 
-    await turn.finalize("The complete persisted answer replaced the streaming tail.");
+    await turn.finalize("The complete persisted answer replaced the streaming tail.", {
+      expectLastRendered: false,
+    });
     await expectStillParked("finalized message", false);
   });
 });
