@@ -44,6 +44,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: ["mutatesAgentConsumedContent"],
     pins: [],
   },
+  "add_ticket_comment": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
   "answer_user_question": {
     opClass: "agentControl",
     argumentSensitive: false,
@@ -122,6 +128,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: ["agentControl"],
     pins: [],
   },
+  "assign_ticket": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
   "block_task": {
     opClass: "agentControl",
     argumentSensitive: false,
@@ -150,6 +162,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     opClass: "agentControl",
     argumentSensitive: false,
     capabilities: ["agentControl"],
+    pins: [],
+  },
+  "clear_ticket_assignee": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: [],
     pins: [],
   },
   "complete_step": {
@@ -962,6 +980,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: [],
     pins: [],
   },
+  "get_ticket_detail": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
   "get_ui_feature_flags": {
     opClass: "read",
     argumentSensitive: false,
@@ -1172,6 +1196,36 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: [],
     pins: [],
   },
+  "list_ticket_filter_options": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "list_ticket_labels": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "list_ticket_transitions": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "list_ticketing_columns": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "list_ticketing_containers": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
   "list_ticketing_providers": {
     opClass: "read",
     argumentSensitive: false,
@@ -1179,6 +1233,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     pins: [],
   },
   "list_ticketing_status_catalog": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "list_tickets": {
     opClass: "read",
     argumentSensitive: false,
     capabilities: [],
@@ -1266,6 +1326,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     opClass: "agentControl",
     argumentSensitive: false,
     capabilities: ["agentControl"],
+    pins: [],
+  },
+  "refresh_ticketing_status_catalog": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: [],
     pins: [],
   },
   "refresh_tickets": {
@@ -1544,6 +1610,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: [],
     pins: [],
   },
+  "set_ticket_labels": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
   "skip_automation_judge": {
     opClass: "agentControl",
     argumentSensitive: false,
@@ -1596,6 +1668,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     opClass: "agentControl",
     argumentSensitive: false,
     capabilities: ["mutatesAgentConsumedContent"],
+    pins: [],
+  },
+  "transition_ticket_status": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: [],
     pins: [],
   },
   "unarchive_persona": {
@@ -1716,6 +1794,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     opClass: "agentControl",
     argumentSensitive: false,
     capabilities: ["mutatesAgentConsumedContent"],
+    pins: [],
+  },
+  "update_ticketing_status_presentation": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: [],
     pins: [],
   },
   "update_ui_feature_flags": {

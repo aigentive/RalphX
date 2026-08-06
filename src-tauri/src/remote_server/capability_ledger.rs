@@ -320,8 +320,52 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
         "audited local settings-repository reads; response summaries omit token_secret_ref and no provider call is made",
     ),
     read_row(
+        "list_ticketing_containers",
+        "audited outbound provider container call spends the host credential; the credential is resolved host-side and does not cross the wire",
+    ),
+    CommandOverride {
+        command: "list_ticketing_columns",
+        policy: policy(
+            RiskClass::AgentControl,
+            NONE,
+            "syncs provider statuses into the local ticketing status catalog, changing local catalog rows",
+        ),
+    },
+    read_row(
         "list_ticketing_status_catalog",
         "audited local status-catalog repository read; no sync, provider call, credential reference, or write",
+    ),
+    CommandOverride {
+        command: "refresh_ticketing_status_catalog",
+        policy: policy(
+            RiskClass::AgentControl,
+            NONE,
+            "fetches provider statuses and changes the local ticketing status catalog",
+        ),
+    },
+    CommandOverride {
+        command: "update_ticketing_status_presentation",
+        policy: policy(
+            RiskClass::AgentControl,
+            NONE,
+            "changes display order, color, visibility, or terminal presentation in the local ticketing status catalog without an outbound provider write",
+        ),
+    },
+    read_row(
+        "list_tickets",
+        "audited outbound provider ticket-list call spends the host credential; the credential is resolved host-side and does not cross the wire",
+    ),
+    read_row(
+        "list_ticket_filter_options",
+        "audited outbound provider filter-options call spends the host credential; the credential is resolved host-side and does not cross the wire",
+    ),
+    read_row(
+        "get_ticket_detail",
+        "audited outbound provider ticket-detail call spends the host credential; the credential is resolved host-side and does not cross the wire",
+    ),
+    read_row(
+        "list_ticket_transitions",
+        "audited outbound provider transition-list call spends the host credential; the credential is resolved host-side and does not cross the wire",
     ),
     read_row(
         "get_ticket_associations",
@@ -334,6 +378,50 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
     read_row(
         "refresh_tickets",
         "audited capability-free clock response; validates provider and returns now_string without state, network, or credential access",
+    ),
+    CommandOverride {
+        command: "transition_ticket_status",
+        policy: policy(
+            RiskClass::AgentControl,
+            NONE,
+            "changes the ticket workflow status on the provider",
+        ),
+    },
+    CommandOverride {
+        command: "assign_ticket",
+        policy: policy(
+            RiskClass::AgentControl,
+            NONE,
+            "changes the ticket assignee on the provider to the credential owner",
+        ),
+    },
+    CommandOverride {
+        command: "clear_ticket_assignee",
+        policy: policy(
+            RiskClass::AgentControl,
+            NONE,
+            "clears the ticket assignee on the provider",
+        ),
+    },
+    CommandOverride {
+        command: "add_ticket_comment",
+        policy: policy(
+            RiskClass::AgentControl,
+            NONE,
+            "adds a comment to the ticket on the provider",
+        ),
+    },
+    CommandOverride {
+        command: "set_ticket_labels",
+        policy: policy(
+            RiskClass::AgentControl,
+            NONE,
+            "replaces the ticket labels or tags on the provider",
+        ),
+    },
+    read_row(
+        "list_ticket_labels",
+        "audited outbound provider label-list call spends the host credential; the credential is resolved host-side and does not cross the wire",
     ),
     process_refusal(
         "start_ralphx_work_from_ticket",

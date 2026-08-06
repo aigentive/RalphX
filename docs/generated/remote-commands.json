@@ -576,20 +576,14 @@
     "retry_merge",
     "update_api_key_projects",
     "update_api_key_permissions",
-    "list_ticketing_containers",
     "list_ticketing_columns",
     "refresh_ticketing_status_catalog",
-    "list_tickets",
-    "list_ticket_filter_options",
-    "get_ticket_detail",
-    "list_ticket_transitions",
     "start_ralphx_work_from_ticket",
     "transition_ticket_status",
     "assign_ticket",
     "clear_ticket_assignee",
     "add_ticket_comment",
-    "set_ticket_labels",
-    "list_ticket_labels"
+    "set_ticket_labels"
   ],
   "authority_reducing_exemptions": [
     {
@@ -3753,10 +3747,82 @@
       "argumentSensitive": false,
       "capabilities": [],
       "class": "read",
+      "command": "list_ticketing_containers",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ticketing_commands::list_ticketing_containers"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "agentControl",
+      "command": "list_ticketing_columns",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ticketing_commands::list_ticketing_columns"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
       "command": "list_ticketing_status_catalog",
       "pins": [],
       "scopeConfined": false,
       "target": "crate::commands::ticketing_commands::list_ticketing_status_catalog"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "agentControl",
+      "command": "refresh_ticketing_status_catalog",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ticketing_commands::refresh_ticketing_status_catalog"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "agentControl",
+      "command": "update_ticketing_status_presentation",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ticketing_commands::update_ticketing_status_presentation"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "list_tickets",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ticketing_commands::list_tickets"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "list_ticket_filter_options",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ticketing_commands::list_ticket_filter_options"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_ticket_detail",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ticketing_commands::get_ticket_detail"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "list_ticket_transitions",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ticketing_commands::list_ticket_transitions"
     },
     {
       "argumentSensitive": false,
@@ -3784,6 +3850,60 @@
       "pins": [],
       "scopeConfined": false,
       "target": "crate::commands::ticketing_commands::refresh_tickets"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "agentControl",
+      "command": "transition_ticket_status",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ticketing_commands::transition_ticket_status"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "agentControl",
+      "command": "assign_ticket",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ticketing_commands::assign_ticket"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "agentControl",
+      "command": "clear_ticket_assignee",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ticketing_commands::clear_ticket_assignee"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "agentControl",
+      "command": "add_ticket_comment",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ticketing_commands::add_ticket_comment"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "agentControl",
+      "command": "set_ticket_labels",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ticketing_commands::set_ticket_labels"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "list_ticket_labels",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ticketing_commands::list_ticket_labels"
     },
     {
       "argumentSensitive": false,
@@ -11364,26 +11484,22 @@
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "class": "elevated",
+      "capabilities": [],
+      "class": "read",
       "command": "list_ticketing_containers",
       "module": "ticketing_commands",
-      "reason": "ticket integration credential/network surface",
-      "registered": false,
-      "v1Resolution": "v1-deferred"
+      "reason": "audited outbound provider container call spends the host credential; the credential is resolved host-side and does not cross the wire",
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "class": "elevated",
+      "capabilities": [],
+      "class": "agentControl",
       "command": "list_ticketing_columns",
       "module": "ticketing_commands",
-      "reason": "ticket integration credential/network surface",
-      "registered": false,
-      "v1Resolution": "v1-deferred"
+      "reason": "syncs provider statuses into the local ticketing status catalog, changing local catalog rows",
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
@@ -11395,70 +11511,58 @@
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "class": "elevated",
+      "capabilities": [],
+      "class": "agentControl",
       "command": "refresh_ticketing_status_catalog",
       "module": "ticketing_commands",
-      "reason": "ticket integration credential/network surface",
-      "registered": false,
-      "v1Resolution": "v1-deferred"
+      "reason": "fetches provider statuses and changes the local ticketing status catalog",
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "class": "elevated",
+      "capabilities": [],
+      "class": "agentControl",
       "command": "update_ticketing_status_presentation",
       "module": "ticketing_commands",
-      "reason": "ticket integration credential/network surface",
-      "registered": false,
-      "v1Resolution": "v1-deferred"
+      "reason": "changes display order, color, visibility, or terminal presentation in the local ticketing status catalog without an outbound provider write",
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "class": "elevated",
+      "capabilities": [],
+      "class": "read",
       "command": "list_tickets",
       "module": "ticketing_commands",
-      "reason": "ticket integration credential/network surface",
-      "registered": false,
-      "v1Resolution": "v1-deferred"
+      "reason": "audited outbound provider ticket-list call spends the host credential; the credential is resolved host-side and does not cross the wire",
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "class": "elevated",
+      "capabilities": [],
+      "class": "read",
       "command": "list_ticket_filter_options",
       "module": "ticketing_commands",
-      "reason": "ticket integration credential/network surface",
-      "registered": false,
-      "v1Resolution": "v1-deferred"
+      "reason": "audited outbound provider filter-options call spends the host credential; the credential is resolved host-side and does not cross the wire",
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "class": "elevated",
+      "capabilities": [],
+      "class": "read",
       "command": "get_ticket_detail",
       "module": "ticketing_commands",
-      "reason": "ticket integration credential/network surface",
-      "registered": false,
-      "v1Resolution": "v1-deferred"
+      "reason": "audited outbound provider ticket-detail call spends the host credential; the credential is resolved host-side and does not cross the wire",
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "class": "elevated",
+      "capabilities": [],
+      "class": "read",
       "command": "list_ticket_transitions",
       "module": "ticketing_commands",
-      "reason": "ticket integration credential/network surface",
-      "registered": false,
-      "v1Resolution": "v1-deferred"
+      "reason": "audited outbound provider transition-list call spends the host credential; the credential is resolved host-side and does not cross the wire",
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
@@ -11499,70 +11603,58 @@
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "class": "elevated",
+      "capabilities": [],
+      "class": "agentControl",
       "command": "transition_ticket_status",
       "module": "ticketing_commands",
-      "reason": "ticket integration credential/network surface",
-      "registered": false,
-      "v1Resolution": "v1-deferred"
+      "reason": "changes the ticket workflow status on the provider",
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "class": "elevated",
+      "capabilities": [],
+      "class": "agentControl",
       "command": "assign_ticket",
       "module": "ticketing_commands",
-      "reason": "ticket integration credential/network surface",
-      "registered": false,
-      "v1Resolution": "v1-deferred"
+      "reason": "changes the ticket assignee on the provider to the credential owner",
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "class": "elevated",
+      "capabilities": [],
+      "class": "agentControl",
       "command": "clear_ticket_assignee",
       "module": "ticketing_commands",
-      "reason": "ticket integration credential/network surface",
-      "registered": false,
-      "v1Resolution": "v1-deferred"
+      "reason": "clears the ticket assignee on the provider",
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "class": "elevated",
+      "capabilities": [],
+      "class": "agentControl",
       "command": "add_ticket_comment",
       "module": "ticketing_commands",
-      "reason": "ticket integration credential/network surface",
-      "registered": false,
-      "v1Resolution": "v1-deferred"
+      "reason": "adds a comment to the ticket on the provider",
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "class": "elevated",
+      "capabilities": [],
+      "class": "agentControl",
       "command": "set_ticket_labels",
       "module": "ticketing_commands",
-      "reason": "ticket integration credential/network surface",
-      "registered": false,
-      "v1Resolution": "v1-deferred"
+      "reason": "replaces the ticket labels or tags on the provider",
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "class": "elevated",
+      "capabilities": [],
+      "class": "read",
       "command": "list_ticket_labels",
       "module": "ticketing_commands",
-      "reason": "ticket integration credential/network surface",
-      "registered": false,
-      "v1Resolution": "v1-deferred"
+      "reason": "audited outbound provider label-list call spends the host credential; the credential is resolved host-side and does not cross the wire",
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [

@@ -414,8 +414,10 @@ fn generated_manifest() -> serde_json::Value {
     let agent_control_floor = rows
         .iter()
         .filter_map(|(command, _)| {
-            (closure_is_arming(&graph.closure([command.clone()])) || detector_b.contains(command))
-                .then_some(command)
+            ((closure_is_arming(&graph.closure([command.clone()]))
+                && !detector_a_audited_read_discharge(command))
+                || detector_b.contains(command))
+            .then_some(command)
         })
         .collect::<Vec<_>>();
     // R5-H1's row shape: entry point, sinks reached, read-surface classification. The closure
@@ -587,6 +589,41 @@ const DETECTOR_A_ROOT_EXCEPTIONS: &[(&str, &str)] = &[(
     "Tauri scaffold demo command defined in lib.rs rather than commands/; it takes a &str, \
      returns a String, and reaches no sink",
 )];
+
+/// Approved credential-spending reads whose provider method names collide with unrelated
+/// authority-bearing roots in the deliberately conservative bare-name call graph.
+const DETECTOR_A_AUDITED_READ_DISCHARGES: &[(&str, &str)] = &[
+    (
+        "list_ticketing_containers",
+        "the command only validates provider input and calls host-side provider container APIs; bare method names such as list_projects over-resolve into unrelated command roots",
+    ),
+    (
+        "get_ticket_detail",
+        "the command only validates provider input and calls host-side provider detail APIs; bare fetch method names over-resolve into unrelated command roots",
+    ),
+    (
+        "list_tickets",
+        "the command only validates and filters host-side provider ticket summaries; bare list and fetch method names over-resolve into unrelated command roots",
+    ),
+    (
+        "list_ticket_filter_options",
+        "the command only derives filter options from host-side provider ticket summaries; bare list and fetch method names over-resolve into unrelated command roots",
+    ),
+    (
+        "list_ticket_transitions",
+        "the command only reads transition options through the host-side ticketing service; the bare list_transitions method name over-resolves into unrelated command roots",
+    ),
+    (
+        "list_ticket_labels",
+        "the command only reads provider label options through the host-side Linear service; bare label-list method names over-resolve into unrelated command roots",
+    ),
+];
+
+fn detector_a_audited_read_discharge(command: &str) -> bool {
+    DETECTOR_A_AUDITED_READ_DISCHARGES
+        .iter()
+        .any(|(discharged, _)| *discharged == command)
+}
 
 /// `complete` only when detector (a) actually resolved: every census command reached a graph
 /// node and every declared cut sink exists as a callable name somewhere in production source.
@@ -971,19 +1008,25 @@ fn capability_ledger_is_exhaustive_and_internally_consistent() {
 fn detector_a_is_a_floor_for_agent_control() {
     let graph = CallGraph::build(&load_production_sources());
     let mut floor = BTreeSet::new();
+    let mut below_floor = Vec::new();
     for (command, module) in census() {
-        if closure_is_arming(&graph.closure([command.clone()])) {
+        if closure_is_arming(&graph.closure([command.clone()]))
+            && !detector_a_audited_read_discharge(&command)
+        {
             floor.insert(command.clone());
             let row = policy_for(&command, &module).expect("census is ledgered");
-            assert!(
-                matches!(
-                    row.class,
-                    RiskClass::AgentControl | RiskClass::Elevated | RiskClass::Denied
-                ),
-                "detector (a) classifies `{command}` as authority-bearing; ledger must be AgentControl or stronger"
-            );
+            if !matches!(
+                row.class,
+                RiskClass::AgentControl | RiskClass::Elevated | RiskClass::Denied
+            ) {
+                below_floor.push(command);
+            }
         }
     }
+    assert!(
+        below_floor.is_empty(),
+        "detector (a) classifies these commands as authority-bearing below AgentControl: {below_floor:?}"
+    );
     assert!(
         floor.contains("reanalyze_project"),
         "project-analyzer spawn sink must mechanically place reanalyze_project in detector (a)"
@@ -991,6 +1034,39 @@ fn detector_a_is_a_floor_for_agent_control() {
     let row = policy_for("reanalyze_project", "project_commands").unwrap();
     assert_eq!(row.class, RiskClass::AgentControl);
     assert_eq!(row.capabilities, &[Capability::AgentControl]);
+}
+
+#[test]
+fn ticketing_detector_a_read_discharges_are_exact_and_evidenced() {
+    let graph = CallGraph::build(&load_production_sources());
+    let modules = census().into_iter().collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        DETECTOR_A_AUDITED_READ_DISCHARGES
+            .iter()
+            .map(|(command, _)| *command)
+            .collect::<Vec<_>>(),
+        vec![
+            "list_ticketing_containers",
+            "get_ticket_detail",
+            "list_tickets",
+            "list_ticket_filter_options",
+            "list_ticket_transitions",
+            "list_ticket_labels",
+        ]
+    );
+    for (command, reason) in DETECTOR_A_AUDITED_READ_DISCHARGES {
+        assert!(
+            closure_is_arming(&graph.closure([command.to_string()])),
+            "detector A no longer over-attributes `{command}`; remove its discharge"
+        );
+        let row = policy_for(command, &modules[*command]).expect("discharged read is ledgered");
+        assert_eq!(row.class, RiskClass::Read);
+        assert!(row.capabilities.is_empty());
+        assert!(
+            reason.len() > 80,
+            "`{command}` has no substantive audit reason"
+        );
+    }
 }
 
 #[test]
@@ -1099,6 +1175,11 @@ fn detector_b_is_calibrated_and_floor_enforced() {
         // read whose response omits the host `file_path`; it carries no ChatAttachmentService,
         // storage path, AppHandle or ExecutionState, proved by the module's carrier-absence
         // assertion. Attachment BYTES remain host-only.
+        // Wave F1 registers fourteen existing ticketing census commands (six provider reads,
+        // three local-catalog writes, and five provider writes). The census stays 605 because
+        // every name was already in `generate_handler!`; only its ledger disposition and remote
+        // registration changed. The ticket credential remains host-side and is absent from all
+        // six serialized read projections.
         605,
         "review the detector against the full command census"
     );

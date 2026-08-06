@@ -796,6 +796,20 @@ export function TicketingDashboardView({
   const statusCatalogReadGate = useAgentGate("ticketingStatusCatalogRead");
   const associationsReadGate = useAgentGate("ticketingAssociationsRead");
   const refreshGate = useAgentGate("ticketingRefresh");
+  const containersReadGate = useAgentGate("ticketingContainersRead");
+  const columnsSyncGate = useAgentGate("ticketingColumnsSync");
+  const statusCatalogRefreshGate = useAgentGate("ticketingStatusCatalogRefresh");
+  const statusPresentationUpdateGate = useAgentGate("ticketingStatusPresentationUpdate");
+  const ticketsReadGate = useAgentGate("ticketingTicketsRead");
+  const filterOptionsReadGate = useAgentGate("ticketingFilterOptionsRead");
+  const detailReadGate = useAgentGate("ticketingDetailRead");
+  const transitionsReadGate = useAgentGate("ticketingTransitionsRead");
+  const transitionWriteGate = useAgentGate("ticketingTransitionWrite");
+  const assignWriteGate = useAgentGate("ticketingAssignWrite");
+  const clearAssigneeWriteGate = useAgentGate("ticketingClearAssigneeWrite");
+  const commentWriteGate = useAgentGate("ticketingCommentWrite");
+  const labelsWriteGate = useAgentGate("ticketingLabelsWrite");
+  const labelsReadGate = useAgentGate("ticketingLabelsRead");
   const projectsQuery = useProjects();
   const providersQuery = useTicketingProviders(projectId, {
     enabled: Boolean(projectId) && !providersReadGate.gated,
@@ -825,7 +839,7 @@ export function TicketingDashboardView({
 
   const containersQuery = useTicketingContainers(
     activeProvider ? { provider: activeProvider, projectId } : null,
-    { enabled: Boolean(activeProvider && readableProvider) },
+    { enabled: Boolean(activeProvider && readableProvider) && !containersReadGate.gated },
   );
   const topLevelContainers = useMemo(() => containersQuery.data ?? [], [containersQuery.data]);
   const selectedSpaceFromTopLevel = useMemo(
@@ -836,7 +850,7 @@ export function TicketingDashboardView({
     activeProvider === "clickup" && selectedSpaceFromTopLevel
       ? { provider: "clickup", projectId, parentContainerId: selectedSpaceFromTopLevel }
       : null,
-    { enabled: Boolean(activeProvider === "clickup" && selectedSpaceFromTopLevel && readableProvider) },
+    { enabled: Boolean(activeProvider === "clickup" && selectedSpaceFromTopLevel && readableProvider) && !containersReadGate.gated },
   );
   const containers = useMemo(
     () => activeProvider === "clickup"
@@ -900,7 +914,7 @@ export function TicketingDashboardView({
           ...(columnsContainerId !== null && { containerId: columnsContainerId }),
         }
       : null,
-    { enabled: Boolean(activeProvider && readableProvider && !containerSelectionNeeded) },
+    { enabled: Boolean(activeProvider && readableProvider && !containerSelectionNeeded) && !columnsSyncGate.gated },
   );
   const columns = columnsQuery.data ?? [];
 
@@ -918,7 +932,7 @@ export function TicketingDashboardView({
       }
     : null;
 
-  const ticketsQuery = useTickets(ticketQuery, { enabled: Boolean(ticketQuery) });
+  const ticketsQuery = useTickets(ticketQuery, { enabled: Boolean(ticketQuery) && !ticketsReadGate.gated });
   const tickets = useMemo(() => flattenTicketPages(ticketsQuery.data), [ticketsQuery.data]);
   const filterOptionsInput: ListTicketFilterOptionsInput | null = activeProvider && activeProvider !== "clickup" && readableProvider && !containerSelectionNeeded
     ? {
@@ -930,7 +944,7 @@ export function TicketingDashboardView({
       }
     : null;
   const filterOptionsQuery = useTicketFilterOptions(filterOptionsInput, {
-    enabled: Boolean(filterOptionsInput),
+    enabled: Boolean(filterOptionsInput) && !filterOptionsReadGate.gated,
   });
   const hasWatcherMetadata = useMemo(
     () =>
@@ -1044,11 +1058,11 @@ export function TicketingDashboardView({
   const detailInput = selectedTicketRef && activeProvider && shouldHydrateDetail
     ? { provider: activeProvider, ticketRef: selectedTicketRef }
     : null;
-  const detailQuery = useTicketDetail(detailInput, { enabled: Boolean(detailInput) });
-  const transitionsQuery = useTicketTransitions(detailInput, { enabled: Boolean(detailInput) });
+  const detailQuery = useTicketDetail(detailInput, { enabled: Boolean(detailInput) && !detailReadGate.gated });
+  const transitionsQuery = useTicketTransitions(detailInput, { enabled: Boolean(detailInput) && !transitionsReadGate.gated });
   // Linear pick-list needs the issue team's labels; Jira is free-text and skips it.
   const labelOptionsQuery = useTicketLabelOptions(detailInput, {
-    enabled: Boolean(detailInput) && activeProvider === "linear",
+    enabled: Boolean(detailInput) && activeProvider === "linear" && !labelsReadGate.gated,
   });
   const associationsQuery = useTicketAssociations(
     detailInput ? { ...detailInput, projectId } : null,
@@ -1138,7 +1152,7 @@ export function TicketingDashboardView({
       lastAutoSyncedStatusScope.current = null;
       return;
     }
-    if (!statusCatalogScope || !readableProvider) {
+    if (!statusCatalogScope || !readableProvider || statusCatalogRefreshGate.gated) {
       return;
     }
     const scopeKey = statusCatalogScopeKey(statusCatalogScope);
@@ -1147,21 +1161,21 @@ export function TicketingDashboardView({
     }
     lastAutoSyncedStatusScope.current = scopeKey;
     refreshStatusCatalog.mutate(statusCatalogScope);
-  }, [readableProvider, refreshStatusCatalog, statusCatalogScope, statusManagerOpen]);
+  }, [readableProvider, refreshStatusCatalog, statusCatalogRefreshGate.gated, statusCatalogScope, statusManagerOpen]);
 
   function handleBindConversation(conversationId: string) {
     bindConversation.mutate(conversationId);
   }
 
   function handleSyncStatuses() {
-    if (!statusCatalogScope) {
+    if (!statusCatalogScope || statusCatalogRefreshGate.gated) {
       return;
     }
     refreshStatusCatalog.mutate(statusCatalogScope);
   }
 
   function handleMoveStatus(entry: TicketingStatusCatalogEntry, direction: -1 | 1) {
-    if (!statusCatalogScope) {
+    if (!statusCatalogScope || statusPresentationUpdateGate.gated) {
       return;
     }
     const entries = sortedStatusCatalogEntries(statusCatalogQuery.data ?? []);
@@ -1186,7 +1200,7 @@ export function TicketingDashboardView({
   }
 
   function handleStatusColorChange(entry: TicketingStatusCatalogEntry, color: string) {
-    if (!statusCatalogScope) {
+    if (!statusCatalogScope || statusPresentationUpdateGate.gated) {
       return;
     }
     updateStatusPresentationMutation.mutate({
@@ -1196,7 +1210,7 @@ export function TicketingDashboardView({
   }
 
   function handleResetStatusColor(entry: TicketingStatusCatalogEntry) {
-    if (!statusCatalogScope) {
+    if (!statusCatalogScope || statusPresentationUpdateGate.gated) {
       return;
     }
     updateStatusPresentationMutation.mutate({
@@ -1209,7 +1223,7 @@ export function TicketingDashboardView({
     entry: TicketingStatusCatalogEntry,
     visible: boolean,
   ) {
-    if (!statusCatalogScope) {
+    if (!statusCatalogScope || statusPresentationUpdateGate.gated) {
       return;
     }
     updateStatusPresentationMutation.mutate({
@@ -1346,7 +1360,7 @@ export function TicketingDashboardView({
   }
 
   async function handleTransitionTicket(transition: TicketTransitionOption) {
-    if (!selectedTicket) {
+    if (!selectedTicket || transitionWriteGate.gated) {
       return;
     }
     await ticketingMutations.transitionStatus({
@@ -1358,7 +1372,7 @@ export function TicketingDashboardView({
   }
 
   async function handleAssignToMe() {
-    if (!selectedTicket) {
+    if (!selectedTicket || assignWriteGate.gated) {
       return;
     }
     await ticketingMutations.assignToMe({
@@ -1369,7 +1383,7 @@ export function TicketingDashboardView({
   }
 
   async function handleClearAssignee() {
-    if (!selectedTicket) {
+    if (!selectedTicket || clearAssigneeWriteGate.gated) {
       return;
     }
     await ticketingMutations.clearAssignee({
@@ -1380,6 +1394,9 @@ export function TicketingDashboardView({
   }
 
   function handleQuickAssign(ticket: TicketSummary) {
+    if (assignWriteGate.gated) {
+      return;
+    }
     void ticketingMutations
       .assignToMe({ provider: ticket.ref.provider, ticketRef: ticket.ref, projectId })
       .catch((error: unknown) => {
@@ -1388,7 +1405,7 @@ export function TicketingDashboardView({
   }
 
   async function handleAddComment(bodyMarkdown: string) {
-    if (!selectedTicket) {
+    if (!selectedTicket || commentWriteGate.gated) {
       return;
     }
     await ticketingMutations.addComment({
@@ -1400,7 +1417,7 @@ export function TicketingDashboardView({
   }
 
   async function handleSetLabels(labels: string[]) {
-    if (!selectedTicket) {
+    if (!selectedTicket || labelsWriteGate.gated) {
       return;
     }
     await ticketingMutations.setLabels({
@@ -1412,6 +1429,9 @@ export function TicketingDashboardView({
   }
 
   function handleMoveTicket(ticket: TicketSummary, column: TicketingColumn) {
+    if (transitionWriteGate.gated || transitionsReadGate.gated) {
+      return;
+    }
     const ticketInput = {
       provider: ticket.ref.provider,
       ticketRef: ticket.ref,
@@ -1578,11 +1598,11 @@ export function TicketingDashboardView({
       <TicketKanbanView
         columns={statusColumns}
         tickets={displayedTickets}
-        canMoveTickets={Boolean(selectedProvider?.capabilities.kanbanWrite)}
+        canMoveTickets={Boolean(selectedProvider?.capabilities.kanbanWrite) && !transitionWriteGate.gated && !transitionsReadGate.gated}
         onMoveTicket={handleMoveTicket}
         onSelectTicket={handleSelectTicket}
         isUnread={isTicketUnread}
-        canQuickAssign={Boolean(selectedProvider?.capabilities.assignmentWrite)}
+        canQuickAssign={Boolean(selectedProvider?.capabilities.assignmentWrite) && !assignWriteGate.gated}
         onQuickAssign={handleQuickAssign}
         onOpenPullRequestDetail={handleOpenPullRequestDetail}
       />
@@ -1599,9 +1619,9 @@ export function TicketingDashboardView({
         onLoadMore={() => void ticketsQuery.fetchNextPage()}
         onSelectTicket={handleSelectTicket}
         isUnread={isTicketUnread}
-        canQuickAssign={Boolean(selectedProvider?.capabilities.assignmentWrite)}
+        canQuickAssign={Boolean(selectedProvider?.capabilities.assignmentWrite) && !assignWriteGate.gated}
         onQuickAssign={handleQuickAssign}
-        canMoveTickets={Boolean(selectedProvider?.capabilities.kanbanWrite)}
+        canMoveTickets={Boolean(selectedProvider?.capabilities.kanbanWrite) && !transitionWriteGate.gated && !transitionsReadGate.gated}
         onMoveTicket={handleMoveTicket}
         onOpenPullRequestDetail={handleOpenPullRequestDetail}
       />
@@ -1740,11 +1760,11 @@ export function TicketingDashboardView({
         isLabelPending={ticketingMutations.setLabelsMutation.isPending}
         labelOptions={labelOptionsQuery.data}
         isLabelOptionsLoading={labelOptionsQuery.isLoading}
-        onTransitionTicket={handleTransitionTicket}
-        onAssignToMe={handleAssignToMe}
-        onClearAssignee={handleClearAssignee}
-        onAddComment={handleAddComment}
-        onSetLabels={selectedTicket ? handleSetLabels : undefined}
+        onTransitionTicket={transitionWriteGate.gated ? undefined : handleTransitionTicket}
+        onAssignToMe={assignWriteGate.gated ? undefined : handleAssignToMe}
+        onClearAssignee={clearAssigneeWriteGate.gated ? undefined : handleClearAssignee}
+        onAddComment={commentWriteGate.gated ? undefined : handleAddComment}
+        onSetLabels={selectedTicket && !labelsWriteGate.gated ? handleSetLabels : undefined}
         seenUntil={seenBaseline}
         isStartWorkPending={false}
         startWorkError={null}
@@ -1773,8 +1793,8 @@ export function TicketingDashboardView({
         entries={statusCatalogQuery.data ?? []}
         ticketCounts={statusTicketCounts}
         isLoading={statusCatalogQuery.isLoading || refreshStatusCatalog.isPending}
-        isSyncing={refreshStatusCatalog.isPending}
-        isUpdating={updateStatusPresentationMutation.isPending}
+        isSyncing={refreshStatusCatalog.isPending || statusCatalogRefreshGate.gated}
+        isUpdating={updateStatusPresentationMutation.isPending || statusPresentationUpdateGate.gated}
         error={statusManagerError}
         onSync={handleSyncStatuses}
         onMove={handleMoveStatus}

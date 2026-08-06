@@ -38,6 +38,150 @@ async fn local_worker_task_context() -> crate::domain::entities::TaskContext {
     .0
 }
 
+#[test]
+fn ticketing_credential_spending_read_projections_carry_no_secret_reference() {
+    use crate::commands::ticketing_commands::{
+        TicketDetailResponse, TicketFilterOptionsResponse, TicketLabelOptionResponse,
+        TicketPageResponse, TicketRefInput, TicketStateResponse, TicketSummaryResponse,
+        TicketTransitionOptionResponse, TicketingContainerResponse,
+    };
+    use crate::remote_server::registry::{find_spec, serialize_ok};
+
+    let summary = TicketSummaryResponse {
+        ref_: TicketRefInput {
+            provider: "linear".into(),
+            id: "issue-1".into(),
+            key: None,
+        },
+        title: "Ticket".into(),
+        state: TicketStateResponse {
+            id: "todo".into(),
+            name: "Todo".into(),
+            category: "todo".into(),
+            color: None,
+        },
+        assignee: None,
+        assignees: vec![],
+        watchers: vec![],
+        reporter: None,
+        labels: vec![],
+        sprints: vec![],
+        project: None,
+        priority: None,
+        updated_at: "2026-08-05T12:00:00Z".into(),
+        url: None,
+        association_count: 0,
+        open_pr_count: 0,
+        open_pr_number: None,
+        open_pr_url: None,
+        open_pr_status: None,
+        current_user_assigned: false,
+        current_user_watching: false,
+    };
+    let projections = [
+        serialize_ok(vec![TicketingContainerResponse {
+            provider: "linear".into(),
+            id: "team-1".into(),
+            key: None,
+            name: "Team".into(),
+            kind: "team".into(),
+            parent_id: None,
+            ticket_count: None,
+        }])
+        .unwrap(),
+        serialize_ok(TicketPageResponse {
+            items: vec![],
+            next_cursor: None,
+            total: Some(0),
+            fetched_at: None,
+        })
+        .unwrap(),
+        serialize_ok(TicketFilterOptionsResponse {
+            assignees: vec![],
+            sprints: vec![],
+            complete: true,
+            truncated: false,
+        })
+        .unwrap(),
+        serialize_ok(TicketDetailResponse {
+            summary,
+            description_markdown: None,
+            description_text: None,
+            acceptance_criteria_markdown: None,
+            comments: vec![],
+            attachments: vec![],
+            transitions: vec![],
+            fetched_at: None,
+        })
+        .unwrap(),
+        serialize_ok(vec![TicketTransitionOptionResponse {
+            to_state_id: "done".into(),
+            provider_transition_id: None,
+            name: "Done".into(),
+            category: "done".into(),
+            disabled_reason: None,
+        }])
+        .unwrap(),
+        serialize_ok(vec![TicketLabelOptionResponse {
+            id: None,
+            name: "bug".into(),
+        }])
+        .unwrap(),
+    ];
+
+    for (command, projection) in [
+        "list_ticketing_containers",
+        "list_tickets",
+        "list_ticket_filter_options",
+        "get_ticket_detail",
+        "list_ticket_transitions",
+        "list_ticket_labels",
+    ]
+    .into_iter()
+    .zip(projections)
+    {
+        let serialized = serde_json::to_string(&projection)
+            .unwrap()
+            .to_ascii_lowercase();
+        for forbidden in ["secret_ref", "secretref", "token", "credential"] {
+            assert!(
+                !serialized.contains(forbidden),
+                "{command} leaked `{forbidden}`"
+            );
+        }
+        let spec = find_spec(command).expect("ticketing read is registered");
+        assert_eq!(spec.class, ralphx_remote_protocol::RiskClass::Read);
+        assert!(spec.capabilities.is_empty());
+    }
+}
+
+#[test]
+fn ticketing_writes_require_ui_agent_before_dispatch() {
+    use crate::remote_server::registry::{enforce_scope, find_spec};
+    use ralphx_remote_protocol::{ErrorCode, RiskClass, Scope};
+
+    for command in [
+        "list_ticketing_columns",
+        "refresh_ticketing_status_catalog",
+        "update_ticketing_status_presentation",
+        "transition_ticket_status",
+        "assign_ticket",
+        "clear_ticket_assignee",
+        "add_ticket_comment",
+        "set_ticket_labels",
+    ] {
+        let spec = find_spec(command).expect("ticketing write is registered");
+        assert_eq!(spec.class, RiskClass::AgentControl);
+        let error = enforce_scope(
+            spec,
+            &[Scope::UiRead, Scope::UiOperate],
+            &serde_json::json!({}),
+        )
+        .expect_err("a client without ui:agent must be refused");
+        assert_eq!(error.code, ErrorCode::RemoteForbidden);
+    }
+}
+
 /// Direction 1 — the LOCAL producer is NOT narrowed.
 ///
 /// `:3847` (internal MCP, local harness agents) and the local Tauri command share this payload
