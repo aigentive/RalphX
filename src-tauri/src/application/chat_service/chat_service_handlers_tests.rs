@@ -4261,7 +4261,8 @@ async fn test_handle_stream_error_stopped_attributes_timeline_blocks_to_run_id()
         turns_finalized: 0,
         completion_tool_called: false,
     };
-    let recovery_spawned = handle_stream_error::<MockRuntime>(
+    let runtime_deps = ChatRuntimeFactoryDeps::from_app_state(&state);
+    let recovery_spawned = handle_stream_error(
         "cancelled",
         Some(&cancelled),
         ChatContextType::Project,
@@ -4298,7 +4299,7 @@ async fn test_handle_stream_error_stopped_attributes_timeline_blocks_to_run_id()
         &None,
         &None,
         &None,
-        &None::<tauri::AppHandle<MockRuntime>>,
+        &runtime_deps,
         None,
         None,
         &None,

@@ -66,8 +66,11 @@ pub(crate) struct StartupPipelineDeps {
     pub artifact_repo: Arc<dyn ArtifactRepository>,
     pub conversation_repo: Arc<dyn ChatConversationRepository>,
     pub agent_conversation_workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    #[allow(dead_code)]
     pub agent_conversation_jira_issue_repo: Arc<dyn AgentConversationJiraIssueRepository>,
+    #[allow(dead_code)]
     pub agent_conversation_linear_issue_repo: Arc<dyn AgentConversationLinearIssueRepository>,
+    #[allow(dead_code)]
     pub agent_conversation_granola_note_repo: Arc<dyn AgentConversationGranolaNoteRepository>,
     pub orphan_worktree_cleanup_marker_repo: Arc<dyn OrphanWorktreeCleanupMarkerRepository>,
     pub automation_repo: Arc<dyn AutomationRepository>,
@@ -84,7 +87,9 @@ pub(crate) struct StartupPipelineDeps {
     pub execution_settings_repo: Arc<dyn ExecutionSettingsRepository>,
     pub agent_lane_settings_repo: Arc<dyn AgentLaneSettingsRepository>,
     pub agent_provider_settings_repo: Arc<dyn AgentProviderSettingsRepository>,
+    #[allow(dead_code)]
     pub ideation_effort_settings_repo: Arc<dyn IdeationEffortSettingsRepository>,
+    #[allow(dead_code)]
     pub ideation_model_settings_repo: Arc<dyn IdeationModelSettingsRepository>,
     pub interactive_process_registry: Arc<InteractiveProcessRegistry>,
     pub review_repo: Arc<dyn ReviewRepository>,
