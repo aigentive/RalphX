@@ -150,7 +150,7 @@ describe("workspace shell read routing", () => {
     expect(project.name).toBe("RalphX");
   });
 
-  it("preserves the path-free GitHub capability snapshot and durable PR setting", async () => {
+  it("preserves remote snapshot URLs and the durable PR setting through the real envelope", async () => {
     useRemoteEnvironment();
     remoteOk({
       ...RAW_PROJECT,
@@ -158,6 +158,8 @@ describe("workspace shell read routing", () => {
       repository_capability_snapshot: {
         kind: "github",
         has_remote: true,
+        fetch_url: "https://github.com/ralphx/ralphx.git",
+        push_url: "git@github.com:ralphx/ralphx.git",
         inspected_at: "2026-08-05T18:00:00+00:00",
         // The host omits `message` when there is none (serde skip_serializing_if), so a
         // realistic success payload has no key here at all — not an explicit null.
@@ -167,7 +169,14 @@ describe("workspace shell read routing", () => {
     const project = await projectsApi.get("project-1");
 
     expect(project.githubPrEnabled).toBe(true);
-    expect(project.repositoryCapability?.kind).toBe("github");
+    expect(project.repositoryCapability).toEqual({
+      kind: "github",
+      fetchUrl: "https://github.com/ralphx/ralphx.git",
+      pushUrl: "git@github.com:ralphx/ralphx.git",
+    });
+    expect(primitiveInvoke.mock.calls[0]?.[0]).toBe("remote_invoke");
+    expect(wireInput().cmd).toBe("get_remote_project");
+    expect(wireInput().args).toEqual({ id: "project-1" });
   });
 
   // Wave C2 retired `repository_capability_kind`: the host derived it from the

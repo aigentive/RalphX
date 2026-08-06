@@ -5820,7 +5820,8 @@ fn batch9_audit_refusals_are_tied_to_a_live_pin() {
 /// PR 3.1-b batch 10 — the batch-9 arming/write block, CLOSED.
 ///
 /// Batch 9 measured the facade and refused to map arming onto a host denial: 83 registered ops
-/// included 16 at `agentControl`, four carrying `Capability::AgentControl` and three carrying
+/// included 16 at `agentControl`; Wave F2 raised the live count to 17 by registering the audited
+/// `set_update_channel` repository write. Four carry `Capability::AgentControl` and three carry
 /// `SeedsSpawnTriggeringState`. So "detector (a) fires" or "it writes" recorded which batch ran
 /// out of scope, not a property of the command, and classifying the 25 anyway would have moved
 /// the ratchet by 25 while putting 25 false statements in the ledger.
@@ -6838,8 +6839,6 @@ fn batch13_closes_the_b7_block_and_two_b6_modules() {
         /// member detector-visible through its eligibility guard; the hand-traced mechanisms
         /// remain pinned in `batch13_detector_gap_is_measured_not_inherited`.
         FloorDetected,
-        /// Ledgered `Elevated`/`HostManagement`: deferred by authority, not denied.
-        DeferredHost,
     }
     use Disposition::*;
 
@@ -6922,11 +6921,7 @@ fn batch13_closes_the_b7_block_and_two_b6_modules() {
             AgentFutureAuthority,
         ),
         ("get_update_channel", "update_channel_commands", Read),
-        (
-            "set_update_channel",
-            "update_channel_commands",
-            DeferredHost,
-        ),
+        ("set_update_channel", "update_channel_commands", Agent),
         // --- mcp_policy_commands: seven refusals -------------------------------------------
         // The four override writes were AgentFutureAuthority (registered) until main's #976
         // probe cache put CLI-path resolution inside ensure_mutation_ready's eligibility
@@ -7078,30 +7073,29 @@ fn batch13_closes_the_b7_block_and_two_b6_modules() {
                     ralphx_remote_protocol::V1Resolution::HostDeniedSpawnsProcess,
                 );
             }
-            DeferredHost => {
-                assert_eq!(
-                    row.class,
-                    RiskClass::Elevated,
-                    "`{command}` is refused on host authority, and Elevated is the class every \
-                     other HostManagement row in this ledger sits at"
-                );
-                assert_eq!(row.capabilities, &[Capability::HostManagement]);
-                assert!(
-                    find_spec(command).is_none(),
-                    "`{command}` is not registered; only its read half is"
-                );
-                // Deferred, NOT denied: no process is spawned, so a later scope may grant it.
-                assert_eq!(
-                    ralphx_remote_protocol::v1_resolution_with_audit(
-                        row.class,
-                        row.capabilities,
-                        audit_refusal_for(command).is_some(),
-                    ),
-                    ralphx_remote_protocol::V1Resolution::V1Deferred,
-                );
-            }
         }
     }
+}
+
+#[test]
+fn update_channel_write_is_agent_control_and_refused_without_ui_agent() {
+    use crate::remote_server::registry::{enforce_scope, find_spec};
+    use ralphx_remote_protocol::{ErrorCode, RiskClass, Scope};
+
+    let row = policy_for("set_update_channel", "update_channel_commands").expect("ledger row");
+    assert_eq!(row.class, RiskClass::AgentControl);
+    assert_eq!(row.capabilities, &[Capability::AgentControl]);
+    assert!(!row.capabilities.contains(&Capability::HostManagement));
+
+    let spec = find_spec("set_update_channel").expect("registered facade command");
+    assert_eq!(spec.class, RiskClass::AgentControl);
+    let error = enforce_scope(
+        spec,
+        &[Scope::UiRead, Scope::UiOperate],
+        &serde_json::json!({"updateChannel": "nightly"}),
+    )
+    .expect_err("ui:read + ui:operate must not dispatch an AgentControl write");
+    assert_eq!(error.code, ErrorCode::RemoteForbidden);
 }
 
 /// PR 3.1-b batch 13 — three detector attribution errors, measured rather than inherited.

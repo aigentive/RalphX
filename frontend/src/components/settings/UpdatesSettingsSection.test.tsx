@@ -101,17 +101,40 @@ describe("UpdatesSettingsSection", () => {
     expect(screen.getByRole("radio", { name: "Nightly — Early access" })).toBeDisabled();
   });
 
-  it("renders host-only disabled channel controls remotely without saving", async () => {
+  it("gates channel controls remotely from manifest presence when ui:agent is absent", async () => {
     useEnvironmentStore.setState({
       activeEnvironmentId: "remote-1",
       environments: [{ id: "remote-1", name: "Studio", kind: "remote" }],
+      effectiveScopes: { "remote-1": ["ui:read", "ui:operate"] },
+      connectionPresentations: {
+        "remote-1": { presentation: "connected", blockedFailure: null, blockedMessage: null },
+      },
     });
     render(<UpdatesSettingsSection />);
     const nightly = screen.getByRole("radio", { name: "Nightly — Early access" });
     expect(nightly).toBeDisabled();
-    expect(screen.getByTestId("remote-host-only-notice")).toHaveTextContent("Studio");
+    expect(screen.getByTestId("update-channel-gate")).toHaveTextContent(
+      "Agent control is off for this device",
+    );
     await userEvent.click(nightly);
     expect(mocks.setUpdateChannel).not.toHaveBeenCalled();
+  });
+
+  it("keeps the manifest-present control usable remotely with ui:agent", async () => {
+    useEnvironmentStore.setState({
+      activeEnvironmentId: "remote-1",
+      environments: [{ id: "remote-1", name: "Studio", kind: "remote" }],
+      effectiveScopes: { "remote-1": ["ui:read", "ui:operate", "ui:agent"] },
+      connectionPresentations: {
+        "remote-1": { presentation: "connected", blockedFailure: null, blockedMessage: null },
+      },
+    });
+    render(<UpdatesSettingsSection />);
+
+    const nightly = screen.getByRole("radio", { name: "Nightly — Early access" });
+    expect(nightly).toBeEnabled();
+    await userEvent.click(nightly);
+    expect(mocks.setUpdateChannel).toHaveBeenCalledWith("nightly");
   });
 
   it("explains the Nightly safety boundary without exposing custom sources", () => {

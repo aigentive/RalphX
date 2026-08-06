@@ -1632,7 +1632,7 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
         policy: policy(
             RiskClass::Read,
             NONE,
-            "pure repository reads of project rows plus stored repository-capability snapshots; performs no live inspection and propagates read errors",
+            "pure repository reads of project rows plus stored repository-capability snapshots, including stored remote URLs; performs no live inspection and propagates read errors",
         ),
     },
     CommandOverride {
@@ -1640,7 +1640,7 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
         policy: policy(
             RiskClass::Read,
             NONE,
-            "pure repository reads of one project row plus its stored repository-capability snapshot through the same projection as `list_remote_projects`; performs no live inspection and propagates read errors",
+            "pure repository reads of one project row plus its stored repository-capability snapshot, including stored remote URLs, through the same projection as `list_remote_projects`; performs no live inspection and propagates read errors",
         ),
     },
     CommandOverride {
@@ -3026,8 +3026,7 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
     ),
     read_row(
         "get_update_channel",
-        "batch-13 audit: one app_state_repo.get projecting update_channel, error mapped. Its \
-         WRITE half `set_update_channel` is deliberately NOT registered — see its row",
+        "batch-13 audit: one app_state_repo.get projecting update_channel, error mapped",
     ),
     //
     // The writers. Registered at `ui:agent` on a body audit; a silent detector never licensed
@@ -3302,14 +3301,14 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
     CommandOverride {
         command: "set_update_channel",
         policy: policy(
-            RiskClass::Elevated,
-            HOST,
+            RiskClass::AgentControl,
+            AGENT,
             "batch-13 audit: one app_state_repo.set_update_channel with the error propagated — \
-             the BODY is clean, and the refusal is about authority, not hygiene. It selects which \
-             release train the desktop app auto-updates onto, which is host management, and every \
-             other HOST row in this ledger (remote_device, remote_environment, remote_host, \
-             startup) sits at Elevated for the same reason. V1Deferred, NOT denied: a later scope \
-             may grant it. Its READ half `get_update_channel` is registered",
+             a single audited repository write. The owner settled the authority question and \
+             accepted that a paired device may move the host's release train; the host will \
+             auto-update and restart, terminating running agents. The accepted authority is \
+             AgentControl, and HostManagement is deliberately absent because class_permits rejects \
+             it at this class",
         ),
     },
 
@@ -3779,7 +3778,7 @@ pub struct AuditRefusal {
 /// **The bar, and what it excludes.** A row belongs here only if the finding disqualifies the
 /// command at EVERY v1 scope as it stands. It is NOT enough that a batch declined to register
 /// it. In particular "detector (a) fires", "detector (b) fires", "it writes", and "it steers"
-/// are all excluded: the facade serves 16 `agentControl` ops today, four carrying
+/// are all excluded: the facade serves 17 `agentControl` ops today, four carrying
 /// `Capability::AgentControl` and three carrying `Capability::SeedsSpawnTriggeringState`, so
 /// arming authority demonstrably does NOT foreclose v1 exposure. Refusals of that shape stay
 /// `registerable` and stay on the ratchet until someone does the `ui:agent` audit they need.

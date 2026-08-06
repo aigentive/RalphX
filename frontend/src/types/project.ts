@@ -98,6 +98,8 @@ export const ProjectResponseSchema = z.object({
     .object({
       kind: z.enum(["local_only", "github", "other_remote", "inspection_failed"]),
       has_remote: z.boolean(),
+      fetch_url: z.string().optional(),
+      push_url: z.string().optional(),
       inspected_at: z.string().datetime({ offset: true }),
       message: z.string().optional(),
     })
@@ -187,9 +189,17 @@ export function transformProject(
       ? transformRepositoryCapability(response.repository_capability)
       : response.repository_capability_snapshot
         ? response.repository_capability_snapshot.kind === "github"
-          ? { kind: "github", fetchUrl: null, pushUrl: null }
+          ? {
+              kind: "github",
+              fetchUrl: response.repository_capability_snapshot.fetch_url ?? null,
+              pushUrl: response.repository_capability_snapshot.push_url ?? null,
+            }
           : response.repository_capability_snapshot.kind === "other_remote"
-            ? { kind: "otherRemote", fetchUrl: null, pushUrl: null }
+            ? {
+                kind: "otherRemote",
+                fetchUrl: response.repository_capability_snapshot.fetch_url ?? null,
+                pushUrl: response.repository_capability_snapshot.push_url ?? null,
+              }
             : response.repository_capability_snapshot.kind === "local_only"
               ? { kind: "localOnly" }
               : {

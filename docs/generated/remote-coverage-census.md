@@ -10,8 +10,8 @@
 ## 1. Scan state
 
 ```
-PASS: remote transport drift — 616 invoke command name(s), 0 dynamic, 0 seam bypasses; 264 manifest-classified; 0 unclassified (P-11 COMPLETE — permanent zero).
-      P-11 census: all 616 names have a reviewed disposition — 300 remote-registered, 33 reason-coded local-only, 51 plugin-local (prefix rule), 232 manifest-classified only, 0 unclassified, 0 suppressions.
+PASS: remote transport drift — 616 invoke command name(s), 0 dynamic, 0 seam bypasses; 263 manifest-classified; 0 unclassified (P-11 COMPLETE — permanent zero).
+      P-11 census: all 616 names have a reviewed disposition — 301 remote-registered, 33 reason-coded local-only, 51 plugin-local (prefix rule), 231 manifest-classified only, 0 unclassified, 0 suppressions.
       Tauri plugin surface: 51 plugin: command name(s) across 7 imported @tauri-apps/plugin-* package(s), 0 reviewed host-targeted exception(s).
 ```
 
@@ -20,12 +20,12 @@ PASS: remote transport drift — 616 invoke command name(s), 0 dynamic, 0 seam b
 | Invoke command names on the transport | 616 | drift scan (AST over `frontend/src` + imported `@tauri-apps/plugin-*`) |
 | Dynamic / unresolvable expressions | 0 | drift scan — must stay 0 |
 | Transport seam bypasses | 0 | drift scan — must stay 0 |
-| Remote-registered (`remote_commands!`) | 299 | `docs/generated/remote-commands.json` |
+| Remote-registered (`remote_commands!`) | 300 | `docs/generated/remote-commands.json` |
 | Reason-coded local-only rows | 34 | `frontend/src/lib/remote/local-only-commands.ts` |
 | `plugin:` names classified by the prefix rule | 51 | `PLUGIN_COMMAND_PREFIX` in `local-only-commands.ts` |
 | `plugin:` host-targeted exceptions | 0 | `HOST_TARGETED_PLUGIN_COMMANDS` — reviewed, currently empty |
 | Ledger rows (exhaustive over `generate_handler!`) | 605 | `docs/generated/remote-commands.json` |
-| Manifest-classified (host-denied / v1-deferred) | 264 | `v1Resolution` in `docs/generated/remote-commands.json` |
+| Manifest-classified (host-denied / v1-deferred) | 263 | `v1Resolution` in `docs/generated/remote-commands.json` |
 | **Unclassified — the 3.1 gap** | **0** | `scripts/remote-transport-drift-baseline.json` |
 
 ## 2. What the gap is made of
@@ -38,10 +38,10 @@ Routing each name mechanically through the ledger splits it into very different 
 | host-denied (class: denied) | 0 | `class_permits` returns false for Denied at any capability set — registering it fails compilation. Resolves for P-11 through the manifest, never through a local-only reason (phase doc key point 6) |
 | host-denied (SpawnsProcess) | 0 | carries `SpawnsProcess`; `class_permits(AgentControl, [SpawnsProcess])` is false and Elevated is a v1 non-goal, so it is not exposable on the v1 facade at any scope (`remote_server/registry.rs` detector-(c) note) |
 | v1-deferred (Elevated) | 0 | ledgered Elevated without SpawnsProcess — reachable only under `ui:elevated`, which §1 excludes from v1; deferred, not denied |
-| v1-audit-refused (per-command finding) | 0 | the class/capability pair would admit a v1 scope, but a recorded audit found a property of the command AS IT STANDS that no v1 scope can accommodate — fail-open, spawn-capable machinery built to serve a read, an unrenderable transport shape, or a registered remote twin that already answers the query. Never used for arming/steering/write refusals: the facade serves 16 `agentControl` ops, so those stay register-candidates |
+| v1-audit-refused (per-command finding) | 0 | the class/capability pair would admit a v1 scope, but a recorded audit found a property of the command AS IT STANDS that no v1 scope can accommodate — fail-open, spawn-capable machinery built to serve a read, an unrenderable transport shape, or a registered remote twin that already answers the query. Never used for arming/steering/write refusals: the facade serves 17 `agentControl` ops (Wave F2 added `set_update_channel`), so those stay register-candidates |
 | orphan invoke (no local handler) | 0 | invoked by the frontend but absent from `generate_handler!` and from the ledger — it cannot be registered remotely because it does not exist locally either |
 
-**264 invoked names now resolve through the manifest** — host-side commands the facade denies or defers, classified by their ledger row's `v1Resolution` rather than by a registration or a client-local reason (phase-doc key point 6). B0 landed that mechanism and the gap fell 419 → 0 with zero registrations. **The baseline is now empty**: batches B1–B7, D1–D3, R1, A1 and the 3.1-b registration batches resolved every remaining name.
+**263 invoked names now resolve through the manifest** — host-side commands the facade denies or defers, classified by their ledger row's `v1Resolution` rather than by a registration or a client-local reason (phase-doc key point 6). B0 landed that mechanism and the gap fell 419 → 0 with zero registrations. **The baseline is now empty**: batches B1–B7, D1–D3, R1, A1 and the 3.1-b registration batches resolved every remaining name.
 
 **0 names are registration candidates** — the gap is closed. The rejection subset this section predicted was real and large: detector (c) refused ledgered-`AgentControl` commands whose process authority the manifest could not see (`resume_task`, `apply_proposals_to_kanban`, `set_agent_conversation_workspace_auto_publish`), and PR 3.1-b batch 14 additionally hand-traced THIRTEEN launches detector (c) could not see at all — `Command::new(<resolved path>)` names no resolver, which is how every agent launch in the codebase is written. Detector silence was never sufficient evidence to register.
 
@@ -199,7 +199,7 @@ Ordering logic: **B0 first** (nothing is measurable without the third dispositio
 - `get_task_context` and the prompt-builder reads are content-surface members (ledger-soundness round found 5 dropped worker content reads) — re-check the surface enumeration before assigning.
 - Every local-only row gets an honest client-local reason; 'hard to classify' is never valid.
 - DONE (PR 3.1-b batch 13): all 33 B7 ratchet members are dispositioned — 24 reads at `ui:read`, 8 writers at `ui:agent`, 1 `v1-deferred`. Zero local-only rows were added, which answers the batch's own open question: the client-local split it anticipated did not survive contact with the commands.
-- RESOLVED — the batch was expected to move `update_channel_commands` and parts of `ui_commands` to `local-only-commands.ts`. Neither is client-local. `get_update_channel`/`set_update_channel` read and write `app_state_repo`, which is HOST state, and `get_ui_feature_flags` projects the host runtime config plus the agent-capability snapshot. `set_update_channel` is instead ledgered `Elevated`/`HostManagement` (V1Deferred, not denied): it selects which release train the desktop app auto-updates onto, matching every other HOST row's class. Its read half is registered.
+- RESOLVED — the batch was expected to move `update_channel_commands` and parts of `ui_commands` to `local-only-commands.ts`. Neither is client-local. `get_update_channel`/`set_update_channel` read and write `app_state_repo`, which is HOST state, and `get_ui_feature_flags` projects the host runtime config plus the agent-capability snapshot. Wave F2 records the owner-approved authority decision: `set_update_channel` is an audited `AgentControl` repository write, and a paired device with `ui:agent` may move the host release train despite the accepted auto-update/restart risk.
 - RESOLVED — the plan flagged 5 dropped worker content reads. They are the `task_context_commands` Tauri commands (`get_task_context`, `get_artifact_full`, `get_artifact_version`, `get_related_artifacts`, `search_artifacts`), all registered at `ui:read`. Note their HTTP namesakes in `http_server/handlers/worker.rs` are DIFFERENT functions: the axum `search_artifacts` silently skips unparsable artifact types, while the Tauri command propagates the parse error. Do not reason about one from the other.
 - NOTE — batch 12 measured this block detector-silent and batch 13 re-measured rather than inheriting, which is how it found that detector (b)'s flag on `update_notification_settings` is a bare-name MARKER collision (`update_settings` vs the workspace-auto-review write marker), not a spawn-triggering write. It is registered WITHOUT `SeedsSpawnTriggeringState`; claiming the tag would have passed the evidence test while being false.
 

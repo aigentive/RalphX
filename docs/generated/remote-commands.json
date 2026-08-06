@@ -5023,6 +5023,17 @@
     {
       "argumentSensitive": false,
       "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "set_update_channel",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::update_channel_commands::set_update_channel"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
         "mutatesAgentConsumedContent"
       ],
       "class": "agentControl",
@@ -9650,7 +9661,7 @@
       "class": "read",
       "command": "list_remote_projects",
       "module": "remote_workspace_commands",
-      "reason": "pure repository reads of project rows plus stored repository-capability snapshots; performs no live inspection and propagates read errors",
+      "reason": "pure repository reads of project rows plus stored repository-capability snapshots, including stored remote URLs; performs no live inspection and propagates read errors",
       "registered": true,
       "v1Resolution": "registerable"
     },
@@ -9659,7 +9670,7 @@
       "class": "read",
       "command": "get_remote_project",
       "module": "remote_workspace_commands",
-      "reason": "pure repository reads of one project row plus its stored repository-capability snapshot through the same projection as `list_remote_projects`; performs no live inspection and propagates read errors",
+      "reason": "pure repository reads of one project row plus its stored repository-capability snapshot, including stored remote URLs, through the same projection as `list_remote_projects`; performs no live inspection and propagates read errors",
       "registered": true,
       "v1Resolution": "registerable"
     },
@@ -11231,20 +11242,20 @@
       "class": "read",
       "command": "get_update_channel",
       "module": "update_channel_commands",
-      "reason": "batch-13 audit: one app_state_repo.get projecting update_channel, error mapped. Its WRITE half `set_update_channel` is deliberately NOT registered — see its row",
+      "reason": "batch-13 audit: one app_state_repo.get projecting update_channel, error mapped",
       "registered": true,
       "v1Resolution": "registerable"
     },
     {
       "capabilities": [
-        "hostManagement"
+        "agentControl"
       ],
-      "class": "elevated",
+      "class": "agentControl",
       "command": "set_update_channel",
       "module": "update_channel_commands",
-      "reason": "batch-13 audit: one app_state_repo.set_update_channel with the error propagated — the BODY is clean, and the refusal is about authority, not hygiene. It selects which release train the desktop app auto-updates onto, which is host management, and every other HOST row in this ledger (remote_device, remote_environment, remote_host, startup) sits at Elevated for the same reason. V1Deferred, NOT denied: a later scope may grant it. Its READ half `get_update_channel` is registered",
-      "registered": false,
-      "v1Resolution": "v1-deferred"
+      "reason": "batch-13 audit: one app_state_repo.set_update_channel with the error propagated — a single audited repository write. The owner settled the authority question and accepted that a paired device may move the host's release train; the host will auto-update and restart, terminating running agents. The accepted authority is AgentControl, and HostManagement is deliberately absent because class_permits rejects it at this class",
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [

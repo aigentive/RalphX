@@ -2,8 +2,7 @@ import { TriangleAlert } from "lucide-react";
 import type { ReactNode } from "react";
 
 import type { UpdateChannel } from "@/api/update-channel";
-import { RemoteHostOnlyNotice } from "@/components/remote/RemoteHostOnlyNotice";
-import { useIsRemoteEnvironment } from "@/hooks/useActiveEnvironment";
+import { useAgentGate } from "@/hooks/useAgentGate";
 import { useUpdateChannel } from "@/hooks/useUpdateChannel";
 
 import { SettingsSection } from "./SettingsView.shared";
@@ -107,7 +106,7 @@ function UpdateChannelError({ children }: { children: ReactNode }) {
 }
 
 export function UpdatesSettingsSection() {
-  const isRemoteEnvironment = useIsRemoteEnvironment();
+  const updateChannelGate = useAgentGate("updateChannelSet");
   const {
     updateChannel,
     isLoading,
@@ -119,9 +118,10 @@ export function UpdatesSettingsSection() {
 
   return (
     <SettingsSection>
-      {isRemoteEnvironment ? (
-        // Wave D may reclassify set_update_channel; until then it is host-only.
-        <RemoteHostOnlyNotice subject="Update channel changes" verb="run" />
+      {updateChannelGate.gated ? (
+        <p className="text-xs text-[var(--text-muted)]" data-testid="update-channel-gate">
+          {updateChannelGate.reason}
+        </p>
       ) : null}
       <div
         role="radiogroup"
@@ -133,7 +133,7 @@ export function UpdatesSettingsSection() {
             key={option.value}
             option={option}
             selected={updateChannel === option.value}
-            disabled={isLoading || isSaving || isRemoteEnvironment}
+            disabled={isLoading || isSaving || updateChannelGate.gated}
             onSelect={setUpdateChannel}
           />
         ))}

@@ -269,7 +269,7 @@ export function RepositorySettingsSection() {
   const remoteUrl =
     repositoryCapability.kind === "github" ||
     repositoryCapability.kind === "otherRemote"
-      ? repositoryCapability.pushUrl
+      ? (repositoryCapability.pushUrl ?? repositoryCapability.fetchUrl)
       : null;
   const ghState = ghStatus?.state;
   const ghNeedsCredentialRepair =
@@ -371,7 +371,9 @@ export function RepositorySettingsSection() {
           <span className="settings-readonly-value max-w-[240px] truncate">
             {repositoryCapability.kind === "notInspected"
               ? "—"
-              : (remoteUrl ?? "Not configured")}
+              : repositoryCapability.kind === "localOnly"
+                ? "Not configured"
+                : (remoteUrl ?? "—")}
           </span>
         </SettingRow>
         <SettingRow

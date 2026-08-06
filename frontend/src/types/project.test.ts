@@ -66,6 +66,39 @@ describe("ProjectSchema", () => {
     expect(project.repositoryCapability).toEqual({ kind: "notInspected" });
   });
 
+  it("carries stored remote snapshot URLs and preserves genuine absence as null", () => {
+    const withUrls = transformProject(ProjectSchema.parse({
+      ...validProject,
+      repository_capability_snapshot: {
+        kind: "github",
+        has_remote: true,
+        fetch_url: "https://github.com/ralphx/ralphx.git",
+        push_url: "git@github.com:ralphx/ralphx.git",
+        inspected_at: "2026-08-05T18:00:00+00:00",
+      },
+    }));
+    expect(withUrls.repositoryCapability).toEqual({
+      kind: "github",
+      fetchUrl: "https://github.com/ralphx/ralphx.git",
+      pushUrl: "git@github.com:ralphx/ralphx.git",
+    });
+
+    const withoutUrls = transformProject(ProjectSchema.parse({
+      ...validProject,
+      repository_capability_snapshot: {
+        kind: "other_remote",
+        has_remote: false,
+        inspected_at: "2026-08-05T18:00:00+00:00",
+      },
+    }));
+    expect(withoutUrls.repositoryCapability).toEqual({
+      kind: "otherRemote",
+      fetchUrl: null,
+      pushUrl: null,
+    });
+    expect(JSON.stringify(withoutUrls.repositoryCapability)).not.toContain('""');
+  });
+
   // Wave C2 deleted `repository_capability_kind` from the wire: the host derived it from the
   // github_pr_enabled USER PREFERENCE, so it asserted "github" or "inspection failed" with no
   // inspection behind either. A client must therefore not trust the legacy field if an older

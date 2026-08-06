@@ -31,8 +31,9 @@
 //! the list answer's field set.
 //!
 //! Full `repositoryCapability` is absent by construction. The projection carries a stored
-//! capability snapshot, never repository paths or remote URLs. URL exposure is deferred pending
-//! an owner decision; widening later requires only adding the approved field here.
+//! capability snapshot including its fetch/push remote URLs: the owner decided a paired client
+//! sees the host's stored remote configuration. Repository paths other than the separately
+//! approved `workingDirectory` remain absent; this does not widen filesystem exposure.
 //!
 //! `workingDirectory` IS carried (owner decision, 2026-07-30). It is a stored string, and the
 //! authority problem was the act of inspecting that path — never the act of returning it. The
@@ -95,6 +96,10 @@ pub struct RemoteProjectView {
 pub struct RemoteRepositoryCapabilitySnapshot {
     pub kind: String,
     pub has_remote: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fetch_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub push_url: Option<String>,
     pub inspected_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
@@ -157,6 +162,8 @@ async fn project_view(state: &AppState, project: Project) -> Result<RemoteProjec
         .map(|row| RemoteRepositoryCapabilitySnapshot {
             kind: row.kind,
             has_remote: row.push_url.is_some(),
+            fetch_url: row.fetch_url,
+            push_url: row.push_url,
             inspected_at: row.inspected_at.to_rfc3339(),
             message: row.message,
         });

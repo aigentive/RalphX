@@ -1529,7 +1529,8 @@ crate::remote_commands! {
     //
     // Batch 9 left 25 audited-and-refused commands on the ratchet with a precise diagnosis:
     // every recorded finding was arming, steering, or an unaudited write, and the facade
-    // already serves 16 `agentControl` ops of exactly that shape. So the refusals recorded
+    // already serves 17 `agentControl` ops of exactly that shape (Wave F2 added the audited
+    // `set_update_channel` write). So the refusals recorded
     // which batch ran out of scope, not a property of the command, and what they needed was
     // the `ui:agent` registration audit nobody had done. Batch 10 did it.
     //
@@ -3476,8 +3477,7 @@ crate::remote_commands! {
     // the Claude CLI.
     //
     // Deliberately NOT here: `get_mcp_catalog`, `refresh_mcp_catalog` and
-    // `retry_legacy_mcp_registration_repair` are host-denied-spawns-process, and
-    // `set_update_channel` is Elevated/HostManagement.
+    // `retry_legacy_mcp_registration_repair` are host-denied-spawns-process.
     // -----------------------------------------------------------------------------------
     "get_artifacts" => crate::commands::artifact_commands::get_artifacts {
         class: Read,
@@ -3695,6 +3695,13 @@ crate::remote_commands! {
         class: Read,
         caps: [],
         params: [(app_state)],
+        call: async,
+        result: fallible,
+    },
+    "set_update_channel" => crate::commands::update_channel_commands::set_update_channel {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [(arg update_channel: crate::domain::entities::app_state::UpdateChannel), (app_state)],
         call: async,
         result: fallible,
     },

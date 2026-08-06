@@ -162,7 +162,8 @@ pub enum V1Resolution {
     /// by adjusting a class; it has to be bought by recording a finding and pinning it.
     ///
     /// PR 3.1-b batch 9 added it after establishing what it must NOT be used for. The facade
-    /// already serves 16 `agentControl` ops, three of which carry `SeedsSpawnTriggeringState`,
+    /// already serves 17 `agentControl` ops (Wave F2 added `set_update_channel`), three of which
+    /// carry `SeedsSpawnTriggeringState`,
     /// so "detector (a)/(b) fires" is a reason a batch declined to register a command — never a
     /// reason the host denies it. Refusals of that shape stay `Registerable` and stay on the
     /// ratchet. See [`AuditRefusalReason`] for the findings that do qualify.

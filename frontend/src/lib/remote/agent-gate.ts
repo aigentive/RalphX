@@ -83,6 +83,7 @@ export const REMOTE_UNAVAILABLE_HINT =
  * signal, and several affordances are legitimately unavailable today.
  */
 export const AGENT_GATED_AFFORDANCES = {
+  updateChannelSet: "set_update_channel",
   ticketingProvidersRead: "list_ticketing_providers",
   ticketingStatusCatalogRead: "list_ticketing_status_catalog",
   ticketingAssociationsRead: "get_ticket_associations",

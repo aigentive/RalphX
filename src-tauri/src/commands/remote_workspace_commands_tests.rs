@@ -252,9 +252,12 @@ async fn project_snapshot_is_real_stale_safe_and_preference_independent() {
             .unwrap()
             .has_remote
     );
-    let serialized = serde_json::to_string(&false_view).unwrap();
-    assert!(!serialized.contains("secret-fetch"));
-    assert!(!serialized.contains("secret-push"));
+    let serialized = serde_json::to_value(&false_view).unwrap();
+    let snapshot = serialized["repository_capability_snapshot"]
+        .as_object()
+        .expect("serialized snapshot");
+    assert_eq!(snapshot["fetch_url"], "secret-fetch");
+    assert_eq!(snapshot["push_url"], "secret-push");
 
     project.github_pr_enabled = true;
     state
@@ -292,4 +295,36 @@ async fn single_project_projection_is_none_for_an_unknown_id() {
         .await
         .expect("missing project is Ok(None), never an error");
     assert!(fetched.is_none());
+}
+
+#[tokio::test]
+async fn absent_snapshot_urls_stay_absent_on_the_wire() {
+    let project = sentinel_project();
+    let id = project.id.clone();
+    let state = state_with_projects(vec![project.clone()]);
+    state
+        .project_repository_capability_repo
+        .upsert(&ProjectRepositoryCapability {
+            project_id: id.clone(),
+            kind: "other_remote".to_string(),
+            fetch_url: None,
+            push_url: None,
+            message: None,
+            inspected_at: chrono::Utc::now(),
+            working_directory: project.working_directory,
+        })
+        .await
+        .expect("seed snapshot");
+
+    let view = get_remote_project_for_app_state(&state, id.as_str())
+        .await
+        .expect("read project")
+        .expect("project exists");
+    let serialized = serde_json::to_value(view).expect("serialize project");
+    let snapshot = serialized["repository_capability_snapshot"]
+        .as_object()
+        .expect("serialized snapshot");
+    assert!(!snapshot.contains_key("fetch_url"));
+    assert!(!snapshot.contains_key("push_url"));
+    assert!(!serialized.to_string().contains("\"\""));
 }

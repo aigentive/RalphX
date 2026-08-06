@@ -105,6 +105,7 @@ export const GATE_WIRED_FILES: readonly string[] = [
   "src/components/recovery/RecoveryPromptDialog.tsx",
   "src/components/settings/McpSettingsSection.tsx",
   "src/components/settings/RepositorySettingsSection.tsx",
+  "src/components/settings/UpdatesSettingsSection.tsx",
   "src/components/ticketing/TicketingDashboardView.tsx",
   "src/hooks/useIdeation.ts",
   // The Agents-pane fork (Phase 0 work item 3) — all five currently ungated.
