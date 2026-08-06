@@ -263,6 +263,14 @@ fn recovery_action_projects_only_backend_admitted_ready_and_blocked_attempts() {
         AgentWorkspaceRepairOperationRecoveryAction::RetryRepair
     );
 
+    attempt.continuation = AgentWorkspaceRepairContinuation::Manual;
+    assert_eq!(
+        agent_workspace_repair_operation_recovery_action(&attempt),
+        AgentWorkspaceRepairOperationRecoveryAction::RetryRepair,
+        "manual repairs are excluded from automatic redrive, so they must retain explicit retry"
+    );
+    attempt.continuation = AgentWorkspaceRepairContinuation::Publish;
+
     attempt
         .pending_reasons
         .push(NEEDS_HUMAN_REPAIR_REASON.to_string());
@@ -374,6 +382,105 @@ async fn recovery_action_fails_closed_while_a_blocked_external_effect_is_open() 
     )
     .await
     .expect("open effect must refuse explicit retry"));
+
+    let mut escalated = blocked.clone();
+    escalated
+        .pending_reasons
+        .push("continuation_open_effect_attention_required".to_string());
+    assert_eq!(
+        load_agent_workspace_repair_operation_recovery_action(
+            state.agent_workspace_repair_repo.as_ref(),
+            &escalated,
+        )
+        .await
+        .expect("classify escalated update effect"),
+        AgentWorkspaceRepairOperationRecoveryAction::RetryRepair,
+        "an escalated UpdatePr effect must retain an explicit retry escape"
+    );
+    assert!(explicit_agent_workspace_repair_retry_allowed(
+        state.agent_workspace_repair_repo.as_ref(),
+        &escalated,
+    )
+    .await
+    .expect("escalated update effect permits explicit retry"));
+}
+
+#[tokio::test]
+async fn recovery_action_keeps_an_escalated_create_pr_effect_fenced() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::from_string("repair-action-open-create-pr");
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(repair_workspace(conversation_id.clone()))
+        .await
+        .expect("seed create-PR recovery workspace");
+    let requested = start_or_join_agent_workspace_repair(
+        Arc::clone(&state.agent_workspace_repair_repo),
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        repair_start_request(
+            conversation_id,
+            AgentWorkspaceRepairSource::Publish,
+            AgentWorkspaceRepairContinuation::Publish,
+            "create-PR recovery action",
+        ),
+    )
+    .await
+    .expect("start create-PR recovery repair")
+    .into_attempt();
+    let mut blocked = requested.clone();
+    blocked.phase = AgentWorkspaceRepairPhase::Blocked;
+    blocked.updated_at = requested.updated_at + chrono::Duration::milliseconds(1);
+    let blocked = match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: blocked,
+            expected_phase: AgentWorkspaceRepairPhase::Requested,
+            expected_updated_at: requested.updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Blocked,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("block create-PR recovery repair")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("blocking create-PR recovery repair should apply: {outcome:?}"),
+    };
+    assert!(matches!(
+        state
+            .agent_workspace_repair_repo
+            .create_repair_effect(CreateAgentWorkspaceRepairEffect {
+                attempt_id: blocked.id.clone(),
+                generation: blocked.generation,
+                expected_phase: AgentWorkspaceRepairPhase::Blocked,
+                expected_attempt_updated_at: blocked.updated_at,
+                effect: AgentWorkspaceRepairEffect::new(
+                    blocked.id.clone(),
+                    AgentWorkspaceRepairEffectKind::CreatePr,
+                    "recovery-action-open-create-pr-effect",
+                    chrono::Utc::now(),
+                ),
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("checkpoint open create-PR effect"),
+        CreateAgentWorkspaceRepairEffectOutcome::Created(_)
+    ));
+    let mut escalated = blocked;
+    escalated
+        .pending_reasons
+        .push("continuation_open_effect_attention_required".to_string());
+    assert_eq!(
+        load_agent_workspace_repair_operation_recovery_action(
+            state.agent_workspace_repair_repo.as_ref(),
+            &escalated,
+        )
+        .await
+        .expect("classify escalated create-PR effect"),
+        AgentWorkspaceRepairOperationRecoveryAction::None,
+        "CreatePr remains fenced even after recovery attention escalation"
+    );
 }
 
 #[tokio::test]
@@ -416,7 +523,7 @@ async fn recovery_action_and_explicit_retry_share_blocked_admission() {
                 continuation: AgentWorkspaceRepairContinuation::Manual,
                 ..blocked.clone()
             },
-            false,
+            true,
         ),
         (
             "settled",

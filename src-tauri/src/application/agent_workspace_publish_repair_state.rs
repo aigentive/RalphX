@@ -25,9 +25,10 @@ use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentRunId, AgentWorkspaceRepairAttempt,
     AgentWorkspaceRepairCompletionAuthority, AgentWorkspaceRepairContinuation,
-    AgentWorkspaceRepairOperationHoldReason, AgentWorkspaceRepairOperationRecoveryAction,
-    AgentWorkspaceRepairOutcome, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
-    AgentWorkspaceReviewGateStatus, ChatConversationId, GitTargetIdentity, GitTargetLeaseOwner,
+    AgentWorkspaceRepairEffectKind, AgentWorkspaceRepairOperationHoldReason,
+    AgentWorkspaceRepairOperationRecoveryAction, AgentWorkspaceRepairOutcome,
+    AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource, AgentWorkspaceReviewGateStatus,
+    ChatConversationId, GitTargetIdentity, GitTargetLeaseOwner,
 };
 use crate::domain::repositories::{
     AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, AgentConversationWorkspaceRepository,
@@ -72,7 +73,8 @@ pub(crate) const PUBLICATION_EFFECT_ATTENTION_RETRIED_STEP: &str =
 /// A deliberately small cap: transient runner failures must not create an unbounded CI loop.
 pub(crate) const MAX_AGENT_WORKSPACE_CI_RERUN_RETRIES: u32 = 3;
 pub(crate) const NEEDS_HUMAN_REPAIR_REASON: &str = "pr_autofix_needs_human";
-const CONTINUATION_OPEN_EFFECT_ATTENTION_REASON_PREFIX: &str = "continuation_open_effect_";
+const CONTINUATION_OPEN_EFFECT_ATTENTION_REASON: &str =
+    "continuation_open_effect_attention_required";
 pub(crate) const PRE_EXISTING_ON_BASE_REPAIR_REASON: &str = "pr_autofix_pre_existing_on_base";
 /// Held because GitHub still reports the exact failure the previous generation was dispatched for.
 /// Distinct from `PRE_EXISTING_ON_BASE_REPAIR_REASON`: RalphX has not proven anything about the
@@ -369,13 +371,7 @@ pub(crate) fn agent_workspace_repair_operation_recovery_action(
         {
             AgentWorkspaceRepairOperationRecoveryAction::ResumePublish
         }
-        AgentWorkspaceRepairPhase::Blocked
-            if attempt.continuation != AgentWorkspaceRepairContinuation::Manual
-                && attempt.next_dispatch_at.is_none()
-                && !attempt.pending_reasons.iter().any(|reason| {
-                    reason.starts_with(CONTINUATION_OPEN_EFFECT_ATTENTION_REASON_PREFIX)
-                }) =>
-        {
+        AgentWorkspaceRepairPhase::Blocked if attempt.next_dispatch_at.is_none() => {
             AgentWorkspaceRepairOperationRecoveryAction::RetryRepair
         }
         _ => AgentWorkspaceRepairOperationRecoveryAction::None,
@@ -383,20 +379,31 @@ pub(crate) fn agent_workspace_repair_operation_recovery_action(
 }
 
 /// Applies the durable-effect guard shared by response projection and explicit retry admission.
-/// A blocked generation with an open external effect must be reconciled, never superseded by a
-/// user retry that could duplicate its push or pull-request handoff.
+/// Create-PR effects stay fenced. Escalated push/update effects regain an explicit user retry
+/// because their replay is idempotent and durable recovery has already yielded ownership.
 pub(crate) async fn load_agent_workspace_repair_operation_recovery_action(
     repair_repo: &dyn AgentWorkspaceRepairRepository,
     attempt: &AgentWorkspaceRepairAttempt,
 ) -> AppResult<AgentWorkspaceRepairOperationRecoveryAction> {
     let recovery_action = agent_workspace_repair_operation_recovery_action(attempt);
-    if recovery_action == AgentWorkspaceRepairOperationRecoveryAction::RetryRepair
-        && repair_repo
-            .get_open_repair_effect(&attempt.id)
-            .await?
-            .is_some()
-    {
-        return Ok(AgentWorkspaceRepairOperationRecoveryAction::None);
+    if recovery_action == AgentWorkspaceRepairOperationRecoveryAction::RetryRepair {
+        let Some(effect) = repair_repo.get_open_repair_effect(&attempt.id).await? else {
+            return Ok(recovery_action);
+        };
+        let escalation_recorded = attempt
+            .pending_reasons
+            .iter()
+            .any(|reason| reason == CONTINUATION_OPEN_EFFECT_ATTENTION_REASON);
+        if effect.kind == AgentWorkspaceRepairEffectKind::CreatePr
+            || !escalation_recorded
+            || !matches!(
+                effect.kind,
+                AgentWorkspaceRepairEffectKind::PushBranch
+                    | AgentWorkspaceRepairEffectKind::UpdatePr
+            )
+        {
+            return Ok(AgentWorkspaceRepairOperationRecoveryAction::None);
+        }
     }
     Ok(recovery_action)
 }
