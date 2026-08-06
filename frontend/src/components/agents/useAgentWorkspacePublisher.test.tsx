@@ -11,14 +11,10 @@ import type {
 import { createTestQueryClient } from "@/test/store-utils";
 
 import {
-  agentWorkspaceMaintenanceOperationToastId,
-  agentWorkspaceOperationToastId,
-  resetAgentWorkspaceOperationToastStateForTests,
-} from "./agentWorkspaceOperationToast";
-import {
+  type AgentWorkspaceOperationResult,
+  agentWorkspaceOperationResultView,
   createAgentWorkspacePublishAttempt,
   readAgentWorkspaceDurablePublishResult,
-  renderAgentWorkspacePublishResult,
 } from "./agentWorkspacePublishAttempt";
 import { conversationFixture, conversationWorkspaceFixture } from "./agentsTestFixtures";
 import { useAgentWorkspacePublisher } from "./useAgentWorkspacePublisher";
@@ -28,21 +24,15 @@ const {
   getAgentConversationWorkspaceFreshnessMock,
   listAgentConversationWorkspacePublicationEventsMock,
   publishAgentConversationWorkspaceMock,
-  toastDismissMock,
-  toastErrorMock,
-  toastLoadingMock,
-  toastInfoMock,
-  toastSuccessMock,
+  watchAgentWorkspaceOperationMock,
+  reportAgentWorkspaceOperationResultMock,
 } = vi.hoisted(() => ({
   getAgentConversationWorkspaceMock: vi.fn(),
   getAgentConversationWorkspaceFreshnessMock: vi.fn(),
   listAgentConversationWorkspacePublicationEventsMock: vi.fn(),
   publishAgentConversationWorkspaceMock: vi.fn(),
-  toastDismissMock: vi.fn(),
-  toastErrorMock: vi.fn(),
-  toastLoadingMock: vi.fn(),
-  toastInfoMock: vi.fn(),
-  toastSuccessMock: vi.fn(),
+  watchAgentWorkspaceOperationMock: vi.fn(),
+  reportAgentWorkspaceOperationResultMock: vi.fn(),
 }));
 
 vi.mock("@/api/chat", async (importOriginal) => {
@@ -63,14 +53,11 @@ vi.mock("@/api/chat", async (importOriginal) => {
   };
 });
 
-vi.mock("sonner", () => ({
-  toast: {
-    dismiss: (...args: unknown[]) => toastDismissMock(...args),
-    error: (...args: unknown[]) => toastErrorMock(...args),
-    loading: (...args: unknown[]) => toastLoadingMock(...args),
-    info: (...args: unknown[]) => toastInfoMock(...args),
-    success: (...args: unknown[]) => toastSuccessMock(...args),
-  },
+vi.mock("./agentWorkspaceOperationRegistry", () => ({
+  watchAgentWorkspaceOperation: (...args: unknown[]) =>
+    watchAgentWorkspaceOperationMock(...args),
+  reportAgentWorkspaceOperationResult: (...args: unknown[]) =>
+    reportAgentWorkspaceOperationResultMock(...args),
 }));
 
 function deferred<T>() {
@@ -130,16 +117,12 @@ function wrapper(queryClient: ReturnType<typeof createTestQueryClient>) {
 
 describe("useAgentWorkspacePublisher", () => {
   beforeEach(() => {
-    resetAgentWorkspaceOperationToastStateForTests();
     getAgentConversationWorkspaceMock.mockReset();
     getAgentConversationWorkspaceFreshnessMock.mockReset();
     listAgentConversationWorkspacePublicationEventsMock.mockReset();
     publishAgentConversationWorkspaceMock.mockReset();
-    toastDismissMock.mockClear();
-    toastErrorMock.mockClear();
-    toastLoadingMock.mockClear();
-    toastInfoMock.mockClear();
-    toastSuccessMock.mockClear();
+    watchAgentWorkspaceOperationMock.mockClear();
+    reportAgentWorkspaceOperationResultMock.mockClear();
   });
 
   afterEach(() => {
@@ -185,6 +168,14 @@ describe("useAgentWorkspacePublisher", () => {
       void result.current.handlePublishWorkspace("conversation-1");
     });
 
+    expect(watchAgentWorkspaceOperationMock).toHaveBeenCalledWith({
+      conversationId: "conversation-1",
+      projectId: "project-1",
+      conversationTitle: "Checkout flow fix",
+      kind: "publish",
+      startedAtMs: expect.any(Number),
+    });
+
     await waitFor(() =>
       expect(result.current.publishAttemptsByConversationId["conversation-1"]).toEqual(
         expect.objectContaining({ conversationId: "conversation-1" }),
@@ -213,12 +204,10 @@ describe("useAgentWorkspacePublisher", () => {
       ["agents", "conversation-workspace", "conversation-1"],
       publishedWorkspace,
     );
-    expect(toastSuccessMock).toHaveBeenCalledWith("Published #204", {
-      description: "Checkout flow fix",
-      duration: 8_000,
-      id: "agent-workspace-operation:conversation-1:publish",
-    });
-    expect(toastErrorMock).not.toHaveBeenCalled();
+    expect(reportAgentWorkspaceOperationResultMock).toHaveBeenCalledWith(
+      "conversation-1",
+      { kind: "success", workspace: publishedWorkspace },
+    );
 
     await act(async () => {
       projectInvalidationDeferred.reject(new Error("Background refresh failed"));
@@ -226,10 +215,10 @@ describe("useAgentWorkspacePublisher", () => {
       await Promise.resolve();
     });
 
-    expect(toastErrorMock).not.toHaveBeenCalled();
+    expect(reportAgentWorkspaceOperationResultMock).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps the publish toast attached to an active durable maintenance operation", async () => {
+  it("keeps the publish attempt open and watches an active durable maintenance operation", async () => {
     const queryClient = createTestQueryClient();
     const workspace = conversationWorkspaceFixture({ mode: "edit" });
     const repairingWorkspace = conversationWorkspaceFixture({
@@ -276,24 +265,18 @@ describe("useAgentWorkspacePublisher", () => {
     });
 
     await waitFor(() =>
-      expect(toastLoadingMock).toHaveBeenLastCalledWith(
-        "Repairing workspace",
-        expect.objectContaining({
-          action: {
-            label: "Open conversation",
-            onClick: expect.any(Function),
-          },
-          id: agentWorkspaceMaintenanceOperationToastId(
-            "conversation-1",
-            "maintenance-1",
-          ),
-        }),
-      ),
+      expect(watchAgentWorkspaceOperationMock).toHaveBeenCalledWith({
+        conversationId: "conversation-1",
+        projectId: "project-1",
+        conversationTitle: null,
+        kind: "observed",
+        startedAtMs: null,
+      }),
     );
     expect(result.current.publishAttemptsByConversationId["conversation-1"]).toEqual(
       expect.objectContaining({ conversationId: "conversation-1" }),
     );
-    expect(toastErrorMock).not.toHaveBeenCalled();
+    expect(reportAgentWorkspaceOperationResultMock).not.toHaveBeenCalled();
   });
 
   it("settles a direct publish response when a terminal PR accompanies stale active maintenance", async () => {
@@ -343,15 +326,13 @@ describe("useAgentWorkspacePublisher", () => {
     });
 
     expect(result.current.publishAttemptsByConversationId["conversation-1"]).toBeUndefined();
-    expect(toastInfoMock).toHaveBeenCalledWith(
-      "Publish stopped because the pull request was merged",
-      expect.objectContaining({
-        id: agentWorkspaceOperationToastId("conversation-1", "publish"),
-      }),
+    expect(reportAgentWorkspaceOperationResultMock).toHaveBeenCalledWith(
+      "conversation-1",
+      { kind: "terminal", status: "merged" },
     );
-    expect(toastLoadingMock).not.toHaveBeenCalledWith(
-      "Repairing workspace",
-      expect.anything(),
+    expect(watchAgentWorkspaceOperationMock).toHaveBeenCalledTimes(1);
+    expect(watchAgentWorkspaceOperationMock).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "publish" }),
     );
   });
 
@@ -410,19 +391,17 @@ describe("useAgentWorkspacePublisher", () => {
 
     await waitFor(() => expect(completed).toBe(true));
     expect(result.current.publishAttemptsByConversationId["conversation-1"]).toBeUndefined();
-    expect(toastInfoMock).toHaveBeenCalledWith(
-      "Publish stopped because the pull request was closed",
-      expect.objectContaining({
-        id: agentWorkspaceOperationToastId("conversation-1", "publish"),
-      }),
+    expect(reportAgentWorkspaceOperationResultMock).toHaveBeenCalledWith(
+      "conversation-1",
+      { kind: "terminal", status: "closed" },
     );
-    expect(toastLoadingMock).not.toHaveBeenCalledWith(
-      "Repairing workspace",
-      expect.anything(),
+    expect(watchAgentWorkspaceOperationMock).toHaveBeenCalledTimes(1);
+    expect(watchAgentWorkspaceOperationMock).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "publish" }),
     );
   });
 
-  it("starts the owned toast before baseline fetch and RPC invocation", async () => {
+  it("watches a durable publish operation before baseline fetch and RPC invocation", async () => {
     const queryClient = createTestQueryClient();
     const baselineDeferred = deferred<AgentConversationWorkspacePublicationEvent[]>();
     listAgentConversationWorkspacePublicationEventsMock.mockReturnValue(
@@ -452,13 +431,13 @@ describe("useAgentWorkspacePublisher", () => {
       completion = result.current.handlePublishWorkspace("conversation-1");
     });
 
-    expect(toastLoadingMock).toHaveBeenCalledWith(
-      "Publishing workspace",
-      expect.objectContaining({
-        description: expect.stringContaining("Checkout flow fix • Check workspace"),
-        id: agentWorkspaceOperationToastId("conversation-1", "publish"),
-      }),
-    );
+    expect(watchAgentWorkspaceOperationMock).toHaveBeenCalledWith({
+      conversationId: "conversation-1",
+      projectId: "project-1",
+      conversationTitle: "Checkout flow fix",
+      kind: "publish",
+      startedAtMs: expect.any(Number),
+    });
     expect(publishAgentConversationWorkspaceMock).not.toHaveBeenCalled();
 
     await act(async () => {
@@ -541,11 +520,10 @@ describe("useAgentWorkspacePublisher", () => {
     });
 
     await waitFor(() => expect(completed).toBe(true));
-    expect(toastSuccessMock).toHaveBeenCalledWith("Published #404", {
-      description: "Checkout flow fix",
-      duration: 8_000,
-      id: agentWorkspaceOperationToastId("conversation-1", "publish"),
-    });
+    expect(reportAgentWorkspaceOperationResultMock).toHaveBeenCalledWith(
+      "conversation-1",
+      { kind: "success", workspace: publishedWorkspace },
+    );
     expect(
       result.current.publishAttemptsByConversationId["conversation-1"],
     ).toBeUndefined();
@@ -573,7 +551,7 @@ describe("useAgentWorkspacePublisher", () => {
     expect(
       result.current.publishAttemptsByConversationId["conversation-1"],
     ).toEqual(expect.objectContaining({ conversationId: "conversation-1" }));
-    expect(toastSuccessMock).toHaveBeenCalledTimes(1);
+    expect(reportAgentWorkspaceOperationResultMock).toHaveBeenCalledTimes(1);
   });
 
   it("deduplicates the same conversation while allowing independent attempts", async () => {
@@ -615,12 +593,13 @@ describe("useAgentWorkspacePublisher", () => {
     await waitFor(() =>
       expect(publishAgentConversationWorkspaceMock).toHaveBeenCalledTimes(2),
     );
-    expect(toastLoadingMock).toHaveBeenCalledWith(
-      "Publishing workspace",
-      expect.objectContaining({
-        id: agentWorkspaceOperationToastId("conversation-2", "publish"),
-      }),
+    expect(watchAgentWorkspaceOperationMock).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: "conversation-2", kind: "publish" }),
     );
+    expect(watchAgentWorkspaceOperationMock).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: "conversation-1", kind: "publish" }),
+    );
+    expect(watchAgentWorkspaceOperationMock).toHaveBeenCalledTimes(2);
   });
 
   it("falls back to direct RPC settlement when the baseline read fails", async () => {
@@ -657,11 +636,10 @@ describe("useAgentWorkspacePublisher", () => {
       await result.current.handlePublishWorkspace("conversation-1");
     });
 
-    expect(toastSuccessMock).toHaveBeenCalledWith("Published #501", {
-      description: "Untitled agent",
-      duration: 8_000,
-      id: agentWorkspaceOperationToastId("conversation-1", "publish"),
-    });
+    expect(reportAgentWorkspaceOperationResultMock).toHaveBeenCalledWith(
+      "conversation-1",
+      { kind: "success", workspace: publishedWorkspace },
+    );
     expect(getAgentConversationWorkspaceFreshnessMock).not.toHaveBeenCalled();
   });
 
@@ -710,7 +688,7 @@ describe("useAgentWorkspacePublisher", () => {
         result.current.publishAttemptsByConversationId["conversation-1"],
       ).toEqual(expect.objectContaining({ conversationId: "conversation-1" })),
     );
-    expect(toastSuccessMock).not.toHaveBeenCalled();
+    expect(reportAgentWorkspaceOperationResultMock).not.toHaveBeenCalled();
   });
 
   it("keeps the local attempt open when the RPC errors while its receipt is unsettled", async () => {
@@ -752,8 +730,7 @@ describe("useAgentWorkspacePublisher", () => {
     expect(
       result.current.publishAttemptsByConversationId["conversation-1"],
     ).toEqual(expect.objectContaining({ conversationId: "conversation-1" }));
-    expect(toastErrorMock).not.toHaveBeenCalled();
-    expect(toastSuccessMock).not.toHaveBeenCalled();
+    expect(reportAgentWorkspaceOperationResultMock).not.toHaveBeenCalled();
   });
 
   it("reattaches an errored publish request to the refreshed maintenance operation", async () => {
@@ -793,22 +770,16 @@ describe("useAgentWorkspacePublisher", () => {
     });
 
     await waitFor(() =>
-      expect(toastLoadingMock).toHaveBeenLastCalledWith(
-        "Repairing workspace",
-        expect.objectContaining({
-          action: {
-            label: "Open conversation",
-            onClick: expect.any(Function),
-          },
-          id: agentWorkspaceMaintenanceOperationToastId(
-            "conversation-1",
-            "maintenance-after-error",
-          ),
-        }),
-      ),
+      expect(watchAgentWorkspaceOperationMock).toHaveBeenCalledWith({
+        conversationId: "conversation-1",
+        projectId: "project-1",
+        conversationTitle: null,
+        kind: "observed",
+        startedAtMs: null,
+      }),
     );
     expect(result.current.publishAttemptsByConversationId["conversation-1"]).toBeDefined();
-    expect(toastErrorMock).not.toHaveBeenCalled();
+    expect(reportAgentWorkspaceOperationResultMock).not.toHaveBeenCalled();
   });
 
   it("settles an errored publish request when the refreshed PR is terminal", async () => {
@@ -835,13 +806,10 @@ describe("useAgentWorkspacePublisher", () => {
       await result.current.handlePublishWorkspace("conversation-1");
     });
 
-    expect(toastInfoMock).toHaveBeenCalledWith(
-      "Publish stopped because the pull request was closed",
-      expect.objectContaining({
-        id: agentWorkspaceOperationToastId("conversation-1", "publish"),
-      }),
+    expect(reportAgentWorkspaceOperationResultMock).toHaveBeenCalledWith(
+      "conversation-1",
+      { kind: "terminal", status: "closed" },
     );
-    expect(toastErrorMock).not.toHaveBeenCalled();
   });
 
   it("settles a push failure when an earlier metadata receipt remains settled", async () => {
@@ -894,14 +862,11 @@ describe("useAgentWorkspacePublisher", () => {
     });
 
     await waitFor(() => expect(completed).toBe(true));
-    expect(toastErrorMock).toHaveBeenCalledWith("Failed to publish branch", {
-      closeButton: true,
-      description: "Untitled agent • Remote rejected the branch push",
-      dismissible: true,
-      duration: 12_000,
-      id: agentWorkspaceOperationToastId("conversation-1", "publish"),
-    });
-    expect(toastSuccessMock).not.toHaveBeenCalled();
+    expect(reportAgentWorkspaceOperationResultMock).toHaveBeenCalledWith(
+      "conversation-1",
+      { kind: "failure", detail: "Remote rejected the branch push" },
+    );
+    expect(reportAgentWorkspaceOperationResultMock).toHaveBeenCalledTimes(1);
     expect(
       result.current.publishAttemptsByConversationId["conversation-1"],
     ).toBeUndefined();
@@ -957,31 +922,25 @@ describe("useAgentWorkspacePublisher", () => {
     });
 
     await waitFor(() => expect(completed).toBe(true));
-    expect(toastErrorMock).toHaveBeenCalledWith(
-      "Publish failed. Sent the error to the agent to fix.",
-      {
-        closeButton: true,
-        description: "Untitled agent • Typecheck failed",
-        dismissible: true,
-        duration: 12_000,
-        id: agentWorkspaceOperationToastId("conversation-1", "publish"),
-      },
+    expect(reportAgentWorkspaceOperationResultMock).toHaveBeenCalledWith(
+      "conversation-1",
+      { kind: "needs_agent", detail: "Typecheck failed" },
     );
-    expect(toastSuccessMock).not.toHaveBeenCalled();
   });
 
-  it("does not put verbose durable publish output in the terminal toast", async () => {
+  it("passes the raw durable classification detail through to the result mailbox unmodified", async () => {
     const queryClient = createTestQueryClient();
     const baseline = publicationEvent({ id: "baseline" });
+    const verboseSummary = [
+      "[1mGuard 1: pre-commit design token guards[0m",
+      "src/components/ui/notice-banner.tsx:21: backgroundColor: var(--status-warning-muted, rgba(224, 179, 65, 0.1))",
+      "src/components/automations/automationRunView.ts:497: backgroundColor: var(--status-success-muted, rgba(63, 191, 127, 0.08))",
+    ].join("\n");
     const failure = publicationEvent({
       id: "failure",
       step: "needs_agent",
       status: "failed",
-      summary: [
-        "\u001B[1mGuard 1: pre-commit design token guards\u001B[0m",
-        "src/components/ui/notice-banner.tsx:21: backgroundColor: var(--status-warning-muted, rgba(224, 179, 65, 0.1))",
-        "src/components/automations/automationRunView.ts:497: backgroundColor: var(--status-success-muted, rgba(63, 191, 127, 0.08))",
-      ].join("\n"),
+      summary: verboseSummary,
       classification: "agent_fixable",
       createdAt: new Date(Date.now() + 1_000).toISOString(),
     });
@@ -1015,15 +974,9 @@ describe("useAgentWorkspacePublisher", () => {
     });
 
     await waitFor(() =>
-      expect(toastErrorMock).toHaveBeenCalledWith(
-        "Publish failed. Sent the error to the agent to fix.",
-        {
-          closeButton: true,
-          description: "Untitled agent • Full output is available in the workspace.",
-          dismissible: true,
-          duration: 12_000,
-          id: agentWorkspaceOperationToastId("conversation-1", "publish"),
-        },
+      expect(reportAgentWorkspaceOperationResultMock).toHaveBeenCalledWith(
+        "conversation-1",
+        { kind: "needs_agent", detail: verboseSummary },
       ),
     );
   });
@@ -1032,12 +985,11 @@ describe("useAgentWorkspacePublisher", () => {
     ["ready", "ready", "Ready for explicit publication"],
     ["blocked", "blocked", "Resolve the protected branch"],
   ] as const)(
-    "reads and renders a durable %s maintenance result",
+    "reads a durable %s maintenance result and maps it to the expected view",
     async (status, kind, detail) => {
       const queryClient = createTestQueryClient();
       const attempt = createAgentWorkspacePublishAttempt({
         conversationId: "conversation-1",
-        conversationTitle: null,
         projectId: "project-1",
         startedAtMs: Date.now(),
         token: 1,
@@ -1066,18 +1018,16 @@ describe("useAgentWorkspacePublisher", () => {
         [publicationEvent()],
       );
       expect(durable).toEqual({ kind, detail });
-      renderAgentWorkspacePublishResult(attempt, durable!);
 
+      const view = agentWorkspaceOperationResultView(durable!);
       if (status === "ready") {
-        expect(toastInfoMock).toHaveBeenCalledWith(
-          "Base updated — ready to publish",
-          expect.objectContaining({ description: detail }),
-        );
+        expect(view).toEqual({
+          tone: "info",
+          message: "Base updated — ready to publish",
+          detail,
+        });
       } else {
-        expect(toastErrorMock).toHaveBeenCalledWith(
-          "Repair blocked",
-          expect.objectContaining({ description: detail }),
-        );
+        expect(view).toEqual({ tone: "error", message: "Repair blocked", detail });
       }
     },
   );
@@ -1086,7 +1036,6 @@ describe("useAgentWorkspacePublisher", () => {
     const queryClient = createTestQueryClient();
     const attempt = createAgentWorkspacePublishAttempt({
       conversationId: "conversation-1",
-      conversationTitle: null,
       projectId: "project-1",
       startedAtMs: Date.now(),
       token: 1,
@@ -1113,6 +1062,89 @@ describe("useAgentWorkspacePublisher", () => {
       readAgentWorkspaceDurablePublishResult(queryClient, attempt, [publicationEvent()]),
     ).resolves.toEqual({
       kind: "blocked",
+      detail: "Resolve the protected branch",
+    });
+  });
+});
+
+describe("agentWorkspaceOperationResultView", () => {
+  it("maps every result kind to its tone and message", () => {
+    const workspaceWithPr = conversationWorkspaceFixture({ publicationPrNumber: 12 });
+    const workspaceWithUrl = conversationWorkspaceFixture({
+      publicationPrNumber: null,
+      publicationPrUrl: "https://github.com/aigentive/ralphx.app/pull/99",
+    });
+    const workspaceBranchOnly = conversationWorkspaceFixture({
+      publicationPrNumber: null,
+      publicationPrUrl: null,
+    });
+
+    const cases: Array<
+      [AgentWorkspaceOperationResult, { tone: "success" | "error" | "info"; message: string }]
+    > = [
+      [
+        { kind: "success", workspace: workspaceWithPr },
+        { tone: "success", message: "Published #12" },
+      ],
+      [
+        { kind: "success", workspace: workspaceWithUrl },
+        {
+          tone: "success",
+          message: `Published ${workspaceWithUrl.publicationPrUrl}`,
+        },
+      ],
+      [
+        { kind: "success", workspace: workspaceBranchOnly },
+        { tone: "success", message: "Published branch" },
+      ],
+      [
+        { kind: "needs_agent" },
+        { tone: "error", message: "Publish failed. Sent the error to the agent to fix." },
+      ],
+      [{ kind: "failure" }, { tone: "error", message: "Failed to publish branch" }],
+      [{ kind: "no_changes" }, { tone: "info", message: "No changes to publish" }],
+      [{ kind: "ready" }, { tone: "info", message: "Base updated — ready to publish" }],
+      [{ kind: "blocked" }, { tone: "error", message: "Repair blocked" }],
+      [
+        { kind: "terminal", status: "merged" },
+        { tone: "info", message: "Publish stopped because the pull request was merged" },
+      ],
+      [
+        { kind: "terminal", status: "closed" },
+        { tone: "info", message: "Publish stopped because the pull request was closed" },
+      ],
+      [
+        { kind: "base-updated", targetRef: "origin/main" },
+        { tone: "success", message: "Updated from origin/main" },
+      ],
+      [
+        { kind: "base-already-current", targetRef: "origin/main" },
+        { tone: "success", message: "Already current with origin/main" },
+      ],
+      [
+        { kind: "base-update-failed" },
+        { tone: "error", message: "Failed to update from base" },
+      ],
+      [{ kind: "repair-started" }, { tone: "info", message: "Repair started" }],
+    ];
+
+    for (const [result, expected] of cases) {
+      expect(agentWorkspaceOperationResultView(result)).toEqual({
+        ...expected,
+        detail: null,
+      });
+    }
+  });
+
+  it("carries a supplied detail string through unchanged", () => {
+    expect(
+      agentWorkspaceOperationResultView({
+        kind: "blocked",
+        detail: "Resolve the protected branch",
+      }),
+    ).toEqual({
+      tone: "error",
+      message: "Repair blocked",
       detail: "Resolve the protected branch",
     });
   });
