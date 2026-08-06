@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use async_trait::async_trait;
+
 use crate::application::managed_team::{
     ManagedTeamAssignmentRequest, ManagedTeamMemberSpec, ManagedTeamService,
     ManagedTeamWorkspaceRequest,
@@ -7,14 +9,18 @@ use crate::application::managed_team::{
 use crate::application::AgentTaskService;
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
-    AgentRun, AgentRunId, AgentTaskAssignmentId, AgentTaskCreate, AgentTaskScope, ChatConversation,
-    DelegatedSessionId, ProjectId, TeamMemberStatus, TeamRunBindingStatus, TeamWorkClassification,
-    TeamWorkspaceReservation, TeamWorkspaceReservationId,
+    AgentRun, AgentRunId, AgentTaskAssignmentId, AgentTaskAssignmentTerminalStatus,
+    AgentTaskCreate, AgentTaskScope, ChatConversation, DelegatedSessionId, ProjectId,
+    TeamMemberStatus, TeamMessageActorKind, TeamMessageEnvelopeTarget, TeamRunBindingStatus,
+    TeamWorkClassification, TeamWorkspaceReservation, TeamWorkspaceReservationId,
 };
 use crate::domain::repositories::{
-    AgentRunRepository, AgentTaskRepository, TeamWorkspaceReservationRepository,
-    UiFeatureFlagOverridesRepository,
+    AgentRunRepository, AgentTaskRepository, ChatConversationRepository, QueuedMessageRepository,
+    TeamMessageRepository, TeamRepository, TeamWakeBatchRepository,
+    TeamWorkspaceReservationRepository, UiFeatureFlagOverridesRepository,
 };
+use crate::domain::services::{QueueKey, QueuedMessage};
+use crate::error::{AppError, AppResult};
 use crate::infrastructure::memory::{
     MemoryAgentRunRepository, MemoryAgentTaskRepository, MemoryChatConversationRepository,
     MemoryQueuedMessageRepository, MemoryTeamCoordinationTransitionRepository,
@@ -725,4 +731,265 @@ async fn terminal_binding_recovery_releases_its_exact_workspace_reservation() {
         .await
         .unwrap()
         .is_empty());
+}
+
+struct SettlementParts {
+    service: ManagedTeamService,
+    runs: Arc<MemoryAgentRunRepository>,
+    message_repo: Arc<MemoryTeamMessageRepository>,
+    wake_repo: Arc<MemoryTeamWakeBatchRepository>,
+}
+
+struct FailingSettlementQueueRepository;
+
+#[async_trait]
+impl QueuedMessageRepository for FailingSettlementQueueRepository {
+    async fn enqueue_back(&self, _key: &QueueKey, _message: &QueuedMessage) -> AppResult<()> {
+        Err(AppError::Infrastructure(
+            "injected settlement queue projection failure".to_string(),
+        ))
+    }
+
+    async fn enqueue_front(&self, _key: &QueueKey, _message: &QueuedMessage) -> AppResult<()> {
+        Err(AppError::Infrastructure(
+            "injected settlement queue projection failure".to_string(),
+        ))
+    }
+
+    async fn list(&self, _key: &QueueKey) -> AppResult<Vec<QueuedMessage>> {
+        Err(AppError::Infrastructure(
+            "injected settlement queue projection failure".to_string(),
+        ))
+    }
+
+    async fn list_keys(&self) -> AppResult<Vec<QueueKey>> {
+        Err(AppError::Infrastructure(
+            "injected settlement queue projection failure".to_string(),
+        ))
+    }
+
+    async fn delete(&self, _key: &QueueKey, _message_id: &str) -> AppResult<bool> {
+        Err(AppError::Infrastructure(
+            "injected settlement queue projection failure".to_string(),
+        ))
+    }
+
+    async fn delete_by_id(&self, _message_id: &str) -> AppResult<bool> {
+        Err(AppError::Infrastructure(
+            "injected settlement queue projection failure".to_string(),
+        ))
+    }
+
+    async fn clear(&self, _key: &QueueKey) -> AppResult<()> {
+        Err(AppError::Infrastructure(
+            "injected settlement queue projection failure".to_string(),
+        ))
+    }
+
+    async fn pop_front(&self, _key: &QueueKey) -> AppResult<Option<QueuedMessage>> {
+        Err(AppError::Infrastructure(
+            "injected settlement queue projection failure".to_string(),
+        ))
+    }
+
+    async fn remove_stale(
+        &self,
+        _key: &QueueKey,
+        _threshold_secs: u64,
+    ) -> AppResult<Vec<QueuedMessage>> {
+        Err(AppError::Infrastructure(
+            "injected settlement queue projection failure".to_string(),
+        ))
+    }
+}
+
+fn build_settlement_service(queued_message_repo: Arc<dyn QueuedMessageRepository>) -> SettlementParts {
+    let sessions = MemoryTeamRepository::new_shared_sessions();
+    let team_repo = Arc::new(MemoryTeamRepository::with_sessions(Arc::clone(&sessions)));
+    let runs = Arc::new(MemoryAgentRunRepository::new());
+    let message_repo = Arc::new(MemoryTeamMessageRepository::new());
+    let wake_repo = Arc::new(MemoryTeamWakeBatchRepository::new());
+    let service = ManagedTeamService::new(
+        Arc::clone(&team_repo) as Arc<dyn TeamRepository>,
+        Arc::new(MemoryTeamCoordinationTransitionRepository::with_sessions(
+            sessions,
+        )),
+        Arc::new(MemoryTeamRunBindingRepository::new()),
+        Arc::clone(&message_repo) as Arc<dyn TeamMessageRepository>,
+        Arc::clone(&wake_repo) as Arc<dyn TeamWakeBatchRepository>,
+        queued_message_repo,
+        Arc::new(MemoryChatConversationRepository::new()) as Arc<dyn ChatConversationRepository>,
+        Arc::clone(&runs) as Arc<dyn AgentRunRepository>,
+        Arc::new(MemoryTeamWorkspaceReservationRepository::new()),
+        Arc::new(MemoryUiFeatureFlagOverridesRepository::new())
+            as Arc<dyn UiFeatureFlagOverridesRepository>,
+    );
+    SettlementParts {
+        service,
+        runs,
+        message_repo,
+        wake_repo,
+    }
+}
+
+/// Drives a Team member assignment through plan -> launch -> bind so a real
+/// `AgentTaskAssignmentView` reaches `settle_member_assignment`.
+async fn plan_and_launch_settleable_assignment(
+    parts: &SettlementParts,
+) -> (
+    crate::domain::entities::TeamMember,
+    crate::domain::entities::AgentTaskAssignmentView,
+    AgentTaskService,
+    AgentTaskScope,
+) {
+    ensure_project_conversation(
+        &parts.service,
+        ProjectId::from_string("project-1".to_string()),
+        team_conversation_id(1),
+    )
+    .await;
+    let team = parts
+        .service
+        .ensure_team(
+            ProjectId::from_string("project-1".to_string()),
+            &team_conversation_id(1),
+        )
+        .await
+        .unwrap();
+    parts
+        .service
+        .startup_barrier()
+        .run(&parts.service.team_repo())
+        .await;
+    parts
+        .service
+        .release_delivery_projection_after_recovery()
+        .await
+        .unwrap();
+    let member = parts
+        .service
+        .add_member(
+            &team.id,
+            ManagedTeamMemberSpec {
+                name: "Writer One".to_string(),
+                canonical_agent_name: "ralphx-general-worker".to_string(),
+                role_summary: "writes bounded code".to_string(),
+                harness: Some(AgentHarnessKind::Codex),
+                logical_model: None,
+                logical_effort: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let repo = Arc::new(MemoryAgentTaskRepository::new());
+    let task_service = AgentTaskService::new(Arc::clone(&repo) as Arc<dyn AgentTaskRepository>);
+    let mut scope = AgentTaskScope::new("conversation", team_conversation_id(1).as_str());
+    scope.project_id = Some(ProjectId::from_string("project-1".to_string()));
+    task_service
+        .create_task(&scope, task("settle me"))
+        .await
+        .unwrap();
+    task_service
+        .create_task(&scope, task("keeps ledger claimable"))
+        .await
+        .unwrap();
+
+    let plan = parts
+        .service
+        .plan_member_assignment(
+            &task_service,
+            ManagedTeamAssignmentRequest {
+                team_id: team.id.clone(),
+                member_name: member.normalized_name.clone(),
+                expected_member_generation: member.generation,
+                caller_scope: scope.clone(),
+                caller_agent_run_id: team_agent_run_id(1),
+                task_ref: "1".to_string(),
+                delegated_session_id: DelegatedSessionId::new(),
+                delegated_conversation_id: team_conversation_id(2),
+                planned_agent_run_id: AgentRunId::new(),
+                work_classification: TeamWorkClassification::ReadOnly,
+                workspace: None,
+            },
+        )
+        .await
+        .unwrap();
+    let mut run = AgentRun::new(plan.binding.conversation_id);
+    run.id = plan.binding.agent_run_id;
+    run.harness = Some(AgentHarnessKind::Codex);
+    parts.runs.create(run).await.unwrap();
+    parts
+        .service
+        .mark_member_assignment_launching(&plan)
+        .await
+        .unwrap();
+    let bound = parts
+        .service
+        .complete_member_assignment_launch(&task_service, &plan)
+        .await
+        .unwrap();
+    (plan.member, bound, task_service, scope)
+}
+
+#[tokio::test]
+async fn settlement_emits_coordinator_completion_message() {
+    let parts = build_settlement_service(Arc::new(MemoryQueuedMessageRepository::new()));
+    let (_member, bound, _task_service, _scope) =
+        plan_and_launch_settleable_assignment(&parts).await;
+
+    parts
+        .service
+        .settle_member_assignment(&bound, AgentTaskAssignmentTerminalStatus::Completed, None)
+        .await
+        .unwrap();
+
+    let messages = parts
+        .message_repo
+        .list_messages_after(bound.assignment.team_id.as_ref().unwrap(), 0, 10)
+        .await
+        .unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].sender_kind, TeamMessageActorKind::System);
+    assert!(messages[0].sender_member_id.is_none());
+    assert_eq!(messages[0].target_kind, TeamMessageEnvelopeTarget::Coordinator);
+    assert_eq!(
+        messages[0].assignment_id,
+        Some(bound.assignment.id.clone())
+    );
+
+    let batches = parts
+        .wake_repo
+        .list_queued_for_team(bound.assignment.team_id.as_ref().unwrap(), 10)
+        .await
+        .unwrap();
+    assert_eq!(batches.len(), 1);
+}
+
+#[tokio::test]
+async fn settlement_notification_failure_does_not_block_settlement() {
+    let parts = build_settlement_service(Arc::new(FailingSettlementQueueRepository));
+    let (member, bound, _task_service, _scope) =
+        plan_and_launch_settleable_assignment(&parts).await;
+
+    // The coordinator completion signal's queue projection fails, but
+    // settlement authority must not depend on that notification succeeding.
+    parts
+        .service
+        .settle_member_assignment(
+            &bound,
+            AgentTaskAssignmentTerminalStatus::Failed,
+            Some("injected_test_failure"),
+        )
+        .await
+        .unwrap();
+
+    let idle = parts
+        .service
+        .member_by_normalized_name(&member.team_id, &member.normalized_name)
+        .await
+        .unwrap();
+    assert_eq!(idle.status, TeamMemberStatus::Idle);
+    assert!(idle.current_assignment_id.is_none());
+    assert!(idle.current_run_id.is_none());
 }

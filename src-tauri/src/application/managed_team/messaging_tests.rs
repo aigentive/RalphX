@@ -527,6 +527,94 @@ async fn coordinator_wakes_coalesce_sequence_range_when_idle() {
 }
 
 #[tokio::test]
+async fn system_sender_creates_coordinator_envelope_with_assignment_id() {
+    let parts = build_parts();
+    let team = ready_team(&parts).await;
+    let member = add_delivery_member(&parts, &team, "Writer One").await;
+    let assignment_id = crate::domain::entities::AgentTaskAssignmentId::new();
+    let binding = crate::application::managed_team::lifecycle::new_member_assignment_run_binding(
+        &member,
+        member.delegated_session_id.clone().unwrap(),
+        team_conversation_id(3),
+        team_agent_run_id(9),
+        assignment_id.clone(),
+        crate::domain::entities::TeamWorkClassification::ReadOnly,
+    );
+    parts.binding_repo.create(binding).await.unwrap();
+
+    let (message, deliveries) = parts
+        .service
+        .send_team_message(ManagedTeamMessageRequest {
+            team_id: team.id,
+            sender: ManagedTeamMessageSender::System {
+                assignment_id: assignment_id.clone(),
+            },
+            target: ManagedTeamMessageTarget::Coordinator,
+            kind: TeamMessageKind::Result,
+            content: "assignment settled".to_string(),
+            idempotency_key: format!("team_assignment_settled:{}:completed", assignment_id.0),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        message.sender_kind,
+        crate::domain::entities::TeamMessageActorKind::System
+    );
+    assert!(message.sender_member_id.is_none());
+    assert_eq!(message.assignment_id, Some(assignment_id));
+    assert_eq!(deliveries.len(), 1);
+    assert_eq!(
+        deliveries[0].recipient_kind,
+        crate::domain::entities::TeamMessageActorKind::Coordinator
+    );
+}
+
+#[tokio::test]
+async fn system_sender_replay_returns_original_envelope() {
+    let parts = build_parts();
+    let team = ready_team(&parts).await;
+    let member = add_delivery_member(&parts, &team, "Writer One").await;
+    let assignment_id = crate::domain::entities::AgentTaskAssignmentId::new();
+    let binding = crate::application::managed_team::lifecycle::new_member_assignment_run_binding(
+        &member,
+        member.delegated_session_id.clone().unwrap(),
+        team_conversation_id(3),
+        team_agent_run_id(10),
+        assignment_id.clone(),
+        crate::domain::entities::TeamWorkClassification::ReadOnly,
+    );
+    parts.binding_repo.create(binding).await.unwrap();
+    let key = format!("team_assignment_settled:{}:completed", assignment_id.0);
+    let request = ManagedTeamMessageRequest {
+        team_id: team.id.clone(),
+        sender: ManagedTeamMessageSender::System {
+            assignment_id: assignment_id.clone(),
+        },
+        target: ManagedTeamMessageTarget::Coordinator,
+        kind: TeamMessageKind::Result,
+        content: "assignment settled".to_string(),
+        idempotency_key: key,
+    };
+
+    let first = parts
+        .service
+        .send_team_message(request.clone())
+        .await
+        .unwrap();
+    let second = parts.service.send_team_message(request).await.unwrap();
+
+    assert_eq!(first.0.id, second.0.id);
+    assert_eq!(first.1[0].id, second.1[0].id);
+    let batches = parts
+        .wake_repo
+        .list_queued_for_team(&team.id, 10)
+        .await
+        .unwrap();
+    assert_eq!(batches.len(), 1);
+}
+
+#[tokio::test]
 async fn stale_member_generation_rejects_message_authority() {
     let parts = build_parts();
     let team = ready_team(&parts).await;

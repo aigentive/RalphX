@@ -1082,10 +1082,30 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
             .release_delivery_projection_after_recovery()
             .await
         {
-            Ok(projected) => tracing::info!(
-                projected,
-                "Managed Team delivery projection released after assignment recovery"
-            ),
+            Ok(projected) => {
+                tracing::info!(
+                    projected,
+                    "Managed Team delivery projection released after assignment recovery"
+                );
+                // Effects strictly after the barrier releases: batches queued by
+                // the re-projection above (and any that a crash left behind
+                // between queue and dispatch) have no settlement left to
+                // re-trigger them, so recovery is their only consumer.
+                match app_state
+                    .build_managed_team_wake_dispatcher()
+                    .drain_open_team_wakes()
+                    .await
+                {
+                    Ok(dispatched) => tracing::info!(
+                        dispatched,
+                        "Managed Team queued coordinator wakes drained during startup recovery"
+                    ),
+                    Err(error) => tracing::error!(
+                        %error,
+                        "Managed Team startup wake drain failed; queued coordinator wakes await the next settlement"
+                    ),
+                }
+            }
             Err(error) => tracing::error!(
                 %error,
                 "Managed Team delivery projection remains deferred after recovery"
