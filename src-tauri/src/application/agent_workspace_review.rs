@@ -4759,6 +4759,7 @@ async fn resolve_workspace_delta_target(
     Ok(Some(target))
 }
 
+#[cfg(test)]
 async fn workspace_delta_content_fingerprint(repo: &Path, base_ref: &str) -> AppResult<String> {
     let trees = workspace_delta_tree_fingerprints(repo, base_ref).await?;
     Ok(fingerprint_parts([
