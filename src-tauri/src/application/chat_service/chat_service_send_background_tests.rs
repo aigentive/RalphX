@@ -3387,6 +3387,7 @@ async fn finalize_no_output_writes_both_chat_messages_and_timeline_placeholder()
         .await
         .expect("seed pre-assistant message");
 
+    let run_id = AgentRunId::new().as_str();
     finalize_no_output_assistant_message_for_test::<tauri::Wry>(
         &state.chat_message_repo,
         &Some(state.chat_timeline_repo.clone()),
@@ -3396,6 +3397,7 @@ async fn finalize_no_output_writes_both_chat_messages_and_timeline_placeholder()
         session_id.as_str(),
         &pre_assistant_id,
         "orchestrator",
+        Some(run_id.as_str()),
     )
     .await;
 
@@ -3447,6 +3449,9 @@ async fn finalize_no_output_writes_both_chat_messages_and_timeline_placeholder()
             .contains("Agent completed with no output"),
         "the placeholder block must carry the same note as chat_messages"
     );
+    assert!(assistant_blocks
+        .iter()
+        .all(|item| item.run_id.as_ref().map(|id| id.as_str()) == Some(run_id.clone())));
 }
 
 #[tokio::test]
@@ -3495,6 +3500,7 @@ async fn finalize_structured_writes_chat_message_and_finalized_timeline_rows() {
         },
     ];
 
+    let run_id = AgentRunId::new().as_str();
     super::finalize_structured_assistant_message::<tauri::Wry>(
         &state.chat_message_repo,
         &Some(state.chat_timeline_repo.clone()),
@@ -3508,6 +3514,7 @@ async fn finalize_structured_writes_chat_message_and_finalized_timeline_rows() {
         &tool_calls,
         &content_blocks,
         false,
+        Some(run_id.as_str()),
     )
     .await;
 
@@ -3560,6 +3567,9 @@ async fn finalize_structured_writes_chat_message_and_finalized_timeline_rows() {
         .input_json
         .as_deref()
         .is_some_and(|raw| raw.contains("file_path")));
+    assert!(assistant_blocks
+        .iter()
+        .all(|item| item.run_id.as_ref().map(|id| id.as_str()) == Some(run_id.clone())));
 }
 
 #[tokio::test]
@@ -3628,6 +3638,7 @@ async fn finalize_structured_split_transcript_writes_timeline_for_each_segment()
         &tool_calls,
         &content_blocks,
         true,
+        None,
     )
     .await;
 
@@ -3733,6 +3744,7 @@ async fn exported_finalization_test_helpers_delegate_to_core_paths() {
             text: "Structured helper content".to_string(),
         }],
         false,
+        None,
     )
     .await;
 
