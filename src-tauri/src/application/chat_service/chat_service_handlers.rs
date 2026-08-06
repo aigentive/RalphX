@@ -13,6 +13,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
+use crate::application::agent_runtime_context::{
+    compose_agent_runtime_context, AgentRuntimeContextScope,
+};
 use crate::application::git_service::GitService;
 use crate::application::notification_service::NotificationService;
 use crate::application::persona_resolver::resolve_persona_for_send;
@@ -2722,6 +2725,55 @@ pub(super) async fn handle_stream_error(
                             working_directory,
                         )
                         .await;
+                        let retry_agent_runtime_context = if let Some(deps) = runtime_factory_deps {
+                            let workspace = match deps.agent_conversation_workspace_repo.as_ref() {
+                                Some(repo) => match conv.context_type {
+                                    ChatContextType::Project | ChatContextType::Standalone => {
+                                        repo.get_by_conversation_id(&conv.id).await
+                                    }
+                                    ChatContextType::Ideation => {
+                                        repo.get_by_linked_ideation_session_id(
+                                            &IdeationSessionId::from_string(
+                                                conv.context_id.to_string(),
+                                            ),
+                                        )
+                                        .await
+                                    }
+                                    _ => Ok(None),
+                                },
+                                None => Ok(None),
+                            };
+                            match workspace {
+                                Ok(workspace) => match deps.agent_runtime_context_deps() {
+                                    Some(context_deps) => {
+                                        compose_agent_runtime_context(
+                                            &AgentRuntimeContextScope {
+                                                conversation_id: &conv.id,
+                                                context_type: conv.context_type,
+                                                context_id: conv.context_id.as_str(),
+                                                project_id: resolved_project_id.as_deref(),
+                                                workspace: workspace.as_ref(),
+                                                working_directory,
+                                                entity_status: None,
+                                            },
+                                            &context_deps,
+                                        )
+                                        .await
+                                    }
+                                    None => None,
+                                },
+                                Err(error) => {
+                                    tracing::warn!(
+                                        conversation_id = %conv.id,
+                                        error = %error,
+                                        "agent runtime workspace context unavailable during stream retry"
+                                    );
+                                    None
+                                }
+                            }
+                        } else {
+                            None
+                        };
 
                         let retry_agent_name =
                             super::chat_service_helpers::resolve_agent(&context_type, None);
@@ -2778,7 +2830,7 @@ pub(super) async fn handle_stream_error(
                                     None,
                                     None,
                                     false,
-                                    None,
+                                    retry_agent_runtime_context.as_deref(),
                                     None,
                                 )
                                 .await

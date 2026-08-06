@@ -13,6 +13,9 @@ use super::chat_service_replay::{
 };
 use super::chat_service_streaming::process_stream_background;
 use super::streaming_state_cache::StreamingStateCache;
+use crate::application::agent_runtime_context::{
+    compose_agent_runtime_context, AgentRuntimeContextScope,
+};
 use crate::application::persona_resolver::resolve_persona_for_send;
 use crate::application::runtime_factory::ChatRuntimeFactoryDeps;
 use crate::domain::agents::{AgentHarnessKind, ProviderSessionRef};
@@ -458,7 +461,55 @@ pub(crate) async fn attempt_session_recovery(
             working_directory,
         )
     };
-
+    let agent_runtime_context = if let Some(deps) = runtime_factory_deps {
+        let workspace = match deps.agent_conversation_workspace_repo.as_ref() {
+            Some(repo) => match context_type {
+                ChatContextType::Project | ChatContextType::Standalone => {
+                    repo.get_by_conversation_id(&conversation.id).await
+                }
+                ChatContextType::Ideation => {
+                    repo.get_by_linked_ideation_session_id(
+                        &crate::domain::entities::IdeationSessionId::from_string(
+                            context_id.to_string(),
+                        ),
+                    )
+                    .await
+                }
+                _ => Ok(None),
+            },
+            None => Ok(None),
+        };
+        match workspace {
+            Ok(workspace) => match deps.agent_runtime_context_deps() {
+                Some(context_deps) => {
+                    compose_agent_runtime_context(
+                        &AgentRuntimeContextScope {
+                            conversation_id: &conversation.id,
+                            context_type,
+                            context_id,
+                            project_id: _resolved_project_id.as_deref(),
+                            workspace: workspace.as_ref(),
+                            working_directory,
+                            entity_status: entity_status.as_deref(),
+                        },
+                        &context_deps,
+                    )
+                    .await
+                }
+                None => None,
+            },
+            Err(error) => {
+                tracing::warn!(
+                    conversation_id = %conversation.id,
+                    error = %error,
+                    "agent runtime workspace context unavailable during session recovery"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
     // Both noninteractive provider adapters already honor an explicit conversation binding.
     // Materialize the authoritative builder-mode binding for recovery so Claude and Codex use
     // the same agent without persisting a redundant derived value on the conversation row.
@@ -493,7 +544,7 @@ pub(crate) async fn attempt_session_recovery(
         None,
         None,
         false,
-        None,
+        agent_runtime_context.as_deref(),
         None,
     )
     .await

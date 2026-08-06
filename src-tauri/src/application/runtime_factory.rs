@@ -4,6 +4,10 @@ use std::time::Instant;
 use ralphx_events::{EventSink, NullEventSink};
 use tauri::AppHandle;
 
+use crate::application::agent_runtime_context::{
+    branch_status::BranchStatusCache, linked_plan_snapshot_resolver_from_app_state,
+    AgentRuntimeContextDeps, LinkedPlanSnapshotResolver,
+};
 use crate::application::chat_service::{AppChatService, ChatService, StreamingStateCache};
 use crate::application::manual_role_default_service::ManualRoleDefaultService;
 use crate::application::notification_service::NotificationService;
@@ -18,8 +22,8 @@ use crate::domain::repositories::{
     ActivityEventRepository, AgentConversationGranolaNoteRepository,
     AgentConversationJiraIssueRepository, AgentConversationLinearIssueRepository,
     AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
-    AgentProviderSettingsRepository, AgentRunRepository, AppStateRepository, ArtifactRepository,
-    AutomationRunRepository, BranchUpdateRepository, ChatAttachmentRepository,
+    AgentProviderSettingsRepository, AgentRunRepository, AgentTaskRepository, AppStateRepository,
+    ArtifactRepository, AutomationRunRepository, BranchUpdateRepository, ChatAttachmentRepository,
     ChatConversationRepository, ChatMessageRepository, ChatTimelineRepository,
     ConversationFolderReferenceRepository, DelegatedSessionRepository, DelegationParkRepository,
     ExecutionPlanRepository, ExecutionSettingsRepository, ExternalEventsRepository,
@@ -322,6 +326,10 @@ pub(crate) struct ChatRuntimeFactoryDeps {
     pub ideation_session_repo: Arc<dyn IdeationSessionRepository>,
     pub persona_repo: Option<Arc<dyn PersonaRepository>>,
     pub delegated_session_repo: Option<Arc<dyn DelegatedSessionRepository>>,
+    pub agent_task_repo: Option<Arc<dyn AgentTaskRepository>>,
+    pub linked_plan_snapshot_resolver: Option<Arc<dyn LinkedPlanSnapshotResolver>>,
+    pub team_repo: Option<Arc<dyn crate::domain::repositories::TeamRepository>>,
+    pub branch_status_cache: Option<BranchStatusCache>,
     pub delegation_park_repo: Option<Arc<dyn DelegationParkRepository>>,
     pub activity_event_repo: Arc<dyn ActivityEventRepository>,
     pub message_queue: Arc<MessageQueue>,
@@ -366,6 +374,22 @@ pub(crate) struct ChatRuntimeFactoryDeps {
 }
 
 impl ChatRuntimeFactoryDeps {
+    pub(crate) fn agent_runtime_context_deps(&self) -> Option<AgentRuntimeContextDeps> {
+        let delegated_session_repo = Arc::clone(self.delegated_session_repo.as_ref()?);
+        let agent_task_repo = Arc::clone(self.agent_task_repo.as_ref()?);
+        let mut deps = AgentRuntimeContextDeps::new(delegated_session_repo, agent_task_repo);
+        if let Some(resolver) = self.linked_plan_snapshot_resolver.as_ref() {
+            deps = deps.with_linked_plan_snapshot_resolver(Arc::clone(resolver));
+        }
+        if let Some(team_repo) = self.team_repo.as_ref() {
+            deps = deps.with_team_repo(Arc::clone(team_repo));
+        }
+        if let Some(cache) = self.branch_status_cache.as_ref() {
+            deps = deps.with_branch_status_cache(cache.clone());
+        }
+        Some(deps)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_core(
         chat_message_repo: Arc<dyn ChatMessageRepository>,
@@ -400,6 +424,10 @@ impl ChatRuntimeFactoryDeps {
             ideation_session_repo,
             persona_repo: None,
             delegated_session_repo: None,
+            agent_task_repo: None,
+            linked_plan_snapshot_resolver: None,
+            team_repo: None,
+            branch_status_cache: None,
             delegation_park_repo: None,
             activity_event_repo,
             message_queue,
@@ -644,6 +672,32 @@ impl ChatRuntimeFactoryDeps {
         self
     }
 
+    pub(crate) fn with_agent_task_repo(mut self, repo: Arc<dyn AgentTaskRepository>) -> Self {
+        self.agent_task_repo = Some(repo);
+        self
+    }
+
+    pub(crate) fn with_linked_plan_snapshot_resolver(
+        mut self,
+        resolver: Arc<dyn LinkedPlanSnapshotResolver>,
+    ) -> Self {
+        self.linked_plan_snapshot_resolver = Some(resolver);
+        self
+    }
+
+    pub(crate) fn with_team_repo(
+        mut self,
+        repo: Arc<dyn crate::domain::repositories::TeamRepository>,
+    ) -> Self {
+        self.team_repo = Some(repo);
+        self
+    }
+
+    pub(crate) fn with_branch_status_cache(mut self, cache: BranchStatusCache) -> Self {
+        self.branch_status_cache = Some(cache);
+        self
+    }
+
     pub(crate) fn with_delegation_park_repo(
         mut self,
         repo: Arc<dyn DelegationParkRepository>,
@@ -812,6 +866,12 @@ impl ChatRuntimeFactoryDeps {
             PlanVerificationCompletionAdapter::from_app_state(state),
         ))
         .with_delegated_session_repo(Arc::clone(&state.delegated_session_repo))
+        .with_agent_task_repo(Arc::clone(&state.agent_task_repo))
+        .with_linked_plan_snapshot_resolver(linked_plan_snapshot_resolver_from_app_state(
+            state.clone(),
+        ))
+        .with_team_repo(state.managed_team.team_repo())
+        .with_branch_status_cache(state.pr_poller_registry.branch_status_cache())
         .with_delegation_park_repo(Arc::clone(&state.delegation_park_repo))
         .with_persona_repo(Arc::clone(&state.persona_repo))
         .with_conversation_folder_reference_context(
@@ -897,6 +957,25 @@ pub(crate) fn build_chat_service_from_deps(
         Arc::clone(&deps.running_agent_registry),
         Arc::clone(&deps.memory_event_repo),
     );
+
+    if let Some(agent_task_repo) = deps.agent_task_repo.as_ref() {
+        let delegated_session_repo = deps
+            .delegated_session_repo
+            .as_ref()
+            .map(Arc::clone)
+            .unwrap_or_else(|| Arc::new(MemoryDelegatedSessionRepository::new()));
+        service = service
+            .with_agent_runtime_context_repos(delegated_session_repo, Arc::clone(agent_task_repo));
+    }
+    if let Some(resolver) = deps.linked_plan_snapshot_resolver.as_ref() {
+        service = service.with_linked_plan_snapshot_resolver(Arc::clone(resolver));
+    }
+    if let Some(team_repo) = deps.team_repo.as_ref() {
+        service = service.with_team_runtime_context_repo(Arc::clone(team_repo));
+    }
+    if let Some(cache) = deps.branch_status_cache.as_ref() {
+        service = service.with_branch_status_cache(cache.clone());
+    }
 
     if let Some(repo) = deps.delegation_park_repo.as_ref() {
         service = service.with_delegation_park_repo(Arc::clone(repo));

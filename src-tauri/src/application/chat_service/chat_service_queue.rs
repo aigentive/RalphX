@@ -22,6 +22,9 @@ use super::{
     message_metadata_hidden_from_ui, persona_resolve_flags_for_conversation,
     team_intent_for_persisted_coordination_mode, ChatService, SendMessageOptions,
 };
+use crate::application::agent_runtime_context::{
+    compose_agent_runtime_context, AgentRuntimeContextScope,
+};
 use crate::application::conversation_reference_inheritance::collect_conversation_inherited_integration_references;
 use crate::application::integration_reference_expansion::{
     expand_integration_references_for_prompt, log_skipped_integration_references,
@@ -2391,6 +2394,31 @@ pub(super) async fn process_queued_messages(
                 )
             };
             let persona_for_attribution = resolved_persona.clone();
+            let agent_runtime_context = if let Some(deps) = runtime_factory_deps.as_ref() {
+                match deps.agent_runtime_context_deps() {
+                    Some(context_deps) => match queued_agent_context.conversation.as_ref() {
+                        Some(conversation) => {
+                            compose_agent_runtime_context(
+                                &AgentRuntimeContextScope {
+                                    conversation_id: &conversation.id,
+                                    context_type: launch_context_type,
+                                    context_id: launch_context_id,
+                                    project_id,
+                                    workspace: queued_agent_context.workspace.as_ref(),
+                                    working_directory,
+                                    entity_status: None,
+                                },
+                                &context_deps,
+                            )
+                            .await
+                        }
+                        None => None,
+                    },
+                    None => None,
+                }
+            } else {
+                None
+            };
             let queued_effort_override = queued_msg
                 .logical_effort_override
                 .map(|effort| effort.to_string());
@@ -2469,7 +2497,7 @@ pub(super) async fn process_queued_messages(
                     Some(&continuation_runtime),
                     queued_msg.service_tier_override.as_deref(),
                     false,
-                    None,
+                    agent_runtime_context.as_deref(),
                     Some(attachment_context.as_str()),
                 )
                 .await
