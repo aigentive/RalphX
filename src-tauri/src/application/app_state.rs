@@ -712,11 +712,12 @@ impl AppState {
     }
 
     fn build_managed_team_memory(
+        chat_conversation_repo: Arc<dyn ChatConversationRepository>,
+        agent_run_repo: Arc<dyn AgentRunRepository>,
         feature_overrides_repo: Arc<dyn UiFeatureFlagOverridesRepository>,
         event_sink: Arc<dyn EventSink>,
     ) -> Arc<crate::application::managed_team::ManagedTeamService> {
         use crate::infrastructure::memory::{
-            MemoryAgentRunRepository, MemoryChatConversationRepository,
             MemoryQueuedMessageRepository, MemoryTeamCoordinationTransitionRepository,
             MemoryTeamMessageRepository, MemoryTeamRepository, MemoryTeamRunBindingRepository,
             MemoryTeamWakeBatchRepository, MemoryTeamWorkspaceReservationRepository,
@@ -732,8 +733,8 @@ impl AppState {
                 Arc::new(MemoryTeamMessageRepository::new()),
                 Arc::new(MemoryTeamWakeBatchRepository::new()),
                 Arc::new(MemoryQueuedMessageRepository::new()),
-                Arc::new(MemoryChatConversationRepository::new()),
-                Arc::new(MemoryAgentRunRepository::new()),
+                chat_conversation_repo,
+                agent_run_repo,
                 Arc::new(MemoryTeamWorkspaceReservationRepository::new()),
                 feature_overrides_repo,
                 event_sink,
@@ -2518,7 +2519,12 @@ impl AppState {
 
         let ui_feature_flag_overrides_repo: Arc<dyn UiFeatureFlagOverridesRepository> =
             Arc::new(MemoryUiFeatureFlagOverridesRepository::new());
+        let chat_conversation_repo: Arc<dyn ChatConversationRepository> =
+            Arc::new(MemoryChatConversationRepository::new());
+        let agent_run_repo: Arc<dyn AgentRunRepository> = Arc::new(MemoryAgentRunRepository::new());
         let managed_team = Self::build_managed_team_memory(
+            Arc::clone(&chat_conversation_repo),
+            Arc::clone(&agent_run_repo),
             Arc::clone(&ui_feature_flag_overrides_repo),
             Arc::clone(&events),
         );
@@ -2583,7 +2589,7 @@ impl AppState {
             proposal_dependency_repo: Arc::new(MemoryProposalDependencyRepository::new()),
             chat_message_repo: Arc::new(MemoryChatMessageRepository::new()),
             chat_timeline_repo: Arc::new(MemoryChatTimelineRepository::new()),
-            chat_conversation_repo: Arc::new(MemoryChatConversationRepository::new()),
+            chat_conversation_repo: Arc::clone(&chat_conversation_repo),
             persona_repo: Arc::new(MemoryPersonaRepository::new()),
             agent_conversation_workspace_repo,
             agent_workspace_repair_repo,
@@ -2608,7 +2614,7 @@ impl AppState {
             ))),
             automation_run_repo: Arc::new(MemoryAutomationRunRepository::new(automation_state)),
             agent_terminal_service: Arc::new(AgentTerminalService::new()),
-            agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
+            agent_run_repo: Arc::clone(&agent_run_repo),
             activity_event_repo: Arc::new(MemoryActivityEventRepository::new()),
             notification_repo: Arc::new(MemoryNotificationRepository::new()),
             task_dependency_repo: Arc::new(MemoryTaskDependencyRepository::new()),

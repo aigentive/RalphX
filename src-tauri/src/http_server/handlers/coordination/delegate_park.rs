@@ -5,13 +5,16 @@
 //!
 //! Caller identity is transport-owned: the parent conversation and run come from the
 //! `x-ralphx-conversation-id` / `x-ralphx-agent-run-id` headers injected by the MCP runtime, never
-//! from model-supplied arguments. Missing or non-current run identity fails closed, exactly like
-//! `delegate_start`.
+//! from model-supplied arguments. Missing run identity or a run that is not live fails closed,
+//! exactly like `delegate_start`.
 
 use super::*;
 
 use crate::application::delegation_park::ArmParkRequest;
 use crate::domain::entities::DelegationWakePolicy;
+use crate::http_server::handlers::trusted_run_authority::{
+    resolve_live_caller_run, TrustedRunRejection,
+};
 use crate::http_server::types::{DelegateParkRequest, DelegateParkResponse, ParkedJobSummary};
 
 /// Fail-closed 400 for park calls whose MCP transport carries no run identity. As with
@@ -67,44 +70,61 @@ pub async fn park_delegate(
     let conversation_id = ChatConversationId::from_string(parent_conversation_id.clone());
     let run_id = AgentRunId::from_string(parent_agent_run_id.clone());
 
-    // The claimed run must exist, belong to the claimed conversation, and still be the ACTIVE run.
+    // The claimed run must exist, belong to the claimed conversation, and still be LIVE (non-terminal).
     // Parking on a stale run would let an old turn register a wake set for a conversation that has
     // already moved on.
-    let trusted_run = state
-        .app_state
-        .agent_run_repo
-        .get_by_id(&run_id)
-        .await
-        .map_err(|error| {
-            json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to validate trusted caller agent run: {error}"),
-            )
-        })?
-        .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Trusted caller agent run not found"))?;
-    if trusted_run.conversation_id != conversation_id {
-        return Err(json_error(
-            StatusCode::BAD_REQUEST,
-            "Trusted caller agent run does not belong to the caller conversation",
-        ));
-    }
-    let active_run = state
-        .app_state
-        .agent_run_repo
-        .get_active_for_conversation(&conversation_id)
-        .await
-        .map_err(|error| {
-            json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to resolve current caller agent run: {error}"),
-            )
-        })?;
-    if active_run.as_ref().map(|run| &run.id) != Some(&trusted_run.id) {
-        return Err(json_error(
-            StatusCode::CONFLICT,
-            "Trusted caller agent run is not the active caller run",
-        ));
-    }
+    let _trusted_run =
+        resolve_live_caller_run(&state.app_state.agent_run_repo, &conversation_id, &run_id)
+            .await
+            .map_err(|rejection| match rejection {
+                TrustedRunRejection::RunNotFound => {
+                    tracing::warn!(
+                        conversation_id = %conversation_id,
+                        run_id = %run_id,
+                        reason = "run_not_found",
+                        "delegate_park rejected"
+                    );
+                    json_error(StatusCode::NOT_FOUND, "Trusted caller agent run not found")
+                }
+                TrustedRunRejection::ConversationMismatch => {
+                    tracing::warn!(
+                        conversation_id = %conversation_id,
+                        run_id = %run_id,
+                        reason = "conversation_mismatch",
+                        "delegate_park rejected"
+                    );
+                    json_error(
+                        StatusCode::BAD_REQUEST,
+                        "Trusted caller agent run does not belong to the caller conversation",
+                    )
+                }
+                TrustedRunRejection::RunTerminal { status } => {
+                    tracing::warn!(
+                        conversation_id = %conversation_id,
+                        run_id = %run_id,
+                        run_status = %status,
+                        reason = "run_terminal",
+                        "delegate_park rejected"
+                    );
+                    json_error(
+                        StatusCode::CONFLICT,
+                        format!("Trusted caller agent run has already finished (status: {status})"),
+                    )
+                }
+                TrustedRunRejection::RepositoryError(error) => {
+                    tracing::warn!(
+                        conversation_id = %conversation_id,
+                        run_id = %run_id,
+                        reason = "repository_error",
+                        %error,
+                        "delegate_park rejected"
+                    );
+                    json_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Failed to validate trusted caller agent run: {error}"),
+                    )
+                }
+            })?;
 
     let wake_policy = parse_wake_policy(req.wake_on.as_deref())?;
     let park = state
@@ -132,6 +152,15 @@ pub async fn park_delegate(
                 format!("Failed to arm delegation park: {other}"),
             ),
         })?;
+
+    tracing::info!(
+        park_id = %park.id,
+        conversation_id = %park.parent_conversation_id,
+        run_id = %park.parent_agent_run_id,
+        job_count = park.jobs.len(),
+        wake_policy = ?park.wake_policy,
+        "delegate_park armed"
+    );
 
     let watched_jobs = park
         .jobs

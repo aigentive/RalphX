@@ -43,7 +43,7 @@ Parks and their watched-job links are durable, generation-scoped records. RalphX
 - A delegate can wake its coordinator only after that delegation's terminal commit compare-and-swap has accepted.
 - Wake dispatch claims the park with an `armed` → `waking` compare-and-swap, so a park injects at most one wake message.
 - A user message to the parked conversation supersedes the park and prevents a later hidden wake from being injected.
-- If the parent run has changed, the park becomes `superseded` instead of injecting into a stale run.
+- If the conversation started a different run *after* the park was armed, the park becomes `superseded` instead of injecting into a stale run. The timing rule matters: a `running` row that predates the park cannot represent the conversation moving on, so an orphaned row left behind by a killed process no longer suppresses a legitimate wake.
 - A read failure at the parent-settlement gate fails closed: the delegate remains pending rather than being settled while its coordinator may still be parked.
 - A coordinator that is itself a delegate does not settle its own parent job while its park remains armed.
 - A coordinator may only park on jobs its own current run started, and that run must belong to the parking conversation. Ownership is proven from the caller run rather than the job's parent conversation, because nested delegates and ideation verification children record an ancestor conversation there as the Delegate widget's lineage anchor.
