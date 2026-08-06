@@ -2753,7 +2753,9 @@ function ArtifactContent({
   const reviewActionBlocker = getAgentWorkspaceReviewActionBlocker(workspace);
   const renderReviewPanel = (
     embedded: boolean,
-    publishReviewEvidence: AgentPublishReviewEvidence = { status: "loading" },
+    publishReviewEvidence: AgentPublishReviewEvidence = {
+      status: "unavailable",
+    },
   ) => (
     <AgentReviewPanel
       reviewArtifact={reviewArtifact}

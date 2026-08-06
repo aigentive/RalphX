@@ -282,6 +282,19 @@ describe("AgentReviewPanel", () => {
     expect(screen.getByText("No reviewable changes")).toBeInTheDocument();
   });
 
+  it("shows the empty state when cumulative Changes evidence is unavailable", () => {
+    renderPanel({
+      reviewArtifact: null,
+      reviewContext: reviewContext({ target: null }),
+      publishReviewEvidence: { status: "unavailable" },
+    });
+
+    expect(screen.getByText("No reviewable changes")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Checking reviewable changes…"),
+    ).not.toBeInTheDocument();
+  });
+
   it("warms review preparation on pointer and keyboard intent", () => {
     const onStartReviewIntent = vi.fn();
     renderPanel({ onStartReviewIntent });

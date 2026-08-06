@@ -3741,6 +3741,31 @@ describe("AgentsArtifactPane", () => {
     expect(screen.queryByText("No reviewable changes")).not.toBeInTheDocument();
   });
 
+  it("shows an empty Workspace Review when its settled context has no target", async () => {
+    getWorkspaceReviewContextMock.mockResolvedValue(
+      workspaceReviewContext({ target: null }),
+    );
+    getWorkspaceReviewMock.mockResolvedValue({
+      changes: [],
+      commits: [],
+      baseRef: "main",
+      headRef: "HEAD",
+    });
+
+    renderPane(
+      "review",
+      workspace({ mode: "edit" }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    expect(await screen.findByText("No reviewable changes")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Checking reviewable changes…"),
+    ).not.toBeInTheDocument();
+  });
+
   it("surfaces Workspace Review context failures and retries the exact owner", async () => {
     getWorkspaceReviewContextMock.mockRejectedValue(
       new Error("workspace target lookup failed"),

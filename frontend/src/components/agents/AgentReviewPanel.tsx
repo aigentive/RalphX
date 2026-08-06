@@ -337,6 +337,16 @@ function reviewStatusForState({
         icon: AlertCircle,
       };
     }
+    if (publishReviewEvidence.status === "unavailable") {
+      return {
+        label: hasArtifact ? "Review available" : "No reviewable changes",
+        detail: hasArtifact
+          ? "The latest Review is available below."
+          : "No reviewable changes were found for this workspace.",
+        color: "var(--text-muted)",
+        icon: AlertCircle,
+      };
+    }
     if (publishReviewEvidence.status === "loading") {
       return {
         label: "Checking reviewable changes…",

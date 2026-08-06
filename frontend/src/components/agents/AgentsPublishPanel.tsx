@@ -259,6 +259,7 @@ function workspaceReviewAutoMergeGuardSummary(
 
 export type AgentPublishReviewEvidence =
   | { status: "loading" }
+  | { status: "unavailable" }
   | { status: "error"; error: Error }
   | { status: "ready"; changeCount: number };
 
@@ -471,7 +472,11 @@ export function AgentPublishPanel({
     ? { status: "error", error: reviewQuery.error }
     : reviewQuery.isSuccess
       ? { status: "ready", changeCount: reviewQuery.data.changes.length }
-      : { status: "loading" };
+      : reviewQuery.fetchStatus === "idle" &&
+          !reviewQuery.isSuccess &&
+          !reviewQuery.isError
+        ? { status: "unavailable" }
+        : { status: "loading" };
   const changeSummaryQuery = useQuery({
     queryKey: agentWorkspaceKeys.changeSummary(conversationId),
     queryFn: () =>
