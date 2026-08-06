@@ -182,6 +182,9 @@ export function watchAgentWorkspaceOperation(entry: {
 }
 
 export function unwatchAgentWorkspaceOperation(conversationId: string): void {
+  // Clear any orphaned session result so it can never be announced against a
+  // later, unrelated watch of the same conversation.
+  resultMailbox.delete(conversationId);
   const map = hydratedMap();
   if (!map.has(conversationId)) {
     return;
@@ -256,4 +259,9 @@ export function takeAgentWorkspaceOperationResult(
   }
   resultMailbox.delete(conversationId);
   return result;
+}
+
+/** Reads the result mailbox without consuming it. */
+export function hasAgentWorkspaceOperationResult(conversationId: string): boolean {
+  return resultMailbox.has(conversationId);
 }

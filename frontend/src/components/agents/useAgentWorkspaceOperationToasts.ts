@@ -49,6 +49,18 @@ export {
 
 const WORKSPACE_OPERATION_ACTIVE_POLL_MS = 1_500;
 const WORKSPACE_OPERATION_IDLE_POLL_MS = 5_000;
+// A mutation that never reports a result must not pin its watch entry
+// forever; bound the wait instead of relying on the registry's 24h prune.
+const SESSION_RESULT_GRACE_MS = 120_000;
+
+function isAwaitingSessionResult(entry: WatchedAgentWorkspaceOperation): boolean {
+  return (
+    entry.kind !== "observed" &&
+    entry.startedAtMs !== null &&
+    !entry.announcedStateKey?.startsWith("result:") &&
+    Date.now() - entry.startedAtMs < SESSION_RESULT_GRACE_MS
+  );
+}
 
 export function useAgentWorkspaceOperationToasts(): void {
   const { isBackgroundSettled } = useStartupStatus();
@@ -63,8 +75,11 @@ export function useAgentWorkspaceOperationToasts(): void {
     getWatchedAgentWorkspaceOperations,
   );
 
-  const shownToastIdsRef = useRef(new Map<string, string>());
+  const shownToastIdsRef = useRef(
+    new Map<string, { id: string; kind: "progress" | "announce" }>(),
+  );
   const lastDismissalKeysRef = useRef(new Map<string, string>());
+  const lastRenderedViewsRef = useRef(new Map<string, string>());
 
   const workspaceQueries = useQueries({
     queries: watchedEntries.map((entry) => ({
@@ -102,11 +117,18 @@ export function useAgentWorkspaceOperationToasts(): void {
       const { conversationId } = entry;
 
       if (decision.kind === "idle") {
-        const shownId = shownToastIdsRef.current.get(conversationId);
-        if (shownId) {
-          dismissAgentWorkspaceOperationToast(shownId);
+        const shown = shownToastIdsRef.current.get(conversationId);
+        if (shown) {
+          // A terminal `announce` toast carries a finite duration and must be
+          // handed to Sonner's own auto-close; only a still-live `progress`
+          // spinner needs to be torn down here, or an Infinity-duration
+          // toast would be orphaned on screen forever.
+          if (shown.kind === "progress") {
+            dismissAgentWorkspaceOperationToast(shown.id);
+          }
           shownToastIdsRef.current.delete(conversationId);
         }
+        lastRenderedViewsRef.current.delete(conversationId);
         if (decision.unwatch) {
           const lastDismissalKey = lastDismissalKeysRef.current.get(conversationId);
           if (lastDismissalKey) {
@@ -135,22 +157,36 @@ export function useAgentWorkspaceOperationToasts(): void {
         isAgentWorkspaceOperationDismissed(view.dismissalKey);
 
       if (suppressed) {
-        const shownId = shownToastIdsRef.current.get(conversationId);
-        if (shownId) {
-          dismissAgentWorkspaceOperationToast(shownId);
+        const shown = shownToastIdsRef.current.get(conversationId);
+        if (shown) {
+          // Same rule as the idle branch: a visible-conversation transition
+          // stops tracking an `announce` toast without forcing it off screen
+          // mid-read; only a live `progress` spinner is torn down.
+          if (shown.kind === "progress") {
+            dismissAgentWorkspaceOperationToast(shown.id);
+          }
           shownToastIdsRef.current.delete(conversationId);
         }
+        lastRenderedViewsRef.current.delete(conversationId);
         return;
       }
+
+      const signature = `${view.id}|${view.tone}|${view.title}|${view.description ?? ""}|${view.startedAtMs ?? ""}`;
+      if (lastRenderedViewsRef.current.get(conversationId) === signature) {
+        shownToastIdsRef.current.set(conversationId, { id: view.id, kind: decision.kind });
+        return;
+      }
+      lastRenderedViewsRef.current.set(conversationId, signature);
 
       renderAgentWorkspaceOperationToast(view, {
         onDismiss: () => {
           dismissAgentWorkspaceOperation(view.dismissalKey);
           shownToastIdsRef.current.delete(conversationId);
+          lastRenderedViewsRef.current.delete(conversationId);
           dismissAgentWorkspaceOperationToast(view.id);
         },
       });
-      shownToastIdsRef.current.set(conversationId, view.id);
+      shownToastIdsRef.current.set(conversationId, { id: view.id, kind: decision.kind });
     },
     [queryClient, visibleConversationId],
   );
@@ -191,6 +227,7 @@ export function useAgentWorkspaceOperationToasts(): void {
         entry,
         pendingResult,
         consecutiveFetchFailures,
+        awaitingSessionResult: isAwaitingSessionResult(entry),
       });
       applyDecision(entry, decision);
     });

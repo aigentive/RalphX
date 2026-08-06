@@ -56,9 +56,15 @@ const ANSI_ESCAPE = String.fromCharCode(27);
 export const AGENT_WORKSPACE_OPERATION_RESULT_DURATION_MS = 8_000;
 export const AGENT_WORKSPACE_OPERATION_ERROR_DURATION_MS = 12_000;
 
+// Sonner invokes the options-level `onDismiss` for both a user gesture (swipe,
+// close button) and a programmatic `toast.dismiss(id)` call, so the driver
+// cannot treat that callback alone as "the user asked to stop seeing this".
+// Ids added here right before a driver-initiated `toast.dismiss` are excluded
+// from the next `onDismiss` invocation.
+const programmaticDismissals = new Set<string>();
+
 export function resetAgentWorkspaceOperationToastStateForTests() {
-  // No module-level session state remains to reset; kept so existing test
-  // setups that call this between cases keep compiling.
+  programmaticDismissals.clear();
 }
 
 export function agentWorkspaceOperationToastId(
@@ -255,6 +261,10 @@ function buildAgentWorkspaceOperationToastContent(
     }),
     actions,
     onDismiss: () => {
+      // Durable write first, removal second: `dismissAgentWorkspaceOperationToast`
+      // marks `view.id` as a programmatic dismissal before calling
+      // `toast.dismiss`, so the options-level `onDismiss` below filters out
+      // the resulting Sonner callback and `handlers.onDismiss` never fires twice.
       handlers.onDismiss();
       dismissAgentWorkspaceOperationToast(view.id);
     },
@@ -271,7 +281,12 @@ export function renderAgentWorkspaceOperationToast(
     duration: view.durationMs,
     dismissible: true,
     closeButton: false,
-    onDismiss: handlers.onDismiss,
+    onDismiss: () => {
+      if (programmaticDismissals.delete(view.id)) {
+        return;
+      }
+      handlers.onDismiss();
+    },
   };
   if (view.tone === "loading") {
     toast.loading(content, options);
@@ -289,6 +304,7 @@ export function renderAgentWorkspaceOperationToast(
 }
 
 export function dismissAgentWorkspaceOperationToast(id: string): void {
+  programmaticDismissals.add(id);
   toast.dismiss(id);
 }
 

@@ -281,6 +281,41 @@ describe("agentWorkspaceOperationToast", () => {
       dismissAgentWorkspaceOperationToast("toast-1");
       expect(toastDismissMock).toHaveBeenCalledWith("toast-1");
     });
+
+    it("filters the options-level onDismiss when it fires after a driver-initiated dismissAgentWorkspaceOperationToast call", () => {
+      const onDismiss = vi.fn();
+      renderAgentWorkspaceOperationToast(buildView({ id: "toast-1" }), { onDismiss });
+
+      dismissAgentWorkspaceOperationToast("toast-1");
+      // Sonner invokes the options-level onDismiss for programmatic
+      // toast.dismiss too; reproduce that here since the mock doesn't.
+      (lastLoadingOptions().onDismiss as () => void)();
+
+      expect(onDismiss).not.toHaveBeenCalled();
+    });
+
+    it("still invokes onDismiss for a genuine Sonner-driven dismissal with no preceding programmatic dismiss", () => {
+      const onDismiss = vi.fn();
+      renderAgentWorkspaceOperationToast(buildView({ id: "toast-1" }), { onDismiss });
+
+      (lastLoadingOptions().onDismiss as () => void)();
+
+      expect(onDismiss).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not double-invoke onDismiss when the user presses Dismiss and Sonner later replays its own onDismiss", () => {
+      const onDismiss = vi.fn();
+      renderAgentWorkspaceOperationToast(buildView({ id: "toast-1" }), { onDismiss });
+
+      render(lastLoadingContent());
+      fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+      // The button click already called dismissAgentWorkspaceOperationToast,
+      // which marks "toast-1" as programmatic; reproduce Sonner replaying its
+      // own callback afterward.
+      (lastLoadingOptions().onDismiss as () => void)();
+
+      expect(onDismiss).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe("startAgentWorkspaceOperationToast", () => {

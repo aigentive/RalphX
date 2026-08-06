@@ -34,6 +34,12 @@ export interface DeriveAgentWorkspaceOperationToastDecisionInput {
   entry: WatchedAgentWorkspaceOperation;
   pendingResult: AgentWorkspaceOperationResult | null;
   consecutiveFetchFailures: number;
+  /**
+   * True while a session-started operation may still report its result. Keeps
+   * the driver from unwatching (and orphaning the eventual mailbox entry)
+   * before a still-pending `reportAgentWorkspaceOperationResult` call lands.
+   */
+  awaitingSessionResult: boolean;
 }
 
 export type AgentWorkspaceOperationToastDecision =
@@ -115,6 +121,7 @@ export function deriveAgentWorkspaceOperationToastDecision({
   entry,
   pendingResult,
   consecutiveFetchFailures,
+  awaitingSessionResult,
 }: DeriveAgentWorkspaceOperationToastDecisionInput): AgentWorkspaceOperationToastDecision {
   const targetConversation = targetConversationFor(entry, workspace);
 
@@ -227,5 +234,8 @@ export function deriveAgentWorkspaceOperationToastDecision({
     };
   }
 
-  return { kind: "idle", unwatch: true };
+  // A session-started operation that hasn't reported its result yet (and is
+  // still inside its grace window) must not be unwatched here — that would
+  // orphan the mailbox entry the caller is about to fill in.
+  return { kind: "idle", unwatch: !awaitingSessionResult };
 }

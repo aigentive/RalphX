@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   getWatchedAgentWorkspaceOperations,
+  hasAgentWorkspaceOperationResult,
   markAgentWorkspaceOperationAnnounced,
   rehydrateAgentWorkspaceOperationRegistryForTests,
   reportAgentWorkspaceOperationResult,
@@ -211,6 +212,27 @@ describe("agentWorkspaceOperationRegistry", () => {
     reportAgentWorkspaceOperationResult("c2", { kind: "ready" });
     rehydrateAgentWorkspaceOperationRegistryForTests();
     expect(takeAgentWorkspaceOperationResult("c2")).toBeNull();
+  });
+
+  it("hasAgentWorkspaceOperationResult peeks the mailbox without consuming it", () => {
+    expect(hasAgentWorkspaceOperationResult("c1")).toBe(false);
+
+    reportAgentWorkspaceOperationResult("c1", { kind: "no_changes" });
+    expect(hasAgentWorkspaceOperationResult("c1")).toBe(true);
+    expect(hasAgentWorkspaceOperationResult("c1")).toBe(true);
+
+    expect(takeAgentWorkspaceOperationResult("c1")).toEqual({ kind: "no_changes" });
+    expect(hasAgentWorkspaceOperationResult("c1")).toBe(false);
+  });
+
+  it("unwatchAgentWorkspaceOperation clears a pending mailbox entry so it cannot be announced later against an unrelated watch", () => {
+    watchObserved("c1");
+    reportAgentWorkspaceOperationResult("c1", { kind: "no_changes" });
+
+    unwatchAgentWorkspaceOperation("c1");
+
+    expect(hasAgentWorkspaceOperationResult("c1")).toBe(false);
+    expect(takeAgentWorkspaceOperationResult("c1")).toBeNull();
   });
 
   it("tolerates corrupt JSON in localStorage without throwing", () => {

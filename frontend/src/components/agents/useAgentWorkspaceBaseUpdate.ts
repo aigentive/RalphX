@@ -80,10 +80,11 @@ export function useAgentWorkspaceBaseUpdate({
             agentWorkspaceKeys.workspace(result.workspace.conversationId),
             result.workspace,
           );
-          await invalidateWorkspaceQueries(
-            queryClient,
-            result.workspace.conversationId,
-          );
+
+          // Report before the awaited invalidate below yields control — the
+          // driver's poll effect can observe "nothing in flight" and unwatch
+          // this conversation in that window, orphaning the result if it were
+          // reported afterward.
           if (result.repairStarted) {
             // A repair took over; if it is still live in workspace state, let
             // the driver keep rendering its progress instead of announcing a
@@ -93,11 +94,22 @@ export function useAgentWorkspaceBaseUpdate({
                 kind: "repair-started",
               });
             }
+          } else if (!result.workspace.maintenanceOperation) {
+            reportAgentWorkspaceOperationResult(requestConversationId, {
+              kind: result.updated ? "base-updated" : "base-already-current",
+              targetRef: result.targetRef,
+            });
+          }
+
+          await invalidateWorkspaceQueries(
+            queryClient,
+            result.workspace.conversationId,
+          );
+
+          if (result.repairStarted || result.workspace.maintenanceOperation) {
             return;
           }
-          if (result.workspace.maintenanceOperation) {
-            return;
-          }
+
           for (const scope of ["full", "local"] as const) {
             queryClient.setQueryData<AgentConversationWorkspaceFreshness>(
               agentWorkspaceKeys.scopedFreshness(
@@ -122,10 +134,6 @@ export function useAgentWorkspaceBaseUpdate({
               },
             );
           }
-          reportAgentWorkspaceOperationResult(requestConversationId, {
-            kind: result.updated ? "base-updated" : "base-already-current",
-            targetRef: result.targetRef,
-          });
         })
         .catch(async (error) => {
           const errorMessage =

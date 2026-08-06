@@ -10,6 +10,7 @@ import { createTestQueryClient } from "@/test/store-utils";
 import { conversationWorkspaceFixture } from "./agentsTestFixtures";
 import {
   agentWorkspaceMaintenanceOperationToastId,
+  agentWorkspaceOperationToastId,
   resetAgentWorkspaceOperationToastStateForTests,
 } from "./agentWorkspaceOperationToast";
 import {
@@ -337,7 +338,7 @@ describe("useAgentWorkspaceOperationToasts", () => {
     expect(screen.getByText("Repair blocked")).toBeInTheDocument();
   });
 
-  it("7. announces a session-reported result exactly once", async () => {
+  it("7. announces a session-reported result exactly once and lets the idle settle path leave the terminal toast alone", async () => {
     seedWatchedEntry({ kind: "publish", publishAttemptKey: "attempt-1" });
     getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspaceFixture());
     reportAgentWorkspaceOperationResult(CONVERSATION_ID, {
@@ -353,6 +354,7 @@ describe("useAgentWorkspaceOperationToasts", () => {
     expect(screen.getByText("Published #42")).toBeInTheDocument();
 
     toastSuccessMock.mockClear();
+    const publishToastId = agentWorkspaceOperationToastId(CONVERSATION_ID, "publish");
     await act(async () => {
       queryClient.setQueryData(
         agentWorkspaceKeys.workspace(CONVERSATION_ID),
@@ -361,6 +363,12 @@ describe("useAgentWorkspaceOperationToasts", () => {
       await Promise.resolve();
     });
     expect(toastSuccessMock).not.toHaveBeenCalled();
+    // The following idle decision (durable state now reports nothing in
+    // flight) must unwatch the conversation without tearing down the
+    // terminal toast it just announced — that toast owns a finite duration
+    // and settles on its own.
+    expect(toastDismissMock).not.toHaveBeenCalledWith(publishToastId);
+    await waitFor(() => expect(getWatchedAgentWorkspaceOperations()).toHaveLength(0));
   });
 
   it("8. settles and unwatches after three consecutive workspace fetch failures instead of spinning forever", async () => {
@@ -523,6 +531,61 @@ describe("useAgentWorkspaceOperationToasts", () => {
     expect(toastErrorMock).not.toHaveBeenCalled();
   });
 
+  it("13b. visible-conversation suppression writes no durable dismissal, and the toast reappears once the conversation is no longer visible", async () => {
+    visibleScopeState.visibleConversationId = CONVERSATION_ID;
+    seedWatchedEntry();
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspaceFixture({
+        maintenanceOperation: maintenanceOperationFixture({ stage: "repairing", status: "active" }),
+      }),
+    );
+    const queryClient = createTestQueryClient();
+
+    renderHook(() => useAgentWorkspaceOperationToasts(), { wrapper: wrapper(queryClient) });
+    await waitFor(() => expect(getAgentConversationWorkspaceMock).toHaveBeenCalled());
+    await flush();
+    expect(toastLoadingMock).not.toHaveBeenCalled();
+    expect(localStorage.getItem(DISMISSALS_STORAGE_KEY)).toBeNull();
+
+    visibleScopeState.visibleConversationId = null;
+    await act(async () => {
+      queryClient.setQueryData(
+        agentWorkspaceKeys.workspace(CONVERSATION_ID),
+        conversationWorkspaceFixture({
+          maintenanceOperation: maintenanceOperationFixture({ stage: "repairing", status: "active" }),
+        }),
+      );
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(toastLoadingMock).toHaveBeenCalledTimes(1));
+    expect(localStorage.getItem(DISMISSALS_STORAGE_KEY)).toBeNull();
+  });
+
+  it("13c. settling an operation writes no durable dismissal", async () => {
+    seedWatchedEntry();
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspaceFixture({
+        maintenanceOperation: maintenanceOperationFixture({ stage: "repairing", status: "active" }),
+      }),
+    );
+    const queryClient = createTestQueryClient();
+
+    renderHook(() => useAgentWorkspaceOperationToasts(), { wrapper: wrapper(queryClient) });
+    await waitFor(() => expect(toastLoadingMock).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      queryClient.setQueryData(
+        agentWorkspaceKeys.workspace(CONVERSATION_ID),
+        conversationWorkspaceFixture({ maintenanceOperation: null }),
+      );
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(getWatchedAgentWorkspaceOperations()).toHaveLength(0));
+    expect(localStorage.getItem(DISMISSALS_STORAGE_KEY)).toBeNull();
+  });
+
   it("14. does not produce a terminal toast for an operation identity that was already dismissed", async () => {
     seedWatchedEntry({ kind: "publish", publishAttemptKey: "attempt-1" });
     getAgentConversationWorkspaceMock.mockResolvedValue(
@@ -577,5 +640,57 @@ describe("useAgentWorkspaceOperationToasts", () => {
     expect(toastSuccessMock).not.toHaveBeenCalled();
     expect(toastInfoMock).not.toHaveBeenCalled();
     expect(toastErrorMock).not.toHaveBeenCalled();
+  });
+
+  it("16. keeps watching a session-started base-update entry until its pending result is drained, even once durable state shows nothing in flight", async () => {
+    seedWatchedEntry({
+      kind: "base-update",
+      publishAttemptKey: "attempt-1",
+      startedAtMs: Date.now(),
+    });
+    getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspaceFixture());
+    const queryClient = createTestQueryClient();
+
+    renderHook(() => useAgentWorkspaceOperationToasts(), { wrapper: wrapper(queryClient) });
+    await waitFor(() => expect(getAgentConversationWorkspaceMock).toHaveBeenCalled());
+    await flush();
+
+    // Durable state already shows nothing in flight, but the session that
+    // started this operation has not reported its result yet — the entry
+    // must stay watched instead of being orphaned.
+    expect(getWatchedAgentWorkspaceOperations()).toHaveLength(1);
+    expect(toastSuccessMock).not.toHaveBeenCalled();
+
+    reportAgentWorkspaceOperationResult(CONVERSATION_ID, {
+      kind: "base-updated",
+      targetRef: "origin/main",
+    });
+    await act(async () => {
+      queryClient.setQueryData(
+        agentWorkspaceKeys.workspace(CONVERSATION_ID),
+        conversationWorkspaceFixture(),
+      );
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(toastSuccessMock).toHaveBeenCalledTimes(1));
+    render(lastCallContent(toastSuccessMock));
+    expect(screen.getByText("Updated from origin/main")).toBeInTheDocument();
+    await waitFor(() => expect(getWatchedAgentWorkspaceOperations()).toHaveLength(0));
+  });
+
+  it("17. unwatches a session-started entry once its result grace window elapses with nothing reported", async () => {
+    seedWatchedEntry({
+      kind: "base-update",
+      publishAttemptKey: "attempt-1",
+      startedAtMs: Date.now() - 130_000,
+    });
+    getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspaceFixture());
+    const queryClient = createTestQueryClient();
+
+    renderHook(() => useAgentWorkspaceOperationToasts(), { wrapper: wrapper(queryClient) });
+
+    await waitFor(() => expect(getWatchedAgentWorkspaceOperations()).toHaveLength(0));
+    expect(toastSuccessMock).not.toHaveBeenCalled();
   });
 });
