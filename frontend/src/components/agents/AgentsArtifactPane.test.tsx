@@ -53,6 +53,7 @@ import { agentGranolaNoteKeys } from "./agentGranolaNoteQueries";
 import { agentJiraIssueKeys } from "./agentJiraIssueQueries";
 import { agentLinearIssueKeys } from "./agentLinearIssueQueries";
 import { agentWorkspaceKeys } from "./agentWorkspaceQueries";
+import { takeAgentWorkspaceOperationResult } from "./agentWorkspaceOperationRegistry";
 import { agentConversationKeys } from "./useProjectAgentConversations";
 
 const deferredHydrationTimeout = { timeout: 3_000 };
@@ -10727,15 +10728,6 @@ describe("AgentsArtifactPane", () => {
         screen.queryByRole("dialog", { name: "Rebase branch" }),
       ).not.toBeInTheDocument(),
     );
-    expect(toastLoadingMock).toHaveBeenCalledWith(
-      "Rebasing branch",
-      expect.objectContaining({
-        description: "Agent conversation • From release/0.8 • 0s",
-        duration: Infinity,
-        id: "agent-workspace-operation:conversation-1:rebase",
-      }),
-    );
-
     updateDeferred.resolve({
       workspace: workspace({
         mode: "edit",
@@ -10751,16 +10743,12 @@ describe("AgentsArtifactPane", () => {
       effectiveBaseDisplayName: "release/0.8",
     });
 
-    await waitFor(() =>
-      expect(toastSuccessMock).toHaveBeenCalledWith(
-        "Updated from release/0.8",
-        {
-          description: "Agent conversation • From release/0.8",
-          duration: 8_000,
-          id: "agent-workspace-operation:conversation-1:rebase",
-        },
-      ),
-    );
+    await waitFor(() => {
+      expect(takeAgentWorkspaceOperationResult("conversation-1")).toEqual({
+        kind: "base-updated",
+        targetRef: "release/0.8",
+      });
+    });
     expect(publish).not.toHaveBeenCalled();
   });
 
@@ -10891,13 +10879,6 @@ describe("AgentsArtifactPane", () => {
     );
     expect(updateWorkspaceFromBaseMock.mock.calls[0]).toHaveLength(1);
     expect(updateWorkspaceFromBaseMock).toHaveBeenCalledTimes(1);
-    expect(toastLoadingMock).toHaveBeenCalledWith(
-      "Refreshing branch",
-      expect.objectContaining({
-        description: "Agent conversation • From release/1.2 • 0s",
-        id: "agent-workspace-operation:conversation-1:update-from-base",
-      }),
-    );
     expect(publish).not.toHaveBeenCalled();
   });
 
@@ -10942,7 +10923,6 @@ describe("AgentsArtifactPane", () => {
       expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
     });
     expect(updateWorkspaceFromBaseMock).not.toHaveBeenCalled();
-    expect(toastLoadingMock).not.toHaveBeenCalled();
   });
 
   it("closes the Update from base confirmation and shows a persistent elapsed toast while updating", async () => {
@@ -10996,15 +10976,6 @@ describe("AgentsArtifactPane", () => {
     await waitFor(() => {
       expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
     });
-    expect(toastLoadingMock).toHaveBeenCalledWith(
-      "Updating branch",
-      expect.objectContaining({
-        description: "Agent conversation • From feature/agent-screen • 0s",
-        duration: Infinity,
-        id: "agent-workspace-operation:conversation-1:update-from-base",
-      }),
-    );
-
     updateDeferred.resolve({
       workspace: workspace({
         mode: "edit",
@@ -11017,16 +10988,12 @@ describe("AgentsArtifactPane", () => {
       baseCommit: "new-base",
     });
 
-    await waitFor(() =>
-      expect(toastSuccessMock).toHaveBeenCalledWith(
-        "Updated from origin/feature/agent-screen",
-        {
-          description: "Agent conversation • From feature/agent-screen",
-          duration: 8_000,
-          id: "agent-workspace-operation:conversation-1:update-from-base",
-        },
-      ),
-    );
+    await waitFor(() => {
+      expect(takeAgentWorkspaceOperationResult("conversation-1")).toEqual({
+        kind: "base-updated",
+        targetRef: "origin/feature/agent-screen",
+      });
+    });
   });
 
   it("keeps the Update from base progress toast connected after the pane unmounts while pending", async () => {
@@ -11149,16 +11116,12 @@ describe("AgentsArtifactPane", () => {
       await updateDeferred.promise;
     });
 
-    await waitFor(() =>
-      expect(toastSuccessMock).toHaveBeenCalledWith(
-        "Updated from origin/feature/agent-screen",
-        {
-          description: "Agent conversation • From feature/agent-screen",
-          duration: 8_000,
-          id: "agent-workspace-operation:conversation-1:update-from-base",
-        },
-      ),
-    );
+    await waitFor(() => {
+      expect(takeAgentWorkspaceOperationResult("conversation-1")).toEqual({
+        kind: "base-updated",
+        targetRef: "origin/feature/agent-screen",
+      });
+    });
   });
 
   it("replaces the persistent error toast if Update from base fails after the pane unmounts", async () => {
@@ -11210,18 +11173,12 @@ describe("AgentsArtifactPane", () => {
       await updateDeferred.promise.catch(() => undefined);
     });
 
-    await waitFor(() =>
-      expect(toastErrorMock).toHaveBeenCalledWith(
-        "Failed to update from base",
-        {
-          closeButton: true,
-          description: "Agent conversation • base update failed",
-          dismissible: true,
-          duration: 12_000,
-          id: "agent-workspace-operation:conversation-1:update-from-base",
-        },
-      ),
-    );
+    await waitFor(() => {
+      expect(takeAgentWorkspaceOperationResult("conversation-1")).toEqual({
+        kind: "base-update-failed",
+        detail: "base update failed",
+      });
+    });
   });
 
   it("replaces the persistent repair toast if Update from base starts repair after the pane unmounts", async () => {
@@ -11279,14 +11236,12 @@ describe("AgentsArtifactPane", () => {
       await updateDeferred.promise.catch(() => undefined);
     });
 
-    await waitFor(() =>
-      expect(toastInfoMock).toHaveBeenCalledWith("Repair started", {
-        description: "Agent conversation • Merge conflicts detected",
-        dismissible: true,
-        duration: 8_000,
-        id: "agent-workspace-operation:conversation-1:update-from-base",
-      }),
-    );
+    await waitFor(() => {
+      expect(takeAgentWorkspaceOperationResult("conversation-1")).toEqual({
+        kind: "repair-started",
+        detail: "Merge conflicts detected",
+      });
+    });
   });
 
   it("refreshes workspace facts when Update from base fails", async () => {
@@ -11339,18 +11294,12 @@ describe("AgentsArtifactPane", () => {
         "conversation-1",
       ),
     );
-    await waitFor(() =>
-      expect(toastErrorMock).toHaveBeenCalledWith(
-        "Failed to update from base",
-        {
-          closeButton: true,
-          description: "Agent conversation • base update failed",
-          dismissible: true,
-          duration: 12_000,
-          id: "agent-workspace-operation:conversation-1:update-from-base",
-        },
-      ),
-    );
+    await waitFor(() => {
+      expect(takeAgentWorkspaceOperationResult("conversation-1")).toEqual({
+        kind: "base-update-failed",
+        detail: "base update failed",
+      });
+    });
     await waitFor(() =>
       expect(getWorkspaceFreshnessMock).toHaveBeenCalledWith("conversation-1", {
         scope: "full",
@@ -11416,18 +11365,12 @@ describe("AgentsArtifactPane", () => {
         "conversation-1",
       ),
     );
-    await waitFor(() =>
-      expect(toastInfoMock).toHaveBeenCalledWith("Repair started", {
-        description: "Agent conversation • Merge conflicts detected",
-        dismissible: true,
-        duration: 8_000,
-        id: "agent-workspace-operation:conversation-1:update-from-base",
-      }),
-    );
-    expect(toastErrorMock).not.toHaveBeenCalledWith(
-      "Failed to update from base",
-      expect.anything(),
-    );
+    await waitFor(() => {
+      expect(takeAgentWorkspaceOperationResult("conversation-1")).toEqual({
+        kind: "repair-started",
+        detail: "Merge conflicts detected",
+      });
+    });
   });
 
   it("treats merged pull requests as terminal even if the old base moved", async () => {

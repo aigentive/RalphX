@@ -37,6 +37,7 @@ import { useAgentWorkflowEvents } from "@/hooks/useAgentWorkflowEvents";
 import { useNotificationEvents } from "@/hooks/useNotificationEvents";
 import { useNotificationToasts } from "@/hooks/useNotificationToasts";
 import { useUsageStatsEvents } from "@/hooks/useUsageStatsEvents";
+import { useAgentWorkspaceOperationToasts } from "@/components/agents/useAgentWorkspaceOperationToasts";
 import { createEventBus, type EventBus } from "@/lib/event-bus";
 
 /**
@@ -86,6 +87,7 @@ function GlobalEventListeners({ children }: { children: ReactNode }) {
   useReviewEvents();
   useNotificationEvents();
   useNotificationToasts();
+  useAgentWorkspaceOperationToasts(); // Global driver for durable repair/publish/base-update toasts
   useFileChangeEvents();
   useAgentEvents(); // Listen to agent:message events for Activity view (no active conversation)
   useExecutionErrorEvents(); // Handle agent execution errors and unstick UI

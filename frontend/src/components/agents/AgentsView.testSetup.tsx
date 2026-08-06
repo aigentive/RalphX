@@ -19,6 +19,8 @@ import {
 import { useChatStore } from "@/stores/chatStore";
 import { useUiStore } from "@/stores/uiStore";
 import { useAgentArtifactUiStore } from "./agentArtifactUiStore";
+import { resetAgentWorkspaceOperationDismissalsForTests } from "./agentWorkspaceOperationDismissals";
+import { resetAgentWorkspaceOperationRegistryForTests } from "./agentWorkspaceOperationRegistry";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
 import type { AgentPublishSubTabRequest } from "./agentPublishSubTab";
 import { useAgentTerminalStore } from "./agentTerminalStore";
@@ -1765,6 +1767,8 @@ export function setupAgentsViewTest() {
   artifactPaneRenderMock.mockReset();
   realPublishPanelState.enabled = false;
   realPublishPanelState.reviewContext = null;
+  resetAgentWorkspaceOperationRegistryForTests();
+  resetAgentWorkspaceOperationDismissalsForTests();
   preloadAgentTerminalExperienceMock.mockReset();
   terminalDrawerModuleLoadedMock.mockReset();
   terminalDrawerMountMock.mockReset();
