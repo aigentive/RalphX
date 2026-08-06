@@ -1,6 +1,6 @@
 use super::*;
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::{fs, process::Command};
@@ -18,6 +18,7 @@ use crate::domain::agents::{
 use crate::domain::entities::{
     app_state::ExecutionHaltMode, AgentConversationWorkspaceMode, AgentRun, AgentRunId,
     AgentRunStatus, ChatConversation, ChatConversationId, ChatMessage, ChatTimelineItemStatus,
+    DelegationPark, DelegationParkId, DelegationParkState, DelegationWakePolicy,
     ExecutionFailureSource, ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode,
     ExecutionRecoveryState, IdeationSessionId, InternalStatus, NotificationCategory,
     NotificationSeverity, NotificationTargetKind, Persona, PersonaId, PersonaStatus, Project,
@@ -902,6 +903,108 @@ async fn cancelled_stream_preserves_already_terminal_agent_run() {
         .expect("run should exist");
     assert_eq!(stored.status, AgentRunStatus::Completed);
     assert!(stored.error_message.is_none());
+}
+
+#[tokio::test]
+async fn handle_stream_success_preserves_armed_delegation_park_for_completed_parent_run() {
+    let state = AppState::new_test();
+    let project_id = ProjectId::new();
+    let conversation = ChatConversation::new_project(project_id.clone());
+    state
+        .chat_conversation_repo
+        .create(conversation.clone())
+        .await
+        .expect("create conversation");
+    let parent_run = state
+        .agent_run_repo
+        .create(AgentRun::new(conversation.id.clone()))
+        .await
+        .expect("create parent run");
+    state
+        .agent_run_repo
+        .complete(&parent_run.id)
+        .await
+        .expect("complete parent run");
+
+    let now = Utc::now();
+    let park = DelegationPark {
+        id: DelegationParkId::new(),
+        parent_conversation_id: conversation.id,
+        parent_agent_run_id: parent_run.id.clone(),
+        generation: 1,
+        wake_policy: DelegationWakePolicy::AllSettled,
+        wake_on_failure: false,
+        state: DelegationParkState::Armed,
+        deadline_at: now + Duration::minutes(5),
+        wake_claimed_at: None,
+        wake_attempts: 0,
+        last_error: None,
+        created_at: now,
+        updated_at: now,
+        jobs: Vec::new(),
+    };
+    state
+        .delegation_park_repo
+        .arm(park.clone())
+        .await
+        .expect("arm delegation park");
+
+    let app = mock_builder()
+        .manage(state.clone())
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let app_handle = Some(app.handle().clone());
+    let parent_run_id = parent_run.id.as_str();
+
+    handle_stream_success::<MockRuntime>(
+        &parent_run_id,
+        ChatContextType::Project,
+        project_id.as_str(),
+        true,
+        false,
+        false,
+        &None,
+        &state.task_repo,
+        &state.task_dependency_repo,
+        &state.project_repo,
+        &state.artifact_repo,
+        &state.chat_message_repo,
+        &state.chat_attachment_repo,
+        &state.chat_conversation_repo,
+        &state.agent_run_repo,
+        &state.ideation_session_repo,
+        &state.activity_event_repo,
+        &state.message_queue,
+        &state.running_agent_registry,
+        &state.memory_event_repo,
+        &None,
+        &None,
+        &None,
+        &app_handle,
+        &None,
+        &None,
+        &None,
+    )
+    .await;
+
+    let stored_run = state
+        .agent_run_repo
+        .get_by_id(&parent_run.id)
+        .await
+        .expect("load parent run")
+        .expect("parent run should exist");
+    assert_eq!(stored_run.status, AgentRunStatus::Completed);
+    let stored_park = state
+        .delegation_park_repo
+        .get(&park.id)
+        .await
+        .expect("load delegation park")
+        .expect("delegation park should exist");
+    assert_eq!(
+        stored_park.state,
+        DelegationParkState::Armed,
+        "normal turn completion must preserve the armed park for a later delegate wake"
+    );
 }
 
 #[tokio::test]
@@ -4038,6 +4141,7 @@ async fn test_handle_stream_error_cancelled_terminalizes_existing_timeline_block
         &Some(pre_assistant_message_id.clone()),
         &content_blocks,
         ChatTimelineItemStatus::Streaming,
+        None,
     )
     .await;
     assert!(initial_items
@@ -4128,6 +4232,111 @@ async fn test_handle_stream_error_cancelled_terminalizes_existing_timeline_block
         .result_json
         .as_deref()
         .is_some_and(|result| result.contains("stopped")));
+}
+
+#[tokio::test]
+async fn test_handle_stream_error_stopped_attributes_timeline_blocks_to_run_id() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let context_id = ProjectId::new().as_str().to_string();
+    let run_id = AgentRunId::new().as_str();
+    let content_blocks = vec![ContentBlockItem::Text {
+        text: "Partial response before stop".to_string(),
+    }];
+    let pre_assistant_message =
+        crate::application::chat_service::chat_service_context::create_assistant_message(
+            ChatContextType::Project,
+            &context_id,
+            "Partial response before stop",
+            conversation_id.clone(),
+            &[],
+            &content_blocks,
+        );
+    let pre_assistant_message_id = pre_assistant_message.id.as_str().to_string();
+    state
+        .chat_message_repo
+        .create(pre_assistant_message)
+        .await
+        .expect("insert pre-assistant message");
+
+    let event_ctx = crate::application::chat_service::event_context(
+        &conversation_id,
+        &ChatContextType::Project,
+        &context_id,
+    );
+    let cancelled = StreamError::Cancelled {
+        turns_finalized: 0,
+        completion_tool_called: false,
+    };
+    let recovery_spawned = handle_stream_error::<MockRuntime>(
+        "cancelled",
+        Some(&cancelled),
+        ChatContextType::Project,
+        &context_id,
+        conversation_id.clone(),
+        run_id.as_str(),
+        &pre_assistant_message_id,
+        &event_ctx,
+        None,
+        crate::domain::agents::AgentHarnessKind::Codex,
+        false,
+        None,
+        None,
+        None,
+        std::path::Path::new("/tmp/codex"),
+        std::path::Path::new("/tmp/plugin"),
+        std::path::Path::new("/tmp"),
+        &state.chat_message_repo,
+        &Some(state.chat_timeline_repo.clone()),
+        &state.chat_attachment_repo,
+        &state.artifact_repo,
+        &state.chat_conversation_repo,
+        &state.agent_run_repo,
+        &state.task_repo,
+        &state.task_dependency_repo,
+        &state.project_repo,
+        &state.ideation_session_repo,
+        &None,
+        &state.activity_event_repo,
+        &state.message_queue,
+        &state.running_agent_registry,
+        &state.memory_event_repo,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<tauri::AppHandle<MockRuntime>>,
+        None,
+        None,
+        &None,
+        &None,
+        &None,
+        &None,
+    )
+    .await;
+
+    assert!(!recovery_spawned);
+    let page = state
+        .chat_timeline_repo
+        .get_page(&conversation_id, 10, None)
+        .await
+        .expect("load timeline page");
+    let assistant_items: Vec<_> = page
+        .items
+        .iter()
+        .filter(|item| {
+            item.message_id
+                .as_ref()
+                .is_some_and(|id| id.as_str() == pre_assistant_message_id)
+        })
+        .collect();
+    assert!(!assistant_items.is_empty());
+    assert!(assistant_items
+        .iter()
+        .all(|item| item.status == ChatTimelineItemStatus::Finalized));
+    assert!(assistant_items
+        .iter()
+        .all(|item| item.run_id.as_ref().map(|id| id.as_str()) == Some(run_id.clone())));
 }
 
 /// Sub-branch A: Cancelled { turns_finalized: 1, completion_tool_called: true }

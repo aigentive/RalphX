@@ -267,6 +267,43 @@ describe("parseSearchResult", () => {
     const parsed = parseSearchResult(result);
     expect(parsed.paths).toEqual(["src/a.ts", "src/b.ts", "src/c.ts"]);
   });
+
+  it("collects exclusion notes without treating them as paths", () => {
+    const parsed = parseSearchResult(
+      [
+        "ROOT: /workspace/project",
+        "MATCHES: 1",
+        "NOTE: 3 paths excluded by .gitignore (node_modules).",
+        "src/app.ts:42: needle",
+      ].join("\n"),
+    );
+
+    expect(parsed.paths).toEqual(["src/app.ts"]);
+    expect(parsed.note).toBe("3 paths excluded by .gitignore (node_modules).");
+  });
+
+  it("drops grep group separators and extracts context-line paths", () => {
+    const parsed = parseSearchResult(
+      [
+        "OUTPUT_MODE: content",
+        "src/agent-chat-system.md-42- before",
+        "src/agent-chat-system.md:43: needle",
+        "--",
+        "src/utils.ts-100- after",
+      ].join("\n"),
+    );
+
+    expect(parsed.paths).toEqual(["src/agent-chat-system.md", "src/utils.ts"]);
+  });
+
+  it("keeps explicit empty-state text before collected notes", () => {
+    const parsed = parseSearchResult(
+      "NOTE: node_modules was excluded.\nNo matches found",
+    );
+
+    expect(parsed.paths).toEqual([]);
+    expect(parsed.note).toBe("No matches found node_modules was excluded.");
+  });
 });
 
 describe("parseReadOutput", () => {

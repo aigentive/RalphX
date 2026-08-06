@@ -4,6 +4,7 @@
 // Handles background stream processing and event emission.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -60,6 +61,53 @@ use super::{
 };
 use crate::utils::truncate_str;
 use crate::AppState;
+
+fn schedule_branch_status_refresh<R: Runtime>(
+    app_handle: Option<&AppHandle<R>>,
+    conversation_id: &ChatConversationId,
+    working_directory: Option<&std::path::Path>,
+) {
+    let (Some(handle), Some(working_directory)) = (app_handle, working_directory) else {
+        return;
+    };
+    let state = handle.state::<AppState>();
+    let workspace_repo = Arc::clone(&state.agent_conversation_workspace_repo);
+    let cache = state.pr_poller_registry.branch_status_cache();
+    let conversation_id = conversation_id.clone();
+    let working_directory = working_directory.to_path_buf();
+    if !cache.claim_refresh(&working_directory) {
+        return;
+    }
+
+    tokio::spawn(async move {
+        let base_ref = match workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+        {
+            Ok(workspace) => workspace.map(|workspace| workspace.base_ref),
+            Err(error) => {
+                tracing::warn!(
+                    conversation_id = %conversation_id.as_str(),
+                    error = %error,
+                    "failed to resolve workspace for runtime branch-status refresh"
+                );
+                None
+            }
+        };
+        let refresh_result = cache
+            .refresh_local(&working_directory, base_ref.as_deref())
+            .await;
+        cache.finish_refresh(&working_directory);
+        if let Err(error) = refresh_result {
+            tracing::warn!(
+                conversation_id = %conversation_id.as_str(),
+                working_directory = %working_directory.display(),
+                error = %error,
+                "runtime branch-status refresh failed"
+            );
+        }
+    });
+}
 
 /// Returns the index `persist_timeline_snapshot` will assign to the text block
 /// this chunk belongs to.
@@ -413,6 +461,7 @@ pub(super) async fn persist_timeline_snapshot(
     assistant_message_id: &Option<String>,
     content_blocks: &[ContentBlockItem],
     status: ChatTimelineItemStatus,
+    agent_run_id: Option<&str>,
 ) -> Vec<ChatTimelineItem> {
     let (Some(repo), Some(message_id)) =
         (chat_timeline_repo.as_ref(), assistant_message_id.as_ref())
@@ -444,6 +493,7 @@ pub(super) async fn persist_timeline_snapshot(
             role,
             kind,
         );
+        item.run_id = agent_run_id.map(|id| AgentRunId::from_string(id.to_string()));
         item.status = status;
         item.updated_at = chrono::Utc::now();
         if status == ChatTimelineItemStatus::Finalized {
@@ -532,6 +582,7 @@ async fn flush_streaming_persistence_if_dirty(
     tool_calls: &[ToolCall],
     content_blocks: &[ContentBlockItem],
     status: ChatTimelineItemStatus,
+    agent_run_id: Option<&str>,
 ) {
     if !*dirty {
         return;
@@ -559,6 +610,7 @@ async fn flush_streaming_persistence_if_dirty(
         assistant_message_id,
         content_blocks,
         status,
+        agent_run_id,
     )
     .await;
     *dirty = false;
@@ -1295,6 +1347,7 @@ pub async fn process_stream_background<R: Runtime>(
     context_type: ChatContextType,
     context_id: &str,
     conversation_id: &ChatConversationId,
+    working_directory: Option<PathBuf>,
     app_handle: Option<AppHandle<R>>,
     activity_event_repo: Option<Arc<dyn ActivityEventRepository>>,
     task_repo: Option<Arc<dyn TaskRepository>>,
@@ -1324,6 +1377,7 @@ pub async fn process_stream_background<R: Runtime>(
             context_type,
             context_id,
             conversation_id,
+            working_directory,
             app_handle,
             activity_event_repo,
             task_repo,
@@ -1519,6 +1573,7 @@ pub async fn process_stream_background<R: Runtime>(
                     &processor.tool_calls,
                     &processor.content_blocks,
                     ChatTimelineItemStatus::Error,
+                    agent_run_id.as_deref(),
                 )
                 .await;
                 flush_content_before_error(
@@ -1531,6 +1586,7 @@ pub async fn process_stream_background<R: Runtime>(
                     &assistant_message_id,
                     &processor.content_blocks,
                     ChatTimelineItemStatus::Error,
+                    agent_run_id.as_deref(),
                 ).await;
                 return Err(StreamError::Cancelled {
                     turns_finalized,
@@ -1630,6 +1686,7 @@ pub async fn process_stream_background<R: Runtime>(
                                 &assistant_message_id,
                                 &processor.content_blocks,
                                 ChatTimelineItemStatus::Error,
+                                agent_run_id.as_deref(),
                             ).await;
                             return Err(StreamError::Timeout {
                                 context_type,
@@ -1867,6 +1924,7 @@ pub async fn process_stream_background<R: Runtime>(
                                 &processor.tool_calls,
                                 &processor.content_blocks,
                                 ChatTimelineItemStatus::Streaming,
+                                agent_run_id.as_deref(),
                             )
                             .await;
                         }
@@ -1961,6 +2019,7 @@ pub async fn process_stream_background<R: Runtime>(
                             &processor.tool_calls,
                             &processor.content_blocks,
                             ChatTimelineItemStatus::Streaming,
+                            agent_run_id.as_deref(),
                         )
                         .await;
                         // Activity stream event for task execution and merge
@@ -2061,6 +2120,7 @@ pub async fn process_stream_background<R: Runtime>(
                             &processor.tool_calls,
                             &processor.content_blocks,
                             ChatTimelineItemStatus::Streaming,
+                            agent_run_id.as_deref(),
                         )
                         .await;
                         // Update streaming state cache with started tool call
@@ -2165,6 +2225,7 @@ pub async fn process_stream_background<R: Runtime>(
                                 &assistant_message_id,
                                 &processor.content_blocks,
                                 ChatTimelineItemStatus::Streaming,
+                                agent_run_id.as_deref(),
                             )
                             .await;
                         }
@@ -2259,6 +2320,11 @@ pub async fn process_stream_background<R: Runtime>(
                         // Captured in processor.finish()
                     }
                     StreamEvent::TurnComplete { session_id } => {
+                        schedule_branch_status_refresh(
+                            app_handle.as_ref(),
+                            conversation_id,
+                            working_directory.as_deref(),
+                        );
                         flush_streaming_persistence_if_dirty(
                             &mut streaming_persistence_dirty,
                             &mut last_streaming_persisted_at,
@@ -2270,6 +2336,7 @@ pub async fn process_stream_background<R: Runtime>(
                             &processor.tool_calls,
                             &processor.content_blocks,
                             ChatTimelineItemStatus::Streaming,
+                            agent_run_id.as_deref(),
                         )
                         .await;
                         tracing::info!(
@@ -2321,6 +2388,7 @@ pub async fn process_stream_background<R: Runtime>(
                                 &assistant_message_id,
                                 &processor.content_blocks,
                                 ChatTimelineItemStatus::Error,
+                                agent_run_id.as_deref(),
                             )
                             .await;
                             if let Some(capture) = processor.current_turn_capture() {
@@ -2405,6 +2473,7 @@ pub async fn process_stream_background<R: Runtime>(
                                 &processor.tool_calls,
                                 &processor.content_blocks,
                                 split_verification_transcript,
+                                agent_run_id.as_deref(),
                             )
                             .await;
                             let turn_capture = processor.current_turn_capture();
@@ -2966,6 +3035,7 @@ pub async fn process_stream_background<R: Runtime>(
                                 &assistant_message_id,
                                 &processor.content_blocks,
                                 ChatTimelineItemStatus::Streaming,
+                                agent_run_id.as_deref(),
                             )
                             .await;
                         }
@@ -3102,6 +3172,7 @@ pub async fn process_stream_background<R: Runtime>(
                     &assistant_message_id,
                     &processor.content_blocks,
                     ChatTimelineItemStatus::Error,
+                    agent_run_id.as_deref(),
                 )
                 .await;
                 return Err(StreamError::ParseStall {
@@ -3185,6 +3256,7 @@ pub async fn process_stream_background<R: Runtime>(
                 &processor.tool_calls,
                 &processor.content_blocks,
                 ChatTimelineItemStatus::Streaming,
+                agent_run_id.as_deref(),
             )
             .await;
         }
@@ -3321,6 +3393,7 @@ pub async fn process_stream_background<R: Runtime>(
                 &assistant_message_id,
                 &result.content_blocks,
                 ChatTimelineItemStatus::Error,
+                agent_run_id.as_deref(),
             )
             .await;
 
@@ -3385,6 +3458,7 @@ pub async fn process_stream_background<R: Runtime>(
         &assistant_message_id,
         &outcome.content_blocks,
         ChatTimelineItemStatus::Finalized,
+        agent_run_id.as_deref(),
     )
     .await;
     if !outcome.usage.is_empty() {
@@ -3574,6 +3648,7 @@ async fn process_codex_stream_background<R: Runtime>(
     context_type: ChatContextType,
     context_id: &str,
     conversation_id: &ChatConversationId,
+    working_directory: Option<PathBuf>,
     app_handle: Option<AppHandle<R>>,
     activity_event_repo: Option<Arc<dyn ActivityEventRepository>>,
     task_repo: Option<Arc<dyn TaskRepository>>,
@@ -3811,6 +3886,7 @@ async fn process_codex_stream_background<R: Runtime>(
                     &assistant_message_id,
                     &content_blocks,
                     ChatTimelineItemStatus::Streaming,
+                    agent_run_id.as_deref(),
                 )
                 .await;
 
@@ -3858,6 +3934,7 @@ async fn process_codex_stream_background<R: Runtime>(
                     &assistant_message_id,
                     &content_blocks,
                     ChatTimelineItemStatus::Streaming,
+                    agent_run_id.as_deref(),
                 )
                 .await;
 
@@ -3954,6 +4031,7 @@ async fn process_codex_stream_background<R: Runtime>(
                     &assistant_message_id,
                     &content_blocks,
                     ChatTimelineItemStatus::Streaming,
+                    agent_run_id.as_deref(),
                 )
                 .await;
 
@@ -4090,6 +4168,7 @@ async fn process_codex_stream_background<R: Runtime>(
                             &assistant_message_id,
                             &content_blocks,
                             ChatTimelineItemStatus::Streaming,
+                            agent_run_id.as_deref(),
                         )
                         .await;
 
@@ -4152,6 +4231,11 @@ async fn process_codex_stream_background<R: Runtime>(
             }
 
             if event.event_type == "turn.completed" {
+                schedule_branch_status_refresh(
+                    app_handle.as_ref(),
+                    conversation_id,
+                    working_directory.as_deref(),
+                );
                 codex_turn_completed = true;
                 let _ = child.start_kill();
                 break;
@@ -4189,6 +4273,7 @@ async fn process_codex_stream_background<R: Runtime>(
                 &assistant_message_id,
                 &content_blocks,
                 ChatTimelineItemStatus::Streaming,
+                agent_run_id.as_deref(),
             )
             .await;
             last_flush = std::time::Instant::now();
@@ -4280,6 +4365,7 @@ async fn process_codex_stream_background<R: Runtime>(
         } else {
             ChatTimelineItemStatus::Error
         },
+        agent_run_id.as_deref(),
     )
     .await;
     if cancellation_token.is_cancelled() {

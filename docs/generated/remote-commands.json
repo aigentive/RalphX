@@ -562,6 +562,10 @@
     "get_agent_conversation_messages_page",
     "get_agent_conversation_timeline_page",
     "get_agent_conversation_workspace",
+    "recheck_pr_health",
+    "retry_pr_autofix_override",
+    "retry_agent_workspace_publication_effect",
+    "stop_pr_autofix_for_failure",
     "set_agent_conversation_workspace_auto_publish",
     "set_agent_conversation_workspace_pr_supervision",
     "set_agent_conversation_workspace_review_automation",
@@ -827,7 +831,7 @@
       "authorityBearing": true,
       "enclosingFunction": "application/chat_service/chat_service_send_background.rs:::::spawn_send_message_background",
       "file": "application/chat_service/chat_service_send_background.rs",
-      "id": "application/chat_service/chat_service_send_background.rs::application/chat_service/chat_service_send_background.rs:::::spawn_send_message_background@cadb8d702e658966",
+      "id": "application/chat_service/chat_service_send_background.rs::application/chat_service/chat_service_send_background.rs:::::spawn_send_message_background@8aea59cb19ee3319",
       "kind": "tokio::spawn",
       "readSurface": [],
       "sinksReached": [
@@ -850,6 +854,15 @@
       "sinksReached": [
         "send_message"
       ]
+    },
+    {
+      "authorityBearing": false,
+      "enclosingFunction": "application/chat_service/chat_service_streaming.rs:::::schedule_branch_status_refresh",
+      "file": "application/chat_service/chat_service_streaming.rs",
+      "id": "application/chat_service/chat_service_streaming.rs::application/chat_service/chat_service_streaming.rs:::::schedule_branch_status_refresh@f26387a4e9781664",
+      "kind": "tokio::spawn",
+      "readSurface": [],
+      "sinksReached": []
     },
     {
       "authorityBearing": false,
@@ -1005,7 +1018,7 @@
       "authorityBearing": true,
       "enclosingFunction": "application/services/pr_merge_poller.rs::PrPollerRegistry::start_agent_workspace_polling_with_optional_repair_repo",
       "file": "application/services/pr_merge_poller.rs",
-      "id": "application/services/pr_merge_poller.rs::application/services/pr_merge_poller.rs::PrPollerRegistry::start_agent_workspace_polling_with_optional_repair_repo@60472b2fcca58014",
+      "id": "application/services/pr_merge_poller.rs::application/services/pr_merge_poller.rs::PrPollerRegistry::start_agent_workspace_polling_with_optional_repair_repo@9463291f555a3c9d",
       "kind": "tokio::spawn",
       "readSurface": [],
       "sinksReached": [
@@ -10295,6 +10308,50 @@
     },
     {
       "capabilities": [
+        "agentControl"
+      ],
+      "class": "denied",
+      "command": "recheck_pr_health",
+      "module": "unified_chat_commands",
+      "reason": "re-polls a workspace pull request's health through the host's gh CLI",
+      "registered": false,
+      "v1Resolution": "host-denied"
+    },
+    {
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "denied",
+      "command": "retry_pr_autofix_override",
+      "module": "unified_chat_commands",
+      "reason": "overrides a held PR autofix and relaunches the autofix agent on the host checkout",
+      "registered": false,
+      "v1Resolution": "host-denied"
+    },
+    {
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "denied",
+      "command": "retry_agent_workspace_publication_effect",
+      "module": "unified_chat_commands",
+      "reason": "clears a publication-effect hold and re-runs the reconciler, which republishes through git and gh",
+      "registered": false,
+      "v1Resolution": "host-denied"
+    },
+    {
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "denied",
+      "command": "stop_pr_autofix_for_failure",
+      "module": "unified_chat_commands",
+      "reason": "stops the held PR autofix generation and leaves auto-merge disabled",
+      "registered": false,
+      "v1Resolution": "host-denied"
+    },
+    {
+      "capabilities": [
         "spawnsProcess",
         "seedsSpawnTriggeringState"
       ],
@@ -11791,13 +11848,16 @@
         "resolve_recovery_prompt",
         "resolve_user_question",
         "resume_deferred_git_startup",
+        "retry_agent_workspace_publication_effect",
         "retry_merge",
+        "retry_pr_autofix_override",
         "set_agent_conversation_muted",
         "set_agent_conversation_workspace_auto_publish",
         "set_agent_conversation_workspace_pr_supervision",
         "set_agent_conversation_workspace_review_automation",
         "start_agent_conversation",
         "start_ralphx_work_from_ticket",
+        "stop_pr_autofix_for_failure",
         "switch_agent_conversation_mode",
         "update_agent_conversation_workspace_from_base"
       ]
@@ -11835,9 +11895,12 @@
         "list_agent_conversation_workspaces_by_project",
         "list_agent_sidebar_conversations",
         "publish_agent_conversation_workspace",
+        "recheck_pr_health",
         "reconcile_agent_conversation_workspace_publication",
         "resolve_user_question",
         "resume_deferred_git_startup",
+        "retry_agent_workspace_publication_effect",
+        "retry_pr_autofix_override",
         "send_agent_message",
         "set_agent_conversation_muted",
         "set_agent_conversation_workspace_auto_publish",
@@ -11846,6 +11909,7 @@
         "start_agent_conversation",
         "start_agent_task_pipeline",
         "start_ralphx_work_from_ticket",
+        "stop_pr_autofix_for_failure",
         "switch_agent_conversation_mode",
         "update_agent_conversation_workspace_from_base"
       ]

@@ -37,7 +37,8 @@ test.describe("Agents Recent inbox", () => {
     await recent.open("empty-needs");
 
     await expect(recent.needsHeader).toContainText("Needs you");
-    await expect(recent.needsEmpty).toBeVisible();
+    await expect(recent.needsEmptyStrip).toBeVisible();
+    await expect(recent.needsEmptyStrip).toHaveText("Nothing needs you");
     await expect(recent.workingGroup.getByText("Working: supervised PR 1")).toBeVisible();
     await expect(recent.sidebar).toHaveScreenshot("agents-inbox-recent-empty-needs.png");
   });

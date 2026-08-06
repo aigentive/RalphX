@@ -9,6 +9,8 @@
 
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { logger } from "@/lib/logger";
+import { useChatStore } from "@/stores/chatStore";
 import {
   ChatMessageList,
   type ChatMessageData,
@@ -93,6 +95,7 @@ vi.mock("react-virtuoso", async () => {
 
   type VirtuosoProps = Record<string, unknown> & {
     components?: {
+      Footer?: React.ComponentType;
       Header?: React.ComponentType;
       Scroller?: React.ForwardRefExoticComponent<
         React.ComponentPropsWithoutRef<"div"> & React.RefAttributes<HTMLDivElement>
@@ -109,6 +112,7 @@ vi.mock("react-virtuoso", async () => {
     const elementRef = React.useRef<HTMLDivElement | null>(null);
     const data = props.data ?? [];
     const Scroller = props.components?.Scroller ?? "div";
+    const Footer = props.components?.Footer;
     const Header = props.components?.Header;
     const { rangeChanged, scrollerRef } = props;
 
@@ -151,6 +155,7 @@ vi.mock("react-virtuoso", async () => {
             </div>
           ))}
         </div>
+        {Footer ? <Footer /> : null}
       </Scroller>
     );
   });
@@ -165,10 +170,21 @@ type ScrollerGeometry = {
 };
 
 function setScrollerGeometry(element: HTMLElement, geometry: ScrollerGeometry): void {
+  // Browsers clamp scrollTop to the scroll extent, on write and whenever the
+  // content shrinks. Bottom follow relies on that clamp, so the double models
+  // it rather than allowing positions past the true bottom.
+  const maxScrollTop = Math.max(0, geometry.scrollHeight - geometry.clientHeight);
+  let position = Math.min(geometry.scrollTop, maxScrollTop);
   Object.defineProperties(element, {
     clientHeight: { configurable: true, value: geometry.clientHeight },
     scrollHeight: { configurable: true, value: geometry.scrollHeight },
-    scrollTop: { configurable: true, value: geometry.scrollTop, writable: true },
+    scrollTop: {
+      configurable: true,
+      get: () => position,
+      set: (next: number) => {
+        position = Math.max(0, Math.min(next, maxScrollTop));
+      },
+    },
   });
 }
 
@@ -197,6 +213,26 @@ const defaultProps = {
 function renderList(overrides: Partial<React.ComponentProps<typeof ChatMessageList>> = {}) {
   return render(<ChatMessageList {...defaultProps} {...overrides} />);
 }
+
+it("renders and registers the transcript bottom spacer after timeline content", () => {
+  const registerBottomSpacer = vi.fn();
+
+  renderList({ registerBottomSpacer });
+
+  const spacer = screen.getByTestId("chat-transcript-bottom-spacer");
+  const transcript = screen.getByTestId("integrated-chat-messages");
+  expect(transcript.lastElementChild).toBe(spacer);
+  expect(spacer).toHaveAttribute("aria-hidden", "true");
+  expect(registerBottomSpacer).toHaveBeenCalledWith(spacer);
+});
+
+it("offsets the scroll-to-bottom control above the measured composer inset", () => {
+  renderList();
+
+  expect(screen.getByTestId("chat-scroll-to-bottom-control")).toHaveStyle({
+    bottom: "calc(var(--chat-bottom-inset, 0px) + 1rem)",
+  });
+});
 
 it("rehydrates one completed-run widget at the end of persisted run rows", () => {
   renderList({ messages: [
@@ -241,6 +277,128 @@ it("shows an unavailable detail state when a settled batch omits a persisted run
 
   expect(screen.getByText("Run attribution is unavailable.")).toBeInTheDocument();
   expect(screen.queryByTestId("run-attribution-loading")).not.toBeInTheDocument();
+});
+
+it("renders exactly one run-attribution widget after a collapsed tool-activity group whose last row is covered", () => {
+  renderList({ messages: [
+    {
+      id: "tool-row-1",
+      role: "assistant",
+      content: "",
+      createdAt: "2026-01-01T12:00:00Z",
+      timelineSequence: 1,
+      contentBlocks: [{ type: "tool_use", id: "t1", name: "Bash" }],
+      runId: "run-tool",
+    },
+    {
+      id: "tool-row-2",
+      role: "assistant",
+      content: "",
+      createdAt: "2026-01-01T12:00:01Z",
+      timelineSequence: 2,
+      contentBlocks: [{ type: "tool_use", id: "t2", name: "Bash" }],
+      runId: "run-tool",
+      finalizedAt: "2026-01-01T12:00:05Z",
+    },
+  ] });
+
+  expect(screen.getAllByTestId("run-attribution-widget")).toHaveLength(1);
+  const toggle = screen.getByTestId("tool-call-group-toggle");
+  const widget = screen.getByTestId("run-attribution-widget");
+  expect(
+    toggle.compareDocumentPosition(widget) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+  expect(widget.closest(".px-3")).not.toBeNull();
+});
+
+it("renders exactly one run-attribution widget when the run's last row is a covered persisted-thinking row", () => {
+  renderList({ messages: [
+    {
+      id: "thinking-row-1",
+      role: "assistant",
+      content: "",
+      createdAt: "2026-01-01T12:00:00Z",
+      timelineSequence: 1,
+      contentBlocks: [{ type: "thinking", text: "first thought" }],
+      runId: "run-thinking",
+    },
+    {
+      id: "thinking-row-2",
+      role: "assistant",
+      content: "",
+      createdAt: "2026-01-01T12:00:01Z",
+      timelineSequence: 2,
+      contentBlocks: [{ type: "thinking", text: "second thought" }],
+      runId: "run-thinking",
+      finalizedAt: "2026-01-01T12:00:05Z",
+    },
+  ] });
+
+  expect(screen.getAllByTestId("run-attribution-widget")).toHaveLength(1);
+  const toggle = screen.getByTestId("thinking-group-toggle");
+  const widget = screen.getByTestId("run-attribution-widget");
+  expect(
+    toggle.compareDocumentPosition(widget) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+  expect(widget.closest(".px-3")).not.toBeNull();
+});
+
+it("renders exactly one run-attribution widget when the run's last provider row is a group toggle row itself, not a covered member", () => {
+  renderList({ messages: [
+    {
+      id: "toggle-anchor-row",
+      role: "assistant",
+      content: "",
+      createdAt: "2026-01-01T12:00:00Z",
+      timelineSequence: 1,
+      contentBlocks: [{ type: "tool_use", id: "t1", name: "Bash" }],
+      runId: "run-toggle-anchor",
+      finalizedAt: "2026-01-01T12:00:05Z",
+    },
+  ] });
+
+  expect(screen.getAllByTestId("run-attribution-widget")).toHaveLength(1);
+  const toggle = screen.getByTestId("tool-call-group-toggle");
+  const widget = screen.getByTestId("run-attribution-widget");
+  expect(
+    toggle.compareDocumentPosition(widget) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+  expect(widget.closest(".px-3")).not.toBeNull();
+});
+
+it("renders no widget and fetches no attributions when every message lacks a runId", () => {
+  runAttributions.mockClear();
+
+  renderList({ messages: [
+    { id: "legacy-row", role: "assistant", content: "legacy", createdAt: "2026-01-01T12:00:00Z" },
+  ] });
+
+  expect(screen.queryByTestId("run-attribution-widget")).not.toBeInTheDocument();
+  expect(runAttributions).toHaveBeenLastCalledWith([], expect.any(Object));
+});
+
+it("hides the widget for a live run while still rendering the previous run's widget", () => {
+  const contextKey = "project:conversation-a";
+  act(() => {
+    useChatStore.setState({ activeAgentRunIds: { [contextKey]: "run-live" } });
+  });
+
+  try {
+    renderList({
+      contextKey,
+      messages: [
+        { id: "run-prev-row", role: "assistant", content: "prev", createdAt: "2026-01-01T12:00:00Z", finalizedAt: "2026-01-01T12:00:10Z", runId: "run-prev" },
+        { id: "run-live-row", role: "assistant", content: "live", createdAt: "2026-01-01T12:00:20Z", runId: "run-live" },
+      ],
+    });
+
+    expect(screen.getAllByTestId("run-attribution-widget")).toHaveLength(1);
+    expect(screen.getByTestId("run-attribution-toggle")).toBeInTheDocument();
+  } finally {
+    act(() => {
+      useChatStore.setState({ activeAgentRunIds: {} });
+    });
+  }
 });
 
 function getScroller(): HTMLElement {
@@ -583,6 +741,138 @@ describe("ChatMessageList controller integration", () => {
     expect(screen.getByTestId("chat-scroll-to-bottom-control")).toHaveAttribute("aria-hidden", "false");
   });
 
+  it("pins when a newly mounted streaming tail reports its first measured height", () => {
+    const resizeObservers: Array<{
+      callback: ResizeObserverCallback;
+      targets: Set<Element>;
+    }> = [];
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        private readonly record: (typeof resizeObservers)[number];
+
+        constructor(callback: ResizeObserverCallback) {
+          this.record = { callback, targets: new Set() };
+          resizeObservers.push(this.record);
+        }
+
+        disconnect(): void {
+          this.record.targets.clear();
+        }
+
+        observe(target: Element): void {
+          this.record.targets.add(target);
+        }
+
+        unobserve(target: Element): void {
+          this.record.targets.delete(target);
+        }
+      },
+    );
+    renderList({
+      isAgentRunning: true,
+      streamingContentBlocks: [{ type: "text", text: "new streaming tail" }],
+    });
+    const scroller = primeAtBottom();
+    const lastRow = screen.getByTestId("integrated-chat-messages").querySelector(
+      '[data-chat-last-rendered-row="true"]',
+    );
+    expect(lastRow).toBeInstanceOf(HTMLElement);
+
+    const lastRowObserver = resizeObservers.find(({ targets }) =>
+      lastRow ? targets.has(lastRow) : false,
+    );
+    expect(lastRowObserver).toBeDefined();
+    setScrollerGeometry(scroller, {
+      clientHeight: 500,
+      scrollHeight: 1_100,
+      scrollTop: 500,
+    });
+    act(() => {
+      lastRowObserver?.callback(
+        [{ contentRect: { height: 160 }, target: lastRow } as ResizeObserverEntry],
+        {} as ResizeObserver,
+      );
+    });
+    flushAnimationFrames();
+
+    expect(scrollWrites).toHaveBeenCalledWith(expect.objectContaining({ top: 600 }));
+    expect(scroller.scrollTop).toBe(600);
+  });
+
+  it("re-pins for composer spacer resizes only while the reader is following", () => {
+    const resizeObservers: Array<{
+      callback: ResizeObserverCallback;
+      targets: Set<Element>;
+    }> = [];
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        private readonly record: (typeof resizeObservers)[number];
+
+        constructor(callback: ResizeObserverCallback) {
+          this.record = { callback, targets: new Set() };
+          resizeObservers.push(this.record);
+        }
+
+        disconnect(): void {
+          this.record.targets.clear();
+        }
+
+        observe(target: Element): void {
+          this.record.targets.add(target);
+        }
+
+        unobserve(target: Element): void {
+          this.record.targets.delete(target);
+        }
+      },
+    );
+    renderList();
+    const scroller = primeAtBottom();
+    const spacer = screen.getByTestId("chat-transcript-bottom-spacer");
+    const spacerObserver = resizeObservers.find(({ targets }) => targets.has(spacer));
+    expect(spacerObserver).toBeDefined();
+    const resizeSpacer = (height: number) => {
+      spacerObserver?.callback(
+        [{ contentRect: { height }, target: spacer } as ResizeObserverEntry],
+        {} as ResizeObserver,
+      );
+    };
+
+    act(() => resizeSpacer(40));
+    scrollWrites.mockClear();
+    setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_040, scrollTop: 500 });
+    act(() => resizeSpacer(80));
+    flushAnimationFrames();
+
+    expect(scroller.scrollTop).toBe(540);
+    expect(scrollWrites).toHaveBeenCalledWith(expect.objectContaining({ top: 540 }));
+
+    scrollWrites.mockClear();
+    setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_000, scrollTop: 540 });
+    act(() => resizeSpacer(40));
+    flushAnimationFrames();
+
+    // The shrink already clamped the reader onto the new true bottom, so the
+    // follow stays put instead of writing the reader back up the transcript.
+    expect(scroller.scrollTop).toBe(500);
+    expect(scrollWrites).not.toHaveBeenCalledWith(
+      expect.objectContaining({ top: expect.any(Number) as number }),
+    );
+
+    setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_000, scrollTop: 200 });
+    fireEvent.wheel(scroller, { deltaY: -80 });
+    fireEvent.scroll(scroller);
+    scrollWrites.mockClear();
+    setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_080, scrollTop: 200 });
+    act(() => resizeSpacer(120));
+    flushAnimationFrames();
+
+    expect(scroller.scrollTop).toBe(200);
+    expect(scrollWrites).not.toHaveBeenCalled();
+  });
+
   it("leaves controller follow state untouched for a prepend epoch", () => {
     const onLoadOlderMessages = vi.fn();
     renderList({ hasOlderMessages: true, onLoadOlderMessages });
@@ -836,6 +1126,27 @@ describe("ChatMessageList controller integration", () => {
     expect(scrollWrites).not.toHaveBeenCalled();
   });
 
+  it("ends a pointer session released outside the scroller and removes the window listener", () => {
+    const debugSpy = vi.spyOn(logger, "debug");
+    const { unmount } = renderList();
+    const scroller = primeAtBottom();
+
+    fireEvent.pointerDown(scroller);
+    fireEvent.pointerUp(window);
+    setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_000, scrollTop: 220 });
+    fireEvent.scroll(scroller);
+    flushAnimationFrames();
+
+    expect(screen.getByTestId("chat-scroll-to-bottom-control")).toHaveAttribute("aria-hidden", "true");
+    expect(scrollWrites).toHaveBeenCalledWith(expect.objectContaining({ top: 500 }));
+
+    unmount();
+    debugSpy.mockClear();
+    fireEvent.pointerUp(window);
+
+    expect(debugSpy).not.toHaveBeenCalled();
+  });
+
   it("re-pins a following transcript after its scroller resize observer reports growth", () => {
     let onResize: ResizeObserverCallback | null = null;
     vi.stubGlobal(
@@ -956,6 +1267,82 @@ describe("ChatMessageList controller integration", () => {
     expect(harness.scrollToIndex).toHaveBeenCalledWith(
       expect.objectContaining({ index: 2, align: "end" }),
     );
+  });
+
+  it("restores the captured at-bottom anchor while toggling a persisted thinking group", () => {
+    const thinkingMessages: ChatMessageData[] = [
+      ...messages(1),
+      {
+        id: "thinking-1",
+        role: "assistant",
+        content: "",
+        createdAt: new Date(2026, 0, 1, 12, 1).toISOString(),
+        contentBlocks: [{ type: "thinking", text: "First thought", durationMs: 1_000 }],
+        timelineSequence: 10,
+      },
+      {
+        id: "thinking-2",
+        role: "assistant",
+        content: "",
+        createdAt: new Date(2026, 0, 1, 12, 2).toISOString(),
+        contentBlocks: [{ type: "thinking", text: "Second thought", durationMs: 2_000 }],
+        timelineSequence: 11,
+      },
+    ];
+    renderList({ messages: thinkingMessages });
+    primeAtBottom();
+    scrollWrites.mockClear();
+    harness.scrollToIndex.mockClear();
+
+    const toggle = screen.getByTestId("thinking-group-toggle");
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(toggle);
+    flushAnimationFrames();
+
+    expect(screen.getByTestId("thinking-group-toggle")).toHaveAttribute("aria-expanded", "false");
+    expect(harness.scrollToIndex).toHaveBeenCalledWith(
+      expect.objectContaining({ index: 2, align: "end" }),
+    );
+  });
+
+  it("preserves a free reader's anchor while collapsing a persisted thinking group", () => {
+    const thinkingMessages: ChatMessageData[] = [
+      ...messages(1),
+      {
+        id: "thinking-1",
+        role: "assistant",
+        content: "",
+        createdAt: new Date(2026, 0, 1, 12, 1).toISOString(),
+        contentBlocks: [{ type: "thinking", text: "First thought", durationMs: 1_000 }],
+        timelineSequence: 10,
+      },
+      {
+        id: "thinking-2",
+        role: "assistant",
+        content: "",
+        createdAt: new Date(2026, 0, 1, 12, 2).toISOString(),
+        contentBlocks: [{ type: "thinking", text: "Second thought", durationMs: 2_000 }],
+        timelineSequence: 11,
+      },
+    ];
+    renderList({ messages: thinkingMessages });
+    const scroller = primeAtBottom();
+    setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_000, scrollTop: 300 });
+    fireEvent.wheel(scroller, { deltaY: -80 });
+    fireEvent.scroll(scroller);
+
+    const toggle = screen.getByTestId("thinking-group-toggle");
+    scroller.getBoundingClientRect = () => new DOMRect(0, 0, 100, 500);
+    toggle.getBoundingClientRect = () => new DOMRect(
+      0,
+      toggle.getAttribute("aria-expanded") === "true" ? 120 : 60,
+      100,
+      24,
+    );
+    fireEvent.click(toggle);
+
+    expect(scroller.scrollTop).toBe(240);
+    expect(screen.getByTestId("chat-scroll-to-bottom-control")).toHaveAttribute("aria-hidden", "false");
   });
 
   it("keeps persisted delegated cards promoted while generic tool details are collapsed", () => {

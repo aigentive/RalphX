@@ -63,6 +63,7 @@ import {
   type StartAgentWorkspaceReviewResult,
 } from "@/api/chat";
 import { Button } from "@/components/ui/button";
+import { NoticeBanner } from "@/components/ui/notice-banner";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -162,7 +163,10 @@ import {
   ArtifactLoadingState,
   EmptyArtifactState,
 } from "./AgentsArtifactEmptyState";
-import { AgentPublishPanel } from "./AgentsPublishPanel";
+import {
+  AgentPublishPanel,
+  type AgentPublishReviewEvidence,
+} from "./AgentsPublishPanel";
 import { AgentWorkspaceToolbar } from "./AgentWorkspaceToolbar";
 import {
   getAgentWorkspaceReviewActionBlocker,
@@ -619,6 +623,7 @@ function mergeWorkspaceReviewMutationContext(
 interface AgentsArtifactPaneProps {
   conversation: AgentConversation | null;
   workspace?: AgentConversationWorkspace | null;
+  activeWorkspaceError?: Error | null;
   activeWorkspaceFreshness?: AgentConversationWorkspaceFreshness | undefined;
   projectBaseBranch?: string | null;
   focusedIdeationSession?: FocusedArtifactIdeationSession | null;
@@ -632,6 +637,7 @@ interface AgentsArtifactPaneProps {
   ) => void;
   onShowTab?: (tab: AgentArtifactTab) => void;
   onOpenPublish?: () => void;
+  onRetryActiveWorkspace?: () => void;
   onTaskModeChange: (mode: AgentTaskArtifactMode) => void;
   onPublishWorkspace: ((conversationId: string) => Promise<void>) | undefined;
   isPublishingWorkspace?: boolean;
@@ -676,6 +682,7 @@ interface AgentsArtifactPaneProps {
 export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   conversation,
   workspace = null,
+  activeWorkspaceError = null,
   activeWorkspaceFreshness,
   projectBaseBranch = null,
   focusedIdeationSession = null,
@@ -686,6 +693,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   onHideTab,
   onShowTab,
   onOpenPublish,
+  onRetryActiveWorkspace,
   onTaskModeChange,
   onPublishWorkspace,
   isPublishingWorkspace = false,
@@ -1116,6 +1124,27 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     workspaceReviewContextQuery.data,
     workspaceReviewConversationId,
   );
+  const isWorkspaceReviewContextLoading = Boolean(
+    !isReviewPrWorkspace &&
+      shouldLoadWorkspaceReviewContext &&
+      (workspaceReviewContextQuery.isPending ||
+        (workspaceReviewContextQuery.isFetching &&
+          !workspaceReviewContextQuery.data)),
+  );
+  const workspaceReviewContextError =
+    !isReviewPrWorkspace &&
+    shouldLoadWorkspaceReviewContext &&
+    !workspaceReviewContext
+      ? (workspaceReviewContextQuery.error ?? null)
+      : null;
+  const retryWorkspaceReviewContext = () => {
+    if (!workspaceReviewConversationId) return;
+    void refreshWorkspaceReviewContext(
+      queryClient,
+      workspaceReviewConversationId,
+      "full_target",
+    ).catch(() => undefined);
+  };
   const workspaceReviewArtifactId = isReviewPrWorkspace
     ? null
     : (workspaceReviewContext?.monitor.reviewArtifactId ?? null);
@@ -1645,31 +1674,33 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   );
   const isWorkspaceReviewActionPending =
     startWorkspaceReviewMutation.isPending &&
-    startWorkspaceReviewMutation.variables?.conversationId === conversationId;
+    startWorkspaceReviewMutation.variables?.conversationId ===
+      workspaceReviewConversationId;
   const isWorkspaceReviewFixIssuesPending =
     startWorkspaceReviewFixerMutation.isPending &&
     startWorkspaceReviewFixerMutation.variables?.conversationId ===
-      conversationId;
+      workspaceReviewConversationId;
   const workspaceReviewStartError =
-    startWorkspaceReviewMutation.variables?.conversationId === conversationId
+    startWorkspaceReviewMutation.variables?.conversationId ===
+    workspaceReviewConversationId
       ? startWorkspaceReviewMutation.error
       : null;
   const workspaceReviewFixIssuesError =
     startWorkspaceReviewFixerMutation.variables?.conversationId ===
-    conversationId
+    workspaceReviewConversationId
       ? startWorkspaceReviewFixerMutation.error
       : null;
   const isWorkspaceReviewApproveAnywayPending =
     approveWorkspaceReviewAnywayMutation.isPending &&
     approveWorkspaceReviewAnywayMutation.variables?.conversationId ===
-      conversationId;
+      workspaceReviewConversationId;
   const workspaceReviewStartResult = workspaceReviewContextForConversation(
     startWorkspaceReviewMutation.data,
-    conversationId,
+    workspaceReviewConversationId,
   );
   const workspaceReviewFixerStartResult = workspaceReviewContextForConversation(
     startWorkspaceReviewFixerMutation.data,
-    conversationId,
+    workspaceReviewConversationId,
   );
   const reviewDisplayContext = isWorkspaceReviewActionPending
     ? (workspaceReviewStartResult ?? workspaceReviewContext)
@@ -2321,6 +2352,33 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           resolutionState={focusedWorkspaceResolution}
         />
 
+        {activeWorkspaceError && !focusedRunTarget ? (
+          <div role="alert" className="shrink-0">
+            <NoticeBanner
+              tone="error"
+              icon={<AlertCircle aria-hidden="true" className="h-4 w-4" />}
+              action={
+                onRetryActiveWorkspace ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-xs"
+                    onClick={() => onRetryActiveWorkspace()}
+                    aria-label="Retry workspace load"
+                  >
+                    Retry
+                  </Button>
+                ) : null
+              }
+              className="mx-3 mt-3 py-2"
+              testId="agents-workspace-load-error"
+            >
+              Workspace details couldn’t load. Some tabs may be unavailable.
+            </NoticeBanner>
+          </div>
+        ) : null}
+
         <div
           key={
             personaArtifactOnly
@@ -2440,6 +2498,9 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
                     !reviewRequestedChangesArtifact &&
                     reviewRequestedChangesArtifactQuery.isFetching)
                 }
+                isReviewContextLoading={isWorkspaceReviewContextLoading}
+                reviewContextError={workspaceReviewContextError}
+                onRetryReviewContext={retryWorkspaceReviewContext}
                 isReviewActionPending={
                   isReviewPrWorkspace ? false : isWorkspaceReviewActionPending
                 }
@@ -2562,6 +2623,9 @@ type ArtifactContentProps = {
   reviewStartResult: StartAgentWorkspaceReviewResult | null;
   reviewStartError: Error | null;
   isReviewLoading: boolean;
+  isReviewContextLoading: boolean;
+  reviewContextError: Error | null;
+  onRetryReviewContext: () => void;
   isReviewActionPending: boolean;
   isFixIssuesActionPending: boolean;
   isApproveAnywayActionPending: boolean;
@@ -2650,6 +2714,9 @@ function ArtifactContent({
   reviewStartResult,
   reviewStartError,
   isReviewLoading,
+  isReviewContextLoading,
+  reviewContextError,
+  onRetryReviewContext,
   isReviewActionPending,
   isFixIssuesActionPending,
   isApproveAnywayActionPending,
@@ -2693,7 +2760,12 @@ function ArtifactContent({
   activeTeamRunId,
 }: ArtifactContentProps) {
   const reviewActionBlocker = getAgentWorkspaceReviewActionBlocker(workspace);
-  const renderReviewPanel = (embedded: boolean) => (
+  const renderReviewPanel = (
+    embedded: boolean,
+    publishReviewEvidence: AgentPublishReviewEvidence = {
+      status: "unavailable",
+    },
+  ) => (
     <AgentReviewPanel
       reviewArtifact={reviewArtifact}
       reviewRequestedChangesArtifact={reviewRequestedChangesArtifact}
@@ -2708,6 +2780,15 @@ function ArtifactContent({
       reviewStartResult={reviewStartResult}
       reviewStartError={reviewStartError}
       isReviewLoading={isReviewLoading}
+      isReviewContextLoading={
+        isReviewPrWorkspace ? false : isReviewContextLoading
+      }
+      reviewContextError={isReviewPrWorkspace ? null : reviewContextError}
+      publishReviewEvidence={
+        isReviewPrWorkspace
+          ? { status: "ready", changeCount: 0 }
+          : publishReviewEvidence
+      }
       isReviewActionPending={isReviewActionPending}
       isFixIssuesActionPending={isFixIssuesActionPending}
       isApproveAnywayActionPending={isApproveAnywayActionPending}
@@ -2717,6 +2798,7 @@ function ArtifactContent({
       onOpenPublish={onOpenPublish}
       onStartReview={onStartReview}
       {...(onStartReviewIntent ? { onStartReviewIntent } : {})}
+      onRetryReviewContext={onRetryReviewContext}
       onFixIssues={onFixIssues}
       onApproveAnyway={onApproveAnyway}
       embedded={embedded}
@@ -2783,7 +2865,7 @@ function ArtifactContent({
         activeSubTab={publishSubTab}
         showReviewTab={showPublishReviewTab}
         onSubTabChange={onPublishSubTabChange}
-        reviewContent={renderReviewPanel(true)}
+        reviewContent={(evidence) => renderReviewPanel(true, evidence)}
         reviewTabStatusColor={reviewTabStatusColor}
         reviewTabStatusLabel={reviewTabStatusLabel}
         isReviewTabRunning={isReviewTabRunning}

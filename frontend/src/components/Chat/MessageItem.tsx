@@ -98,7 +98,10 @@ export interface MessageItemProps {
   /** Stable parent scope used when ChatMessageList owns thinking-group intent across virtualization. */
   contentThinkingGroupKeyPrefix?: string | undefined;
   isContentThinkingGroupExpanded?: ((groupKey: string) => boolean) | undefined;
-  onToggleContentThinkingGroup?: ((groupKey: string) => void) | undefined;
+  onToggleContentThinkingGroup?: ((
+    groupKey: string,
+    toggleElement: HTMLElement | null,
+  ) => void) | undefined;
   /** File attachments for user messages */
   attachments?: MessageAttachment[];
   /** The host has not exposed attachment metadata to this client. */
@@ -477,9 +480,9 @@ export const MessageItem = React.memo(function MessageItem({
             isSettled={aggregate.isSettled} segmentCount={aggregate.segmentCount}
             {...(aggregate.totalDurationMs != null ? { durationMs: aggregate.totalDurationMs } : {})}
             {...(aggregate.reasoningTokens != null ? { reasoningTokens: aggregate.reasoningTokens } : {})}
-            onToggle={() => {
+            onToggle={(event) => {
               if (onToggleContentThinkingGroup) {
-                onToggleContentThinkingGroup(groupKey);
+                onToggleContentThinkingGroup(groupKey, event.currentTarget);
               } else {
                 toggleContentThinkingGroup(groupKey);
               }

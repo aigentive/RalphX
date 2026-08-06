@@ -35,8 +35,10 @@ export function PublishFact({
     <div
       className="flex min-w-0 items-start gap-2 rounded-md border px-3 py-2"
       style={{
-        background: "var(--bg-base)",
-        borderColor: "var(--overlay-weak)",
+        backgroundColor: "var(--bg-base, #18181d)",
+        borderColor: "var(--overlay-weak, #3b3b43)",
+        borderStyle: "solid",
+        borderWidth: "1px",
       }}
     >
       <Icon className="mt-0.5 h-4 w-4 shrink-0 text-[var(--text-muted)]" />

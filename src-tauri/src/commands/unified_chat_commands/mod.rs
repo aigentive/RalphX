@@ -22,10 +22,11 @@ use std::{
     time::{Duration, Instant},
 };
 
+use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
-use tauri::{Emitter, Manager, Runtime, State};
+use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use uuid::Uuid;
 
 use crate::application::agent_conversation_archive::{
@@ -102,7 +103,10 @@ use crate::application::agent_workspace_publish_repair_state::{
     classify_agent_workspace_repair_delivery, last_human_repair_reason,
     reserve_agent_workspace_repair_dispatch, resume_current_agent_workspace_repair_publish,
     resume_ready_agent_workspace_repair_for_publish,
+    retry_agent_workspace_pr_autofix_hold_override,
+    retry_agent_workspace_publication_effect as retry_agent_workspace_publication_effect_service,
     settle_agent_workspace_repair_dispatch_outcome, start_or_join_agent_workspace_repair,
+    stop_agent_workspace_pr_autofix_for_hold, AgentWorkspacePrAutofixHoldActionOutcome,
     AgentWorkspaceRepairDispatchOutcome, AgentWorkspaceRepairDispatchSettlement,
     AgentWorkspaceRepairPublishResumeOutcome, AgentWorkspaceRepairStartOutcome,
     AgentWorkspaceRepairStartRequest, AgentWorkspaceRepairTransitionOutcome, PublishAuthority,
@@ -144,7 +148,10 @@ use crate::application::services::pr_auto_merge_status::{
     auto_merge_disable_failure_summary, auto_merge_enable_failure_summary,
     AUTO_MERGE_SUPERVISION_STATUS_WAITING,
 };
-use crate::application::services::pr_merge_poller::sync_agent_workspace_auto_merge_preference_for_workspace;
+use crate::application::services::pr_merge_poller::{
+    sync_agent_workspace_auto_merge_preference_for_workspace,
+    update_agent_workspace_pr_supervision_preferences, update_agent_workspace_pr_supervision_state,
+};
 use crate::application::session_namer_agent::{spawn_session_namer_agent, SessionNamerTarget};
 use crate::application::{AppChatService, AppState, ChatService, SendResult};
 use crate::commands::agent_model_commands::load_agent_model_registry;
@@ -160,14 +167,14 @@ use crate::domain::entities::{
     AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent,
     AgentConversationWorkspaceStatus, AgentRun, AgentRunId, AgentRunStatus,
     AgentWorkspacePrDescription, AgentWorkspacePrMetadataDecision, AgentWorkspaceRepairAttempt,
-    AgentWorkspaceRepairContinuation, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
-    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceSourcePullRequest, ArtifactContent,
-    ChatAttachmentId, ChatContextType, ChatConversation, ChatConversationId, ChatMessage,
-    ChatMessageId, ChatTimelineItem, CoordinationMode, DelegatedSessionId, ExecutionPlanStatus,
-    GitTargetIdentity, IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow,
-    IdeationSessionId, InternalStatus, PersonaId, PlanBranch, PlanBranchStatus, Project, ProjectId,
-    RuntimeSource, Task, TaskCategory, TeamIntent, TeamMessageTarget,
-    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    AgentWorkspaceRepairAttemptId, AgentWorkspaceRepairContinuation, AgentWorkspaceRepairPhase,
+    AgentWorkspaceRepairSource, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceSourcePullRequest,
+    ArtifactContent, ChatAttachmentId, ChatContextType, ChatConversation, ChatConversationId,
+    ChatMessage, ChatMessageId, ChatTimelineItem, CoordinationMode, DelegatedSessionId,
+    ExecutionPlanStatus, GitTargetIdentity, IdeationAnalysisBaseRefKind, IdeationSession,
+    IdeationSessionFlow, IdeationSessionId, InternalStatus, PersonaId, PlanBranch,
+    PlanBranchStatus, Project, ProjectId, RuntimeSource, Task, TaskCategory, TeamIntent,
+    TeamMessageTarget, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::execution::{
     build_running_ideation_session, build_running_process, context_matches_running_status,
@@ -4936,6 +4943,154 @@ pub async fn get_agent_conversation_workspace(
     }
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentWorkspaceRepairHoldActionInput {
+    pub conversation_id: String,
+    pub attempt_id: String,
+    pub generation: u64,
+    pub updated_at: String,
+}
+
+/// Triggers one immediate, coalesced PR-supervision pass for a workspace.
+#[tauri::command]
+pub async fn recheck_pr_health(
+    conversation_id: String,
+    state: State<'_, AppState>,
+    execution_state: State<'_, Arc<ExecutionState>>,
+    app: AppHandle,
+) -> Result<(), String> {
+    let chat_service: Arc<dyn ChatService> =
+        Arc::new(create_chat_service(&state, app, &execution_state));
+    recheck_pr_health_for_state(conversation_id, state.inner(), chat_service)
+        .await
+        .map(|_| ())
+}
+
+async fn recheck_pr_health_for_state(
+    conversation_id: String,
+    state: &AppState,
+    chat_service: Arc<dyn ChatService>,
+) -> Result<bool, String> {
+    crate::application::services::pr_merge_poller::recheck_agent_workspace_pr_health(
+        state,
+        &ChatConversationId::from_string(conversation_id),
+        chat_service,
+    )
+    .await
+    .map_err(|error| error.to_string())
+}
+
+/// Retries a held PR autofix only when the UI's exact durable attempt version still owns it.
+#[tauri::command]
+pub async fn retry_pr_autofix_override(
+    input: AgentWorkspaceRepairHoldActionInput,
+    state: State<'_, AppState>,
+) -> Result<AgentConversationWorkspaceResponse, String> {
+    apply_pr_autofix_hold_action(input, state.inner(), true).await
+}
+
+/// Stops the exact held PR autofix generation and leaves auto-merge disabled.
+#[tauri::command]
+pub async fn stop_pr_autofix_for_failure(
+    input: AgentWorkspaceRepairHoldActionInput,
+    state: State<'_, AppState>,
+) -> Result<AgentConversationWorkspaceResponse, String> {
+    apply_pr_autofix_hold_action(input, state.inner(), false).await
+}
+
+/// Clears a continuation's publication-effect attention hold only when the UI's exact durable
+/// attempt version still owns it, then re-runs the ordinary reconciler.
+#[tauri::command]
+pub async fn retry_agent_workspace_publication_effect(
+    input: AgentWorkspaceRepairHoldActionInput,
+    state: State<'_, AppState>,
+) -> Result<AgentConversationWorkspaceResponse, String> {
+    let conversation_id = ChatConversationId::from_string(input.conversation_id);
+    let updated_at = DateTime::parse_from_rfc3339(&input.updated_at)
+        .map_err(|error| format!("invalid repair updated_at: {error}"))?
+        .with_timezone(&Utc);
+    let outcome = retry_agent_workspace_publication_effect_service(
+        state.inner(),
+        &conversation_id,
+        &AgentWorkspaceRepairAttemptId::from_string(input.attempt_id),
+        input.generation,
+        updated_at,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    if !matches!(
+        outcome,
+        AgentWorkspacePrAutofixHoldActionOutcome::Applied(_)
+    ) {
+        return Err(
+            "The workspace repair publication-effect hold changed before this action could be applied."
+                .to_string(),
+        );
+    }
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Agent conversation workspace not found".to_string())?;
+    agent_workspace_response_for_state(state.inner(), workspace).await
+}
+
+async fn apply_pr_autofix_hold_action(
+    input: AgentWorkspaceRepairHoldActionInput,
+    state: &AppState,
+    retry: bool,
+) -> Result<AgentConversationWorkspaceResponse, String> {
+    let conversation_id = ChatConversationId::from_string(input.conversation_id);
+    let updated_at = DateTime::parse_from_rfc3339(&input.updated_at)
+        .map_err(|error| format!("invalid repair updated_at: {error}"))?
+        .with_timezone(&Utc);
+    let outcome = if retry {
+        retry_agent_workspace_pr_autofix_hold_override(
+            Arc::clone(&state.agent_workspace_repair_repo),
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            &conversation_id,
+            &AgentWorkspaceRepairAttemptId::from_string(input.attempt_id),
+            input.generation,
+            updated_at,
+        )
+        .await
+    } else {
+        stop_agent_workspace_pr_autofix_for_hold(
+            Arc::clone(&state.agent_workspace_repair_repo),
+            &conversation_id,
+            &AgentWorkspaceRepairAttemptId::from_string(input.attempt_id),
+            input.generation,
+            updated_at,
+        )
+        .await
+    }
+    .map_err(|error| error.to_string())?;
+    if !matches!(
+        outcome,
+        AgentWorkspacePrAutofixHoldActionOutcome::Applied(_)
+    ) {
+        return Err("The PR autofix hold changed before this action could be applied.".to_string());
+    }
+    if retry {
+        schedule_pr_supervision_recovery_for_conversation_id(
+            state,
+            conversation_id.clone(),
+            AgentWorkspacePrSupervisionRecoveryTrigger::WorkspaceLoad,
+            true,
+        )
+        .await?;
+    }
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Agent conversation workspace not found".to_string())?;
+    agent_workspace_response_for_state(state, workspace).await
+}
+
 fn normalize_agent_workspace_auto_merge_method(method: Option<String>) -> Result<String, String> {
     let method = method
         .unwrap_or_else(|| DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD.to_string())
@@ -5195,6 +5350,7 @@ async fn reconcile_agent_workspace_auto_merge_for_supervision_toggle(
                 pr_number,
                 &desired_workspace,
                 Arc::clone(&state.agent_conversation_workspace_repo),
+                Arc::clone(&state.agent_workspace_repair_repo),
             )
             .await
             .map_err(|error| error.to_string())?;
@@ -5214,16 +5370,16 @@ async fn reconcile_agent_workspace_auto_merge_for_supervision_toggle(
 
         match enable_result {
             Ok(()) => {
-                state
-                    .agent_conversation_workspace_repo
-                    .update_pr_auto_merge_state(
-                        conversation_id,
-                        Some(true),
-                        Some("monitoring"),
-                        Some("GitHub auto-merge is enabled for this PR."),
-                    )
-                    .await
-                    .map_err(|e| e.to_string())?;
+                update_agent_workspace_pr_supervision_state(
+                    state.agent_conversation_workspace_repo.as_ref(),
+                    Some(state.agent_workspace_repair_repo.as_ref()),
+                    conversation_id,
+                    Some(true),
+                    Some("monitoring"),
+                    Some("GitHub auto-merge is enabled for this PR."),
+                )
+                .await
+                .map_err(|e| e.to_string())?;
             }
             Err(error) => {
                 tracing::warn!(
@@ -5232,16 +5388,16 @@ async fn reconcile_agent_workspace_auto_merge_for_supervision_toggle(
                     error = %error,
                     "Agent workspace PR supervision deferred GitHub auto-merge enable"
                 );
-                state
-                    .agent_conversation_workspace_repo
-                    .update_pr_auto_merge_state(
-                        conversation_id,
-                        Some(false),
-                        Some(AUTO_MERGE_SUPERVISION_STATUS_WAITING),
-                        Some(&auto_merge_enable_failure_summary(&error)),
-                    )
-                    .await
-                    .map_err(|e| e.to_string())?;
+                update_agent_workspace_pr_supervision_state(
+                    state.agent_conversation_workspace_repo.as_ref(),
+                    Some(state.agent_workspace_repair_repo.as_ref()),
+                    conversation_id,
+                    Some(false),
+                    Some(AUTO_MERGE_SUPERVISION_STATUS_WAITING),
+                    Some(&auto_merge_enable_failure_summary(&error)),
+                )
+                .await
+                .map_err(|e| e.to_string())?;
             }
         }
     } else {
@@ -5255,6 +5411,7 @@ async fn reconcile_agent_workspace_auto_merge_for_supervision_toggle(
             pr_number,
             &desired_workspace,
             Arc::clone(&state.agent_conversation_workspace_repo),
+            Arc::clone(&state.agent_workspace_repair_repo),
         )
         .await
         {
@@ -5264,16 +5421,16 @@ async fn reconcile_agent_workspace_auto_merge_for_supervision_toggle(
                 error = %error,
                 "Agent workspace PR supervision deferred GitHub auto-merge disable"
             );
-            state
-                .agent_conversation_workspace_repo
-                .update_pr_auto_merge_state(
-                    conversation_id,
-                    Some(true),
-                    Some(AUTO_MERGE_SUPERVISION_STATUS_WAITING),
-                    Some(&auto_merge_disable_failure_summary(&error)),
-                )
-                .await
-                .map_err(|e| e.to_string())?;
+            update_agent_workspace_pr_supervision_state(
+                state.agent_conversation_workspace_repo.as_ref(),
+                Some(state.agent_workspace_repair_repo.as_ref()),
+                conversation_id,
+                Some(true),
+                Some(AUTO_MERGE_SUPERVISION_STATUS_WAITING),
+                Some(&auto_merge_disable_failure_summary(&error)),
+            )
+            .await
+            .map_err(|e| e.to_string())?;
         }
     }
 
@@ -5356,16 +5513,16 @@ pub async fn set_agent_conversation_workspace_pr_supervision_for_state(
         .await?;
     }
 
-    state
-        .agent_conversation_workspace_repo
-        .update_pr_supervision_preferences(
-            &conversation_id,
-            input.auto_fix_enabled,
-            input.auto_merge_desired,
-            &auto_merge_method,
-        )
-        .await
-        .map_err(|e| e.to_string())?;
+    update_agent_workspace_pr_supervision_preferences(
+        state.agent_conversation_workspace_repo.as_ref(),
+        state.agent_workspace_repair_repo.as_ref(),
+        &conversation_id,
+        input.auto_fix_enabled,
+        input.auto_merge_desired,
+        &auto_merge_method,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
 
     reconcile_agent_workspace_auto_merge_for_supervision_toggle(
         state,
@@ -5766,6 +5923,7 @@ pub async fn set_agent_conversation_workspace_auto_publish_for_state(
                 pr_number,
                 &refreshed_for_sync,
                 Arc::clone(&state.agent_conversation_workspace_repo),
+                Arc::clone(&state.agent_workspace_repair_repo),
             )
             .await
             {
@@ -7987,6 +8145,7 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
             pr_number,
             &refreshed,
             Arc::clone(&state.agent_conversation_workspace_repo),
+            Arc::clone(&state.agent_workspace_repair_repo),
         )
         .await
         {
@@ -9260,6 +9419,7 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
             outcome.pr_number,
             &refreshed,
             Arc::clone(&state.agent_conversation_workspace_repo),
+            Arc::clone(&state.agent_workspace_repair_repo),
         )
         .await
         {

@@ -1,7 +1,7 @@
 {
   "name": "ralphx",
   "private": true,
-  "version": "0.93.0",
+  "version": "0.95.0",
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
@@ -14,6 +14,7 @@
     "test": "vitest",
     "test:run": "vitest run",
     "test:check-warnings": "./scripts/check-vitest-warnings.sh",
+    "test:integration:chat-scroll": "playwright test tests/integration/chat-scroll-lifecycle.spec.ts --workers=1",
     "test:visual": "playwright test tests/visual --workers=1",
     "test:coverage": "vitest run --coverage --testTimeout=15000 --retry=1",
     "pretypecheck": "node ../scripts/check-raw-tauri-event-listen.mjs .. && node ../scripts/check-remote-transport-drift.mjs --self-test && node ../scripts/check-remote-transport-drift.mjs .. && node ../scripts/check-local-only-event-mirror.mjs .. && node ../scripts/check-remote-vocabulary-mirror.mjs .. && node ../scripts/check-agent-control-command-mirror.mjs .. && node ../scripts/generate-remote-coverage-census.mjs --check ..",
@@ -73,7 +74,7 @@
     "react-dom": "^19.2.5",
     "react-intersection-observer": "^10.0.3",
     "react-markdown": "^10.1.0",
-    "react-virtuoso": "^4.18.6",
+    "react-virtuoso": "^4.18.11",
     "recharts": "^3.8.1",
     "remark-gfm": "^4.0.1",
     "sonner": "^2.0.7",

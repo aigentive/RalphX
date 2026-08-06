@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, act } from "@testing-library/react";
+import { render, screen, act, renderHook } from "@testing-library/react";
 import { BashWidget } from "../BashWidget";
 import { ToolCallStoreKeyContext } from "../ToolCallStoreKeyContext";
 import { useChatStore } from "@/stores/chatStore";
+import { useDelegateCardExpansion } from "../../useDelegateCardExpansion";
 import type { ToolCall } from "../shared.constants";
 
 const STORE_KEY = "task_execution:test-task-123";
@@ -175,5 +176,68 @@ describe("BashWidget — duration display", () => {
       expect(screen.getByText("exit 0")).toBeInTheDocument();
       expect(screen.getByText("Tests passed")).toBeInTheDocument();
     });
+  });
+});
+
+describe("ToolCallStoreKeyContext activation — context-scoped state", () => {
+  beforeEach(() => {
+    useChatStore.setState({
+      toolCallStartTimes: {},
+      toolCallCompletionTimestamps: {},
+      activeConversationIds: {},
+      delegateExpansionByConversation: {},
+    });
+  });
+
+  it("scopes bash duration to the active store key and clears on a conversation switch", () => {
+    const startTime = Date.now() - 30_000;
+    const completedAt = Date.now() - 5_000; // took 25s
+    useChatStore.setState({
+      toolCallStartTimes: { "project:conv-a": { "bash-tool-1": startTime } },
+      toolCallCompletionTimestamps: { "project:conv-a": { "bash-tool-1": completedAt } },
+    });
+
+    const { rerender } = render(
+      <ToolCallStoreKeyContext.Provider value="project:conv-a">
+        <BashWidget toolCall={makeToolCall()} />
+      </ToolCallStoreKeyContext.Provider>,
+    );
+    expect(screen.getByTestId("bash-duration")).toHaveTextContent("25s");
+
+    // Switching context keys (e.g. conversation switch) must not leak the previous key's duration.
+    rerender(
+      <ToolCallStoreKeyContext.Provider value="project:conv-b">
+        <BashWidget toolCall={makeToolCall()} />
+      </ToolCallStoreKeyContext.Provider>,
+    );
+    expect(screen.queryByTestId("bash-duration")).not.toBeInTheDocument();
+  });
+
+  it("drops delegate-card expansion state for the previous conversation on a conversation switch", () => {
+    const storeKey = "project:conv-switch";
+    act(() => {
+      useChatStore.getState().setActiveConversation(storeKey, "conversation-a");
+    });
+
+    const { result } = renderHook(() => useDelegateCardExpansion("delegate-1", true), {
+      wrapper: ({ children }) => (
+        <ToolCallStoreKeyContext.Provider value={storeKey}>{children}</ToolCallStoreKeyContext.Provider>
+      ),
+    });
+
+    act(() => {
+      result.current.setIsExpanded(true);
+    });
+    expect(result.current.isExpanded).toBe(true);
+    expect(
+      useChatStore.getState().delegateExpansionByConversation["conversation-a"]?.["delegate-1"],
+    ).toBe(true);
+
+    act(() => {
+      useChatStore.getState().setActiveConversation(storeKey, "conversation-b");
+    });
+
+    expect(useChatStore.getState().delegateExpansionByConversation["conversation-a"]).toBeUndefined();
+    expect(result.current.isExpanded).toBe(false);
   });
 });

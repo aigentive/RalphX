@@ -122,6 +122,7 @@ async fn chunk_block_index_matches_persisted_block_index_across_interleaved_bloc
         &message_id,
         &blocks,
         ChatTimelineItemStatus::Streaming,
+        None,
     )
     .await;
     let persisted_block_index = persisted
@@ -165,6 +166,7 @@ async fn chunk_block_index_ignores_skipped_empty_text_block() {
         &message_id,
         &blocks,
         ChatTimelineItemStatus::Streaming,
+        None,
     )
     .await;
     let persisted_block_index = persisted
@@ -202,6 +204,7 @@ async fn persist_timeline_snapshot_has_no_item_for_empty_thinking_summary() {
         &message_id,
         &processor.content_blocks,
         ChatTimelineItemStatus::Streaming,
+        None,
     )
     .await;
 
@@ -236,6 +239,7 @@ async fn persist_timeline_snapshot_skips_whitespace_thinking_blocks_without_remo
         &message_id,
         &blocks,
         ChatTimelineItemStatus::Finalized,
+        None,
     )
     .await;
 
@@ -685,6 +689,7 @@ async fn run_claude_stream_lines(lines: &[&str]) -> Result<StreamOutcome, Stream
         ChatContextType::Ideation,
         context_id.as_str(),
         &conversation_id,
+        None::<std::path::PathBuf>,
         Some(app_handle),
         None,
         None,
@@ -742,6 +747,7 @@ async fn claude_thinking_stream_emits_settle_payload_through_service_entry() {
         ChatContextType::Ideation,
         context_id.as_str(),
         &conversation_id,
+        None::<std::path::PathBuf>,
         Some(app.handle().clone()),
         None,
         None,
@@ -806,6 +812,7 @@ async fn claude_task_events_cache_lifecycle_defaults_and_stream_sequence() {
         ChatContextType::Ideation,
         context_id.as_str(),
         &conversation_id,
+        None::<std::path::PathBuf>,
         None,
         None,
         None,
@@ -859,6 +866,7 @@ async fn claude_stream_error_turn_complete_does_not_wait_for_interactive_timeout
             ChatContextType::Ideation,
             context_id.as_str(),
             &conversation_id,
+            None::<std::path::PathBuf>,
             None,
             None,
             None,
@@ -945,6 +953,7 @@ async fn claude_mode_handoff_turn_complete_retires_exact_ipr_without_waiting_for
             ChatContextType::Project,
             context_id,
             &conversation_id,
+            None::<std::path::PathBuf>,
             None,
             None,
             None,
@@ -991,6 +1000,7 @@ async fn run_codex_stream_lines(lines: &[&str]) -> Result<StreamOutcome, StreamE
         ChatContextType::Ideation,
         context_id.as_str(),
         &conversation_id,
+        None::<std::path::PathBuf>,
         None::<tauri::AppHandle<MockRuntime>>,
         None,
         None,
@@ -1029,6 +1039,7 @@ async fn codex_stream_turn_completed_finishes_without_waiting_for_process_exit()
             ChatContextType::Ideation,
             context_id.as_str(),
             &conversation_id,
+            None::<std::path::PathBuf>,
             None::<tauri::AppHandle<MockRuntime>>,
             None,
             None,
@@ -1119,6 +1130,7 @@ async fn codex_empty_nonzero_terminal_exit_is_typed_as_no_output() {
         ChatContextType::Ideation,
         context_id.as_str(),
         &conversation_id,
+        None::<std::path::PathBuf>,
         None::<tauri::AppHandle<MockRuntime>>,
         None,
         None,
@@ -1166,6 +1178,7 @@ async fn codex_empty_success_terminal_exit_is_typed_as_no_output() {
         ChatContextType::Ideation,
         context_id.as_str(),
         &conversation_id,
+        None::<std::path::PathBuf>,
         None::<tauri::AppHandle<MockRuntime>>,
         None,
         None,
@@ -1218,6 +1231,7 @@ async fn codex_owned_cancellation_outranks_empty_terminal_exit() {
         ChatContextType::Ideation,
         context_id.as_str(),
         &conversation_id,
+        None::<std::path::PathBuf>,
         None::<tauri::AppHandle<MockRuntime>>,
         None,
         None,
@@ -1256,6 +1270,7 @@ async fn codex_stdin_notice_only_exit_is_typed_as_no_output_with_details() {
         ChatContextType::Ideation,
         context_id.as_str(),
         &conversation_id,
+        None::<std::path::PathBuf>,
         None::<tauri::AppHandle<MockRuntime>>,
         None,
         None,
@@ -1320,6 +1335,7 @@ async fn codex_event_msg_agent_messages_persist_to_task_execution_transcript() {
         ChatContextType::TaskExecution,
         task_id.as_str(),
         &conversation_id,
+        None::<std::path::PathBuf>,
         None::<tauri::AppHandle<MockRuntime>>,
         None,
         None,
@@ -1422,6 +1438,7 @@ async fn codex_reasoning_persists_as_thinking_without_entering_response_text() {
         ChatContextType::Ideation,
         context_id.as_str(),
         &conversation_id,
+        None::<std::path::PathBuf>,
         None::<tauri::AppHandle<MockRuntime>>,
         None,
         None,
@@ -1499,6 +1516,7 @@ async fn live_codex_exec_json_reasoning_persists_as_thinking_blocks() {
         ChatContextType::Ideation,
         context_id.as_str(),
         &conversation_id,
+        None::<std::path::PathBuf>,
         Some(app.handle().clone()),
         None,
         None,
@@ -1653,6 +1671,7 @@ async fn claude_stream_turn_complete_persists_assistant_blocks_to_timeline() {
         ChatContextType::Ideation,
         context_id.as_str(),
         &conversation_id,
+        None::<std::path::PathBuf>,
         Some(app_handle),
         None,
         None,
@@ -1754,6 +1773,7 @@ async fn claude_text_only_in_flight_stream_persists_timeline_snapshot_before_fin
                 ChatContextType::Ideation,
                 context_id.as_str(),
                 &conversation_id,
+                None::<std::path::PathBuf>,
                 None,
                 None,
                 None,
@@ -1858,6 +1878,7 @@ async fn claude_multi_turn_stream_persists_combined_usage_to_canonical_run() {
         ChatContextType::Ideation,
         context_id.as_str(),
         &conversation_id,
+        None::<std::path::PathBuf>,
         None,
         None,
         None,
@@ -1942,6 +1963,7 @@ async fn persist_timeline_snapshot_writes_ordered_blocks_and_finalizes_them() {
         &message_id,
         &streaming_blocks,
         ChatTimelineItemStatus::Streaming,
+        None,
     )
     .await;
     assert_eq!(streaming_items.len(), 4);
@@ -1977,6 +1999,7 @@ async fn persist_timeline_snapshot_writes_ordered_blocks_and_finalizes_them() {
         &message_id,
         &blocks,
         ChatTimelineItemStatus::Finalized,
+        None,
     )
     .await;
     assert_eq!(finalized_items.len(), 3);
@@ -2002,6 +2025,84 @@ async fn persist_timeline_snapshot_writes_ordered_blocks_and_finalizes_them() {
         .items
         .iter()
         .all(|item| item.finalized_at.is_some()));
+}
+
+#[tokio::test]
+async fn persist_timeline_snapshot_attributes_blocks_to_the_active_run() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let message_id = Some("assistant-message-run-attribution".to_string());
+    let run_id = AgentRunId::new().as_str();
+    let blocks = vec![
+        ContentBlockItem::Text {
+            text: "Attributed to the active run".to_string(),
+        },
+        ContentBlockItem::ToolUse {
+            id: Some("tool-attribution".to_string()),
+            name: "bash".to_string(),
+            arguments: serde_json::json!({ "command": "cargo test" }),
+            result: Some(serde_json::json!("ok")),
+            parent_tool_use_id: None,
+            diff_context: None,
+        },
+    ];
+
+    let items = persist_timeline_snapshot(
+        &Some(state.chat_timeline_repo.clone()),
+        &conversation_id.as_str(),
+        &message_id,
+        &blocks,
+        ChatTimelineItemStatus::Finalized,
+        Some(run_id.as_str()),
+    )
+    .await;
+
+    assert!(!items.is_empty());
+    assert!(items
+        .iter()
+        .all(|item| item.run_id.as_ref().map(|id| id.as_str()) == Some(run_id.clone())));
+
+    let page = state
+        .chat_timeline_repo
+        .get_page(&conversation_id, 10, None)
+        .await
+        .expect("load timeline page");
+    assert!(!page.items.is_empty());
+    assert!(page
+        .items
+        .iter()
+        .all(|item| item.run_id.as_ref().map(|id| id.as_str()) == Some(run_id.clone())));
+}
+
+#[tokio::test]
+async fn persist_timeline_snapshot_without_run_leaves_run_id_null() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let message_id = Some("assistant-message-no-run-attribution".to_string());
+    let blocks = vec![ContentBlockItem::Text {
+        text: "No active run in scope".to_string(),
+    }];
+
+    let items = persist_timeline_snapshot(
+        &Some(state.chat_timeline_repo.clone()),
+        &conversation_id.as_str(),
+        &message_id,
+        &blocks,
+        ChatTimelineItemStatus::Finalized,
+        None,
+    )
+    .await;
+
+    assert!(!items.is_empty());
+    assert!(items.iter().all(|item| item.run_id.is_none()));
+
+    let page = state
+        .chat_timeline_repo
+        .get_page(&conversation_id, 10, None)
+        .await
+        .expect("load timeline page");
+    assert!(!page.items.is_empty());
+    assert!(page.items.iter().all(|item| item.run_id.is_none()));
 }
 
 #[tokio::test]
@@ -2034,6 +2135,7 @@ async fn persist_timeline_snapshot_keeps_raw_payloads_only_for_full_fidelity_too
         &message_id,
         &blocks,
         ChatTimelineItemStatus::Finalized,
+        None,
     )
     .await;
 
@@ -2090,6 +2192,7 @@ async fn persist_timeline_snapshot_preserves_streaming_block_order_and_kind_when
         &message_id,
         &blocks,
         ChatTimelineItemStatus::Streaming,
+        None,
     )
     .await;
     let streaming_projection = streaming_items
@@ -2110,6 +2213,7 @@ async fn persist_timeline_snapshot_preserves_streaming_block_order_and_kind_when
         &message_id,
         &blocks,
         ChatTimelineItemStatus::Finalized,
+        None,
     )
     .await;
 
@@ -2159,6 +2263,7 @@ async fn persist_timeline_snapshot_returns_empty_when_any_item_write_fails() {
         &message_id,
         &blocks,
         ChatTimelineItemStatus::Finalized,
+        None,
     )
     .await;
 
@@ -2222,6 +2327,7 @@ async fn timeline_persistence_helpers_ignore_missing_repo_or_message_identity() 
         &Some("assistant-message-missing-repo".to_string()),
         &blocks,
         ChatTimelineItemStatus::Streaming,
+        None,
     )
     .await;
     let missing_message_items = persist_timeline_snapshot(
@@ -2230,6 +2336,7 @@ async fn timeline_persistence_helpers_ignore_missing_repo_or_message_identity() 
         &None,
         &blocks,
         ChatTimelineItemStatus::Streaming,
+        None,
     )
     .await;
     assert!(missing_repo_items.is_empty());
@@ -2404,6 +2511,7 @@ async fn codex_cumulative_capture_requires_persisted_session_attribution() {
         ChatContextType::Ideation,
         conversation.context_id.as_str(),
         &conversation.id,
+        None::<std::path::PathBuf>,
         None::<tauri::AppHandle<MockRuntime>>,
         None,
         None,
@@ -3707,6 +3815,7 @@ async fn run_debounce_stream(
         ChatContextType::Ideation,
         context_id.as_str(),
         &conversation_id,
+        None::<std::path::PathBuf>,
         Some(app_handle),
         None,
         None,
@@ -3880,6 +3989,7 @@ async fn debounce_flush_never_wipes_durable_rows_while_text_is_still_in_flight()
         &[],
         &[],
         ChatTimelineItemStatus::Streaming,
+        None,
     )
     .await;
 

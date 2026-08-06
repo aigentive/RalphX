@@ -64,6 +64,10 @@ vi.mock("@/hooks/useUsageStatsEvents", () => ({
   useUsageStatsEvents: vi.fn(),
 }));
 
+vi.mock("@/components/agents/useAgentWorkspaceOperationToasts", () => ({
+  useAgentWorkspaceOperationToasts: vi.fn(),
+}));
+
 // Mock the event bus module
 vi.mock("@/lib/event-bus", () => ({
   createEventBus: vi.fn(() => ({

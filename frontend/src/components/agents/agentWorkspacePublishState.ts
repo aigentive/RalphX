@@ -143,7 +143,7 @@ export function getAgentWorkspaceTerminalPublicationLabel(
 }
 
 export type AgentWorkspaceMaintenancePresentation = {
-  action: "none" | "publish" | "retry";
+  action: "hold" | "none" | "publish" | "retry";
   automaticContinuation: string | null;
   busy: boolean;
   summary: string;
@@ -154,6 +154,31 @@ export type AgentWorkspaceMaintenancePresentation = {
 export type AgentWorkspacePrAutofixFingerprintSpendPresentation = {
   summary: string;
   exhausted: boolean;
+};
+
+export type AgentWorkspaceHoldPresentation = {
+  agentStatus: string;
+  generationVerdict: string;
+  title: string;
+  waitingOnLabel: string;
+  waitingOn: string;
+};
+
+const HOLD_SUMMARIES = {
+  pr_autofix_unchanged_health:
+    "The fixer ran but changed nothing, and GitHub still reports the same failing check. RalphX won't spend another generation until this PR's health changes.",
+  pr_autofix_pre_existing_on_base:
+    "This failure already exists on the base branch, so fixing it on this PR branch would not help.",
+  pr_autofix_ci_rerun_pending:
+    "RalphX asked GitHub to re-run the failed jobs and is waiting for the result.",
+  base_stale:
+    "The branch is still behind its targeted base commit after RalphX attempted the update.",
+  health_evidence:
+    "RalphX is waiting for GitHub to report new PR health evidence before retrying.",
+  publish_redrive:
+    "RalphX is resuming publication for the rebased branch.",
+  publication_effect_attention:
+    "RalphX pushed a repair but could not confirm it reached GitHub. Retry publication to make RalphX try again.",
 };
 
 export function getAgentWorkspacePrAutofixFingerprintSpendPresentation(
@@ -173,6 +198,49 @@ export function getAgentWorkspaceMaintenanceOperation(
   workspace: AgentConversationWorkspace | null | undefined,
 ): AgentWorkspaceMaintenanceOperation | null {
   return workspace?.maintenanceOperation ?? null;
+}
+
+export function getAgentWorkspaceHoldPresentation(
+  workspace: AgentConversationWorkspace | null | undefined,
+): AgentWorkspaceHoldPresentation | null {
+  const operation = getAgentWorkspaceMaintenanceOperation(workspace);
+  if (operation?.stage !== "held") {
+    return null;
+  }
+  if (operation.holdReason === "publication_effect_attention") {
+    return {
+      agentStatus: "Nothing is running",
+      generationVerdict:
+        operation.summary ??
+        HOLD_SUMMARIES.publication_effect_attention,
+      title: "Repair paused — publish not confirmed",
+      waitingOnLabel: "Confirmation the push reached GitHub",
+      waitingOn: HOLD_SUMMARIES.publication_effect_attention,
+    };
+  }
+  const holdSummary = operation.holdReason
+    ? HOLD_SUMMARIES[operation.holdReason]
+    : null;
+  const waitingOn =
+    holdSummary ?? "RalphX paused this repair until new PR health evidence is available.";
+  const preExisting = operation.holdReason === "pr_autofix_pre_existing_on_base";
+  const ciRerun = operation.holdReason === "pr_autofix_ci_rerun_pending";
+  return {
+    agentStatus: "Nothing is running",
+    generationVerdict:
+      operation.summary ?? "The last repair generation did not clear this failure.",
+    title: preExisting
+      ? "Repair paused — failure exists on the base branch"
+      : ciRerun
+        ? "Repair paused — waiting for CI rerun"
+        : "Repair paused — waiting for new CI evidence",
+    waitingOnLabel: preExisting
+      ? "Base branch repair"
+      : ciRerun
+        ? "GitHub CI rerun"
+        : "New PR health evidence",
+    waitingOn,
+  };
 }
 
 export function isAgentWorkspaceMaintenanceActive(
@@ -273,6 +341,17 @@ export function getAgentWorkspaceMaintenancePresentation(
         action: "none",
         automaticContinuation,
       };
+    case "held": {
+      const hold = getAgentWorkspaceHoldPresentation(workspace);
+      return {
+        title: hold?.title ?? "Repair paused",
+        summary: hold?.waitingOn ?? summary,
+        tone: "warning",
+        busy: false,
+        action: "hold",
+        automaticContinuation: null,
+      };
+    }
     case "ready":
       if (operation.holdReason === "publish_redrive") {
         return {
@@ -282,6 +361,16 @@ export function getAgentWorkspaceMaintenancePresentation(
           busy: true,
           action: "none",
           automaticContinuation: "RalphX is resuming publication automatically.",
+        };
+      }
+      if (operation.holdReason === "base_stale") {
+        return {
+          title: "Behind base — update did not take",
+          summary,
+          tone: "warning",
+          busy: false,
+          action: "none",
+          automaticContinuation: null,
         };
       }
       if (operation.holdReason === "health_evidence") {

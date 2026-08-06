@@ -1180,7 +1180,11 @@ fn detector_b_is_calibrated_and_floor_enforced() {
         // every name was already in `generate_handler!`; only its ledger disposition and remote
         // registration changed. The ticket credential remains host-side and is absent from all
         // six serialized read projections.
-        605,
+        // 605 -> 609: four PR-autofix/publication-repair commands arrived on main —
+        // `recheck_pr_health`, `retry_pr_autofix_override`, `stop_pr_autofix_for_failure`, and
+        // `retry_agent_workspace_publication_effect`. A census-count change only: each reaches
+        // gh, git, or an agent relaunch, all four are ledgered Denied, and none is registered.
+        609,
         "review the detector against the full command census"
     );
     let flagged = spawn_triggering_writers(

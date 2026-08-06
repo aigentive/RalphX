@@ -239,6 +239,7 @@ async fn build_standalone_claude_noninteractive_resume_command(
         None,
         false,
         None,
+        None,
     )
     .await
     .expect("standalone Claude noninteractive resume command should build")

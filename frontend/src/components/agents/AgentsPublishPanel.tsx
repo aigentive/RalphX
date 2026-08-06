@@ -65,10 +65,7 @@ import {
 import { useIsRemoteEnvironment } from "@/hooks/useActiveEnvironment";
 import { useAgentGate } from "@/hooks/useAgentGate";
 import { useConfirmation } from "@/hooks/useConfirmation";
-import {
-  prKeys,
-  usePullRequestDetail,
-} from "@/hooks/usePullRequestDetail";
+import { prKeys, usePullRequestDetail } from "@/hooks/usePullRequestDetail";
 import { useReviewSettings } from "@/hooks/useReviewSettings";
 import {
   pullRequestSelectorFromShell,
@@ -96,6 +93,7 @@ import {
   type PublishWorkspaceDialogPhase,
 } from "./AgentsPublishWorkspaceDialog";
 import { AgentsPublishInlineDiffs } from "./AgentsPublishInlineDiffs";
+import { AgentsPublishHoldCard } from "./AgentsPublishHoldCard";
 import { AgentsPublishRepairState } from "./AgentsPublishRepairState";
 import {
   blocksAgentWorkspaceGitInspection,
@@ -135,6 +133,7 @@ import {
 } from "./useAgentWorkspaceBaseUpdate";
 import { useAgentWorkspaceFullFreshness } from "./useAgentWorkspaceFullFreshness";
 import type { AgentWorkspacePublishAttempt } from "./useAgentWorkspacePublisher";
+import { watchAgentWorkspaceOperation } from "./agentWorkspaceOperationRegistry";
 import {
   agentWorkspaceOperationErrorDetail,
   agentWorkspaceOperationToastId,
@@ -142,7 +141,9 @@ import {
 } from "./agentWorkspaceOperationToast";
 
 const LazyDiffViewer = lazyWithRetry(() =>
-  import("@/components/diff").then((module) => ({ default: module.DiffViewer })),
+  import("@/components/diff").then((module) => ({
+    default: module.DiffViewer,
+  })),
 );
 
 const PUBLISH_EVENT_START_SKEW_MS = 5_000;
@@ -172,7 +173,8 @@ function formatSnapshotAge(capturedAt: string): string {
 }
 
 function hasPublishReadinessAction(
-  freshness: { recommendedActions?: readonly string[] | undefined } | null | undefined,
+  freshness:
+    { recommendedActions?: readonly string[] | undefined } | null | undefined,
   action: string,
 ) {
   return freshness?.recommendedActions?.includes(action) ?? false;
@@ -200,7 +202,9 @@ function latestPublicationEventForActivePublish(
             createdAtMs >= publishStartedAtMs - PUBLISH_EVENT_START_SKEW_MS
           );
         });
-  return candidates.length > 0 ? candidates[candidates.length - 1] ?? null : null;
+  return candidates.length > 0
+    ? (candidates[candidates.length - 1] ?? null)
+    : null;
 }
 
 function pipelineStatusFromPublicationEvent(
@@ -212,15 +216,34 @@ function pipelineStatusFromPublicationEvent(
   return event.step === "published" ? "pushed" : event.step;
 }
 
+function heldRepairActionInput(workspace: AgentConversationWorkspace | null) {
+  const operation = workspace?.maintenanceOperation;
+  if (!operation || operation.stage !== "held") {
+    throw new Error(
+      "This repair hold is no longer current. Refresh and try again.",
+    );
+  }
+  return {
+    attemptId: operation.operationId,
+    generation: operation.generation,
+    updatedAt: operation.updatedAt,
+  };
+}
+
 function workspaceReviewAutoMergeGuardSummary(
   reviewContext: AgentWorkspaceReviewContext | null | undefined,
-): { label: string; detail: string; status: "active" | "error" | "pending" } | null {
+): {
+  label: string;
+  detail: string;
+  status: "active" | "error" | "pending";
+} | null {
   const monitor = reviewContext?.monitor;
   switch (monitor?.autoMergeGuardStatus) {
     case "pausing":
       return {
         label: "Auto-merge pausing",
-        detail: "GitHub auto-merge is being paused before Workspace Review starts.",
+        detail:
+          "GitHub auto-merge is being paused before Workspace Review starts.",
         status: "pending",
       };
     case "paused_for_review":
@@ -255,6 +278,12 @@ function workspaceReviewAutoMergeGuardSummary(
   }
 }
 
+export type AgentPublishReviewEvidence =
+  | { status: "loading" }
+  | { status: "unavailable" }
+  | { status: "error"; error: Error }
+  | { status: "ready"; changeCount: number };
+
 export function AgentPublishPanel({
   workspace,
   conversationTitle,
@@ -283,7 +312,7 @@ export function AgentPublishPanel({
   activeSubTab: AgentPublishSubTab;
   showReviewTab: boolean;
   onSubTabChange: (tab: AgentPublishSubTab) => void;
-  reviewContent: ReactNode;
+  reviewContent: (evidence: AgentPublishReviewEvidence) => ReactNode;
   reviewTabStatusColor?: string | null;
   reviewTabStatusLabel?: string | null;
   isReviewTabRunning?: boolean;
@@ -306,7 +335,8 @@ export function AgentPublishPanel({
   const prDescriptionPrecomputeKeysRef = useRef<Set<string>>(new Set());
   const autoRefreshFromBaseKeysRef = useRef<Set<string>>(new Set());
   const [selectedRebaseBaseKey, setSelectedRebaseBaseKey] = useState("");
-  const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
+  const { confirm, confirmationDialogProps, ConfirmationDialog } =
+    useConfirmation();
   const reviewSettingsQuery = useReviewSettings();
   const conversationId = workspace?.conversationId ?? null;
   const project = useProjectStore(
@@ -368,7 +398,8 @@ export function AgentPublishPanel({
         conversationId,
         history:
           (sameConversation && current.history) || activeSubTab === "history",
-        review: (sameConversation && current.review) || activeSubTab === "review",
+        review:
+          (sameConversation && current.review) || activeSubTab === "review",
       };
     });
   }, [activeSubTab, conversationId]);
@@ -377,25 +408,45 @@ export function AgentPublishPanel({
       current?.conversationId === conversationId ? current : null,
     );
   }, [conversationId]);
-  const maintenancePresentation = getAgentWorkspaceMaintenancePresentation(workspace);
-  const fingerprintSpend = getAgentWorkspacePrAutofixFingerprintSpendPresentation(workspace);
+  const maintenancePresentation =
+    getAgentWorkspaceMaintenancePresentation(workspace);
+  const fingerprintSpend =
+    getAgentWorkspacePrAutofixFingerprintSpendPresentation(workspace);
+  const isHeld = maintenancePresentation?.action === "hold";
   const isMaintenanceActive = isAgentWorkspaceMaintenanceActive(workspace);
   const blocksGitInspection = blocksAgentWorkspaceGitInspection(workspace);
   const isPublishingWorkspace =
     publishAttempt !== null || isAgentWorkspacePublishActive(workspace);
   const publishStartedAtMs = publishAttempt?.startedAtMs ?? null;
   const currentPublishDialogState =
-    publishDialogState?.conversationId === conversationId ? publishDialogState : null;
+    publishDialogState?.conversationId === conversationId
+      ? publishDialogState
+      : null;
   const publishDialogOpen = currentPublishDialogState?.open ?? false;
   const publishDialogPhase = currentPublishDialogState?.phase ?? "confirm";
-  const {
-    isUpdatingFromBase,
-    runUpdateFromBase,
-    syncMaintenanceOperation,
-  } = useAgentWorkspaceBaseUpdate({ conversationTitle });
+  const { isUpdatingFromBase, runUpdateFromBase } = useAgentWorkspaceBaseUpdate(
+    {
+      conversationTitle,
+    },
+  );
   useEffect(() => {
-    syncMaintenanceOperation(workspace);
-  }, [syncMaintenanceOperation, workspace]);
+    if (
+      !conversationId ||
+      !(
+        workspace?.maintenanceOperation ||
+        isAgentWorkspacePublishActive(workspace)
+      )
+    ) {
+      return;
+    }
+    watchAgentWorkspaceOperation({
+      conversationId,
+      projectId: workspace?.projectId ?? null,
+      conversationTitle: conversationTitle?.trim() || null,
+      kind: "observed",
+      startedAtMs: null,
+    });
+  }, [conversationId, conversationTitle, workspace]);
   const canHydratePublishFacts = useDeferredAgentHydration(conversationId);
   const isRepairPending =
     !workspace?.maintenanceOperation &&
@@ -452,6 +503,19 @@ export function AgentPublishPanel({
       (reviewOpen || inlineDiffsCandidate),
     staleTime: 2_000,
   });
+  const publishReviewEvidence: AgentPublishReviewEvidence = reviewQuery.isError
+    ? { status: "error", error: reviewQuery.error }
+    : reviewQuery.isSuccess
+      ? // A remote review resolves to null when the host has never captured a
+        // snapshot; that is "not captured", never an empty change set.
+        reviewQuery.data === null
+        ? { status: "unavailable" }
+        : { status: "ready", changeCount: reviewQuery.data.changes.length }
+      : reviewQuery.fetchStatus === "idle" &&
+          !reviewQuery.isSuccess &&
+          !reviewQuery.isError
+        ? { status: "unavailable" }
+        : { status: "loading" };
   const changeSummaryQuery = useQuery({
     queryKey: agentWorkspaceKeys.changeSummary(conversationId),
     queryFn: () =>
@@ -466,24 +530,33 @@ export function AgentPublishPanel({
     staleTime: AGENT_WORKSPACE_STALE_MS,
   });
   const publicationEventsQuery = useQuery({
-    queryKey: ["agents", "conversation-workspace-publication-events", conversationId],
+    queryKey: [
+      "agents",
+      "conversation-workspace-publication-events",
+      conversationId,
+    ],
     queryFn: () =>
       chatApi.listAgentConversationWorkspacePublicationEvents(conversationId!),
     enabled: canHydratePublishFacts && !!conversationId,
     staleTime: 0,
-    refetchInterval: isPublishingWorkspace || isMaintenanceActive ? 1_500 : false,
+    refetchInterval:
+      isPublishingWorkspace || isMaintenanceActive ? 1_500 : false,
   });
   const prAnnotationsQuery = useQuery({
     queryKey: agentWorkspaceKeys.prAnnotations(conversationId),
-    queryFn: () => diffApi.getAgentConversationWorkspacePrAnnotations(conversationId!),
+    queryFn: () =>
+      diffApi.getAgentConversationWorkspacePrAnnotations(conversationId!),
     enabled: canHydratePublishFacts && !!conversationId && hasPublishedPr,
     staleTime: 30_000,
-    refetchInterval: isPublishingWorkspace || isMaintenanceActive ? 5_000 : false,
+    refetchInterval:
+      isPublishingWorkspace || isMaintenanceActive ? 5_000 : false,
   });
   const workspaceReviewHunkAnnotationsQuery = useQuery({
     queryKey: agentWorkspaceKeys.workspaceReviewHunkAnnotations(conversationId),
     queryFn: () =>
-      diffApi.getAgentConversationWorkspaceReviewHunkAnnotations(conversationId!),
+      diffApi.getAgentConversationWorkspaceReviewHunkAnnotations(
+        conversationId!,
+      ),
     enabled:
       canHydratePublishFacts &&
       !!conversationId &&
@@ -491,7 +564,8 @@ export function AgentPublishPanel({
       !blocksGitInspection &&
       (reviewOpen || inlineDiffsCandidate),
     staleTime: 2_000,
-    refetchInterval: isPublishingWorkspace || isMaintenanceActive ? 5_000 : false,
+    refetchInterval:
+      isPublishingWorkspace || isMaintenanceActive ? 5_000 : false,
   });
   const terminalPublicationLabel =
     getAgentWorkspaceTerminalPublicationLabel(workspace);
@@ -510,7 +584,9 @@ export function AgentPublishPanel({
   const isLocalCommitPrimary =
     workspacePublishMode.kind === "localCommit" && canCommitLocally;
   const isPipelinePrAutomationWorkspace =
-    workspace?.mode === "ideation" && isPipelineOwnedWorkspace && hasPublishedPr;
+    workspace?.mode === "ideation" &&
+    isPipelineOwnedWorkspace &&
+    hasPublishedPr;
   const shouldShowPrSupervisionControls =
     (workspacePublishMode.kind === "newPr" ||
       workspacePublishMode.kind === "persistedPr") &&
@@ -539,10 +615,8 @@ export function AgentPublishPanel({
       isPublishingWorkspace || isMaintenanceActive || isUpdatingFromBase,
   });
   const freshness = canInspectBaseFreshness ? freshnessQuery.data : undefined;
-  const shouldAutoRefreshFromBase = shouldAutoRefreshCleanAgentWorkspaceFromBase(
-    workspace,
-    freshness,
-  );
+  const shouldAutoRefreshFromBase =
+    shouldAutoRefreshCleanAgentWorkspaceFromBase(workspace, freshness);
   const baseStatus = freshness?.baseStatus ?? "valid";
   const baseBlocked = baseStatus === "blocked";
   const fallbackRebaseOptions = useMemo(
@@ -651,7 +725,10 @@ export function AgentPublishPanel({
         ["agents", "conversation-workspace", updatedWorkspace.conversationId],
         updatedWorkspace,
       );
-      await invalidateWorkspaceQueries(queryClient, updatedWorkspace.conversationId);
+      await invalidateWorkspaceQueries(
+        queryClient,
+        updatedWorkspace.conversationId,
+      );
       toast.success("Pull request closed");
     },
     onError: (error) => {
@@ -659,6 +736,80 @@ export function AgentPublishPanel({
         error instanceof Error ? error.message : "Failed to close pull request",
       );
     },
+  });
+  const heldRepairMutationOptions = {
+    onError: (error: Error) => {
+      toast.error(error.message);
+    },
+  };
+  const recheckPrHealthMutation = useMutation<void, Error>({
+    mutationFn: () =>
+      chatApi.recheckAgentConversationWorkspacePrHealth(conversationId!),
+    onSuccess: async () => {
+      if (conversationId) {
+        await invalidateWorkspaceQueries(queryClient, conversationId);
+      }
+    },
+    ...heldRepairMutationOptions,
+  });
+  const retryPrAutofixMutation = useMutation<AgentConversationWorkspace, Error>(
+    {
+      mutationFn: () =>
+        chatApi.retryAgentConversationWorkspacePrAutofixOverride(
+          conversationId!,
+          heldRepairActionInput(workspace),
+        ),
+      onSuccess: async (updatedWorkspace) => {
+        queryClient.setQueryData(
+          agentWorkspaceKeys.workspace(updatedWorkspace.conversationId),
+          updatedWorkspace,
+        );
+        await invalidateWorkspaceQueries(
+          queryClient,
+          updatedWorkspace.conversationId,
+        );
+      },
+      ...heldRepairMutationOptions,
+    },
+  );
+  const stopPrAutofixMutation = useMutation<AgentConversationWorkspace, Error>({
+    mutationFn: () =>
+      chatApi.stopAgentConversationWorkspacePrAutofixForFailure(
+        conversationId!,
+        heldRepairActionInput(workspace),
+      ),
+    onSuccess: async (updatedWorkspace) => {
+      queryClient.setQueryData(
+        agentWorkspaceKeys.workspace(updatedWorkspace.conversationId),
+        updatedWorkspace,
+      );
+      await invalidateWorkspaceQueries(
+        queryClient,
+        updatedWorkspace.conversationId,
+      );
+    },
+    ...heldRepairMutationOptions,
+  });
+  const retryPublicationEffectMutation = useMutation<
+    AgentConversationWorkspace,
+    Error
+  >({
+    mutationFn: () =>
+      chatApi.retryAgentConversationWorkspacePublicationEffect(
+        conversationId!,
+        heldRepairActionInput(workspace),
+      ),
+    onSuccess: async (updatedWorkspace) => {
+      queryClient.setQueryData(
+        agentWorkspaceKeys.workspace(updatedWorkspace.conversationId),
+        updatedWorkspace,
+      );
+      await invalidateWorkspaceQueries(
+        queryClient,
+        updatedWorkspace.conversationId,
+      );
+    },
+    ...heldRepairMutationOptions,
   });
   const commitLocallyMutation = useMutation({
     mutationFn: async () => {
@@ -740,11 +891,7 @@ export function AgentPublishPanel({
         throw error;
       }
     },
-    onSuccess: async ({
-      attemptToken,
-      initiatingConversationId,
-      result,
-    }) => {
+    onSuccess: async ({ attemptToken, initiatingConversationId, result }) => {
       if (
         activeConversationIdRef.current !== initiatingConversationId ||
         localCommitAttemptRef.current?.conversationId !==
@@ -758,10 +905,7 @@ export function AgentPublishPanel({
         agentWorkspaceKeys.workspace(initiatingConversationId),
         result.workspace,
       );
-      await invalidateWorkspaceQueries(
-        queryClient,
-        initiatingConversationId,
-      );
+      await invalidateWorkspaceQueries(queryClient, initiatingConversationId);
     },
   });
   const changesError = reviewQuery.error;
@@ -793,7 +937,8 @@ export function AgentPublishPanel({
     changeSummaryQuery.isSuccess &&
     reviewQuery.data === null &&
     changeSummaryQuery.data === null;
-  const isManagedByTaskPipeline = isPipelineOwnedWorkspace && !isPipelinePrAutomationWorkspace;
+  const isManagedByTaskPipeline =
+    isPipelineOwnedWorkspace && !isPipelinePrAutomationWorkspace;
   useEffect(() => {
     if (
       !conversationId ||
@@ -847,7 +992,9 @@ export function AgentPublishPanel({
       : null;
   const baseRetargeted = baseStatus === "retargeted";
   const isBranchUpdateNeeded =
-    !baseBlocked && !terminalPublicationStatus && Boolean(freshness?.isBaseAhead);
+    !baseBlocked &&
+    !terminalPublicationStatus &&
+    Boolean(freshness?.isBaseAhead);
   const isPublishCurrent = isAgentWorkspacePublishCurrent(workspace, freshness);
   const isPublishingThisWorkspace = isPublishingWorkspace;
   const effectivePublishing =
@@ -857,8 +1004,10 @@ export function AgentPublishPanel({
     effectivePublishing,
     workspace.publicationMetadataAttemptId,
   ).visibleEvents.length;
-  const isDescriptionFailed = workspace.publicationPushStatus === "description_failed";
-  const receiptPresentation = getAgentWorkspacePublishReceiptPresentation(workspace);
+  const isDescriptionFailed =
+    workspace.publicationPushStatus === "description_failed";
+  const receiptPresentation =
+    getAgentWorkspacePublishReceiptPresentation(workspace);
   const latestActivePublishEvent = latestPublicationEventForActivePublish(
     publicationEvents,
     publishStartedAtMs,
@@ -876,7 +1025,9 @@ export function AgentPublishPanel({
       : workspace.publicationPushStatus;
   const pipelineStatus = isUpdatingFromBase
     ? "refreshing"
-    : eventPipelineStatus ?? localPublishFallbackStatus ?? workspacePipelineStatus;
+    : (eventPipelineStatus ??
+      localPublishFallbackStatus ??
+      workspacePipelineStatus);
   const baseActionLabel =
     freshness?.effectiveBaseDisplayName ??
     freshness?.effectiveBaseRef ??
@@ -1000,9 +1151,12 @@ export function AgentPublishPanel({
     if (terminalPublicationLabel) return terminalPublicationLabel;
     if (isManagedByTaskPipeline) return "Managed by Tasks";
     if (reviewBlocksPublish && reviewIsRunning) return "Reviewing";
-    if (reviewBlocksPublish && reviewGateStatus === "required") return "Review required";
-    if (reviewBlocksPublish && reviewGateStatus === "blocking") return "Review blocking";
-    if (reviewBlocksPublish && reviewGateStatus === "failed") return "Review failed";
+    if (reviewBlocksPublish && reviewGateStatus === "required")
+      return "Review required";
+    if (reviewBlocksPublish && reviewGateStatus === "blocking")
+      return "Review blocking";
+    if (reviewBlocksPublish && reviewGateStatus === "failed")
+      return "Review failed";
     if (isPublishCurrent) return "PR is up to date";
     return "Commit & Publish";
   })();
@@ -1035,7 +1189,8 @@ export function AgentPublishPanel({
     if (hasPrConflict) return "PR conflicts";
     if (!autoPublishEnabled && hasPublishedPr) return "Auto Publish paused";
     if (prSupervisionStatus === "fixing") return "Fixing PR";
-    if (prSupervisionStatus === "waiting_for_checks") return "Waiting for checks";
+    if (prSupervisionStatus === "waiting_for_checks")
+      return "Waiting for checks";
     if (prSupervisionStatus === "blocked") return "PR supervision blocked";
     if (prAutofixEnabled || prAutoMergeDesired) return "Monitoring PR";
     return null;
@@ -1110,7 +1265,9 @@ export function AgentPublishPanel({
     }
     if (isBranchUpdateNeeded) {
       return {
-        title: isUpdatingFromBase ? "Updating branch" : "Update from base required",
+        title: isUpdatingFromBase
+          ? "Updating branch"
+          : "Update from base required",
         summary: `Base branch ${baseActionLabel} has new commits. Publishing will continue after this branch is updated.`,
         tone: "warning" as const,
         ...(isUpdatingFromBase ? { busy: true } : {}),
@@ -1119,7 +1276,8 @@ export function AgentPublishPanel({
     if (baseBlocked) {
       return {
         title: "Publishing blocked",
-        summary: "Publishing is blocked until the workspace base branch is resolved.",
+        summary:
+          "Publishing is blocked until the workspace base branch is resolved.",
         tone: "warning" as const,
       };
     }
@@ -1176,10 +1334,11 @@ export function AgentPublishPanel({
       return receiptPresentation;
     }
     if (isDescriptionFailed) {
-      const descriptionFailure = getAgentWorkspaceDescriptionFailurePresentation(
-        publishTargetPullRequestLabel,
-        workspace.publicationMetadataState,
-      );
+      const descriptionFailure =
+        getAgentWorkspaceDescriptionFailurePresentation(
+          publishTargetPullRequestLabel,
+          workspace.publicationMetadataState,
+        );
       return {
         ...descriptionFailure,
         tone: "error" as const,
@@ -1188,14 +1347,16 @@ export function AgentPublishPanel({
     if (hasPublishedPr && !autoPublishEnabled) {
       return {
         title: "Automatic publishing paused",
-        summary: "Automatic publishing is paused. Manual Commit & Publish remains available.",
+        summary:
+          "Automatic publishing is paused. Manual Commit & Publish remains available.",
         tone: "warning" as const,
       };
     }
     if (!hasPublishedPr && autoPublishEnabled) {
       return {
         title: "Auto Publish enabled",
-        summary: "Auto Publish will run Commit & Publish when the agent finishes.",
+        summary:
+          "Auto Publish will run Commit & Publish when the agent finishes.",
         tone: "neutral" as const,
       };
     }
@@ -1345,6 +1506,17 @@ export function AgentPublishPanel({
       onConfirm: () => commitLocallyMutation.mutateAsync(),
     });
   };
+  const confirmStopHeldRepair = () => {
+    void confirm({
+      title: "Stop auto-repair for this failure?",
+      description:
+        "RalphX will stop autofix for this failure and leave GitHub auto-merge off. You can re-enable automation later from the Automation tab.",
+      confirmText: "Stop auto-repair",
+      pendingText: "Stopping...",
+      variant: "destructive",
+      onConfirm: () => stopPrAutofixMutation.mutateAsync(),
+    });
+  };
   const handleConfirmPublishWorkspace = () => {
     const publishConversationId = workspace.conversationId;
     setPublishDialogState({
@@ -1352,12 +1524,13 @@ export function AgentPublishPanel({
       open: true,
       phase: "publishing",
     });
-    void Promise.resolve(onPublishWorkspace!(publishConversationId))
-      .finally(() => {
+    void Promise.resolve(onPublishWorkspace!(publishConversationId)).finally(
+      () => {
         setPublishDialogState((current) =>
           current?.conversationId === publishConversationId ? null : current,
         );
-      });
+      },
+    );
   };
   const handlePublishDialogOpenChange = (open: boolean) => {
     if (!open) {
@@ -1393,10 +1566,7 @@ export function AgentPublishPanel({
   const publishChangeFacts =
     terminalPublicationStatus || isRepairPending || blocksGitInspection
       ? null
-      : getAgentWorkspaceChangeFacts(
-          changeSummaryQuery.data,
-          reviewQuery.data,
-        );
+      : getAgentWorkspaceChangeFacts(changeSummaryQuery.data, reviewQuery.data);
   const publishAutomationStatus =
     !maintenancePresentation &&
     shouldShowPrSupervisionControls &&
@@ -1438,215 +1608,232 @@ export function AgentPublishPanel({
         <section className="sticky top-0 z-20">
           <AgentsPublishActionBar
             presentation={publishPresentation}
-            changeFacts={publishChangeFacts}
+            changeFacts={isHeld ? null : publishChangeFacts}
             automationStatus={publishAutomationStatus}
             liveAnnouncement={maintenanceLiveAnnouncement}
             primaryAction={
               <>
-                {maintenancePresentation?.action === "none" ? (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  className={`${primaryActionClassName} ${STATUS_ACTION_BUTTON_CLASSNAME}`}
-                  style={statusActionButtonStyle(maintenancePresentation.tone)}
-                  disabled
-                  data-testid="agents-publish-maintenance-active"
-                >
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  {maintenancePresentation.title}
-                </Button>
-              ) : maintenancePresentation?.action === "retry" ? (
-                <Button
-                  type="button"
-                  className={primaryActionClassName}
-                  onClick={confirmPublishWorkspace}
-                  disabled={
-                    !onPublishWorkspace ||
-                    isManagedByTaskPipeline ||
-                    publishGate.gated
-                  }
-                  title={publishGate.reason ?? undefined}
-                  data-testid="agents-publish-retry-maintenance"
-                >
-                  <AlertTriangle className="h-3.5 w-3.5" />
-                  {retryRepairLabel}
-                </Button>
-              ) : maintenancePresentation?.action === "publish" ? (
-                <Button
-                  type="button"
-                  className={primaryActionClassName}
-                  onClick={confirmPublishWorkspace}
-                  disabled={
-                    !onPublishWorkspace ||
-                    isManagedByTaskPipeline ||
-                    publishGate.gated
-                  }
-                  title={publishGate.reason ?? undefined}
-                  data-testid="agents-publish-resume-maintenance"
-                >
-                  <GitPullRequestArrow className="h-3.5 w-3.5" />
-                  Commit & Publish
-                </Button>
-              ) : isRepairPending ? (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  className={`${primaryActionClassName} ${STATUS_ACTION_BUTTON_CLASSNAME}`}
-                  style={statusActionButtonStyle("warning")}
-                  disabled
-                  data-testid="agents-publish-repair-pending"
-                >
-                  <AlertTriangle className="h-3.5 w-3.5" />
-                  Repair pending
-                </Button>
-              ) : isPublishingThisWorkspace ? (
-                <Button
-                  type="button"
-                  className={primaryActionClassName}
-                  disabled
-                  data-testid="agents-publish-confirm"
-                >
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  {publishButtonLabel}
-                </Button>
-              ) : mergedPullRequestBaseSelection ? (
-                <Button
-                  type="button"
-                  className={primaryActionClassName}
-                  onClick={rebaseMergedPullRequestBase}
-                  disabled={effectivePublishing || workspace.status === "missing"}
-                  data-testid="agents-rebase-merged-pr-base"
-                >
-                  <GitBranch className="h-3.5 w-3.5" />
-                  Rebase onto {mergedPullRequestBaseSelection.displayName}
-                </Button>
-              ) : hasPrConflict ? (
-                <Button
-                  type="button"
-                  className={primaryActionClassName}
-                  onClick={confirmResolvePrConflicts}
-                  disabled={
-                    effectivePublishing ||
-                    isAutomationPreferenceSaving ||
-                    workspace.status === "missing"
-                  }
-                  data-testid="agents-resolve-pr-conflicts"
-                >
-                  {isUpdatingFromBase ? (
+                {maintenancePresentation?.action === "hold" ? (
+                  <Button
+                    type="button"
+                    className={primaryActionClassName}
+                    onClick={() => recheckPrHealthMutation.mutate()}
+                    disabled={recheckPrHealthMutation.isPending}
+                    data-testid="agents-publish-recheck-pr-health"
+                  >
+                    {recheckPrHealthMutation.isPending ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <ListChecks className="h-3.5 w-3.5" />
+                    )}
+                    Re-check PR health
+                  </Button>
+                ) : maintenancePresentation?.action === "none" ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className={`${primaryActionClassName} ${STATUS_ACTION_BUTTON_CLASSNAME}`}
+                    style={statusActionButtonStyle(
+                      maintenancePresentation.tone,
+                    )}
+                    disabled
+                    data-testid="agents-publish-maintenance-active"
+                  >
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <GitBranch className="h-3.5 w-3.5" />
-                  )}
-                  Resolve conflicts
-                </Button>
-              ) : isBranchUpdateNeeded ? (
-                <Button
-                  type="button"
-                  className={primaryActionClassName}
-                  onClick={confirmUpdateFromBase}
-                  disabled={
-                    baseBlocked ||
-                    effectivePublishing ||
-                    (isRepairPending && !isPipelineOwnedWorkspace)
-                  }
-                  data-testid="agents-update-from-base"
-                >
-                  {isUpdatingFromBase ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <GitBranch className="h-3.5 w-3.5" />
-                  )}
-                  Update from {baseActionLabel}
-                </Button>
-              ) : baseBlocked ? (
-                <Button
-                  type="button"
-                  className={primaryActionClassName}
-                  onClick={() => setRebaseDialogOpen(true)}
-                  disabled={effectivePublishing}
-                  data-testid="agents-rebase-from-base"
-                >
-                  {isUpdatingFromBase ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <GitBranch className="h-3.5 w-3.5" />
-                  )}
-                  Rebase branch
-                </Button>
-              ) : repositoryInspectionFailed ? (
-                <Button
-                  type="button"
-                  className={primaryActionClassName}
-                  disabled
-                  data-testid="agents-publish-unavailable"
-                >
-                  <AlertTriangle className="h-3.5 w-3.5" />
-                  Repository setup required
-                </Button>
-              ) : reviewBlocksPublish ? (
-                <Button
-                  type="button"
-                  className={primaryActionClassName}
-                  onClick={onOpenReview}
-                  disabled={!onOpenReview}
-                  data-testid={
-                    reviewIsRunning
-                      ? "agents-publish-reviewing"
-                      : "agents-publish-review-required"
-                  }
-                >
-                  {reviewIsRunning ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
+                    {maintenancePresentation.title}
+                  </Button>
+                ) : maintenancePresentation?.action === "retry" ? (
+                  <Button
+                    type="button"
+                    className={primaryActionClassName}
+                    onClick={confirmPublishWorkspace}
+                    disabled={
+                      !onPublishWorkspace ||
+                      isManagedByTaskPipeline ||
+                      publishGate.gated
+                    }
+                    title={publishGate.reason ?? undefined}
+                    data-testid="agents-publish-retry-maintenance"
+                  >
                     <AlertTriangle className="h-3.5 w-3.5" />
-                  )}
-                  {publishButtonLabel}
-                </Button>
-              ) : isLocalCommitPrimary ? (
-                <Button
-                  type="button"
-                  className={primaryActionClassName}
-                  onClick={confirmCommitLocally}
-                  disabled={localCommitDisabled}
-                  data-testid="agents-commit-locally"
-                >
-                  {commitLocallyMutation.isPending ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <GitBranch className="h-3.5 w-3.5" />
-                  )}
-                  Commit locally
-                </Button>
-              ) : (
-                <Button
-                  type="button"
-                  variant={publishDisabled ? "ghost" : undefined}
-                  className={
-                    publishDisabled
-                      ? `${primaryActionClassName} ${STATUS_ACTION_BUTTON_CLASSNAME}`
-                      : primaryActionClassName
-                  }
-                  style={
-                    publishDisabled
-                      ? statusActionButtonStyle(publishPresentation.tone)
-                      : undefined
-                  }
-                  onClick={confirmPublishWorkspace}
-                  disabled={publishDisabled}
-                  title={publishGate.reason ?? undefined}
-                  data-testid="agents-publish-confirm"
-                >
-                  {isPublishingThisWorkspace ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : isPublishCurrent || terminalPublicationStatus ? (
-                    <CheckCircle2 className="h-3.5 w-3.5" />
-                  ) : (
+                    {retryRepairLabel}
+                  </Button>
+                ) : maintenancePresentation?.action === "publish" ? (
+                  <Button
+                    type="button"
+                    className={primaryActionClassName}
+                    onClick={confirmPublishWorkspace}
+                    disabled={
+                      !onPublishWorkspace ||
+                      isManagedByTaskPipeline ||
+                      publishGate.gated
+                    }
+                    title={publishGate.reason ?? undefined}
+                    data-testid="agents-publish-resume-maintenance"
+                  >
                     <GitPullRequestArrow className="h-3.5 w-3.5" />
-                  )}
-                  {baseBlocked
-                    ? "Base unavailable"
-                    : publishButtonLabel}
-                </Button>
+                    Commit & Publish
+                  </Button>
+                ) : isRepairPending ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className={`${primaryActionClassName} ${STATUS_ACTION_BUTTON_CLASSNAME}`}
+                    style={statusActionButtonStyle("warning")}
+                    disabled
+                    data-testid="agents-publish-repair-pending"
+                  >
+                    <AlertTriangle className="h-3.5 w-3.5" />
+                    Repair pending
+                  </Button>
+                ) : isPublishingThisWorkspace ? (
+                  <Button
+                    type="button"
+                    className={primaryActionClassName}
+                    disabled
+                    data-testid="agents-publish-confirm"
+                  >
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    {publishButtonLabel}
+                  </Button>
+                ) : mergedPullRequestBaseSelection ? (
+                  <Button
+                    type="button"
+                    className={primaryActionClassName}
+                    onClick={rebaseMergedPullRequestBase}
+                    disabled={
+                      effectivePublishing || workspace.status === "missing"
+                    }
+                    data-testid="agents-rebase-merged-pr-base"
+                  >
+                    <GitBranch className="h-3.5 w-3.5" />
+                    Rebase onto {mergedPullRequestBaseSelection.displayName}
+                  </Button>
+                ) : hasPrConflict ? (
+                  <Button
+                    type="button"
+                    className={primaryActionClassName}
+                    onClick={confirmResolvePrConflicts}
+                    disabled={
+                      effectivePublishing ||
+                      isAutomationPreferenceSaving ||
+                      workspace.status === "missing"
+                    }
+                    data-testid="agents-resolve-pr-conflicts"
+                  >
+                    {isUpdatingFromBase ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <GitBranch className="h-3.5 w-3.5" />
+                    )}
+                    Resolve conflicts
+                  </Button>
+                ) : isBranchUpdateNeeded ? (
+                  <Button
+                    type="button"
+                    className={primaryActionClassName}
+                    onClick={confirmUpdateFromBase}
+                    disabled={
+                      baseBlocked ||
+                      effectivePublishing ||
+                      (isRepairPending && !isPipelineOwnedWorkspace)
+                    }
+                    data-testid="agents-update-from-base"
+                  >
+                    {isUpdatingFromBase ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <GitBranch className="h-3.5 w-3.5" />
+                    )}
+                    Update from {baseActionLabel}
+                  </Button>
+                ) : baseBlocked ? (
+                  <Button
+                    type="button"
+                    className={primaryActionClassName}
+                    onClick={() => setRebaseDialogOpen(true)}
+                    disabled={effectivePublishing}
+                    data-testid="agents-rebase-from-base"
+                  >
+                    {isUpdatingFromBase ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <GitBranch className="h-3.5 w-3.5" />
+                    )}
+                    Rebase branch
+                  </Button>
+                ) : repositoryInspectionFailed ? (
+                  <Button
+                    type="button"
+                    className={primaryActionClassName}
+                    disabled
+                    data-testid="agents-publish-unavailable"
+                  >
+                    <AlertTriangle className="h-3.5 w-3.5" />
+                    Repository setup required
+                  </Button>
+                ) : reviewBlocksPublish ? (
+                  <Button
+                    type="button"
+                    className={primaryActionClassName}
+                    onClick={onOpenReview}
+                    disabled={!onOpenReview}
+                    data-testid={
+                      reviewIsRunning
+                        ? "agents-publish-reviewing"
+                        : "agents-publish-review-required"
+                    }
+                  >
+                    {reviewIsRunning ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <AlertTriangle className="h-3.5 w-3.5" />
+                    )}
+                    {publishButtonLabel}
+                  </Button>
+                ) : isLocalCommitPrimary ? (
+                  <Button
+                    type="button"
+                    className={primaryActionClassName}
+                    onClick={confirmCommitLocally}
+                    disabled={localCommitDisabled}
+                    data-testid="agents-commit-locally"
+                  >
+                    {commitLocallyMutation.isPending ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <GitBranch className="h-3.5 w-3.5" />
+                    )}
+                    Commit locally
+                  </Button>
+                ) : (
+                  <Button
+                    type="button"
+                    variant={publishDisabled ? "ghost" : undefined}
+                    className={
+                      publishDisabled
+                        ? `${primaryActionClassName} ${STATUS_ACTION_BUTTON_CLASSNAME}`
+                        : primaryActionClassName
+                    }
+                    style={
+                      publishDisabled
+                        ? statusActionButtonStyle(publishPresentation.tone)
+                        : undefined
+                    }
+                    onClick={confirmPublishWorkspace}
+                    disabled={publishDisabled}
+                    title={publishGate.reason ?? undefined}
+                    data-testid="agents-publish-confirm"
+                  >
+                    {isPublishingThisWorkspace ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : isPublishCurrent || terminalPublicationStatus ? (
+                      <CheckCircle2 className="h-3.5 w-3.5" />
+                    ) : (
+                      <GitPullRequestArrow className="h-3.5 w-3.5" />
+                    )}
+                    {baseBlocked ? "Base unavailable" : publishButtonLabel}
+                  </Button>
                 )}
                 {publishGate.gated && publishGate.reason ? (
                   <span
@@ -1672,7 +1859,7 @@ export function AgentPublishPanel({
                     <XCircle className="h-3.5 w-3.5" />
                     Close PR
                   </Button>
-                ) : canClosePr ? (
+                ) : canClosePr || isHeld ? (
                   <DropdownMenu>
                     <Tooltip>
                       <TooltipTrigger asChild>
@@ -1696,6 +1883,15 @@ export function AgentPublishPanel({
                       <TooltipContent>Publish actions</TooltipContent>
                     </Tooltip>
                     <DropdownMenuContent align="end" className="min-w-[160px]">
+                      {isHeld && (
+                        <DropdownMenuItem
+                          onClick={confirmPublishWorkspace}
+                          disabled={publishDisabled}
+                          data-testid="agents-publish-hold-commit-publish"
+                        >
+                          Commit &amp; Publish
+                        </DropdownMenuItem>
+                      )}
                       <DropdownMenuItem
                         data-testid="agents-close-pr"
                         onSelect={(event) => {
@@ -1829,7 +2025,9 @@ export function AgentPublishPanel({
               >
                 <Zap className="h-3.5 w-3.5" aria-hidden="true" />
                 <span>Automation</span>
-                {hasActiveAgentsPublishAutomation(effectiveAutomationSnapshot) && (
+                {hasActiveAgentsPublishAutomation(
+                  effectiveAutomationSnapshot,
+                ) && (
                   <span
                     aria-label="Automation active"
                     className="h-1.5 w-1.5 rounded-full"
@@ -1874,7 +2072,9 @@ export function AgentPublishPanel({
               <AutoMergeGuardIcon
                 aria-hidden="true"
                 className={`mt-0.5 h-3.5 w-3.5 shrink-0${
-                  autoMergeGuardSummary.status === "pending" ? " animate-spin" : ""
+                  autoMergeGuardSummary.status === "pending"
+                    ? " animate-spin"
+                    : ""
                 }`}
                 style={{ color: autoMergeGuardColor }}
               />
@@ -1898,7 +2098,8 @@ export function AgentPublishPanel({
                 style={{ color: "var(--status-warning)" }}
               />
               <span>
-                Base branch {freshness?.baseRef ?? baseActionLabel} has new commits.
+                Base branch {freshness?.baseRef ?? baseActionLabel} has new
+                commits.
               </span>
             </div>
           )}
@@ -1949,97 +2150,114 @@ export function AgentPublishPanel({
             className="m-0 flex min-h-0 flex-1 flex-col gap-4 pt-4 data-[state=inactive]:hidden"
             data-testid="agents-publish-content-changes"
           >
-        {prAnnotationSourcesUnavailable.length > 0 && (
-          <div
-            className="rounded-md px-2.5 py-1.5 text-[0.6875rem]"
-            data-testid="agents-pr-annotations-partial-warning"
-            style={{
-              backgroundColor: "var(--bg-subtle)",
-              borderColor: "var(--status-warning-border)",
-              borderStyle: "solid",
-              borderWidth: "1px",
-              color: "var(--text-secondary)",
-            }}
-          >
-            GitHub annotations partially unavailable
-          </div>
-        )}
-        {shouldShowPublishPipeline && (
-          <PublishPipelineSteps
-            autoMergeCurrent={prAutoMergeCurrent}
-            autoMergeDesired={prAutoMergeDesired}
-            className="mt-0"
-            prSupervisionStatus={prSupervisionStatus}
-            receiptPhase={workspace.publicationMetadataPhase}
-            receiptState={workspace.publicationMetadataState}
-            targetPullRequestLabel={publishTargetPullRequestLabel}
-            status={pipelineStatus}
-            isPublishing={effectivePublishing}
-          />
-        )}
-
-        <GitAuthRepairPanel
-          projectId={workspace.projectId}
-          surface="publish"
-          requiresGhAuth
-        />
-
-
-        {/* Inline diff view — below the action row, all files expanded by default */}
-        {isRepairPending && inlineDiffsCandidate ? (
-          <AgentsPublishRepairState
-            conversationId={workspace.conversationId}
-            canHydratePublishFacts={canHydratePublishFacts}
-            focusRequest={publishFocusRequest}
-          />
-        ) : inlineDiffsCandidate && !baseBlocked ? (
-          <section
-            className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border"
-            data-testid="agents-publish-inline-diffs-section"
-            style={{
-              backgroundColor: "var(--bg-surface)",
-              borderColor: "var(--border-subtle)",
-            }}
-          >
-            {snapshotCapturedAt ? (
-              <p className="px-3 pt-3 text-xs text-[var(--text-muted)]">
-                Changes as of {formatSnapshotAge(snapshotCapturedAt)} (host snapshot)
-              </p>
-            ) : snapshotUnavailable ? (
-              <p className="px-3 pt-3 text-xs text-[var(--text-muted)]">
-                The host has not captured workspace changes yet. Open this workspace on the host to capture them.
-              </p>
-            ) : null}
-            {!isRemoteEnvironment || !snapshotUnavailable ? (
-              <AgentsPublishInlineDiffs
-                key={`${conversationId ?? "missing"}:${terminalPublicationStatus ?? "active"}`}
-                conversationId={conversationId ?? ""}
-                review={reviewQuery.data ?? null}
-                commits={commits}
-                isLoading={
-                  Boolean(conversationId) &&
-                  (!canHydratePublishFacts || reviewQuery.isLoading)
-                }
-                annotations={prAnnotations}
-                hunkAnnotations={workspaceReviewHunkAnnotations}
-                error={reviewQuery.error}
-                onOpenInDialog={() => setReviewOpen(true)}
-                focusRequest={publishFocusRequest}
-                liveSummary={changeSummaryQuery.data ?? null}
-                {...(inlineDiffDefaultMode !== undefined && {
-                  defaultMode: inlineDiffDefaultMode,
-                })}
-                {...(cumulativeModeLabel !== undefined && {
-                  cumulativeModeLabel,
-                })}
-                {...(isPublishCurrent && {
-                  workspaceChangeLabel: "Published changes",
-                })}
+            {prAnnotationSourcesUnavailable.length > 0 && (
+              <div
+                className="rounded-md px-2.5 py-1.5 text-[0.6875rem]"
+                data-testid="agents-pr-annotations-partial-warning"
+                style={{
+                  backgroundColor: "var(--bg-subtle)",
+                  borderColor: "var(--status-warning-border)",
+                  borderStyle: "solid",
+                  borderWidth: "1px",
+                  color: "var(--text-secondary)",
+                }}
+              >
+                GitHub annotations partially unavailable
+              </div>
+            )}
+            {shouldShowPublishPipeline && (
+              <PublishPipelineSteps
+                autoMergeCurrent={prAutoMergeCurrent}
+                autoMergeDesired={prAutoMergeDesired}
+                className="mt-0"
+                prSupervisionStatus={prSupervisionStatus}
+                receiptPhase={workspace.publicationMetadataPhase}
+                receiptState={workspace.publicationMetadataState}
+                targetPullRequestLabel={publishTargetPullRequestLabel}
+                status={pipelineStatus}
+                isPublishing={effectivePublishing}
               />
-            ) : null}
-          </section>
-        ) : null}
+            )}
 
+            <GitAuthRepairPanel
+              projectId={workspace.projectId}
+              surface="publish"
+              requiresGhAuth
+            />
+
+            {/* Inline diff view — below the action row, all files expanded by default */}
+            {isRepairPending && inlineDiffsCandidate ? (
+              <AgentsPublishRepairState
+                conversationId={workspace.conversationId}
+                canHydratePublishFacts={canHydratePublishFacts}
+                focusRequest={publishFocusRequest}
+              />
+            ) : isHeld ? (
+              <AgentsPublishHoldCard
+                workspace={workspace}
+                onOpenChecks={() => onSubTabChange("checks")}
+                onRecheck={() => recheckPrHealthMutation.mutate()}
+                onRetry={() => retryPrAutofixMutation.mutate()}
+                onRetryPublication={() =>
+                  retryPublicationEffectMutation.mutate()
+                }
+                onStop={confirmStopHeldRepair}
+                isPending={
+                  recheckPrHealthMutation.isPending ||
+                  retryPrAutofixMutation.isPending ||
+                  stopPrAutofixMutation.isPending ||
+                  retryPublicationEffectMutation.isPending
+                }
+              />
+            ) : inlineDiffsCandidate && !baseBlocked ? (
+              <section
+                className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border"
+                data-testid="agents-publish-inline-diffs-section"
+                style={{
+                  backgroundColor: "var(--bg-surface)",
+                  borderColor: "var(--border-subtle)",
+                }}
+              >
+                {snapshotCapturedAt ? (
+                  <p className="px-3 pt-3 text-xs text-[var(--text-muted)]">
+                    Changes as of {formatSnapshotAge(snapshotCapturedAt)} (host
+                    snapshot)
+                  </p>
+                ) : snapshotUnavailable ? (
+                  <p className="px-3 pt-3 text-xs text-[var(--text-muted)]">
+                    The host has not captured workspace changes yet. Open this
+                    workspace on the host to capture them.
+                  </p>
+                ) : null}
+                {!isRemoteEnvironment || !snapshotUnavailable ? (
+                  <AgentsPublishInlineDiffs
+                    key={`${conversationId ?? "missing"}:${terminalPublicationStatus ?? "active"}`}
+                    conversationId={conversationId ?? ""}
+                    review={reviewQuery.data ?? null}
+                    commits={commits}
+                    isLoading={
+                      Boolean(conversationId) &&
+                      (!canHydratePublishFacts || reviewQuery.isLoading)
+                    }
+                    annotations={prAnnotations}
+                    hunkAnnotations={workspaceReviewHunkAnnotations}
+                    error={reviewQuery.error}
+                    onOpenInDialog={() => setReviewOpen(true)}
+                    focusRequest={publishFocusRequest}
+                    liveSummary={changeSummaryQuery.data ?? null}
+                    {...(inlineDiffDefaultMode !== undefined && {
+                      defaultMode: inlineDiffDefaultMode,
+                    })}
+                    {...(cumulativeModeLabel !== undefined && {
+                      cumulativeModeLabel,
+                    })}
+                    {...(isPublishCurrent && {
+                      workspaceChangeLabel: "Published changes",
+                    })}
+                  />
+                ) : null}
+              </section>
+            ) : null}
           </TabsContent>
         )}
         {showReviewTab && mountedSubTabsForConversation.review && (
@@ -2049,7 +2267,7 @@ export function AgentPublishPanel({
             className="m-0 min-h-0 flex-1 overflow-y-auto pt-4 data-[state=inactive]:hidden"
             data-testid="agents-publish-content-review"
           >
-            {reviewContent}
+            {reviewContent(publishReviewEvidence)}
           </TabsContent>
         )}
         {hasPublishedPr &&
@@ -2066,9 +2284,9 @@ export function AgentPublishPanel({
                 isError={checksDetailQuery.isError}
                 isLoading={Boolean(
                   canHydrateChecks &&
-                    !checksDetail &&
-                    (checksDetailQuery.isLoading ||
-                      checksDetailQuery.fetchStatus !== "idle"),
+                  !checksDetail &&
+                  (checksDetailQuery.isLoading ||
+                    checksDetailQuery.fetchStatus !== "idle"),
                 )}
                 isReady={canHydrateChecks}
               />
@@ -2108,6 +2326,7 @@ export function AgentPublishPanel({
                   freshness?.hasUncommittedChanges,
                 )}
                 terminalPrLabel={terminalPrLabel}
+                publicationEvents={publicationEvents}
                 onSnapshotChange={setAutomationSnapshot}
               />
             </TabsContent>
@@ -2121,20 +2340,34 @@ export function AgentPublishPanel({
             border: "1px solid var(--border-subtle)",
           }}
         >
-          <DialogTitle className="sr-only">Review workspace changes</DialogTitle>
+          <DialogTitle className="sr-only">
+            Review workspace changes
+          </DialogTitle>
           <DialogDescription className="sr-only">
-            Inspect changed files and commits before publishing this agent workspace.
+            Inspect changed files and commits before publishing this agent
+            workspace.
           </DialogDescription>
           {reviewOpen && (
-            <Suspense fallback={<EmptyArtifactState title="Loading workspace diff..." />}>
+            <Suspense
+              fallback={
+                <EmptyArtifactState title="Loading workspace diff..." />
+              }
+            >
               <LazyDiffViewer
                 changes={changes}
                 commits={commits}
-                defaultTab={changes.length === 0 && !changesError ? "history" : "changes"}
-                {...(changesError ? {
-                  changesEmptyTitle: "Could not load workspace changes",
-                  changesEmptySubtitle: changesError instanceof Error ? changesError.message : String(changesError),
-                } : {})}
+                defaultTab={
+                  changes.length === 0 && !changesError ? "history" : "changes"
+                }
+                {...(changesError
+                  ? {
+                      changesEmptyTitle: "Could not load workspace changes",
+                      changesEmptySubtitle:
+                        changesError instanceof Error
+                          ? changesError.message
+                          : String(changesError),
+                    }
+                  : {})}
                 commitFiles={commitFiles}
                 annotations={prAnnotations}
                 hunkAnnotations={workspaceReviewHunkAnnotations}
@@ -2209,7 +2442,8 @@ export function AgentPublishPanel({
         >
           <DialogTitle>Rebase branch</DialogTitle>
           <DialogDescription>
-            Choose the base branch for {branch}. Project default is selected first.
+            Choose the base branch for {branch}. Project default is selected
+            first.
           </DialogDescription>
           <div className="mt-3 flex flex-col gap-2">
             <BranchBasePicker
@@ -2217,7 +2451,9 @@ export function AgentPublishPanel({
               onValueChange={setSelectedRebaseBaseKey}
               options={rebaseBaseOptions}
               placeholder={
-                rebaseBaseOptionsQuery.isLoading ? "Loading branches..." : "Base branch"
+                rebaseBaseOptionsQuery.isLoading
+                  ? "Loading branches..."
+                  : "Base branch"
               }
               disabled={isUpdatingFromBase || rebaseBaseOptions.length === 0}
               testId="agents-rebase-base-select"
@@ -2227,7 +2463,9 @@ export function AgentPublishPanel({
               className="w-full max-w-full justify-start rounded-md border border-[var(--border-subtle)] px-3 py-2"
             />
             <p className="text-xs leading-relaxed text-[var(--text-muted)]">
-              {selectedRebaseBase?.detail ?? selectedRebaseBase?.selection.ref ?? ""}
+              {selectedRebaseBase?.detail ??
+                selectedRebaseBase?.selection.ref ??
+                ""}
             </p>
           </div>
           <div className="mt-4 flex justify-end gap-2">

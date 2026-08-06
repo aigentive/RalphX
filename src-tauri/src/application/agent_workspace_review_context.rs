@@ -8,9 +8,10 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::application::agent_workspace_review::{
-    build_context, load_agent_workspace_review_context, load_current_workspace_review_eligible,
-    AgentWorkspaceReviewContext, AgentWorkspaceReviewGoalContext, AgentWorkspaceReviewPacket,
-    AgentWorkspaceReviewTarget,
+    build_context, load_agent_workspace_review_context_with_materialization,
+    load_current_workspace_review_eligible, AgentWorkspaceReviewContext,
+    AgentWorkspaceReviewGoalContext, AgentWorkspaceReviewPacket, AgentWorkspaceReviewTarget,
+    AgentWorkspaceReviewTargetMaterialization,
 };
 use crate::application::AppState;
 use crate::domain::entities::{
@@ -43,6 +44,15 @@ impl AgentWorkspaceReviewContextReadMode {
 
     fn allows_completed_cache(self) -> bool {
         self == Self::FullTarget
+    }
+
+    fn materialization(self) -> AgentWorkspaceReviewTargetMaterialization {
+        match self {
+            Self::StatusSnapshot | Self::FullTarget => {
+                AgentWorkspaceReviewTargetMaterialization::IdentityOnly
+            }
+            Self::FullPacket => AgentWorkspaceReviewTargetMaterialization::FullPacket,
+        }
     }
 }
 
@@ -82,12 +92,13 @@ impl From<Option<AgentWorkspaceReviewMonitor>> for MonitorGeneration {
 struct CompletedCalculation {
     generation: MonitorGeneration,
     context: AgentWorkspaceReviewContext,
+    materialization: AgentWorkspaceReviewTargetMaterialization,
     completed_at: Instant,
     sequence: u64,
 }
 
 struct CoordinatorEntryState {
-    in_flight: bool,
+    in_flight: Option<AgentWorkspaceReviewTargetMaterialization>,
     completed: Option<CompletedCalculation>,
     sequence: u64,
     waiters: usize,
@@ -97,7 +108,7 @@ struct CoordinatorEntryState {
 impl Default for CoordinatorEntryState {
     fn default() -> Self {
         Self {
-            in_flight: false,
+            in_flight: None,
             completed: None,
             sequence: 0,
             waiters: 0,
@@ -116,6 +127,79 @@ static CONTEXT_COORDINATOR: OnceLock<
     Mutex<HashMap<WorkspaceReviewContextKey, Arc<CoordinatorEntry>>>,
 > = OnceLock::new();
 
+#[cfg(test)]
+struct ContextCalculationGate {
+    worktree_path: PathBuf,
+    owner_started: Arc<Notify>,
+    release: Arc<Notify>,
+}
+
+#[cfg(test)]
+static IDENTITY_CALCULATION_GATE: OnceLock<Mutex<Option<Arc<ContextCalculationGate>>>> =
+    OnceLock::new();
+
+#[cfg(test)]
+pub(crate) struct IdentityCalculationGateGuard {
+    gate: Arc<ContextCalculationGate>,
+}
+
+#[cfg(test)]
+impl IdentityCalculationGateGuard {
+    pub(crate) async fn wait_until_owner_started(&self) {
+        self.gate.owner_started.notified().await;
+    }
+
+    pub(crate) fn release(&self) {
+        self.gate.release.notify_waiters();
+    }
+}
+
+#[cfg(test)]
+impl Drop for IdentityCalculationGateGuard {
+    fn drop(&mut self) {
+        let gates = IDENTITY_CALCULATION_GATE.get_or_init(|| Mutex::new(None));
+        let mut installed = lock_unpoisoned(gates);
+        if installed
+            .as_ref()
+            .is_some_and(|gate| Arc::ptr_eq(gate, &self.gate))
+        {
+            *installed = None;
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn install_identity_calculation_gate(
+    worktree_path: PathBuf,
+) -> IdentityCalculationGateGuard {
+    let gate = Arc::new(ContextCalculationGate {
+        worktree_path,
+        owner_started: Arc::new(Notify::new()),
+        release: Arc::new(Notify::new()),
+    });
+    let gates = IDENTITY_CALCULATION_GATE.get_or_init(|| Mutex::new(None));
+    *lock_unpoisoned(gates) = Some(Arc::clone(&gate));
+    IdentityCalculationGateGuard { gate }
+}
+
+#[cfg(test)]
+async fn wait_for_identity_calculation_gate(
+    workspace: &AgentConversationWorkspace,
+    materialization: AgentWorkspaceReviewTargetMaterialization,
+) {
+    if materialization != AgentWorkspaceReviewTargetMaterialization::IdentityOnly {
+        return;
+    }
+    let gate = IDENTITY_CALCULATION_GATE
+        .get()
+        .and_then(|gates| lock_unpoisoned(gates).clone())
+        .filter(|gate| gate.worktree_path == *workspace.worktree_path);
+    if let Some(gate) = gate {
+        gate.owner_started.notify_waiters();
+        gate.release.notified().await;
+    }
+}
+
 fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
@@ -131,14 +215,17 @@ fn coordinator_entry(key: &WorkspaceReviewContextKey) -> AppResult<Arc<Coordinat
     let now = Instant::now();
     entries.retain(|_, entry| {
         let state = lock_unpoisoned(&entry.state);
-        state.in_flight || now.duration_since(state.last_touched) <= COORDINATOR_ENTRY_TTL
+        state.in_flight.is_some() || now.duration_since(state.last_touched) <= COORDINATOR_ENTRY_TTL
     });
     if entries.len() >= MAX_COORDINATOR_ENTRIES {
         let removable = entries
             .iter()
             .filter_map(|(candidate_key, entry)| {
                 let state = lock_unpoisoned(&entry.state);
-                (!state.in_flight).then_some((candidate_key.clone(), state.last_touched))
+                state
+                    .in_flight
+                    .is_none()
+                    .then_some((candidate_key.clone(), state.last_touched))
             })
             .min_by_key(|(_, touched)| *touched)
             .map(|(candidate_key, _)| candidate_key);
@@ -168,6 +255,7 @@ pub(crate) fn invalidate_workspace_review_presentation_context(
 struct CalculationOwnerGuard {
     entry: Arc<CoordinatorEntry>,
     request_id: Uuid,
+    materialization: AgentWorkspaceReviewTargetMaterialization,
     completed: bool,
 }
 
@@ -190,10 +278,15 @@ impl Drop for RegisteredWaiterGuard {
 }
 
 impl CalculationOwnerGuard {
-    fn new(entry: Arc<CoordinatorEntry>, request_id: Uuid) -> Self {
+    fn new(
+        entry: Arc<CoordinatorEntry>,
+        request_id: Uuid,
+        materialization: AgentWorkspaceReviewTargetMaterialization,
+    ) -> Self {
         Self {
             entry,
             request_id,
+            materialization,
             completed: false,
         }
     }
@@ -205,7 +298,7 @@ impl CalculationOwnerGuard {
     ) {
         self.completed = true;
         let mut state = lock_unpoisoned(&self.entry.state);
-        state.in_flight = false;
+        state.in_flight = None;
         state.last_touched = Instant::now();
         state.sequence = state.sequence.saturating_add(1);
         if let Ok(context) = result {
@@ -213,6 +306,7 @@ impl CalculationOwnerGuard {
             state.completed = Some(CompletedCalculation {
                 generation,
                 context: context.clone(),
+                materialization: self.materialization,
                 completed_at: Instant::now(),
                 sequence,
             });
@@ -228,7 +322,7 @@ impl Drop for CalculationOwnerGuard {
             return;
         }
         let mut state = lock_unpoisoned(&self.entry.state);
-        state.in_flight = false;
+        state.in_flight = None;
         state.last_touched = Instant::now();
         drop(state);
         self.entry.notify.notify_waiters();
@@ -314,10 +408,16 @@ async fn calculate_generation_fenced_context(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
     initial_generation: MonitorGeneration,
+    materialization: AgentWorkspaceReviewTargetMaterialization,
 ) -> AppResult<(MonitorGeneration, AgentWorkspaceReviewContext)> {
     let mut expected_generation = initial_generation;
     for attempt in 0..2 {
-        let context = load_agent_workspace_review_context(state, workspace).await?;
+        let context = load_agent_workspace_review_context_with_materialization(
+            state,
+            workspace,
+            materialization,
+        )
+        .await?;
         let current_generation = load_monitor_generation(state, workspace).await?;
         if current_generation == expected_generation {
             return Ok((current_generation, context));
@@ -358,6 +458,7 @@ async fn coordinated_full_context(
     let key = WorkspaceReviewContextKey::from(workspace);
     let entry = coordinator_entry(&key)?;
     let mut generation = initial_generation;
+    let required_materialization = mode.materialization();
     loop {
         let notified = entry.notify.notified();
         let decision = {
@@ -367,6 +468,9 @@ async fn coordinated_full_context(
                 entry_state.completed.as_ref().filter(|completed| {
                     completed.generation == generation
                         && completed.completed_at.elapsed() <= PRESENTATION_CACHE_TTL
+                        && completed
+                            .materialization
+                            .satisfies(required_materialization)
                 })
             });
             if let Some(Some(completed)) = cached {
@@ -374,7 +478,7 @@ async fn coordinated_full_context(
                     context: Box::new(completed.context.clone()),
                     waiters: entry_state.waiters,
                 }
-            } else if entry_state.in_flight {
+            } else if entry_state.in_flight.is_some() {
                 let observed_sequence = entry_state.sequence;
                 entry_state.waiters = entry_state.waiters.saturating_add(1);
                 CoordinatorDecision::Join {
@@ -382,7 +486,7 @@ async fn coordinated_full_context(
                     waiters: entry_state.waiters,
                 }
             } else {
-                entry_state.in_flight = true;
+                entry_state.in_flight = Some(required_materialization);
                 CoordinatorDecision::Own {
                     waiters: entry_state.waiters,
                 }
@@ -423,6 +527,9 @@ async fn coordinated_full_context(
                         .filter(|completed| {
                             completed.sequence > observed_sequence
                                 && completed.generation == generation
+                                && completed
+                                    .materialization
+                                    .satisfies(required_materialization)
                         })
                         .map(|completed| completed.context.clone())
                 };
@@ -432,7 +539,8 @@ async fn coordinated_full_context(
                 generation = load_monitor_generation(state, workspace).await?;
             }
             CoordinatorDecision::Own { waiters } => {
-                let owner = CalculationOwnerGuard::new(entry.clone(), request_id);
+                let owner =
+                    CalculationOwnerGuard::new(entry.clone(), request_id, required_materialization);
                 info!(
                     target: WORKSPACE_REVIEW_CONTEXT_LOG_TARGET,
                     request_id = %request_id,
@@ -441,8 +549,15 @@ async fn coordinated_full_context(
                     waiters,
                     "Started workspace Review context calculation"
                 );
-                let result =
-                    calculate_generation_fenced_context(state, workspace, generation.clone()).await;
+                #[cfg(test)]
+                wait_for_identity_calculation_gate(workspace, required_materialization).await;
+                let result = calculate_generation_fenced_context(
+                    state,
+                    workspace,
+                    generation.clone(),
+                    required_materialization,
+                )
+                .await;
                 let (completed_generation, context_result) = match result {
                     Ok((completed_generation, context)) => (completed_generation, Ok(context)),
                     Err(error) => (generation.clone(), Err(error)),

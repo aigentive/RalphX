@@ -643,6 +643,15 @@ pub struct GitRuntimeConfig {
     pub workspace_pr_annotations_cache_ttl_ms: u64,
     /// Maximum annotated check runs to query for per-run annotations on one PR payload.
     pub workspace_pr_annotations_check_run_fetch_limit: u64,
+    /// Hard latency budget for composing volatile per-turn agent runtime state.
+    #[serde(default = "default_agent_runtime_context_budget_ms")]
+    pub agent_runtime_context_budget_ms: u64,
+    /// Minimum age before a send schedules a background branch-status refresh.
+    #[serde(default = "default_agent_runtime_branch_status_refresh_secs")]
+    pub agent_runtime_branch_status_refresh_secs: u64,
+    /// Age after which cached branch observations are explicitly marked stale.
+    #[serde(default = "default_agent_runtime_branch_status_stale_secs")]
+    pub agent_runtime_branch_status_stale_secs: u64,
     /// TTL for external PR reconciliation attempts on an unlinked agent workspace.
     #[serde(default = "default_agent_workspace_pr_reconciliation_cache_ttl_ms")]
     pub agent_workspace_pr_reconciliation_cache_ttl_ms: u64,
@@ -698,6 +707,9 @@ impl Default for GitRuntimeConfig {
             workspace_pr_description_cache_ttl_ms: 300_000,
             workspace_pr_annotations_cache_ttl_ms: 30_000,
             workspace_pr_annotations_check_run_fetch_limit: 10,
+            agent_runtime_context_budget_ms: 75,
+            agent_runtime_branch_status_refresh_secs: 30,
+            agent_runtime_branch_status_stale_secs: 300,
             agent_workspace_pr_reconciliation_cache_ttl_ms: 30_000,
             agent_workspace_publish_lease_stale_secs: 300,
             agent_workspace_publish_lease_heartbeat_interval_secs: 30,
@@ -722,6 +734,18 @@ fn default_remote_workspace_snapshot_ttl_ms() -> u64 {
 
 fn default_agent_workspace_pr_reconciliation_cache_ttl_ms() -> u64 {
     30_000
+}
+
+fn default_agent_runtime_context_budget_ms() -> u64 {
+    75
+}
+
+fn default_agent_runtime_branch_status_refresh_secs() -> u64 {
+    30
+}
+
+fn default_agent_runtime_branch_status_stale_secs() -> u64 {
+    300
 }
 
 fn default_agent_workspace_publish_lease_stale_secs() -> u64 {
@@ -1243,6 +1267,18 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
     env_u64!(
         cfg.git.workspace_pr_annotations_check_run_fetch_limit,
         "RALPHX_GIT_WORKSPACE_PR_ANNOTATIONS_CHECK_RUN_FETCH_LIMIT"
+    );
+    env_u64!(
+        cfg.git.agent_runtime_context_budget_ms,
+        "RALPHX_GIT_AGENT_RUNTIME_CONTEXT_BUDGET_MS"
+    );
+    env_u64!(
+        cfg.git.agent_runtime_branch_status_refresh_secs,
+        "RALPHX_GIT_AGENT_RUNTIME_BRANCH_STATUS_REFRESH_SECS"
+    );
+    env_u64!(
+        cfg.git.agent_runtime_branch_status_stale_secs,
+        "RALPHX_GIT_AGENT_RUNTIME_BRANCH_STATUS_STALE_SECS"
     );
     env_u64!(
         cfg.git.agent_workspace_pr_reconciliation_cache_ttl_ms,

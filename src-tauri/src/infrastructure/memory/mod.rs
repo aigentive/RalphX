@@ -39,6 +39,8 @@ pub mod memory_clickup_integration_settings_repo;
 pub mod memory_conversation_folder_reference_repo;
 pub mod memory_delegated_session_repo;
 pub mod memory_delegation_park_repo;
+#[cfg(test)]
+mod memory_delegation_park_repo_tests;
 pub mod memory_execution_plan_repo;
 pub mod memory_execution_settings_repo;
 pub mod memory_external_events_repo;

@@ -54,17 +54,17 @@ pub mod plan_selection_stats;
 pub mod project;
 pub mod remote_access;
 pub mod remote_agent_stop_request;
-pub mod remote_automation_run_request;
 pub mod remote_automation_draft_request;
+pub mod remote_automation_run_request;
 pub mod remote_conversation_lifecycle_request;
 pub mod remote_conversation_message_request;
 pub mod remote_conversation_mode_switch_request;
 pub mod remote_conversation_start_request;
-pub mod remote_request_dedup;
-pub mod remote_plan_approval_request;
 pub mod remote_finalize_decision_request;
+pub mod remote_plan_approval_request;
 pub mod remote_plan_edit_request;
 pub mod remote_queued_send_request;
+pub mod remote_request_dedup;
 pub mod remote_resume_request;
 pub mod research;
 pub mod review;
@@ -81,8 +81,6 @@ pub mod task_metadata;
 pub mod task_qa;
 pub mod task_step;
 pub mod team;
-#[cfg(test)]
-mod team_tests;
 pub mod team_member;
 #[cfg(test)]
 mod team_member_tests;
@@ -95,6 +93,8 @@ mod team_run_binding_tests;
 pub mod team_session;
 #[cfg(test)]
 mod team_session_tests;
+#[cfg(test)]
+mod team_tests;
 pub mod team_wake_batch;
 #[cfg(test)]
 mod team_wake_batch_tests;
@@ -133,26 +133,24 @@ pub use agent_conversation_linear_issue::{
 pub use agent_conversation_mute::AgentConversationMute;
 pub use agent_conversation_workspace::{
     is_open_pr, is_pr_status_pollable_push_status, is_publication_push_active,
-    is_terminal_publication_pr_status, workspace_review_fixer_status_is_active,
-    pr_comment_body_excerpt, AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
-    AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent,
-    AgentConversationWorkspaceStatus, AgentWorkspaceFollowupProvenance,
-    AgentWorkspacePrCommentEvidence, AgentWorkspacePrCommentEvidenceUpsert,
-    AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
+    is_terminal_publication_pr_status, pr_comment_body_excerpt,
+    workspace_review_fixer_status_is_active, AgentConversationWorkspace,
+    AgentConversationWorkspaceBranchMode, AgentConversationWorkspaceMode,
+    AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
+    AgentWorkspaceFollowupProvenance, AgentWorkspacePrCommentEvidence,
+    AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
+    AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
     AgentWorkspacePrReviewMonitorStatus, AgentWorkspacePublicationMetadataPhase,
     AgentWorkspacePublicationMetadataReceipt, AgentWorkspacePublicationMetadataState,
-    AgentWorkspaceReviewAutoMergeGuard,
-    AgentWorkspaceReviewAutoMergeGuardStatus, AgentWorkspaceReviewGateStatus,
-    AgentWorkspaceReviewApprovalSnapshot, AgentWorkspaceReviewFixerSnapshot,
-    AgentWorkspaceReviewHunkAnnotation,
-    AgentWorkspaceReviewMonitor,
-    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
-    AgentWorkspaceReviewRuntimeState,
-    AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest,
-    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD, WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED,
-    WORKSPACE_REVIEW_FIXER_STATUS_QUEUED, WORKSPACE_REVIEW_FIXER_STATUS_ROUTING,
-    WORKSPACE_REVIEW_FIXER_STATUS_RUNNING,
+    AgentWorkspaceReviewApprovalSnapshot, AgentWorkspaceReviewAutoMergeGuard,
+    AgentWorkspaceReviewAutoMergeGuardStatus, AgentWorkspaceReviewFixerSnapshot,
+    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewHunkAnnotation,
+    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
+    AgentWorkspaceReviewRuntimeState, AgentWorkspaceReviewTargetScope,
+    AgentWorkspaceSourcePullRequest, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED, WORKSPACE_REVIEW_FIXER_STATUS_QUEUED,
+    WORKSPACE_REVIEW_FIXER_STATUS_ROUTING, WORKSPACE_REVIEW_FIXER_STATUS_RUNNING,
 };
 pub use agent_run::{
     AgentRun, AgentRunAction, AgentRunActionKind, AgentRunAttribution, AgentRunId, AgentRunStatus,
@@ -175,45 +173,15 @@ pub use agent_workspace_repair::{
     AgentWorkspaceRepairEffect, AgentWorkspaceRepairEffectId, AgentWorkspaceRepairEffectKind,
     AgentWorkspaceRepairEffectStatus, AgentWorkspaceRepairOperationHoldReason,
     AgentWorkspaceRepairOperationSnapshot, AgentWorkspaceRepairOperationStage,
-    AgentWorkspaceRepairOperationStatus,
-    AgentWorkspaceRepairOutcome, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
-};
-pub use team_member::{normalize_team_member_name, TeamMember, TeamMemberId, TeamMemberStatus};
-pub use team_message::{
-    TeamMessage, TeamMessageActorKind, TeamMessageDelivery, TeamMessageDeliveryId,
-    TeamMessageDeliveryStatus, TeamMessageId, TeamMessageKind,
-    TeamMessageTarget as TeamMessageEnvelopeTarget,
-};
-pub use team_run_binding::{
-    TeamRunBinding, TeamRunBindingId, TeamRunBindingStatus, TeamRunTriggerKind,
-    TeamWorkClassification,
-};
-pub use team_session::{TeamBudgetPolicy, TeamSession, TeamSessionId, TeamSessionStatus};
-pub use team_wake_batch::{
-    TeamWakeBatch, TeamWakeBatchId, TeamWakeBatchStatus, TeamWakeRecipientKind,
-};
-pub use team_workspace_reservation::{
-    normalize_team_writable_path, team_paths_overlap, TeamWorkspaceReservation,
-    TeamWorkspaceReservationId,
+    AgentWorkspaceRepairOperationStatus, AgentWorkspaceRepairOutcome, AgentWorkspaceRepairPhase,
+    AgentWorkspaceRepairSource, CONTINUATION_OPEN_EFFECT_ATTENTION_PENDING_REASON,
+    PR_AUTOFIX_BASE_STALE_AFTER_UPDATE_PENDING_REASON,
 };
 pub use api_key::{
     ApiKey, AuditLogEntry, PERMISSION_ADMIN, PERMISSION_CREATE_PROJECT, PERMISSION_MAX,
     PERMISSION_READ, PERMISSION_WRITE,
 };
 pub use app_state::AppSettings;
-pub use remote_plan_approval_request::{RemotePlanApprovalRequest, RemotePlanApprovalRequestStatus};
-pub use remote_finalize_decision_request::{
-    RemoteFinalizeDecision, RemoteFinalizeDecisionRequest, RemoteFinalizeDecisionRequestStatus,
-};
-pub use remote_automation_run_request::{
-    RemoteAutomationRunKind, RemoteAutomationRunRequest, RemoteAutomationRunRequestStatus,
-};
-pub use remote_automation_draft_request::{
-    RemoteAutomationDraftRequest, RemoteAutomationDraftRequestStatus,
-};
-pub use remote_conversation_lifecycle_request::*;
-pub use remote_plan_edit_request::{RemotePlanEditRequest, RemotePlanEditRequestStatus};
-pub use remote_queued_send_request::{RemoteQueuedSendRequest, RemoteQueuedSendRequestStatus};
 pub use artifact::{
     Artifact, ArtifactBucket, ArtifactBucketId, ArtifactContent, ArtifactId, ArtifactMetadata,
     ArtifactRelation, ArtifactRelationId, ArtifactRelationType, ArtifactType,
@@ -299,6 +267,13 @@ pub use remote_access::{
     RemoteScopeSet, RemoteSession, RemoteSessionId, RemoteWsTicket,
 };
 pub use remote_agent_stop_request::{RemoteAgentStopRequest, RemoteAgentStopStatus};
+pub use remote_automation_draft_request::{
+    RemoteAutomationDraftRequest, RemoteAutomationDraftRequestStatus,
+};
+pub use remote_automation_run_request::{
+    RemoteAutomationRunKind, RemoteAutomationRunRequest, RemoteAutomationRunRequestStatus,
+};
+pub use remote_conversation_lifecycle_request::*;
 pub use remote_conversation_message_request::{
     RemoteConversationMessageRequest, RemoteConversationMessageStatus,
 };
@@ -308,6 +283,14 @@ pub use remote_conversation_mode_switch_request::{
 pub use remote_conversation_start_request::{
     RemoteConversationStartRequest, RemoteConversationStartStatus,
 };
+pub use remote_finalize_decision_request::{
+    RemoteFinalizeDecision, RemoteFinalizeDecisionRequest, RemoteFinalizeDecisionRequestStatus,
+};
+pub use remote_plan_approval_request::{
+    RemotePlanApprovalRequest, RemotePlanApprovalRequestStatus,
+};
+pub use remote_plan_edit_request::{RemotePlanEditRequest, RemotePlanEditRequestStatus};
+pub use remote_queued_send_request::{RemoteQueuedSendRequest, RemoteQueuedSendRequestStatus};
 pub use remote_request_dedup::{
     RemoteAttachment, RemoteDedupOutcomeKind, RemoteRequestDedupRecord,
 };
@@ -355,6 +338,24 @@ pub use task_step::{StepProgressSummary, TaskStep, TaskStepStatus};
 pub use team::{
     CapabilityIntent, CoordinationMode, TeamIntent, TeamIntentStrategy, TeamMessageTarget,
     TeamMessageTargetKind,
+};
+pub use team_member::{normalize_team_member_name, TeamMember, TeamMemberId, TeamMemberStatus};
+pub use team_message::{
+    TeamMessage, TeamMessageActorKind, TeamMessageDelivery, TeamMessageDeliveryId,
+    TeamMessageDeliveryStatus, TeamMessageId, TeamMessageKind,
+    TeamMessageTarget as TeamMessageEnvelopeTarget,
+};
+pub use team_run_binding::{
+    TeamRunBinding, TeamRunBindingId, TeamRunBindingStatus, TeamRunTriggerKind,
+    TeamWorkClassification,
+};
+pub use team_session::{TeamBudgetPolicy, TeamSession, TeamSessionId, TeamSessionStatus};
+pub use team_wake_batch::{
+    TeamWakeBatch, TeamWakeBatchId, TeamWakeBatchStatus, TeamWakeRecipientKind,
+};
+pub use team_workspace_reservation::{
+    normalize_team_writable_path, team_paths_overlap, TeamWorkspaceReservation,
+    TeamWorkspaceReservationId,
 };
 pub use ticket_canonical_branch::TicketCanonicalBranch;
 pub use types::{

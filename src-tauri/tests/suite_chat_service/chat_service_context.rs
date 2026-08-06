@@ -226,6 +226,7 @@ async fn persona_builder_read_roots_resolve_to_ingest_store_only() {
             None,
             None,
             None,
+            None,
         )
         .await
     })
@@ -331,6 +332,7 @@ async fn persona_builder_attachment_uses_real_app_data_when_project_path_contain
             None,
             &[],
             0,
+            None,
             None,
             None,
             None,
@@ -636,6 +638,7 @@ async fn non_persona_modes_preserve_unenforced_mcp_spawn_shape() {
                 None,
                 None,
                 None,
+                None,
             )
             .await
         })
@@ -704,6 +707,7 @@ async fn queued_flush_uses_persona_builder_read_roots() {
             Arc::new(MemoryTaskRepository::new()),
             &[],
             0,
+            None,
             None,
             None,
             None,
@@ -873,6 +877,7 @@ async fn assert_suppressed_persona_has_no_final_command_block(
             None,
             false,
             None,
+            None,
         )
         .await
     })
@@ -912,6 +917,7 @@ async fn fresh_spawn_prompt_includes_bound_persona_block() {
             None,
             None,
             false,
+            None,
             None,
         )
         .await
@@ -954,6 +960,7 @@ async fn codex_fresh_persona_builder_spawn_uses_conversation_identity_and_cli_en
         None,
         None,
         false,
+        None,
         None,
     )
     .await
@@ -1126,6 +1133,7 @@ async fn resume_command_prompt_includes_bound_persona_block() {
             None,
             false,
             None,
+            None,
         )
         .await
     })
@@ -1165,6 +1173,7 @@ async fn recovery_command_prompt_includes_bound_persona_block() {
             None,
             None,
             false,
+            None,
             None,
         )
         .await
@@ -1390,6 +1399,7 @@ async fn codex_fresh_command_forwards_a_resolved_persona_block() {
             None,
             false,
             None,
+            None,
         )
         .await
     })
@@ -1439,6 +1449,7 @@ async fn persona_codex_command_reports_reasoned_skip_when_agent_prompt_is_missin
             None,
             None,
             false,
+            None,
             None,
         )
         .await
@@ -1798,6 +1809,7 @@ async fn finalize_structured_assistant_message_splits_verification_transcript_se
         &tool_calls,
         &content_blocks,
         true,
+        None,
     )
     .await;
 
@@ -2650,8 +2662,14 @@ async fn test_get_entity_status_for_resume_project_context() {
 fn test_build_resume_initial_prompt_ideation_includes_context_id_no_recovery_note() {
     let context_id = "test-session-123";
     let user_message = "hello";
-    let result =
-        build_resume_initial_prompt(ChatContextType::Ideation, context_id, user_message, &[], 0);
+    let result = build_resume_initial_prompt(
+        ChatContextType::Ideation,
+        context_id,
+        user_message,
+        &[],
+        0,
+        None,
+    );
     assert!(result.contains(&format!("<context_id>{}</context_id>", context_id)));
     assert!(!result.contains("<recovery_note>"));
     assert!(!result.contains("get_session_messages"));
@@ -2663,8 +2681,14 @@ fn test_build_resume_initial_prompt_ideation_includes_context_id_no_recovery_not
 fn test_build_resume_initial_prompt_task_includes_context_id_no_recovery_note() {
     let context_id = "task-abc";
     let user_message = "hello";
-    let result =
-        build_resume_initial_prompt(ChatContextType::Task, context_id, user_message, &[], 0);
+    let result = build_resume_initial_prompt(
+        ChatContextType::Task,
+        context_id,
+        user_message,
+        &[],
+        0,
+        None,
+    );
     assert!(result.contains(&format!("<task_id>{}</task_id>", context_id)));
     assert!(!result.contains("<recovery_note>"));
     assert!(result.contains(&format!("<user_message>{}</user_message>", user_message)));
@@ -2674,8 +2698,14 @@ fn test_build_resume_initial_prompt_task_includes_context_id_no_recovery_note() 
 fn test_build_resume_initial_prompt_project_includes_context_id_no_recovery_note() {
     let context_id = "project-xyz";
     let user_message = "hello";
-    let result =
-        build_resume_initial_prompt(ChatContextType::Project, context_id, user_message, &[], 0);
+    let result = build_resume_initial_prompt(
+        ChatContextType::Project,
+        context_id,
+        user_message,
+        &[],
+        0,
+        None,
+    );
     assert!(result.contains(&format!("<project_id>{}</project_id>", context_id)));
     assert!(!result.contains("<recovery_note>"));
 }
@@ -2690,6 +2720,7 @@ fn test_build_resume_initial_prompt_task_execution_delegates_to_initial_prompt()
         user_message,
         &[],
         0,
+        None,
     );
     let initial = build_initial_prompt(
         ChatContextType::TaskExecution,
@@ -2786,6 +2817,7 @@ async fn codex_recovery_resume_command_forwards_a_resolved_persona_block() {
             None,
             false,
             None,
+            None,
         )
         .await
     })
@@ -2877,6 +2909,7 @@ async fn persona_codex_resume_command_uses_resume_subcommand_and_reports_injecti
             None,
             None,
             false,
+            None,
             None,
         )
         .await
@@ -2975,6 +3008,7 @@ async fn codex_legacy_verification_session_uses_active_ideation_features() {
             None,
             false,
             None,
+            None,
         )
         .await
     })
@@ -3036,6 +3070,7 @@ async fn task_execution_launch_injects_compact_runtime_context_and_state_env() {
             None,
             &[],
             0,
+            None,
             None,
             None,
             None,
@@ -3102,6 +3137,7 @@ async fn task_execution_launch_fails_closed_without_project_identity() {
             None,
             None,
             None,
+            None,
         )
         .await
     })
@@ -3138,6 +3174,7 @@ async fn task_reexecution_launch_injects_reexecuting_state() {
             None,
             &[],
             0,
+            None,
             None,
             None,
             None,
@@ -3181,6 +3218,7 @@ async fn review_launch_injects_reviewing_runtime_context_and_state_env() {
             None,
             &[],
             0,
+            None,
             None,
             None,
             None,
@@ -3637,6 +3675,7 @@ fn integration_ideation_resume_prompt_marks_provider_resume_bootstrap_mode() {
         "continue the same plan",
         &[],
         0,
+        None,
     );
 
     assert!(
@@ -4129,6 +4168,7 @@ async fn test_plan_verifier_sets_subagent_cap_env_var() {
             None,
             None,
             None,
+            None,
         )
         .await
     })
@@ -4180,6 +4220,7 @@ async fn test_plan_verifier_subagent_cap_uses_haiku_default_when_no_db_rows() {
             Some(settings_repo),
             &[],
             0,
+            None,
             None,
             None,
             None,
@@ -4264,6 +4305,7 @@ async fn test_non_verifier_ideation_agent_subagent_cap_is_agent_own_model() {
             None,
             &[],
             0,
+            None,
             None,
             None,
             None,
@@ -4358,6 +4400,7 @@ async fn test_orchestrator_ideation_uses_ideation_subagent_cap() {
             0,
             None,
             None, // model_override=None; primary model is "opus" from lane row
+            None, // agent_runtime_context
             None, // attachment_context_override
         )
         .await
@@ -4435,6 +4478,7 @@ async fn test_both_build_and_resume_use_ideation_subagent_cap() {
             None,
             None,
             None,
+            None,
         )
         .await
     })
@@ -4490,6 +4534,7 @@ async fn test_both_build_and_resume_use_ideation_subagent_cap() {
             None,
             None,
             None,
+            None,
         )
         .await
     })
@@ -4542,6 +4587,7 @@ async fn test_build_command_resumes_from_provider_session_ref_without_legacy_ali
                 None,
                 &[],
                 0,
+                None,
                 None,
                 None,
                 None,

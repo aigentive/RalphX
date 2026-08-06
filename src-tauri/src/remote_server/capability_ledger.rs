@@ -1018,6 +1018,38 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
         ),
     },
     CommandOverride {
+        command: "recheck_pr_health",
+        policy: policy(
+            RiskClass::Denied,
+            AGENT,
+            "re-polls a workspace pull request's health through the host's gh CLI",
+        ),
+    },
+    CommandOverride {
+        command: "retry_pr_autofix_override",
+        policy: policy(
+            RiskClass::Denied,
+            AGENT,
+            "overrides a held PR autofix and relaunches the autofix agent on the host checkout",
+        ),
+    },
+    CommandOverride {
+        command: "stop_pr_autofix_for_failure",
+        policy: policy(
+            RiskClass::Denied,
+            AGENT,
+            "stops the held PR autofix generation and leaves auto-merge disabled",
+        ),
+    },
+    CommandOverride {
+        command: "retry_agent_workspace_publication_effect",
+        policy: policy(
+            RiskClass::Denied,
+            AGENT,
+            "clears a publication-effect hold and re-runs the reconciler, which republishes through git and gh",
+        ),
+    },
+    CommandOverride {
         command: "close_agent_workspace_pr",
         policy: policy(
             RiskClass::Denied,

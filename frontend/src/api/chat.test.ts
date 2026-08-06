@@ -39,6 +39,10 @@ import {
   listAgentConversationWorkspacesByProject,
   listAgentSidebarConversations,
   updateAgentConversationWorkspaceFromBase,
+  recheckAgentConversationWorkspacePrHealth,
+  retryAgentConversationWorkspacePrAutofixOverride,
+  retryAgentConversationWorkspacePublicationEffect,
+  stopAgentConversationWorkspacePrAutofixForFailure,
   commitAgentConversationWorkspaceLocally,
   precomputeAgentConversationWorkspacePrDescription,
   setAgentConversationWorkspaceAutoPublish,
@@ -1171,6 +1175,8 @@ describe("chat api", () => {
       timelineBlockIndex: 0,
       inputTokens: 10,
       providerHarness: "codex",
+      runId: "run-1",
+      finalizedAt: null,
     });
     expect(result.items[1].toolCall?.detailRef).toMatchObject({
       conversationId: "c-timeline",
@@ -1706,7 +1712,7 @@ describe("chat api", () => {
     ).toBeNull();
   });
 
-  it("transforms a typed repair hold reason", async () => {
+  it("transforms a typed held maintenance operation", async () => {
     mockInvoke.mockResolvedValueOnce([
       {
         ...planSeedWorkspaceResponse(),
@@ -1714,10 +1720,10 @@ describe("chat api", () => {
           operation_id: "maintenance-held",
           generation: 3,
           source: "pr_autofix",
-          stage: "ready",
-          status: "ready",
-          hold_reason: "health_evidence",
-          summary: "RalphX is holding the repair on identical CI evidence.",
+          stage: "held",
+          status: "held",
+          hold_reason: "pr_autofix_unchanged_health",
+          summary: "RalphX is waiting for the CI rerun.",
           blocker: null,
           automatic_continuation: false,
           started_at: "2026-01-24T10:00:00Z",
@@ -1728,7 +1734,130 @@ describe("chat api", () => {
 
     const result = await listAgentConversationWorkspacesByProject("project-1");
 
-    expect(result[0]?.maintenanceOperation?.holdReason).toBe("health_evidence");
+    expect(result[0]?.maintenanceOperation).toMatchObject({
+      stage: "held",
+      status: "held",
+      holdReason: "pr_autofix_unchanged_health",
+    });
+  });
+
+  it("transforms a publication_effect_attention hold reason", async () => {
+    mockInvoke.mockResolvedValueOnce([
+      {
+        ...planSeedWorkspaceResponse(),
+        maintenance_operation: {
+          operation_id: "maintenance-publication-effect",
+          generation: 5,
+          source: "publish",
+          stage: "held",
+          status: "held",
+          hold_reason: "publication_effect_attention",
+          summary: "RalphX pushed a repair but could not confirm it reached the remote.",
+          blocker: null,
+          automatic_continuation: false,
+          started_at: "2026-01-24T10:00:00Z",
+          updated_at: "2026-01-24T10:01:00Z",
+        },
+      },
+    ]);
+
+    const result = await listAgentConversationWorkspacesByProject("project-1");
+
+    expect(result[0]?.maintenanceOperation).toMatchObject({
+      stage: "held",
+      status: "held",
+      holdReason: "publication_effect_attention",
+    });
+  });
+
+  it("degrades an unknown maintenance hold reason without dropping workspace data", async () => {
+    mockInvoke.mockResolvedValueOnce([
+      {
+        ...planSeedWorkspaceResponse(),
+        mode: "edit",
+        publication_pr_number: 993,
+        maintenance_operation: {
+          operation_id: "maintenance-future-hold",
+          generation: 4,
+          source: "pr_autofix",
+          stage: "held",
+          status: "held",
+          hold_reason: "some_future_reason",
+          summary: "RalphX is waiting for a future repair condition.",
+          blocker: null,
+          automatic_continuation: false,
+          started_at: "2026-01-24T10:00:00Z",
+          updated_at: "2026-01-24T10:01:00Z",
+        },
+      },
+    ]);
+
+    const result = await listAgentConversationWorkspacesByProject("project-1");
+
+    expect(result[0]).toMatchObject({
+      conversationId: "conversation-plan",
+      mode: "edit",
+      publicationPrNumber: 993,
+      maintenanceOperation: {
+        operationId: "maintenance-future-hold",
+        stage: "held",
+        status: "held",
+        holdReason: null,
+      },
+    });
+  });
+
+  it("keeps legacy maintenance payloads without a hold reason compatible", () => {
+    expect(
+      AgentConversationWorkspaceResponseSchema.parse({
+        ...planSeedWorkspaceResponse(),
+        maintenance_operation: {
+          operation_id: "maintenance-ready",
+          generation: 1,
+          source: "base_update",
+          stage: "ready",
+          status: "ready",
+          summary: "Base updated.",
+          blocker: null,
+          automatic_continuation: false,
+          started_at: "2026-01-24T10:00:00Z",
+          updated_at: "2026-01-24T10:01:00Z",
+        },
+      }).maintenance_operation?.hold_reason,
+    ).toBeNull();
+  });
+
+  it("sends the current repair version for hold actions", async () => {
+    const input = {
+      attemptId: "repair-attempt-1",
+      generation: 2,
+      updatedAt: "2026-08-02T10:01:00Z",
+    };
+    mockInvoke.mockResolvedValue(planSeedWorkspaceResponse());
+
+    await retryAgentConversationWorkspacePrAutofixOverride("conversation-1", input);
+    expect(mockInvoke).toHaveBeenLastCalledWith("retry_pr_autofix_override", {
+      input: { conversationId: "conversation-1", ...input },
+    });
+
+    await stopAgentConversationWorkspacePrAutofixForFailure("conversation-1", input);
+    expect(mockInvoke).toHaveBeenLastCalledWith("stop_pr_autofix_for_failure", {
+      input: { conversationId: "conversation-1", ...input },
+    });
+
+    await retryAgentConversationWorkspacePublicationEffect("conversation-1", input);
+    expect(mockInvoke).toHaveBeenLastCalledWith(
+      "retry_agent_workspace_publication_effect",
+      { input: { conversationId: "conversation-1", ...input } },
+    );
+
+    mockInvoke.mockResolvedValue(null);
+    await expect(
+      recheckAgentConversationWorkspacePrHealth("conversation-1"),
+    ).resolves.toBeUndefined();
+    expect(mockInvoke).toHaveBeenLastCalledWith("recheck_pr_health", {
+      conversationId: "conversation-1",
+    });
   });
 
   it("rejects an unknown maintenance operation stage", () => {
@@ -1827,6 +1956,19 @@ describe("chat api", () => {
                 publication_pr_url: "https://github.com/acme/demo/pull/123",
                 publication_pr_status: "merged",
                 publication_push_status: "published",
+                maintenance_operation: {
+                  operation_id: "maintenance-held",
+                  generation: 3,
+                  source: "pr_autofix",
+                  stage: "held",
+                  status: "held",
+                  hold_reason: "pr_autofix_unchanged_health",
+                  summary: "RalphX is waiting for PR health to change.",
+                  blocker: null,
+                  automatic_continuation: false,
+                  started_at: "2026-01-24T10:00:00Z",
+                  updated_at: "2026-01-24T10:01:00Z",
+                },
                 status: "active",
                 created_at: "2026-01-24T10:00:00Z",
                 updated_at: "2026-01-24T10:01:00Z",
@@ -1886,6 +2028,12 @@ describe("chat api", () => {
           parkedDelegateCount: 2,
           actionVerb: "Merged",
           isMuted: false,
+          workspace: {
+            maintenanceOperation: {
+              status: "held",
+              holdReason: "pr_autofix_unchanged_health",
+            },
+          },
         },
       ],
     });

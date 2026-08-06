@@ -10,8 +10,7 @@ use super::{AgentRunId, ChatConversationId};
 macro_rules! repair_string_enum {
     ($name:ident { $($variant:ident => $wire:literal),+ $(,)? }) => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-        #[serde(rename_all = "snake_case")]
-        pub enum $name { $($variant),+ }
+        pub enum $name { $(#[serde(rename = $wire)] $variant),+ }
 
         impl $name {
             pub fn as_str(self) -> &'static str {
@@ -146,22 +145,37 @@ repair_string_enum!(AgentWorkspaceRepairOperationStage {
     Publishing => "publishing",
     Ready => "ready",
     Blocked => "blocked",
+    Held => "held",
 });
 
 repair_string_enum!(AgentWorkspaceRepairOperationStatus {
     Active => "active",
     Ready => "ready",
     Blocked => "blocked",
+    Held => "held",
 });
 
 repair_string_enum!(AgentWorkspaceRepairOperationHoldReason {
+    UnchangedHealth => "pr_autofix_unchanged_health",
+    PreExistingOnBase => "pr_autofix_pre_existing_on_base",
+    CiRerunPending => "pr_autofix_ci_rerun_pending",
+    BaseStale => "base_stale",
     HealthEvidence => "health_evidence",
     PublishRedrive => "publish_redrive",
+    PublicationEffectAttention => "publication_effect_attention",
 });
 
 pub const PR_AUTOFIX_PRE_EXISTING_ON_BASE_PENDING_REASON: &str = "pr_autofix_pre_existing_on_base";
 pub const PR_AUTOFIX_UNCHANGED_HEALTH_PENDING_REASON: &str = "pr_autofix_unchanged_health";
+pub const PR_AUTOFIX_BASE_STALE_AFTER_UPDATE_PENDING_REASON: &str =
+    "pr_autofix_base_stale_after_update";
 pub const PR_AUTOFIX_HEAD_REDRIVE_PENDING_REASON_PREFIX: &str = "pr_autofix_head_redrive:";
+/// Mirrors `CONTINUATION_OPEN_EFFECT_ATTENTION_REASON` owned by
+/// `application::agent_workspace_publish_recovery::durable_attempt_recovery` in the root crate,
+/// which this pure domain crate cannot depend on. Kept as a literal wire-string duplicate rather
+/// than an inverted dependency; the two must stay byte-identical.
+pub const CONTINUATION_OPEN_EFFECT_ATTENTION_PENDING_REASON: &str =
+    "continuation_open_effect_attention_required";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentWorkspaceRepairAttempt {
@@ -174,6 +188,9 @@ pub struct AgentWorkspaceRepairAttempt {
     pub reserved_agent_run_id: Option<AgentRunId>,
     pub target_base_ref: String,
     pub target_base_commit: Option<String>,
+    /// GitHub base tip targeted by a completed automatic update route for this attempt.
+    #[serde(default)]
+    pub base_update_target_commit: Option<String>,
     pub pending_reasons: Vec<String>,
     pub review_required: bool,
     pub auto_publish_enabled: bool,
@@ -227,6 +244,7 @@ impl AgentWorkspaceRepairAttempt {
             reserved_agent_run_id: None,
             target_base_ref: target_base_ref.into(),
             target_base_commit: None,
+            base_update_target_commit: None,
             pending_reasons: Vec::new(),
             review_required,
             auto_publish_enabled,
@@ -258,49 +276,87 @@ impl AgentWorkspaceRepairAttempt {
     }
 
     pub fn operation_snapshot(&self) -> AgentWorkspaceRepairOperationSnapshot {
-        let stage = match self.phase {
-            AgentWorkspaceRepairPhase::Requested | AgentWorkspaceRepairPhase::Dispatching => {
-                AgentWorkspaceRepairOperationStage::UpdatingBase
-            }
-            AgentWorkspaceRepairPhase::Repairing => AgentWorkspaceRepairOperationStage::Repairing,
-            AgentWorkspaceRepairPhase::Validating => AgentWorkspaceRepairOperationStage::Validating,
-            AgentWorkspaceRepairPhase::AwaitingReview => {
-                AgentWorkspaceRepairOperationStage::Reviewing
-            }
-            AgentWorkspaceRepairPhase::ContinuationPending
-            | AgentWorkspaceRepairPhase::Continuing => {
-                AgentWorkspaceRepairOperationStage::Publishing
-            }
-            AgentWorkspaceRepairPhase::Ready => AgentWorkspaceRepairOperationStage::Ready,
-            AgentWorkspaceRepairPhase::Blocked => AgentWorkspaceRepairOperationStage::Blocked,
-        };
-        let status = match self.phase {
-            AgentWorkspaceRepairPhase::Ready => AgentWorkspaceRepairOperationStatus::Ready,
-            AgentWorkspaceRepairPhase::Blocked => AgentWorkspaceRepairOperationStatus::Blocked,
-            _ => AgentWorkspaceRepairOperationStatus::Active,
-        };
-        let hold_reason = if self.phase == AgentWorkspaceRepairPhase::Ready
-            && self.source == AgentWorkspaceRepairSource::PrAutofix
-        {
+        let publish_redrive = self.phase == AgentWorkspaceRepairPhase::Ready
+            && self
+                .pending_reasons
+                .iter()
+                .any(|reason| reason.starts_with(PR_AUTOFIX_HEAD_REDRIVE_PENDING_REASON_PREFIX));
+        let hold_reason = if self.phase == AgentWorkspaceRepairPhase::Ready && !publish_redrive {
             if self
                 .pending_reasons
                 .iter()
-                .any(|reason| reason.starts_with(PR_AUTOFIX_HEAD_REDRIVE_PENDING_REASON_PREFIX))
+                .any(|reason| reason == PR_AUTOFIX_BASE_STALE_AFTER_UPDATE_PENDING_REASON)
             {
-                Some(AgentWorkspaceRepairOperationHoldReason::PublishRedrive)
-            } else if self.pending_reasons.iter().any(|reason| {
-                matches!(
-                    reason.as_str(),
-                    PR_AUTOFIX_PRE_EXISTING_ON_BASE_PENDING_REASON
-                        | PR_AUTOFIX_UNCHANGED_HEALTH_PENDING_REASON
-                )
-            }) {
-                Some(AgentWorkspaceRepairOperationHoldReason::HealthEvidence)
+                Some(AgentWorkspaceRepairOperationHoldReason::BaseStale)
             } else {
-                None
+                self.pending_reasons
+                    .iter()
+                    .find_map(|reason| {
+                        AgentWorkspaceRepairOperationHoldReason::from_str(reason).ok()
+                    })
+                    .or_else(|| {
+                        ((self.ci_rerun_count > 0 && self.ci_rerun_fingerprint.is_some())
+                            || self
+                                .pending_reasons
+                                .iter()
+                                .any(|reason| reason == "pr_autofix_awaiting_ci"))
+                        .then_some(AgentWorkspaceRepairOperationHoldReason::CiRerunPending)
+                    })
             }
+        } else if matches!(
+            self.phase,
+            AgentWorkspaceRepairPhase::ContinuationPending | AgentWorkspaceRepairPhase::Continuing
+        ) && self
+            .pending_reasons
+            .iter()
+            .any(|reason| reason == CONTINUATION_OPEN_EFFECT_ATTENTION_PENDING_REASON)
+        {
+            // Additive branch: a continuation stuck behind an unresolved publication effect
+            // (push/PR mutation whose outcome is still unproven) needs a distinct manual escape
+            // hatch. This deliberately falls through to the same Held stage/status/
+            // automatic_continuation=false shape as the Ready hold branch below, rather than
+            // preserving the Publishing stage — after Phases 1-2 this state only survives when no
+            // automatic path can fix it, so Held is the accurate signal.
+            Some(AgentWorkspaceRepairOperationHoldReason::PublicationEffectAttention)
         } else {
             None
+        };
+        let stage = if publish_redrive {
+            AgentWorkspaceRepairOperationStage::Publishing
+        } else if hold_reason.is_some() {
+            AgentWorkspaceRepairOperationStage::Held
+        } else {
+            match self.phase {
+                AgentWorkspaceRepairPhase::Requested | AgentWorkspaceRepairPhase::Dispatching => {
+                    AgentWorkspaceRepairOperationStage::UpdatingBase
+                }
+                AgentWorkspaceRepairPhase::Repairing => {
+                    AgentWorkspaceRepairOperationStage::Repairing
+                }
+                AgentWorkspaceRepairPhase::Validating => {
+                    AgentWorkspaceRepairOperationStage::Validating
+                }
+                AgentWorkspaceRepairPhase::AwaitingReview => {
+                    AgentWorkspaceRepairOperationStage::Reviewing
+                }
+                AgentWorkspaceRepairPhase::ContinuationPending
+                | AgentWorkspaceRepairPhase::Continuing => {
+                    AgentWorkspaceRepairOperationStage::Publishing
+                }
+                AgentWorkspaceRepairPhase::Ready => AgentWorkspaceRepairOperationStage::Ready,
+                AgentWorkspaceRepairPhase::Blocked => AgentWorkspaceRepairOperationStage::Blocked,
+            }
+        };
+        let status = if publish_redrive {
+            AgentWorkspaceRepairOperationStatus::Active
+        } else if hold_reason.is_some() {
+            AgentWorkspaceRepairOperationStatus::Held
+        } else {
+            match self.phase {
+                AgentWorkspaceRepairPhase::Ready => AgentWorkspaceRepairOperationStatus::Ready,
+                AgentWorkspaceRepairPhase::Blocked => AgentWorkspaceRepairOperationStatus::Blocked,
+                _ => AgentWorkspaceRepairOperationStatus::Active,
+            }
         };
 
         AgentWorkspaceRepairOperationSnapshot {
@@ -375,6 +431,27 @@ impl AgentWorkspaceRepairEffect {
             return Err("repair effect completion cannot predate creation".to_string());
         }
         Ok(())
+    }
+
+    /// True when the remote is still exactly at the pre-push state this effect recorded, which
+    /// proves the intended mutation never reached the remote. Ambiguous shapes return false: a
+    /// missing OID proof is not evidence of anything.
+    pub fn remote_matches_recorded_precondition(&self, remote_oid: Option<&str>) -> bool {
+        (self.expected_remote_absent && remote_oid.is_none())
+            || (!self.expected_remote_absent && remote_oid == self.expected_remote_oid.as_deref())
+    }
+
+    /// True when the effect carries the exact OID proof both reconciliation directions require.
+    pub fn has_exact_remote_oid_proof(&self) -> bool {
+        self.intended_head_oid
+            .as_deref()
+            .is_some_and(|oid| !oid.trim().is_empty())
+            && ((self.expected_remote_absent && self.expected_remote_oid.is_none())
+                || (!self.expected_remote_absent
+                    && self
+                        .expected_remote_oid
+                        .as_deref()
+                        .is_some_and(|oid| !oid.trim().is_empty())))
     }
 }
 

@@ -92,6 +92,15 @@ export default defineConfig(async ({ mode }) => {
     : {};
 
   return {
+    // Native Tauri dev and web-mode Playwright can run concurrently from the
+    // same checkout. Separate their pre-bundles so either server can rebuild or
+    // shut down without invalidating the other's optimized dependency hashes.
+    // dev-fresh already clears the shared parent directory before launch.
+    cacheDir: path.resolve(
+      __dirname,
+      "./node_modules/.vite",
+      isWebMode ? "web" : "native",
+    ),
     define: {
       // UI debug logging is opt-in via shell env, e.g. DEBUG=true npm run tauri dev
       __UI_DEBUG__: JSON.stringify(process.env.DEBUG === "true"),
@@ -100,7 +109,14 @@ export default defineConfig(async ({ mode }) => {
       react(),
       tailwindcss(),
       checker({
-        typescript: true,
+        // Keep the long-running checker inside the active worktree even when
+        // node_modules is repaired while dev-fresh remains running. Bare
+        // module resolution can otherwise retain React types from the primary
+        // checkout and report incompatible duplicate Ref types after HMR.
+        typescript: {
+          root: __dirname,
+          tsconfigPath: "tsconfig.json",
+        },
         overlay: {
           initialIsOpen: false,
           position: "br",

@@ -134,6 +134,7 @@ import { ChildSessionNavigationContext } from "./tool-widgets/ChildSessionNaviga
 import { ChildSessionTranscriptModal } from "./ChildSessionTranscriptModal";
 import { cn } from "@/lib/utils";
 import { PersonaChip } from "./PersonaChip";
+import { useChatBottomInset } from "./useChatBottomInset";
 import type { ComposerRuntimePersonaField } from "@/components/agents/composer/runtime/runtimeSelectorTypes";
 import { toast } from "sonner";
 
@@ -351,6 +352,8 @@ export function IntegratedChatPanel({
 }: IntegratedChatPanelProps) {
   const attachmentUploadGate = useAgentGate("attachmentUpload");
   const attachmentMetadataReadGate = useAgentGate("attachmentMetadataRead");
+  const { chromeRef, containerRef, registerTranscriptSpacer } =
+    useChatBottomInset();
   const bus = useEventBus();
   const queryClient = useQueryClient();
   const { data: featureFlags } = useFeatureFlags();
@@ -1744,10 +1747,15 @@ export function IntegratedChatPanel({
           <ChildSessionNavigationContext.Provider
             value={handleNavigateToChildSession}
           >
+            <div
+              ref={containerRef}
+              className="relative flex-1 min-h-0 flex flex-col"
+            >
             {isLoading ? (
               <div
                 className="flex-1 flex items-center justify-center"
                 data-testid="integrated-chat-messages"
+                style={{ paddingBottom: "var(--chat-bottom-inset, 0px)" }}
               >
                 <LoadingState />
               </div>
@@ -1755,6 +1763,7 @@ export function IntegratedChatPanel({
               <div
                 className="flex-1 flex items-center justify-center"
                 data-testid="integrated-chat-messages"
+                style={{ paddingBottom: "var(--chat-bottom-inset, 0px)" }}
               >
                 {emptyState ??
                   (isHistoryMode && !hasHistoryConversation ? (
@@ -1768,6 +1777,7 @@ export function IntegratedChatPanel({
                 ref={virtuosoRef}
                 messages={sortedMessages}
                 conversationId={effectiveConversationId}
+                contextKey={storeContextKey}
                 initialPaintCoverKey={
                   transcriptPaintCoverConversationId ===
                   transcriptConversationId
@@ -1815,13 +1825,32 @@ export function IntegratedChatPanel({
                 hasOlderMessages={primaryTranscriptWindow.hasOlderMessages}
                 isFetchingOlderMessages={primaryTranscriptWindow.isFetchingOlderMessages}
                 onLoadOlderMessages={primaryTranscriptWindow.fetchOlderMessages}
+                registerBottomSpacer={registerTranscriptSpacer}
               />
             )}
 
             <div
+              ref={chromeRef}
               data-testid="chat-below-transcript-chrome"
-              className="shrink-0"
+              className="absolute inset-x-0 bottom-0 z-20 flex flex-col overflow-y-auto"
+              style={{ maxHeight: "min(60%, 100%)" }}
             >
+              <div
+                className="absolute inset-0 -z-10"
+                aria-hidden
+                style={
+                  surfaceBackground === "transparent"
+                    ? {
+                        backgroundColor: "var(--bg-base)",
+                      }
+                    : {
+                        backgroundColor:
+                          "color-mix(in srgb, var(--bg-surface) 92%, transparent)",
+                        backdropFilter: "blur(20px) saturate(180%)",
+                        WebkitBackdropFilter: "blur(20px) saturate(180%)",
+                      }
+                }
+              />
               {/* Child Session Notification - shows when follow-up is created (ideation mode only) */}
               {ideationSessionId && !isHistoryMode && (
                 <div className="px-3">
@@ -1868,14 +1897,13 @@ export function IntegratedChatPanel({
              darker than body on Dark, producing a three-tier sandwich. */}
               <div
                 data-testid="chat-input-container"
-                className={inputContainerClassName ?? "shrink-0"}
+                className={inputContainerClassName ?? ""}
                 style={
                   inputContainerClassName
                     ? undefined
                     : {
                         backgroundColor:
                           "color-mix(in srgb, var(--text-primary) 2%, transparent)",
-                        borderTop: "1px solid var(--border-subtle)",
                       }
                 }
               >
@@ -1929,9 +1957,8 @@ export function IntegratedChatPanel({
                   )}
 
                   {/* Chat Input — wrapper padding matches ExecutionControlBar's
-                  outer `p-2` so the top border of the composer aligns with
-                  the top border of the execution bar across the split pane. */}
-                  <div className="p-2">
+                  outer `p-2` so the composer aligns across the split pane. */}
+                  <div className="p-2 empty:p-0">
                     {renderComposer ? (
                       renderComposer({
                         onSend: activeQuestion
@@ -2031,6 +2058,7 @@ export function IntegratedChatPanel({
                   </div>
                 </div>
               </div>
+            </div>
             </div>
           </ChildSessionNavigationContext.Provider>
         </div>

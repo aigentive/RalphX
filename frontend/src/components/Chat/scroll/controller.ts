@@ -67,6 +67,7 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
   let capturedAnchor: CapturedAnchor | null = null;
   let pinFrame: number | null = null;
   let settleFrame: number | null = null;
+  let returningSettleFrameCount = 0;
   let jumpSettleFrame: number | null = null;
   let jumpSettleScrollTop: number | null = null;
   let jumpSettleFrameCount = 0;
@@ -79,13 +80,27 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
   let visualBottom: boolean | null = null;
   let pinBehavior: "auto" | "smooth" = "auto";
   let pinReasons: string[] = [];
+  let pinNeedsIndexAlignment = false;
   let suppressFreeBottomReentry = false;
   let detached = false;
 
   const getElement = (): HTMLElement | null => deps.getScrollElement() ?? attachedElement;
 
   const debug = (event: string, detail: Record<string, unknown> = {}): void => {
-    deps.debugLog?.(event, { state, ...detail });
+    deps.debugLog?.(event, {
+      state,
+      activeIntent: activeIntent?.target === "bottom"
+        ? "bottom"
+        : activeIntent?.target
+          ? "anchor" in activeIntent.target ? "anchor" : "offset"
+          : null,
+      pointerSession,
+      prependEpoch,
+      previousScrollTop,
+      visualBottom,
+      zeroSizeEpoch,
+      ...detail,
+    });
   };
 
   const updateVisualBottom = (): boolean => {
@@ -113,11 +128,13 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
     cancelFrame(pinFrame);
     pinFrame = null;
     pinReasons = [];
+    pinNeedsIndexAlignment = false;
   };
 
   const cancelSettle = (): void => {
     cancelFrame(settleFrame);
     settleFrame = null;
+    returningSettleFrameCount = 0;
   };
 
   const cancelJumpSettle = (): void => {
@@ -141,7 +158,12 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
   };
 
   const scrollToTrueBottom = (element: HTMLElement, behavior: "auto" | "smooth"): number => {
-    const target = getTrueBottomScrollTop(element);
+    // The scroller under-reports its extent by hundreds of pixels while the
+    // virtualizer's rendered range lags the scroll position, so a target above
+    // the current position is a transient measurement rather than a shorter
+    // transcript. Genuine shrink is already handled: the browser clamps
+    // scrollTop down on its own, against geometry we cannot read mid-render.
+    const target = Math.max(element.scrollTop, getTrueBottomScrollTop(element));
     if (element.scrollTop !== target) {
       element.scrollTo({ top: target, behavior });
     }
@@ -157,7 +179,10 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
     if (!activeIntent) return false;
     const { target, epsilon } = activeIntent;
     if (target === "bottom") {
-      return Math.abs(getTrueBottomScrollTop(element) - element.scrollTop) <= epsilon;
+      // Nothing left below the reader satisfies the bottom intent. Sitting
+      // past an under-reported extent is a transient virtualizer measurement,
+      // not an unmet intent, and treating it as one spins correction pins.
+      return getTrueBottomScrollTop(element) - element.scrollTop <= epsilon;
     }
     if (typeof target === "object" && "anchor" in target) {
       const offset = target.anchor.getBoundingClientRect().top - element.getBoundingClientRect().top;
@@ -179,50 +204,95 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
     updateVisualBottom();
   };
 
+  const settleBottomIntent = (source: "frame" | "scroll"): void => {
+    cancelPendingPin();
+    cancelSettle();
+    setState("pinned");
+    beginBottomIntent();
+    updateVisualBottom();
+    debug("bottom-intent-settled", { source });
+  };
+
   const scheduleReturningSettle = (): void => {
     if (state !== "returning" || settleFrame !== null || prependEpoch || zeroSizeEpoch) return;
     settleFrame = deps.requestFrame(() => {
       settleFrame = null;
       const element = getElement();
       if (!element || state !== "returning" || prependEpoch || zeroSizeEpoch) return;
+      returningSettleFrameCount += 1;
       if (isWithinActiveIntent(element)) {
-        setState("pinned");
-        beginBottomIntent();
-        updateVisualBottom();
-        debug("bottom-intent-settled");
+        if (returningSettleFrameCount >= MAX_SETTLE_FRAMES) {
+          settleBottomIntent("frame");
+        } else {
+          scheduleReturningSettle();
+        }
         return;
       }
-      schedulePin("returning-settle", "auto");
+      schedulePin("returning-settle", "auto", false);
     });
   };
 
-  const performPin = (reason: string, behavior: "auto" | "smooth"): void => {
+  const performPin = (
+    reason: string,
+    behavior: "auto" | "smooth",
+    alignLastItem = true,
+  ): void => {
     if (detached || state === "free" || prependEpoch || zeroSizeEpoch) return;
     const element = getElement();
     beginBottomIntent();
-    deps.scrollToIndex({ index: deps.getLastIndex(), align: "end", behavior });
+    if (alignLastItem) {
+      deps.scrollToIndex({ index: deps.getLastIndex(), align: "end", behavior });
+    }
     if (element) {
       const target = scrollToTrueBottom(element, behavior);
       previousScrollTop = element.scrollTop;
-      debug("pin", { behavior, reason, target });
+      debug("pin", { alignLastItem, behavior, reason, target });
     } else {
-      debug("pin", { behavior, reason, target: null });
+      debug("pin", { alignLastItem, behavior, reason, target: null });
     }
     updateVisualBottom();
     scheduleReturningSettle();
   };
 
-  const schedulePin = (reason: string, behavior: "auto" | "smooth"): void => {
+  const schedulePin = (
+    reason: string,
+    behavior: "auto" | "smooth",
+    alignLastItem = true,
+  ): void => {
     if (detached || state === "free" || prependEpoch || zeroSizeEpoch) return;
     pinBehavior = behavior;
     pinReasons.push(reason);
+    // Item alignment hands the virtualizer a second, asynchronous scroll
+    // writer, and its deferred write lands at the last item's end rather than
+    // the true bottom below the footer spacer. Once measurement-driven growth
+    // joins the batch the native true-bottom write covers it, so the batch must
+    // not also replay an alignment against geometry that has since moved.
+    if (alignLastItem) {
+      pinNeedsIndexAlignment ||= pinReasons.length === 1;
+    } else {
+      pinNeedsIndexAlignment = false;
+    }
     if (pinFrame !== null) return;
     pinFrame = deps.requestFrame(() => {
       pinFrame = null;
       const reasons = pinReasons;
+      const shouldAlignLastItem = pinNeedsIndexAlignment;
       pinReasons = [];
-      performPin(reasons.join(","), pinBehavior);
+      pinNeedsIndexAlignment = false;
+      performPin(reasons.join(","), pinBehavior, shouldAlignLastItem);
     });
+  };
+
+  const startReturningBottomIntent = (
+    reason: string,
+    behavior: "auto" | "smooth",
+    alignLastItem = true,
+  ): void => {
+    cancelJumpSettle();
+    cancelSettle();
+    setState("returning");
+    beginBottomIntent();
+    schedulePin(reason, behavior, alignLastItem);
   };
 
   const schedulePrependSettle = (): void => {
@@ -336,12 +406,14 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
     },
 
     notifyWheel(deltaY, isNestedScrollableTarget) {
+      debug("wheel", { deltaY, isNestedScrollableTarget });
       if (isNestedScrollableTarget) return;
       classifyAgainstTargetInput(deltaY < 0, "wheel");
       if (deltaY > 0 && state === "returning") schedulePin("wheel-affirmation", "auto");
     },
 
     notifyKeyScroll(direction) {
+      debug("key-scroll", { direction });
       classifyAgainstTargetInput(direction === "up", "key");
       if (direction === "down" && state === "returning") schedulePin("key-affirmation", "auto");
     },
@@ -349,18 +421,22 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
     notifyPointerDown() {
       pointerSession = true;
       previousScrollTop = getElement()?.scrollTop ?? previousScrollTop;
+      debug("pointer-down");
     },
 
     notifyPointerUp() {
       pointerSession = false;
+      debug("pointer-up");
     },
 
     notifyScroll() {
       const element = getElement();
       if (!element) return;
       const current = element.scrollTop;
-      const movedUp = previousScrollTop !== null && current < previousScrollTop - VISUAL_BOTTOM_EPSILON_PX;
+      const priorScrollTop = previousScrollTop;
+      const movedUp = priorScrollTop !== null && current < priorScrollTop - VISUAL_BOTTOM_EPSILON_PX;
       previousScrollTop = current;
+      debug("scroll", { current, movedUp, priorScrollTop });
       if (prependEpoch) {
         schedulePrependSettle();
         updateVisualBottom();
@@ -368,10 +444,6 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
       }
       if (pointerSession && movedUp) {
         cancelIntentAndFree("pointer-scroll");
-        return;
-      }
-      if (movedUp && state !== "free" && !isWithinActiveIntent(element)) {
-        cancelIntentAndFree("scroll-away");
         return;
       }
       const atBottom = updateVisualBottom();
@@ -384,23 +456,31 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
         return;
       }
       if (hasActiveBottomIntent() && !isWithinActiveIntent(element)) {
-        schedulePin("scroll-intent-correction", "auto");
+        schedulePin("scroll-intent-correction", "auto", false);
       }
       scheduleReturningSettle();
     },
 
     notifyContentGrowth() {
+      debug("content-growth");
       if (prependEpoch) {
         previousScrollTop = getElement()?.scrollTop ?? previousScrollTop;
         schedulePrependSettle();
         return;
       }
       updateVisualBottom();
-      if (state !== "free") schedulePin("content-growth", "auto");
+      if (state !== "free") {
+        // The semantic request that introduced the tail already aligned the
+        // virtual item. Measurement-driven growth must only reconcile the
+        // native scroller; another async item alignment can replay stale
+        // Virtuoso geometry and fight the true-bottom write indefinitely.
+        startReturningBottomIntent("content-growth", "auto", false);
+      }
     },
 
     notifyContainerResize() {
       const element = getElement();
+      debug("container-resize", { clientHeight: element?.clientHeight ?? null });
       if (!element || element.clientHeight === 0) {
         zeroSizeEpoch = true;
         cancelPendingPin();
@@ -416,7 +496,7 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
       updateVisualBottom();
       if (state !== "free" && !prependEpoch) {
         cancelPendingPin();
-        performPin("container-resize", "auto");
+        performPin("container-resize", "auto", false);
       }
     },
 
@@ -433,29 +513,22 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
     },
 
     requestPin(reason, behavior) {
+      debug("pin-request", { behavior, reason });
       if (state === "free") {
         debug("pin-ignored-free", { reason });
         return;
       }
-      schedulePin(reason, behavior);
+      startReturningBottomIntent(reason, behavior);
     },
 
     pinForUserIntent(reason, behavior) {
-      if (state === "pinned") {
-        schedulePin(reason, behavior);
-        return;
-      }
-      cancelJumpSettle();
-      setState("returning");
-      beginBottomIntent();
-      schedulePin(reason, behavior);
+      debug("user-pin-request", { behavior, reason });
+      startReturningBottomIntent(reason, behavior);
     },
 
     scrollToBottomClicked() {
-      cancelJumpSettle();
-      setState("returning");
-      beginBottomIntent();
-      schedulePin("scroll-to-bottom-click", "auto");
+      debug("scroll-to-bottom-click");
+      startReturningBottomIntent("scroll-to-bottom-click", "auto");
     },
 
     forwardWheel(deltaX, deltaY) {
@@ -501,6 +574,10 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
         offset: anchor.getBoundingClientRect().top - element.getBoundingClientRect().top,
         wasAtBottom: isScrollElementVisuallyAtBottom(element),
       };
+      debug("anchor-captured", {
+        offset: capturedAnchor.offset,
+        wasAtBottom: capturedAnchor.wasAtBottom,
+      });
     },
 
     restoreAnchor() {

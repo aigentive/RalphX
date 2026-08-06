@@ -139,7 +139,14 @@ export function useAgentConversationActions({
         return;
       }
 
-      queryClient.setQueryData(chatKeys.conversationSummary(conversation.id), conversation);
+      const conversationSummaryKey = chatKeys.conversationSummary(
+        conversation.id,
+      );
+      if (queryClient.getQueryData(conversationSummaryKey) === undefined) {
+        queryClient.setQueryData(conversationSummaryKey, conversation, {
+          updatedAt: 0,
+        });
+      }
       setOptimisticSelectedConversationId(conversation.id);
       setOptimisticConversationsById((current) =>
         current[conversation.id] === conversation
@@ -151,6 +158,11 @@ export function useAgentConversationActions({
         getAgentConversationStoreKey(conversation),
         conversation.id
       );
+      void queryClient.prefetchQuery({
+        queryKey: conversationSummaryKey,
+        queryFn: () => chatApi.getConversationSummary(conversation.id),
+        staleTime: 30 * 1000,
+      });
       if (conversation.contextType === "project") {
         void preflightAgentWorkspaceFreshness(queryClient, conversation.id);
       }

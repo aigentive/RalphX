@@ -1,5 +1,8 @@
 //! Durable parent-turn parking for native delegation.
 
+mod arm_authority;
+#[cfg(test)]
+mod arm_authority_tests;
 #[cfg(test)]
 mod arm_tests;
 #[cfg(test)]
@@ -79,11 +82,26 @@ impl DelegationParkService {
         }
     }
 
+    /// Disarm every armed park owned by a parent run that has reached a terminal path.
+    ///
+    /// The repository CAS is the authority here: an already-waking park belongs to its claimed
+    /// dispatcher, while an armed park can no longer create a surprise `resume_in_place` turn.
+    /// Delegated jobs are deliberately untouched.
+    pub async fn disarm_armed_for_terminal_parent(
+        park_repo: &dyn DelegationParkRepository,
+        conversation_id: &ChatConversationId,
+        parent_run_id: &AgentRunId,
+    ) -> AppResult<usize> {
+        park_repo
+            .disarm_armed_for_parent_run(conversation_id, parent_run_id)
+            .await
+    }
+
     /// Validate delegate ownership then arm one durable park for the conversation.
     ///
-    /// Ownership means the caller run: every watched job must have been started by
-    /// `request.parent_agent_run_id`, and that run must belong to
-    /// `request.parent_conversation_id`.
+    /// Ownership means every watched job was started by the caller run or is an exact member of
+    /// the backend wake park that resumed it. The caller run must belong to the requested
+    /// conversation.
     ///
     /// # Errors
     ///
@@ -106,51 +124,8 @@ impl DelegationParkService {
             )));
         }
 
-        let mut jobs: Vec<DelegationParkJob> = Vec::new();
-        for job_id in &request.job_ids {
-            let snapshot = delegation_jobs
-                .park_job_snapshot(job_id)
-                .await
-                .ok_or_else(|| AppError::NotFound(format!("delegation job not found: {job_id}")))?;
-            if snapshot.status != "running" {
-                return Err(AppError::Validation(format!(
-                    "delegation job is not running: {job_id}"
-                )));
-            }
-            // Ownership is proven from the caller RUN alone. A job's `parent_conversation_id` is
-            // the Delegate widget / lineage anchor, which `resolve_nested_delegation_parent` and
-            // the ideation verification-child resolver deliberately leave pointing at an ancestor
-            // conversation rather than the runtime that called `delegate_start`. Only
-            // `parent_agent_run_id` is bound to the calling conversation on every resolver branch.
-            if snapshot.parent_agent_run_id.as_deref()
-                != Some(request.parent_agent_run_id.as_str().as_str())
-            {
-                return Err(AppError::Validation(format!(
-                    "delegation job is not owned by this parent: {job_id}"
-                )));
-            }
-            let delegated_agent_run_id = snapshot.delegated_agent_run_id.ok_or_else(|| {
-                AppError::Validation(format!(
-                    "delegation job has no durable delegated run: {job_id}"
-                ))
-            })?;
-            let delegated_agent_run_id =
-                AgentRunId::from_str(&delegated_agent_run_id).map_err(|_| {
-                    AppError::Validation(format!(
-                        "delegation job has an invalid durable delegated run: {job_id}"
-                    ))
-                })?;
-            jobs.push(DelegationParkJob {
-                job_id: job_id.clone(),
-                delegated_session_id: snapshot.delegated_session_id,
-                delegated_agent_run_id,
-                settled_status: None,
-            });
-        }
-
-        // Bind the claimed run to the claimed conversation here rather than trusting the transport
-        // to have done it: without this the caller-run token above would authorize a park for any
-        // conversation the request names.
+        // Bind the claimed run to the claimed conversation before consulting delegation or park
+        // state. Inherited authority is allowed only for metadata persisted on this exact run.
         let caller_run = self
             .agent_run_repo
             .get_by_id(&request.parent_agent_run_id)
@@ -166,6 +141,58 @@ impl DelegationParkService {
                 "delegation park caller agent run does not belong to the caller conversation"
                     .to_string(),
             ));
+        }
+
+        let mut jobs: Vec<DelegationParkJob> = Vec::new();
+        let mut inherited_jobs: Vec<DelegationParkJob> = Vec::new();
+        for job_id in &request.job_ids {
+            let snapshot = delegation_jobs
+                .park_job_snapshot(job_id)
+                .await
+                .ok_or_else(|| AppError::NotFound(format!("delegation job not found: {job_id}")))?;
+            if snapshot.status != "running" {
+                return Err(AppError::Validation(format!(
+                    "delegation job is not running: {job_id}"
+                )));
+            }
+            // Direct ownership is proven from the caller RUN alone. A job's
+            // `parent_conversation_id` is
+            // the Delegate widget / lineage anchor, which `resolve_nested_delegation_parent` and
+            // the ideation verification-child resolver deliberately leave pointing at an ancestor
+            // conversation rather than the runtime that called `delegate_start`. Only
+            // `parent_agent_run_id` is bound to the calling conversation on every resolver branch.
+            let is_direct = snapshot.parent_agent_run_id.as_deref()
+                == Some(request.parent_agent_run_id.as_str().as_str());
+            let delegated_agent_run_id = snapshot.delegated_agent_run_id.ok_or_else(|| {
+                AppError::Validation(format!(
+                    "delegation job has no durable delegated run: {job_id}"
+                ))
+            })?;
+            let delegated_agent_run_id =
+                AgentRunId::from_str(&delegated_agent_run_id).map_err(|_| {
+                    AppError::Validation(format!(
+                        "delegation job has an invalid durable delegated run: {job_id}"
+                    ))
+                })?;
+            let job = DelegationParkJob {
+                job_id: job_id.clone(),
+                delegated_session_id: snapshot.delegated_session_id,
+                delegated_agent_run_id,
+                settled_status: None,
+            };
+            if !is_direct {
+                inherited_jobs.push(job.clone());
+            }
+            jobs.push(job);
+        }
+
+        if !inherited_jobs.is_empty() {
+            self.validate_inherited_arm_authority(
+                &caller_run,
+                &request.parent_conversation_id,
+                &inherited_jobs,
+            )
+            .await?;
         }
 
         let config = delegation_config();
