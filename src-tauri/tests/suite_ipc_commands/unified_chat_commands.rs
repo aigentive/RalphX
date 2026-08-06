@@ -1160,7 +1160,6 @@ fn send_agent_message_rejects_team_flip_for_project_persona_builder() {
 #[tokio::test]
 async fn update_coordination_mode_rejects_builder_and_allows_project_chat() {
     use ralphx_lib::application::managed_team::ManagedTeamService;
-    use ralphx_lib::domain::repositories::TeamRepository;
     use ralphx_lib::infrastructure::memory::{
         MemoryQueuedMessageRepository, MemoryTeamCoordinationTransitionRepository,
         MemoryTeamMessageRepository, MemoryTeamRepository, MemoryTeamRunBindingRepository,
@@ -1301,9 +1300,6 @@ async fn rx_native_team_send_replay_preallocates_coordinator_run_binding() {
     use ralphx_lib::application::chat_service::{ChatService, SendMessageOptions};
     use ralphx_lib::application::managed_team::ManagedTeamService;
     use ralphx_lib::domain::entities::{AgentRunId, TeamIntent};
-    use ralphx_lib::domain::repositories::{
-        TeamRunBindingRepository, UiFeatureFlagOverridesRepository,
-    };
     use ralphx_lib::infrastructure::memory::{
         MemoryQueuedMessageRepository, MemoryTeamCoordinationTransitionRepository,
         MemoryTeamMessageRepository, MemoryTeamRepository, MemoryTeamRunBindingRepository,
