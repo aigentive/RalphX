@@ -32,9 +32,14 @@ import {
   useAgentArtifactUiStore,
 } from "./agentArtifactUiStore";
 import { agentWorkspaceKeys } from "./agentWorkspaceQueries";
+import { takeAgentWorkspaceOperationResult } from "./agentWorkspaceOperationRegistry";
 import { prKeys } from "@/hooks/usePullRequestDetail";
 
 const deferredHydrationTimeout = { timeout: 3_000 };
+
+function toastContentProps(content: unknown): { title: string; description?: string } {
+  return (content as { props: { title: string; description?: string } }).props;
+}
 
 const {
   getAgentConversationRuntimeStatusesMock,
@@ -61,7 +66,6 @@ const {
   realPublishPanelState,
   sendAgentMessageMock,
   toastDismissMock,
-  toastErrorMock,
   toastInfoMock,
   toastSuccessMock,
   updateWorkspaceFromBaseMock,
@@ -328,16 +332,16 @@ describe("AgentsView publish", () => {
         },
       ),
     );
-    await waitFor(() =>
-      expect(toastSuccessMock).toHaveBeenCalledWith(
-        "Committed locally on ralphx/ralphx/agent-abcdef12",
-        {
-          description: "Untitled agent • 1234567",
-          duration: 8_000,
-          id: "agent-workspace-operation:conversation-1:local-commit",
-        },
-      ),
-    );
+    await waitFor(() => expect(toastSuccessMock).toHaveBeenCalledTimes(1));
+    const [successContent, successOptions] = toastSuccessMock.mock.calls[0]!;
+    expect(toastContentProps(successContent)).toMatchObject({
+      title: "Committed locally on ralphx/ralphx/agent-abcdef12",
+      description: "Untitled agent • 1234567",
+    });
+    expect(successOptions).toMatchObject({
+      duration: 8_000,
+      id: "agent-workspace-operation:conversation-1:local-commit",
+    });
 
     act(() => {
       useProjectStore.getState().updateProject("project-1", {
@@ -557,29 +561,19 @@ describe("AgentsView publish", () => {
       commitSha: "1234567890abcdef",
       outcome: "already_committed" as const,
       expectedMessage: "Already committed locally",
-      expectedOptions: {
-        description: "Untitled agent • 1234567",
-        dismissible: true,
-        duration: 8_000,
-        id: "agent-workspace-operation:conversation-1:local-commit",
-      },
+      expectedDescription: "Untitled agent • 1234567",
     },
     {
       commitSha: "",
       outcome: "no_changes" as const,
       expectedMessage: "No local changes to commit",
-      expectedOptions: {
-        description: "Untitled agent • Commit isolated workspace branch",
-        dismissible: true,
-        duration: 8_000,
-        id: "agent-workspace-operation:conversation-1:local-commit",
-      },
+      expectedDescription: "Untitled agent • Commit isolated workspace branch",
     },
   ])("shows an informational local-commit toast for $outcome", async ({
     commitSha,
     outcome,
     expectedMessage,
-    expectedOptions,
+    expectedDescription,
   }) => {
     configurePublishPane();
     useProjectStore.getState().updateProject("project-1", {
@@ -601,9 +595,17 @@ describe("AgentsView publish", () => {
     const commitButtons = await screen.findAllByRole("button", { name: "Commit locally" });
     fireEvent.click(commitButtons.at(-1)!);
 
-    await waitFor(() =>
-      expect(toastInfoMock).toHaveBeenCalledWith(expectedMessage, expectedOptions),
-    );
+    await waitFor(() => expect(toastInfoMock).toHaveBeenCalledTimes(1));
+    const [infoContent, infoOptions] = toastInfoMock.mock.calls[0]!;
+    expect(toastContentProps(infoContent)).toMatchObject({
+      title: expectedMessage,
+      description: expectedDescription,
+    });
+    expect(infoOptions).toMatchObject({
+      dismissible: true,
+      duration: 8_000,
+      id: "agent-workspace-operation:conversation-1:local-commit",
+    });
   });
 
   it("keeps publishing ahead of conflict presentation and action branches", async () => {
@@ -1491,13 +1493,12 @@ describe("AgentsView publish", () => {
       );
     });
 
-    await waitFor(() =>
-      expect(toastSuccessMock).toHaveBeenCalledWith("Published #78", {
-        description: "Untitled agent",
-        duration: 8_000,
-        id: "agent-workspace-operation:conversation-1:publish",
-      }),
-    );
+    await waitFor(() => {
+      expect(takeAgentWorkspaceOperationResult("conversation-1")).toEqual({
+        kind: "success",
+        workspace: publishedWorkspace,
+      });
+    });
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 
     fireEvent.click(await screen.findByTestId("agents-publish-workspace"));
@@ -2864,16 +2865,12 @@ describe("AgentsView publish", () => {
 
     await waitFor(() => expect(getAgentConversationWorkspaceMock).toHaveBeenCalledTimes(3));
     expect(sendAgentMessageMock).not.toHaveBeenCalled();
-    expect(toastErrorMock).toHaveBeenCalledWith(
-      "Publish failed. Sent the error to the agent to fix.",
-      {
-        closeButton: true,
-        description: "Untitled agent • Failed to commit: typecheck failed",
-        dismissible: true,
-        duration: 12_000,
-        id: "agent-workspace-operation:conversation-1:publish",
-      },
-    );
+    await waitFor(() => {
+      expect(takeAgentWorkspaceOperationResult("conversation-1")).toEqual({
+        kind: "needs_agent",
+        detail: "Failed to commit: typecheck failed",
+      });
+    });
   });
 
   it("does not send operational publish failures to the workspace agent", async () => {
@@ -2895,18 +2892,12 @@ describe("AgentsView publish", () => {
     await screen.findByTestId("agents-publish-confirm");
     fireEvent.click(screen.getByTestId("agents-publish-confirm"));
 
-    await waitFor(() =>
-      expect(toastErrorMock).toHaveBeenCalledWith(
-        "Failed to publish branch",
-        {
-          closeButton: true,
-          description: "Untitled agent • GitHub integration is not available",
-          dismissible: true,
-          duration: 12_000,
-          id: "agent-workspace-operation:conversation-1:publish",
-        },
-      ),
-    );
+    await waitFor(() => {
+      expect(takeAgentWorkspaceOperationResult("conversation-1")).toEqual({
+        kind: "failure",
+        detail: "GitHub integration is not available",
+      });
+    });
     expect(sendAgentMessageMock).not.toHaveBeenCalled();
   });
 
