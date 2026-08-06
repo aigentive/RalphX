@@ -197,6 +197,23 @@ export function seedMockConversation(
   refreshConversationMessageStats(conversation.id);
 }
 
+/**
+ * Appends one persisted message, mirroring the backend writing to the DB before
+ * it emits the matching chat event. `agent:message_created` schedules a fallback
+ * refetch, so a mock that only replays the event returns a transcript missing
+ * the turn it just announced and the UI correctly drops what it can no longer see.
+ */
+export function appendMockConversationMessage(
+  conversationId: string,
+  message: ChatMessageResponse
+): void {
+  const existing = mockMessages.get(conversationId) ?? [];
+  const retained = existing.filter((entry) => entry.id !== message.id);
+  retained.push(cloneMockChatMessage(message));
+  mockMessages.set(conversationId, retained);
+  refreshConversationMessageStats(conversationId);
+}
+
 export function replaceMockConversationMessages(
   conversationId: string,
   messages: ChatMessageResponse[]

@@ -158,7 +158,12 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
   };
 
   const scrollToTrueBottom = (element: HTMLElement, behavior: "auto" | "smooth"): number => {
-    const target = getTrueBottomScrollTop(element);
+    // The scroller under-reports its extent by hundreds of pixels while the
+    // virtualizer's rendered range lags the scroll position, so a target above
+    // the current position is a transient measurement rather than a shorter
+    // transcript. Genuine shrink is already handled: the browser clamps
+    // scrollTop down on its own, against geometry we cannot read mid-render.
+    const target = Math.max(element.scrollTop, getTrueBottomScrollTop(element));
     if (element.scrollTop !== target) {
       element.scrollTo({ top: target, behavior });
     }
@@ -174,7 +179,10 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
     if (!activeIntent) return false;
     const { target, epsilon } = activeIntent;
     if (target === "bottom") {
-      return Math.abs(getTrueBottomScrollTop(element) - element.scrollTop) <= epsilon;
+      // Nothing left below the reader satisfies the bottom intent. Sitting
+      // past an under-reported extent is a transient virtualizer measurement,
+      // not an unmet intent, and treating it as one spins correction pins.
+      return getTrueBottomScrollTop(element) - element.scrollTop <= epsilon;
     }
     if (typeof target === "object" && "anchor" in target) {
       const offset = target.anchor.getBoundingClientRect().top - element.getBoundingClientRect().top;
@@ -254,7 +262,16 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
     if (detached || state === "free" || prependEpoch || zeroSizeEpoch) return;
     pinBehavior = behavior;
     pinReasons.push(reason);
-    pinNeedsIndexAlignment ||= alignLastItem;
+    // Item alignment hands the virtualizer a second, asynchronous scroll
+    // writer, and its deferred write lands at the last item's end rather than
+    // the true bottom below the footer spacer. Once measurement-driven growth
+    // joins the batch the native true-bottom write covers it, so the batch must
+    // not also replay an alignment against geometry that has since moved.
+    if (alignLastItem) {
+      pinNeedsIndexAlignment ||= pinReasons.length === 1;
+    } else {
+      pinNeedsIndexAlignment = false;
+    }
     if (pinFrame !== null) return;
     pinFrame = deps.requestFrame(() => {
       pinFrame = null;
