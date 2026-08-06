@@ -1678,6 +1678,11 @@ async fn blocked_existing_pr_preserve_handoff_declines_when_github_is_unavailabl
         .list_publication_events(&workspace.conversation_id)
         .await
         .expect("read events before unavailable-GitHub reconciliation");
+    let lease_before = state
+        .branch_update_repo
+        .get_target_lease(&identity)
+        .await
+        .expect("read repair lease before unavailable-GitHub reconciliation");
     state.github_service = None;
 
     assert_eq!(
@@ -1706,14 +1711,15 @@ async fn blocked_existing_pr_preserve_handoff_declines_when_github_is_unavailabl
         AgentWorkspaceRepairEffectStatus::InFlight,
         "declining must not observe the handoff effect"
     );
-    assert!(state
-        .branch_update_repo
-        .get_target_lease(&identity)
-        .await
-        .expect("read repair lease after decline")
-        .expect("repair lease remains auditable")
-        .active_mutation()
-        .is_some());
+    assert_eq!(
+        state
+            .branch_update_repo
+            .get_target_lease(&identity)
+            .await
+            .expect("read repair lease after decline"),
+        lease_before,
+        "declining must not mutate repair lease state"
+    );
     assert_eq!(
         state
             .agent_conversation_workspace_repo
