@@ -134,6 +134,7 @@ import {
 } from "./useAgentWorkspaceBaseUpdate";
 import { useAgentWorkspaceFullFreshness } from "./useAgentWorkspaceFullFreshness";
 import type { AgentWorkspacePublishAttempt } from "./useAgentWorkspacePublisher";
+import { watchAgentWorkspaceOperation } from "./agentWorkspaceOperationRegistry";
 import {
   agentWorkspaceOperationErrorDetail,
   agentWorkspaceOperationToastId,
@@ -387,14 +388,24 @@ export function AgentPublishPanel({
     publishDialogState?.conversationId === conversationId ? publishDialogState : null;
   const publishDialogOpen = currentPublishDialogState?.open ?? false;
   const publishDialogPhase = currentPublishDialogState?.phase ?? "confirm";
-  const {
-    isUpdatingFromBase,
-    runUpdateFromBase,
-    syncMaintenanceOperation,
-  } = useAgentWorkspaceBaseUpdate({ conversationTitle });
+  const { isUpdatingFromBase, runUpdateFromBase } = useAgentWorkspaceBaseUpdate({
+    conversationTitle,
+  });
   useEffect(() => {
-    syncMaintenanceOperation(workspace);
-  }, [syncMaintenanceOperation, workspace]);
+    if (
+      !conversationId ||
+      !(workspace?.maintenanceOperation || isAgentWorkspacePublishActive(workspace))
+    ) {
+      return;
+    }
+    watchAgentWorkspaceOperation({
+      conversationId,
+      projectId: workspace?.projectId ?? null,
+      conversationTitle: conversationTitle?.trim() || null,
+      kind: "observed",
+      startedAtMs: null,
+    });
+  }, [conversationId, conversationTitle, workspace]);
   const canHydratePublishFacts = useDeferredAgentHydration(conversationId);
   const isRepairPending =
     !workspace?.maintenanceOperation &&
