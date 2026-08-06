@@ -3,6 +3,7 @@ import { expect, type Page } from "@playwright/test";
 import type { AgentsChatPage } from "./agents-chat.page";
 
 const PROJECT_ID = "project-mock-1";
+const FINALIZED_MESSAGE_HANDOFF_TIMEOUT_MS = 15_000;
 
 export class AgentsChatTurnPage {
   constructor(
@@ -71,6 +72,11 @@ export class AgentsChatTurnPage {
     const messageId = `${this.conversationId}-final`;
     const createdAt = "2026-08-05T02:30:00.000Z";
     const contentBlocks = [{ type: "text", text: content }];
+    // agent:message_created schedules a fallback refetch whenever the
+    // render-ready handoff loses the race against timeline hydration. The
+    // backend has already persisted the message by the time it emits, so the
+    // mock store must hold it too or the refetch erases the whole turn.
+    await this.persist(messageId, content, contentBlocks, createdAt);
     await this.emit("agent:message_created", {
       conversation_id: this.conversationId,
       context_type: "project",
@@ -110,11 +116,55 @@ export class AgentsChatTurnPage {
         }],
       },
     });
-    await this.expectLastRenderedContent(content);
+    // agent:message_created cancels the in-flight timeline queries and then
+    // invalidates them. In web mode nothing re-triggers the invalidated query
+    // promptly - there is no window focus and no backend push - so the
+    // persisted row reached the DOM anywhere between 0.5s and >21s. Driving the
+    // refetch here stands in for that trigger and makes the handoff
+    // deterministic without weakening what the assertion checks.
+    await this.refetchTimeline();
+    await this.expectLastRenderedContent(content, FINALIZED_MESSAGE_HANDOFF_TIMEOUT_MS);
   }
 
-  private async expectLastRenderedContent(content: string): Promise<void> {
-    await expect(this.chat.lastRenderedRow.filter({ hasText: content })).toBeVisible();
+  private async expectLastRenderedContent(content: string, timeout?: number): Promise<void> {
+    await expect(this.chat.lastRenderedRow.filter({ hasText: content })).toBeVisible({ timeout });
+  }
+
+  private async refetchTimeline(): Promise<void> {
+    await this.page.evaluate(async (id) => {
+      await window.__queryClient?.refetchQueries({
+        queryKey: ["chat", "conversations", id, "timeline"],
+      });
+    }, this.conversationId);
+  }
+
+  private async persist(
+    messageId: string,
+    content: string,
+    contentBlocks: { type: string; text: string }[],
+    createdAt: string,
+  ): Promise<void> {
+    await this.page.evaluate(async ({ blocks, id, conversationId, projectId, text, timestamp }) => {
+      const chat = await import("/src/api-mock/chat");
+      chat.appendMockConversationMessage(conversationId, {
+        id, sessionId: null, projectId, taskId: null, role: "assistant",
+        content: text, metadata: null, parentMessageId: null, conversationId,
+        toolCalls: null, contentBlocks: blocks, sender: null,
+        attributionSource: "provider", providerHarness: "codex",
+        providerSessionId: `thread-${conversationId}`, upstreamProvider: "openai",
+        providerProfile: null, logicalModel: null, effectiveModelId: null,
+        logicalEffort: null, effectiveEffort: null, inputTokens: null,
+        outputTokens: null, cacheCreationTokens: null, cacheReadTokens: null,
+        estimatedUsd: null, createdAt: timestamp,
+      });
+    }, {
+      blocks: contentBlocks,
+      conversationId: this.conversationId,
+      id: messageId,
+      projectId: PROJECT_ID,
+      text: content,
+      timestamp: createdAt,
+    });
   }
 
   private async emit(event: string, payload: unknown): Promise<void> {

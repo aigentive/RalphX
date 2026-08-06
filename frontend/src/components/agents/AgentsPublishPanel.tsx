@@ -257,6 +257,12 @@ function workspaceReviewAutoMergeGuardSummary(
   }
 }
 
+export type AgentPublishReviewEvidence =
+  | { status: "loading" }
+  | { status: "unavailable" }
+  | { status: "error"; error: Error }
+  | { status: "ready"; changeCount: number };
+
 export function AgentPublishPanel({
   workspace,
   conversationTitle,
@@ -285,7 +291,7 @@ export function AgentPublishPanel({
   activeSubTab: AgentPublishSubTab;
   showReviewTab: boolean;
   onSubTabChange: (tab: AgentPublishSubTab) => void;
-  reviewContent: ReactNode;
+  reviewContent: (evidence: AgentPublishReviewEvidence) => ReactNode;
   reviewTabStatusColor?: string | null;
   reviewTabStatusLabel?: string | null;
   isReviewTabRunning?: boolean;
@@ -462,6 +468,15 @@ export function AgentPublishPanel({
       (reviewOpen || inlineDiffsCandidate),
     staleTime: 2_000,
   });
+  const publishReviewEvidence: AgentPublishReviewEvidence = reviewQuery.isError
+    ? { status: "error", error: reviewQuery.error }
+    : reviewQuery.isSuccess
+      ? { status: "ready", changeCount: reviewQuery.data.changes.length }
+      : reviewQuery.fetchStatus === "idle" &&
+          !reviewQuery.isSuccess &&
+          !reviewQuery.isError
+        ? { status: "unavailable" }
+        : { status: "loading" };
   const changeSummaryQuery = useQuery({
     queryKey: agentWorkspaceKeys.changeSummary(conversationId),
     queryFn: () =>
@@ -702,6 +717,21 @@ export function AgentPublishPanel({
   const stopPrAutofixMutation = useMutation<AgentConversationWorkspace, Error>({
     mutationFn: () =>
       chatApi.stopAgentConversationWorkspacePrAutofixForFailure(
+        conversationId!,
+        heldRepairActionInput(workspace),
+      ),
+    onSuccess: async (updatedWorkspace) => {
+      queryClient.setQueryData(
+        agentWorkspaceKeys.workspace(updatedWorkspace.conversationId),
+        updatedWorkspace,
+      );
+      await invalidateWorkspaceQueries(queryClient, updatedWorkspace.conversationId);
+    },
+    ...heldRepairMutationOptions,
+  });
+  const retryPublicationEffectMutation = useMutation<AgentConversationWorkspace, Error>({
+    mutationFn: () =>
+      chatApi.retryAgentConversationWorkspacePublicationEffect(
         conversationId!,
         heldRepairActionInput(workspace),
       ),
@@ -2043,11 +2073,13 @@ export function AgentPublishPanel({
             onOpenChecks={() => onSubTabChange("checks")}
             onRecheck={() => recheckPrHealthMutation.mutate()}
             onRetry={() => retryPrAutofixMutation.mutate()}
+            onRetryPublication={() => retryPublicationEffectMutation.mutate()}
             onStop={confirmStopHeldRepair}
             isPending={
               recheckPrHealthMutation.isPending ||
               retryPrAutofixMutation.isPending ||
-              stopPrAutofixMutation.isPending
+              stopPrAutofixMutation.isPending ||
+              retryPublicationEffectMutation.isPending
             }
           />
         ) : inlineDiffsCandidate && !baseBlocked ? (
@@ -2093,7 +2125,7 @@ export function AgentPublishPanel({
             className="m-0 min-h-0 flex-1 overflow-y-auto pt-4 data-[state=inactive]:hidden"
             data-testid="agents-publish-content-review"
           >
-            {reviewContent}
+            {reviewContent(publishReviewEvidence)}
           </TabsContent>
         )}
         {hasPublishedPr &&

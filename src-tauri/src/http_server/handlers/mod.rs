@@ -40,6 +40,9 @@ pub mod tasks;
 pub mod ticket_attachments;
 #[cfg(test)]
 mod ticket_attachments_tests;
+pub mod trusted_run_authority;
+#[cfg(test)]
+mod trusted_run_authority_tests;
 pub mod validation;
 pub mod verification;
 pub mod worker;

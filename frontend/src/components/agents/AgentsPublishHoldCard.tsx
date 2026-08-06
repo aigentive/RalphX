@@ -4,6 +4,7 @@ import type { AgentConversationWorkspace } from "@/api/chat";
 import { Button } from "@/components/ui/button";
 import {
   getAgentWorkspaceHoldPresentation,
+  getAgentWorkspaceMaintenanceOperation,
   getAgentWorkspacePrAutofixFingerprintSpendPresentation,
 } from "./agentWorkspacePublishState";
 import { PublishFact } from "./AgentsPublishFact";
@@ -13,6 +14,7 @@ export function AgentsPublishHoldCard({
   onOpenChecks,
   onRecheck,
   onRetry,
+  onRetryPublication,
   onStop,
   isPending = false,
 }: {
@@ -20,6 +22,7 @@ export function AgentsPublishHoldCard({
   onOpenChecks: () => void;
   onRecheck: () => void;
   onRetry: () => void;
+  onRetryPublication: () => void;
   onStop: () => void;
   isPending?: boolean;
 }) {
@@ -28,6 +31,9 @@ export function AgentsPublishHoldCard({
   if (!hold) {
     return null;
   }
+  const isPublicationEffectAttention =
+    getAgentWorkspaceMaintenanceOperation(workspace)?.holdReason ===
+    "publication_effect_attention";
 
   return (
     <section
@@ -97,25 +103,33 @@ export function AgentsPublishHoldCard({
           borderWidth: "1px 0 0",
         }}
       >
-        <Button type="button" onClick={onRecheck} disabled={isPending}>
-          Re-check PR health
-        </Button>
-        <Button
-          type="button"
-          variant="outline"
-          onClick={onRetry}
-          disabled={isPending}
-        >
-          Retry repair anyway{spend ? ` · ${spend.summary}` : ""}
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          onClick={onStop}
-          disabled={isPending}
-        >
-          Stop auto-repair
-        </Button>
+        {isPublicationEffectAttention ? (
+          <Button type="button" onClick={onRetryPublication} disabled={isPending}>
+            Retry publication
+          </Button>
+        ) : (
+          <>
+            <Button type="button" onClick={onRecheck} disabled={isPending}>
+              Re-check PR health
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={onRetry}
+              disabled={isPending}
+            >
+              Retry repair anyway{spend ? ` · ${spend.summary}` : ""}
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={onStop}
+              disabled={isPending}
+            >
+              Stop auto-repair
+            </Button>
+          </>
+        )}
       </div>
     </section>
   );

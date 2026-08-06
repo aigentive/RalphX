@@ -12,7 +12,8 @@ use crate::domain::entities::{
     AgentConversationWorkspace, AgentWorkspaceRepairAttempt, AgentWorkspaceRepairContinuation,
     AgentWorkspaceRepairEffect, AgentWorkspaceRepairEffectKind, AgentWorkspaceRepairEffectStatus,
     AgentWorkspaceRepairOutcome, AgentWorkspaceRepairPhase, ChatConversation, ChatConversationId,
-    GitMutationKind, GitTargetIdentity, GitTargetLeaseOwner, IdeationAnalysisBaseRefKind,
+    GitMutationKind, GitTargetIdentity, GitTargetLeaseOwner, GitTargetLeaseOwnerKind,
+    IdeationAnalysisBaseRefKind,
 };
 use crate::domain::repositories::{
     AgentWorkspaceRepairAttemptTransition, AgentWorkspaceRepairAttemptTransitionOutcome,
@@ -896,6 +897,18 @@ pub(crate) enum AgentWorkspaceRepairPushOutcome {
 pub(crate) enum AgentWorkspaceRepairOpenPushEffectReconciliation {
     Observed,
     Pending,
+    /// The remote is exactly at this effect's recorded pre-push state: the intended mutation
+    /// provably never reached the remote, so the effect was terminated as `Failed` and the
+    /// fence is clear.
+    NotApplied,
+}
+
+/// Resolution of the base push-effect idempotency key lookup: either an in-flight effect to
+/// resume, or a key under which a fresh effect should be created (the base key on first push, or
+/// an ordinal-suffixed retry key once the base key belongs to a terminated `Failed` effect).
+enum AgentWorkspaceRepairPushEffectResolution {
+    Reuse(Box<AgentWorkspaceRepairEffect>),
+    Create(String),
 }
 
 /// Trusted inputs for a repair-owned branch publication. The caller resolves this target from
@@ -961,26 +974,46 @@ pub(crate) async fn push_agent_workspace_repair_branch(
     let branch_name = local_ref.strip_prefix("refs/heads/").ok_or_else(|| {
         AppError::Validation("workspace repair target is not a local branch ref".to_string())
     })?;
-    let idempotency_key = format!(
+    let base_idempotency_key = format!(
         "agent_workspace_repair:{}:{}:push_branch",
         attempt.id, attempt.generation
     );
-    let effect = match repair_repo
-        .get_repair_effect_by_idempotency_key(&idempotency_key)
+    // A `Failed` effect for the base key with `completed_at` set is a provably terminated prior
+    // push (the effect fence proved it never reached the remote). It keeps its own idempotency
+    // key so its history stays intact, and the retry gets a distinct ordinal-suffixed key instead
+    // of colliding with it. A `Failed` effect with `completed_at` still `None` predates this
+    // migration's backfill and keeps today's Conflict until recovery closes it.
+    let resolution = match repair_repo
+        .get_repair_effect_by_idempotency_key(&base_idempotency_key)
         .await?
     {
-        Some(effect) => {
-            if effect.status == AgentWorkspaceRepairEffectStatus::Observed {
-                return observed_workspace_repair_push_outcome(effect);
-            }
-            if effect.status != AgentWorkspaceRepairEffectStatus::InFlight {
-                return Err(AppError::Conflict(
-                    "workspace repair push effect is not available for continuation".to_string(),
-                ));
-            }
-            effect
+        Some(effect) if effect.status == AgentWorkspaceRepairEffectStatus::Observed => {
+            return observed_workspace_repair_push_outcome(effect);
         }
-        None => {
+        Some(effect) if effect.status == AgentWorkspaceRepairEffectStatus::InFlight => {
+            AgentWorkspaceRepairPushEffectResolution::Reuse(Box::new(effect))
+        }
+        Some(effect)
+            if effect.status == AgentWorkspaceRepairEffectStatus::Failed
+                && effect.completed_at.is_some() =>
+        {
+            let idempotency_key = next_agent_workspace_repair_push_retry_idempotency_key(
+                repair_repo.as_ref(),
+                &base_idempotency_key,
+            )
+            .await?;
+            AgentWorkspaceRepairPushEffectResolution::Create(idempotency_key)
+        }
+        Some(_) => {
+            return Err(AppError::Conflict(
+                "workspace repair push effect is not available for continuation".to_string(),
+            ));
+        }
+        None => AgentWorkspaceRepairPushEffectResolution::Create(base_idempotency_key.clone()),
+    };
+    let effect = match resolution {
+        AgentWorkspaceRepairPushEffectResolution::Reuse(effect) => *effect,
+        AgentWorkspaceRepairPushEffectResolution::Create(idempotency_key) => {
             let mut effect = AgentWorkspaceRepairEffect::new(
                 attempt.id.clone(),
                 AgentWorkspaceRepairEffectKind::PushBranch,
@@ -1150,6 +1183,30 @@ pub(crate) async fn push_agent_workspace_repair_branch(
         )));
     }
     mutation_result
+}
+
+/// Finds the next never-used ordinal-suffixed idempotency key for a repeat push effect after the
+/// base key's effect terminated as `Failed`. `idempotency_key` is unique table-wide, so a retry
+/// cannot reuse the base key; this is a bounded read (one lookup per ordinal, capped) rather than
+/// an unbounded scan.
+async fn next_agent_workspace_repair_push_retry_idempotency_key(
+    repair_repo: &dyn AgentWorkspaceRepairRepository,
+    base_idempotency_key: &str,
+) -> AppResult<String> {
+    const MAX_RETRY_ORDINAL: u32 = 50;
+    for ordinal in 2..=MAX_RETRY_ORDINAL {
+        let candidate = format!("{base_idempotency_key}#{ordinal}");
+        if repair_repo
+            .get_repair_effect_by_idempotency_key(&candidate)
+            .await?
+            .is_none()
+        {
+            return Ok(candidate);
+        }
+    }
+    Err(AppError::Conflict(
+        "workspace repair push effect retry identity space exhausted".to_string(),
+    ))
 }
 
 pub(crate) async fn prepare_agent_workspace_repair_push_attempt(
@@ -1349,6 +1406,25 @@ pub(crate) async fn reconcile_open_agent_workspace_repair_push_effect(
     if !effect.expected_remote_absent && effect.expected_remote_oid.is_none() {
         return Ok(AgentWorkspaceRepairOpenPushEffectReconciliation::Pending);
     }
+    if !effect.has_exact_remote_oid_proof() {
+        return Ok(AgentWorkspaceRepairOpenPushEffectReconciliation::Pending);
+    }
+    // A live repair-owned mutation claim means a push may be in flight right now; startup claim
+    // recovery (`recover_repair_owned_in_flight_git_mutations`) stays the sole authority in that
+    // window, so this reconciler must not draw any conclusion while the claim is still open.
+    let owner_id = attempt.id.to_string();
+    if state
+        .branch_update_repo
+        .list_in_flight_mutations()
+        .await?
+        .iter()
+        .any(|claim| {
+            claim.owner.kind == GitTargetLeaseOwnerKind::AgentWorkspaceRepair
+                && claim.owner.owner_id == owner_id
+        })
+    {
+        return Ok(AgentWorkspaceRepairOpenPushEffectReconciliation::Pending);
+    }
 
     let workspace = state
         .agent_conversation_workspace_repo
@@ -1407,18 +1483,30 @@ pub(crate) async fn reconcile_open_agent_workspace_repair_push_effect(
     let remote_oid =
         read_remote_ref_oid_without_local_update(&target.path, observed_identity.full_ref())
             .await?;
-    if remote_oid.as_deref() != Some(intended_head_oid.as_str()) {
-        return Ok(AgentWorkspaceRepairOpenPushEffectReconciliation::Pending);
+    if remote_oid.as_deref() == Some(intended_head_oid.as_str()) {
+        observe_agent_workspace_repair_push_effect(
+            state.agent_workspace_repair_repo.as_ref(),
+            attempt,
+            effect,
+            observed_identity.full_ref(),
+            &intended_head_oid,
+        )
+        .await?;
+        return Ok(AgentWorkspaceRepairOpenPushEffectReconciliation::Observed);
     }
-    observe_agent_workspace_repair_push_effect(
-        state.agent_workspace_repair_repo.as_ref(),
-        attempt,
-        effect,
-        observed_identity.full_ref(),
-        &intended_head_oid,
-    )
-    .await?;
-    Ok(AgentWorkspaceRepairOpenPushEffectReconciliation::Observed)
+    if effect.remote_matches_recorded_precondition(remote_oid.as_deref()) {
+        fail_agent_workspace_repair_push_effect(
+            state.agent_workspace_repair_repo.as_ref(),
+            attempt,
+            effect,
+            "repair push remote OID still matches the recorded pre-push state; the push never reached the remote",
+        )
+        .await?;
+        return Ok(AgentWorkspaceRepairOpenPushEffectReconciliation::NotApplied);
+    }
+    // A differing remote OID is proof of nothing (a third party may have advanced the branch);
+    // keep the fence open and let the next recovery pass re-check.
+    Ok(AgentWorkspaceRepairOpenPushEffectReconciliation::Pending)
 }
 
 pub(crate) async fn observe_agent_workspace_repair_push_effect(
@@ -1459,6 +1547,42 @@ pub(crate) async fn observe_agent_workspace_repair_push_effect(
         CompleteAgentWorkspaceRepairEffectOutcome::Stale(_)
         | CompleteAgentWorkspaceRepairEffectOutcome::Missing => Err(AppError::Conflict(
             "workspace repair push receipt lost current attempt authority".to_string(),
+        )),
+    }
+}
+
+pub(crate) async fn fail_agent_workspace_repair_push_effect(
+    repair_repo: &dyn AgentWorkspaceRepairRepository,
+    attempt: &AgentWorkspaceRepairAttempt,
+    mut effect: AgentWorkspaceRepairEffect,
+    reason: &str,
+) -> AppResult<AgentWorkspaceRepairEffect> {
+    let expected_effect_updated_at = effect.updated_at;
+    let expected_effect_status = effect.status;
+    effect.status = AgentWorkspaceRepairEffectStatus::Failed;
+    effect.last_error = Some(reason.to_string());
+    effect.updated_at = next_effect_checkpoint_at(effect.updated_at);
+    effect.completed_at = Some(effect.updated_at);
+    match repair_repo
+        .complete_repair_effect(CompleteAgentWorkspaceRepairEffect {
+            attempt_id: attempt.id.clone(),
+            generation: attempt.generation,
+            expected_phase: AgentWorkspaceRepairPhase::Continuing,
+            expected_attempt_updated_at: attempt.updated_at,
+            expected_effect_updated_at,
+            expected_effect_status,
+            effect,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await?
+    {
+        CompleteAgentWorkspaceRepairEffectOutcome::Applied(effect) => Ok(*effect),
+        CompleteAgentWorkspaceRepairEffectOutcome::Stale(_) => Err(AppError::Conflict(
+            "repair push failure lost current attempt authority during recovery".to_string(),
+        )),
+        CompleteAgentWorkspaceRepairEffectOutcome::Missing => Err(AppError::NotFound(
+            "repair push effect disappeared during recovery".to_string(),
         )),
     }
 }

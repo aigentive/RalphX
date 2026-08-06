@@ -16,16 +16,18 @@ use tokio::task::JoinHandle;
 use crate::application::agent_conversation_workspace::{
     agent_name_for_workspace_mode, resolve_valid_agent_conversation_workspace_path,
 };
+use crate::application::agent_runtime_context::branch_status::BranchStatusCache;
 use crate::application::agent_workspace_base_staleness::{
     classify_health_hold_disposition, BaseStalenessObservation, HealthHoldDisposition,
 };
-use crate::application::agent_runtime_context::branch_status::BranchStatusCache;
 use crate::application::agent_workspace_ci_rerun::ci_rerun_hold_still_pending;
 use crate::application::agent_workspace_pr_autofix_attempt::{
     load_pr_autofix_attempt_decision, pr_autofix_action_metadata,
 };
 use crate::application::agent_workspace_publish_recovery::{
     recover_stale_publish_repair_for_workspace_in_state_result, StalePublishRepairRecoveryOutcome,
+    CONTINUATION_OPEN_EFFECT_ATTENTION_REASON, CONTINUATION_OPEN_EFFECT_EVIDENCE_REASON_PREFIX,
+    CONTINUATION_OPEN_EFFECT_REARMED_STEP, CONTINUATION_OPEN_EFFECT_RECOVERY_REASON_PREFIX,
 };
 use crate::application::agent_workspace_publish_repair_state::{
     agent_workspace_repair_is_base_stale_held, agent_workspace_repair_is_ci_held,
@@ -75,9 +77,10 @@ use crate::domain::entities::{
     NotificationTargetKind,
 };
 use crate::domain::repositories::{
-    AgentConversationWorkspaceRepository, AgentRunRepository, AgentWorkspaceRepairRepository,
-    BranchUpdateRepository, PlanBranchRepository, SettleAgentWorkspaceRepairAttempt,
-    SettleAgentWorkspaceRepairAttemptOutcome,
+    AgentConversationWorkspaceRepository, AgentRunRepository,
+    AgentWorkspaceRepairAttemptTransition, AgentWorkspaceRepairAttemptTransitionOutcome,
+    AgentWorkspaceRepairRepository, BranchUpdateRepository, PlanBranchRepository,
+    SettleAgentWorkspaceRepairAttempt, SettleAgentWorkspaceRepairAttemptOutcome,
 };
 use crate::domain::services::github_service::{
     PrHealth, PrHealthCheck, PrMergeStateStatus, PrMergeableState, PrReviewCommentFeedback,
@@ -1384,6 +1387,35 @@ async fn agent_workspace_poll_loop(
                                     continue;
                                 }
                             }
+
+                            match re_arm_escalated_open_effect_continuation(
+                                recovery_state,
+                                &workspace_repo,
+                                &conversation_id,
+                                pr_number,
+                                &health,
+                            )
+                            .await
+                            {
+                                Ok(true) => {
+                                    tracing::info!(
+                                        conversation_id = conversation_id.as_str(),
+                                        pr_number,
+                                        "Agent workspace PR poller re-armed an escalated open-effect continuation with new evidence"
+                                    );
+                                    continue;
+                                }
+                                Ok(false) => {}
+                                Err(error) => {
+                                    tracing::warn!(
+                                        conversation_id = conversation_id.as_str(),
+                                        pr_number,
+                                        error = %error,
+                                        "Agent workspace PR poller failed to re-arm an escalated open-effect continuation"
+                                    );
+                                    continue;
+                                }
+                            }
                         }
 
                         if repair_repo.is_none() {
@@ -1593,6 +1625,177 @@ async fn re_drive_held_unpublished_agent_workspace_repair(
                 conversation_id
             ))
         })?;
+    let (_, outcome) =
+        recover_stale_publish_repair_for_workspace_in_state_result(state, workspace).await?;
+    Ok(!matches!(outcome, StalePublishRepairRecoveryOutcome::Noop))
+}
+
+/// Maps `PrMergeStateStatus` to a fixed evidence token. Unit variants get a stable lowercase
+/// literal; `Other(payload)` is prefixed so it can never collide with a unit-variant token or with
+/// another `Other` payload's token.
+fn pr_merge_state_status_evidence_token(status: Option<&PrMergeStateStatus>) -> String {
+    match status {
+        None => "absent-merge-state".to_string(),
+        Some(PrMergeStateStatus::Clean) => "clean".to_string(),
+        Some(PrMergeStateStatus::Behind) => "behind".to_string(),
+        Some(PrMergeStateStatus::Dirty) => "dirty".to_string(),
+        Some(PrMergeStateStatus::Blocked) => "blocked".to_string(),
+        Some(PrMergeStateStatus::Draft) => "draft".to_string(),
+        Some(PrMergeStateStatus::Unknown) => "unknown".to_string(),
+        Some(PrMergeStateStatus::Unstable) => "unstable".to_string(),
+        Some(PrMergeStateStatus::HasHooks) => "has_hooks".to_string(),
+        Some(PrMergeStateStatus::Other(payload)) => format!("other:{payload}"),
+    }
+}
+
+/// Stable identity of what the PR looked like when a continuation escalated. Any change here is
+/// new input for unattended repair; an unchanged identity must never buy another budget.
+fn agent_workspace_pr_evidence_identity(
+    health: &PrHealth,
+    workspace: &AgentConversationWorkspace,
+    pr_number: i64,
+) -> String {
+    let head_oid = health
+        .sync_state
+        .head_ref_oid
+        .as_deref()
+        .unwrap_or("absent-head-oid");
+    let base_oid = health
+        .sync_state
+        .base_ref_oid
+        .as_deref()
+        .unwrap_or("absent-base-oid");
+    let merge_state =
+        pr_merge_state_status_evidence_token(health.sync_state.merge_state_status.as_ref());
+    let autofix_classification = classify_agent_workspace_pr_autofix_issue(pr_number, health)
+        .map(|issue| issue.classification)
+        .unwrap_or_else(|| "absent-autofix-classification".to_string());
+    let workspace_base_commit = workspace
+        .base_commit
+        .as_deref()
+        .unwrap_or("absent-workspace-base-commit");
+
+    let mut hasher = Sha256::new();
+    hasher.update(head_oid);
+    hasher.update(b"\0");
+    hasher.update(base_oid);
+    hasher.update(b"\0");
+    hasher.update(merge_state.as_str());
+    hasher.update(b"\0");
+    hasher.update(autofix_classification.as_str());
+    hasher.update(b"\0");
+    hasher.update(workspace_base_commit);
+    let digest = format!("{:x}", hasher.finalize());
+    digest[..16].to_string()
+}
+
+/// A fresh PR-health read is the poller's authority to re-arm an escalated continuation, but only
+/// the durable reconciler may transition it. Unchanged evidence deliberately leaves the escalation
+/// intact.
+async fn re_arm_escalated_open_effect_continuation(
+    state: &AppState,
+    workspace_repo: &Arc<dyn AgentConversationWorkspaceRepository>,
+    conversation_id: &ChatConversationId,
+    pr_number: i64,
+    health: &PrHealth,
+) -> crate::AppResult<bool> {
+    let Some(attempt) = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(conversation_id)
+        .await?
+    else {
+        return Ok(false);
+    };
+    if !matches!(
+        attempt.phase,
+        AgentWorkspaceRepairPhase::ContinuationPending | AgentWorkspaceRepairPhase::Continuing
+    ) || !attempt
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == CONTINUATION_OPEN_EFFECT_ATTENTION_REASON)
+    {
+        return Ok(false);
+    }
+    let workspace = workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!(
+                "Agent conversation workspace not found for escalated open-effect continuation {}",
+                conversation_id
+            ))
+        })?;
+    let identity = agent_workspace_pr_evidence_identity(health, &workspace, pr_number);
+    let evidence_marker = format!("{CONTINUATION_OPEN_EFFECT_EVIDENCE_REASON_PREFIX}{identity}");
+    if attempt
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == &evidence_marker)
+    {
+        return Ok(false);
+    }
+
+    let expected_updated_at = attempt.updated_at;
+    let phase = attempt.phase;
+    let attempt_id = attempt.id.clone();
+    let mut marked = attempt;
+    marked.pending_reasons.retain(|reason| {
+        reason != CONTINUATION_OPEN_EFFECT_ATTENTION_REASON
+            && !reason.starts_with(CONTINUATION_OPEN_EFFECT_RECOVERY_REASON_PREFIX)
+            && !reason.starts_with(CONTINUATION_OPEN_EFFECT_EVIDENCE_REASON_PREFIX)
+    });
+    marked.pending_reasons.push(evidence_marker);
+    marked.summary = Some(format!(
+        "Workspace repair open-effect continuation observed changed PR evidence ({identity}); re-arming for another reconciliation pass."
+    ));
+    marked.updated_at = std::cmp::max(
+        chrono::Utc::now(),
+        expected_updated_at + chrono::Duration::microseconds(1),
+    );
+    let applied = match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: marked,
+            expected_phase: phase,
+            expected_updated_at,
+            next_phase: phase,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await?
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(applied) => applied,
+        AgentWorkspaceRepairAttemptTransitionOutcome::Stale(_)
+        | AgentWorkspaceRepairAttemptTransitionOutcome::Missing => return Ok(false),
+    };
+
+    if let Err(error) = state
+        .agent_conversation_workspace_repo
+        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+            applied.conversation_id.clone(),
+            CONTINUATION_OPEN_EFFECT_REARMED_STEP,
+            "active",
+            format!(
+                "Workspace repair open-effect continuation re-armed after observing changed PR evidence ({identity})."
+            ),
+            Some(attempt_id.to_string()),
+        ))
+        .await
+    {
+        tracing::warn!(
+            error = %error,
+            attempt_id = %attempt_id,
+            "Failed to append workspace repair open-effect re-arm event"
+        );
+    }
+    state
+        .notification_service()
+        .resolve_workflow_notification(&format!(
+            "repair_open_effect:{}:{}",
+            applied.conversation_id, attempt_id
+        ))
+        .await;
+
     let (_, outcome) =
         recover_stale_publish_repair_for_workspace_in_state_result(state, workspace).await?;
     Ok(!matches!(outcome, StalePublishRepairRecoveryOutcome::Noop))
@@ -3175,8 +3378,16 @@ async fn recheck_agent_workspace_pr_health_once(
                 "Held PR health recheck requires a current repair attempt".to_string(),
             )
         })?;
+    // Flipping `status` to `Held` for an escalated ContinuationPending/Continuing publication
+    // effect (Phase 3) makes the typed-status check above pass for a state this command was
+    // never designed to touch. That hold is settled only through the dedicated publication-
+    // effect retry command, never through the ordinary held-PR-health recheck.
     if !attempt.is_unsettled()
         || attempt.operation_snapshot().status != AgentWorkspaceRepairOperationStatus::Held
+        || matches!(
+            attempt.phase,
+            AgentWorkspaceRepairPhase::ContinuationPending | AgentWorkspaceRepairPhase::Continuing
+        )
     {
         return Err(AppError::Conflict(
             "The PR repair hold is no longer current".to_string(),

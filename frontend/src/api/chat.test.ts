@@ -41,6 +41,7 @@ import {
   updateAgentConversationWorkspaceFromBase,
   recheckAgentConversationWorkspacePrHealth,
   retryAgentConversationWorkspacePrAutofixOverride,
+  retryAgentConversationWorkspacePublicationEffect,
   stopAgentConversationWorkspacePrAutofixForFailure,
   commitAgentConversationWorkspaceLocally,
   precomputeAgentConversationWorkspacePrDescription,
@@ -1737,6 +1738,35 @@ describe("chat api", () => {
     });
   });
 
+  it("transforms a publication_effect_attention hold reason", async () => {
+    mockInvoke.mockResolvedValueOnce([
+      {
+        ...planSeedWorkspaceResponse(),
+        maintenance_operation: {
+          operation_id: "maintenance-publication-effect",
+          generation: 5,
+          source: "publish",
+          stage: "held",
+          status: "held",
+          hold_reason: "publication_effect_attention",
+          summary: "RalphX pushed a repair but could not confirm it reached the remote.",
+          blocker: null,
+          automatic_continuation: false,
+          started_at: "2026-01-24T10:00:00Z",
+          updated_at: "2026-01-24T10:01:00Z",
+        },
+      },
+    ]);
+
+    const result = await listAgentConversationWorkspacesByProject("project-1");
+
+    expect(result[0]?.maintenanceOperation).toMatchObject({
+      stage: "held",
+      status: "held",
+      holdReason: "publication_effect_attention",
+    });
+  });
+
   it("degrades an unknown maintenance hold reason without dropping workspace data", async () => {
     mockInvoke.mockResolvedValueOnce([
       {
@@ -1811,6 +1841,12 @@ describe("chat api", () => {
     expect(mockInvoke).toHaveBeenLastCalledWith("stop_pr_autofix_for_failure", {
       input: { conversationId: "conversation-1", ...input },
     });
+
+    await retryAgentConversationWorkspacePublicationEffect("conversation-1", input);
+    expect(mockInvoke).toHaveBeenLastCalledWith(
+      "retry_agent_workspace_publication_effect",
+      { input: { conversationId: "conversation-1", ...input } },
+    );
 
     mockInvoke.mockResolvedValue(null);
     await expect(
