@@ -1048,7 +1048,7 @@ async fn get_parent_context_rejects_stale_runs_before_reading_messages() {
     assert!(error.1 .0["error"]
         .as_str()
         .unwrap_or_default()
-        .contains("stale or no longer active"));
+        .contains("get_parent_context trusted run has already finished"));
 }
 
 #[tokio::test]
@@ -5347,7 +5347,56 @@ async fn test_routed_delegate_start_rejects_wrong_conversation_and_stale_parent_
     assert!(stale_error.1 .0["error"]
         .as_str()
         .unwrap_or_default()
-        .contains("is not the active caller run"));
+        .contains("has already finished (status: completed)"));
+}
+
+#[tokio::test]
+async fn test_routed_delegate_start_accepts_a_live_parent_run_outranked_by_a_newer_running_row() {
+    let _env_lock = codex_cli_env_lock().lock().await;
+    let (_fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
+    let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let parent = create_parent_session(&state).await;
+    let parent_conversation = state
+        .app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_ideation(parent.id.clone()))
+        .await
+        .expect("create parent conversation");
+
+    let caller = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(parent_conversation.id))
+        .await
+        .expect("create caller run");
+
+    let mut ghost = AgentRun::new(parent_conversation.id);
+    ghost.started_at = caller.started_at + chrono::Duration::seconds(60);
+    let ghost = state
+        .app_state
+        .agent_run_repo
+        .create(ghost)
+        .await
+        .expect("create ghost run");
+    assert!(ghost.started_at > caller.started_at);
+    assert_ne!(ghost.id, caller.id);
+
+    let mut headers = HeaderMap::new();
+    headers.insert("x-ralphx-agent-run-id", caller.id.as_str().parse().unwrap());
+    let started = start_delegate_with_runtime_context(
+        State(state),
+        headers,
+        Json(routed_delegate_start_request(
+            parent.id.as_str(),
+            &parent_conversation.id.as_str(),
+        )),
+    )
+    .await
+    .expect("live caller outranked by a newer running row must still be accepted")
+    .0;
+
+    assert_eq!(started.parent_agent_run_id, Some(caller.id.as_str()));
 }
 
 #[tokio::test]

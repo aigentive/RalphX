@@ -33,12 +33,12 @@ async fn dispatch_wake_skips_when_claim_is_lost() {
 async fn dispatch_wake_supersedes_when_another_run_is_active() {
     let harness = harness();
     let (conversation, parent, delegate) = insert_parent_and_delegate(&harness).await;
-    let mut newer = AgentRun::new(conversation.clone());
+    // Park must be armed before the competing run starts, or it predates the park.
+    let park = park(conversation.clone(), parent.id, delegate.id);
+    harness.parks.insert(park.clone()).await;
+    let mut newer = AgentRun::new(conversation);
     newer.status = AgentRunStatus::Running;
     harness.runs.create(newer).await.unwrap();
-    let park = park(conversation, parent.id, delegate.id);
-    harness.parks.insert(park.clone()).await;
-
     harness
         .service()
         .dispatch_wake(&park, DelegationWakeReason::AllSettled)
@@ -48,6 +48,74 @@ async fn dispatch_wake_supersedes_when_another_run_is_active() {
     assert_eq!(
         harness.parks.settled.lock().await.as_slice(),
         &[DelegationParkState::Superseded]
+    );
+}
+
+#[tokio::test]
+async fn dispatch_wake_dispatches_when_a_ghost_run_predates_the_park() {
+    let harness = harness();
+    let (conversation, parent, delegate) = insert_parent_and_delegate(&harness).await;
+    let park = park(conversation.clone(), parent.id, delegate.id);
+    harness.parks.insert(park.clone()).await;
+    // A ghost `running` row that predates the park's arm must not block the wake.
+    let mut ghost = AgentRun::new(conversation);
+    ghost.status = AgentRunStatus::Running;
+    ghost.started_at = park.created_at - Duration::seconds(60);
+    harness.runs.create(ghost).await.unwrap();
+    harness
+        .service()
+        .dispatch_wake(&park, DelegationWakeReason::AllSettled)
+        .await
+        .unwrap();
+    assert!(!harness.chat.get_sent_messages().await.is_empty());
+    assert_eq!(
+        harness.parks.settled.lock().await.as_slice(),
+        &[DelegationParkState::Woken]
+    );
+}
+
+#[tokio::test]
+async fn dispatch_wake_supersedes_when_active_run_postdates_the_park() {
+    let harness = harness();
+    let (conversation, parent, delegate) = insert_parent_and_delegate(&harness).await;
+    let park = park(conversation.clone(), parent.id, delegate.id);
+    harness.parks.insert(park.clone()).await;
+    let mut newer = AgentRun::new(conversation);
+    newer.status = AgentRunStatus::Running;
+    newer.started_at = park.created_at + Duration::seconds(1);
+    harness.runs.create(newer).await.unwrap();
+    harness
+        .service()
+        .dispatch_wake(&park, DelegationWakeReason::AllSettled)
+        .await
+        .unwrap();
+    assert!(harness.chat.get_sent_messages().await.is_empty());
+    assert_eq!(
+        harness.parks.settled.lock().await.as_slice(),
+        &[DelegationParkState::Superseded]
+    );
+}
+
+#[tokio::test]
+async fn dispatch_wake_dispatches_when_only_the_parent_run_is_active() {
+    let harness = harness();
+    let (conversation, parent, delegate) = insert_parent_and_delegate(&harness).await;
+    harness
+        .runs
+        .update_status(&parent.id, AgentRunStatus::Running)
+        .await
+        .unwrap();
+    let park = park(conversation, parent.id, delegate.id);
+    harness.parks.insert(park.clone()).await;
+    harness
+        .service()
+        .dispatch_wake(&park, DelegationWakeReason::AllSettled)
+        .await
+        .unwrap();
+    assert!(!harness.chat.get_sent_messages().await.is_empty());
+    assert_eq!(
+        harness.parks.settled.lock().await.as_slice(),
+        &[DelegationParkState::Woken]
     );
 }
 
