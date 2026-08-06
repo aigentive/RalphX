@@ -100,6 +100,7 @@ export interface ChatMessageResponse {
   timelineBlockIndex?: number | null;
   runId?: string | null;
   createdAt: string;
+  finalizedAt?: string | null;
 }
 
 export type UsageProvenance =
@@ -1408,6 +1409,7 @@ function transformTimelineItem(
     toolCalls: toolCall ? [toolCall] : null,
     contentBlocks,
     createdAt: raw.created_at,
+    finalizedAt: raw.finalized_at ?? null,
   };
 
   return {

@@ -1809,6 +1809,7 @@ async fn finalize_structured_assistant_message_splits_verification_transcript_se
         &tool_calls,
         &content_blocks,
         true,
+        None,
     )
     .await;
 

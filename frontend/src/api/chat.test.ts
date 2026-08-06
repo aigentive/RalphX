@@ -1172,6 +1172,8 @@ describe("chat api", () => {
       timelineBlockIndex: 0,
       inputTokens: 10,
       providerHarness: "codex",
+      runId: "run-1",
+      finalizedAt: null,
     });
     expect(result.items[1].toolCall?.detailRef).toMatchObject({
       conversationId: "c-timeline",

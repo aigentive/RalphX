@@ -2841,6 +2841,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                                     &tools,
                                     &blocks,
                                     split_verification_transcript,
+                                    Some(queued_run_id.as_str()),
                                 )
                                 .await
                             } else {

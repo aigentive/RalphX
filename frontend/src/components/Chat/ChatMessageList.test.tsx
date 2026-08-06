@@ -10,6 +10,7 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { logger } from "@/lib/logger";
+import { useChatStore } from "@/stores/chatStore";
 import {
   ChatMessageList,
   type ChatMessageData,
@@ -265,6 +266,128 @@ it("shows an unavailable detail state when a settled batch omits a persisted run
 
   expect(screen.getByText("Run attribution is unavailable.")).toBeInTheDocument();
   expect(screen.queryByTestId("run-attribution-loading")).not.toBeInTheDocument();
+});
+
+it("renders exactly one run-attribution widget after a collapsed tool-activity group whose last row is covered", () => {
+  renderList({ messages: [
+    {
+      id: "tool-row-1",
+      role: "assistant",
+      content: "",
+      createdAt: "2026-01-01T12:00:00Z",
+      timelineSequence: 1,
+      contentBlocks: [{ type: "tool_use", id: "t1", name: "Bash" }],
+      runId: "run-tool",
+    },
+    {
+      id: "tool-row-2",
+      role: "assistant",
+      content: "",
+      createdAt: "2026-01-01T12:00:01Z",
+      timelineSequence: 2,
+      contentBlocks: [{ type: "tool_use", id: "t2", name: "Bash" }],
+      runId: "run-tool",
+      finalizedAt: "2026-01-01T12:00:05Z",
+    },
+  ] });
+
+  expect(screen.getAllByTestId("run-attribution-widget")).toHaveLength(1);
+  const toggle = screen.getByTestId("tool-call-group-toggle");
+  const widget = screen.getByTestId("run-attribution-widget");
+  expect(
+    toggle.compareDocumentPosition(widget) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+  expect(widget.closest(".px-3")).not.toBeNull();
+});
+
+it("renders exactly one run-attribution widget when the run's last row is a covered persisted-thinking row", () => {
+  renderList({ messages: [
+    {
+      id: "thinking-row-1",
+      role: "assistant",
+      content: "",
+      createdAt: "2026-01-01T12:00:00Z",
+      timelineSequence: 1,
+      contentBlocks: [{ type: "thinking", text: "first thought" }],
+      runId: "run-thinking",
+    },
+    {
+      id: "thinking-row-2",
+      role: "assistant",
+      content: "",
+      createdAt: "2026-01-01T12:00:01Z",
+      timelineSequence: 2,
+      contentBlocks: [{ type: "thinking", text: "second thought" }],
+      runId: "run-thinking",
+      finalizedAt: "2026-01-01T12:00:05Z",
+    },
+  ] });
+
+  expect(screen.getAllByTestId("run-attribution-widget")).toHaveLength(1);
+  const toggle = screen.getByTestId("thinking-group-toggle");
+  const widget = screen.getByTestId("run-attribution-widget");
+  expect(
+    toggle.compareDocumentPosition(widget) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+  expect(widget.closest(".px-3")).not.toBeNull();
+});
+
+it("renders exactly one run-attribution widget when the run's last provider row is a group toggle row itself, not a covered member", () => {
+  renderList({ messages: [
+    {
+      id: "toggle-anchor-row",
+      role: "assistant",
+      content: "",
+      createdAt: "2026-01-01T12:00:00Z",
+      timelineSequence: 1,
+      contentBlocks: [{ type: "tool_use", id: "t1", name: "Bash" }],
+      runId: "run-toggle-anchor",
+      finalizedAt: "2026-01-01T12:00:05Z",
+    },
+  ] });
+
+  expect(screen.getAllByTestId("run-attribution-widget")).toHaveLength(1);
+  const toggle = screen.getByTestId("tool-call-group-toggle");
+  const widget = screen.getByTestId("run-attribution-widget");
+  expect(
+    toggle.compareDocumentPosition(widget) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+  expect(widget.closest(".px-3")).not.toBeNull();
+});
+
+it("renders no widget and fetches no attributions when every message lacks a runId", () => {
+  runAttributions.mockClear();
+
+  renderList({ messages: [
+    { id: "legacy-row", role: "assistant", content: "legacy", createdAt: "2026-01-01T12:00:00Z" },
+  ] });
+
+  expect(screen.queryByTestId("run-attribution-widget")).not.toBeInTheDocument();
+  expect(runAttributions).toHaveBeenLastCalledWith([], expect.any(Object));
+});
+
+it("hides the widget for a live run while still rendering the previous run's widget", () => {
+  const contextKey = "project:conversation-a";
+  act(() => {
+    useChatStore.setState({ activeAgentRunIds: { [contextKey]: "run-live" } });
+  });
+
+  try {
+    renderList({
+      contextKey,
+      messages: [
+        { id: "run-prev-row", role: "assistant", content: "prev", createdAt: "2026-01-01T12:00:00Z", finalizedAt: "2026-01-01T12:00:10Z", runId: "run-prev" },
+        { id: "run-live-row", role: "assistant", content: "live", createdAt: "2026-01-01T12:00:20Z", runId: "run-live" },
+      ],
+    });
+
+    expect(screen.getAllByTestId("run-attribution-widget")).toHaveLength(1);
+    expect(screen.getByTestId("run-attribution-toggle")).toBeInTheDocument();
+  } finally {
+    act(() => {
+      useChatStore.setState({ activeAgentRunIds: {} });
+    });
+  }
 });
 
 function getScroller(): HTMLElement {
