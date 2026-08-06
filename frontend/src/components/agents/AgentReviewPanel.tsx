@@ -896,7 +896,6 @@ export function AgentReviewPanel({
     !displayContext?.target &&
     Boolean(onRetryReviewContext) &&
     (Boolean(reviewContextError) ||
-      publishReviewEvidence.status === "error" ||
       (publishReviewEvidence.status === "ready" &&
         publishReviewEvidence.changeCount > 0));
   const statusActionButton = shouldShowReviewContextRetry ? (

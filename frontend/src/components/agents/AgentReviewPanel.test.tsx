@@ -255,6 +255,23 @@ describe("AgentReviewPanel", () => {
     expect(screen.queryByText("No reviewable changes")).not.toBeInTheDocument();
   });
 
+  it("keeps cumulative Changes failures unavailable without a context-only retry", () => {
+    renderPanel({
+      reviewArtifact: null,
+      reviewContext: reviewContext({ target: null }),
+      publishReviewEvidence: {
+        status: "error",
+        error: new Error("Changes query failed"),
+      },
+      onRetryReviewContext: vi.fn(),
+    });
+
+    expect(screen.getByText("Workspace Review unavailable")).toBeInTheDocument();
+    expect(screen.getByText("Changes query failed")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(screen.queryByText("No reviewable changes")).not.toBeInTheDocument();
+  });
+
   it("shows the empty state only when context and Changes agree on zero", () => {
     renderPanel({
       reviewArtifact: null,

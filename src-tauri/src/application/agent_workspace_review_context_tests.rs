@@ -1,5 +1,6 @@
 use crate::application::agent_workspace_review_context::{
-    load_agent_workspace_review_presentation_context, AgentWorkspaceReviewContextReadMode,
+    install_identity_calculation_gate, load_agent_workspace_review_presentation_context,
+    AgentWorkspaceReviewContextReadMode,
 };
 use crate::application::AppState;
 use crate::domain::entities::{
@@ -13,6 +14,7 @@ use futures::future::join_all;
 use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
+use std::time::Duration;
 
 fn git(repo: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
@@ -401,6 +403,7 @@ async fn full_packet_does_not_join_identity_only_context() {
         .expect("workspace file should be written");
     }
     let state = Arc::new(state);
+    let gate = install_identity_calculation_gate(repo.clone());
     let identity_state = Arc::clone(&state);
     let identity_workspace = workspace.clone();
     let identity = tokio::spawn(async move {
@@ -411,16 +414,33 @@ async fn full_packet_does_not_join_identity_only_context() {
         )
         .await
     });
-    tokio::task::yield_now().await;
-    let full = load_agent_workspace_review_presentation_context(
-        state.as_ref(),
-        &workspace,
-        AgentWorkspaceReviewContextReadMode::FullPacket,
-    )
-    .await
-    .expect("packet-capable context should load")
-    .target
-    .expect("full packet target should exist");
+    tokio::time::timeout(Duration::from_secs(2), gate.wait_until_owner_started())
+        .await
+        .expect("identity calculation should become the coordinator owner");
+    let full_state = Arc::clone(&state);
+    let full_workspace = workspace.clone();
+    let mut full = tokio::spawn(async move {
+        load_agent_workspace_review_presentation_context(
+            full_state.as_ref(),
+            &full_workspace,
+            AgentWorkspaceReviewContextReadMode::FullPacket,
+        )
+        .await
+    });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), &mut full)
+            .await
+            .is_err(),
+        "full-packet caller must wait for the identity-only owner rather than completing sequentially"
+    );
+    gate.release();
+    let full = tokio::time::timeout(Duration::from_secs(2), full)
+        .await
+        .expect("packet-capable context should settle after the gate releases")
+        .expect("packet task should complete")
+        .expect("packet-capable context should load")
+        .target
+        .expect("full packet target should exist");
     let identity = identity
         .await
         .expect("identity task should complete")
@@ -432,6 +452,11 @@ async fn full_packet_does_not_join_identity_only_context() {
         identity.review_packet,
         crate::application::agent_workspace_review::AgentWorkspaceReviewPacket::default()
     );
+    assert_eq!(identity.scope, full.scope);
+    assert_eq!(identity.base_ref, full.base_ref);
+    assert_eq!(identity.base_sha, full.base_sha);
+    assert_eq!(identity.head_ref, full.head_ref);
+    assert_eq!(identity.head_sha, full.head_sha);
     assert_eq!(identity.diff_fingerprint, full.diff_fingerprint);
     assert_eq!(full.review_packet.summary.files_changed, 64);
     assert_eq!(full.review_packet.changed_files.len(), 64);

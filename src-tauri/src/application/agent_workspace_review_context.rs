@@ -127,6 +127,79 @@ static CONTEXT_COORDINATOR: OnceLock<
     Mutex<HashMap<WorkspaceReviewContextKey, Arc<CoordinatorEntry>>>,
 > = OnceLock::new();
 
+#[cfg(test)]
+struct ContextCalculationGate {
+    worktree_path: PathBuf,
+    owner_started: Arc<Notify>,
+    release: Arc<Notify>,
+}
+
+#[cfg(test)]
+static IDENTITY_CALCULATION_GATE: OnceLock<Mutex<Option<Arc<ContextCalculationGate>>>> =
+    OnceLock::new();
+
+#[cfg(test)]
+pub(crate) struct IdentityCalculationGateGuard {
+    gate: Arc<ContextCalculationGate>,
+}
+
+#[cfg(test)]
+impl IdentityCalculationGateGuard {
+    pub(crate) async fn wait_until_owner_started(&self) {
+        self.gate.owner_started.notified().await;
+    }
+
+    pub(crate) fn release(&self) {
+        self.gate.release.notify_waiters();
+    }
+}
+
+#[cfg(test)]
+impl Drop for IdentityCalculationGateGuard {
+    fn drop(&mut self) {
+        let gates = IDENTITY_CALCULATION_GATE.get_or_init(|| Mutex::new(None));
+        let mut installed = lock_unpoisoned(gates);
+        if installed
+            .as_ref()
+            .is_some_and(|gate| Arc::ptr_eq(gate, &self.gate))
+        {
+            *installed = None;
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn install_identity_calculation_gate(
+    worktree_path: PathBuf,
+) -> IdentityCalculationGateGuard {
+    let gate = Arc::new(ContextCalculationGate {
+        worktree_path,
+        owner_started: Arc::new(Notify::new()),
+        release: Arc::new(Notify::new()),
+    });
+    let gates = IDENTITY_CALCULATION_GATE.get_or_init(|| Mutex::new(None));
+    *lock_unpoisoned(gates) = Some(Arc::clone(&gate));
+    IdentityCalculationGateGuard { gate }
+}
+
+#[cfg(test)]
+async fn wait_for_identity_calculation_gate(
+    workspace: &AgentConversationWorkspace,
+    materialization: AgentWorkspaceReviewTargetMaterialization,
+) {
+    if materialization != AgentWorkspaceReviewTargetMaterialization::IdentityOnly {
+        return;
+    }
+    let gate = IDENTITY_CALCULATION_GATE
+        .get()
+        .and_then(|gates| lock_unpoisoned(gates).clone())
+        .filter(|gate| gate.worktree_path == PathBuf::from(&workspace.worktree_path));
+    if let Some(gate) = gate {
+        gate.owner_started.notify_waiters();
+        gate.release.notified().await;
+    }
+}
+
 fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
@@ -476,6 +549,8 @@ async fn coordinated_full_context(
                     waiters,
                     "Started workspace Review context calculation"
                 );
+                #[cfg(test)]
+                wait_for_identity_calculation_gate(workspace, required_materialization).await;
                 let result = calculate_generation_fenced_context(
                     state,
                     workspace,
