@@ -706,6 +706,8 @@ impl ManagedTeamService {
             }
             self.emit_member_updated(&idle).await;
         }
+        self.notify_coordinator_assignment_settled(assignment, &member, terminal_status, reason)
+            .await;
         Ok(())
     }
 
