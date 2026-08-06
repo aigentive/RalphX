@@ -170,10 +170,21 @@ type ScrollerGeometry = {
 };
 
 function setScrollerGeometry(element: HTMLElement, geometry: ScrollerGeometry): void {
+  // Browsers clamp scrollTop to the scroll extent, on write and whenever the
+  // content shrinks. Bottom follow relies on that clamp, so the double models
+  // it rather than allowing positions past the true bottom.
+  const maxScrollTop = Math.max(0, geometry.scrollHeight - geometry.clientHeight);
+  let position = Math.min(geometry.scrollTop, maxScrollTop);
   Object.defineProperties(element, {
     clientHeight: { configurable: true, value: geometry.clientHeight },
     scrollHeight: { configurable: true, value: geometry.scrollHeight },
-    scrollTop: { configurable: true, value: geometry.scrollTop, writable: true },
+    scrollTop: {
+      configurable: true,
+      get: () => position,
+      set: (next: number) => {
+        position = Math.max(0, Math.min(next, maxScrollTop));
+      },
+    },
   });
 }
 
@@ -843,8 +854,12 @@ describe("ChatMessageList controller integration", () => {
     act(() => resizeSpacer(40));
     flushAnimationFrames();
 
+    // The shrink already clamped the reader onto the new true bottom, so the
+    // follow stays put instead of writing the reader back up the transcript.
     expect(scroller.scrollTop).toBe(500);
-    expect(scrollWrites).toHaveBeenCalledWith(expect.objectContaining({ top: 500 }));
+    expect(scrollWrites).not.toHaveBeenCalledWith(
+      expect.objectContaining({ top: expect.any(Number) as number }),
+    );
 
     setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_000, scrollTop: 200 });
     fireEvent.wheel(scroller, { deltaY: -80 });
