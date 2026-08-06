@@ -168,6 +168,14 @@ impl RuntimeFactoryDeps {
         self
     }
 
+    pub(crate) fn with_execution_plan_repo_option(
+        mut self,
+        execution_plan_repo: Option<Arc<dyn ExecutionPlanRepository>>,
+    ) -> Self {
+        self.execution_plan_repo = execution_plan_repo;
+        self
+    }
+
     pub(crate) fn with_completion_authority_repositories(
         mut self,
         task_step_repo: Option<Arc<dyn TaskStepRepository>>,
@@ -305,6 +313,57 @@ impl RuntimeFactoryDeps {
         );
         deps
     }
+
+    /// Rebuild transition/scheduler dependencies from the complete chat runtime snapshot.
+    ///
+    /// Chat-owned recovery and handler paths retain this explicit snapshot after runtime
+    /// erasure, so this conversion must mirror the AppState-backed production wiring.
+    pub(crate) fn from_chat_runtime_deps(deps: &ChatRuntimeFactoryDeps) -> Self {
+        Self {
+            events: Arc::clone(&deps.events),
+            chat_runtime_deps: Some(deps.clone()),
+            task_repo: Arc::clone(&deps.task_repo),
+            task_step_repo: deps.task_step_repo.as_ref().map(Arc::clone),
+            validation_run_repo: deps.validation_run_repo.as_ref().map(Arc::clone),
+            external_events_repo: deps.external_events_repo.as_ref().map(Arc::clone),
+            webhook_publisher: deps.webhook_publisher.as_ref().map(Arc::clone),
+            branch_update_repo: deps.branch_update_repo.as_ref().map(Arc::clone),
+            task_dependency_repo: Arc::clone(&deps.task_dependency_repo),
+            project_repo: Arc::clone(&deps.project_repo),
+            artifact_repo: Arc::clone(&deps.artifact_repo),
+            chat_message_repo: Arc::clone(&deps.chat_message_repo),
+            chat_attachment_repo: Arc::clone(&deps.chat_attachment_repo),
+            conversation_repo: Arc::clone(&deps.conversation_repo),
+            agent_run_repo: Arc::clone(&deps.agent_run_repo),
+            ideation_session_repo: Arc::clone(&deps.ideation_session_repo),
+            activity_event_repo: Arc::clone(&deps.activity_event_repo),
+            message_queue: Arc::clone(&deps.message_queue),
+            running_agent_registry: Arc::clone(&deps.running_agent_registry),
+            memory_event_repo: Arc::clone(&deps.memory_event_repo),
+            agent_clients: deps.agent_clients.clone(),
+            execution_plan_repo: deps.execution_plan_repo.as_ref().map(Arc::clone),
+            execution_settings_repo: deps.execution_settings_repo.as_ref().map(Arc::clone),
+            agent_lane_settings_repo: deps.agent_lane_settings_repo.as_ref().map(Arc::clone),
+            agent_provider_settings_repo: deps
+                .agent_provider_settings_repo
+                .as_ref()
+                .map(Arc::clone),
+            manual_role_default_service: deps.manual_role_default_service.as_ref().map(Arc::clone),
+            review_repo: deps.review_repo.as_ref().map(Arc::clone),
+            plan_branch_repo: deps.plan_branch_repo.as_ref().map(Arc::clone),
+            agent_conversation_workspace_repo: deps
+                .agent_conversation_workspace_repo
+                .as_ref()
+                .map(Arc::clone),
+            interactive_process_registry: deps
+                .interactive_process_registry
+                .as_ref()
+                .map(Arc::clone),
+            github_service: deps.github_service.as_ref().map(Arc::clone),
+            pr_poller_registry: deps.pr_poller_registry.as_ref().map(Arc::clone),
+            plan_pr_description_drafter: deps.plan_pr_description_drafter.as_ref().map(Arc::clone),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -336,6 +395,8 @@ pub(crate) struct ChatRuntimeFactoryDeps {
     pub queued_message_repo: Option<Arc<dyn QueuedMessageRepository>>,
     pub running_agent_registry: Arc<dyn RunningAgentRegistry>,
     pub memory_event_repo: Arc<dyn MemoryEventRepository>,
+    pub agent_clients: Option<AgentClientBundle>,
+    pub execution_plan_repo: Option<Arc<dyn ExecutionPlanRepository>>,
     pub notification_service: Option<Arc<NotificationService>>,
     pub app_state_repo: Option<Arc<dyn AppStateRepository>>,
     /// Typed terminal verification/approval capability for chat finalizers.
@@ -434,6 +495,8 @@ impl ChatRuntimeFactoryDeps {
             queued_message_repo: None,
             running_agent_registry,
             memory_event_repo,
+            agent_clients: None,
+            execution_plan_repo: None,
             notification_service: None,
             app_state_repo: None,
             plan_verification_completion: None,
@@ -471,6 +534,19 @@ impl ChatRuntimeFactoryDeps {
 
     pub(crate) fn with_events(mut self, events: Arc<dyn EventSink>) -> Self {
         self.events = events;
+        self
+    }
+
+    pub(crate) fn with_agent_clients(mut self, agent_clients: Option<AgentClientBundle>) -> Self {
+        self.agent_clients = agent_clients;
+        self
+    }
+
+    pub(crate) fn with_execution_plan_repo(
+        mut self,
+        execution_plan_repo: Arc<dyn ExecutionPlanRepository>,
+    ) -> Self {
+        self.execution_plan_repo = Some(execution_plan_repo);
         self
     }
 
@@ -858,6 +934,8 @@ impl ChatRuntimeFactoryDeps {
             Arc::clone(&state.memory_event_repo),
         )
         .with_events(Arc::clone(&state.events))
+        .with_agent_clients(Some(state.agent_client_bundle()))
+        .with_execution_plan_repo(Arc::clone(&state.execution_plan_repo))
         .with_chat_timeline_repo(Arc::clone(&state.chat_timeline_repo))
         .with_queued_message_repo(Arc::clone(&state.queued_message_repo))
         .with_notification_service(state.notification_service())

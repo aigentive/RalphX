@@ -783,6 +783,53 @@ fn handler_runtime_factory_deps_keep_explicit_lane_and_provider_without_app_hand
 }
 
 #[test]
+fn handler_runtime_factory_deps_preserve_complete_chat_snapshot_dependencies() {
+    let app_state = AppState::new_test();
+    let chat_deps = ChatRuntimeFactoryDeps::from_app_state(&app_state);
+    let runtime_support = RuntimeSupportRepos::new(
+        &chat_deps.execution_settings_repo,
+        &chat_deps.agent_lane_settings_repo,
+        &chat_deps.agent_provider_settings_repo,
+        &chat_deps.plan_branch_repo,
+        &chat_deps.interactive_process_registry,
+        &chat_deps.task_step_repo,
+        &chat_deps.validation_run_repo,
+    )
+    .with_runtime_factory_deps(Some(&chat_deps));
+
+    let deps = build_runtime_factory_deps(
+        Arc::clone(&app_state.task_repo),
+        Arc::clone(&app_state.task_dependency_repo),
+        Arc::clone(&app_state.project_repo),
+        Arc::clone(&app_state.artifact_repo),
+        Arc::clone(&app_state.chat_message_repo),
+        Arc::clone(&app_state.chat_attachment_repo),
+        Arc::clone(&app_state.chat_conversation_repo),
+        Arc::clone(&app_state.agent_run_repo),
+        Arc::clone(&app_state.ideation_session_repo),
+        Arc::clone(&app_state.activity_event_repo),
+        Arc::clone(&app_state.message_queue),
+        Arc::clone(&app_state.running_agent_registry),
+        Arc::clone(&app_state.memory_event_repo),
+        runtime_support,
+    );
+
+    assert!(Arc::ptr_eq(
+        deps.review_repo.as_ref().expect("review repo"),
+        chat_deps.review_repo.as_ref().expect("chat review repo"),
+    ));
+    assert!(Arc::ptr_eq(
+        deps.agent_conversation_workspace_repo
+            .as_ref()
+            .expect("workspace repo"),
+        chat_deps
+            .agent_conversation_workspace_repo
+            .as_ref()
+            .expect("chat workspace repo"),
+    ));
+}
+
+#[test]
 fn handler_runtime_factory_deps_do_not_backfill_missing_lane_and_provider() {
     let app_state = AppState::new_test();
     let execution_settings_repo = Some(Arc::clone(&app_state.execution_settings_repo));

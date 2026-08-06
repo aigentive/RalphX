@@ -483,43 +483,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     startup_phase_completed("transition_service_build", phase_started_at);
 
     let phase_started_at = startup_phase_started("recovery_chat_service_deps_build");
-    let recovery_chat_service_deps = ChatRuntimeFactoryDeps::from_core(
-        Arc::clone(&chat_message_repo),
-        Arc::clone(&chat_attachment_repo),
-        Arc::clone(&artifact_repo),
-        Arc::clone(&conversation_repo),
-        Arc::clone(&agent_run_repo),
-        Arc::clone(&automation_run_repo),
-        Arc::clone(&project_repo),
-        Arc::clone(&task_repo),
-        Arc::clone(&task_dependency_repo),
-        Arc::clone(&ideation_session_repo),
-        Arc::clone(&activity_event_repo),
-        Arc::clone(&message_queue),
-        Arc::clone(&running_agent_registry),
-        Arc::clone(&memory_event_repo),
-    )
-    .with_events(Arc::clone(&app_state.events))
-    .with_agent_conversation_workspace_repo(Some(Arc::clone(&agent_conversation_workspace_repo)))
-    .with_agent_conversation_jira_issue_repo(Some(Arc::clone(&agent_conversation_jira_issue_repo)))
-    .with_agent_conversation_linear_issue_repo(Some(Arc::clone(
-        &agent_conversation_linear_issue_repo,
-    )))
-    .with_agent_conversation_granola_note_repo(Some(Arc::clone(
-        &agent_conversation_granola_note_repo,
-    )))
-    .with_runtime_support(
-        Some(Arc::clone(&execution_settings_repo)),
-        Some(Arc::clone(&agent_lane_settings_repo)),
-        Some(Arc::clone(&agent_provider_settings_repo)),
-        None,
-        Some(Arc::clone(&interactive_process_registry)),
-    )
-    .with_ideation_runtime_support(
-        Some(Arc::clone(&ideation_effort_settings_repo)),
-        Some(Arc::clone(&ideation_model_settings_repo)),
-    )
-    .with_integration_reference_services_from_app_state(&app_state);
+    let recovery_chat_service_deps = ChatRuntimeFactoryDeps::from_app_state(&app_state);
     startup_phase_completed("recovery_chat_service_deps_build", phase_started_at);
 
     let phase_started_at = startup_phase_started("recovery_chat_service_build");

@@ -911,6 +911,10 @@ fn build_runtime_factory_deps(
     memory_event_repo: Arc<dyn MemoryEventRepository>,
     runtime_support: RuntimeSupportRepos,
 ) -> RuntimeFactoryDeps {
+    if let Some(deps) = runtime_support.chat_runtime_deps {
+        return RuntimeFactoryDeps::from_chat_runtime_deps(&deps);
+    }
+
     RuntimeFactoryDeps::from_core(
         task_repo,
         task_dependency_repo,

@@ -200,10 +200,7 @@ impl TaskSchedulerService {
         self
     }
 
-    pub(crate) fn with_chat_runtime_deps(
-        mut self,
-        deps: Option<ChatRuntimeFactoryDeps>,
-    ) -> Self {
+    pub(crate) fn with_chat_runtime_deps(mut self, deps: Option<ChatRuntimeFactoryDeps>) -> Self {
         self.chat_runtime_deps = deps;
         self
     }
@@ -477,43 +474,50 @@ impl TaskSchedulerService {
     /// Creates a fresh instance to avoid circular dependency issues when
     /// the scheduler is called from within TransitionHandler.
     pub(super) fn build_transition_service(&self) -> Arc<TaskTransitionService> {
-        let deps = RuntimeFactoryDeps::from_core(
-            Arc::clone(&self.task_repo),
-            Arc::clone(&self.task_dependency_repo),
-            Arc::clone(&self.project_repo),
-            Arc::clone(&self.artifact_repo),
-            Arc::clone(&self.chat_message_repo),
-            Arc::clone(&self.chat_attachment_repo),
-            Arc::clone(&self.conversation_repo),
-            Arc::clone(&self.agent_run_repo),
-            Arc::clone(&self.ideation_session_repo),
-            Arc::clone(&self.activity_event_repo),
-            Arc::clone(&self.message_queue),
-            Arc::clone(&self.running_agent_registry),
-            Arc::clone(&self.memory_event_repo),
-        )
-        .with_events(Arc::clone(&self.events))
-        .with_chat_runtime_deps_option(self.chat_runtime_deps.clone())
-        .with_agent_clients(self.agent_clients.clone())
-        .with_completion_authority_repositories(
-            self.task_step_repo.as_ref().map(Arc::clone),
-            self.validation_run_repo.as_ref().map(Arc::clone),
-        )
-        .with_completion_event_delivery(
-            self.external_events_repo.as_ref().map(Arc::clone),
-            self.webhook_publisher.as_ref().map(Arc::clone),
-        )
-        .with_runtime_support(
-            self.execution_settings_repo.as_ref().map(Arc::clone),
-            self.agent_lane_settings_repo.as_ref().map(Arc::clone),
-            self.agent_provider_settings_repo.as_ref().map(Arc::clone),
-            self.plan_branch_repo.as_ref().map(Arc::clone),
-            self.interactive_process_registry.as_ref().map(Arc::clone),
-        )
-        .with_github_runtime_support(
-            self.github_service.as_ref().map(Arc::clone),
-            self.pr_poller_registry.as_ref().map(Arc::clone),
-        );
+        let deps = self
+            .chat_runtime_deps
+            .as_ref()
+            .map(RuntimeFactoryDeps::from_chat_runtime_deps)
+            .unwrap_or_else(|| {
+                RuntimeFactoryDeps::from_core(
+                    Arc::clone(&self.task_repo),
+                    Arc::clone(&self.task_dependency_repo),
+                    Arc::clone(&self.project_repo),
+                    Arc::clone(&self.artifact_repo),
+                    Arc::clone(&self.chat_message_repo),
+                    Arc::clone(&self.chat_attachment_repo),
+                    Arc::clone(&self.conversation_repo),
+                    Arc::clone(&self.agent_run_repo),
+                    Arc::clone(&self.ideation_session_repo),
+                    Arc::clone(&self.activity_event_repo),
+                    Arc::clone(&self.message_queue),
+                    Arc::clone(&self.running_agent_registry),
+                    Arc::clone(&self.memory_event_repo),
+                )
+            })
+            .with_events(Arc::clone(&self.events))
+            .with_chat_runtime_deps_option(self.chat_runtime_deps.clone())
+            .with_agent_clients(self.agent_clients.clone())
+            .with_execution_plan_repo_option(self.execution_plan_repo.as_ref().map(Arc::clone))
+            .with_completion_authority_repositories(
+                self.task_step_repo.as_ref().map(Arc::clone),
+                self.validation_run_repo.as_ref().map(Arc::clone),
+            )
+            .with_completion_event_delivery(
+                self.external_events_repo.as_ref().map(Arc::clone),
+                self.webhook_publisher.as_ref().map(Arc::clone),
+            )
+            .with_runtime_support(
+                self.execution_settings_repo.as_ref().map(Arc::clone),
+                self.agent_lane_settings_repo.as_ref().map(Arc::clone),
+                self.agent_provider_settings_repo.as_ref().map(Arc::clone),
+                self.plan_branch_repo.as_ref().map(Arc::clone),
+                self.interactive_process_registry.as_ref().map(Arc::clone),
+            )
+            .with_github_runtime_support(
+                self.github_service.as_ref().map(Arc::clone),
+                self.pr_poller_registry.as_ref().map(Arc::clone),
+            );
         let deps = if let Some(drafter) = self.plan_pr_description_drafter.as_ref() {
             deps.with_plan_pr_description_drafter(Arc::clone(drafter))
         } else {

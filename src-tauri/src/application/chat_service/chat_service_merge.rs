@@ -98,6 +98,9 @@ pub(crate) struct MergeAutoCompleteContext<'a> {
 impl MergeAutoCompleteContext<'_> {
     fn build_runtime_factory_deps(&self) -> RuntimeFactoryDeps {
         let chat_deps = self.runtime_factory_deps;
+        if let Some(chat_deps) = chat_deps {
+            return RuntimeFactoryDeps::from_chat_runtime_deps(chat_deps);
+        }
         let mut deps = RuntimeFactoryDeps::from_core(
             Arc::clone(self.task_repo),
             Arc::clone(self.task_dependency_repo),
