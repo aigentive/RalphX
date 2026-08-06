@@ -189,6 +189,8 @@ pub async fn send_managed_team_message(
     };
     let idempotency_key =
         team_tool_idempotency_key(&source_run_id, &target, kind, &request.content);
+    let targets_coordinator = target == ManagedTeamMessageTarget::Coordinator;
+    let team_id_for_wake = team_id.clone();
     let (message, deliveries) = state
         .app_state
         .managed_team
@@ -202,6 +204,27 @@ pub async fn send_managed_team_message(
         })
         .await
         .map_err(|error| json_error(StatusCode::CONFLICT, error.to_string()))?;
+    // `dispatch_pending_wakes` is otherwise only reached from assignment
+    // settlement and the startup drain, so a member's message to the
+    // coordinator would queue a wake batch that nothing claims until an
+    // unrelated settlement or app restart. Not awaited: the handler must not
+    // block on a coordinator turn, and a lost dispatcher is recovered by the
+    // next settlement or startup drain claiming the durable batch.
+    if targets_coordinator {
+        let wake_dispatcher = state.app_state.build_managed_team_wake_dispatcher();
+        tokio::spawn(async move {
+            if let Err(error) = wake_dispatcher
+                .dispatch_pending_wakes(&team_id_for_wake)
+                .await
+            {
+                tracing::warn!(
+                    team_id = team_id_for_wake.as_str(),
+                    %error,
+                    "managed Team wake dispatch failed after team_send_message; the next settlement or startup recovery will retry"
+                );
+            }
+        });
+    }
     Ok(Json(ManagedTeamMessageResponse {
         sequence: message.sequence,
         recipient_count: deliveries.len() as u32,

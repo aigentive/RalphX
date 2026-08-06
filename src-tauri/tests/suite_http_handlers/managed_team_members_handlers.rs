@@ -141,6 +141,26 @@ fn error_status<T>(result: Result<T, (StatusCode, Json<serde_json::Value>)>) -> 
     }
 }
 
+/// Releases the managed-Team startup barrier so `send_team_message`'s delivery
+/// projection and wake scheduling can run; the fixture otherwise leaves it
+/// unreleased, which every `send_managed_team_message` call needs.
+async fn release_delivery_projection(fixture: &Fixture) {
+    fixture
+        .state
+        .app_state
+        .managed_team
+        .startup_barrier()
+        .run(&fixture.state.app_state.managed_team.team_repo())
+        .await;
+    fixture
+        .state
+        .app_state
+        .managed_team
+        .release_delivery_projection_after_recovery()
+        .await
+        .expect("release delivery projection barrier");
+}
+
 async fn seed_authoritative_member(fixture: &Fixture) -> TeamMember {
     let now = Utc::now();
     let member = TeamMember {
@@ -617,6 +637,112 @@ async fn member_status_never_crosses_team_boundaries() {
         .expect("status passes authority for first Team");
     assert_eq!(status_a.0.len(), 1);
     assert_eq!(status_a.0[0].name, member_a.name);
+}
+
+/// A member's message to the coordinator has only two other production
+/// triggers for its wake batch: assignment settlement and the startup drain.
+/// Without dispatching after `send_team_message` too, a blocked member's
+/// question to the coordinator would wait for an unrelated event.
+#[tokio::test]
+async fn member_send_to_coordinator_dispatches_pending_wake() {
+    let fixture = fixture(Some("ralphx-general-worker")).await;
+    release_delivery_projection(&fixture).await;
+    let member = seed_authoritative_member(&fixture).await;
+    let binding = fixture
+        .state
+        .app_state
+        .managed_team
+        .run_binding_repo()
+        .get_by_agent_run_id(&fixture.run.id)
+        .await
+        .expect("read binding")
+        .expect("binding");
+    let mut replacement = binding.clone();
+    replacement.team_member_id = Some(member.id.clone());
+    replacement.team_member_generation = Some(member.generation);
+    replacement.work_classification =
+        ralphx_lib::domain::entities::TeamWorkClassification::ReadOnly;
+    fixture
+        .state
+        .app_state
+        .managed_team
+        .run_binding_repo()
+        .transition(&binding.id, binding.version, replacement)
+        .await
+        .expect("replace binding as member-shaped");
+
+    let response = send_managed_team_message(
+        State(fixture.state.clone()),
+        fixture.headers.clone(),
+        Json(SendManagedTeamMessageRequest {
+            target: "coordinator".to_string(),
+            member_name: None,
+            kind: None,
+            content: "member needs the coordinator".to_string(),
+        }),
+    )
+    .await
+    .expect("member send to coordinator should be authorized");
+    assert_eq!(response.0.recipient_count, 1);
+
+    // Let the fire-and-forget wake dispatch spawned by the handler run;
+    // the handler does not await it so the turn stays non-blocking.
+    for _ in 0..50 {
+        tokio::task::yield_now().await;
+    }
+
+    let queued = fixture
+        .state
+        .app_state
+        .managed_team
+        .wake_batch_repo()
+        .list_queued_for_team(&fixture.session.id, 10)
+        .await
+        .expect("list queued batches");
+    assert!(
+        queued.is_empty(),
+        "a member's message to the coordinator must dispatch its wake batch immediately, \
+         not wait for an unrelated assignment settlement or app restart"
+    );
+}
+
+/// A coordinator-authority send to a member never queues a coordinator wake
+/// batch; the dispatch trigger is scoped to coordinator-addressed deliveries.
+#[tokio::test]
+async fn coordinator_send_to_member_queues_no_wake_batch() {
+    let fixture = fixture(Some("ralphx-general-worker")).await;
+    release_delivery_projection(&fixture).await;
+    let _ = seed_authoritative_member(&fixture).await;
+
+    let _ = send_managed_team_message(
+        State(fixture.state.clone()),
+        fixture.headers.clone(),
+        Json(SendManagedTeamMessageRequest {
+            target: "member".to_string(),
+            member_name: Some("Member".to_string()),
+            kind: None,
+            content: "instruction to member".to_string(),
+        }),
+    )
+    .await
+    .expect("coordinator send to member should be authorized");
+
+    for _ in 0..50 {
+        tokio::task::yield_now().await;
+    }
+
+    let queued = fixture
+        .state
+        .app_state
+        .managed_team
+        .wake_batch_repo()
+        .list_queued_for_team(&fixture.session.id, 10)
+        .await
+        .expect("list queued batches");
+    assert!(
+        queued.is_empty(),
+        "a coordinator-to-member send must not queue or dispatch a coordinator wake batch"
+    );
 }
 
 #[tokio::test]

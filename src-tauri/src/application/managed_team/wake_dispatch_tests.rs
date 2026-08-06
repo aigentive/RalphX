@@ -10,8 +10,8 @@ use crate::application::managed_team::{
 };
 use crate::domain::entities::{
     AgentRun, AgentTaskAssignmentId, ChatContextType, ChatConversation, CoordinationMode,
-    ProjectId, TeamMessageKind, TeamRunBindingStatus, TeamRunTriggerKind, TeamSession,
-    TeamWakeBatchStatus,
+    ProjectId, TeamMessageDeliveryStatus, TeamMessageKind, TeamRunBindingStatus,
+    TeamRunTriggerKind, TeamSession, TeamWakeBatchStatus,
 };
 use crate::domain::repositories::{
     AgentRunRepository, ChatConversationRepository, QueuedMessageRepository, TeamMessageRepository,
@@ -647,5 +647,140 @@ async fn wake_message_only_carries_messages_addressed_to_the_coordinator() {
         sent[0].contains("Team update (2 messages)."),
         "the wake header must count only coordinator-addressed messages, got: {}",
         sent[0]
+    );
+}
+
+#[tokio::test]
+async fn successful_dispatch_retires_the_delivered_queue_entry() {
+    // `project_delivery` enqueues the coordinator delivery under the
+    // conversation-scoped `QueueKey` keyed by delivery id. If a successfully
+    // dispatched wake leaves that entry queued, the turn-end drain
+    // (`process_queued_messages`) starts a second, redundant coordinator turn
+    // with identical content.
+    let harness = build_harness();
+    let team = ready_team(&harness, 30).await;
+    queue_one_coordinator_wake(&harness, &team).await;
+
+    let queued_batches = harness
+        .wake_batch_repo
+        .list_queued_for_team(&team.id, 10)
+        .await
+        .unwrap();
+    assert_eq!(queued_batches.len(), 1);
+    let delivery_id = queued_batches[0].delivery_ids[0].clone();
+
+    let conversation_key = QueueKey::new(
+        ChatContextType::Project,
+        team.coordinator_conversation_id.as_str(),
+    );
+    assert_eq!(
+        harness
+            .queued_messages
+            .list(&conversation_key)
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "the settlement message must be queued before dispatch"
+    );
+
+    harness
+        .dispatcher()
+        .dispatch_pending_wakes(&team.id)
+        .await
+        .unwrap();
+
+    assert!(
+        harness
+            .queued_messages
+            .list(&conversation_key)
+            .await
+            .unwrap()
+            .is_empty(),
+        "a successfully dispatched wake must retire the queue entry it just delivered"
+    );
+
+    let delivery = harness
+        .managed_team
+        .message_repo
+        .get_delivery(&delivery_id)
+        .await
+        .unwrap()
+        .expect("the delivery row must still exist");
+    assert_eq!(
+        delivery.status,
+        TeamMessageDeliveryStatus::Delivered,
+        "the retired delivery must be marked Delivered, the first production writer of that status"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn failed_dispatch_leaves_the_queue_entry_intact() {
+    // A failed or retried send must leave the durable queue untouched: the
+    // user-message delivery contract lets a gate refuse to resume a session,
+    // never to discard a user message.
+    let harness = build_harness();
+    let team = ready_team(&harness, 31).await;
+    queue_one_coordinator_wake(&harness, &team).await;
+    harness.chat.set_available(false).await;
+
+    let conversation_key = QueueKey::new(
+        ChatContextType::Project,
+        team.coordinator_conversation_id.as_str(),
+    );
+
+    harness
+        .dispatcher()
+        .dispatch_pending_wakes(&team.id)
+        .await
+        .unwrap();
+
+    assert!(
+        !harness
+            .queued_messages
+            .list(&conversation_key)
+            .await
+            .unwrap()
+            .is_empty(),
+        "a durably failed wake must not retire the queue entry; it is still deliverable"
+    );
+}
+
+#[tokio::test]
+async fn mid_turn_cancellation_leaves_the_queue_entry_for_the_normal_drain() {
+    // When the coordinator is already mid-turn, the settlement message is
+    // exactly what the turn-end drain must find on the queue; the cancelled
+    // wake batch must not retire it.
+    let harness = build_harness();
+    let team = ready_team(&harness, 32).await;
+    queue_one_coordinator_wake(&harness, &team).await;
+
+    let mut active_run = AgentRun::new(team.coordinator_conversation_id);
+    active_run.id = crate::domain::entities::AgentRunId::new();
+    harness.agent_runs.create(active_run).await.unwrap();
+
+    let conversation_key = QueueKey::new(
+        ChatContextType::Project,
+        team.coordinator_conversation_id.as_str(),
+    );
+
+    harness
+        .dispatcher()
+        .dispatch_pending_wakes(&team.id)
+        .await
+        .unwrap();
+
+    assert!(
+        harness.chat.get_sent_messages().await.is_empty(),
+        "an already-active coordinator run must suppress dispatch"
+    );
+    assert!(
+        !harness
+            .queued_messages
+            .list(&conversation_key)
+            .await
+            .unwrap()
+            .is_empty(),
+        "the mid-turn cancel path must leave the entry for the normal turn-end drain"
     );
 }

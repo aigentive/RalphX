@@ -18,10 +18,11 @@ use crate::application::managed_team::lifecycle::advance_binding_status;
 use crate::application::managed_team::render_team_origin_message;
 use crate::domain::entities::{
     AgentRunActionKind, AgentRunId, ChatConversation, TeamMessage, TeamMessageActorKind,
-    TeamMessageEnvelopeTarget, TeamRunBindingStatus, TeamSession, TeamSessionId, TeamWakeBatch,
-    TeamWakeBatchStatus,
+    TeamMessageDeliveryStatus, TeamMessageEnvelopeTarget, TeamRunBindingStatus, TeamSession,
+    TeamSessionId, TeamWakeBatch, TeamWakeBatchStatus,
 };
 use crate::domain::repositories::{AgentRunRepository, ChatConversationRepository};
+use crate::domain::services::QueueKey;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::delegation_config;
 
@@ -225,7 +226,11 @@ impl ManagedTeamWakeDispatcher {
                 )
                 .await
             {
-                Ok(_) => return self.settle_batch(&running).await,
+                Ok(_) => {
+                    self.retire_delivered_queue_entries(&conversation, &running)
+                        .await;
+                    return self.settle_batch(&running).await;
+                }
                 Err(error) => {
                     let error_message = error.to_string();
                     if attempts >= retry_max {
@@ -239,6 +244,70 @@ impl ManagedTeamWakeDispatcher {
                         .await;
                 }
             }
+        }
+    }
+
+    /// Retires the durable queue entries `project_delivery` created for this
+    /// batch's coordinator deliveries. `project_delivery` enqueues each
+    /// coordinator-addressed delivery onto the coordinator's normal `QueueKey`
+    /// keyed by delivery id (`messaging_delivery.rs`), so once this dispatch
+    /// has successfully delivered the same content via a hidden resume send,
+    /// leaving those entries queued means the turn-end drain
+    /// (`process_queued_messages`) starts a second, redundant coordinator turn
+    /// with identical content.
+    ///
+    /// Best-effort: a failed delete or delivery transition is a duplicate
+    /// turn, not lost work, and must not fail an already-delivered wake.
+    async fn retire_delivered_queue_entries(
+        &self,
+        conversation: &ChatConversation,
+        batch: &TeamWakeBatch,
+    ) {
+        let key = QueueKey::new(conversation.context_type, conversation.id.as_str());
+        for delivery_id in &batch.delivery_ids {
+            if let Err(error) = self
+                .managed_team
+                .queued_message_repo
+                .delete(&key, delivery_id.0.as_str())
+                .await
+            {
+                tracing::warn!(
+                    team_id = batch.team_id.as_str(),
+                    wake_batch_id = batch.id.0.as_str(),
+                    delivery_id = delivery_id.0.as_str(),
+                    %error,
+                    "managed Team wake dispatch failed to retire a delivered queue entry; the turn-end drain may re-deliver it"
+                );
+            }
+            let Ok(Some(delivery)) = self
+                .managed_team
+                .message_repo
+                .get_delivery(delivery_id)
+                .await
+            else {
+                continue;
+            };
+            if delivery.status != TeamMessageDeliveryStatus::Queued {
+                continue;
+            }
+            let expected = delivery.status;
+            let mut delivered = delivery;
+            if delivered
+                .transition_to(TeamMessageDeliveryStatus::Delivered, Utc::now())
+                .is_err()
+            {
+                continue;
+            }
+            let _ = self
+                .managed_team
+                .message_repo
+                .transition_delivery(
+                    delivery_id,
+                    expected,
+                    TeamMessageDeliveryStatus::Delivered,
+                    delivered,
+                )
+                .await;
         }
     }
 
