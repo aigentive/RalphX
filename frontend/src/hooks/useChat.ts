@@ -614,6 +614,7 @@ function timelineItemFromRenderReadyPayload(
     timelineSequence: raw.sequence,
     runId: raw.run_id ?? null,
     createdAt: raw.created_at,
+    finalizedAt: raw.finalized_at ?? null,
   };
 
   return {
