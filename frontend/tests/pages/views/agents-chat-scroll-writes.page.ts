@@ -49,7 +49,16 @@ export class AgentsChatScrollWritesPage extends BasePage {
       scroller.scrollTo = (options?: ScrollToOptions | number, y?: number): void => {
         const before = read();
         const requested = typeof options === "number" ? (y ?? before) : (options?.top ?? before);
-        scrollTo(options as ScrollToOptions, y as number);
+        // Forward the exact arity. Passing a second argument alongside an
+        // options object selects the numeric scrollTo(x, y) overload, which
+        // coerces the object to 0 and scrolls the transcript to the top.
+        if (typeof options === "number") {
+          scrollTo(options, y as number);
+        } else if (options !== undefined) {
+          scrollTo(options);
+        } else {
+          scrollTo();
+        }
         note(requested, before);
       };
     }, SCROLLER);

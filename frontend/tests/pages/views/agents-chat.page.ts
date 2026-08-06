@@ -125,6 +125,15 @@ export class AgentsChatPage extends BasePage {
     }));
   }
 
+  /**
+   * Real wheel input over the transcript, which is what the controller
+   * classifies as away intent - a scrollTop write would not be.
+   */
+  async scrollUp(deltaY: number): Promise<void> {
+    await this.scroller.hover();
+    await this.page.mouse.wheel(0, -deltaY);
+  }
+
   async growComposer(): Promise<void> {
     await this.composerInput.fill("one\ntwo\nthree\nfour\nfive\nsix\nseven");
   }
