@@ -285,11 +285,7 @@ async fn should_defer_on_publish(
                     .and_then(|target| DelegationParkId::from_str(target).ok())
                     .is_some_and(|target| !target.as_uuid().is_nil())
         }
-        Some(
-            AgentRunActionKind::PrAutofix
-            | AgentRunActionKind::WorkspaceReviewFixer
-            | AgentRunActionKind::ManagedTeamWake,
-        ) => false,
+        Some(AgentRunActionKind::PrAutofix | AgentRunActionKind::WorkspaceReviewFixer) => false,
     }
 }
 

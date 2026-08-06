@@ -4135,7 +4135,6 @@ async fn test_handle_stream_error_cancelled_terminalizes_existing_timeline_block
         &Some(pre_assistant_message_id.clone()),
         &content_blocks,
         ChatTimelineItemStatus::Streaming,
-        None,
     )
     .await;
     assert!(initial_items

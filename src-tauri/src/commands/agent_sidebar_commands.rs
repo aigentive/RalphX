@@ -8,8 +8,8 @@ use tauri::State;
 use crate::application::agent_workspace_publish_recovery::is_blocked_and_not_auto_retryable;
 use crate::application::AppState;
 use crate::commands::unified_chat_commands::{
-    agent_workspace_response_with_pr_supervision_for_state, AgentConversationResponse,
-    AgentConversationWorkspaceResponse,
+    agent_conversation_response_for_state, agent_workspace_response_with_pr_supervision_for_state,
+    AgentConversationResponse, AgentConversationWorkspaceResponse,
 };
 use crate::commands::ExecutionState;
 use crate::domain::entities::{
