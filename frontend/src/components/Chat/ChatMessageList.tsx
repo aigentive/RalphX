@@ -1406,6 +1406,18 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     const retryRunAttributions = useCallback(() => {
       void refetchRunAttributions();
     }, [refetchRunAttributions]);
+    const renderRunAttribution = useCallback((messageId: string) => {
+      const timing = resolvedRunAttributionTimingByMessageId.get(messageId);
+      if (!timing) return null;
+      return (
+        <RunAttributionWidget
+          {...timing}
+          isAttributionPending={isRunAttributionsPending}
+          isAttributionError={isRunAttributionsError}
+          retryAttribution={retryRunAttributions}
+        />
+      );
+    }, [resolvedRunAttributionTimingByMessageId, isRunAttributionsPending, isRunAttributionsError, retryRunAttributions]);
     const delegationProjection = useMemo(
       () => projectDelegationTimelineMessages(messages, streamingTasks),
       [messages, streamingTasks],
@@ -2130,7 +2142,15 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         isCollapsedToolCallGroupCoveredItem(item, expandedToolGroupKeys)
         || isPersistedThinkingGroupCoveredItem(item)
       ) {
-        return null;
+        const widget = renderRunAttribution(item.data.id);
+        if (!widget) return null;
+        return (
+          <div className="px-3 w-full">
+            <ContentShell className={contentWidthClassName}>
+              {widget}
+            </ContentShell>
+          </div>
+        );
       }
       const msg = item.data;
       const senderGroupState =
@@ -2143,16 +2163,19 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         thinkingGroup != null && isThinkingGroupExpanded(thinkingGroup.key);
       if (thinkingGroup?.position === "toggle") {
         return (
-          <PersistedThinkingGroupToggleRow
-            msg={msg}
-            marker={thinkingGroup}
-            senderGroupState={senderGroupState}
-            isLastInList={isLastVisibleTimelineItem}
-            isExpanded={isExpandedThinkingGroup}
-            onToggle={(event) => toggleToolCallGroup(thinkingGroup.key, event.currentTarget)}
-            contentWidthClassName={contentWidthClassName}
-            rowRef={isLastVisibleTimelineItem ? handleLastRenderedRowRef : undefined}
-          />
+          <>
+            <PersistedThinkingGroupToggleRow
+              msg={msg}
+              marker={thinkingGroup}
+              senderGroupState={senderGroupState}
+              isLastInList={isLastVisibleTimelineItem}
+              isExpanded={isExpandedThinkingGroup}
+              onToggle={(event) => toggleToolCallGroup(thinkingGroup.key, event.currentTarget)}
+              contentWidthClassName={contentWidthClassName}
+              rowRef={isLastVisibleTimelineItem ? handleLastRenderedRowRef : undefined}
+            />
+            {renderRunAttribution(msg.id)}
+          </>
         );
       }
       const groupToggleRow = toolCallGroup?.position === "toggle"
@@ -2178,7 +2201,12 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         : null;
 
       if (groupToggleRow && !isExpandedToolCallGroup && !toolCallGroup?.promoted) {
-        return groupToggleRow;
+        return (
+          <>
+            {groupToggleRow}
+            {renderRunAttribution(msg.id)}
+          </>
+        );
       }
 
       const messageMetadata = parseMessageMetadata(msg.metadata);
@@ -2232,7 +2260,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
               reserveAssistantIconSpace={effectiveSenderGroupState.reserveAssistantGutter}
               showProviderMeta={effectiveSenderGroupState.showSenderHeader}
             />
-            {resolvedRunAttributionTimingByMessageId.has(msg.id) ? <RunAttributionWidget {...resolvedRunAttributionTimingByMessageId.get(msg.id)!} isAttributionPending={isRunAttributionsPending} isAttributionError={isRunAttributionsError} retryAttribution={retryRunAttributions} /> : null}
+            {renderRunAttribution(msg.id)}
           </ContentShell>
         </div>
       );
@@ -2255,11 +2283,8 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       lastVisibleTimelineIndex,
       providerHarness,
       providerSessionId,
+      renderRunAttribution,
       renderStreamingToolCallBlock,
-      resolvedRunAttributionTimingByMessageId,
-      isRunAttributionsError,
-      isRunAttributionsPending,
-      retryRunAttributions,
       streamingMessageCreatedAt,
       streamingTasks,
       timelineSenderGroups,
@@ -2348,7 +2373,15 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
               isCollapsedToolCallGroupCoveredItem(item, expandedToolGroupKeys)
               || isPersistedThinkingGroupCoveredItem(item)
             ) {
-              return null;
+              const widget = renderRunAttribution(item.data.id);
+              if (!widget) return null;
+              return (
+                <div key={`run-attribution-${item.data.id}`} className="px-3 w-full">
+                  <ContentShell className={contentWidthClassName}>
+                    {widget}
+                  </ContentShell>
+                </div>
+              );
             }
             const msg = item.data;
             const senderGroupState =
@@ -2362,22 +2395,23 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
               thinkingGroup != null && isThinkingGroupExpanded(thinkingGroup.key);
             if (thinkingGroup?.position === "toggle") {
               return (
-                <PersistedThinkingGroupToggleRow
-                  key={`persisted-thinking-group-${thinkingGroup.key}`}
-                  msg={msg}
-                  marker={thinkingGroup}
-                  senderGroupState={senderGroupState}
-                  isLastInList={isLastVisibleTimelineItem}
-                  isExpanded={isExpandedThinkingGroup}
-                  onToggle={(event) => toggleToolCallGroup(thinkingGroup.key, event.currentTarget)}
-                  contentWidthClassName={contentWidthClassName}
-                />
+                <React.Fragment key={`persisted-thinking-group-${thinkingGroup.key}`}>
+                  <PersistedThinkingGroupToggleRow
+                    msg={msg}
+                    marker={thinkingGroup}
+                    senderGroupState={senderGroupState}
+                    isLastInList={isLastVisibleTimelineItem}
+                    isExpanded={isExpandedThinkingGroup}
+                    onToggle={(event) => toggleToolCallGroup(thinkingGroup.key, event.currentTarget)}
+                    contentWidthClassName={contentWidthClassName}
+                  />
+                  {renderRunAttribution(msg.id)}
+                </React.Fragment>
               );
             }
             const groupToggleRow = toolCallGroup?.position === "toggle"
               ? (
                 <ToolCallGroupToggleRow
-                  key={`tool-call-group-${toolCallGroup.key}`}
                   msg={msg}
                   marker={toolCallGroup}
                   senderGroupState={senderGroupState}
@@ -2393,7 +2427,12 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
               : null;
 
             if (groupToggleRow && !isExpandedToolCallGroup && !toolCallGroup?.promoted) {
-              return groupToggleRow;
+              return (
+                <React.Fragment key={`tool-call-group-${toolCallGroup?.key ?? msg.id}`}>
+                  {groupToggleRow}
+                  {renderRunAttribution(msg.id)}
+                </React.Fragment>
+              );
             }
 
             const messageMetadata = parseMessageMetadata(msg.metadata);
@@ -2447,7 +2486,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
                     reserveAssistantIconSpace={effectiveSenderGroupState.reserveAssistantGutter}
                     showProviderMeta={effectiveSenderGroupState.showSenderHeader}
                   />
-                  {resolvedRunAttributionTimingByMessageId.has(msg.id) ? <RunAttributionWidget {...resolvedRunAttributionTimingByMessageId.get(msg.id)!} isAttributionPending={isRunAttributionsPending} isAttributionError={isRunAttributionsError} retryAttribution={retryRunAttributions} /> : null}
+                  {renderRunAttribution(msg.id)}
                 </ContentShell>
               </div>
             );
