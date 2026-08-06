@@ -7906,6 +7906,92 @@ async fn blocked_pr_autofix_streak_does_not_rearm_when_new_fingerprint_budget_is
 }
 
 #[tokio::test]
+async fn blocked_pr_autofix_streak_does_not_rearm_while_a_repair_head_is_unpublished() {
+    let (mut state, conversation_id, _worktree_parent, _project_dir) =
+        seed_pr_autofix_health_workspace(203).await;
+    start_blocked_pr_autofix_generation(&state, &conversation_id).await;
+
+    let old_health = failing_check_pr_health("head-unpublished-old", "Rust Tests");
+    let old_fingerprint = health_fingerprint(684, &old_health);
+    let blocked = block_pr_autofix_attempt_with_fingerprint(
+        &state,
+        &conversation_id,
+        Some(old_fingerprint.clone()),
+    )
+    .await;
+
+    // A non-empty `repair_head_commit` with its redrive-check marker already recorded falls
+    // through the existing redrive block (`durable_attempt_recovery.rs:923-956`) without a GitHub
+    // read, and the deliberate `!has_unpublished_repair_head` guard must then skip the blocked-
+    // streak re-arm entirely rather than resetting the streak for an unpublished head.
+    let repair_head = "unpublished-repair-head".to_string();
+    let expected_updated_at = blocked.updated_at;
+    let mut exhausted = blocked.clone();
+    exhausted.repair_head_commit = Some(repair_head.clone());
+    exhausted.pending_reasons.extend([
+        format!("{AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX}3"),
+        format!("{EXHAUSTED_PUBLISH_REDRIVE_CHECKED_REASON_PREFIX}{repair_head}"),
+    ]);
+    exhausted.updated_at += chrono::Duration::microseconds(1);
+    let exhausted = match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: exhausted,
+            expected_phase: AgentWorkspaceRepairPhase::Blocked,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Blocked,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("seed exhausted blocked streak with an unpublished repair head")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("seeding exhausted blocked streak must apply, got {outcome:?}"),
+    };
+
+    let new_health = failing_check_pr_health("head-unpublished-new", "Lint");
+    let new_fingerprint = health_fingerprint(684, &new_health);
+    assert_ne!(old_fingerprint, new_fingerprint);
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(new_health));
+    state.github_service =
+        Some(github.clone() as Arc<dyn crate::domain::services::GithubServiceTrait>);
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("recovery pass must not rearm while a repair head is unpublished"),
+        0
+    );
+
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload unpublished-head blocked attempt")
+        .expect("unpublished-head blocked attempt remains current");
+    assert_eq!(current.id, exhausted.id);
+    assert_eq!(
+        current.updated_at, exhausted.updated_at,
+        "the attempt must stay untouched, not just re-converge to the same markers"
+    );
+    assert!(current
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == &format!("{AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX}3")));
+    assert!(!current
+        .pending_reasons
+        .iter()
+        .any(|reason| reason.starts_with(BLOCKED_STREAK_REARMED_REASON_PREFIX)));
+    assert_eq!(
+        github.state().fetch_pr_health_calls,
+        0,
+        "an unpublished repair head must not add an unbounded GitHub read on a parked attempt"
+    );
+}
+
+#[tokio::test]
 async fn blocked_pr_autofix_streak_rearm_guard_prevents_a_second_reset_for_the_same_identity() {
     let (mut state, conversation_id, _worktree_parent, _project_dir) =
         seed_pr_autofix_health_workspace(202).await;

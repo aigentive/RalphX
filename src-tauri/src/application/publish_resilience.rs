@@ -903,6 +903,14 @@ pub(crate) enum AgentWorkspaceRepairOpenPushEffectReconciliation {
     NotApplied,
 }
 
+/// Resolution of the base push-effect idempotency key lookup: either an in-flight effect to
+/// resume, or a key under which a fresh effect should be created (the base key on first push, or
+/// an ordinal-suffixed retry key once the base key belongs to a terminated `Failed` effect).
+enum AgentWorkspaceRepairPushEffectResolution {
+    Reuse(Box<AgentWorkspaceRepairEffect>),
+    Create(String),
+}
+
 /// Trusted inputs for a repair-owned branch publication. The caller resolves this target from
 /// persisted workspace/project/plan metadata, never from model-provided branch or remote strings.
 pub(crate) struct AgentWorkspaceRepairPushRequest<'a> {
@@ -966,26 +974,46 @@ pub(crate) async fn push_agent_workspace_repair_branch(
     let branch_name = local_ref.strip_prefix("refs/heads/").ok_or_else(|| {
         AppError::Validation("workspace repair target is not a local branch ref".to_string())
     })?;
-    let idempotency_key = format!(
+    let base_idempotency_key = format!(
         "agent_workspace_repair:{}:{}:push_branch",
         attempt.id, attempt.generation
     );
-    let effect = match repair_repo
-        .get_repair_effect_by_idempotency_key(&idempotency_key)
+    // A `Failed` effect for the base key with `completed_at` set is a provably terminated prior
+    // push (the effect fence proved it never reached the remote). It keeps its own idempotency
+    // key so its history stays intact, and the retry gets a distinct ordinal-suffixed key instead
+    // of colliding with it. A `Failed` effect with `completed_at` still `None` predates this
+    // migration's backfill and keeps today's Conflict until recovery closes it.
+    let resolution = match repair_repo
+        .get_repair_effect_by_idempotency_key(&base_idempotency_key)
         .await?
     {
-        Some(effect) => {
-            if effect.status == AgentWorkspaceRepairEffectStatus::Observed {
-                return observed_workspace_repair_push_outcome(effect);
-            }
-            if effect.status != AgentWorkspaceRepairEffectStatus::InFlight {
-                return Err(AppError::Conflict(
-                    "workspace repair push effect is not available for continuation".to_string(),
-                ));
-            }
-            effect
+        Some(effect) if effect.status == AgentWorkspaceRepairEffectStatus::Observed => {
+            return observed_workspace_repair_push_outcome(effect);
         }
-        None => {
+        Some(effect) if effect.status == AgentWorkspaceRepairEffectStatus::InFlight => {
+            AgentWorkspaceRepairPushEffectResolution::Reuse(Box::new(effect))
+        }
+        Some(effect)
+            if effect.status == AgentWorkspaceRepairEffectStatus::Failed
+                && effect.completed_at.is_some() =>
+        {
+            let idempotency_key = next_agent_workspace_repair_push_retry_idempotency_key(
+                repair_repo.as_ref(),
+                &base_idempotency_key,
+            )
+            .await?;
+            AgentWorkspaceRepairPushEffectResolution::Create(idempotency_key)
+        }
+        Some(_) => {
+            return Err(AppError::Conflict(
+                "workspace repair push effect is not available for continuation".to_string(),
+            ));
+        }
+        None => AgentWorkspaceRepairPushEffectResolution::Create(base_idempotency_key.clone()),
+    };
+    let effect = match resolution {
+        AgentWorkspaceRepairPushEffectResolution::Reuse(effect) => *effect,
+        AgentWorkspaceRepairPushEffectResolution::Create(idempotency_key) => {
             let mut effect = AgentWorkspaceRepairEffect::new(
                 attempt.id.clone(),
                 AgentWorkspaceRepairEffectKind::PushBranch,
@@ -1155,6 +1183,30 @@ pub(crate) async fn push_agent_workspace_repair_branch(
         )));
     }
     mutation_result
+}
+
+/// Finds the next never-used ordinal-suffixed idempotency key for a repeat push effect after the
+/// base key's effect terminated as `Failed`. `idempotency_key` is unique table-wide, so a retry
+/// cannot reuse the base key; this is a bounded read (one lookup per ordinal, capped) rather than
+/// an unbounded scan.
+async fn next_agent_workspace_repair_push_retry_idempotency_key(
+    repair_repo: &dyn AgentWorkspaceRepairRepository,
+    base_idempotency_key: &str,
+) -> AppResult<String> {
+    const MAX_RETRY_ORDINAL: u32 = 50;
+    for ordinal in 2..=MAX_RETRY_ORDINAL {
+        let candidate = format!("{base_idempotency_key}#{ordinal}");
+        if repair_repo
+            .get_repair_effect_by_idempotency_key(&candidate)
+            .await?
+            .is_none()
+        {
+            return Ok(candidate);
+        }
+    }
+    Err(AppError::Conflict(
+        "workspace repair push effect retry identity space exhausted".to_string(),
+    ))
 }
 
 pub(crate) async fn prepare_agent_workspace_repair_push_attempt(
@@ -1510,6 +1562,7 @@ pub(crate) async fn fail_agent_workspace_repair_push_effect(
     effect.status = AgentWorkspaceRepairEffectStatus::Failed;
     effect.last_error = Some(reason.to_string());
     effect.updated_at = next_effect_checkpoint_at(effect.updated_at);
+    effect.completed_at = Some(effect.updated_at);
     match repair_repo
         .complete_repair_effect(CompleteAgentWorkspaceRepairEffect {
             attempt_id: attempt.id.clone(),
