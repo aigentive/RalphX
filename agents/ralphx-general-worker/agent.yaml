@@ -90,6 +90,8 @@ profiles:
         - team_list
         - team_stop_member
         - team_send_message
+        - team_roster
+        - team_status
     harnesses:
       claude:
         model: sonnet

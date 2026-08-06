@@ -178,6 +178,14 @@ pub async fn send_managed_team_message(
                 "Trusted coordinator Team run has no source identity",
             ));
         }
+        // `System` is backend-originated only; the sender above is always built
+        // from coordinator or member run authority, never from a tool request.
+        ManagedTeamMessageSender::System { .. } => {
+            return Err(json_error(
+                StatusCode::FORBIDDEN,
+                "System Team messages cannot originate from a tool request",
+            ));
+        }
     };
     let idempotency_key =
         team_tool_idempotency_key(&source_run_id, &target, kind, &request.content);

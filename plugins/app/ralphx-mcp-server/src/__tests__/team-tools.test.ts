@@ -48,6 +48,37 @@ describe("Team tools", () => {
     ]);
   });
 
+  it("denies team_status to agents without RX-native Team mode", () => {
+    expect(applyTeamToolPolicy(["team_status", "get_artifact"])).toEqual(["get_artifact"]);
+    process.env.RALPHX_COORDINATION_MODE = "rx_native_team";
+    expect(applyTeamToolPolicy(["team_status", "get_artifact"])).toEqual([
+      "team_status",
+      "get_artifact",
+    ]);
+  });
+
+  it("routes team_status reads with transport authority", async () => {
+    const { calls, post, get } = captureCalls();
+    await callTeamTool(
+      "team_status",
+      post,
+      get,
+      {},
+      { conversationId: "conversation-1", agentRunId: "run-1" }
+    );
+    expect(calls).toEqual([
+      {
+        path: "managed_team/members/status",
+        options: {
+          headers: {
+            "x-ralphx-conversation-id": "conversation-1",
+            "x-ralphx-agent-run-id": "run-1",
+          },
+        },
+      },
+    ]);
+  });
+
   it("sends coordinator authority only through transport headers", async () => {
     const { calls, post, get } = captureCalls();
     await callTeamTool(

@@ -10,7 +10,10 @@ use crate::domain::entities::{
 
 /// Default number of members allowed to run concurrently in a new Team.
 pub const DEFAULT_TEAM_CONCURRENCY: u32 = 2;
-/// Default cap on automatic coordinator wake-ups per wake batch chain.
+/// Default cap on concurrent in-flight automatic coordinator wake batches
+/// (`Planned`/`Launching`/`Running` `WakeBatch`-triggered run bindings) for a
+/// Team; settled (terminal/failed/cancelled) wake bindings do not count
+/// against this budget.
 pub const DEFAULT_AUTOMATIC_WAKE_LIMIT: u32 = 5;
 
 /// Builds the durable session row for a newly ensured Team.

@@ -14,6 +14,10 @@ use crate::error::{AppError, AppResult};
 use super::messaging::member_can_receive;
 
 const DELIVERY_PROJECTION_LIMIT: u32 = 128;
+/// Emitted when a coordinator wake is dropped because the Team exhausted its
+/// automatic wake budget. Suppression here means settlement messages sit in the
+/// durable queue with nothing scheduled to drain them.
+const TEAM_WAKE_SUPPRESSED_EVENT: &str = "team:needs_attention";
 
 impl ManagedTeamService {
     pub(super) async fn project_actionable_deliveries(
@@ -184,6 +188,10 @@ impl ManagedTeamService {
                 .await?
                 .is_some()
             {
+                tracing::debug!(
+                    team_id = session.id.as_str(),
+                    "managed Team coordinator wake suppressed: coordinator already has an active run"
+                );
                 continue;
             }
             let bindings = self.run_binding_repo.list_for_team(&session.id).await?;
@@ -191,13 +199,51 @@ impl ManagedTeamService {
                 .iter()
                 .filter(|binding| binding.status == TeamRunBindingStatus::Running)
                 .count() as u32;
+            // Only live (not-yet-settled) wake bindings consume automatic wake
+            // budget. `TeamRunBindingRepository` has no delete method, so
+            // Terminal/Failed/Cancelled WakeBatch bindings persist for the
+            // life of the Team row; counting them unfiltered would make the
+            // budget decay to zero and never recover.
             let wake_count = bindings
                 .iter()
-                .filter(|binding| binding.trigger_kind == TeamRunTriggerKind::WakeBatch)
+                .filter(|binding| {
+                    binding.trigger_kind == TeamRunTriggerKind::WakeBatch
+                        && matches!(
+                            binding.status,
+                            TeamRunBindingStatus::Planned
+                                | TeamRunBindingStatus::Launching
+                                | TeamRunBindingStatus::Running
+                        )
+                })
                 .count() as u32;
             if running_count >= session.effective_concurrency
                 || wake_count >= session.automatic_wake_limit
             {
+                let wake_budget_exhausted = wake_count >= session.automatic_wake_limit;
+                tracing::warn!(
+                    team_id = session.id.as_str(),
+                    running_count,
+                    effective_concurrency = session.effective_concurrency,
+                    wake_count,
+                    automatic_wake_limit = session.automatic_wake_limit,
+                    wake_budget_exhausted,
+                    "managed Team coordinator wake suppressed: concurrency or automatic wake budget exhausted"
+                );
+                if wake_budget_exhausted {
+                    // A Team that has stopped waking must be diagnosable from the
+                    // UI, not only from a queue inspection.
+                    self.event_sink.emit(
+                        TEAM_WAKE_SUPPRESSED_EVENT,
+                        serde_json::json!({
+                            "team_id": session.id.as_str(),
+                            "coordinator_conversation_id":
+                                session.coordinator_conversation_id.as_str(),
+                            "wake_count": wake_count,
+                            "automatic_wake_limit": session.automatic_wake_limit,
+                            "reason": "automatic_wake_budget_exhausted",
+                        }),
+                    );
+                }
                 continue;
             }
             let now = Utc::now();

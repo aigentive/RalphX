@@ -539,6 +539,24 @@ async fn settle_delegation_from_run(
             .managed_team
             .settle_member_assignment(&assignment, terminal_status, error.as_deref())
             .await?;
+        // Effects strictly after authority: the wake dispatch is only spawned once
+        // settlement above has accepted this terminal. It is decoupled from settlement
+        // the same way the delegation park wake below is: awaiting it here would stall
+        // the 100ms settlement monitor, and a lost dispatcher is recovered by the next
+        // wake dispatch (startup recovery or the next settlement) claiming the durable
+        // wake batch that `settle_member_assignment`'s notifier queued.
+        if let Some(team_id) = assignment.assignment.team_id.clone() {
+            let wake_dispatcher = state.app_state.build_managed_team_wake_dispatcher();
+            tokio::spawn(async move {
+                if let Err(error) = wake_dispatcher.dispatch_pending_wakes(&team_id).await {
+                    warn!(
+                        team_id = team_id.as_str(),
+                        %error,
+                        "managed Team wake dispatch failed; the next settlement or startup recovery will retry"
+                    );
+                }
+            });
+        }
         candidate.assignment = Some(delegation_assignment_summary(&assignment));
     }
     persist_terminal_projection(

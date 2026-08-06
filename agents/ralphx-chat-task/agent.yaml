@@ -50,6 +50,8 @@ profiles:
         - team_list
         - team_stop_member
         - team_send_message
+        - team_roster
+        - team_status
         - delegate_start
         - delegate_wait
         - delegate_cancel

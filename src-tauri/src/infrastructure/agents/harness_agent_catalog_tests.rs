@@ -3190,6 +3190,74 @@ fn team_coordinator_profile_resolves_for_rx_native_team_conversations() {
     );
 }
 
+/// RX-TEAM-007 / RX-TEAM-005a: `team_roster` routes to the read-only member roster handler,
+/// which already accepts `MessageAuthority::Coordinator`; only the canonical grant was missing.
+/// `team_status` is the new coordinator-only liveness projection. Both `team_coordinator`
+/// profiles (general-worker, chat-task) must carry both grants end to end, and an agent outside
+/// the Team surface must never receive either.
+#[test]
+fn team_roster_and_team_status_granted_for_team_coordinator_profile_on_both_agents() {
+    let root = project_root();
+
+    for agent_name in ["ralphx-general-worker", "ralphx-chat-task"] {
+        let definition = load_canonical_agent_definition_for_profile(
+            &root,
+            agent_name,
+            Some("team_coordinator"),
+        )
+        .unwrap_or_else(|| panic!("missing team_coordinator profile for {agent_name}"));
+        let runtime_config = get_agent_config_for_profile(agent_name, Some("team_coordinator"))
+            .unwrap_or_else(|| panic!("missing runtime team_coordinator profile for {agent_name}"));
+
+        for team_tool in ["team_roster", "team_status"] {
+            assert!(
+                definition
+                    .capabilities
+                    .mcp_tools
+                    .iter()
+                    .any(|tool| tool == team_tool),
+                "{agent_name} team_coordinator profile canonical capabilities should grant {team_tool}"
+            );
+            assert!(
+                runtime_config
+                    .allowed_mcp_tools
+                    .iter()
+                    .any(|tool| tool == team_tool),
+                "{agent_name} team_coordinator profile runtime grants should include {team_tool}"
+            );
+        }
+    }
+}
+
+/// Denied path: an agent outside the RX-native Team surface must not receive `team_roster` or
+/// `team_status`.
+#[test]
+fn team_roster_and_team_status_denied_for_non_team_agent() {
+    let root = project_root();
+    let definition = load_canonical_agent_definition(&root, "ralphx-chat-project")
+        .expect("expected canonical definition for ralphx-chat-project");
+    let runtime_config = get_agent_config("ralphx-chat-project")
+        .expect("expected runtime config for ralphx-chat-project");
+
+    for team_tool in ["team_roster", "team_status"] {
+        assert!(
+            !definition
+                .capabilities
+                .mcp_tools
+                .iter()
+                .any(|tool| tool == team_tool),
+            "ralphx-chat-project canonical capabilities must not grant {team_tool}"
+        );
+        assert!(
+            !runtime_config
+                .allowed_mcp_tools
+                .iter()
+                .any(|tool| tool == team_tool),
+            "ralphx-chat-project runtime grants must not include {team_tool}"
+        );
+    }
+}
+
 /// Class-killer: any profile key declared anywhere in `agents/*/agent.yaml` must resolve through
 /// the Rust catalog. A future key the validator rejects fails here instead of in a release build.
 #[test]
