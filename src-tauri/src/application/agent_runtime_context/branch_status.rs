@@ -36,8 +36,6 @@ pub(crate) struct BranchStatusSnapshot {
 #[derive(Clone, Default)]
 pub(crate) struct BranchStatusCache {
     entries: Arc<DashMap<PathBuf, BranchStatusSnapshot>>,
-    #[cfg(test)]
-    refreshes_in_flight: Arc<DashMap<PathBuf, ()>>,
 }
 
 impl BranchStatusCache {
@@ -47,18 +45,6 @@ impl BranchStatusCache {
 
     pub(crate) fn record(&self, workspace_path: &Path, snapshot: BranchStatusSnapshot) {
         self.entries.insert(workspace_path.to_path_buf(), snapshot);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn claim_refresh(&self, workspace_path: &Path) -> bool {
-        self.refreshes_in_flight
-            .insert(workspace_path.to_path_buf(), ())
-            .is_none()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn finish_refresh(&self, workspace_path: &Path) {
-        self.refreshes_in_flight.remove(workspace_path);
     }
 
     pub(crate) fn observe_pr_sync(
