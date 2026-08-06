@@ -202,6 +202,9 @@ function renderPanel(
       reviewStartResult={null}
       reviewStartError={null}
       isReviewLoading={false}
+      isReviewContextLoading={false}
+      reviewContextError={null}
+      publishReviewEvidence={{ status: "ready", changeCount: 1 }}
       isReviewActionPending={false}
       isWorkspaceRuntimeGenerating={false}
       onStartReview={vi.fn()}
@@ -212,6 +215,86 @@ function renderPanel(
 }
 
 describe("AgentReviewPanel", () => {
+  it("shows an honest checking state while Workspace Review context is unresolved", () => {
+    renderPanel({
+      reviewArtifact: null,
+      reviewContext: null,
+      isReviewContextLoading: true,
+    });
+
+    expect(screen.getByText("Checking reviewable changes…")).toBeInTheDocument();
+    expect(screen.queryByText("No reviewable changes")).not.toBeInTheDocument();
+  });
+
+  it("shows context failures with a retry action", async () => {
+    const user = userEvent.setup();
+    const onRetryReviewContext = vi.fn();
+    renderPanel({
+      reviewArtifact: null,
+      reviewContext: null,
+      reviewContextError: new Error("git target lookup failed"),
+      onRetryReviewContext,
+    });
+
+    expect(screen.getByText("Workspace Review unavailable")).toBeInTheDocument();
+    expect(screen.getByText("git target lookup failed")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    expect(onRetryReviewContext).toHaveBeenCalledOnce();
+    expect(screen.queryByText("No reviewable changes")).not.toBeInTheDocument();
+  });
+
+  it("reports a cross-projection mismatch when Changes proves files exist", () => {
+    renderPanel({
+      reviewArtifact: null,
+      reviewContext: reviewContext({ target: null }),
+      publishReviewEvidence: { status: "ready", changeCount: 2 },
+    });
+
+    expect(screen.getByText("Review target unavailable")).toBeInTheDocument();
+    expect(screen.getByText(/Changes found 2 changed files/)).toBeInTheDocument();
+    expect(screen.queryByText("No reviewable changes")).not.toBeInTheDocument();
+  });
+
+  it("keeps cumulative Changes failures unavailable without a context-only retry", () => {
+    renderPanel({
+      reviewArtifact: null,
+      reviewContext: reviewContext({ target: null }),
+      publishReviewEvidence: {
+        status: "error",
+        error: new Error("Changes query failed"),
+      },
+      onRetryReviewContext: vi.fn(),
+    });
+
+    expect(screen.getByText("Workspace Review unavailable")).toBeInTheDocument();
+    expect(screen.getByText("Changes query failed")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(screen.queryByText("No reviewable changes")).not.toBeInTheDocument();
+  });
+
+  it("shows the empty state only when context and Changes agree on zero", () => {
+    renderPanel({
+      reviewArtifact: null,
+      reviewContext: reviewContext({ target: null }),
+      publishReviewEvidence: { status: "ready", changeCount: 0 },
+    });
+
+    expect(screen.getByText("No reviewable changes")).toBeInTheDocument();
+  });
+
+  it("shows the empty state when cumulative Changes evidence is unavailable", () => {
+    renderPanel({
+      reviewArtifact: null,
+      reviewContext: reviewContext({ target: null }),
+      publishReviewEvidence: { status: "unavailable" },
+    });
+
+    expect(screen.getByText("No reviewable changes")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Checking reviewable changes…"),
+    ).not.toBeInTheDocument();
+  });
+
   it("warms review preparation on pointer and keyboard intent", () => {
     const onStartReviewIntent = vi.fn();
     renderPanel({ onStartReviewIntent });

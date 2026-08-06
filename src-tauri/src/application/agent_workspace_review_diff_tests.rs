@@ -391,6 +391,45 @@ async fn file_inventory_merges_committed_staged_and_unstaged_sources() {
 }
 
 #[tokio::test]
+async fn workspace_review_retains_two_file_target_after_base_rebase() {
+    let (repo, mut workspace, project) = init_workspace();
+    git(repo.path(), &["checkout", "-b", "feature/rebased-review"]);
+    std::fs::write(repo.path().join("first.rs"), "pub fn first() {}\n")
+        .expect("first feature file should be written");
+    std::fs::write(repo.path().join("second.rs"), "pub fn second() {}\n")
+        .expect("second feature file should be written");
+    git(repo.path(), &["add", "first.rs", "second.rs"]);
+    git(repo.path(), &["commit", "-m", "two feature files"]);
+    git(repo.path(), &["checkout", "main"]);
+    std::fs::write(repo.path().join("base.txt"), "advanced base\n")
+        .expect("base advance should be written");
+    git(repo.path(), &["add", "base.txt"]);
+    git(repo.path(), &["commit", "-m", "advance base"]);
+    let updated_base = git(repo.path(), &["rev-parse", "HEAD"]);
+    git(repo.path(), &["checkout", "feature/rebased-review"]);
+    git(repo.path(), &["rebase", "main"]);
+    workspace.base_commit = Some(updated_base.clone());
+    workspace.branch_name = "feature/rebased-review".to_string();
+
+    let target = resolve_review_target(&workspace, &project)
+        .await
+        .expect("rebased workspace target should resolve")
+        .expect("rebased workspace should retain its feature delta");
+
+    assert_eq!(target.base_sha.as_deref(), Some(updated_base.as_str()));
+    assert_eq!(target.review_packet.summary.files_changed, 2);
+    assert_eq!(
+        target
+            .review_packet
+            .changed_files
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["first.rs", "second.rs"]
+    );
+}
+
+#[tokio::test]
 async fn diff_page_rejects_invalid_first_page_and_cursor_offsets() {
     let (repo, workspace, project) = init_workspace();
     std::fs::write(repo.path().join("README.md"), "changed\n").expect("modify tracked file");

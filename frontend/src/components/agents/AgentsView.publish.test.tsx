@@ -26,6 +26,7 @@ import {
   renderWithAgentProviders,
 } from "./agentsTestFixtures";
 import { AgentPublishPanel } from "./AgentsPublishPanel";
+import { AgentReviewPanel } from "./AgentReviewPanel";
 import { getAgentConversationStoreKey } from "./agentConversations";
 import {
   DEFAULT_AGENT_ARTIFACT_UI_STATE,
@@ -176,6 +177,7 @@ function configurePublishPane({
   getWorkspaceReviewContextMock.mockResolvedValue(reviewContext);
   realPublishPanelState.enabled = true;
   realPublishPanelState.reviewContext = reviewContext;
+  return reviewContext as AgentWorkspaceReviewContext;
 }
 
 async function openPublishPane() {
@@ -199,7 +201,7 @@ function publishPanelProps(workspace: AgentConversationWorkspace) {
     activeSubTab: "changes" as const,
     showReviewTab: false,
     onSubTabChange: () => undefined,
-    reviewContent: null,
+    reviewContent: () => null,
   };
 }
 
@@ -229,6 +231,52 @@ describe("AgentsView publish", () => {
       ).toBeInTheDocument();
       expect(actionbar).toHaveTextContent("1 changed file published for review.");
     });
+  });
+
+  it("does not claim an empty Workspace Review when Changes reports two files", async () => {
+    const secondReviewFile: FileChange = {
+      ...reviewFile,
+      path: "src-tauri/src/lib.rs",
+    };
+    const reviewContext = configurePublishPane({
+      changes: [reviewFile, secondReviewFile],
+    });
+    const workspace = conversationWorkspace({ mode: "edit" });
+
+    renderWithAgentProviders(
+      <AgentPublishPanel
+        workspace={workspace}
+        conversationTitle="Agent conversation"
+        projectBaseBranch="main"
+        onPublishWorkspace={undefined}
+        publishAttempt={null}
+        reviewContext={reviewContext}
+        activeSubTab="review"
+        showReviewTab
+        onSubTabChange={() => undefined}
+        reviewContent={(evidence) => (
+          <AgentReviewPanel
+            reviewArtifact={null}
+            reviewContext={reviewContext}
+            reviewStartResult={null}
+            reviewStartError={null}
+            isReviewLoading={false}
+            isReviewContextLoading={false}
+            reviewContextError={null}
+            publishReviewEvidence={evidence}
+            isReviewActionPending={false}
+            onRetryReviewContext={() => undefined}
+            onStartReview={() => undefined}
+            onFixIssues={() => undefined}
+            embedded
+          />
+        )}
+      />,
+    );
+
+    expect(await screen.findByText("Review target unavailable")).toBeInTheDocument();
+    expect(screen.getByText(/Changes found 2 changed files/)).toBeInTheDocument();
+    expect(screen.queryByText("No reviewable changes")).not.toBeInTheDocument();
   });
 
   it("refetches invalidated plan-mode freshness instead of retaining a cached base-ahead verdict", async () => {
@@ -506,7 +554,7 @@ describe("AgentsView publish", () => {
       activeSubTab: "changes" as const,
       showReviewTab: false,
       onSubTabChange: vi.fn(),
-      reviewContent: null,
+      reviewContent: () => null,
     });
 
     const { queryClient, rerender } = renderWithAgentProviders(
