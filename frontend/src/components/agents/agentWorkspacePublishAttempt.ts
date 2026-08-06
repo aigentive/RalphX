@@ -6,19 +6,12 @@ import type {
   AgentConversationWorkspacePublicationEvent,
 } from "@/api/chat";
 
+import { watchAgentWorkspaceOperation } from "./agentWorkspaceOperationRegistry";
 import {
   classifyAgentWorkspacePublishTerminalEvent,
   getAgentWorkspaceTerminalPublicationStatus,
   getPostBaselinePublicationEvents,
 } from "./agentWorkspacePublishState";
-import {
-  type AgentWorkspaceOperationToast,
-  agentWorkspaceMaintenanceOperationToastId,
-  agentWorkspaceOperationToastId,
-  maintenanceOperationToastLabel,
-  publishPipelineToastLabel,
-  startAgentWorkspaceOperationToast,
-} from "./agentWorkspaceOperationToast";
 import { agentWorkspaceKeys } from "./agentWorkspaceQueries";
 
 export interface AgentWorkspacePublishAttempt {
@@ -38,7 +31,6 @@ export interface PublishAttemptState extends AgentWorkspacePublishAttempt {
 
 export interface ActivePublishAttempt extends PublishAttemptState {
   completion: Promise<void>;
-  controller: AgentWorkspaceOperationToast;
   projectId: string | null;
   reconciling: boolean;
   resolve: () => void;
@@ -54,15 +46,20 @@ export type PublishFinalResult =
   | { detail?: string; kind: "success"; workspace: AgentConversationWorkspace }
   | { detail?: string; kind: "terminal"; status: "closed" | "merged" };
 
+export type AgentWorkspaceOperationResult =
+  | PublishFinalResult
+  | { detail?: string; kind: "base-updated"; targetRef: string }
+  | { detail?: string; kind: "base-already-current"; targetRef: string }
+  | { detail?: string; kind: "base-update-failed" }
+  | { detail?: string; kind: "repair-started" };
+
 export function createAgentWorkspacePublishAttempt({
   conversationId,
-  conversationTitle,
   projectId,
   startedAtMs,
   token,
 }: {
   conversationId: string;
-  conversationTitle: string | null;
   projectId: string | null;
   startedAtMs: number;
   token: number;
@@ -75,13 +72,6 @@ export function createAgentWorkspacePublishAttempt({
     baseline: { state: "loading" },
     completion,
     conversationId,
-    controller: startAgentWorkspaceOperationToast({
-      conversationTitle,
-      detail: publishPipelineToastLabel(null),
-      id: agentWorkspaceOperationToastId(conversationId, "publish"),
-      startedAtMs,
-      title: "Publishing workspace",
-    }),
     projectId,
     reconciling: false,
     resolve,
@@ -124,10 +114,6 @@ export async function readAgentWorkspaceDurablePublishResult(
     attempt.baseline.lastEventId,
     attempt.startedAtMs,
   );
-  const latestEvent = suffix?.[suffix.length - 1];
-  if (latestEvent) {
-    attempt.controller.update({ detail: publishPipelineToastLabel(latestEvent.step) });
-  }
   const workspace = await queryClient.fetchQuery({
     queryKey: agentWorkspaceKeys.workspace(attempt.conversationId),
     queryFn: () => chatApi.getAgentConversationWorkspace(attempt.conversationId),
@@ -142,18 +128,12 @@ export async function readAgentWorkspaceDurablePublishResult(
   }
   const maintenanceOperation = workspace.maintenanceOperation;
   if (maintenanceOperation?.status === "active") {
-    attempt.controller.update({
-      detail: maintenanceOperation.blocker ?? maintenanceOperation.summary,
-      id: agentWorkspaceMaintenanceOperationToastId(
-        workspace.conversationId,
-        maintenanceOperation.operationId,
-      ),
-      startedAtMs: new Date(maintenanceOperation.startedAt).getTime(),
-      targetConversation: {
-        conversationId: workspace.conversationId,
-        projectId: workspace.projectId,
-      },
-      title: maintenanceOperationToastLabel(maintenanceOperation.stage),
+    watchAgentWorkspaceOperation({
+      conversationId: workspace.conversationId,
+      projectId: workspace.projectId,
+      conversationTitle: null,
+      kind: "observed",
+      startedAtMs: null,
     });
     return null;
   }
@@ -215,41 +195,57 @@ export async function readAgentWorkspaceDurablePublishResult(
     : { detail: terminal.event.summary, kind: terminal.kind };
 }
 
-export function renderAgentWorkspacePublishResult(
-  attempt: ActivePublishAttempt,
-  result: PublishFinalResult,
-): void {
-  if (result.kind === "success") {
-    const message = result.workspace.publicationPrNumber
-      ? `Published #${result.workspace.publicationPrNumber}`
-      : result.workspace.publicationPrUrl
-        ? `Published ${result.workspace.publicationPrUrl}`
-        : "Published branch";
-    attempt.controller.success(message, { detail: result.detail ?? null });
-  } else if (result.kind === "needs_agent") {
-    attempt.controller.error("Publish failed. Sent the error to the agent to fix.", {
-      detail: result.detail ?? null,
-    });
-  } else if (result.kind === "failure") {
-    attempt.controller.error("Failed to publish branch", {
-      detail: result.detail ?? null,
-    });
-  } else if (result.kind === "no_changes") {
-    attempt.controller.info("No changes to publish", {
-      detail: result.detail ?? null,
-    });
-  } else if (result.kind === "ready") {
-    attempt.controller.info("Base updated — ready to publish", {
-      detail: result.detail ?? null,
-    });
-  } else if (result.kind === "blocked") {
-    attempt.controller.error("Repair blocked", { detail: result.detail ?? null });
-  } else {
-    attempt.controller.info(
-      result.status === "merged"
-        ? "Publish stopped because the pull request was merged"
-        : "Publish stopped because the pull request was closed",
-      { detail: result.detail ?? null },
-    );
+export function agentWorkspaceOperationResultView(
+  result: AgentWorkspaceOperationResult,
+): { tone: "success" | "error" | "info"; message: string; detail: string | null } {
+  const detail = result.detail ?? null;
+  switch (result.kind) {
+    case "success": {
+      const message = result.workspace.publicationPrNumber
+        ? `Published #${result.workspace.publicationPrNumber}`
+        : result.workspace.publicationPrUrl
+          ? `Published ${result.workspace.publicationPrUrl}`
+          : "Published branch";
+      return { tone: "success", message, detail };
+    }
+    case "needs_agent":
+      return {
+        tone: "error",
+        message: "Publish failed. Sent the error to the agent to fix.",
+        detail,
+      };
+    case "failure":
+      return { tone: "error", message: "Failed to publish branch", detail };
+    case "no_changes":
+      return { tone: "info", message: "No changes to publish", detail };
+    case "ready":
+      return { tone: "info", message: "Base updated — ready to publish", detail };
+    case "blocked":
+      return { tone: "error", message: "Repair blocked", detail };
+    case "terminal":
+      return {
+        tone: "info",
+        message:
+          result.status === "merged"
+            ? "Publish stopped because the pull request was merged"
+            : "Publish stopped because the pull request was closed",
+        detail,
+      };
+    case "base-updated":
+      return { tone: "success", message: `Updated from ${result.targetRef}`, detail };
+    case "base-already-current":
+      return {
+        tone: "success",
+        message: `Already current with ${result.targetRef}`,
+        detail,
+      };
+    case "base-update-failed":
+      return { tone: "error", message: "Failed to update from base", detail };
+    case "repair-started":
+      return { tone: "info", message: "Repair started", detail };
+    default: {
+      const exhaustive: never = result;
+      return exhaustive;
+    }
   }
 }

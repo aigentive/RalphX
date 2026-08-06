@@ -30,7 +30,7 @@ export class AgentsChatTurnPage {
     await this.chat.composerInput.fill(content);
     await this.chat.composerInput.press("Enter");
     await expect(this.chat.composerInput).toHaveValue("");
-    await expect(this.page.getByText(content, { exact: true })).toBeVisible();
+    await this.expectLastRenderedContent(content);
   }
 
   async start(): Promise<void> {
@@ -123,8 +123,11 @@ export class AgentsChatTurnPage {
     // refetch here stands in for that trigger and makes the handoff
     // deterministic without weakening what the assertion checks.
     await this.refetchTimeline();
-    await expect(this.page.getByText(content, { exact: true }))
-      .toBeVisible({ timeout: FINALIZED_MESSAGE_HANDOFF_TIMEOUT_MS });
+    await this.expectLastRenderedContent(content, FINALIZED_MESSAGE_HANDOFF_TIMEOUT_MS);
+  }
+
+  private async expectLastRenderedContent(content: string, timeout?: number): Promise<void> {
+    await expect(this.chat.lastRenderedRow.filter({ hasText: content })).toBeVisible({ timeout });
   }
 
   private async refetchTimeline(): Promise<void> {

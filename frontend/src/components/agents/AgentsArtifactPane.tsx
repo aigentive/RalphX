@@ -61,6 +61,7 @@ import {
   type StartAgentWorkspaceReviewResult,
 } from "@/api/chat";
 import { Button } from "@/components/ui/button";
+import { NoticeBanner } from "@/components/ui/notice-banner";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -616,6 +617,7 @@ function mergeWorkspaceReviewMutationContext(
 interface AgentsArtifactPaneProps {
   conversation: AgentConversation | null;
   workspace?: AgentConversationWorkspace | null;
+  activeWorkspaceError?: Error | null;
   activeWorkspaceFreshness?: AgentConversationWorkspaceFreshness | undefined;
   projectBaseBranch?: string | null;
   focusedIdeationSession?: FocusedArtifactIdeationSession | null;
@@ -629,6 +631,7 @@ interface AgentsArtifactPaneProps {
   ) => void;
   onShowTab?: (tab: AgentArtifactTab) => void;
   onOpenPublish?: () => void;
+  onRetryActiveWorkspace?: () => void;
   onTaskModeChange: (mode: AgentTaskArtifactMode) => void;
   onPublishWorkspace: ((conversationId: string) => Promise<void>) | undefined;
   isPublishingWorkspace?: boolean;
@@ -673,6 +676,7 @@ interface AgentsArtifactPaneProps {
 export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   conversation,
   workspace = null,
+  activeWorkspaceError = null,
   activeWorkspaceFreshness,
   projectBaseBranch = null,
   focusedIdeationSession = null,
@@ -683,6 +687,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   onHideTab,
   onShowTab,
   onOpenPublish,
+  onRetryActiveWorkspace,
   onTaskModeChange,
   onPublishWorkspace,
   isPublishingWorkspace = false,
@@ -2311,6 +2316,33 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           workspace={scopedWorkspace}
           resolutionState={focusedWorkspaceResolution}
         />
+
+        {activeWorkspaceError && !focusedRunTarget ? (
+          <div role="alert" className="shrink-0">
+            <NoticeBanner
+              tone="error"
+              icon={<AlertCircle aria-hidden="true" className="h-4 w-4" />}
+              action={
+                onRetryActiveWorkspace ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-xs"
+                    onClick={() => onRetryActiveWorkspace()}
+                    aria-label="Retry workspace load"
+                  >
+                    Retry
+                  </Button>
+                ) : null
+              }
+              className="mx-3 mt-3 py-2"
+              testId="agents-workspace-load-error"
+            >
+              Workspace details couldn’t load. Some tabs may be unavailable.
+            </NoticeBanner>
+          </div>
+        ) : null}
 
         <div
           key={

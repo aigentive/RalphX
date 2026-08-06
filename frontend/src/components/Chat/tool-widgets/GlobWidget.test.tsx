@@ -225,6 +225,25 @@ describe("GlobWidget", () => {
       expect(screen.getByText("No files matched")).toBeInTheDocument();
       expect(screen.getByText("no matches")).toBeInTheDocument();
     });
+
+    it("renders a zero-match exclusion diagnostic as the empty state", () => {
+      render(
+        <GlobWidget
+          toolCall={makeGlobCall({
+            result: [
+              "ROOT: /workspace/project",
+              "MATCHES: 0",
+              "NOTE: 1 path excluded by .gitignore (node_modules). Set respect_gitignore=false to include it.",
+            ].join("\n"),
+          })}
+        />,
+      );
+
+      expect(
+        screen.getByText(/1 path excluded by \.gitignore \(node_modules\)/),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/^NOTE:/)).not.toBeInTheDocument();
+    });
   });
 
   describe("compact mode", () => {
