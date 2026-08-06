@@ -2469,6 +2469,7 @@ pub(super) async fn process_queued_messages(
                     Some(&continuation_runtime),
                     queued_msg.service_tier_override.as_deref(),
                     false,
+                    None,
                     Some(attachment_context.as_str()),
                 )
                 .await

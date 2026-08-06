@@ -494,6 +494,7 @@ pub(crate) async fn attempt_session_recovery(
         None,
         false,
         None,
+        None,
     )
     .await
     {

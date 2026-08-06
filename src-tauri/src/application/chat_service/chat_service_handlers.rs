@@ -2779,6 +2779,7 @@ pub(super) async fn handle_stream_error(
                                     None,
                                     false,
                                     None,
+                                    None,
                                 )
                                 .await
                             }

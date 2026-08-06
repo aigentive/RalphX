@@ -67,8 +67,7 @@ use crate::application::agent_conversation_workspace::{
     AGENT_CONVERSATION_WORKSPACE_CONTINUATION_MESSAGE,
 };
 use crate::application::agent_runtime_context::{
-    branch_status::BranchStatusCache, compose_agent_runtime_context,
-    linked_plan_snapshot_resolver_from_app_state, AgentRuntimeContextDeps,
+    branch_status::BranchStatusCache, compose_agent_runtime_context, AgentRuntimeContextDeps,
     AgentRuntimeContextScope, LinkedPlanSnapshotResolver,
 };
 use crate::application::agent_workspace_continuation::classify_agent_workspace_continuation_with_plan_branch;
@@ -90,7 +89,6 @@ use crate::application::persona_prompt::ResolvedPersona;
 use crate::application::persona_resolver::{resolve_persona_for_send, PersonaResolveFlags};
 use crate::application::plan_verification_service::PlanVerificationCompletionAdapter;
 use crate::application::question_state::QuestionState;
-use crate::application::AppState;
 use crate::application::AtlassianIntegrationService;
 use crate::application::ClickUpIntegrationService;
 use crate::application::GranolaIntegrationService;
@@ -1803,53 +1801,6 @@ fn merge_conversation_integration_references(
             ))
         })
         .collect()
-}
-
-async fn compose_agent_runtime_context_from_app_state(
-    state: &AppState,
-    conversation: &ChatConversation,
-    context_type: ChatContextType,
-    entity_status: Option<&str>,
-    project_id: Option<&str>,
-    working_directory: &Path,
-) -> Option<String> {
-    let workspace = match state
-        .agent_conversation_workspace_repo
-        .get_by_conversation_id(&conversation.id)
-        .await
-    {
-        Ok(workspace) => workspace,
-        Err(error) => {
-            tracing::warn!(
-                conversation_id = %conversation.id.as_str(),
-                error = %error,
-                "agent runtime workspace context unavailable"
-            );
-            None
-        }
-    };
-    let deps = AgentRuntimeContextDeps::new(
-        Arc::clone(&state.delegated_session_repo),
-        Arc::clone(&state.agent_task_repo),
-    )
-    .with_branch_status_cache(state.pr_poller_registry.branch_status_cache())
-    .with_team_repo(state.managed_team.team_repo())
-    .with_linked_plan_snapshot_resolver(linked_plan_snapshot_resolver_from_app_state(
-        state.clone(),
-    ));
-    compose_agent_runtime_context(
-        &AgentRuntimeContextScope {
-            conversation_id: &conversation.id,
-            context_type,
-            context_id: &conversation.context_id,
-            project_id,
-            workspace: workspace.as_ref(),
-            working_directory,
-            entity_status,
-        },
-        &deps,
-    )
-    .await
 }
 
 impl AppChatService {

@@ -4954,8 +4954,9 @@ async fn recheck_pr_health_for_state(
 pub async fn retry_pr_autofix_override(
     input: AgentWorkspaceRepairHoldActionInput,
     state: State<'_, AppState>,
+    execution_state: State<'_, Arc<ExecutionState>>,
 ) -> Result<AgentConversationWorkspaceResponse, String> {
-    apply_pr_autofix_hold_action(input, state.inner(), true).await
+    apply_pr_autofix_hold_action(input, state.inner(), execution_state.inner(), true).await
 }
 
 /// Stops the exact held PR autofix generation and leaves auto-merge disabled.
@@ -4963,8 +4964,9 @@ pub async fn retry_pr_autofix_override(
 pub async fn stop_pr_autofix_for_failure(
     input: AgentWorkspaceRepairHoldActionInput,
     state: State<'_, AppState>,
+    execution_state: State<'_, Arc<ExecutionState>>,
 ) -> Result<AgentConversationWorkspaceResponse, String> {
-    apply_pr_autofix_hold_action(input, state.inner(), false).await
+    apply_pr_autofix_hold_action(input, state.inner(), execution_state.inner(), false).await
 }
 
 /// Clears a continuation's publication-effect attention hold only when the UI's exact durable
@@ -5005,6 +5007,7 @@ pub async fn retry_agent_workspace_publication_effect(
 async fn apply_pr_autofix_hold_action(
     input: AgentWorkspaceRepairHoldActionInput,
     state: &AppState,
+    execution_state: &Arc<ExecutionState>,
     retry: bool,
 ) -> Result<AgentConversationWorkspaceResponse, String> {
     let conversation_id = ChatConversationId::from_string(input.conversation_id);
@@ -5041,6 +5044,7 @@ async fn apply_pr_autofix_hold_action(
     if retry {
         schedule_pr_supervision_recovery_for_conversation_id(
             state,
+            execution_state,
             conversation_id.clone(),
             AgentWorkspacePrSupervisionRecoveryTrigger::WorkspaceLoad,
             true,
