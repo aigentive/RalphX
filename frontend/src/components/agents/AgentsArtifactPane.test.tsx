@@ -4687,6 +4687,96 @@ describe("AgentsArtifactPane", () => {
     );
   });
 
+  it("keeps a nested child Review start pending and retains its parent result", async () => {
+    const start = deferred<StartAgentWorkspaceReviewResult>();
+    const parentContext = workspaceReviewContext({
+      conversationId: "parent-conversation",
+      target: workspaceReviewTarget,
+      shouldShowTab: true,
+    });
+    getWorkspaceReviewContextMock.mockResolvedValue(parentContext);
+    startWorkspaceReviewMock.mockReturnValue(start.promise);
+
+    renderPane(
+      "review",
+      workspace({ conversationId: "parent-conversation", mode: "edit" }),
+      vi.fn(),
+      false,
+      {
+        ...conversation(),
+        id: "review-child-conversation",
+        parentConversationId: "parent-conversation",
+      },
+    );
+
+    const runReview = await screen.findByRole("button", {
+      name: "Run review",
+    });
+    fireEvent.click(runReview);
+
+    await waitFor(() =>
+      expect(startWorkspaceReviewMock).toHaveBeenCalledWith(
+        "parent-conversation",
+        { force: false },
+      ),
+    );
+    await waitFor(() => expect(runReview).toBeDisabled());
+    fireEvent.click(runReview);
+    expect(startWorkspaceReviewMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      start.resolve(
+        workspaceReviewContext({
+          conversationId: "parent-conversation",
+          target: workspaceReviewTarget,
+          status: "reviewing",
+          reviewGateStatus: "reviewing",
+          shouldShowTab: true,
+        }),
+      );
+    });
+
+    expect(
+      await screen.findByTestId("agents-publish-reviewing"),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps a nested child Review start failure scoped to its parent owner", async () => {
+    getWorkspaceReviewContextMock.mockResolvedValue(
+      workspaceReviewContext({
+        conversationId: "parent-conversation",
+        target: workspaceReviewTarget,
+        shouldShowTab: true,
+      }),
+    );
+    startWorkspaceReviewMock.mockRejectedValue(
+      new Error("parent review conflict"),
+    );
+
+    renderPane(
+      "review",
+      workspace({ conversationId: "parent-conversation", mode: "edit" }),
+      vi.fn(),
+      false,
+      {
+        ...conversation(),
+        id: "review-child-conversation",
+        parentConversationId: "parent-conversation",
+      },
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Run review" }));
+
+    expect(
+      await screen.findByText("parent review conflict"),
+    ).toBeInTheDocument();
+    expect(
+      within(screen.getByTestId("agents-publish-tab-review")).getByText(
+        "Failed",
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("keeps a failed Review start visible after the mutation settles", async () => {
     getWorkspaceReviewContextMock.mockResolvedValue(
       workspaceReviewContext({

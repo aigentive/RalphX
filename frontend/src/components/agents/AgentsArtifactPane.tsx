@@ -1665,31 +1665,33 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   );
   const isWorkspaceReviewActionPending =
     startWorkspaceReviewMutation.isPending &&
-    startWorkspaceReviewMutation.variables?.conversationId === conversationId;
+    startWorkspaceReviewMutation.variables?.conversationId ===
+      workspaceReviewConversationId;
   const isWorkspaceReviewFixIssuesPending =
     startWorkspaceReviewFixerMutation.isPending &&
     startWorkspaceReviewFixerMutation.variables?.conversationId ===
-      conversationId;
+      workspaceReviewConversationId;
   const workspaceReviewStartError =
-    startWorkspaceReviewMutation.variables?.conversationId === conversationId
+    startWorkspaceReviewMutation.variables?.conversationId ===
+    workspaceReviewConversationId
       ? startWorkspaceReviewMutation.error
       : null;
   const workspaceReviewFixIssuesError =
     startWorkspaceReviewFixerMutation.variables?.conversationId ===
-    conversationId
+    workspaceReviewConversationId
       ? startWorkspaceReviewFixerMutation.error
       : null;
   const isWorkspaceReviewApproveAnywayPending =
     approveWorkspaceReviewAnywayMutation.isPending &&
     approveWorkspaceReviewAnywayMutation.variables?.conversationId ===
-      conversationId;
+      workspaceReviewConversationId;
   const workspaceReviewStartResult = workspaceReviewContextForConversation(
     startWorkspaceReviewMutation.data,
-    conversationId,
+    workspaceReviewConversationId,
   );
   const workspaceReviewFixerStartResult = workspaceReviewContextForConversation(
     startWorkspaceReviewFixerMutation.data,
-    conversationId,
+    workspaceReviewConversationId,
   );
   const reviewDisplayContext = isWorkspaceReviewActionPending
     ? (workspaceReviewStartResult ?? workspaceReviewContext)
