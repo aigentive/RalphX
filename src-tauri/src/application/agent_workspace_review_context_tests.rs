@@ -393,6 +393,45 @@ async fn workspace_review_identity_target_matches_full_packet() {
 }
 
 #[tokio::test]
+async fn workspace_review_identity_target_matches_full_packet_when_worktree_nets_to_base() {
+    let (_temp, repo, state, workspace) = setup_full_context().await;
+    std::fs::write(repo.join("committed.rs"), "pub fn committed() {}\n")
+        .expect("committed file should be written");
+    git(&repo, &["add", "committed.rs"]);
+    git(&repo, &["commit", "-m", "committed workspace change"]);
+    std::fs::remove_file(repo.join("committed.rs")).expect("committed file should be deleted");
+
+    let identity = load_agent_workspace_review_presentation_context(
+        &state,
+        &workspace,
+        AgentWorkspaceReviewContextReadMode::FullTarget,
+    )
+    .await
+    .expect("identity context should load")
+    .target
+    .expect("identity target should exist");
+    let full = load_agent_workspace_review_presentation_context(
+        &state,
+        &workspace,
+        AgentWorkspaceReviewContextReadMode::FullPacket,
+    )
+    .await
+    .expect("full packet context should load")
+    .target
+    .expect("full packet target should exist");
+
+    assert_eq!(identity.scope, full.scope);
+    assert_eq!(identity.base_ref, full.base_ref);
+    assert_eq!(identity.base_sha, full.base_sha);
+    assert_eq!(identity.head_ref, full.head_ref);
+    assert_eq!(identity.head_sha, full.head_sha);
+    assert_eq!(identity.diff_fingerprint, full.diff_fingerprint);
+    assert_eq!(identity.review_packet, Default::default());
+    assert_eq!(full.review_packet.summary.files_changed, 1);
+    assert_eq!(full.review_packet.changed_files.len(), 1);
+}
+
+#[tokio::test]
 async fn full_packet_does_not_join_identity_only_context() {
     let (_temp, repo, state, workspace) = setup_full_context().await;
     for index in 0..64 {

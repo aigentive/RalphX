@@ -4576,7 +4576,10 @@ async fn resolve_workspace_delta_target(
             phase_started,
             total_started,
         );
-        if trees.base_tree == trees.target_tree {
+        if trees.base_tree == trees.target_tree
+            && trees.base_tree == trees.head_tree
+            && trees.base_tree == trees.index_tree
+        {
             log_workspace_review_phase(
                 "workspace_review_target_phase",
                 workspace,
