@@ -12,15 +12,20 @@ use chrono::Utc;
 use ralphx_events::RecordingEventSink;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::{Listener, Manager};
 use tokio::io::AsyncReadExt;
+use tokio::process::Command as TokioCommand;
+use tokio_util::sync::CancellationToken;
 
 use ralphx_lib::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
-use ralphx_lib::application::chat_service::{ChatService, ChatServiceError, SendMessageOptions};
+use ralphx_lib::application::chat_service::{
+    process_stream_background, ChatService, ChatServiceError, SendMessageOptions,
+    StreamingStateCache,
+};
 use ralphx_lib::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessMetadata, InteractiveProcessRegistry,
 };
@@ -132,6 +137,30 @@ fn write_capturing_claude_cli(temp: &Path, capture: &Path) -> PathBuf {
         fs::set_permissions(&cli_path, permissions).expect("mark capturing Claude CLI executable");
     }
     cli_path
+}
+
+fn spawn_interactive_claude_result_after_two_messages() -> tokio::process::Child {
+    let mut command = TokioCommand::new("sh");
+    command
+        .arg("-c")
+        .arg(
+            "IFS= read -r first || exit 1\n\
+             IFS= read -r second || exit 1\n\
+             printf '%s\\n' \"$RALPHX_STREAM_RESULT\"\n\
+             exec sleep 10",
+        )
+        .env(
+            "RALPHX_STREAM_RESULT",
+            r#"{"type":"result","session_id":"gate1-burst-session","is_error":false,"result":"burst handled","cost_usd":0.0}"#,
+        )
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+
+    command
+        .spawn()
+        .expect("spawn two-message interactive Claude fixture")
 }
 
 fn runtime_plugin_dir_for_gate1_persona_test() -> PathBuf {
@@ -1508,7 +1537,7 @@ async fn verify_plan_retirement_after_settled_burst_does_not_requeue() {
     });
     let state = app.state::<AppState>();
     let context_id = "project-gate1-verify-plan-settled-burst";
-    let (project_dir, conversation_id, retired_run_id, interactive_key, mut child) =
+    let (project_dir, conversation_id, retired_run_id, interactive_key, mut observer_child) =
         setup_live_project_continuation(
             &state,
             context_id,
@@ -1517,11 +1546,34 @@ async fn verify_plan_retirement_after_settled_burst_does_not_requeue() {
         )
         .await;
     initialize_git_project(project_dir.path());
+
+    drop(
+        state
+            .interactive_process_registry
+            .remove(&interactive_key)
+            .await
+            .expect("remove stdin observer before registering stream fixture"),
+    );
+    let _ = observer_child.wait().await;
+    let mut child = spawn_interactive_claude_result_after_two_messages();
+    let stream_token = state
+        .interactive_process_registry
+        .register_with_metadata(
+            interactive_key.clone(),
+            child.stdin.take().expect("two-message fixture stdin"),
+            InteractiveProcessMetadata {
+                agent_run_id: Some(retired_run_id.clone()),
+                harness: Some(ralphx_lib::domain::agents::AgentHarnessKind::Claude),
+                ..Default::default()
+            },
+        )
+        .await;
     let retired_owner = state
         .interactive_process_registry
         .capture_owner(&interactive_key)
         .await
         .expect("live IPR owner");
+    assert_eq!(retired_owner.token, stream_token);
     let service = state
         .build_chat_service_for_runtime(
             Some(Arc::new(ExecutionState::new())),
@@ -1549,28 +1601,73 @@ async fn verify_plan_retirement_after_settled_burst_does_not_requeue() {
         assert_eq!(result.agent_run_id, retired_run_id);
     }
 
-    // This is the owner-scoped ledger and idle transition performed by a
-    // finalized assistant turn before the Verify Plan send observes the entry.
-    assert_eq!(
-        state
-            .interactive_process_registry
-            .settle_delivered_turns_if_owner(&interactive_key, retired_owner.token)
-            .await
-            .len(),
-        2,
-        "one finalized assistant turn settles the delivered burst"
-    );
-    assert!(matches!(
-        state
-            .interactive_process_registry
-            .complete_turn_if_owner(
-                &interactive_key,
-                retired_owner.token,
-                &retired_run_id,
-            )
-            .await,
-        ralphx_lib::application::interactive_process_registry::InteractiveProcessTurnCompleteDisposition::KeepAlive
-    ));
+    let interactive_registry = Arc::clone(&state.interactive_process_registry);
+    let agent_run_repo = Arc::clone(&state.agent_run_repo);
+    let stream_conversation_id = conversation_id.clone();
+    let stream_interactive_key = interactive_key.clone();
+    let stream_run_id = retired_run_id.clone();
+    let stream_app_handle = app.handle().clone();
+    let mut stream_task = tokio::spawn(async move {
+        process_stream_background::<tauri::test::MockRuntime>(
+            child,
+            ralphx_lib::domain::agents::AgentHarnessKind::Claude,
+            ChatContextType::Project,
+            context_id,
+            &stream_conversation_id,
+            None,
+            Some(stream_app_handle),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            CancellationToken::new(),
+            StreamingStateCache::new(),
+            None,
+            Some(agent_run_repo),
+            Some(stream_run_id),
+            None,
+            None,
+            false,
+            false,
+            Some(interactive_registry),
+            Some(stream_interactive_key),
+            Some(stream_token),
+        )
+        .await
+    });
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if matches!(
+                state
+                    .interactive_process_registry
+                    .retire_after_turn_disposition_if_owner(
+                        &interactive_key,
+                        retired_owner.token,
+                        &retired_run_id,
+                    )
+                    .await,
+                ralphx_lib::application::interactive_process_registry::InteractiveProcessRetireAfterTurnDisposition::Idle {
+                    is_armed: false
+                }
+            ) {
+                break;
+            }
+
+            tokio::select! {
+                result = &mut stream_task => match result {
+                    Ok(Ok(_)) => panic!("stream exited before reaching the idle TurnComplete boundary"),
+                    Ok(Err(error)) => panic!("stream finalization failed before reaching idle: {error}"),
+                    Err(error) => panic!("stream task failed before reaching idle: {error}"),
+                },
+                _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+            }
+        }
+    })
+    .await
+    .expect("stream must finalize its successful assistant turn and mark the owner idle");
 
     let verify_plan_result = service
         .send_message(
@@ -1634,11 +1731,18 @@ async fn verify_plan_retirement_after_settled_burst_does_not_requeue() {
         "Verify Plan retirement must not publish phantom queued-message events"
     );
 
+    stream_task.abort();
+    assert!(
+        stream_task
+            .await
+            .expect_err("stream fixture should be aborted after Verify Plan replaces its owner")
+            .is_cancelled(),
+        "the test must clean up its still-interactive stream task"
+    );
     state
         .interactive_process_registry
         .remove(&interactive_key)
         .await;
-    let _ = child.wait().await;
 }
 
 #[tokio::test]
