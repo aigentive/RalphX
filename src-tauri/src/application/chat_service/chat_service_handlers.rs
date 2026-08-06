@@ -1461,17 +1461,19 @@ async fn finalize_assistant_message_with_terminal_tool_state(
     tool_calls_json: Option<String>,
     content_blocks_json: Option<String>,
     reason: &str,
+    agent_run_id: Option<&str>,
 ) {
     let sealed_tool_calls = seal_unresolved_tool_calls_json(tool_calls_json, reason);
     let sealed_content_blocks = seal_unresolved_content_blocks_json(content_blocks_json, reason);
     let terminal_content_blocks =
         terminal_timeline_content_blocks(content, sealed_content_blocks.as_deref());
-    let timeline_items = super::chat_service_streaming::persist_timeline_snapshot(
+    let timeline_items = super::chat_service_streaming::persist_timeline_snapshot_for_run(
         chat_timeline_repo,
         &conversation_id.as_str(),
         &Some(message_id.to_string()),
         &terminal_content_blocks,
         crate::domain::entities::ChatTimelineItemStatus::Finalized,
+        agent_run_id,
     )
     .await;
     let _ = super::chat_service_send_background::finalize_assistant_message(
@@ -2581,6 +2583,7 @@ pub(super) async fn handle_stream_error(
             existing_tool_calls,
             existing_content_blocks,
             "stopped",
+            Some(agent_run_id),
         )
         .await;
 
@@ -3062,6 +3065,7 @@ pub(super) async fn handle_stream_error(
                         existing_tool_calls,
                         existing_content_blocks,
                         "validation_complete",
+                        Some(agent_run_id),
                     )
                     .await;
 
@@ -3128,6 +3132,7 @@ pub(super) async fn handle_stream_error(
                     existing_tool_calls,
                     existing_content_blocks,
                     "verification_parent_resolved",
+                    Some(agent_run_id),
                 )
                 .await;
                 verification_handoff::inject_verification_handoff_if_missing(
@@ -3184,6 +3189,7 @@ pub(super) async fn handle_stream_error(
                 existing_tool_calls,
                 existing_content_blocks,
                 "verification_auto_continue",
+                Some(agent_run_id),
             )
             .await;
 
@@ -3228,6 +3234,7 @@ pub(super) async fn handle_stream_error(
         existing_tool_calls,
         existing_content_blocks,
         "interrupted",
+        Some(agent_run_id),
     )
     .await;
 

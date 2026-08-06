@@ -421,6 +421,25 @@ pub(super) async fn persist_timeline_snapshot(
     content_blocks: &[ContentBlockItem],
     status: ChatTimelineItemStatus,
 ) -> Vec<ChatTimelineItem> {
+    persist_timeline_snapshot_for_run(
+        chat_timeline_repo,
+        conversation_id,
+        assistant_message_id,
+        content_blocks,
+        status,
+        None,
+    )
+    .await
+}
+
+pub(super) async fn persist_timeline_snapshot_for_run(
+    chat_timeline_repo: &Option<Arc<dyn ChatTimelineRepository>>,
+    conversation_id: &str,
+    assistant_message_id: &Option<String>,
+    content_blocks: &[ContentBlockItem],
+    status: ChatTimelineItemStatus,
+    agent_run_id: Option<&str>,
+) -> Vec<ChatTimelineItem> {
     let (Some(repo), Some(message_id)) =
         (chat_timeline_repo.as_ref(), assistant_message_id.as_ref())
     else {
@@ -451,6 +470,7 @@ pub(super) async fn persist_timeline_snapshot(
             role,
             kind,
         );
+        item.run_id = agent_run_id.map(|id| AgentRunId::from_string(id.to_string()));
         item.status = status;
         item.updated_at = chrono::Utc::now();
         if status == ChatTimelineItemStatus::Finalized {
