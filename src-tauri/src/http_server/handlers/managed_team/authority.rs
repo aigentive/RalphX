@@ -6,6 +6,9 @@ use axum::{
 use crate::domain::entities::{
     AgentRun, AgentRunId, ChatConversationId, TeamMemberId, TeamRunBindingStatus, TeamSession,
 };
+use crate::http_server::handlers::trusted_run_authority::{
+    resolve_live_caller_run, TrustedRunRejection,
+};
 use crate::http_server::types::HttpServerState;
 
 type JsonError = (StatusCode, Json<serde_json::Value>);
@@ -76,19 +79,25 @@ pub(super) async fn resolve_team_authority(
                 "Team tools require trusted caller run context",
             )
         })?;
-    let active = state
-        .app_state
-        .agent_run_repo
-        .get_active_for_conversation(&conversation_id)
-        .await
-        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
-        .ok_or_else(|| json_error(StatusCode::CONFLICT, "Trusted Team run is not active"))?;
-    if active.id != run_id {
-        return Err(json_error(
-            StatusCode::CONFLICT,
-            "Trusted Team run is not active",
-        ));
-    }
+    let active =
+        resolve_live_caller_run(&state.app_state.agent_run_repo, &conversation_id, &run_id)
+            .await
+            .map_err(|rejection| match rejection {
+                TrustedRunRejection::RunNotFound => {
+                    json_error(StatusCode::CONFLICT, "Trusted Team run is not active")
+                }
+                TrustedRunRejection::ConversationMismatch => json_error(
+                    StatusCode::CONFLICT,
+                    "Trusted Team run does not belong to the caller conversation",
+                ),
+                TrustedRunRejection::RunTerminal { status } => json_error(
+                    StatusCode::CONFLICT,
+                    format!("Trusted Team run has already finished ({status:?})"),
+                ),
+                TrustedRunRejection::RepositoryError(error) => {
+                    json_error(StatusCode::INTERNAL_SERVER_ERROR, error)
+                }
+            })?;
     let binding = state
         .app_state
         .managed_team

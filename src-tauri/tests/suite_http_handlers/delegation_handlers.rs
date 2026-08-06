@@ -1048,7 +1048,7 @@ async fn get_parent_context_rejects_stale_runs_before_reading_messages() {
     assert!(error.1 .0["error"]
         .as_str()
         .unwrap_or_default()
-        .contains("stale or no longer active"));
+        .contains("get_parent_context trusted run has already finished"));
 }
 
 #[tokio::test]
@@ -5347,7 +5347,7 @@ async fn test_routed_delegate_start_rejects_wrong_conversation_and_stale_parent_
     assert!(stale_error.1 .0["error"]
         .as_str()
         .unwrap_or_default()
-        .contains("is not the active caller run"));
+        .contains("has already finished (status: completed)"));
 }
 
 #[tokio::test]

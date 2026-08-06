@@ -30,7 +30,7 @@ paths:
 | Native Team uses this topology | RX-native Team is a product surface over this provider-neutral delegation contract; removed vendor-specific Team semantics do not return here. |
 | Tool naming convention | Prompt prose uses bare tool names like `delegate_start`; config/frontmatter/allowlists use fully qualified MCP names only where that path requires qualification. |
 | Waiting is backend-held | Coordinators wait via bounded `delegate_wait` (`wait_timeout_ms`) or `delegate_park` + turn end; never model-side polling loops. |
-| Re-park inheritance is backend-proven | A resumed run may re-park only exact jobs from the `Waking\|Woken\|Expired` park named by its backend-owned `delegation_park_wake` action tuple; timestamps, conversation equality, and job id alone never grant ownership. |
+| Re-park inheritance is backend-proven | A resumed run may re-park only exact jobs from the `Waking\|Woken\|Expired` park named by its backend-owned `delegation_park_wake` action tuple; timestamps, conversation equality, and job id alone never grant ownership. Caller authority itself is liveness-based — the transport-supplied run must be non-terminal and bound to the caller conversation, never merely the newest `running` row. |
 
 ## Shared-Worktree Coordination
 

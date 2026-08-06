@@ -228,7 +228,14 @@ impl DelegationParkService {
         self.park_repo
             .supersede_for_conversation(&park.parent_conversation_id)
             .await?;
-        self.park_repo.arm(park).await
+        let armed = self.park_repo.arm(park).await?;
+        tracing::info!(
+            park_id = %armed.id,
+            generation = armed.generation,
+            job_count = armed.jobs.len(),
+            "delegation_park: armed"
+        );
+        Ok(armed)
     }
 
     /// Record one delegated run's terminal status and wake each resulting park when due.

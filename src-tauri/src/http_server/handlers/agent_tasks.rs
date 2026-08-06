@@ -1,5 +1,6 @@
 use axum::{extract::State, http::HeaderMap, Json};
 
+use super::trusted_run_authority::{resolve_live_caller_run, TrustedRunRejection};
 use crate::application::AgentTaskService;
 use crate::domain::entities::{
     AgentRunId, AgentTaskAssignmentView, AgentTaskCreate, AgentTaskDetail, AgentTaskListId,
@@ -325,29 +326,22 @@ pub(crate) async fn trusted_delegate_identity(
     }
     let delegated_session_id = DelegatedSessionId::from_string(conversation.context_id);
     let run_id = AgentRunId::from_string(run_id);
-    let run = state
-        .app_state
-        .agent_run_repo
-        .get_by_id(&run_id)
+    resolve_live_caller_run(&state.app_state.agent_run_repo, &conversation_id, &run_id)
         .await
-        .map_err(|error| format!("{operation} could not validate the trusted run: {error}"))?
-        .ok_or_else(|| format!("{operation} trusted run was not found"))?;
-    if run.conversation_id != conversation_id {
-        return Err(format!(
-            "{operation} trusted run does not belong to the delegated conversation"
-        ));
-    }
-    let active_run = state
-        .app_state
-        .agent_run_repo
-        .get_active_for_conversation(&conversation_id)
-        .await
-        .map_err(|error| format!("{operation} could not resolve the active run: {error}"))?;
-    if active_run.as_ref().map(|active| &active.id) != Some(&run_id) {
-        return Err(format!(
-            "{operation} trusted run is stale or no longer active"
-        ));
-    }
+        .map_err(|rejection| match rejection {
+            TrustedRunRejection::RunNotFound => {
+                format!("{operation} trusted run was not found")
+            }
+            TrustedRunRejection::ConversationMismatch => {
+                format!("{operation} trusted run does not belong to the delegated conversation")
+            }
+            TrustedRunRejection::RunTerminal { .. } => {
+                format!("{operation} trusted run has already finished")
+            }
+            TrustedRunRejection::RepositoryError(error) => {
+                format!("{operation} could not validate the trusted run: {error}")
+            }
+        })?;
     let session = state
         .app_state
         .delegated_session_repo
