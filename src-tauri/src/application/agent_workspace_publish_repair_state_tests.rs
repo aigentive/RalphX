@@ -6,15 +6,19 @@ use std::sync::Arc;
 use crate::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
 use crate::application::agent_workspace_publish_recovery::{
     AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX, AUTO_RETRY_READY_REPAIR_REASON_PREFIX,
+    BLOCKED_STREAK_REARMED_REASON_PREFIX, CONTINUATION_OPEN_EFFECT_ATTENTION_REASON,
+    CONTINUATION_OPEN_EFFECT_EVIDENCE_REASON_PREFIX,
+    CONTINUATION_OPEN_EFFECT_RECOVERY_REASON_PREFIX,
     EXHAUSTED_PUBLISH_REDRIVE_CHECKED_REASON_PREFIX,
 };
 use crate::application::agent_workspace_publish_repair_state::{
-    abort_agent_workspace_pr_fix_review_handoff, agent_workspace_repair_is_base_stale_held,
-    agent_workspace_repair_is_ci_held, agent_workspace_repair_is_health_held,
-    block_agent_workspace_pr_fix_claim, block_agent_workspace_repair_needs_human,
-    claim_agent_workspace_repair, classify_agent_workspace_repair_completion_authority,
-    classify_agent_workspace_repair_delivery, complete_agent_workspace_pr_fix_claim,
-    complete_agent_workspace_repair_claim, continue_agent_workspace_repair_at_boundary,
+    abort_agent_workspace_pr_fix_review_handoff, agent_workspace_repair_hold_reason,
+    agent_workspace_repair_is_base_stale_held, agent_workspace_repair_is_ci_held,
+    agent_workspace_repair_is_health_held, block_agent_workspace_pr_fix_claim,
+    block_agent_workspace_repair_needs_human, claim_agent_workspace_repair,
+    classify_agent_workspace_repair_completion_authority, classify_agent_workspace_repair_delivery,
+    complete_agent_workspace_pr_fix_claim, complete_agent_workspace_repair_claim,
+    continue_agent_workspace_repair_at_boundary,
     continue_agent_workspace_repair_at_boundary_with_review_starter,
     current_agent_workspace_repair_claim_for_completion, inspect_agent_workspace_repair_completion,
     is_machine_repair_reason_marker, last_human_repair_reason,
@@ -26,8 +30,9 @@ use crate::application::agent_workspace_publish_repair_state::{
     reserve_agent_workspace_ci_rerun, reserve_agent_workspace_pre_existing_on_base,
     reserve_agent_workspace_repair_completion_validation, reserve_agent_workspace_repair_dispatch,
     resume_current_agent_workspace_repair_publish, retry_agent_workspace_pr_autofix_hold_override,
-    settle_agent_workspace_repair_dispatch_outcome, settle_agent_workspace_repair_failure,
-    start_or_join_agent_workspace_repair, start_or_join_agent_workspace_repair_without_projection,
+    retry_agent_workspace_publication_effect, settle_agent_workspace_repair_dispatch_outcome,
+    settle_agent_workspace_repair_failure, start_or_join_agent_workspace_repair,
+    start_or_join_agent_workspace_repair_without_projection,
     stop_agent_workspace_pr_autofix_for_hold, terminal_run_authorizes_repair_recovery,
     transition_agent_workspace_repair_attempt, validate_agent_workspace_repair_target_lease,
     AgentWorkspacePrAutofixHoldActionOutcome, AgentWorkspaceRepairDispatchOutcome,
@@ -36,9 +41,10 @@ use crate::application::agent_workspace_publish_repair_state::{
     AgentWorkspaceRepairTransitionOutcome, DurableRepairWorkspaceReviewStartFuture,
     DurableRepairWorkspaceReviewStarter, PrAutofixCarryover, PublishAuthority,
     AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION, AWAITING_CI_REPAIR_REASON,
-    DEFERRED_REPAIR_WAIT_TIMEOUT_SECS, MAX_AGENT_WORKSPACE_CI_RERUN_RETRIES,
-    MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES, NEEDS_HUMAN_REPAIR_REASON,
-    PRE_EXISTING_ON_BASE_REPAIR_REASON, REPAIR_SENT_STEP, UNCHANGED_HEALTH_REPAIR_REASON,
+    CONTINUATION_RECOVERY_FAILURE_REASON_PREFIX, DEFERRED_REPAIR_WAIT_TIMEOUT_SECS,
+    MAX_AGENT_WORKSPACE_CI_RERUN_RETRIES, MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES,
+    NEEDS_HUMAN_REPAIR_REASON, PRE_EXISTING_ON_BASE_REPAIR_REASON, REPAIR_SENT_STEP,
+    UNCHANGED_HEALTH_REPAIR_REASON,
 };
 use crate::application::agent_workspace_review::{
     load_agent_workspace_review_context, AgentWorkspaceReviewStart,
@@ -142,6 +148,123 @@ fn repair_reason_helpers_return_no_context_when_only_machine_markers_remain() {
 }
 
 #[test]
+fn is_machine_repair_reason_marker_recognizes_continuation_open_effect_attention_marker() {
+    assert!(is_machine_repair_reason_marker(
+        CONTINUATION_OPEN_EFFECT_ATTENTION_REASON
+    ));
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        ChatConversationId::from_string("repair-reason-open-effect-attention".to_string()),
+        AgentWorkspaceRepairSource::Publish,
+        AgentWorkspaceRepairContinuation::Publish,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+    attempt.pending_reasons = vec![CONTINUATION_OPEN_EFFECT_ATTENTION_REASON.to_string()];
+    assert_eq!(last_human_repair_reason(&attempt), None);
+}
+
+#[test]
+fn is_machine_repair_reason_marker_recognizes_continuation_open_effect_recovery_prefix() {
+    let marker = format!("{CONTINUATION_OPEN_EFFECT_RECOVERY_REASON_PREFIX}2");
+    assert!(is_machine_repair_reason_marker(&marker));
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        ChatConversationId::from_string("repair-reason-open-effect-recovery".to_string()),
+        AgentWorkspaceRepairSource::Publish,
+        AgentWorkspaceRepairContinuation::Publish,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+    attempt.pending_reasons = vec![marker];
+    assert_eq!(last_human_repair_reason(&attempt), None);
+}
+
+#[test]
+fn is_machine_repair_reason_marker_recognizes_continuation_open_effect_evidence_prefix() {
+    let marker = format!("{CONTINUATION_OPEN_EFFECT_EVIDENCE_REASON_PREFIX}bba066f");
+    assert!(is_machine_repair_reason_marker(&marker));
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        ChatConversationId::from_string("repair-reason-open-effect-evidence".to_string()),
+        AgentWorkspaceRepairSource::Publish,
+        AgentWorkspaceRepairContinuation::Publish,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+    attempt.pending_reasons = vec![marker];
+    assert_eq!(last_human_repair_reason(&attempt), None);
+}
+
+#[test]
+fn is_machine_repair_reason_marker_recognizes_blocked_streak_rearmed_prefix() {
+    let marker = format!("{BLOCKED_STREAK_REARMED_REASON_PREFIX}bba066f");
+    assert!(is_machine_repair_reason_marker(&marker));
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        ChatConversationId::from_string("repair-reason-blocked-streak-rearmed".to_string()),
+        AgentWorkspaceRepairSource::PrAutofix,
+        AgentWorkspaceRepairContinuation::Publish,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+    attempt.pending_reasons = vec![marker];
+    assert_eq!(last_human_repair_reason(&attempt), None);
+}
+
+/// The pure domain crate cannot depend on the root crate, so the attention marker exists twice: as
+/// a literal in `entities::agent_workspace_repair` and as the application-owned constant written by
+/// `durable_attempt_recovery`. Nothing but this assertion keeps them byte-identical. If they drift,
+/// `operation_snapshot()` silently stops emitting `PublicationEffectAttention`, the stuck
+/// publication loses its hold reason and its UI escape hatch, and nothing fails to compile.
+#[test]
+fn domain_attention_pending_reason_matches_application_marker() {
+    use crate::application::agent_workspace_publish_recovery as recovery;
+    use crate::domain::entities::CONTINUATION_OPEN_EFFECT_ATTENTION_PENDING_REASON as DOMAIN_MARKER;
+
+    assert_eq!(
+        DOMAIN_MARKER,
+        recovery::CONTINUATION_OPEN_EFFECT_ATTENTION_REASON,
+        "domain and application attention markers must stay byte-identical"
+    );
+}
+
+#[test]
+fn is_machine_repair_reason_marker_recognizes_continuation_recovery_failure_prefix() {
+    let marker = format!("{CONTINUATION_RECOVERY_FAILURE_REASON_PREFIX}1");
+    assert!(is_machine_repair_reason_marker(&marker));
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        ChatConversationId::from_string("repair-reason-recovery-failure".to_string()),
+        AgentWorkspaceRepairSource::Publish,
+        AgentWorkspaceRepairContinuation::Publish,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+    attempt.pending_reasons = vec![marker];
+    assert_eq!(
+        last_human_repair_reason(&attempt),
+        None,
+        "a pre-existing continuation_recovery_failure marker must not leak into dispatch prompts as human context"
+    );
+}
+
+#[test]
 fn ci_held_predicate_recognizes_rerun_reservations_and_await_holds() {
     let mut attempt = AgentWorkspaceRepairAttempt::new(
         ChatConversationId::from_string("ci-held-predicate"),
@@ -211,6 +334,308 @@ fn compatibility_projection_marks_only_stationary_ready_repairs_as_held() {
             .as_deref(),
         Some("paused"),
         "genuine Ready remains publishable"
+    );
+}
+
+#[test]
+fn compatibility_projection_marks_escalated_continuations_as_held_not_publishing() {
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        ChatConversationId::from_string("repair-projection-continuation-hold"),
+        AgentWorkspaceRepairSource::Publish,
+        AgentWorkspaceRepairContinuation::Publish,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+
+    for phase in [
+        AgentWorkspaceRepairPhase::ContinuationPending,
+        AgentWorkspaceRepairPhase::Continuing,
+    ] {
+        attempt.phase = phase;
+        attempt.pending_reasons = vec![CONTINUATION_OPEN_EFFECT_ATTENTION_REASON.to_string()];
+        let projection = repair_attempt_projection(&attempt, "held", Some(false));
+        assert_eq!(
+            projection.publication_push_status.as_deref(),
+            Some("refreshed"),
+            "{phase}"
+        );
+        assert_eq!(
+            projection.pr_supervision_status.as_deref(),
+            Some("held"),
+            "escalated continuation ({phase}) must not report as an in-progress publish"
+        );
+
+        attempt.pending_reasons.clear();
+        let unescalated = repair_attempt_projection(&attempt, "continuing", Some(false));
+        assert_eq!(
+            unescalated.pr_supervision_status.as_deref(),
+            Some("publishing"),
+            "an ordinary in-flight continuation ({phase}) keeps its existing legacy status"
+        );
+    }
+}
+
+#[test]
+fn agent_workspace_repair_hold_reason_surfaces_publication_effect_attention_without_health_hold() {
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        ChatConversationId::from_string("repair-hold-reason-publication-effect"),
+        AgentWorkspaceRepairSource::Publish,
+        AgentWorkspaceRepairContinuation::Publish,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+    attempt.phase = AgentWorkspaceRepairPhase::ContinuationPending;
+    attempt.pending_reasons = vec![CONTINUATION_OPEN_EFFECT_ATTENTION_REASON.to_string()];
+
+    assert_eq!(
+        agent_workspace_repair_hold_reason(&attempt),
+        Some(crate::domain::entities::AgentWorkspaceRepairOperationHoldReason::PublicationEffectAttention)
+    );
+    assert!(
+        !agent_workspace_repair_is_health_held(&attempt),
+        "a publication-effect attention hold is not a PR-autofix health hold"
+    );
+}
+
+async fn seed_continuation_phase_publication_effect_attempt(
+    state: &AppState,
+    conversation_id: ChatConversationId,
+    phase: AgentWorkspaceRepairPhase,
+    pending_reasons: Vec<String>,
+) -> AgentWorkspaceRepairAttempt {
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(repair_workspace(conversation_id.clone()))
+        .await
+        .expect("publication effect retry workspace should persist");
+    let attempt = start_or_join_agent_workspace_repair(
+        Arc::clone(&state.agent_workspace_repair_repo),
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        repair_start_request(
+            conversation_id,
+            AgentWorkspaceRepairSource::Publish,
+            AgentWorkspaceRepairContinuation::Publish,
+            "publish continuation stuck behind an open effect",
+        ),
+    )
+    .await
+    .expect("publication effect retry attempt should start")
+    .into_attempt();
+
+    let expected_updated_at = attempt.updated_at;
+    let mut escalated = attempt.clone();
+    escalated.phase = phase;
+    escalated.pending_reasons = pending_reasons;
+    escalated.updated_at += chrono::Duration::microseconds(1);
+    match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: escalated,
+            expected_phase: attempt.phase,
+            expected_updated_at,
+            next_phase: phase,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("publication effect retry checkpoint should persist")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("publication effect retry checkpoint must apply, got {outcome:?}"),
+    }
+}
+
+#[tokio::test]
+async fn retry_publication_effect_reports_missing_when_no_attempt_is_current() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::from_string("retry-publication-effect-missing");
+
+    let outcome = retry_agent_workspace_publication_effect(
+        &state,
+        &conversation_id,
+        &crate::domain::entities::AgentWorkspaceRepairAttemptId::new(),
+        0,
+        chrono::Utc::now(),
+    )
+    .await
+    .expect("missing attempt lookup should not error");
+
+    assert_eq!(outcome, AgentWorkspacePrAutofixHoldActionOutcome::Missing);
+}
+
+#[tokio::test]
+async fn retry_publication_effect_fails_closed_for_a_stale_generation_or_timestamp() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::from_string("retry-publication-effect-stale");
+    let attempt = seed_continuation_phase_publication_effect_attempt(
+        &state,
+        conversation_id.clone(),
+        AgentWorkspaceRepairPhase::ContinuationPending,
+        vec![CONTINUATION_OPEN_EFFECT_ATTENTION_REASON.to_string()],
+    )
+    .await;
+
+    let outcome = retry_agent_workspace_publication_effect(
+        &state,
+        &conversation_id,
+        &attempt.id,
+        attempt.generation,
+        attempt.updated_at - chrono::Duration::microseconds(1),
+    )
+    .await
+    .expect("a stale timestamp must not error");
+
+    let AgentWorkspacePrAutofixHoldActionOutcome::Stale(current) = outcome else {
+        panic!("expected Stale for a mismatched observed timestamp, got {outcome:?}");
+    };
+    assert!(
+        current
+            .pending_reasons
+            .iter()
+            .any(|reason| reason == CONTINUATION_OPEN_EFFECT_ATTENTION_REASON),
+        "a rejected stale override must never clear the attention marker"
+    );
+}
+
+#[tokio::test]
+async fn retry_publication_effect_fails_closed_outside_continuation_phases() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::from_string("retry-publication-effect-wrong-phase");
+    let attempt = seed_continuation_phase_publication_effect_attempt(
+        &state,
+        conversation_id.clone(),
+        AgentWorkspaceRepairPhase::Ready,
+        vec![CONTINUATION_OPEN_EFFECT_ATTENTION_REASON.to_string()],
+    )
+    .await;
+
+    let outcome = retry_agent_workspace_publication_effect(
+        &state,
+        &conversation_id,
+        &attempt.id,
+        attempt.generation,
+        attempt.updated_at,
+    )
+    .await
+    .expect("a wrong-phase override must not error");
+
+    assert!(
+        matches!(outcome, AgentWorkspacePrAutofixHoldActionOutcome::Stale(_)),
+        "a Ready-phase attempt is never this command's authority, even carrying the same marker string"
+    );
+}
+
+#[tokio::test]
+async fn retry_publication_effect_fails_closed_without_the_attention_marker() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::from_string("retry-publication-effect-no-marker");
+    let attempt = seed_continuation_phase_publication_effect_attempt(
+        &state,
+        conversation_id.clone(),
+        AgentWorkspaceRepairPhase::Continuing,
+        Vec::new(),
+    )
+    .await;
+
+    let outcome = retry_agent_workspace_publication_effect(
+        &state,
+        &conversation_id,
+        &attempt.id,
+        attempt.generation,
+        attempt.updated_at,
+    )
+    .await
+    .expect("a missing marker must not error");
+
+    assert!(
+        matches!(outcome, AgentWorkspacePrAutofixHoldActionOutcome::Stale(_)),
+        "an ordinary in-flight continuation without the attention marker must stay unreachable"
+    );
+}
+
+#[tokio::test]
+async fn retry_publication_effect_clears_the_hold_and_reruns_the_durable_reconciler() {
+    let temp = tempfile::tempdir().expect("publication effect retry tempdir should be created");
+    let state = AppState::new_test();
+    let attempt = workspace_review_boundary_context(&state, temp.path(), false).await;
+    let (checkpointed, _identity, _epoch) =
+        checkpoint_workspace_review_boundary_lease(&state, attempt).await;
+
+    let expected_updated_at = checkpointed.updated_at;
+    let mut escalated = checkpointed.clone();
+    escalated.phase = AgentWorkspaceRepairPhase::ContinuationPending;
+    escalated.pending_reasons = vec![CONTINUATION_OPEN_EFFECT_ATTENTION_REASON.to_string()];
+    escalated.updated_at += chrono::Duration::microseconds(1);
+    let escalated = match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: escalated,
+            expected_phase: checkpointed.phase,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::ContinuationPending,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("publication effect retry escalation checkpoint should persist")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("publication effect retry escalation must apply, got {outcome:?}"),
+    };
+    state
+        .notification_service()
+        .record(crate::domain::entities::NewNotification {
+            project_id: None,
+            category: crate::domain::entities::NotificationCategory::TaskBlocked,
+            severity: crate::domain::entities::NotificationSeverity::ActionRequired,
+            title: "Workspace repair effect needs attention".to_string(),
+            body: Some("pre-existing escalation notification".to_string()),
+            target: crate::domain::entities::NotificationTarget::none(),
+            dedupe_key: Some(format!(
+                "repair_open_effect:{}:{}",
+                escalated.conversation_id, escalated.id
+            )),
+        })
+        .await;
+
+    let outcome = retry_agent_workspace_publication_effect(
+        &state,
+        &escalated.conversation_id,
+        &escalated.id,
+        escalated.generation,
+        escalated.updated_at,
+    )
+    .await
+    .expect("clearing a genuine attention hold must not error");
+
+    let AgentWorkspacePrAutofixHoldActionOutcome::Applied(applied) = outcome else {
+        panic!("expected Applied once the CAS matches the current generation, got {outcome:?}");
+    };
+    assert!(
+        !applied
+            .pending_reasons
+            .iter()
+            .any(|reason| reason == CONTINUATION_OPEN_EFFECT_ATTENTION_REASON),
+        "the attention marker must be cleared by an accepted override"
+    );
+
+    assert!(
+        state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&escalated.conversation_id)
+            .await
+            .expect("publication events should load")
+            .iter()
+            .any(|event| event.step == "publication_effect_attention_retried"),
+        "the override must leave a durable audit trail"
     );
 }
 

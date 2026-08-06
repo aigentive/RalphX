@@ -5,6 +5,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Duration, Utc};
 
 use crate::application::agent_conversation_workspace::resolve_effective_agent_conversation_workspace_path;
+use crate::application::agent_workspace_publish_recovery::recover_stale_publish_repair_for_workspace_in_state_result;
 use crate::application::agent_workspace_review::{
     load_agent_workspace_review_context, load_workspace_review_publish_blocker,
     review_gate_publish_blocker, AgentWorkspaceReviewStart,
@@ -66,6 +67,8 @@ pub(crate) const AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION: u64 = 1;
 pub(crate) const MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES: u32 = 3;
 pub(crate) const CONTINUATION_RECOVERY_FAILURE_REASON_PREFIX: &str =
     "continuation_recovery_failure:";
+pub(crate) const PUBLICATION_EFFECT_ATTENTION_RETRIED_STEP: &str =
+    "publication_effect_attention_retried";
 /// A deliberately small cap: transient runner failures must not create an unbounded CI loop.
 pub(crate) const MAX_AGENT_WORKSPACE_CI_RERUN_RETRIES: u32 = 3;
 pub(crate) const NEEDS_HUMAN_REPAIR_REASON: &str = "pr_autofix_needs_human";
@@ -95,13 +98,20 @@ pub(crate) fn is_machine_repair_reason_marker(reason: &str) -> bool {
             | UNCHANGED_HEALTH_REPAIR_REASON
             | BASE_STALE_AFTER_UPDATE_REPAIR_REASON
             | AWAITING_CI_REPAIR_REASON
+            | crate::application::agent_workspace_publish_recovery::CONTINUATION_OPEN_EFFECT_ATTENTION_REASON
     ) || trimmed.starts_with(
         crate::application::agent_workspace_publish_recovery::AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX,
     ) || trimmed.starts_with(
         crate::application::agent_workspace_publish_recovery::AUTO_RETRY_READY_REPAIR_REASON_PREFIX,
     ) || trimmed.starts_with(
         crate::application::agent_workspace_publish_recovery::EXHAUSTED_PUBLISH_REDRIVE_CHECKED_REASON_PREFIX,
-    )
+    ) || trimmed.starts_with(
+        crate::application::agent_workspace_publish_recovery::CONTINUATION_OPEN_EFFECT_RECOVERY_REASON_PREFIX,
+    ) || trimmed.starts_with(
+        crate::application::agent_workspace_publish_recovery::CONTINUATION_OPEN_EFFECT_EVIDENCE_REASON_PREFIX,
+    ) || trimmed.starts_with(
+        crate::application::agent_workspace_publish_recovery::BLOCKED_STREAK_REARMED_REASON_PREFIX,
+    ) || trimmed.starts_with(CONTINUATION_RECOVERY_FAILURE_REASON_PREFIX)
 }
 
 pub(crate) fn last_human_repair_reason(attempt: &AgentWorkspaceRepairAttempt) -> Option<&str> {
@@ -305,6 +315,15 @@ pub(crate) fn repair_attempt_projection(
         | AgentWorkspaceRepairPhase::Repairing
         | AgentWorkspaceRepairPhase::Validating => ("needs_agent", "fixing"),
         AgentWorkspaceRepairPhase::AwaitingReview => ("refreshed", "reviewing"),
+        AgentWorkspaceRepairPhase::ContinuationPending | AgentWorkspaceRepairPhase::Continuing
+            if attempt.operation_snapshot().status
+                == crate::domain::entities::AgentWorkspaceRepairOperationStatus::Held =>
+        {
+            // A continuation stuck behind an unresolved publication effect projects the same
+            // legacy "held" pair as a Ready health hold, so the compatibility layer never has to
+            // learn a third state; the typed `operation_snapshot()` stays the source of truth.
+            ("refreshed", "held")
+        }
         AgentWorkspaceRepairPhase::ContinuationPending | AgentWorkspaceRepairPhase::Continuing => {
             ("refreshed", "publishing")
         }
@@ -1081,6 +1100,122 @@ pub(crate) async fn stop_agent_workspace_pr_autofix_for_hold(
             Ok(AgentWorkspacePrAutofixHoldActionOutcome::Missing)
         }
     }
+}
+
+/// Clears a continuation's publication-effect attention hold by explicit user override and
+/// re-runs the ordinary durable reconciler. The CAS fences the exact attempt id, generation, and
+/// observed timestamp so a stale UI action cannot clear a marker the backend has already
+/// resolved or replaced.
+///
+/// Unlike [`retry_agent_workspace_pr_autofix_hold_override`] this never starts a successor
+/// generation and never reuses `ResumePrSupervision` continuation semantics: the continuation
+/// this hold belongs to is still the current, unsettled generation. It only needs its stuck
+/// evidence cleared before the reconciler is given another pass.
+pub(crate) async fn retry_agent_workspace_publication_effect(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    attempt_id: &crate::domain::entities::AgentWorkspaceRepairAttemptId,
+    generation: u64,
+    updated_at: DateTime<Utc>,
+) -> AppResult<AgentWorkspacePrAutofixHoldActionOutcome> {
+    let Some(current) = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(conversation_id)
+        .await?
+    else {
+        return Ok(AgentWorkspacePrAutofixHoldActionOutcome::Missing);
+    };
+    if current.id != *attempt_id
+        || current.generation != generation
+        || current.updated_at != updated_at
+        || !matches!(
+            current.phase,
+            AgentWorkspaceRepairPhase::ContinuationPending | AgentWorkspaceRepairPhase::Continuing
+        )
+        || !current.pending_reasons.iter().any(|reason| {
+            reason
+                == crate::application::agent_workspace_publish_recovery::CONTINUATION_OPEN_EFFECT_ATTENTION_REASON
+        })
+    {
+        return Ok(AgentWorkspacePrAutofixHoldActionOutcome::Stale(current));
+    }
+
+    let phase = current.phase;
+    let expected_updated_at = current.updated_at;
+    let mut cleared = current;
+    cleared.pending_reasons.retain(|reason| {
+        reason
+            != crate::application::agent_workspace_publish_recovery::CONTINUATION_OPEN_EFFECT_ATTENTION_REASON
+            && !reason.starts_with(
+                crate::application::agent_workspace_publish_recovery::CONTINUATION_OPEN_EFFECT_RECOVERY_REASON_PREFIX,
+            )
+            && !reason.starts_with(
+                crate::application::agent_workspace_publish_recovery::CONTINUATION_OPEN_EFFECT_EVIDENCE_REASON_PREFIX,
+            )
+    });
+    cleared.summary =
+        Some("Retrying workspace repair publication by explicit user override.".to_string());
+    cleared.updated_at = next_transition_at(Some(expected_updated_at));
+    let applied = match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: cleared,
+            expected_phase: phase,
+            expected_updated_at,
+            next_phase: phase,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await?
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(applied) => applied,
+        AgentWorkspaceRepairAttemptTransitionOutcome::Stale(attempt) => {
+            return Ok(AgentWorkspacePrAutofixHoldActionOutcome::Stale(attempt));
+        }
+        AgentWorkspaceRepairAttemptTransitionOutcome::Missing => {
+            return Ok(AgentWorkspacePrAutofixHoldActionOutcome::Missing);
+        }
+    };
+
+    if let Err(error) = state
+        .agent_conversation_workspace_repo
+        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+            applied.conversation_id.clone(),
+            PUBLICATION_EFFECT_ATTENTION_RETRIED_STEP,
+            "active",
+            "Workspace repair publication-effect attention hold cleared by explicit user override.",
+            Some(applied.id.to_string()),
+        ))
+        .await
+    {
+        tracing::warn!(
+            error = %error,
+            attempt_id = %applied.id,
+            "Failed to append workspace repair publication-effect retry event"
+        );
+    }
+    state
+        .notification_service()
+        .resolve_workflow_notification(&format!(
+            "repair_open_effect:{}:{}",
+            applied.conversation_id, applied.id
+        ))
+        .await;
+
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!(
+                "workspace {conversation_id} for publication effect retry"
+            ))
+        })?;
+    // Only the durable reconciler acquires leases, transitions phases, and invokes the
+    // publisher; this override's sole authority is clearing the stuck marker above.
+    recover_stale_publish_repair_for_workspace_in_state_result(state, workspace).await?;
+
+    Ok(AgentWorkspacePrAutofixHoldActionOutcome::Applied(applied))
 }
 
 /// CAS-reserve a wait for the workflow run RalphX intends to rerun. Unlike a rerun reservation,

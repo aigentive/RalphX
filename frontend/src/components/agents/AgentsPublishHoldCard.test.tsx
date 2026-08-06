@@ -53,6 +53,7 @@ describe("AgentsPublishHoldCard", () => {
     const onOpenChecks = vi.fn();
     const onRecheck = vi.fn();
     const onRetry = vi.fn();
+    const onRetryPublication = vi.fn();
     const onStop = vi.fn();
     render(
       <TooltipProvider delayDuration={0}>
@@ -61,6 +62,7 @@ describe("AgentsPublishHoldCard", () => {
           onOpenChecks={onOpenChecks}
           onRecheck={onRecheck}
           onRetry={onRetry}
+          onRetryPublication={onRetryPublication}
           onStop={onStop}
         />
       </TooltipProvider>,
@@ -79,5 +81,62 @@ describe("AgentsPublishHoldCard", () => {
     expect(onRecheck).toHaveBeenCalledOnce();
     expect(onRetry).toHaveBeenCalledOnce();
     expect(onStop).toHaveBeenCalledOnce();
+    expect(
+      screen.queryByRole("button", { name: "Retry publication" }),
+    ).not.toBeInTheDocument();
+    expect(onRetryPublication).not.toHaveBeenCalled();
+  });
+
+  it("gates a publication_effect_attention hold to a single Retry publication action", async () => {
+    const user = userEvent.setup();
+    const onOpenChecks = vi.fn();
+    const onRecheck = vi.fn();
+    const onRetry = vi.fn();
+    const onRetryPublication = vi.fn();
+    const onStop = vi.fn();
+    const publicationEffectWorkspace: AgentConversationWorkspace = {
+      ...workspace,
+      maintenanceOperation: {
+        ...workspace.maintenanceOperation!,
+        source: "publish",
+        holdReason: "publication_effect_attention",
+        summary: "RalphX could not confirm the push reached GitHub.",
+      },
+    };
+    render(
+      <TooltipProvider delayDuration={0}>
+        <AgentsPublishHoldCard
+          workspace={publicationEffectWorkspace}
+          onOpenChecks={onOpenChecks}
+          onRecheck={onRecheck}
+          onRetry={onRetry}
+          onRetryPublication={onRetryPublication}
+          onStop={onStop}
+        />
+      </TooltipProvider>,
+    );
+
+    const retryPublicationButton = screen.getByRole("button", {
+      name: "Retry publication",
+    });
+    expect(retryPublicationButton).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: "Re-check PR health" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Retry repair anyway/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Stop auto-repair" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Abandon/i }),
+    ).not.toBeInTheDocument();
+
+    await user.click(retryPublicationButton);
+    expect(onRetryPublication).toHaveBeenCalledOnce();
+    expect(onRecheck).not.toHaveBeenCalled();
+    expect(onRetry).not.toHaveBeenCalled();
+    expect(onStop).not.toHaveBeenCalled();
   });
 });
