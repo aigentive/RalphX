@@ -873,11 +873,9 @@ pub(crate) async fn reconcile_blocked_agent_workspace_repair_pr_handoff(
         state.plan_branch_repo.as_ref(),
     )
     .await?;
-    let github = state.github_service.as_ref().ok_or_else(|| {
-        AppError::Infrastructure(
-            "GitHub integration is unavailable for blocked PR handoff reconciliation".to_string(),
-        )
-    })?;
+    let Some(github) = state.github_service.as_ref() else {
+        return Ok(BlockedRepairPrHandoffReconciliation::NotRecoverable);
+    };
     let sync_state = github.check_pr_sync_state(&target.path, pr_number).await?;
     if sync_state.status != PrStatus::Open
         || sync_state.head_ref_name != workspace.branch_name
