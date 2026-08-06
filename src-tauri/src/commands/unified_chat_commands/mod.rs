@@ -10047,15 +10047,12 @@ where
     else {
         return false;
     };
-    let recovery_action = crate::application::agent_workspace_publish_repair_state::load_agent_workspace_repair_operation_recovery_action(
+    let retry_allowed = crate::application::agent_workspace_publish_repair_state::explicit_agent_workspace_repair_retry_allowed(
         state.agent_workspace_repair_repo.as_ref(),
         &attempt,
     )
     .await;
-    if !matches!(
-        recovery_action,
-        Ok(crate::domain::entities::AgentWorkspaceRepairOperationRecoveryAction::RetryRepair)
-    ) {
+    if !matches!(retry_allowed, Ok(true)) {
         return false;
     }
     let Ok(Some(project)) = state.project_repo.get_by_id(&workspace.project_id).await else {
