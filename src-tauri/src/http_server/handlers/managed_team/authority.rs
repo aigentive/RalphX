@@ -84,17 +84,47 @@ pub(super) async fn resolve_team_authority(
             .await
             .map_err(|rejection| match rejection {
                 TrustedRunRejection::RunNotFound => {
+                    tracing::warn!(
+                        conversation_id = %conversation_id,
+                        run_id = %run_id,
+                        reason = "run_not_found",
+                        "resolve_team_authority rejected"
+                    );
                     json_error(StatusCode::CONFLICT, "Trusted Team run is not active")
                 }
-                TrustedRunRejection::ConversationMismatch => json_error(
-                    StatusCode::CONFLICT,
-                    "Trusted Team run does not belong to the caller conversation",
-                ),
-                TrustedRunRejection::RunTerminal { status } => json_error(
-                    StatusCode::CONFLICT,
-                    format!("Trusted Team run has already finished ({status:?})"),
-                ),
+                TrustedRunRejection::ConversationMismatch => {
+                    tracing::warn!(
+                        conversation_id = %conversation_id,
+                        run_id = %run_id,
+                        reason = "conversation_mismatch",
+                        "resolve_team_authority rejected"
+                    );
+                    json_error(
+                        StatusCode::CONFLICT,
+                        "Trusted Team run does not belong to the caller conversation",
+                    )
+                }
+                TrustedRunRejection::RunTerminal { status } => {
+                    tracing::warn!(
+                        conversation_id = %conversation_id,
+                        run_id = %run_id,
+                        run_status = %status,
+                        reason = "run_terminal",
+                        "resolve_team_authority rejected"
+                    );
+                    json_error(
+                        StatusCode::CONFLICT,
+                        format!("Trusted Team run has already finished (status: {status})"),
+                    )
+                }
                 TrustedRunRejection::RepositoryError(error) => {
+                    tracing::warn!(
+                        conversation_id = %conversation_id,
+                        run_id = %run_id,
+                        reason = "repository_error",
+                        %error,
+                        "resolve_team_authority rejected"
+                    );
                     json_error(StatusCode::INTERNAL_SERVER_ERROR, error)
                 }
             })?;

@@ -330,15 +330,45 @@ pub(crate) async fn trusted_delegate_identity(
         .await
         .map_err(|rejection| match rejection {
             TrustedRunRejection::RunNotFound => {
+                tracing::warn!(
+                    operation = %operation,
+                    conversation_id = %conversation_id,
+                    run_id = %run_id,
+                    reason = "run_not_found",
+                    "trusted_delegate_identity rejected"
+                );
                 format!("{operation} trusted run was not found")
             }
             TrustedRunRejection::ConversationMismatch => {
+                tracing::warn!(
+                    operation = %operation,
+                    conversation_id = %conversation_id,
+                    run_id = %run_id,
+                    reason = "conversation_mismatch",
+                    "trusted_delegate_identity rejected"
+                );
                 format!("{operation} trusted run does not belong to the delegated conversation")
             }
-            TrustedRunRejection::RunTerminal { .. } => {
-                format!("{operation} trusted run has already finished")
+            TrustedRunRejection::RunTerminal { status } => {
+                tracing::warn!(
+                    operation = %operation,
+                    conversation_id = %conversation_id,
+                    run_id = %run_id,
+                    run_status = %status,
+                    reason = "run_terminal",
+                    "trusted_delegate_identity rejected"
+                );
+                format!("{operation} trusted run has already finished (status: {status})")
             }
             TrustedRunRejection::RepositoryError(error) => {
+                tracing::warn!(
+                    operation = %operation,
+                    conversation_id = %conversation_id,
+                    run_id = %run_id,
+                    reason = "repository_error",
+                    %error,
+                    "trusted_delegate_identity rejected"
+                );
                 format!("{operation} could not validate the trusted run: {error}")
             }
         })?;

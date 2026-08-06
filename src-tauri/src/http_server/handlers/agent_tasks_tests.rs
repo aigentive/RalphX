@@ -68,7 +68,7 @@ async fn trusted_delegate_identity_rejects_a_terminal_caller_run() {
         .expect_err("a finished turn has no delegate authority");
 
     assert_eq!(
-        error, "test_operation trusted run has already finished",
+        error, "test_operation trusted run has already finished (status: completed)",
         "unexpected error message: {error}"
     );
 }
