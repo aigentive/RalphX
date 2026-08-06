@@ -1624,7 +1624,7 @@ function renderPublishPanelForWorkspaceRerender(
             activeSubTab="automation"
             showReviewTab
             onSubTabChange={() => {}}
-            reviewContent={null}
+            reviewContent={() => null}
           />
         </div>
       </TooltipProvider>
@@ -3724,6 +3724,75 @@ describe("AgentsArtifactPane", () => {
     expect(startWorkspaceReviewMock).not.toHaveBeenCalled();
   });
 
+  it("keeps Workspace Review in a checking state while its owner context is pending", async () => {
+    getWorkspaceReviewContextMock.mockImplementation(() => new Promise(() => {}));
+
+    renderPane(
+      "review",
+      workspace({ mode: "edit" }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    expect(
+      await screen.findByText("Checking reviewable changes…"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("No reviewable changes")).not.toBeInTheDocument();
+  });
+
+  it("shows an empty Workspace Review when its settled context has no target", async () => {
+    getWorkspaceReviewContextMock.mockResolvedValue(
+      workspaceReviewContext({ target: null }),
+    );
+    getWorkspaceReviewMock.mockResolvedValue({
+      changes: [],
+      commits: [],
+      baseRef: "main",
+      headRef: "HEAD",
+    });
+
+    renderPane(
+      "review",
+      workspace({ mode: "edit" }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    expect(await screen.findByText("No reviewable changes")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Checking reviewable changes…"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("surfaces Workspace Review context failures and retries the exact owner", async () => {
+    getWorkspaceReviewContextMock.mockRejectedValue(
+      new Error("workspace target lookup failed"),
+    );
+
+    renderPane(
+      "review",
+      workspace({ mode: "edit" }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    expect(
+      await screen.findByText("Workspace Review unavailable"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("workspace target lookup failed")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() =>
+      expect(getWorkspaceReviewContextMock).toHaveBeenCalledWith(
+        "conversation-1",
+        expect.objectContaining({ refreshTarget: true }),
+      ),
+    );
+    expect(screen.queryByText("No reviewable changes")).not.toBeInTheDocument();
+  });
+
   it("keeps the no-changes publish guard active when Review mounts first", async () => {
     getWorkspaceReviewContextMock.mockResolvedValue(
       workspaceReviewContext({
@@ -4641,6 +4710,96 @@ describe("AgentsArtifactPane", () => {
       "review-child-conversation",
       expect.anything(),
     );
+  });
+
+  it("keeps a nested child Review start pending and retains its parent result", async () => {
+    const start = deferred<StartAgentWorkspaceReviewResult>();
+    const parentContext = workspaceReviewContext({
+      conversationId: "parent-conversation",
+      target: workspaceReviewTarget,
+      shouldShowTab: true,
+    });
+    getWorkspaceReviewContextMock.mockResolvedValue(parentContext);
+    startWorkspaceReviewMock.mockReturnValue(start.promise);
+
+    renderPane(
+      "review",
+      workspace({ conversationId: "parent-conversation", mode: "edit" }),
+      vi.fn(),
+      false,
+      {
+        ...conversation(),
+        id: "review-child-conversation",
+        parentConversationId: "parent-conversation",
+      },
+    );
+
+    const runReview = await screen.findByRole("button", {
+      name: "Run review",
+    });
+    fireEvent.click(runReview);
+
+    await waitFor(() =>
+      expect(startWorkspaceReviewMock).toHaveBeenCalledWith(
+        "parent-conversation",
+        { force: false },
+      ),
+    );
+    await waitFor(() => expect(runReview).toBeDisabled());
+    fireEvent.click(runReview);
+    expect(startWorkspaceReviewMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      start.resolve(
+        workspaceReviewContext({
+          conversationId: "parent-conversation",
+          target: workspaceReviewTarget,
+          status: "reviewing",
+          reviewGateStatus: "reviewing",
+          shouldShowTab: true,
+        }),
+      );
+    });
+
+    expect(
+      await screen.findByTestId("agents-publish-reviewing"),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps a nested child Review start failure scoped to its parent owner", async () => {
+    getWorkspaceReviewContextMock.mockResolvedValue(
+      workspaceReviewContext({
+        conversationId: "parent-conversation",
+        target: workspaceReviewTarget,
+        shouldShowTab: true,
+      }),
+    );
+    startWorkspaceReviewMock.mockRejectedValue(
+      new Error("parent review conflict"),
+    );
+
+    renderPane(
+      "review",
+      workspace({ conversationId: "parent-conversation", mode: "edit" }),
+      vi.fn(),
+      false,
+      {
+        ...conversation(),
+        id: "review-child-conversation",
+        parentConversationId: "parent-conversation",
+      },
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Run review" }));
+
+    expect(
+      await screen.findByText("parent review conflict"),
+    ).toBeInTheDocument();
+    expect(
+      within(screen.getByTestId("agents-publish-tab-review")).getByText(
+        "Failed",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("keeps a failed Review start visible after the mutation settles", async () => {

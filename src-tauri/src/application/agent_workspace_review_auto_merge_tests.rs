@@ -2,7 +2,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
-use crate::application::agent_workspace_review::resolve_review_target;
+use crate::application::agent_workspace_review::{
+    resolve_review_target, AgentWorkspaceReviewPacket,
+};
 use crate::application::agent_workspace_review_auto_merge::{
     auto_merge_guard_blocks_enable, cancel_workspace_review_auto_merge_guard,
     handle_passing_workspace_review_auto_merge_guard, preview_manual_workspace_review_start,
@@ -378,6 +380,62 @@ async fn selected_source_workspace_context(
         .await
         .expect("workspace should persist");
     (state, github, workspace, feature_head)
+}
+
+#[tokio::test]
+async fn manual_preview_defers_workspace_delta_review_packet_materialization() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let state = AppState::new_test();
+    let project = Project::new(
+        "Workspace Review".to_string(),
+        temp.path().to_string_lossy().to_string(),
+    );
+    state
+        .project_repo
+        .create(project.clone())
+        .await
+        .expect("project should persist");
+    let conversation_id = ChatConversationId::from_string("workspace-review-identity-preview");
+    let worktree_path = resolve_agent_conversation_workspace_path(&project, &conversation_id)
+        .expect("workspace path should resolve");
+    let branch_name = "ralphx/test/workspace-review";
+    init_repo(&worktree_path, branch_name);
+    let workspace = AgentConversationWorkspace::new(
+        conversation_id,
+        project.id.clone(),
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::CurrentBranch,
+        "main".to_string(),
+        None,
+        None,
+        branch_name.to_string(),
+        worktree_path.to_string_lossy().to_string(),
+    );
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+
+    let full_target = resolve_review_target(&workspace, &project)
+        .await
+        .expect("full target should resolve")
+        .expect("workspace delta should exist");
+    let preview = preview_manual_workspace_review_start(&state, &workspace)
+        .await
+        .expect("preview should resolve");
+    let preview_target = preview.target.expect("preview target should resolve");
+
+    assert_eq!(
+        preview_target.review_packet,
+        AgentWorkspaceReviewPacket::default()
+    );
+    assert_eq!(
+        preview_target.diff_fingerprint,
+        full_target.diff_fingerprint
+    );
+    assert_eq!(preview_target.base_sha, full_target.base_sha);
+    assert_eq!(preview_target.head_sha, full_target.head_sha);
 }
 
 #[tokio::test]
