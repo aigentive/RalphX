@@ -4463,17 +4463,18 @@ pub(crate) async fn resolve_review_target(
 pub(crate) async fn resolve_review_target_for_user(
     workspace: &AgentConversationWorkspace,
     project: &Project,
+    materialization: AgentWorkspaceReviewTargetMaterialization,
 ) -> AppResult<Option<AgentWorkspaceReviewTarget>> {
     resolve_review_target_in_lane(
         workspace,
         project,
         GitCommandLane::Foreground,
-        AgentWorkspaceReviewTargetMaterialization::FullPacket,
+        materialization,
     )
     .await
 }
 
-async fn resolve_review_target_with_materialization(
+pub(crate) async fn resolve_review_target_with_materialization(
     workspace: &AgentConversationWorkspace,
     project: &Project,
     materialization: AgentWorkspaceReviewTargetMaterialization,
