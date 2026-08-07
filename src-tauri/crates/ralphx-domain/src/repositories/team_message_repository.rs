@@ -15,6 +15,10 @@ pub trait TeamMessageRepository: Send + Sync {
         deliveries: Vec<TeamMessageDelivery>,
     ) -> AppResult<(TeamMessage, Vec<TeamMessageDelivery>)>;
     async fn get_message(&self, id: &TeamMessageId) -> AppResult<Option<TeamMessage>>;
+    async fn get_delivery(
+        &self,
+        id: &TeamMessageDeliveryId,
+    ) -> AppResult<Option<TeamMessageDelivery>>;
     /// Looks up a previously accepted request before a caller retries its
     /// transport-owned idempotency key.
     async fn get_envelope_by_idempotency_key(

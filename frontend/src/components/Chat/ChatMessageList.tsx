@@ -27,7 +27,6 @@ import type { HookEvent, HookStartedEvent } from "@/types/hook-event";
 import { isDiffToolCall, isTaskToolCall } from "./DiffToolCallView.utils";
 import { DiffToolCallView } from "./DiffToolCallView";
 import { TaskSubagentCard } from "./TaskSubagentCard";
-import { shouldUseWebkitSafeScrollBehavior } from "@/lib/platform-quirks";
 import { logger } from "@/lib/logger";
 import { useMessageAttachments } from "@/hooks/useMessageAttachments";
 import { useRunAttributions } from "@/hooks/useRunAttributions";
@@ -87,6 +86,24 @@ import {
 
 const INITIAL_TRANSCRIPT_PAINT_MAX_FRAMES = 240;
 const INITIAL_TRANSCRIPT_PAINT_MAX_MS = 2_500;
+
+/**
+ * First-paint position, and the only one that survives a conversation that
+ * mounts empty and hydrates afterwards.
+ *
+ * `align: "end"` is required now that the composer inset lives inside the last
+ * item. The literal `"LAST"` is required too: Virtuoso resolves locations in
+ * unshifted space, so a numeric `firstItemIndex + timeline.length - 1` only
+ * works by its out-of-range clamp. Guarding it with `timeline.length > 0 ? ...
+ * : 0` is worse still - Virtuoso treats a bare `0` as "already at the top" and
+ * permanently disarms the once-per-mount initial-scroll gate, and `followOutput`
+ * cannot rescue it because its trigger skips the first `totalCount` emission.
+ * Module-level so the reference is stable across renders.
+ */
+const INITIAL_TOP_MOST_LAST = { index: "LAST", align: "end" } as const;
+
+/** Keeps message-row bottom margins inside the box Virtuoso measures. */
+const ITEM_BLOCK_FORMATTING_CONTEXT = { display: "flow-root" } as const;
 
 /** Shared styles for content containers to handle long text */
 const contentContainerStyle: React.CSSProperties = {
@@ -155,6 +172,30 @@ function isEditableOrInteractiveTarget(target: EventTarget | null): boolean {
     'input, textarea, select, [contenteditable], [role="textbox"]',
   ) !== null;
 }
+
+/**
+ * Reserves the composer's measured height at the very end of the transcript.
+ *
+ * It lives inside the last timeline item rather than in Virtuoso's `Footer`,
+ * because Virtuoso's bottom follow always resolves to `scrollToIndex({index:
+ * "LAST", align: "end"})` and a `Footer` sits below that item - the reserved
+ * space would fall past the viewport and hide the last message behind the
+ * composer. Height comes from the inherited custom property written by
+ * `useChatBottomInset`, so there is exactly one writer and no unreserved frame
+ * when the item that owns the spacer remounts on append.
+ */
+const TranscriptBottomSpacer = forwardRef<HTMLDivElement>(
+  function TranscriptBottomSpacer(_props, ref) {
+    return (
+      <div
+        ref={ref}
+        data-testid="chat-transcript-bottom-spacer"
+        aria-hidden
+        style={{ height: "var(--chat-bottom-inset, 0px)", flexShrink: 0 }}
+      />
+    );
+  },
+);
 
 function ContentShell({
   children,
@@ -1027,15 +1068,13 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     },
     ref
   ) {
-    const preferredScrollBehavior = shouldUseWebkitSafeScrollBehavior()
-      ? "auto"
-      : "smooth";
+    // Every remaining follow is WebKit-safe "auto": `followOutput` resolves a
+    // boolean to "auto" internally and the user-message follow always was.
     const lastMessage = messages[messages.length - 1] ?? null;
     const lastUserMessageId = lastMessage?.role === "user" ? lastMessage.id : null;
 
     // Internal ref for scroll operations
     const virtuosoRef = useRef<VirtuosoHandle>(null);
-    const previousLastItemIndexRef = useRef<number | null>(null);
     // Track previous shouldFilterLastAssistant to detect false→true→false transition
     const prevShouldFilterRef = useRef(false);
     const lastUserMessageIdRef = useRef<string | null>(lastUserMessageId);
@@ -1052,7 +1091,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     const previousTotalListHeightRef = useRef<number>(-1);
     const previousFirstItemIndexRef = useRef({ conversationId, index: firstItemIndex });
     const timestampJumpKeyRef = useRef<string | null>(null);
-    const lastItemIndexRef = useRef(firstItemIndex);
     const isTestEnv = import.meta.env.VITEST;
     const [isVisuallyAtBottom, setIsVisuallyAtBottomState] = useState(true);
     const isVisuallyAtBottomRef = useRef(true);
@@ -1108,19 +1146,23 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
 
     const getScrollElement = useCallback(() => scrollerElRef.current, []);
     const scrollToTimelineIndex = useCallback(
-      (options: { index: number; align: "start" | "end"; behavior: "auto" | "smooth" }) => {
+      (options: { index: "LAST" | number; align: "start" | "end"; behavior: "auto" | "smooth" }) => {
         virtuosoRef.current?.scrollToIndex(options);
       },
       [],
     );
-    const getLastTimelineIndex = useCallback(() => lastItemIndexRef.current, []);
+    const autoscrollToBottom = useCallback(() => {
+      virtuosoRef.current?.autoscrollToBottom();
+    }, []);
     const [scrollControllerDeps] = useState<ChatScrollControllerDeps>(() => ({
       getScrollElement,
       scrollToIndex: scrollToTimelineIndex,
-      getLastIndex: getLastTimelineIndex,
+      autoscrollToBottom,
       requestFrame: (callback) => requestAnimationFrame(callback),
       cancelFrame: (frame) => cancelAnimationFrame(frame),
-      onVisualBottomChange: setIsVisuallyAtBottom,
+      // Bottom-control visibility is driven by Virtuoso's `atBottomStateChange`,
+      // not by the controller's `scrollHeight - clientHeight` estimate, which
+      // the virtualizer republishes several hundred pixels short mid-render.
       debugLog: (event, detail) => {
         logger.debug(`[ChatScroll] ${event}`, detail);
         recordChatScrollTrace({
@@ -1682,9 +1724,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         : DEFAULT_ASSISTANT_GROUP_STATE;
 
     const lastItemIndex = firstItemIndex + timeline.length - 1;
-    useLayoutEffect(() => {
-      lastItemIndexRef.current = lastItemIndex;
-    }, [lastItemIndex]);
+    const isTimelineEmpty = timeline.length === 0;
 
     useLayoutEffect(() => {
       scrollController.restoreAnchor();
@@ -1710,7 +1750,13 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       if (scroller) {
         updateScrollableOverflow(scroller);
       }
-      if (height > 0 && (previousHeight < 0 || height > previousHeight)) {
+      if (height > 0 && height !== previousHeight) {
+        // Any total-height change, not just growth. While Virtuoso replaces
+        // estimated item sizes with measured ones it publishes a shrinking
+        // total, the browser clamps the follower down on each shrink, and the
+        // regrow that follows leaves them short with no count change to trigger
+        // followOutput. Arming is cheap and never writes scrollTop: Virtuoso
+        // acts only when a size increase actually pushed the reader off bottom.
         scrollController?.notifyContentGrowth();
       } else {
         scrollController?.isVisuallyAtBottom();
@@ -1833,7 +1879,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
 
     useEffect(() => {
       previousTotalListHeightRef.current = -1;
-      previousLastItemIndexRef.current = null;
       timestampJumpKeyRef.current = null;
       setHasScrollableOverflow(false);
       scrollController?.reset();
@@ -1858,11 +1903,10 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     }, [lastUserMessageId, scrollController]);
 
     useEffect(() => {
-      if (isAgentRunning && !agentRunningRef.current) {
-        scrollController?.requestPin("streaming-started", preferredScrollBehavior);
-      }
+      // Streaming start appends a timeline item, which is exactly what
+      // `followOutput` triggers on. A second follow here only adds a writer.
       agentRunningRef.current = isAgentRunning;
-    }, [isAgentRunning, preferredScrollBehavior, scrollController]);
+    }, [isAgentRunning]);
 
     // Scroll to specific timestamp for history mode (time-travel feature)
     // Finds the first message at or after the given timestamp and scrolls to it
@@ -1893,7 +1937,9 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     useEffect(() => {
       if (scrollToTimestamp) return;
       if (prevShouldFilterRef.current && !shouldFilterCurrentProviderMessage) {
-        scrollController?.requestPin("finalized-provider-message-revealed", "auto");
+        // The reveal can swap a live row for its persisted twin without
+        // changing `totalCount`, so `followOutput` alone would not fire.
+        scrollController?.notifyContentGrowth();
       }
       prevShouldFilterRef.current = shouldFilterCurrentProviderMessage;
     }, [scrollController, shouldFilterCurrentProviderMessage, scrollToTimestamp]);
@@ -1926,6 +1972,18 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       [scrollController, shouldShowScrollToBottom],
     );
 
+    /**
+     * Virtuoso hands this `isAtBottom || scrollingInProgress`, and a bare
+     * `followOutput` would follow on either. That drags a reader who just
+     * wheeled up and receives a message inside the scroll-in-progress window,
+     * so the controller's explicit away intent vetoes the follow. Returning
+     * `false` for anything else preserves Virtuoso's own gate.
+     */
+    const handleFollowOutput = useCallback((atBottomOrScrolling: boolean) => {
+      if (scrollController.getState() === "free") return false;
+      return atBottomOrScrolling ? ("auto" as const) : false;
+    }, [scrollController]);
+
     const handleRangeChanged = useCallback(
       (range: ListRange) => {
         if (timeline.length > 0 && range.endIndex >= range.startIndex) {
@@ -1941,22 +1999,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       }
       scheduleInitialPaintReadyCheck();
     }, [scheduleInitialPaintReadyCheck, shouldShowInitialPaintCover]);
-
-    useEffect(() => {
-      const previousLastItemIndex = previousLastItemIndexRef.current;
-      previousLastItemIndexRef.current = lastItemIndex;
-
-      if (
-        scrollToTimestamp ||
-        timeline.length === 0 ||
-        previousLastItemIndex === null ||
-        lastItemIndex <= previousLastItemIndex
-      ) {
-        return;
-      }
-
-      scrollController?.requestPin("new-timeline-item-appended", preferredScrollBehavior);
-    }, [lastItemIndex, preferredScrollBehavior, scrollController, scrollToTimestamp, timeline.length]);
 
     const renderStreamingToolCallBlock = useCallback(
       (
@@ -2093,23 +2135,25 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
           </ContentShell>
         </div>
       ),
+      // Only the empty-timeline fallback. With any content the spacer belongs
+      // inside the last item so `align: "end"` lands it at the composer top.
       Footer: () => (
-        <div
-          ref={handleBottomSpacerRef}
-          data-testid="chat-transcript-bottom-spacer"
-          aria-hidden
-          style={{ height: 0, flexShrink: 0 }}
-        />
+        isTimelineEmpty
+          ? <TranscriptBottomSpacer ref={handleBottomSpacerRef} />
+          : null
       ),
     }), [
       contentWidthClassName,
       failedRun, onDismissFailedRun,
       handleBottomSpacerRef,
+      // Emptiness, not `timeline.length`: this identity must survive every
+      // append or Virtuoso remounts the Header on each streamed row.
+      isTimelineEmpty,
       topInsetClassName,
     ]);
 
     // Memoize itemContent for virtualized rendering.
-    const renderItem = useCallback((index: number, item: TimelineItem) => {
+    const renderTimelineRow = useCallback((index: number, item: TimelineItem) => {
       const timelineIndex = index - firstItemIndex;
       const isLastVisibleTimelineItem = timelineIndex === lastVisibleTimelineIndex;
       if (item.kind === "hook") {
@@ -2304,6 +2348,28 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       toggleToolCallGroup,
       toggleThinkingGroup,
     ]);
+
+    const renderItem = useCallback((index: number, item: TimelineItem) => (
+      // The block formatting context is load-bearing. Message rows carry a
+      // `mb-5` that otherwise collapses straight out of Virtuoso's item
+      // wrapper, so every item measured 20px smaller than it occupied and the
+      // size tree ran short by 20px per rendered row - which is why
+      // `scrollToIndex({index: "LAST", align: "end"})` landed ~119px above the
+      // true bottom and why a raw corrective write used to be needed at all.
+      <div style={ITEM_BLOCK_FORMATTING_CONTEXT}>
+        {renderTimelineRow(index, item)}
+        {/*
+          Must match what Virtuoso's follow resolves `"LAST"` to - `totalCount
+          - 1` in the same `firstItemIndex`-shifted space this callback
+          receives - and never `lastVisibleTimelineIndex`, which skips covered
+          tool-call and thinking rows and would leave the run-attribution row
+          below the reserved inset.
+        */}
+        {index === lastItemIndex
+          ? <TranscriptBottomSpacer ref={handleBottomSpacerRef} />
+          : null}
+      </div>
+    ), [handleBottomSpacerRef, lastItemIndex, renderTimelineRow]);
 
     if (isTestEnv) {
       return (
@@ -2509,12 +2575,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
             onClick={handleScrollToBottomClick}
             onWheel={handleScrollToBottomWheel}
           />
-          <div
-            ref={handleBottomSpacerRef}
-            data-testid="chat-transcript-bottom-spacer"
-            aria-hidden
-            style={{ height: 0, flexShrink: 0 }}
-          />
+          <TranscriptBottomSpacer ref={handleBottomSpacerRef} />
         </div>
       );
     }
@@ -2541,9 +2602,9 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
           scrollerRef={handleScrollerRef}
           data={timeline}
           firstItemIndex={firstItemIndex}
-          // Start at the last item on mount
-          initialTopMostItemIndex={timeline.length > 0 ? lastItemIndex : 0}
-          followOutput={false}
+          initialTopMostItemIndex={INITIAL_TOP_MOST_LAST}
+          followOutput={handleFollowOutput}
+          atBottomStateChange={setIsVisuallyAtBottom}
           rangeChanged={handleRangeChanged}
           totalListHeightChanged={handleTotalListHeightChanged}
           {...virtuosoStartReachedProps}

@@ -66,6 +66,12 @@ impl TeamMessageRepository for MemoryTeamMessageRepository {
     async fn get_message(&self, id: &TeamMessageId) -> AppResult<Option<TeamMessage>> {
         Ok(self.messages.read().await.get(id).cloned())
     }
+    async fn get_delivery(
+        &self,
+        id: &TeamMessageDeliveryId,
+    ) -> AppResult<Option<TeamMessageDelivery>> {
+        Ok(self.deliveries.read().await.get(id).cloned())
+    }
     async fn get_envelope_by_idempotency_key(
         &self,
         team: &TeamSessionId,

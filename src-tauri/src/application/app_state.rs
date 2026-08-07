@@ -1283,6 +1283,24 @@ impl AppState {
         )
     }
 
+    /// Build the managed-Team wake dispatcher on demand.
+    ///
+    /// Constructed per call, like `build_delegation_park_service`, because it depends on
+    /// `ChatService`, which is itself built from `AppState`. Durable authority lives in the
+    /// Team repos owned by the shared `managed_team` service, so both AppState graphs observe
+    /// the same wake batches.
+    pub fn build_managed_team_wake_dispatcher(
+        &self,
+    ) -> crate::application::managed_team::wake_dispatch::ManagedTeamWakeDispatcher {
+        crate::application::managed_team::wake_dispatch::ManagedTeamWakeDispatcher::new(
+            Arc::clone(&self.managed_team),
+            Arc::new(self.build_chat_service()),
+            Arc::clone(&self.agent_run_repo),
+            Arc::clone(&self.chat_conversation_repo),
+            Arc::clone(&self.events),
+        )
+    }
+
     /// Build chat service with the app-managed execution halt state when available.
     pub fn build_chat_service_with_managed_execution_state(&self) -> AppChatService {
         let execution_state = self

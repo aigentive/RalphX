@@ -2767,3 +2767,25 @@ pub struct ManagedTeamRosterEntry {
     pub role_summary: String,
     pub status: String,
 }
+
+/// One roster member joined to its delegated-session liveness. `agent_state`-derived
+/// fields stay `None` when the member has no delegated session yet, or when its
+/// delegated session was already cleared (degrade, never fail — the member entry
+/// itself always remains present).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedTeamMemberStatusEntry {
+    pub name: String,
+    pub normalized_name: String,
+    pub role_summary: String,
+    pub status: String,
+    pub canonical_agent_name: String,
+    pub generation: i64,
+    pub harness: Option<String>,
+    pub current_assignment_id: Option<String>,
+    pub last_activity_at: Option<String>,
+    pub is_running: Option<bool>,
+    pub last_active_at: Option<String>,
+    pub estimated_status: Option<String>,
+    pub latest_run: Option<DelegatedRunSummary>,
+}
