@@ -68,7 +68,16 @@ export class AgentsChatTurnPage {
     });
   }
 
-  async finalize(content: string): Promise<void> {
+  /**
+   * `expectLastRendered` waits for the finalized row to become the visible tail,
+   * which is only true for a reader who is following the bottom. A reader parked
+   * up the transcript keeps the tail virtualized out by design, so those callers
+   * pass `false` and synchronize on the timeline refetch instead.
+   */
+  async finalize(
+    content: string,
+    { expectLastRendered = true }: { expectLastRendered?: boolean } = {},
+  ): Promise<void> {
     const messageId = `${this.conversationId}-final`;
     const createdAt = "2026-08-05T02:30:00.000Z";
     const contentBlocks = [{ type: "text", text: content }];
@@ -123,7 +132,23 @@ export class AgentsChatTurnPage {
     // refetch here stands in for that trigger and makes the handoff
     // deterministic without weakening what the assertion checks.
     await this.refetchTimeline();
-    await this.expectLastRenderedContent(content, FINALIZED_MESSAGE_HANDOFF_TIMEOUT_MS);
+    if (expectLastRendered) {
+      await this.expectLastRenderedContent(content, FINALIZED_MESSAGE_HANDOFF_TIMEOUT_MS);
+      return;
+    }
+    // The row is virtualized out for a parked reader, so the transcript cache is
+    // the only handoff signal available that does not assume bottom-follow.
+    await expect
+      .poll(
+        () => this.page.evaluate((id) => {
+          const queries = window.__queryClient?.getQueryCache().findAll({
+            queryKey: ["chat", "conversations", id, "timeline"],
+          }) ?? [];
+          return JSON.stringify(queries.map((query) => query.state.data)).includes(`${id}-final`);
+        }, this.conversationId),
+        { timeout: FINALIZED_MESSAGE_HANDOFF_TIMEOUT_MS },
+      )
+      .toBe(true);
   }
 
   private async expectLastRenderedContent(content: string, timeout?: number): Promise<void> {
