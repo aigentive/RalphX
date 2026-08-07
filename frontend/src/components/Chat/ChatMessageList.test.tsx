@@ -21,6 +21,7 @@ const harness = vi.hoisted(() => ({
   props: null as Record<string, unknown> | null,
   componentsHistory: [] as unknown[],
   scrollToIndex: vi.fn(),
+  autoscrollToBottom: vi.fn(),
 }));
 
 const messageAttachments = vi.hoisted(() => vi.fn(() => ({ data: new Map() })));
@@ -106,6 +107,7 @@ vi.mock("react-virtuoso", async () => {
     itemContent?: (index: number, item: unknown) => React.ReactNode;
     rangeChanged?: (range: { startIndex: number; endIndex: number }) => void;
     scrollerRef?: (element: HTMLElement | Window | null) => void;
+    atBottomStateChange?: (atBottom: boolean) => void;
   };
 
   const Virtuoso = React.forwardRef<unknown, VirtuosoProps>(function MockVirtuoso(props, ref) {
@@ -114,7 +116,7 @@ vi.mock("react-virtuoso", async () => {
     const Scroller = props.components?.Scroller ?? "div";
     const Footer = props.components?.Footer;
     const Header = props.components?.Header;
-    const { rangeChanged, scrollerRef } = props;
+    const { atBottomStateChange, rangeChanged, scrollerRef } = props;
 
     const setScroller = React.useCallback((element: HTMLDivElement | null) => {
       if (element) {
@@ -123,7 +125,10 @@ vi.mock("react-virtuoso", async () => {
       elementRef.current = element;
     }, []);
 
-    React.useImperativeHandle(ref, () => ({ scrollToIndex: harness.scrollToIndex }));
+    React.useImperativeHandle(ref, () => ({
+      scrollToIndex: harness.scrollToIndex,
+      autoscrollToBottom: harness.autoscrollToBottom,
+    }));
 
     React.useEffect(() => {
       harness.props = props;
@@ -144,6 +149,25 @@ vi.mock("react-virtuoso", async () => {
       }
       return () => scrollerRef?.(null);
     }, [data.length, rangeChanged, scrollerRef]);
+
+    // Virtuoso publishes its own debounced, distinct-until-changed at-bottom
+    // state; the double derives it from the same scroll events the transcript
+    // already fires so bottom-control visibility stays observable in tests.
+    React.useEffect(() => {
+      const element = elementRef.current;
+      if (!element || !atBottomStateChange) return undefined;
+      let reported: boolean | null = null;
+      const publish = (): void => {
+        const atBottom =
+          element.scrollHeight - element.clientHeight - element.scrollTop <= 2;
+        if (reported === atBottom) return;
+        reported = atBottom;
+        atBottomStateChange(atBottom);
+      };
+      publish();
+      element.addEventListener("scroll", publish);
+      return () => element.removeEventListener("scroll", publish);
+    }, [atBottomStateChange, data.length]);
 
     return (
       <Scroller ref={setScroller} data-testid="mock-virtuoso">
@@ -405,6 +429,33 @@ function getScroller(): HTMLElement {
   return screen.getByTestId("mock-virtuoso");
 }
 
+/**
+ * Follow reaches Virtuoso one of two ways: arming its post-growth window when
+ * the reader is still at the bottom, or re-issuing `scrollToIndex` when a
+ * growth left them short. Both are Virtuoso-owned; neither writes scrollTop.
+ */
+function expectFollowDelegated(): void {
+  const armed = harness.autoscrollToBottom.mock.calls.length > 0;
+  const corrected = harness.scrollToIndex.mock.calls.some(
+    ([location]: [{ index: unknown; align: unknown }]) =>
+      location.index === "LAST" && location.align === "end",
+  );
+  expect(armed || corrected, "expected follow to be delegated to Virtuoso").toBe(true);
+  expect(scrollWrites).not.toHaveBeenCalled();
+}
+
+function expectNoFollow(): void {
+  expect(harness.autoscrollToBottom).not.toHaveBeenCalled();
+  expect(harness.scrollToIndex).not.toHaveBeenCalled();
+  expect(scrollWrites).not.toHaveBeenCalled();
+}
+
+type FollowOutputFn = (atBottomOrScrolling: boolean) => "auto" | false;
+
+function followOutput(): FollowOutputFn {
+  return callback<FollowOutputFn>("followOutput");
+}
+
 function callback<T>(name: string): T {
   const value = harness.props?.[name];
   expect(value).toEqual(expect.any(Function));
@@ -427,12 +478,122 @@ function flushAnimationFrames(limit = 20): void {
 
 function primeAtBottom(): HTMLElement {
   const scroller = getScroller();
-  setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_000, scrollTop: 480 });
+  // Stands in for Virtuoso's initial-scroll gate landing the transcript on the
+  // last item. Nothing in the controller writes scroll any more, so the double
+  // has to place the reader genuinely at the bottom rather than short of it.
+  setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_000, scrollTop: 500 });
+  fireEvent.scroll(scroller);
   flushAnimationFrames();
   scrollWrites.mockClear();
   harness.scrollToIndex.mockClear();
+  harness.autoscrollToBottom.mockClear();
   return scroller;
 }
+
+describe("transcript bottom spacer placement", () => {
+  beforeEach(() => {
+    vi.stubEnv("VITEST", "");
+    harness.props = null;
+    harness.componentsHistory = [];
+    harness.scrollToIndex.mockReset();
+    harness.autoscrollToBottom.mockReset();
+    messageAttachments.mockReturnValue({ data: new Map() });
+    runAttributions.mockReturnValue({ data: new Map(), isPending: false, isError: false, refetch: vi.fn() });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+  });
+
+  function spacers(): HTMLElement[] {
+    return screen.queryAllByTestId("chat-transcript-bottom-spacer");
+  }
+
+  function itemAt(index: number): HTMLElement {
+    const item = document.querySelector<HTMLElement>(`[data-mock-index="${index}"]`);
+    if (!item) throw new Error(`no rendered item at mock index ${index}`);
+    return item;
+  }
+
+  it("renders exactly one spacer, inside the last timeline item", () => {
+    renderList();
+
+    expect(spacers()).toHaveLength(1);
+    expect(itemAt(2)).toContainElement(spacers()[0] ?? null);
+  });
+
+  it("sizes the spacer from the inherited composer-inset variable", () => {
+    renderList();
+
+    expect(spacers()[0]).toHaveStyle({ height: "var(--chat-bottom-inset, 0px)" });
+    expect(spacers()[0]).toHaveAttribute("aria-hidden", "true");
+  });
+
+  it("registers the spacer with the inset writer", () => {
+    const registerBottomSpacer = vi.fn();
+
+    renderList({ registerBottomSpacer });
+
+    expect(registerBottomSpacer).toHaveBeenCalledWith(spacers()[0]);
+  });
+
+  it("anchors the spacer on the last timeline item under a shifted firstItemIndex", () => {
+    renderList({ firstItemIndex: 10, messages: messages(4, 20) });
+
+    // itemContent receives firstItemIndex-shifted indices, and the anchor is
+    // compared in that same space - not against the unshifted array position.
+    expect(spacers()).toHaveLength(1);
+    expect(itemAt(3)).toContainElement(spacers()[0] ?? null);
+  });
+
+  // The regression this anchor exists for: a finished assistant turn commonly
+  // ends in a collapsed tool-call group, whose covered members make
+  // lastVisibleTimelineIndex smaller than timeline.length - 1. Anchoring there
+  // would put the run-attribution row below the reserved inset and reproduce
+  // the original composer overlap. (A fully covered timeline, where that index
+  // is -1, is unreachable through props: a group's first row is always its
+  // visible toggle.)
+  it("keeps the spacer on the last item when the tail is a covered tool-call row", () => {
+    renderList({ messages: [
+      {
+        id: "tool-row-1",
+        role: "assistant",
+        content: "",
+        createdAt: "2026-01-01T12:00:00Z",
+        timelineSequence: 1,
+        contentBlocks: [{ type: "tool_use", id: "t1", name: "Bash" }],
+        runId: "run-tool",
+      },
+      {
+        id: "tool-row-2",
+        role: "assistant",
+        content: "",
+        createdAt: "2026-01-01T12:00:01Z",
+        timelineSequence: 2,
+        contentBlocks: [{ type: "tool_use", id: "t2", name: "Bash" }],
+        runId: "run-tool",
+        finalizedAt: "2026-01-01T12:00:05Z",
+      },
+    ] });
+
+    expect(screen.getByTestId("tool-call-group-toggle")).toHaveAttribute("aria-expanded", "false");
+    expect(spacers()).toHaveLength(1);
+    expect(itemAt(1)).toContainElement(spacers()[0] ?? null);
+  });
+
+  it("falls back to the Virtuoso footer only while the timeline is empty", () => {
+    const { rerender } = render(<ChatMessageList {...defaultProps} messages={[]} />);
+
+    expect(spacers()).toHaveLength(1);
+    expect(document.querySelector("[data-mock-index]")).toBeNull();
+
+    rerender(<ChatMessageList {...defaultProps} />);
+
+    expect(spacers()).toHaveLength(1);
+    expect(itemAt(2)).toContainElement(spacers()[0] ?? null);
+  });
+});
 
 describe("ChatMessageList controller integration", () => {
   beforeEach(() => {
@@ -440,6 +601,7 @@ describe("ChatMessageList controller integration", () => {
     harness.props = null;
     harness.componentsHistory = [];
     harness.scrollToIndex.mockReset();
+    harness.autoscrollToBottom.mockReset();
     messageAttachments.mockReturnValue({ data: new Map() });
     runAttributions.mockReturnValue({ data: new Map(), isPending: false, isError: false, refetch: vi.fn() });
     animationFrames = new Map();
@@ -473,7 +635,7 @@ describe("ChatMessageList controller integration", () => {
     vi.unstubAllEnvs();
   });
 
-  it("pins an initial conversation at the last item and preserves the paint cover until the transcript is ready", () => {
+  it("leaves the initial landing to Virtuoso and preserves the paint cover until the transcript is ready", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     const onInitialPaintReady = vi.fn();
     renderList({ initialPaintCoverKey: "conversation-a", onInitialPaintReady });
@@ -483,10 +645,13 @@ describe("ChatMessageList controller integration", () => {
     setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_000, scrollTop: 480 });
     flushAnimationFrames();
 
-    expect(harness.scrollToIndex).toHaveBeenCalledWith(
-      expect.objectContaining({ index: 2, align: "end" }),
-    );
-    expect(scrollWrites).toHaveBeenCalledWith(expect.objectContaining({ top: 500 }));
+    // Virtuoso's once-per-mount initial-scroll gate owns first position. The
+    // literal "LAST" location is what keeps it armed for a conversation that
+    // mounts empty and hydrates afterwards.
+    expect(harness.props?.initialTopMostItemIndex).toEqual({ index: "LAST", align: "end" });
+    expect(followOutput()(true)).toBe("auto");
+    expect(harness.scrollToIndex).not.toHaveBeenCalled();
+    expect(scrollWrites).not.toHaveBeenCalled();
 
     act(() => {
       vi.advanceTimersByTime(1);
@@ -495,7 +660,7 @@ describe("ChatMessageList controller integration", () => {
     expect(screen.queryByTestId("chat-transcript-settling-placeholders")).not.toBeInTheDocument();
   });
 
-  it("coalesces repeated streaming growth into bounded pinned writes", () => {
+  it("arms Virtuoso's follow for every streaming growth signal without writing scroll", () => {
     renderList();
     const scroller = primeAtBottom();
     const totalListHeightChanged = callback<(height: number) => void>("totalListHeightChanged");
@@ -509,11 +674,12 @@ describe("ChatMessageList controller integration", () => {
     });
     flushAnimationFrames();
 
-    expect(scrollWrites).toHaveBeenCalledWith(expect.objectContaining({ top: 530 }));
-    expect(scrollWrites).toHaveBeenCalledTimes(1);
+    // Overlapping follow windows are the point: Virtuoso's post-growth window
+    // is short, so every growth signal re-arms it instead of coalescing.
+    expectFollowDelegated();
   });
 
-  it("pins when the first post-attach list-height measurement reports content", () => {
+  it("arms follow when the first post-attach list-height measurement reports content", () => {
     renderList();
     const scroller = primeAtBottom();
     const totalListHeightChanged = callback<(height: number) => void>("totalListHeightChanged");
@@ -522,7 +688,7 @@ describe("ChatMessageList controller integration", () => {
     act(() => totalListHeightChanged(1_030));
     flushAnimationFrames();
 
-    expect(scrollWrites).toHaveBeenCalledWith(expect.objectContaining({ top: 530 }));
+    expectFollowDelegated();
   });
 
   it("does not pin again when a later total-height measurement shrinks", () => {
@@ -560,9 +726,10 @@ describe("ChatMessageList controller integration", () => {
 
     expect(scrollWrites).not.toHaveBeenCalled();
     expect(harness.scrollToIndex).not.toHaveBeenCalled();
+    expect(harness.autoscrollToBottom).not.toHaveBeenCalled();
   });
 
-  it("pins a free reader after a new user message is appended", () => {
+  it("follows the last item for a free reader after a new user message is appended", () => {
     const { rerender } = renderList();
     const scroller = primeAtBottom();
     setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_000, scrollTop: 220 });
@@ -585,11 +752,14 @@ describe("ChatMessageList controller integration", () => {
     rerender(<ChatMessageList {...defaultProps} messages={nextMessages} />);
     flushAnimationFrames();
 
-    expect(harness.scrollToIndex).toHaveBeenCalledWith(
-      // behavior is platform-dependent (webkit-safe "auto" vs "smooth")
-      expect.objectContaining({ index: 3, align: "end" }),
-    );
-    expect(scrollWrites).toHaveBeenCalledWith(expect.objectContaining({ top: 500 }));
+    // "LAST" is resolved by Virtuoso against its own unshifted totalCount, so
+    // the follow never has to reason about firstItemIndex.
+    expect(harness.scrollToIndex).toHaveBeenCalledExactlyOnceWith({
+      index: "LAST",
+      align: "end",
+      behavior: "auto",
+    });
+    expect(scrollWrites).not.toHaveBeenCalled();
   });
 
   it("keeps following when a wheel-down tick occurs at the bottom", () => {
@@ -605,45 +775,35 @@ describe("ChatMessageList controller integration", () => {
     });
     flushAnimationFrames();
 
-    expect(scrollWrites).toHaveBeenCalledWith(expect.objectContaining({ top: 540 }));
+    expectFollowDelegated();
     expect(screen.getByTestId("chat-scroll-to-bottom-control")).toHaveAttribute("aria-hidden", "true");
   });
 
-  it("keeps the active bottom intent through a short pin replay and native scroll event", () => {
+  it("never writes scroll for a native scroll event that reports a short extent", () => {
     renderList();
     const scroller = primeAtBottom();
     const totalListHeightChanged = callback<(height: number) => void>("totalListHeightChanged");
-    let growsOnWrite = true;
-    Object.defineProperty(scroller, "scrollTo", {
-      configurable: true,
-      value: (options: ScrollToOptions) => {
-        scrollWrites(options);
-        if (typeof options.top === "number") {
-          scroller.scrollTop = options.top;
-        }
-        if (growsOnWrite) {
-          growsOnWrite = false;
-          setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_060, scrollTop: scroller.scrollTop });
-        }
-      },
-    });
 
     act(() => {
       totalListHeightChanged(1_000);
       setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_030, scrollTop: 500 });
       totalListHeightChanged(1_030);
     });
-    flushAnimationFrames(1);
+    scrollWrites.mockClear();
     fireEvent.scroll(scroller);
     flushAnimationFrames();
 
-    expect(scrollWrites).toHaveBeenCalledWith(expect.objectContaining({ top: 560 }));
-    expect(screen.getByTestId("chat-scroll-to-bottom-control")).toHaveAttribute("aria-hidden", "true");
+    // 30px short of the reported extent. The pin loop read exactly this as an
+    // unmet bottom intent and wrote scrollTop again on the next frame, which
+    // is what sustained the up-and-down jitter.
+    expect(scrollWrites).not.toHaveBeenCalled();
+    expect(scroller.scrollTop).toBe(500);
   });
 
-  it("returns to true bottom from the control and lets wheel-up cancel a pending descent", () => {
+  it("follows the last item from the bottom control and stays free after a later wheel-up", () => {
     renderList();
     const scroller = primeAtBottom();
+    const totalListHeightChanged = callback<(height: number) => void>("totalListHeightChanged");
     setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_000, scrollTop: 200 });
     fireEvent.wheel(scroller, { deltaY: -100 });
     fireEvent.scroll(scroller);
@@ -652,17 +812,23 @@ describe("ChatMessageList controller integration", () => {
 
     fireEvent.click(button);
     flushAnimationFrames();
-    expect(scroller.scrollTop).toBe(500);
-    expect(screen.getByTestId("chat-scroll-to-bottom-control")).toHaveAttribute("aria-hidden", "true");
 
-    setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_100, scrollTop: 200 });
-    fireEvent.wheel(scroller, { deltaY: -100 });
-    fireEvent.scroll(scroller);
-    fireEvent.click(screen.getByTestId("chat-scroll-to-bottom-button"));
+    expect(harness.scrollToIndex).toHaveBeenCalledExactlyOnceWith({
+      index: "LAST",
+      align: "end",
+      behavior: "auto",
+    });
+    expect(scrollWrites).not.toHaveBeenCalled();
+
+    harness.scrollToIndex.mockClear();
+    harness.autoscrollToBottom.mockClear();
+    harness.scrollToIndex.mockClear();
     fireEvent.wheel(scroller, { deltaY: -80 });
-    scrollWrites.mockClear();
+    act(() => totalListHeightChanged(1_100));
     flushAnimationFrames();
 
+    expect(harness.scrollToIndex).not.toHaveBeenCalled();
+    expect(harness.autoscrollToBottom).not.toHaveBeenCalled();
     expect(scrollWrites).not.toHaveBeenCalled();
   });
 
@@ -704,8 +870,15 @@ describe("ChatMessageList controller integration", () => {
     fireEvent.wheel(scroller, { deltaY: -80 });
     fireEvent.scroll(scroller);
     fireEvent.click(screen.getByTestId("chat-scroll-to-bottom-button"));
-    flushAnimationFrames();
-    expect(scroller.scrollTop).toBe(500);
+    expect(harness.scrollToIndex).toHaveBeenCalledExactlyOnceWith({
+      index: "LAST",
+      align: "end",
+      behavior: "auto",
+    });
+    // Virtuoso lands the last item's end at the viewport bottom, which is the
+    // composer top now that the reserved inset lives inside that item.
+    setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_000, scrollTop: 500 });
+    fireEvent.scroll(scroller);
 
     const lastRowObserver = resizeObservers.find(({ targets }) =>
       lastRow ? targets.has(lastRow) : false,
@@ -719,29 +892,32 @@ describe("ChatMessageList controller integration", () => {
     };
     act(() => notifyLastRowHeight(100));
     scrollWrites.mockClear();
+    harness.autoscrollToBottom.mockClear();
+    harness.scrollToIndex.mockClear();
 
     setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_024, scrollTop: 500 });
     act(() => notifyLastRowHeight(124));
     flushAnimationFrames();
 
-    expect(scrollWrites).toHaveBeenCalledWith(expect.objectContaining({ top: 524 }));
-    expect(scroller.scrollTop).toBe(524);
+    expectFollowDelegated();
     expect(screen.getByTestId("chat-scroll-to-bottom-control")).toHaveAttribute("aria-hidden", "true");
 
     setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_024, scrollTop: 200 });
     fireEvent.wheel(scroller, { deltaY: -80 });
     fireEvent.scroll(scroller);
     scrollWrites.mockClear();
+    harness.autoscrollToBottom.mockClear();
+    harness.scrollToIndex.mockClear();
     setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_048, scrollTop: 200 });
     act(() => notifyLastRowHeight(148));
     flushAnimationFrames();
 
-    expect(scrollWrites).not.toHaveBeenCalled();
+    expectNoFollow();
     expect(scroller.scrollTop).toBe(200);
     expect(screen.getByTestId("chat-scroll-to-bottom-control")).toHaveAttribute("aria-hidden", "false");
   });
 
-  it("pins when a newly mounted streaming tail reports its first measured height", () => {
+  it("arms follow when a newly mounted streaming tail reports its first measured height", () => {
     const resizeObservers: Array<{
       callback: ResizeObserverCallback;
       targets: Set<Element>;
@@ -796,11 +972,11 @@ describe("ChatMessageList controller integration", () => {
     });
     flushAnimationFrames();
 
-    expect(scrollWrites).toHaveBeenCalledWith(expect.objectContaining({ top: 600 }));
-    expect(scroller.scrollTop).toBe(600);
+    expectFollowDelegated();
+    expect(scroller.scrollTop).toBe(500);
   });
 
-  it("re-pins for composer spacer resizes only while the reader is following", () => {
+  it("arms follow for composer spacer resizes only while the reader is following", () => {
     const resizeObservers: Array<{
       callback: ResizeObserverCallback;
       targets: Set<Element>;
@@ -842,35 +1018,26 @@ describe("ChatMessageList controller integration", () => {
 
     act(() => resizeSpacer(40));
     scrollWrites.mockClear();
+    harness.autoscrollToBottom.mockClear();
+    harness.scrollToIndex.mockClear();
     setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_040, scrollTop: 500 });
     act(() => resizeSpacer(80));
     flushAnimationFrames();
 
-    expect(scroller.scrollTop).toBe(540);
-    expect(scrollWrites).toHaveBeenCalledWith(expect.objectContaining({ top: 540 }));
+    expectFollowDelegated();
 
-    scrollWrites.mockClear();
-    setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_000, scrollTop: 540 });
-    act(() => resizeSpacer(40));
-    flushAnimationFrames();
-
-    // The shrink already clamped the reader onto the new true bottom, so the
-    // follow stays put instead of writing the reader back up the transcript.
-    expect(scroller.scrollTop).toBe(500);
-    expect(scrollWrites).not.toHaveBeenCalledWith(
-      expect.objectContaining({ top: expect.any(Number) as number }),
-    );
-
-    setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_000, scrollTop: 200 });
+    setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_040, scrollTop: 200 });
     fireEvent.wheel(scroller, { deltaY: -80 });
     fireEvent.scroll(scroller);
     scrollWrites.mockClear();
+    harness.autoscrollToBottom.mockClear();
+    harness.scrollToIndex.mockClear();
     setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_080, scrollTop: 200 });
     act(() => resizeSpacer(120));
     flushAnimationFrames();
 
+    expectNoFollow();
     expect(scroller.scrollTop).toBe(200);
-    expect(scrollWrites).not.toHaveBeenCalled();
   });
 
   it("leaves controller follow state untouched for a prepend epoch", () => {
@@ -931,7 +1098,7 @@ describe("ChatMessageList controller integration", () => {
     expect(screen.getByTestId("chat-scroll-to-bottom-control")).toHaveAttribute("aria-hidden", "false");
   });
 
-  it("resets the controller and lands a switched conversation at its bottom", () => {
+  it("resets the controller and leaves a switched conversation's landing to Virtuoso", () => {
     const { rerender } = renderList();
     primeAtBottom();
     harness.scrollToIndex.mockClear();
@@ -948,10 +1115,11 @@ describe("ChatMessageList controller integration", () => {
     setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 900, scrollTop: 300 });
     flushAnimationFrames();
 
-    expect(harness.scrollToIndex).toHaveBeenCalledWith(
-      expect.objectContaining({ index: 1, align: "end" }),
-    );
-    expect(scrollWrites).toHaveBeenCalledWith(expect.objectContaining({ top: 400 }));
+    // The conversation key remounts Virtuoso, so its initial-scroll gate lands
+    // the new transcript; a controller follow here would be a second writer.
+    expect(harness.props?.initialTopMostItemIndex).toEqual({ index: "LAST", align: "end" });
+    expect(harness.scrollToIndex).not.toHaveBeenCalled();
+    expect(scrollWrites).not.toHaveBeenCalled();
   });
 
   it("uses a non-following start-aligned timestamp jump and ignores subsequent growth", () => {
@@ -1087,7 +1255,7 @@ describe("ChatMessageList controller integration", () => {
     flushAnimationFrames();
 
     expect(scroller).toHaveAttribute("tabindex", "0");
-    expect(scrollWrites).toHaveBeenCalledWith(expect.objectContaining({ top: 540 }));
+    expectFollowDelegated();
   });
 
   it("unfollows for transcript PageUp while leaving editable key presses pinned", () => {
@@ -1097,16 +1265,21 @@ describe("ChatMessageList controller integration", () => {
     const input = document.createElement("input");
     scroller.append(input);
     setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_000, scrollTop: 220 });
+    // A real PageUp scrolls, and the scroll event is what publishes at-bottom.
+    fireEvent.scroll(scroller);
 
     fireEvent.keyDown(input, { key: "PageUp" });
     fireEvent.keyDown(scroller, { key: "PageUp" });
     fireEvent.keyDown(scroller, { key: "PageDown" });
     scrollWrites.mockClear();
+    harness.autoscrollToBottom.mockClear();
+    harness.scrollToIndex.mockClear();
     act(() => totalListHeightChanged(1_040));
     flushAnimationFrames();
 
     expect(screen.getByTestId("chat-scroll-to-bottom-control")).toHaveAttribute("aria-hidden", "false");
     expect(scrollWrites).not.toHaveBeenCalled();
+    expect(harness.autoscrollToBottom).not.toHaveBeenCalled();
   });
 
   it("unfollows after pointer-driven upward scrolling and ignores growth after pointer release", () => {
@@ -1137,8 +1310,11 @@ describe("ChatMessageList controller integration", () => {
     fireEvent.scroll(scroller);
     flushAnimationFrames();
 
-    expect(screen.getByTestId("chat-scroll-to-bottom-control")).toHaveAttribute("aria-hidden", "true");
-    expect(scrollWrites).toHaveBeenCalledWith(expect.objectContaining({ top: 500 }));
+    // Nothing drags an unattributed scroll back down: the reader stays where
+    // the scroller left them and the control simply becomes reachable.
+    expect(screen.getByTestId("chat-scroll-to-bottom-control")).toHaveAttribute("aria-hidden", "false");
+    expect(scrollWrites).not.toHaveBeenCalled();
+    expect(scroller.scrollTop).toBe(220);
 
     unmount();
     debugSpy.mockClear();
@@ -1147,7 +1323,7 @@ describe("ChatMessageList controller integration", () => {
     expect(debugSpy).not.toHaveBeenCalled();
   });
 
-  it("re-pins a following transcript after its scroller resize observer reports growth", () => {
+  it("arms follow for a following transcript after its scroller resize observer reports growth", () => {
     let onResize: ResizeObserverCallback | null = null;
     vi.stubGlobal(
       "ResizeObserver",
@@ -1168,11 +1344,12 @@ describe("ChatMessageList controller integration", () => {
 
     act(() => onResize?.([], {} as ResizeObserver));
 
-    expect(scrollWrites).toHaveBeenCalledWith(expect.objectContaining({ top: 600 }));
-    expect(scroller.scrollTop).toBe(600);
+    expect(harness.autoscrollToBottom).toHaveBeenCalled();
+    expect(scrollWrites).not.toHaveBeenCalled();
+    expect(scroller.scrollTop).toBe(500);
   });
 
-  it("pins on streaming start only while the reader is still following", () => {
+  it("leaves streaming-start follow to Virtuoso's followOutput", () => {
     const { rerender } = renderList();
     const scroller = primeAtBottom();
     scrollWrites.mockClear();
@@ -1182,26 +1359,30 @@ describe("ChatMessageList controller integration", () => {
     rerender(<ChatMessageList {...defaultProps} isAgentRunning />);
     flushAnimationFrames();
 
-    // isAgentRunning appends a streaming timeline row, so the last index is 3.
-    expect(harness.scrollToIndex).toHaveBeenCalledWith(
-      expect.objectContaining({ index: 3, align: "end" }),
-    );
-    expect(scrollWrites).toHaveBeenCalledWith(expect.objectContaining({ top: 600 }));
-
-    setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_100, scrollTop: 220 });
-    fireEvent.wheel(scroller, { deltaY: -80 });
-    fireEvent.scroll(scroller);
-    scrollWrites.mockClear();
-    harness.scrollToIndex.mockClear();
-    rerender(<ChatMessageList {...defaultProps} isAgentRunning={false} />);
-    rerender(<ChatMessageList {...defaultProps} isAgentRunning />);
-    flushAnimationFrames();
-
-    expect(scrollWrites).not.toHaveBeenCalled();
+    // isAgentRunning appends a streaming timeline row, which is precisely what
+    // followOutput triggers on. A controller follow here only adds a writer.
+    expect(followOutput()(true)).toBe("auto");
     expect(harness.scrollToIndex).not.toHaveBeenCalled();
+    expect(scrollWrites).not.toHaveBeenCalled();
   });
 
-  it("pins a following reader when the finalized provider message is revealed", () => {
+  it("vetoes followOutput once the reader has scrolled away", () => {
+    renderList();
+    const scroller = primeAtBottom();
+    expect(followOutput()(true)).toBe("auto");
+    expect(followOutput()(false)).toBe(false);
+
+    setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_000, scrollTop: 220 });
+    fireEvent.wheel(scroller, { deltaY: -80 });
+    fireEvent.scroll(scroller);
+
+    // Virtuoso passes `isAtBottom || scrollingInProgress`, so a bare
+    // `followOutput` would drag a reader who just wheeled up and received a
+    // message inside the scroll-in-progress window.
+    expect(followOutput()(true)).toBe(false);
+  });
+
+  it("arms follow for a following reader when the finalized provider message is revealed", () => {
     const providerMessages: ChatMessageData[] = [
       ...messages(2),
       {
@@ -1218,15 +1399,13 @@ describe("ChatMessageList controller integration", () => {
     scrollWrites.mockClear();
     harness.scrollToIndex.mockClear();
 
-    // Grow content so the reveal pin must actually write (a pin at true bottom is a no-op).
+    // The reveal swaps a live row for its persisted twin without changing
+    // totalCount, so followOutput alone would not fire.
     setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_100, scrollTop: 500 });
     rerender(<ChatMessageList {...defaultProps} messages={providerMessages} isAgentRunning={false} />);
     flushAnimationFrames();
 
-    expect(harness.scrollToIndex).toHaveBeenCalledWith(
-      expect.objectContaining({ index: 2, align: "end" }),
-    );
-    expect(scrollWrites).toHaveBeenCalledWith(expect.objectContaining({ top: 600 }));
+    expectFollowDelegated();
   });
 
   it("restores the captured at-bottom anchor while expanding a persisted tool-call group", () => {
@@ -1264,9 +1443,7 @@ describe("ChatMessageList controller integration", () => {
     expect(screen.getByTestId("tool-call-group-toggle")).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByText("First tool call")).toBeInTheDocument();
     expect(screen.getByText("Second tool call")).toBeInTheDocument();
-    expect(harness.scrollToIndex).toHaveBeenCalledWith(
-      expect.objectContaining({ index: 2, align: "end" }),
-    );
+    expectFollowDelegated();
   });
 
   it("restores the captured at-bottom anchor while toggling a persisted thinking group", () => {
@@ -1300,9 +1477,8 @@ describe("ChatMessageList controller integration", () => {
     flushAnimationFrames();
 
     expect(screen.getByTestId("thinking-group-toggle")).toHaveAttribute("aria-expanded", "false");
-    expect(harness.scrollToIndex).toHaveBeenCalledWith(
-      expect.objectContaining({ index: 2, align: "end" }),
-    );
+    expect(harness.autoscrollToBottom).toHaveBeenCalled();
+    expect(scrollWrites).not.toHaveBeenCalled();
   });
 
   it("preserves a free reader's anchor while collapsing a persisted thinking group", () => {
@@ -1830,7 +2006,7 @@ describe("ChatMessageList controller integration", () => {
     act(() => totalListHeightChanged(1_100));
     flushAnimationFrames();
 
-    expect(scrollWrites).toHaveBeenCalledWith(expect.objectContaining({ top: 600 }));
+    expectFollowDelegated();
     expect(screen.getByTestId("chat-scroll-to-bottom-control")).toHaveAttribute("aria-hidden", "true");
   });
 
@@ -1859,6 +2035,6 @@ describe("ChatMessageList controller integration", () => {
     });
     flushAnimationFrames();
 
-    expect(scrollWrites).toHaveBeenCalledWith(expect.objectContaining({ top: 540 }));
+    expectFollowDelegated();
   });
 });

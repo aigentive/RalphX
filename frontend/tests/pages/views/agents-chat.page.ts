@@ -125,6 +125,42 @@ export class AgentsChatPage extends BasePage {
     }));
   }
 
+  /**
+   * Real wheel input over the transcript, which is what the controller
+   * classifies as away intent - a scrollTop write would not be.
+   *
+   * Chromium hands the wheel to the compositor and returns before the scroll
+   * lands, so sampling geometry straight after `mouse.wheel` intermittently
+   * read the pre-wheel position and made callers believe the reader never
+   * left the tail. Wait for the position to hold still instead.
+   */
+  async scrollUp(deltaY: number): Promise<void> {
+    await this.scroller.hover();
+    await this.page.mouse.wheel(0, -deltaY);
+    await this.scroller.evaluate((element) => new Promise<void>((resolve) => {
+      const STABLE_FRAMES = 3;
+      const MAX_FRAMES = 120;
+      let last = element.scrollTop;
+      let stable = 0;
+      let frames = 0;
+      const check = (): void => {
+        frames += 1;
+        if (element.scrollTop === last) {
+          stable += 1;
+        } else {
+          stable = 0;
+          last = element.scrollTop;
+        }
+        if (stable >= STABLE_FRAMES || frames >= MAX_FRAMES) {
+          resolve();
+          return;
+        }
+        requestAnimationFrame(check);
+      };
+      requestAnimationFrame(check);
+    }));
+  }
+
   async growComposer(): Promise<void> {
     await this.composerInput.fill("one\ntwo\nthree\nfour\nfive\nsix\nseven");
   }

@@ -82,28 +82,40 @@ describe("useChatBottomInset", () => {
     vi.unstubAllGlobals();
   });
 
-  it("writes the measured chrome height to the spacer and container variable", () => {
+  it("writes the measured chrome height to the container variable only", () => {
     const { getByTestId } = render(<TestHarness />);
 
     resizeChrome(72.2);
 
-    expect(getByTestId("spacer")).toHaveStyle({ height: "73px" });
     expect(getByTestId("container").style.getPropertyValue("--chat-bottom-inset"))
       .toBe("73px");
   });
 
-  it("ignores identical measurements and applies the last inset to a remounted spacer", () => {
-    const { getByTestId, rerender } = render(<TestHarness />);
-    resizeChrome(64);
-    const firstSpacer = getByTestId("spacer");
-    const heightSetter = vi.spyOn(firstSpacer.style, "height", "set");
+  // The spacer now lives inside the last transcript item and sizes itself from
+  // the inherited custom property, so the hook must never be a second writer of
+  // its height - that would leave the inset unreserved whenever the item that
+  // owns the spacer remounts on append.
+  it("never writes the registered spacer's height", () => {
+    const { getByTestId } = render(<TestHarness />);
+    const heightSetter = vi.spyOn(getByTestId("spacer").style, "height", "set");
 
     resizeChrome(64);
+    resizeChrome(80);
+
     expect(heightSetter).not.toHaveBeenCalled();
+    expect(getByTestId("spacer").style.height).toBe("");
+  });
 
-    rerender(<TestHarness withSpacer={false} />);
-    rerender(<TestHarness />);
-    expect(getByTestId("spacer")).toHaveStyle({ height: "64px" });
+  it("ignores identical measurements", () => {
+    const { getByTestId } = render(<TestHarness />);
+    resizeChrome(64);
+    const container = getByTestId("container");
+    const propertySetter = vi.spyOn(container.style, "setProperty");
+
+    resizeChrome(64);
+
+    expect(propertySetter).not.toHaveBeenCalled();
+    expect(container.style.getPropertyValue("--chat-bottom-inset")).toBe("64px");
   });
 
   it("updates the container safely while the transcript spacer is absent", () => {
