@@ -1,12 +1,24 @@
+import { resetTransportEnvironmentId } from "@/lib/remote/active-environment";
+import { resetQueryClient } from "@/lib/queryClient";
 import { createElement, type ReactElement } from "react";
 /**
  * RunningProcessPopover component tests
  */
 
-import { beforeEach, describe, it, expect, vi } from "vitest";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { render as rtlRender, screen, fireEvent } from "@testing-library/react";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { RunningProcessPopover } from "./RunningProcessPopover";
+
+// Gate tests park the store on a remote environment; without this the next file in
+// the same worker inherits it and resolves a different keyed QueryClient. That is
+// what broke EnvironmentScopedProviders under CI sharding.
+afterEach(() => {
+  resetQueryClient();
+  resetTransportEnvironmentId();
+  useEnvironmentStore.setState({ activeEnvironmentId: LOCAL_ENVIRONMENT_ID });
+});
+
 import type {
   ExecutionCapacitySummary,
   ExecutionLaneUsage,

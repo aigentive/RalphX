@@ -1,9 +1,11 @@
+import { resetTransportEnvironmentId } from "@/lib/remote/active-environment";
+import { resetQueryClient } from "@/lib/queryClient";
 import { createElement, type ReactElement } from "react";
 /**
  * GroupContextMenuItems.test.tsx - Tests for group-level bulk action context menu items
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { afterEach, describe, it, expect, vi, beforeEach } from "vitest";
 import {
   render as rtlRender,
   screen,
@@ -18,6 +20,16 @@ import {
 } from "@/components/ui/context-menu";
 import { GroupContextMenuItems } from "./GroupContextMenuItems";
 import { useConfirmation } from "@/hooks/useConfirmation";
+
+// Gate tests park the store on a remote environment; without this the next file in
+// the same worker inherits it and resolves a different keyed QueryClient. That is
+// what broke EnvironmentScopedProviders under CI sharding.
+afterEach(() => {
+  resetQueryClient();
+  resetTransportEnvironmentId();
+  useEnvironmentStore.setState({ activeEnvironmentId: LOCAL_ENVIRONMENT_ID });
+});
+
 import {
   LOCAL_ENVIRONMENT_ID,
   useEnvironmentStore,

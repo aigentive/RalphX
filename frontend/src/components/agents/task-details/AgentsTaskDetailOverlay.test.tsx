@@ -1,7 +1,9 @@
+import { resetTransportEnvironmentId } from "@/lib/remote/active-environment";
+import { resetQueryClient } from "@/lib/queryClient";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useState, type ComponentProps } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useUiStore } from "@/stores/uiStore";
@@ -13,6 +15,15 @@ import type { Task } from "@/types/task";
 import type { TaskHistoryState } from "@/types/task-history";
 
 import { AgentsTaskDetailOverlay } from "./AgentsTaskDetailOverlay";
+
+// Gate tests park the store on a remote environment; without this the next file in
+// the same worker inherits it and resolves a different keyed QueryClient. That is
+// what broke EnvironmentScopedProviders under CI sharding.
+afterEach(() => {
+  resetQueryClient();
+  resetTransportEnvironmentId();
+  useEnvironmentStore.setState({ activeEnvironmentId: LOCAL_ENVIRONMENT_ID });
+});
 
 const {
   useTasksMock,

@@ -1,3 +1,5 @@
+import { resetTransportEnvironmentId } from "@/lib/remote/active-environment";
+import { resetQueryClient } from "@/lib/queryClient";
 import { createElement, type ReactElement } from "react";
 /**
  * TaskContextMenuItems.test.tsx - Tests for shared TaskContextMenuItems component
@@ -6,7 +8,7 @@ import { createElement, type ReactElement } from "react";
  * and that handlers are invoked properly.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { afterEach, describe, it, expect, vi, beforeEach } from "vitest";
 import {
   render as rtlRender,
   screen,
@@ -27,6 +29,16 @@ import {
   type TaskContextMenuHandlers,
 } from "./TaskContextMenuItems";
 import type { Task } from "@/types/task";
+
+// Gate tests park the store on a remote environment; without this the next file in
+// the same worker inherits it and resolves a different keyed QueryClient. That is
+// what broke EnvironmentScopedProviders under CI sharding.
+afterEach(() => {
+  resetQueryClient();
+  resetTransportEnvironmentId();
+  useEnvironmentStore.setState({ activeEnvironmentId: LOCAL_ENVIRONMENT_ID });
+});
+
 import {
   LOCAL_ENVIRONMENT_ID,
   useEnvironmentStore,

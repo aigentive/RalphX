@@ -1,11 +1,23 @@
+import { LOCAL_ENVIRONMENT_ID } from "@/stores/environmentStore";
+import { resetTransportEnvironmentId } from "@/lib/remote/active-environment";
+import { resetQueryClient } from "@/lib/queryClient";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useEnvironmentStore } from "@/stores/environmentStore";
 import type { Persona } from "@/types/persona";
 
 import { PersonaRow } from "./PersonaManagementRows";
+
+// Gate tests park the store on a remote environment; without this the next file in
+// the same worker inherits it and resolves a different keyed QueryClient. That is
+// what broke EnvironmentScopedProviders under CI sharding.
+afterEach(() => {
+  resetQueryClient();
+  resetTransportEnvironmentId();
+  useEnvironmentStore.setState({ activeEnvironmentId: LOCAL_ENVIRONMENT_ID });
+});
 
 const persona: Persona = {
   id: "persona-1",
@@ -74,9 +86,11 @@ describe("PersonaRow agent gate", () => {
     expect(onRemove).not.toHaveBeenCalled();
     button.focus();
     expect(
-      (await screen.findAllByText(
-        "Agent control is off for this device — enable it on the host.",
-      )).length,
+      (
+        await screen.findAllByText(
+          "Agent control is off for this device — enable it on the host.",
+        )
+      ).length,
     ).toBeGreaterThan(0);
   });
 
