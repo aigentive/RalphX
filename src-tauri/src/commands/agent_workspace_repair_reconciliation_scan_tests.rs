@@ -398,6 +398,7 @@ async fn scan_tick_redelivers_a_due_interrupted_dispatch_but_leaves_a_fresh_one_
 /// scheduled by the deferred waiter) is re-dispatched by a later scan tick.
 #[cfg(unix)]
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn scan_tick_redelivers_a_due_scheduled_retry_and_binds_a_replacement_run() {
     let _environment_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
         .lock()
