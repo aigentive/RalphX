@@ -63,7 +63,7 @@ pub async fn request_remote_automation_run_for_state(
         .await
         .map_err(|_| REMOTE_AUTOMATION_RUN_LOOKUP_FAILED.to_string())?;
     if let Some(expected) = input.expected_run_id.as_deref() {
-        if latest.as_ref().map(|run| run.id.as_str()).as_deref() != Some(expected) {
+        if latest.as_ref().map(|run| run.id.as_str()) != Some(expected) {
             return Err(REMOTE_AUTOMATION_RUN_RUN_CHANGED.into());
         }
     }

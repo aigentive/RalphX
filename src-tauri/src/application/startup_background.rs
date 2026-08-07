@@ -1632,7 +1632,7 @@ pub(crate) async fn dispatch_one_remote_plan_edit(state: &AppState) -> AppResult
         .run(move |conn| {
             let latest = ArtifactRepo::resolve_latest_sync(conn, &id)?;
             ArtifactRepo::get_by_id_sync(conn, &latest)?
-                .ok_or_else(|| crate::error::AppError::NotFound(latest))
+                .ok_or(crate::error::AppError::NotFound(latest))
         })
         .await?;
     if artifact.metadata.version != row.expected_version {
@@ -1725,7 +1725,7 @@ pub(crate) async fn dispatch_one_remote_automation_run(state: &AppState) -> AppR
         .latest_for_automation(&automation_id)
         .await?;
     if let Some(expected) = row.expected_run_id.as_deref() {
-        if latest.as_ref().map(|run| run.id.as_str()).as_deref() != Some(expected) {
+        if latest.as_ref().map(|run| run.id.as_str()) != Some(expected) {
             state
                 .remote_automation_run_request_repo
                 .fail(

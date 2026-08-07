@@ -301,7 +301,38 @@ pub async fn update_plan_artifact_for_state(
     )
     .await?;
     let transaction_authority = authority.cloned();
-    let(created,previous,sessions,linked,reset)=state.db.run_transaction(move|conn|{let old_id=ArtifactRepo::resolve_latest_sync(conn,&artifact_id)?;let old=ArtifactRepo::get_by_id_sync(conn,&old_id)?.ok_or_else(||AppError::NotFound(format!("Artifact {old_id} not found")))?;let mut owning=SessionRepo::get_by_plan_artifact_id_sync(conn,&old_id)?;owning.extend(SessionRepo::get_by_plan_blueprint_artifact_id_sync(conn,&old_id)?);if let Some(session)=owning.first(){if session.status!=crate::domain::entities::IdeationSessionStatus::Active{return Err(AppError::Validation(format!("Cannot modify {} session. Reopen it first.",session.status)))}}if owning.is_empty(){let inherited=SessionRepo::get_by_inherited_plan_artifact_id_sync(conn,&old_id)?;let blueprints=SessionRepo::get_by_inherited_plan_blueprint_artifact_id_sync(conn,&old_id)?;if !inherited.is_empty()||!blueprints.is_empty(){return Err(AppError::Validation("Cannot update inherited plan. Use create_plan_artifact to create a session-specific plan.".into()))}}finalize_plan_update(conn,&old,content,transaction_authority.as_ref())}).await?;
+    let (created, previous, sessions, linked, reset) = state
+        .db
+        .run_transaction(move |conn| {
+            let old_id = ArtifactRepo::resolve_latest_sync(conn, &artifact_id)?;
+            let old = ArtifactRepo::get_by_id_sync(conn, &old_id)?
+                .ok_or_else(|| AppError::NotFound(format!("Artifact {old_id} not found")))?;
+            let mut owning = SessionRepo::get_by_plan_artifact_id_sync(conn, &old_id)?;
+            owning.extend(SessionRepo::get_by_plan_blueprint_artifact_id_sync(
+                conn, &old_id,
+            )?);
+            if let Some(session) = owning.first() {
+                if session.status != crate::domain::entities::IdeationSessionStatus::Active {
+                    return Err(AppError::Validation(format!(
+                        "Cannot modify {} session. Reopen it first.",
+                        session.status
+                    )));
+                }
+            }
+            if owning.is_empty() {
+                let inherited = SessionRepo::get_by_inherited_plan_artifact_id_sync(conn, &old_id)?;
+                let blueprints =
+                    SessionRepo::get_by_inherited_plan_blueprint_artifact_id_sync(conn, &old_id)?;
+                if !inherited.is_empty() || !blueprints.is_empty() {
+                    return Err(AppError::Validation(
+                        "Cannot update inherited plan. Use create_plan_artifact to create a session-specific plan."
+                            .into(),
+                    ));
+                }
+            }
+            finalize_plan_update(conn, &old, content, transaction_authority.as_ref())
+        })
+        .await?;
     if reset {
         if let Some(session) = sessions.first() {
             crate::application::verification_event_emitters::emit_verification_status_changed(

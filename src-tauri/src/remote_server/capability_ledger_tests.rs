@@ -5104,7 +5104,8 @@ fn b2_detector_clean_members_refused_on_their_own_findings() {
     // steer surface, and the read-only seam that would fix this does not exist yet. Contrast
     // `list_agent_conversations`, whose `_for_app_state` seam was extracted for exactly this
     // reason and which IS registered above.
-    for (command, module) in [("get_agent_run_status_unified", "unified_chat_commands")] {
+    {
+        let (command, module) = ("get_agent_run_status_unified", "unified_chat_commands");
         let row = policy_for(command, module).expect("ledgered");
         assert_ne!(
             row.class,

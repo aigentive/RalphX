@@ -63,7 +63,13 @@ SCENARIOS = (
             "frontend/src/components/Chat/ChatMessageList.tsx",
             "frontend/src/hooks/useChatEvents.ts",
         ),
-        73_000,
+        # 73_000 -> 74_500: the remote-access work added two lines to the ROOT CLAUDE.md,
+        # which every scenario inherits — a rules-index entry for remote-facade.md (rule 15
+        # requires one per new rule) and a Key Features line. Both are already single lines,
+        # so there is nothing to compress; S2 was simply the scenario with the least
+        # headroom. The new ceiling restores roughly the ~1.7% margin the other scenarios
+        # carry rather than pinning the current size.
+        74_500,
     ),
 )
 
