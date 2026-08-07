@@ -30,8 +30,12 @@
  */
 
 import { useAgentGate } from "@/hooks/useAgentGate";
+import { cn } from "@/lib/utils";
 import { useCallback } from "react";
-import { ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu";
+import {
+  ContextMenuItem,
+  ContextMenuSeparator,
+} from "@/components/ui/context-menu";
 import {
   EXPLAINED_DISABLED_MENU_ITEM_CLASS,
   MenuItemExplanation,
@@ -84,7 +88,9 @@ export function GroupContextMenuItems({
   onArchiveAll,
   confirm,
 }: GroupContextMenuItemsProps) {
-  const agentGate = useAgentGate("groupResume");
+  const cancelGate = useAgentGate("groupCancel");
+  const pauseGate = useAgentGate("groupPause");
+  const resumeGate = useAgentGate("groupResume");
   const cancelAction = GROUP_ACTIONS.cancelAll;
   const pauseAction = GROUP_ACTIONS.pauseAll;
   const resumeAction = GROUP_ACTIONS.resumeAll;
@@ -96,6 +102,7 @@ export function GroupContextMenuItems({
   const archiveLabel = getArchiveAllLabel(groupKind, groupLabel);
 
   const handleCancelAll = useCallback(async () => {
+    if (cancelGate.gated) return;
     if (taskCount === 0 || !onCancelAll) return;
     const config = cancelAction.confirmConfig(groupLabel, taskCount);
     const confirmed = await confirm({
@@ -105,9 +112,17 @@ export function GroupContextMenuItems({
       variant: config.variant,
     });
     if (confirmed) onCancelAll();
-  }, [taskCount, cancelAction, groupLabel, confirm, onCancelAll]);
+  }, [
+    cancelGate.gated,
+    taskCount,
+    cancelAction,
+    groupLabel,
+    confirm,
+    onCancelAll,
+  ]);
 
   const handlePauseAll = useCallback(async () => {
+    if (pauseGate.gated) return;
     if (taskCount === 0 || !onPauseAll) return;
     const config = pauseAction.confirmConfig(groupLabel, taskCount);
     const confirmed = await confirm({
@@ -117,7 +132,14 @@ export function GroupContextMenuItems({
       variant: config.variant,
     });
     if (confirmed) onPauseAll();
-  }, [taskCount, pauseAction, groupLabel, confirm, onPauseAll]);
+  }, [
+    pauseGate.gated,
+    taskCount,
+    pauseAction,
+    groupLabel,
+    confirm,
+    onPauseAll,
+  ]);
 
   const handleResumeAll = useCallback(async () => {
     if (taskCount === 0 || !onResumeAll) return;
@@ -156,29 +178,49 @@ export function GroupContextMenuItems({
   return (
     <>
       {onPauseAll && (
-        <ContextMenuItem onClick={handlePauseAll} data-testid="pause-all-action">
-          <PauseIcon className="w-4 h-4 mr-2" />
-          {pauseLabel}
-        </ContextMenuItem>
+        <MenuItemExplanation
+          reason={pauseGate.gated ? pauseGate.reason : null}
+          testId="pause-all-gate-explanation"
+        >
+          <ContextMenuItem
+            onClick={pauseGate.gated ? undefined : handlePauseAll}
+            data-testid="pause-all-action"
+            className={
+              pauseGate.gated ? EXPLAINED_DISABLED_MENU_ITEM_CLASS : undefined
+            }
+            {...(pauseGate.gated
+              ? {
+                  "data-agent-gated": "true",
+                  "aria-label":
+                    `${pauseLabel} — ${pauseGate.reason ?? ""}`.trim(),
+                  ...explainedDisabledMenuItemProps(),
+                }
+              : {})}
+          >
+            <PauseIcon className="w-4 h-4 mr-2" />
+            {pauseLabel}
+          </ContextMenuItem>
+        </MenuItemExplanation>
       )}
       {onResumeAll && (
         // Soft-disabled, not `disabled`: a Radix-disabled item has
         // `pointer-events: none` and leaves the roving-focus order, so its reason
         // would be unreachable by both mouse and keyboard.
         <MenuItemExplanation
-          reason={agentGate.gated ? agentGate.reason : null}
+          reason={resumeGate.gated ? resumeGate.reason : null}
           testId="resume-all-gate-explanation"
         >
           <ContextMenuItem
-            onClick={agentGate.gated ? undefined : handleResumeAll}
+            onClick={resumeGate.gated ? undefined : handleResumeAll}
             className={
-              agentGate.gated ? EXPLAINED_DISABLED_MENU_ITEM_CLASS : undefined
+              resumeGate.gated ? EXPLAINED_DISABLED_MENU_ITEM_CLASS : undefined
             }
             data-testid="resume-all-action"
-            {...(agentGate.gated
+            {...(resumeGate.gated
               ? {
                   "data-agent-gated": "true",
-                  "aria-label": `${resumeLabel} — ${agentGate.reason ?? ""}`.trim(),
+                  "aria-label":
+                    `${resumeLabel} — ${resumeGate.reason ?? ""}`.trim(),
                   ...explainedDisabledMenuItemProps(),
                 }
               : {})}
@@ -189,7 +231,10 @@ export function GroupContextMenuItems({
         </MenuItemExplanation>
       )}
       {onArchiveAll && (
-        <ContextMenuItem onClick={handleArchiveAll} data-testid="archive-all-action">
+        <ContextMenuItem
+          onClick={handleArchiveAll}
+          data-testid="archive-all-action"
+        >
           <ArchiveIcon className="w-4 h-4 mr-2" />
           {archiveLabel}
         </ContextMenuItem>
@@ -198,14 +243,30 @@ export function GroupContextMenuItems({
         <ContextMenuSeparator />
       )}
       {onCancelAll && (
-        <ContextMenuItem
-          onClick={handleCancelAll}
-          className="text-destructive"
-          data-testid="cancel-all-action"
+        <MenuItemExplanation
+          reason={cancelGate.gated ? cancelGate.reason : null}
+          testId="cancel-all-gate-explanation"
         >
-          <CancelIcon className="w-4 h-4 mr-2" />
-          {cancelLabel}
-        </ContextMenuItem>
+          <ContextMenuItem
+            onClick={cancelGate.gated ? undefined : handleCancelAll}
+            className={cn(
+              "text-destructive",
+              cancelGate.gated && EXPLAINED_DISABLED_MENU_ITEM_CLASS,
+            )}
+            data-testid="cancel-all-action"
+            {...(cancelGate.gated
+              ? {
+                  "data-agent-gated": "true",
+                  "aria-label":
+                    `${cancelLabel} — ${cancelGate.reason ?? ""}`.trim(),
+                  ...explainedDisabledMenuItemProps(),
+                }
+              : {})}
+          >
+            <CancelIcon className="w-4 h-4 mr-2" />
+            {cancelLabel}
+          </ContextMenuItem>
+        </MenuItemExplanation>
       )}
     </>
   );

@@ -110,7 +110,9 @@ interface DialogState {
     confirmText?: string;
     variant?: "default" | "destructive";
   }) => Promise<boolean>;
-  confirmationDialogProps: ReturnType<typeof useConfirmation>["confirmationDialogProps"];
+  confirmationDialogProps: ReturnType<
+    typeof useConfirmation
+  >["confirmationDialogProps"];
   ConfirmationDialog: ReturnType<typeof useConfirmation>["ConfirmationDialog"];
 }
 
@@ -118,10 +120,17 @@ const DialogStateContext = createContext<DialogState | null>(null);
 
 /** Hook to create shared state for TaskContextMenuItems + TaskContextMenuDialogs */
 export function useTaskContextMenu() {
-  const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
+  const { confirm, confirmationDialogProps, ConfirmationDialog } =
+    useConfirmation();
   const [showBlockDialog, setShowBlockDialog] = useState(false);
 
-  return { showBlockDialog, setShowBlockDialog, confirm, confirmationDialogProps, ConfirmationDialog };
+  return {
+    showBlockDialog,
+    setShowBlockDialog,
+    confirm,
+    confirmationDialogProps,
+    ConfirmationDialog,
+  };
 }
 
 /** Provider that wraps ContextMenu to share dialog state between Items and Dialogs */
@@ -189,16 +198,16 @@ function resolveHandler(
 /**
  * Handler keys that STEER work forward and therefore require `ui:agent` (2.6-b).
  *
- * The complement is deliberate, not an oversight: `onPause`, `onBlockWithReason`,
- * `onStatusChange` for `cancel`, and the view-only actions are authority-reducing or
- * inert, so a device without `ui:agent` keeps them under the operate-only boundary. This
- * one map covers both the Kanban and graph menus, so neither surface can drift from
- * the other.
+ * The host classifies pause and block as agent-control writes even though they reduce
+ * authority, so those handlers belong here alongside forward-steering transitions.
+ * This one map covers both the Kanban and graph menus, so neither surface can drift.
  */
 const AGENT_STEERING_HANDLER_KEYS: ReadonlySet<string> = new Set([
   "onStatusChange",
+  "onBlockWithReason",
   "onUnblock",
   "onStartExecution",
+  "onPause",
   "onResume",
   "onApprove",
   "onReject",
@@ -216,8 +225,10 @@ const HANDLER_AFFORDANCES: Readonly<
   Partial<Record<string, AgentGatedAffordance>>
 > = {
   onStatusChange: "taskMove",
+  onBlockWithReason: "taskBlock",
   onUnblock: "taskUnblock",
   onStartExecution: "taskMove",
+  onPause: "taskPause",
   onResume: "taskResume",
   onApprove: "taskApprove",
 };
@@ -233,11 +244,15 @@ export function TaskContextMenuItems({
 }: TaskContextMenuItemsProps) {
   const dialogState = useContext(DialogStateContext);
   if (!dialogState) {
-    throw new Error("TaskContextMenuItems must be wrapped in TaskContextMenuProvider");
+    throw new Error(
+      "TaskContextMenuItems must be wrapped in TaskContextMenuProvider",
+    );
   }
 
   const { confirm, setShowBlockDialog } = dialogState;
   const agentGate = useAgentGate();
+  const archiveGate = useAgentGate("taskArchive");
+  const restoreGate = useAgentGate("taskRestore");
   const isRemote = useIsRemoteEnvironment();
   const scopes = useActiveEffectiveScopes();
   const gateForAction = useCallback(
@@ -250,7 +265,7 @@ export function TaskContextMenuItems({
           : resolveAffordanceGate(affordance, isRemote, scopes);
       return gate.gated ? gate : null;
     },
-    [agentGate, isRemote, scopes]
+    [agentGate, isRemote, scopes],
   );
 
   const isArchived = task.archivedAt !== null;
@@ -258,43 +273,47 @@ export function TaskContextMenuItems({
   const isBacklog = task.internalStatus === "backlog";
   const statusActions = getTaskActions(task.internalStatus, context);
 
-  const handleRegistryAction = useCallback(async (action: TaskAction) => {
-    // Belt-and-braces: the item is already disabled, but a keyboard activation path
-    // must not be able to dispatch a steering mutation either.
-    if (gateForAction(action) !== null) {
-      return;
-    }
-    if (action.opensDialog && action.handlerKey === "onBlockWithReason") {
-      setShowBlockDialog(true);
-      return;
-    }
+  const handleRegistryAction = useCallback(
+    async (action: TaskAction) => {
+      // Belt-and-braces: the item is already disabled, but a keyboard activation path
+      // must not be able to dispatch a steering mutation either.
+      if (gateForAction(action) !== null) {
+        return;
+      }
+      if (action.opensDialog && action.handlerKey === "onBlockWithReason") {
+        setShowBlockDialog(true);
+        return;
+      }
 
-    const handler = resolveHandler(action.handlerKey, handlers, action);
-    if (!handler) {
-      handlers.onViewDetails();
-      return;
-    }
+      const handler = resolveHandler(action.handlerKey, handlers, action);
+      if (!handler) {
+        handlers.onViewDetails();
+        return;
+      }
 
-    if (action.isViewAction) {
+      if (action.isViewAction) {
+        handler();
+        return;
+      }
+
+      if (action.confirmConfig) {
+        const confirmed = await confirm({
+          title: action.confirmConfig.title,
+          description: action.confirmConfig.description,
+          confirmText: action.label,
+          variant: action.confirmConfig.variant,
+        });
+        if (confirmed) handler();
+        return;
+      }
+
       handler();
-      return;
-    }
-
-    if (action.confirmConfig) {
-      const confirmed = await confirm({
-        title: action.confirmConfig.title,
-        description: action.confirmConfig.description,
-        confirmText: action.label,
-        variant: action.confirmConfig.variant,
-      });
-      if (confirmed) handler();
-      return;
-    }
-
-    handler();
-  }, [gateForAction, handlers, confirm, setShowBlockDialog]);
+    },
+    [gateForAction, handlers, confirm, setShowBlockDialog],
+  );
 
   const handleArchive = useCallback(async () => {
+    if (archiveGate.gated) return;
     const confirmed = await confirm({
       title: "Archive this task?",
       description: "The task will be moved to the archive.",
@@ -302,9 +321,10 @@ export function TaskContextMenuItems({
       variant: "default",
     });
     if (confirmed) handlers.onArchive?.();
-  }, [confirm, handlers]);
+  }, [archiveGate.gated, confirm, handlers]);
 
   const handleRestore = useCallback(async () => {
+    if (restoreGate.gated) return;
     const confirmed = await confirm({
       title: "Restore this task?",
       description: "The task will be restored to the backlog.",
@@ -312,7 +332,7 @@ export function TaskContextMenuItems({
       variant: "default",
     });
     if (confirmed) handlers.onRestore?.();
-  }, [confirm, handlers]);
+  }, [confirm, handlers, restoreGate.gated]);
 
   return (
     <>
@@ -345,33 +365,36 @@ export function TaskContextMenuItems({
             const gate = gateForAction(action);
             const gated = gate !== null;
             return (
-            // Soft-disabled rather than `disabled`: a Radix-disabled item has
-            // `pointer-events: none` and leaves the roving-focus order, so its reason
-            // would be unreachable by both mouse and keyboard.
-            <MenuItemExplanation
-              key={action.id}
-              reason={gate?.reason ?? null}
-              testId={`${action.id}-gate-explanation`}
-            >
-              <ContextMenuItem
-                onClick={gated ? undefined : () => handleRegistryAction(action)}
-                className={cn(
-                  action.variant === "destructive" && "text-destructive",
-                  gated && EXPLAINED_DISABLED_MENU_ITEM_CLASS
-                )}
-                data-testid={`${action.id}-action`}
-                {...(gate !== null
-                  ? {
-                      "data-agent-gated": "true",
-                      "aria-label": `${action.label} — ${gate.reason ?? ""}`.trim(),
-                      ...explainedDisabledMenuItemProps(),
-                    }
-                  : {})}
+              // Soft-disabled rather than `disabled`: a Radix-disabled item has
+              // `pointer-events: none` and leaves the roving-focus order, so its reason
+              // would be unreachable by both mouse and keyboard.
+              <MenuItemExplanation
+                key={action.id}
+                reason={gate?.reason ?? null}
+                testId={`${action.id}-gate-explanation`}
               >
-                <action.icon className="w-4 h-4 mr-2" />
-                {action.label}
-              </ContextMenuItem>
-            </MenuItemExplanation>
+                <ContextMenuItem
+                  onClick={
+                    gated ? undefined : () => handleRegistryAction(action)
+                  }
+                  className={cn(
+                    action.variant === "destructive" && "text-destructive",
+                    gated && EXPLAINED_DISABLED_MENU_ITEM_CLASS,
+                  )}
+                  data-testid={`${action.id}-action`}
+                  {...(gate !== null
+                    ? {
+                        "data-agent-gated": "true",
+                        "aria-label":
+                          `${action.label} — ${gate.reason ?? ""}`.trim(),
+                        ...explainedDisabledMenuItemProps(),
+                      }
+                    : {})}
+                >
+                  <action.icon className="w-4 h-4 mr-2" />
+                  {action.label}
+                </ContextMenuItem>
+              </MenuItemExplanation>
             );
           })}
         </>
@@ -380,20 +403,62 @@ export function TaskContextMenuItems({
       {!isArchived && handlers.onArchive && (
         <>
           <ContextMenuSeparator />
-          <ContextMenuItem onClick={handleArchive}>
-            <Archive className="w-4 h-4 mr-2" />
-            Archive
-          </ContextMenuItem>
+          <MenuItemExplanation
+            reason={archiveGate.gated ? archiveGate.reason : null}
+            testId="archive-gate-explanation"
+          >
+            <ContextMenuItem
+              onClick={archiveGate.gated ? undefined : handleArchive}
+              className={
+                archiveGate.gated
+                  ? EXPLAINED_DISABLED_MENU_ITEM_CLASS
+                  : undefined
+              }
+              data-testid="archive-action"
+              {...(archiveGate.gated
+                ? {
+                    "data-agent-gated": "true",
+                    "aria-label":
+                      `Archive — ${archiveGate.reason ?? ""}`.trim(),
+                    ...explainedDisabledMenuItemProps(),
+                  }
+                : {})}
+            >
+              <Archive className="w-4 h-4 mr-2" />
+              Archive
+            </ContextMenuItem>
+          </MenuItemExplanation>
         </>
       )}
 
       {isArchived && handlers.onRestore && (
         <>
           <ContextMenuSeparator />
-          <ContextMenuItem onClick={handleRestore}>
-            <RotateCcw className="w-4 h-4 mr-2" />
-            Restore
-          </ContextMenuItem>
+          <MenuItemExplanation
+            reason={restoreGate.gated ? restoreGate.reason : null}
+            testId="restore-gate-explanation"
+          >
+            <ContextMenuItem
+              onClick={restoreGate.gated ? undefined : handleRestore}
+              className={
+                restoreGate.gated
+                  ? EXPLAINED_DISABLED_MENU_ITEM_CLASS
+                  : undefined
+              }
+              data-testid="restore-action"
+              {...(restoreGate.gated
+                ? {
+                    "data-agent-gated": "true",
+                    "aria-label":
+                      `Restore — ${restoreGate.reason ?? ""}`.trim(),
+                    ...explainedDisabledMenuItemProps(),
+                  }
+                : {})}
+            >
+              <RotateCcw className="w-4 h-4 mr-2" />
+              Restore
+            </ContextMenuItem>
+          </MenuItemExplanation>
         </>
       )}
     </>
@@ -413,7 +478,9 @@ export function TaskContextMenuDialogs({
 }) {
   const dialogState = useContext(DialogStateContext);
   if (!dialogState) {
-    throw new Error("TaskContextMenuDialogs must be wrapped in TaskContextMenuProvider");
+    throw new Error(
+      "TaskContextMenuDialogs must be wrapped in TaskContextMenuProvider",
+    );
   }
 
   const {

@@ -173,6 +173,10 @@ export const AGENT_GATED_AFFORDANCES = {
   // `send_remote_chat_message` remote command.
   questionAnswer: "resolve_remote_user_question",
   taskMove: "move_task",
+  taskArchive: "archive_task",
+  taskRestore: "restore_task",
+  taskBlock: "block_task",
+  taskPause: "pause_task",
   // Task-level stop is registered as agentControl, so remotes without ui:agent must not invoke it.
   taskStop: "stop_task",
   // Resume/restart route through the registered spawn-free intent twins. Older hosts omit
@@ -181,6 +185,8 @@ export const AGENT_GATED_AFFORDANCES = {
   taskApprove: "approve_task_for_review",
   taskResume: "request_remote_task_resume",
   groupResume: "request_remote_group_resume",
+  groupCancel: "cancel_tasks_in_group",
+  groupPause: "pause_tasks_in_group",
   recoveryPromptResolve: "request_remote_recovery_prompt_resolution",
   taskUnblock: "unblock_task",
   // Merge recovery commands are not registered on the remote facade.
@@ -282,11 +288,7 @@ export const INERT_AFFORDANCE_OPS = {
  * through. It differs from `gated` (fix it on the host) and `unavailable` (nothing
  * fixes it) in that it clears by itself when the supervisor reconnects.
  */
-export type AgentGateStatus =
-  | "enabled"
-  | "gated"
-  | "unavailable"
-  | "read_only";
+export type AgentGateStatus = "enabled" | "gated" | "unavailable" | "read_only";
 
 export interface AgentGateState {
   readonly status: AgentGateStatus;
@@ -296,7 +298,11 @@ export interface AgentGateState {
   readonly reason: string | null;
 }
 
-const ENABLED: AgentGateState = { status: "enabled", gated: false, reason: null };
+const ENABLED: AgentGateState = {
+  status: "enabled",
+  gated: false,
+  reason: null,
+};
 const GATED: AgentGateState = {
   status: "gated",
   gated: true,
@@ -320,7 +326,7 @@ const UNAVAILABLE: AgentGateState = {
 export function withReadOnly(
   gate: AgentGateState,
   writable: boolean,
-  reason: string | null
+  reason: string | null,
 ): AgentGateState {
   if (writable || gate.status === "unavailable") {
     return gate;
@@ -331,12 +337,16 @@ export function withReadOnly(
     // Presentation-neutral: this fallback is reached only when the caller supplied no
     // reason, and asserting "reconnecting" over a syncing environment would contradict
     // the calm chip. The specific copy comes from `useEnvironmentWritable`.
-    reason: reason ?? "This environment isn't connected — changes can't be made right now.",
+    reason:
+      reason ??
+      "This environment isn't connected — changes can't be made right now.",
   };
 }
 
 function hasAgentScope(scopes: readonly string[] | null | undefined): boolean {
-  return scopes !== null && scopes !== undefined && scopes.includes(UI_AGENT_SCOPE);
+  return (
+    scopes !== null && scopes !== undefined && scopes.includes(UI_AGENT_SCOPE)
+  );
 }
 
 /** The facade op backing a command name, or `null` when it is not exposed remotely. */
@@ -356,7 +366,7 @@ export function facadeOpFor(command: string): RemoteFacadeOp | null {
 export function resolveAffordanceGate(
   affordance: AgentGatedAffordance,
   isRemoteEnvironment: boolean,
-  effectiveScopes: readonly string[] | null | undefined
+  effectiveScopes: readonly string[] | null | undefined,
 ): AgentGateState {
   if (!isRemoteEnvironment) return ENABLED;
 
@@ -383,7 +393,7 @@ export function resolveAffordanceGate(
  */
 export function resolveAgentGate(
   isRemoteEnvironment: boolean,
-  effectiveScopes: readonly string[] | null | undefined
+  effectiveScopes: readonly string[] | null | undefined,
 ): AgentGateState {
   if (!isRemoteEnvironment) return ENABLED;
   return hasAgentScope(effectiveScopes) ? ENABLED : GATED;
@@ -399,7 +409,7 @@ export function resolveFieldGate(
   command: string,
   field: string,
   isRemoteEnvironment: boolean,
-  effectiveScopes: readonly string[] | null | undefined
+  effectiveScopes: readonly string[] | null | undefined,
 ): AgentGateState {
   if (!isRemoteEnvironment) return ENABLED;
   if (facadeOpFor(command) === null) return UNAVAILABLE;
@@ -437,7 +447,7 @@ export interface RemoteErrorBannerProps {
  * stops this mapper from quietly swallowing errors it has nothing useful to say about.
  */
 export function remoteErrorBannerProps(
-  error: unknown
+  error: unknown,
 ): RemoteErrorBannerProps | null {
   if (!isRemoteTransportError(error)) return null;
   const transportError: RemoteTransportError = error;

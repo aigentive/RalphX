@@ -1,3 +1,4 @@
+import { createElement, type ReactElement } from "react";
 /**
  * TaskContextMenuItems.test.tsx - Tests for shared TaskContextMenuItems component
  *
@@ -6,7 +7,13 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import {
+  render as rtlRender,
+  screen,
+  fireEvent,
+  waitFor,
+} from "@testing-library/react";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -20,11 +27,44 @@ import {
   type TaskContextMenuHandlers,
 } from "./TaskContextMenuItems";
 import type { Task } from "@/types/task";
+import {
+  LOCAL_ENVIRONMENT_ID,
+  useEnvironmentStore,
+} from "@/stores/environmentStore";
+
+// Gated icon-only controls carry the app tooltip; `Tooltip` throws without a
+// provider, which production gets from App.tsx.
+function render(ui: ReactElement): ReturnType<typeof rtlRender> {
+  return rtlRender(createElement(TooltipProvider, null, ui));
+}
+
+const REMOTE_ID = "remote-gate-test";
+
+function setGateEnvironment(granted: boolean): void {
+  useEnvironmentStore.setState({
+    activeEnvironmentId: REMOTE_ID,
+    environments: [
+      { id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" },
+      { id: REMOTE_ID, name: "Remote Mac", kind: "remote" },
+    ],
+    effectiveScopes: {
+      [REMOTE_ID]: granted
+        ? ["ui:read", "ui:operate", "ui:agent"]
+        : ["ui:read", "ui:operate"],
+    },
+    connectionPresentations: {
+      [REMOTE_ID]: {
+        presentation: "connected",
+        blockedFailure: null,
+        blockedMessage: null,
+      },
+    },
+  });
+}
 
 // ============================================================================
 // Helpers
 // ============================================================================
-
 
 function createMockTask(overrides: Partial<Task> = {}): Task {
   return {
@@ -126,6 +166,14 @@ describe("TaskContextMenuItems", () => {
 
   beforeEach(() => {
     handlers = createMockHandlers();
+    useEnvironmentStore.setState({
+      activeEnvironmentId: LOCAL_ENVIRONMENT_ID,
+      environments: [
+        { id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" },
+      ],
+      effectiveScopes: {},
+      connectionPresentations: {},
+    });
   });
 
   // --------------------------------------------------------------------------
@@ -145,12 +193,18 @@ describe("TaskContextMenuItems", () => {
     });
 
     it("shows Edit for non-archived, non-system-controlled tasks", () => {
-      renderWithContextMenu(createMockTask({ internalStatus: "backlog" }), handlers);
+      renderWithContextMenu(
+        createMockTask({ internalStatus: "backlog" }),
+        handlers,
+      );
       expect(screen.getByText("Edit")).toBeInTheDocument();
     });
 
     it("hides Edit for system-controlled tasks", () => {
-      renderWithContextMenu(createMockTask({ internalStatus: "executing" }), handlers);
+      renderWithContextMenu(
+        createMockTask({ internalStatus: "executing" }),
+        handlers,
+      );
       expect(screen.queryByText("Edit")).not.toBeInTheDocument();
     });
 
@@ -164,23 +218,35 @@ describe("TaskContextMenuItems", () => {
 
     it("hides Edit when onEdit handler not provided", () => {
       handlers.onEdit = undefined;
-      renderWithContextMenu(createMockTask({ internalStatus: "backlog" }), handlers);
+      renderWithContextMenu(
+        createMockTask({ internalStatus: "backlog" }),
+        handlers,
+      );
       expect(screen.queryByText("Edit")).not.toBeInTheDocument();
     });
 
     it("shows Start Ideation for backlog tasks when handler provided", () => {
-      renderWithContextMenu(createMockTask({ internalStatus: "backlog" }), handlers);
+      renderWithContextMenu(
+        createMockTask({ internalStatus: "backlog" }),
+        handlers,
+      );
       expect(screen.getByText("Start Ideation")).toBeInTheDocument();
     });
 
     it("hides Start Ideation for non-backlog tasks", () => {
-      renderWithContextMenu(createMockTask({ internalStatus: "ready" }), handlers);
+      renderWithContextMenu(
+        createMockTask({ internalStatus: "ready" }),
+        handlers,
+      );
       expect(screen.queryByText("Start Ideation")).not.toBeInTheDocument();
     });
 
     it("hides Start Ideation when handler not provided", () => {
       handlers.onStartIdeation = undefined;
-      renderWithContextMenu(createMockTask({ internalStatus: "backlog" }), handlers);
+      renderWithContextMenu(
+        createMockTask({ internalStatus: "backlog" }),
+        handlers,
+      );
       expect(screen.queryByText("Start Ideation")).not.toBeInTheDocument();
     });
   });
@@ -190,6 +256,48 @@ describe("TaskContextMenuItems", () => {
   // --------------------------------------------------------------------------
 
   describe("archive/restore/delete", () => {
+    it("disables archive and shows the gate reason without dispatching", async () => {
+      setGateEnvironment(false);
+      renderWithContextMenu(createMockTask(), handlers);
+      const action = screen.getByTestId("archive-action");
+      expect(action).toHaveAttribute("data-agent-gated", "true");
+      // The reason renders in a Radix TooltipContent that mounts on focus.
+      action.focus();
+      await waitFor(() => {
+        expect(
+          screen.getByTestId("archive-gate-explanation"),
+        ).toHaveTextContent(/agent control/i);
+      });
+      fireEvent.click(action);
+      expect(handlers.onArchive).not.toHaveBeenCalled();
+    });
+
+    it("keeps archive live and dispatches when the gate is granted", async () => {
+      setGateEnvironment(true);
+      renderWithContextMenu(createMockTask(), handlers);
+      fireEvent.click(screen.getByTestId("archive-action"));
+      fireEvent.click(await screen.findByRole("button", { name: "Archive" }));
+      await waitFor(() => expect(handlers.onArchive).toHaveBeenCalledTimes(1));
+    });
+
+    it("disables restore and shows the gate reason without dispatching", async () => {
+      setGateEnvironment(false);
+      renderWithContextMenu(
+        createMockTask({ archivedAt: new Date().toISOString() }),
+        handlers,
+      );
+      const action = screen.getByTestId("restore-action");
+      expect(action).toHaveAttribute("data-agent-gated", "true");
+      // The reason renders in a Radix TooltipContent that mounts on focus.
+      action.focus();
+      await waitFor(() => {
+        expect(
+          screen.getByTestId("restore-gate-explanation"),
+        ).toHaveTextContent(/agent control/i);
+      });
+      fireEvent.click(action);
+      expect(handlers.onRestore).not.toHaveBeenCalled();
+    });
     it("shows Archive for non-archived tasks", () => {
       renderWithContextMenu(createMockTask(), handlers);
       expect(screen.getByText("Archive")).toBeInTheDocument();
@@ -218,6 +326,31 @@ describe("TaskContextMenuItems", () => {
   // --------------------------------------------------------------------------
 
   describe("kanban surface", () => {
+    it.each([
+      ["ready", "block", "onBlockWithReason"],
+      ["executing", "pause", "onPause"],
+    ] as const)(
+      "gates %s task %s and does not dispatch",
+      async (status, actionId, handlerKey) => {
+        setGateEnvironment(false);
+        renderWithContextMenu(
+          createMockTask({ internalStatus: status }),
+          handlers,
+          "kanban",
+        );
+        const action = screen.getByTestId(`${actionId}-action`);
+        expect(action).toHaveAttribute("data-agent-gated", "true");
+        // The reason renders in a Radix TooltipContent that mounts on focus.
+        action.focus();
+        await waitFor(() => {
+          expect(
+            screen.getByTestId(`${actionId}-gate-explanation`),
+          ).toHaveTextContent(/agent control/i);
+        });
+        fireEvent.click(action);
+        expect(handlers[handlerKey]).not.toHaveBeenCalled();
+      },
+    );
     it("shows Cancel for backlog tasks", () => {
       renderWithContextMenu(
         createMockTask({ internalStatus: "backlog" }),

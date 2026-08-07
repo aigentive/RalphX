@@ -91,6 +91,7 @@ export const GATE_WIRED_FILES: readonly string[] = [
   "src/components/tasks/detail-views/BasicTaskDetail.tsx",
   "src/components/tasks/TaskEditForm.tsx",
   "src/components/agents/task-details/TaskEditForm.tsx",
+  "src/components/agents/task-details/AgentsTaskDetailOverlay.tsx",
   "src/components/agents/task-details/StepList.tsx",
   "src/components/Ideation/PlanEditor.tsx",
   "src/components/Ideation/ProposalCard.tsx",
@@ -102,6 +103,7 @@ export const GATE_WIRED_FILES: readonly string[] = [
   "src/components/automations/AutomationRunTimelineItem.tsx",
   "src/components/automations/AutomationsView.tsx",
   "src/components/execution/ExecutionControlBar.tsx",
+  "src/components/execution/ProcessCard.tsx",
   "src/components/recovery/RecoveryPromptDialog.tsx",
   "src/components/settings/McpSettingsSection.tsx",
   "src/components/settings/RepositorySettingsSection.tsx",
@@ -145,7 +147,8 @@ export const GATE_CALLSITE_INDIRECTIONS: readonly {
   {
     file: "src/components/Chat/ChatInput.tsx",
     affordance: "chatSend",
-    reason: "Presentational input; send dispatches through the `onSend` prop the host owns.",
+    reason:
+      "Presentational input; send dispatches through the `onSend` prop the host owns.",
   },
   {
     file: "src/components/agents/AgentsStartComposer.tsx",
@@ -174,121 +177,187 @@ export const GATE_CALLSITE_INDIRECTIONS: readonly {
   {
     file: "src/components/agents/AgentComposerSurface.tsx",
     affordance: "agentComposerSend",
-    reason: "Composer dispatches through the `onSend` prop; the invoke lives in the conversation host.",
+    reason:
+      "Composer dispatches through the `onSend` prop; the invoke lives in the conversation host.",
   },
   {
     file: "src/components/agents/AgentComposerSurface.tsx",
     affordance: "agentStop",
-    reason: "Stop dispatches through the optional `onStop` prop; the invoke lives in the conversation host.",
+    reason:
+      "Stop dispatches through the optional `onStop` prop; the invoke lives in the conversation host.",
   },
   {
     file: "src/hooks/useQuestionInput.ts",
     affordance: "questionAnswer",
-    reason: "Answer submission is the injected `submitAnswer` param (supplied by useAskUserQuestion).",
+    reason:
+      "Answer submission is the injected `submitAnswer` param (supplied by useAskUserQuestion).",
   },
   {
     file: "src/components/Chat/QueuedMessage.tsx",
     affordance: "queuedMessageDelete",
-    reason: "Chip renders the gate; the delete invoke lives in useChatActions and arrives as the `onDelete` prop.",
+    reason:
+      "Chip renders the gate; the delete invoke lives in useChatActions and arrives as the `onDelete` prop.",
   },
   {
     file: "src/components/Chat/QueuedMessage.tsx",
     affordance: "queuedMessageEdit",
-    reason: "Chip renders the gate; the edit invoke lives in useChatActions and arrives as the `onEdit` prop.",
+    reason:
+      "Chip renders the gate; the edit invoke lives in useChatActions and arrives as the `onEdit` prop.",
   },
   {
     file: "src/components/Chat/QueuedMessage.tsx",
     affordance: "queuedMessageSendNow",
-    reason: "Chip renders the gate; the invoke lives in useChatActions and arrives as the `onSendNow` prop.",
+    reason:
+      "Chip renders the gate; the invoke lives in useChatActions and arrives as the `onSendNow` prop.",
   },
   {
     file: "src/components/Chat/ChatInput.tsx",
     affordance: "queuedMessageEdit",
-    reason: "ArrowUp enters edit through `onEditLastQueued`; the delete invoke lives in useChatActions.",
+    reason:
+      "ArrowUp enters edit through `onEditLastQueued`; the delete invoke lives in useChatActions.",
   },
   {
     file: "src/components/tasks/TaskContextMenuItems.tsx",
     affordance: "taskMove",
-    reason: "Menu items dispatch through the `handlers` prop map; no command is invoked in this file.",
+    reason:
+      "Menu items dispatch through the `handlers` prop map; no command is invoked in this file.",
+  },
+  {
+    file: "src/components/tasks/TaskContextMenuItems.tsx",
+    affordance: "taskArchive",
+    reason:
+      "The menu gates archive; the task API dispatch arrives through the `handlers.onArchive` prop.",
+  },
+  {
+    file: "src/components/tasks/TaskContextMenuItems.tsx",
+    affordance: "taskRestore",
+    reason:
+      "The menu gates restore; the task API dispatch arrives through the `handlers.onRestore` prop.",
+  },
+  {
+    file: "src/components/tasks/TaskContextMenuItems.tsx",
+    affordance: "taskBlock",
+    reason:
+      "The menu gates Block dialog entry; the task API dispatch arrives through `handlers.onBlockWithReason`.",
+  },
+  {
+    file: "src/components/tasks/TaskContextMenuItems.tsx",
+    affordance: "taskPause",
+    reason:
+      "The menu gates pause; the task API dispatch arrives through the `handlers.onPause` prop.",
   },
   {
     file: "src/components/tasks/TaskContextMenuItems.tsx",
     affordance: "taskApprove",
-    reason: "Menu items dispatch through the `handlers` prop map; no command is invoked in this file.",
+    reason:
+      "Menu items dispatch through the `handlers` prop map; no command is invoked in this file.",
   },
   {
     file: "src/components/tasks/TaskContextMenuItems.tsx",
     affordance: "taskResume",
-    reason: "Menu items dispatch through the `handlers` prop map; no command is invoked in this file.",
+    reason:
+      "Menu items dispatch through the `handlers` prop map; no command is invoked in this file.",
   },
   {
     file: "src/components/tasks/TaskContextMenuItems.tsx",
     affordance: "taskUnblock",
-    reason: "Menu items dispatch through the `handlers` prop map; no command is invoked in this file.",
+    reason:
+      "Menu items dispatch through the `handlers` prop map; no command is invoked in this file.",
   },
   {
     file: "src/components/tasks/GroupContextMenuItems.tsx",
     affordance: "groupResume",
-    reason: "Resume All dispatches through the `onResumeAll` prop supplied by the board.",
+    reason:
+      "Resume All dispatches through the `onResumeAll` prop supplied by the board.",
+  },
+  {
+    file: "src/components/tasks/GroupContextMenuItems.tsx",
+    affordance: "groupCancel",
+    reason:
+      "Cancel All dispatches through the `onCancelAll` prop supplied by the board or graph.",
+  },
+  {
+    file: "src/components/tasks/GroupContextMenuItems.tsx",
+    affordance: "groupPause",
+    reason:
+      "Pause All dispatches through the `onPauseAll` prop supplied by the board or graph.",
+  },
+  {
+    file: "src/components/execution/ProcessCard.tsx",
+    affordance: "taskPause",
+    reason:
+      "The process row gates pause; the task API dispatch arrives through the `onPause` prop.",
   },
   {
     file: "src/components/tasks/TaskBoard/Column.tsx",
     affordance: "groupResume",
-    reason: "Wave B1 Resume All dispatches through `resumeTasksInGroupMutation` from the task mutation hook.",
+    reason:
+      "Wave B1 Resume All dispatches through `resumeTasksInGroupMutation` from the task mutation hook.",
   },
   {
     file: "src/components/settings/McpSettingsSection.tsx",
     affordance: "mcpCatalogRefresh",
-    reason: "Wave C refresh dispatches through the provider policy hook's `refreshProvider` method.",
+    reason:
+      "Wave C refresh dispatches through the provider policy hook's `refreshProvider` method.",
   },
   {
     file: "src/components/agents/task-details/detail-views/BasicTaskDetail.tsx",
     affordance: "taskRestart",
-    reason: "Wave B1 restart dispatches through `api.tasks.restart` inside the mutation callback.",
+    reason:
+      "Wave B1 restart dispatches through `api.tasks.restart` inside the mutation callback.",
   },
   {
     file: "src/components/tasks/detail-views/BasicTaskDetail.tsx",
     affordance: "taskRestart",
-    reason: "Wave B1 restart dispatches through `api.tasks.restart` inside the mutation callback.",
+    reason:
+      "Wave B1 restart dispatches through `api.tasks.restart` inside the mutation callback.",
   },
   {
     file: "src/components/Ideation/ProposalCard.tsx",
     affordance: "proposalEdit",
-    reason: "Edit/delete dispatch through the `onEdit` / `onDelete` props owned by the ideation host.",
+    reason:
+      "Edit/delete dispatch through the `onEdit` / `onDelete` props owned by the ideation host.",
   },
   {
     file: "src/components/Ideation/ProposalDetailSheet.tsx",
     affordance: "proposalEdit",
-    reason: "Edit dispatches through the `onEdit` prop owned by the ideation host.",
+    reason:
+      "Edit dispatches through the `onEdit` prop owned by the ideation host.",
   },
-  ...([
-    ["automationFinalize", "onApprove"],
-    ["automationRestart", "onRestart"],
-    ["automationResume", "onResume"],
-    ["automationPause", "onPause"],
-    ["automationRunNow", "onRunNow"],
-    ["automationStop", "onCancelAutomation"],
-    ["automationSkipJudge", "onSkipJudge"],
-    ["automationSetupEdit", "onEdit"],
-    ["automationDelete", "onDelete"],
-  ] as const).map(([affordance, prop]) => ({
+  ...(
+    [
+      ["automationFinalize", "onApprove"],
+      ["automationRestart", "onRestart"],
+      ["automationResume", "onResume"],
+      ["automationPause", "onPause"],
+      ["automationRunNow", "onRunNow"],
+      ["automationStop", "onCancelAutomation"],
+      ["automationSkipJudge", "onSkipJudge"],
+      ["automationSetupEdit", "onEdit"],
+      ["automationDelete", "onDelete"],
+    ] as const
+  ).map(([affordance, prop]) => ({
     file: "src/components/automations/AutomationDetailHeader.tsx",
     affordance,
     reason: `Header dispatches through the \`${prop}\` prop owned by AutomationDetailView.`,
   })),
-  ...([
-    ["automationRetryPlanJudge", "onRetryPlanJudge"],
-    ["automationRetryJudge", "onRetryJudge"],
-    ["automationRunNow", "onRunNow"],
-  ] as const).map(([affordance, prop]) => ({
+  ...(
+    [
+      ["automationRetryPlanJudge", "onRetryPlanJudge"],
+      ["automationRetryJudge", "onRetryJudge"],
+      ["automationRunNow", "onRunNow"],
+    ] as const
+  ).map(([affordance, prop]) => ({
     file: "src/components/automations/AutomationRunsTab.tsx",
     affordance,
     reason: `Runs tab dispatches through the \`${prop}\` prop owned by AutomationDetailView.`,
   })),
-  ...([
-    ["automationDeleteRun", "onDeleteRun"],
-    ["automationResumeRun", "onResumeRun"],
-  ] as const).map(([affordance, prop]) => ({
+  ...(
+    [
+      ["automationDeleteRun", "onDeleteRun"],
+      ["automationResumeRun", "onResumeRun"],
+    ] as const
+  ).map(([affordance, prop]) => ({
     file: "src/components/automations/AutomationRunTimelineItem.tsx",
     affordance,
     reason: `Timeline item dispatches through the \`${prop}\` prop owned by AutomationDetailView.`,
@@ -309,7 +378,7 @@ export const AFFORDANCE_CONSUMPTION_ALIASES: readonly {
   {
     affordance: "taskEditContent",
     reason:
-      "Argument-level row: both TaskEditForms consume it as useFieldGate(\"update_task\", \"title\"), which routes to the same escalation branch in resolveAffordanceGate.",
+      'Argument-level row: both TaskEditForms consume it as useFieldGate("update_task", "title"), which routes to the same escalation branch in resolveAffordanceGate.',
   },
 ];
 
@@ -377,12 +446,11 @@ export const KNOWN_GATE_GAPS: readonly KnownGateGap[] = [
     owner: 1,
     why: "The local transport branch legitimately invokes resolve_user_question; the remote branch invokes the registered resolve_remote_user_question twin.",
   },
-
 ];
 
 export function orphanedWiringGapIds(
   gaps: readonly KnownGateGap[],
-  wiredFiles: readonly string[]
+  wiredFiles: readonly string[],
 ): string[] {
   const wired = new Set(wiredFiles);
   return gaps
@@ -394,6 +462,6 @@ export function orphanedWiringGapIds(
 /** The quarantined ids of one kind, as a set — the guards diff against these. */
 export function quarantinedIds(kind: GateGapKind): ReadonlySet<string> {
   return new Set(
-    KNOWN_GATE_GAPS.filter((gap) => gap.kind === kind).map((gap) => gap.id)
+    KNOWN_GATE_GAPS.filter((gap) => gap.kind === kind).map((gap) => gap.id),
   );
 }

@@ -1,9 +1,11 @@
+import { createElement, type ReactElement } from "react";
 /**
  * RunningProcessPopover component tests
  */
 
-import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { beforeEach, describe, it, expect, vi } from "vitest";
+import { render as rtlRender, screen, fireEvent } from "@testing-library/react";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { RunningProcessPopover } from "./RunningProcessPopover";
 import type {
   ExecutionCapacitySummary,
@@ -12,9 +14,32 @@ import type {
   RunningIdeationSession,
   RunningWorkspaceSession,
 } from "@/api/running-processes";
+import {
+  LOCAL_ENVIRONMENT_ID,
+  useEnvironmentStore,
+} from "@/stores/environmentStore";
+
+// Gated icon-only controls carry the app tooltip; `Tooltip` throws without a
+// provider, which production gets from App.tsx.
+function render(ui: ReactElement): ReturnType<typeof rtlRender> {
+  return rtlRender(createElement(TooltipProvider, null, ui));
+}
+
+beforeEach(() => {
+  useEnvironmentStore.setState({
+    activeEnvironmentId: LOCAL_ENVIRONMENT_ID,
+    environments: [
+      { id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" },
+    ],
+    effectiveScopes: {},
+    connectionPresentations: {},
+  });
+});
 
 // Mock process data helper
-function createMockProcess(overrides?: Partial<RunningProcess>): RunningProcess {
+function createMockProcess(
+  overrides?: Partial<RunningProcess>,
+): RunningProcess {
   return {
     taskId: "task-123",
     title: "Test Task",
@@ -54,7 +79,7 @@ function createMockProcess(overrides?: Partial<RunningProcess>): RunningProcess 
 
 // Mock process data helper
 function createMockIdeationSession(
-  overrides?: Partial<RunningIdeationSession>
+  overrides?: Partial<RunningIdeationSession>,
 ): RunningIdeationSession {
   return {
     sessionId: "session-1",
@@ -66,7 +91,7 @@ function createMockIdeationSession(
 }
 
 function createMockWorkspaceSession(
-  overrides?: Partial<RunningWorkspaceSession>
+  overrides?: Partial<RunningWorkspaceSession>,
 ): RunningWorkspaceSession {
   return {
     conversationId: "workspace-1",
@@ -131,7 +156,7 @@ describe("RunningProcessPopover", () => {
           onOpenSettings={vi.fn()}
         >
           <button>Trigger</button>
-        </RunningProcessPopover>
+        </RunningProcessPopover>,
       );
       expect(screen.getByText("Trigger")).toBeInTheDocument();
     });
@@ -148,7 +173,7 @@ describe("RunningProcessPopover", () => {
           onOpenSettings={vi.fn()}
         >
           <button>Trigger</button>
-        </RunningProcessPopover>
+        </RunningProcessPopover>,
       );
       expect(screen.getByTestId("running-process-popover")).toBeInTheDocument();
     });
@@ -165,9 +190,11 @@ describe("RunningProcessPopover", () => {
           onOpenSettings={vi.fn()}
         >
           <button>Trigger</button>
-        </RunningProcessPopover>
+        </RunningProcessPopover>,
       );
-      expect(screen.queryByTestId("running-process-popover")).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId("running-process-popover"),
+      ).not.toBeInTheDocument();
     });
   });
 
@@ -188,7 +215,7 @@ describe("RunningProcessPopover", () => {
           onOpenSettings={vi.fn()}
         >
           <button>Trigger</button>
-        </RunningProcessPopover>
+        </RunningProcessPopover>,
       );
       expect(screen.getByText("Execution (2/3)")).toBeInTheDocument();
     });
@@ -205,7 +232,7 @@ describe("RunningProcessPopover", () => {
           onOpenSettings={vi.fn()}
         >
           <button>Trigger</button>
-        </RunningProcessPopover>
+        </RunningProcessPopover>,
       );
       expect(screen.getByText(/Max: 5/)).toBeInTheDocument();
     });
@@ -223,7 +250,7 @@ describe("RunningProcessPopover", () => {
           onOpenSettings={onOpenSettings}
         >
           <button>Trigger</button>
-        </RunningProcessPopover>
+        </RunningProcessPopover>,
       );
 
       fireEvent.click(screen.getByTestId("open-settings-button"));
@@ -244,9 +271,11 @@ describe("RunningProcessPopover", () => {
           onOpenSettings={vi.fn()}
         >
           <button>Trigger</button>
-        </RunningProcessPopover>
+        </RunningProcessPopover>,
       );
-      expect(screen.getByText("No active execution processes")).toBeInTheDocument();
+      expect(
+        screen.getByText("No active execution processes"),
+      ).toBeInTheDocument();
     });
 
     it("renders all processes as ProcessCard components", () => {
@@ -266,7 +295,7 @@ describe("RunningProcessPopover", () => {
           onOpenSettings={vi.fn()}
         >
           <button>Trigger</button>
-        </RunningProcessPopover>
+        </RunningProcessPopover>,
       );
 
       expect(screen.getByTestId("process-card-task-1")).toBeInTheDocument();
@@ -288,11 +317,51 @@ describe("RunningProcessPopover", () => {
           onOpenSettings={vi.fn()}
         >
           <button>Trigger</button>
-        </RunningProcessPopover>
+        </RunningProcessPopover>,
       );
 
       fireEvent.click(screen.getByTestId("pause-button-task-1"));
       expect(onPauseProcess).toHaveBeenCalledWith("task-1");
+    });
+
+    it("disables pause with its reason and never dispatches when gated", async () => {
+      const onPauseProcess = vi.fn();
+      useEnvironmentStore.setState({
+        activeEnvironmentId: "remote",
+        environments: [{ id: "remote", name: "Remote", kind: "remote" }],
+        effectiveScopes: { remote: ["ui:read", "ui:operate"] },
+        connectionPresentations: {
+          remote: {
+            presentation: "connected",
+            blockedFailure: null,
+            blockedMessage: null,
+          },
+        },
+      });
+      render(
+        <RunningProcessPopover
+          processes={[createMockProcess({ taskId: "task-1" })]}
+          maxConcurrent={3}
+          open={true}
+          onOpenChange={vi.fn()}
+          onPauseProcess={onPauseProcess}
+          onStopProcess={vi.fn()}
+          onOpenSettings={vi.fn()}
+        >
+          <button>Trigger</button>
+        </RunningProcessPopover>,
+      );
+      const button = screen.getByTestId("pause-button-task-1");
+      // Soft-disabled so the reason stays reachable; a real `disabled` would hide it.
+      expect(button).toHaveAttribute("aria-disabled", "true");
+      expect(button).not.toBeDisabled();
+      button.focus();
+      // Radix renders tooltip copy twice (visible + the live-region announcement).
+      expect(
+        (await screen.findAllByText(/agent control/i)).length,
+      ).toBeGreaterThan(0);
+      fireEvent.click(button);
+      expect(onPauseProcess).not.toHaveBeenCalled();
     });
 
     it("passes onStopProcess callback to ProcessCard", () => {
@@ -309,7 +378,7 @@ describe("RunningProcessPopover", () => {
           onOpenSettings={vi.fn()}
         >
           <button>Trigger</button>
-        </RunningProcessPopover>
+        </RunningProcessPopover>,
       );
 
       fireEvent.click(screen.getByTestId("stop-button-task-1"));
@@ -330,9 +399,11 @@ describe("RunningProcessPopover", () => {
           onOpenSettings={vi.fn()}
         >
           <button>Trigger</button>
-        </RunningProcessPopover>
+        </RunningProcessPopover>,
       );
-      expect(screen.getByText(/runs up to 5 tasks in parallel/)).toBeInTheDocument();
+      expect(
+        screen.getByText(/runs up to 5 tasks in parallel/),
+      ).toBeInTheDocument();
     });
 
     it("calls onOpenSettings when footer link clicked", () => {
@@ -348,7 +419,7 @@ describe("RunningProcessPopover", () => {
           onOpenSettings={onOpenSettings}
         >
           <button>Trigger</button>
-        </RunningProcessPopover>
+        </RunningProcessPopover>,
       );
 
       // Find the footer button by text content "Open Settings"
@@ -372,7 +443,7 @@ describe("RunningProcessPopover", () => {
           onOpenSettings={vi.fn()}
         >
           <button>Trigger</button>
-        </RunningProcessPopover>
+        </RunningProcessPopover>,
       );
 
       // Simulate opening
@@ -387,7 +458,7 @@ describe("RunningProcessPopover", () => {
           onOpenSettings={vi.fn()}
         >
           <button>Trigger</button>
-        </RunningProcessPopover>
+        </RunningProcessPopover>,
       );
 
       expect(screen.getByTestId("running-process-popover")).toBeInTheDocument();
@@ -410,9 +481,11 @@ describe("RunningProcessPopover", () => {
           ideationMax={2}
         >
           <button>Trigger</button>
-        </RunningProcessPopover>
+        </RunningProcessPopover>,
       );
-      expect(screen.getByRole("tab", { name: /Execution/ })).toBeInTheDocument();
+      expect(
+        screen.getByRole("tab", { name: /Execution/ }),
+      ).toBeInTheDocument();
       expect(screen.getByRole("tab", { name: /Ideation/ })).toBeInTheDocument();
     });
 
@@ -429,7 +502,7 @@ describe("RunningProcessPopover", () => {
           showIdeation={false}
         >
           <button>Trigger</button>
-        </RunningProcessPopover>
+        </RunningProcessPopover>,
       );
       expect(screen.queryByRole("tablist")).not.toBeInTheDocument();
     });
@@ -437,7 +510,10 @@ describe("RunningProcessPopover", () => {
     it("renders running, workspace, tasks, and ideation tabs when lane usage is present", () => {
       render(
         <RunningProcessPopover
-          processes={[createMockProcess({ taskId: "task-1" }), createMockProcess({ taskId: "task-2" })]}
+          processes={[
+            createMockProcess({ taskId: "task-1" }),
+            createMockProcess({ taskId: "task-2" }),
+          ]}
           ideationSessions={[createMockIdeationSession()]}
           workspaceSessions={[createMockWorkspaceSession()]}
           lanes={mockLanes}
@@ -453,21 +529,27 @@ describe("RunningProcessPopover", () => {
           initialTab="running"
         >
           <button>Trigger</button>
-        </RunningProcessPopover>
+        </RunningProcessPopover>,
       );
 
       expect(screen.getByRole("tab", { name: /Running/ })).toBeInTheDocument();
-      expect(screen.getByRole("tab", { name: /Workspaces/ })).toBeInTheDocument();
+      expect(
+        screen.getByRole("tab", { name: /Workspaces/ }),
+      ).toBeInTheDocument();
       expect(screen.getByRole("tab", { name: /Tasks/ })).toBeInTheDocument();
       expect(screen.getByRole("tab", { name: /Ideation/ })).toBeInTheDocument();
-      expect(screen.getByTestId("capacity-lane-workspaces")).toHaveTextContent("1/10");
+      expect(screen.getByTestId("capacity-lane-workspaces")).toHaveTextContent(
+        "1/10",
+      );
     });
 
     it("clicking Workspaces tab shows workspace sessions", () => {
       render(
         <RunningProcessPopover
           processes={[]}
-          workspaceSessions={[createMockWorkspaceSession({ title: "Main workspace" })]}
+          workspaceSessions={[
+            createMockWorkspaceSession({ title: "Main workspace" }),
+          ]}
           lanes={mockLanes}
           capacity={mockCapacity}
           maxConcurrent={8}
@@ -479,7 +561,7 @@ describe("RunningProcessPopover", () => {
           initialTab="running"
         >
           <button>Trigger</button>
-        </RunningProcessPopover>
+        </RunningProcessPopover>,
       );
 
       fireEvent.click(screen.getByRole("tab", { name: /Workspaces/ }));
@@ -490,9 +572,15 @@ describe("RunningProcessPopover", () => {
     it("clicking lane summaries in Running switches to the corresponding tab", () => {
       render(
         <RunningProcessPopover
-          processes={[createMockProcess({ taskId: "task-lane", title: "Lane Task" })]}
-          ideationSessions={[createMockIdeationSession({ title: "Lane Ideation" })]}
-          workspaceSessions={[createMockWorkspaceSession({ title: "Lane Workspace" })]}
+          processes={[
+            createMockProcess({ taskId: "task-lane", title: "Lane Task" }),
+          ]}
+          ideationSessions={[
+            createMockIdeationSession({ title: "Lane Ideation" }),
+          ]}
+          workspaceSessions={[
+            createMockWorkspaceSession({ title: "Lane Workspace" }),
+          ]}
           lanes={mockLanes}
           capacity={mockCapacity}
           maxConcurrent={8}
@@ -506,7 +594,7 @@ describe("RunningProcessPopover", () => {
           initialTab="running"
         >
           <button>Trigger</button>
-        </RunningProcessPopover>
+        </RunningProcessPopover>,
       );
 
       fireEvent.click(screen.getByTestId("capacity-lane-workspaces"));
@@ -522,7 +610,9 @@ describe("RunningProcessPopover", () => {
     });
 
     it("clicking Ideation tab shows ideation content", () => {
-      const session = createMockIdeationSession({ title: "My Ideation Session" });
+      const session = createMockIdeationSession({
+        title: "My Ideation Session",
+      });
       render(
         <RunningProcessPopover
           processes={[]}
@@ -537,7 +627,7 @@ describe("RunningProcessPopover", () => {
           ideationMax={2}
         >
           <button>Trigger</button>
-        </RunningProcessPopover>
+        </RunningProcessPopover>,
       );
 
       fireEvent.click(screen.getByRole("tab", { name: /Ideation/ }));
@@ -545,7 +635,10 @@ describe("RunningProcessPopover", () => {
     });
 
     it("clicking Execution tab shows execution content", () => {
-      const process = createMockProcess({ taskId: "task-exec", title: "Exec Task" });
+      const process = createMockProcess({
+        taskId: "task-exec",
+        title: "Exec Task",
+      });
       const session = createMockIdeationSession({ title: "Hidden Ideation" });
       render(
         <RunningProcessPopover
@@ -562,7 +655,7 @@ describe("RunningProcessPopover", () => {
           initialTab="ideation"
         >
           <button>Trigger</button>
-        </RunningProcessPopover>
+        </RunningProcessPopover>,
       );
 
       // Currently on ideation tab — switch back to execution
@@ -571,7 +664,9 @@ describe("RunningProcessPopover", () => {
     });
 
     it("initialTab='ideation' starts on ideation tab", () => {
-      const session = createMockIdeationSession({ title: "Initial Ideation Session" });
+      const session = createMockIdeationSession({
+        title: "Initial Ideation Session",
+      });
       render(
         <RunningProcessPopover
           processes={[]}
@@ -587,7 +682,7 @@ describe("RunningProcessPopover", () => {
           initialTab="ideation"
         >
           <button>Trigger</button>
-        </RunningProcessPopover>
+        </RunningProcessPopover>,
       );
       expect(screen.getByText("Initial Ideation Session")).toBeInTheDocument();
     });
@@ -617,7 +712,7 @@ describe("RunningProcessPopover", () => {
           onNavigateToTask={onNavigateToTask}
         >
           <button>Trigger</button>
-        </RunningProcessPopover>
+        </RunningProcessPopover>,
       );
 
       fireEvent.click(screen.getByTestId("process-card-task-nav-1"));
@@ -655,7 +750,7 @@ describe("RunningProcessPopover", () => {
           initialTab="workspaces"
         >
           <button>Trigger</button>
-        </RunningProcessPopover>
+        </RunningProcessPopover>,
       );
 
       fireEvent.click(screen.getByTestId("workspace-card-conversation-123"));
@@ -694,10 +789,12 @@ describe("RunningProcessPopover", () => {
           initialTab="workspaces"
         >
           <button>Trigger</button>
-        </RunningProcessPopover>
+        </RunningProcessPopover>,
       );
 
-      fireEvent.click(screen.getByTestId("workspace-card-run-conversation-123"));
+      fireEvent.click(
+        screen.getByTestId("workspace-card-run-conversation-123"),
+      );
 
       expect(onOpenChange).toHaveBeenCalledWith(false);
       expect(onNavigateToWorkspace).toHaveBeenCalledWith(
@@ -723,9 +820,11 @@ describe("RunningProcessPopover", () => {
           ideationMax={2}
         >
           <button>Trigger</button>
-        </RunningProcessPopover>
+        </RunningProcessPopover>,
       );
-      expect(screen.getByText("No active execution processes")).toBeInTheDocument();
+      expect(
+        screen.getByText("No active execution processes"),
+      ).toBeInTheDocument();
     });
 
     it("shows 'No active ideation sessions' on ideation tab when empty", () => {
@@ -744,9 +843,11 @@ describe("RunningProcessPopover", () => {
           initialTab="ideation"
         >
           <button>Trigger</button>
-        </RunningProcessPopover>
+        </RunningProcessPopover>,
       );
-      expect(screen.getByText("No active ideation sessions")).toBeInTheDocument();
+      expect(
+        screen.getByText("No active ideation sessions"),
+      ).toBeInTheDocument();
     });
   });
 });
