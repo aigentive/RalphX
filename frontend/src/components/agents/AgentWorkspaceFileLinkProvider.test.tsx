@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { toast } from "sonner";
 
@@ -252,5 +252,49 @@ describe("AgentWorkspaceFileLinkProvider", () => {
 
     expect(screen.getByTestId("file-link-context")).toHaveTextContent("none");
     expect(chatApi.listWorkspaceOpenTargets).not.toHaveBeenCalled();
+  });
+
+  it("keeps children mounted when the workspace appears and disappears", async () => {
+    // The transcript lives under this provider. Returning a bare fragment when
+    // there is no workspace made the workspace flip swap the element type at
+    // this position, so React tore down and rebuilt the whole chat subtree - a
+    // fresh ChatMessageList mounts pinned and yanks a parked reader to the
+    // bottom whenever a run completes and the workspace query re-resolves.
+    let mounts = 0;
+    function MountCounter() {
+      useEffect(() => {
+        mounts += 1;
+      }, []);
+      return <div data-testid="mount-probe" />;
+    }
+
+    const { rerender, queryClient } = renderProvider({
+      children: <MountCounter />,
+      workspace: null,
+    });
+    expect(mounts).toBe(1);
+
+    const withWorkspace = conversationWorkspace();
+    const renderWith = (workspace: ReturnType<typeof conversationWorkspace> | null) =>
+      rerender(
+        <QueryClientProvider client={queryClient}>
+          <AgentWorkspaceFileLinkProvider
+            conversationId="conversation-1"
+            workspace={workspace}
+          >
+            <MountCounter />
+          </AgentWorkspaceFileLinkProvider>
+        </QueryClientProvider>,
+      );
+
+    renderWith(withWorkspace);
+    await waitFor(() => {
+      expect(chatApi.listWorkspaceOpenTargets).toHaveBeenCalled();
+    });
+    renderWith(null);
+    renderWith(withWorkspace);
+
+    expect(screen.getByTestId("mount-probe")).toBeInTheDocument();
+    expect(mounts).toBe(1);
   });
 });
