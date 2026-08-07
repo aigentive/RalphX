@@ -34,7 +34,7 @@
     {
       "name": "agent:conversation_created",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 8431,
+      "line": 8439,
       "kind": "wrapper_method"
     },
     {
@@ -160,7 +160,7 @@
     {
       "name": "agent:error",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 3672,
+      "line": 3680,
       "kind": "wrapper_method"
     },
     {
@@ -238,31 +238,31 @@
     {
       "name": "agent:message_created",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 3647,
+      "line": 3655,
       "kind": "wrapper_method"
     },
     {
       "name": "agent:message_created",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 4381,
+      "line": 4389,
       "kind": "wrapper_method"
     },
     {
       "name": "agent:message_created",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 6103,
+      "line": 6111,
       "kind": "wrapper_method"
     },
     {
       "name": "agent:message_created",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 7243,
+      "line": 7251,
       "kind": "wrapper_method"
     },
     {
       "name": "agent:message_created",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 8261,
+      "line": 8269,
       "kind": "wrapper_method"
     },
     {
@@ -310,7 +310,7 @@
     {
       "name": "agent:queue_sent",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 8284,
+      "line": 8292,
       "kind": "wrapper_method"
     },
     {
@@ -352,13 +352,13 @@
     {
       "name": "agent:run_completed",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 8551,
+      "line": 8559,
       "kind": "wrapper_method"
     },
     {
       "name": "agent:run_completed",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 8580,
+      "line": 8588,
       "kind": "wrapper_method"
     },
     {
@@ -388,13 +388,13 @@
     {
       "name": "agent:run_started",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 6254,
+      "line": 6262,
       "kind": "wrapper_method"
     },
     {
       "name": "agent:run_started",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 7717,
+      "line": 7725,
       "kind": "wrapper_method"
     },
     {
@@ -436,13 +436,13 @@
     {
       "name": "agent:stopped",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 8510,
+      "line": 8518,
       "kind": "wrapper_method"
     },
     {
       "name": "agent:stopped",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 8571,
+      "line": 8579,
       "kind": "wrapper_method"
     },
     {
@@ -466,7 +466,7 @@
     {
       "name": "agent:task_completed",
       "file": "src-tauri/src/http_server/handlers/coordination/native_delegation.rs",
-      "line": 587,
+      "line": 605,
       "kind": "wrapper"
     },
     {
@@ -478,7 +478,7 @@
     {
       "name": "agent:task_started",
       "file": "src-tauri/src/http_server/handlers/coordination/native_delegation.rs",
-      "line": 1175,
+      "line": 1193,
       "kind": "wrapper"
     },
     {
@@ -568,7 +568,7 @@
     {
       "name": "agent:workspace_changed",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 4270,
+      "line": 4278,
       "kind": "wrapper_method"
     },
     {
@@ -1772,6 +1772,18 @@
       "kind": "wrapper"
     },
     {
+      "name": "team:needs_attention",
+      "file": "src-tauri/src/application/managed_team/messaging_delivery.rs",
+      "line": 299,
+      "kind": "method"
+    },
+    {
+      "name": "team:needs_attention",
+      "file": "src-tauri/src/application/managed_team/wake_dispatch.rs",
+      "line": 527,
+      "kind": "method"
+    },
+    {
       "name": "ticketing:cache_invalidated",
       "file": "src-tauri/src/application/agent_conversation_start_service/finish_flow.rs",
       "line": 496,
@@ -2183,6 +2195,7 @@
     "task_completed",
     "task_failed",
     "team:artifact_created",
+    "team:needs_attention",
     "ticketing:operation_updated",
     "verification:pending_confirmation"
   ]

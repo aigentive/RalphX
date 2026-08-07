@@ -1953,6 +1953,17 @@
       "authorityBearing": true,
       "enclosingFunction": "http_server/handlers/coordination/native_delegation.rs:::::settle_delegation_from_run",
       "file": "http_server/handlers/coordination/native_delegation.rs",
+      "id": "http_server/handlers/coordination/native_delegation.rs::http_server/handlers/coordination/native_delegation.rs:::::settle_delegation_from_run@bf518596cb4a8aa5",
+      "kind": "tokio::spawn",
+      "readSurface": [],
+      "sinksReached": [
+        "send_message"
+      ]
+    },
+    {
+      "authorityBearing": true,
+      "enclosingFunction": "http_server/handlers/coordination/native_delegation.rs:::::settle_delegation_from_run",
+      "file": "http_server/handlers/coordination/native_delegation.rs",
       "id": "http_server/handlers/coordination/native_delegation.rs::http_server/handlers/coordination/native_delegation.rs:::::settle_delegation_from_run@2587d494b7cce8c2",
       "kind": "tokio::spawn",
       "readSurface": [],
@@ -2017,6 +2028,17 @@
       "sinksReached": [
         "send_message",
         "write_message"
+      ]
+    },
+    {
+      "authorityBearing": true,
+      "enclosingFunction": "http_server/handlers/managed_team/messaging.rs:::::send_managed_team_message",
+      "file": "http_server/handlers/managed_team/messaging.rs",
+      "id": "http_server/handlers/managed_team/messaging.rs::http_server/handlers/managed_team/messaging.rs:::::send_managed_team_message@3ebdff8b8d3d7c20",
+      "kind": "tokio::spawn",
+      "readSurface": [],
+      "sinksReached": [
+        "send_message"
       ]
     },
     {
