@@ -36,13 +36,20 @@ const DEFAULT_RETRY = 1;
  * Create and configure the QueryClient
  */
 export function createQueryClient(): QueryClient {
-  let queryClient: QueryClient;
+  // The cache is constructed before the client it belongs to, so the handler reaches
+  // its own client through this holder. Nothing else may write it — that is what keeps
+  // environment scoping structural rather than conventional.
+  const owner: { client: QueryClient | null } = { client: null };
   const mutationCache = new MutationCache({
     onError: async (error, _variables, _onMutateResult, mutation) => {
       if (!isRemoteTransportError(error) || !error.isUnknownOutcome) {
         return;
       }
 
+      const queryClient = owner.client;
+      if (queryClient === null) {
+        return;
+      }
       const queryKeys = mutation.options.meta?.unknownOutcomeQueryKeys;
       if (queryKeys === undefined) {
         await queryClient.invalidateQueries();
@@ -58,7 +65,7 @@ export function createQueryClient(): QueryClient {
     },
   });
 
-  queryClient = new QueryClient({
+  const queryClient = new QueryClient({
     mutationCache,
     defaultOptions: {
       queries: {
@@ -83,6 +90,7 @@ export function createQueryClient(): QueryClient {
       },
     },
   });
+  owner.client = queryClient;
   return queryClient;
 }
 

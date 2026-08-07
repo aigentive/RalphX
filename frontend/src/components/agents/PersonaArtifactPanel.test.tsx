@@ -11,6 +11,7 @@ import { personaKeys } from "@/hooks/usePersonas";
 import { EventProvider } from "@/providers/EventProvider";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { useUiStore } from "@/stores/uiStore";
+import { useEnvironmentStore } from "@/stores/environmentStore";
 import type { ChatConversation } from "@/types/chat-conversation";
 import type { FeatureFlags } from "@/types/feature-flags";
 import { PersonaResponseSchema, transformPersona } from "@/types/persona";
@@ -175,6 +176,77 @@ describe("PersonaArtifactPanel", () => {
       startConversationDraft: null,
     });
     useUiStore.setState({ activeModal: null, modalContext: undefined });
+    useEnvironmentStore.setState({
+      activeEnvironmentId: "local",
+      environments: [{ id: "local", name: "This Mac", kind: "local" }],
+      effectiveScopes: {},
+      connectionPresentations: {},
+    });
+  });
+
+  it("soft-disables persona approval remotely without agent control and exposes why", async () => {
+    mockPersonaQueries();
+    useEnvironmentStore.setState({
+      activeEnvironmentId: "remote",
+      environments: [
+        { id: "local", name: "This Mac", kind: "local" },
+        { id: "remote", name: "Studio Mac", kind: "remote" },
+      ],
+      effectiveScopes: { remote: ["ui:read", "ui:operate"] },
+      connectionPresentations: {
+        remote: {
+          presentation: "connected",
+          blockedFailure: null,
+          blockedMessage: null,
+        },
+      },
+    });
+    renderPanel(conversation({ builderDraftId: "draft-1" }));
+    const button = await screen.findByRole("button", { name: "Approve Persona" });
+
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    expect(button).not.toBeDisabled();
+    fireEvent.click(button);
+    expect(invoke).not.toHaveBeenCalledWith("approve_persona", expect.anything());
+    button.focus();
+    expect(
+      (await screen.findAllByText(
+        "Agent control is off for this device — enable it on the host.",
+      )).length,
+    ).toBeGreaterThan(0);
+  });
+
+  it("approves a persona when remote agent control is granted", async () => {
+    mockPersonaQueries();
+    useEnvironmentStore.setState({
+      activeEnvironmentId: "remote",
+      environments: [
+        { id: "local", name: "This Mac", kind: "local" },
+        { id: "remote", name: "Studio Mac", kind: "remote" },
+      ],
+      effectiveScopes: { remote: ["ui:read", "ui:operate", "ui:agent"] },
+      connectionPresentations: {
+        remote: {
+          presentation: "connected",
+          blockedFailure: null,
+          blockedMessage: null,
+        },
+      },
+    });
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === "get_persona") return rawDraft;
+      if (command === "get_artifact") return rawPersonaArtifact;
+      if (command === "approve_persona") return rawApproved;
+      return null;
+    });
+    renderPanel(conversation({ builderDraftId: "draft-1" }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Approve Persona" }));
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("approve_persona", {
+        input: { id: "draft-1" },
+      }),
+    );
   });
 
   it("renders empty state without persona actions when no binding exists", () => {

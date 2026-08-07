@@ -106,6 +106,9 @@ export const GATE_WIRED_FILES: readonly string[] = [
   "src/components/execution/ProcessCard.tsx",
   "src/components/recovery/RecoveryPromptDialog.tsx",
   "src/components/settings/McpSettingsSection.tsx",
+  "src/components/settings/PersonaEditor.tsx",
+  "src/components/settings/PersonaManagementRows.tsx",
+  "src/components/agents/PersonaArtifactPanel.tsx",
   "src/components/settings/RepositorySettingsSection.tsx",
   "src/components/settings/UpdatesSettingsSection.tsx",
   "src/components/ticketing/TicketingDashboardView.tsx",
@@ -144,6 +147,24 @@ export const GATE_CALLSITE_INDIRECTIONS: readonly {
   readonly affordance: AgentGatedAffordance;
   readonly reason: string;
 }[] = [
+  {
+    file: "src/components/settings/PersonaManagementRows.tsx",
+    affordance: "personaApprove",
+    reason:
+      "The row owns the Activate control; approval dispatches through the `onActivate` prop.",
+  },
+  {
+    file: "src/components/settings/PersonaManagementRows.tsx",
+    affordance: "personaArchive",
+    reason:
+      "The row owns the Archive control; archival dispatches through the `onRemove` prop.",
+  },
+  {
+    file: "src/components/settings/PersonaManagementRows.tsx",
+    affordance: "personaUnarchive",
+    reason:
+      "The row owns the Restore control; restoration dispatches through the `onRestore` prop.",
+  },
   {
     file: "src/components/Chat/ChatInput.tsx",
     affordance: "chatSend",

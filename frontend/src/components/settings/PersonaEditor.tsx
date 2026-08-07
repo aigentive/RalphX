@@ -19,6 +19,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useConversationSummary } from "@/hooks/useChat";
+import { useAgentGate } from "@/hooks/useAgentGate";
 import {
   fetchPersona,
   personaKeys,
@@ -86,6 +87,9 @@ export function PersonaEditor({
   const createDraft = useCreatePersonaDraft();
   const updatePersona = useUpdatePersona();
   const updateDraft = useUpdatePersonaDraft();
+  const createGate = useAgentGate("personaCreateDraft");
+  const updateGate = useAgentGate("personaUpdate");
+  const updateDraftGate = useAgentGate("personaUpdateDraft");
   const closeModal = useUiStore((state) => state.closeModal);
   const builderConversationId =
     (editor.kind === "edit" ? editor.conversationId : undefined) ??
@@ -98,8 +102,15 @@ export function PersonaEditor({
     !slug.trim() ||
     !instructions.trim() ||
     (!pastedPersonaDocument && !description.trim());
+  const saveGate =
+    editor.kind === "create"
+      ? createGate
+      : currentPersona?.status === "draft"
+        ? updateDraftGate
+        : updateGate;
 
   const handleSave = async () => {
+    if (saveGate.gated) return;
     setSaveError(null);
     setDraftConflict(false);
     try {
@@ -436,14 +447,23 @@ export function PersonaEditor({
         <Button type="button" variant="ghost" onClick={onBack} disabled={isSaving}>
           Cancel
         </Button>
-        <Button
-          type="button"
-          onClick={() => void handleSave()}
-          disabled={isSaving || requiredFieldsMissing}
-          className="bg-[var(--accent-primary)] text-white hover:bg-[var(--accent-secondary)]"
-        >
-          {currentPersona ? `Save (creates v${currentPersona.version + 1})` : "Save"}
-        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              onClick={() => void handleSave()}
+              disabled={isSaving || requiredFieldsMissing}
+              aria-disabled={saveGate.gated || undefined}
+              data-disabled-explained={saveGate.gated ? "true" : undefined}
+              className={`bg-[var(--accent-primary)] text-white hover:bg-[var(--accent-secondary)]${saveGate.gated ? " opacity-50" : ""}`}
+            >
+              {currentPersona ? `Save (creates v${currentPersona.version + 1})` : "Save"}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>
+            {saveGate.gated ? saveGate.reason : "Save persona"}
+          </TooltipContent>
+        </Tooltip>
       </div>
 
       {currentPersona?.artifactId && (

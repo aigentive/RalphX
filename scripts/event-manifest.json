@@ -466,7 +466,7 @@
     {
       "name": "agent:task_completed",
       "file": "src-tauri/src/http_server/handlers/coordination/native_delegation.rs",
-      "line": 584,
+      "line": 587,
       "kind": "wrapper"
     },
     {
@@ -478,7 +478,7 @@
     {
       "name": "agent:task_started",
       "file": "src-tauri/src/http_server/handlers/coordination/native_delegation.rs",
-      "line": 1139,
+      "line": 1175,
       "kind": "wrapper"
     },
     {
@@ -670,7 +670,7 @@
     {
       "name": "delegation_park:needs_attention",
       "file": "src-tauri/src/application/delegation_park/wake_dispatch.rs",
-      "line": 177,
+      "line": 199,
       "kind": "method"
     },
     {

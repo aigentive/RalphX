@@ -204,6 +204,14 @@ export const AGENT_GATED_AFFORDANCES = {
   stepUpdate: "update_task_step",
   stepSkip: "skip_step",
   proposalEdit: "update_task_proposal",
+  personaCreateDraft: "create_persona_draft",
+  personaUpdate: "update_persona",
+  personaUpdateDraft: "update_persona_draft",
+  personaApprove: "approve_persona",
+  personaApproveAsNew: "approve_persona_as_new",
+  personaReseedDraft: "reseed_persona_draft",
+  personaArchive: "archive_persona",
+  personaUnarchive: "unarchive_persona",
   // Attaching a folder to a conversation. Unavailable remotely for TWO independent reasons
   // and derived, as always, from absence: the host keeps `add_conversation_folder_reference`
   // off the facade (the stored path becomes an MCP filesystem root for every later spawn, with
