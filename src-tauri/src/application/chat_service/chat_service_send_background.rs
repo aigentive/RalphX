@@ -1086,7 +1086,7 @@ pub fn spawn_send_message_background(ctx: BackgroundRunContext) {
                 (
                     Arc::clone(qmr),
                     Arc::clone(&chat_message_repo),
-                    Arc::clone(&chat_timeline_repo),
+                    chat_timeline_repo.as_ref().map(Arc::clone),
                 )
             });
             super::chat_service_queue::requeue_pending_stdin_turns(
@@ -1099,13 +1099,15 @@ pub fn spawn_send_message_background(ctx: BackgroundRunContext) {
                 &runtime_context_id,
                 Some(conversation_id.as_str()),
                 pending_turns,
-                recovery_repositories.as_ref().map(
+                recovery_repositories.as_ref().and_then(
                     |(_, chat_message_repo, chat_timeline_repo)| {
-                        super::chat_service_queue::AnsweredTurnEvidence {
-                        chat_message_repo,
-                        chat_timeline_repo,
-                        conversation_id: &conversation_id,
-                    }
+                        chat_timeline_repo.as_ref().map(|ctr| {
+                            super::chat_service_queue::AnsweredTurnEvidence {
+                                chat_message_repo,
+                                chat_timeline_repo: ctr,
+                                conversation_id: &conversation_id,
+                            }
+                        })
                     },
                 ),
             )

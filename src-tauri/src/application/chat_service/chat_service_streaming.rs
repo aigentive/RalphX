@@ -2746,11 +2746,16 @@ pub(crate) async fn process_stream_background(
                                         .unwrap_or(context_id),
                                     Some(conversation_id.as_str()),
                                     pending_turns,
-                                    Some(super::chat_service_queue::AnsweredTurnEvidence {
-                                        chat_message_repo: &state.chat_message_repo,
-                                        chat_timeline_repo: &state.chat_timeline_repo,
-                                        conversation_id,
-                                    }),
+                                    match (&chat_message_repo, &chat_timeline_repo) {
+                                        (Some(cmr), Some(ctr)) => {
+                                            Some(super::chat_service_queue::AnsweredTurnEvidence {
+                                                chat_message_repo: cmr,
+                                                chat_timeline_repo: ctr,
+                                                conversation_id,
+                                            })
+                                        }
+                                        _ => None,
+                                    },
                                 )
                                 .await;
                             }
