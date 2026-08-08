@@ -219,8 +219,18 @@ where
         })
         .await;
         match result {
-            Ok(true) => updated += 1,
-            Ok(false) => {}
+            Ok(BaseFreshnessCandidateOutcome::Updated(true)) => updated += 1,
+            Ok(BaseFreshnessCandidateOutcome::Updated(false)) => {}
+            Ok(BaseFreshnessCandidateOutcome::NotInspectable(reason)) => {
+                // Worktree missing or checked out on another branch is a normal, often
+                // persistent state during repair/merge — not a genuine per-tick failure. Logging
+                // it at `warn` forever would drown the real failures this scan needs to surface.
+                tracing::debug!(
+                    conversation_id = conversation_id.as_str(),
+                    reason = %reason,
+                    "Agent workspace base-freshness scan candidate is not currently inspectable"
+                );
+            }
             Err(error) => {
                 tracing::warn!(
                     conversation_id = conversation_id.as_str(),
@@ -234,17 +244,28 @@ where
     Ok(updated)
 }
 
+/// Outcome of evaluating one base-freshness candidate. `NotInspectable` covers the structurally
+/// normal case (worktree missing or checked out on another branch) so the caller can log it at
+/// `debug` instead of `warn`; every candidate from `list_active_unpublished_edit_workspaces` is
+/// Edit-mode and non-execution-owned, so `resolve_agent_workspace_publish_target` can only fail
+/// there via `resolve_valid_agent_conversation_workspace_path`.
+enum BaseFreshnessCandidateOutcome {
+    Updated(bool),
+    NotInspectable(String),
+}
+
 /// Detects base-ahead drift for one unpublished Edit workspace, persists the transition, and —
-/// only when the base is currently ahead — attempts a gated auto-update. Returns `Ok(true)` when
-/// an auto-update was performed, `Ok(false)` when detection ran but no update was performed or
-/// needed, and `Err` only for genuine detection failures (missing project, blocked-base
-/// resolution errors, freshness inspection failures).
+/// only when the base is currently ahead — attempts a gated auto-update. Returns
+/// `Ok(Updated(true))` when an auto-update was performed, `Ok(Updated(false))` when detection ran
+/// but no update was performed or needed, `Ok(NotInspectable(_))` when the workspace path/branch
+/// could not be resolved, and `Err` only for genuine detection failures (missing project,
+/// blocked-base resolution errors, freshness inspection failures).
 async fn process_unpublished_workspace_base_freshness<R>(
     state: &AppState,
     execution_state: &Arc<ExecutionState>,
     app_handle: Option<&tauri::AppHandle<R>>,
     workspace: AgentConversationWorkspace,
-) -> Result<bool, String>
+) -> Result<BaseFreshnessCandidateOutcome, String>
 where
     R: Runtime,
 {
@@ -262,7 +283,7 @@ where
     if base_resolution.status == BaseStatus::Blocked {
         // Blocked base is not stale (mirrors AutoPublishSkipReason::BaseBlocked semantics);
         // leave any previously persisted `stale_base_detected_at` untouched.
-        return Ok(false);
+        return Ok(BaseFreshnessCandidateOutcome::Updated(false));
     }
     let effective_base_ref = base_resolution
         .effective_checkout_ref()
@@ -270,7 +291,10 @@ where
         .to_string();
 
     let publish_target =
-        resolve_agent_workspace_publish_target(state, &project, &workspace).await?;
+        match resolve_agent_workspace_publish_target(state, &project, &workspace).await {
+            Ok(target) => target,
+            Err(reason) => return Ok(BaseFreshnessCandidateOutcome::NotInspectable(reason)),
+        };
     let freshness = inspect_publish_branch_freshness_for_source_after_fetch(
         &publish_target.worktree_path,
         &effective_base_ref,
@@ -280,67 +304,80 @@ where
     .await
     .map_err(|error| error.to_string())?;
 
-    let workspace = persist_stale_base_detected_at_transition(
+    let Some(workspace) = persist_stale_base_detected_at_transition(
         state,
         app_handle,
         workspace,
         freshness.is_base_ahead,
     )
-    .await?;
+    .await?
+    else {
+        // The workspace was deleted between listing and the transition write; nothing left to
+        // auto-update.
+        return Ok(BaseFreshnessCandidateOutcome::Updated(false));
+    };
 
     if !freshness.is_base_ahead {
-        return Ok(false);
+        return Ok(BaseFreshnessCandidateOutcome::Updated(false));
     }
 
-    Ok(attempt_gated_agent_workspace_base_auto_update(
-        state,
-        execution_state,
-        &conversation_id,
-        &workspace,
-    )
-    .await)
+    Ok(BaseFreshnessCandidateOutcome::Updated(
+        attempt_gated_agent_workspace_base_auto_update(
+            state,
+            execution_state,
+            &conversation_id,
+            &workspace,
+        )
+        .await,
+    ))
 }
 
 /// Persists `stale_base_detected_at` only on a detection transition (ahead → set, current →
-/// clear) and emits `agent:workspace_changed` only when a transition actually happened, so
-/// unwatched conversations in the Agents sidebar (Phase D) and unselected-conversation polling
-/// stay quiet on steady-state ticks.
-async fn persist_stale_base_detected_at_transition<R>(
+/// clear) via a targeted column setter — never a whole-row upsert, so a concurrent targeted
+/// write elsewhere (publication linkage, toggles, status) is never reverted by this unattended
+/// timer. Emits `agent:workspace_changed` only when a transition actually happened, so unwatched
+/// conversations in the Agents sidebar (Phase D) and unselected-conversation polling stay quiet
+/// on steady-state ticks. Returns a freshly re-read workspace (not the pre-fetch snapshot) so the
+/// auto-update gate evaluates current state; returns `Ok(None)` if the workspace was deleted
+/// between listing and this write, which the caller treats as a benign skip.
+pub(crate) async fn persist_stale_base_detected_at_transition<R>(
     state: &AppState,
     app_handle: Option<&tauri::AppHandle<R>>,
-    mut workspace: AgentConversationWorkspace,
+    workspace: AgentConversationWorkspace,
     is_base_ahead: bool,
-) -> Result<AgentConversationWorkspace, String>
+) -> Result<Option<AgentConversationWorkspace>, String>
 where
     R: Runtime,
 {
-    let transitioned = match (workspace.stale_base_detected_at.is_some(), is_base_ahead) {
-        (false, true) => {
-            workspace.stale_base_detected_at = Some(Utc::now());
-            true
-        }
-        (true, false) => {
-            workspace.stale_base_detected_at = None;
-            true
-        }
-        _ => false,
+    let next_value = match (workspace.stale_base_detected_at.is_some(), is_base_ahead) {
+        (false, true) => Some(Utc::now()),
+        (true, false) => None,
+        _ => return Ok(Some(workspace)),
     };
-    if !transitioned {
-        return Ok(workspace);
-    }
-    workspace.updated_at = Utc::now();
-    let workspace = state
+
+    let conversation_id = workspace.conversation_id.clone();
+    state
         .agent_conversation_workspace_repo
-        .create_or_update(workspace)
+        .set_stale_base_detected_at(&conversation_id, next_value)
         .await
         .map_err(|error| error.to_string())?;
+
+    let refreshed = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let Some(refreshed) = refreshed else {
+        return Ok(None);
+    };
+
     if let Some(app_handle) = app_handle {
         let _ = app_handle.emit(
             "agent:workspace_changed",
-            serde_json::json!({ "conversation_id": workspace.conversation_id.as_str() }),
+            serde_json::json!({ "conversation_id": refreshed.conversation_id.as_str() }),
         );
     }
-    Ok(workspace)
+    Ok(Some(refreshed))
 }
 
 /// Gated auto-update from base (all must hold: opt-in, idle, settled repair, non-blocked base —

@@ -540,6 +540,15 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         fingerprint: Option<&str>,
     ) -> AppResult<()>;
 
+    /// Persists a base-ahead detection transition for one workspace via a targeted column
+    /// update. Required (not defaulted) so a forgotten implementor is a compile error rather
+    /// than a silent fail-open that discards detection state.
+    async fn set_stale_base_detected_at(
+        &self,
+        conversation_id: &ChatConversationId,
+        detected_at: Option<DateTime<Utc>>,
+    ) -> AppResult<()>;
+
     /// Sets the per-workspace Auto Review & Fix override. Enabling re-arms only a capped fixer
     /// cycle, leaving any active routing/queued/running reservation untouched.
     async fn set_review_automation_override(

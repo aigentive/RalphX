@@ -1407,6 +1407,13 @@ impl AgentConversationWorkspaceRepository for WorkspaceLoadErrorRepository {
     ) -> AppResult<()> {
         Ok(())
     }
+    async fn set_stale_base_detected_at(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _detected_at: Option<DateTime<Utc>>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
     async fn set_review_automation_override(
         &self,
         _conversation_id: &ChatConversationId,

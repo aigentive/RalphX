@@ -43,6 +43,7 @@ use crate::error::{AppError, AppResult};
 use crate::infrastructure::memory::MemoryAgentProviderSettingsRepository;
 
 use super::agent_workspace_repair_reconciliation_scan::{
+    persist_stale_base_detected_at_transition,
     run_agent_workspace_base_freshness_scan_tick_from_app_handle,
     run_agent_workspace_repair_reconciliation_scan_tick_for_state,
     run_agent_workspace_repair_reconciliation_scan_tick_from_app_handle,
@@ -1029,6 +1030,90 @@ async fn base_freshness_scan_leaves_stale_base_detected_at_untouched_when_base_i
 }
 
 #[tokio::test]
+async fn persist_stale_base_detected_at_transition_survives_concurrent_publication() {
+    let conversation_id = ChatConversationId::new();
+    let workspace = minimal_active_workspace(conversation_id.clone(), "concurrent-publication");
+    let state = AppState::new_test();
+    let workspace_repo = Arc::clone(&state.agent_conversation_workspace_repo);
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should seed");
+
+    // Simulates a PR landing (via `update_publication`) after the scan's listing snapshot was
+    // taken but before the base-freshness transition is persisted.
+    workspace_repo
+        .update_publication(
+            &conversation_id,
+            Some(1042),
+            Some("https://github.com/example/repo/pull/1042"),
+            Some("open"),
+            Some("pushed"),
+        )
+        .await
+        .expect("concurrent publication update should succeed");
+
+    let refreshed = persist_stale_base_detected_at_transition::<tauri::test::MockRuntime>(
+        &state, None, workspace, true,
+    )
+    .await
+    .expect("transition should persist")
+    .expect("workspace should still exist");
+
+    assert!(refreshed.stale_base_detected_at.is_some());
+    assert_eq!(refreshed.publication_pr_number, Some(1042));
+    assert_eq!(refreshed.publication_pr_status.as_deref(), Some("open"));
+    assert_eq!(refreshed.publication_push_status.as_deref(), Some("pushed"));
+
+    let reloaded = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace should load")
+        .expect("workspace should exist");
+    assert_eq!(reloaded.publication_pr_number, Some(1042));
+    assert!(reloaded.stale_base_detected_at.is_some());
+}
+
+#[tokio::test]
+async fn persist_stale_base_detected_at_transition_survives_concurrent_toggle() {
+    let conversation_id = ChatConversationId::new();
+    let workspace = minimal_active_workspace(conversation_id.clone(), "concurrent-toggle");
+    let state = AppState::new_test();
+    let workspace_repo = Arc::clone(&state.agent_conversation_workspace_repo);
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should seed");
+
+    // Simulates the user flipping automation preferences after the scan's listing snapshot was
+    // taken but before the base-freshness transition is persisted.
+    workspace_repo
+        .update_pr_supervision_preferences(&conversation_id, true, true, "squash")
+        .await
+        .expect("concurrent preference toggle should succeed");
+
+    let refreshed = persist_stale_base_detected_at_transition::<tauri::test::MockRuntime>(
+        &state, None, workspace, true,
+    )
+    .await
+    .expect("transition should persist")
+    .expect("workspace should still exist");
+
+    assert!(refreshed.stale_base_detected_at.is_some());
+    assert!(refreshed.pr_autofix_enabled);
+    assert!(refreshed.pr_auto_merge_desired);
+
+    let reloaded = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace should load")
+        .expect("workspace should exist");
+    assert!(reloaded.pr_autofix_enabled);
+    assert!(reloaded.pr_auto_merge_desired);
+    assert!(reloaded.stale_base_detected_at.is_some());
+}
+
+#[tokio::test]
 async fn base_freshness_scan_skips_auto_update_when_agent_run_is_active() {
     let (_repo, project, workspace) = unpublished_git_workspace_fixture();
     // `auto_publish_enabled` defaults to `true` on a freshly constructed workspace: opted in.
@@ -1217,6 +1302,90 @@ async fn base_freshness_scan_skips_auto_update_when_publish_guard_is_held_then_p
         updated, 1,
         "auto-update should proceed once the publish guard is free"
     );
+}
+
+#[tokio::test]
+async fn base_freshness_scan_skips_a_missing_worktree_candidate_without_blocking_a_healthy_one() {
+    let (_repo, project, mut healthy_workspace) = unpublished_git_workspace_fixture();
+    healthy_workspace.auto_publish_enabled = false;
+    healthy_workspace.auto_publish_initial_pr_enabled = false;
+    let healthy_conversation_id = healthy_workspace.conversation_id.clone();
+    let repo_path = Path::new(&project.working_directory).to_path_buf();
+
+    let ineligible_conversation_id = ChatConversationId::new();
+    let mut ineligible_workspace = AgentConversationWorkspace::new(
+        ineligible_conversation_id.clone(),
+        project.id.clone(),
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("Project default (main)".to_string()),
+        healthy_workspace.base_commit.clone(),
+        format!("ralphx/test/{}", ineligible_conversation_id.as_str()),
+        format!(
+            "/tmp/ralphx-scan-missing-worktree-{}",
+            ineligible_conversation_id.as_str()
+        ),
+    );
+    ineligible_workspace.auto_publish_enabled = false;
+    ineligible_workspace.auto_publish_initial_pr_enabled = false;
+
+    let state = AppState::new_test();
+    let workspace_repo = Arc::clone(&state.agent_conversation_workspace_repo);
+    state
+        .project_repo
+        .create(project)
+        .await
+        .expect("project should seed");
+    workspace_repo
+        .create_or_update(healthy_workspace)
+        .await
+        .expect("healthy workspace should seed");
+    workspace_repo
+        .create_or_update(ineligible_workspace)
+        .await
+        .expect("ineligible workspace should seed");
+    let app = mock_app_with_state_and_execution(state, Arc::new(ExecutionState::new()));
+
+    let updated = run_agent_workspace_base_freshness_scan_tick_from_app_handle(app.handle())
+        .await
+        .expect("a structurally ineligible candidate must not fail the tick");
+    assert_eq!(updated, 0);
+
+    let ineligible_reloaded = workspace_repo
+        .get_by_conversation_id(&ineligible_conversation_id)
+        .await
+        .expect("workspace should load")
+        .expect("workspace should exist");
+    assert_eq!(ineligible_reloaded.stale_base_detected_at, None);
+
+    // Advance the base so the healthy candidate is detected in the very same tick as the
+    // ineligible one, proving the ineligible candidate does not block detection for others.
+    commit_file(&repo_path, "drift.txt", "drift\n", "advance base");
+    let updated = run_agent_workspace_base_freshness_scan_tick_from_app_handle(app.handle())
+        .await
+        .expect("tick should not fail");
+    assert_eq!(
+        updated, 0,
+        "auto-publish-disabled workspace should only be detected, not updated"
+    );
+
+    let healthy_reloaded = workspace_repo
+        .get_by_conversation_id(&healthy_conversation_id)
+        .await
+        .expect("workspace should load")
+        .expect("workspace should exist");
+    assert!(
+        healthy_reloaded.stale_base_detected_at.is_some(),
+        "the ineligible candidate must not block detection for a healthy candidate in the same tick"
+    );
+
+    let ineligible_reloaded_again = workspace_repo
+        .get_by_conversation_id(&ineligible_conversation_id)
+        .await
+        .expect("workspace should load")
+        .expect("workspace should exist");
+    assert_eq!(ineligible_reloaded_again.stale_base_detected_at, None);
 }
 
 #[tokio::test]

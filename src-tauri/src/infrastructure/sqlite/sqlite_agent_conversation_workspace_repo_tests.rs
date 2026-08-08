@@ -3942,6 +3942,58 @@ async fn stale_base_detected_at_round_trips_through_create_or_update() {
 }
 
 #[tokio::test]
+async fn set_stale_base_detected_at_round_trips_via_targeted_setter() {
+    let (_db, repo, conversation_id) = setup_repo();
+    let workspace = make_workspace(conversation_id.clone());
+    repo.create_or_update(workspace).await.unwrap();
+
+    let detected_at = "2026-08-06T15:00:00+00:00"
+        .parse::<chrono::DateTime<chrono::Utc>>()
+        .unwrap();
+    repo.set_stale_base_detected_at(&conversation_id, Some(detected_at))
+        .await
+        .unwrap();
+    let loaded = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should exist");
+    assert_eq!(loaded.stale_base_detected_at, Some(detected_at));
+
+    repo.set_stale_base_detected_at(&conversation_id, None)
+        .await
+        .unwrap();
+    let cleared = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should exist");
+    assert_eq!(cleared.stale_base_detected_at, None);
+}
+
+#[tokio::test]
+async fn set_stale_base_detected_at_is_a_no_op_for_a_missing_conversation() {
+    let (_db, repo, conversation_id) = setup_repo();
+    let missing_id = ChatConversationId::new();
+
+    repo.set_stale_base_detected_at(&missing_id, Some(chrono::Utc::now()))
+        .await
+        .unwrap();
+
+    assert!(repo
+        .get_by_conversation_id(&missing_id)
+        .await
+        .unwrap()
+        .is_none());
+    // Unrelated conversation stays untouched.
+    assert!(repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
 async fn list_active_pr_poller_recovery_workspaces_includes_supervised_ideation_and_review_prs() {
     let (db, repo, conversation_id) = setup_repo();
     let mut direct = make_workspace(conversation_id);

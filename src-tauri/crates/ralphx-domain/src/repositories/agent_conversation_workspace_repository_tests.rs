@@ -167,6 +167,14 @@ impl AgentConversationWorkspaceRepository for FallbackOnlyWorkspaceRepository {
         Ok(())
     }
 
+    async fn set_stale_base_detected_at(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _detected_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
     async fn delete(&self, _conversation_id: &ChatConversationId) -> AppResult<()> {
         Ok(())
     }

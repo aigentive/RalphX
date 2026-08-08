@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 
 use super::{AgentWorkspacePrPollerStart, PrPollerRegistry, RateLimitState};
 use crate::application::agent_conversation_workspace::{
@@ -10122,6 +10122,15 @@ impl AgentConversationWorkspaceRepository for SequencedWorkspaceRepository {
     ) -> AppResult<()> {
         Ok(())
     }
+    async fn set_stale_base_detected_at(
+        &self,
+        conversation_id: &ChatConversationId,
+        detected_at: Option<DateTime<Utc>>,
+    ) -> AppResult<()> {
+        self.inner
+            .set_stale_base_detected_at(conversation_id, detected_at)
+            .await
+    }
     async fn set_review_automation_override(
         &self,
         conversation_id: &ChatConversationId,
@@ -10394,6 +10403,13 @@ impl AgentConversationWorkspaceRepository for ReviewMonitorLookupErrorRepository
     ) -> AppResult<()> {
         Ok(())
     }
+    async fn set_stale_base_detected_at(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _detected_at: Option<DateTime<Utc>>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
     async fn set_review_automation_override(
         &self,
         _conversation_id: &ChatConversationId,
@@ -10550,6 +10566,13 @@ impl AgentConversationWorkspaceRepository for WorkspaceLookupErrorRepository {
         &self,
         _conversation_id: &ChatConversationId,
         _fingerprint: Option<&str>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+    async fn set_stale_base_detected_at(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _detected_at: Option<DateTime<Utc>>,
     ) -> AppResult<()> {
         Ok(())
     }

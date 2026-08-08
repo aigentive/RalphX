@@ -2655,6 +2655,28 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
             .await
     }
 
+    async fn set_stale_base_detected_at(
+        &self,
+        conversation_id: &ChatConversationId,
+        detected_at: Option<DateTime<Utc>>,
+    ) -> AppResult<()> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let detected_at = detected_at.map(|value| value.to_rfc3339());
+        let now = Utc::now().to_rfc3339();
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "UPDATE agent_conversation_workspaces
+                     SET stale_base_detected_at = ?2,
+                         updated_at = ?3
+                     WHERE conversation_id = ?1",
+                    rusqlite::params![conversation_id, detected_at, now],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
     async fn update_pr_supervision_preferences(
         &self,
         conversation_id: &ChatConversationId,
