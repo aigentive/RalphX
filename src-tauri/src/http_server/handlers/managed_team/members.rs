@@ -73,8 +73,8 @@ fn member_summary(member: &crate::domain::entities::TeamMember) -> ManagedTeamMe
     }
 }
 
-struct CoordinatorAuthority {
-    team_id: crate::domain::entities::TeamSessionId,
+pub(super) struct CoordinatorAuthority {
+    pub(super) team_id: crate::domain::entities::TeamSessionId,
     project_id: ProjectId,
     conversation_id: ChatConversationId,
     run_id: AgentRunId,
@@ -82,7 +82,7 @@ struct CoordinatorAuthority {
     working_directory: PathBuf,
 }
 
-async fn resolve_coordinator_authority(
+pub(super) async fn resolve_coordinator_authority(
     state: &HttpServerState,
     headers: &HeaderMap,
 ) -> Result<CoordinatorAuthority, JsonError> {
@@ -151,6 +151,13 @@ pub async fn add_managed_team_member(
         .map(LogicalEffort::from_str)
         .transpose()
         .map_err(|error| json_error(StatusCode::BAD_REQUEST, error))?;
+    crate::application::ensure_provider_spawn_enabled(
+        &state.app_state.agent_provider_settings_repo,
+        harness.unwrap_or(DEFAULT_AGENT_HARNESS),
+        "Team member",
+    )
+    .await
+    .map_err(|error| json_error(StatusCode::CONFLICT, error))?;
     let member = state
         .app_state
         .managed_team

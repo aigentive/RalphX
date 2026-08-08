@@ -132,4 +132,16 @@ async fn test_list_messages_after_and_transition_delivery() {
         )
         .await
         .unwrap());
+
+    let fetched = repo
+        .get_delivery(&id)
+        .await
+        .unwrap()
+        .expect("delivery exists");
+    assert_eq!(fetched.status, TeamMessageDeliveryStatus::Queued);
+    assert!(repo
+        .get_delivery(&crate::domain::entities::TeamMessageDeliveryId::from_string("missing"))
+        .await
+        .unwrap()
+        .is_none());
 }

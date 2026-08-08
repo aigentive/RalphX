@@ -1,19 +1,26 @@
 import {
-  getTrueBottomScrollTop,
   isScrollElementVisuallyAtBottom,
   VISUAL_BOTTOM_EPSILON_PX,
 } from "../ChatMessageList.scroll";
 
-export type ChatScrollState = "pinned" | "free" | "returning";
+export type ChatScrollState = "pinned" | "free";
 
 export interface ChatScrollControllerDeps {
   getScrollElement(): HTMLElement | null;
+  /**
+   * Virtuoso resolves `"LAST"` against its own unshifted `totalCount`, so bottom
+   * follow never has to reason about `firstItemIndex`.
+   */
   scrollToIndex(opts: {
-    index: number;
+    index: "LAST" | number;
     align: "start" | "end";
     behavior: "auto" | "smooth";
   }): void;
-  getLastIndex(): number;
+  /**
+   * Arms Virtuoso's own post-growth follow window. It is a no-op while the
+   * reader is already at the bottom and never writes `scrollTop` directly.
+   */
+  autoscrollToBottom(): void;
   requestFrame(cb: () => void): number;
   cancelFrame(id: number): void;
   onStateChange?(state: ChatScrollState): void;
@@ -65,9 +72,6 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
   let attachedElement: HTMLElement | null = null;
   let activeIntent: ActiveIntent | null = null;
   let capturedAnchor: CapturedAnchor | null = null;
-  let pinFrame: number | null = null;
-  let settleFrame: number | null = null;
-  let returningSettleFrameCount = 0;
   let jumpSettleFrame: number | null = null;
   let jumpSettleScrollTop: number | null = null;
   let jumpSettleFrameCount = 0;
@@ -78,10 +82,9 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
   let pointerSession = false;
   let previousScrollTop: number | null = null;
   let visualBottom: boolean | null = null;
-  let pinBehavior: "auto" | "smooth" = "auto";
-  let pinReasons: string[] = [];
-  let pinNeedsIndexAlignment = false;
   let suppressFreeBottomReentry = false;
+  let correctionFrame: number | null = null;
+  let correctionFrameCount = 0;
   let detached = false;
 
   const getElement = (): HTMLElement | null => deps.getScrollElement() ?? attachedElement;
@@ -124,19 +127,6 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
     if (frame !== null) deps.cancelFrame(frame);
   };
 
-  const cancelPendingPin = (): void => {
-    cancelFrame(pinFrame);
-    pinFrame = null;
-    pinReasons = [];
-    pinNeedsIndexAlignment = false;
-  };
-
-  const cancelSettle = (): void => {
-    cancelFrame(settleFrame);
-    settleFrame = null;
-    returningSettleFrameCount = 0;
-  };
-
   const cancelJumpSettle = (): void => {
     cancelFrame(jumpSettleFrame);
     jumpSettleFrame = null;
@@ -157,46 +147,7 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
     activeIntent = { target: "bottom", epsilon: VISUAL_BOTTOM_EPSILON_PX };
   };
 
-  const scrollToTrueBottom = (element: HTMLElement, behavior: "auto" | "smooth"): number => {
-    // The scroller under-reports its extent by hundreds of pixels while the
-    // virtualizer's rendered range lags the scroll position, so a target above
-    // the current position is a transient measurement rather than a shorter
-    // transcript. Genuine shrink is already handled: the browser clamps
-    // scrollTop down on its own, against geometry we cannot read mid-render.
-    const target = Math.max(element.scrollTop, getTrueBottomScrollTop(element));
-    if (element.scrollTop !== target) {
-      element.scrollTo({ top: target, behavior });
-    }
-    if (behavior !== "smooth" && element.scrollTop !== target) {
-      element.scrollTop = target;
-    }
-    return target;
-  };
-
-  const hasActiveBottomIntent = (): boolean => activeIntent?.target === "bottom";
-
-  const isWithinActiveIntent = (element: HTMLElement): boolean => {
-    if (!activeIntent) return false;
-    const { target, epsilon } = activeIntent;
-    if (target === "bottom") {
-      // Nothing left below the reader satisfies the bottom intent. Sitting
-      // past an under-reported extent is a transient virtualizer measurement,
-      // not an unmet intent, and treating it as one spins correction pins.
-      return getTrueBottomScrollTop(element) - element.scrollTop <= epsilon;
-    }
-    if (typeof target === "object" && "anchor" in target) {
-      const offset = target.anchor.getBoundingClientRect().top - element.getBoundingClientRect().top;
-      return Math.abs(offset - target.offset) <= epsilon;
-    }
-    if (typeof target === "object" && "offset" in target) {
-      return Math.abs(element.scrollTop - target.offset) <= epsilon;
-    }
-    return false;
-  };
-
   const cancelIntentAndFree = (source: string): void => {
-    cancelPendingPin();
-    cancelSettle();
     cancelJumpSettle();
     activeIntent = null;
     setState("free");
@@ -204,95 +155,64 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
     updateVisualBottom();
   };
 
-  const settleBottomIntent = (source: "frame" | "scroll"): void => {
-    cancelPendingPin();
-    cancelSettle();
-    setState("pinned");
-    beginBottomIntent();
+  /**
+   * The single bottom-follow actuator. Virtuoso resolves `"LAST"` itself and
+   * lands the item's end at the viewport bottom, which is exactly the composer
+   * top now that the reserved inset lives inside that item. Nothing here writes
+   * `scrollTop`: a raw corrective write was measured to destabilise Virtuoso's
+   * own geometry and park the reader hundreds of pixels short.
+   */
+  const followBottom = (reason: string, behavior: "auto" | "smooth"): void => {
+    if (detached || prependEpoch || zeroSizeEpoch) return;
+    deps.scrollToIndex({ index: "LAST", align: "end", behavior });
+    debug("follow-bottom", { behavior, reason });
     updateVisualBottom();
-    debug("bottom-intent-settled", { source });
   };
 
-  const scheduleReturningSettle = (): void => {
-    if (state !== "returning" || settleFrame !== null || prependEpoch || zeroSizeEpoch) return;
-    settleFrame = deps.requestFrame(() => {
-      settleFrame = null;
+  /**
+   * Arms Virtuoso's post-growth follow window. Safe to call unconditionally
+   * while following: it only acts when a size increase has actually pushed the
+   * reader off the bottom, and does nothing when already there.
+   */
+  const armGrowthFollow = (): void => {
+    if (detached || state === "free" || prependEpoch || zeroSizeEpoch) return;
+    deps.autoscrollToBottom();
+    debug("growth-follow-armed");
+  };
+
+  /**
+   * One correction per frame. A height settle publishes many intermediate
+   * totals, and re-issuing `scrollToIndex` on each of them restarts Virtuoso's
+   * own scroll before it can land.
+   */
+  const scheduleFollowCorrection = (): void => {
+    if (correctionFrame !== null) return;
+    const scheduledScrollHeight = getElement()?.scrollHeight ?? null;
+    correctionFrame = deps.requestFrame(() => {
+      correctionFrame = null;
+      if (detached || state === "free" || prependEpoch || zeroSizeEpoch) return;
       const element = getElement();
-      if (!element || state !== "returning" || prependEpoch || zeroSizeEpoch) return;
-      returningSettleFrameCount += 1;
-      if (isWithinActiveIntent(element)) {
-        if (returningSettleFrameCount >= MAX_SETTLE_FRAMES) {
-          settleBottomIntent("frame");
-        } else {
-          scheduleReturningSettle();
-        }
+      if (!element) return;
+      // Correct against settled geometry only. Mid-settle, Virtuoso's size tree
+      // and the scroller's extent disagree by hundreds of pixels, and following
+      // that torn measurement moves the reader *up* the transcript - the exact
+      // symptom this change exists to remove.
+      if (element.scrollHeight !== scheduledScrollHeight) {
+        correctionFrameCount += 1;
+        if (correctionFrameCount < MAX_SETTLE_FRAMES) scheduleFollowCorrection();
         return;
       }
-      schedulePin("returning-settle", "auto", false);
+      correctionFrameCount = 0;
+      if (updateVisualBottom()) return;
+      followBottom("content-growth-correction", "auto");
     });
   };
 
-  const performPin = (
-    reason: string,
-    behavior: "auto" | "smooth",
-    alignLastItem = true,
-  ): void => {
-    if (detached || state === "free" || prependEpoch || zeroSizeEpoch) return;
-    const element = getElement();
-    beginBottomIntent();
-    if (alignLastItem) {
-      deps.scrollToIndex({ index: deps.getLastIndex(), align: "end", behavior });
-    }
-    if (element) {
-      const target = scrollToTrueBottom(element, behavior);
-      previousScrollTop = element.scrollTop;
-      debug("pin", { alignLastItem, behavior, reason, target });
-    } else {
-      debug("pin", { alignLastItem, behavior, reason, target: null });
-    }
-    updateVisualBottom();
-    scheduleReturningSettle();
-  };
-
-  const schedulePin = (
-    reason: string,
-    behavior: "auto" | "smooth",
-    alignLastItem = true,
-  ): void => {
-    if (detached || state === "free" || prependEpoch || zeroSizeEpoch) return;
-    pinBehavior = behavior;
-    pinReasons.push(reason);
-    // Item alignment hands the virtualizer a second, asynchronous scroll
-    // writer, and its deferred write lands at the last item's end rather than
-    // the true bottom below the footer spacer. Once measurement-driven growth
-    // joins the batch the native true-bottom write covers it, so the batch must
-    // not also replay an alignment against geometry that has since moved.
-    if (alignLastItem) {
-      pinNeedsIndexAlignment ||= pinReasons.length === 1;
-    } else {
-      pinNeedsIndexAlignment = false;
-    }
-    if (pinFrame !== null) return;
-    pinFrame = deps.requestFrame(() => {
-      pinFrame = null;
-      const reasons = pinReasons;
-      const shouldAlignLastItem = pinNeedsIndexAlignment;
-      pinReasons = [];
-      pinNeedsIndexAlignment = false;
-      performPin(reasons.join(","), pinBehavior, shouldAlignLastItem);
-    });
-  };
-
-  const startReturningBottomIntent = (
-    reason: string,
-    behavior: "auto" | "smooth",
-    alignLastItem = true,
-  ): void => {
+  const followBottomForUserIntent = (reason: string, behavior: "auto" | "smooth"): void => {
     cancelJumpSettle();
-    cancelSettle();
-    setState("returning");
+    setState("pinned");
     beginBottomIntent();
-    schedulePin(reason, behavior, alignLastItem);
+    followBottom(reason, behavior);
   };
 
   const schedulePrependSettle = (): void => {
@@ -313,7 +233,6 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
       if (state !== "free") beginBottomIntent();
       debug("prepend-settled");
       updateVisualBottom();
-      if (state === "returning") schedulePin("prepend-settled-returning", "auto");
     });
   };
 
@@ -344,14 +263,6 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
     cancelIntentAndFree(source);
   };
 
-  const rebaselineAfterZeroSize = (): void => {
-    previousScrollTop = getElement()?.scrollTop ?? null;
-    updateVisualBottom();
-    if (state !== "free" && !prependEpoch) {
-      performPin("zero-size-rebaseline", "auto");
-    }
-  };
-
   return {
     attach(el) {
       detached = false;
@@ -364,16 +275,18 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
       zeroSizeEpoch = el.clientHeight === 0;
       beginBottomIntent();
       updateVisualBottom();
-      if (!zeroSizeEpoch) schedulePin("attach", "auto");
+      // `initialTopMostItemIndex` owns the first position; an attach-time
+      // follow would fight it against geometry that has not settled yet.
+      debug("attach");
     },
 
     detach() {
       detached = true;
-      cancelPendingPin();
-      cancelSettle();
+      cancelFrame(correctionFrame);
+      correctionFrame = null;
+      correctionFrameCount = 0;
       cancelJumpSettle();
       cancelFrame(prependFrame);
-      pinReasons = [];
       prependFrame = null;
       prependEpoch = false;
       prependSettleFrameCount = 0;
@@ -387,11 +300,8 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
     },
 
     reset() {
-      cancelPendingPin();
-      cancelSettle();
       cancelJumpSettle();
       cancelFrame(prependFrame);
-      pinReasons = [];
       prependFrame = null;
       prependEpoch = false;
       prependSettleFrameCount = 0;
@@ -402,20 +312,20 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
       setState("pinned");
       beginBottomIntent();
       previousScrollTop = element?.scrollTop ?? null;
-      if (attachedElement && !zeroSizeEpoch) schedulePin("reset", "auto");
+      // A conversation switch remounts Virtuoso under a new key, so its
+      // `initialTopMostItemIndex` lands the new transcript at its own bottom.
+      debug("reset");
     },
 
     notifyWheel(deltaY, isNestedScrollableTarget) {
       debug("wheel", { deltaY, isNestedScrollableTarget });
       if (isNestedScrollableTarget) return;
       classifyAgainstTargetInput(deltaY < 0, "wheel");
-      if (deltaY > 0 && state === "returning") schedulePin("wheel-affirmation", "auto");
     },
 
     notifyKeyScroll(direction) {
       debug("key-scroll", { direction });
       classifyAgainstTargetInput(direction === "up", "key");
-      if (direction === "down" && state === "returning") schedulePin("key-affirmation", "auto");
     },
 
     notifyPointerDown() {
@@ -447,18 +357,14 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
         return;
       }
       const atBottom = updateVisualBottom();
-      if (state === "free") {
-        if (atBottom && !suppressFreeBottomReentry) {
-          setState("pinned");
-          beginBottomIntent();
-          debug("bottom-reentry");
-        }
-        return;
+      if (state === "free" && atBottom && !suppressFreeBottomReentry) {
+        setState("pinned");
+        beginBottomIntent();
+        debug("bottom-reentry");
       }
-      if (hasActiveBottomIntent() && !isWithinActiveIntent(element)) {
-        schedulePin("scroll-intent-correction", "auto", false);
-      }
-      scheduleReturningSettle();
+      // A pinned reader sitting short of the reported extent is a transient
+      // virtualizer measurement, not an unmet intent. Correcting it here is
+      // what sustained the write/measure oscillation.
     },
 
     notifyContentGrowth() {
@@ -468,14 +374,21 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
         schedulePrependSettle();
         return;
       }
-      updateVisualBottom();
-      if (state !== "free") {
-        // The semantic request that introduced the tail already aligned the
-        // virtual item. Measurement-driven growth must only reconcile the
-        // native scroller; another async item alignment can replay stale
-        // Virtuoso geometry and fight the true-bottom write indefinitely.
-        startReturningBottomIntent("content-growth", "auto", false);
+      if (updateVisualBottom()) {
+        armGrowthFollow();
+        return;
       }
+      // The transcript changed height and left a follower short: hydration can
+      // collapse the extent for a frame so Virtuoso's own write clamps to 0,
+      // and `autoscrollToBottom` will not recover it because its window only
+      // acts on a SIZE_INCREASED that pushed the reader off the bottom.
+      //
+      // Re-issuing Virtuoso's actuator is safe where the old pin was not.
+      // This is driven by content-height changes, never by scroll events, so a
+      // follow cannot produce the signal that triggers the next correction -
+      // that feedback loop is what sustained the jitter - and it writes through
+      // the size tree rather than raw scrollTop.
+      scheduleFollowCorrection();
     },
 
     notifyContainerResize() {
@@ -483,29 +396,21 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
       debug("container-resize", { clientHeight: element?.clientHeight ?? null });
       if (!element || element.clientHeight === 0) {
         zeroSizeEpoch = true;
-        cancelPendingPin();
-        cancelSettle();
         cancelJumpSettle();
         return;
       }
       if (zeroSizeEpoch) {
         zeroSizeEpoch = false;
-        rebaselineAfterZeroSize();
-        return;
+        previousScrollTop = element.scrollTop;
       }
       updateVisualBottom();
-      if (state !== "free" && !prependEpoch) {
-        cancelPendingPin();
-        performPin("container-resize", "auto", false);
-      }
+      armGrowthFollow();
     },
 
     notifyPrepend() {
       if (detached) return;
       prependEpoch = true;
       prependSettleFrameCount = 0;
-      cancelPendingPin();
-      cancelSettle();
       cancelJumpSettle();
       previousScrollTop = getElement()?.scrollTop ?? previousScrollTop;
       schedulePrependSettle();
@@ -518,17 +423,17 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
         debug("pin-ignored-free", { reason });
         return;
       }
-      startReturningBottomIntent(reason, behavior);
+      followBottom(reason, behavior);
     },
 
     pinForUserIntent(reason, behavior) {
       debug("user-pin-request", { behavior, reason });
-      startReturningBottomIntent(reason, behavior);
+      followBottomForUserIntent(reason, behavior);
     },
 
     scrollToBottomClicked() {
       debug("scroll-to-bottom-click");
-      startReturningBottomIntent("scroll-to-bottom-click", "auto");
+      followBottomForUserIntent("scroll-to-bottom-click", "auto");
     },
 
     forwardWheel(deltaX, deltaY) {
@@ -548,8 +453,6 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
     },
 
     jumpToIndex(index) {
-      cancelPendingPin();
-      cancelSettle();
       cancelJumpSettle();
       setState("free");
       const offset = getElement()?.scrollTop ?? 0;
@@ -586,7 +489,9 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
       capturedAnchor = null;
       if (!element || !anchor) return;
       if (anchor.wasAtBottom) {
-        if (state !== "free") schedulePin("anchor-bottom-restore", "auto");
+        // The toggle changed the transcript's height under a follower; let
+        // Virtuoso re-land on the last item rather than writing scrollTop.
+        armGrowthFollow();
         return;
       }
       const currentOffset = anchor.element.getBoundingClientRect().top - element.getBoundingClientRect().top;

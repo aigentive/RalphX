@@ -3,8 +3,8 @@
 use chrono::Utc;
 
 use crate::domain::entities::{
-    normalize_team_member_name, AgentRunId, ChatConversationId, TeamMember, TeamMemberId,
-    TeamMemberStatus, TeamMessage, TeamMessageActorKind, TeamMessageDelivery,
+    normalize_team_member_name, AgentRunId, AgentTaskAssignmentId, ChatConversationId, TeamMember,
+    TeamMemberId, TeamMemberStatus, TeamMessage, TeamMessageActorKind, TeamMessageDelivery,
     TeamMessageDeliveryId, TeamMessageDeliveryStatus, TeamMessageEnvelopeTarget, TeamMessageId,
     TeamMessageKind, TeamRunBindingStatus, TeamSessionId, TeamWakeBatch, TeamWakeBatchId,
     TeamWakeBatchStatus,
@@ -34,6 +34,12 @@ pub enum ManagedTeamMessageSender {
         member_id: TeamMemberId,
         generation: i64,
         source_run_id: AgentRunId,
+    },
+    /// Backend-originated notifications (e.g. settlement completion signals)
+    /// that carry no run authority of their own; validated only against Team
+    /// ownership of the referenced assignment.
+    System {
+        assignment_id: AgentTaskAssignmentId,
     },
 }
 
@@ -258,6 +264,20 @@ impl ManagedTeamService {
                 }
                 Ok(Some(member))
             }
+            ManagedTeamMessageSender::System { assignment_id } => {
+                let belongs_to_team = self
+                    .run_binding_repo
+                    .list_for_team(&session.id)
+                    .await?
+                    .iter()
+                    .any(|binding| binding.assignment_id.as_ref() == Some(assignment_id));
+                if !belongs_to_team {
+                    return Err(AppError::Conflict(
+                        "system message assignment does not belong to this Team".to_string(),
+                    ));
+                }
+                Ok(None)
+            }
         }
     }
 
@@ -332,6 +352,7 @@ impl ManagedTeamService {
                         TeamMessageActorKind::Coordinator
                     }
                     ManagedTeamMessageSender::Member { .. } => TeamMessageActorKind::Member,
+                    ManagedTeamMessageSender::System { .. } => TeamMessageActorKind::System,
                 },
                 sender_member_id: sender_member.as_ref().map(|member| member.id.clone()),
                 target_kind,
@@ -339,7 +360,7 @@ impl ManagedTeamService {
                 kind: request.kind,
                 content: request.content.trim().to_string(),
                 source_run_id: sender_source_run_id(&request.sender),
-                assignment_id: None,
+                assignment_id: sender_assignment_id(&request.sender),
                 idempotency_key: request.idempotency_key.clone(),
                 created_at: Utc::now(),
             };
@@ -379,6 +400,16 @@ fn sender_source_run_id(sender: &ManagedTeamMessageSender) -> Option<AgentRunId>
     match sender {
         ManagedTeamMessageSender::Coordinator { source_run_id, .. } => source_run_id.clone(),
         ManagedTeamMessageSender::Member { source_run_id, .. } => Some(source_run_id.clone()),
+        ManagedTeamMessageSender::System { .. } => None,
+    }
+}
+
+fn sender_assignment_id(sender: &ManagedTeamMessageSender) -> Option<AgentTaskAssignmentId> {
+    match sender {
+        ManagedTeamMessageSender::System { assignment_id } => Some(assignment_id.clone()),
+        ManagedTeamMessageSender::Coordinator { .. } | ManagedTeamMessageSender::Member { .. } => {
+            None
+        }
     }
 }
 

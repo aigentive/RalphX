@@ -43,7 +43,7 @@ pub struct ManagedTeamService {
     pub(super) agent_run_repo: Arc<dyn AgentRunRepository>,
     pub(super) reservation_repo: Arc<dyn TeamWorkspaceReservationRepository>,
     pub(super) feature_overrides_repo: Arc<dyn UiFeatureFlagOverridesRepository>,
-    event_sink: Arc<dyn EventSink>,
+    pub(super) event_sink: Arc<dyn EventSink>,
     startup_barrier: Arc<ManagedTeamStartupBarrier>,
 }
 
@@ -249,6 +249,16 @@ impl ManagedTeamService {
     /// Records the member-null, coordination-only run binding for a managed
     /// coordinator send before the run launches.
     ///
+    /// Idempotent for a wake-driven send that already carries a binding for
+    /// this exact run id: a wake batch claim (`claim_next_actionable_wake_batch`)
+    /// creates the member-null binding before the coordinator send happens, so
+    /// this call must return that binding unchanged instead of creating a
+    /// second one for the same `agent_run_id` — a duplicate would make
+    /// `run_binding_repo.get_by_agent_run_id` ambiguous for
+    /// `validate_message_sender` and `settle_member_assignment`. A binding for
+    /// a different Team or conversation is a real conflict, not something to
+    /// silently adopt.
+    ///
     /// Returns `Ok(None)` when the Team capability override is disabled (the
     /// send proceeds as an ordinary turn). Override read errors and binding
     /// write errors propagate; callers must fail the send instead of launching
@@ -263,6 +273,22 @@ impl ManagedTeamService {
             return Ok(None);
         }
         let session = self.ensure_team(project_id, conversation_id).await?;
+        if let Some(existing) = self
+            .run_binding_repo
+            .get_by_agent_run_id(agent_run_id)
+            .await?
+        {
+            if existing.team_id == session.id
+                && existing.conversation_id == *conversation_id
+                && existing.team_member_id.is_none()
+            {
+                return Ok(Some(existing));
+            }
+            return Err(AppError::Conflict(
+                "agent run already carries a Team run binding for a different Team or conversation"
+                    .to_string(),
+            ));
+        }
         let binding = new_coordinator_run_binding(session.id, *conversation_id, *agent_run_id);
         let binding = self.run_binding_repo.create(binding).await?;
         Ok(Some(binding))

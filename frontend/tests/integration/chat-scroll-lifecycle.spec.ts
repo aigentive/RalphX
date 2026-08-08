@@ -4,17 +4,16 @@ import {
   dismissProviderCliUpdateToasts,
   setupApp,
 } from "../fixtures/setup.fixtures";
-import { expectNoPinChurn } from "../helpers/chat-scroll.helpers";
-import { AgentsChatBistablePage } from "../pages/views/agents-chat-bistable.page";
 import { AgentsChatDiagnosticsPage } from "../pages/views/agents-chat-diagnostics.page";
 import { AgentsChatPage } from "../pages/views/agents-chat.page";
 import { AgentsChatScrollWritesPage } from "../pages/views/agents-chat-scroll-writes.page";
-import { AgentsChatStillnessPage } from "../pages/views/agents-chat-stillness.page";
 import { AgentsChatTurnPage } from "../pages/views/agents-chat-turn.page";
 
-const BISTABLE_TAIL_GAP_PX = 20;
-const STILLNESS_FRAMES = 40;
-const SETTLE_AFTER_HYDRATION_MS = 500;
+const PARKED_TOLERANCE_PX = 4;
+const READER_SCROLL_UP_PX = 900;
+// Chromium delivers less scroll than the requested wheel delta, so the
+// precondition checks that the reader genuinely left the tail, not the delta.
+const MIN_PARKED_DISTANCE_PX = 250;
 
 test.describe("existing conversation bottom follow", () => {
   test.beforeEach(async ({ page }) => {
@@ -83,13 +82,15 @@ test.describe("existing conversation bottom follow", () => {
     await turn.expectAtTrueBottom();
 
     const trace = await diagnostics.stop();
+    // The growth path is still wired end to end, it just arms Virtuoso's own
+    // follow window now instead of writing scrollTop.
     expect(trace).toEqual(expect.arrayContaining([
       expect.objectContaining({ source: "controller", event: "content-growth" }),
-      expect.objectContaining({ source: "controller", event: "pin" }),
+      expect.objectContaining({ source: "controller", event: "growth-follow-armed" }),
     ]));
   });
 
-  test("keeps the controller the only scroll writer and never pins back up the transcript", async ({ page }, testInfo) => {
+  test("keeps Virtuoso the only scroll writer and never moves the reader up the transcript", async ({ page }, testInfo) => {
     const executionId = `${testInfo.workerIndex}-${testInfo.repeatEachIndex}`;
     const conversationId = `single-scroll-writer-${executionId}`;
     const chat = new AgentsChatPage(page);
@@ -110,91 +111,71 @@ test.describe("existing conversation bottom follow", () => {
     }
     await turn.complete();
 
-    const recorded = await writes.writes();
-    expect(recorded.length).toBeGreaterThan(0);
-    // Item alignment used to leak into coalesced pins, which made Virtuoso a
-    // second asynchronous writer landing at the last item's end - above the
-    // footer spacer - and dragged the reader 200-600px back up.
-    expect(recorded.filter(({ fromController }) => !fromController)).toEqual([]);
-    // A bottom pin computed from a transiently under-reported extent used to
-    // scroll the reader upward. Genuine shrink is the browser's clamp, not ours.
-    expect(recorded.filter(({ requested, before }) => requested < before)).toEqual([]);
+    await writes.expectSingleWriterNoRewind();
+    // Virtuoso's mid-settle corrections are only tolerable because they are
+    // intermediates: the turn still has to end at the real bottom.
+    await turn.expectAtTrueBottom();
   });
 
-  // KNOWN OPEN DEFECT — expected to fail. With the controller now the single
-  // scroll writer, the residual churn is driven entirely by the browser: the
-  // virtualizer republishes a stale, several-hundred-pixel-short extent for a
-  // frame and scrollTop is clamped up before we can read anything. Measured in
-  // Chromium, 1-4 such clamps per streaming turn survive on an unmodified tree.
-  test("stops the bottom pin loop when the tail measurement collapses on every write", async ({ page }, testInfo) => {
-    test.fail();
+  /**
+   * Parks a reader above the tail and returns an assertion bound to where they
+   * stopped. The reader must never be dragged down; distance to the bottom is
+   * only asserted while the turn is still adding content, because completing a
+   * run drops the live streaming row and the browser legitimately clamps a
+   * parked reader onto a transcript that became shorter than their position.
+   */
+  const parkReaderAboveTail = async (
+    chat: AgentsChatPage,
+  ): Promise<(step: string, expectAwayFromBottom?: boolean) => Promise<void>> => {
+    await chat.scrollUp(READER_SCROLL_UP_PX);
+    const { clientHeight, scrollHeight, scrollTop: parked } = await chat.geometry();
+    expect(
+      scrollHeight - clientHeight - parked,
+      "wheel-up should park the reader well above the bottom",
+    ).toBeGreaterThan(MIN_PARKED_DISTANCE_PX);
+
+    return async (step, expectAwayFromBottom = true) => {
+      const geometry = await chat.geometry();
+      expect(geometry.scrollTop, `${step} moved the parked reader down`)
+        .toBeLessThanOrEqual(parked + PARKED_TOLERANCE_PX);
+      if (!expectAwayFromBottom) return;
+      expect(
+        geometry.scrollHeight - geometry.clientHeight - geometry.scrollTop,
+        `${step} returned the reader to the bottom`,
+      ).toBeGreaterThan(PARKED_TOLERANCE_PX);
+    };
+  };
+
+  // Run completion used to yank this reader to the bottom, and not through the
+  // scroll layer: `AgentWorkspaceFileLinkProvider` swapped between a bare
+  // fragment and a context provider as the workspace query resolved, which
+  // remounted the whole chat subtree, and a fresh transcript mounts pinned.
+  test("leaves a reader who scrolled away where they are", async ({ page }, testInfo) => {
     const executionId = `${testInfo.workerIndex}-${testInfo.repeatEachIndex}`;
-    const conversationId = `bistable-tail-${executionId}`;
+    const conversationId = `reader-parked-${executionId}`;
     const chat = new AgentsChatPage(page);
-    const bistable = new AgentsChatBistablePage(page);
-    const diagnostics = new AgentsChatDiagnosticsPage(page);
-    const turn = new AgentsChatTurnPage(page, chat, conversationId, `run-bistable-${executionId}`);
+    const turn = new AgentsChatTurnPage(page, chat, conversationId, `run-parked-${executionId}`);
     await chat.open();
     await chat.seedConversation(conversationId, false, 12);
     await turn.expectAtTrueBottom();
-
-    await bistable.install(BISTABLE_TAIL_GAP_PX);
-    await diagnostics.start();
-    await diagnostics.mark("bistable-tail-installed");
+    const expectStillParked = await parkReaderAboveTail(chat);
 
     await turn.start();
-    await turn.stream(
-      `Streaming into a collapsing tail. ${"Measured virtualized content keeps growing. ".repeat(18)}`,
-      1,
-    );
-    // Give the write/measure loop a full second of real frames to run away.
-    await page.waitForTimeout(1_000);
+    await expectStillParked("run start");
+    for (let sequence = 1; sequence <= 4; sequence += 1) {
+      await turn.stream(
+        `Streaming block ${sequence}. ${"Measured virtualized content keeps growing. ".repeat(18)}`,
+        sequence,
+      );
+      await expectStillParked(`streaming block ${sequence}`);
+    }
+
     await turn.complete();
+    await expectStillParked("run completion", false);
 
-    const trace = await diagnostics.stop();
-    expectNoPinChurn(trace);
-    expect(await bistable.distanceToBottom()).toBeLessThanOrEqual(BISTABLE_TAIL_GAP_PX + 2);
-  });
-
-  // KNOWN OPEN DEFECT — expected to fail. This is the up-and-down jitter itself,
-  // reproduced without any agent activity: a hydrated transcript sitting at the
-  // bottom moves on ~39 of 40 consecutive frames, up to ~1150px per frame.
-  //
-  // Measured cause (Chromium, per-frame geometry + write attribution):
-  //   pin write -> Virtuoso recomputes its render window -> it commits the new
-  //   item set and the matching padding in DIFFERENT frames, so for one frame
-  //   the scroller reports a several-hundred-pixel-short extent -> the browser
-  //   clamps scrollTop up -> the controller reads an unmet bottom intent and
-  //   pins again. Freeing the controller stops the oscillation dead (0 of 40
-  //   frames move), so the writes sustain it; the geometry itself is stable.
-  //
-  // Two fixes were measured and rejected rather than shipped: gating pins on a
-  // true bottom that held still for 2 frames cut the writes from 24 to 8 per
-  // 300ms but left the reader parked short of the bottom (it broke
-  // expectAtTrueBottom); persisting the last-row height across remounts changed
-  // nothing measurable. The remaining candidate is an extent floor that keeps
-  // the scroller from reporting a shorter extent than it just published, so the
-  // torn frame can never clamp the position away.
-  test("holds a settled transcript still while it sits at the bottom", async ({ page }, testInfo) => {
-    test.fail();
-    const executionId = `${testInfo.workerIndex}-${testInfo.repeatEachIndex}`;
-    const conversationId = `settled-stillness-${executionId}`;
-    const chat = new AgentsChatPage(page);
-    const stillness = new AgentsChatStillnessPage(page);
-    const turn = new AgentsChatTurnPage(page, chat, conversationId, `run-stillness-${executionId}`);
-    await chat.open();
-    await chat.seedConversation(conversationId, false, 12);
-    await turn.expectAtTrueBottom();
-    // Let hydration finish; nothing touches the transcript after this point, so
-    // every frame that moves rendered content is churn with no content behind it.
-    await page.waitForTimeout(SETTLE_AFTER_HYDRATION_MS);
-
-    const movement = await stillness.measure(STILLNESS_FRAMES);
-    expect(movement.frames).toBeGreaterThanOrEqual(STILLNESS_FRAMES - 2);
-    expect(
-      movement,
-      `transcript moved on ${movement.movingFrames} of ${movement.frames} settled frames`
-      + ` (largest jump ${movement.maxJumpPx}px)`,
-    ).toMatchObject({ movingFrames: 0, maxJumpPx: 0 });
+    await turn.finalize("The complete persisted answer replaced the streaming tail.", {
+      expectLastRendered: false,
+    });
+    await expectStillParked("finalized message", false);
   });
 });

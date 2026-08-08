@@ -428,7 +428,13 @@ async fn test_preallocate_fails_closed_on_override_read_error() {
 }
 
 #[tokio::test]
-async fn test_duplicate_run_binding_rejected() {
+async fn preallocate_coordinator_run_binding_is_idempotent_for_wake_runs() {
+    // A wake-driven coordinator send preallocates the run binding twice for the
+    // same run id: once when `claim_next_actionable_wake_batch` creates the
+    // member-null wake binding, and again when the coordinator send itself
+    // calls `preallocate_coordinator_run_binding`. The second call must return
+    // the original binding unchanged rather than erroring or creating a
+    // duplicate that would make `get_by_agent_run_id` ambiguous.
     let parts = build_service();
     enable_team(&parts.overrides_repo).await;
     let conversation = team_conversation_id(1);
@@ -439,7 +445,7 @@ async fn test_duplicate_run_binding_rejected() {
     )
     .await;
 
-    parts
+    let first = parts
         .service
         .preallocate_coordinator_run_binding(
             ProjectId::from_string("project-1".to_string()),
@@ -447,17 +453,71 @@ async fn test_duplicate_run_binding_rejected() {
             &team_agent_run_id(1),
         )
         .await
+        .unwrap()
+        .expect("enabled capability must record a binding");
+    let second = parts
+        .service
+        .preallocate_coordinator_run_binding(
+            ProjectId::from_string("project-1".to_string()),
+            &conversation,
+            &team_agent_run_id(1),
+        )
+        .await
+        .unwrap()
+        .expect("idempotent replay must return the existing binding");
+
+    assert_eq!(first.id, second.id, "one agent run must not bind twice");
+    let bindings = parts
+        .run_binding_repo
+        .list_for_team(&first.team_id)
+        .await
         .unwrap();
+    assert_eq!(
+        bindings.len(),
+        1,
+        "idempotent replay must not create a second binding for the same run id"
+    );
+}
+
+#[tokio::test]
+async fn preallocate_rejects_cross_team_binding_for_same_run() {
+    let parts = build_service();
+    enable_team(&parts.overrides_repo).await;
+    let conversation_a = team_conversation_id(1);
+    let conversation_b = team_conversation_id(2);
+    create_project_conversation(
+        &parts.conversations,
+        ProjectId::from_string("project-1".to_string()),
+        conversation_a,
+    )
+    .await;
+    create_project_conversation(
+        &parts.conversations,
+        ProjectId::from_string("project-2".to_string()),
+        conversation_b,
+    )
+    .await;
+
+    parts
+        .service
+        .preallocate_coordinator_run_binding(
+            ProjectId::from_string("project-1".to_string()),
+            &conversation_a,
+            &team_agent_run_id(1),
+        )
+        .await
+        .unwrap();
+
+    let result = parts
+        .service
+        .preallocate_coordinator_run_binding(
+            ProjectId::from_string("project-2".to_string()),
+            &conversation_b,
+            &team_agent_run_id(1),
+        )
+        .await;
     assert!(
-        parts
-            .service
-            .preallocate_coordinator_run_binding(
-                ProjectId::from_string("project-1".to_string()),
-                &conversation,
-                &team_agent_run_id(1),
-            )
-            .await
-            .is_err(),
-        "one agent run must not bind twice"
+        matches!(result, Err(AppError::Conflict(_))),
+        "a run id already bound to a different Team/conversation must never be silently adopted"
     );
 }
