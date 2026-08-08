@@ -439,7 +439,7 @@ jobs:
           retention-days: 1
 
   rust-lib-tests:
-    name: Rust Lib Tests (Shard ${{ matrix.shard }}/2)
+    name: Rust Lib Tests (Shard ${{ matrix.shard }}/3)
     needs:
       - changes
       - rust-lib-nextest-archive
@@ -449,7 +449,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        shard: [1, 2, 3]
     env:
       RALPHX_TEST_MODE: "1"
     steps:
@@ -474,19 +474,19 @@ jobs:
           name: rust-lib-tests-nextest-archive
           path: .
 
-      - name: Run Rust lib tests shard ${{ matrix.shard }}/2
+      - name: Run Rust lib tests shard ${{ matrix.shard }}/3
         run: |
           cargo nextest run \
             --archive-file rust-lib-tests.tar.zst \
             --workspace-remap "${GITHUB_WORKSPACE}/src-tauri" \
             --profile ci \
-            --partition hash:${{ matrix.shard }}/2
+            --partition hash:${{ matrix.shard }}/3
 
       - name: Upload Rust lib test timings
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: rust-lib-tests-junit-${{ matrix.shard }}-of-2
+          name: rust-lib-tests-junit-${{ matrix.shard }}-of-3
           path: src-tauri/target/nextest/ci/junit.xml
           if-no-files-found: warn
           retention-days: 7
@@ -534,6 +534,11 @@ jobs:
     timeout-minutes: 30
     env:
       RALPHX_TEST_MODE: "1"
+      # --all-targets --all-features peaks past the 16 GB on ubuntu-latest once the
+      # crate graph is this large: the job was reaped mid-compile with exit 143
+      # ("runner has received a shutdown signal"), not a lint failure. Same cap, and
+      # same reason, as the coverage archive job. Raise if the runner grows.
+      CARGO_BUILD_JOBS: "1"
     steps:
       - uses: actions/checkout@v6
 

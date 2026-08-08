@@ -1072,7 +1072,7 @@
     {
       "name": "plan:proposals_may_need_update",
       "file": "src-tauri/src/application/plan_artifact_edit.rs",
-      "line": 324,
+      "line": 355,
       "kind": "method"
     },
     {
@@ -1096,7 +1096,7 @@
     {
       "name": "plan_artifact:updated",
       "file": "src-tauri/src/application/plan_artifact_edit.rs",
-      "line": 322,
+      "line": 353,
       "kind": "method"
     },
     {
