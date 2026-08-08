@@ -1099,18 +1099,33 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                 .as_mut()
                 .map(InteractiveProcess::take_pending_stdin_turns)
                 .unwrap_or_default();
-            let queued_message_repo = app_handle.as_ref().map(|handle| {
+            let recovery_repositories = app_handle.as_ref().map(|handle| {
                 let app_state = handle.state::<crate::application::AppState>();
-                Arc::clone(&app_state.queued_message_repo)
+                (
+                    Arc::clone(&app_state.queued_message_repo),
+                    Arc::clone(&app_state.chat_message_repo),
+                    Arc::clone(&app_state.chat_timeline_repo),
+                )
             });
             super::chat_service_queue::requeue_pending_stdin_turns(
-                queued_message_repo.as_ref(),
+                recovery_repositories
+                    .as_ref()
+                    .map(|(queued_message_repo, _, _)| queued_message_repo),
                 &message_queue,
                 app_handle.as_ref(),
                 context_type,
                 &runtime_context_id,
                 Some(conversation_id.as_str()),
                 pending_turns,
+                recovery_repositories.as_ref().map(
+                    |(_, chat_message_repo, chat_timeline_repo)| {
+                        super::chat_service_queue::AnsweredTurnEvidence {
+                        chat_message_repo,
+                        chat_timeline_repo,
+                        conversation_id: &conversation_id,
+                    }
+                    },
+                ),
             )
             .await;
             if removed.is_none() {

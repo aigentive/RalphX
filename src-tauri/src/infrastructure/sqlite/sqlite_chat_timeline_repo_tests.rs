@@ -7,6 +7,7 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::{ChatConversationRepository, ChatTimelineRepository};
 use crate::testing::SqliteTestDb;
+use chrono::{Duration, Utc};
 use serde_json::json;
 
 fn setup_repos() -> (
@@ -184,6 +185,68 @@ async fn upsert_assigns_sequences_and_preserves_existing_sequence_on_update() {
     assert_eq!(loaded.result_json.as_deref(), Some(r#""ok""#));
     assert_eq!(loaded.provider_harness, Some(AgentHarnessKind::Codex));
     assert_eq!(loaded.provider_session_id.as_deref(), Some("thread-1"));
+}
+
+#[tokio::test]
+async fn latest_assistant_activity_is_scoped_to_conversation_and_role() {
+    let (db, conversation_repo, timeline_repo) = setup_repos();
+    let conversation_id = create_conversation(&conversation_repo).await;
+    let other_conversation_id = create_conversation(&conversation_repo).await;
+    let message_id = ChatMessageId::from_string("assistant-activity-message");
+    let other_message_id = ChatMessageId::from_string("other-activity-message");
+    insert_parent_message(&db, conversation_id.clone(), &message_id);
+    insert_parent_message(&db, other_conversation_id.clone(), &other_message_id);
+
+    let expected_activity = Utc::now() - Duration::seconds(1);
+    let mut assistant_item = ChatTimelineItem::for_message_block(
+        message_id.clone(),
+        conversation_id.clone(),
+        0,
+        MessageRole::Orchestrator,
+        ChatTimelineItemKind::Text,
+    );
+    assistant_item.updated_at = expected_activity;
+    timeline_repo
+        .upsert_item(assistant_item)
+        .await
+        .expect("insert assistant activity");
+
+    let mut wrong_role_item = ChatTimelineItem::for_message_block(
+        message_id,
+        conversation_id.clone(),
+        1,
+        MessageRole::Worker,
+        ChatTimelineItemKind::Text,
+    );
+    wrong_role_item.updated_at = expected_activity + Duration::seconds(1);
+    timeline_repo
+        .upsert_item(wrong_role_item)
+        .await
+        .expect("insert other role activity");
+
+    let mut other_conversation_item = ChatTimelineItem::for_message_block(
+        other_message_id,
+        other_conversation_id,
+        0,
+        MessageRole::Orchestrator,
+        ChatTimelineItemKind::Text,
+    );
+    other_conversation_item.updated_at = expected_activity + Duration::seconds(2);
+    timeline_repo
+        .upsert_item(other_conversation_item)
+        .await
+        .expect("insert other conversation activity");
+
+    assert_eq!(
+        timeline_repo
+            .latest_assistant_activity_at_for_conversation(
+                &conversation_id,
+                MessageRole::Orchestrator,
+            )
+            .await
+            .expect("load assistant activity"),
+        Some(expected_activity)
+    );
 }
 
 #[tokio::test]
