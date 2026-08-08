@@ -72,9 +72,48 @@ async fn pending_stdin_turns_are_fifo_and_exact_owner_scoped() {
             .push_pending_turn(&key, token, second.clone())
             .await
     );
-    assert_eq!(registry.pop_pending_turn(&key, token).await, Some(first));
-    assert_eq!(registry.take_pending_turns(&key, token).await, vec![second]);
+    assert_eq!(
+        registry.settle_delivered_turns_if_owner(&key, token).await,
+        vec![first, second]
+    );
     assert!(registry.take_pending_turns(&key, token).await.is_empty());
+}
+
+#[tokio::test]
+async fn pending_stdin_settlement_from_a_missing_or_stale_owner_is_a_no_op() {
+    let registry = InteractiveProcessRegistry::new();
+    let key = InteractiveProcessKey::new("project", "stale-settlement");
+    let (stdin, _child) = create_test_stdin().await;
+    let token = registry
+        .register_with_metadata(key.clone(), stdin, InteractiveProcessMetadata::default())
+        .await;
+    let turn = PendingStdinTurn {
+        persisted_message_id: "message-1".to_string(),
+        content: "still unanswered".to_string(),
+        metadata_override: None,
+        queued_at: "2026-07-30T10:00:00Z".to_string(),
+    };
+    assert!(registry.push_pending_turn(&key, token, turn.clone()).await);
+    let missing_key = InteractiveProcessKey::new("project", "missing-owner");
+    assert!(registry
+        .settle_delivered_turns_if_owner(&missing_key, token)
+        .await
+        .is_empty());
+    let other_key = InteractiveProcessKey::new("project", "other-owner");
+    let (other_stdin, _other_child) = create_test_stdin().await;
+    let other_token = registry
+        .register_with_metadata(
+            other_key,
+            other_stdin,
+            InteractiveProcessMetadata::default(),
+        )
+        .await;
+
+    assert!(registry
+        .settle_delivered_turns_if_owner(&key, other_token)
+        .await
+        .is_empty());
+    assert_eq!(registry.take_pending_turns(&key, token).await, vec![turn]);
 }
 
 #[tokio::test]

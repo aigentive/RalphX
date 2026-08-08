@@ -2561,15 +2561,23 @@ pub async fn process_stream_background<R: Runtime>(
 
                         turns_finalized += 1;
 
-                        // Interactive stdin turns are consumed in order. Once an
-                        // assistant turn finalizes, its matching pending user turn
-                        // no longer needs exit recovery.
+                        // The registry lock orders successful stdin delivery against
+                        // this boundary. One finalized assistant turn may consume a
+                        // whole burst, so settle every turn delivered before it.
                         if let (Some(registry), Some(key), Some(token)) = (
                             interactive_process_registry.as_ref(),
                             interactive_process_key.as_ref(),
                             interactive_process_token,
                         ) {
-                            let _ = registry.pop_pending_turn(key, token).await;
+                            let settled =
+                                registry.settle_delivered_turns_if_owner(key, token).await;
+                            if !settled.is_empty() {
+                                tracing::debug!(
+                                    conversation_id = %conversation_id_str,
+                                    settled = settled.len(),
+                                    "TurnComplete settled delivered stdin turns"
+                                );
+                            }
                         }
 
                         // Free the execution slot while process is idle between turns.
@@ -2729,6 +2737,11 @@ pub async fn process_stream_background<R: Runtime>(
                                         .unwrap_or(context_id),
                                     Some(conversation_id.as_str()),
                                     pending_turns,
+                                    Some(super::chat_service_queue::AnsweredTurnEvidence {
+                                        chat_message_repo: &state.chat_message_repo,
+                                        chat_timeline_repo: &state.chat_timeline_repo,
+                                        conversation_id,
+                                    }),
                                 )
                                 .await;
                             }
