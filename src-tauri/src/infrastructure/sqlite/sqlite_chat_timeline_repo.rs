@@ -194,6 +194,35 @@ impl ChatTimelineRepository for SqliteChatTimelineRepository {
             .await
     }
 
+    async fn latest_assistant_activity_at_for_conversation(
+        &self,
+        conversation_id: &ChatConversationId,
+        assistant_role: MessageRole,
+    ) -> AppResult<Option<DateTime<Utc>>> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let assistant_role = assistant_role.to_string();
+        self.db
+            .run(move |conn| {
+                let latest: Option<String> = conn.query_row(
+                    "SELECT MAX(updated_at) FROM chat_message_blocks WHERE conversation_id = ?1 AND role = ?2",
+                    params![conversation_id, assistant_role],
+                    |row| row.get(0),
+                )?;
+                latest
+                    .map(|value| {
+                        DateTime::parse_from_rfc3339(&value)
+                            .map(|value| value.with_timezone(&Utc))
+                            .map_err(|error| {
+                                crate::error::AppError::Infrastructure(format!(
+                                    "invalid assistant timeline activity timestamp: {error}"
+                                ))
+                            })
+                    })
+                    .transpose()
+            })
+            .await
+    }
+
     async fn delete_message_items_except_block_indices(
         &self,
         message_id: &ChatMessageId,

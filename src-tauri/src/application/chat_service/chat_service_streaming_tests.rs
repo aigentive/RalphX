@@ -14,7 +14,7 @@ use super::{
 use crate::application::chat_service::chat_service_context::create_assistant_message;
 use crate::application::chat_service::chat_service_errors::{ProviderErrorCategory, StreamError};
 use crate::application::interactive_process_registry::{
-    InteractiveProcessKey, InteractiveProcessMetadata, InteractiveProcessRegistry,
+    InteractiveProcessKey, InteractiveProcessMetadata, PendingStdinTurn,
 };
 use crate::application::AppState;
 use crate::domain::agents::{AgentHarnessKind, HarnessStreamMode};
@@ -27,7 +27,9 @@ use crate::domain::entities::{
 use crate::domain::repositories::{
     AgentRunRepository, ChatMessageRepository, ChatTimelineRepository,
 };
-use crate::domain::services::{MemoryRunningAgentRegistry, RunningAgentKey, RunningAgentRegistry};
+use crate::domain::services::{
+    MemoryRunningAgentRegistry, QueueKey, RunningAgentKey, RunningAgentRegistry,
+};
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::{
     AssistantContent, AssistantMessage, ContentBlockItem, StreamMessage, StreamProcessor, ToolCall,
@@ -43,7 +45,9 @@ use chrono::{Duration, Utc};
 use ralphx_events::{EventSink, NullEventSink, RecordingEventSink};
 use std::os::unix::process::ExitStatusExt;
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
+use tauri::{Listener, Manager};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
@@ -524,6 +528,14 @@ impl ChatTimelineRepository for FailingTimelineRepository {
         Ok(Vec::new())
     }
 
+    async fn latest_assistant_activity_at_for_conversation(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _assistant_role: MessageRole,
+    ) -> AppResult<Option<chrono::DateTime<Utc>>> {
+        Err(AppError::Infrastructure("timeline read failed".to_string()))
+    }
+
     async fn delete_message_items_except_block_indices(
         &self,
         _message_id: &ChatMessageId,
@@ -893,7 +905,110 @@ async fn claude_stream_error_turn_complete_does_not_wait_for_interactive_timeout
 }
 
 #[tokio::test]
-async fn claude_mode_handoff_turn_complete_retires_exact_ipr_without_waiting_for_eof() {
+async fn error_turn_complete_with_persisted_output_leaves_pending_stdin_for_recovery() {
+    let mut child = spawn_interactive_jsonl_process_that_stays_alive(
+        concat!(
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"partial assistant output"}]},"session_id":"sess-error-recovery"}"#,
+            "\n",
+            r#"{"type":"result","session_id":"sess-error-recovery","is_error":true,"errors":["API Error: 529 Overloaded"],"cost_usd":0.0}"#,
+        ),
+    )
+    .await;
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let context_id = "error-recovery-context";
+    let interactive_key = InteractiveProcessKey::new("project", context_id);
+    let interactive_registry = Arc::clone(&state.interactive_process_registry);
+    let token = interactive_registry
+        .register_with_metadata(
+            interactive_key.clone(),
+            child.stdin.take().expect("error fixture stdin"),
+            InteractiveProcessMetadata::default(),
+        )
+        .await;
+    let pre_assistant = create_assistant_message(
+        ChatContextType::Project,
+        context_id,
+        "",
+        conversation_id,
+        &[],
+        &[],
+    );
+    let pending_queued_at = (pre_assistant.created_at - Duration::seconds(1)).to_rfc3339();
+    let pre_assistant_id = pre_assistant.id.as_str().to_string();
+    state
+        .chat_message_repo
+        .create(pre_assistant)
+        .await
+        .expect("seed assistant message");
+    assert!(
+        interactive_registry
+            .push_pending_turn(
+                &interactive_key,
+                token,
+                PendingStdinTurn {
+                    persisted_message_id: "already-answered-error-turn".to_string(),
+                    content: "do not replay me".to_string(),
+                    metadata_override: None,
+                    queued_at: pending_queued_at,
+                },
+            )
+            .await
+    );
+
+    let app = mock_builder()
+        .manage(state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let app_state = app.state::<AppState>();
+
+    let error = process_stream_background::<MockRuntime>(
+        child,
+        AgentHarnessKind::Claude,
+        ChatContextType::Project,
+        context_id,
+        &conversation_id,
+        None::<std::path::PathBuf>,
+        Some(app.handle().clone()),
+        None,
+        None,
+        Some(Arc::clone(&app_state.chat_message_repo)),
+        Some(Arc::clone(&app_state.chat_timeline_repo)),
+        Some(pre_assistant_id.clone()),
+        None,
+        CancellationToken::new(),
+        StreamingStateCache::new(),
+        None,
+        None,
+        Some("error-recovery-run".to_string()),
+        None,
+        None,
+        false,
+        false,
+        Some(interactive_registry.clone()),
+        Some(interactive_key),
+        Some(token),
+    )
+    .await
+    .expect_err("provider error must end the stream");
+    assert!(matches!(error, StreamError::ProviderError { .. }));
+
+    let persisted = app_state
+        .chat_message_repo
+        .get_by_id(&ChatMessageId::from_string(pre_assistant_id))
+        .await
+        .expect("assistant read")
+        .expect("assistant persisted");
+    assert_eq!(persisted.content, "partial assistant output");
+    let mut removed = interactive_registry
+        .remove(&InteractiveProcessKey::new("project", context_id))
+        .await
+        .expect("pending stdin remains for the stream-exit recovery path");
+    assert_eq!(removed.take_pending_stdin_turns().len(), 1);
+}
+
+#[tokio::test]
+async fn pending_stdin_burst_turn_complete_retires_without_requeue_or_waiting_for_eof() {
     let mut child = spawn_interactive_jsonl_process_that_stays_alive(
         r#"{"type":"result","session_id":"sess-handoff","is_error":false,"result":"Handoff complete.","cost_usd":0.0}"#,
     )
@@ -902,7 +1017,8 @@ async fn claude_mode_handoff_turn_complete_retires_exact_ipr_without_waiting_for
     let context_id = "handoff-stream-context";
     let run_id = "handoff-stream-run";
     let interactive_key = InteractiveProcessKey::new("project", context_id);
-    let interactive_registry = Arc::new(InteractiveProcessRegistry::new());
+    let state = AppState::new_test();
+    let interactive_registry = Arc::clone(&state.interactive_process_registry);
     let token = interactive_registry
         .register_with_metadata(
             interactive_key.clone(),
@@ -913,6 +1029,22 @@ async fn claude_mode_handoff_turn_complete_retires_exact_ipr_without_waiting_for
             },
         )
         .await;
+    for (id, content) in [("burst-1", "first"), ("burst-2", "second")] {
+        assert!(
+            interactive_registry
+                .push_pending_turn(
+                    &interactive_key,
+                    token,
+                    PendingStdinTurn {
+                        persisted_message_id: id.to_string(),
+                        content: content.to_string(),
+                        metadata_override: None,
+                        queued_at: Utc::now().to_rfc3339(),
+                    },
+                )
+                .await
+        );
+    }
     assert!(matches!(
         interactive_registry
             .arm_retire_after_turn_if_owner(&interactive_key, token, run_id)
@@ -932,6 +1064,15 @@ async fn claude_mode_handoff_turn_complete_retires_exact_ipr_without_waiting_for
         )
         .await;
     let running_registry: Arc<dyn RunningAgentRegistry> = running_impl;
+    let app = mock_builder()
+        .manage(state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let queued_events = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&queued_events);
+    let _listener = app.listen("agent:message_queued", move |event| {
+        captured.lock().unwrap().push(event.payload().to_string())
+    });
 
     let outcome = tokio::time::timeout(
         std::time::Duration::from_secs(1),
@@ -976,6 +1117,25 @@ async fn claude_mode_handoff_turn_complete_retires_exact_ipr_without_waiting_for
             .await
             .is_none(),
         "TurnComplete must retire exactly the armed IPR owner"
+    );
+    let queue_key = QueueKey::new(ChatContextType::Project, context_id);
+    assert!(app
+        .state::<AppState>()
+        .queued_message_repo
+        .list(&queue_key)
+        .await
+        .expect("durable queue")
+        .is_empty());
+    assert!(
+        app.state::<AppState>()
+            .message_queue
+            .get_queued_with_key(&queue_key)
+            .is_empty(),
+        "one finalized turn must settle the complete pre-result burst"
+    );
+    assert!(
+        queued_events.lock().unwrap().is_empty(),
+        "settled burst messages must not publish phantom queued events"
     );
 }
 
@@ -3657,6 +3817,16 @@ impl ChatTimelineRepository for CountingTimelineRepository {
         *self.snapshot_calls.lock().expect("snapshot counter") += 1;
         self.inner
             .delete_message_items_except_block_indices(message_id, retained_block_indices)
+            .await
+    }
+
+    async fn latest_assistant_activity_at_for_conversation(
+        &self,
+        conversation_id: &ChatConversationId,
+        assistant_role: MessageRole,
+    ) -> AppResult<Option<chrono::DateTime<Utc>>> {
+        self.inner
+            .latest_assistant_activity_at_for_conversation(conversation_id, assistant_role)
             .await
     }
 
