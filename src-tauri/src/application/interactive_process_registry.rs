@@ -434,17 +434,23 @@ impl InteractiveProcessRegistry {
         true
     }
 
-    /// Remove the oldest unanswered stdin turn for exactly one owner.
-    pub async fn pop_pending_turn(
+    /// Settle every stdin turn delivered before this assistant turn finalized.
+    ///
+    /// The registry mutex serializes stdin writes against settlement, so every
+    /// turn present here was delivered before the finalizing turn boundary.
+    pub async fn settle_delivered_turns_if_owner(
         &self,
         key: &InteractiveProcessKey,
         token: InteractiveProcessToken,
-    ) -> Option<PendingStdinTurn> {
+    ) -> Vec<PendingStdinTurn> {
         let mut processes = self.processes.lock().await;
-        let entry = processes.get_mut(key)?;
-        (entry.token == token)
-            .then(|| entry.pending_stdin_turns.pop_front())
-            .flatten()
+        let Some(entry) = processes.get_mut(key) else {
+            return Vec::new();
+        };
+        if entry.token != token {
+            return Vec::new();
+        }
+        entry.pending_stdin_turns.drain(..).collect()
     }
 
     /// Drain every unanswered stdin turn only when the exact owner is current.

@@ -1,7 +1,9 @@
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 
 use crate::domain::entities::{
     ChatConversationId, ChatMessageId, ChatTimelineItem, ChatTimelineItemId, ChatTimelinePage,
+    MessageRole,
 };
 use crate::error::AppResult;
 
@@ -24,6 +26,12 @@ pub trait ChatTimelineRepository: Send + Sync {
         &self,
         conversation_id: &ChatConversationId,
     ) -> AppResult<Vec<ChatTimelineItem>>;
+
+    async fn latest_assistant_activity_at_for_conversation(
+        &self,
+        conversation_id: &ChatConversationId,
+        assistant_role: MessageRole,
+    ) -> AppResult<Option<DateTime<Utc>>>;
 
     async fn delete_message_items_except_block_indices(
         &self,
