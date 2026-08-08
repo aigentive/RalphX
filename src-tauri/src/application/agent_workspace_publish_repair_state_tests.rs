@@ -42,9 +42,10 @@ use crate::application::agent_workspace_publish_repair_state::{
     AgentWorkspaceRepairTransitionOutcome, DurableRepairWorkspaceReviewStartFuture,
     DurableRepairWorkspaceReviewStarter, PrAutofixCarryover, PublishAuthority,
     AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION, AWAITING_CI_REPAIR_REASON,
-    DEFERRED_REPAIR_WAIT_TIMEOUT_SECS, MAX_AGENT_WORKSPACE_CI_RERUN_RETRIES,
-    MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES, NEEDS_HUMAN_REPAIR_REASON,
-    PRE_EXISTING_ON_BASE_REPAIR_REASON, REPAIR_SENT_STEP, UNCHANGED_HEALTH_REPAIR_REASON,
+    CONTINUATION_RECOVERY_FAILURE_REASON_PREFIX, DEFERRED_REPAIR_WAIT_TIMEOUT_SECS,
+    MAX_AGENT_WORKSPACE_CI_RERUN_RETRIES, MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES,
+    NEEDS_HUMAN_REPAIR_REASON, PRE_EXISTING_ON_BASE_REPAIR_REASON, REPAIR_SENT_STEP,
+    UNCHANGED_HEALTH_REPAIR_REASON,
 };
 use crate::application::agent_workspace_review::{
     load_agent_workspace_review_context, AgentWorkspaceReviewStart,
@@ -226,6 +227,47 @@ fn is_machine_repair_reason_marker_recognizes_blocked_streak_rearmed_prefix() {
 }
 
 #[test]
+fn domain_attention_pending_reason_matches_application_marker() {
+    // Nothing but this assertion keeps them byte-identical. The domain crate cannot depend on
+    // the application crate, so the literal is duplicated at
+    // `crate::domain::entities::CONTINUATION_OPEN_EFFECT_ATTENTION_PENDING_REASON`.
+    // `load_agent_workspace_repair_operation_recovery_action` reads the application copy to
+    // decide `RetryRepair` versus `None`, so drift now also silently suppresses the Retry
+    // action in the workspace response — not just the hold reason.
+    assert_eq!(
+        crate::domain::entities::CONTINUATION_OPEN_EFFECT_ATTENTION_PENDING_REASON,
+        crate::application::agent_workspace_publish_recovery::CONTINUATION_OPEN_EFFECT_ATTENTION_REASON,
+        "domain and application copies of the continuation open-effect attention marker must stay byte-identical"
+    );
+}
+
+#[test]
+fn is_machine_repair_reason_marker_recognizes_continuation_recovery_failure_prefix() {
+    let marker = format!("{CONTINUATION_RECOVERY_FAILURE_REASON_PREFIX}1");
+    assert!(
+        is_machine_repair_reason_marker(&marker),
+        "continuation_recovery_failure:<n> must be treated as an internal scheduling marker"
+    );
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        ChatConversationId::from_string("repair-reason-continuation-recovery-failure".to_string()),
+        AgentWorkspaceRepairSource::Publish,
+        AgentWorkspaceRepairContinuation::Publish,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+    attempt.pending_reasons = vec![marker];
+    assert_eq!(
+        last_human_repair_reason(&attempt),
+        None,
+        "a continuation_recovery_failure marker must not leak into dispatch prompts as human context"
+    );
+}
+
+#[test]
 fn ci_held_predicate_recognizes_rerun_reservations_and_await_holds() {
     let mut attempt = AgentWorkspaceRepairAttempt::new(
         ChatConversationId::from_string("ci-held-predicate"),
@@ -296,6 +338,48 @@ fn compatibility_projection_marks_only_stationary_ready_repairs_as_held() {
         Some("paused"),
         "genuine Ready remains publishable"
     );
+}
+
+#[test]
+fn compatibility_projection_marks_escalated_continuations_as_held_not_publishing() {
+    for phase in [
+        AgentWorkspaceRepairPhase::ContinuationPending,
+        AgentWorkspaceRepairPhase::Continuing,
+    ] {
+        let mut attempt = AgentWorkspaceRepairAttempt::new(
+            ChatConversationId::from_string(format!("repair-projection-escalated-{phase:?}")),
+            AgentWorkspaceRepairSource::Publish,
+            AgentWorkspaceRepairContinuation::Publish,
+            "main",
+            false,
+            true,
+            false,
+            None,
+            chrono::Utc::now(),
+        );
+        attempt.phase = phase;
+        attempt.pending_reasons = vec![CONTINUATION_OPEN_EFFECT_ATTENTION_REASON.to_string()];
+
+        let held = repair_attempt_projection(&attempt, "held", Some(false));
+        assert_eq!(
+            held.publication_push_status.as_deref(),
+            Some("refreshed"),
+            "{phase:?} with an open-effect attention hold must project push status as refreshed"
+        );
+        assert_eq!(
+            held.pr_supervision_status.as_deref(),
+            Some("held"),
+            "{phase:?} with an open-effect attention hold must project supervision status as held"
+        );
+
+        attempt.pending_reasons.clear();
+        let publishing = repair_attempt_projection(&attempt, "publishing", Some(false));
+        assert_eq!(
+            publishing.pr_supervision_status.as_deref(),
+            Some("publishing"),
+            "{phase:?} with no hold must project supervision status as publishing"
+        );
+    }
 }
 
 #[test]
