@@ -681,7 +681,34 @@ describe("useAgentWorkspaceOperationToasts", () => {
     await waitFor(() => expect(getWatchedAgentWorkspaceOperations()).toHaveLength(0));
   });
 
-  it("17. unwatches a session-started entry once its result grace window elapses with nothing reported", async () => {
+  it("17. drains a reported result without waiting for the next workspace poll tick", async () => {
+    seedWatchedEntry({
+      kind: "base-update",
+      publishAttemptKey: "attempt-1",
+      startedAtMs: Date.now(),
+    });
+    getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspaceFixture());
+    const queryClient = createTestQueryClient();
+
+    renderHook(() => useAgentWorkspaceOperationToasts(), { wrapper: wrapper(queryClient) });
+    await waitFor(() => expect(getAgentConversationWorkspaceMock).toHaveBeenCalled());
+    await flush();
+
+    // No query update follows: a poll that returns structurally-equal data in
+    // the same millisecond produces no new query result, so the report itself
+    // has to wake the driver or the toast stalls until the next poll tick.
+    reportAgentWorkspaceOperationResult(CONVERSATION_ID, {
+      kind: "base-updated",
+      targetRef: "origin/main",
+    });
+
+    await waitFor(() => expect(toastSuccessMock).toHaveBeenCalledTimes(1));
+    render(lastCallContent(toastSuccessMock));
+    expect(screen.getByText("Updated from origin/main")).toBeInTheDocument();
+    await waitFor(() => expect(getWatchedAgentWorkspaceOperations()).toHaveLength(0));
+  });
+
+  it("18. unwatches a session-started entry once its result grace window elapses with nothing reported", async () => {
     seedWatchedEntry({
       kind: "base-update",
       publishAttemptKey: "attempt-1",
