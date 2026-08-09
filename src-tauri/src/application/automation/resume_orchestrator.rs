@@ -1,3 +1,4 @@
+use crate::application::app_state::ApplicationExecutionState;
 use crate::application::automation::api::automation_service_for_state;
 use crate::application::automation::pause_recovery::is_actionable_paused_reason;
 use crate::application::automation::reopen::{
@@ -19,10 +20,16 @@ use crate::error::{AppError, AppResult};
 /// Returns a typed, user-facing error when the automation cannot be loaded or resumed safely.
 pub(crate) async fn resume_automation_smart(
     state: &AppState,
+    execution_state: &std::sync::Arc<ApplicationExecutionState>,
     automation_id: &AutomationId,
 ) -> AppResult<Automation> {
-    resume_automation_smart_with_reopener(state, automation_id, SmartResumeReopener::Production)
-        .await
+    resume_automation_smart_with_reopener(
+        state,
+        execution_state,
+        automation_id,
+        SmartResumeReopener::Production,
+    )
+    .await
 }
 
 // Test-only injection seam: exercised by resume_orchestrator_tests, so it reads as
@@ -30,11 +37,13 @@ pub(crate) async fn resume_automation_smart(
 #[allow(dead_code)]
 pub(crate) async fn resume_automation_smart_with_redriver(
     state: &AppState,
+    execution_state: &std::sync::Arc<ApplicationExecutionState>,
     automation_id: &AutomationId,
     redriver: &dyn AutomationRunRedriver,
 ) -> AppResult<Automation> {
     resume_automation_smart_with_reopener(
         state,
+        execution_state,
         automation_id,
         SmartResumeReopener::Redriver(redriver),
     )
@@ -59,6 +68,7 @@ enum SmartResumeDecision {
 
 async fn resume_automation_smart_with_reopener(
     state: &AppState,
+    execution_state: &std::sync::Arc<ApplicationExecutionState>,
     automation_id: &AutomationId,
     reopener: SmartResumeReopener<'_>,
 ) -> AppResult<Automation> {
@@ -74,11 +84,17 @@ async fn resume_automation_smart_with_reopener(
             );
             let result = match reopener {
                 SmartResumeReopener::Production => {
-                    reopen_automation_run(state, automation_id, &run_id).await
+                    reopen_automation_run(state, execution_state, automation_id, &run_id).await
                 }
                 SmartResumeReopener::Redriver(redriver) => {
-                    reopen_automation_run_with_redriver(state, automation_id, &run_id, redriver)
-                        .await
+                    reopen_automation_run_with_redriver(
+                        state,
+                        execution_state,
+                        automation_id,
+                        &run_id,
+                        redriver,
+                    )
+                    .await
                 }
             };
             result.map_err(with_resume_context)?;

@@ -116,6 +116,7 @@ async fn fixture(agent_name: Option<&str>) -> Fixture {
             app_state,
             execution_state: Arc::new(ExecutionState::new()),
             delegation_service: Default::default(),
+            external_mcp_supervisor: None,
         },
         headers,
         session,

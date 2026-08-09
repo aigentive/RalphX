@@ -1,7 +1,6 @@
 use std::{path::Path, time::Instant};
 
 use serde::Serialize;
-use tauri::{Emitter, Runtime};
 
 use super::AgentWorkspaceSourcePullRequestInput;
 use crate::application::agent_conversation_workspace::{

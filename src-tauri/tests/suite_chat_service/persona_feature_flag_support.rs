@@ -1,6 +1,7 @@
 pub(super) use std::fs;
-pub(super) use std::sync::{Arc, Mutex};
+pub(super) use std::sync::Arc;
 
+pub(super) use ralphx_events::RecordingEventSink;
 pub(super) use ralphx_lib::application::app_paths::AppPaths;
 pub(super) use ralphx_lib::application::chat_service::{
     process_queued_messages_for_test, process_queued_messages_for_test_with_persona_feature,
@@ -24,7 +25,7 @@ pub(super) use ralphx_lib::infrastructure::agents::{
 };
 pub(super) use ralphx_lib::infrastructure::memory::MemoryChatConversationRepository;
 pub(super) use ralphx_lib::utils::path_safety::validate_absolute_non_root_path;
-pub(super) use tauri::{Listener, Manager};
+pub(super) use tauri::Manager;
 
 pub(super) use super::support::{fake_claude::FakeClaude, fake_codex::FakeCodex};
 
@@ -67,8 +68,21 @@ impl Drop for StandaloneFlagOverrideReset {
     }
 }
 
+pub(super) fn recorded_event_payloads(
+    events: &RecordingEventSink,
+    event_name: &str,
+) -> Vec<serde_json::Value> {
+    events
+        .events()
+        .into_iter()
+        .filter(|event| event.event == event_name)
+        .map(|event| event.payload)
+        .collect()
+}
+
 pub(super) fn persona_flag_override_chat_service(state: &AppState) -> AppChatService {
     AppChatService::new(
+        Arc::clone(&state.events),
         Arc::clone(&state.chat_message_repo),
         Arc::clone(&state.chat_attachment_repo),
         Arc::clone(&state.artifact_repo),
@@ -112,9 +126,6 @@ pub(super) async fn send_persona_attribution_fixture(
     Vec<serde_json::Value>,
 ) {
     use std::os::unix::fs::PermissionsExt;
-    use std::sync::Mutex;
-    use tauri::Listener;
-
     let _spawn_permission = PersonaEnvReset::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
     let _native_agent_flag = PersonaEnvReset::set(
         "RALPHX_USE_NATIVE_AGENT_FLAG",
@@ -135,7 +146,9 @@ pub(super) async fn send_persona_attribution_fixture(
     permissions.set_mode(0o755);
     fs::set_permissions(&cli_path, permissions).unwrap();
 
-    let initial_state = AppState::new_test();
+    let mut initial_state = AppState::new_test();
+    let events = RecordingEventSink::new();
+    initial_state.events = Arc::new(events.clone());
     if let Some(persona) = persona.as_ref() {
         initial_state
             .persona_repo
@@ -163,22 +176,9 @@ pub(super) async fn send_persona_attribution_fixture(
         .manage(initial_state)
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("build persona attribution mock app");
-    let events = Arc::new(Mutex::new(Vec::new()));
-    for event_name in ["persona:applied", "persona:injection_skipped"] {
-        let captured = Arc::clone(&events);
-        let _ = app.listen(event_name, move |event| {
-            if let Ok(payload) = serde_json::from_str(event.payload()) {
-                captured.lock().unwrap().push(payload);
-            }
-        });
-    }
-
     let service = app
         .state::<AppState>()
-        .build_chat_service_for_runtime::<tauri::test::MockRuntime>(
-            None,
-            Some(app.handle().clone()),
-        )
+        .build_chat_service()
         .with_persona_feature_enabled(true)
         .with_cli_path(cli_path)
         .with_working_directory(&project_directory);
@@ -202,7 +202,10 @@ pub(super) async fn send_persona_attribution_fixture(
         .await
         .expect("read persona attribution run")
         .expect("persona attribution run should exist");
-    let captured = events.lock().unwrap().clone();
+    let captured = ["persona:applied", "persona:injection_skipped"]
+        .into_iter()
+        .flat_map(|event_name| recorded_event_payloads(&events, event_name))
+        .collect();
     (run, captured)
 }
 

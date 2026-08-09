@@ -40,10 +40,7 @@ fn preview_persona(slug: &str) -> Persona {
 async fn preview_fixture(
     persona: &Persona,
     bind: bool,
-) -> (
-    AppChatService<tauri::Wry>,
-    crate::domain::entities::ChatConversationId,
-) {
+) -> (AppChatService, crate::domain::entities::ChatConversationId) {
     let mut state = AppState::new_test();
     let persona_repo = Arc::new(MemoryPersonaRepository::new());
     persona_repo
@@ -65,7 +62,7 @@ async fn preview_fixture(
         .expect("conversation fixture should persist");
 
     let service = state
-        .build_chat_service_for_runtime::<tauri::Wry>(None, None)
+        .build_chat_service()
         .with_persona_feature_enabled(true);
     (service, conversation_id)
 }
@@ -134,7 +131,7 @@ async fn preview_is_project_context_only() {
         .expect("conversation fixture should persist");
 
     let service = state
-        .build_chat_service_for_runtime::<tauri::Wry>(None, None)
+        .build_chat_service()
         .with_persona_feature_enabled(true);
     assert_eq!(
         service

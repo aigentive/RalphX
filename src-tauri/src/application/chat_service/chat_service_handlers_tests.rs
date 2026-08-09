@@ -4,12 +4,13 @@ use chrono::{DateTime, Duration, Utc};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::{fs, process::Command};
-use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
+use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
 
 use crate::application::{
     chat_service::verification_child_process_registry::VerificationChildProcessRegistry,
     chat_service::{ProviderErrorCategory, ProviderErrorMetadata},
+    runtime_factory::ChatRuntimeFactoryDeps,
     AppState, InteractiveProcessRegistry,
 };
 use crate::domain::agents::{
@@ -38,10 +39,9 @@ use crate::domain::services::{MessageQueue, RunningAgentRegistry};
 use crate::error::AppResult;
 use crate::infrastructure::agents::claude::{ContentBlockItem, SpawnableCommand, ToolCall};
 use crate::infrastructure::memory::MemoryValidationRunRepository;
-use tauri::{AppHandle, Runtime};
 
 #[allow(clippy::too_many_arguments)]
-async fn handle_stream_success<R: Runtime>(
+async fn handle_stream_success(
     agent_run_id: &str,
     context_type: ChatContextType,
     context_id: &str,
@@ -65,16 +65,12 @@ async fn handle_stream_success<R: Runtime>(
     plan_branch_repo: &Option<Arc<dyn PlanBranchRepository>>,
     task_step_repo: &Option<Arc<dyn TaskStepRepository>>,
     execution_settings_repo: &Option<Arc<dyn ExecutionSettingsRepository>>,
-    app_handle: &Option<AppHandle<R>>,
+    runtime_factory_deps: &ChatRuntimeFactoryDeps,
     interactive_process_registry: &Option<Arc<InteractiveProcessRegistry>>,
     review_repo: &Option<Arc<dyn ReviewRepository>>,
     verification_child_registry: &Option<Arc<VerificationChildProcessRegistry>>,
 ) {
-    let validation_run_repo = app_handle.as_ref().and_then(|handle| {
-        handle
-            .try_state::<AppState>()
-            .map(|state| Arc::clone(&state.validation_run_repo))
-    });
+    let validation_run_repo = runtime_factory_deps.validation_run_repo.clone();
     super::handle_stream_success(
         agent_run_id,
         context_type,
@@ -102,9 +98,10 @@ async fn handle_stream_success<R: Runtime>(
         &None,
         &None,
         execution_settings_repo,
-        &None,
-        &None,
-        app_handle,
+        &runtime_factory_deps.agent_lane_settings_repo,
+        &runtime_factory_deps.agent_provider_settings_repo,
+        &runtime_factory_deps.events,
+        Some(runtime_factory_deps),
         interactive_process_registry,
         review_repo,
         verification_child_registry,
@@ -113,7 +110,7 @@ async fn handle_stream_success<R: Runtime>(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn handle_stream_error<R: Runtime + 'static>(
+async fn handle_stream_error(
     error: &str,
     stream_error: Option<&StreamError>,
     context_type: ChatContextType,
@@ -150,7 +147,7 @@ async fn handle_stream_error<R: Runtime + 'static>(
     question_state: &Option<Arc<QuestionState>>,
     plan_branch_repo: &Option<Arc<dyn PlanBranchRepository>>,
     execution_settings_repo: &Option<Arc<dyn ExecutionSettingsRepository>>,
-    app_handle: &Option<AppHandle<R>>,
+    runtime_factory_deps: &ChatRuntimeFactoryDeps,
     agent_name: Option<&str>,
     run_chain_id: Option<String>,
     interactive_process_registry: &Option<Arc<InteractiveProcessRegistry>>,
@@ -158,11 +155,7 @@ async fn handle_stream_error<R: Runtime + 'static>(
     task_step_repo: &Option<Arc<dyn TaskStepRepository>>,
     verification_child_registry: &Option<Arc<VerificationChildProcessRegistry>>,
 ) -> bool {
-    let validation_run_repo = app_handle.as_ref().and_then(|handle| {
-        handle
-            .try_state::<AppState>()
-            .map(|state| Arc::clone(&state.validation_run_repo))
-    });
+    let validation_run_repo = runtime_factory_deps.validation_run_repo.clone();
     super::handle_stream_error(
         error,
         stream_error,
@@ -202,19 +195,21 @@ async fn handle_stream_error<R: Runtime + 'static>(
         question_state,
         plan_branch_repo,
         execution_settings_repo,
-        &None,
-        &None,
-        app_handle,
+        &runtime_factory_deps.agent_lane_settings_repo,
+        &runtime_factory_deps.agent_provider_settings_repo,
+        Arc::clone(&runtime_factory_deps.events),
+        None,
+        Some(runtime_factory_deps),
         agent_name,
         run_chain_id,
         interactive_process_registry,
         review_repo,
         task_step_repo,
         &validation_run_repo,
-        &None,
-        &None,
+        &runtime_factory_deps.external_events_repo,
+        &runtime_factory_deps.webhook_publisher,
         verification_child_registry,
-        &None,
+        &runtime_factory_deps.notification_service,
     )
     .await
 }
@@ -231,10 +226,10 @@ fn forced_transition_failures() -> &'static Mutex<HashSet<String>> {
 }
 
 #[tokio::test]
-async fn provider_env_for_harness_reads_app_state_provider_settings() {
-    let empty = provider_env_for_harness::<MockRuntime>(&None, &None, AgentHarnessKind::Claude)
+async fn provider_env_for_harness_reads_explicit_provider_settings() {
+    let empty = provider_env_for_harness(&None, AgentHarnessKind::Claude)
         .await
-        .expect("missing app handle");
+        .expect("missing provider settings");
     assert!(empty.is_empty());
 
     let temp_dir = tempfile::tempdir().expect("temp dir");
@@ -253,13 +248,9 @@ async fn provider_env_for_harness_reads_app_state_provider_settings() {
         .upsert(&settings)
         .await
         .expect("save provider settings");
-    let app = mock_builder()
-        .manage(app_state)
-        .build(mock_context(noop_assets()))
-        .expect("mock app");
-    let handle = Some(app.handle().clone());
+    let provider_repo = Some(Arc::clone(&app_state.agent_provider_settings_repo));
 
-    let provider_env = provider_env_for_harness(&handle, &None, AgentHarnessKind::Claude)
+    let provider_env = provider_env_for_harness(&provider_repo, AgentHarnessKind::Claude)
         .await
         .expect("load provider env");
 
@@ -289,10 +280,9 @@ async fn provider_env_for_harness_uses_explicit_provider_repo_without_app_handle
         .expect("save provider settings");
     let provider_repo = Some(Arc::clone(&app_state.agent_provider_settings_repo));
 
-    let provider_env =
-        provider_env_for_harness::<MockRuntime>(&None, &provider_repo, AgentHarnessKind::Claude)
-            .await
-            .expect("load provider env");
+    let provider_env = provider_env_for_harness(&provider_repo, AgentHarnessKind::Claude)
+        .await
+        .expect("load provider env");
 
     assert_eq!(
         provider_env
@@ -304,13 +294,9 @@ async fn provider_env_for_harness_uses_explicit_provider_repo_without_app_handle
 
 #[tokio::test]
 async fn recovery_retry_provider_decision_fails_execution_without_provider_repo() {
-    let decision = recovery_retry_provider_decision::<MockRuntime>(
-        &None,
-        &None,
-        AgentHarnessKind::Claude,
-        ChatContextType::Review,
-    )
-    .await;
+    let decision =
+        recovery_retry_provider_decision(&None, AgentHarnessKind::Claude, ChatContextType::Review)
+            .await;
 
     assert_eq!(
         decision,
@@ -321,14 +307,10 @@ async fn recovery_retry_provider_decision_fails_execution_without_provider_repo(
 
 #[tokio::test]
 async fn recovery_retry_provider_decision_allows_non_execution_without_provider_repo() {
-    let decision = recovery_retry_provider_decision::<MockRuntime>(
-        &None,
-        &None,
-        AgentHarnessKind::Claude,
-        ChatContextType::Project,
-    )
-    .await
-    .expect("non-execution recovery can run without provider settings");
+    let decision =
+        recovery_retry_provider_decision(&None, AgentHarnessKind::Claude, ChatContextType::Project)
+            .await
+            .expect("non-execution recovery can run without provider settings");
 
     assert_eq!(
         decision,
@@ -348,8 +330,7 @@ async fn recovery_retry_provider_decision_blocks_disabled_provider() {
         .expect("save disabled default provider");
     let provider_repo = Some(Arc::clone(&app_state.agent_provider_settings_repo));
 
-    let decision = recovery_retry_provider_decision::<MockRuntime>(
-        &None,
+    let decision = recovery_retry_provider_decision(
         &provider_repo,
         AgentHarnessKind::Claude,
         ChatContextType::Review,
@@ -388,8 +369,7 @@ async fn recovery_retry_provider_decision_applies_explicit_provider_env() {
         .expect("save enabled provider settings");
     let provider_repo = Some(Arc::clone(&app_state.agent_provider_settings_repo));
 
-    let decision = recovery_retry_provider_decision::<MockRuntime>(
-        &None,
+    let decision = recovery_retry_provider_decision(
         &provider_repo,
         AgentHarnessKind::Claude,
         ChatContextType::Review,
@@ -485,13 +465,13 @@ fn write_claude_session_fixture(dir: &std::path::Path, session_id: &str) -> std:
 
 #[tokio::test]
 async fn recovery_retry_spawnable_gate_fails_execution_without_provider_repo() {
-    let spawnable = recovery_retry_spawnable_with_provider_gate::<MockRuntime>(
-        &None,
+    let spawnable = recovery_retry_spawnable_with_provider_gate(
         &None,
         AgentHarnessKind::Claude,
         ChatContextType::Review,
         None,
         std::path::Path::new("/tmp"),
+        None,
         recovery_retry_test_provider_spawnable(),
     )
     .await
@@ -505,13 +485,13 @@ async fn recovery_retry_spawnable_gate_fails_execution_without_provider_repo() {
 
 #[tokio::test]
 async fn recovery_retry_spawnable_gate_blocks_non_execution_without_app_state() {
-    let spawnable = recovery_retry_spawnable_with_provider_gate::<MockRuntime>(
-        &None,
+    let spawnable = recovery_retry_spawnable_with_provider_gate(
         &None,
         AgentHarnessKind::Claude,
         ChatContextType::Project,
         None,
         std::path::Path::new("/tmp"),
+        None,
         recovery_retry_test_provider_spawnable(),
     )
     .await
@@ -532,19 +512,15 @@ async fn recovery_retry_spawnable_gate_applies_policy_without_provider_repo() {
         .set_server_state(None, &key, McpOverrideState::Disabled)
         .await
         .expect("save global MCP deny");
-    let app = mock_builder()
-        .manage(app_state)
-        .build(mock_context(noop_assets()))
-        .expect("mock app");
-    let handle = Some(app.handle().clone());
+    let runtime_deps = ChatRuntimeFactoryDeps::from_app_state(&app_state);
 
     let spawnable = recovery_retry_spawnable_with_provider_gate(
-        &handle,
         &None,
         AgentHarnessKind::Claude,
         ChatContextType::Project,
         None,
         std::path::Path::new("/tmp"),
+        Some(&runtime_deps),
         recovery_retry_test_provider_spawnable(),
     )
     .await
@@ -569,13 +545,13 @@ async fn recovery_retry_spawnable_gate_blocks_disabled_provider() {
         .expect("save disabled default provider");
     let provider_repo = Some(Arc::clone(&app_state.agent_provider_settings_repo));
 
-    let spawnable = recovery_retry_spawnable_with_provider_gate::<MockRuntime>(
-        &None,
+    let spawnable = recovery_retry_spawnable_with_provider_gate(
         &provider_repo,
         AgentHarnessKind::Claude,
         ChatContextType::Review,
         None,
         std::path::Path::new("/tmp"),
+        None,
         recovery_retry_test_provider_spawnable(),
     )
     .await
@@ -604,19 +580,15 @@ async fn recovery_retry_spawnable_gate_applies_provider_env() {
         .await
         .expect("save enabled provider settings");
     let provider_repo = Some(Arc::clone(&app_state.agent_provider_settings_repo));
-    let app = mock_builder()
-        .manage(app_state)
-        .build(mock_context(noop_assets()))
-        .expect("mock app");
-    let handle = Some(app.handle().clone());
+    let runtime_deps = ChatRuntimeFactoryDeps::from_app_state(&app_state);
 
     let spawnable = recovery_retry_spawnable_with_provider_gate(
-        &handle,
         &provider_repo,
         AgentHarnessKind::Claude,
         ChatContextType::Review,
         None,
         std::path::Path::new("/tmp"),
+        Some(&runtime_deps),
         recovery_retry_test_provider_spawnable(),
     )
     .await
@@ -631,21 +603,18 @@ async fn recovery_retry_spawnable_gate_applies_provider_env() {
 
 #[tokio::test]
 async fn resolve_recovery_retry_spawnable_allows_gated_build_success() {
-    let app = mock_builder()
-        .manage(AppState::new_test())
-        .build(mock_context(noop_assets()))
-        .expect("mock app");
-    let app_handle = Some(app.handle().clone());
+    let app_state = AppState::new_test();
+    let runtime_deps = ChatRuntimeFactoryDeps::from_app_state(&app_state);
     let provider_gate = RecoveryRetryProviderGate::new(
-        &app_handle,
         &None,
         AgentHarnessKind::Claude,
         ChatContextType::Project,
         None,
         std::path::Path::new("/tmp"),
+        Some(&runtime_deps),
     );
 
-    let spawnable = resolve_recovery_retry_spawnable::<MockRuntime>(
+    let spawnable = resolve_recovery_retry_spawnable(
         Ok(recovery_retry_test_provider_spawnable()),
         provider_gate,
     )
@@ -662,19 +631,17 @@ async fn resolve_recovery_retry_spawnable_allows_gated_build_success() {
 async fn resolve_recovery_retry_spawnable_drops_build_errors() {
     let provider_gate = RecoveryRetryProviderGate::new(
         &None,
-        &None,
         AgentHarnessKind::Claude,
         ChatContextType::Project,
         None,
         std::path::Path::new("/tmp"),
+        None,
     );
 
-    let spawnable = resolve_recovery_retry_spawnable::<MockRuntime>(
-        Err("build failed".to_string()),
-        provider_gate,
-    )
-    .await
-    .unwrap();
+    let spawnable =
+        resolve_recovery_retry_spawnable(Err("build failed".to_string()), provider_gate)
+            .await
+            .unwrap();
 
     assert!(
         spawnable.is_none(),
@@ -683,8 +650,8 @@ async fn resolve_recovery_retry_spawnable_drops_build_errors() {
 }
 
 #[test]
-fn recovery_retry_app_repos_are_empty_without_app_handle() {
-    let repos = RecoveryRetryAppRepos::from_app_handle::<MockRuntime>(&None);
+fn recovery_retry_app_repos_are_empty_without_runtime_deps() {
+    let repos = RecoveryRetryAppRepos::from_runtime_factory_deps(None);
 
     assert!(repos.ideation_effort_settings_repo.is_none());
     assert!(repos.ideation_model_settings_repo.is_none());
@@ -692,15 +659,11 @@ fn recovery_retry_app_repos_are_empty_without_app_handle() {
 }
 
 #[test]
-fn recovery_retry_app_repos_read_required_app_state_repos() {
+fn recovery_retry_app_repos_read_required_runtime_repos() {
     let app_state = AppState::new_test();
-    let app = mock_builder()
-        .manage(app_state)
-        .build(mock_context(noop_assets()))
-        .expect("mock app");
-    let app_handle = Some(app.handle().clone());
+    let runtime_deps = ChatRuntimeFactoryDeps::from_app_state(&app_state);
 
-    let repos = RecoveryRetryAppRepos::from_app_handle(&app_handle);
+    let repos = RecoveryRetryAppRepos::from_runtime_factory_deps(Some(&runtime_deps));
 
     assert!(repos.ideation_effort_settings_repo.is_some());
     assert!(repos.ideation_model_settings_repo.is_some());
@@ -751,14 +714,10 @@ async fn recovery_retry_folder_refs_context_carries_prompt_block_and_roots() {
     .add(conversation.id, &folder, "Recovery Folder".to_string())
     .await
     .expect("seed folder reference");
-    let app = mock_builder()
-        .manage(state)
-        .build(mock_context(noop_assets()))
-        .expect("mock app");
-    let app_handle = Some(app.handle().clone());
+    let runtime_deps = ChatRuntimeFactoryDeps::from_app_state(&state);
 
     let (block, roots) = recovery_retry_folder_refs_context(
-        &app_handle,
+        Some(&runtime_deps),
         &conversation,
         Some(project_id.as_str()),
         &project_root,
@@ -774,7 +733,7 @@ async fn recovery_retry_folder_refs_context_carries_prompt_block_and_roots() {
     let mut builder = conversation;
     builder.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
     let (builder_block, builder_roots) = recovery_retry_folder_refs_context(
-        &app_handle,
+        Some(&runtime_deps),
         &builder,
         Some(project_id.as_str()),
         &project_root,
@@ -801,8 +760,7 @@ fn handler_runtime_factory_deps_keep_explicit_lane_and_provider_without_app_hand
         &None,
     );
 
-    let deps = build_runtime_factory_deps::<MockRuntime>(
-        &None,
+    let deps = build_runtime_factory_deps(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),
@@ -825,7 +783,54 @@ fn handler_runtime_factory_deps_keep_explicit_lane_and_provider_without_app_hand
 }
 
 #[test]
-fn handler_runtime_factory_deps_do_not_backfill_missing_lane_and_provider_from_app_handle() {
+fn handler_runtime_factory_deps_preserve_complete_chat_snapshot_dependencies() {
+    let app_state = AppState::new_test();
+    let chat_deps = ChatRuntimeFactoryDeps::from_app_state(&app_state);
+    let runtime_support = RuntimeSupportRepos::new(
+        &chat_deps.execution_settings_repo,
+        &chat_deps.agent_lane_settings_repo,
+        &chat_deps.agent_provider_settings_repo,
+        &chat_deps.plan_branch_repo,
+        &chat_deps.interactive_process_registry,
+        &chat_deps.task_step_repo,
+        &chat_deps.validation_run_repo,
+    )
+    .with_runtime_factory_deps(Some(&chat_deps));
+
+    let deps = build_runtime_factory_deps(
+        Arc::clone(&app_state.task_repo),
+        Arc::clone(&app_state.task_dependency_repo),
+        Arc::clone(&app_state.project_repo),
+        Arc::clone(&app_state.artifact_repo),
+        Arc::clone(&app_state.chat_message_repo),
+        Arc::clone(&app_state.chat_attachment_repo),
+        Arc::clone(&app_state.chat_conversation_repo),
+        Arc::clone(&app_state.agent_run_repo),
+        Arc::clone(&app_state.ideation_session_repo),
+        Arc::clone(&app_state.activity_event_repo),
+        Arc::clone(&app_state.message_queue),
+        Arc::clone(&app_state.running_agent_registry),
+        Arc::clone(&app_state.memory_event_repo),
+        runtime_support,
+    );
+
+    assert!(Arc::ptr_eq(
+        deps.review_repo.as_ref().expect("review repo"),
+        chat_deps.review_repo.as_ref().expect("chat review repo"),
+    ));
+    assert!(Arc::ptr_eq(
+        deps.agent_conversation_workspace_repo
+            .as_ref()
+            .expect("workspace repo"),
+        chat_deps
+            .agent_conversation_workspace_repo
+            .as_ref()
+            .expect("chat workspace repo"),
+    ));
+}
+
+#[test]
+fn handler_runtime_factory_deps_do_not_backfill_missing_lane_and_provider() {
     let app_state = AppState::new_test();
     let execution_settings_repo = Some(Arc::clone(&app_state.execution_settings_repo));
     let runtime_support = RuntimeSupportRepos::new(
@@ -837,14 +842,7 @@ fn handler_runtime_factory_deps_do_not_backfill_missing_lane_and_provider_from_a
         &None,
         &None,
     );
-    let app = mock_builder()
-        .manage(app_state.clone())
-        .build(mock_context(noop_assets()))
-        .expect("mock app");
-    let app_handle = Some(app.handle().clone());
-
-    let deps = build_runtime_factory_deps::<MockRuntime>(
-        &app_handle,
+    let deps = build_runtime_factory_deps(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),
@@ -949,14 +947,10 @@ async fn handle_stream_success_preserves_armed_delegation_park_for_completed_par
         .await
         .expect("arm delegation park");
 
-    let app = mock_builder()
-        .manage(state.clone())
-        .build(mock_context(noop_assets()))
-        .expect("mock app");
-    let app_handle = Some(app.handle().clone());
+    let runtime_deps = ChatRuntimeFactoryDeps::from_app_state(&state);
     let parent_run_id = parent_run.id.as_str();
 
-    handle_stream_success::<MockRuntime>(
+    handle_stream_success(
         &parent_run_id,
         ChatContextType::Project,
         project_id.as_str(),
@@ -980,7 +974,7 @@ async fn handle_stream_success_preserves_armed_delegation_park_for_completed_par
         &None,
         &None,
         &None,
-        &app_handle,
+        &runtime_deps,
         &None,
         &None,
         &None,
@@ -1937,9 +1931,12 @@ async fn test_apply_system_wide_provider_pause_pauses_mixed_active_task_states()
         .expect("mock app");
     let handle = app.handle().clone();
     let state = handle.state::<AppState>();
+    let runtime_deps = ChatRuntimeFactoryDeps::from_app_state(&state);
 
-    let pause_applied = apply_system_wide_provider_pause::<MockRuntime>(
-        &Some(handle.clone()),
+    let pause_applied = apply_system_wide_provider_pause(
+        Some(&runtime_deps),
+        Some(&execution_state),
+        Arc::clone(&state.events),
         &ProviderErrorCategory::RateLimit,
         "You've hit your limit · resets 11pm (Europe/Bucharest)",
         &Some((chrono::Utc::now() + chrono::Duration::minutes(30)).to_rfc3339()),
@@ -2006,8 +2003,10 @@ async fn test_apply_system_wide_provider_pause_pauses_mixed_active_task_states()
     );
 
     assert!(
-        apply_system_wide_provider_pause::<MockRuntime>(
-            &Some(handle.clone()),
+        apply_system_wide_provider_pause(
+            Some(&runtime_deps),
+            Some(&execution_state),
+            Arc::clone(&state.events),
             &ProviderErrorCategory::RateLimit,
             "You've hit your limit · resets 11pm (Europe/Bucharest)",
             &Some((chrono::Utc::now() + chrono::Duration::minutes(30)).to_rfc3339()),
@@ -2053,9 +2052,12 @@ async fn test_provider_pause_from_delegation_does_not_pause_execution_tasks() {
         .expect("mock app");
     let handle = app.handle().clone();
     let state = handle.state::<AppState>();
+    let runtime_deps = ChatRuntimeFactoryDeps::from_app_state(&state);
 
-    let pause_applied = apply_system_wide_provider_pause::<MockRuntime>(
-        &Some(handle.clone()),
+    let pause_applied = apply_system_wide_provider_pause(
+        Some(&runtime_deps),
+        Some(&execution_state),
+        Arc::clone(&state.events),
         &ProviderErrorCategory::RateLimit,
         "You've hit your weekly limit · resets 11pm (Europe/Bucharest)",
         &Some((chrono::Utc::now() + chrono::Duration::minutes(30)).to_rfc3339()),
@@ -2145,7 +2147,7 @@ async fn test_codex_local_tool_rate_limit_text_does_not_global_pause_execution()
     );
     let error_message = stream_error.to_string();
 
-    let recovery_spawned = handle_stream_error::<MockRuntime>(
+    let recovery_spawned = handle_stream_error(
         &error_message,
         Some(&stream_error),
         ChatContextType::TaskExecution,
@@ -2182,7 +2184,7 @@ async fn test_codex_local_tool_rate_limit_text_does_not_global_pause_execution()
         &None,
         &None,
         &None,
-        &Some(handle.clone()),
+        &ChatRuntimeFactoryDeps::from_app_state(&state),
         None,
         None,
         &None,
@@ -2807,7 +2809,7 @@ async fn assert_late_execution_finalizer_preserves_status(target_status: Interna
             target_status,
         }));
 
-    handle_stream_success::<MockRuntime>(
+    handle_stream_success(
         "late-run-id",
         ChatContextType::TaskExecution,
         task_id.as_str(),
@@ -2831,7 +2833,7 @@ async fn assert_late_execution_finalizer_preserves_status(target_status: Interna
         &None,
         &task_step_repo,
         &None,
-        &None::<tauri::AppHandle<MockRuntime>>,
+        &ChatRuntimeFactoryDeps::from_app_state(&state),
         &None,
         &None,
         &None,
@@ -2875,7 +2877,7 @@ async fn test_incomplete_execution_success_finalizer_fails_current_attempt_with_
     let task_step_repo: Option<Arc<dyn TaskStepRepository>> =
         Some(Arc::new(StubTaskStepRepo { steps: vec![] }));
 
-    handle_stream_success::<MockRuntime>(
+    handle_stream_success(
         "run-id-incomplete-success",
         ChatContextType::TaskExecution,
         task_id.as_str(),
@@ -2899,7 +2901,7 @@ async fn test_incomplete_execution_success_finalizer_fails_current_attempt_with_
         &None,
         &task_step_repo,
         &None,
-        &None::<tauri::AppHandle<MockRuntime>>,
+        &ChatRuntimeFactoryDeps::from_app_state(&state),
         &None,
         &None,
         &None,
@@ -2982,7 +2984,7 @@ async fn test_zero_step_run_with_output_and_completion_signal_transitions_out_of
     let task_step_repo: Option<Arc<dyn TaskStepRepository>> =
         Some(Arc::new(StubTaskStepRepo { steps: vec![] }));
 
-    handle_stream_success::<MockRuntime>(
+    handle_stream_success(
         "run-id-zero-step-output",
         ChatContextType::TaskExecution,
         task_id.as_str(),
@@ -3006,7 +3008,7 @@ async fn test_zero_step_run_with_output_and_completion_signal_transitions_out_of
         &None,
         &task_step_repo,
         &None,
-        &None::<tauri::AppHandle<MockRuntime>>,
+        &ChatRuntimeFactoryDeps::from_app_state(&state),
         &None,
         &None,
         &None,
@@ -3070,13 +3072,9 @@ async fn test_success_finalizer_uses_head_matched_validation_cache_for_failed_st
             make_step(&task_id, TaskStepStatus::Failed),
         ],
     }));
-    let app = mock_builder()
-        .manage(state.clone())
-        .build(mock_context(noop_assets()))
-        .expect("mock app");
-    let app_handle = Some(app.handle().clone());
+    let runtime_deps = ChatRuntimeFactoryDeps::from_app_state(&state);
 
-    handle_stream_success::<MockRuntime>(
+    handle_stream_success(
         agent_run_id.as_str(),
         ChatContextType::TaskExecution,
         task_id.as_str(),
@@ -3100,7 +3098,7 @@ async fn test_success_finalizer_uses_head_matched_validation_cache_for_failed_st
         &None,
         &task_step_repo,
         &None,
-        &app_handle,
+        &runtime_deps,
         &None,
         &None,
         &None,
@@ -3152,7 +3150,7 @@ async fn test_identity_unknown_does_not_consult_validation_cache_rescue() {
         ],
     }));
 
-    handle_stream_success::<MockRuntime>(
+    handle_stream_success(
         "missing-agent-run",
         ChatContextType::TaskExecution,
         task_id.as_str(),
@@ -3176,7 +3174,7 @@ async fn test_identity_unknown_does_not_consult_validation_cache_rescue() {
         &None,
         &task_step_repo,
         &None,
-        &None::<tauri::AppHandle<MockRuntime>>,
+        &ChatRuntimeFactoryDeps::from_app_state(&state),
         &None,
         &None,
         &None,
@@ -3229,7 +3227,7 @@ async fn test_success_finalizer_rejects_no_test_validation_cache_for_failed_step
         ],
     }));
 
-    handle_stream_success::<MockRuntime>(
+    handle_stream_success(
         agent_run_id.as_str(),
         ChatContextType::TaskExecution,
         task_id.as_str(),
@@ -3253,7 +3251,7 @@ async fn test_success_finalizer_rejects_no_test_validation_cache_for_failed_step
         &None,
         &task_step_repo,
         &None,
-        &None::<tauri::AppHandle<MockRuntime>>,
+        &ChatRuntimeFactoryDeps::from_app_state(&state),
         &None,
         &None,
         &None,
@@ -3354,10 +3352,7 @@ async fn invoke_handle_stream_error_cancelled(cancelled: &StreamError) -> (bool,
     let state = AppState::new_test();
     let exec = Arc::new(ExecutionState::new());
     let execution_state = Some(Arc::clone(&exec));
-    let app = mock_builder()
-        .build(mock_context(noop_assets()))
-        .expect("mock app");
-    let app_handle = app.handle().clone();
+    let runtime_deps = ChatRuntimeFactoryDeps::from_app_state(&state);
 
     let conversation_id = ChatConversationId::new();
     let context_id = "test-session-id";
@@ -3370,7 +3365,7 @@ async fn invoke_handle_stream_error_cancelled(cancelled: &StreamError) -> (bool,
     let plugin_dir = std::path::Path::new("/tmp/plugin");
     let working_dir = std::path::Path::new("/tmp");
 
-    let recovery_spawned = handle_stream_error::<MockRuntime>(
+    let recovery_spawned = handle_stream_error(
         "cancelled",
         Some(cancelled),
         ChatContextType::Ideation,
@@ -3407,7 +3402,7 @@ async fn invoke_handle_stream_error_cancelled(cancelled: &StreamError) -> (bool,
         &None, // question_state — not used in Cancelled path
         &None, // plan_branch_repo — not used for Ideation
         &None, // execution_settings_repo — not used for Ideation
-        &Some(app_handle),
+        &runtime_deps,
         None,  // agent_name
         None,  // run_chain_id
         &None, // interactive_process_registry
@@ -3438,8 +3433,9 @@ async fn test_recovery_retry_background_context_preserves_execution_side_runtime
         harness: crate::domain::agents::AgentHarnessKind::Codex,
         provider_session_id: "codex-recovered-session".to_string(),
     });
+    let runtime_deps = ChatRuntimeFactoryDeps::from_app_state(&state);
 
-    let ctx = build_recovery_retry_background_context::<MockRuntime>(
+    let ctx = build_recovery_retry_background_context(
         retry_child,
         crate::domain::agents::AgentHarnessKind::Codex,
         ChatContextType::Review,
@@ -3463,8 +3459,6 @@ async fn test_recovery_retry_background_context_preserves_execution_side_runtime
         &Some(Arc::clone(&state.execution_settings_repo)),
         &Some(Arc::clone(&state.agent_lane_settings_repo)),
         &Some(Arc::clone(&state.agent_provider_settings_repo)),
-        &Some(Arc::clone(&state.ideation_effort_settings_repo)),
-        &Some(Arc::clone(&state.ideation_model_settings_repo)),
         &Some(Arc::clone(&state.task_proposal_repo)),
         &state.activity_event_repo,
         &state.memory_event_repo,
@@ -3473,7 +3467,8 @@ async fn test_recovery_retry_background_context_preserves_execution_side_runtime
         &execution_state,
         &question_state,
         &None,
-        &None::<tauri::AppHandle<MockRuntime>>,
+        Arc::clone(&runtime_deps.events),
+        Some(runtime_deps),
         Some("run-chain-1".to_string()),
         false,
         false,
@@ -3596,13 +3591,9 @@ async fn handle_stream_error_persona_recovery_attributes_retry_run() {
     );
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let cli_path = write_claude_session_fixture(temp_dir.path(), "recovered-session");
-    let app = mock_builder()
-        .manage(state.clone())
-        .build(mock_context(noop_assets()))
-        .expect("mock app");
-    let app_handle = Some(app.handle().clone());
+    let runtime_deps = ChatRuntimeFactoryDeps::from_app_state(&state);
 
-    let recovery_spawned = super::handle_stream_error::<MockRuntime>(
+    let recovery_spawned = super::handle_stream_error(
         "No conversation found with session ID old-session",
         None,
         ChatContextType::Project,
@@ -3643,7 +3634,9 @@ async fn handle_stream_error_persona_recovery_attributes_retry_run() {
         &None,
         &Some(Arc::clone(&state.agent_lane_settings_repo)),
         &Some(Arc::clone(&state.agent_provider_settings_repo)),
-        &app_handle,
+        Arc::clone(&runtime_deps.events),
+        runtime_deps.plan_verification_completion.as_ref(),
+        Some(&runtime_deps),
         Some("orchestrator"),
         Some("chain-stale-recovery".to_string()),
         &None,
@@ -3735,14 +3728,15 @@ async fn test_handle_verification_child_completion_queues_hidden_auto_continue()
     let handle = app.handle().clone();
     let state = handle.state::<AppState>();
 
-    handle_verification_child_completion::<MockRuntime>(
+    handle_verification_child_completion(
         &child_id,
         &parent_id,
         &state.ideation_session_repo,
         &state.chat_conversation_repo,
         &state.chat_message_repo,
         &state.message_queue,
-        &Some(handle.clone()),
+        Some(&state.queued_message_repo),
+        state.events.as_ref(),
         &None,
     )
     .await;
@@ -3866,7 +3860,7 @@ async fn cancelled_incomplete_codex_turn_clears_provider_session_before_next_sen
         completion_tool_called: false,
     };
 
-    let recovery_spawned = handle_stream_error::<MockRuntime>(
+    let recovery_spawned = handle_stream_error(
         "cancelled",
         Some(&cancelled),
         ChatContextType::Project,
@@ -3903,7 +3897,7 @@ async fn cancelled_incomplete_codex_turn_clears_provider_session_before_next_sen
         &None,
         &None,
         &None,
-        &None::<tauri::AppHandle<MockRuntime>>,
+        &ChatRuntimeFactoryDeps::from_app_state(&state),
         None,
         None,
         &None,
@@ -3953,7 +3947,7 @@ async fn cancelled_incomplete_claude_turn_preserves_provider_session_for_continu
         completion_tool_called: false,
     };
 
-    let recovery_spawned = handle_stream_error::<MockRuntime>(
+    let recovery_spawned = handle_stream_error(
         "cancelled",
         Some(&cancelled),
         ChatContextType::Project,
@@ -3990,7 +3984,7 @@ async fn cancelled_incomplete_claude_turn_preserves_provider_session_for_continu
         &None,
         &None,
         &None,
-        &None::<tauri::AppHandle<MockRuntime>>,
+        &ChatRuntimeFactoryDeps::from_app_state(&state),
         None,
         None,
         &None,
@@ -4040,7 +4034,7 @@ async fn test_handle_stream_error_cancelled_preserves_terminal_system_run_status
         completion_tool_called: false,
     };
 
-    let recovery_spawned = handle_stream_error::<MockRuntime>(
+    let recovery_spawned = handle_stream_error(
         "cancelled",
         Some(&cancelled),
         ChatContextType::Project,
@@ -4077,7 +4071,7 @@ async fn test_handle_stream_error_cancelled_preserves_terminal_system_run_status
         &None,
         &None,
         &None,
-        &None::<tauri::AppHandle<MockRuntime>>,
+        &ChatRuntimeFactoryDeps::from_app_state(&state),
         None,
         None,
         &None,
@@ -4141,7 +4135,6 @@ async fn test_handle_stream_error_cancelled_terminalizes_existing_timeline_block
         &Some(pre_assistant_message_id.clone()),
         &content_blocks,
         ChatTimelineItemStatus::Streaming,
-        None,
     )
     .await;
     assert!(initial_items
@@ -4157,7 +4150,7 @@ async fn test_handle_stream_error_cancelled_terminalizes_existing_timeline_block
         turns_finalized: 0,
         completion_tool_called: false,
     };
-    let recovery_spawned = handle_stream_error::<MockRuntime>(
+    let recovery_spawned = handle_stream_error(
         "cancelled",
         Some(&cancelled),
         ChatContextType::Project,
@@ -4194,7 +4187,7 @@ async fn test_handle_stream_error_cancelled_terminalizes_existing_timeline_block
         &None,
         &None,
         &None,
-        &None::<tauri::AppHandle<MockRuntime>>,
+        &ChatRuntimeFactoryDeps::from_app_state(&state),
         None,
         None,
         &None,
@@ -4268,7 +4261,8 @@ async fn test_handle_stream_error_stopped_attributes_timeline_blocks_to_run_id()
         turns_finalized: 0,
         completion_tool_called: false,
     };
-    let recovery_spawned = handle_stream_error::<MockRuntime>(
+    let runtime_deps = ChatRuntimeFactoryDeps::from_app_state(&state);
+    let recovery_spawned = handle_stream_error(
         "cancelled",
         Some(&cancelled),
         ChatContextType::Project,
@@ -4305,7 +4299,7 @@ async fn test_handle_stream_error_stopped_attributes_timeline_blocks_to_run_id()
         &None,
         &None,
         &None,
-        &None::<tauri::AppHandle<MockRuntime>>,
+        &runtime_deps,
         None,
         None,
         &None,
@@ -4416,7 +4410,7 @@ async fn test_handle_stream_error_preserves_existing_content_blocks_without_seri
         stderr: "user cancelled MCP tool call".to_string(),
     };
 
-    let recovery_spawned = handle_stream_error::<MockRuntime>(
+    let recovery_spawned = handle_stream_error(
         "user cancelled MCP tool call",
         Some(&stream_error),
         ChatContextType::Ideation,
@@ -4453,7 +4447,7 @@ async fn test_handle_stream_error_preserves_existing_content_blocks_without_seri
         &None,
         &None,
         &None,
-        &None::<tauri::AppHandle<MockRuntime>>,
+        &ChatRuntimeFactoryDeps::from_app_state(&state),
         None,
         None,
         &None,
@@ -4598,7 +4592,7 @@ async fn test_handle_stream_error_terminal_verification_child_seals_unresolved_t
         stderr: "agent exited".to_string(),
     };
 
-    let recovery_spawned = handle_stream_error::<MockRuntime>(
+    let recovery_spawned = handle_stream_error(
         "agent exited",
         Some(&stream_error),
         ChatContextType::Ideation,
@@ -4635,7 +4629,7 @@ async fn test_handle_stream_error_terminal_verification_child_seals_unresolved_t
         &None,
         &None,
         &None,
-        &None::<tauri::AppHandle<MockRuntime>>,
+        &ChatRuntimeFactoryDeps::from_app_state(&state),
         None,
         None,
         &None,
@@ -4782,7 +4776,7 @@ async fn test_handle_stream_error_actionable_verification_child_queues_hidden_au
         stderr: "agent exited".to_string(),
     };
 
-    let recovery_spawned = handle_stream_error::<MockRuntime>(
+    let recovery_spawned = handle_stream_error(
         "agent exited",
         Some(&stream_error),
         ChatContextType::Ideation,
@@ -4819,7 +4813,7 @@ async fn test_handle_stream_error_actionable_verification_child_queues_hidden_au
         &None,
         &None,
         &None,
-        &None::<tauri::AppHandle<MockRuntime>>,
+        &ChatRuntimeFactoryDeps::from_app_state(&state),
         None,
         None,
         &None,
@@ -4901,7 +4895,7 @@ async fn test_handle_stream_error_appends_generic_agent_error_to_existing_conten
         stderr: "unexpected agent crash".to_string(),
     };
 
-    let recovery_spawned = handle_stream_error::<MockRuntime>(
+    let recovery_spawned = handle_stream_error(
         "unexpected agent crash",
         Some(&stream_error),
         ChatContextType::Ideation,
@@ -4938,7 +4932,7 @@ async fn test_handle_stream_error_appends_generic_agent_error_to_existing_conten
         &None,
         &None,
         &None,
-        &None::<tauri::AppHandle<MockRuntime>>,
+        &ChatRuntimeFactoryDeps::from_app_state(&state),
         None,
         None,
         &None,
@@ -5082,7 +5076,7 @@ async fn test_task_execution_shutdown_success_persists_startup_recovery_metadata
     let handle = app.handle().clone();
     let state = handle.state::<AppState>();
 
-    handle_stream_success::<MockRuntime>(
+    handle_stream_success(
         "run-id-shutdown-success",
         ChatContextType::TaskExecution,
         task_id.as_str(),
@@ -5106,7 +5100,7 @@ async fn test_task_execution_shutdown_success_persists_startup_recovery_metadata
         &None,
         &None,
         &None,
-        &Some(handle.clone()),
+        &ChatRuntimeFactoryDeps::from_app_state(&state),
         &None,
         &None,
         &None,
@@ -5173,7 +5167,7 @@ async fn test_task_execution_shutdown_error_persists_startup_recovery_metadata()
         stderr: "agent exited during shutdown".to_string(),
     };
 
-    let recovery_spawned = handle_stream_error::<MockRuntime>(
+    let recovery_spawned = handle_stream_error(
         "agent exited during shutdown",
         Some(&stream_error),
         ChatContextType::TaskExecution,
@@ -5210,7 +5204,7 @@ async fn test_task_execution_shutdown_error_persists_startup_recovery_metadata()
         &None,
         &None,
         &None,
-        &None::<tauri::AppHandle<MockRuntime>>,
+        &ChatRuntimeFactoryDeps::from_app_state(&state),
         None,
         None,
         &None,
@@ -5290,7 +5284,7 @@ async fn test_task_execution_error_finalizer_fails_current_attempt_with_metadata
         elapsed_secs: 120,
     };
 
-    let recovery_spawned = handle_stream_error::<MockRuntime>(
+    let recovery_spawned = handle_stream_error(
         "execution timed out after 120s",
         Some(&stream_error),
         ChatContextType::TaskExecution,
@@ -5327,7 +5321,7 @@ async fn test_task_execution_error_finalizer_fails_current_attempt_with_metadata
         &None,
         &None,
         &None,
-        &None::<tauri::AppHandle<MockRuntime>>,
+        &ChatRuntimeFactoryDeps::from_app_state(&state),
         None,
         None,
         &None,
@@ -5413,7 +5407,7 @@ async fn test_task_execution_agent_exit_preserves_worker_error_as_failure_error(
     };
     let expected_error = format!("Agent failed: {}", worker_stderr);
 
-    let recovery_spawned = handle_stream_error::<MockRuntime>(
+    let recovery_spawned = handle_stream_error(
         &expected_error,
         Some(&stream_error),
         ChatContextType::TaskExecution,
@@ -5450,7 +5444,7 @@ async fn test_task_execution_agent_exit_preserves_worker_error_as_failure_error(
         &None,
         &None,
         &None,
-        &None::<tauri::AppHandle<MockRuntime>>,
+        &ChatRuntimeFactoryDeps::from_app_state(&state),
         None,
         None,
         &None,
@@ -5546,13 +5540,9 @@ async fn test_task_execution_local_tool_failure_uses_head_matched_validation_cac
     let stream_error = StreamError::LocalToolFailed {
         message: "late local diagnostic after execution_complete".to_string(),
     };
-    let app = mock_builder()
-        .manage(state.clone())
-        .build(mock_context(noop_assets()))
-        .expect("mock app");
-    let app_handle = Some(app.handle().clone());
+    let runtime_deps = ChatRuntimeFactoryDeps::from_app_state(&state);
 
-    let recovery_spawned = handle_stream_error::<MockRuntime>(
+    let recovery_spawned = handle_stream_error(
         "late local diagnostic after execution_complete",
         Some(&stream_error),
         ChatContextType::TaskExecution,
@@ -5589,7 +5579,7 @@ async fn test_task_execution_local_tool_failure_uses_head_matched_validation_cac
         &None,
         &None,
         &None,
-        &app_handle,
+        &runtime_deps,
         None,
         None,
         &None,
@@ -5682,7 +5672,7 @@ async fn test_task_execution_provider_error_finalizer_pauses_with_metadata() {
         retry_after: Some(retry_after.clone()),
     };
 
-    let recovery_spawned = handle_stream_error::<MockRuntime>(
+    let recovery_spawned = handle_stream_error(
         "usage limit reached",
         Some(&stream_error),
         ChatContextType::TaskExecution,
@@ -5719,7 +5709,7 @@ async fn test_task_execution_provider_error_finalizer_pauses_with_metadata() {
         &None,
         &None,
         &None,
-        &None::<tauri::AppHandle<MockRuntime>>,
+        &ChatRuntimeFactoryDeps::from_app_state(&state),
         None,
         None,
         &None,
@@ -5762,15 +5752,20 @@ async fn test_task_execution_provider_error_finalizer_pauses_with_metadata() {
         "provider pause metadata should include the unified pause reason"
     );
 
-    assert!(
-        state
-            .notification_repo
-            .list(None, None, 50)
-            .await
-            .expect("provider pause notification query should succeed")
-            .notifications
-            .is_empty(),
-        "per-task stream finalization must not bypass the global pause producer"
+    let notifications = state
+        .notification_repo
+        .list(None, None, 50)
+        .await
+        .expect("provider pause notification query should succeed")
+        .notifications;
+    assert_eq!(
+        notifications.len(),
+        1,
+        "per-task stream finalization must use the single global pause producer"
+    );
+    assert_eq!(
+        notifications[0].category,
+        NotificationCategory::ProviderPaused
     );
 }
 
@@ -5809,8 +5804,9 @@ async fn task_execution_recovery_failed_records_one_task_stuck_notification() {
         exit_code: Some(1),
         stderr: "worker crashed".to_string(),
     };
+    let runtime_deps = ChatRuntimeFactoryDeps::from_app_state(&state);
 
-    let recovery_spawned = super::handle_stream_error::<MockRuntime>(
+    let recovery_spawned = super::handle_stream_error(
         "worker crashed",
         Some(&stream_error),
         ChatContextType::TaskExecution,
@@ -5851,7 +5847,9 @@ async fn task_execution_recovery_failed_records_one_task_stuck_notification() {
         &None,
         &None,
         &None,
-        &Some(handle.clone()),
+        Arc::clone(&runtime_deps.events),
+        runtime_deps.plan_verification_completion.as_ref(),
+        Some(&runtime_deps),
         None,
         None,
         &None,
@@ -6021,13 +6019,13 @@ async fn test_normal_completion_unaffected_by_verification_guards() {
 }
 
 #[tokio::test]
-async fn recovery_retry_persona_short_circuits_without_feature_or_app_handle() {
+async fn recovery_retry_persona_short_circuits_without_feature_or_runtime_deps() {
     let conversation =
         ChatConversation::new_project(ProjectId::from_string("retry-persona-project".to_string()));
 
     assert_eq!(
-        resolve_recovery_retry_persona::<MockRuntime>(
-            &None,
+        resolve_recovery_retry_persona(
+            None,
             false,
             &conversation,
             ChatContextType::Project,
@@ -6038,15 +6036,9 @@ async fn recovery_retry_persona_short_circuits_without_feature_or_app_handle() {
         None
     );
     assert_eq!(
-        resolve_recovery_retry_persona::<MockRuntime>(
-            &None,
-            true,
-            &conversation,
-            ChatContextType::Project,
-            false,
-        )
-        .await
-        .expect("retries without a Tauri app must keep the prior no-persona behavior"),
+        resolve_recovery_retry_persona(None, true, &conversation, ChatContextType::Project, false,)
+            .await
+            .expect("retries without runtime deps must keep the prior no-persona behavior"),
         None
     );
 }
@@ -6082,14 +6074,10 @@ async fn recovery_retry_persona_uses_project_binding_without_a_workspace_row() {
         .create(persona)
         .await
         .expect("seed active retry persona");
-    let app = mock_builder()
-        .manage(state)
-        .build(mock_context(noop_assets()))
-        .expect("mock app");
-    let app_handle = Some(app.handle().clone());
+    let runtime_deps = ChatRuntimeFactoryDeps::from_app_state(&state);
 
     let resolved = resolve_recovery_retry_persona(
-        &app_handle,
+        Some(&runtime_deps),
         true,
         &conversation,
         ChatContextType::Project,

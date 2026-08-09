@@ -384,7 +384,7 @@ pub(super) async fn start_with_app(
     AgentConversationStartService::new(AgentConversationStartDeps {
         state: state.inner(),
         execution_state: execution_state.inner(),
-        app_handle: app.handle().clone(),
+        events: Arc::clone(&state.events),
     })
     .start(input)
     .await

@@ -32,22 +32,26 @@ pub async fn accept_finalize(
     // Verification admission and every other precondition run before the pending
     // confirmation is consumed. The final CAS shares the task transaction, so a
     // failed/queued verification or concurrent rejection leaves no Kanban rows.
-    let result = apply_pending_proposals_core_for_session(&state.app_state, &req.session_id)
-        .await
-        .map_err(|e| {
-            error!("Failed to apply proposals after acceptance: {}", e);
-            let status = match &e {
-                crate::error::AppError::Validation(_) => StatusCode::BAD_REQUEST,
-                crate::error::AppError::NotFound(_) => StatusCode::NOT_FOUND,
-                _ => StatusCode::INTERNAL_SERVER_ERROR,
-            };
-            json_error(status, e.to_string())
-        })?;
+    let result = apply_pending_proposals_core_for_session(
+        &state.app_state,
+        &state.execution_state,
+        &req.session_id,
+    )
+    .await
+    .map_err(|e| {
+        error!("Failed to apply proposals after acceptance: {}", e);
+        let status = match &e {
+            crate::error::AppError::Validation(_) => StatusCode::BAD_REQUEST,
+            crate::error::AppError::NotFound(_) => StatusCode::NOT_FOUND,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        json_error(status, e.to_string())
+    })?;
 
     spawn_ready_task_scheduler_if_needed(
         &state.app_state,
         std::sync::Arc::clone(&state.execution_state),
-        state.app_state.app_handle.as_ref().cloned(),
+        None,
         result.any_ready_tasks,
     );
 

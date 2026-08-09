@@ -43,6 +43,7 @@ fn setup_http_state_with_pr_mode() -> (HttpServerState, Arc<MockGithubService>) 
             app_state,
             execution_state,
             delegation_service: Default::default(),
+            external_mcp_supervisor: None,
         },
         mock_github,
     )

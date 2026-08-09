@@ -640,9 +640,10 @@ pub(super) async fn load_linked_agent_conversation_workspace(
 /// for missing entities, and [`AppError::Database`] for persistence failures.
 pub async fn apply_proposals_core(
     app_state: &AppState,
+    execution_state: &Arc<crate::application::app_state::ApplicationExecutionState>,
     input: ApplyProposalsInput,
 ) -> AppResult<ApplyProposalsResult> {
-    apply_proposals_core_inner(app_state, input, false, None).await
+    apply_proposals_core_inner(app_state, execution_state, input, false, None).await
 }
 
 /// Apply every selected proposal under a still-pending human confirmation.
@@ -652,21 +653,31 @@ pub async fn apply_proposals_core(
 /// failures therefore leave the confirmation pending for a later retry.
 pub async fn apply_pending_proposals_core(
     app_state: &AppState,
+    execution_state: &Arc<crate::application::app_state::ApplicationExecutionState>,
     input: ApplyProposalsInput,
 ) -> AppResult<ApplyProposalsResult> {
-    apply_proposals_core_inner(app_state, input, true, None).await
+    apply_proposals_core_inner(app_state, execution_state, input, true, None).await
 }
 
 pub(crate) async fn apply_supervised_proposals_core(
     app_state: &AppState,
+    execution_state: &Arc<crate::application::app_state::ApplicationExecutionState>,
     input: ApplyProposalsInput,
     conversation_id: String,
 ) -> AppResult<ApplyProposalsResult> {
-    apply_proposals_core_inner(app_state, input, false, Some(conversation_id)).await
+    apply_proposals_core_inner(
+        app_state,
+        execution_state,
+        input,
+        false,
+        Some(conversation_id),
+    )
+    .await
 }
 
 async fn apply_proposals_core_inner(
     app_state: &AppState,
+    execution_state: &Arc<crate::application::app_state::ApplicationExecutionState>,
     input: ApplyProposalsInput,
     require_pending_confirmation: bool,
     supervised_task_pipeline_conversation_id: Option<String>,
@@ -717,7 +728,8 @@ async fn apply_proposals_core_inner(
         .map_err(|e| AppError::Database(format!("Failed to get ideation settings: {}", e)))?;
     let effective_policy =
         crate::domain::services::resolve_effective_gate_policy(&ideation_settings, session.origin);
-    let chat_service = app_state.build_chat_service_with_managed_execution_state();
+    let chat_service =
+        app_state.build_chat_service_with_execution_state(Arc::clone(execution_state));
     crate::application::plan_verification_service::ensure_plan_verification_for_acceptance(
         app_state,
         &chat_service,
@@ -1241,32 +1253,43 @@ async fn apply_proposals_core_inner(
 pub async fn apply_proposals_to_kanban(
     input: ApplyProposalsInput,
     state: State<'_, AppState>,
+    execution_state: State<'_, Arc<crate::commands::ExecutionState>>,
     app: tauri::AppHandle,
 ) -> Result<ApplyProposalsResultResponse, String> {
-    apply_proposals_to_kanban_for_state(input, &state, &app).await
+    apply_proposals_to_kanban_for_state(input, &state, &execution_state, &app).await
 }
 
 #[doc(hidden)]
 pub async fn apply_proposals_to_kanban_for_state(
     input: ApplyProposalsInput,
     state: &State<'_, AppState>,
+    execution_state: &State<'_, Arc<crate::commands::ExecutionState>>,
     app: &tauri::AppHandle,
 ) -> Result<ApplyProposalsResultResponse, String> {
-    apply_proposals_to_kanban_for_state_inner(input, state, app, None).await
+    apply_proposals_to_kanban_for_state_inner(input, state, execution_state, app, None).await
 }
 
 pub(crate) async fn apply_supervised_proposals_to_kanban_for_state(
     input: ApplyProposalsInput,
     conversation_id: String,
     state: &State<'_, AppState>,
+    execution_state: &State<'_, Arc<crate::commands::ExecutionState>>,
     app: &tauri::AppHandle,
 ) -> Result<ApplyProposalsResultResponse, String> {
-    apply_proposals_to_kanban_for_state_inner(input, state, app, Some(conversation_id)).await
+    apply_proposals_to_kanban_for_state_inner(
+        input,
+        state,
+        execution_state,
+        app,
+        Some(conversation_id),
+    )
+    .await
 }
 
 async fn apply_proposals_to_kanban_for_state_inner(
     input: ApplyProposalsInput,
     state: &State<'_, AppState>,
+    execution_state: &State<'_, Arc<crate::commands::ExecutionState>>,
     app: &tauri::AppHandle,
     supervised_task_pipeline_conversation_id: Option<String>,
 ) -> Result<ApplyProposalsResultResponse, String> {
@@ -1274,9 +1297,15 @@ async fn apply_proposals_to_kanban_for_state_inner(
 
     let result = match supervised_task_pipeline_conversation_id {
         Some(conversation_id) => {
-            apply_supervised_proposals_core(state.inner(), input, conversation_id).await
+            apply_supervised_proposals_core(
+                state.inner(),
+                execution_state.inner(),
+                input,
+                conversation_id,
+            )
+            .await
         }
-        None => apply_proposals_core(state.inner(), input).await,
+        None => apply_proposals_core(state.inner(), execution_state.inner(), input).await,
     }
     .map_err(|e| e.to_string())?;
 
@@ -1288,7 +1317,7 @@ async fn apply_proposals_to_kanban_for_state_inner(
             Arc::clone(&state.task_repo),
             Arc::clone(&state.project_repo),
             Arc::clone(&state.running_agent_registry),
-            Some(app.clone()),
+            Arc::clone(&state.events),
         )
         .with_interactive_process_registry(Arc::clone(&state.interactive_process_registry));
 

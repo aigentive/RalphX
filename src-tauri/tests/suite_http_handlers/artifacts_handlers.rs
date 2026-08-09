@@ -49,6 +49,7 @@ async fn setup_test_state() -> HttpServerState {
         app_state,
         execution_state,
         delegation_service: Default::default(),
+        external_mcp_supervisor: None,
     }
 }
 
@@ -66,6 +67,7 @@ async fn setup_model_native_verification_test_state() -> HttpServerState {
         app_state,
         execution_state,
         delegation_service: Default::default(),
+        external_mcp_supervisor: None,
     }
 }
 
@@ -78,6 +80,7 @@ async fn setup_disabled_provider_test_state() -> HttpServerState {
         app_state,
         execution_state,
         delegation_service: Default::default(),
+        external_mcp_supervisor: None,
     }
 }
 
@@ -3402,6 +3405,7 @@ async fn setup_freeze_state(registry: Arc<MemoryRunningAgentRegistry>) -> HttpSe
         app_state,
         execution_state,
         delegation_service: Default::default(),
+        external_mcp_supervisor: None,
     }
 }
 

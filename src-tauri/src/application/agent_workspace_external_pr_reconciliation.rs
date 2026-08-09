@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use futures::{stream, StreamExt as _};
-use tauri::{AppHandle, Emitter, Manager};
+use ralphx_events::EventSink;
 
 use crate::application::agent_conversation_workspace::resolve_valid_agent_conversation_workspace_path;
 use crate::application::agent_workspace_publication_reconciliation::{
@@ -96,7 +96,11 @@ pub(crate) struct AgentWorkspaceExternalPrReconciliationDeps {
     /// cannot fall back to legacy repair authority.
     pub agent_workspace_repair_repo: Option<Arc<dyn AgentWorkspaceRepairRepository>>,
     pub plan_branch_repo: Arc<dyn PlanBranchRepository>,
-    pub app_handle: Option<AppHandle>,
+    /// Shared event delivery for workspace and ticketing invalidations.
+    pub events: Arc<dyn EventSink>,
+    /// Production callers pass the explicit recovery state needed by the durable poller.
+    /// Focused compatibility tests may omit it.
+    pub durable_recovery_state: Option<Arc<AppState>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -206,7 +210,7 @@ pub(crate) async fn reconcile_agent_workspace_external_pr(
         .await?
         {
             PublicationCorrectionOutcome::Corrected => {
-                emit_workspace_changed(deps.app_handle.as_ref(), &workspace.conversation_id);
+                emit_workspace_changed(deps.events.as_ref(), &workspace.conversation_id);
                 Ok(AgentWorkspaceExternalPrReconciliationOutcome::Skipped(
                     "foreign_publication_corrected",
                 ))
@@ -296,7 +300,7 @@ pub(crate) async fn reconcile_agent_workspace_external_pr(
         .await?;
     append_external_pr_reconciliation_event(&deps.workspace_repo, &conversation_id, pr_status)
         .await?;
-    emit_workspace_changed(deps.app_handle.as_ref(), &conversation_id);
+    emit_workspace_changed(deps.events.as_ref(), &conversation_id);
     reconcile_clickup_ticket_for_workspace_pr(
         &deps,
         &workspace,
@@ -358,7 +362,7 @@ async fn reconcile_linked_agent_workspace_pr(
     .await?
     {
         PublicationCorrectionOutcome::Corrected => {
-            emit_workspace_changed(deps.app_handle.as_ref(), &workspace.conversation_id);
+            emit_workspace_changed(deps.events.as_ref(), &workspace.conversation_id);
             return Ok(AgentWorkspaceExternalPrReconciliationOutcome::Skipped(
                 "foreign_publication_corrected",
             ));
@@ -417,7 +421,7 @@ async fn reconcile_linked_agent_workspace_pr(
             None,
         ))
         .await?;
-    emit_workspace_changed(deps.app_handle.as_ref(), &workspace.conversation_id);
+    emit_workspace_changed(deps.events.as_ref(), &workspace.conversation_id);
     let terminalized = terminalize_agent_workspace_after_pr(
         Arc::clone(&deps.workspace_repo),
         Arc::clone(&deps.agent_run_repo),
@@ -469,11 +473,6 @@ fn start_agent_workspace_pr_poller(
     };
 
     if let Some(repair_repo) = deps.agent_workspace_repair_repo.as_ref() {
-        let recovery_state = deps
-            .app_handle
-            .as_ref()
-            .and_then(|app_handle| app_handle.try_state::<AppState>())
-            .map(|state| Arc::new(state.inner().clone()));
         registry.start_agent_workspace_polling_with_repair_repo_and_recovery_state(
             conversation_id,
             pr_number,
@@ -483,7 +482,7 @@ fn start_agent_workspace_pr_poller(
             Arc::clone(&deps.agent_run_repo),
             Arc::clone(repair_repo),
             Arc::clone(chat_service),
-            recovery_state,
+            deps.durable_recovery_state.as_ref().map(Arc::clone),
         );
     }
 }
@@ -591,7 +590,7 @@ async fn reconcile_clickup_ticket_for_workspace_pr(
                 link_id,
                 "Linked ClickUp task to RalphX conversation from Git evidence"
             );
-            emit_clickup_link_changed(deps.app_handle.as_ref(), project, workspace, &task_id);
+            emit_clickup_link_changed(deps.events.as_ref(), project, workspace, &task_id);
         }
         Ok(ClickUpPrAssociationOutcome::Ambiguous { task_ids }) => tracing::warn!(
             conversation_id = workspace.conversation_id.as_str(),
@@ -621,14 +620,11 @@ async fn reconcile_clickup_ticket_for_workspace_pr(
 }
 
 fn emit_clickup_link_changed(
-    app_handle: Option<&AppHandle>,
+    events: &dyn EventSink,
     project: &Project,
     workspace: &AgentConversationWorkspace,
     task_id: &str,
 ) {
-    let Some(handle) = app_handle else {
-        return;
-    };
     let event = TicketingCacheInvalidatedEvent {
         provider: "clickup".to_string(),
         ticket_id: Some(task_id.to_string()),
@@ -638,8 +634,8 @@ fn emit_clickup_link_changed(
         reason: "git_conversation_linked".to_string(),
         invalidated_at: chrono::Utc::now().to_rfc3339(),
     };
-    let _ = handle.emit(TICKETING_CACHE_INVALIDATED_EVENT, event);
-    emit_workspace_changed(Some(handle), &workspace.conversation_id);
+    let _ = ralphx_events::emit_serialized(events, TICKETING_CACHE_INVALIDATED_EVENT, &event);
+    emit_workspace_changed(events, &workspace.conversation_id);
 }
 
 fn publication_status_for_pr_status(status: &PrStatus) -> &'static str {
@@ -794,13 +790,12 @@ async fn append_external_pr_reconciliation_event(
         .await
 }
 
-fn emit_workspace_changed(app_handle: Option<&AppHandle>, conversation_id: &ChatConversationId) {
-    if let Some(handle) = app_handle {
-        let _ = handle.emit(
-            "agent:workspace_changed",
-            serde_json::json!({ "conversation_id": conversation_id.as_str() }),
-        );
-    }
+fn emit_workspace_changed(events: &dyn EventSink, conversation_id: &ChatConversationId) {
+    let _ = ralphx_events::emit_serialized(
+        events,
+        "agent:workspace_changed",
+        &serde_json::json!({ "conversation_id": conversation_id.as_str() }),
+    );
 }
 
 fn claim_reconciliation(conversation_id: &ChatConversationId, force: bool) -> bool {

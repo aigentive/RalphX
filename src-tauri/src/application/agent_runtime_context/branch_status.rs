@@ -5,10 +5,13 @@ use chrono::{DateTime, Duration, Utc};
 use dashmap::DashMap;
 
 use crate::application::chat_service::escape_attr;
+#[cfg(test)]
 use crate::application::git_service::git_cmd;
 use crate::domain::services::PrSyncState;
+#[cfg(test)]
 use crate::{AppError, AppResult};
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct DirtyCounts {
     pub staged: usize,
@@ -33,7 +36,6 @@ pub(crate) struct BranchStatusSnapshot {
 #[derive(Clone, Default)]
 pub(crate) struct BranchStatusCache {
     entries: Arc<DashMap<PathBuf, BranchStatusSnapshot>>,
-    refreshes_in_flight: Arc<DashMap<PathBuf, ()>>,
 }
 
 impl BranchStatusCache {
@@ -43,16 +45,6 @@ impl BranchStatusCache {
 
     pub(crate) fn record(&self, workspace_path: &Path, snapshot: BranchStatusSnapshot) {
         self.entries.insert(workspace_path.to_path_buf(), snapshot);
-    }
-
-    pub(crate) fn claim_refresh(&self, workspace_path: &Path) -> bool {
-        self.refreshes_in_flight
-            .insert(workspace_path.to_path_buf(), ())
-            .is_none()
-    }
-
-    pub(crate) fn finish_refresh(&self, workspace_path: &Path) {
-        self.refreshes_in_flight.remove(workspace_path);
     }
 
     pub(crate) fn observe_pr_sync(
@@ -103,6 +95,7 @@ impl BranchStatusCache {
         self.record(workspace_path, snapshot);
     }
 
+    #[cfg(test)]
     pub(crate) async fn refresh_local(
         &self,
         workspace_path: &Path,
@@ -172,6 +165,7 @@ impl BranchStatusCache {
     }
 }
 
+#[cfg(test)]
 async fn local_base_counts(workspace_path: &Path, base_ref: &str) -> AppResult<(u32, u32)> {
     let range = format!("{base_ref}...HEAD");
     let output = git_cmd::run(
@@ -201,6 +195,7 @@ async fn local_base_counts(workspace_path: &Path, base_ref: &str) -> AppResult<(
     Ok((behind, ahead))
 }
 
+#[cfg(test)]
 fn relation_for_counts(behind: u32, ahead: u32) -> &'static str {
     match (behind, ahead) {
         (0, 0) => "even",
@@ -210,6 +205,7 @@ fn relation_for_counts(behind: u32, ahead: u32) -> &'static str {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn parse_porcelain_counts(output: &str) -> DirtyCounts {
     output
         .lines()

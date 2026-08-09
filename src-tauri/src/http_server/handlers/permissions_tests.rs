@@ -42,6 +42,7 @@ fn make_test_state() -> HttpServerState {
         app_state,
         execution_state,
         delegation_service: Default::default(),
+        external_mcp_supervisor: None,
     }
 }
 
@@ -56,6 +57,7 @@ fn make_test_state_with_event_sink() -> (HttpServerState, RecordingEventSink) {
             app_state,
             execution_state,
             delegation_service: Default::default(),
+            external_mcp_supervisor: None,
         },
         event_sink,
     )

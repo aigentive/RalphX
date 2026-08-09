@@ -327,13 +327,6 @@ pub(crate) async fn create_followup_agent_conversation_for_request(
         return Ok(response);
     }
 
-    let app_handle = state.app_state.app_handle.clone().ok_or_else(|| {
-        json_error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Agent conversation follow-up creation requires an initialized app handle",
-        )
-    })?;
-
     let parent_workspace = state
         .app_state
         .agent_conversation_workspace_repo
@@ -377,7 +370,6 @@ pub(crate) async fn create_followup_agent_conversation_for_request(
         },
         &state.app_state,
         &state.execution_state,
-        app_handle,
     )
     .await
     .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error))?;

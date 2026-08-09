@@ -1,5 +1,6 @@
 use super::*;
 use crate::domain::state_machine::transition_handler::set_trigger_origin;
+use ralphx_events::emit_serialized;
 
 /// Pause execution (stops picking up new tasks and transitions running tasks to Paused)
 /// This transitions all agent-active tasks to Paused status via TransitionHandler.
@@ -50,7 +51,7 @@ pub async fn pause_execution(
 
     // Build transition service for proper state machine transitions
     let transition_service =
-        app_state.build_transition_service_with_execution_state(Arc::clone(&execution_state));
+        app_state.build_transition_service_for_runtime(Arc::clone(&execution_state), None);
 
     // Find all tasks in agent-active states (scoped to project if specified)
     let projects_to_process = if let Some(ref pid) = effective_project_id {
@@ -111,20 +112,19 @@ pub async fn pause_execution(
 
     // Emit status_changed event for real-time UI update with projectId
     // This reflects the final state after all tasks have been paused
-    if let Some(ref handle) = app_state.app_handle {
-        let _ = handle.emit(
-            "execution:status_changed",
-            serde_json::json!({
-                "isPaused": execution_state.is_paused(),
-                "haltMode": "paused",
-                "runningCount": execution_state.running_count(),
-                "maxConcurrent": execution_state.max_concurrent(),
-                "reason": "paused",
-                "projectId": effective_project_id.as_ref().map(|p| p.as_str()),
-                "timestamp": chrono::Utc::now().to_rfc3339(),
-            }),
-        );
-    }
+    let _ = emit_serialized(
+        app_state.events.as_ref(),
+        "execution:status_changed",
+        &serde_json::json!({
+            "isPaused": execution_state.is_paused(),
+            "haltMode": "paused",
+            "runningCount": execution_state.running_count(),
+            "maxConcurrent": execution_state.max_concurrent(),
+            "reason": "paused",
+            "projectId": effective_project_id.as_ref().map(|p| p.as_str()),
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+        }),
+    );
 
     // Get current status
     let status = get_execution_status(
@@ -182,7 +182,7 @@ pub async fn resume_execution(
 
     // Build transition service for proper state machine transitions
     let transition_service =
-        app_state.build_transition_service_with_execution_state(Arc::clone(&execution_state));
+        app_state.build_transition_service_for_runtime(Arc::clone(&execution_state), None);
 
     // Find all Paused tasks (scoped to project if specified) and restore them
     // Note: Stopped tasks are NOT restored - they require manual restart
@@ -296,26 +296,23 @@ pub async fn resume_execution(
     execution_state.resume();
 
     // Emit status_changed event for real-time UI update with projectId
-    if let Some(ref handle) = app_state.app_handle {
-        let _ = handle.emit(
-            "execution:status_changed",
-            serde_json::json!({
-                "isPaused": execution_state.is_paused(),
-                "haltMode": "running",
-                "runningCount": execution_state.running_count(),
-                "maxConcurrent": execution_state.max_concurrent(),
-                "reason": if previous_halt_mode == ExecutionHaltMode::Stopped { "started" } else { "resumed" },
-                "projectId": effective_project_id.as_ref().map(|p| p.as_str()),
-                "timestamp": chrono::Utc::now().to_rfc3339(),
-            }),
-        );
-    }
+    let _ = emit_serialized(
+        app_state.events.as_ref(),
+        "execution:status_changed",
+        &serde_json::json!({
+            "isPaused": execution_state.is_paused(),
+            "haltMode": "running",
+            "runningCount": execution_state.running_count(),
+            "maxConcurrent": execution_state.max_concurrent(),
+            "reason": if previous_halt_mode == ExecutionHaltMode::Stopped { "started" } else { "resumed" },
+            "projectId": effective_project_id.as_ref().map(|p| p.as_str()),
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+        }),
+    );
 
     // Trigger scheduler to pick up waiting Ready tasks
-    let scheduler = Arc::new(app_state.build_task_scheduler_for_runtime(
-        Arc::clone(&execution_state),
-        app_state.app_handle.clone(),
-    ));
+    let scheduler =
+        Arc::new(app_state.build_task_scheduler_for_runtime(Arc::clone(&execution_state), None));
     scheduler.set_self_ref(Arc::clone(&scheduler) as Arc<dyn TaskScheduler>);
     // Set active project scope before scheduling to prevent cross-project scheduling
     scheduler
@@ -323,7 +320,7 @@ pub async fn resume_execution(
         .await;
     scheduler.try_schedule_ready_tasks().await;
 
-    if app_state.app_handle.is_some() {
+    {
         let execution_state_arc = Arc::clone(execution_state.inner());
         if let Err(error) = resume_paused_workspace_queues_with_chat_service(
             effective_project_id.as_ref(),
@@ -506,7 +503,7 @@ pub async fn stop_execution(
 
     // Build transition service for proper state machine transitions
     let transition_service =
-        app_state.build_transition_service_with_execution_state(Arc::clone(&execution_state));
+        app_state.build_transition_service_for_runtime(Arc::clone(&execution_state), None);
 
     // Find all tasks in agent-active states (scoped to project if specified)
     let projects_to_process = if let Some(ref pid) = effective_project_id {
@@ -555,20 +552,19 @@ pub async fn stop_execution(
 
     // Emit status_changed event for real-time UI update with projectId
     // This reflects the final state after all tasks have been stopped
-    if let Some(ref handle) = app_state.app_handle {
-        let _ = handle.emit(
-            "execution:status_changed",
-            serde_json::json!({
-                "isPaused": execution_state.is_paused(),
-                "haltMode": "stopped",
-                "runningCount": execution_state.running_count(),
-                "maxConcurrent": execution_state.max_concurrent(),
-                "reason": "stopped",
-                "projectId": effective_project_id.as_ref().map(|p| p.as_str()),
-                "timestamp": chrono::Utc::now().to_rfc3339(),
-            }),
-        );
-    }
+    let _ = emit_serialized(
+        app_state.events.as_ref(),
+        "execution:status_changed",
+        &serde_json::json!({
+            "isPaused": execution_state.is_paused(),
+            "haltMode": "stopped",
+            "runningCount": execution_state.running_count(),
+            "maxConcurrent": execution_state.max_concurrent(),
+            "reason": "stopped",
+            "projectId": effective_project_id.as_ref().map(|p| p.as_str()),
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+        }),
+    );
 
     // Get current status
     let status = get_execution_status(

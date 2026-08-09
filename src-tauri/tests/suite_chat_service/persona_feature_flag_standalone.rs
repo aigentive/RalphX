@@ -36,10 +36,7 @@ async fn standalone_chat_fresh_send_accepts_codex_override() {
         .expect("build standalone Codex app");
     let service = app
         .state::<AppState>()
-        .build_chat_service_for_runtime::<tauri::test::MockRuntime>(
-            None,
-            Some(app.handle().clone()),
-        )
+        .build_chat_service()
         .with_persona_feature_enabled(true)
         .with_working_directory(temp.path());
     let context_id = conversation.id.as_str();
@@ -115,10 +112,7 @@ async fn standalone_chat_fresh_send_accepts_claude_override() {
         .expect("build standalone Claude app");
     let service = app
         .state::<AppState>()
-        .build_chat_service_for_runtime::<tauri::test::MockRuntime>(
-            None,
-            Some(app.handle().clone()),
-        )
+        .build_chat_service()
         .with_persona_feature_enabled(true)
         .with_working_directory(temp.path());
     let context_id = conversation.id.as_str();
@@ -196,6 +190,8 @@ async fn standalone_chat_queue_accepts_codex_override() {
     let mut initial_state = AppState::new_test();
     initial_state.chat_conversation_repo = conversation_repo;
     initial_state.app_paths = AppPaths::new(temp.path().join("app-data"), None);
+    let events = RecordingEventSink::new();
+    initial_state.events = Arc::new(events.clone());
     let context_id = conversation.id.as_str();
     create_workspace(initial_state.app_paths.app_data_dir(), &context_id)
         .expect("create queued standalone private workspace");
@@ -232,14 +228,11 @@ async fn standalone_chat_queue_accepts_codex_override() {
         .manage(initial_state)
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("build queued standalone Codex app");
-    let errors = Arc::new(Mutex::new(Vec::new()));
-    let captured = Arc::clone(&errors);
-    let _listener = app.listen("agent:error", move |event| {
-        captured.lock().unwrap().push(event.payload().to_string());
-    });
-
+    let state = app.state::<AppState>();
     let (processed, last_run_id) = process_queued_messages_for_test(
-        app.handle().clone(),
+        state.inner(),
+        None,
+        Arc::clone(&state.events),
         ChatContextType::Standalone,
         AgentHarnessKind::Codex,
         &context_id,
@@ -251,7 +244,7 @@ async fn standalone_chat_queue_accepts_codex_override() {
 
     assert_eq!(processed, 1);
     let last_run_id = last_run_id.expect("queued standalone Codex run should start");
-    assert!(errors.lock().unwrap().is_empty());
+    assert!(recorded_event_payloads(&events, "agent:error").is_empty());
     let runs = app
         .state::<AppState>()
         .agent_run_repo
@@ -303,6 +296,8 @@ async fn standalone_chat_queue_accepts_claude_override() {
     let mut initial_state = AppState::new_test();
     initial_state.chat_conversation_repo = conversation_repo;
     initial_state.app_paths = AppPaths::new(temp.path().join("app-data"), None);
+    let events = RecordingEventSink::new();
+    initial_state.events = Arc::new(events.clone());
     let context_id = conversation.id.as_str();
     create_workspace(initial_state.app_paths.app_data_dir(), &context_id)
         .expect("create queued standalone private workspace");
@@ -339,14 +334,11 @@ async fn standalone_chat_queue_accepts_claude_override() {
         .manage(initial_state)
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("build queued standalone Claude app");
-    let errors = Arc::new(Mutex::new(Vec::new()));
-    let captured = Arc::clone(&errors);
-    let _listener = app.listen("agent:error", move |event| {
-        captured.lock().unwrap().push(event.payload().to_string());
-    });
-
+    let state = app.state::<AppState>();
     let (processed, last_run_id) = process_queued_messages_for_test(
-        app.handle().clone(),
+        state.inner(),
+        None,
+        Arc::clone(&state.events),
         ChatContextType::Standalone,
         AgentHarnessKind::Claude,
         &context_id,
@@ -358,7 +350,7 @@ async fn standalone_chat_queue_accepts_claude_override() {
 
     assert_eq!(processed, 1);
     let last_run_id = last_run_id.expect("queued standalone Claude run should start");
-    assert!(errors.lock().unwrap().is_empty());
+    assert!(recorded_event_payloads(&events, "agent:error").is_empty());
     let runs = app
         .state::<AppState>()
         .agent_run_repo
@@ -399,6 +391,8 @@ async fn standalone_chat_queue_rejects_caller_context_downgrade_without_spawning
         .expect("create persisted standalone conversation");
     let mut initial_state = AppState::new_test();
     initial_state.chat_conversation_repo = conversation_repo;
+    let events = RecordingEventSink::new();
+    initial_state.events = Arc::new(events.clone());
     let context_id = conversation.context_id.as_str();
     initial_state
         .message_queue
@@ -426,14 +420,11 @@ async fn standalone_chat_queue_rejects_caller_context_downgrade_without_spawning
         .manage(initial_state)
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("build mismatched queue app");
-    let errors = Arc::new(Mutex::new(Vec::new()));
-    let captured = Arc::clone(&errors);
-    let _listener = app.listen("agent:error", move |event| {
-        captured.lock().unwrap().push(event.payload().to_string());
-    });
-
+    let state = app.state::<AppState>();
     let (processed, last_run_id) = process_queued_messages_for_test(
-        app.handle().clone(),
+        state.inner(),
+        None,
+        Arc::clone(&state.events),
         ChatContextType::Project,
         AgentHarnessKind::Claude,
         context_id,
@@ -449,11 +440,9 @@ async fn standalone_chat_queue_rejects_caller_context_downgrade_without_spawning
         "mismatched identity must not start a run"
     );
     assert!(
-        errors
-            .lock()
-            .unwrap()
+        recorded_event_payloads(&events, "agent:error")
             .iter()
-            .any(|error| error.contains("context type mismatch")),
+            .any(|error| error.to_string().contains("context type mismatch")),
         "identity mismatch must surface as an agent error",
     );
     assert!(
@@ -491,8 +480,11 @@ async fn standalone_chat_queue_missing_authoritative_conversation_fails_without_
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("build orphaned queue app");
 
+    let state = app.state::<AppState>();
     let (processed, last_run_id) = process_queued_messages_for_test(
-        app.handle().clone(),
+        state.inner(),
+        None,
+        Arc::clone(&state.events),
         ChatContextType::Standalone,
         AgentHarnessKind::Codex,
         &context_id,

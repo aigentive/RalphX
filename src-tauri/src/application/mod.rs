@@ -256,6 +256,8 @@ pub mod startup_pipeline_launch;
 #[cfg(test)]
 mod startup_pipeline_tests;
 pub mod startup_runtime_builders;
+#[cfg(test)]
+mod startup_runtime_builders_tests;
 pub mod startup_status;
 pub mod startup_transition_factory;
 pub mod supervisor_service;

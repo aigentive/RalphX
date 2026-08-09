@@ -32,10 +32,13 @@ pub async fn get_agent_workspace_pr_review_context(
                 load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
         }
     }
-    let workspace_response =
-        agent_workspace_response_for_state(state.app_state.as_ref(), workspace.clone())
-            .await
-            .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error, None))?;
+    let workspace_response = agent_workspace_response_with_pr_supervision_for_state(
+        state.app_state.as_ref(),
+        &state.execution_state,
+        workspace.clone(),
+    )
+    .await
+    .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error, None))?;
     let events =
         load_agent_workspace_publication_events(state.app_state.as_ref(), &conversation_id).await?;
     let verified_remote_head_sha = health

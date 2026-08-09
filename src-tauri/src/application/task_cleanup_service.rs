@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use ralphx_events::{emit_serialized, EventSink};
 use serde::{Deserialize, Serialize};
-use tauri::AppHandle;
 
 use crate::application::agent_conversation_workspace::expand_worktree_parent_public;
 use crate::application::chat_service::AgentRunCompletedPayload;
@@ -113,7 +113,7 @@ pub struct TaskCleanupService {
     project_repo: Arc<dyn ProjectRepository>,
     running_agent_registry: Arc<dyn RunningAgentRegistry>,
     interactive_process_registry: Option<Arc<InteractiveProcessRegistry>>,
-    app_handle: Option<AppHandle>,
+    events: Arc<dyn EventSink>,
     /// Optional task stopper for Graceful mode. When set, Graceful stop will
     /// transition tasks to Stopped via the state machine (triggering on_exit
     /// side effects). When None, Graceful falls back to DirectStop behavior.
@@ -129,14 +129,14 @@ impl TaskCleanupService {
         task_repo: Arc<dyn TaskRepository>,
         project_repo: Arc<dyn ProjectRepository>,
         running_agent_registry: Arc<dyn RunningAgentRegistry>,
-        app_handle: Option<AppHandle>,
+        events: Arc<dyn EventSink>,
     ) -> Self {
         Self {
             task_repo,
             project_repo,
             running_agent_registry,
             interactive_process_registry: None,
-            app_handle,
+            events,
             task_stopper: None,
         }
     }
@@ -449,29 +449,28 @@ impl TaskCleanupService {
         let registry_key = RunningAgentKey::new(matched_context_type, session_id);
         match self.running_agent_registry.stop(&registry_key).await {
             Ok(Some(info)) => {
-                if let Some(app) = self.app_handle.as_ref() {
-                    use tauri::Emitter;
-                    let _ = app.emit(
-                        "agent:stopped",
-                        serde_json::json!({
-                            "conversation_id": info.conversation_id,
-                            "agent_run_id": info.agent_run_id,
-                            "context_type": matched_context_type,
-                            "context_id": session_id,
-                        }),
-                    );
-                    let _ = app.emit(
-                        "agent:run_completed",
-                        AgentRunCompletedPayload::with_provider_session(
-                            info.conversation_id,
-                            matched_context_type.to_string(),
-                            session_id.to_string(),
-                            None,
-                            None,
-                            None,
-                        ),
-                    );
-                }
+                let _ = emit_serialized(
+                    self.events.as_ref(),
+                    "agent:stopped",
+                    &serde_json::json!({
+                        "conversation_id": info.conversation_id,
+                        "agent_run_id": info.agent_run_id,
+                        "context_type": matched_context_type,
+                        "context_id": session_id,
+                    }),
+                );
+                let _ = emit_serialized(
+                    self.events.as_ref(),
+                    "agent:run_completed",
+                    &AgentRunCompletedPayload::with_provider_session(
+                        info.conversation_id,
+                        matched_context_type.to_string(),
+                        session_id.to_string(),
+                        None,
+                        None,
+                        None,
+                    ),
+                );
             }
             Ok(None) => {
                 tracing::debug!(
@@ -809,16 +808,14 @@ impl TaskCleanupService {
 
     /// Emit a task:archived event for real-time UI updates.
     fn emit_task_archived(&self, task_id: &str, project_id: &str) {
-        if let Some(ref app) = self.app_handle {
-            use tauri::Emitter;
-            let _ = app.emit(
-                "task:archived",
-                serde_json::json!({
-                    "taskId": task_id,
-                    "projectId": project_id,
-                }),
-            );
-        }
+        let _ = emit_serialized(
+            self.events.as_ref(),
+            "task:archived",
+            &serde_json::json!({
+                "taskId": task_id,
+                "projectId": project_id,
+            }),
+        );
     }
 }
 

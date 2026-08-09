@@ -918,7 +918,7 @@ pub async fn start_ideation_http(
     let mut agent_spawn_blocked_reason: Option<String> = None;
     let mut pending_initial_prompt: Option<String> = None;
     if let Some(ref prompt_str) = effective_prompt {
-        let chat_service = build_chat_service(&state.app_state, &state.execution_state);
+        let chat_service = build_chat_service(&state);
 
         match chat_service
             .send_message(

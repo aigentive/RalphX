@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use ralphx_domain::repositories::automation_run_repository::AutomationJudgeTransitionGuard;
+use ralphx_events::{emit_serialized, EventSink};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
@@ -58,6 +59,17 @@ pub struct NoopAutomationEventEmitter;
 
 impl AutomationEventEmitter for NoopAutomationEventEmitter {
     fn emit(&self, _event: AutomationEvent) {}
+}
+
+#[derive(Clone)]
+pub struct SinkAutomationEventEmitter {
+    events: Arc<dyn EventSink>,
+}
+
+impl SinkAutomationEventEmitter {
+    pub fn new(events: Arc<dyn EventSink>) -> Self {
+        Self { events }
+    }
 }
 
 #[derive(Clone)]
@@ -136,6 +148,58 @@ impl AutomationEventEmitter for TauriAutomationEventEmitter {
                     project_id_camel: project_id,
                 };
                 let _ = self.app_handle.emit(AUTOMATION_DELETED_EVENT, payload);
+            }
+        }
+    }
+}
+
+impl AutomationEventEmitter for SinkAutomationEventEmitter {
+    fn emit(&self, event: AutomationEvent) {
+        match event {
+            AutomationEvent::AutomationUpdated { automation_id } => {
+                let id = automation_id.as_str().to_string();
+                let _ = emit_serialized(
+                    self.events.as_ref(),
+                    AUTOMATION_UPDATED_EVENT,
+                    &AutomationUpdatedPayload {
+                        automation_id: id.clone(),
+                        automation_id_camel: id,
+                    },
+                );
+            }
+            AutomationEvent::AutomationRunUpdated {
+                automation_id,
+                run_id,
+            } => {
+                let automation_id = automation_id.as_str().to_string();
+                let run_id = run_id.as_str().to_string();
+                let _ = emit_serialized(
+                    self.events.as_ref(),
+                    AUTOMATION_RUN_UPDATED_EVENT,
+                    &AutomationRunUpdatedPayload {
+                        automation_id: automation_id.clone(),
+                        automation_id_camel: automation_id,
+                        run_id: run_id.clone(),
+                        run_id_camel: run_id,
+                    },
+                );
+            }
+            AutomationEvent::AutomationDeleted {
+                automation_id,
+                project_id,
+            } => {
+                let automation_id = automation_id.as_str().to_string();
+                let project_id = project_id.as_str().to_string();
+                let _ = emit_serialized(
+                    self.events.as_ref(),
+                    AUTOMATION_DELETED_EVENT,
+                    &AutomationDeletedPayload {
+                        automation_id: automation_id.clone(),
+                        automation_id_camel: automation_id,
+                        project_id: project_id.clone(),
+                        project_id_camel: project_id,
+                    },
+                );
             }
         }
     }
