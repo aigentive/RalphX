@@ -1575,10 +1575,7 @@ async fn verify_plan_retirement_after_settled_burst_does_not_requeue() {
         .expect("live IPR owner");
     assert_eq!(retired_owner.token, stream_token);
     let service = state
-        .build_chat_service_for_runtime(
-            Some(Arc::new(ExecutionState::new())),
-            Some(app.handle().clone()),
-        )
+        .build_chat_service_with_execution_state(Arc::new(ExecutionState::new()))
         .with_cli_path(cli_path)
         .with_plugin_dir(runtime_plugin_dir_for_gate1_persona_test())
         .with_working_directory(temp.path());

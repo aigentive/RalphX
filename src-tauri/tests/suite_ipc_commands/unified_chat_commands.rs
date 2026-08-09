@@ -1358,10 +1358,7 @@ async fn rx_native_team_send_replay_preallocates_coordinator_run_binding() {
 
     let service = app
         .state::<AppState>()
-        .build_chat_service_for_runtime::<tauri::test::MockRuntime>(
-            None,
-            Some(app.handle().clone()),
-        )
+        .build_chat_service()
         .with_managed_team(Arc::clone(&app.state::<AppState>().managed_team))
         .with_cli_path(fake_cli.cli_path.clone())
         .with_working_directory(project_dir.path());
