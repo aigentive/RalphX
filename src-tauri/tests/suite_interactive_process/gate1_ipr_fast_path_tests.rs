@@ -13,7 +13,7 @@ use ralphx_events::RecordingEventSink;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
@@ -23,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 
 use ralphx_lib::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
 use ralphx_lib::application::chat_service::{
-    process_stream_background, ChatService, ChatServiceError, SendMessageOptions,
+    process_stream_background_for_test, ChatService, ChatServiceError, SendMessageOptions,
     StreamingStateCache,
 };
 use ralphx_lib::application::interactive_process_registry::{
@@ -1527,14 +1527,7 @@ async fn verify_plan_retirement_after_settled_burst_does_not_requeue() {
         .manage(AppState::new_test())
         .build(mock_context(noop_assets()))
         .expect("build mock app");
-    let queued_events = Arc::new(Mutex::new(Vec::new()));
-    let captured_events = Arc::clone(&queued_events);
-    let _listener = app.listen("agent:message_queued", move |event| {
-        captured_events
-            .lock()
-            .expect("queued event lock")
-            .push(event.payload().to_string());
-    });
+    let recording_sink = Arc::new(RecordingEventSink::new());
     let state = app.state::<AppState>();
     let context_id = "project-gate1-verify-plan-settled-burst";
     let (project_dir, conversation_id, retired_run_id, interactive_key, mut observer_child) =
@@ -1603,16 +1596,15 @@ async fn verify_plan_retirement_after_settled_burst_does_not_requeue() {
     let stream_conversation_id = conversation_id;
     let stream_interactive_key = interactive_key.clone();
     let stream_run_id = retired_run_id.clone();
-    let stream_app_handle = app.handle().clone();
+    let stream_events = Arc::clone(&recording_sink);
     let mut stream_task = tokio::spawn(async move {
-        process_stream_background::<tauri::test::MockRuntime>(
+        process_stream_background_for_test(
             child,
             ralphx_lib::domain::agents::AgentHarnessKind::Claude,
             ChatContextType::Project,
             context_id,
             &stream_conversation_id,
-            None,
-            Some(stream_app_handle),
+            stream_events,
             None,
             None,
             None,
@@ -1724,7 +1716,10 @@ async fn verify_plan_retirement_after_settled_burst_does_not_requeue() {
         "settled stdin turns must not be retained in the in-memory queue"
     );
     assert!(
-        queued_events.lock().expect("queued event lock").is_empty(),
+        recording_sink
+            .events()
+            .iter()
+            .all(|e| e.event != "agent:message_queued"),
         "Verify Plan retirement must not publish phantom queued-message events"
     );
 
