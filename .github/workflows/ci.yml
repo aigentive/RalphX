@@ -34,14 +34,14 @@ jobs:
       run_visual: ${{ steps.decide.outputs.run_visual }}
       run_tauri_alignment: ${{ steps.decide.outputs.run_tauri_alignment }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Detect changed paths
         id: filter
         if: github.event_name != 'merge_group'
-        uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         with:
           predicate-quantifier: every
           filters: |
@@ -159,7 +159,7 @@ jobs:
     if: needs.changes.outputs.run_automation == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Validate workflow and automation YAML
         shell: bash
@@ -242,10 +242,10 @@ jobs:
     if: needs.changes.outputs.run_tauri_alignment == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '20'
 
@@ -262,7 +262,7 @@ jobs:
       CARGO_PROFILE_TEST_DEBUG: "1"
       RALPHX_TEST_MODE: "1"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Linux system dependencies
         uses: ./.github/actions/linux-deps
@@ -316,7 +316,7 @@ jobs:
       CARGO_PROFILE_TEST_DEBUG: "1"
       RALPHX_TEST_MODE: "1"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Linux system dependencies
         uses: ./.github/actions/linux-deps
@@ -370,7 +370,7 @@ jobs:
     env:
       RALPHX_TEST_MODE: "1"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Linux system dependencies
         uses: ./.github/actions/linux-deps
@@ -417,7 +417,7 @@ jobs:
     env:
       RALPHX_TEST_MODE: "1"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Linux system dependencies
         uses: ./.github/actions/linux-deps
@@ -452,7 +452,7 @@ jobs:
     env:
       RALPHX_TEST_MODE: "1"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Linux system dependencies
         uses: ./.github/actions/linux-deps
@@ -486,7 +486,7 @@ jobs:
     env:
       RALPHX_TEST_MODE: "1"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Linux system dependencies
         uses: ./.github/actions/linux-deps
@@ -515,7 +515,7 @@ jobs:
       CARGO_PROFILE_TEST_DEBUG: "1"
       RALPHX_TEST_MODE: "1"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Linux system dependencies
         uses: ./.github/actions/linux-deps
@@ -565,7 +565,7 @@ jobs:
     env:
       RALPHX_TEST_MODE: "1"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Linux system dependencies
         uses: ./.github/actions/linux-deps
@@ -632,10 +632,10 @@ jobs:
     env:
       RALPHX_TEST_MODE: "1"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '20'
           cache: 'npm'
@@ -723,10 +723,10 @@ jobs:
             package_dir: plugins/app/ralphx-mcp-server
             package_lock: plugins/app/ralphx-mcp-server/package-lock.json
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '20'
           cache: 'npm'
@@ -798,10 +798,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '20'
           cache: 'npm'
@@ -830,10 +830,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '20'
           cache: 'npm'
@@ -854,10 +854,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '20'
           cache: 'npm'
@@ -878,10 +878,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '20'
           cache: 'npm'
@@ -952,10 +952,10 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 35
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '20'
           cache: 'npm'

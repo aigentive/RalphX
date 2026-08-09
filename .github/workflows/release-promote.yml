@@ -88,7 +88,7 @@ jobs:
       STABLE_NOTES_DIR: ${{ github.workspace }}/stable-notes
     steps:
       - name: Checkout release automation
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -142,7 +142,7 @@ jobs:
 
       - name: Setup Node.js
         if: ${{ inputs.operation == 'promote' && steps.baseline.outputs.combine == 'true' }}
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: "20"
 
