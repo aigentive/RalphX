@@ -752,6 +752,9 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
                 workspace.pr_supervision_summary = None;
                 workspace.pr_supervision_updated_at = Some(now);
             }
+            if pr_number.is_some() {
+                workspace.stale_base_detected_at = None;
+            }
             workspace.updated_at = now;
         }
         Ok(())
@@ -1100,6 +1103,9 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             workspace.pr_supervision_summary = None;
             workspace.pr_supervision_updated_at = Some(now);
         }
+        if workspace.publication_pr_number.is_some() {
+            workspace.stale_base_detected_at = None;
+        }
         workspace.updated_at = now;
         publication_events
             .entry(conversation_id.clone())
@@ -1147,6 +1153,9 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             workspace.pr_supervision_status = None;
             workspace.pr_supervision_summary = None;
             workspace.pr_supervision_updated_at = Some(now);
+        }
+        if workspace.publication_pr_number.is_some() {
+            workspace.stale_base_detected_at = None;
         }
         workspace.updated_at = now;
         publication_events

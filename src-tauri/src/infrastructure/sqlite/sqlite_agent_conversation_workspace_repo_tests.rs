@@ -4670,3 +4670,88 @@ async fn terminal_publication_update_clears_stale_pr_supervision_state() {
     assert!(updated.pr_supervision_status.is_none());
     assert!(updated.pr_supervision_summary.is_none());
 }
+
+#[tokio::test]
+async fn update_publication_clears_stale_base_detected_at_when_pr_number_is_set() {
+    let (_db, repo, conversation_id) = setup_repo();
+    let mut workspace = make_workspace(conversation_id.clone());
+    let detected_at = "2026-08-06T15:00:00+00:00"
+        .parse::<chrono::DateTime<chrono::Utc>>()
+        .unwrap();
+    workspace.stale_base_detected_at = Some(detected_at);
+    repo.create_or_update(workspace).await.unwrap();
+
+    repo.update_publication(
+        &conversation_id,
+        Some(91),
+        Some("https://github.com/owner/repo/pull/91"),
+        Some("open"),
+        Some("pushed"),
+    )
+    .await
+    .unwrap();
+
+    let updated = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should exist");
+    assert_eq!(updated.publication_pr_number, Some(91));
+    assert_eq!(updated.stale_base_detected_at, None);
+}
+
+#[tokio::test]
+async fn update_publication_leaves_stale_base_detected_at_untouched_when_pr_number_is_none() {
+    let (_db, repo, conversation_id) = setup_repo();
+    let mut workspace = make_workspace(conversation_id.clone());
+    let detected_at = "2026-08-06T15:00:00+00:00"
+        .parse::<chrono::DateTime<chrono::Utc>>()
+        .unwrap();
+    workspace.stale_base_detected_at = Some(detected_at);
+    repo.create_or_update(workspace).await.unwrap();
+
+    repo.update_publication(&conversation_id, None, None, None, None)
+        .await
+        .unwrap();
+
+    let updated = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should exist");
+    assert_eq!(updated.publication_pr_number, None);
+    assert_eq!(updated.stale_base_detected_at, Some(detected_at));
+}
+
+#[tokio::test]
+async fn update_publication_with_events_clears_stale_base_detected_at_via_cas_path() {
+    let (_db, repo, conversation_id) = setup_repo();
+    let mut workspace = make_workspace(conversation_id.clone());
+    let detected_at = "2026-08-06T15:00:00+00:00"
+        .parse::<chrono::DateTime<chrono::Utc>>()
+        .unwrap();
+    workspace.stale_base_detected_at = Some(detected_at);
+    let saved = repo.create_or_update(workspace).await.unwrap();
+
+    let expected = crate::domain::repositories::AgentWorkspacePublicationGuard::from_workspace(&saved);
+    let publication = crate::domain::repositories::AgentWorkspacePublicationUpdate {
+        pr_number: Some(91),
+        pr_url: Some("https://github.com/owner/repo/pull/91".to_string()),
+        pr_status: Some("open".to_string()),
+        push_status: Some("pushed".to_string()),
+    };
+
+    let applied = repo
+        .update_publication_with_events(&conversation_id, &expected, publication, Vec::new())
+        .await
+        .unwrap();
+    assert!(applied);
+
+    let updated = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should exist");
+    assert_eq!(updated.publication_pr_number, Some(91));
+    assert_eq!(updated.stale_base_detected_at, None);
+}

@@ -1773,6 +1773,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                          pr_supervision_status = CASE WHEN ?7 THEN NULL ELSE pr_supervision_status END,
                          pr_supervision_summary = CASE WHEN ?7 THEN NULL ELSE pr_supervision_summary END,
                          pr_supervision_updated_at = CASE WHEN ?7 THEN ?6 ELSE pr_supervision_updated_at END,
+                         stale_base_detected_at = CASE WHEN ?2 IS NOT NULL THEN NULL ELSE stale_base_detected_at END,
                          updated_at = ?6
                      WHERE conversation_id = ?1",
                     rusqlite::params![
@@ -2299,6 +2300,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                          pr_supervision_status = CASE WHEN ?10 THEN NULL ELSE pr_supervision_status END,
                          pr_supervision_summary = CASE WHEN ?10 THEN NULL ELSE pr_supervision_summary END,
                          pr_supervision_updated_at = CASE WHEN ?10 THEN ?11 ELSE pr_supervision_updated_at END,
+                         stale_base_detected_at = CASE WHEN ?4 IS NOT NULL THEN NULL ELSE stale_base_detected_at END,
                          updated_at = ?11
                      WHERE conversation_id = ?1
                        AND publication_metadata_attempt_id = ?2
@@ -2405,6 +2407,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                      pr_supervision_status = CASE WHEN ?6 THEN NULL ELSE pr_supervision_status END,
                      pr_supervision_summary = CASE WHEN ?6 THEN NULL ELSE pr_supervision_summary END,
                      pr_supervision_updated_at = CASE WHEN ?6 THEN ?7 ELSE pr_supervision_updated_at END,
+                     stale_base_detected_at = CASE WHEN ?2 IS NOT NULL THEN NULL ELSE stale_base_detected_at END,
                      updated_at = ?7
                  WHERE conversation_id = ?1
                    AND publication_pr_number IS ?8
