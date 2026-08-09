@@ -1,3 +1,4 @@
+use chrono::{Duration, Utc};
 use rusqlite::Connection;
 
 use ralphx_lib::commands::metrics_commands::compute_project_trends;
@@ -58,17 +59,36 @@ fn weekly_delivery_throughput_dedupes_task_pipeline_and_direct_workspace_output(
     let conn = Connection::open_in_memory().unwrap();
     create_schema(&conn);
 
+    // Anchor fixture timestamps to `now` (rather than hardcoded calendar dates) so they
+    // stay inside the query's rolling 77-day window regardless of when the test runs.
+    let now = Utc::now();
+    let ready_at = (now - Duration::days(10))
+        .format("%Y-%m-%dT09:00:00+00:00")
+        .to_string();
+    let merged_at = (now - Duration::days(8))
+        .format("%Y-%m-%dT09:00:00+00:00")
+        .to_string();
+    let pr_only_merged_at = (now - Duration::days(8))
+        .format("%Y-%m-%dT11:00:00+00:00")
+        .to_string();
+    let workspace_created_at = (now - Duration::days(9))
+        .format("%Y-%m-%dT09:00:00+00:00")
+        .to_string();
+    let workspace_published_at = (now - Duration::days(9))
+        .format("%Y-%m-%dT10:00:00+00:00")
+        .to_string();
+
     conn.execute(
         "INSERT INTO tasks (id, project_id, internal_status, created_at, updated_at)
-         VALUES ('task-1', 'proj-1', 'merged', '2026-05-18T09:00:00+00:00', '2026-05-20T09:00:00+00:00')",
-        [],
+         VALUES ('task-1', 'proj-1', 'merged', ?1, ?2)",
+        rusqlite::params![ready_at, merged_at],
     )
     .unwrap();
     conn.execute(
         "INSERT INTO task_state_history (id, task_id, to_status, created_at)
-         VALUES ('hist-ready', 'task-1', 'ready', '2026-05-18T09:00:00+00:00'),
-                ('hist-merged', 'task-1', 'merged', '2026-05-20T09:00:00+00:00')",
-        [],
+         VALUES ('hist-ready', 'task-1', 'ready', ?1),
+                ('hist-merged', 'task-1', 'merged', ?2)",
+        rusqlite::params![ready_at, merged_at],
     )
     .unwrap();
     conn.execute(
@@ -76,9 +96,9 @@ fn weekly_delivery_throughput_dedupes_task_pipeline_and_direct_workspace_output(
             id, project_id, merge_task_id, pr_number, pr_status, merged_at, last_polled_at
          )
          VALUES
-            ('pb-1', 'proj-1', 'task-1', 10, 'merged', '2026-05-20T09:00:00+00:00', '2026-05-20T09:00:00+00:00'),
-            ('pb-pr-only', 'proj-1', NULL, 12, 'merged', '2026-05-20T11:00:00+00:00', '2026-05-20T11:00:00+00:00')",
-        [],
+            ('pb-1', 'proj-1', 'task-1', 10, 'merged', ?1, ?1),
+            ('pb-pr-only', 'proj-1', NULL, 12, 'merged', ?2, ?2)",
+        rusqlite::params![merged_at, pr_only_merged_at],
     )
     .unwrap();
     conn.execute(
@@ -87,17 +107,17 @@ fn weekly_delivery_throughput_dedupes_task_pipeline_and_direct_workspace_output(
             publication_pr_status, created_at, updated_at
          )
          VALUES
-            ('direct-workspace', 'proj-1', NULL, 11, 'open', '2026-05-19T09:00:00+00:00', '2026-05-19T10:00:00+00:00'),
-            ('execution-owned', 'proj-1', 'pb-1', 10, 'merged', '2026-05-19T09:00:00+00:00', '2026-05-20T09:00:00+00:00')",
-        [],
+            ('direct-workspace', 'proj-1', NULL, 11, 'open', ?1, ?2),
+            ('execution-owned', 'proj-1', 'pb-1', 10, 'merged', ?1, ?3)",
+        rusqlite::params![workspace_created_at, workspace_published_at, merged_at],
     )
     .unwrap();
     conn.execute(
         "INSERT INTO agent_conversation_workspace_publication_events (
             id, conversation_id, step, status, created_at
          )
-         VALUES ('direct-published', 'direct-workspace', 'published', 'succeeded', '2026-05-19T10:00:00+00:00')",
-        [],
+         VALUES ('direct-published', 'direct-workspace', 'published', 'succeeded', ?1)",
+        rusqlite::params![workspace_published_at],
     )
     .unwrap();
 
