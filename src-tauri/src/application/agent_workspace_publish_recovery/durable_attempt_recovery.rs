@@ -491,14 +491,27 @@ async fn reconcile_agent_workspace_repair_attempt(
             retry_safe_ready_agent_workspace_repair_publish(state, current).await
         }
         AgentWorkspaceRepairPhase::Blocked => {
-            match reconcile_blocked_agent_workspace_repair_pr_handoff(state, &current).await? {
-                BlockedRepairPrHandoffReconciliation::Recovered => {
+            // A failed PR-handoff reconciliation read (gh outage, expired auth, unreadable
+            // workspace) must not abort the recovery sweep for other workspaces. Declining
+            // here performs no recovery write, so the next sweep re-evaluates the same
+            // evidence from scratch.
+            match reconcile_blocked_agent_workspace_repair_pr_handoff(state, &current).await {
+                Ok(BlockedRepairPrHandoffReconciliation::Recovered) => {
                     return Ok(DurableRepairRecoveryOutcome::Continued);
                 }
-                BlockedRepairPrHandoffReconciliation::Stale => {
+                Ok(BlockedRepairPrHandoffReconciliation::Stale) => {
                     return Ok(DurableRepairRecoveryOutcome::Stale);
                 }
-                BlockedRepairPrHandoffReconciliation::NotRecoverable => {}
+                Ok(BlockedRepairPrHandoffReconciliation::NotRecoverable) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        conversation_id = current.conversation_id.as_str(),
+                        attempt_id = current.id.as_str(),
+                        %error,
+                        "Blocked PR-handoff reconciliation could not be evaluated; leaving the attempt unsettled"
+                    );
+                    return Ok(DurableRepairRecoveryOutcome::Noop);
+                }
             }
             release_repair_lease_if_settled_boundary(state, &current).await?;
             retry_safe_blocked_agent_workspace_repair(state, current).await

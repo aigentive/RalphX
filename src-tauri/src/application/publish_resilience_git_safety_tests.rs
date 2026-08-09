@@ -2067,6 +2067,125 @@ async fn blocked_existing_pr_preserve_handoff_returns_stale_for_stale_attempt_au
 }
 
 #[tokio::test]
+async fn recovery_sweep_survives_a_failed_blocked_pr_handoff_read() {
+    let fixture = setup_blocked_existing_pr_preserve_handoff().await;
+    fixture.github.state().check_pr_sync_state_result = Some(Err(AppError::Infrastructure(
+        "simulated gh network failure".to_string(),
+    )));
+
+    let update_key = format!(
+        "agent_workspace_repair:{}:{}:{}",
+        fixture.blocked.id,
+        fixture.blocked.generation,
+        AgentWorkspaceRepairEffectKind::UpdatePr
+    );
+    let events_before = fixture
+        .state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&fixture.workspace.conversation_id)
+        .await
+        .expect("read events before sweep");
+    let lease_before = fixture
+        .state
+        .branch_update_repo
+        .get_target_lease(&fixture.identity)
+        .await
+        .expect("read repair lease before sweep");
+
+    let recovered = recover_agent_workspace_repair_attempts_for_state(&fixture.state)
+        .await
+        .expect("recovery sweep must survive a failed gh read");
+    assert_eq!(
+        recovered, 0,
+        "a failing gh read must not be counted as a recovered attempt"
+    );
+
+    assert_eq!(
+        fixture
+            .state
+            .agent_workspace_repair_repo
+            .get_current_repair_attempt(&fixture.workspace.conversation_id)
+            .await
+            .expect("read blocked attempt after sweep"),
+        Some(fixture.blocked.clone()),
+        "failing reconciliation must not settle the current repair"
+    );
+    assert_eq!(
+        fixture
+            .state
+            .agent_workspace_repair_repo
+            .get_repair_effect_by_idempotency_key(&update_key)
+            .await
+            .expect("read update effect after sweep")
+            .expect("blocked handoff keeps its effect")
+            .status,
+        AgentWorkspaceRepairEffectStatus::InFlight,
+        "failing reconciliation must not observe the handoff effect"
+    );
+    assert_eq!(
+        fixture
+            .state
+            .branch_update_repo
+            .get_target_lease(&fixture.identity)
+            .await
+            .expect("read repair lease after sweep"),
+        lease_before,
+        "failing reconciliation must not mutate repair lease state"
+    );
+    assert_eq!(
+        fixture
+            .state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&fixture.workspace.conversation_id)
+            .await
+            .expect("read events after sweep"),
+        events_before,
+        "failing reconciliation must not append a recovery event"
+    );
+    assert_eq!(
+        fixture
+            .github
+            .state()
+            .push_branch_with_expected_remote_oid_lease_calls,
+        0,
+        "failing reconciliation must not touch Git"
+    );
+}
+
+#[tokio::test]
+async fn recovery_sweep_re_evaluates_blocked_attempt_on_next_pass_after_failed_read() {
+    let fixture = setup_blocked_existing_pr_preserve_handoff().await;
+    fixture.github.state().check_pr_sync_state_result = Some(Err(AppError::Infrastructure(
+        "simulated gh outage".to_string(),
+    )));
+
+    // First pass: gh fails → sweep returns Ok, attempt left unsettled.
+    recover_agent_workspace_repair_attempts_for_state(&fixture.state)
+        .await
+        .expect("first sweep pass must survive a failed gh read");
+
+    // The Err is consumed; subsequent calls return the default PrSyncState (head mismatch).
+    // Second pass: reconciler declines NotRecoverable → sweep still returns Ok.
+    let recovered = recover_agent_workspace_repair_attempts_for_state(&fixture.state)
+        .await
+        .expect("second sweep pass must re-evaluate the same attempt without error");
+    assert_eq!(
+        recovered, 0,
+        "a gh-declined attempt must not be counted as recovered on re-evaluation"
+    );
+    assert_eq!(
+        fixture
+            .state
+            .agent_workspace_repair_repo
+            .get_current_repair_attempt(&fixture.workspace.conversation_id)
+            .await
+            .expect("read blocked attempt after two sweep passes"),
+        Some(fixture.blocked.clone()),
+        "repeated sweep passes must not settle an attempt with mismatched pr evidence"
+    );
+}
+
+#[tokio::test]
 async fn busy_repair_push_returns_before_touching_the_workspace_git_path() {
     let fixture = setup_rewritten_workspace_push().await;
     let (state, continuing, effect) = state_with_in_flight_repair_push(&fixture).await;
