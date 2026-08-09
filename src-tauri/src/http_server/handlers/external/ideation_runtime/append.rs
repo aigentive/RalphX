@@ -73,7 +73,7 @@ pub async fn append_session_task_http(
     spawn_ready_task_scheduler_if_needed(
         &state.app_state,
         Arc::clone(&state.execution_state),
-        state.app_state.app_handle.as_ref().cloned(),
+        None,
         result.any_ready_tasks,
     );
 

@@ -1,13 +1,24 @@
+use std::sync::Arc;
+
 use serde::Serialize;
 
 use crate::application::chat_service::{
     decode_pending_initial_prompt, ChatService, SendMessageOptions, SendQueuePolicy,
+};
+use crate::application::plan_approval_notification_service::{
+    release_deferred_plan_approval_for_conversation_with_deps,
+    release_deferred_plan_approval_for_run_with_deps, PlanApprovalNotificationDeps,
+    PlanApprovalNotificationDisposition,
 };
 use crate::application::AppState;
 use crate::domain::entities::{
     AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus, AgentRun, AgentRunActionKind,
     AgentRunId, AgentRunStatus, ChatContextType, ChatConversationId, IdeationSession,
     IdeationSessionId,
+};
+use crate::domain::repositories::{
+    AgentConversationWorkspaceRepository, AgentRunRepository, ChatConversationRepository,
+    IdeationSessionRepository, IdeationSettingsRepository, QueuedMessageRepository,
 };
 use crate::domain::services::{
     check_verification_gate, EffectiveGatePolicy, QueueKey, QueuedMessage,
@@ -108,6 +119,98 @@ pub struct PlanVerificationCompletion {
     pub newly_recorded: bool,
 }
 
+/// Explicit dependencies for Plan verification request, status, and terminal completion flows.
+/// Runtime composition owns the shared admission maps so separate AppState graphs retain the
+/// same idempotency authority.
+#[derive(Clone)]
+pub(crate) struct PlanVerificationServiceDeps {
+    pub(crate) ideation_session_repo: Arc<dyn IdeationSessionRepository>,
+    pub(crate) agent_run_repo: Arc<dyn AgentRunRepository>,
+    pub(crate) agent_conversation_workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    pub(crate) chat_conversation_repo: Arc<dyn ChatConversationRepository>,
+    pub(crate) ideation_settings_repo: Arc<dyn IdeationSettingsRepository>,
+    pub(crate) message_queue: Arc<crate::domain::services::MessageQueue>,
+    pub(crate) queued_message_repo: Arc<dyn QueuedMessageRepository>,
+    pub(crate) plan_verification_locks: Arc<dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    pub(crate) plan_verification_admissions: Arc<dashmap::DashMap<String, String>>,
+}
+
+impl PlanVerificationServiceDeps {
+    pub(crate) fn from_app_state(state: &AppState) -> Self {
+        Self {
+            ideation_session_repo: Arc::clone(&state.ideation_session_repo),
+            agent_run_repo: Arc::clone(&state.agent_run_repo),
+            agent_conversation_workspace_repo: Arc::clone(&state.agent_conversation_workspace_repo),
+            chat_conversation_repo: Arc::clone(&state.chat_conversation_repo),
+            ideation_settings_repo: Arc::clone(&state.ideation_settings_repo),
+            message_queue: Arc::clone(&state.message_queue),
+            queued_message_repo: Arc::clone(&state.queued_message_repo),
+            plan_verification_locks: Arc::clone(&state.plan_verification_locks),
+            plan_verification_admissions: Arc::clone(&state.plan_verification_admissions),
+        }
+    }
+}
+
+/// Terminal-plan adapter injected into chat runtimes. It owns only typed verification and
+/// approval-notification capabilities, keeping finalizers independent of managed AppState.
+pub(crate) struct PlanVerificationCompletionAdapter {
+    verification: PlanVerificationServiceDeps,
+    approval_notifications: PlanApprovalNotificationDeps,
+}
+
+impl PlanVerificationCompletionAdapter {
+    pub(crate) fn from_app_state(state: &AppState) -> Self {
+        Self {
+            verification: PlanVerificationServiceDeps::from_app_state(state),
+            approval_notifications: PlanApprovalNotificationDeps::from_app_state(state),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn complete_verification(
+        &self,
+        session_id: &IdeationSessionId,
+        agent_run_id: &str,
+    ) -> AppResult<PlanVerificationCompletion> {
+        complete_plan_verification_with_deps(&self.verification, session_id, agent_run_id).await
+    }
+
+    pub(crate) async fn admit_automatic<C: ChatService + ?Sized>(
+        &self,
+        chat_service: &C,
+        conversation_id: &ChatConversationId,
+        run_id: &AgentRunId,
+        completion_applied: bool,
+    ) -> AppResult<AutomaticPlanVerificationDisposition> {
+        admit_automatic_plan_verification_with_deps(
+            &self.verification,
+            chat_service,
+            conversation_id,
+            run_id,
+            completion_applied,
+        )
+        .await
+    }
+
+    pub(crate) async fn release_for_conversation(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<PlanApprovalNotificationDisposition> {
+        release_deferred_plan_approval_for_conversation_with_deps(
+            &self.approval_notifications,
+            conversation_id,
+        )
+        .await
+    }
+
+    pub(crate) async fn release_for_run(
+        &self,
+        run_id: &AgentRunId,
+    ) -> AppResult<PlanApprovalNotificationDisposition> {
+        release_deferred_plan_approval_for_run_with_deps(&self.approval_notifications, run_id).await
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AutomaticPlanVerificationDisposition {
     NotEligible,
@@ -179,7 +282,7 @@ fn run_matches_action(
 }
 
 async fn resolve_conversation_target(
-    state: &AppState,
+    state: &PlanVerificationServiceDeps,
     session: &IdeationSession,
 ) -> AppResult<ConversationTarget> {
     if let Some(workspace) = state
@@ -215,7 +318,7 @@ async fn resolve_conversation_target(
 }
 
 async fn action_is_queued(
-    state: &AppState,
+    state: &PlanVerificationServiceDeps,
     key: &QueueKey,
     session: &IdeationSession,
     session_id: &str,
@@ -306,8 +409,8 @@ fn status_from_run(session: &IdeationSession, run: Option<AgentRun>) -> PlanVeri
     }
 }
 
-pub async fn get_plan_verification_status(
-    state: &AppState,
+pub(crate) async fn get_plan_verification_status_with_deps(
+    state: &PlanVerificationServiceDeps,
     session_id: &IdeationSessionId,
 ) -> AppResult<PlanVerificationStatus> {
     let session = state
@@ -369,8 +472,8 @@ pub async fn get_plan_verification_status(
     Ok(status_from_run(&session, latest))
 }
 
-pub async fn request_plan_verification<C: ChatService + ?Sized>(
-    state: &AppState,
+pub(crate) async fn request_plan_verification_with_deps<C: ChatService + ?Sized>(
+    state: &PlanVerificationServiceDeps,
     chat_service: &C,
     session_id: &IdeationSessionId,
     source: PlanVerificationRequestSource,
@@ -507,8 +610,8 @@ pub async fn request_plan_verification<C: ChatService + ?Sized>(
 }
 
 /// Admit completion-triggered verification only from the authoritative successful finalizer.
-pub async fn admit_automatic_plan_verification<C: ChatService + ?Sized>(
-    state: &AppState,
+pub(crate) async fn admit_automatic_plan_verification_with_deps<C: ChatService + ?Sized>(
+    state: &PlanVerificationServiceDeps,
     chat_service: &C,
     conversation_id: &ChatConversationId,
     run_id: &AgentRunId,
@@ -557,7 +660,7 @@ pub async fn admit_automatic_plan_verification<C: ChatService + ?Sized>(
         return Ok(AutomaticPlanVerificationDisposition::NotEligible);
     }
 
-    let outcome = request_plan_verification(
+    let outcome = request_plan_verification_with_deps(
         state,
         chat_service,
         &session_id,
@@ -589,8 +692,8 @@ pub async fn admit_automatic_plan_verification<C: ChatService + ?Sized>(
 /// Returns [`AppError::Validation`] while required proof is absent, including
 /// after a verification action is queued or already in progress. Infrastructure
 /// and persistence failures from verification request admission are propagated.
-pub async fn ensure_plan_verification_for_acceptance<C: ChatService + ?Sized>(
-    state: &AppState,
+pub(crate) async fn ensure_plan_verification_for_acceptance_with_deps<C: ChatService + ?Sized>(
+    state: &PlanVerificationServiceDeps,
     chat_service: &C,
     session: &IdeationSession,
     policy: &EffectiveGatePolicy,
@@ -604,7 +707,7 @@ pub async fn ensure_plan_verification_for_acceptance<C: ChatService + ?Sized>(
         return Err(AppError::Validation(gate_error.to_string()));
     }
 
-    match request_plan_verification(
+    match request_plan_verification_with_deps(
         state,
         chat_service,
         &session.id,
@@ -641,8 +744,8 @@ pub async fn ensure_plan_verification_for_acceptance<C: ChatService + ?Sized>(
     }
 }
 
-pub async fn complete_plan_verification(
-    state: &AppState,
+pub(crate) async fn complete_plan_verification_with_deps(
+    state: &PlanVerificationServiceDeps,
     session_id: &IdeationSessionId,
     agent_run_id: &str,
 ) -> AppResult<PlanVerificationCompletion> {
@@ -687,4 +790,75 @@ pub async fn complete_plan_verification(
         "Verification completion rejected: stale, failed, cancelled, ordinary, or mismatched action"
             .to_string(),
     ))
+}
+
+pub async fn get_plan_verification_status(
+    state: &AppState,
+    session_id: &IdeationSessionId,
+) -> AppResult<PlanVerificationStatus> {
+    get_plan_verification_status_with_deps(
+        &PlanVerificationServiceDeps::from_app_state(state),
+        session_id,
+    )
+    .await
+}
+
+pub async fn request_plan_verification<C: ChatService + ?Sized>(
+    state: &AppState,
+    chat_service: &C,
+    session_id: &IdeationSessionId,
+    source: PlanVerificationRequestSource,
+) -> AppResult<PlanVerificationRequestOutcome> {
+    request_plan_verification_with_deps(
+        &PlanVerificationServiceDeps::from_app_state(state),
+        chat_service,
+        session_id,
+        source,
+    )
+    .await
+}
+
+pub async fn admit_automatic_plan_verification<C: ChatService + ?Sized>(
+    state: &AppState,
+    chat_service: &C,
+    conversation_id: &ChatConversationId,
+    run_id: &AgentRunId,
+    completion_applied: bool,
+) -> AppResult<AutomaticPlanVerificationDisposition> {
+    admit_automatic_plan_verification_with_deps(
+        &PlanVerificationServiceDeps::from_app_state(state),
+        chat_service,
+        conversation_id,
+        run_id,
+        completion_applied,
+    )
+    .await
+}
+
+pub async fn ensure_plan_verification_for_acceptance<C: ChatService + ?Sized>(
+    state: &AppState,
+    chat_service: &C,
+    session: &IdeationSession,
+    policy: &EffectiveGatePolicy,
+) -> AppResult<()> {
+    ensure_plan_verification_for_acceptance_with_deps(
+        &PlanVerificationServiceDeps::from_app_state(state),
+        chat_service,
+        session,
+        policy,
+    )
+    .await
+}
+
+pub async fn complete_plan_verification(
+    state: &AppState,
+    session_id: &IdeationSessionId,
+    agent_run_id: &str,
+) -> AppResult<PlanVerificationCompletion> {
+    complete_plan_verification_with_deps(
+        &PlanVerificationServiceDeps::from_app_state(state),
+        session_id,
+        agent_run_id,
+    )
+    .await
 }

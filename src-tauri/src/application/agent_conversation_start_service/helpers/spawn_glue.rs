@@ -85,8 +85,8 @@ struct AgentStartupProgressPayload<'a> {
     label: &'static str,
 }
 
-pub(crate) fn emit_start_agent_conversation_progress<R: Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) fn emit_start_agent_conversation_progress(
+    events: &dyn ralphx_events::EventSink,
     context_type: &'static str,
     context_id: &str,
     conversation_id: &ChatConversationId,
@@ -101,14 +101,12 @@ pub(crate) fn emit_start_agent_conversation_progress<R: Runtime>(
     } else {
         context_id.to_string()
     };
-    let _ = app.emit(
-        "agent:startup_progress",
-        AgentStartupProgressPayload {
-            conversation_id: conversation_id.as_str(),
-            context_type,
-            context_id: &context_id,
-            stage,
-            label,
-        },
-    );
+    let payload = AgentStartupProgressPayload {
+        conversation_id: conversation_id.as_str(),
+        context_type,
+        context_id: &context_id,
+        stage,
+        label,
+    };
+    let _ = ralphx_events::emit_serialized(events, "agent:startup_progress", &payload);
 }

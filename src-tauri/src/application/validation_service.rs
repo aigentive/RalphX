@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tauri::AppHandle;
+use std::sync::Arc;
 
 use crate::application::git_service::GitService;
 use crate::application::task_diff_base::resolve_task_diff_base;
@@ -497,7 +497,7 @@ async fn build_or_run_command(
         &command,
         &cwd,
         DEFAULT_VALIDATION_TIMEOUT_SECS,
-        state.app_handle.clone(),
+        Arc::clone(&state.events),
         Some(event_context),
     )
     .await;
@@ -572,7 +572,7 @@ async fn execute_shell_command(
     command_text: &str,
     cwd: &Path,
     timeout_secs: u64,
-    app_handle: Option<AppHandle>,
+    events: Arc<dyn ralphx_events::EventSink>,
     event_context: Option<ValidationCommandEventContext>,
 ) -> AppResult<std::process::Output> {
     let mut command = tokio::process::Command::new(resolve_shell_cli_path());
@@ -595,11 +595,11 @@ async fn execute_shell_command(
 
     let stdout_fut = read_stream_with_events(
         stdout_handle,
-        app_handle.clone(),
+        Arc::clone(&events),
         event_context.clone(),
         "stdout",
     );
-    let stderr_fut = read_stream_with_events(stderr_handle, app_handle, event_context, "stderr");
+    let stderr_fut = read_stream_with_events(stderr_handle, events, event_context, "stderr");
 
     tokio::select! {
         (status, stdout, stderr) = async { tokio::join!(child.wait(), stdout_fut, stderr_fut) } => {
@@ -1050,7 +1050,7 @@ impl From<&ValidationCommandResult> for ValidationCommandSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::application::validation_events::emit_task_validation_event_to_handle;
+    use crate::application::validation_events::emit_task_validation_event_to_sink;
     use crate::domain::review::ReviewSettings;
 
     async fn seeded_state() -> (AppState, tempfile::TempDir, TaskId) {
@@ -1397,7 +1397,7 @@ mod tests {
 
         let payload =
             TaskValidationEventPayload::command_output(&context, "stderr", "failure\n".to_string());
-        emit_task_validation_event_to_handle(None, &payload);
+        emit_task_validation_event_to_sink(&ralphx_events::NullEventSink, &payload);
         let value = serde_json::to_value(payload).expect("payload should serialize");
 
         assert_eq!(value["type"], "command_output");

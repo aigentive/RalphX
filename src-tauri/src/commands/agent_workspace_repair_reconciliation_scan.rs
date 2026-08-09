@@ -85,13 +85,20 @@ where
     if state.startup_git_auth_recovery_state.is_pending() {
         return Ok(0);
     }
-    run_agent_workspace_repair_reconciliation_scan_tick_for_state(state.inner()).await
+    let execution_state = app_handle
+        .try_state::<Arc<ExecutionState>>()
+        .ok_or_else(|| "ExecutionState is not available".to_string())?
+        .inner()
+        .clone();
+    run_agent_workspace_repair_reconciliation_scan_tick_for_state(state.inner(), &execution_state)
+        .await
 }
 
 /// Fail-closed candidate listing: a repo error aborts the whole tick (the caller logs a warning
 /// and the next tick retries); a per-workspace load error skips only that workspace.
 pub(crate) async fn run_agent_workspace_repair_reconciliation_scan_tick_for_state(
     state: &AppState,
+    execution_state: &Arc<ExecutionState>,
 ) -> Result<usize, String> {
     let mut conversation_ids: HashSet<ChatConversationId> = HashSet::new();
 
@@ -145,6 +152,10 @@ pub(crate) async fn run_agent_workspace_repair_reconciliation_scan_tick_for_stat
         // routing.
         schedule_pr_supervision_recovery_for_workspace(
             state,
+            crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrSupervisionRuntime::from_state(
+                state,
+                Arc::clone(execution_state),
+            ),
             &workspace,
             AgentWorkspacePrSupervisionRecoveryTrigger::PeriodicScan,
             false,

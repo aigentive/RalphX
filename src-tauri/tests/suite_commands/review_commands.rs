@@ -561,8 +561,7 @@ async fn test_request_task_changes_from_reviewing_accepts_reviewing_state() {
 #[tokio::test]
 async fn test_request_task_changes_from_reviewing_rejects_review_passed() {
     let state = setup_test_state().await;
-    let task =
-        create_task_with_status(&state, "proj-rc2", InternalStatus::ReviewPassed).await;
+    let task = create_task_with_status(&state, "proj-rc2", InternalStatus::ReviewPassed).await;
 
     let fetched = state
         .task_repo
@@ -583,8 +582,7 @@ async fn test_request_task_changes_from_reviewing_rejects_review_passed() {
 #[tokio::test]
 async fn test_request_task_changes_from_reviewing_rejects_escalated() {
     let state = setup_test_state().await;
-    let task =
-        create_task_with_status(&state, "proj-rc3", InternalStatus::Escalated).await;
+    let task = create_task_with_status(&state, "proj-rc3", InternalStatus::Escalated).await;
 
     let fetched = state
         .task_repo
@@ -600,8 +598,7 @@ async fn test_request_task_changes_from_reviewing_rejects_escalated() {
 #[tokio::test]
 async fn test_request_task_changes_from_reviewing_rejects_executing() {
     let state = setup_test_state().await;
-    let task =
-        create_task_with_status(&state, "proj-rc4", InternalStatus::Executing).await;
+    let task = create_task_with_status(&state, "proj-rc4", InternalStatus::Executing).await;
 
     let fetched = state
         .task_repo
@@ -617,8 +614,7 @@ async fn test_request_task_changes_from_reviewing_rejects_executing() {
 #[tokio::test]
 async fn test_request_task_changes_from_reviewing_writes_idempotency_flag() {
     let state = setup_test_state().await;
-    let mut task =
-        create_task_with_status(&state, "proj-rc5", InternalStatus::Reviewing).await;
+    let mut task = create_task_with_status(&state, "proj-rc5", InternalStatus::Reviewing).await;
 
     // Simulate command step 2: write idempotency guard
     let mut meta = task
@@ -649,7 +645,10 @@ async fn test_request_task_changes_from_reviewing_writes_idempotency_flag() {
         .expect("task not found");
 
     let stored_meta: serde_json::Value = serde_json::from_str(
-        updated.metadata.as_deref().expect("metadata must be present"),
+        updated
+            .metadata
+            .as_deref()
+            .expect("metadata must be present"),
     )
     .expect("metadata must be valid JSON");
 
@@ -665,8 +664,7 @@ async fn test_request_task_changes_from_reviewing_writes_idempotency_flag() {
 #[tokio::test]
 async fn test_request_task_changes_from_reviewing_creates_review_note() {
     let state = setup_test_state().await;
-    let task =
-        create_task_with_status(&state, "proj-rc6", InternalStatus::Reviewing).await;
+    let task = create_task_with_status(&state, "proj-rc6", InternalStatus::Reviewing).await;
 
     let feedback = "Missing error handling in the auth flow".to_string();
 

@@ -68,6 +68,7 @@ fn test_http_state(app_state: Arc<AppState>) -> HttpServerState {
         app_state,
         execution_state: Arc::new(ExecutionState::new()),
         delegation_service: Default::default(),
+        external_mcp_supervisor: None,
     }
 }
 
@@ -3052,6 +3053,7 @@ async fn update_from_base_rejects_invalid_base_kind_before_loading_workspace() {
 #[tokio::test]
 async fn needs_repair_action_response_preserves_error_payload_without_implying_queue() {
     let app_state = Arc::new(AppState::new_test());
+    let execution_state = Arc::new(ExecutionState::new());
     let conversation_id = ChatConversationId::new();
     let mut workspace = test_workspace(conversation_id.clone());
     workspace.publication_push_status = Some("needs_agent".to_string());
@@ -3065,6 +3067,7 @@ async fn needs_repair_action_response_preserves_error_payload_without_implying_q
 
     let Json(response) = action_response_for_needs_repair(
         app_state.as_ref(),
+        &execution_state,
         &conversation_id,
         "merge conflict".to_string(),
     )
@@ -3083,6 +3086,7 @@ async fn needs_repair_action_response_preserves_error_payload_without_implying_q
 #[tokio::test]
 async fn needs_repair_action_response_reports_queue_from_repair_events() {
     let app_state = Arc::new(AppState::new_test());
+    let execution_state = Arc::new(ExecutionState::new());
     let conversation_id = ChatConversationId::new();
     let mut workspace = test_workspace(conversation_id.clone());
     workspace.publication_push_status = Some("needs_agent".to_string());
@@ -3105,6 +3109,7 @@ async fn needs_repair_action_response_reports_queue_from_repair_events() {
 
     let Json(response) = action_response_for_needs_repair(
         app_state.as_ref(),
+        &execution_state,
         &conversation_id,
         "merge conflict".to_string(),
     )

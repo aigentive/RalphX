@@ -591,7 +591,7 @@ async fn register_issue_attempts_auto_followup_when_enabled() {
     let mut req = origin_only_issue_request(Some(origin.id.as_str()));
     req.auto_followup_eligible = true;
     let error = register_issue_error(state.clone(), req).await;
-    assert_eq!(error.0, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(error.0, StatusCode::INTERNAL_SERVER_ERROR);
 
     let list = list_agent_conversation_issues(
         State(state),

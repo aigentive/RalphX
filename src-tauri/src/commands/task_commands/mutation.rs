@@ -1,6 +1,8 @@
 // Mutation (write) handlers for task_commands module
 
-use super::helpers::{emit_queue_changed, emit_task_lifecycle_event};
+use super::helpers::{
+    emit_queue_changed, emit_task_lifecycle_event, emit_task_lifecycle_event_to_sink,
+};
 use super::types::{
     AnswerUserQuestionInput, AnswerUserQuestionResponse, CreateTaskInput, InjectTaskInput,
     InjectTaskResponse, TaskResponse, UnblockTaskResponse, UpdateTaskInput,
@@ -22,6 +24,7 @@ use crate::domain::repositories::{
 use crate::domain::services::{QueueKey, RunningAgentKey};
 use crate::domain::state_machine::services::TaskScheduler;
 use crate::domain::state_machine::transition_handler::metadata_builder::build_restart_metadata;
+use ralphx_events::emit_serialized;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -157,22 +160,18 @@ async fn attach_create_task_plan_scope(
 fn build_transition_service(
     state: &AppState,
     execution_state: &Arc<ExecutionState>,
-    app_handle: Option<&AppHandle>,
+    _app_handle: Option<&AppHandle>,
 ) -> TaskTransitionService {
-    state.build_transition_service_for_runtime(
-        Arc::clone(execution_state),
-        app_handle.cloned().or_else(|| state.app_handle.clone()),
-    )
+    state.build_transition_service_for_runtime(Arc::clone(execution_state), None)
 }
 
 fn build_task_scheduler(
     state: &AppState,
     execution_state: &Arc<ExecutionState>,
-    app: &AppHandle,
+    _app: &AppHandle,
 ) -> Arc<dyn TaskScheduler> {
-    let scheduler_concrete = Arc::new(
-        state.build_task_scheduler_for_runtime(Arc::clone(execution_state), Some(app.clone())),
-    );
+    let scheduler_concrete =
+        Arc::new(state.build_task_scheduler_for_runtime(Arc::clone(execution_state), None));
     scheduler_concrete.set_self_ref(Arc::clone(&scheduler_concrete) as Arc<dyn TaskScheduler>);
     scheduler_concrete as Arc<dyn TaskScheduler>
 }
@@ -900,7 +899,7 @@ pub async fn cleanup_task(
         Arc::clone(&state.task_repo),
         Arc::clone(&state.project_repo),
         Arc::clone(&state.running_agent_registry),
-        Some(app.clone()),
+        Arc::clone(&state.events),
     )
     .with_interactive_process_registry(Arc::clone(&state.interactive_process_registry))
     .with_task_stopper(stopper);
@@ -962,7 +961,7 @@ pub async fn cleanup_tasks_in_group(
         Arc::clone(&state.task_repo),
         Arc::clone(&state.project_repo),
         Arc::clone(&state.running_agent_registry),
-        Some(app.clone()),
+        Arc::clone(&state.events),
     )
     .with_interactive_process_registry(Arc::clone(&state.interactive_process_registry))
     .with_task_stopper(stopper);
@@ -1292,14 +1291,12 @@ pub async fn pause_task(
             .await
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "Paused branch-update task disappeared".to_string())?;
-        if let Some(ref app) = state.app_handle {
-            emit_task_lifecycle_event(
-                app,
-                "task:paused",
-                paused.id.as_str(),
-                paused.project_id.as_str(),
-            );
-        }
+        emit_task_lifecycle_event_to_sink(
+            state.events.as_ref(),
+            "task:paused",
+            paused.id.as_str(),
+            paused.project_id.as_str(),
+        );
         return Ok(TaskResponse::from(paused));
     }
 
@@ -1325,14 +1322,12 @@ pub async fn pause_task(
         .map_err(|e| e.to_string())?;
 
     // Emit lifecycle event
-    if let Some(ref app) = state.app_handle {
-        emit_task_lifecycle_event(
-            app,
-            "task:paused",
-            updated_task.id.as_str(),
-            updated_task.project_id.as_str(),
-        );
-    }
+    emit_task_lifecycle_event_to_sink(
+        state.events.as_ref(),
+        "task:paused",
+        updated_task.id.as_str(),
+        updated_task.project_id.as_str(),
+    );
 
     Ok(TaskResponse::from(updated_task))
 }
@@ -1409,19 +1404,18 @@ pub async fn stop_task(
             .await
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "Stopped branch-update task disappeared".to_string())?;
-        if let Some(ref app) = state.app_handle {
-            app.emit(
-                "task:stopped",
-                serde_json::json!({
-                    "taskId": stopped.id.as_str(),
-                    "projectId": stopped.project_id.as_str(),
-                    "stoppedFromStatus": from_status.as_str(),
-                    "stopReason": reason,
-                    "timestamp": chrono::Utc::now().to_rfc3339(),
-                }),
-            )
-            .map_err(|error| format!("Failed to emit task:stopped event: {error}"))?;
-        }
+        emit_serialized(
+            state.events.as_ref(),
+            "task:stopped",
+            &serde_json::json!({
+                "taskId": stopped.id.as_str(),
+                "projectId": stopped.project_id.as_str(),
+                "stoppedFromStatus": from_status.as_str(),
+                "stopReason": reason,
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+            }),
+        )
+        .map_err(|error| format!("Failed to emit task:stopped event: {error}"))?;
         return Ok(TaskResponse::from(stopped));
     }
 
@@ -1435,19 +1429,18 @@ pub async fn stop_task(
         .map_err(|e| e.to_string())?;
 
     // Emit lifecycle event with stop context
-    if let Some(ref app) = state.app_handle {
-        app.emit(
-            "task:stopped",
-            serde_json::json!({
-                "taskId": updated_task.id.as_str(),
-                "projectId": updated_task.project_id.as_str(),
-                "stoppedFromStatus": from_status.as_str(),
-                "stopReason": reason,
-                "timestamp": chrono::Utc::now().to_rfc3339(),
-            }),
-        )
-        .map_err(|e| format!("Failed to emit task:stopped event: {}", e))?;
-    }
+    emit_serialized(
+        state.events.as_ref(),
+        "task:stopped",
+        &serde_json::json!({
+            "taskId": updated_task.id.as_str(),
+            "projectId": updated_task.project_id.as_str(),
+            "stoppedFromStatus": from_status.as_str(),
+            "stopReason": reason,
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+        }),
+    )
+    .map_err(|error| format!("Failed to emit task:stopped event: {error}"))?;
 
     Ok(TaskResponse::from(updated_task))
 }

@@ -3,7 +3,6 @@ use std::time::Duration;
 
 use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
-use serde::Deserialize;
 use tauri::{Emitter, Listener, Manager, Runtime};
 use uuid::Uuid;
 
@@ -24,13 +23,13 @@ use crate::application::agent_workspace_publish_recovery::is_blocked_and_not_aut
 use crate::application::agent_workspace_publish_recovery::{
     AGENT_WORKSPACE_PUBLISH_REDRIVE_PENDING_STATUS, AGENT_WORKSPACE_PUBLISH_REDRIVE_REQUESTED,
 };
-use crate::application::chat_service::events::{AGENT_RUN_COMPLETED, AGENT_TURN_COMPLETED};
 use crate::application::git_service::git_cmd;
 use crate::application::publish_resilience::{
     count_publishable_commits_with_base_fallback, count_unpublished_publish_commits,
     inspect_publish_branch_freshness_for_source_after_fetch,
 };
 use crate::application::{AppState, GitService};
+use crate::commands::agent_workspace_completion_dispatch::AgentCompletionPayload;
 use crate::commands::agent_workspace_repair_reconciliation_scan::start_agent_workspace_repair_reconciliation_scan;
 use crate::commands::unified_chat_commands::{
     install_agent_workspace_repair_publish_continuation,
@@ -45,13 +44,6 @@ use crate::domain::entities::{
 use crate::infrastructure::git_auth::{inspect_repository_capability, RepositoryCapability};
 
 const AUTO_PUBLISH_FRESHNESS_SCAN_INTERVAL: Duration = Duration::from_secs(60);
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct AgentCompletionPayload {
-    pub(crate) conversation_id: String,
-    pub(crate) context_type: ChatContextType,
-    pub(crate) run_id: Option<String>,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct AutoPublishFacts {
@@ -124,39 +116,24 @@ impl AutoPublishSkipReason {
     }
 }
 
-/// Register backend-only listeners that publish opted-in agent workspaces after
-/// an agent turn finishes, then keep already-published PRs fresh.
-pub(crate) fn install_agent_workspace_auto_publish_listeners<R>(app_handle: tauri::AppHandle<R>)
-where
+/// Install durable redrive and periodic freshness sources that are independent
+/// from run/turn completion dispatch.
+pub(crate) fn install_agent_workspace_auto_publish_non_completion_sources<R>(
+    app_handle: tauri::AppHandle<R>,
+) where
     R: Runtime,
 {
-    if let Some(state) = app_handle.try_state::<AppState>() {
-        install_agent_workspace_repair_publish_continuation(state.inner());
+    if let (Some(state), Some(execution_state)) = (
+        app_handle.try_state::<AppState>(),
+        app_handle.try_state::<Arc<ExecutionState>>(),
+    ) {
+        install_agent_workspace_repair_publish_continuation(
+            state.inner(),
+            Arc::clone(execution_state.inner()),
+        );
     }
     start_agent_workspace_auto_publish_freshness_scan(app_handle.clone());
     start_agent_workspace_repair_reconciliation_scan(app_handle.clone());
-
-    let run_completed_handle = app_handle.clone();
-    app_handle.listen_any(AGENT_RUN_COMPLETED, move |event| {
-        spawn_auto_publish_from_completion_event(
-            run_completed_handle.clone(),
-            AGENT_RUN_COMPLETED,
-            event.payload(),
-        );
-        spawn_pr_supervision_recovery_from_run_completed_event(
-            run_completed_handle.clone(),
-            event.payload(),
-        );
-    });
-
-    let turn_completed_handle = app_handle.clone();
-    app_handle.listen_any(AGENT_TURN_COMPLETED, move |event| {
-        spawn_auto_publish_from_completion_event(
-            turn_completed_handle.clone(),
-            AGENT_TURN_COMPLETED,
-            event.payload(),
-        );
-    });
 
     let recovery_redrive_handle = app_handle.clone();
     app_handle.listen_any(AGENT_WORKSPACE_PUBLISH_REDRIVE_REQUESTED, move |event| {
@@ -189,22 +166,12 @@ where
     );
 }
 
-fn spawn_pr_supervision_recovery_from_run_completed_event<R>(
+pub(crate) fn spawn_pr_supervision_recovery_from_completion_payload<R>(
     app_handle: tauri::AppHandle<R>,
-    payload: &str,
+    payload: AgentCompletionPayload,
 ) where
     R: Runtime,
 {
-    let payload = match serde_json::from_str::<AgentCompletionPayload>(payload) {
-        Ok(payload) => payload,
-        Err(error) => {
-            tracing::warn!(
-                error = %error,
-                "Skipping agent workspace PR supervision recovery: completion payload could not be parsed"
-            );
-            return;
-        }
-    };
     if payload.context_type != ChatContextType::Project {
         return;
     }
@@ -308,25 +275,18 @@ where
         .try_state::<Arc<ExecutionState>>()?
         .inner()
         .clone();
-    let runtime_app_handle = state.app_handle.clone();
-    let transition_service = Arc::new(state.build_transition_service_for_runtime(
+    let runtime = crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrSupervisionRuntime::from_state(
+        state.inner(),
         Arc::clone(&execution_state),
-        runtime_app_handle.clone(),
-    ));
-    let chat_service: Arc<dyn crate::application::ChatService> =
-        Arc::new(state.build_chat_service_for_runtime(
-            Some(execution_state.clone()),
-            runtime_app_handle.clone(),
-        ));
+    );
     let resumer = Arc::new(AgentWorkspacePrFixReviewPublishCommandResumer {
         app_state: state.inner().clone(),
         execution_state,
     });
     build_agent_workspace_pr_supervision_recovery_deps(
         state.inner(),
-        runtime_app_handle,
-        Some(transition_service),
-        Some(chat_service),
+        Some(runtime.transition_service),
+        Some(runtime.chat_service),
         Some(resumer),
     )
 }
@@ -374,30 +334,13 @@ pub(crate) async fn is_exact_terminal_pr_autofix_completion(
     Ok(current_run.is_some_and(|current_run| current_run.id == run_id))
 }
 
-pub(crate) fn spawn_auto_publish_from_completion_event<R>(
+pub(crate) fn spawn_auto_publish_from_completion_payload<R>(
     app_handle: tauri::AppHandle<R>,
     event_name: &'static str,
-    payload: &str,
+    conversation_id: ChatConversationId,
 ) where
     R: Runtime,
 {
-    let payload = match serde_json::from_str::<AgentCompletionPayload>(payload) {
-        Ok(payload) => payload,
-        Err(error) => {
-            tracing::warn!(
-                event_name,
-                error = %error,
-                "Skipping agent workspace auto-publish: completion payload could not be parsed"
-            );
-            return;
-        }
-    };
-
-    if payload.context_type != ChatContextType::Project {
-        return;
-    }
-
-    let conversation_id = ChatConversationId::from_string(payload.conversation_id);
     spawn_auto_publish_existing_pr(
         app_handle,
         event_name,

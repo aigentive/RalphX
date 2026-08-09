@@ -2,12 +2,13 @@
 // Manages per-project execution state: pause, resume, stop
 // Phase 82: Project-scoped execution with optional project_id parameters
 
+use ralphx_events::emit_serialized;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, Runtime, State};
+use tauri::{AppHandle, Runtime, State};
 use tokio::sync::RwLock;
 
 use crate::application::chat_service::{
@@ -385,20 +386,19 @@ pub async fn restart_task(
     );
 
     // 8. Emit lifecycle event
-    if let Some(ref app) = state.app_handle {
-        let _ = app.emit(
-            "task:restarted",
-            serde_json::json!({
-                "taskId": updated_task.id.as_str(),
-                "projectId": updated_task.project_id.as_str(),
-                "resumedToStatus": transition_target.as_str(),
-                "stoppedFromStatus": stopped_from_status.as_str(),
-                "category": categorized.category,
-                "stopReason": stop_metadata.stop_reason,
-                "timestamp": chrono::Utc::now().to_rfc3339(),
-            }),
-        );
-    }
+    let _ = emit_serialized(
+        state.events.as_ref(),
+        "task:restarted",
+        &serde_json::json!({
+            "taskId": updated_task.id.as_str(),
+            "projectId": updated_task.project_id.as_str(),
+            "resumedToStatus": transition_target.as_str(),
+            "stoppedFromStatus": stopped_from_status.as_str(),
+            "category": categorized.category,
+            "stopReason": stop_metadata.stop_reason,
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+        }),
+    );
 
     // 9. Return success result
     // Serialize task to JSON Value for flexible response

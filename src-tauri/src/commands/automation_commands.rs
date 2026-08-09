@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use std::sync::Arc;
 use tauri::State;
 
 use crate::application::agent_conversation_start_service::AgentWorkspaceSourcePullRequestInput;
@@ -27,6 +28,7 @@ use crate::application::automation::service::{
     UpdateAutomationSettingsInput as ServiceUpdateSettingsInput,
 };
 use crate::application::AppState;
+use crate::commands::ExecutionState;
 use crate::domain::entities::{
     AgentConversationWorkspaceBranchMode, AgentConversationWorkspaceMode, AutomationId,
     AutomationPlanApprovalMode, AutomationPrMergeMode, AutomationRunId, ChatConversation,
@@ -313,9 +315,10 @@ pub async fn pause_automation(
 pub async fn resume_automation(
     input: AutomationIdInput,
     state: State<'_, AppState>,
+    execution_state: State<'_, Arc<ExecutionState>>,
 ) -> Result<AutomationResponse, String> {
     let id = parse_automation_id(&input.id)?;
-    resume_automation_smart(&state, &id)
+    resume_automation_smart(&state, &execution_state, &id)
         .await
         .map(AutomationResponse::from)
         .map_err(|error| error.to_string())
@@ -442,10 +445,11 @@ pub async fn delete_automation_run(
 pub async fn resume_automation_run(
     input: AutomationRunScopedInput,
     state: State<'_, AppState>,
+    execution_state: State<'_, Arc<ExecutionState>>,
 ) -> Result<(), String> {
     let id = parse_automation_id(&input.id)?;
     let run_id = parse_automation_run_id(&input.run_id)?;
-    reopen_automation_run(&state, &id, &run_id)
+    reopen_automation_run(&state, &execution_state, &id, &run_id)
         .await
         .map_err(|error| error.to_string())
 }

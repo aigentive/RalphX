@@ -294,16 +294,17 @@ pub async fn complete_review(
 
     // 6. Trigger state transition via TaskTransitionService
     // Create scheduler for auto-scheduling next Ready task when this one exits Reviewing
-    let scheduler_concrete = Arc::new(state.app_state.build_task_scheduler_for_runtime(
-        Arc::clone(&state.execution_state),
-        state.app_state.app_handle.as_ref().cloned(),
-    ));
+    let scheduler_concrete = Arc::new(
+        state
+            .app_state
+            .build_task_scheduler_for_runtime(Arc::clone(&state.execution_state), None),
+    );
     scheduler_concrete.set_self_ref(Arc::clone(&scheduler_concrete) as Arc<dyn TaskScheduler>);
     let task_scheduler: Arc<dyn TaskScheduler> = scheduler_concrete;
 
     let mut transition_service_builder = state
         .app_state
-        .build_transition_service_with_execution_state(Arc::clone(&state.execution_state))
+        .build_transition_service_for_runtime(Arc::clone(&state.execution_state), None)
         .with_task_scheduler(task_scheduler);
 
     if let Some(ref pub_) = state.app_state.webhook_publisher {

@@ -288,9 +288,12 @@ async fn scan_tick_schedules_recovery_for_an_active_workspace_with_an_unsettled_
         .expect("seed workspace");
     seed_dispatching_repair_attempt(&state, conversation_id.clone()).await;
 
-    let scheduled = run_agent_workspace_repair_reconciliation_scan_tick_for_state(&state)
-        .await
-        .expect("scan tick should succeed");
+    let scheduled = run_agent_workspace_repair_reconciliation_scan_tick_for_state(
+        &state,
+        &Arc::new(ExecutionState::new()),
+    )
+    .await
+    .expect("scan tick should succeed");
     assert_eq!(scheduled, 1);
 
     wait_for_repair_publication_event(&state, &conversation_id, "repair_sent").await;
@@ -362,9 +365,12 @@ async fn scan_tick_redelivers_a_due_interrupted_dispatch_but_leaves_a_fresh_one_
         outcome => panic!("seeding fresh dispatching attempt must apply, got {outcome:?}"),
     }
 
-    let scheduled = run_agent_workspace_repair_reconciliation_scan_tick_for_state(&state)
-        .await
-        .expect("scan tick should succeed");
+    let scheduled = run_agent_workspace_repair_reconciliation_scan_tick_for_state(
+        &state,
+        &Arc::new(ExecutionState::new()),
+    )
+    .await
+    .expect("scan tick should succeed");
     assert_eq!(
         scheduled, 2,
         "both candidates are scheduled onto the reconciler"
@@ -540,9 +546,12 @@ wait "$stdin_drain_pid" 2>/dev/null || true
         outcome => panic!("seeding due scan retry must apply, got {outcome:?}"),
     }
 
-    let scheduled = run_agent_workspace_repair_reconciliation_scan_tick_for_state(&state)
-        .await
-        .expect("scan tick should succeed");
+    let scheduled = run_agent_workspace_repair_reconciliation_scan_tick_for_state(
+        &state,
+        &Arc::new(ExecutionState::new()),
+    )
+    .await
+    .expect("scan tick should succeed");
     assert_eq!(scheduled, 1);
 
     for _ in 0..200 {
@@ -621,9 +630,12 @@ async fn scan_tick_fails_closed_when_repair_attempt_listing_errors() {
         &healthy_repair_repo,
     )));
 
-    let error = run_agent_workspace_repair_reconciliation_scan_tick_for_state(&state)
-        .await
-        .expect_err("a repair-repo listing failure must abort the tick");
+    let error = run_agent_workspace_repair_reconciliation_scan_tick_for_state(
+        &state,
+        &Arc::new(ExecutionState::new()),
+    )
+    .await
+    .expect_err("a repair-repo listing failure must abort the tick");
     assert!(error.contains("repair attempt listing failed"));
 
     let events = state
@@ -637,9 +649,12 @@ async fn scan_tick_fails_closed_when_repair_attempt_listing_errors() {
     );
 
     state.agent_workspace_repair_repo = healthy_repair_repo;
-    let scheduled = run_agent_workspace_repair_reconciliation_scan_tick_for_state(&state)
-        .await
-        .expect("the next tick must retry successfully once the repo recovers");
+    let scheduled = run_agent_workspace_repair_reconciliation_scan_tick_for_state(
+        &state,
+        &Arc::new(ExecutionState::new()),
+    )
+    .await
+    .expect("the next tick must retry successfully once the repo recovers");
     assert_eq!(scheduled, 1);
 }
 
@@ -674,7 +689,16 @@ async fn non_github_workspace_get_and_scan_tick_both_run_durable_reconciler() {
             .expect("seed workspace");
         seed_dispatching_repair_attempt(&state, conversation_id.clone()).await;
 
-        schedule_pr_supervision_recovery_for_workspace(&state, &workspace, trigger, true);
+        schedule_pr_supervision_recovery_for_workspace(
+            &state,
+            crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrSupervisionRuntime::from_state(
+                &state,
+                Arc::new(ExecutionState::new()),
+            ),
+            &workspace,
+            trigger,
+            true,
+        );
 
         wait_for_repair_publication_event(&state, &conversation_id, "repair_sent").await;
     }
@@ -719,7 +743,7 @@ async fn app_handle_scan_tick_schedules_recovery_through_the_managed_app_state()
         .await
         .expect("seed app-handle workspace");
     seed_dispatching_repair_attempt(&state, conversation_id.clone()).await;
-    let app = mock_app_with_state(state);
+    let app = mock_app_with_state_and_execution(state, Arc::new(ExecutionState::new()));
 
     let scheduled =
         run_agent_workspace_repair_reconciliation_scan_tick_from_app_handle(app.handle())

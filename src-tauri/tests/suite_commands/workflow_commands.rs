@@ -81,7 +81,10 @@ async fn create_workflow_command_maps_input_and_persists_response() {
     .expect("workflow creates");
 
     assert_eq!(response.name, "Command Workflow");
-    assert_eq!(response.description.as_deref(), Some("Created through command"));
+    assert_eq!(
+        response.description.as_deref(),
+        Some("Created through command")
+    );
     assert!(response.is_default);
     assert_eq!(response.worker_profile.as_deref(), Some("worker"));
     assert_eq!(response.reviewer_profile.as_deref(), Some("reviewer"));
@@ -91,7 +94,10 @@ async fn create_workflow_command_maps_input_and_persists_response() {
     assert_eq!(response.columns[0].icon.as_deref(), Some("Play"));
     assert_eq!(response.columns[0].skip_review, Some(true));
     assert_eq!(response.columns[0].auto_advance, Some(false));
-    assert_eq!(response.columns[0].agent_profile.as_deref(), Some("fast-worker"));
+    assert_eq!(
+        response.columns[0].agent_profile.as_deref(),
+        Some("fast-worker")
+    );
 
     let stored = get_workflow(response.id.clone(), app.state::<AppState>())
         .await
@@ -216,7 +222,10 @@ async fn get_workflows_command_maps_all_rows() {
     let workflows = get_workflows(app.state::<AppState>())
         .await
         .expect("workflows should list");
-    let names: Vec<&str> = workflows.iter().map(|workflow| workflow.name.as_str()).collect();
+    let names: Vec<&str> = workflows
+        .iter()
+        .map(|workflow| workflow.name.as_str())
+        .collect();
     assert_eq!(workflows.len(), 2);
     assert!(names.contains(&"WF Command 1"));
     assert!(names.contains(&"WF Command 2"));
@@ -315,7 +324,10 @@ async fn update_workflow_command_applies_partial_updates_and_validates_missing_r
     assert_eq!(response.description.as_deref(), Some("Updated description"));
     assert!(response.is_default);
     assert_eq!(response.worker_profile.as_deref(), Some("worker-updated"));
-    assert_eq!(response.reviewer_profile.as_deref(), Some("reviewer-updated"));
+    assert_eq!(
+        response.reviewer_profile.as_deref(),
+        Some("reviewer-updated")
+    );
     assert_eq!(response.columns.len(), 2);
     assert_eq!(response.columns[0].maps_to, "backlog");
 }

@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use futures::{stream, StreamExt as _};
-use tauri::{AppHandle, Emitter};
+use ralphx_events::EventSink;
 
 use crate::application::agent_conversation_workspace::{
     ensure_linked_plan_branch_agent_worktree, resolve_valid_agent_conversation_workspace_path,
@@ -117,7 +117,7 @@ pub(crate) struct AgentWorkspacePrSupervisionRecoveryDeps {
     pub transition_service: Option<Arc<TaskTransitionService>>,
     pub chat_service: Option<Arc<dyn ChatService>>,
     pub agent_run_repo: Arc<dyn AgentRunRepository>,
-    pub app_handle: Option<AppHandle>,
+    pub events: Arc<dyn EventSink>,
     pub pr_fix_review_publish_resumer: Option<Arc<dyn AgentWorkspacePrFixReviewPublishResumer>>,
     /// Production recovery reuses AppState so one canonical durable repair reconciler owns
     /// legacy import, attempt fencing, and continuation settlement before PR supervision.
@@ -125,9 +125,28 @@ pub(crate) struct AgentWorkspacePrSupervisionRecoveryDeps {
     pub durable_recovery_state: Option<Arc<AppState>>,
 }
 
+#[derive(Clone)]
+pub(crate) struct AgentWorkspacePrSupervisionRuntime {
+    pub transition_service: Arc<TaskTransitionService>,
+    pub chat_service: Arc<dyn ChatService>,
+}
+
+impl AgentWorkspacePrSupervisionRuntime {
+    pub(crate) fn from_state(
+        state: &AppState,
+        execution_state: Arc<crate::application::app_state::ApplicationExecutionState>,
+    ) -> Self {
+        Self {
+            transition_service: Arc::new(
+                state.build_transition_service_with_execution_state(Arc::clone(&execution_state)),
+            ),
+            chat_service: Arc::new(state.build_chat_service_with_execution_state(execution_state)),
+        }
+    }
+}
+
 pub(crate) fn build_agent_workspace_pr_supervision_recovery_deps(
     state: &AppState,
-    app_handle: Option<AppHandle>,
     transition_service: Option<Arc<TaskTransitionService>>,
     chat_service: Option<Arc<dyn ChatService>>,
     pr_fix_review_publish_resumer: Option<Arc<dyn AgentWorkspacePrFixReviewPublishResumer>>,
@@ -142,7 +161,7 @@ pub(crate) fn build_agent_workspace_pr_supervision_recovery_deps(
         transition_service,
         chat_service,
         agent_run_repo: Arc::clone(&state.agent_run_repo),
-        app_handle,
+        events: Arc::clone(&state.events),
         pr_fix_review_publish_resumer,
         durable_recovery_state: Some(Arc::new(state.clone())),
     })
@@ -494,7 +513,7 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
                         None,
                     ))
                     .await?;
-                emit_workspace_changed(deps.app_handle.as_ref(), &conversation_id);
+                emit_workspace_changed(deps.events.as_ref(), &conversation_id);
                 let terminalized = terminalize_agent_workspace_after_pr(
                     Arc::clone(&deps.workspace_repo),
                     Arc::clone(&deps.agent_run_repo),
@@ -556,7 +575,7 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
                 None,
             ))
             .await?;
-        emit_workspace_changed(deps.app_handle.as_ref(), &conversation_id);
+        emit_workspace_changed(deps.events.as_ref(), &conversation_id);
         let terminalized = terminalize_agent_workspace_after_pr(
             Arc::clone(&deps.workspace_repo),
             Arc::clone(&deps.agent_run_repo),
@@ -641,7 +660,7 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
             )),
         ))
         .await?;
-    emit_workspace_changed(deps.app_handle.as_ref(), &conversation_id);
+    emit_workspace_changed(deps.events.as_ref(), &conversation_id);
 
     start_recovered_pr_polling(&deps, &conversation_id, &project, &target);
 
@@ -690,7 +709,7 @@ async fn resume_passed_pr_fix_review_handoff_if_ready(
             let Some(pr_number) = workspace.publication_pr_number else {
                 return Ok(None);
             };
-            emit_workspace_changed(deps.app_handle.as_ref(), conversation_id);
+            emit_workspace_changed(deps.events.as_ref(), conversation_id);
             Ok(Some(
                 AgentWorkspacePrSupervisionRecoveryOutcome::ReviewPublished { pr_number },
             ))
@@ -701,7 +720,7 @@ async fn resume_passed_pr_fix_review_handoff_if_ready(
                 error = %error,
                 "Agent workspace PR supervision recovery failed to resume passed Workspace Review publish handoff"
             );
-            emit_workspace_changed(deps.app_handle.as_ref(), conversation_id);
+            emit_workspace_changed(deps.events.as_ref(), conversation_id);
             Ok(Some(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
                 "pr_fix_review_publish_failed",
             )))
@@ -1263,13 +1282,12 @@ fn terminal_pr_recovery_summary(pr_status: &str) -> &'static str {
     }
 }
 
-fn emit_workspace_changed(app_handle: Option<&AppHandle>, conversation_id: &ChatConversationId) {
-    if let Some(handle) = app_handle {
-        let _ = handle.emit(
-            "agent:workspace_changed",
-            serde_json::json!({ "conversation_id": conversation_id.as_str() }),
-        );
-    }
+fn emit_workspace_changed(events: &dyn EventSink, conversation_id: &ChatConversationId) {
+    let _ = ralphx_events::emit_serialized(
+        events,
+        "agent:workspace_changed",
+        &serde_json::json!({ "conversation_id": conversation_id.as_str() }),
+    );
 }
 
 fn claim_recovery(

@@ -1,9 +1,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use ralphx_events::emit_serialized;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 
 use crate::application::harness_runtime_registry::resolve_harness_agent_bootstrap;
 use crate::application::AppState;
@@ -368,9 +369,11 @@ pub(crate) fn emit_plan_complexity_assessed(
     state: &AppState,
     assessment: &PlanComplexityAssessmentResponse,
 ) {
-    if let Some(app_handle) = &state.app_handle {
-        let _ = app_handle.emit("plan_complexity:assessed", assessment);
-    }
+    let _ = emit_serialized(
+        state.events.as_ref(),
+        "plan_complexity:assessed",
+        assessment,
+    );
 }
 
 fn validate_submit_request(request: &SubmitPlanComplexityAssessmentRequest) -> AppResult<()> {
