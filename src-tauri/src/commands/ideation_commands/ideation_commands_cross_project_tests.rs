@@ -67,11 +67,9 @@ async fn cross_project_import_clones_the_verified_bundle_into_owned_pointers() {
         .create(source)
         .await
         .expect("source session should persist");
-    let app = tauri::test::mock_app();
-
     let response = create_cross_project_session_impl(
-        app.handle(),
         &state,
+        state.events.as_ref(),
         CreateCrossProjectSessionInput {
             target_project_path: target_path.to_string_lossy().to_string(),
             source_session_id: source.id.as_str().to_string(),

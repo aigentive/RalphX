@@ -13,7 +13,6 @@
 // - Sends "Continue where you left off." message to resume the stored provider session
 
 use std::sync::Arc;
-use tauri::AppHandle;
 use tracing::{info, warn};
 
 use crate::application::agent_workspace_continuation::{
@@ -26,9 +25,7 @@ use crate::application::chat_service::{
     team_intent_for_persisted_coordination_mode, SendCallerContext, SendMessageOptions,
 };
 use crate::application::interactive_process_registry::InteractiveProcessKey;
-use crate::application::runtime_factory::{
-    build_chat_service_with_fallback, ChatRuntimeFactoryDeps,
-};
+use crate::application::runtime_factory::{build_chat_service_from_deps, ChatRuntimeFactoryDeps};
 use crate::application::{AppChatService, ChatService, InteractiveProcessRegistry};
 use crate::commands::execution_commands::{ExecutionState, AGENT_ACTIVE_STATUSES};
 use crate::domain::entities::{
@@ -60,7 +57,6 @@ pub struct ChatResumptionRunner {
     agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
     plan_branch_repo: Option<Arc<dyn PlanBranchRepository>>,
     interactive_process_registry: Option<Arc<InteractiveProcessRegistry>>,
-    app_handle: Option<AppHandle>,
     managed_team_barrier: Option<Arc<crate::application::managed_team::ManagedTeamStartupBarrier>>,
 }
 
@@ -88,7 +84,6 @@ impl ChatResumptionRunner {
             agent_provider_settings_repo: None,
             plan_branch_repo: None,
             interactive_process_registry: None,
-            app_handle: None,
             managed_team_barrier: None,
         }
     }
@@ -138,12 +133,6 @@ impl ChatResumptionRunner {
         ipr: Arc<InteractiveProcessRegistry>,
     ) -> Self {
         self.interactive_process_registry = Some(ipr);
-        self
-    }
-
-    /// Set the Tauri app handle (builder pattern).
-    pub fn with_app_handle(mut self, app_handle: AppHandle) -> Self {
-        self.app_handle = Some(app_handle);
         self
     }
 
@@ -645,11 +634,7 @@ impl ChatResumptionRunner {
             self.plan_branch_repo.as_ref().map(Arc::clone),
             self.interactive_process_registry.as_ref().map(Arc::clone),
         );
-        build_chat_service_with_fallback(
-            &self.app_handle,
-            Some(Arc::clone(&self.execution_state)),
-            &deps,
-        )
+        build_chat_service_from_deps(Some(Arc::clone(&self.execution_state)), &deps)
     }
 }
 

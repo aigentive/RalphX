@@ -146,7 +146,7 @@ pub async fn get_project_analysis(
             &state.app_state,
             project_id.as_str(),
             &project.working_directory,
-            state.app_state.app_handle.clone(),
+            std::sync::Arc::clone(&state.app_state.events),
         )
         .await;
         return Ok(Json(AnalysisResponse {
@@ -396,7 +396,7 @@ pub async fn register_project_external(
         &state.app_state,
         &response_id,
         &canonical_str,
-        state.app_state.app_handle.clone(),
+        std::sync::Arc::clone(&state.app_state.events),
     )
     .await;
 

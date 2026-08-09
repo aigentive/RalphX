@@ -263,7 +263,7 @@ pub async fn ideation_message_http(
         }));
     }
 
-    let chat_service = build_chat_service(&state.app_state, &state.execution_state);
+    let chat_service = build_chat_service(&state);
     let send_result = chat_service
         .send_message(
             ChatContextType::Ideation,

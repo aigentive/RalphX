@@ -6,9 +6,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use axum::{extract::State, http::StatusCode, Json};
 use chrono::Utc;
+use ralphx_events::emit_serialized;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tauri::Emitter;
 
 use super::coordination::{
     build_delegated_session_status_response, cancel_delegate_impl,
@@ -39,12 +39,10 @@ struct AgentWorkflowProgressEvent {
 }
 
 fn emit_workflow_progress(state: &HttpServerState, run_id: &AgentWorkflowRunId) {
-    let Some(app_handle) = state.app_state.app_handle.as_ref() else {
-        return;
-    };
-    if let Err(error) = app_handle.emit(
+    if let Err(error) = emit_serialized(
+        state.app_state.events.as_ref(),
         AGENT_WORKFLOW_PROGRESS_EVENT,
-        AgentWorkflowProgressEvent {
+        &AgentWorkflowProgressEvent {
             run_id: run_id.to_string(),
             emitted_at: Utc::now(),
         },

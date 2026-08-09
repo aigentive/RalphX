@@ -9,6 +9,7 @@ use crate::domain::repositories::{ProjectRepository, TaskRepository};
 use crate::domain::services::{RunningAgentKey, RunningAgentRegistry};
 use crate::infrastructure::memory::MemoryProjectRepository;
 use crate::utils::path_safety::validate_absolute_non_root_path;
+use ralphx_events::{NullEventSink, RecordingEventSink};
 
 fn git_ok(repo: &Path, args: &[&str]) {
     let repo = validate_absolute_non_root_path(repo, "task cleanup test repository")
@@ -34,6 +35,42 @@ fn setup_git_repo() -> tempfile::TempDir {
     git_ok(repo.path(), &["config", "user.name", "Test User"]);
     git_ok(repo.path(), &["commit", "--allow-empty", "-m", "initial"]);
     repo
+}
+
+#[tokio::test]
+async fn cleanup_single_task_emits_archived_event_through_explicit_sink() {
+    let task_repo = Arc::new(crate::infrastructure::memory::MemoryTaskRepository::new());
+    let project_repo = Arc::new(MemoryProjectRepository::new());
+    let running_registry = Arc::new(crate::domain::services::MemoryRunningAgentRegistry::new());
+    let project = project_repo
+        .create(Project::new(
+            "Event Project".to_string(),
+            "/tmp/event-project".to_string(),
+        ))
+        .await
+        .unwrap();
+    let task = task_repo
+        .create(Task::new(project.id.clone(), "Event task".to_string()))
+        .await
+        .unwrap();
+    let events = RecordingEventSink::new();
+    let service = TaskCleanupService::new(
+        Arc::clone(&task_repo) as Arc<dyn crate::domain::repositories::TaskRepository>,
+        Arc::clone(&project_repo) as Arc<dyn crate::domain::repositories::ProjectRepository>,
+        Arc::clone(&running_registry) as Arc<dyn crate::domain::services::RunningAgentRegistry>,
+        Arc::new(events.clone()),
+    );
+
+    service
+        .cleanup_single_task(&task, StopMode::DirectStop, true)
+        .await
+        .unwrap();
+
+    let recorded = events.events();
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].event, "task:archived");
+    assert_eq!(recorded[0].payload["taskId"], task.id.as_str());
+    assert_eq!(recorded[0].payload["projectId"], project.id.as_str());
 }
 
 #[tokio::test]
@@ -77,7 +114,7 @@ async fn test_direct_cleanup_stops_task_using_current_repo_state_not_stale_snaps
         Arc::clone(&task_repo) as Arc<dyn crate::domain::repositories::TaskRepository>,
         Arc::clone(&project_repo) as Arc<dyn crate::domain::repositories::ProjectRepository>,
         Arc::clone(&running_registry) as Arc<dyn crate::domain::services::RunningAgentRegistry>,
-        None,
+        Arc::new(NullEventSink),
     );
 
     let report = service
@@ -136,7 +173,7 @@ async fn replacement_cleanup_removes_only_derived_task_worktrees_and_reports_err
         Arc::clone(&task_repo) as Arc<dyn crate::domain::repositories::TaskRepository>,
         Arc::clone(&project_repo) as Arc<dyn crate::domain::repositories::ProjectRepository>,
         Arc::clone(&running_registry) as Arc<dyn crate::domain::services::RunningAgentRegistry>,
-        None,
+        Arc::new(NullEventSink),
     );
     let report = service
         .prepare_tasks_for_replacement(&[task], StopMode::DirectStop, None)
@@ -226,7 +263,7 @@ async fn replacement_cleanup_validates_the_whole_batch_before_mutating_any_workt
         Arc::clone(&task_repo) as Arc<dyn crate::domain::repositories::TaskRepository>,
         Arc::clone(&project_repo) as Arc<dyn crate::domain::repositories::ProjectRepository>,
         Arc::clone(&running_registry) as Arc<dyn crate::domain::services::RunningAgentRegistry>,
-        None,
+        Arc::new(NullEventSink),
     );
     let report = service
         .prepare_tasks_for_replacement(&[valid_task, unsafe_task], StopMode::DirectStop, None)
@@ -267,7 +304,7 @@ async fn replacement_cleanup_deletes_task_branch_checked_out_in_project_root() {
         Arc::clone(&task_repo) as Arc<dyn crate::domain::repositories::TaskRepository>,
         Arc::clone(&project_repo) as Arc<dyn crate::domain::repositories::ProjectRepository>,
         Arc::clone(&running_registry) as Arc<dyn crate::domain::services::RunningAgentRegistry>,
-        None,
+        Arc::new(NullEventSink),
     );
     let report = service
         .prepare_tasks_for_replacement(&[task], StopMode::DirectStop, None)
@@ -314,7 +351,7 @@ async fn replacement_cleanup_preserves_explicitly_preserved_branch() {
         Arc::clone(&task_repo) as Arc<dyn crate::domain::repositories::TaskRepository>,
         Arc::clone(&project_repo) as Arc<dyn crate::domain::repositories::ProjectRepository>,
         Arc::clone(&running_registry) as Arc<dyn crate::domain::services::RunningAgentRegistry>,
-        None,
+        Arc::new(NullEventSink),
     );
     service
         .preflight_tasks_for_replacement(std::slice::from_ref(&task), Some(&preserved_branch))
@@ -355,7 +392,7 @@ async fn replacement_cleanup_fails_closed_when_a_task_row_disappeared() {
         Arc::clone(&task_repo) as Arc<dyn crate::domain::repositories::TaskRepository>,
         Arc::clone(&project_repo) as Arc<dyn crate::domain::repositories::ProjectRepository>,
         Arc::clone(&running_registry) as Arc<dyn crate::domain::services::RunningAgentRegistry>,
-        None,
+        Arc::new(NullEventSink),
     );
 
     let report = service

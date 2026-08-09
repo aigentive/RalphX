@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use tauri::State;
 
 pub(crate) use crate::application::agent_task_pipeline_service::validate_complete_task_pipeline_proposal_selection;
@@ -16,13 +17,16 @@ use crate::commands::ideation_commands::{
     ApplyProposalsResultResponse,
 };
 use crate::commands::unified_chat_commands::{
-    agent_workspace_response_for_state, ensure_plan_workspace_planning_session_link_for_send,
+    agent_workspace_response_with_pr_supervision_for_state,
+    ensure_plan_workspace_planning_session_link_for_send,
     plan_edit_handoff::{
         finish_plan_to_edit_handoff_after_commit, stop_plan_to_edit_handoff_before_commit,
     },
-    switch_agent_conversation_mode_for_state_allowing_running, AgentConversationResponse,
-    AgentConversationWorkspaceResponse, ModeSwitchInitiator, SwitchAgentConversationModeInput,
+    switch_agent_conversation_mode_for_state_allowing_running_with_execution_state,
+    AgentConversationResponse, AgentConversationWorkspaceResponse, ModeSwitchInitiator,
+    SwitchAgentConversationModeInput,
 };
+use crate::commands::ExecutionState;
 use crate::domain::entities::{
     AgentConversationWorkspaceMode, Artifact, ArtifactBucketId, ArtifactContent, ArtifactId,
     ArtifactMetadata, ArtifactRelation, ArtifactType, ChatContextType, ChatConversationId,
@@ -175,38 +179,48 @@ struct CreatedPlanSeed {
 pub async fn copy_agent_conversation_plan(
     input: CopyAgentConversationPlanInput,
     state: State<'_, AppState>,
+    execution_state: State<'_, Arc<ExecutionState>>,
 ) -> Result<AgentConversationPlanSeedResponse, String> {
-    copy_agent_conversation_plan_for_state(input, state.inner()).await
+    copy_agent_conversation_plan_for_state(input, state.inner(), execution_state.inner()).await
 }
 
 #[tauri::command]
 pub async fn import_agent_conversation_plan(
     input: ImportAgentConversationPlanInput,
     state: State<'_, AppState>,
+    execution_state: State<'_, Arc<ExecutionState>>,
 ) -> Result<AgentConversationPlanSeedResponse, String> {
-    import_agent_conversation_plan_for_state(input, state.inner()).await
+    import_agent_conversation_plan_for_state(input, state.inner(), execution_state.inner()).await
 }
 
 #[tauri::command]
 pub async fn activate_agent_task_pipeline(
     input: ActivateAgentTaskPipelineInput,
     state: State<'_, AppState>,
+    execution_state: State<'_, Arc<ExecutionState>>,
 ) -> Result<AgentConversationWorkspaceResponse, String> {
-    activate_agent_task_pipeline_for_state(input, state.inner()).await
+    activate_agent_task_pipeline_for_state(input, state.inner(), execution_state.inner()).await
 }
 
 #[tauri::command]
 pub async fn activate_agent_plan_direct_implementation(
     input: ActivateAgentPlanDirectImplementationInput,
     state: State<'_, AppState>,
+    execution_state: State<'_, Arc<ExecutionState>>,
 ) -> Result<ActivateAgentPlanDirectImplementationResponse, String> {
-    activate_agent_plan_direct_implementation_for_state(input, state.inner()).await
+    activate_agent_plan_direct_implementation_for_state(
+        input,
+        state.inner(),
+        execution_state.inner(),
+    )
+    .await
 }
 
 #[tauri::command]
 pub async fn start_agent_task_pipeline(
     input: StartAgentTaskPipelineInput,
     state: State<'_, AppState>,
+    execution_state: State<'_, Arc<ExecutionState>>,
     app: tauri::AppHandle,
 ) -> Result<ApplyProposalsResultResponse, String> {
     validate_supervised_task_pipeline(
@@ -231,6 +245,7 @@ pub async fn start_agent_task_pipeline(
         },
         input.conversation_id,
         &state,
+        &execution_state,
         &app,
     )
     .await
@@ -240,6 +255,7 @@ pub async fn start_agent_task_pipeline(
 pub(crate) async fn activate_agent_task_pipeline_for_state(
     input: ActivateAgentTaskPipelineInput,
     state: &AppState,
+    execution_state: &Arc<ExecutionState>,
 ) -> Result<AgentConversationWorkspaceResponse, String> {
     if let Some(runtime_override) = input.runtime_override.as_ref() {
         let conversation_id = ChatConversationId::from_string(input.conversation_id.clone());
@@ -277,13 +293,14 @@ pub(crate) async fn activate_agent_task_pipeline_for_state(
         input.runtime_override.as_ref(),
     )
     .await?;
-    agent_workspace_response_for_state(state, workspace).await
+    agent_workspace_response_with_pr_supervision_for_state(state, execution_state, workspace).await
 }
 
 #[doc(hidden)]
 pub(crate) async fn activate_agent_plan_direct_implementation_for_state(
     input: ActivateAgentPlanDirectImplementationInput,
     state: &AppState,
+    execution_state: &Arc<ExecutionState>,
 ) -> Result<ActivateAgentPlanDirectImplementationResponse, String> {
     let conversation_id = ChatConversationId::from_string(input.conversation_id.clone());
     let tx_conversation_id = input.conversation_id;
@@ -377,7 +394,9 @@ pub(crate) async fn activate_agent_plan_direct_implementation_for_state(
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "Activated Edit workspace was not found".to_string())?;
-    let workspace = agent_workspace_response_for_state(state, workspace).await?;
+    let workspace =
+        agent_workspace_response_with_pr_supervision_for_state(state, execution_state, workspace)
+            .await?;
     let artifact_references = plan_bundle_composer_references(
         &response_session_id,
         &approved_bundle.overview,
@@ -400,6 +419,7 @@ pub(crate) async fn activate_agent_plan_direct_implementation_for_state(
 pub(crate) async fn copy_agent_conversation_plan_for_state(
     input: CopyAgentConversationPlanInput,
     state: &AppState,
+    execution_state: &Arc<ExecutionState>,
 ) -> Result<AgentConversationPlanSeedResponse, String> {
     if input.source_version == 0 {
         return Err("Source plan version must be greater than zero".to_string());
@@ -428,6 +448,7 @@ pub(crate) async fn copy_agent_conversation_plan_for_state(
             blueprint,
         },
         state,
+        execution_state,
     )
     .await
 }
@@ -436,6 +457,7 @@ pub(crate) async fn copy_agent_conversation_plan_for_state(
 pub(crate) async fn import_agent_conversation_plan_for_state(
     input: ImportAgentConversationPlanInput,
     state: &AppState,
+    execution_state: &Arc<ExecutionState>,
 ) -> Result<AgentConversationPlanSeedResponse, String> {
     let title = input.title.trim().to_string();
     if title.is_empty() {
@@ -457,6 +479,7 @@ pub(crate) async fn import_agent_conversation_plan_for_state(
             blueprint: None,
         },
         state,
+        execution_state,
     )
     .await
 }
@@ -593,22 +616,25 @@ async fn seed_agent_conversation_plan(
     conversation_id: ChatConversationId,
     seed: PlanSeed,
     state: &AppState,
+    execution_state: &Arc<ExecutionState>,
 ) -> Result<AgentConversationPlanSeedResponse, String> {
-    let switch_response = switch_agent_conversation_mode_for_state_allowing_running(
-        SwitchAgentConversationModeInput {
-            conversation_id: conversation_id.as_str().to_string(),
-            mode: AgentConversationWorkspaceMode::Plan.to_string(),
-            base_ref_kind: None,
-            base_branch_mode: None,
-            base_ref: None,
-            base_display_name: None,
-            base_source_pull_request: None,
-            runtime_override: None,
-        },
-        state,
-        ModeSwitchInitiator::User,
-    )
-    .await?;
+    let switch_response =
+        switch_agent_conversation_mode_for_state_allowing_running_with_execution_state(
+            SwitchAgentConversationModeInput {
+                conversation_id: conversation_id.as_str().to_string(),
+                mode: AgentConversationWorkspaceMode::Plan.to_string(),
+                base_ref_kind: None,
+                base_branch_mode: None,
+                base_ref: None,
+                base_display_name: None,
+                base_source_pull_request: None,
+                runtime_override: None,
+            },
+            state,
+            execution_state,
+            ModeSwitchInitiator::User,
+        )
+        .await?;
 
     ensure_plan_workspace_planning_session_link_for_send(state, &conversation_id).await?;
 
@@ -629,7 +655,9 @@ async fn seed_agent_conversation_plan(
         .to_string();
 
     let created = create_or_version_target_plan(state, target_session_id.clone(), seed).await?;
-    let workspace_response = agent_workspace_response_for_state(state, workspace).await?;
+    let workspace_response =
+        agent_workspace_response_with_pr_supervision_for_state(state, execution_state, workspace)
+            .await?;
     let mut artifact_response = AgentPlanArtifactResponse::from(created.overview);
     artifact_response.session_id = Some(target_session_id.clone());
     artifact_response.plan_approval_status = Some("draft".to_string());

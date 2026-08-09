@@ -58,48 +58,36 @@ fn weekly_delivery_throughput_dedupes_task_pipeline_and_direct_workspace_output(
     let conn = Connection::open_in_memory().unwrap();
     create_schema(&conn);
 
-    conn.execute(
+    // Use relative dates so the events stay within the 77-day rolling window regardless of
+    // when the test runs.
+    conn.execute_batch(
         "INSERT INTO tasks (id, project_id, internal_status, created_at, updated_at)
-         VALUES ('task-1', 'proj-1', 'merged', '2026-05-18T09:00:00+00:00', '2026-05-20T09:00:00+00:00')",
-        [],
+         VALUES ('task-1', 'proj-1', 'merged',
+                 datetime('now', '-10 days'),
+                 datetime('now', '-8 days'));
+
+         INSERT INTO task_state_history (id, task_id, to_status, created_at)
+         VALUES ('hist-ready',  'task-1', 'ready',  datetime('now', '-10 days')),
+                ('hist-merged', 'task-1', 'merged', datetime('now', '-8 days'));
+
+         INSERT INTO plan_branches (
+             id, project_id, merge_task_id, pr_number, pr_status, merged_at, last_polled_at
+         ) VALUES
+             ('pb-1',      'proj-1', 'task-1', 10, 'merged', datetime('now', '-8 days'), datetime('now', '-8 days')),
+             ('pb-pr-only','proj-1', NULL,      12, 'merged', datetime('now', '-8 days'), datetime('now', '-8 days'));
+
+         INSERT INTO agent_conversation_workspaces (
+             conversation_id, project_id, linked_plan_branch_id, publication_pr_number,
+             publication_pr_status, created_at, updated_at
+         ) VALUES
+             ('direct-workspace', 'proj-1', NULL,   11, 'open',   datetime('now', '-9 days'), datetime('now', '-8 days')),
+             ('execution-owned',  'proj-1', 'pb-1', 10, 'merged', datetime('now', '-9 days'), datetime('now', '-8 days'));
+
+         INSERT INTO agent_conversation_workspace_publication_events (
+             id, conversation_id, step, status, created_at
+         ) VALUES ('direct-published', 'direct-workspace', 'published', 'succeeded', datetime('now', '-8 days'));",
     )
-    .unwrap();
-    conn.execute(
-        "INSERT INTO task_state_history (id, task_id, to_status, created_at)
-         VALUES ('hist-ready', 'task-1', 'ready', '2026-05-18T09:00:00+00:00'),
-                ('hist-merged', 'task-1', 'merged', '2026-05-20T09:00:00+00:00')",
-        [],
-    )
-    .unwrap();
-    conn.execute(
-        "INSERT INTO plan_branches (
-            id, project_id, merge_task_id, pr_number, pr_status, merged_at, last_polled_at
-         )
-         VALUES
-            ('pb-1', 'proj-1', 'task-1', 10, 'merged', '2026-05-20T09:00:00+00:00', '2026-05-20T09:00:00+00:00'),
-            ('pb-pr-only', 'proj-1', NULL, 12, 'merged', '2026-05-20T11:00:00+00:00', '2026-05-20T11:00:00+00:00')",
-        [],
-    )
-    .unwrap();
-    conn.execute(
-        "INSERT INTO agent_conversation_workspaces (
-            conversation_id, project_id, linked_plan_branch_id, publication_pr_number,
-            publication_pr_status, created_at, updated_at
-         )
-         VALUES
-            ('direct-workspace', 'proj-1', NULL, 11, 'open', '2026-05-19T09:00:00+00:00', '2026-05-19T10:00:00+00:00'),
-            ('execution-owned', 'proj-1', 'pb-1', 10, 'merged', '2026-05-19T09:00:00+00:00', '2026-05-20T09:00:00+00:00')",
-        [],
-    )
-    .unwrap();
-    conn.execute(
-        "INSERT INTO agent_conversation_workspace_publication_events (
-            id, conversation_id, step, status, created_at
-         )
-         VALUES ('direct-published', 'direct-workspace', 'published', 'succeeded', '2026-05-19T10:00:00+00:00')",
-        [],
-    )
-    .unwrap();
+    .expect("insert test data");
 
     let trends = compute_project_trends(&conn, "proj-1", 0, 0).unwrap();
     let active = trends

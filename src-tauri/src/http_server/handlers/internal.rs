@@ -100,15 +100,7 @@ pub async fn create_cross_project_session_http(
     State(state): State<HttpServerState>,
     Json(input): Json<CreateCrossProjectSessionInput>,
 ) -> Result<Json<IdeationSessionResponse>, HttpError> {
-    let app_handle = state.app_state.app_handle.as_ref().ok_or_else(|| {
-        tracing::error!("create_cross_project_session_http: app_handle not available");
-        HttpError {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: Some("App handle not available".to_string()),
-        }
-    })?;
-
-    create_cross_project_session_impl(app_handle, &state.app_state, input)
+    create_cross_project_session_impl(&state.app_state, state.app_state.events.as_ref(), input)
         .await
         .map(Json)
         .map_err(|e| {

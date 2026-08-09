@@ -6,9 +6,9 @@ use crate::application::plan_approval_notification_service::{
     has_deferred_plan_approval, has_deferred_plan_approval_in_db,
     reconcile_deferred_plan_approvals_on_startup, reconcile_plan_approval_on_publish,
     release_deferred_plan_approval, release_deferred_plan_approval_for_conversation,
-    release_deferred_plan_approval_for_run, PlanApprovalNotificationDisposition,
-    PlanApprovalPublishAuthority,
+    PlanApprovalNotificationDisposition, PlanApprovalPublishAuthority,
 };
+use crate::application::plan_verification_service::PlanVerificationCompletionAdapter;
 use crate::application::AppState;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunActionKind,
@@ -522,6 +522,7 @@ async fn conversation_release_waits_for_verifier_then_terminal_run_records_atten
     let state = AppState::new_test();
     let (session, conversation) = planning_session_with_workspace(&state).await;
     seed_deferred_marker(&state, &session, "plan-current").await;
+    let adapter = PlanVerificationCompletionAdapter::from_app_state(&state);
     let mut verifier = AgentRun::new(conversation.id);
     verifier.action_kind = Some(AgentRunActionKind::VerifyPlan);
     verifier.action_context_id = Some(session.id.as_str().to_string());
@@ -529,7 +530,8 @@ async fn conversation_release_waits_for_verifier_then_terminal_run_records_atten
     let verifier = state.agent_run_repo.create(verifier).await.unwrap();
 
     assert_eq!(
-        release_deferred_plan_approval_for_conversation(&state, &conversation.id)
+        adapter
+            .release_for_conversation(&conversation.id)
             .await
             .unwrap(),
         PlanApprovalNotificationDisposition::Deferred
@@ -546,9 +548,7 @@ async fn conversation_release_waits_for_verifier_then_terminal_run_records_atten
         .await
         .unwrap();
     assert_eq!(
-        release_deferred_plan_approval_for_run(&state, &verifier.id)
-            .await
-            .unwrap(),
+        adapter.release_for_run(&verifier.id).await.unwrap(),
         PlanApprovalNotificationDisposition::Recorded
     );
     assert!(
@@ -559,7 +559,8 @@ async fn conversation_release_waits_for_verifier_then_terminal_run_records_atten
 
     seed_deferred_marker(&state, &session, "plan-current").await;
     assert_eq!(
-        release_deferred_plan_approval_for_conversation(&state, &conversation.id)
+        adapter
+            .release_for_conversation(&conversation.id)
             .await
             .unwrap(),
         PlanApprovalNotificationDisposition::Recorded
@@ -607,11 +608,10 @@ async fn run_release_rejects_missing_untyped_and_mismatched_authority() {
     let state = AppState::new_test();
     let (session, conversation) = planning_session_with_workspace(&state).await;
     seed_deferred_marker(&state, &session, "plan-current").await;
+    let adapter = PlanVerificationCompletionAdapter::from_app_state(&state);
 
     assert_eq!(
-        release_deferred_plan_approval_for_run(&state, &AgentRunId::new())
-            .await
-            .unwrap(),
+        adapter.release_for_run(&AgentRunId::new()).await.unwrap(),
         PlanApprovalNotificationDisposition::Skipped
     );
 
@@ -622,9 +622,7 @@ async fn run_release_rejects_missing_untyped_and_mismatched_authority() {
         .unwrap();
     state.agent_run_repo.complete(&plain.id).await.unwrap();
     assert_eq!(
-        release_deferred_plan_approval_for_run(&state, &plain.id)
-            .await
-            .unwrap(),
+        adapter.release_for_run(&plain.id).await.unwrap(),
         PlanApprovalNotificationDisposition::Skipped
     );
 
@@ -633,9 +631,7 @@ async fn run_release_rejects_missing_untyped_and_mismatched_authority() {
     let verifier = state.agent_run_repo.create(verifier).await.unwrap();
     state.agent_run_repo.complete(&verifier.id).await.unwrap();
     assert_eq!(
-        release_deferred_plan_approval_for_run(&state, &verifier.id)
-            .await
-            .unwrap(),
+        adapter.release_for_run(&verifier.id).await.unwrap(),
         PlanApprovalNotificationDisposition::Skipped
     );
 
@@ -650,9 +646,7 @@ async fn run_release_rejects_missing_untyped_and_mismatched_authority() {
         .await
         .unwrap();
     assert_eq!(
-        release_deferred_plan_approval_for_run(&state, &missing_session.id)
-            .await
-            .unwrap(),
+        adapter.release_for_run(&missing_session.id).await.unwrap(),
         PlanApprovalNotificationDisposition::Skipped
     );
 
@@ -667,9 +661,7 @@ async fn run_release_rejects_missing_untyped_and_mismatched_authority() {
         .await
         .unwrap();
     assert_eq!(
-        release_deferred_plan_approval_for_run(&state, &stale_target.id)
-            .await
-            .unwrap(),
+        adapter.release_for_run(&stale_target.id).await.unwrap(),
         PlanApprovalNotificationDisposition::Skipped
     );
     assert!(

@@ -1,7 +1,8 @@
 // Proposal CRUD and management commands
 
+use ralphx_events::emit_serialized;
 use std::collections::{HashMap, HashSet, VecDeque};
-use tauri::{Emitter, State};
+use tauri::State;
 
 use crate::application::{AppState, CreateProposalOptions, UpdateProposalOptions, UpdateSource};
 use crate::domain::entities::{
@@ -211,16 +212,15 @@ pub async fn toggle_proposal_selection(
         .map_err(|e| e.to_string())?;
 
     // Fetch updated proposal and emit event
-    if let Some(app_handle) = &state.app_handle {
-        if let Ok(Some(updated_proposal)) = state.task_proposal_repo.get_by_id(&proposal_id).await {
-            let response = TaskProposalResponse::from(updated_proposal);
-            let _ = app_handle.emit(
-                "proposal:updated",
-                serde_json::json!({
-                    "proposal": response
-                }),
-            );
-        }
+    if let Ok(Some(updated_proposal)) = state.task_proposal_repo.get_by_id(&proposal_id).await {
+        let response = TaskProposalResponse::from(updated_proposal);
+        let _ = emit_serialized(
+            state.events.as_ref(),
+            "proposal:updated",
+            &serde_json::json!({
+                "proposal": response
+            }),
+        );
     }
 
     Ok(new_selected)
@@ -257,16 +257,15 @@ pub async fn set_proposal_selection(
         .map_err(|e| e.to_string())?;
 
     // Fetch updated proposal and emit event
-    if let Some(app_handle) = &state.app_handle {
-        if let Ok(Some(updated_proposal)) = state.task_proposal_repo.get_by_id(&proposal_id).await {
-            let response = TaskProposalResponse::from(updated_proposal);
-            let _ = app_handle.emit(
-                "proposal:updated",
-                serde_json::json!({
-                    "proposal": response
-                }),
-            );
-        }
+    if let Ok(Some(updated_proposal)) = state.task_proposal_repo.get_by_id(&proposal_id).await {
+        let response = TaskProposalResponse::from(updated_proposal);
+        let _ = emit_serialized(
+            state.events.as_ref(),
+            "proposal:updated",
+            &serde_json::json!({
+                "proposal": response
+            }),
+        );
     }
 
     Ok(())
@@ -302,21 +301,20 @@ pub async fn reorder_proposals(
         .map_err(|e| e.to_string())?;
 
     // Emit event with updated proposals so frontend can update its state
-    if let Some(app_handle) = &state.app_handle {
-        // Fetch all proposals for this session with their new order
-        if let Ok(proposals) = state.task_proposal_repo.get_by_session(&session_id).await {
-            let responses: Vec<TaskProposalResponse> = proposals
-                .into_iter()
-                .map(TaskProposalResponse::from)
-                .collect();
-            let _ = app_handle.emit(
-                "proposals:reordered",
-                serde_json::json!({
-                    "sessionId": session_id.as_str(),
-                    "proposals": responses
-                }),
-            );
-        }
+    // Fetch all proposals for this session with their new order
+    if let Ok(proposals) = state.task_proposal_repo.get_by_session(&session_id).await {
+        let responses: Vec<TaskProposalResponse> = proposals
+            .into_iter()
+            .map(TaskProposalResponse::from)
+            .collect();
+        let _ = emit_serialized(
+            state.events.as_ref(),
+            "proposals:reordered",
+            &serde_json::json!({
+                "sessionId": session_id.as_str(),
+                "proposals": responses
+            }),
+        );
     }
 
     Ok(())
@@ -355,17 +353,16 @@ pub async fn assess_proposal_priority(
         .map_err(|e| e.to_string())?;
 
     // Emit event to frontend
-    if let Some(app_handle) = &state.app_handle {
-        let _ = app_handle.emit(
-            "proposal:priority_assessed",
-            serde_json::json!({
-                "proposalId": assessment.proposal_id.as_str(),
-                "priority": assessment.suggested_priority.to_string(),
-                "score": assessment.priority_score,
-                "reason": assessment.priority_reason
-            }),
-        );
-    }
+    let _ = emit_serialized(
+        state.events.as_ref(),
+        "proposal:priority_assessed",
+        &serde_json::json!({
+            "proposalId": assessment.proposal_id.as_str(),
+            "priority": assessment.suggested_priority.to_string(),
+            "score": assessment.priority_score,
+            "reason": assessment.priority_reason
+        }),
+    );
 
     Ok(PriorityAssessmentResponse {
         proposal_id: assessment.proposal_id.as_str().to_string(),
@@ -418,15 +415,14 @@ pub async fn assess_all_priorities(
     }
 
     // Emit event to frontend for batch assessment
-    if let Some(app_handle) = &state.app_handle {
-        let _ = app_handle.emit(
-            "session:priorities_assessed",
-            serde_json::json!({
-                "sessionId": session_id.as_str(),
-                "count": assessments.len()
-            }),
-        );
-    }
+    let _ = emit_serialized(
+        state.events.as_ref(),
+        "session:priorities_assessed",
+        &serde_json::json!({
+            "sessionId": session_id.as_str(),
+            "count": assessments.len()
+        }),
+    );
 
     Ok(assessments)
 }

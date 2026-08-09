@@ -229,7 +229,10 @@ async fn activate_methodology_command_deactivates_previous_and_reports_context()
         .await
         .expect("second activation should succeed");
 
-    assert_eq!(response.previous_methodology_id.as_deref(), Some(first_id.as_str()));
+    assert_eq!(
+        response.previous_methodology_id.as_deref(),
+        Some(first_id.as_str())
+    );
     assert_eq!(response.methodology.id, second_id.as_str());
     assert!(response.methodology.is_active);
     assert_eq!(response.workflow.name, "Test Workflow");

@@ -3,7 +3,6 @@
 
 use std::sync::Arc;
 
-use tauri::Emitter;
 use tracing::{error, info, warn};
 
 use crate::application::chat_service::{reconcile_merge_auto_complete, MergeAutoCompleteContext};
@@ -549,10 +548,8 @@ impl ReconciliationRunner {
         self.execution_state
             .set_running_count(registry_count.saturating_sub(idle_count));
         if removed > 0 {
-            if let Some(handle) = self.app_handle.as_ref() {
-                self.execution_state
-                    .emit_status_changed(handle, "runtime_registry_gc");
-            }
+            self.execution_state
+                .emit_status_changed_to_sink(self.events.as_ref(), "runtime_registry_gc");
         }
     }
 
@@ -1924,17 +1921,15 @@ impl ReconciliationRunner {
         );
 
         // Emit event for frontend
-        if let Some(ref handle) = self.app_handle {
-            let _ = handle.emit(
-                "task:provider_error_resuming",
-                serde_json::json!({
-                    "task_id": task.id.as_str(),
-                    "category": category.to_string(),
-                    "resume_status": resume_status.to_string(),
-                    "attempt": resume_attempts + 1,
-                }),
-            );
-        }
+        self.events.emit(
+            "task:provider_error_resuming",
+            serde_json::json!({
+                "task_id": task.id.as_str(),
+                "category": category.to_string(),
+                "resume_status": resume_status.to_string(),
+                "attempt": resume_attempts + 1,
+            }),
+        );
 
         // Transition back to the previous active state
         // The TransitionHandler's on_enter will re-spawn the agent
@@ -2603,7 +2598,8 @@ impl ReconciliationRunner {
                     execution_state: &self.execution_state,
                     execution_settings_repo: None,
                     plan_branch_repo: &self.plan_branch_repo,
-                    app_handle: self.app_handle.as_ref(),
+                    events: &self.events,
+                    runtime_factory_deps: self.chat_runtime_deps.as_ref(),
                     interactive_process_registry: &None,
                 };
                 reconcile_merge_auto_complete(&merge_ctx).await;

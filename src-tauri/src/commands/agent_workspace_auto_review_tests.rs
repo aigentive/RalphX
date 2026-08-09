@@ -4,22 +4,19 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
-use serde_json::json;
-use tauri::Emitter;
 
 use super::agent_workspace_auto_review::{
-    begin_auto_review, handle_auto_review_workspace_change_result,
-    install_agent_workspace_auto_review_listeners, interactive_slot_key, maybe_start_auto_review,
-    maybe_start_auto_review_from_app_handle, related_workspace_runtime_is_generating,
-    resolve_auto_review_start_action, resolve_workspace_conversation_id_for_review_event,
-    spawn_auto_review_after_workspace_change, spawn_auto_review_for_workspace,
-    spawn_auto_review_from_completion_event, AutoReviewDecision, AutoReviewSkipReason,
-    AutoReviewStartAction, AutoReviewTrigger, WorkspaceChangedEmitter,
+    begin_auto_review, handle_auto_review_workspace_change_result, interactive_slot_key,
+    maybe_start_auto_review, maybe_start_auto_review_from_app_handle,
+    related_workspace_runtime_is_generating, resolve_auto_review_start_action,
+    resolve_workspace_conversation_id_for_review_event, spawn_auto_review_after_workspace_change,
+    spawn_auto_review_for_workspace, spawn_auto_review_from_completion_payload, AutoReviewDecision,
+    AutoReviewSkipReason, AutoReviewStartAction, AutoReviewTrigger, WorkspaceChangedEmitter,
 };
 use crate::application::agent_workspace_review::{
     apply_review_artifact_to_monitor, load_agent_workspace_review_context,
 };
-use crate::application::chat_service::events::{AGENT_RUN_COMPLETED, AGENT_TURN_COMPLETED};
+use crate::application::chat_service::events::AGENT_RUN_COMPLETED;
 use crate::application::AppState;
 use crate::commands::ExecutionState;
 use crate::domain::entities::{
@@ -271,39 +268,6 @@ fn interactive_slot_key_uses_project_context() {
 }
 
 #[test]
-fn completion_event_listener_ignores_invalid_and_non_project_payloads() {
-    let app = test_app(AppState::new_test());
-    install_agent_workspace_auto_review_listeners(app.handle().clone());
-
-    app.emit(AGENT_RUN_COMPLETED, "not-json")
-        .expect("invalid payload event should emit");
-    app.emit(
-        AGENT_TURN_COMPLETED,
-        json!({
-            "conversation_id": ChatConversationId::new().as_str(),
-            "context_type": "task"
-        }),
-    )
-    .expect("non-project payload event should emit");
-}
-
-#[test]
-fn completion_event_adapter_ignores_invalid_and_non_project_payloads() {
-    let app = test_app(AppState::new_test());
-
-    spawn_auto_review_from_completion_event(app.handle().clone(), AGENT_RUN_COMPLETED, "not-json");
-    spawn_auto_review_from_completion_event(
-        app.handle().clone(),
-        AGENT_TURN_COMPLETED,
-        &json!({
-            "conversation_id": ChatConversationId::new().as_str(),
-            "context_type": "task"
-        })
-        .to_string(),
-    );
-}
-
-#[test]
 fn spawn_auto_review_for_workspace_skips_when_already_in_flight() {
     let app = test_app_with_execution_state(AppState::new_test());
     let conversation_id = ChatConversationId::new();
@@ -324,14 +288,10 @@ async fn project_completion_event_with_missing_workspace_resolves_without_starti
     let app = test_app_with_execution_state(AppState::new_test());
     let conversation_id = ChatConversationId::new();
 
-    spawn_auto_review_from_completion_event(
+    spawn_auto_review_from_completion_payload(
         app.handle().clone(),
         AGENT_RUN_COMPLETED,
-        &json!({
-            "conversation_id": conversation_id.as_str(),
-            "context_type": "project",
-        })
-        .to_string(),
+        conversation_id,
     );
 
     tokio::time::sleep(std::time::Duration::from_millis(350)).await;
@@ -351,14 +311,10 @@ async fn project_completion_event_resolves_workspace_and_runs_skip_path() {
     seed_workspace_conversation(&state, &workspace).await;
     let app = test_app_with_execution_state(state);
 
-    spawn_auto_review_from_completion_event(
+    spawn_auto_review_from_completion_payload(
         app.handle().clone(),
         AGENT_RUN_COMPLETED,
-        &json!({
-            "conversation_id": workspace.conversation_id.as_str(),
-            "context_type": "project",
-        })
-        .to_string(),
+        workspace.conversation_id.clone(),
     );
 
     for _ in 0..40 {

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::agent_workspace_auto_publish::*;
-use crate::application::chat_service::events::{AGENT_RUN_COMPLETED, AGENT_TURN_COMPLETED};
+use super::agent_workspace_completion_dispatch::AgentCompletionPayload;
 use crate::application::AppState;
 use crate::application::GitService;
 use crate::commands::unified_chat_commands::AgentConversationWorkspacePublishTarget;
@@ -302,62 +302,24 @@ fn spawn_auto_publish_skips_when_already_in_flight() {
     );
 }
 
-#[test]
-fn malformed_completion_payload_is_ignored() {
-    let app = mock_builder()
-        .build(mock_context(noop_assets()))
-        .expect("mock app should build");
-
-    spawn_auto_publish_from_completion_event(app.handle().clone(), "test_event", "{not-json");
-}
-
-#[test]
-fn non_project_completion_payload_is_ignored() {
-    let app = mock_builder()
-        .build(mock_context(noop_assets()))
-        .expect("mock app should build");
-
-    spawn_auto_publish_from_completion_event(
-        app.handle().clone(),
-        "test_event",
-        r#"{"conversation_id":"33333333-3333-3333-3333-333333333333","context_type":"task"}"#,
-    );
-}
-
 #[tokio::test]
 async fn project_completion_payload_schedules_auto_publish_task() {
     let app = mock_app(AppState::new_test(), Arc::new(ExecutionState::new()));
 
-    spawn_auto_publish_from_completion_event(
+    spawn_auto_publish_from_completion_payload(
         app.handle().clone(),
         "test_event",
-        r#"{"conversation_id":"44444444-4444-4444-4444-444444444444","context_type":"project"}"#,
+        ChatConversationId::from_string("44444444-4444-4444-4444-444444444444"),
     );
 
     wait_for_spawned_auto_publish().await;
 }
 
 #[tokio::test]
-async fn installed_listeners_handle_completion_events() {
+async fn installed_non_completion_sources_handle_recovery_redrive() {
     let app = mock_app(AppState::new_test(), Arc::new(ExecutionState::new()));
-    install_agent_workspace_auto_publish_listeners(app.handle().clone());
+    install_agent_workspace_auto_publish_non_completion_sources(app.handle().clone());
 
-    app.emit(
-        AGENT_RUN_COMPLETED,
-        serde_json::json!({
-            "conversation_id": "66666666-6666-6666-6666-666666666666",
-            "context_type": "project"
-        }),
-    )
-    .expect("run completion event should emit");
-    app.emit(
-        AGENT_TURN_COMPLETED,
-        serde_json::json!({
-            "conversation_id": "77777777-7777-7777-7777-777777777777",
-            "context_type": "project"
-        }),
-    )
-    .expect("turn completion event should emit");
     app.emit(
         crate::application::agent_workspace_publish_recovery::AGENT_WORKSPACE_PUBLISH_REDRIVE_REQUESTED,
         "88888888-8888-8888-8888-888888888888",

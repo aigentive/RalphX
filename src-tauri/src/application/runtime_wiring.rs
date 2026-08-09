@@ -230,6 +230,9 @@ pub fn build_http_app_state(
     // INVARIANT: both AppStates share native focus transitions and notification coalescing.
     http_app_state_inner.window_focus_state = shared_window_focus_state;
     http_app_state_inner.notification_service_cache = shared_notification_service_cache;
+    // INVARIANT: HTTP/MCP completion producers use the exact same correlated sink and bus as
+    // Tauri commands so one emission cannot acquire a second transport identity.
+    share_event_runtime(app_state, &mut http_app_state_inner);
     // INVARIANT: Tauri commands and HTTP/MCP handlers enforce the same live capability state.
     http_app_state_inner.agent_capability_gate = shared_agent_capability_gate;
     // INVARIANT: delegate settlement (HTTP graph) and user-send supersession (Tauri graph) must
@@ -254,6 +257,11 @@ pub(crate) fn share_plan_verification_runtime(source: &AppState, target: &mut Ap
     // INVARIANT: automatic stream finalization and manual HTTP admission serialize together.
     target.plan_verification_locks = Arc::clone(&source.plan_verification_locks);
     target.plan_verification_admissions = Arc::clone(&source.plan_verification_admissions);
+}
+
+pub(crate) fn share_event_runtime(source: &AppState, target: &mut AppState) {
+    target.events = Arc::clone(&source.events);
+    target.internal_event_bus = source.internal_event_bus.clone();
 }
 
 pub(crate) fn share_agent_workspace_repair_publish_continuation(

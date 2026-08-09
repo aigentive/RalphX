@@ -31,7 +31,7 @@ pub(super) struct ProjectSetupOutput {
     pub(super) source_pull_request: Option<AgentWorkspaceSourcePullRequest>,
 }
 
-impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
+impl<'a> AgentConversationStartService<'a> {
     pub(super) async fn resolve_project_setup(
         &self,
         input: ProjectSetupInput,
