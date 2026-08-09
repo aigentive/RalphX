@@ -1,4 +1,4 @@
-use chrono::{Duration, Utc};
+use chrono::{Datelike, Duration, Utc};
 use rusqlite::Connection;
 
 use ralphx_lib::commands::metrics_commands::compute_project_trends;
@@ -60,23 +60,22 @@ fn weekly_delivery_throughput_dedupes_task_pipeline_and_direct_workspace_output(
     create_schema(&conn);
 
     // Anchor fixture timestamps to `now` (rather than hardcoded calendar dates) so they
-    // stay inside the query's rolling 77-day window regardless of when the test runs.
+    // stay inside the query's rolling 77-day window, and place them all inside the same
+    // Sunday-start week bucket (offsets 0-2) so the fixture can't split across a week
+    // boundary regardless of which weekday the test runs on.
     let now = Utc::now();
-    let ready_at = (now - Duration::days(10))
-        .format("%Y-%m-%dT09:00:00+00:00")
-        .to_string();
-    let merged_at = (now - Duration::days(8))
-        .format("%Y-%m-%dT09:00:00+00:00")
-        .to_string();
-    let pr_only_merged_at = (now - Duration::days(8))
-        .format("%Y-%m-%dT11:00:00+00:00")
-        .to_string();
-    let workspace_created_at = (now - Duration::days(9))
-        .format("%Y-%m-%dT09:00:00+00:00")
-        .to_string();
-    let workspace_published_at = (now - Duration::days(9))
-        .format("%Y-%m-%dT10:00:00+00:00")
-        .to_string();
+    let week_start =
+        now - Duration::days(now.weekday().num_days_from_sunday() as i64) - Duration::days(7);
+    let day = |offset: i64, hour: &str| {
+        (week_start + Duration::days(offset))
+            .format(&format!("%Y-%m-%dT{hour}:00:00+00:00"))
+            .to_string()
+    };
+    let ready_at = day(0, "09");
+    let workspace_created_at = day(1, "09");
+    let workspace_published_at = day(1, "10");
+    let merged_at = day(2, "09");
+    let pr_only_merged_at = day(2, "11");
 
     conn.execute(
         "INSERT INTO tasks (id, project_id, internal_status, created_at, updated_at)
