@@ -1,5 +1,7 @@
 use super::*;
-use crate::application::plan_verification_service::complete_plan_verification;
+use crate::application::plan_verification_service::{
+    complete_plan_verification_with_deps, PlanVerificationServiceDeps,
+};
 use crate::domain::entities::{AgentRunActionKind, AgentRunId};
 use serde::Serialize;
 
@@ -48,7 +50,8 @@ pub async fn complete_plan_verification_http(
         .ok_or_else(|| {
             HttpError::validation("Verification run is missing its session binding".to_string())
         })?;
-    let completion = complete_plan_verification(&state.app_state, &session_id, run_id)
+    let verification_deps = PlanVerificationServiceDeps::from_app_state(&state.app_state);
+    let completion = complete_plan_verification_with_deps(&verification_deps, &session_id, run_id)
         .await
         .map_err(map_app_err_local)?;
 

@@ -1,4 +1,7 @@
-use super::ticketing_cache_invalidator::TicketingCacheInvalidator;
+use super::ticketing_cache_invalidator::{
+    TicketingCacheInvalidator, TICKETING_CACHE_INVALIDATED_EVENT,
+};
+use ralphx_events::RecordingEventSink;
 
 #[test]
 fn linear_issue_webhook_payload_builds_ticketing_cache_event() {
@@ -172,4 +175,55 @@ fn invalidate_linear_webhook_with_unsupported_payload_returns_none() {
     );
 
     assert!(event.is_none());
+}
+
+#[test]
+fn invalidate_linear_webhook_with_sink_emits_the_parsed_ticket_identity() {
+    let body = serde_json::json!({
+        "type": "Issue",
+        "data": {
+            "id": "issue-sink",
+            "identifier": "LIN-SINK"
+        }
+    })
+    .to_string();
+    let events = RecordingEventSink::new();
+
+    let event = TicketingCacheInvalidator::invalidate_linear_webhook_with_sink(
+        &events,
+        body.as_bytes(),
+        "recorded_by_sink",
+    )
+    .expect("supported issue webhook should invalidate the cache");
+
+    assert_eq!(event.ticket_id.as_deref(), Some("issue-sink"));
+    assert_eq!(event.ticket_key.as_deref(), Some("LIN-SINK"));
+    let recorded = events.events();
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].event, TICKETING_CACHE_INVALIDATED_EVENT);
+    assert_eq!(recorded[0].payload["ticketId"], "issue-sink");
+    assert_eq!(recorded[0].payload["ticketKey"], "LIN-SINK");
+    assert_eq!(recorded[0].payload["reason"], "recorded_by_sink");
+}
+
+#[test]
+fn invalidate_linear_webhook_with_sink_rejects_unsupported_payload_without_emitting() {
+    let body = serde_json::json!({
+        "type": "Cycle",
+        "data": { "id": "cycle-sink" }
+    })
+    .to_string();
+    let events = RecordingEventSink::new();
+
+    let event = TicketingCacheInvalidator::invalidate_linear_webhook_with_sink(
+        &events,
+        body.as_bytes(),
+        "unsupported_sink_event",
+    );
+
+    assert!(event.is_none());
+    assert!(
+        events.events().is_empty(),
+        "unsupported webhook must not emit cache invalidation"
+    );
 }

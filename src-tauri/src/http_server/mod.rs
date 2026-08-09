@@ -59,6 +59,7 @@ pub(crate) async fn recover_agent_workflow_runs_for_startup(
         app_state,
         execution_state,
         delegation_service: Arc::new(DelegationService::new()),
+        external_mcp_supervisor: None,
     };
     handlers::agent_workflows::recover_agent_workflow_runs(&state).await
 }
@@ -80,7 +81,7 @@ pub async fn start_http_server(
     execution_state: Arc<ExecutionState>,
     shutdown: crate::application::HttpShutdownHandle,
 ) -> AppResult<()> {
-    start_http_server_with_listener_ready(app_state, execution_state, shutdown, None).await
+    start_http_server_with_listener_ready(app_state, execution_state, shutdown, None, None).await
 }
 
 /// Starts the HTTP server and resolves the supplied sender only after the
@@ -90,11 +91,17 @@ pub async fn start_http_server_with_listener_ready(
     execution_state: Arc<ExecutionState>,
     shutdown: crate::application::HttpShutdownHandle,
     mut listener_ready: Option<oneshot::Sender<AppResult<()>>>,
+    external_mcp_supervisor: Option<
+        Arc<
+            dyn Fn() -> Option<Arc<crate::infrastructure::ExternalMcpSupervisor>> + Send + Sync,
+        >,
+    >,
 ) -> AppResult<()> {
     let state = HttpServerState {
         app_state,
         execution_state,
         delegation_service: Arc::new(DelegationService::new()),
+        external_mcp_supervisor,
     };
 
     // Management routes — require admin API key + localhost-only CORS.

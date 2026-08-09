@@ -1,9 +1,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::application::runtime_factory::{
-    build_transition_service_with_fallback, RuntimeFactoryDeps,
-};
+use crate::application::runtime_factory::{build_transition_service_from_deps, RuntimeFactoryDeps};
 use crate::application::task_notification_producer::TaskPipelineNotificationProducer;
 use crate::application::task_transition_service::TaskTransitionService;
 use crate::application::InteractiveProcessRegistry;
@@ -55,8 +53,8 @@ impl StartupTransitionFactory {
         Self::log_build_step("startup_transition_deps_overlay", started_at);
 
         let started_at = Instant::now();
-        let mut service = build_transition_service_with_fallback(
-            &Some(app_handle),
+        let mut service = build_transition_service_from_deps(
+            Some(app_handle),
             Arc::clone(&self.execution_state),
             &deps,
         );

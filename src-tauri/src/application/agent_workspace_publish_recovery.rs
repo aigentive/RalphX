@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use tauri::Emitter;
+use ralphx_events::emit_serialized;
 
 #[cfg(any(test, feature = "test-utils"))]
 use crate::application::agent_workspace_pr_autofix_attempt::{
@@ -642,18 +642,17 @@ pub async fn recover_stale_transient_publish_statuses_for_state(
     state: &AppState,
     stale_older_than_secs: u64,
 ) -> AppResult<u32> {
-    let app_handle = state.app_handle.clone();
+    let events = Arc::clone(&state.events);
     recover_stale_transient_publish_statuses_for_state_with_redrive_emitter(
         state,
         stale_older_than_secs,
-        &move |conversation_id| match app_handle.as_ref() {
-            Some(app_handle) => app_handle
-                .emit(
-                    AGENT_WORKSPACE_PUBLISH_REDRIVE_REQUESTED,
-                    conversation_id.as_str(),
-                )
-                .map_err(|error| error.to_string()),
-            None => Err("Tauri app handle is unavailable".to_string()),
+        &move |conversation_id| {
+            emit_serialized(
+                events.as_ref(),
+                AGENT_WORKSPACE_PUBLISH_REDRIVE_REQUESTED,
+                &conversation_id.as_str(),
+            )
+            .map_err(|error| error.to_string())
         },
     )
     .await

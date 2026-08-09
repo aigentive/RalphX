@@ -73,17 +73,18 @@ pub async fn approve_task(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     // 3. Transition to Approved
-    let approve_scheduler_concrete = Arc::new(state.app_state.build_task_scheduler_for_runtime(
-        Arc::clone(&state.execution_state),
-        state.app_state.app_handle.as_ref().cloned(),
-    ));
+    let approve_scheduler_concrete = Arc::new(
+        state
+            .app_state
+            .build_task_scheduler_for_runtime(Arc::clone(&state.execution_state), None),
+    );
     approve_scheduler_concrete
         .set_self_ref(Arc::clone(&approve_scheduler_concrete) as Arc<dyn TaskScheduler>);
     let approve_task_scheduler: Arc<dyn TaskScheduler> = approve_scheduler_concrete;
 
     let transition_service = state
         .app_state
-        .build_transition_service_with_execution_state(Arc::clone(&state.execution_state))
+        .build_transition_service_for_runtime(Arc::clone(&state.execution_state), None)
         .with_task_scheduler(approve_task_scheduler);
 
     transition_service
@@ -170,7 +171,7 @@ pub async fn request_task_changes(
     // 3. Transition to RevisionNeeded (will auto-trigger re-execution)
     let transition_service = state
         .app_state
-        .build_transition_service_with_execution_state(Arc::clone(&state.execution_state));
+        .build_transition_service_for_runtime(Arc::clone(&state.execution_state), None);
 
     transition_service
         .transition_task(&task_id, InternalStatus::RevisionNeeded)

@@ -34,19 +34,17 @@ pub struct ExecutionPlanControlOutcome {
 pub struct ExecutionPlanControlService<'a> {
     state: &'a AppState,
     execution_state: Arc<ExecutionState>,
-    app_handle: Option<AppHandle>,
 }
 
 impl<'a> ExecutionPlanControlService<'a> {
     pub fn new(
         state: &'a AppState,
         execution_state: Arc<ExecutionState>,
-        app_handle: Option<AppHandle>,
+        _app_handle: Option<AppHandle>,
     ) -> Self {
         Self {
             state,
             execution_state,
-            app_handle,
         }
     }
 
@@ -99,10 +97,10 @@ impl<'a> ExecutionPlanControlService<'a> {
             .set_halt_mode(&plan.id, ExecutionPlanHaltMode::Running)
             .await?;
 
-        let scheduler = Arc::new(self.state.build_task_scheduler_for_runtime(
-            Arc::clone(&self.execution_state),
-            self.app_handle.clone(),
-        ));
+        let scheduler = Arc::new(
+            self.state
+                .build_task_scheduler_for_runtime(Arc::clone(&self.execution_state), None),
+        );
         scheduler.set_self_ref(Arc::clone(&scheduler) as Arc<dyn TaskScheduler>);
         scheduler
             .set_active_project(Some(scope.project_id.clone()))
@@ -245,10 +243,8 @@ impl<'a> ExecutionPlanControlService<'a> {
     }
 
     fn build_transition_service(&self) -> crate::application::TaskTransitionService {
-        self.state.build_transition_service_for_runtime(
-            Arc::clone(&self.execution_state),
-            self.app_handle.clone(),
-        )
+        self.state
+            .build_transition_service_for_runtime(Arc::clone(&self.execution_state), None)
     }
 
     async fn pause_active_task(

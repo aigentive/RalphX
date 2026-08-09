@@ -1,8 +1,9 @@
 use std::path::Path;
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
+use ralphx_events::{emit_serialized, EventSink};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::application::validation_service::ValidationCommandRequest;
@@ -331,21 +332,19 @@ impl ValidationCommandEventContext {
 }
 
 pub(crate) fn emit_task_validation_event(state: &AppState, payload: &TaskValidationEventPayload) {
-    emit_task_validation_event_to_handle(state.app_handle.as_ref(), payload);
+    emit_task_validation_event_to_sink(state.events.as_ref(), payload);
 }
 
-pub(crate) fn emit_task_validation_event_to_handle(
-    app_handle: Option<&AppHandle>,
+pub(crate) fn emit_task_validation_event_to_sink(
+    events: &dyn EventSink,
     payload: &TaskValidationEventPayload,
 ) {
-    if let Some(handle) = app_handle {
-        let _ = handle.emit(TASK_VALIDATION_EVENT, payload);
-    }
+    let _ = emit_serialized(events, TASK_VALIDATION_EVENT, payload);
 }
 
 pub(crate) async fn read_stream_with_events<R>(
     stream: Option<R>,
-    app_handle: Option<AppHandle>,
+    events: Arc<dyn EventSink>,
     event_context: Option<ValidationCommandEventContext>,
     stream_name: &'static str,
 ) -> Vec<u8>
@@ -363,11 +362,10 @@ where
             Ok(0) => break,
             Ok(read) => {
                 collected.extend_from_slice(&chunk[..read]);
-                if let (Some(handle), Some(context)) = (app_handle.as_ref(), event_context.as_ref())
-                {
+                if let Some(context) = event_context.as_ref() {
                     let delta = String::from_utf8_lossy(&chunk[..read]).to_string();
-                    emit_task_validation_event_to_handle(
-                        Some(handle),
+                    emit_task_validation_event_to_sink(
+                        events.as_ref(),
                         &TaskValidationEventPayload::command_output(context, stream_name, delta),
                     );
                 }

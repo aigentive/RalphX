@@ -14,15 +14,14 @@ use crate::domain::state_machine::services::TaskScheduler;
 pub fn spawn_ready_task_scheduler_if_needed(
     app_state: &AppState,
     execution_state: Arc<ExecutionState>,
-    app_handle: Option<AppHandle>,
+    _app_handle: Option<AppHandle>,
     any_ready_tasks: bool,
 ) {
     if !any_ready_tasks {
         return;
     }
 
-    let scheduler =
-        Arc::new(app_state.build_task_scheduler_for_runtime(execution_state, app_handle));
+    let scheduler = Arc::new(app_state.build_task_scheduler_for_runtime(execution_state, None));
     scheduler.set_self_ref(Arc::clone(&scheduler) as Arc<dyn TaskScheduler>);
 
     let settle_ms = default_scheduler_ready_settle_ms();

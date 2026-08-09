@@ -86,7 +86,7 @@ pub async fn external_apply_proposals(
     // apply_proposals_core (which resolves EffectiveGatePolicy from session.origin).
     // assert_project_scope above handles auth; session fetch above validates ownership.
 
-    let result = apply_proposals_core(&state.app_state, req.into())
+    let result = apply_proposals_core(&state.app_state, &state.execution_state, req.into())
         .await
         .map_err(|e| {
             error!("apply_proposals_core failed: {}", e);
@@ -98,7 +98,7 @@ pub async fn external_apply_proposals(
             Arc::clone(&state.app_state.task_repo),
             Arc::clone(&state.app_state.project_repo),
             Arc::clone(&state.app_state.running_agent_registry),
-            None,
+            Arc::clone(&state.app_state.events),
         )
         .with_interactive_process_registry(Arc::clone(
             &state.app_state.interactive_process_registry,
@@ -131,7 +131,7 @@ pub async fn external_apply_proposals(
     spawn_ready_task_scheduler_if_needed(
         &state.app_state,
         Arc::clone(&state.execution_state),
-        state.app_state.app_handle.as_ref().cloned(),
+        None,
         result.any_ready_tasks,
     );
 

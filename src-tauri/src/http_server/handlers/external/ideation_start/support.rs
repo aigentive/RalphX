@@ -1,13 +1,11 @@
-use super::*;
 use crate::application::session_namer_agent::{spawn_session_namer_agent, SessionNamerTarget};
 
 /// Build a fully configured app chat service from shared app + execution state.
 /// Extracted to avoid duplicating the 12-arg constructor chain across multiple handlers.
 pub(crate) fn build_chat_service(
-    app: &crate::application::AppState,
-    execution_state: &std::sync::Arc<crate::commands::ExecutionState>,
+    state: &crate::http_server::HttpServerState,
 ) -> crate::application::AppChatService {
-    app.build_chat_service_with_execution_state(Arc::clone(execution_state))
+    state.build_chat_service()
 }
 
 /// Fire-and-forget: spawn the session namer agent to auto-name the session.

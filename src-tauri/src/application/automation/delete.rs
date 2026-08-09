@@ -7,7 +7,7 @@ use crate::application::automation::api::{
     automation_service_for_state, automation_transition_service_for_state,
 };
 use crate::application::automation::transition::{
-    AutomationTransitionService, AUTOMATION_RUN_UPDATED_EVENT, AUTOMATION_UPDATED_EVENT,
+    AutomationTransitionService, AUTOMATION_RUN_UPDATED_EVENT,
 };
 use crate::application::git_service::GitService;
 use crate::application::AppState;
@@ -164,19 +164,18 @@ pub(crate) async fn delete_automation_run_with_archive(
             }
         };
     }
+    state.events.emit(
+        AUTOMATION_RUN_UPDATED_EVENT,
+        serde_json::json!({
+            "automation_id": automation_id.as_str(),
+            "automationId": automation_id.as_str(),
+            "run_id": run_id.as_str(),
+            "runId": run_id.as_str(),
+        }),
+    );
     service
         .sync_goal_items_for_closed_run_without_successor(automation_id)
         .await;
-    let automation_id = automation_id.as_str();
-    let run_id = run_id.as_str();
-    state.events.emit(
-        AUTOMATION_RUN_UPDATED_EVENT,
-        serde_json::json!({"automation_id": automation_id, "automationId": automation_id, "run_id": run_id, "runId": run_id}),
-    );
-    state.events.emit(
-        AUTOMATION_UPDATED_EVENT,
-        serde_json::json!({"automation_id": automation_id, "automationId": automation_id}),
-    );
     Ok(())
 }
 

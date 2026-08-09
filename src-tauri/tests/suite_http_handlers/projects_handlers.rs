@@ -56,6 +56,7 @@ fn setup_sqlite_register_state() -> (ralphx_lib::testing::SqliteTestDb, HttpServ
         app_state: Arc::new(app_state),
         execution_state,
         delegation_service: Default::default(),
+        external_mcp_supervisor: None,
     };
     (db, state)
 }

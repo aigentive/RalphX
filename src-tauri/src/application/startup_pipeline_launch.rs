@@ -173,6 +173,7 @@ pub(crate) async fn resume_deferred_git_startup_pipeline(
     app_state: &AppState,
     startup_execution_state: Arc<ExecutionState>,
     startup_active_project_state: Arc<ActiveProjectState>,
+    startup_app_handle: tauri::AppHandle,
     pr_fix_review_publish_resumer: Option<
         Arc<
             dyn crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrFixReviewPublishResumer,
@@ -185,14 +186,11 @@ pub(crate) async fn resume_deferred_git_startup_pipeline(
     }
 
     let result = async {
-        let Some(app_handle) = app_state.app_handle.clone() else {
-            return Err("Cannot resume startup recovery without an app handle".to_string());
-        };
         let deps = build_startup_pipeline_deps(
             app_state,
             startup_execution_state,
             startup_active_project_state,
-            app_handle,
+            startup_app_handle,
             StartupPipelineMode::DeferredGitResume,
             None,
             pr_fix_review_publish_resumer,

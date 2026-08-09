@@ -49,11 +49,13 @@ use tower::ServiceExt;
 
 fn test_state() -> HttpServerState {
     let app_state = AppState::new_test();
-    install_agent_workspace_repair_publish_continuation(&app_state);
+    let execution_state = Arc::new(ExecutionState::new());
+    install_agent_workspace_repair_publish_continuation(&app_state, Arc::clone(&execution_state));
     HttpServerState {
         app_state: Arc::new(app_state),
-        execution_state: Arc::new(ExecutionState::new()),
+        execution_state,
         delegation_service: Default::default(),
+        external_mcp_supervisor: None,
     }
 }
 

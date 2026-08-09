@@ -7,6 +7,9 @@ use super::{
 use std::path::Path;
 use std::sync::Arc;
 
+use ralphx_events::NullEventSink;
+
+use crate::application::runtime_factory::ChatRuntimeFactoryDeps;
 use crate::application::AppState;
 use crate::domain::agents::{AgentHarnessKind, AgentProviderSettings};
 use crate::domain::entities::{
@@ -20,7 +23,6 @@ use crate::infrastructure::memory::{
     MemoryAgentProviderSettingsRepository, MemoryIdeationSessionRepository,
     MemoryTaskProposalRepository,
 };
-use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
 
 fn make_repos() -> (
     Arc<MemoryIdeationSessionRepository>,
@@ -34,9 +36,9 @@ fn make_repos() -> (
 
 #[tokio::test]
 async fn provider_env_for_harness_reads_recovery_app_state_provider_settings() {
-    let empty = provider_env_for_harness::<MockRuntime>(None, &None, AgentHarnessKind::Claude)
+    let empty = provider_env_for_harness(&None, AgentHarnessKind::Claude)
         .await
-        .expect("missing app handle");
+        .expect("missing provider repository");
     assert!(empty.is_empty());
 
     let temp_dir = tempfile::tempdir().expect("temp dir");
@@ -55,15 +57,11 @@ async fn provider_env_for_harness_reads_recovery_app_state_provider_settings() {
         .upsert(&settings)
         .await
         .expect("save provider settings");
-    let app = mock_builder()
-        .manage(app_state)
-        .build(mock_context(noop_assets()))
-        .expect("mock app");
+    let provider_repo = Some(Arc::clone(&app_state.agent_provider_settings_repo));
 
-    let provider_env =
-        provider_env_for_harness(Some(app.handle()), &None, AgentHarnessKind::Claude)
-            .await
-            .expect("load provider env");
+    let provider_env = provider_env_for_harness(&provider_repo, AgentHarnessKind::Claude)
+        .await
+        .expect("load provider env");
 
     assert_eq!(
         provider_env
@@ -94,10 +92,9 @@ async fn provider_env_for_harness_uses_recovery_explicit_provider_repo_without_a
         .expect("save provider settings");
     let provider_repo = Some(Arc::clone(&app_state.agent_provider_settings_repo));
 
-    let provider_env =
-        provider_env_for_harness::<MockRuntime>(None, &provider_repo, AgentHarnessKind::Claude)
-            .await
-            .expect("load provider env");
+    let provider_env = provider_env_for_harness(&provider_repo, AgentHarnessKind::Claude)
+        .await
+        .expect("load provider env");
 
     assert_eq!(
         provider_env
@@ -110,8 +107,7 @@ async fn provider_env_for_harness_uses_recovery_explicit_provider_repo_without_a
 
 #[tokio::test]
 async fn session_recovery_provider_decision_fails_slot_without_provider_repo() {
-    let block = session_recovery_provider_decision::<MockRuntime>(
-        None,
+    let block = session_recovery_provider_decision(
         &None,
         AgentHarnessKind::Claude,
         ChatContextType::Review,
@@ -124,8 +120,7 @@ async fn session_recovery_provider_decision_fails_slot_without_provider_repo() {
 
 #[tokio::test]
 async fn session_recovery_provider_decision_allows_non_slot_without_provider_repo() {
-    let decision = session_recovery_provider_decision::<MockRuntime>(
-        None,
+    let decision = session_recovery_provider_decision(
         &None,
         AgentHarnessKind::Claude,
         ChatContextType::Project,
@@ -149,8 +144,7 @@ async fn session_recovery_provider_decision_blocks_disabled_slot_provider_withou
     let provider_repo: Arc<dyn AgentProviderSettingsRepository> = repo;
     let provider_repo = Some(provider_repo);
 
-    let block = session_recovery_provider_decision::<MockRuntime>(
-        None,
+    let block = session_recovery_provider_decision(
         &provider_repo,
         AgentHarnessKind::Claude,
         ChatContextType::Review,
@@ -188,8 +182,7 @@ async fn session_recovery_provider_decision_applies_explicit_provider_env() {
         .expect("save provider settings");
     let provider_repo = Some(Arc::clone(&app_state.agent_provider_settings_repo));
 
-    let decision = session_recovery_provider_decision::<MockRuntime>(
-        None,
+    let decision = session_recovery_provider_decision(
         &provider_repo,
         AgentHarnessKind::Claude,
         ChatContextType::Review,
@@ -267,13 +260,12 @@ async fn attempt_session_recovery_uses_managed_review_provider_settings_until_st
     let chat_attachment_repo = Arc::clone(&state.chat_attachment_repo);
     let artifact_repo = Arc::clone(&state.artifact_repo);
     let agent_run_repo = Arc::clone(&state.agent_run_repo);
-    let app = mock_builder()
-        .manage(state)
-        .build(mock_context(noop_assets()))
-        .expect("mock app");
+    let provider_repo = Some(Arc::clone(&state.agent_provider_settings_repo));
+    let runtime_factory_deps = ChatRuntimeFactoryDeps::from_app_state(&state);
+    let events = Arc::clone(&state.events);
     let temp_dir = tempfile::tempdir().expect("temp dir");
 
-    let error = attempt_session_recovery::<MockRuntime>(
+    let error = attempt_session_recovery(
         &conversation_id,
         &conversation,
         AgentHarnessKind::Claude,
@@ -292,11 +284,12 @@ async fn attempt_session_recovery_uses_managed_review_provider_settings_until_st
         None,
         agent_run_repo,
         "recovery-run-id",
-        None,
+        provider_repo,
         false,
         false,
         "old-session",
-        Some(app.handle()),
+        Some(&runtime_factory_deps),
+        events.as_ref(),
     )
     .await
     .expect_err("review recovery should reach the inert stream with managed provider settings");
@@ -337,13 +330,11 @@ async fn attempt_session_recovery_allows_project_without_provider_settings_until
     let chat_attachment_repo = Arc::clone(&state.chat_attachment_repo);
     let artifact_repo = Arc::clone(&state.artifact_repo);
     let agent_run_repo = Arc::clone(&state.agent_run_repo);
-    let app = mock_builder()
-        .manage(state)
-        .build(mock_context(noop_assets()))
-        .expect("mock app");
+    let runtime_factory_deps = ChatRuntimeFactoryDeps::from_app_state(&state);
+    let events = Arc::clone(&state.events);
     let temp_dir = tempfile::tempdir().expect("temp dir");
 
-    let error = attempt_session_recovery::<MockRuntime>(
+    let error = attempt_session_recovery(
         &conversation_id,
         &conversation,
         AgentHarnessKind::Claude,
@@ -366,7 +357,8 @@ async fn attempt_session_recovery_allows_project_without_provider_settings_until
         false,
         false,
         "old-session",
-        Some(app.handle()),
+        Some(&runtime_factory_deps),
+        events.as_ref(),
     )
     .await
     .expect_err("project recovery should reach the inert stream without provider settings");
@@ -397,7 +389,8 @@ async fn attempt_session_recovery_rejects_authoritative_mode_only_builder_identi
         .expect("seed invalid-context builder row");
     let temp_dir = tempfile::tempdir().expect("temp dir");
 
-    let error = attempt_session_recovery::<MockRuntime>(
+    let events = NullEventSink;
+    let error = attempt_session_recovery(
         &conversation_id,
         &conversation,
         AgentHarnessKind::Claude,
@@ -421,6 +414,7 @@ async fn attempt_session_recovery_rejects_authoritative_mode_only_builder_identi
         false,
         "invalid-builder-session",
         None,
+        &events,
     )
     .await
     .expect_err("unsupported context must not acquire PersonaBuilder recovery authority");
@@ -448,12 +442,13 @@ async fn test_recovery_metadata_includes_verification_fields_when_in_progress() 
         session_repo.clone() as Arc<dyn IdeationSessionRepository>;
     let proposal_repo_dyn: Arc<dyn TaskProposalRepository> =
         proposal_repo as Arc<dyn TaskProposalRepository>;
+    let events = NullEventSink;
 
     let metadata = build_ideation_recovery_metadata(
         session_id.as_str(),
         Some(&session_repo_dyn),
         Some(&proposal_repo_dyn),
-        None::<&tauri::AppHandle>,
+        &events,
     )
     .await;
 
@@ -501,12 +496,13 @@ async fn test_recovery_metadata_no_reset_when_not_in_progress() {
         session_repo.clone() as Arc<dyn IdeationSessionRepository>;
     let proposal_repo_dyn: Arc<dyn TaskProposalRepository> =
         proposal_repo as Arc<dyn TaskProposalRepository>;
+    let events = NullEventSink;
 
     let metadata = build_ideation_recovery_metadata(
         session_id.as_str(),
         Some(&session_repo_dyn),
         Some(&proposal_repo_dyn),
-        None::<&tauri::AppHandle>,
+        &events,
     )
     .await;
 
@@ -536,12 +532,13 @@ async fn test_recovery_metadata_returns_none_for_missing_session() {
         session_repo as Arc<dyn IdeationSessionRepository>;
     let proposal_repo_dyn: Arc<dyn TaskProposalRepository> =
         proposal_repo as Arc<dyn TaskProposalRepository>;
+    let events = NullEventSink;
 
     let metadata = build_ideation_recovery_metadata(
         "nonexistent-session-id",
         Some(&session_repo_dyn),
         Some(&proposal_repo_dyn),
-        None::<&tauri::AppHandle>,
+        &events,
     )
     .await;
 
@@ -550,8 +547,7 @@ async fn test_recovery_metadata_returns_none_for_missing_session() {
 
 #[tokio::test]
 async fn test_recovery_metadata_returns_none_when_repos_absent() {
-    let metadata =
-        build_ideation_recovery_metadata("any-id", None, None, None::<&tauri::AppHandle>).await;
+    let metadata = build_ideation_recovery_metadata("any-id", None, None, &NullEventSink).await;
     assert!(
         metadata.is_none(),
         "must return None when repos are not provided"

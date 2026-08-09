@@ -1,6 +1,7 @@
 // Tauri commands for Project CRUD operations
 // Thin layer that delegates to ProjectRepository
 
+use ralphx_events::EventSink;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -283,7 +284,7 @@ pub async fn create_project(
         &state,
         created.id.as_str(),
         &created.working_directory,
-        state.app_handle.clone(),
+        Arc::clone(&state.events),
     )
     .await;
 
@@ -625,7 +626,7 @@ pub async fn spawn_project_analyzer(
     state: &AppState,
     project_id: &str,
     working_directory: &str,
-    app_handle: Option<tauri::AppHandle>,
+    events: Arc<dyn EventSink>,
 ) {
     use crate::application::harness_runtime_registry::resolve_harness_agent_bootstrap;
     use crate::domain::agents::{AgentConfig, AgentRole, RoutingRole, DEFAULT_AGENT_HARNESS};
@@ -645,18 +646,17 @@ pub async fn spawn_project_analyzer(
     let pid = project_id.to_string();
 
     let emit_failure = {
-        let app_handle = app_handle.clone();
+        let events = Arc::clone(&events);
         let pid = pid.clone();
         move |error: &str| {
-            if let Some(ref handle) = app_handle {
-                let _ = handle.emit(
-                    "project:analysis_failed",
-                    serde_json::json!({
-                        "project_id": pid,
-                        "error": error,
-                    }),
-                );
-            }
+            let _ = ralphx_events::emit_serialized(
+                events.as_ref(),
+                "project:analysis_failed",
+                &serde_json::json!({
+                    "project_id": pid,
+                    "error": error,
+                }),
+            );
         }
     };
 
@@ -757,7 +757,7 @@ pub async fn reanalyze_project(id: String, state: State<'_, AppState>) -> Result
         &state,
         &id,
         &project.working_directory,
-        state.app_handle.clone(),
+        Arc::clone(&state.events),
     )
     .await;
 
@@ -1166,6 +1166,7 @@ pub async fn resume_deferred_git_startup(
     state: State<'_, AppState>,
     execution_state: State<'_, Arc<ExecutionState>>,
     active_project_state: State<'_, Arc<ActiveProjectState>>,
+    app: tauri::AppHandle,
 ) -> Result<bool, String> {
     let pr_fix_review_publish_resumer = Arc::new(
         crate::commands::unified_chat_commands::AgentWorkspacePrFixReviewPublishCommandResumer {
@@ -1180,6 +1181,7 @@ pub async fn resume_deferred_git_startup(
         &state,
         Arc::clone(&execution_state),
         Arc::clone(&active_project_state),
+        app,
         Some(pr_fix_review_publish_resumer),
     )
     .await

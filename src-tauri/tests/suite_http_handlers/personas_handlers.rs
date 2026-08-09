@@ -68,6 +68,7 @@ fn setup_state(event_sink: Option<RecordingEventSink>) -> HttpServerState {
         app_state: Arc::new(app_state),
         execution_state: Arc::new(ExecutionState::new()),
         delegation_service: Arc::new(DelegationService::new()),
+        external_mcp_supervisor: None,
     }
 }
 

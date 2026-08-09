@@ -64,7 +64,10 @@ async fn start_research_command_applies_custom_depth_brief_and_output() {
 
     assert_eq!(response.name, "Command Research");
     assert_eq!(response.question, "How should commands be tested?");
-    assert_eq!(response.context.as_deref(), Some("Backend command coverage"));
+    assert_eq!(
+        response.context.as_deref(),
+        Some("Backend command coverage")
+    );
     assert_eq!(response.scope.as_deref(), Some("src-tauri commands"));
     assert_eq!(response.constraints, vec!["test-only", "no network"]);
     assert_eq!(response.agent_profile_id, "researcher");
@@ -244,10 +247,9 @@ async fn pause_resume_and_stop_research_commands_enforce_status_transitions() {
         .await
         .expect("pending process creates");
 
-    let pending_pause =
-        pause_research(pending_id.as_str().to_string(), app.state::<AppState>())
-            .await
-            .expect_err("pending process cannot pause");
+    let pending_pause = pause_research(pending_id.as_str().to_string(), app.state::<AppState>())
+        .await
+        .expect_err("pending process cannot pause");
     assert!(pending_pause.contains("Cannot pause research in status: pending"));
 
     let mut running = create_test_process();

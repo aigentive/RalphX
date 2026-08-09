@@ -25,6 +25,7 @@ fn test_state() -> HttpServerState {
         app_state: Arc::new(AppState::new_test()),
         execution_state: Arc::new(ExecutionState::new()),
         delegation_service: Arc::new(DelegationService::new()),
+        external_mcp_supervisor: None,
     }
 }
 

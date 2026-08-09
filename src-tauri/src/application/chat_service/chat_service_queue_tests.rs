@@ -1,4 +1,5 @@
 use super::*;
+use crate::application::AppState;
 use crate::domain::agents::LogicalEffort;
 use crate::domain::entities::{
     ChatAttachmentId, ChatContextType, ChatConversationId, ChatTimelineItem, ChatTimelineItemKind,
@@ -11,8 +12,9 @@ use crate::domain::services::{
 };
 use crate::infrastructure::agents::claude::agent_names;
 use chrono::{Duration, Utc};
-use std::sync::{Arc, Mutex};
-use tauri::{Listener, Manager};
+use ralphx_events::RecordingEventSink;
+use std::sync::Arc;
+use tauri::Manager;
 
 fn recovered_pending_turn(queued_at: String) -> PendingStdinTurn {
     PendingStdinTurn {
@@ -135,17 +137,13 @@ async fn requeue_pending_stdin_turns_suppresses_later_assistant_activity() {
         .manage(state)
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("mock app");
-    let events = Arc::new(Mutex::new(Vec::new()));
-    let captured = Arc::clone(&events);
-    let _listener = app.listen("agent:message_queued", move |event| {
-        captured.lock().unwrap().push(event.payload().to_string());
-    });
+    let recording_sink = RecordingEventSink::new();
 
     let state = app.state::<AppState>();
     requeue_pending_stdin_turns(
         Some(&state.queued_message_repo),
         &state.message_queue,
-        Some(app.handle()),
+        &recording_sink,
         ChatContextType::Project,
         "recovery-context",
         Some(conversation_id.as_str()),
@@ -166,7 +164,10 @@ async fn requeue_pending_stdin_turns_suppresses_later_assistant_activity() {
         .expect("durable queue")
         .is_empty());
     assert!(state.message_queue.get_queued_with_key(&key).is_empty());
-    assert!(events.lock().unwrap().is_empty());
+    assert!(recording_sink
+        .events()
+        .iter()
+        .all(|e| e.event != "agent:message_queued"));
 }
 
 #[tokio::test]
@@ -190,17 +191,13 @@ async fn requeue_pending_stdin_turns_retains_unparseable_timestamp() {
         .manage(state)
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("mock app");
-    let events = Arc::new(Mutex::new(Vec::new()));
-    let captured = Arc::clone(&events);
-    let _listener = app.listen("agent:message_queued", move |event| {
-        captured.lock().unwrap().push(event.payload().to_string());
-    });
+    let recording_sink = RecordingEventSink::new();
 
     let state = app.state::<AppState>();
     requeue_pending_stdin_turns(
         Some(&state.queued_message_repo),
         &state.message_queue,
-        Some(app.handle()),
+        &recording_sink,
         ChatContextType::Project,
         "recovery-context",
         Some(conversation_id.as_str()),
@@ -224,7 +221,14 @@ async fn requeue_pending_stdin_turns_retains_unparseable_timestamp() {
         1
     );
     assert_eq!(state.message_queue.get_queued_with_key(&key).len(), 1);
-    assert_eq!(events.lock().unwrap().len(), 1);
+    assert_eq!(
+        recording_sink
+            .events()
+            .iter()
+            .filter(|e| e.event == "agent:message_queued")
+            .count(),
+        1
+    );
 }
 
 #[tokio::test]
@@ -255,17 +259,13 @@ async fn requeue_pending_stdin_turns_retains_turn_when_timeline_evidence_fails()
         .manage(state)
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("mock app");
-    let events = Arc::new(Mutex::new(Vec::new()));
-    let captured = Arc::clone(&events);
-    let _listener = app.listen("agent:message_queued", move |event| {
-        captured.lock().unwrap().push(event.payload().to_string());
-    });
+    let recording_sink = RecordingEventSink::new();
 
     let state = app.state::<AppState>();
     requeue_pending_stdin_turns(
         Some(&state.queued_message_repo),
         &state.message_queue,
-        Some(app.handle()),
+        &recording_sink,
         ChatContextType::Project,
         "recovery-context",
         Some(conversation_id.as_str()),
@@ -289,7 +289,14 @@ async fn requeue_pending_stdin_turns_retains_turn_when_timeline_evidence_fails()
         1
     );
     assert_eq!(state.message_queue.get_queued_with_key(&key).len(), 1);
-    assert_eq!(events.lock().unwrap().len(), 1);
+    assert_eq!(
+        recording_sink
+            .events()
+            .iter()
+            .filter(|e| e.event == "agent:message_queued")
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -771,7 +778,7 @@ async fn provider_switch_queue_without_app_handle_requeues_instead_of_resuming()
         Vec::new(),
     );
 
-    let outcome = process_queued_messages::<tauri::test::MockRuntime>(
+    let outcome = process_queued_messages(
         ChatContextType::Ideation,
         AgentHarnessKind::Claude,
         "session-queued-switch",
@@ -795,6 +802,8 @@ async fn provider_switch_queue_without_app_handle_requeues_instead_of_resuming()
         std::path::Path::new("."),
         std::path::Path::new("."),
         None,
+        None,
+        Arc::clone(&app_state.events),
         None,
         None,
         None,
@@ -857,7 +866,7 @@ async fn missing_completed_owner_requeues_message_without_preflight_failure_run(
         Vec::new(),
     );
 
-    let outcome = process_queued_messages::<tauri::test::MockRuntime>(
+    let outcome = process_queued_messages(
         ChatContextType::Ideation,
         AgentHarnessKind::Codex,
         "plan-session",
@@ -881,6 +890,8 @@ async fn missing_completed_owner_requeues_message_without_preflight_failure_run(
         std::path::Path::new("."),
         std::path::Path::new("."),
         None,
+        None,
+        Arc::clone(&app_state.events),
         None,
         None,
         None,

@@ -81,7 +81,7 @@ use crate::application::managed_team::{
 };
 use crate::application::publish_resilience::PublishBranchFreshnessStatus;
 use crate::application::{
-    chat_service::{AgentRuntimeStatus, MockChatService},
+    chat_service::{AgentRuntimeStatus, ChatService, MockChatService},
     AgentTaskService, AppState,
 };
 use crate::commands::ExecutionState;
@@ -2264,6 +2264,26 @@ async fn repair_wait_releases_when_ipr_is_idle_or_process_exited() {
     );
 }
 
+#[test]
+fn repair_chat_runtime_preserves_explicit_execution_gate() {
+    let state = AppState::new_test();
+    let execution_state = Arc::new(ExecutionState::new());
+    let service = state.build_chat_service_with_execution_state(Arc::clone(&execution_state));
+
+    let composed = service
+        .runtime_execution_state()
+        .expect("repair chat runtime should retain its explicit execution gate");
+    assert!(Arc::ptr_eq(&composed, &execution_state));
+
+    let supervision_runtime = crate::application::agent_workspace_pr_supervision_recovery::
+        AgentWorkspacePrSupervisionRuntime::from_state(&state, Arc::clone(&execution_state));
+    let supervision_gate = supervision_runtime
+        .chat_service
+        .runtime_execution_state()
+        .expect("PR supervision runtime should retain its explicit execution gate");
+    assert!(Arc::ptr_eq(&supervision_gate, &execution_state));
+}
+
 #[tokio::test]
 async fn fixable_publish_failure_routes_repair_and_records_events() {
     let state = AppState::new_test();
@@ -4133,6 +4153,7 @@ async fn deferred_repair_spawn_without_app_handle_noops() {
         AgentWorkspacePostRepairAction::Publish,
         None,
         None,
+        None,
     )
     .await;
 
@@ -5288,6 +5309,7 @@ async fn workspace_load_external_pr_reconciliation_schedules_for_reconcilable_wo
 
     schedule_external_pr_reconciliation_for_workspace(
         &state,
+        &Arc::new(ExecutionState::new()),
         &workspace,
         AgentWorkspaceExternalPrReconciliationTrigger::WorkspaceLoad,
         false,
@@ -5315,6 +5337,7 @@ async fn workspace_load_external_pr_reconciliation_skips_unreconcilable_workspac
 
     schedule_external_pr_reconciliation_for_workspace(
         &state,
+        &Arc::new(ExecutionState::new()),
         &workspace,
         AgentWorkspaceExternalPrReconciliationTrigger::WorkspaceLoad,
         false,
@@ -5350,6 +5373,7 @@ async fn run_completed_external_pr_reconciliation_links_terminal_pr() {
 
     schedule_external_pr_reconciliation_for_conversation_id(
         &state,
+        &Arc::new(ExecutionState::new()),
         conversation_id.clone(),
         AgentWorkspaceExternalPrReconciliationTrigger::AgentRunCompleted,
         true,
@@ -5413,6 +5437,7 @@ async fn run_completed_pr_supervision_recovery_rearms_blocked_workspace() {
 
     schedule_pr_supervision_recovery_for_conversation_id(
         &state,
+        &Arc::new(ExecutionState::new()),
         conversation_id.clone(),
         AgentWorkspacePrSupervisionRecoveryTrigger::AgentRunCompleted,
         true,
