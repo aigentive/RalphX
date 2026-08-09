@@ -46,7 +46,7 @@ use ralphx_events::{EventSink, NullEventSink, RecordingEventSink};
 use std::os::unix::process::ExitStatusExt;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
-use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
+use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::{Listener, Manager};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
@@ -962,14 +962,15 @@ async fn error_turn_complete_with_persisted_output_leaves_pending_stdin_for_reco
         .expect("mock app");
     let app_state = app.state::<AppState>();
 
-    let error = process_stream_background::<MockRuntime>(
+    let error = process_stream_background(
         child,
         AgentHarnessKind::Claude,
         ChatContextType::Project,
         context_id,
         &conversation_id,
-        None::<std::path::PathBuf>,
-        Some(app.handle().clone()),
+        null_event_sink(),
+        None,
+        None,
         None,
         None,
         Some(Arc::clone(&app_state.chat_message_repo)),

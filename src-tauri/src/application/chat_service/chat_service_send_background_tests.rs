@@ -3043,21 +3043,8 @@ async fn background_run_suppresses_answered_pending_stdin_turns() {
         execution_settings_repo: Some(Arc::clone(&state.execution_settings_repo)),
         agent_lane_settings_repo: Some(Arc::clone(&state.agent_lane_settings_repo)),
         agent_provider_settings_repo: Some(Arc::clone(&state.agent_provider_settings_repo)),
-        ideation_effort_settings_repo: None,
-        ideation_model_settings_repo: None,
-        agent_conversation_workspace_repo: Some(Arc::clone(
-            &state.agent_conversation_workspace_repo,
-        )),
-        agent_conversation_jira_issue_repo: Some(Arc::clone(
-            &state.agent_conversation_jira_issue_repo,
-        )),
-        agent_conversation_linear_issue_repo: Some(Arc::clone(
-            &state.agent_conversation_linear_issue_repo,
-        )),
-        agent_conversation_granola_note_repo: Some(Arc::clone(
-            &state.agent_conversation_granola_note_repo,
-        )),
         task_proposal_repo: Some(Arc::clone(&state.task_proposal_repo)),
+        queued_message_repo: Some(Arc::clone(&state.queued_message_repo)),
         activity_event_repo: Arc::clone(&state.activity_event_repo),
         memory_event_repo: Arc::clone(&state.memory_event_repo),
         notification_service: None,
@@ -3075,15 +3062,7 @@ async fn background_run_suppresses_answered_pending_stdin_turns() {
         .manage(state)
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("mock app");
-    let app_handle = app.handle().clone();
-    let queued_events = Arc::new(Mutex::new(Vec::new()));
-    let captured_events = Arc::clone(&queued_events);
-    let _listener = app.listen("agent:message_queued", move |event| {
-        captured_events
-            .lock()
-            .expect("queued event log")
-            .push(event.payload().to_string());
-    });
+    let recording_sink = Arc::new(RecordingEventSink::new());
     let mut child = spawn_interactive_claude_jsonl_fixture(&[
         r#"{"type":"assistant","message":{"content":[{"type":"text","text":"handled after the pending message"}]},"session_id":"sess-bg-pending"}"#,
         r#"{"type":"result","session_id":"sess-bg-pending","is_error":true,"errors":["fixture failure"],"result":"failed","cost_usd":0.0}"#,
@@ -3112,7 +3091,7 @@ async fn background_run_suppresses_answered_pending_stdin_turns() {
             .await
     );
 
-    super::spawn_send_message_background::<tauri::test::MockRuntime>(super::BackgroundRunContext {
+    super::spawn_send_message_background(super::BackgroundRunContext {
         child,
         harness: AgentHarnessKind::Claude,
         context_type: ChatContextType::Project,
@@ -3128,7 +3107,9 @@ async fn background_run_suppresses_answered_pending_stdin_turns() {
         execution_state: None,
         question_state: None,
         plan_branch_repo: None,
-        app_handle: Some(app_handle),
+        events: Arc::clone(&recording_sink) as Arc<dyn ralphx_events::EventSink>,
+        plan_verification_completion: None,
+        runtime_factory_deps: None,
         run_chain_id: None,
         is_retry_attempt: false,
         persona_feature_enabled: false,
@@ -3176,7 +3157,10 @@ async fn background_run_suppresses_answered_pending_stdin_turns() {
         "suppressed recovery must not leave an in-memory retry"
     );
     assert!(
-        queued_events.lock().expect("queued event log").is_empty(),
+        recording_sink
+            .events()
+            .iter()
+            .all(|e| e.event != "agent:message_queued"),
         "suppressed recovery must not publish a queued-message event"
     );
 }
