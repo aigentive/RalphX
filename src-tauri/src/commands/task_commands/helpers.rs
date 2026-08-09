@@ -7,6 +7,7 @@ use crate::application::AppState;
 use crate::domain::entities::{
     ChatContextType, IdeationSessionId, InternalStatus, ProjectId, TaskId,
 };
+use ralphx_events::{emit_serialized, EventSink};
 use tauri::{Emitter, State};
 
 /// Default target for inject_task command
@@ -156,6 +157,22 @@ pub fn emit_task_lifecycle_event(
     let _ = app.emit(
         event_name,
         serde_json::json!({
+            "taskId": task_id,
+            "projectId": project_id,
+        }),
+    );
+}
+
+pub fn emit_task_lifecycle_event_to_sink(
+    events: &dyn EventSink,
+    event_name: &str,
+    task_id: &str,
+    project_id: &str,
+) {
+    let _ = emit_serialized(
+        events,
+        event_name,
+        &serde_json::json!({
             "taskId": task_id,
             "projectId": project_id,
         }),

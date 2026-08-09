@@ -18,7 +18,7 @@ use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{ChatContextType, ChatConversationId};
 use crate::infrastructure::agents::claude::{DiffContext, ToolCall};
 use crate::infrastructure::memory::MemoryChatMessageRepository;
-use tauri::test::MockRuntime;
+use ralphx_events::NullEventSink;
 use tokio_util::sync::CancellationToken;
 
 #[test]
@@ -961,7 +961,6 @@ fn live_tool_result_payload_helpers_use_preview_result() {
 
 #[tokio::test]
 async fn stream_background_previews_heavy_live_tool_result() {
-    let app = crate::testing::create_mock_app();
     let conversation_id = ChatConversationId::from_string("conv-live-preview".to_string());
     let long_result = (1..=12)
         .map(|index| format!("line {index}"))
@@ -999,14 +998,15 @@ async fn stream_background_previews_heavy_live_tool_result() {
         .spawn()
         .expect("spawn stream fixture");
 
-    let outcome = process_stream_background::<MockRuntime>(
+    let outcome = process_stream_background(
         child,
         AgentHarnessKind::Claude,
         ChatContextType::TaskExecution,
         "task-live-preview",
         &conversation_id,
-        None::<std::path::PathBuf>,
-        Some(app.handle().clone()),
+        Arc::new(NullEventSink),
+        None,
+        None,
         None,
         None,
         Some(Arc::new(MemoryChatMessageRepository::new())),

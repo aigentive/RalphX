@@ -1,14 +1,9 @@
-use std::sync::Arc;
-
 use chrono::Utc;
-use tauri::Manager;
+use std::sync::Arc;
 
 use crate::application::app_state::ApplicationExecutionState;
 use crate::application::automation::api::automation_transition_service_for_state;
 use crate::application::automation::plan_gate::clear_plan_phase_publication_metadata;
-use crate::application::automation::transition::{
-    AUTOMATION_RUN_UPDATED_EVENT, AUTOMATION_UPDATED_EVENT,
-};
 use crate::application::startup_background::resume_automation_run_with_prompt_via_chat_service;
 use crate::application::AppState;
 use crate::domain::entities::{
@@ -33,6 +28,7 @@ pub(crate) trait AutomationRunRedriver: Send + Sync {
     async fn redrive(
         &self,
         state: &AppState,
+        execution_state: &Arc<ApplicationExecutionState>,
         conversation_id: &ChatConversationId,
         prompt: &str,
     ) -> AppResult<()>;
@@ -45,10 +41,12 @@ impl AutomationRunRedriver for ChatServiceAutomationRunRedriver {
     async fn redrive(
         &self,
         state: &AppState,
+        execution_state: &Arc<ApplicationExecutionState>,
         conversation_id: &ChatConversationId,
         prompt: &str,
     ) -> AppResult<()> {
-        let chat_service = state.build_chat_service_with_managed_execution_state();
+        let chat_service =
+            state.build_chat_service_with_execution_state(Arc::clone(execution_state));
         resume_automation_run_with_prompt_via_chat_service(
             state,
             &chat_service,
@@ -68,11 +66,13 @@ impl AutomationRunRedriver for ChatServiceAutomationRunRedriver {
 /// reopened, and propagates repository or chat delivery failures.
 pub(crate) async fn reopen_automation_run(
     state: &AppState,
+    execution_state: &Arc<ApplicationExecutionState>,
     automation_id: &AutomationId,
     run_id: &AutomationRunId,
 ) -> AppResult<()> {
     reopen_automation_run_with_redriver(
         state,
+        execution_state,
         automation_id,
         run_id,
         &ChatServiceAutomationRunRedriver,
@@ -82,11 +82,12 @@ pub(crate) async fn reopen_automation_run(
 
 pub(crate) async fn reopen_automation_run_with_redriver(
     state: &AppState,
+    execution_state: &Arc<ApplicationExecutionState>,
     automation_id: &AutomationId,
     run_id: &AutomationRunId,
     redriver: &dyn AutomationRunRedriver,
 ) -> AppResult<()> {
-    let context = load_reopen_context(state, automation_id, run_id).await?;
+    let context = load_reopen_context(state, execution_state, automation_id, run_id).await?;
     let basis = Utc::now();
 
     // Claim authority first: the corrective transition is the atomic gate. Only after
@@ -128,17 +129,18 @@ pub(crate) async fn reopen_automation_run_with_redriver(
     redriver
         .redrive(
             state,
+            execution_state,
             &context.conversation_id,
             AUTOMATION_RUN_CONTINUATION_PROMPT,
         )
         .await?;
 
-    emit_reopen_events(state, automation_id, run_id);
     Ok(())
 }
 
 async fn load_reopen_context(
     state: &AppState,
+    execution_state: &Arc<ApplicationExecutionState>,
     automation_id: &AutomationId,
     run_id: &AutomationRunId,
 ) -> AppResult<ReopenContext> {
@@ -194,7 +196,7 @@ async fn load_reopen_context(
             "the run agent is already running".to_string(),
         ));
     }
-    if launches_paused(state) {
+    if execution_state.is_paused() {
         return Err(AppError::Conflict("agent launches are paused".to_string()));
     }
 
@@ -224,32 +226,6 @@ async fn reset_reopen_state(state: &AppState, context: &ReopenContext) -> AppRes
         .set_plan_reminder_count(&context.run.id, 0)
         .await?;
     Ok(())
-}
-
-fn emit_reopen_events(state: &AppState, automation_id: &AutomationId, run_id: &AutomationRunId) {
-    let automation_id = automation_id.as_str();
-    let run_id = run_id.as_str();
-    state.events.emit(
-        AUTOMATION_RUN_UPDATED_EVENT,
-        serde_json::json!({
-            "automation_id": automation_id,
-            "automationId": automation_id,
-            "run_id": run_id,
-            "runId": run_id,
-        }),
-    );
-    state.events.emit(
-        AUTOMATION_UPDATED_EVENT,
-        serde_json::json!({"automation_id": automation_id, "automationId": automation_id}),
-    );
-}
-
-fn launches_paused(state: &AppState) -> bool {
-    state
-        .app_handle
-        .as_ref()
-        .and_then(|handle| handle.try_state::<Arc<ApplicationExecutionState>>())
-        .is_some_and(|execution_state| execution_state.is_paused())
 }
 
 async fn rearm_workspace_review_monitor(

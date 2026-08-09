@@ -12,19 +12,20 @@ fn tauri_context() -> tauri::Context<tauri::test::MockRuntime> {
 }
 
 mod activity_commands;
+mod agent_completion_event_runtime;
 mod agent_profile_commands;
-mod automation_commands;
-mod methodology_commands;
-mod metrics_commands;
-mod qa_commands;
-mod release_notes_commands;
-mod research_commands;
-mod workflow_commands;
 mod artifact_commands;
-mod review_commands;
-mod review_service;
-mod plan_branch_commands;
+mod automation_commands;
 mod conversation_stats_commands;
 mod execution_commands_running_count;
-mod question_commands;
 mod git_commands;
+mod methodology_commands;
+mod metrics_commands;
+mod plan_branch_commands;
+mod qa_commands;
+mod question_commands;
+mod release_notes_commands;
+mod research_commands;
+mod review_commands;
+mod review_service;
+mod workflow_commands;

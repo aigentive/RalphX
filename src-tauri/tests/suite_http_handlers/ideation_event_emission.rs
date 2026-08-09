@@ -106,6 +106,7 @@ fn make_http_state(
         app_state,
         execution_state,
         delegation_service: Default::default(),
+        external_mcp_supervisor: None,
     }
 }
 

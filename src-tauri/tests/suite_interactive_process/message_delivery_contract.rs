@@ -2,6 +2,7 @@
 
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
+use ralphx_events::RecordingEventSink;
 use ralphx_lib::application::chat_service::{process_queued_messages_for_test, ChatService};
 use ralphx_lib::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessMetadata, PendingStdinTurn,
@@ -18,8 +19,8 @@ use ralphx_lib::domain::services::{MessageQueue, QueuedMessage};
 use ralphx_lib::error::{AppError, AppResult};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
-use tauri::{Listener, Manager};
+use std::sync::Arc;
+use tauri::Manager;
 use tokio::process::Command;
 
 const STALE_SECS: u64 = 300;
@@ -103,10 +104,13 @@ async fn enable_fixture(state: &AppState, cli: &Path) {
 
 #[tokio::test]
 async fn old_queued_user_message_survives_exit_cleanup_and_drains() {
+    let _allow_spawn =
+        crate::support::env::EnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
     let state = AppState::new_test();
     let (project, conversation) = seed(&state, "old queue user").await;
     let temp = tempfile::tempdir().expect("fixture dir");
     let (cli, calls) = fixture(temp.path());
+    enable_fixture(&state, &cli).await;
     let message = old_message("old-user", "deliver me", None);
     state.message_queue.queue_front_existing(
         ChatContextType::Project,
@@ -129,8 +133,11 @@ async fn old_queued_user_message_survives_exit_cleanup_and_drains() {
         .manage(state)
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("app");
+    let state = app.state::<AppState>();
     let (processed, _) = process_queued_messages_for_test(
-        app.handle().clone(),
+        state.inner(),
+        None,
+        Arc::clone(&state.events),
         ChatContextType::Project,
         AgentHarnessKind::Claude,
         project.id.as_str(),
@@ -152,7 +159,9 @@ async fn old_queued_user_message_survives_exit_cleanup_and_drains() {
 async fn missing_completed_owner_replays_fresh_without_queued_preflight_failure() {
     let _allow_spawn =
         crate::support::env::EnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
-    let state = AppState::new_test();
+    let mut state = AppState::new_test();
+    let events = RecordingEventSink::new();
+    state.events = Arc::new(events.clone());
     let (project, conversation) = seed(&state, "fresh replay").await;
     let temp = tempfile::tempdir().expect("fixture dir");
     let (cli, calls) = fixture(temp.path());
@@ -166,13 +175,11 @@ async fn missing_completed_owner_replays_fresh_without_queued_preflight_failure(
         .manage(state)
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("app");
-    let errors = Arc::new(Mutex::new(Vec::new()));
-    let captured = Arc::clone(&errors);
-    let _listener = app.listen("agent:error", move |event| {
-        captured.lock().unwrap().push(event.payload().to_string())
-    });
+    let state = app.state::<AppState>();
     let (processed, run_id) = process_queued_messages_for_test(
-        app.handle().clone(),
+        state.inner(),
+        None,
+        Arc::clone(&state.events),
         ChatContextType::Project,
         AgentHarnessKind::Claude,
         project.id.as_str(),
@@ -192,11 +199,11 @@ async fn missing_completed_owner_replays_fresh_without_queued_preflight_failure(
         "fresh replay cannot lose the message"
     );
     assert!(
-        errors
-            .lock()
-            .unwrap()
+        events
+            .events()
             .iter()
-            .all(|event| !event.contains("queued_preflight")),
+            .filter(|event| event.event == "agent:error")
+            .all(|event| !event.payload.to_string().contains("queued_preflight")),
         "no queued_preflight error event"
     );
     assert!(
@@ -214,6 +221,8 @@ async fn missing_completed_owner_replays_fresh_without_queued_preflight_failure(
 #[tokio::test]
 async fn continuation_resolution_error_restores_queue_front_and_emits_error() {
     let mut state = AppState::new_test();
+    let events = RecordingEventSink::new();
+    state.events = Arc::new(events.clone());
     let (project, conversation) = seed(&state, "continuation error").await;
     state.agent_run_repo = Arc::new(FailingContinuationRepo);
     let message = old_message("restore-front", "retain me", None);
@@ -226,18 +235,11 @@ async fn continuation_resolution_error_restores_queue_front_and_emits_error() {
         .manage(state)
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("app");
-    let errors = Arc::new(Mutex::new(Vec::new()));
-    let captured = Arc::clone(&errors);
-    let _listener = app.listen("agent:error", move |event| {
-        captured.lock().unwrap().push(event.payload().to_string())
-    });
-    let queue_sent = Arc::new(Mutex::new(Vec::new()));
-    let captured = Arc::clone(&queue_sent);
-    let _queue_sent_listener = app.listen("agent:queue_sent", move |event| {
-        captured.lock().unwrap().push(event.payload().to_string())
-    });
+    let state = app.state::<AppState>();
     let (processed, run_id) = process_queued_messages_for_test(
-        app.handle().clone(),
+        state.inner(),
+        None,
+        Arc::clone(&state.events),
         ChatContextType::Project,
         AgentHarnessKind::Claude,
         project.id.as_str(),
@@ -255,13 +257,18 @@ async fn continuation_resolution_error_restores_queue_front_and_emits_error() {
         vec![message],
         "failed resolution restores the original message at queue front"
     );
-    assert!(errors
-        .lock()
-        .unwrap()
+    let recorded_events = events.events();
+    assert!(recorded_events
         .iter()
-        .any(|event| event.contains("injected continuation resolution failure")));
+        .filter(|event| event.event == "agent:error")
+        .any(|event| event
+            .payload
+            .to_string()
+            .contains("injected continuation resolution failure")));
     assert!(
-        queue_sent.lock().unwrap().is_empty(),
+        recorded_events
+            .iter()
+            .all(|event| event.event != "agent:queue_sent"),
         "restored queue truth must not be followed by a terminal queue_sent event"
     );
 }
@@ -281,7 +288,9 @@ fn old_hidden_recovery_message_still_drops() {
 async fn replayed_message_is_delivered_exactly_once_on_reentry() {
     let _allow_spawn =
         crate::support::env::EnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
-    let state = AppState::new_test();
+    let mut state = AppState::new_test();
+    let events = RecordingEventSink::new();
+    state.events = Arc::new(events.clone());
     let (project, conversation) = seed(&state, "exactly once").await;
     let temp = tempfile::tempdir().expect("fixture dir");
     let (cli, calls) = fixture(temp.path());
@@ -295,13 +304,11 @@ async fn replayed_message_is_delivered_exactly_once_on_reentry() {
         .manage(state)
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("app");
-    let queue_sent = Arc::new(Mutex::new(Vec::new()));
-    let captured = Arc::clone(&queue_sent);
-    let _queue_sent_listener = app.listen("agent:queue_sent", move |event| {
-        captured.lock().unwrap().push(event.payload().to_string())
-    });
+    let state = app.state::<AppState>();
     let first = process_queued_messages_for_test(
-        app.handle().clone(),
+        state.inner(),
+        None,
+        Arc::clone(&state.events),
         ChatContextType::Project,
         AgentHarnessKind::Claude,
         project.id.as_str(),
@@ -311,7 +318,9 @@ async fn replayed_message_is_delivered_exactly_once_on_reentry() {
     )
     .await;
     let second = process_queued_messages_for_test(
-        app.handle().clone(),
+        state.inner(),
+        None,
+        Arc::clone(&state.events),
         ChatContextType::Project,
         AgentHarnessKind::Claude,
         project.id.as_str(),
@@ -327,7 +336,11 @@ async fn replayed_message_is_delivered_exactly_once_on_reentry() {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     assert_eq!(fs::read_to_string(calls).expect("calls").lines().count(), 1);
     assert_eq!(
-        queue_sent.lock().unwrap().len(),
+        events
+            .events()
+            .iter()
+            .filter(|event| event.event == "agent:queue_sent")
+            .count(),
         1,
         "re-entry must not emit a duplicate delivery event"
     );
@@ -335,10 +348,13 @@ async fn replayed_message_is_delivered_exactly_once_on_reentry() {
 
 #[tokio::test]
 async fn recovered_stdin_turn_drains_without_duplicate_user_message_row() {
+    let _allow_spawn =
+        crate::support::env::EnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
     let state = AppState::new_test();
     let (project, conversation) = seed(&state, "stdin cancellation recovery").await;
     let temp = tempfile::tempdir().expect("fixture dir");
     let (cli, calls) = fixture(temp.path());
+    enable_fixture(&state, &cli).await;
     let persisted_message_id = ChatMessageId::from_string("stdin-user-row".to_string());
     let mut persisted = ChatMessage::user_in_project(project.id.clone(), "deliver after cancel");
     persisted.id = persisted_message_id.clone();
@@ -363,8 +379,11 @@ async fn recovered_stdin_turn_drains_without_duplicate_user_message_row() {
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("app");
 
+    let state = app.state::<AppState>();
     let (processed, _) = process_queued_messages_for_test(
-        app.handle().clone(),
+        state.inner(),
+        None,
+        Arc::clone(&state.events),
         ChatContextType::Project,
         AgentHarnessKind::Claude,
         project.id.as_str(),
@@ -391,7 +410,9 @@ async fn recovered_stdin_turn_drains_without_duplicate_user_message_row() {
 
 #[tokio::test]
 async fn stopping_exact_interactive_owner_requeues_pending_turn_and_publishes_backend_truth() {
-    let state = AppState::new_test();
+    let mut state = AppState::new_test();
+    let events = RecordingEventSink::new();
+    state.events = Arc::new(events.clone());
     let (project, conversation) = seed(&state, "stdin stop recovery").await;
     let persisted_message_id = ChatMessageId::from_string("stdin-stop-user-row".to_string());
     let mut persisted = ChatMessage::user_in_project(project.id.clone(), "recover after stop");
@@ -468,13 +489,8 @@ async fn stopping_exact_interactive_owner_requeues_pending_turn_and_publishes_ba
         .manage(state)
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("app");
-    let queued_events = Arc::new(Mutex::new(Vec::new()));
-    let captured = Arc::clone(&queued_events);
-    let _listener = app.listen("agent:message_queued", move |event| {
-        captured.lock().unwrap().push(event.payload().to_string())
-    });
     let state = app.state::<AppState>();
-    let service = state.build_chat_service_for_runtime(None, Some(app.handle().clone()));
+    let service = state.build_chat_service();
 
     assert!(!service
         .stop_agent(ChatContextType::Project, &conversation.id.as_str())
@@ -498,12 +514,20 @@ async fn stopping_exact_interactive_owner_requeues_pending_turn_and_publishes_ba
         recovered[1].persisted_message_id.as_deref(),
         Some(second_message_id.as_str())
     );
-    {
-        let queued_events = queued_events.lock().unwrap();
-        assert_eq!(queued_events.len(), 2);
-        assert!(queued_events[0].contains("recover after stop"));
-        assert!(queued_events[1].contains("recover second after stop"));
-    }
+    let queued_events: Vec<_> = events
+        .events()
+        .into_iter()
+        .filter(|event| event.event == "agent:message_queued")
+        .collect();
+    assert_eq!(queued_events.len(), 2);
+    assert!(queued_events[0]
+        .payload
+        .to_string()
+        .contains("recover after stop"));
+    assert!(queued_events[1]
+        .payload
+        .to_string()
+        .contains("recover second after stop"));
 
     let _ = child.kill().await;
     let _ = child.wait().await;

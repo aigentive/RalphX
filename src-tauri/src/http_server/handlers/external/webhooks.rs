@@ -297,7 +297,7 @@ pub async fn receive_linear_webhook_http(
 
     let mut transition_service_builder = state
         .app_state
-        .build_transition_service_with_execution_state(Arc::clone(&state.execution_state));
+        .build_transition_service_for_runtime(Arc::clone(&state.execution_state), None);
     if let Some(ref publisher) = state.app_state.webhook_publisher {
         transition_service_builder =
             transition_service_builder.with_webhook_publisher_for_emitter(Arc::clone(publisher));
@@ -325,8 +325,8 @@ pub async fn receive_linear_webhook_http(
         .await
         .map_err(linear_webhook_http_error)?;
     if !outcome.duplicate {
-        let _ = TicketingCacheInvalidator::invalidate_linear_webhook(
-            state.app_state.app_handle.as_ref(),
+        let _ = TicketingCacheInvalidator::invalidate_linear_webhook_with_sink(
+            state.app_state.events.as_ref(),
             &body,
             linear_action_label(&outcome.action),
         );
@@ -410,6 +410,7 @@ mod tests {
             app_state,
             execution_state: Arc::new(ExecutionState::new()),
             delegation_service: Default::default(),
+            external_mcp_supervisor: None,
         }
     }
 

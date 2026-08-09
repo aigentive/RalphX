@@ -245,7 +245,7 @@ pub async fn complete_branch_update(
             .ok_or_else(|| error(StatusCode::CONFLICT, "Continued task disappeared"))?;
         let transition_service = state
             .app_state
-            .build_transition_service_with_execution_state(Arc::clone(&state.execution_state));
+            .build_transition_service_for_runtime(Arc::clone(&state.execution_state), None);
         transition_service
             .execute_entry_actions(&continued.id, &continued, next_status)
             .await;

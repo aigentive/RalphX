@@ -1358,10 +1358,7 @@ async fn rx_native_team_send_replay_preallocates_coordinator_run_binding() {
 
     let service = app
         .state::<AppState>()
-        .build_chat_service_for_runtime::<tauri::test::MockRuntime>(
-            None,
-            Some(app.handle().clone()),
-        )
+        .build_chat_service()
         .with_managed_team(Arc::clone(&app.state::<AppState>().managed_team))
         .with_cli_path(fake_cli.cli_path.clone())
         .with_working_directory(project_dir.path());
@@ -3178,13 +3175,15 @@ mod ipc_contract {
             .expect("agent run should fail");
         let app = mock_builder()
             .manage(state)
+            .manage(Arc::new(ExecutionState::new()))
             .build(mock_context(noop_assets()))
             .expect("mock app should build");
 
-        let response = get_agent_conversation_workspace(conversation_id.as_str(), app.state())
-            .await
-            .expect("workspace response should load")
-            .expect("workspace response should exist");
+        let response =
+            get_agent_conversation_workspace(conversation_id.as_str(), app.state(), app.state())
+                .await
+                .expect("workspace response should load")
+                .expect("workspace response should exist");
 
         assert_eq!(
             response.publication_push_status.as_deref(),
@@ -4122,7 +4121,6 @@ mod ipc_contract {
             },
             app.state::<AppState>(),
             app.state::<Arc<ExecutionState>>(),
-            app.handle().clone(),
         )
         .await
         .expect("chat-mode start should succeed");
@@ -4219,7 +4217,6 @@ mod ipc_contract {
             },
             app.state::<AppState>(),
             app.state::<Arc<ExecutionState>>(),
-            app.handle().clone(),
         )
         .await
         .expect("PR-backed chat-mode start should succeed");
@@ -4371,7 +4368,6 @@ mod ipc_contract {
             },
             app.state::<AppState>(),
             app.state::<Arc<ExecutionState>>(),
-            app.handle().clone(),
         )
         .await
         .expect("edit-mode start should succeed");
@@ -4874,7 +4870,6 @@ mod ipc_contract {
                 },
                 state.clone(),
                 fix.app.state::<Arc<ExecutionState>>(),
-                fix.app.handle().clone(),
             )
             .await
             .unwrap_or_else(|error| panic!("{mode} plan-reference start should succeed: {error}"));
@@ -5057,7 +5052,6 @@ mod ipc_contract {
             },
             state.clone(),
             fix.app.state::<Arc<ExecutionState>>(),
-            fix.app.handle().clone(),
         )
         .await
         .expect_err("Review PR start without PR metadata should fail early");
@@ -5132,7 +5126,6 @@ mod ipc_contract {
             },
             state,
             fix.app.state::<Arc<ExecutionState>>(),
-            fix.app.handle().clone(),
         )
         .await
         .expect_err("multiple plan references should fail closed");
@@ -5231,7 +5224,6 @@ mod ipc_contract {
             },
             app.state::<AppState>(),
             app.state::<Arc<ExecutionState>>(),
-            app.handle().clone(),
         )
         .await
         .expect("existing linked workspace should not self-conflict");
@@ -5329,7 +5321,6 @@ mod ipc_contract {
             },
             app.state::<AppState>(),
             app.state::<Arc<ExecutionState>>(),
-            app.handle().clone(),
         )
         .await
         .expect_err("linked branch conflict should fail before creating a new chat");
@@ -5421,7 +5412,6 @@ mod ipc_contract {
             },
             app.state::<AppState>(),
             app.state::<Arc<ExecutionState>>(),
-            app.handle().clone(),
         )
         .await
         .expect_err("linked primary checkout should fail setup");
@@ -5512,7 +5502,6 @@ mod ipc_contract {
             },
             app.state::<AppState>(),
             app.state::<Arc<ExecutionState>>(),
-            app.handle().clone(),
         )
         .await
         .expect("plan-mode start should succeed");

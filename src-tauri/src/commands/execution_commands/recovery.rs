@@ -6,7 +6,7 @@ pub(super) fn build_transition_service_for_recovery(
 ) -> Arc<TaskTransitionService> {
     Arc::new(
         app_state
-            .build_transition_service_with_execution_state(execution_state)
+            .build_transition_service_for_runtime(execution_state, None)
             .with_step_repo(Arc::clone(&app_state.task_step_repo)),
     )
 }

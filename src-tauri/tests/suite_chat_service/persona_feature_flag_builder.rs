@@ -45,10 +45,7 @@ async fn persona_builder_send_no_longer_requires_live_ingest() {
         .await
         .expect("create persona builder conversation");
     let service = state
-        .build_chat_service_for_runtime::<tauri::test::MockRuntime>(
-            None,
-            Some(app.handle().clone()),
-        )
+        .build_chat_service()
         .with_persona_feature_enabled(true);
     let options = SendMessageOptions {
         conversation_id_override: Some(conversation.id),
@@ -146,10 +143,7 @@ async fn persona_builder_send_does_not_reintroduce_the_retired_ingest_gate() {
         .await
         .expect("create live bound draft");
     let service = state
-        .build_chat_service_for_runtime::<tauri::test::MockRuntime>(
-            None,
-            Some(app.handle().clone()),
-        )
+        .build_chat_service()
         .with_persona_feature_enabled(true);
     let options = SendMessageOptions {
         conversation_id_override: Some(conversation.id),

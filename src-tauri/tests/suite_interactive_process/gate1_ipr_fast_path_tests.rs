@@ -13,17 +13,17 @@ use ralphx_events::RecordingEventSink;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::test::{mock_builder, mock_context, noop_assets};
-use tauri::{Listener, Manager};
+use tauri::Manager;
 use tokio::io::AsyncReadExt;
 use tokio::process::Command as TokioCommand;
 use tokio_util::sync::CancellationToken;
 
 use ralphx_lib::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
 use ralphx_lib::application::chat_service::{
-    process_stream_background, ChatService, ChatServiceError, SendMessageOptions,
+    process_stream_background_for_test, ChatService, ChatServiceError, SendMessageOptions,
     StreamingStateCache,
 };
 use ralphx_lib::application::interactive_process_registry::{
@@ -1527,14 +1527,7 @@ async fn verify_plan_retirement_after_settled_burst_does_not_requeue() {
         .manage(AppState::new_test())
         .build(mock_context(noop_assets()))
         .expect("build mock app");
-    let queued_events = Arc::new(Mutex::new(Vec::new()));
-    let captured_events = Arc::clone(&queued_events);
-    let _listener = app.listen("agent:message_queued", move |event| {
-        captured_events
-            .lock()
-            .expect("queued event lock")
-            .push(event.payload().to_string());
-    });
+    let recording_sink = Arc::new(RecordingEventSink::new());
     let state = app.state::<AppState>();
     let context_id = "project-gate1-verify-plan-settled-burst";
     let (project_dir, conversation_id, retired_run_id, interactive_key, mut observer_child) =
@@ -1575,10 +1568,7 @@ async fn verify_plan_retirement_after_settled_burst_does_not_requeue() {
         .expect("live IPR owner");
     assert_eq!(retired_owner.token, stream_token);
     let service = state
-        .build_chat_service_for_runtime(
-            Some(Arc::new(ExecutionState::new())),
-            Some(app.handle().clone()),
-        )
+        .build_chat_service_with_execution_state(Arc::new(ExecutionState::new()))
         .with_cli_path(cli_path)
         .with_plugin_dir(runtime_plugin_dir_for_gate1_persona_test())
         .with_working_directory(temp.path());
@@ -1606,16 +1596,15 @@ async fn verify_plan_retirement_after_settled_burst_does_not_requeue() {
     let stream_conversation_id = conversation_id;
     let stream_interactive_key = interactive_key.clone();
     let stream_run_id = retired_run_id.clone();
-    let stream_app_handle = app.handle().clone();
+    let stream_events = Arc::clone(&recording_sink);
     let mut stream_task = tokio::spawn(async move {
-        process_stream_background::<tauri::test::MockRuntime>(
+        process_stream_background_for_test(
             child,
             ralphx_lib::domain::agents::AgentHarnessKind::Claude,
             ChatContextType::Project,
             context_id,
             &stream_conversation_id,
-            None,
-            Some(stream_app_handle),
+            stream_events,
             None,
             None,
             None,
@@ -1727,7 +1716,10 @@ async fn verify_plan_retirement_after_settled_burst_does_not_requeue() {
         "settled stdin turns must not be retained in the in-memory queue"
     );
     assert!(
-        queued_events.lock().expect("queued event lock").is_empty(),
+        recording_sink
+            .events()
+            .iter()
+            .all(|e| e.event != "agent:message_queued"),
         "Verify Plan retirement must not publish phantom queued-message events"
     );
 
@@ -1840,12 +1832,13 @@ async fn gate1_ownerless_process_falls_through_without_stdin_or_message_side_eff
 #[tokio::test]
 async fn gate1_message_persistence_failure_prevents_untracked_stdin_delivery() {
     let mut seed_state = AppState::new_test();
+    let events = RecordingEventSink::new();
+    seed_state.events = Arc::new(events.clone());
     seed_state.chat_message_repo = Arc::new(FailingChatMessageRepository::new());
     let app = mock_builder()
         .manage(seed_state)
         .build(mock_context(noop_assets()))
         .expect("build mock app");
-    let handle = app.handle().clone();
     let state = app.state::<AppState>();
     let context_id = "project-gate1-message-persistence-failure";
     let (_project_dir, conversation_id, _run_id, interactive_key, mut child) =
@@ -1857,27 +1850,8 @@ async fn gate1_message_persistence_failure_prevents_untracked_stdin_delivery() {
         )
         .await;
 
-    let run_started_events = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
-    let run_started_listener = Arc::clone(&run_started_events);
-    handle.listen("agent:run_started", move |event| {
-        let payload = serde_json::from_str(event.payload()).expect("run_started payload JSON");
-        run_started_listener
-            .lock()
-            .expect("run_started event lock")
-            .push(payload);
-    });
-    let message_created_events = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
-    let message_created_listener = Arc::clone(&message_created_events);
-    handle.listen("agent:message_created", move |event| {
-        let payload = serde_json::from_str(event.payload()).expect("message_created payload JSON");
-        message_created_listener
-            .lock()
-            .expect("message_created event lock")
-            .push(payload);
-    });
-
     let error = state
-        .build_chat_service_for_runtime(Some(Arc::new(ExecutionState::new())), Some(handle.clone()))
+        .build_chat_service_with_execution_state(Arc::new(ExecutionState::new()))
         .send_message(
             ChatContextType::Project,
             context_id,
@@ -1918,18 +1892,18 @@ async fn gate1_message_persistence_failure_prevents_untracked_stdin_delivery() {
         "a failed user-message create must not create a timeline row"
     );
     assert!(
-        message_created_events
-            .lock()
-            .expect("message_created event lock")
-            .is_empty(),
+        events
+            .events()
+            .iter()
+            .all(|event| event.event != "agent:message_created"),
         "a failed user-message create must not claim the message was persisted"
     );
-    let observed_run_started = run_started_events
-        .lock()
-        .expect("run_started event lock")
-        .clone();
     assert_eq!(
-        observed_run_started.len(),
+        events
+            .events()
+            .iter()
+            .filter(|event| event.event == "agent:run_started")
+            .count(),
         0,
         "an undelivered turn must not emit run_started"
     );

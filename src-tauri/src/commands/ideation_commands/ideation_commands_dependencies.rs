@@ -1,7 +1,8 @@
 // Dependency analysis commands and graph building utilities
 
+use ralphx_events::emit_serialized;
 use std::collections::{HashMap, HashSet, VecDeque};
-use tauri::{Emitter, State};
+use tauri::State;
 use tracing::warn;
 
 use crate::application::AppState;
@@ -33,15 +34,14 @@ pub async fn remove_proposal_dependency(
         .map_err(|e| e.to_string())?;
 
     // Emit event to frontend
-    if let Some(app_handle) = &state.app_handle {
-        let _ = app_handle.emit(
-            "dependency:removed",
-            serde_json::json!({
-                "proposalId": proposal_id,
-                "dependsOnId": depends_on_id
-            }),
-        );
-    }
+    let _ = emit_serialized(
+        state.events.as_ref(),
+        "dependency:removed",
+        &serde_json::json!({
+            "proposalId": proposal_id,
+            "dependsOnId": depends_on_id
+        }),
+    );
 
     Ok(())
 }

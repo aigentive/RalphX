@@ -82,8 +82,9 @@ pub async fn approve_plan_artifact(
             "approvedAt": approved.approved_at,
         }),
     );
-    crate::application::plan_approval_notification_service::resolve_plan_approval_notifications(
-        &state.app_state,
+    let approval_notification_deps = crate::application::plan_approval_notification_service::PlanApprovalNotificationDeps::from_app_state(&state.app_state);
+    crate::application::plan_approval_notification_service::resolve_plan_approval_notifications_with_deps(
+        &approval_notification_deps,
         &approved.session_id,
         &plan_bundle,
     )

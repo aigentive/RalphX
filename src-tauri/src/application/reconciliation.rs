@@ -19,12 +19,14 @@ pub mod recovery_queue;
 pub mod verification_handoff;
 pub mod verification_reconciliation;
 
+use ralphx_events::{EventSink, NullEventSink};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::AppHandle;
 use tokio::sync::Mutex;
 
 use crate::application::interactive_process_registry::InteractiveProcessRegistry;
+use crate::application::runtime_factory::ChatRuntimeFactoryDeps;
 use crate::application::{NotificationService, TaskTransitionService};
 use crate::commands::execution_commands::ExecutionState;
 use crate::domain::repositories::{
@@ -64,6 +66,8 @@ pub struct ReconciliationRunner {
     pub(crate) interactive_process_registry: Option<Arc<InteractiveProcessRegistry>>,
     pub(crate) review_repo: Option<Arc<dyn ReviewRepository>>,
     pub(crate) app_handle: Option<AppHandle>,
+    pub(crate) events: Arc<dyn EventSink>,
+    pub(crate) chat_runtime_deps: Option<ChatRuntimeFactoryDeps>,
     pub(crate) policy: RecoveryPolicy,
     /// Optional application notification effect, injected for non-Tauri runners and tests.
     pub(crate) notification_service: Option<Arc<NotificationService>>,
@@ -115,6 +119,8 @@ impl ReconciliationRunner {
             interactive_process_registry: None,
             review_repo: None,
             app_handle,
+            events: Arc::new(NullEventSink),
+            chat_runtime_deps: None,
             policy: RecoveryPolicy,
             notification_service: None,
             prompt_tracker: Arc::new(Mutex::new(HashMap::new())),
@@ -124,6 +130,16 @@ impl ReconciliationRunner {
 
     pub fn with_app_handle(mut self, app_handle: AppHandle) -> Self {
         self.app_handle = Some(app_handle);
+        self
+    }
+
+    pub fn with_events(mut self, events: Arc<dyn EventSink>) -> Self {
+        self.events = events;
+        self
+    }
+
+    pub(crate) fn with_chat_runtime_deps(mut self, deps: ChatRuntimeFactoryDeps) -> Self {
+        self.chat_runtime_deps = Some(deps);
         self
     }
 

@@ -94,9 +94,7 @@ pub async fn external_task_transition_http(
 
     let mut transition_service_builder = state
         .app_state
-        .build_transition_service_with_execution_state(std::sync::Arc::clone(
-            &state.execution_state,
-        ));
+        .build_transition_service_for_runtime(std::sync::Arc::clone(&state.execution_state), None);
 
     if let Some(ref pub_) = state.app_state.webhook_publisher {
         transition_service_builder = transition_service_builder
@@ -581,9 +579,7 @@ pub async fn review_action_http(
 
     let mut transition_service_builder = state
         .app_state
-        .build_transition_service_with_execution_state(std::sync::Arc::clone(
-            &state.execution_state,
-        ));
+        .build_transition_service_for_runtime(std::sync::Arc::clone(&state.execution_state), None);
 
     if let Some(ref pub_) = state.app_state.webhook_publisher {
         transition_service_builder = transition_service_builder

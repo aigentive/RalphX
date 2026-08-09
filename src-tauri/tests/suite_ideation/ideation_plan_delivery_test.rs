@@ -229,6 +229,7 @@ fn build_http_state(setup: &TestSetup) -> HttpServerState {
         app_state,
         execution_state,
         delegation_service: Default::default(),
+        external_mcp_supervisor: None,
     }
 }
 
