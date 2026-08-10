@@ -111,6 +111,13 @@ RULES: list[dict[str, Any]] = [
             "crate::http_server",
         ],
     },
+    # Deliberately still a baseline after phase 4. The ideation apply cohort
+    # (`apply_proposals_core` and friends) was scoped for descent here, but
+    # `http_server/helpers.rs` imports `TaskProposalResponse` from the same
+    # module, so moving ~1200 lines of apply logic into `application` would
+    # close only `handlers/external/mod.rs` and leave the helpers.rs entry
+    # standing. The response-DTO cohort is phase 4.5 scope; both descend
+    # together or neither is worth the churn.
     {
         "id": "root_http_no_commands_imports",
         "mode": "baseline",
