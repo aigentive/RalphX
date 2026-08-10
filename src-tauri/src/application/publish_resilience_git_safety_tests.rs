@@ -2831,11 +2831,11 @@ async fn startup_recovery_does_not_reacquire_while_a_push_effect_is_open() {
     assert_eq!(current.phase, AgentWorkspaceRepairPhase::Continuing);
     assert_eq!(current.target_lease_epoch, continuing.target_lease_epoch);
     assert!(
-        current
+        !current
             .pending_reasons
             .iter()
-            .any(|reason| reason == "continuation_open_effect_recovery:1"),
-        "unexpected durable open-effect state: {current:#?}"
+            .any(|reason| reason.starts_with("continuation_open_effect_recovery:")),
+        "not-applied pass must not add an open-effect recovery reason: {current:#?}"
     );
     assert!(
         state
@@ -2920,11 +2920,11 @@ async fn startup_recovery_clears_a_push_effect_that_never_reached_the_remote() {
     assert_eq!(current.phase, AgentWorkspaceRepairPhase::Continuing);
     assert_eq!(current.target_lease_epoch, continuing.target_lease_epoch);
     assert!(
-        current
+        !current
             .pending_reasons
             .iter()
-            .any(|reason| reason == "continuation_open_effect_recovery:1"),
-        "not-applied effect must defer reacquire with a pending reason: {current:#?}"
+            .any(|reason| reason.starts_with("continuation_open_effect_recovery:")),
+        "not-applied pass must not add an open-effect recovery reason: {current:#?}"
     );
     assert!(!current
         .pending_reasons
