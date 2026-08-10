@@ -290,6 +290,16 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         &self,
     ) -> AppResult<Vec<AgentConversationWorkspace>>;
 
+    /// Lists active, open Edit workspaces that have never published (no `publication_pr_number`).
+    ///
+    /// Feeds the unattended base-freshness scan's detection/auto-update candidate set. This is a
+    /// required method (no default `Ok(Vec::new())` body) because a defaulted empty result would
+    /// fail *open*: any implementor that forgot to override it would silently report "nothing
+    /// unpublished" and disable detection entirely.
+    async fn list_active_unpublished_edit_workspaces(
+        &self,
+    ) -> AppResult<Vec<AgentConversationWorkspace>>;
+
     async fn list_active_pr_poller_recovery_workspaces(
         &self,
     ) -> AppResult<Vec<AgentConversationWorkspace>> {
@@ -528,6 +538,15 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         &self,
         conversation_id: &ChatConversationId,
         fingerprint: Option<&str>,
+    ) -> AppResult<()>;
+
+    /// Persists a base-ahead detection transition for one workspace via a targeted column
+    /// update. Required (not defaulted) so a forgotten implementor is a compile error rather
+    /// than a silent fail-open that discards detection state.
+    async fn set_stale_base_detected_at(
+        &self,
+        conversation_id: &ChatConversationId,
+        detected_at: Option<DateTime<Utc>>,
     ) -> AppResult<()>;
 
     /// Sets the per-workspace Auto Review & Fix override. Enabling re-arms only a capped fixer

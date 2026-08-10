@@ -1709,6 +1709,26 @@ describe("chat api", () => {
     ).toBeNull();
   });
 
+  it("defaults stale_base_detected_at to null for older backends that omit it", () => {
+    expect(
+      AgentConversationWorkspaceResponseSchema.parse(planSeedWorkspaceResponse())
+        .stale_base_detected_at,
+    ).toBeNull();
+  });
+
+  it("transforms stale_base_detected_at to staleBaseDetectedAt", async () => {
+    mockInvoke.mockResolvedValueOnce([
+      {
+        ...planSeedWorkspaceResponse(),
+        stale_base_detected_at: "2026-08-06T15:00:00Z",
+      },
+    ]);
+
+    const result = await listAgentConversationWorkspacesByProject("project-1");
+
+    expect(result[0]?.staleBaseDetectedAt).toBe("2026-08-06T15:00:00Z");
+  });
+
   it("transforms a typed held maintenance operation", async () => {
     mockInvoke.mockResolvedValueOnce([
       {
