@@ -402,15 +402,14 @@ async fn reconcile_agent_workspace_repair_attempt(
                         {
                             Ok(crate::application::publish_resilience::AgentWorkspaceRepairOpenPushEffectReconciliation::Observed) => {}
                             Ok(crate::application::publish_resilience::AgentWorkspaceRepairOpenPushEffectReconciliation::NotApplied) => {
+                                // The reconciler proved the push never reached the remote and
+                                // terminated the effect as Failed, clearing the fence. Return Noop
+                                // so the next sweep reacquires the lease without spending an
+                                // open-effect recovery credit or re-raising the attention
+                                // notification that record_continuation_effect_not_applied just
+                                // resolved.
                                 record_continuation_effect_not_applied(state, &current).await;
-                                let error = AppError::Conflict(
-                                    "workspace repair push effect cleared as not-applied; deferring lease reacquire to the next recovery pass"
-                                        .to_string(),
-                                );
-                                return record_open_effect_continuation_recovery_failure(
-                                    state, current, &error,
-                                )
-                                .await;
+                                return Ok(DurableRepairRecoveryOutcome::Noop);
                             }
                             Ok(crate::application::publish_resilience::AgentWorkspaceRepairOpenPushEffectReconciliation::Pending) => {
                                 let error = AppError::Conflict(

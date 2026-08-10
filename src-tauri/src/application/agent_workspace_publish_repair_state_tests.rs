@@ -439,6 +439,14 @@ fn recovery_action_projects_only_backend_admitted_ready_and_blocked_attempts() {
         AgentWorkspaceRepairOperationRecoveryAction::ResumePublish,
         "an explicit publish upgrades a manual repair"
     );
+    attempt.continuation = AgentWorkspaceRepairContinuation::ResumePrSupervision;
+    assert_eq!(
+        agent_workspace_repair_operation_recovery_action(&attempt),
+        AgentWorkspaceRepairOperationRecoveryAction::ResumePublish,
+        "ResumePrSupervision ready attempts may resume publish — hold reason is the only gate"
+    );
+    // Pin the admission set: every continuation variant returns ResumePublish from hold-free Ready.
+    attempt.continuation = AgentWorkspaceRepairContinuation::Publish;
     attempt.pending_reasons.push("base_stale".to_string());
     assert_eq!(
         agent_workspace_repair_operation_recovery_action(&attempt),

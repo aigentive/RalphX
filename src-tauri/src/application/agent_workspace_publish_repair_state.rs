@@ -360,13 +360,10 @@ pub(crate) fn agent_workspace_repair_operation_recovery_action(
         return AgentWorkspaceRepairOperationRecoveryAction::None;
     }
     match attempt.phase {
-        AgentWorkspaceRepairPhase::Ready
-            if (attempt.continuation.priority()
-                <= AgentWorkspaceRepairContinuation::Publish.priority()
-                || attempt.continuation
-                    == AgentWorkspaceRepairContinuation::ResumePrSupervision)
-                && attempt.operation_snapshot().hold_reason.is_none() =>
-        {
+        // Every continuation kind, including Manual and ResumePrSupervision, may resume
+        // publish from a hold-free Ready phase. The hold reason is the only gate here;
+        // continuation priority is irrelevant to whether a ready attempt can be published.
+        AgentWorkspaceRepairPhase::Ready if attempt.operation_snapshot().hold_reason.is_none() => {
             AgentWorkspaceRepairOperationRecoveryAction::ResumePublish
         }
         AgentWorkspaceRepairPhase::Blocked if attempt.next_dispatch_at.is_none() => {
