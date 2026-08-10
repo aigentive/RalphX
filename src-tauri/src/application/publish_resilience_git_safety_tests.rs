@@ -2918,9 +2918,14 @@ async fn startup_recovery_clears_a_push_effect_that_never_reached_the_remote() {
         .expect("reacquired continuation remains current");
     assert_eq!(current.id, continuing.id);
     assert_eq!(current.phase, AgentWorkspaceRepairPhase::Continuing);
-    assert!(current
-        .target_lease_epoch
-        .is_some_and(|epoch| epoch > fencing_epoch));
+    assert_eq!(current.target_lease_epoch, continuing.target_lease_epoch);
+    assert!(
+        current
+            .pending_reasons
+            .iter()
+            .any(|reason| reason == "continuation_open_effect_recovery:1"),
+        "not-applied effect must defer reacquire with a pending reason: {current:#?}"
+    );
     assert!(!current
         .pending_reasons
         .iter()
