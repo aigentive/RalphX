@@ -773,7 +773,7 @@ fn log_agent_workspace_probe_result(
     );
 }
 
-async fn run_or_defer_agent_conversation_workspace_setup(
+pub(crate) async fn run_or_defer_agent_conversation_workspace_setup(
     project: &Project,
     conversation_id: &ChatConversationId,
     worktree_path: &Path,
@@ -1107,7 +1107,7 @@ async fn ensure_agent_conversation_worktree(
     result
 }
 
-async fn ensure_linked_agent_conversation_branch_worktree(
+pub(crate) async fn ensure_linked_agent_conversation_branch_worktree(
     repo_path: &Path,
     workspace_path: &Path,
     branch_name: &str,

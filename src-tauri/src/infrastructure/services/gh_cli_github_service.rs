@@ -1113,6 +1113,16 @@ impl GithubServiceTrait for GhCliGithubService {
         Ok(())
     }
 
+    async fn reopen_pr(&self, working_dir: &Path, pr_number: i64) -> AppResult<()> {
+        let args = vec![
+            "pr".to_string(),
+            "reopen".to_string(),
+            pr_number.to_string(),
+        ];
+        self.runner.run_gh(working_dir, &args).await?;
+        Ok(())
+    }
+
     async fn delete_remote_branch(&self, working_dir: &Path, branch: &str) -> AppResult<()> {
         // git push origin --delete <branch>
         // Already-deleted → "remote ref does not exist" → treat as no-op
