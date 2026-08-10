@@ -7641,10 +7641,19 @@ async fn continuation_recovery_failure_streak_stays_independent_of_the_open_effe
         .pending_reasons
         .iter()
         .any(|reason| reason == "continuation_recovery_failure:1"));
+    // The not-applied fence-clearing pass now records one open-effect recovery reason; the
+    // independent generic continuation failures must not increment the open-effect counter further.
+    assert!(blocked
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == "continuation_open_effect_recovery:1"));
     assert!(!blocked
         .pending_reasons
         .iter()
-        .any(|reason| reason.starts_with("continuation_open_effect_recovery:")));
+        .any(|reason| {
+            reason.starts_with("continuation_open_effect_recovery:")
+                && reason != "continuation_open_effect_recovery:1"
+        }));
     assert!(!blocked
         .pending_reasons
         .iter()
