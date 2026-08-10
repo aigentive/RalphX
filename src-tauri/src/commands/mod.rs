@@ -90,7 +90,6 @@ pub mod qa_commands;
 pub mod question_commands;
 #[cfg(test)]
 mod question_commands_tests;
-pub mod registry;
 pub mod release_notes_commands;
 pub mod repository_settings_commands;
 #[cfg(test)]

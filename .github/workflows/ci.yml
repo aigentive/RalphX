@@ -103,7 +103,7 @@ jobs:
                   - 'frontend/**'
                   - 'src-tauri/Cargo.lock'
                   - 'src-tauri/Cargo.toml'
-                  - 'src-tauri/src/application/runtime_wiring.rs'
+                  - 'src-tauri/src/shell/runtime_wiring.rs'
                   - 'src-tauri/tauri.conf.json'
               - '!**/CLAUDE.md'
             tauri_alignment:

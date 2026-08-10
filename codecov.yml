@@ -21,14 +21,14 @@ coverage:
           - "!src-tauri/src/application/chat_service/chat_service_send_background.rs"
           # Startup composition roots mostly wire long-lived Tauri services, timers, and
           # background loops. Keep behavior covered through extracted helpers/services.
-          - "!src-tauri/src/application/app_setup.rs"
-          - "!src-tauri/src/application/runtime_wiring.rs"
+          - "!src-tauri/src/shell/app_setup.rs"
+          - "!src-tauri/src/shell/runtime_wiring.rs"
           - "!src-tauri/src/application/startup_background.rs"
-          - "!src-tauri/src/application/startup_bootstrap.rs"
-          - "!src-tauri/src/application/startup_cleanup.rs"
-          - "!src-tauri/src/application/startup_pipeline.rs"
-          - "!src-tauri/src/application/startup_pipeline_launch.rs"
-          - "!src-tauri/src/application/startup_transition_factory.rs"
+          - "!src-tauri/src/shell/startup_bootstrap.rs"
+          - "!src-tauri/src/shell/startup_cleanup.rs"
+          - "!src-tauri/src/shell/startup_pipeline.rs"
+          - "!src-tauri/src/shell/startup_pipeline_launch.rs"
+          - "!src-tauri/src/shell/startup_transition_factory.rs"
           # Startup commands wrap Tauri State/AppHandle and the opener plugin.
           # Their deterministic diagnostics/retry/path helpers are sidecar-tested.
           - "!src-tauri/src/commands/startup_commands.rs"
@@ -38,10 +38,10 @@ coverage:
           # #[tokio::test]); the ExitRequested arm's `api: ExitRequestApi` field
           # has no public constructor in Tauri 2.x. The actual decision logic is
           # extracted into pub(crate) `trigger_http_shutdown` + `HttpShutdownHandle`,
-          # both unit-tested in `application/shutdown_tests.rs` and
+          # both unit-tested in `shell/shutdown_tests.rs` and
           # `application/http_shutdown_tests.rs`.
-          - "!src-tauri/src/application/shutdown.rs"
-          - "!src-tauri/src/application/server_boot.rs"
+          - "!src-tauri/src/shell/shutdown.rs"
+          - "!src-tauri/src/shell/server_boot.rs"
           # Per-harness child-process cleanup (Claude + Codex). Both files wrap
           # real subprocess spawning, stdio handling, and OS signal management
           # — only exercisable via integration tests with real process spawning
@@ -291,7 +291,7 @@ coverage:
           # delegation, and startup orchestration.
           - "!src-tauri/src/application/agent_task_service.rs"
           - "!src-tauri/src/application/runtime_factory.rs"
-          - "!src-tauri/src/application/startup_runtime_builders.rs"
+          - "!src-tauri/src/shell/startup_runtime_builders.rs"
           - "!src-tauri/src/application/chat_resumption.rs"
           - "!src-tauri/src/application/chat_service/chat_service_recovery.rs"
           - "!src-tauri/src/application/task_transition_service.rs"
@@ -391,7 +391,7 @@ ignore:
   - "src-tauri/src/application/git_mutation_recovery.rs"
   - "src-tauri/src/application/git_service/git_cmd.rs"
   - "src-tauri/src/application/reconciliation/handlers/execution.rs"
-  - "src-tauri/src/application/startup_pipeline.rs"
+  - "src-tauri/src/shell/startup_pipeline.rs"
   - "src-tauri/src/application/task_transition_service.rs"
   - "src-tauri/src/commands/task_commands/mutation.rs"
   - "src-tauri/src/domain/state_machine/machine/transitions.rs"

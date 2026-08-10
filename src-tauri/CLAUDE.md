@@ -34,7 +34,7 @@ Commands (Tauri IPC) → Application Services → Domain Layer ← NO INFRA DEPS
 ```
 
 ### Dual AppState (CRITICAL)
-TWO `AppState` object graphs exist (Tauri commands + HTTP/MCP server), wired in `app_setup.rs` / `server_boot.rs` / `runtime_wiring.rs`; the HTTP state is built from the Tauri state's **shared physical SQLite connection**. Any `Arc<T>` coordinating between them MUST be explicitly cloned in `runtime_wiring.rs`. ❌ Relying on `new_production()` defaults.
+TWO `AppState` object graphs exist (Tauri commands + HTTP/MCP server), wired in `shell/app_setup.rs` / `shell/server_boot.rs` / `shell/runtime_wiring.rs`; the HTTP state is built from the Tauri state's **shared physical SQLite connection**. Any `Arc<T>` coordinating between them MUST be explicitly cloned in `shell/runtime_wiring.rs`. ❌ Relying on `new_production()` defaults.
 
 | Shared State | What Breaks If Not Shared |
 |---|---|

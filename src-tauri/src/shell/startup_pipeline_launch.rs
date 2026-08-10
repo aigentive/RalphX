@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use crate::application;
-use crate::application::startup_pipeline::{StartupPipelineDeps, StartupPipelineMode};
+use crate::shell::startup_pipeline::{StartupPipelineDeps, StartupPipelineMode};
 use crate::application::startup_status::{StartupCoordinator, StartupStage};
 use crate::commands::{ActiveProjectState, ExecutionState};
 use crate::AppState;
+use tauri::State;
 
 fn build_startup_pipeline_deps(
     app_state: &AppState,
@@ -149,7 +149,7 @@ pub(crate) fn launch_startup_pipeline_from_handle(
         pr_fix_review_publish_resumer,
     );
     tauri::async_runtime::spawn(async move {
-        match application::startup_pipeline::run_startup_pipeline(deps).await {
+        match crate::shell::startup_pipeline::run_startup_pipeline(deps).await {
             Ok(()) => {
                 let _ = startup_coordinator.advance(attempt_id, StartupStage::Ready);
             }
@@ -195,7 +195,7 @@ pub(crate) async fn resume_deferred_git_startup_pipeline(
             None,
             pr_fix_review_publish_resumer,
         );
-        application::startup_pipeline::run_startup_pipeline(deps)
+        crate::shell::startup_pipeline::run_startup_pipeline(deps)
             .await
             .map_err(|error| error.to_string())?;
         Ok(!recovery_state.is_pending())
@@ -204,4 +204,35 @@ pub(crate) async fn resume_deferred_git_startup_pipeline(
 
     recovery_state.finish_resume();
     result
+}
+
+/// Resume Git/GitHub-dependent startup work that was deferred by startup preflight.
+///
+/// Hosted in the shell rather than `commands::project_commands` because it
+/// drives the startup pipeline directly; keeping it in `commands` would
+/// require an upward `crate::shell` import.
+#[tauri::command]
+pub async fn resume_deferred_git_startup(
+    state: State<'_, AppState>,
+    execution_state: State<'_, Arc<ExecutionState>>,
+    active_project_state: State<'_, Arc<ActiveProjectState>>,
+    app: tauri::AppHandle,
+) -> Result<bool, String> {
+    let pr_fix_review_publish_resumer = Arc::new(
+        crate::commands::unified_chat_commands::AgentWorkspacePrFixReviewPublishCommandResumer {
+            app_state: state.inner().clone(),
+            execution_state: Arc::clone(&execution_state),
+        },
+    )
+        as Arc<
+            dyn crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrFixReviewPublishResumer,
+        >;
+    resume_deferred_git_startup_pipeline(
+        &state,
+        Arc::clone(&execution_state),
+        Arc::clone(&active_project_state),
+        app,
+        Some(pr_fix_review_publish_resumer),
+    )
+    .await
 }

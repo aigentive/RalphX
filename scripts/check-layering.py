@@ -122,7 +122,7 @@ RULES: list[dict[str, Any]] = [
             "src-tauri/src/application/agent_conversation_start_service/project_setup.rs",
             "src-tauri/src/application/agent_conversation_start_service/helpers/spawn_glue.rs",
             "src-tauri/src/application/startup_background.rs",
-            "src-tauri/src/application/startup_runtime_builders.rs",
+            "src-tauri/src/shell/startup_runtime_builders.rs",
             "src-tauri/src/application/chat_resumption.rs",
             "src-tauri/src/application/task_cleanup_service.rs",
         ],
@@ -140,7 +140,7 @@ RULES: list[dict[str, Any]] = [
             "src-tauri/src/application/agent_conversation_start_service/finish_flow.rs",
             "src-tauri/src/application/agent_conversation_start_service/project_setup.rs",
             "src-tauri/src/application/startup_background.rs",
-            "src-tauri/src/application/startup_runtime_builders.rs",
+            "src-tauri/src/shell/startup_runtime_builders.rs",
         ],
         "forbidden": [
             "AppChatService<",

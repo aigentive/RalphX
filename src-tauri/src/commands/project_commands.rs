@@ -1160,33 +1160,6 @@ pub(crate) fn browser_login_required(state: GithubConnectionState) -> Result<boo
     }
 }
 
-/// Resume Git/GitHub-dependent startup work that was deferred by startup preflight.
-#[tauri::command]
-pub async fn resume_deferred_git_startup(
-    state: State<'_, AppState>,
-    execution_state: State<'_, Arc<ExecutionState>>,
-    active_project_state: State<'_, Arc<ActiveProjectState>>,
-    app: tauri::AppHandle,
-) -> Result<bool, String> {
-    let pr_fix_review_publish_resumer = Arc::new(
-        crate::commands::unified_chat_commands::AgentWorkspacePrFixReviewPublishCommandResumer {
-            app_state: state.inner().clone(),
-            execution_state: Arc::clone(&execution_state),
-        },
-    )
-        as Arc<
-            dyn crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrFixReviewPublishResumer,
-        >;
-    crate::application::startup_pipeline_launch::resume_deferred_git_startup_pipeline(
-        &state,
-        Arc::clone(&execution_state),
-        Arc::clone(&active_project_state),
-        app,
-        Some(pr_fix_review_publish_resumer),
-    )
-    .await
-}
-
 /// Check whether the `gh` CLI is authenticated.
 ///
 /// Returns whether a local GitHub CLI credential is present without requiring a

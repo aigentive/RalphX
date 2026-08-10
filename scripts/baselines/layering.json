@@ -109,7 +109,7 @@
         "src-tauri/src/application/agent_conversation_start_service/project_setup.rs",
         "src-tauri/src/application/agent_conversation_start_service/helpers/spawn_glue.rs",
         "src-tauri/src/application/startup_background.rs",
-        "src-tauri/src/application/startup_runtime_builders.rs",
+        "src-tauri/src/shell/startup_runtime_builders.rs",
         "src-tauri/src/application/chat_resumption.rs",
         "src-tauri/src/application/task_cleanup_service.rs"
       ]
@@ -135,7 +135,7 @@
         "src-tauri/src/application/agent_conversation_start_service/finish_flow.rs",
         "src-tauri/src/application/agent_conversation_start_service/project_setup.rs",
         "src-tauri/src/application/startup_background.rs",
-        "src-tauri/src/application/startup_runtime_builders.rs"
+        "src-tauri/src/shell/startup_runtime_builders.rs"
       ]
     },
     {
@@ -191,26 +191,6 @@
     "bounded_chat_start_runtime_no_tauri_generics": [],
     "bounded_completion_producers_no_direct_tauri_emit": [],
     "root_application_no_commands_or_http_imports": [
-      {
-        "path": "src-tauri/src/application/app_setup.rs",
-        "target": "crate::commands",
-        "text": "crate::commands::agent_workspace_auto_publish::"
-      },
-      {
-        "path": "src-tauri/src/application/app_setup.rs",
-        "target": "crate::commands",
-        "text": "crate::commands::agent_workspace_completion_dispatch::"
-      },
-      {
-        "path": "src-tauri/src/application/app_setup.rs",
-        "target": "crate::commands",
-        "text": "crate::commands::workspace_open_commands::warm_workspace_open_target_cache();"
-      },
-      {
-        "path": "src-tauri/src/application/app_setup.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::{ActiveProjectState, ExecutionState};"
-      },
       {
         "path": "src-tauri/src/application/app_state.rs",
         "target": "crate::commands",
@@ -352,29 +332,9 @@
         "text": "use crate::commands::ExecutionState;"
       },
       {
-        "path": "src-tauri/src/application/server_boot.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
-        "path": "src-tauri/src/application/server_boot.rs",
-        "target": "crate::http_server",
-        "text": "use crate::http_server;"
-      },
-      {
         "path": "src-tauri/src/application/session_reopen_service.rs",
         "target": "crate::http_server",
         "text": "use crate::http_server::handlers::ideation::{stop_and_archive_children, ChildFilter};"
-      },
-      {
-        "path": "src-tauri/src/application/setup_settings.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
-        "path": "src-tauri/src/application/shutdown.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands;"
       },
       {
         "path": "src-tauri/src/application/startup_background.rs",
@@ -390,26 +350,6 @@
         "path": "src-tauri/src/application/startup_jobs_tests.rs",
         "target": "crate::commands",
         "text": "use crate::commands::execution_commands::{ActiveProjectState, ExecutionState};"
-      },
-      {
-        "path": "src-tauri/src/application/startup_pipeline.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::{ActiveProjectState, ExecutionState};"
-      },
-      {
-        "path": "src-tauri/src/application/startup_pipeline_launch.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::{ActiveProjectState, ExecutionState};"
-      },
-      {
-        "path": "src-tauri/src/application/startup_runtime_builders.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
-        "path": "src-tauri/src/application/startup_transition_factory.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
       },
       {
         "path": "src-tauri/src/application/task_cleanup_service.rs",

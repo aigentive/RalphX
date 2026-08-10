@@ -2,17 +2,19 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::application::notification_service::WindowFocusState;
-use crate::application::runtime_wiring::{
+use crate::shell::runtime_wiring::{
     build_http_app_state, create_main_window, register_managed_state,
 };
-use crate::application::server_boot::start_server_boot;
-use crate::application::setup_settings::initialize_settings_defaults;
-use crate::application::startup_cleanup::run_startup_cleanup;
+use crate::shell::server_boot::start_server_boot;
+use crate::shell::setup_settings::initialize_settings_defaults;
+use crate::shell::startup_cleanup::run_startup_cleanup;
 use crate::application::startup_failure_classification::{
     classify_app_state_construction_failure, generic_app_state_construction_failure,
 };
-use crate::application::startup_pipeline_launch::launch_startup_pipeline_from_handle;
-use crate::application::startup_status::{StartupCoordinator, StartupFailureCode, StartupStage};
+use crate::shell::startup_pipeline_launch::launch_startup_pipeline_from_handle;
+use crate::application::startup_status::{
+    StartupAttemptLauncher, StartupCoordinator, StartupFailureCode, StartupStage,
+};
 use crate::application::AppPaths;
 use crate::commands::{ActiveProjectState, ExecutionState};
 use crate::shell::agent_completion_event_runtime::create_agent_completion_event_runtime;
@@ -41,20 +43,6 @@ pub(crate) type StartupPrFixReviewPublishResumerFactory = Arc<
         + Send
         + Sync,
 >;
-
-pub(crate) struct StartupAttemptLauncher {
-    launch: Arc<dyn Fn(u64) + Send + Sync>,
-}
-
-impl StartupAttemptLauncher {
-    fn new(launch: Arc<dyn Fn(u64) + Send + Sync>) -> Self {
-        Self { launch }
-    }
-
-    pub(crate) fn launch(&self, attempt_id: u64) {
-        (self.launch)(attempt_id);
-    }
-}
 
 pub(super) fn resolve_bundled_runtime_paths(
     resource_dir: &Path,

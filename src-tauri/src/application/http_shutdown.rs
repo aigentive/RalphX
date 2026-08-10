@@ -7,7 +7,7 @@ use tokio::sync::Notify;
 /// Trigger for graceful HTTP server shutdown.
 ///
 /// Stored as Tauri managed state so the Tauri-runtime shutdown handler in
-/// [`crate::application::shutdown`] can fire it from `RunEvent::ExitRequested`
+/// [`crate::shell::shutdown`] can fire it from `RunEvent::ExitRequested`
 /// without coupling [`crate::AppState`] to the HTTP transport layer.
 ///
 /// Once triggered, axum's `with_graceful_shutdown` stops accepting new

@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::timeout;
 
-use crate::application::shutdown::{
+use crate::shell::shutdown::{
     handle_run_event, trigger_http_shutdown, trigger_startup_cancellation, ExitWatchdog,
 };
 use crate::application::startup_status::StartupCoordinator;

@@ -42,8 +42,8 @@ mod tests;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use application::app_setup::run_app_setup;
-use application::startup_bootstrap::initialize_process_bootstrap;
+use shell::app_setup::run_app_setup;
+use shell::startup_bootstrap::initialize_process_bootstrap;
 use application::startup_status::StartupCoordinator;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
@@ -178,8 +178,8 @@ pub fn run() {
                 .build()
         )
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .menu(application::native_menu::build_app_menu)
-        .on_menu_event(application::native_menu::handle_menu_event)
+        .menu(shell::native_menu::build_app_menu)
+        .on_menu_event(shell::native_menu::handle_menu_event)
         .manage(startup_coordinator)
         .manage(execution_state)
         .manage(active_project_state)
@@ -210,9 +210,9 @@ pub fn run() {
         .run(|app_handle, event| {
             #[cfg(all(dev, target_os = "macos"))]
             if matches!(&event, tauri::RunEvent::Ready) {
-                application::dev_dock_icon::set_light_dev_dock_icon();
+                shell::dev_dock_icon::set_light_dev_dock_icon();
             }
 
-            application::shutdown::handle_run_event(app_handle, &event);
+            shell::shutdown::handle_run_event(app_handle, &event);
         });
 }
