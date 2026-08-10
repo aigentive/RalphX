@@ -2082,8 +2082,8 @@ async fn surface_open_effect_continuation_attention(
 /// The reconciler proved the push never reached the remote and terminated the effect as
 /// `Failed`, clearing the fence. Record a timeline event and settle any attention notification
 /// raised by prior open-effect recovery failures. Best-effort: neither write may fail the
-/// continuation, which is about to fall through and re-drive publication under existing
-/// authority gates.
+/// caller, and the caller defers the lease reacquire to the next recovery pass rather than
+/// re-driving publication in this pass.
 async fn record_continuation_effect_not_applied(
     state: &AppState,
     attempt: &AgentWorkspaceRepairAttempt,
