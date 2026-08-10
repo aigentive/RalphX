@@ -2186,6 +2186,101 @@ async fn recovery_sweep_re_evaluates_blocked_attempt_on_next_pass_after_failed_r
 }
 
 #[tokio::test]
+async fn recovery_sweep_settles_blocked_pr_handoff_with_exact_live_evidence() {
+    let fixture = setup_blocked_existing_pr_preserve_handoff().await;
+    let repair_head = fixture
+        .blocked
+        .repair_head_commit
+        .clone()
+        .expect("blocked handoff retains repair head");
+    fixture
+        .github
+        .will_return_sync_state(matching_open_pr_sync_state(&fixture.workspace, repair_head));
+
+    let pushes_before = fixture
+        .github
+        .state()
+        .push_branch_with_expected_remote_oid_lease_calls;
+    let update_key = format!(
+        "agent_workspace_repair:{}:{}:{}",
+        fixture.blocked.id,
+        fixture.blocked.generation,
+        AgentWorkspaceRepairEffectKind::UpdatePr
+    );
+
+    let recovered = recover_agent_workspace_repair_attempts_for_state(&fixture.state)
+        .await
+        .expect("recovery sweep must succeed with exact live PR evidence");
+    assert_eq!(
+        recovered, 1,
+        "an exactly matching blocked attempt must be counted as recovered"
+    );
+
+    assert!(
+        fixture
+            .state
+            .agent_workspace_repair_repo
+            .get_current_repair_attempt(&fixture.workspace.conversation_id)
+            .await
+            .expect("read repair attempt after sweep")
+            .is_none(),
+        "sweep must settle the blocked attempt"
+    );
+
+    let settled_workspace = fixture
+        .state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&fixture.workspace.conversation_id)
+        .await
+        .expect("load workspace after sweep")
+        .expect("workspace exists after sweep");
+    assert_eq!(
+        settled_workspace.publication_push_status.as_deref(),
+        Some("pushed"),
+        "settled workspace must retain pushed status"
+    );
+    assert_eq!(
+        settled_workspace.pr_supervision_status.as_deref(),
+        Some("monitoring"),
+        "settled workspace must advance to monitoring"
+    );
+
+    assert_eq!(
+        fixture
+            .state
+            .agent_workspace_repair_repo
+            .get_repair_effect_by_idempotency_key(&update_key)
+            .await
+            .expect("read update effect after sweep")
+            .expect("UpdatePr effect must remain after settlement")
+            .status,
+        AgentWorkspaceRepairEffectStatus::Observed,
+        "sweep must observe the UpdatePr effect"
+    );
+
+    let all_attempts = fixture
+        .state
+        .agent_workspace_repair_repo
+        .list_repair_attempts_for_conversation(&fixture.workspace.conversation_id)
+        .await
+        .expect("list all repair attempts after sweep");
+    assert_eq!(
+        all_attempts.len(),
+        1,
+        "sweep must not spawn a successor attempt after settling"
+    );
+
+    assert_eq!(
+        fixture
+            .github
+            .state()
+            .push_branch_with_expected_remote_oid_lease_calls,
+        pushes_before,
+        "sweep must not issue a second push after settlement"
+    );
+}
+
+#[tokio::test]
 async fn busy_repair_push_returns_before_touching_the_workspace_git_path() {
     let fixture = setup_rewritten_workspace_push().await;
     let (state, continuing, effect) = state_with_in_flight_repair_push(&fixture).await;
