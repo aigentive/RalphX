@@ -1372,6 +1372,15 @@ impl AgentConversationWorkspaceRepository for ControlledWorkspaceRepo {
     ) -> AppResult<()> {
         Ok(())
     }
+    async fn set_stale_base_detected_at(
+        &self,
+        conversation_id: &ChatConversationId,
+        detected_at: Option<DateTime<Utc>>,
+    ) -> AppResult<()> {
+        self.inner
+            .set_stale_base_detected_at(conversation_id, detected_at)
+            .await
+    }
     async fn set_review_automation_override(
         &self,
         conversation_id: &ChatConversationId,
@@ -1519,6 +1528,12 @@ impl AgentConversationWorkspaceRepository for ControlledWorkspaceRepo {
         &self,
     ) -> AppResult<Vec<AgentConversationWorkspace>> {
         self.inner.list_active_direct_published_workspaces().await
+    }
+
+    async fn list_active_unpublished_edit_workspaces(
+        &self,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        self.inner.list_active_unpublished_edit_workspaces().await
     }
 
     async fn list_active_needs_agent_workspaces(

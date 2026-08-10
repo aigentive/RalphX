@@ -267,6 +267,8 @@ git:
   agent_workspace_publish_lease_heartbeat_interval_secs: 30 # Env: RALPHX_GIT_AGENT_WORKSPACE_PUBLISH_LEASE_HEARTBEAT_INTERVAL_SECS
   # agent_workspace_publish_recovery.rs — liveness-aware publish recovery cadence
   agent_workspace_publish_recovery_interval_secs: 120 # Env: RALPHX_GIT_AGENT_WORKSPACE_PUBLISH_RECOVERY_INTERVAL_SECS
+  # agent_workspace_repair_reconciliation_scan.rs — periodic clock-only durable repair-reconciliation scan cadence
+  agent_workspace_repair_reconciliation_scan_interval_secs: 60 # Env: RALPHX_GIT_AGENT_WORKSPACE_REPAIR_RECONCILIATION_SCAN_INTERVAL_SECS
   # pr_startup_recovery.rs — periodic retry cadence for terminal PR local branch/worktree cleanup
   terminal_pr_local_cleanup_interval_secs: 900 # Env: RALPHX_GIT_TERMINAL_PR_LOCAL_CLEANUP_INTERVAL_SECS
   # pr_startup_recovery.rs — retry window for retryable terminal PR cleanup markers
