@@ -9,11 +9,12 @@ use crate::application::agent_workspace_publish_repair_state::validate_agent_wor
 use crate::application::git_service::git_cmd;
 use crate::domain::entities::plan_branch::PrPushStatus;
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentWorkspaceRepairAttempt, AgentWorkspaceRepairContinuation,
-    AgentWorkspaceRepairEffect, AgentWorkspaceRepairEffectKind, AgentWorkspaceRepairEffectStatus,
-    AgentWorkspaceRepairOutcome, AgentWorkspaceRepairPhase, ChatConversation, ChatConversationId,
-    GitMutationKind, GitTargetIdentity, GitTargetLeaseOwner, GitTargetLeaseOwnerKind,
-    IdeationAnalysisBaseRefKind,
+    AgentConversationWorkspace, AgentConversationWorkspacePublicationEvent,
+    AgentWorkspacePrMetadataDecision, AgentWorkspaceRepairAttempt,
+    AgentWorkspaceRepairContinuation, AgentWorkspaceRepairEffect, AgentWorkspaceRepairEffectKind,
+    AgentWorkspaceRepairEffectStatus, AgentWorkspaceRepairOutcome, AgentWorkspaceRepairPhase,
+    ChatConversation, ChatConversationId, GitMutationKind, GitTargetIdentity, GitTargetLeaseOwner,
+    GitTargetLeaseOwnerKind, IdeationAnalysisBaseRefKind,
 };
 use crate::domain::repositories::{
     AgentWorkspaceRepairAttemptTransition, AgentWorkspaceRepairAttemptTransitionOutcome,
@@ -23,6 +24,7 @@ use crate::domain::repositories::{
     GitAuthorityCasOutcome, SettleAgentWorkspaceRepairAttempt,
     SettleAgentWorkspaceRepairAttemptOutcome,
 };
+use crate::domain::services::github_service::PrStatus;
 use crate::domain::services::GithubServiceTrait;
 use crate::domain::state_machine::transition_handler::{
     classify_commit_hook_failure_text, update_plan_from_main_isolated, update_source_from_target,
@@ -681,7 +683,26 @@ pub(crate) async fn reconcile_linked_plan_agent_workspace_repair_pr_handoff(
 pub(crate) async fn observe_agent_workspace_repair_pr_handoff_effect(
     repair_repo: &dyn AgentWorkspaceRepairRepository,
     attempt: &AgentWorkspaceRepairAttempt,
+    effect: AgentWorkspaceRepairEffect,
+    pr_number: i64,
+    pr_url: Option<&str>,
+) -> AppResult<AgentWorkspaceRepairEffect> {
+    observe_agent_workspace_repair_pr_handoff_effect_for_phase(
+        repair_repo,
+        attempt,
+        effect,
+        AgentWorkspaceRepairPhase::Continuing,
+        pr_number,
+        pr_url,
+    )
+    .await
+}
+
+async fn observe_agent_workspace_repair_pr_handoff_effect_for_phase(
+    repair_repo: &dyn AgentWorkspaceRepairRepository,
+    attempt: &AgentWorkspaceRepairAttempt,
     mut effect: AgentWorkspaceRepairEffect,
+    expected_phase: AgentWorkspaceRepairPhase,
     pr_number: i64,
     pr_url: Option<&str>,
 ) -> AppResult<AgentWorkspaceRepairEffect> {
@@ -707,7 +728,7 @@ pub(crate) async fn observe_agent_workspace_repair_pr_handoff_effect(
         .complete_repair_effect(CompleteAgentWorkspaceRepairEffect {
             attempt_id: attempt.id.clone(),
             generation: attempt.generation,
-            expected_phase: AgentWorkspaceRepairPhase::Continuing,
+            expected_phase,
             expected_attempt_updated_at: attempt.updated_at,
             expected_effect_updated_at,
             expected_effect_status,
@@ -725,11 +746,211 @@ pub(crate) async fn observe_agent_workspace_repair_pr_handoff_effect(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BlockedRepairPrHandoffReconciliation {
+    Recovered,
+    Stale,
+    NotRecoverable,
+}
+
+/// Reconciles only a blocked existing-PR no-op handoff whose durable receipts and live GitHub
+/// head all prove that the external effect already completed.
+pub(crate) async fn reconcile_blocked_agent_workspace_repair_pr_handoff(
+    state: &AppState,
+    observed: &AgentWorkspaceRepairAttempt,
+) -> AppResult<BlockedRepairPrHandoffReconciliation> {
+    let Some(current) = state
+        .agent_workspace_repair_repo
+        .get_repair_attempt(&observed.id)
+        .await?
+    else {
+        return Ok(BlockedRepairPrHandoffReconciliation::Stale);
+    };
+    if current.id != observed.id
+        || current.generation != observed.generation
+        || current.phase != AgentWorkspaceRepairPhase::Blocked
+        || current.updated_at != observed.updated_at
+        || current.settled_at.is_some()
+    {
+        return Ok(BlockedRepairPrHandoffReconciliation::Stale);
+    }
+    let Some(repair_head) = current
+        .repair_head_commit
+        .as_deref()
+        .filter(|head| !head.trim().is_empty())
+    else {
+        return Ok(BlockedRepairPrHandoffReconciliation::NotRecoverable);
+    };
+    let push_key = format!(
+        "agent_workspace_repair:{}:{}:{}",
+        current.id,
+        current.generation,
+        AgentWorkspaceRepairEffectKind::PushBranch
+    );
+    let Some(push_effect) = state
+        .agent_workspace_repair_repo
+        .get_repair_effect_by_idempotency_key(&push_key)
+        .await?
+    else {
+        return Ok(BlockedRepairPrHandoffReconciliation::NotRecoverable);
+    };
+    if push_effect.attempt_id != current.id
+        || push_effect.kind != AgentWorkspaceRepairEffectKind::PushBranch
+        || push_effect.status != AgentWorkspaceRepairEffectStatus::Observed
+        || push_effect.intended_head_oid.as_deref() != Some(repair_head)
+    {
+        return Ok(BlockedRepairPrHandoffReconciliation::NotRecoverable);
+    }
+    let AgentWorkspaceRepairPushOutcome::Observed { remote_oid, .. } =
+        observed_workspace_repair_push_outcome(push_effect)?
+    else {
+        return Ok(BlockedRepairPrHandoffReconciliation::NotRecoverable);
+    };
+    if remote_oid != repair_head {
+        return Ok(BlockedRepairPrHandoffReconciliation::NotRecoverable);
+    }
+
+    let update_key = format!(
+        "agent_workspace_repair:{}:{}:{}",
+        current.id,
+        current.generation,
+        AgentWorkspaceRepairEffectKind::UpdatePr
+    );
+    let Some(mut update_effect) = state
+        .agent_workspace_repair_repo
+        .get_repair_effect_by_idempotency_key(&update_key)
+        .await?
+    else {
+        return Ok(BlockedRepairPrHandoffReconciliation::NotRecoverable);
+    };
+    if update_effect.attempt_id != current.id
+        || update_effect.kind != AgentWorkspaceRepairEffectKind::UpdatePr
+        || !matches!(
+            update_effect.status,
+            AgentWorkspaceRepairEffectStatus::InFlight | AgentWorkspaceRepairEffectStatus::Observed
+        )
+        || update_effect.intended_head_oid.as_deref() != Some(repair_head)
+    {
+        return Ok(BlockedRepairPrHandoffReconciliation::NotRecoverable);
+    }
+
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&current.conversation_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!(
+                "workspace {} for blocked PR handoff reconciliation",
+                current.conversation_id
+            ))
+        })?;
+    let Some(pr_number) = workspace.publication_pr_number else {
+        return Ok(BlockedRepairPrHandoffReconciliation::NotRecoverable);
+    };
+    if update_effect.expected_pr_number != Some(pr_number)
+        || state
+            .agent_conversation_workspace_repo
+            .get_pr_metadata_decision(&current.conversation_id)
+            .await?
+            != Some(AgentWorkspacePrMetadataDecision::Preserve)
+    {
+        return Ok(BlockedRepairPrHandoffReconciliation::NotRecoverable);
+    }
+    let project = state
+        .project_repo
+        .get_by_id(&workspace.project_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!(
+                "project {} for blocked PR handoff reconciliation",
+                workspace.project_id
+            ))
+        })?;
+    let target = resolve_effective_agent_conversation_workspace_path(
+        &project,
+        &workspace,
+        state.plan_branch_repo.as_ref(),
+    )
+    .await?;
+    let Some(github) = state.github_service.as_ref() else {
+        return Ok(BlockedRepairPrHandoffReconciliation::NotRecoverable);
+    };
+    let sync_state = github.check_pr_sync_state(&target.path, pr_number).await?;
+    if sync_state.status != PrStatus::Open
+        || sync_state.head_ref_name != workspace.branch_name
+        || sync_state.head_ref_oid.as_deref() != Some(repair_head)
+    {
+        return Ok(BlockedRepairPrHandoffReconciliation::NotRecoverable);
+    }
+
+    if update_effect.status == AgentWorkspaceRepairEffectStatus::InFlight {
+        update_effect = observe_agent_workspace_repair_pr_handoff_effect_for_phase(
+            state.agent_workspace_repair_repo.as_ref(),
+            &current,
+            update_effect,
+            AgentWorkspaceRepairPhase::Blocked,
+            pr_number,
+            workspace.publication_pr_url.as_deref(),
+        )
+        .await?;
+    }
+    debug_assert_eq!(
+        update_effect.status,
+        AgentWorkspaceRepairEffectStatus::Observed
+    );
+    release_agent_workspace_repair_lease_after_pr_handoff(state, &current).await?;
+
+    let settled_at = Utc::now();
+    let projection = crate::domain::repositories::AgentWorkspaceRepairCompatibilityProjection {
+        publication_push_status: Some("pushed".to_string()),
+        pr_supervision_status: Some("monitoring".to_string()),
+        pr_supervision_summary: Some(
+            "Recovered the existing pull-request monitoring handoff.".to_string(),
+        ),
+        pr_supervision_updated_at: Some(settled_at),
+        pr_auto_merge_current: workspace.pr_auto_merge_current,
+        pr_autofix_enabled: None,
+        pr_auto_merge_desired: None,
+        base_commit: current.target_base_commit.clone(),
+    };
+    let event = AgentConversationWorkspacePublicationEvent::new(
+        current.conversation_id.clone(),
+        "repair_pr_handoff_reconciled",
+        "completed",
+        "Recovered the existing pull-request monitoring handoff.",
+        Some("existing_pr_preserve".to_string()),
+    );
+    match state
+        .agent_workspace_repair_repo
+        .settle_repair_attempt(SettleAgentWorkspaceRepairAttempt {
+            attempt_id: current.id,
+            generation: current.generation,
+            expected_phase: AgentWorkspaceRepairPhase::Blocked,
+            expected_updated_at: current.updated_at,
+            outcome: AgentWorkspaceRepairOutcome::Succeeded,
+            settled_at,
+            compatibility_projection: Some(projection),
+            events: vec![event],
+        })
+        .await?
+    {
+        SettleAgentWorkspaceRepairAttemptOutcome::Applied(_) => {
+            Ok(BlockedRepairPrHandoffReconciliation::Recovered)
+        }
+        SettleAgentWorkspaceRepairAttemptOutcome::Stale(_)
+        | SettleAgentWorkspaceRepairAttemptOutcome::Missing => {
+            Ok(BlockedRepairPrHandoffReconciliation::Stale)
+        }
+    }
+}
+
 async fn block_agent_workspace_repair_pr_handoff(
     state: &AppState,
     attempt: AgentWorkspaceRepairAttempt,
     error: &str,
 ) -> AppResult<()> {
+    let observed_push_is_authoritative =
+        has_authoritative_observed_agent_workspace_repair_push(state, &attempt).await?;
     let auto_merge_current = state
         .agent_conversation_workspace_repo
         .get_by_conversation_id(&attempt.conversation_id)
@@ -738,16 +959,48 @@ async fn block_agent_workspace_repair_pr_handoff(
     let blocker = format!(
         "Pull-request continuation could not complete: {error}. Retry the blocked operation."
     );
-    let _ = crate::application::agent_workspace_publish_repair_state::block_agent_workspace_repair_completion(
+    let _ = crate::application::agent_workspace_publish_repair_state::block_agent_workspace_repair_completion_with_projection(
         Arc::clone(&state.agent_workspace_repair_repo),
         Arc::clone(&state.branch_update_repo),
         attempt,
         "Workspace repair publish continuation is blocked.",
         &blocker,
         auto_merge_current,
+        observed_push_is_authoritative.then_some(("pushed", "blocked")),
     )
     .await?;
     Ok(())
+}
+
+async fn has_authoritative_observed_agent_workspace_repair_push(
+    state: &AppState,
+    attempt: &AgentWorkspaceRepairAttempt,
+) -> AppResult<bool> {
+    let idempotency_key = format!(
+        "agent_workspace_repair:{}:{}:{}",
+        attempt.id,
+        attempt.generation,
+        AgentWorkspaceRepairEffectKind::PushBranch
+    );
+    let Some(effect) = state
+        .agent_workspace_repair_repo
+        .get_repair_effect_by_idempotency_key(&idempotency_key)
+        .await?
+    else {
+        return Ok(false);
+    };
+    if effect.attempt_id != attempt.id
+        || effect.kind != AgentWorkspaceRepairEffectKind::PushBranch
+        || effect.status != AgentWorkspaceRepairEffectStatus::Observed
+    {
+        return Ok(false);
+    }
+    let AgentWorkspaceRepairPushOutcome::Observed { remote_oid, .. } =
+        observed_workspace_repair_push_outcome(effect)?
+    else {
+        return Ok(false);
+    };
+    Ok(attempt.repair_head_commit.as_deref() == Some(remote_oid.as_str()))
 }
 
 /// Durably block a drifted-but-exact pre-PR repair receipt so the budgeted blocked-repair

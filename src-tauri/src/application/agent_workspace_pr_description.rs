@@ -602,17 +602,32 @@ async fn draft_agent_workspace_pr_metadata_decision_unlocked(
                     })
                     .flatten()
             });
-            let Some(decision) = recovered else {
-                return Err(pr_describer_missing_submission_error(&output));
-            };
-            warn!(
-                target: "ralphx_lib::application::agent_workspace_pr_description",
-                conversation_id = %workspace.conversation_id,
-                project_id = %project.id,
-                branch = %workspace.branch_name,
-                "Recovered PR metadata decision from literal tool-call text emitted by describer helper"
-            );
-            decision
+            match recovered {
+                Some(decision) => {
+                    warn!(
+                        target: "ralphx_lib::application::agent_workspace_pr_description",
+                        conversation_id = %workspace.conversation_id,
+                        project_id = %project.id,
+                        branch = %workspace.branch_name,
+                        "Recovered PR metadata decision from literal tool-call text emitted by describer helper"
+                    );
+                    decision
+                }
+                None if matches!(target, ResolvedAgentWorkspacePrTarget::Existing(_))
+                    && output.content.trim().is_empty() =>
+                {
+                    info!(
+                        target: "ralphx_lib::application::agent_workspace_pr_description",
+                        conversation_id = %workspace.conversation_id,
+                        project_id = %project.id,
+                        branch = %workspace.branch_name,
+                        decision_source = "implicit_empty_existing_pr",
+                        "Synthesized PR metadata preserve decision from silent successful completion"
+                    );
+                    AgentWorkspacePrMetadataDecision::Preserve
+                }
+                None => return Err(pr_describer_missing_submission_error(&output)),
+            }
         }
     };
 
