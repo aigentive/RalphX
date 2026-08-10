@@ -567,6 +567,19 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .collect())
     }
 
+    async fn list_active_unpublished_edit_workspaces(
+        &self,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        Ok(self
+            .workspaces
+            .read()
+            .await
+            .values()
+            .filter(|workspace| is_active_unpublished_edit_workspace(workspace))
+            .cloned()
+            .collect())
+    }
+
     async fn list_active_pr_poller_recovery_workspaces(
         &self,
     ) -> AppResult<Vec<AgentConversationWorkspace>> {
@@ -738,6 +751,9 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
                 workspace.pr_supervision_status = None;
                 workspace.pr_supervision_summary = None;
                 workspace.pr_supervision_updated_at = Some(now);
+            }
+            if pr_number.is_some() {
+                workspace.stale_base_detected_at = None;
             }
             workspace.updated_at = now;
         }
@@ -1087,6 +1103,9 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             workspace.pr_supervision_summary = None;
             workspace.pr_supervision_updated_at = Some(now);
         }
+        if workspace.publication_pr_number.is_some() {
+            workspace.stale_base_detected_at = None;
+        }
         workspace.updated_at = now;
         publication_events
             .entry(conversation_id.clone())
@@ -1134,6 +1153,9 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             workspace.pr_supervision_status = None;
             workspace.pr_supervision_summary = None;
             workspace.pr_supervision_updated_at = Some(now);
+        }
+        if workspace.publication_pr_number.is_some() {
+            workspace.stale_base_detected_at = None;
         }
         workspace.updated_at = now;
         publication_events
@@ -1318,6 +1340,18 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         if let Some(workspace) = self.workspaces.write().await.get_mut(conversation_id) {
             workspace.last_blocked_pr_health_fingerprint = fingerprint.map(str::to_string);
             workspace.last_blocked_pr_health_at = fingerprint.map(|_| Utc::now());
+            workspace.updated_at = Utc::now();
+        }
+        Ok(())
+    }
+
+    async fn set_stale_base_detected_at(
+        &self,
+        conversation_id: &ChatConversationId,
+        detected_at: Option<DateTime<Utc>>,
+    ) -> AppResult<()> {
+        if let Some(workspace) = self.workspaces.write().await.get_mut(conversation_id) {
+            workspace.stale_base_detected_at = detected_at;
             workspace.updated_at = Utc::now();
         }
         Ok(())
@@ -2883,6 +2917,13 @@ fn is_active_direct_published_workspace(workspace: &AgentConversationWorkspace) 
         && workspace.auto_publish_enabled
         && workspace.has_pr_status_pollable_push_status()
         && !workspace.has_terminal_publication_pr_status()
+}
+
+fn is_active_unpublished_edit_workspace(workspace: &AgentConversationWorkspace) -> bool {
+    workspace.status == AgentConversationWorkspaceStatus::Active
+        && workspace.mode == AgentConversationWorkspaceMode::Edit
+        && workspace.linked_plan_branch_id.is_none()
+        && workspace.publication_pr_number.is_none()
 }
 
 fn is_active_pr_poller_recovery_workspace(workspace: &AgentConversationWorkspace) -> bool {
