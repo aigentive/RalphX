@@ -52,6 +52,10 @@ use crate::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_REPAIR;
 
 /// Publication step recorded when unattended repair stops because its budget is spent.
 const REPAIR_BUDGET_EXHAUSTED_STEP: &str = "repair_budget_exhausted";
+/// Recorded every time a due auto-retry dispatch actually executes, deliberately with no
+/// read-before-append dedupe: each execution is a distinct observable event, so a retry that
+/// fires three times over an hour must produce three entries in the publish panel event log.
+const REPAIR_AUTO_RETRY_DISPATCHED_STEP: &str = "repair_auto_retry_dispatched";
 const REPAIR_PUBLISH_REDRIVE_STEP: &str = "repair_publish_redrive";
 pub(crate) const CONTINUATION_RECOVERY_BLOCKED_STEP: &str = "continuation_recovery_blocked";
 const CONTINUATION_OPEN_EFFECT_ATTENTION_STEP: &str = "continuation_open_effect_attention_required";
@@ -339,7 +343,15 @@ async fn reconcile_agent_workspace_repair_attempt(
             if !agent_workspace_repair_dispatch_is_due(&current, Utc::now()) {
                 return Ok(DurableRepairRecoveryOutcome::Noop);
             }
-            redeliver_due_repair_dispatch(state, current).await
+            let conversation_id = current.conversation_id;
+            let outcome = redeliver_due_repair_dispatch(state, current).await?;
+            // Only a genuine redelivery (the dispatch was actually reserved and sent) is an
+            // auto-retry worth surfacing; `Noop`/`Stale` mean this call lost a race (an open
+            // effect, an in-flight mutation, or a stale lease/reservation) and nothing advanced.
+            if outcome.was_recovered() {
+                append_repair_auto_retry_dispatched_event(state, conversation_id).await;
+            }
+            Ok(outcome)
         }
         AgentWorkspaceRepairPhase::Validating => {
             let active = match current.reserved_agent_run_id.as_ref() {
@@ -1418,6 +1430,32 @@ async fn redeliver_due_repair_dispatch(
         "Durable workspace repair delivery retry completed.",
     )
     .await
+}
+
+/// Records that a due auto-retry dispatch executed. Deliberately per-execution with no
+/// read-before-append dedupe (unlike lifecycle-classification events elsewhere in this module) so
+/// the publish panel shows every actual redelivery, not just the first. Emission is non-fatal.
+async fn append_repair_auto_retry_dispatched_event(
+    state: &AppState,
+    conversation_id: crate::domain::entities::ChatConversationId,
+) {
+    if let Err(error) = state
+        .agent_conversation_workspace_repo
+        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+            conversation_id,
+            REPAIR_AUTO_RETRY_DISPATCHED_STEP,
+            "retrying",
+            "RalphX automatically redelivered a due workspace repair retry.",
+            None,
+        ))
+        .await
+    {
+        tracing::warn!(
+            conversation_id = conversation_id.as_str(),
+            error = %error,
+            "Failed to record repair auto-retry dispatched publication event"
+        );
+    }
 }
 
 async fn rescue_orphaned_repair_dispatch(

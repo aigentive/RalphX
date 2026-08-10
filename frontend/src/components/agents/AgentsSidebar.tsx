@@ -22,6 +22,7 @@ import {
   Folder,
   Clock,
   GitBranch,
+  GitCompareArrows,
   GitFork,
   GitPullRequest,
   Inbox,
@@ -3722,6 +3723,32 @@ function AgentSessionRow({
             <span className="flex h-[1em] shrink-0 items-center" aria-hidden="true">
               ·
             </span>
+            {workspace?.staleBaseDetectedAt && (
+              <>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span
+                      role="img"
+                      aria-label="Base branch has moved ahead — this workspace needs an update"
+                      className="inline-flex shrink-0 items-center"
+                      data-testid={`agents-session-base-ahead-${conversation.id}`}
+                    >
+                      <GitCompareArrows
+                        className="h-3 w-3"
+                        style={{ color: "var(--status-warning)" }}
+                        aria-hidden="true"
+                      />
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom" className="text-xs">
+                    Base branch has moved ahead
+                  </TooltipContent>
+                </Tooltip>
+                <span className="flex h-[1em] shrink-0 items-center" aria-hidden="true">
+                  ·
+                </span>
+              </>
+            )}
             {publicationLabel && (
               <>
                 <span

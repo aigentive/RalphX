@@ -1302,6 +1302,41 @@ describe("AgentsSidebar", () => {
     );
   });
 
+  it("shows a base-ahead indicator only when staleBaseDetectedAt is persisted", () => {
+    const staleConversation = conversation({ id: "conversation-stale-base" });
+    const freshConversation = conversation({ id: "conversation-fresh-base" });
+    conversationsByProject.set("project-1", {
+      data: [staleConversation, freshConversation],
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    workspacesByProject.set("project-1", [
+      workspace({
+        conversationId: staleConversation.id,
+        staleBaseDetectedAt: "2026-08-06T15:00:00Z",
+      }),
+      workspace({ conversationId: freshConversation.id }),
+    ]);
+
+    renderSidebar([project({ baseBranch: "main" })]);
+
+    expect(
+      within(screen.getByTestId("agents-session-conversation-stale-base")).getByTestId(
+        "agents-session-base-ahead-conversation-stale-base",
+      ),
+    ).toHaveAttribute(
+      "aria-label",
+      "Base branch has moved ahead — this workspace needs an update",
+    );
+    expect(
+      within(
+        screen.getByTestId("agents-session-conversation-fresh-base"),
+      ).queryByTestId("agents-session-base-ahead-conversation-fresh-base"),
+    ).not.toBeInTheDocument();
+  });
+
   it("only shows a runtime label for running conversations", () => {
     const idleConversation = conversation({ id: "conversation-idle" });
     const runningConversation = conversation({

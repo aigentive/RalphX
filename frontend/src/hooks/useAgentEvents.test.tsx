@@ -25,6 +25,11 @@ import type {
 } from "@/api/chat";
 import { chatApi } from "@/api/chat";
 import { agentWorkspaceKeys } from "@/components/agents/agentWorkspaceQueries";
+import {
+  getWatchedAgentWorkspaceOperations,
+  resetAgentWorkspaceOperationRegistryForTests,
+} from "@/components/agents/agentWorkspaceOperationRegistry";
+import { deriveAgentWorkspaceOperationToastDecision } from "@/components/agents/agentWorkspaceOperationToastDecision";
 
 // ============================================================================
 // Mock EventBus
@@ -1085,6 +1090,84 @@ describe("useAgentEvents", () => {
       });
 
       expect(useChatStore.getState().agentStatus["merge:task-123"]).toBeUndefined();
+    });
+  });
+
+  describe("agent:workspace_changed — observed watch lifecycle", () => {
+    beforeEach(() => {
+      resetAgentWorkspaceOperationRegistryForTests();
+    });
+
+    afterEach(() => {
+      resetAgentWorkspaceOperationRegistryForTests();
+    });
+
+    it("adds exactly one observed watch for an unselected conversation", () => {
+      const wrapper = createWrapper();
+      renderHook(() => useAgentEvents("conv-selected"), { wrapper });
+
+      act(() => {
+        emitEvent("agent:workspace_changed", {
+          conversation_id: "conv-unselected",
+        });
+      });
+
+      const watched = getWatchedAgentWorkspaceOperations();
+      expect(watched).toHaveLength(1);
+      expect(watched[0]).toMatchObject({
+        conversationId: "conv-unselected",
+        kind: "observed",
+        projectId: null,
+        startedAtMs: null,
+      });
+    });
+
+    it("changes nothing on a repeat event for the same conversation (registry idempotence)", () => {
+      const wrapper = createWrapper();
+      renderHook(() => useAgentEvents("conv-selected"), { wrapper });
+
+      act(() => {
+        emitEvent("agent:workspace_changed", {
+          conversation_id: "conv-unselected",
+        });
+      });
+      const before = getWatchedAgentWorkspaceOperations();
+
+      act(() => {
+        emitEvent("agent:workspace_changed", {
+          conversation_id: "conv-unselected",
+        });
+      });
+      const after = getWatchedAgentWorkspaceOperations();
+
+      expect(after).toBe(before);
+      expect(after).toHaveLength(1);
+    });
+
+    it("removes the watch after the first poll shows no active operation (cost bound)", () => {
+      const wrapper = createWrapper();
+      renderHook(() => useAgentEvents("conv-selected"), { wrapper });
+
+      act(() => {
+        emitEvent("agent:workspace_changed", {
+          conversation_id: "conv-unselected",
+        });
+      });
+
+      const entry = getWatchedAgentWorkspaceOperations()[0]!;
+      // One poll tick of the toast driver's workspace query, returning a
+      // workspace with no maintenance operation and no active publish, must
+      // resolve to a single unwatch — bounding the cost of an observed watch
+      // to exactly one idle poll rather than persisting indefinitely.
+      const decision = deriveAgentWorkspaceOperationToastDecision({
+        workspace: null,
+        entry,
+        pendingResult: null,
+        consecutiveFetchFailures: 0,
+        awaitingSessionResult: false,
+      });
+
+      expect(decision).toEqual({ kind: "idle", unwatch: true });
     });
   });
 
