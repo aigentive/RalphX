@@ -8,6 +8,7 @@
 pub(crate) mod agent_completion_event_runtime;
 #[cfg(test)]
 mod agent_completion_event_runtime_tests;
+pub mod agent_workspace_completion_testkit;
 pub mod app_setup;
 #[cfg(test)]
 mod app_setup_tests;

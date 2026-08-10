@@ -121,12 +121,6 @@ pub mod workflow_commands;
 pub mod workspace_open_commands;
 pub mod workspace_review_settings_commands;
 
-#[doc(hidden)]
-pub use agent_workspace_completion_dispatch::{
-    install_agent_workspace_completion_dispatch_for_test,
-    AgentWorkspaceCompletionDispatchTestHandle,
-};
-
 // Re-export commands for registration
 pub use crate::application::automation::api::{
     AutomationDetailResponse, AutomationResponse, AutomationRunResponse,

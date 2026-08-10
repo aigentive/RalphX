@@ -35,6 +35,31 @@
     },
     {
       "forbidden": [
+        "crate::shell"
+      ],
+      "id": "root_no_imports_from_shell",
+      "mode": "hard-zero",
+      "paths": [
+        "src-tauri/src/domain/**/*.rs",
+        "src-tauri/src/application/**/*.rs",
+        "src-tauri/src/infrastructure/**/*.rs",
+        "src-tauri/src/http_server/**/*.rs",
+        "src-tauri/src/commands/**/*.rs"
+      ]
+    },
+    {
+      "forbidden": [
+        "rusqlite::",
+        "crate::infrastructure::sqlite::"
+      ],
+      "id": "root_shell_no_direct_sqlite",
+      "mode": "baseline",
+      "paths": [
+        "src-tauri/src/shell/**/*.rs"
+      ]
+    },
+    {
+      "forbidden": [
         "crate::commands",
         "crate::http_server"
       ],
@@ -1198,6 +1223,39 @@
         "path": "src-tauri/src/infrastructure/sqlite/sqlite_question_repo_tests.rs",
         "target": "crate::application",
         "text": "use crate::application::question_state::QuestionState;"
+      }
+    ],
+    "root_no_imports_from_shell": [],
+    "root_shell_no_direct_sqlite": [
+      {
+        "path": "src-tauri/src/shell/app_setup.rs",
+        "target": "crate::infrastructure::sqlite::",
+        "text": "Ok(Ok(crate::infrastructure::sqlite::database_maintenance::CompactionOutcome::Compacted { reclaimed_bytes })) => {"
+      },
+      {
+        "path": "src-tauri/src/shell/app_setup.rs",
+        "target": "crate::infrastructure::sqlite::",
+        "text": "Ok(Ok(crate::infrastructure::sqlite::database_maintenance::CompactionOutcome::NotRequested)) => {}"
+      },
+      {
+        "path": "src-tauri/src/shell/app_setup.rs",
+        "target": "crate::infrastructure::sqlite::",
+        "text": "Ok(Ok(crate::infrastructure::sqlite::database_maintenance::CompactionOutcome::Skipped(reason))) => {"
+      },
+      {
+        "path": "src-tauri/src/shell/app_setup.rs",
+        "target": "crate::infrastructure::sqlite::",
+        "text": "crate::infrastructure::sqlite::database_maintenance::CompactionConfig {"
+      },
+      {
+        "path": "src-tauri/src/shell/app_setup.rs",
+        "target": "crate::infrastructure::sqlite::",
+        "text": "crate::infrastructure::sqlite::database_maintenance::compact_before_pool_opens_at("
+      },
+      {
+        "path": "src-tauri/src/shell/shutdown.rs",
+        "target": "crate::infrastructure::sqlite::",
+        "text": "use crate::infrastructure::sqlite::DbConnection;"
       }
     ],
     "workspace_domain_no_root_layer_refs": [],

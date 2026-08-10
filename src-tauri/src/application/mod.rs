@@ -119,6 +119,7 @@ pub(crate) mod conversation_reference_inheritance;
 mod conversation_reference_inheritance_tests;
 pub mod chat_attachment_storage;
 pub mod chat_resumption;
+pub mod completion_correlation;
 pub mod chat_service;
 pub mod clickup_git_association;
 pub mod clickup_integration_service;

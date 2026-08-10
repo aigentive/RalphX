@@ -63,6 +63,30 @@ RULES: list[dict[str, Any]] = [
         "paths": ["src-tauri/src/domain/**/*.rs"],
         "forbidden": ["tauri::"],
     },
+    # `src/shell` is the Tauri composition root introduced in phase 4. It may
+    # import every layer below it; nothing below it may import back. Without
+    # this rule the shell tree would be unscanned and the moves would reduce
+    # enforcement rather than increase it.
+    {
+        "id": "root_no_imports_from_shell",
+        "mode": "hard-zero",
+        "paths": [
+            "src-tauri/src/domain/**/*.rs",
+            "src-tauri/src/application/**/*.rs",
+            "src-tauri/src/infrastructure/**/*.rs",
+            "src-tauri/src/http_server/**/*.rs",
+            "src-tauri/src/commands/**/*.rs",
+        ],
+        "forbidden": ["crate::shell"],
+    },
+    # The shell owns composition, not persistence: it must not reach for raw
+    # SQLite or reimplement repository access.
+    {
+        "id": "root_shell_no_direct_sqlite",
+        "mode": "baseline",
+        "paths": ["src-tauri/src/shell/**/*.rs"],
+        "forbidden": ["rusqlite::", "crate::infrastructure::sqlite::"],
+    },
     # Phase 4 drove this to zero (ExecutionState split, spawner move, and the
     # http_server descents). Hard zero so phases 5/12 keep a clean precondition.
     {
