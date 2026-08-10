@@ -379,10 +379,22 @@ export function parseContentBlocks(raw: unknown): ContentBlockItem[] {
     const item: ContentBlockItem = {
       type: block.type,
       text: block.text,
-      durationMs: typeof block.duration_ms === "number" ? block.duration_ms : block.durationMs,
-      isSettled: typeof block.is_settled === "boolean" ? block.is_settled : block.isSettled,
-      estimatedTokens: typeof block.estimated_tokens === "number" ? block.estimated_tokens : block.estimatedTokens,
-      reasoningTokens: typeof block.reasoning_tokens === "number" ? block.reasoning_tokens : block.reasoningTokens,
+      durationMs:
+        typeof block.duration_ms === "number"
+          ? block.duration_ms
+          : block.durationMs,
+      isSettled:
+        typeof block.is_settled === "boolean"
+          ? block.is_settled
+          : block.isSettled,
+      estimatedTokens:
+        typeof block.estimated_tokens === "number"
+          ? block.estimated_tokens
+          : block.estimatedTokens,
+      reasoningTokens:
+        typeof block.reasoning_tokens === "number"
+          ? block.reasoning_tokens
+          : block.reasoningTokens,
       id: block.id,
       name: block.name,
       arguments: block.arguments ?? block.input,
@@ -460,10 +472,7 @@ export type AgentSidebarPublicationState =
   "active" | "draft" | "merged" | "closed" | "uncommitted" | "unpushed";
 
 export type AgentSidebarGroupBy =
-  | "project"
-  | "publication"
-  | "automation"
-  | "inbox";
+  "project" | "publication" | "automation" | "inbox";
 export type AgentSidebarSort = "latest" | "az" | "za";
 export type AgentSidebarAttentionLane = "needs" | "working" | "stale" | "done";
 
@@ -569,18 +578,27 @@ const ConversationActiveStateResponseSchema = z.object({
   is_active: z.boolean(),
   run_id: z.string().min(1).optional(),
   tool_calls: z.array(z.unknown()).default([]),
-  streaming_tasks: z.array(z.custom<ActiveStreamingTaskResponse>((value) => {
-    if (value == null || typeof value !== "object") return false;
-    const record = value as Record<string, unknown>;
-    return typeof record.tool_use_id === "string"
-      && typeof record.status === "string"
-      && (record.started_at == null || typeof record.started_at === "string")
-      && (record.completed_at == null || typeof record.completed_at === "string")
-      && (record.timestamp_provenance == null
-        || record.timestamp_provenance === "delegated_run"
-        || record.timestamp_provenance === "delegation_job")
-      && (record.seq == null || (typeof record.seq === "number" && Number.isFinite(record.seq)));
-  })).default([]),
+  streaming_tasks: z
+    .array(
+      z.custom<ActiveStreamingTaskResponse>((value) => {
+        if (value == null || typeof value !== "object") return false;
+        const record = value as Record<string, unknown>;
+        return (
+          typeof record.tool_use_id === "string" &&
+          typeof record.status === "string" &&
+          (record.started_at == null ||
+            typeof record.started_at === "string") &&
+          (record.completed_at == null ||
+            typeof record.completed_at === "string") &&
+          (record.timestamp_provenance == null ||
+            record.timestamp_provenance === "delegated_run" ||
+            record.timestamp_provenance === "delegation_job") &&
+          (record.seq == null ||
+            (typeof record.seq === "number" && Number.isFinite(record.seq)))
+        );
+      }),
+    )
+    .default([]),
   partial_text: z.string().default(""),
   partial_text_segments: z.array(z.string()).default([]),
   partial_thinking_segments: z.array(z.string()).default([]),
@@ -610,11 +628,12 @@ export async function getConversationActiveState(
     tool_calls: parsed.tool_calls,
     streaming_tasks: parsed.streaming_tasks,
     partial_text: parsed.partial_text,
-    partial_text_segments: parsed.partial_text_segments.length > 0
-      ? parsed.partial_text_segments
-      : parsed.partial_text.length > 0
-        ? [parsed.partial_text]
-        : [],
+    partial_text_segments:
+      parsed.partial_text_segments.length > 0
+        ? parsed.partial_text_segments
+        : parsed.partial_text.length > 0
+          ? [parsed.partial_text]
+          : [],
     partial_thinking_segments: parsed.partial_thinking_segments,
   };
 }
@@ -828,8 +847,7 @@ function transformConversation(raw: RawConversation): ChatConversation {
     lastRunPersonaVersion: raw.last_run_persona_version ?? null,
     lastRunPersonaContentHash: raw.last_run_persona_content_hash ?? null,
     lastRunPersonaInjected: raw.last_run_persona_injected ?? null,
-    lastRunPersonaSkippedReason:
-      raw.last_run_persona_skipped_reason ?? null,
+    lastRunPersonaSkippedReason: raw.last_run_persona_skipped_reason ?? null,
     personaRuns: raw.persona_runs.map((run) => ({
       id: run.run_id,
       personaId: run.persona_id,
@@ -1233,12 +1251,15 @@ const AgentMessageSchema = z.object({
   cache_creation_tokens: z.number().nullable().optional(),
   cache_read_tokens: z.number().nullable().optional(),
   estimated_usd: z.number().nullable().optional(),
-  usage_provenance: z.enum([
-    "provider_turn_delta",
-    "derived_cumulative_delta",
-    "provider_snapshot_fallback",
-    "cumulative_baseline_only",
-  ]).nullable().optional(),
+  usage_provenance: z
+    .enum([
+      "provider_turn_delta",
+      "derived_cumulative_delta",
+      "provider_snapshot_fallback",
+      "cumulative_baseline_only",
+    ])
+    .nullable()
+    .optional(),
   created_at: z.string(),
 });
 
@@ -1288,12 +1309,15 @@ const AgentTimelineItemSchema = z.object({
   cache_creation_tokens: z.number().nullable().optional(),
   cache_read_tokens: z.number().nullable().optional(),
   estimated_usd: z.number().nullable().optional(),
-  usage_provenance: z.enum([
-    "provider_turn_delta",
-    "derived_cumulative_delta",
-    "provider_snapshot_fallback",
-    "cumulative_baseline_only",
-  ]).nullable().optional(),
+  usage_provenance: z
+    .enum([
+      "provider_turn_delta",
+      "derived_cumulative_delta",
+      "provider_snapshot_fallback",
+      "cumulative_baseline_only",
+    ])
+    .nullable()
+    .optional(),
   created_at: z.string(),
   updated_at: z.string(),
   finalized_at: z.string().nullable().optional(),
@@ -1641,7 +1665,9 @@ export async function getConversationMessagesPage(
         ConversationMessagesPageResponseSchema.nullable(),
       );
   if (raw === null) {
-    throw new Error(`Conversation ${conversationId} was not found on this host.`);
+    throw new Error(
+      `Conversation ${conversationId} was not found on this host.`,
+    );
   }
 
   return transformConversationMessagesPage(raw);
@@ -1671,7 +1697,9 @@ export async function getConversationTimelinePage(
         ConversationTimelinePageResponseSchema.nullable(),
       );
   if (raw === null) {
-    throw new Error(`Conversation ${conversationId} was not found on this host.`);
+    throw new Error(
+      `Conversation ${conversationId} was not found on this host.`,
+    );
   }
 
   return transformConversationTimelinePage(raw);
@@ -1813,26 +1841,34 @@ const ArchiveConversationResponseSchema = z.object({
 });
 
 const RemoteConversationLifecycleStatusSchema = z.enum([
-  "pending", "starting", "completed", "failed", "failedStale",
+  "pending",
+  "starting",
+  "completed",
+  "failed",
+  "failedStale",
 ]);
-const RemoteConversationLifecycleIntentSchema = z.object({
-  requestId: z.string(),
-  allocatedConversationId: z.string().nullable(),
-  status: RemoteConversationLifecycleStatusSchema,
-  deduplicated: z.boolean(),
-  createdAt: z.string(),
-}).strict();
-const RemoteConversationLifecycleRequestSchema = z.object({
-  requestId: z.string(),
-  kind: z.enum(["archive", "fork"]),
-  conversationId: z.string(),
-  allocatedConversationId: z.string().nullable(),
-  status: RemoteConversationLifecycleStatusSchema,
-  errorCode: z.string().nullable(),
-  result: z.record(z.string(), z.unknown()).nullable(),
-  createdAt: z.string(),
-  updatedAt: z.string(),
-}).strict();
+const RemoteConversationLifecycleIntentSchema = z
+  .object({
+    requestId: z.string(),
+    allocatedConversationId: z.string().nullable(),
+    status: RemoteConversationLifecycleStatusSchema,
+    deduplicated: z.boolean(),
+    createdAt: z.string(),
+  })
+  .strict();
+const RemoteConversationLifecycleRequestSchema = z
+  .object({
+    requestId: z.string(),
+    kind: z.enum(["archive", "fork"]),
+    conversationId: z.string(),
+    allocatedConversationId: z.string().nullable(),
+    status: RemoteConversationLifecycleStatusSchema,
+    errorCode: z.string().nullable(),
+    result: z.record(z.string(), z.unknown()).nullable(),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+  })
+  .strict();
 
 async function pollRemoteConversationLifecycle(requestId: string) {
   for (let attempt = 0; attempt < 240; attempt += 1) {
@@ -1841,7 +1877,8 @@ async function pollRemoteConversationLifecycle(requestId: string) {
       { requestId },
       RemoteConversationLifecycleRequestSchema,
     );
-    if (["completed", "failed", "failedStale"].includes(request.status)) return request;
+    if (["completed", "failed", "failedStale"].includes(request.status))
+      return request;
     await new Promise((resolve) => setTimeout(resolve, 750));
   }
   throw new Error("Timed out waiting for the host conversation operation");
@@ -1866,18 +1903,38 @@ export async function archiveConversation(
     try {
       intent = await typedInvoke(
         "request_remote_conversation_archive",
-        { input: { conversationId, closePullRequest: options.closePullRequest } },
+        {
+          input: { conversationId, closePullRequest: options.closePullRequest },
+        },
         RemoteConversationLifecycleIntentSchema,
       );
     } catch (error) {
-      if (error !== "REMOTE_CONVERSATION_LIFECYCLE_ALREADY_ARCHIVED") throw error;
+      if (error !== "REMOTE_CONVERSATION_LIFECYCLE_ALREADY_ARCHIVED")
+        throw error;
       const { conversation } = await getConversation(conversationId);
-      return { conversation, cleanup: { runtimeShutdownSucceeded: true, cleanupClaim: "not_claimed", localCleanup: "cleaned", message: null } };
+      return {
+        conversation,
+        cleanup: {
+          runtimeShutdownSucceeded: true,
+          cleanupClaim: "not_claimed",
+          localCleanup: "cleaned",
+          message: null,
+        },
+      };
     }
     const request = await pollRemoteConversationLifecycle(intent.requestId);
-    if (request.status !== "completed") throw new Error(request.errorCode ?? `Archive ${request.status}`);
+    if (request.status !== "completed")
+      throw new Error(request.errorCode ?? `Archive ${request.status}`);
     const { conversation } = await getConversation(conversationId);
-    return { conversation, cleanup: { runtimeShutdownSucceeded: true, cleanupClaim: "not_claimed", localCleanup: "cleaned", message: null } };
+    return {
+      conversation,
+      cleanup: {
+        runtimeShutdownSucceeded: true,
+        cleanupClaim: "not_claimed",
+        localCleanup: "cleaned",
+        message: null,
+      },
+    };
   }
   const raw = await typedInvoke(
     "archive_agent_conversation",
@@ -1970,7 +2027,9 @@ export const QueuedMessageResponseSchema = z.object({
 
 type RawQueuedMessage = z.infer<typeof QueuedMessageResponseSchema>;
 
-export function transformQueuedMessage(raw: RawQueuedMessage): QueuedMessageResponse {
+export function transformQueuedMessage(
+  raw: RawQueuedMessage,
+): QueuedMessageResponse {
   const selection = raw.composer_selection_snapshot;
   return {
     id: raw.id,
@@ -2049,6 +2108,7 @@ export const chatApi = {
   setAgentConversationWorkspacePrSupervision,
   setAgentConversationWorkspaceReviewAutomation,
   closeAgentWorkspacePr,
+  reopenAgentWorkspacePr,
   getAgentWorkspacePrReviewContext,
   setAgentWorkspacePrReviewAutoApprove,
   setAgentWorkspacePrReviewMonitoring,
@@ -2238,11 +2298,7 @@ export interface AgentConversationSourcePullRequest {
 }
 
 export type AgentWorkspaceMaintenanceOperationSource =
-  | "base_update"
-  | "publish"
-  | "pr_conflict"
-  | "pr_autofix"
-  | "legacy";
+  "base_update" | "publish" | "pr_conflict" | "pr_autofix" | "legacy";
 export type AgentWorkspaceMaintenanceOperationStage =
   | "updating_base"
   | "repairing"
@@ -2253,10 +2309,7 @@ export type AgentWorkspaceMaintenanceOperationStage =
   | "blocked"
   | "held";
 export type AgentWorkspaceMaintenanceOperationStatus =
-  | "active"
-  | "ready"
-  | "blocked"
-  | "held";
+  "active" | "ready" | "blocked" | "held";
 export type AgentWorkspaceMaintenanceOperationHoldReason =
   | "pr_autofix_unchanged_health"
   | "pr_autofix_pre_existing_on_base"
@@ -2339,10 +2392,7 @@ export interface AgentConversationWorkspace {
 }
 
 export type AgentWorkspacePublicationMetadataPhase =
-  | "prepared"
-  | "mutating"
-  | "reconciling"
-  | "settled";
+  "prepared" | "mutating" | "reconciling" | "settled";
 
 export type AgentWorkspacePublicationMetadataState =
   | "not_attempted"
@@ -2572,9 +2622,7 @@ export type AgentWorkspacePrReviewActionStatus =
   | "superseded";
 
 export type AgentWorkspacePrReviewActionHeadStatus =
-  | "current"
-  | "stale"
-  | "unverified";
+  "current" | "stale" | "unverified";
 
 export interface AgentWorkspacePrReviewMonitor {
   conversationId: string;
@@ -2854,7 +2902,13 @@ const AgentConversationWorkspaceSourcePullRequestResponseSchema = z.object({
 export const AgentWorkspaceMaintenanceOperationResponseSchema = z.object({
   operation_id: z.string(),
   generation: z.number().int().positive(),
-  source: z.enum(["base_update", "publish", "pr_conflict", "pr_autofix", "legacy"]),
+  source: z.enum([
+    "base_update",
+    "publish",
+    "pr_conflict",
+    "pr_autofix",
+    "legacy",
+  ]),
   stage: z.enum([
     "updating_base",
     "repairing",
@@ -2919,14 +2973,19 @@ export const AgentConversationWorkspaceResponseSchema = z.object({
   publication_pr_url: z.string().nullable(),
   publication_pr_status: z.string().nullable(),
   publication_push_status: z.string().nullable(),
-  maintenance_operation: AgentWorkspaceMaintenanceOperationResponseSchema.nullable()
-    .optional()
-    .default(null),
+  maintenance_operation:
+    AgentWorkspaceMaintenanceOperationResponseSchema.nullable()
+      .optional()
+      .default(null),
   pr_autofix_fingerprint_spend:
     AgentWorkspacePrAutofixFingerprintSpendResponseSchema.nullable()
       .optional()
       .default(null),
-  publication_metadata_attempt_id: z.string().nullable().optional().default(null),
+  publication_metadata_attempt_id: z
+    .string()
+    .nullable()
+    .optional()
+    .default(null),
   publication_metadata_phase: z
     .enum(["prepared", "mutating", "reconciling", "settled"])
     .nullable()
@@ -3174,7 +3233,11 @@ const AgentWorkspaceReviewMonitorResponseSchema = z.object({
     .nullable()
     .optional()
     .default(null),
-  review_gate_bypassed_artifact_id: z.string().nullable().optional().default(null),
+  review_gate_bypassed_artifact_id: z
+    .string()
+    .nullable()
+    .optional()
+    .default(null),
   review_gate_bypassed_artifact_version: z
     .number()
     .nullable()
@@ -3207,7 +3270,13 @@ const AgentWorkspaceReviewMonitorResponseSchema = z.object({
   last_run_id: z.string().nullable(),
   last_error: z.string().nullable(),
   auto_merge_guard_status: z
-    .enum(["pausing", "paused_for_review", "awaiting_publish", "restoring", "restore_failed"])
+    .enum([
+      "pausing",
+      "paused_for_review",
+      "awaiting_publish",
+      "restoring",
+      "restore_failed",
+    ])
     .nullable()
     .optional()
     .default(null),
@@ -3218,7 +3287,11 @@ const AgentWorkspaceReviewMonitorResponseSchema = z.object({
     .nullable()
     .optional()
     .default(null),
-  auto_merge_guard_diff_fingerprint: z.string().nullable().optional().default(null),
+  auto_merge_guard_diff_fingerprint: z
+    .string()
+    .nullable()
+    .optional()
+    .default(null),
   auto_merge_guard_head_sha: z.string().nullable().optional().default(null),
   auto_merge_guard_last_error: z.string().nullable().optional().default(null),
   created_at: z.string(),
@@ -3562,7 +3635,9 @@ const AgentConversationPlanSeedResponseSchema = z.object({
   workspace: AgentConversationWorkspaceResponseSchema,
   session_id: z.string(),
   artifact: ArtifactResponseSchema,
-  blueprint_artifact: ArtifactResponseSchema.nullable().optional().default(null),
+  blueprint_artifact: ArtifactResponseSchema.nullable()
+    .optional()
+    .default(null),
 });
 
 const PublishAgentConversationWorkspaceResponseSchema = z.object({
@@ -3729,7 +3804,8 @@ function transformAgentConversationWorkspace(
           holdReason: raw.maintenance_operation.hold_reason,
           summary: raw.maintenance_operation.summary,
           blocker: raw.maintenance_operation.blocker,
-          automaticContinuation: raw.maintenance_operation.automatic_continuation,
+          automaticContinuation:
+            raw.maintenance_operation.automatic_continuation,
           startedAt: raw.maintenance_operation.started_at,
           updatedAt: raw.maintenance_operation.updated_at,
         }
@@ -3847,7 +3923,9 @@ export function startAgentConversationInvokeInput(
     ...(input.modelId ? { modelOverride: input.modelId } : {}),
     ...(input.logicalEffort ? { logicalEffort: input.logicalEffort } : {}),
     ...(input.personaId ? { personaId: input.personaId } : {}),
-    ...(input.sourcePersonaId ? { sourcePersonaId: input.sourcePersonaId } : {}),
+    ...(input.sourcePersonaId
+      ? { sourcePersonaId: input.sourcePersonaId }
+      : {}),
     ...(input.codexFastMode != null
       ? { codexFastMode: input.codexFastMode }
       : {}),
@@ -4095,8 +4173,7 @@ function transformAgentWorkspaceReviewMonitor(
     reviewArtifactId: raw.review_artifact_id,
     reviewArtifactVersion: raw.review_artifact_version,
     reviewArtifactUpdatedAt: raw.review_artifact_updated_at,
-    reviewRequestedChangesArtifactId:
-      raw.review_requested_changes_artifact_id,
+    reviewRequestedChangesArtifactId: raw.review_requested_changes_artifact_id,
     reviewRequestedChangesArtifactVersion:
       raw.review_requested_changes_artifact_version,
     reviewRequestedChangesArtifactUpdatedAt:
@@ -4106,7 +4183,8 @@ function transformAgentWorkspaceReviewMonitor(
     reviewGateBypassedDiffFingerprint:
       raw.review_gate_bypassed_diff_fingerprint,
     reviewGateBypassedArtifactId: raw.review_gate_bypassed_artifact_id,
-    reviewGateBypassedArtifactVersion: raw.review_gate_bypassed_artifact_version,
+    reviewGateBypassedArtifactVersion:
+      raw.review_gate_bypassed_artifact_version,
     reviewedHeadSha: raw.reviewed_head_sha,
     reviewedDiffFingerprint: raw.reviewed_diff_fingerprint,
     selectedSourceBaseRef: raw.selected_source_base_ref,
@@ -4278,7 +4356,9 @@ export async function getAgentConversationWorkspace(
         AgentConversationWorkspaceResponseSchema.nullable(),
       );
   if (remote && !raw) {
-    throw new Error(`Agent workspace ${conversationId} was not found on this host.`);
+    throw new Error(
+      `Agent workspace ${conversationId} was not found on this host.`,
+    );
   }
   return raw ? transformAgentConversationWorkspace(raw) : null;
 }
@@ -4519,8 +4599,7 @@ export async function startAgentWorkspaceReview(
               will_disable_auto_merge:
                 options.confirmation.willDisableAutoMerge,
               merge_method: options.confirmation.mergeMethod,
-              restore_after_publish:
-                options.confirmation.restoreAfterPublish,
+              restore_after_publish: options.confirmation.restoreAfterPublish,
             }
           : undefined,
         runtime_override: options.runtimeOverride
@@ -5124,7 +5203,9 @@ export class RemoteConversationStartError extends Error {
  * base/branch, persona, attachments, and `refreshRuntime` are host-forced or absent by design
  * and MUST NOT be forwarded.
  */
-function remoteConversationStartInvokeInput(input: StartAgentConversationInput) {
+function remoteConversationStartInvokeInput(
+  input: StartAgentConversationInput,
+) {
   if (!input.projectId) {
     throw new Error("A project is required to start a conversation remotely.");
   }
@@ -5223,6 +5304,52 @@ async function startRemoteAgentConversation(
   };
 }
 
+const ReopenAgentWorkspacePrResponseSchema = z.object({
+  outcome: z.enum([
+    "latch_cleared",
+    "reopened_on_github",
+    "confirmation_required",
+    "already_merged",
+  ]),
+  prNumber: z.number(),
+  localWorkspace: z
+    .enum(["already_present", "restored", "restore_failed"])
+    .nullable(),
+  message: z.string(),
+  workspace: AgentConversationWorkspaceResponseSchema,
+});
+
+export type ReopenLocalWorkspaceState =
+  "already_present" | "restored" | "restore_failed";
+
+export interface ReopenAgentWorkspacePrResult {
+  outcome:
+    | "latch_cleared"
+    | "reopened_on_github"
+    | "confirmation_required"
+    | "already_merged";
+  prNumber: number;
+  /** State of the local checkout after reopen; null when reopen never touched it. */
+  localWorkspace: ReopenLocalWorkspaceState | null;
+  message: string;
+  workspace: AgentConversationWorkspace;
+}
+
+export async function reopenAgentWorkspacePr(
+  conversationId: string,
+  reopenOnGithub: boolean,
+): Promise<ReopenAgentWorkspacePrResult> {
+  const raw = await typedInvoke(
+    "reopen_agent_workspace_pr",
+    { input: { conversationId, reopenOnGithub } },
+    ReopenAgentWorkspacePrResponseSchema,
+  );
+  return {
+    ...raw,
+    workspace: transformAgentConversationWorkspace(raw.workspace),
+  };
+}
+
 export async function startAgentConversation(
   input: StartAgentConversationInput,
 ): Promise<StartAgentConversationResult> {
@@ -5253,13 +5380,25 @@ export async function forkAgentConversation(
       RemoteConversationLifecycleIntentSchema,
     );
     const request = await pollRemoteConversationLifecycle(intent.requestId);
-    if (request.status !== "completed") throw new Error(request.errorCode ?? `Fork ${request.status}`);
-    const childId = request.allocatedConversationId ?? intent.allocatedConversationId;
-    if (!childId) throw new Error("Fork completed without an allocated conversation id");
-    const [{ conversation: parentConversation }, { conversation }] = await Promise.all([
-      getConversation(conversationId), getConversation(childId),
-    ]);
-    return { parentConversation, conversation, workspace: null, providerSessionForked: false, copiedMessageCount: 0, copiedTimelineItemCount: 0 };
+    if (request.status !== "completed")
+      throw new Error(request.errorCode ?? `Fork ${request.status}`);
+    const childId =
+      request.allocatedConversationId ?? intent.allocatedConversationId;
+    if (!childId)
+      throw new Error("Fork completed without an allocated conversation id");
+    const [{ conversation: parentConversation }, { conversation }] =
+      await Promise.all([
+        getConversation(conversationId),
+        getConversation(childId),
+      ]);
+    return {
+      parentConversation,
+      conversation,
+      workspace: null,
+      providerSessionForked: false,
+      copiedMessageCount: 0,
+      copiedTimelineItemCount: 0,
+    };
   }
   const raw = await typedInvoke(
     "fork_agent_conversation",
@@ -5367,9 +5506,9 @@ async function switchRemoteAgentConversationMode(
     requested.modeSwitchRequestId,
   );
   if (
-    !(REMOTE_CONVERSATION_MODE_SWITCH_SUCCESS_STATUSES as readonly string[]).includes(
-      request.status,
-    )
+    !(
+      REMOTE_CONVERSATION_MODE_SWITCH_SUCCESS_STATUSES as readonly string[]
+    ).includes(request.status)
   ) {
     throw new RemoteConversationModeSwitchError(
       request.status,
@@ -5398,7 +5537,11 @@ export async function switchAgentConversationMode(
         conversationId: input.conversationId,
         mode: input.mode,
         ...(input.runtimeOverride
-          ? { runtimeOverride: roleRuntimeOverrideInvokeInput(input.runtimeOverride) }
+          ? {
+              runtimeOverride: roleRuntimeOverrideInvokeInput(
+                input.runtimeOverride,
+              ),
+            }
           : {}),
         ...(input.base
           ? {
@@ -5488,7 +5631,11 @@ export async function activateAgentTaskPipeline(input: {
         conversationId: input.conversationId,
         sessionId: input.sessionId,
         ...(input.runtimeOverride
-          ? { runtimeOverride: roleRuntimeOverrideInvokeInput(input.runtimeOverride) }
+          ? {
+              runtimeOverride: roleRuntimeOverrideInvokeInput(
+                input.runtimeOverride,
+              ),
+            }
           : {}),
       },
     },
@@ -5601,7 +5748,8 @@ const REMOTE_CHAT_SEND_MESSAGES: Readonly<Record<string, string>> = {
     "That conversation no longer exists on the host.",
   REMOTE_CHAT_SEND_LOOKUP_FAILED:
     "The host couldn't confirm whether that conversation is live, so nothing was sent.",
-  REMOTE_CHAT_SEND_ENQUEUE_FAILED: "The host couldn't queue that message. Try again.",
+  REMOTE_CHAT_SEND_ENQUEUE_FAILED:
+    "The host couldn't queue that message. Try again.",
   REMOTE_CHAT_SEND_EMPTY_CONTENT: "Type a message before sending.",
   REMOTE_CHAT_SEND_ROLE_NOT_PERMITTED:
     "Remote devices can only send your own messages.",
@@ -5623,7 +5771,10 @@ function remoteChatSendRefusal(error: unknown): Error | null {
 export class RemoteConversationMessageError extends Error {
   readonly status: RemoteConversationMessageStatus;
   readonly errorCode: string | null;
-  constructor(status: RemoteConversationMessageStatus, errorCode: string | null) {
+  constructor(
+    status: RemoteConversationMessageStatus,
+    errorCode: string | null,
+  ) {
     super(
       REMOTE_CONV_MESSAGE_MESSAGES[errorCode ?? ""] ??
         REMOTE_CONV_MESSAGE_STATUS_MESSAGES[status] ??
@@ -5766,7 +5917,9 @@ async function continueRemoteConversation(
     throw remoteConversationMessageRefusal(error) ?? error;
   });
 
-  const request = await pollRemoteConversationMessage(requested.messageRequestId);
+  const request = await pollRemoteConversationMessage(
+    requested.messageRequestId,
+  );
   if (request.status !== "dispatched") {
     throw new RemoteConversationMessageError(
       request.status,
@@ -5847,7 +6000,9 @@ async function sendRemoteChatMessage(
     // must NOT fall through to the idle path: an unknown outcome may already have queued the
     // turn, and continuing would risk sending it twice.
     if (error instanceof RemoteTransportError) throw error;
-    const code = (error instanceof Error ? error.message : String(error)).trim();
+    const code = (
+      error instanceof Error ? error.message : String(error)
+    ).trim();
     if (code === "REMOTE_CHAT_SEND_NOT_STEERABLE") {
       return continueRemoteConversation(
         content,
@@ -5921,7 +6076,11 @@ export async function sendAgentMessage(
           ? { codexFastMode: options.codexFastMode }
           : {}),
         ...(options?.runtimeOverride
-          ? { runtimeOverride: roleRuntimeOverrideInvokeInput(options.runtimeOverride) }
+          ? {
+              runtimeOverride: roleRuntimeOverrideInvokeInput(
+                options.runtimeOverride,
+              ),
+            }
           : {}),
         ...(options?.suppressUserMessage ? { suppressUserMessage: true } : {}),
         ...(options?.requireApprovedLinkedPlan
@@ -6093,14 +6252,15 @@ export async function sendRemoteQueuedAgentMessageNow(
           : null;
     throw new RemoteQueuedMessageSendError(errorCode, null);
   }
-  let request: z.infer<typeof GetRemoteQueuedMessageSendRequestResponseSchema> = {
-    requestId: requested.requestId,
-    status: requested.status,
-    errorCode: null,
-    result: null,
-    createdAt: requested.createdAt,
-    updatedAt: requested.createdAt,
-  };
+  let request: z.infer<typeof GetRemoteQueuedMessageSendRequestResponseSchema> =
+    {
+      requestId: requested.requestId,
+      status: requested.status,
+      errorCode: null,
+      result: null,
+      createdAt: requested.createdAt,
+      updatedAt: requested.createdAt,
+    };
   for (let attempt = 0; attempt < REMOTE_QUEUED_SEND_MAX_POLLS; attempt += 1) {
     if (["completed", "failed", "failedStale"].includes(request.status)) break;
     await new Promise((resolve) =>
@@ -6256,7 +6416,9 @@ const REMOTE_AGENT_STOP_POLL_INTERVAL_MS = 400;
 /** ~24s at the poll interval. A brake that has not bitten by then is surfaced, not hidden. */
 const REMOTE_AGENT_STOP_MAX_POLLS = 60;
 
-function isTerminalRemoteAgentStopStatus(status: RemoteAgentStopStatus): boolean {
+function isTerminalRemoteAgentStopStatus(
+  status: RemoteAgentStopStatus,
+): boolean {
   return (REMOTE_AGENT_STOP_TERMINAL_STATUSES as readonly string[]).includes(
     status,
   );
@@ -6328,7 +6490,10 @@ export async function stopAgent(
   // conversations exist on the remote Agents surface, and for those the backend queue context
   // id IS the conversation id — the intent takes no `contextType`, so any other context must
   // keep the local command rather than be silently re-aimed at a conversation.
-  if (isRemoteEnvironmentId(getTransportEnvironmentId()) && contextType === "project") {
+  if (
+    isRemoteEnvironmentId(getTransportEnvironmentId()) &&
+    contextType === "project"
+  ) {
     return stopRemoteAgent(contextId);
   }
   return typedInvoke("stop_agent", { contextType, contextId }, z.boolean());
@@ -6667,7 +6832,10 @@ export interface ChatAttachmentResponse {
   createdAt: string;
 }
 
-export type RemoteChatAttachmentResponse = Omit<ChatAttachmentResponse, "filePath">;
+export type RemoteChatAttachmentResponse = Omit<
+  ChatAttachmentResponse,
+  "filePath"
+>;
 
 const ChatAttachmentResponseSchema = z.object({
   id: z.string(),

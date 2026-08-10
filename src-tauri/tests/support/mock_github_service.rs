@@ -489,6 +489,10 @@ impl GithubServiceTrait for MockGithubService {
         Ok(())
     }
 
+    async fn reopen_pr(&self, _wd: &Path, _pr_number: i64) -> AppResult<()> {
+        Ok(())
+    }
+
     async fn delete_remote_branch(&self, _wd: &Path, _branch: &str) -> AppResult<()> {
         *self.delete_remote_branch_calls.lock().unwrap() += 1;
         Ok(())

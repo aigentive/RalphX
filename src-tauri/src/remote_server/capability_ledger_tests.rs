@@ -1184,7 +1184,10 @@ fn detector_b_is_calibrated_and_floor_enforced() {
         // `recheck_pr_health`, `retry_pr_autofix_override`, `stop_pr_autofix_for_failure`, and
         // `retry_agent_workspace_publication_effect`. A census-count change only: each reaches
         // gh, git, or an agent relaunch, all four are ledgered Denied, and none is registered.
-        609,
+        // 609 -> 610: main's #1012 adds `reopen_agent_workspace_pr`. A census-count change
+        // only: it runs `gh pr reopen` on the host credential and rebuilds the local branch
+        // and worktree from origin, so it is ledgered Denied and is not registered.
+        610,
         "review the detector against the full command census"
     );
     let flagged = spawn_triggering_writers(
@@ -7818,5 +7821,3 @@ fn merged_commands_pin_host_log_amplification_and_workspace_recovery_funnel() {
          or retaining its process-floor disposition"
     );
 }
-
-

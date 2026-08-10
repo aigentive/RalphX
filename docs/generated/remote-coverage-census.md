@@ -3,29 +3,29 @@
 > GENERATED — do not edit by hand. Regenerate: `node scripts/generate-remote-coverage-census.mjs`. Staleness gate: `--check`.
 > This is the PR 3.1-a planning artifact. It registers nothing. Every class here is the ledger's CURRENT value; the per-command hand audit (§3.3) and the P-17 detector run own the final one.
 
-> **P-11 is COMPLETE.** All 620 production invoke command names carry a reviewed disposition: remote-registered, reason-coded local-only, plugin-local by the `plugin:` prefix rule, or manifest-classified (host-denied / v1-deferred / v1-audit-refused). **0 unclassified, 0 dynamic expressions, 0 suppressions.**
+> **P-11 is COMPLETE.** All 621 production invoke command names carry a reviewed disposition: remote-registered, reason-coded local-only, plugin-local by the `plugin:` prefix rule, or manifest-classified (host-denied / v1-deferred / v1-audit-refused). **0 unclassified, 0 dynamic expressions, 0 suppressions.**
 > The inventory spans two source sets: `frontend/src`, plus the 7 `@tauri-apps/plugin-*` packages it imports. The Vite alias redirects `@tauri-apps/api/core` for the whole module graph, node_modules included, so those packages' own 51 `plugin:` command names ride the same transport — see §7.
 > The ratchet baseline `scripts/remote-transport-drift-baseline.json` is now a PERMANENT ZERO — `check-remote-transport-drift.mjs` fails if it is non-empty and refuses `--update-baseline` when unclassified names exist, so the list cannot quietly regrow. The work-batch sections below are kept as the audit record of how the 499 were resolved.
 
 ## 1. Scan state
 
 ```
-PASS: remote transport drift — 620 invoke command name(s), 0 dynamic, 0 seam bypasses; 267 manifest-classified; 0 unclassified (P-11 COMPLETE — permanent zero).
-      P-11 census: all 620 names have a reviewed disposition — 301 remote-registered, 33 reason-coded local-only, 51 plugin-local (prefix rule), 235 manifest-classified only, 0 unclassified, 0 suppressions.
+PASS: remote transport drift — 621 invoke command name(s), 0 dynamic, 0 seam bypasses; 268 manifest-classified; 0 unclassified (P-11 COMPLETE — permanent zero).
+      P-11 census: all 621 names have a reviewed disposition — 301 remote-registered, 33 reason-coded local-only, 51 plugin-local (prefix rule), 236 manifest-classified only, 0 unclassified, 0 suppressions.
       Tauri plugin surface: 51 plugin: command name(s) across 7 imported @tauri-apps/plugin-* package(s), 0 reviewed host-targeted exception(s).
 ```
 
 | Measure | Count | Source |
 |---|---|---|
-| Invoke command names on the transport | 620 | drift scan (AST over `frontend/src` + imported `@tauri-apps/plugin-*`) |
+| Invoke command names on the transport | 621 | drift scan (AST over `frontend/src` + imported `@tauri-apps/plugin-*`) |
 | Dynamic / unresolvable expressions | 0 | drift scan — must stay 0 |
 | Transport seam bypasses | 0 | drift scan — must stay 0 |
 | Remote-registered (`remote_commands!`) | 300 | `docs/generated/remote-commands.json` |
 | Reason-coded local-only rows | 34 | `frontend/src/lib/remote/local-only-commands.ts` |
 | `plugin:` names classified by the prefix rule | 51 | `PLUGIN_COMMAND_PREFIX` in `local-only-commands.ts` |
 | `plugin:` host-targeted exceptions | 0 | `HOST_TARGETED_PLUGIN_COMMANDS` — reviewed, currently empty |
-| Ledger rows (exhaustive over `generate_handler!`) | 609 | `docs/generated/remote-commands.json` |
-| Manifest-classified (host-denied / v1-deferred) | 267 | `v1Resolution` in `docs/generated/remote-commands.json` |
+| Ledger rows (exhaustive over `generate_handler!`) | 610 | `docs/generated/remote-commands.json` |
+| Manifest-classified (host-denied / v1-deferred) | 268 | `v1Resolution` in `docs/generated/remote-commands.json` |
 | **Unclassified — the 3.1 gap** | **0** | `scripts/remote-transport-drift-baseline.json` |
 
 ## 2. What the gap is made of
@@ -41,7 +41,7 @@ Routing each name mechanically through the ledger splits it into very different 
 | v1-audit-refused (per-command finding) | 0 | the class/capability pair would admit a v1 scope, but a recorded audit found a property of the command AS IT STANDS that no v1 scope can accommodate — fail-open, spawn-capable machinery built to serve a read, an unrenderable transport shape, or a registered remote twin that already answers the query. Never used for arming/steering/write refusals: the facade serves 17 `agentControl` ops (Wave F2 added `set_update_channel`), so those stay register-candidates |
 | orphan invoke (no local handler) | 0 | invoked by the frontend but absent from `generate_handler!` and from the ledger — it cannot be registered remotely because it does not exist locally either |
 
-**267 invoked names now resolve through the manifest** — host-side commands the facade denies or defers, classified by their ledger row's `v1Resolution` rather than by a registration or a client-local reason (phase-doc key point 6). B0 landed that mechanism and the gap fell 419 → 0 with zero registrations. **The baseline is now empty**: batches B1–B7, D1–D3, R1, A1 and the 3.1-b registration batches resolved every remaining name.
+**268 invoked names now resolve through the manifest** — host-side commands the facade denies or defers, classified by their ledger row's `v1Resolution` rather than by a registration or a client-local reason (phase-doc key point 6). B0 landed that mechanism and the gap fell 419 → 0 with zero registrations. **The baseline is now empty**: batches B1–B7, D1–D3, R1, A1 and the 3.1-b registration batches resolved every remaining name.
 
 **0 names are registration candidates** — the gap is closed. The rejection subset this section predicted was real and large: detector (c) refused ledgered-`AgentControl` commands whose process authority the manifest could not see (`resume_task`, `apply_proposals_to_kanban`, `set_agent_conversation_workspace_auto_publish`), and PR 3.1-b batch 14 additionally hand-traced THIRTEEN launches detector (c) could not see at all — `Command::new(<resolved path>)` names no resolver, which is how every agent launch in the codebase is written. Detector silence was never sufficient evidence to register.
 

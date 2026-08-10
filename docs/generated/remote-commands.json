@@ -575,6 +575,7 @@
     "publish_agent_conversation_workspace",
     "commit_agent_conversation_workspace_locally",
     "close_agent_workspace_pr",
+    "reopen_agent_workspace_pr",
     "resolve_merge_conflict",
     "retry_merge",
     "update_api_key_projects",
@@ -10494,6 +10495,17 @@
       "capabilities": [
         "agentControl"
       ],
+      "class": "denied",
+      "command": "reopen_agent_workspace_pr",
+      "module": "unified_chat_commands",
+      "reason": "reopens the pull request through the host's gh credential and rebuilds the local branch and worktree from origin",
+      "registered": false,
+      "v1Resolution": "host-denied"
+    },
+    {
+      "capabilities": [
+        "agentControl"
+      ],
       "class": "agentControl",
       "command": "create_agent_conversation",
       "module": "unified_chat_commands",
@@ -11851,6 +11863,7 @@
         "reconcile_agent_conversation_workspace_publication",
         "recover_task_execution",
         "reject_fix_task",
+        "reopen_agent_workspace_pr",
         "request_task_changes_for_review",
         "request_task_changes_from_reviewing",
         "resolve_recovery_prompt",
@@ -11904,6 +11917,7 @@
         "publish_agent_conversation_workspace",
         "recheck_pr_health",
         "reconcile_agent_conversation_workspace_publication",
+        "reopen_agent_workspace_pr",
         "resolve_user_question",
         "resume_deferred_git_startup",
         "retry_pr_autofix_override",

@@ -1050,6 +1050,15 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
         ),
     },
     CommandOverride {
+        command: "reopen_agent_workspace_pr",
+        policy: policy(
+            RiskClass::Denied,
+            AGENT,
+            "reopens the pull request through the host's gh credential and rebuilds the local \
+             branch and worktree from origin",
+        ),
+    },
+    CommandOverride {
         command: "close_agent_workspace_pr",
         policy: policy(
             RiskClass::Denied,

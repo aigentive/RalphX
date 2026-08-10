@@ -45,6 +45,11 @@ pub mod agent_workspace_external_pr_reconciliation;
 pub mod agent_workspace_local_commit;
 #[cfg(test)]
 mod agent_workspace_local_commit_tests;
+pub(crate) mod agent_workspace_pr_reopen;
+pub(crate) mod agent_workspace_pr_reopen_restore;
+#[cfg(test)]
+mod agent_workspace_pr_reopen_tests;
+pub mod agent_workspace_publication_reconciliation;
 pub(crate) mod agent_workspace_pr_autofix_attempt;
 #[cfg(test)]
 mod agent_workspace_pr_autofix_attempt_tests;
@@ -52,7 +57,6 @@ pub mod agent_workspace_pr_description;
 #[cfg(test)]
 pub(crate) mod agent_workspace_pr_metadata_reconciliation;
 pub(crate) mod agent_workspace_pr_supervision_recovery;
-pub mod agent_workspace_publication_reconciliation;
 pub(crate) mod agent_workspace_publish_lease;
 #[cfg(test)]
 mod agent_workspace_publish_lease_tests;
