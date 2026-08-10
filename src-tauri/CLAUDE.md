@@ -19,6 +19,9 @@ src-tauri/src/
 │  ├─ app_state.rs     # DI container
 │  └─ *_service.rs     # Business logic
 ├─ commands/           # Thin Tauri IPC wrappers
+├─ shell/              # Tauri composition root (app_setup, runtime_wiring, server_boot,
+│                      # startup pipeline, shutdown, menu, invoke registry).
+│                      # Imports every layer below; NOTHING may import `crate::shell`.
 ├─ http_server/        # Axum :3847 handlers/routes for MCP adapters
 └─ infrastructure/
    ├─ sqlite/          # Repo implementations
@@ -30,7 +33,7 @@ src-tauri/crates/
 
 ## Architecture: Clean/Hexagonal
 ```
-Commands (Tauri IPC) → Application Services → Domain Layer ← NO INFRA DEPS → Infrastructure
+Shell (composition root) → Commands (Tauri IPC) → Application Services → Domain Layer ← NO INFRA DEPS → Infrastructure
 ```
 
 ### Dual AppState (CRITICAL)
@@ -116,6 +119,7 @@ New pattern → add one-liner here. Pattern name + rule only.
 | Rust test runner split | Local agents use targeted `cargo test` filters and targeted `cargo nextest --test ... -E ...`; broad Rust runs are CI/manual-diagnostic only; fixture rules and commands live in `.claude/rules/rust-test-execution.md` |
 | Tauri test-utils gate | Tauri mock-app helpers require `--features test-utils`; keep root lib/IPC CI lanes feature-on until later phases remove lib-side `tauri::test` users |
 | Worktree-safe Rust helper | `scripts/test-rust-fast.sh` bundles selected CI lanes for explicit manual diagnosis; ordinary agent handoff never runs its broad `pr`/`main` modes |
+| Shell composition root (NON-NEGOTIABLE) | Tauri composition (`app_setup`, `runtime_wiring`, `server_boot`, startup pipeline, shutdown, menu, invoke registry) lives in `src/shell`. Shell imports downward freely; `crate::shell` is a hard zero for domain/application/infrastructure/http_server/commands. If a lower layer needs a symbol from shell, descend the symbol — ❌ re-export shims, which reintroduce the inversion |
 | Layering ratchet | `python3 scripts/check-layering.py` blocks new tracked backend layering violations; intentional baseline changes require reviewing `scripts/baselines/layering.json` |
 | Workspace domain split | Low-dependency backend modules and pure entities move into `src-tauri/crates/ralphx-domain`; review logic, shared memory/team types, and pure repository traits belong there, while Tauri/SQLite-facing or root-coupled code stays in the root crate until a clean boundary exists |
 | Forward-only migration repairs | Never reuse or renumber shipped migration versions; schema repair for already-upgraded DBs must be a new forward-only migration |
