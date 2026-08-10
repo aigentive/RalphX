@@ -14,8 +14,8 @@ use tauri::{AppHandle, Emitter, Wry};
 use crate::application::agent_lane_resolution::resolve_agent_spawn_settings;
 use crate::application::chat_service::uses_execution_slot;
 use crate::application::harness_runtime_registry::resolve_harness_plugin_dir;
-use crate::commands::execution_commands::context_matches_running_status_for_gc;
-use crate::commands::ExecutionState;
+use crate::application::execution_state::context_matches_running_status_for_gc;
+use crate::application::execution_state::ExecutionState;
 use crate::domain::agents::{
     AgentConfig, AgentHandle, AgentHarnessKind, AgentRole, AgenticClient, ClientType,
     LogicalEffort, DEFAULT_AGENT_HARNESS,

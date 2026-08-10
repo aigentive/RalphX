@@ -31,8 +31,8 @@ use crate::application::harness_runtime_registry::default_scheduler_runtime_conf
 use crate::application::runtime_factory::{
     build_transition_service_from_deps, ChatRuntimeFactoryDeps, RuntimeFactoryDeps,
 };
-use crate::commands::execution_commands::context_matches_running_status_for_gc;
-use crate::commands::ExecutionState;
+use crate::application::execution_state::context_matches_running_status_for_gc;
+use crate::application::execution_state::ExecutionState;
 use crate::domain::entities::{
     task_metadata::{
         MergeFailureSource, MergeRecoveryEvent, MergeRecoveryEventKind, MergeRecoveryMetadata,

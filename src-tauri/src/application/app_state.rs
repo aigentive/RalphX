@@ -46,7 +46,7 @@ use crate::application::UnavailableAtlassianApiClient;
 use crate::application::UnavailableClickUpApiClient;
 use crate::application::UnavailableGranolaApiClient;
 use crate::application::UnavailableLinearApiClient;
-use crate::commands::ExecutionState;
+use crate::application::execution_state::ExecutionState;
 
 pub type ApplicationExecutionState = ExecutionState;
 use crate::domain::agents::{

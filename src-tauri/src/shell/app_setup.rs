@@ -16,7 +16,7 @@ use crate::application::startup_status::{
     StartupAttemptLauncher, StartupCoordinator, StartupFailureCode, StartupStage,
 };
 use crate::application::AppPaths;
-use crate::commands::{ActiveProjectState, ExecutionState};
+use crate::application::execution_state::{ActiveProjectState, ExecutionState};
 use crate::shell::agent_completion_event_runtime::create_agent_completion_event_runtime;
 use crate::AppState;
 use tauri::Manager;

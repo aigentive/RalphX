@@ -9,7 +9,7 @@ use crate::application::AppState;
 use crate::commands::unified_chat_commands::{
     AgentConversationResponse, AgentConversationWorkspaceResponse, SendAgentMessageResponse,
 };
-use crate::commands::ExecutionState;
+use crate::application::execution_state::ExecutionState;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort};
 use crate::domain::entities::{
     AgentTaskState, Artifact, ArtifactContent, AuditLogEntry, MemoryEntry, StepProgressSummary,

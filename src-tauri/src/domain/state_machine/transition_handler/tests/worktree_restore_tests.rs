@@ -21,7 +21,7 @@ use crate::application::chat_service::freshness_routing::{
     freshness_return_route, FreshnessRouteResult,
 };
 use crate::application::AppState;
-use crate::commands::ExecutionState;
+use crate::application::execution_state::ExecutionState;
 use crate::domain::entities::{GitMode, InternalStatus, Project, ProjectId, Task};
 use crate::domain::services::{MemoryRunningAgentRegistry, MessageQueue};
 use crate::domain::state_machine::services::TaskScheduler;

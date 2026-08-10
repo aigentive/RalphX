@@ -11,7 +11,7 @@ use crate::application::{
     agent_capability_gate::AgentCapabilities, load_or_seed_agent_lane_settings_defaults,
     load_or_seed_execution_settings_defaults,
 };
-use crate::commands::ExecutionState;
+use crate::application::execution_state::ExecutionState;
 use crate::domain::agents::AgentHarnessKind;
 use crate::infrastructure::agents::claude::apply_claude_provider_permission_settings;
 use crate::infrastructure::agents::set_agent_personas_override;

@@ -399,7 +399,7 @@ fn linear_webhook_http_error(error: LinearWebhookError) -> HttpError {
 mod tests {
     use super::*;
     use crate::application::AppState;
-    use crate::commands::ExecutionState;
+    use crate::application::execution_state::ExecutionState;
     use crate::domain::entities::{InternalStatus, TaskId};
     use crate::http_server::handlers::external_auth::EXTERNAL_KEY_ID_HEADER;
     use crate::http_server::types::HttpServerState;

@@ -130,6 +130,7 @@ pub(crate) mod desktop_notification;
 pub mod diff_service;
 pub mod event_cleanup_service;
 pub mod execution_settings_bootstrap;
+pub mod execution_state;
 pub mod external_issue_link_service;
 pub(crate) mod git_artifact_cleanup;
 pub mod git_mutation_recovery;

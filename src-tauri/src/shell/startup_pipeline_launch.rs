@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::shell::startup_pipeline::{StartupPipelineDeps, StartupPipelineMode};
 use crate::application::startup_status::{StartupCoordinator, StartupStage};
-use crate::commands::{ActiveProjectState, ExecutionState};
+use crate::application::execution_state::{ActiveProjectState, ExecutionState};
 use crate::AppState;
 use tauri::State;
 

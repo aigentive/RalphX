@@ -26,7 +26,7 @@ use crate::application::chat_service::{ChatService, SendCallerContext, SendMessa
 use crate::application::git_service::GitService;
 use crate::application::recovery_queue::{RecoveryItem, RecoveryPriority, RecoveryQueue};
 use crate::application::ReconciliationRunner;
-use crate::commands::execution_commands::{
+use crate::application::execution_state::{
     context_matches_running_status_for_gc, ActiveProjectState, ExecutionState,
     AGENT_ACTIVE_STATUSES, AUTO_TRANSITION_STATES,
 };

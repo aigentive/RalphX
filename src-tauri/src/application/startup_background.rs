@@ -38,7 +38,7 @@ use crate::application::plan_verification_service::{
 };
 use crate::application::runtime_factory::{build_chat_service_from_deps, ChatRuntimeFactoryDeps};
 use crate::application::AppState;
-use crate::commands::ExecutionState;
+use crate::application::execution_state::ExecutionState;
 use crate::domain::entities::{ChatContextType, ChatConversationId, VerificationStatus};
 use crate::domain::repositories::{
     ExternalEventsRepository, MemoryArchiveRepository, MemoryEntryRepository, ProjectRepository,

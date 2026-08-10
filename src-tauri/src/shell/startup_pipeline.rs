@@ -22,7 +22,7 @@ use crate::application::{
     startup_background, startup_jobs, AgentClientBundle, AppState, InteractiveProcessRegistry,
     StartupJobRunner,
 };
-use crate::commands::{ActiveProjectState, ExecutionState};
+use crate::application::execution_state::{ActiveProjectState, ExecutionState};
 use crate::domain::repositories::{
     ActivityEventRepository, AgentConversationGranolaNoteRepository,
     AgentConversationJiraIssueRepository, AgentConversationLinearIssueRepository,

@@ -13,7 +13,7 @@
 use std::sync::Arc;
 
 use crate::application::{AppState, TaskSchedulerService, TaskTransitionService};
-use crate::commands::ExecutionState;
+use crate::application::execution_state::ExecutionState;
 use crate::domain::entities::{InternalStatus, Project, ProjectId, Task};
 use crate::domain::repositories::TaskRepository;
 use crate::domain::services::{MemoryRunningAgentRegistry, RunningAgentKey, RunningAgentRegistry};

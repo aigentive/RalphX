@@ -24,7 +24,7 @@ use crate::application::manual_role_default_service::ManualRoleDefaultService;
 use crate::application::runtime_factory::{build_chat_service_from_deps, ChatRuntimeFactoryDeps};
 use crate::application::task_restart::FailedRecoveryEvidence;
 use crate::application::{AppChatService, ChatService, GitService, InteractiveProcessRegistry};
-use crate::commands::ExecutionState;
+use crate::application::execution_state::ExecutionState;
 use crate::domain::agents::{AgentHarnessKind, AgenticClient};
 use crate::domain::entities::task_metadata::GIT_ISOLATION_ERROR_PREFIX;
 use crate::domain::entities::{
