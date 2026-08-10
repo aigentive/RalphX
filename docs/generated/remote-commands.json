@@ -699,6 +699,21 @@
       ]
     },
     {
+      "authorityBearing": true,
+      "enclosingFunction": "application/agent_workspace_pr_supervision_recovery.rs:::::schedule_agent_workspace_durable_repair_reconciliation",
+      "file": "application/agent_workspace_pr_supervision_recovery.rs",
+      "id": "application/agent_workspace_pr_supervision_recovery.rs::application/agent_workspace_pr_supervision_recovery.rs:::::schedule_agent_workspace_durable_repair_reconciliation@f48509ef2fce95d5",
+      "kind": "tokio::spawn",
+      "readSurface": [],
+      "sinksReached": [
+        "execute_entry_actions",
+        "send_message",
+        "transition_task",
+        "transition_task_corrective_with_exit",
+        "try_schedule_ready_tasks"
+      ]
+    },
+    {
       "authorityBearing": false,
       "enclosingFunction": "application/agent_workspace_publish_lease.rs:::::spawn_publish_operation_lease_heartbeat_for_operation",
       "file": "application/agent_workspace_publish_lease.rs",
@@ -1526,6 +1541,21 @@
       "kind": "async_runtime::spawn",
       "readSurface": [],
       "sinksReached": []
+    },
+    {
+      "authorityBearing": true,
+      "enclosingFunction": "commands/agent_workspace_repair_reconciliation_scan.rs:::::start_agent_workspace_repair_reconciliation_scan",
+      "file": "commands/agent_workspace_repair_reconciliation_scan.rs",
+      "id": "commands/agent_workspace_repair_reconciliation_scan.rs::commands/agent_workspace_repair_reconciliation_scan.rs:::::start_agent_workspace_repair_reconciliation_scan@7d96f5df9cf8fefb",
+      "kind": "async_runtime::spawn",
+      "readSurface": [],
+      "sinksReached": [
+        "execute_entry_actions",
+        "send_message",
+        "transition_task",
+        "transition_task_corrective_with_exit",
+        "try_schedule_ready_tasks"
+      ]
     },
     {
       "authorityBearing": false,

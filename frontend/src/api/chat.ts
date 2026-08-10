@@ -2332,6 +2332,7 @@ export interface AgentConversationWorkspace {
   prSupervisionSummary?: string | null;
   prSupervisionUpdatedAt?: string | null;
   reviewAutomationOverride: boolean | null;
+  staleBaseDetectedAt?: string | null;
   status: string;
   createdAt: string;
   updatedAt: string;
@@ -2963,6 +2964,7 @@ export const AgentConversationWorkspaceResponseSchema = z.object({
   pr_supervision_summary: z.string().nullable().optional().default(null),
   pr_supervision_updated_at: z.string().nullable().optional().default(null),
   review_automation_override: z.boolean().nullable().optional().default(null),
+  stale_base_detected_at: z.string().nullable().optional().default(null),
   status: z.string(),
   created_at: z.string(),
   updated_at: z.string(),
@@ -3757,6 +3759,7 @@ function transformAgentConversationWorkspace(
     prSupervisionSummary: raw.pr_supervision_summary,
     prSupervisionUpdatedAt: raw.pr_supervision_updated_at,
     reviewAutomationOverride: raw.review_automation_override,
+    staleBaseDetectedAt: raw.stale_base_detected_at,
     status: raw.status,
     createdAt: raw.created_at,
     updatedAt: raw.updated_at,

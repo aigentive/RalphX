@@ -46,7 +46,7 @@
     {
       "name": "agent:conversation_created",
       "file": "src-tauri/src/commands/unified_chat_commands/mod.rs",
-      "line": 2383,
+      "line": 2394,
       "kind": "method"
     },
     {
@@ -58,7 +58,7 @@
     {
       "name": "agent:conversation_forked",
       "file": "src-tauri/src/commands/unified_chat_commands/mod.rs",
-      "line": 2391,
+      "line": 2402,
       "kind": "method"
     },
     {
@@ -514,7 +514,7 @@
     {
       "name": "agent:workspace_changed",
       "file": "src-tauri/src/application/agent_workspace_pr_supervision_recovery.rs",
-      "line": 1152,
+      "line": 1286,
       "kind": "wrapper"
     },
     {
@@ -526,13 +526,19 @@
     {
       "name": "agent:workspace_changed",
       "file": "src-tauri/src/commands/agent_workspace_auto_publish.rs",
-      "line": 744,
+      "line": 746,
       "kind": "method"
     },
     {
       "name": "agent:workspace_changed",
       "file": "src-tauri/src/commands/agent_workspace_auto_review.rs",
       "line": 160,
+      "kind": "method"
+    },
+    {
+      "name": "agent:workspace_changed",
+      "file": "src-tauri/src/commands/agent_workspace_repair_reconciliation_scan.rs",
+      "line": 386,
       "kind": "method"
     },
     {
@@ -544,31 +550,31 @@
     {
       "name": "agent:workspace_changed",
       "file": "src-tauri/src/commands/unified_chat_commands/mod.rs",
-      "line": 1034,
+      "line": 1039,
       "kind": "method"
     },
     {
       "name": "agent:workspace_changed",
       "file": "src-tauri/src/commands/unified_chat_commands/mod.rs",
-      "line": 1058,
+      "line": 1063,
       "kind": "wrapper"
     },
     {
       "name": "agent:workspace_changed",
       "file": "src-tauri/src/commands/unified_chat_commands/mod.rs",
-      "line": 4604,
+      "line": 4615,
       "kind": "method"
     },
     {
       "name": "agent:workspace_changed",
       "file": "src-tauri/src/commands/unified_chat_commands/mod.rs",
-      "line": 7314,
+      "line": 7325,
       "kind": "wrapper"
     },
     {
       "name": "agent:workspace_changed",
       "file": "src-tauri/src/commands/unified_chat_commands/mod.rs",
-      "line": 7401,
+      "line": 7412,
       "kind": "method"
     },
     {

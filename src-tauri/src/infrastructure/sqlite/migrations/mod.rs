@@ -591,18 +591,28 @@ mod v20260730151837_agent_workspace_repair_ci_rerun_reservations;
 #[cfg(test)]
 mod v20260730151837_agent_workspace_repair_ci_rerun_reservations_tests;
 mod v20260730161032_agent_workspace_pr_autofix_completion_evidence;
+mod v20260731023949_agent_run_identity;
+mod v20260731111346_purge_empty_thinking_blocks;
+mod v20260731125157_add_workspace_repair_fingerprint_state;
+mod v20260801021420_delegation_parks;
+mod v20260801211636_delegation_park_wake_claimed_at;
+mod v20260802031156_delegate_context_inheritance;
+mod v20260802174000_workspace_review_fixer_cycle_cap;
+mod v20260802194326_agent_workspace_repair_explicit_publish_consent;
+mod v20260802215754_add_workspace_review_automation_override;
+mod v20260803113302_agent_workspace_publish_lease;
+mod v20260804073002_jira_link_acceptance_criteria_backfill;
+mod v20260804125852_delegated_session_job_identity;
+mod v20260806071104_agent_workspace_repair_effect_failed_completed_at;
+mod v20260806154753_add_agent_workspace_stale_base_detected_at;
 #[cfg(test)]
 mod v20260730161032_agent_workspace_pr_autofix_completion_evidence_tests;
-mod v20260731023949_agent_run_identity;
 #[cfg(test)]
 mod v20260731023949_agent_run_identity_tests;
-mod v20260731111346_purge_empty_thinking_blocks;
 #[cfg(test)]
 mod v20260731111346_purge_empty_thinking_blocks_tests;
-mod v20260731125157_add_workspace_repair_fingerprint_state;
 #[cfg(test)]
 mod v20260731125157_add_workspace_repair_fingerprint_state_tests;
-mod v20260801021420_delegation_parks;
 #[cfg(test)]
 mod v20260801021420_delegation_parks_tests;
 mod v20260801120000_remote_conversation_start_requests;
@@ -617,25 +627,18 @@ mod v20260801130000_remote_conversation_message_requests_tests;
 mod v20260801140000_remote_conversation_mode_switch_requests;
 #[cfg(test)]
 mod v20260801140000_remote_conversation_mode_switch_requests_tests;
-mod v20260801211636_delegation_park_wake_claimed_at;
 #[cfg(test)]
 mod v20260801211636_delegation_park_wake_claimed_at_tests;
-mod v20260802031156_delegate_context_inheritance;
 #[cfg(test)]
 mod v20260802031156_delegate_context_inheritance_tests;
-mod v20260802174000_workspace_review_fixer_cycle_cap;
 #[cfg(test)]
 mod v20260802174000_workspace_review_fixer_cycle_cap_tests;
-mod v20260802194326_agent_workspace_repair_explicit_publish_consent;
 #[cfg(test)]
 mod v20260802194326_agent_workspace_repair_explicit_publish_consent_tests;
-mod v20260802215754_add_workspace_review_automation_override;
 #[cfg(test)]
 mod v20260802215754_add_workspace_review_automation_override_tests;
-mod v20260803113302_agent_workspace_publish_lease;
 #[cfg(test)]
 mod v20260803113302_agent_workspace_publish_lease_tests;
-mod v20260804073002_jira_link_acceptance_criteria_backfill;
 #[cfg(test)]
 mod v20260804073002_jira_link_acceptance_criteria_backfill_tests;
 mod v20260804105225_remote_resume_requests;
@@ -644,7 +647,6 @@ mod v20260804105225_remote_resume_requests_tests;
 mod v20260804120000_agent_workspace_base_stale_target;
 #[cfg(test)]
 mod v20260804120000_agent_workspace_base_stale_target_tests;
-mod v20260804125852_delegated_session_job_identity;
 #[cfg(test)]
 mod v20260804125852_delegated_session_job_identity_tests;
 mod v20260805120000_remote_finalize_decision_requests;
@@ -674,12 +676,13 @@ mod v20260805190000_project_repository_capability_tests;
 mod v20260805191000_mcp_catalog_snapshot;
 #[cfg(test)]
 mod v20260805191000_mcp_catalog_snapshot_tests;
-mod v20260806071104_agent_workspace_repair_effect_failed_completed_at;
 #[cfg(test)]
 mod v20260806071104_agent_workspace_repair_effect_failed_completed_at_tests;
 mod v20260806080000_remote_plan_approval_requests;
 #[cfg(test)]
 mod v20260806080000_remote_plan_approval_requests_tests;
+#[cfg(test)]
+mod v20260806154753_add_agent_workspace_stale_base_detected_at_tests;
 #[cfg(test)]
 pub(super) fn migrate_scripted_agent_workflows_for_test(conn: &Connection) -> AppResult<()> {
     v20260715194617_scripted_agent_workflows::migrate(conn)
@@ -774,7 +777,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260806080000;
+pub const SCHEMA_VERSION: i64 = 20260806154753;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -2119,6 +2122,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260806080000,
         name: "remote_plan_approval_requests",
         migrate: v20260806080000_remote_plan_approval_requests::migrate,
+    },
+    Migration {
+        version: 20260806154753,
+        name: "add_agent_workspace_stale_base_detected_at",
+        migrate: v20260806154753_add_agent_workspace_stale_base_detected_at::migrate,
     },
 ];
 

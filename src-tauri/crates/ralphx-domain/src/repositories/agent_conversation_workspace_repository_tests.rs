@@ -39,6 +39,12 @@ impl AgentConversationWorkspaceRepository for FallbackOnlyWorkspaceRepository {
         Ok(Vec::new())
     }
 
+    async fn list_active_unpublished_edit_workspaces(
+        &self,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        Ok(Vec::new())
+    }
+
     async fn list_active_needs_agent_workspaces(
         &self,
     ) -> AppResult<Vec<AgentConversationWorkspace>> {
@@ -157,6 +163,14 @@ impl AgentConversationWorkspaceRepository for FallbackOnlyWorkspaceRepository {
         &self,
         _conversation_id: &ChatConversationId,
         _fingerprint: Option<&str>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn set_stale_base_detected_at(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _detected_at: Option<chrono::DateTime<chrono::Utc>>,
     ) -> AppResult<()> {
         Ok(())
     }
