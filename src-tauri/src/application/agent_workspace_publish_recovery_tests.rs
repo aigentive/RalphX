@@ -7258,7 +7258,7 @@ async fn not_applied_push_effect_clears_the_fence_and_reacquires_the_lease() {
         ReconciliationRemoteShape::MatchesPrecondition,
     )
     .await;
-    let (state, conversation_id, identity, old_epoch, effect) = (
+    let (state, conversation_id, identity, _old_epoch, effect) = (
         fixture.state,
         fixture.conversation_id,
         fixture.identity,
@@ -7297,8 +7297,8 @@ async fn not_applied_push_effect_clears_the_fence_and_reacquires_the_lease() {
         .expect("check not-applied push effect fence")
         .is_none());
 
-    // The fence clearing must actually unblock: normal reacquire-lease recovery proceeds and the
-    // continuation is re-driven under a fresh epoch, exactly like the already-observed case.
+    // The fence is cleared (effect is Failed) but reacquisition is deferred: a pending reason is
+    // recorded so the next recovery pass handles lease reacquisition once the state is re-evaluated.
     let current = state
         .agent_workspace_repair_repo
         .get_current_repair_attempt(&conversation_id)
@@ -7306,9 +7306,13 @@ async fn not_applied_push_effect_clears_the_fence_and_reacquires_the_lease() {
         .expect("reload not-applied continuation")
         .expect("not-applied continuation remains current");
     assert_eq!(current.phase, AgentWorkspaceRepairPhase::Continuing);
-    assert!(current
-        .target_lease_epoch
-        .is_some_and(|epoch| epoch > old_epoch));
+    assert!(
+        current
+            .pending_reasons
+            .iter()
+            .any(|reason| reason == "continuation_open_effect_recovery:1"),
+        "not-applied effect must defer reacquire with a pending reason: {current:#?}"
+    );
     assert!(state
         .branch_update_repo
         .get_target_lease(&identity)
