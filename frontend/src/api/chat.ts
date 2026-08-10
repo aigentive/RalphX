@@ -1902,6 +1902,7 @@ export const chatApi = {
   setAgentConversationWorkspacePrSupervision,
   setAgentConversationWorkspaceReviewAutomation,
   closeAgentWorkspacePr,
+  reopenAgentWorkspacePr,
   getAgentWorkspacePrReviewContext,
   setAgentWorkspacePrReviewAutoApprove,
   setAgentWorkspacePrReviewMonitoring,
@@ -4711,6 +4712,51 @@ export async function closeAgentWorkspacePr(
     AgentConversationWorkspaceResponseSchema,
   );
   return transformAgentConversationWorkspace(raw);
+}
+
+const ReopenAgentWorkspacePrResponseSchema = z.object({
+  outcome: z.enum([
+    "latch_cleared",
+    "reopened_on_github",
+    "confirmation_required",
+    "already_merged",
+  ]),
+  prNumber: z.number(),
+  localWorkspace: z
+    .enum(["already_present", "restored", "restore_failed"])
+    .nullable(),
+  message: z.string(),
+  workspace: AgentConversationWorkspaceResponseSchema,
+});
+
+export type ReopenLocalWorkspaceState =
+  | "already_present"
+  | "restored"
+  | "restore_failed";
+
+export interface ReopenAgentWorkspacePrResult {
+  outcome:
+    | "latch_cleared"
+    | "reopened_on_github"
+    | "confirmation_required"
+    | "already_merged";
+  prNumber: number;
+  /** State of the local checkout after reopen; null when reopen never touched it. */
+  localWorkspace: ReopenLocalWorkspaceState | null;
+  message: string;
+  workspace: AgentConversationWorkspace;
+}
+
+export async function reopenAgentWorkspacePr(
+  conversationId: string,
+  reopenOnGithub: boolean,
+): Promise<ReopenAgentWorkspacePrResult> {
+  const raw = await typedInvoke(
+    "reopen_agent_workspace_pr",
+    { input: { conversationId, reopenOnGithub } },
+    ReopenAgentWorkspacePrResponseSchema,
+  );
+  return { ...raw, workspace: transformAgentConversationWorkspace(raw.workspace) };
 }
 
 export async function startAgentConversation(

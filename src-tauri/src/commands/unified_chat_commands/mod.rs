@@ -85,6 +85,10 @@ use crate::application::agent_workspace_pr_description::{
     invalidate_agent_workspace_pr_description_cache, AgentWorkspacePrDescriptionCacheKey,
     ExistingPrMetadataSnapshot, ResolvedAgentWorkspacePrTarget,
 };
+use crate::application::agent_workspace_pr_reopen::{
+    reopen_agent_workspace_pr_for_state, ReopenAgentWorkspacePrResult,
+};
+use crate::application::agent_workspace_pr_reopen_restore::ReopenLocalWorkspaceState;
 use crate::application::agent_workspace_pr_supervision_recovery::{
     build_agent_workspace_pr_supervision_recovery_deps,
     schedule_agent_workspace_durable_repair_reconciliation,
@@ -7766,6 +7770,56 @@ pub async fn close_agent_workspace_pr(
 
     agent_workspace_response_with_pr_supervision_for_state(&state, execution_state.inner(), updated)
         .await
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReopenAgentWorkspacePrInput {
+    pub conversation_id: String,
+    #[serde(default)]
+    pub reopen_on_github: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReopenAgentWorkspacePrResponse {
+    pub outcome: ReopenAgentWorkspacePrResult,
+    pub pr_number: i64,
+    pub local_workspace: Option<ReopenLocalWorkspaceState>,
+    pub message: String,
+    pub workspace: AgentConversationWorkspaceResponse,
+}
+
+/// Reopen a terminal-closed PR associated with an agent conversation workspace.
+#[tauri::command]
+pub async fn reopen_agent_workspace_pr(
+    input: ReopenAgentWorkspacePrInput,
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<ReopenAgentWorkspacePrResponse, String> {
+    let conversation_id = ChatConversationId::from_string(input.conversation_id);
+    let _freshness_invalidation = AgentWorkspaceFreshnessInvalidationGuard::new(&conversation_id);
+    let _pr_description_invalidation =
+        AgentWorkspacePrDescriptionInvalidationGuard::new(&conversation_id, true);
+    let _workspace_changed_event = emit_workspace_changed_when_done(&app, &conversation_id);
+    let outcome =
+        reopen_agent_workspace_pr_for_state(&conversation_id, input.reopen_on_github, &state)
+            .await?;
+
+    let updated = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Workspace disappeared after update".to_string())?;
+
+    Ok(ReopenAgentWorkspacePrResponse {
+        outcome: outcome.outcome,
+        pr_number: outcome.pr_number,
+        local_workspace: outcome.local_workspace,
+        message: outcome.message,
+        workspace: agent_workspace_response_for_state(&state, updated).await?,
+    })
 }
 
 async fn linked_plan_branch_has_unfinished_regular_tasks(
