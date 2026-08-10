@@ -2,7 +2,8 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
 
-use chrono::Utc;
+use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 
 use crate::application::agent_conversation_workspace::{
     agent_conversation_branch_name, resolve_agent_conversation_workspace_path,
@@ -17,14 +18,17 @@ use crate::application::services::PrPollerRegistry;
 use crate::application::AppState;
 use crate::domain::entities::plan_branch::PrStatus as PlanBranchPrStatus;
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode,
+    AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
+    AgentWorkspacePrDescription, AgentWorkspacePrReviewMonitor,
     AgentWorkspacePrReviewMonitorStatus, ArtifactId, ChatConversation, ChatConversationId,
-    IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch, Project,
+    IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch, PlanBranchId, Project, ProjectId,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, ChatConversationRepository,
 };
 use crate::domain::services::github_service::{GithubServiceTrait, PrStatus};
+use crate::error::{AppError, AppResult};
 use crate::infrastructure::sqlite::{
     SqliteAgentConversationWorkspaceRepository, SqliteChatConversationRepository,
 };
@@ -191,6 +195,206 @@ async fn create_linked_plan_branch(
         .await
         .expect("workspace links should be updated");
     created
+}
+
+const APPEND_PUBLICATION_EVENT_FAILURE: &str = "injected append_publication_event failure";
+
+/// Test repository that delegates every call to `inner` except `append_publication_event`,
+/// which always fails. Proves a transient audit-event write failure cannot abort a reopen
+/// whose remote mutation and durable un-latch already committed.
+struct AppendPublicationEventFailingWorkspaceRepository {
+    inner: Arc<dyn AgentConversationWorkspaceRepository>,
+}
+
+impl AppendPublicationEventFailingWorkspaceRepository {
+    fn new(inner: Arc<dyn AgentConversationWorkspaceRepository>) -> Self {
+        Self { inner }
+    }
+}
+
+#[async_trait]
+impl AgentConversationWorkspaceRepository for AppendPublicationEventFailingWorkspaceRepository {
+    async fn create_or_update(
+        &self,
+        workspace: AgentConversationWorkspace,
+    ) -> AppResult<AgentConversationWorkspace> {
+        self.inner.create_or_update(workspace).await
+    }
+
+    async fn get_by_conversation_id(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentConversationWorkspace>> {
+        self.inner.get_by_conversation_id(conversation_id).await
+    }
+
+    async fn get_by_project_id(
+        &self,
+        project_id: &ProjectId,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        self.inner.get_by_project_id(project_id).await
+    }
+
+    async fn list_active_direct_published_workspaces(
+        &self,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        self.inner.list_active_direct_published_workspaces().await
+    }
+
+    async fn list_active_unpublished_edit_workspaces(
+        &self,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        self.inner.list_active_unpublished_edit_workspaces().await
+    }
+
+    async fn list_active_needs_agent_workspaces(
+        &self,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        self.inner.list_active_needs_agent_workspaces().await
+    }
+
+    async fn update_links(
+        &self,
+        conversation_id: &ChatConversationId,
+        ideation_session_id: Option<&IdeationSessionId>,
+        plan_branch_id: Option<&PlanBranchId>,
+    ) -> AppResult<()> {
+        self.inner
+            .update_links(conversation_id, ideation_session_id, plan_branch_id)
+            .await
+    }
+
+    async fn update_publication(
+        &self,
+        conversation_id: &ChatConversationId,
+        pr_number: Option<i64>,
+        pr_url: Option<&str>,
+        pr_status: Option<&str>,
+        push_status: Option<&str>,
+    ) -> AppResult<()> {
+        self.inner
+            .update_publication(conversation_id, pr_number, pr_url, pr_status, push_status)
+            .await
+    }
+
+    async fn update_pr_supervision_preferences(
+        &self,
+        conversation_id: &ChatConversationId,
+        autofix_enabled: bool,
+        auto_merge_desired: bool,
+        auto_merge_method: &str,
+    ) -> AppResult<()> {
+        self.inner
+            .update_pr_supervision_preferences(
+                conversation_id,
+                autofix_enabled,
+                auto_merge_desired,
+                auto_merge_method,
+            )
+            .await
+    }
+
+    async fn set_last_blocked_pr_health_fingerprint(
+        &self,
+        conversation_id: &ChatConversationId,
+        fingerprint: Option<&str>,
+    ) -> AppResult<()> {
+        self.inner
+            .set_last_blocked_pr_health_fingerprint(conversation_id, fingerprint)
+            .await
+    }
+
+    async fn set_stale_base_detected_at(
+        &self,
+        conversation_id: &ChatConversationId,
+        detected_at: Option<DateTime<Utc>>,
+    ) -> AppResult<()> {
+        self.inner
+            .set_stale_base_detected_at(conversation_id, detected_at)
+            .await
+    }
+
+    async fn set_review_automation_override(
+        &self,
+        conversation_id: &ChatConversationId,
+        value: Option<bool>,
+    ) -> AppResult<()> {
+        self.inner
+            .set_review_automation_override(conversation_id, value)
+            .await
+    }
+
+    async fn update_status(
+        &self,
+        conversation_id: &ChatConversationId,
+        status: AgentConversationWorkspaceStatus,
+    ) -> AppResult<()> {
+        self.inner.update_status(conversation_id, status).await
+    }
+
+    async fn save_pr_description(
+        &self,
+        conversation_id: &ChatConversationId,
+        description: AgentWorkspacePrDescription,
+    ) -> AppResult<()> {
+        self.inner
+            .save_pr_description(conversation_id, description)
+            .await
+    }
+
+    async fn get_pr_description(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentWorkspacePrDescription>> {
+        self.inner.get_pr_description(conversation_id).await
+    }
+
+    async fn clear_pr_description(&self, conversation_id: &ChatConversationId) -> AppResult<()> {
+        self.inner.clear_pr_description(conversation_id).await
+    }
+
+    async fn append_publication_event(
+        &self,
+        _event: AgentConversationWorkspacePublicationEvent,
+    ) -> AppResult<()> {
+        Err(AppError::Infrastructure(
+            APPEND_PUBLICATION_EVENT_FAILURE.to_string(),
+        ))
+    }
+
+    async fn list_publication_events(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Vec<AgentConversationWorkspacePublicationEvent>> {
+        self.inner.list_publication_events(conversation_id).await
+    }
+
+    async fn set_pr_review_auto_approve_enabled(
+        &self,
+        conversation_id: &ChatConversationId,
+        enabled: bool,
+    ) -> AppResult<AgentWorkspacePrReviewMonitor> {
+        self.inner
+            .set_pr_review_auto_approve_enabled(conversation_id, enabled)
+            .await
+    }
+
+    async fn mark_pr_review_first_action_resolved(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<AgentWorkspacePrReviewMonitor> {
+        self.inner
+            .mark_pr_review_first_action_resolved(conversation_id)
+            .await
+    }
+
+    async fn claim_pending_pr_review_action(&self, action_id: &str) -> AppResult<bool> {
+        self.inner.claim_pending_pr_review_action(action_id).await
+    }
+
+    async fn delete(&self, conversation_id: &ChatConversationId) -> AppResult<()> {
+        self.inner.delete(conversation_id).await
+    }
 }
 
 #[tokio::test]
@@ -917,4 +1121,106 @@ async fn poller_restart_falls_back_to_project_root_when_restore_fails() {
         Some(ReopenLocalWorkspaceState::RestoreFailed)
     );
     assert!(!Path::new(&workspace.worktree_path).exists());
+}
+
+#[tokio::test]
+async fn transient_publication_event_failure_does_not_abort_a_completed_reopen() {
+    let (_temp, mut state, conversation_id, _workspace, github) = setup_reopen_state(
+        "event-append-failure",
+        AgentConversationWorkspaceMode::Edit,
+        Some(17),
+        Some("closed"),
+    )
+    .await;
+    let inner = Arc::clone(&state.agent_conversation_workspace_repo);
+    state.agent_conversation_workspace_repo =
+        Arc::new(AppendPublicationEventFailingWorkspaceRepository::new(inner));
+    github.will_return_status(PrStatus::Open);
+
+    let outcome = reopen_agent_workspace_pr_for_state(&conversation_id, false, &state)
+        .await
+        .expect("a transient publication-event append failure must not abort a completed reopen");
+
+    assert_eq!(outcome.outcome, ReopenAgentWorkspacePrResult::LatchCleared);
+    let persisted = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(persisted.publication_pr_status.as_deref(), Some("open"));
+    assert!(state
+        .pr_poller_registry
+        .is_agent_workspace_polling(&conversation_id));
+}
+
+#[tokio::test]
+async fn live_merged_pr_corrects_the_closed_latch() {
+    let (_temp, state, conversation_id, _workspace, github) = setup_reopen_state(
+        "live-merged",
+        AgentConversationWorkspaceMode::Edit,
+        Some(18),
+        Some("closed"),
+    )
+    .await;
+    github.will_return_status(PrStatus::Merged {
+        merge_commit_sha: Some("deadbeef".to_string()),
+        merged_at: Some("2026-01-01T00:00:00Z".to_string()),
+    });
+
+    let outcome = reopen_agent_workspace_pr_for_state(&conversation_id, true, &state)
+        .await
+        .expect("a live-merged PR is an Ok outcome, not an error");
+
+    assert_eq!(outcome.outcome, ReopenAgentWorkspacePrResult::AlreadyMerged);
+    assert_eq!(github.state().reopen_pr_calls, 0);
+    let persisted = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(persisted.publication_pr_status.as_deref(), Some("merged"));
+    assert!(!state
+        .pr_poller_registry
+        .is_agent_workspace_polling(&conversation_id));
+}
+
+#[tokio::test]
+async fn live_merged_pr_corrects_the_linked_plan_branch_status() {
+    let (_temp, state, conversation_id, workspace, github) = setup_reopen_state(
+        "live-merged-plan-branch",
+        AgentConversationWorkspaceMode::Ideation,
+        Some(19),
+        Some("closed"),
+    )
+    .await;
+    let plan_branch = create_linked_plan_branch(
+        &state,
+        &conversation_id,
+        &workspace,
+        "live-merged-plan-branch",
+        19,
+    )
+    .await;
+    github.will_return_status(PrStatus::Merged {
+        merge_commit_sha: Some("deadbeef".to_string()),
+        merged_at: Some("2026-01-01T00:00:00Z".to_string()),
+    });
+
+    let outcome = reopen_agent_workspace_pr_for_state(&conversation_id, true, &state)
+        .await
+        .expect("a live-merged PR is an Ok outcome, not an error");
+
+    assert_eq!(outcome.outcome, ReopenAgentWorkspacePrResult::AlreadyMerged);
+    let reloaded_plan_branch = state
+        .plan_branch_repo
+        .get_by_id(&plan_branch.id)
+        .await
+        .expect("plan branch lookup should succeed")
+        .expect("plan branch should still exist");
+    assert_eq!(
+        reloaded_plan_branch.pr_status,
+        Some(PlanBranchPrStatus::Merged)
+    );
 }

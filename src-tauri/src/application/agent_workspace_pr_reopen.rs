@@ -274,8 +274,10 @@ async fn unlatch_and_restart(
         .await
         .map_err(|e| e.to_string())?;
 
-    // (e) Record the reopen as a durable publication event.
-    state
+    // (e) Record the reopen as a durable publication event. A failed append must not abort a
+    // reopen whose remote mutation and durable un-latch already committed; the poller restart
+    // and status reconciliation below still need to run.
+    if let Err(error) = state
         .agent_conversation_workspace_repo
         .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
             conversation_id.clone(),
@@ -285,13 +287,27 @@ async fn unlatch_and_restart(
             None,
         ))
         .await
-        .map_err(|e| e.to_string())?;
+    {
+        tracing::warn!(
+            conversation_id = %conversation_id,
+            pr_number = target.number,
+            error = %error,
+            "Could not append pr_reopened publication event after a successful reopen"
+        );
+    }
 
     // (f) Rebuild the local branch and worktree from origin before anything reads
     // the checkout; terminal cleanup force-deletes both.
     let restore =
         restore_agent_workspace_local_artifacts(project, workspace, linked_plan_branch).await;
-    record_restore_outcome(conversation_id, &restore, state).await?;
+    if let Err(error) = record_restore_outcome(conversation_id, &restore, state).await {
+        tracing::warn!(
+            conversation_id = %conversation_id,
+            pr_number = target.number,
+            error = %error,
+            "Could not append local-restore publication event after a successful reopen"
+        );
+    }
 
     // (g) Restart the poller last, after the workspace is confirmed nonterminal. Prefer
     // the restored worktree; fall back to the project root only when restore failed.
