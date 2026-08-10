@@ -190,38 +190,12 @@
     "bounded_chat_start_runtime_no_app_handle": [],
     "bounded_chat_start_runtime_no_tauri_generics": [],
     "bounded_completion_producers_no_direct_tauri_emit": [],
-    "root_application_no_commands_or_http_imports": [
-      {
-        "path": "src-tauri/src/application/plan_complexity_assessment.rs",
-        "target": "crate::http_server",
-        "text": "use crate::http_server::types::{"
-      },
-      {
-        "path": "src-tauri/src/application/plan_complexity_assessment_tests.rs",
-        "target": "crate::http_server",
-        "text": "use crate::http_server::types::SubmitPlanComplexityAssessmentRequest;"
-      },
-      {
-        "path": "src-tauri/src/application/session_reopen_service.rs",
-        "target": "crate::http_server",
-        "text": "use crate::http_server::handlers::ideation::{stop_and_archive_children, ChildFilter};"
-      },
-      {
-        "path": "src-tauri/src/application/validation_service.rs",
-        "target": "crate::http_server",
-        "text": "let (validation_hint, hint_message) = crate::http_server::helpers::compute_validation_hint("
-      }
-    ],
+    "root_application_no_commands_or_http_imports": [],
     "root_commands_no_http_imports": [
       {
         "path": "src-tauri/src/commands/ideation_commands/ideation_commands_apply.rs",
         "target": "crate::http_server",
         "text": "/// External HTTP callers use [`crate::http_server::handlers::external_apply_proposals`]"
-      },
-      {
-        "path": "src-tauri/src/commands/ideation_commands/ideation_commands_apply.rs",
-        "target": "crate::http_server",
-        "text": "use crate::http_server::handlers::ideation::stop_verification_children;"
       },
       {
         "path": "src-tauri/src/commands/ideation_commands/ideation_commands_proposals.rs",

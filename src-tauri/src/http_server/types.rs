@@ -1164,49 +1164,16 @@ pub struct ApprovePlanArtifactRequest {
     pub blueprint_artifact_version: Option<u32>,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct SubmitPlanComplexityAssessmentRequest {
-    pub session_id: String,
-    pub artifact_id: String,
-    pub artifact_version: u32,
-    #[serde(default)]
-    pub blueprint_artifact_id: Option<String>,
-    #[serde(default)]
-    pub blueprint_artifact_version: Option<u32>,
-    pub level: String,
-    pub score: u8,
-    pub recommended_action: String,
-    pub confidence: f64,
-    pub reason_summary: String,
-    #[serde(default)]
-    pub signals: Option<Value>,
-}
+// Plan-complexity request/response shapes are owned by the application service
+// that validates and produces them; re-exported here for the HTTP handlers.
+pub use crate::application::plan_complexity_assessment::{
+    PlanComplexityAssessmentResponse, SubmitPlanComplexityAssessmentRequest,
+};
 
 #[derive(Debug, Serialize)]
 pub struct SubmitPlanComplexityAssessmentResponse {
     pub success: bool,
     pub assessment: PlanComplexityAssessmentResponse,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct PlanComplexityAssessmentResponse {
-    pub id: String,
-    pub session_id: String,
-    pub artifact_id: String,
-    pub artifact_version: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub blueprint_artifact_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub blueprint_artifact_version: Option<u32>,
-    pub level: String,
-    pub score: u8,
-    pub recommended_action: String,
-    pub confidence: f64,
-    pub reason_summary: String,
-    pub signals: Value,
-    pub assessed_by: String,
-    pub created_at: String,
-    pub updated_at: String,
 }
 
 #[derive(Debug, Deserialize)]

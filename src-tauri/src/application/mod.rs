@@ -260,6 +260,7 @@ pub mod ticketing_service;
 pub mod ticketing_status_catalog_service;
 pub(crate) mod validation_events;
 pub mod validation_service;
+pub mod verification_child_lifecycle;
 pub mod verification_event_emitters;
 pub mod webhook_service;
 pub(crate) mod workspace_capacity;

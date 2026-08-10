@@ -26,7 +26,7 @@ use super::ideation_commands_types::{
 use super::is_local_proposal;
 use crate::commands::branch_helpers::ensure_base_branch_exists;
 use crate::commands::plan_branch_commands::slug_from_name;
-use crate::http_server::handlers::ideation::stop_verification_children;
+use crate::application::verification_child_lifecycle::stop_verification_children;
 use crate::infrastructure::git_auth::{inspect_repository_capability, RepositoryCapability};
 
 // ============================================================================
