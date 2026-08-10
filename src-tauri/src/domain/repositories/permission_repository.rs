@@ -2,11 +2,11 @@
 //
 // This trait defines the contract for persisting pending permission requests.
 // SQLite stores data for restart resilience + audit trail; in-memory channels remain for signaling.
-// Types imported from crate::application::permission_state.
+// Records live in crate::domain::entities::permission_request.
 
 use async_trait::async_trait;
 
-use crate::application::permission_state::{PendingPermissionInfo, PermissionDecision};
+use crate::domain::entities::permission_request::{PendingPermissionInfo, PermissionDecision};
 use crate::error::AppResult;
 
 /// Repository trait for pending permission persistence.

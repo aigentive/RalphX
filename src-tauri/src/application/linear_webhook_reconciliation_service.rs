@@ -8,9 +8,16 @@ use serde::Deserialize;
 use sha2::Sha256;
 use tokio::sync::Mutex;
 
-use crate::domain::entities::{InternalStatus, ProjectId, SyncProvider, TaskId, WorkflowSchema};
+use crate::domain::entities::{InternalStatus, SyncProvider, TaskId, WorkflowSchema};
 use crate::domain::repositories::WorkflowRepository;
 use crate::error::{AppError, AppResult};
+
+// Delivery/link records and the store port are domain contracts; re-exported
+// here so existing `application::linear_webhook_reconciliation_service`
+// importers keep resolving.
+pub use crate::domain::integrations::linear_webhook::{
+    ExternalIssueLink, LinearDelivery, LinearDeliveryRecord, LinearWebhookStore,
+};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -27,31 +34,6 @@ pub struct LinearWebhookHeaders {
 pub struct LinearWebhookRequest {
     pub headers: LinearWebhookHeaders,
     pub raw_body: Vec<u8>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExternalIssueLink {
-    pub provider: SyncProvider,
-    pub project_id: ProjectId,
-    pub task_id: Option<TaskId>,
-    pub external_id: String,
-    pub external_key: Option<String>,
-    pub external_url: Option<String>,
-    pub last_external_status: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LinearDelivery {
-    pub delivery_id: String,
-    pub webhook_id: Option<String>,
-    pub event_type: String,
-    pub received_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LinearDeliveryRecord {
-    Recorded,
-    Duplicate,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,23 +91,6 @@ impl LinearWebhookError {
     pub fn is_stale_timestamp(&self) -> bool {
         matches!(self, Self::StaleTimestamp)
     }
-}
-
-#[async_trait]
-pub trait LinearWebhookStore: Send + Sync {
-    async fn record_delivery(&self, delivery: LinearDelivery) -> AppResult<LinearDeliveryRecord>;
-
-    async fn get_issue_link(&self, external_issue_id: &str)
-        -> AppResult<Option<ExternalIssueLink>>;
-
-    async fn upsert_issue_link(&self, link: ExternalIssueLink) -> AppResult<()>;
-
-    async fn record_issue_activity(
-        &self,
-        delivery_id: &str,
-        external_issue_id: &str,
-        event_type: &str,
-    ) -> AppResult<()>;
 }
 
 pub struct LinearWebhookReconciliationService {

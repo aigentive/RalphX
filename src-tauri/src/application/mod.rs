@@ -158,7 +158,6 @@ mod interactive_notification_producer_tests;
 pub mod interactive_process_registry;
 #[cfg(test)]
 mod interactive_process_registry_tests;
-mod jira_agile_types;
 pub mod linear_integration_service;
 pub mod linear_webhook_reconciliation_service;
 pub(crate) mod managed_provider_cli;
@@ -330,7 +329,7 @@ pub use ideation_service::{
     UpdateSource,
 };
 pub use interactive_process_registry::{InteractiveProcessKey, InteractiveProcessRegistry};
-pub use jira_agile_types::{
+pub use crate::domain::integrations::jira_agile_types::{
     JiraBoardColumn, JiraBoardConfiguration, JiraBoardSummary, JiraSprintSummary,
 };
 pub use linear_integration_service::{

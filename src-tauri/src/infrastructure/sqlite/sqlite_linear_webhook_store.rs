@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use uuid::Uuid;
 
-use crate::application::linear_webhook_reconciliation_service::{
+use crate::domain::integrations::linear_webhook::{
     ExternalIssueLink, LinearDelivery, LinearDeliveryRecord, LinearWebhookStore,
 };
 use crate::domain::entities::{ProjectId, SyncProvider, TaskId};

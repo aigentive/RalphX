@@ -1,5 +1,5 @@
 use super::*;
-use crate::application::question_state::QuestionOption;
+use crate::domain::entities::question_request::QuestionOption;
 use std::collections::HashMap;
 use std::sync::RwLock;
 

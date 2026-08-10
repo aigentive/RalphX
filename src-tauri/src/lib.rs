@@ -28,6 +28,7 @@ pub mod domain;
 pub mod error;
 pub mod http_server;
 pub mod infrastructure;
+pub mod runtime_config;
 pub mod shell;
 pub mod testing;
 pub mod utils;

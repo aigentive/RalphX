@@ -95,9 +95,15 @@ RULES: list[dict[str, Any]] = [
         "paths": ["src-tauri/src/application/**/*.rs"],
         "forbidden": ["crate::commands", "crate::http_server"],
     },
+    # Phase 4 drove this to zero: the spawner moved up into `application`, and
+    # every remaining upward reach was a type the repositories/clients own —
+    # question/permission records, verification markers, integration settings,
+    # client ports and DTOs — which now live in `domain` (plus the config read in
+    # `crate::runtime_config`). Hard zero so persistence can never again pull on
+    # a service.
     {
         "id": "root_infrastructure_no_upper_layer_imports",
-        "mode": "baseline",
+        "mode": "hard-zero",
         "paths": ["src-tauri/src/infrastructure/**/*.rs"],
         "forbidden": [
             "crate::application",

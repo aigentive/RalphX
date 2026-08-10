@@ -76,7 +76,7 @@
         "crate::http_server"
       ],
       "id": "root_infrastructure_no_upper_layer_imports",
-      "mode": "baseline",
+      "mode": "hard-zero",
       "paths": [
         "src-tauri/src/infrastructure/**/*.rs"
       ]
@@ -240,31 +240,6 @@
     "root_domain_no_commands_imports": [],
     "root_domain_no_tauri_usage": [],
     "root_domain_no_upward_imports": [
-      {
-        "path": "src-tauri/src/domain/repositories/permission_repository.rs",
-        "target": "crate::application",
-        "text": "// Types imported from crate::application::permission_state."
-      },
-      {
-        "path": "src-tauri/src/domain/repositories/permission_repository.rs",
-        "target": "crate::application",
-        "text": "use crate::application::permission_state::{PendingPermissionInfo, PermissionDecision};"
-      },
-      {
-        "path": "src-tauri/src/domain/repositories/question_repository.rs",
-        "target": "crate::application",
-        "text": "// Types imported from crate::application::question_state."
-      },
-      {
-        "path": "src-tauri/src/domain/repositories/question_repository.rs",
-        "target": "crate::application",
-        "text": "use crate::application::question_state::{PendingQuestionInfo, QuestionAnswer};"
-      },
-      {
-        "path": "src-tauri/src/domain/repositories/question_repository_tests.rs",
-        "target": "crate::application",
-        "text": "use crate::application::question_state::QuestionOption;"
-      },
       {
         "path": "src-tauri/src/domain/services/api_key_service_tests.rs",
         "target": "crate::infrastructure",
@@ -1083,148 +1058,7 @@
         "text": "use crate::commands::unified_chat_commands::{"
       }
     ],
-    "root_infrastructure_no_upper_layer_imports": [
-      {
-        "path": "src-tauri/src/infrastructure/atlassian_client.rs",
-        "target": "crate::application",
-        "text": "use crate::application::{"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/atlassian_client_tests.rs",
-        "target": "crate::application",
-        "text": "use crate::application::{AtlassianApiClient, AtlassianAuthContext, AtlassianCredential};"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/clickup_client.rs",
-        "target": "crate::application",
-        "text": "use crate::application::clickup_integration_service::{"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/clickup_client.rs",
-        "target": "crate::application",
-        "text": "use crate::application::{"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/clickup_client_tests.rs",
-        "target": "crate::application",
-        "text": "use crate::application::clickup_integration_service::ClickUpTaskListOptions;"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/clickup_client_tests.rs",
-        "target": "crate::application",
-        "text": "use crate::application::{ClickUpApiClient, ClickUpAuthContext};"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/granola_client.rs",
-        "target": "crate::application",
-        "text": "use crate::application::granola_integration_service::is_valid_granola_note_id;"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/granola_client.rs",
-        "target": "crate::application",
-        "text": "use crate::application::{"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/granola_client_tests.rs",
-        "target": "crate::application",
-        "text": "use crate::application::{GranolaApiClient, GranolaApiError, GranolaAuthContext};"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/linear_client.rs",
-        "target": "crate::application",
-        "text": "use crate::application::linear_integration_service::LinearAttachment;"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/linear_client.rs",
-        "target": "crate::application",
-        "text": "use crate::application::{"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/memory/memory_chat_message_repo.rs",
-        "target": "crate::application",
-        "text": "crate::application::reconciliation::verification_handoff::VERIFICATION_RESULT_MARKER,"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/memory/memory_chat_message_repo.rs",
-        "target": "crate::application",
-        "text": "metadata.contains(crate::application::reconciliation::verification_handoff::VERIFICATION_RESULT_METADATA_KEY)"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/memory/memory_linear_integration_settings_repo.rs",
-        "target": "crate::application",
-        "text": "use crate::application::{LinearIntegrationSettings, LinearIntegrationSettingsRepository};"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/memory/memory_permission_repo.rs",
-        "target": "crate::application",
-        "text": "use crate::application::permission_state::{PendingPermissionInfo, PermissionDecision};"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/memory/memory_question_repo.rs",
-        "target": "crate::application",
-        "text": "use crate::application::question_state::{PendingQuestionInfo, QuestionAnswer};"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/memory/memory_question_repo_tests.rs",
-        "target": "crate::application",
-        "text": "use crate::application::question_state::QuestionOption;"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/sqlite/sqlite_chat_message_repo.rs",
-        "target": "crate::application",
-        "text": "crate::application::reconciliation::verification_handoff::VERIFICATION_RESULT_MARKER"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/sqlite/sqlite_chat_message_repo.rs",
-        "target": "crate::application",
-        "text": "crate::application::reconciliation::verification_handoff::VERIFICATION_RESULT_METADATA_KEY"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/sqlite/sqlite_ideation_session_repo.rs",
-        "target": "crate::application",
-        "text": "use crate::application::harness_runtime_registry::default_verification_max_rounds;"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/sqlite/sqlite_linear_integration_settings_repo.rs",
-        "target": "crate::application",
-        "text": "use crate::application::{LinearIntegrationSettings, LinearIntegrationSettingsRepository};"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/sqlite/sqlite_linear_integration_settings_repo_tests.rs",
-        "target": "crate::application",
-        "text": "use crate::application::{LinearIntegrationSettings, LinearIntegrationSettingsRepository};"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/sqlite/sqlite_linear_webhook_store.rs",
-        "target": "crate::application",
-        "text": "use crate::application::linear_webhook_reconciliation_service::{"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/sqlite/sqlite_linear_webhook_store_tests.rs",
-        "target": "crate::application",
-        "text": "use crate::application::linear_webhook_reconciliation_service::{"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/sqlite/sqlite_permission_repo.rs",
-        "target": "crate::application",
-        "text": "use crate::application::permission_state::{PendingPermissionInfo, PermissionDecision};"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/sqlite/sqlite_permission_repo_tests.rs",
-        "target": "crate::application",
-        "text": "use crate::application::permission_state::PermissionState;"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/sqlite/sqlite_question_repo.rs",
-        "target": "crate::application",
-        "text": "use crate::application::question_state::{PendingQuestionInfo, QuestionAnswer, QuestionOption};"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/sqlite/sqlite_question_repo_tests.rs",
-        "target": "crate::application",
-        "text": "use crate::application::question_state::QuestionState;"
-      }
-    ],
+    "root_infrastructure_no_upper_layer_imports": [],
     "root_no_imports_from_shell": [],
     "root_shell_no_direct_sqlite": [
       {
