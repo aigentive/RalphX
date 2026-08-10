@@ -168,6 +168,10 @@ pub(crate) fn run_app_setup(
 
     configure_bundled_runtime_env(app);
 
+    // Wire the command-layer stats caches into the domain invalidation port
+    // before anything can transition a task, so no eviction is missed.
+    crate::commands::metrics_commands::register_stats_cache_invalidator();
+
     // The native window must be visible before SQLite open/migration work begins.
     let window_focus_state = Arc::new(WindowFocusState::default());
     create_main_window(app, Arc::clone(&window_focus_state))?;

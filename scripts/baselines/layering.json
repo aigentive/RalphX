@@ -4,12 +4,21 @@
     {
       "forbidden": [
         "crate::application",
-        "crate::commands",
         "crate::infrastructure",
         "crate::http_server"
       ],
       "id": "root_domain_no_upward_imports",
       "mode": "baseline",
+      "paths": [
+        "src-tauri/src/domain/**/*.rs"
+      ]
+    },
+    {
+      "forbidden": [
+        "crate::commands"
+      ],
+      "id": "root_domain_no_commands_imports",
+      "mode": "hard-zero",
       "paths": [
         "src-tauri/src/domain/**/*.rs"
       ]
@@ -30,7 +39,7 @@
         "crate::http_server"
       ],
       "id": "root_application_no_commands_or_http_imports",
-      "mode": "baseline",
+      "mode": "hard-zero",
       "paths": [
         "src-tauri/src/application/**/*.rs"
       ]
@@ -203,6 +212,7 @@
         "text": "use crate::http_server::helpers::{"
       }
     ],
+    "root_domain_no_commands_imports": [],
     "root_domain_no_tauri_usage": [],
     "root_domain_no_upward_imports": [
       {
@@ -489,11 +499,6 @@
         "path": "src-tauri/src/domain/state_machine/transition_handler/merge_validation/mod.rs",
         "target": "crate::infrastructure",
         "text": "use crate::infrastructure::tool_paths::{"
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/mod.rs",
-        "target": "crate::commands",
-        "text": "crate::commands::metrics_commands::invalidate_project_stats_cache("
       },
       {
         "path": "src-tauri/src/domain/state_machine/transition_handler/on_enter_states/mod.rs",

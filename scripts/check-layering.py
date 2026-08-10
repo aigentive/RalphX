@@ -44,10 +44,18 @@ RULES: list[dict[str, Any]] = [
         "paths": ["src-tauri/src/domain/**/*.rs"],
         "forbidden": [
             "crate::application",
-            "crate::commands",
             "crate::infrastructure",
             "crate::http_server",
         ],
+    },
+    # Phase 4 reached zero here by giving domain its own stats-invalidation
+    # port instead of calling into the command layer. Kept as a hard zero so it
+    # cannot be re-baselined.
+    {
+        "id": "root_domain_no_commands_imports",
+        "mode": "hard-zero",
+        "paths": ["src-tauri/src/domain/**/*.rs"],
+        "forbidden": ["crate::commands"],
     },
     {
         "id": "root_domain_no_tauri_usage",
@@ -55,9 +63,11 @@ RULES: list[dict[str, Any]] = [
         "paths": ["src-tauri/src/domain/**/*.rs"],
         "forbidden": ["tauri::"],
     },
+    # Phase 4 drove this to zero (ExecutionState split, spawner move, and the
+    # http_server descents). Hard zero so phases 5/12 keep a clean precondition.
     {
         "id": "root_application_no_commands_or_http_imports",
-        "mode": "baseline",
+        "mode": "hard-zero",
         "paths": ["src-tauri/src/application/**/*.rs"],
         "forbidden": ["crate::commands", "crate::http_server"],
     },
