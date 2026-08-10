@@ -2107,6 +2107,10 @@ export type AgentWorkspaceMaintenanceOperationStatus =
   | "ready"
   | "blocked"
   | "held";
+export type AgentWorkspaceMaintenanceOperationRecoveryAction =
+  | "none"
+  | "resume_publish"
+  | "retry_repair";
 export type AgentWorkspaceMaintenanceOperationHoldReason =
   | "pr_autofix_unchanged_health"
   | "pr_autofix_pre_existing_on_base"
@@ -2122,6 +2126,7 @@ export interface AgentWorkspaceMaintenanceOperation {
   source: AgentWorkspaceMaintenanceOperationSource;
   stage: AgentWorkspaceMaintenanceOperationStage;
   status: AgentWorkspaceMaintenanceOperationStatus;
+  recoveryAction?: AgentWorkspaceMaintenanceOperationRecoveryAction;
   holdReason?: AgentWorkspaceMaintenanceOperationHoldReason | null;
   summary: string | null;
   blocker: string | null;
@@ -2716,6 +2721,10 @@ export const AgentWorkspaceMaintenanceOperationResponseSchema = z.object({
     "held",
   ]),
   status: z.enum(["active", "ready", "blocked", "held"]),
+  recovery_action: z
+    .enum(["none", "resume_publish", "retry_repair"])
+    .optional()
+    .default("none"),
   hold_reason: z
     .enum([
       "pr_autofix_unchanged_health",
@@ -3381,6 +3390,7 @@ function transformAgentConversationWorkspace(
           source: raw.maintenance_operation.source,
           stage: raw.maintenance_operation.stage,
           status: raw.maintenance_operation.status,
+          recoveryAction: raw.maintenance_operation.recovery_action,
           holdReason: raw.maintenance_operation.hold_reason,
           summary: raw.maintenance_operation.summary,
           blocker: raw.maintenance_operation.blocker,

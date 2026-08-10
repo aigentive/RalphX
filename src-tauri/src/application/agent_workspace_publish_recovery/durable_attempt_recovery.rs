@@ -27,6 +27,9 @@ use crate::application::agent_workspace_publish_repair_state::{
     ORPHANED_REPAIR_DISPATCH_RESCUE_GRACE_SECS,
 };
 use crate::application::chat_service::{ChatService, SendMessageOptions, SendQueuePolicy};
+use crate::application::publish_resilience::{
+    reconcile_blocked_agent_workspace_repair_pr_handoff, BlockedRepairPrHandoffReconciliation,
+};
 use crate::application::{AppState, GitService};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspacePublicationEvent, AgentRunId,
@@ -399,7 +402,14 @@ async fn reconcile_agent_workspace_repair_attempt(
                         {
                             Ok(crate::application::publish_resilience::AgentWorkspaceRepairOpenPushEffectReconciliation::Observed) => {}
                             Ok(crate::application::publish_resilience::AgentWorkspaceRepairOpenPushEffectReconciliation::NotApplied) => {
+                                // The reconciler proved the push never reached the remote and
+                                // terminated the effect as Failed, clearing the fence. Return Noop
+                                // so the next sweep reacquires the lease without spending an
+                                // open-effect recovery credit or re-raising the attention
+                                // notification that record_continuation_effect_not_applied just
+                                // resolved.
                                 record_continuation_effect_not_applied(state, &current).await;
+                                return Ok(DurableRepairRecoveryOutcome::Noop);
                             }
                             Ok(crate::application::publish_resilience::AgentWorkspaceRepairOpenPushEffectReconciliation::Pending) => {
                                 let error = AppError::Conflict(
@@ -500,6 +510,28 @@ async fn reconcile_agent_workspace_repair_attempt(
             retry_safe_ready_agent_workspace_repair_publish(state, current).await
         }
         AgentWorkspaceRepairPhase::Blocked => {
+            // A failed PR-handoff reconciliation read (gh outage, expired auth, unreadable
+            // workspace) must not abort the recovery sweep for other workspaces. Declining
+            // here performs no recovery write, so the next sweep re-evaluates the same
+            // evidence from scratch.
+            match reconcile_blocked_agent_workspace_repair_pr_handoff(state, &current).await {
+                Ok(BlockedRepairPrHandoffReconciliation::Recovered) => {
+                    return Ok(DurableRepairRecoveryOutcome::Continued);
+                }
+                Ok(BlockedRepairPrHandoffReconciliation::Stale) => {
+                    return Ok(DurableRepairRecoveryOutcome::Stale);
+                }
+                Ok(BlockedRepairPrHandoffReconciliation::NotRecoverable) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        conversation_id = current.conversation_id.as_str(),
+                        attempt_id = current.id.as_str(),
+                        %error,
+                        "Blocked PR-handoff reconciliation could not be evaluated; leaving the attempt unsettled"
+                    );
+                    return Ok(DurableRepairRecoveryOutcome::Noop);
+                }
+            }
             release_repair_lease_if_settled_boundary(state, &current).await?;
             retry_safe_blocked_agent_workspace_repair(state, current).await
         }
@@ -2049,8 +2081,8 @@ async fn surface_open_effect_continuation_attention(
 /// The reconciler proved the push never reached the remote and terminated the effect as
 /// `Failed`, clearing the fence. Record a timeline event and settle any attention notification
 /// raised by prior open-effect recovery failures. Best-effort: neither write may fail the
-/// continuation, which is about to fall through and re-drive publication under existing
-/// authority gates.
+/// caller, and the caller defers the lease reacquire to the next recovery pass rather than
+/// re-driving publication in this pass.
 async fn record_continuation_effect_not_applied(
     state: &AppState,
     attempt: &AgentWorkspaceRepairAttempt,
