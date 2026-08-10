@@ -564,7 +564,6 @@
     "get_agent_conversation_workspace",
     "recheck_pr_health",
     "retry_pr_autofix_override",
-    "retry_agent_workspace_publication_effect",
     "stop_pr_autofix_for_failure",
     "set_agent_conversation_workspace_auto_publish",
     "set_agent_conversation_workspace_pr_supervision",
@@ -735,7 +734,7 @@
       "authorityBearing": true,
       "enclosingFunction": "application/app_setup.rs:::::launch_startup_attempt",
       "file": "application/app_setup.rs",
-      "id": "application/app_setup.rs::application/app_setup.rs:::::launch_startup_attempt@47945a764fb18d39",
+      "id": "application/app_setup.rs::application/app_setup.rs:::::launch_startup_attempt@5fc4b3f848826903",
       "kind": "async_runtime::spawn",
       "readSurface": [],
       "sinksReached": [
@@ -831,7 +830,7 @@
       "authorityBearing": true,
       "enclosingFunction": "application/chat_service/chat_service_send_background.rs:::::spawn_send_message_background",
       "file": "application/chat_service/chat_service_send_background.rs",
-      "id": "application/chat_service/chat_service_send_background.rs::application/chat_service/chat_service_send_background.rs:::::spawn_send_message_background@8aea59cb19ee3319",
+      "id": "application/chat_service/chat_service_send_background.rs::application/chat_service/chat_service_send_background.rs:::::spawn_send_message_background@d4c8882a5ca83ac6",
       "kind": "tokio::spawn",
       "readSurface": [],
       "sinksReached": [
@@ -854,15 +853,6 @@
       "sinksReached": [
         "send_message"
       ]
-    },
-    {
-      "authorityBearing": false,
-      "enclosingFunction": "application/chat_service/chat_service_streaming.rs:::::schedule_branch_status_refresh",
-      "file": "application/chat_service/chat_service_streaming.rs",
-      "id": "application/chat_service/chat_service_streaming.rs::application/chat_service/chat_service_streaming.rs:::::schedule_branch_status_refresh@f26387a4e9781664",
-      "kind": "tokio::spawn",
-      "readSurface": [],
-      "sinksReached": []
     },
     {
       "authorityBearing": false,
@@ -1007,7 +997,7 @@
       "authorityBearing": true,
       "enclosingFunction": "application/server_boot.rs:::::start_server_boot",
       "file": "application/server_boot.rs",
-      "id": "application/server_boot.rs::application/server_boot.rs:::::start_server_boot@487f8e4fb31fc533",
+      "id": "application/server_boot.rs::application/server_boot.rs:::::start_server_boot@5ea4e57295850417",
       "kind": "async_runtime::spawn",
       "readSurface": [],
       "sinksReached": [
@@ -1126,7 +1116,7 @@
       "authorityBearing": true,
       "enclosingFunction": "application/startup_background.rs:::::spawn_agent_workspace_bridge_dispatcher",
       "file": "application/startup_background.rs",
-      "id": "application/startup_background.rs::application/startup_background.rs:::::spawn_agent_workspace_bridge_dispatcher@11ddd3248e57299b",
+      "id": "application/startup_background.rs::application/startup_background.rs:::::spawn_agent_workspace_bridge_dispatcher@ce779acefa5432",
       "kind": "async_runtime::spawn",
       "readSurface": [
         "workspace-bridge",
@@ -1140,7 +1130,7 @@
       "authorityBearing": true,
       "enclosingFunction": "application/startup_background.rs:::::spawn_remote_conversation_start_dispatcher",
       "file": "application/startup_background.rs",
-      "id": "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_conversation_start_dispatcher@b6221551ae133d71",
+      "id": "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_conversation_start_dispatcher@2212793b1dbfb5d0",
       "kind": "async_runtime::spawn",
       "readSurface": [
         "remote-conversation-start"
@@ -1158,7 +1148,7 @@
       "authorityBearing": true,
       "enclosingFunction": "application/startup_background.rs:::::spawn_remote_conversation_message_dispatcher",
       "file": "application/startup_background.rs",
-      "id": "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_conversation_message_dispatcher@419d74969e41afba",
+      "id": "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_conversation_message_dispatcher@c959b62d91939d1",
       "kind": "async_runtime::spawn",
       "readSurface": [
         "remote-conversation-message"
@@ -1171,7 +1161,7 @@
       "authorityBearing": false,
       "enclosingFunction": "application/startup_background.rs:::::spawn_remote_agent_stop_dispatcher",
       "file": "application/startup_background.rs",
-      "id": "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_agent_stop_dispatcher@1238583d1bc5193c",
+      "id": "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_agent_stop_dispatcher@4d7fc0892abbe19d",
       "kind": "async_runtime::spawn",
       "readSurface": [],
       "sinksReached": []
@@ -1180,7 +1170,7 @@
       "authorityBearing": true,
       "enclosingFunction": "application/startup_background.rs:::::spawn_remote_resume_dispatchers",
       "file": "application/startup_background.rs",
-      "id": "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@2130ab982b84bb8a",
+      "id": "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@ced3a7ce75eb6466",
       "kind": "async_runtime::spawn",
       "readSurface": [
         "remote-conversation-lifecycle",
@@ -1424,9 +1414,9 @@
     },
     {
       "authorityBearing": true,
-      "enclosingFunction": "commands/agent_workspace_auto_publish.rs:::::install_agent_workspace_auto_publish_listeners",
+      "enclosingFunction": "commands/agent_workspace_auto_publish.rs:::::install_agent_workspace_auto_publish_non_completion_sources",
       "file": "commands/agent_workspace_auto_publish.rs",
-      "id": "commands/agent_workspace_auto_publish.rs::commands/agent_workspace_auto_publish.rs:::::install_agent_workspace_auto_publish_listeners@c960665df6beaf62",
+      "id": "commands/agent_workspace_auto_publish.rs::commands/agent_workspace_auto_publish.rs:::::install_agent_workspace_auto_publish_non_completion_sources@df1d3f2407db9b84",
       "kind": "listen_any",
       "readSurface": [],
       "sinksReached": [
@@ -1439,39 +1429,9 @@
     },
     {
       "authorityBearing": true,
-      "enclosingFunction": "commands/agent_workspace_auto_publish.rs:::::install_agent_workspace_auto_publish_listeners",
+      "enclosingFunction": "commands/agent_workspace_auto_publish.rs:::::spawn_pr_supervision_recovery_from_completion_payload",
       "file": "commands/agent_workspace_auto_publish.rs",
-      "id": "commands/agent_workspace_auto_publish.rs::commands/agent_workspace_auto_publish.rs:::::install_agent_workspace_auto_publish_listeners@acfeac7ad887cf56",
-      "kind": "listen_any",
-      "readSurface": [],
-      "sinksReached": [
-        "execute_entry_actions",
-        "send_message",
-        "transition_task",
-        "transition_task_corrective_with_exit",
-        "try_schedule_ready_tasks"
-      ]
-    },
-    {
-      "authorityBearing": true,
-      "enclosingFunction": "commands/agent_workspace_auto_publish.rs:::::install_agent_workspace_auto_publish_listeners",
-      "file": "commands/agent_workspace_auto_publish.rs",
-      "id": "commands/agent_workspace_auto_publish.rs::commands/agent_workspace_auto_publish.rs:::::install_agent_workspace_auto_publish_listeners@df1d3f2407db9b84",
-      "kind": "listen_any",
-      "readSurface": [],
-      "sinksReached": [
-        "execute_entry_actions",
-        "send_message",
-        "transition_task",
-        "transition_task_corrective_with_exit",
-        "try_schedule_ready_tasks"
-      ]
-    },
-    {
-      "authorityBearing": true,
-      "enclosingFunction": "commands/agent_workspace_auto_publish.rs:::::spawn_pr_supervision_recovery_from_run_completed_event",
-      "file": "commands/agent_workspace_auto_publish.rs",
-      "id": "commands/agent_workspace_auto_publish.rs::commands/agent_workspace_auto_publish.rs:::::spawn_pr_supervision_recovery_from_run_completed_event@fd751fcb1dd83895",
+      "id": "commands/agent_workspace_auto_publish.rs::commands/agent_workspace_auto_publish.rs:::::spawn_pr_supervision_recovery_from_completion_payload@fd751fcb1dd83895",
       "kind": "async_runtime::spawn",
       "readSurface": [],
       "sinksReached": [
@@ -1516,31 +1476,9 @@
     },
     {
       "authorityBearing": true,
-      "enclosingFunction": "commands/agent_workspace_auto_review.rs:::::install_agent_workspace_auto_review_listeners",
+      "enclosingFunction": "commands/agent_workspace_auto_review.rs:::::spawn_auto_review_from_completion_payload",
       "file": "commands/agent_workspace_auto_review.rs",
-      "id": "commands/agent_workspace_auto_review.rs::commands/agent_workspace_auto_review.rs:::::install_agent_workspace_auto_review_listeners@745c026b0e9c6b3a",
-      "kind": "listen_any",
-      "readSurface": [],
-      "sinksReached": [
-        "send_message"
-      ]
-    },
-    {
-      "authorityBearing": true,
-      "enclosingFunction": "commands/agent_workspace_auto_review.rs:::::install_agent_workspace_auto_review_listeners",
-      "file": "commands/agent_workspace_auto_review.rs",
-      "id": "commands/agent_workspace_auto_review.rs::commands/agent_workspace_auto_review.rs:::::install_agent_workspace_auto_review_listeners@277511ee1b4619fc",
-      "kind": "listen_any",
-      "readSurface": [],
-      "sinksReached": [
-        "send_message"
-      ]
-    },
-    {
-      "authorityBearing": true,
-      "enclosingFunction": "commands/agent_workspace_auto_review.rs:::::spawn_auto_review_from_completion_event",
-      "file": "commands/agent_workspace_auto_review.rs",
-      "id": "commands/agent_workspace_auto_review.rs::commands/agent_workspace_auto_review.rs:::::spawn_auto_review_from_completion_event@2080f33f14a291dc",
+      "id": "commands/agent_workspace_auto_review.rs::commands/agent_workspace_auto_review.rs:::::spawn_auto_review_from_completion_payload@2080f33f14a291dc",
       "kind": "async_runtime::spawn",
       "readSurface": [],
       "sinksReached": [
@@ -1570,6 +1508,24 @@
       "sinksReached": [
         "send_message"
       ]
+    },
+    {
+      "authorityBearing": false,
+      "enclosingFunction": "commands/agent_workspace_completion_dispatch.rs:::::listen_for_tauri_completion",
+      "file": "commands/agent_workspace_completion_dispatch.rs",
+      "id": "commands/agent_workspace_completion_dispatch.rs::commands/agent_workspace_completion_dispatch.rs:::::listen_for_tauri_completion@60afc40b1bc3f83a",
+      "kind": "listen_any",
+      "readSurface": [],
+      "sinksReached": []
+    },
+    {
+      "authorityBearing": false,
+      "enclosingFunction": "commands/agent_workspace_completion_dispatch.rs:::::spawn_bus_completion_dispatch",
+      "file": "commands/agent_workspace_completion_dispatch.rs",
+      "id": "commands/agent_workspace_completion_dispatch.rs::commands/agent_workspace_completion_dispatch.rs:::::spawn_bus_completion_dispatch@f0f007830c625948",
+      "kind": "async_runtime::spawn",
+      "readSurface": [],
+      "sinksReached": []
     },
     {
       "authorityBearing": false,
@@ -1730,7 +1686,7 @@
       "authorityBearing": true,
       "enclosingFunction": "commands/git_commands.rs:::::retry_merge_inner",
       "file": "commands/git_commands.rs",
-      "id": "commands/git_commands.rs::commands/git_commands.rs:::::retry_merge_inner@ace166d45aee4ae1",
+      "id": "commands/git_commands.rs::commands/git_commands.rs:::::retry_merge_inner@de73d6494a605890",
       "kind": "tokio::spawn",
       "readSurface": [],
       "sinksReached": [
@@ -1786,7 +1742,7 @@
       "authorityBearing": true,
       "enclosingFunction": "commands/unified_chat_commands/mod.rs:::::spawn_deferred_agent_workspace_repair_message",
       "file": "commands/unified_chat_commands/mod.rs",
-      "id": "commands/unified_chat_commands/mod.rs::commands/unified_chat_commands/mod.rs:::::spawn_deferred_agent_workspace_repair_message@438140338d56f26b",
+      "id": "commands/unified_chat_commands/mod.rs::commands/unified_chat_commands/mod.rs:::::spawn_deferred_agent_workspace_repair_message@20a7b50b03f88805",
       "kind": "async_runtime::spawn",
       "readSurface": [],
       "sinksReached": [
@@ -2004,7 +1960,7 @@
       "authorityBearing": false,
       "enclosingFunction": "http_server/handlers/ideation/proposals.rs:::::finalize_proposals",
       "file": "http_server/handlers/ideation/proposals.rs",
-      "id": "http_server/handlers/ideation/proposals.rs::http_server/handlers/ideation/proposals.rs:::::finalize_proposals@ff1fbfa0088a3905",
+      "id": "http_server/handlers/ideation/proposals.rs::http_server/handlers/ideation/proposals.rs:::::finalize_proposals@f013f2149c17d6b9",
       "kind": "tokio::spawn",
       "readSurface": [],
       "sinksReached": []
@@ -11870,7 +11826,6 @@
         "resolve_recovery_prompt",
         "resolve_user_question",
         "resume_deferred_git_startup",
-        "retry_agent_workspace_publication_effect",
         "retry_merge",
         "retry_pr_autofix_override",
         "set_agent_conversation_muted",
@@ -11901,7 +11856,7 @@
       "armedValue": "linked active plan/edit workspace",
       "id": "workspace-bridge",
       "readByLoops": [
-        "application/startup_background.rs::application/startup_background.rs:::::spawn_agent_workspace_bridge_dispatcher@11ddd3248e57299b"
+        "application/startup_background.rs::application/startup_background.rs:::::spawn_agent_workspace_bridge_dispatcher@ce779acefa5432"
       ],
       "surface": "agent_conversation_workspaces.linked_ideation_session_id/status/mode",
       "writers": [
@@ -11921,7 +11876,6 @@
         "reconcile_agent_conversation_workspace_publication",
         "resolve_user_question",
         "resume_deferred_git_startup",
-        "retry_agent_workspace_publication_effect",
         "retry_pr_autofix_override",
         "send_agent_message",
         "set_agent_conversation_muted",
@@ -11940,7 +11894,7 @@
       "armedValue": "unconsumed row",
       "id": "external-event-cursor",
       "readByLoops": [
-        "application/startup_background.rs::application/startup_background.rs:::::spawn_agent_workspace_bridge_dispatcher@11ddd3248e57299b"
+        "application/startup_background.rs::application/startup_background.rs:::::spawn_agent_workspace_bridge_dispatcher@ce779acefa5432"
       ],
       "surface": "external_events rows/cursor",
       "writers": [
@@ -11980,7 +11934,7 @@
       "armedValue": "Pending",
       "id": "remote-conversation-message",
       "readByLoops": [
-        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_conversation_message_dispatcher@419d74969e41afba"
+        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_conversation_message_dispatcher@c959b62d91939d1"
       ],
       "surface": "remote_conversation_message_requests.status",
       "writers": [
@@ -12002,7 +11956,7 @@
       "armedValue": "Pending",
       "id": "remote-conversation-start",
       "readByLoops": [
-        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_conversation_start_dispatcher@b6221551ae133d71"
+        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_conversation_start_dispatcher@2212793b1dbfb5d0"
       ],
       "surface": "remote_conversation_start_requests.status",
       "writers": [
@@ -12013,7 +11967,7 @@
       "armedValue": "Pending",
       "id": "remote-conversation-lifecycle",
       "readByLoops": [
-        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@2130ab982b84bb8a"
+        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@ced3a7ce75eb6466"
       ],
       "surface": "remote_conversation_lifecycle_requests.status",
       "writers": [
@@ -12025,7 +11979,7 @@
       "armedValue": "Pending",
       "id": "remote-execution-resume",
       "readByLoops": [
-        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@2130ab982b84bb8a"
+        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@ced3a7ce75eb6466"
       ],
       "surface": "remote_resume_requests.status where family=execution",
       "writers": [
@@ -12036,7 +11990,7 @@
       "armedValue": "Pending",
       "id": "remote-task-action",
       "readByLoops": [
-        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@2130ab982b84bb8a"
+        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@ced3a7ce75eb6466"
       ],
       "surface": "remote_resume_requests.status where family=task",
       "writers": [
@@ -12050,7 +12004,7 @@
       "armedValue": "Pending",
       "id": "remote-plan-approval",
       "readByLoops": [
-        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@2130ab982b84bb8a"
+        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@ced3a7ce75eb6466"
       ],
       "surface": "remote_plan_approval_requests.status",
       "writers": [
@@ -12061,7 +12015,7 @@
       "armedValue": "Pending",
       "id": "remote-finalize-decision",
       "readByLoops": [
-        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@2130ab982b84bb8a"
+        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@ced3a7ce75eb6466"
       ],
       "surface": "remote_finalize_decision_requests.status",
       "writers": [
@@ -12072,7 +12026,7 @@
       "armedValue": "Pending",
       "id": "remote-queued-send",
       "readByLoops": [
-        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@2130ab982b84bb8a"
+        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@ced3a7ce75eb6466"
       ],
       "surface": "remote_queued_send_requests.status",
       "writers": [
@@ -12083,7 +12037,7 @@
       "armedValue": "Pending",
       "id": "remote-automation-run",
       "readByLoops": [
-        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@2130ab982b84bb8a"
+        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@ced3a7ce75eb6466"
       ],
       "surface": "remote_automation_run_requests.status",
       "writers": [
@@ -12094,7 +12048,7 @@
       "armedValue": "Pending",
       "id": "remote-automation-draft",
       "readByLoops": [
-        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@2130ab982b84bb8a"
+        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@ced3a7ce75eb6466"
       ],
       "surface": "remote_automation_draft_requests.status",
       "writers": [

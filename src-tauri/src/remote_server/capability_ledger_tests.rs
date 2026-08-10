@@ -4214,21 +4214,26 @@ fn the_b2_workspace_read_refusals_are_pinned() {
     // MECHANISM 1 — the shared workspace hydrator arms, which is what disqualifies the whole
     // workspace read cluster. Every workspace-returning command funnels through it, so this is
     // the single fact that makes three of the six refusals non-negotiable.
-    let hydrator = graph.closure(["agent_workspace_response_for_state".to_string()]);
+    // main's #993/PR-supervision split made `agent_workspace_response_for_state` a passive alias
+    // of the recovery-free hydrator; the arming moved to the supervision variant. All three
+    // refused commands were re-checked and still hydrate through THIS function, so the refusal
+    // basis is unchanged — only the name of the arming seam moved.
+    let hydrator =
+        graph.closure(["agent_workspace_response_with_pr_supervision_for_state".to_string()]);
     assert!(
         !hydrator.visited.is_empty(),
         "the hydrator did not resolve; this assertion would be vacuous"
     );
     assert!(
         closure_is_arming(&hydrator),
-        "`agent_workspace_response_for_state` no longer arms. If the workspace read surface \
-         became genuinely passive, re-audit the three refusals it disqualifies rather than \
-         deleting this assertion."
+        "`agent_workspace_response_with_pr_supervision_for_state` no longer arms. If the \
+         workspace read surface became genuinely passive, re-audit the three refusals it \
+         disqualifies rather than deleting this assertion."
     );
 
     // MECHANISM 2 — the sidebar list reaches the same arming surface through its own seam, so
     // its `_for_app_state` shape is NOT sufficient to make the LOCAL command registrable: it
-    // hydrates through `agent_workspace_response_for_state`, which schedules PR-supervision
+    // hydrates through `agent_workspace_response_with_pr_supervision_for_state`, which schedules
     // recovery. That is why `list_agent_sidebar_conversations` stays host-denied and off the
     // facade. The paired-device inbox read is served instead by a REGISTERED remote twin,
     // `list_remote_agent_sidebar_conversations`, which routes through a recovery-free hydrator
@@ -7813,3 +7818,5 @@ fn merged_commands_pin_host_log_amplification_and_workspace_recovery_funnel() {
          or retaining its process-floor disposition"
     );
 }
+
+

@@ -21,7 +21,7 @@ use crate::domain::repositories::{
 };
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::agent_names;
-use tauri::Emitter;
+use ralphx_events::{emit_serialized, EventSink};
 
 const AUTO_TITLE_SOURCE: &str = "auto";
 const USER_TITLE_SOURCE: &str = "user";
@@ -62,7 +62,7 @@ struct SessionNamerTitleUpdater {
     ideation_session_repo: Arc<dyn IdeationSessionRepository>,
     chat_conversation_repo: Arc<dyn ChatConversationRepository>,
     agent_conversation_workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
-    app_handle: Option<tauri::AppHandle>,
+    events: Arc<dyn EventSink>,
 }
 
 pub(crate) async fn spawn_session_namer_agent(
@@ -557,7 +557,7 @@ impl SessionNamerTitleUpdater {
             ideation_session_repo: Arc::clone(&state.ideation_session_repo),
             chat_conversation_repo: Arc::clone(&state.chat_conversation_repo),
             agent_conversation_workspace_repo: Arc::clone(&state.agent_conversation_workspace_repo),
-            app_handle: state.app_handle.clone(),
+            events: Arc::clone(&state.events),
         }
     }
 
@@ -583,15 +583,14 @@ impl SessionNamerTitleUpdater {
                 self.ideation_session_repo
                     .update_title(&session_id, Some(title.clone()), AUTO_TITLE_SOURCE)
                     .await?;
-                if let Some(app_handle) = &self.app_handle {
-                    let _ = app_handle.emit(
-                        "ideation:session_title_updated",
-                        serde_json::json!({
-                            "sessionId": session_id.as_str(),
-                            "title": title,
-                        }),
-                    );
-                }
+                let _ = emit_serialized(
+                    self.events.as_ref(),
+                    "ideation:session_title_updated",
+                    &serde_json::json!({
+                        "sessionId": session_id.as_str(),
+                        "title": title,
+                    }),
+                );
             }
             SessionNamerTarget::ConversationInitial {
                 conversation_id, ..
@@ -608,27 +607,27 @@ impl SessionNamerTitleUpdater {
                     .sync_linked_planning_session_title_from_conversation(&conversation_id, &title)
                     .await?;
 
-                if let Some(app_handle) = &self.app_handle {
-                    if let Some(session_id) = synced_planning_session_id {
-                        let _ = app_handle.emit(
-                            "ideation:session_title_updated",
-                            serde_json::json!({
-                                "sessionId": session_id.as_str(),
-                                "title": title,
-                            }),
-                        );
-                    }
-                    if let Some(conversation) = conversation {
-                        let _ = app_handle.emit(
-                            "agent:conversation_title_updated",
-                            serde_json::json!({
-                                "conversationId": conversation.id.as_str(),
-                                "contextType": conversation.context_type.to_string(),
-                                "contextId": conversation.context_id,
-                                "title": title,
-                            }),
-                        );
-                    }
+                if let Some(session_id) = synced_planning_session_id {
+                    let _ = emit_serialized(
+                        self.events.as_ref(),
+                        "ideation:session_title_updated",
+                        &serde_json::json!({
+                            "sessionId": session_id.as_str(),
+                            "title": title,
+                        }),
+                    );
+                }
+                if let Some(conversation) = conversation {
+                    let _ = emit_serialized(
+                        self.events.as_ref(),
+                        "agent:conversation_title_updated",
+                        &serde_json::json!({
+                            "conversationId": conversation.id.as_str(),
+                            "contextType": conversation.context_type.to_string(),
+                            "contextId": conversation.context_id,
+                            "title": title,
+                        }),
+                    );
                 }
             }
         }

@@ -6,8 +6,7 @@ use crate::application::automation::service::{
     AutomationDetail, AutomationScheduleOutcome, AutomationService, LOCAL_BRANCH_BASE_REF_KIND,
 };
 use crate::application::automation::transition::{
-    AutomationEventEmitter, AutomationTransitionService, NoopAutomationEventEmitter,
-    TauriAutomationEventEmitter,
+    AutomationEventEmitter, AutomationTransitionService, SinkAutomationEventEmitter,
 };
 use crate::application::AppState;
 use crate::domain::entities::{
@@ -158,10 +157,7 @@ pub struct AutomationScheduleResponse {
 }
 
 pub fn automation_event_emitter_for_state(state: &AppState) -> Arc<dyn AutomationEventEmitter> {
-    match state.app_handle.as_ref() {
-        Some(app_handle) => Arc::new(TauriAutomationEventEmitter::new(app_handle.clone())),
-        None => Arc::new(NoopAutomationEventEmitter),
-    }
+    Arc::new(SinkAutomationEventEmitter::new(Arc::clone(&state.events)))
 }
 
 pub fn automation_service_for_state(state: &AppState) -> AutomationService {

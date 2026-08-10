@@ -66,8 +66,11 @@ pub(crate) struct StartupPipelineDeps {
     pub artifact_repo: Arc<dyn ArtifactRepository>,
     pub conversation_repo: Arc<dyn ChatConversationRepository>,
     pub agent_conversation_workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    #[allow(dead_code)]
     pub agent_conversation_jira_issue_repo: Arc<dyn AgentConversationJiraIssueRepository>,
+    #[allow(dead_code)]
     pub agent_conversation_linear_issue_repo: Arc<dyn AgentConversationLinearIssueRepository>,
+    #[allow(dead_code)]
     pub agent_conversation_granola_note_repo: Arc<dyn AgentConversationGranolaNoteRepository>,
     pub orphan_worktree_cleanup_marker_repo: Arc<dyn OrphanWorktreeCleanupMarkerRepository>,
     pub automation_repo: Arc<dyn AutomationRepository>,
@@ -84,7 +87,9 @@ pub(crate) struct StartupPipelineDeps {
     pub execution_settings_repo: Arc<dyn ExecutionSettingsRepository>,
     pub agent_lane_settings_repo: Arc<dyn AgentLaneSettingsRepository>,
     pub agent_provider_settings_repo: Arc<dyn AgentProviderSettingsRepository>,
+    #[allow(dead_code)]
     pub ideation_effort_settings_repo: Arc<dyn IdeationEffortSettingsRepository>,
+    #[allow(dead_code)]
     pub ideation_model_settings_repo: Arc<dyn IdeationModelSettingsRepository>,
     pub interactive_process_registry: Arc<InteractiveProcessRegistry>,
     pub review_repo: Arc<dyn ReviewRepository>,
@@ -200,9 +205,29 @@ async fn run_external_mcp_startup(mode: StartupPipelineMode, app_handle: tauri::
     if mode != StartupPipelineMode::Full {
         return;
     }
-    startup_background::maybe_start_external_mcp(app_handle, |port, timeout| {
-        Box::pin(crate::wait_for_backend_ready(port, timeout))
-    })
+    let supervisor_handle = app_handle.clone();
+    startup_background::maybe_start_external_mcp(
+        move |config| {
+            use tauri::Manager;
+
+            let app_data_dir = supervisor_handle
+                .path()
+                .app_data_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let supervisor = Arc::new(crate::infrastructure::ExternalMcpSupervisor::new(
+                config,
+                supervisor_handle.clone(),
+                app_data_dir,
+            ));
+            let handle = supervisor_handle.state::<crate::infrastructure::ExternalMcpHandle>();
+            if handle.set(Arc::clone(&supervisor)).is_err() {
+                warn!("ExternalMcpHandle already initialized");
+                return None;
+            }
+            Some(supervisor)
+        },
+        |port, timeout| Box::pin(crate::wait_for_backend_ready(port, timeout)),
+    )
     .await;
 }
 
@@ -236,7 +261,6 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         startup_background::spawn_remote_conversation_start_dispatcher(
             deps.app_state.clone(),
             Arc::clone(&deps.execution_state),
-            deps.app_handle.clone(),
         );
         startup_phase_completed(
             "remote_conversation_start_dispatcher_spawn",
@@ -255,7 +279,6 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         startup_background::spawn_remote_conversation_message_dispatcher(
             deps.app_state.clone(),
             Arc::clone(&deps.execution_state),
-            deps.app_handle.clone(),
         );
         startup_phase_completed(
             "remote_conversation_message_dispatcher_spawn",
@@ -271,7 +294,6 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         startup_background::spawn_remote_agent_stop_dispatcher(
             deps.app_state.clone(),
             Arc::clone(&deps.execution_state),
-            deps.app_handle.clone(),
         );
         startup_phase_completed("remote_agent_stop_dispatcher_spawn", phase_started_at);
     }
@@ -283,7 +305,6 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
             deps.app_state.clone(),
             Arc::clone(&deps.active_project_state),
             Arc::clone(&deps.execution_state),
-            deps.app_handle.clone(),
         );
         startup_phase_completed("remote_resume_dispatchers_spawn", phase_started_at);
     }
@@ -345,9 +366,9 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         artifact_repo,
         conversation_repo,
         agent_conversation_workspace_repo,
-        agent_conversation_jira_issue_repo,
-        agent_conversation_linear_issue_repo,
-        agent_conversation_granola_note_repo,
+        agent_conversation_jira_issue_repo: _,
+        agent_conversation_linear_issue_repo: _,
+        agent_conversation_granola_note_repo: _,
         orphan_worktree_cleanup_marker_repo,
         automation_repo: _automation_repo,
         automation_run_repo,
@@ -363,8 +384,8 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         execution_settings_repo,
         agent_lane_settings_repo,
         agent_provider_settings_repo,
-        ideation_effort_settings_repo,
-        ideation_model_settings_repo,
+        ideation_effort_settings_repo: _,
+        ideation_model_settings_repo: _,
         interactive_process_registry,
         review_repo,
         external_events_repo,
@@ -502,12 +523,12 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         running_agent_registry: Arc::clone(&running_agent_registry),
         memory_event_repo: Arc::clone(&memory_event_repo),
         agent_clients: agent_clients.clone(),
+        agent_lane_settings_repo: Arc::clone(&agent_lane_settings_repo),
         agent_provider_settings_repo: Arc::clone(&agent_provider_settings_repo),
         plan_branch_repo: Arc::clone(&plan_branch_repo),
         github_service: github_service.as_ref().map(Arc::clone),
         pr_poller_registry: Arc::clone(&pr_poller_registry),
         interactive_process_registry: Arc::clone(&interactive_process_registry),
-        _app_handle: app_handle.clone(),
     });
     startup_phase_completed("task_scheduler_build", phase_started_at);
 
@@ -530,25 +551,11 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     startup_phase_completed("startup_transition_factory_build", phase_started_at);
 
     let phase_started_at = startup_phase_started("core_runtime_deps_build");
-    let core_runtime_deps = RuntimeFactoryDeps::from_core(
-        Arc::clone(&task_repo),
-        Arc::clone(&task_dependency_repo),
-        Arc::clone(&project_repo),
-        Arc::clone(&artifact_repo),
-        Arc::clone(&chat_message_repo),
-        Arc::clone(&chat_attachment_repo),
-        Arc::clone(&conversation_repo),
-        Arc::clone(&agent_run_repo),
-        Arc::clone(&ideation_session_repo),
-        Arc::clone(&activity_event_repo),
-        Arc::clone(&message_queue),
-        Arc::clone(&running_agent_registry),
-        Arc::clone(&memory_event_repo),
-    )
-    .with_github_runtime_support(
-        github_service.as_ref().map(Arc::clone),
-        Some(Arc::clone(&pr_poller_registry)),
-    );
+    let core_runtime_deps = RuntimeFactoryDeps::from_app_state(&app_state)
+        .with_github_runtime_support(
+            github_service.as_ref().map(Arc::clone),
+            Some(Arc::clone(&pr_poller_registry)),
+        );
     startup_phase_completed("core_runtime_deps_build", phase_started_at);
 
     let phase_started_at = startup_phase_started("transition_service_build");
@@ -558,47 +565,11 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     startup_phase_completed("transition_service_build", phase_started_at);
 
     let phase_started_at = startup_phase_started("recovery_chat_service_deps_build");
-    let recovery_chat_service_deps = ChatRuntimeFactoryDeps::from_core(
-        Arc::clone(&chat_message_repo),
-        Arc::clone(&chat_attachment_repo),
-        Arc::clone(&artifact_repo),
-        Arc::clone(&conversation_repo),
-        Arc::clone(&agent_run_repo),
-        Arc::clone(&automation_run_repo),
-        Arc::clone(&project_repo),
-        Arc::clone(&task_repo),
-        Arc::clone(&task_dependency_repo),
-        Arc::clone(&ideation_session_repo),
-        Arc::clone(&activity_event_repo),
-        Arc::clone(&message_queue),
-        Arc::clone(&running_agent_registry),
-        Arc::clone(&memory_event_repo),
-    )
-    .with_agent_conversation_workspace_repo(Some(Arc::clone(&agent_conversation_workspace_repo)))
-    .with_agent_conversation_jira_issue_repo(Some(Arc::clone(&agent_conversation_jira_issue_repo)))
-    .with_agent_conversation_linear_issue_repo(Some(Arc::clone(
-        &agent_conversation_linear_issue_repo,
-    )))
-    .with_agent_conversation_granola_note_repo(Some(Arc::clone(
-        &agent_conversation_granola_note_repo,
-    )))
-    .with_runtime_support(
-        Some(Arc::clone(&execution_settings_repo)),
-        Some(Arc::clone(&agent_lane_settings_repo)),
-        Some(Arc::clone(&agent_provider_settings_repo)),
-        None,
-        Some(Arc::clone(&interactive_process_registry)),
-    )
-    .with_ideation_runtime_support(
-        Some(Arc::clone(&ideation_effort_settings_repo)),
-        Some(Arc::clone(&ideation_model_settings_repo)),
-    )
-    .with_integration_reference_services_from_app_state(&app_state);
+    let recovery_chat_service_deps = ChatRuntimeFactoryDeps::from_app_state(&app_state);
     startup_phase_completed("recovery_chat_service_deps_build", phase_started_at);
 
     let phase_started_at = startup_phase_started("recovery_chat_service_build");
     let recovery_chat_service = build_startup_recovery_chat_service(
-        app_handle.clone(),
         Arc::clone(&execution_state),
         recovery_chat_service_deps.clone(),
     );
@@ -830,7 +801,8 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
                 agent_run_repo: Arc::clone(&agent_run_repo),
                 agent_workspace_repair_repo: Some(Arc::clone(&app_state.agent_workspace_repair_repo)),
                 plan_branch_repo: Arc::clone(&plan_branch_repo),
-                app_handle: Some(app_handle.clone()),
+                events: Arc::clone(&app_state.events),
+                durable_recovery_state: Some(Arc::new(app_state.clone())),
             };
         let blocked_git_project_ids = Arc::clone(&blocked_git_project_ids);
         crate::application::agent_workspace_external_pr_reconciliation::reconcile_recent_agent_workspace_external_prs_on_startup(
@@ -1011,7 +983,6 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
 
     if let Some(deps) = crate::application::agent_workspace_pr_supervision_recovery::build_agent_workspace_pr_supervision_recovery_deps(
         &app_state,
-        Some(app_handle.clone()),
         Some(Arc::clone(&transition_service)),
         Some(Arc::clone(&recovery_chat_service)),
         pr_fix_review_publish_resumer.clone(),
@@ -1069,7 +1040,6 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
             agent_provider_settings_repo: Arc::clone(&agent_provider_settings_repo),
             plan_branch_repo: Arc::clone(&plan_branch_repo),
             interactive_process_registry: Arc::clone(&interactive_process_registry),
-            app_handle: app_handle.clone(),
             managed_team_barrier: app_state.managed_team.startup_barrier(),
         });
         run_startup_owned_phase("chat_resumption", STARTUP_BACKGROUND_DB_GRACE, async move {
@@ -1225,7 +1195,8 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
             review_repo: Arc::clone(&review_repo),
             notification_service: app_state.notification_service(),
             recovery_prompt_tracker: Arc::clone(&app_state.recovery_prompt_tracker),
-            app_handle: app_handle.clone(),
+            events: Arc::clone(&app_state.events),
+            chat_runtime_deps: ChatRuntimeFactoryDeps::from_app_state(&app_state),
         },
     ));
     startup_phase_completed("reconciliation_runner_build", phase_started_at);
@@ -1271,11 +1242,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         startup_phase_completed("watchdog_spawn", phase_started_at);
 
         let phase_started_at = startup_phase_started("automation_scheduler_spawn");
-        startup_background::spawn_automation_scheduler(
-            app_state.clone(),
-            Arc::clone(&execution_state),
-            app_handle.clone(),
-        );
+        startup_background::spawn_automation_scheduler(app_state, Arc::clone(&execution_state));
         startup_phase_completed("automation_scheduler_spawn", phase_started_at);
     }
 
@@ -1297,7 +1264,6 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
             },
             recovery_chat_service_deps.clone(),
             Arc::clone(&execution_state),
-            app_handle.clone(),
         );
         startup_phase_completed("agent_workspace_bridge_dispatcher_spawn", phase_started_at);
     }

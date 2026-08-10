@@ -1,6 +1,8 @@
 // Mutation (write) handlers for task_commands module
 
-use super::helpers::{emit_queue_changed, emit_task_lifecycle_event};
+use super::helpers::{
+    emit_queue_changed, emit_task_lifecycle_event, emit_task_lifecycle_event_to_sink,
+};
 use super::types::{
     AnswerUserQuestionInput, AnswerUserQuestionResponse, CreateTaskInput, InjectTaskInput,
     InjectTaskResponse, TaskResponse, UnblockTaskResponse, UpdateTaskInput,
@@ -14,15 +16,15 @@ use crate::application::task_resume_execution::{
 use crate::application::{AppState, TaskTransitionService};
 use crate::commands::ExecutionState;
 use crate::domain::entities::{
-    BranchUpdatePhase, ChatContextType,
-    ExecutionPlanId, IdeationSessionId, InternalStatus, ProjectId, Task, TaskCategory, TaskId,
+    BranchUpdatePhase, ChatContextType, ExecutionPlanId, IdeationSessionId, InternalStatus,
+    ProjectId, Task, TaskCategory, TaskId,
 };
 use crate::domain::repositories::{
-    BranchUpdateCasOutcome, PauseBranchUpdate, RetryBranchUpdate,
-    StopBranchUpdate,
+    BranchUpdateCasOutcome, PauseBranchUpdate, RetryBranchUpdate, StopBranchUpdate,
 };
 use crate::domain::services::{QueueKey, RunningAgentKey};
 use crate::domain::state_machine::transition_handler::metadata_builder::build_restart_metadata;
+use ralphx_events::emit_serialized;
 use std::sync::Arc;
 use tauri::{Emitter, Manager, State};
 
@@ -345,10 +347,10 @@ pub async fn move_task(
     };
 
     // Create the task scheduler for auto-scheduling Ready tasks
-    let task_scheduler = build_task_scheduler(&state, &execution_state, &app);
+    let task_scheduler = build_task_scheduler(&state, &execution_state);
 
     // Create the transition service with all required dependencies
-    let mut transition_service = build_transition_service(&state, &execution_state, Some(&app))
+    let mut transition_service = build_transition_service(&state, &execution_state)
         .with_task_scheduler(Arc::clone(&task_scheduler));
     transition_service = transition_service.with_step_repo(Arc::clone(&state.task_step_repo));
 
@@ -519,7 +521,6 @@ pub async fn answer_user_question(
     input: AnswerUserQuestionInput,
     state: State<'_, AppState>,
     execution_state: State<'_, Arc<ExecutionState>>,
-    app: tauri::AppHandle,
 ) -> Result<AnswerUserQuestionResponse, String> {
     let task_id = TaskId::from_string(input.task_id.clone());
 
@@ -540,10 +541,10 @@ pub async fn answer_user_question(
         ));
     }
 
-    let task_scheduler = build_task_scheduler(&state, &execution_state, &app);
+    let task_scheduler = build_task_scheduler(&state, &execution_state);
 
-    let transition_service = build_transition_service(&state, &execution_state, Some(&app))
-        .with_task_scheduler(task_scheduler);
+    let transition_service =
+        build_transition_service(&state, &execution_state).with_task_scheduler(task_scheduler);
 
     let updated_task = transition_service
         .transition_task(&task_id, InternalStatus::Ready)
@@ -694,11 +695,11 @@ pub async fn block_task(
     let project_id = task.project_id.clone();
 
     // Create the task scheduler for auto-scheduling Ready tasks
-    let task_scheduler = build_task_scheduler(&state, &execution_state, &app);
+    let task_scheduler = build_task_scheduler(&state, &execution_state);
 
     // Create the transition service
-    let transition_service = build_transition_service(&state, &execution_state, Some(&app))
-        .with_task_scheduler(task_scheduler);
+    let transition_service =
+        build_transition_service(&state, &execution_state).with_task_scheduler(task_scheduler);
 
     // Transition to Blocked status
     let mut blocked_task = transition_service
@@ -803,11 +804,11 @@ pub async fn unblock_task(
     };
 
     // Create the task scheduler for auto-scheduling Ready tasks
-    let task_scheduler = build_task_scheduler(&state, &execution_state, &app);
+    let task_scheduler = build_task_scheduler(&state, &execution_state);
 
     // Create the transition service
-    let transition_service = build_transition_service(&state, &execution_state, Some(&app))
-        .with_task_scheduler(task_scheduler);
+    let transition_service =
+        build_transition_service(&state, &execution_state).with_task_scheduler(task_scheduler);
 
     // Transition to Ready status
     let mut unblocked_task = transition_service
@@ -866,12 +867,12 @@ pub async fn cleanup_task(
 
     let project_id_str = task.project_id.as_str().to_string();
 
-    let stopper = build_task_stopper(&state, &execution_state, &app);
+    let stopper = build_task_stopper(&state, &execution_state);
     let service = TaskCleanupService::new(
         Arc::clone(&state.task_repo),
         Arc::clone(&state.project_repo),
         Arc::clone(&state.running_agent_registry),
-        Some(app.clone()),
+        Arc::clone(&state.events),
     )
     .with_interactive_process_registry(Arc::clone(&state.interactive_process_registry))
     .with_task_stopper(stopper);
@@ -928,12 +929,12 @@ pub async fn cleanup_tasks_in_group(
         }
     };
 
-    let stopper = build_task_stopper(&state, &execution_state, &app);
+    let stopper = build_task_stopper(&state, &execution_state);
     let service = TaskCleanupService::new(
         Arc::clone(&state.task_repo),
         Arc::clone(&state.project_repo),
         Arc::clone(&state.running_agent_registry),
-        Some(app.clone()),
+        Arc::clone(&state.events),
     )
     .with_interactive_process_registry(Arc::clone(&state.interactive_process_registry))
     .with_task_stopper(stopper);
@@ -1194,9 +1195,8 @@ mod update_task_validation_tests {
 fn build_task_stopper(
     state: &AppState,
     execution_state: &Arc<ExecutionState>,
-    app: &tauri::AppHandle,
 ) -> Arc<dyn TaskStopper> {
-    let transition_service = build_transition_service(state, execution_state, Some(app));
+    let transition_service = build_transition_service(state, execution_state);
 
     Arc::new(TransitionTaskStopper { transition_service })
 }
@@ -1263,14 +1263,12 @@ pub async fn pause_task(
             .await
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "Paused branch-update task disappeared".to_string())?;
-        if let Some(ref app) = state.app_handle {
-            emit_task_lifecycle_event(
-                app,
-                "task:paused",
-                paused.id.as_str(),
-                paused.project_id.as_str(),
-            );
-        }
+        emit_task_lifecycle_event_to_sink(
+            state.events.as_ref(),
+            "task:paused",
+            paused.id.as_str(),
+            paused.project_id.as_str(),
+        );
         return Ok(TaskResponse::from(paused));
     }
 
@@ -1287,7 +1285,7 @@ pub async fn pause_task(
     let _ = state.task_repo.update(&task_to_update).await;
 
     // Build transition service
-    let transition_service = build_transition_service(&state, &execution_state, None);
+    let transition_service = build_transition_service(&state, &execution_state);
 
     // Transition to Paused
     let updated_task = transition_service
@@ -1296,14 +1294,12 @@ pub async fn pause_task(
         .map_err(|e| e.to_string())?;
 
     // Emit lifecycle event
-    if let Some(ref app) = state.app_handle {
-        emit_task_lifecycle_event(
-            app,
-            "task:paused",
-            updated_task.id.as_str(),
-            updated_task.project_id.as_str(),
-        );
-    }
+    emit_task_lifecycle_event_to_sink(
+        state.events.as_ref(),
+        "task:paused",
+        updated_task.id.as_str(),
+        updated_task.project_id.as_str(),
+    );
 
     Ok(TaskResponse::from(updated_task))
 }
@@ -1380,24 +1376,23 @@ pub async fn stop_task(
             .await
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "Stopped branch-update task disappeared".to_string())?;
-        if let Some(ref app) = state.app_handle {
-            app.emit(
-                "task:stopped",
-                serde_json::json!({
-                    "taskId": stopped.id.as_str(),
-                    "projectId": stopped.project_id.as_str(),
-                    "stoppedFromStatus": from_status.as_str(),
-                    "stopReason": reason,
-                    "timestamp": chrono::Utc::now().to_rfc3339(),
-                }),
-            )
-            .map_err(|error| format!("Failed to emit task:stopped event: {error}"))?;
-        }
+        emit_serialized(
+            state.events.as_ref(),
+            "task:stopped",
+            &serde_json::json!({
+                "taskId": stopped.id.as_str(),
+                "projectId": stopped.project_id.as_str(),
+                "stoppedFromStatus": from_status.as_str(),
+                "stopReason": reason,
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+            }),
+        )
+        .map_err(|error| format!("Failed to emit task:stopped event: {error}"))?;
         return Ok(TaskResponse::from(stopped));
     }
 
     // Build transition service
-    let transition_service = build_transition_service(&state, &execution_state, None);
+    let transition_service = build_transition_service(&state, &execution_state);
 
     // Transition to Stopped with context capture
     let updated_task = transition_service
@@ -1406,19 +1401,18 @@ pub async fn stop_task(
         .map_err(|e| e.to_string())?;
 
     // Emit lifecycle event with stop context
-    if let Some(ref app) = state.app_handle {
-        app.emit(
-            "task:stopped",
-            serde_json::json!({
-                "taskId": updated_task.id.as_str(),
-                "projectId": updated_task.project_id.as_str(),
-                "stoppedFromStatus": from_status.as_str(),
-                "stopReason": reason,
-                "timestamp": chrono::Utc::now().to_rfc3339(),
-            }),
-        )
-        .map_err(|e| format!("Failed to emit task:stopped event: {}", e))?;
-    }
+    emit_serialized(
+        state.events.as_ref(),
+        "task:stopped",
+        &serde_json::json!({
+            "taskId": updated_task.id.as_str(),
+            "projectId": updated_task.project_id.as_str(),
+            "stoppedFromStatus": from_status.as_str(),
+            "stopReason": reason,
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+        }),
+    )
+    .map_err(|error| format!("Failed to emit task:stopped event: {error}"))?;
 
     Ok(TaskResponse::from(updated_task))
 }
@@ -1479,7 +1473,7 @@ pub async fn cancel_tasks_in_group(
     };
 
     // Build transition service
-    let transition_service = build_transition_service(&state, &execution_state, Some(&app));
+    let transition_service = build_transition_service(&state, &execution_state);
 
     let mut cancelled_count = 0;
 
@@ -1540,9 +1534,8 @@ pub async fn resume_task(
     task_id: String,
     state: State<'_, AppState>,
     execution_state: State<'_, Arc<ExecutionState>>,
-    app: tauri::AppHandle,
 ) -> Result<TaskResponse, String> {
-    resume_task_for_state(task_id, &state, &execution_state, app).await
+    resume_task_for_state(task_id, &state, &execution_state).await
 }
 
 #[tauri::command]
@@ -1550,7 +1543,6 @@ pub async fn retry_branch_update(
     task_id: String,
     state: State<'_, AppState>,
     execution_state: State<'_, Arc<ExecutionState>>,
-    app: tauri::AppHandle,
 ) -> Result<TaskResponse, String> {
     let task_id = TaskId::from_string(task_id);
     let task = state
@@ -1619,7 +1611,7 @@ pub async fn retry_branch_update(
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "Branch-update retry operation disappeared".to_string())?;
-    let transition_service = build_transition_service(&state, &execution_state, Some(&app));
+    let transition_service = build_transition_service(&state, &execution_state);
     if retry.phase == BranchUpdatePhase::Programmatic {
         let project = state
             .project_repo
@@ -1754,7 +1746,7 @@ pub async fn pause_tasks_in_group(
         }
     };
 
-    let transition_service = build_transition_service(&state, &execution_state, Some(&app));
+    let transition_service = build_transition_service(&state, &execution_state);
 
     let mut paused_count = 0;
 
@@ -1817,17 +1809,9 @@ pub async fn resume_tasks_in_group(
     project_id: String,
     state: State<'_, AppState>,
     execution_state: State<'_, Arc<ExecutionState>>,
-    app: tauri::AppHandle,
 ) -> Result<super::types::BulkResumeResponse, String> {
-    resume_tasks_in_group_for_state(
-        group_kind,
-        group_id,
-        project_id,
-        &state,
-        &execution_state,
-        app,
-    )
-    .await
+    resume_tasks_in_group_for_state(group_kind, group_id, project_id, &state, &execution_state)
+        .await
 }
 
 #[tauri::command]

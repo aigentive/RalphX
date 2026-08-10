@@ -2,10 +2,12 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::application::{
     agent_conversation_workspace::resolve_valid_agent_conversation_workspace_path,
-    agent_task_pipeline_service::validate_start_authority_sync, AppState,
+    agent_task_pipeline_service::validate_start_authority_sync,
+    app_state::ApplicationExecutionState, AppState,
 };
 use crate::domain::entities::ideation::PLAN_CONTRACT_V2;
 use crate::domain::entities::{
@@ -680,9 +682,10 @@ pub(crate) async fn load_linked_agent_conversation_workspace(
 /// for missing entities, and [`AppError::Database`] for persistence failures.
 pub async fn apply_proposals_core(
     app_state: &AppState,
+    execution_state: &Arc<ApplicationExecutionState>,
     input: ApplyProposalsInput,
 ) -> AppResult<ApplyProposalsResult> {
-    apply_proposals_core_inner(app_state, input, false, None).await
+    apply_proposals_core_inner(app_state, execution_state, input, false, None).await
 }
 
 /// Apply every selected proposal under a still-pending human confirmation.
@@ -692,13 +695,15 @@ pub async fn apply_proposals_core(
 /// failures therefore leave the confirmation pending for a later retry.
 pub async fn apply_pending_proposals_core(
     app_state: &AppState,
+    execution_state: &Arc<ApplicationExecutionState>,
     input: ApplyProposalsInput,
 ) -> AppResult<ApplyProposalsResult> {
-    apply_proposals_core_inner(app_state, input, true, None).await
+    apply_proposals_core_inner(app_state, execution_state, input, true, None).await
 }
 
 pub async fn apply_pending_proposals_core_for_session(
     state: &AppState,
+    execution_state: &Arc<ApplicationExecutionState>,
     session_id: &str,
 ) -> AppResult<ApplyProposalsResult> {
     let session_id_typed = IdeationSessionId::from_string(session_id.to_string());
@@ -717,6 +722,7 @@ pub async fn apply_pending_proposals_core_for_session(
         .collect();
     apply_pending_proposals_core(
         state,
+        execution_state,
         ApplyProposalsInput {
             session_id: session_id.to_string(),
             proposal_ids,
@@ -729,14 +735,23 @@ pub async fn apply_pending_proposals_core_for_session(
 
 pub(crate) async fn apply_supervised_proposals_core(
     app_state: &AppState,
+    execution_state: &Arc<ApplicationExecutionState>,
     input: ApplyProposalsInput,
     conversation_id: String,
 ) -> AppResult<ApplyProposalsResult> {
-    apply_proposals_core_inner(app_state, input, false, Some(conversation_id)).await
+    apply_proposals_core_inner(
+        app_state,
+        execution_state,
+        input,
+        false,
+        Some(conversation_id),
+    )
+    .await
 }
 
 async fn apply_proposals_core_inner(
     app_state: &AppState,
+    execution_state: &Arc<ApplicationExecutionState>,
     input: ApplyProposalsInput,
     require_pending_confirmation: bool,
     supervised_task_pipeline_conversation_id: Option<String>,
@@ -787,7 +802,8 @@ async fn apply_proposals_core_inner(
         .map_err(|e| AppError::Database(format!("Failed to get ideation settings: {}", e)))?;
     let effective_policy =
         crate::domain::services::resolve_effective_gate_policy(&ideation_settings, session.origin);
-    let chat_service = app_state.build_chat_service_with_managed_execution_state();
+    let chat_service =
+        app_state.build_chat_service_with_execution_state(Arc::clone(execution_state));
     crate::application::plan_verification_service::ensure_plan_verification_for_acceptance(
         app_state,
         &chat_service,

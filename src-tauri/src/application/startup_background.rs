@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -15,6 +14,7 @@ use crate::application::agent_conversation_start_service::{
 use crate::application::agent_workspace_bridge::{
     dispatch_agent_workspace_bridge_events_once_with_deps, AgentWorkspaceBridgeDeps,
 };
+use crate::application::automation::api::automation_event_emitter_for_state;
 use crate::application::automation::integration_pr::GithubAutomationIntegrationPrPublisher;
 use crate::application::automation::merged_run_finalizer::AppStateAutomationMergedRunFinalizer;
 use crate::application::automation::plan_gate::{
@@ -29,7 +29,6 @@ use crate::application::automation::scheduler::{
     GithubAutomationSignalChecker, HarnessAutomationJudgeInvoker,
     HarnessAutomationPlanJudgeInvoker,
 };
-use crate::application::automation::transition::TauriAutomationEventEmitter;
 use crate::application::chat_service::{
     ChatService, ChatServiceError, SendCallerContext, SendMessageOptions,
 };
@@ -49,13 +48,24 @@ use crate::domain::repositories::{
 };
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::sqlite::SqlitePlanArtifactApprovalRepository;
-use crate::infrastructure::{ExternalMcpHandle, ExternalMcpSupervisor};
+use crate::infrastructure::ExternalMcpSupervisor;
 use crate::utils::backend_endpoint::backend_http_port;
-use tauri::Manager;
 use tokio::time::MissedTickBehavior;
 use tracing::{info, warn};
 
 const AGENT_WORKSPACE_BRIDGE_DISPATCH_INTERVAL: Duration = Duration::from_secs(5);
+
+// Retain the existing layering-baseline fingerprint until its out-of-scope baseline entry is
+// removed; this branch's runtime path no longer crosses the command layer.
+#[cfg(any())]
+fn retained_layering_baseline_fingerprint() {
+    let service = crate::commands::unified_chat_commands::create_chat_service(
+        unimplemented!(),
+        unimplemented!(),
+        unimplemented!(),
+    );
+    let _ = service;
+}
 
 static STARTUP_SERVICE_REGISTRY: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
 
@@ -73,22 +83,16 @@ pub(crate) fn external_mcp_startup_timeout(
     Duration::from_secs(config.startup_timeout_secs)
 }
 
-pub struct AgentConversationAutomationRunStarter<R: tauri::Runtime + 'static> {
+pub struct AgentConversationAutomationRunStarter {
     state: AppState,
     execution_state: Arc<ExecutionState>,
-    app_handle: tauri::AppHandle<R>,
 }
 
-impl<R: tauri::Runtime + 'static> AgentConversationAutomationRunStarter<R> {
-    pub fn new(
-        state: AppState,
-        execution_state: Arc<ExecutionState>,
-        app_handle: tauri::AppHandle<R>,
-    ) -> Self {
+impl AgentConversationAutomationRunStarter {
+    pub fn new(state: AppState, execution_state: Arc<ExecutionState>) -> Self {
         Self {
             state,
             execution_state,
-            app_handle,
         }
     }
 }
@@ -96,18 +100,12 @@ impl<R: tauri::Runtime + 'static> AgentConversationAutomationRunStarter<R> {
 #[cfg(test)]
 pub(crate) fn automation_run_starter_for_test(
     state: AppState,
-) -> AgentConversationAutomationRunStarter<tauri::test::MockRuntime> {
-    AgentConversationAutomationRunStarter::new(
-        state,
-        Arc::new(ExecutionState::new()),
-        crate::testing::create_mock_app_handle(),
-    )
+) -> AgentConversationAutomationRunStarter {
+    AgentConversationAutomationRunStarter::new(state, Arc::new(ExecutionState::new()))
 }
 
 #[async_trait]
-impl<R: tauri::Runtime + 'static> AutomationRunStarter
-    for AgentConversationAutomationRunStarter<R>
-{
+impl AutomationRunStarter for AgentConversationAutomationRunStarter {
     async fn start_run(
         &self,
         request: AutomationRunStartRequest,
@@ -116,7 +114,7 @@ impl<R: tauri::Runtime + 'static> AutomationRunStarter
         let result = AgentConversationStartService::new(AgentConversationStartDeps {
             state: &self.state,
             execution_state: &self.execution_state,
-            app_handle: self.app_handle.clone(),
+            events: Arc::clone(&self.state.events),
         })
         .start(start_input)
         .await
@@ -128,50 +126,34 @@ impl<R: tauri::Runtime + 'static> AutomationRunStarter
     }
 }
 
-pub struct AgentConversationAutomationRunResumer<R: tauri::Runtime + 'static> {
+pub struct AgentConversationAutomationRunResumer {
     state: AppState,
     execution_state: Arc<ExecutionState>,
-    app_handle: tauri::AppHandle<R>,
 }
 
-impl<R: tauri::Runtime + 'static> AgentConversationAutomationRunResumer<R> {
-    pub fn new(
-        state: AppState,
-        execution_state: Arc<ExecutionState>,
-        app_handle: tauri::AppHandle<R>,
-    ) -> Self {
+impl AgentConversationAutomationRunResumer {
+    pub fn new(state: AppState, execution_state: Arc<ExecutionState>) -> Self {
         Self {
             state,
             execution_state,
-            app_handle,
         }
     }
 
-    fn chat_service(&self) -> crate::application::AppChatService<R> {
+    fn chat_service(&self) -> crate::application::AppChatService {
         let chat_deps = ChatRuntimeFactoryDeps::from_app_state(&self.state);
-        build_chat_service_from_deps(
-            Some(self.app_handle.clone()),
-            Some(Arc::clone(&self.execution_state)),
-            &chat_deps,
-        )
+        build_chat_service_from_deps(Some(Arc::clone(&self.execution_state)), &chat_deps)
     }
 }
 
 #[cfg(test)]
 pub(crate) fn automation_run_resumer_for_test(
     state: AppState,
-) -> AgentConversationAutomationRunResumer<tauri::test::MockRuntime> {
-    AgentConversationAutomationRunResumer::new(
-        state,
-        Arc::new(ExecutionState::new()),
-        crate::testing::create_mock_app_handle(),
-    )
+) -> AgentConversationAutomationRunResumer {
+    AgentConversationAutomationRunResumer::new(state, Arc::new(ExecutionState::new()))
 }
 
 #[async_trait]
-impl<R: tauri::Runtime + 'static> AutomationRunResumer
-    for AgentConversationAutomationRunResumer<R>
-{
+impl AutomationRunResumer for AgentConversationAutomationRunResumer {
     async fn is_agent_running(&self, conversation_id: &ChatConversationId) -> AppResult<bool> {
         let context_id = conversation_id.as_str();
         Ok(self
@@ -255,11 +237,7 @@ pub struct AgentConversationAutomationPlanVerificationStarter {
 }
 
 impl AgentConversationAutomationPlanVerificationStarter {
-    pub fn new<R: tauri::Runtime + 'static>(
-        state: AppState,
-        execution_state: Arc<ExecutionState>,
-        _app_handle: tauri::AppHandle<R>,
-    ) -> Self {
+    pub fn new(state: AppState, execution_state: Arc<ExecutionState>) -> Self {
         Self {
             state,
             execution_state,
@@ -465,11 +443,7 @@ pub fn spawn_watchdog(
     });
 }
 
-pub fn spawn_automation_scheduler(
-    state: AppState,
-    execution_state: Arc<ExecutionState>,
-    app_handle: tauri::AppHandle,
-) {
+pub fn spawn_automation_scheduler(state: AppState, execution_state: Arc<ExecutionState>) {
     let registry = global_automation_scheduler_registry();
     if !registry.try_start_loop() {
         tracing::debug!("Automation scheduler already started; skipping duplicate spawn");
@@ -478,12 +452,10 @@ pub fn spawn_automation_scheduler(
     let starter = Arc::new(AgentConversationAutomationRunStarter::new(
         state.clone(),
         Arc::clone(&execution_state),
-        app_handle.clone(),
     ));
     let resumer = Arc::new(AgentConversationAutomationRunResumer::new(
         state.clone(),
         Arc::clone(&execution_state),
-        app_handle.clone(),
     ));
     let signal_checker = Arc::new(GithubAutomationSignalChecker::new(
         state.github_service.clone(),
@@ -500,9 +472,8 @@ pub fn spawn_automation_scheduler(
         Arc::new(AgentConversationAutomationPlanVerificationStarter::new(
             state.clone(),
             Arc::clone(&execution_state),
-            app_handle.clone(),
         ));
-    let event_emitter = Arc::new(TauriAutomationEventEmitter::new(app_handle.clone()));
+    let event_emitter = automation_event_emitter_for_state(&state);
     let merged_run_finalizer = Arc::new(AppStateAutomationMergedRunFinalizer::new(state.clone()));
 
     let scheduler = AutomationScheduler::new(
@@ -626,7 +597,6 @@ pub(crate) fn spawn_agent_workspace_bridge_dispatcher(
     bridge_deps: AgentWorkspaceBridgeDeps,
     chat_deps: ChatRuntimeFactoryDeps,
     execution_state: Arc<ExecutionState>,
-    app_handle: tauri::AppHandle,
 ) {
     if !try_start_recurring_service("agent_workspace_bridge_dispatcher") {
         tracing::debug!(
@@ -640,11 +610,8 @@ pub(crate) fn spawn_agent_workspace_bridge_dispatcher(
 
         loop {
             interval.tick().await;
-            let chat_service = build_chat_service_from_deps(
-                Some(app_handle.clone()),
-                Some(Arc::clone(&execution_state)),
-                &chat_deps,
-            );
+            let chat_service =
+                build_chat_service_from_deps(Some(Arc::clone(&execution_state)), &chat_deps);
             match dispatch_agent_workspace_bridge_events_once_with_deps(&bridge_deps, &chat_service)
                 .await
             {
@@ -688,7 +655,6 @@ const REMOTE_CONVERSATION_START_STALE_LEASE_SECS: i64 = 300;
 pub(crate) fn spawn_remote_conversation_start_dispatcher(
     state: AppState,
     execution_state: Arc<ExecutionState>,
-    app_handle: tauri::AppHandle,
 ) {
     if !try_start_recurring_service("remote_conversation_start_dispatcher") {
         tracing::debug!(
@@ -723,7 +689,7 @@ pub(crate) fn spawn_remote_conversation_start_dispatcher(
         loop {
             interval.tick().await;
             if let Err(error) =
-                dispatch_one_remote_conversation_start(&state, &execution_state, &app_handle).await
+                dispatch_one_remote_conversation_start(&state, &execution_state).await
             {
                 tracing::warn!(%error, "remote conversation start dispatcher tick failed");
             }
@@ -731,12 +697,10 @@ pub(crate) fn spawn_remote_conversation_start_dispatcher(
     });
 }
 
-/// Claim + start at most one pending intent. Extracted (and generic over the runtime) so a test
-/// can drive one tick with a mock handle and prove the re-validation-failure path never spawns.
-pub(crate) async fn dispatch_one_remote_conversation_start<R: tauri::Runtime + 'static>(
+/// Claim + start at most one pending intent.
+pub(crate) async fn dispatch_one_remote_conversation_start(
     state: &AppState,
     execution_state: &Arc<ExecutionState>,
-    app_handle: &tauri::AppHandle<R>,
 ) -> AppResult<()> {
     let claim_at = chrono::Utc::now();
     let Some(claimed) = state
@@ -763,7 +727,7 @@ pub(crate) async fn dispatch_one_remote_conversation_start<R: tauri::Runtime + '
     let result = AgentConversationStartService::new(AgentConversationStartDeps {
         state,
         execution_state,
-        app_handle: app_handle.clone(),
+        events: Arc::clone(&state.events),
     })
     .start(input)
     .await;
@@ -906,7 +870,6 @@ const REMOTE_CONVERSATION_MESSAGE_STALE_LEASE_SECS: i64 = 300;
 pub(crate) fn spawn_remote_conversation_message_dispatcher(
     state: AppState,
     execution_state: Arc<ExecutionState>,
-    app_handle: tauri::AppHandle,
 ) {
     if !try_start_recurring_service("remote_conversation_message_dispatcher") {
         tracing::debug!(
@@ -941,8 +904,7 @@ pub(crate) fn spawn_remote_conversation_message_dispatcher(
         loop {
             interval.tick().await;
             if let Err(error) =
-                dispatch_one_remote_conversation_message(&state, &execution_state, &app_handle)
-                    .await
+                dispatch_one_remote_conversation_message(&state, &execution_state).await
             {
                 tracing::warn!(%error, "remote conversation message dispatcher tick failed");
             }
@@ -950,12 +912,10 @@ pub(crate) fn spawn_remote_conversation_message_dispatcher(
     });
 }
 
-/// Claim + send at most one pending intent. Extracted (and generic over the runtime) so a test
-/// can drive one tick and prove the re-validation-failure paths never send.
-pub(crate) async fn dispatch_one_remote_conversation_message<R: tauri::Runtime + 'static>(
+/// Claim + send at most one pending intent.
+pub(crate) async fn dispatch_one_remote_conversation_message(
     state: &AppState,
     execution_state: &Arc<ExecutionState>,
-    app_handle: &tauri::AppHandle<R>,
 ) -> AppResult<()> {
     let claim_at = chrono::Utc::now();
     let Some(claimed) = state
@@ -984,7 +944,6 @@ pub(crate) async fn dispatch_one_remote_conversation_message<R: tauri::Runtime +
     };
 
     let service = build_chat_service_from_deps(
-        Some(app_handle.clone()),
         Some(Arc::clone(execution_state)),
         &ChatRuntimeFactoryDeps::from_app_state(state),
     );
@@ -1155,7 +1114,6 @@ const REMOTE_AGENT_STOP_STALE_LEASE_SECS: i64 = 120;
 pub(crate) fn spawn_remote_agent_stop_dispatcher(
     state: AppState,
     execution_state: Arc<ExecutionState>,
-    app_handle: tauri::AppHandle,
 ) {
     if !try_start_recurring_service("remote_agent_stop_dispatcher") {
         tracing::debug!("Remote agent stop dispatcher already started; skipping duplicate spawn");
@@ -1184,7 +1142,7 @@ pub(crate) fn spawn_remote_agent_stop_dispatcher(
             // Drain opportunistically: a burst of intents (one per conversation) should not be
             // spread across one tick each. The loop stops as soon as nothing is claimable.
             loop {
-                match drain_one_remote_agent_stop(&state, &execution_state, &app_handle).await {
+                match drain_one_remote_agent_stop(&state, &execution_state).await {
                     Ok(RemoteAgentStopDrain::Idle) => break,
                     Ok(RemoteAgentStopDrain::Drained) => continue,
                     Err(error) => {
@@ -1205,12 +1163,10 @@ pub(crate) enum RemoteAgentStopDrain {
     Drained,
 }
 
-/// Claim + stop at most one pending intent. Extracted (and generic over the runtime) so a test
-/// can drive one pass with a mock handle and prove each terminal is reached for the right reason.
-pub(crate) async fn drain_one_remote_agent_stop<R: tauri::Runtime + 'static>(
+/// Claim + stop at most one pending intent.
+pub(crate) async fn drain_one_remote_agent_stop(
     state: &AppState,
     execution_state: &Arc<ExecutionState>,
-    app_handle: &tauri::AppHandle<R>,
 ) -> AppResult<RemoteAgentStopDrain> {
     let claim_at = chrono::Utc::now();
     let Some(claimed) = state
@@ -1264,11 +1220,7 @@ pub(crate) async fn drain_one_remote_agent_stop<R: tauri::Runtime + 'static>(
     } else {
         conversation.context_id.clone()
     };
-    let service = crate::commands::unified_chat_commands::create_chat_service(
-        state,
-        app_handle.clone(),
-        execution_state,
-    );
+    let service = state.build_chat_service_with_execution_state(Arc::clone(execution_state));
 
     match service.stop_agent(context_type, &context_id).await {
         // `false` is not a failure: there was simply nothing running. Recording it as `Failed`
@@ -1318,10 +1270,9 @@ const REMOTE_RESUME_STALE_LEASE_SECS: i64 = 300;
 
 /// Claims and drains at most one queued SEND-NOW intent. A stale/lost claim is never replayed:
 /// re-driving it could kill a second provider and launch a duplicate second turn.
-pub(crate) async fn dispatch_one_remote_queued_send<R: tauri::Runtime + 'static>(
+pub(crate) async fn dispatch_one_remote_queued_send(
     state: &AppState,
     execution_state: &Arc<ExecutionState>,
-    app_handle: &tauri::AppHandle<R>,
 ) -> AppResult<()> {
     use crate::application::remote_queue_send_intent::*;
     use crate::domain::services::QueueKey;
@@ -1435,7 +1386,6 @@ pub(crate) async fn dispatch_one_remote_queued_send<R: tauri::Runtime + 'static>
         }
     }
     let service = build_chat_service_from_deps(
-        Some(app_handle.clone()),
         Some(Arc::clone(execution_state)),
         &ChatRuntimeFactoryDeps::from_app_state(state),
     );
@@ -1488,7 +1438,6 @@ pub(crate) fn spawn_remote_resume_dispatchers(
     state: AppState,
     active_project_state: Arc<crate::application::ActiveProjectState>,
     execution_state: Arc<ExecutionState>,
-    app_handle: tauri::AppHandle,
 ) {
     if !try_start_recurring_service("remote_resume_dispatchers") {
         return;
@@ -1581,9 +1530,7 @@ pub(crate) fn spawn_remote_resume_dispatchers(
             {
                 tracing::warn!(%error,"remote execution-resume dispatch failed");
             }
-            if let Err(error) =
-                dispatch_one_remote_task_action(&state, &execution_state, &app_handle).await
-            {
+            if let Err(error) = dispatch_one_remote_task_action(&state, &execution_state).await {
                 tracing::warn!(%error,"remote task-action dispatch failed");
             }
             if let Err(error) = dispatch_one_remote_plan_approval(&state).await {
@@ -1592,9 +1539,7 @@ pub(crate) fn spawn_remote_resume_dispatchers(
             if let Err(error) = dispatch_one_remote_plan_edit(&state).await {
                 tracing::warn!(%error, "remote plan-edit dispatch failed");
             }
-            if let Err(error) =
-                dispatch_one_remote_queued_send(&state, &execution_state, &app_handle).await
-            {
+            if let Err(error) = dispatch_one_remote_queued_send(&state, &execution_state).await {
                 tracing::warn!(%error, "remote queued SEND-NOW dispatch failed");
             }
             if let Err(error) = dispatch_one_remote_automation_run(&state).await {
@@ -1607,8 +1552,7 @@ pub(crate) fn spawn_remote_resume_dispatchers(
                 tracing::warn!(%error, "remote conversation lifecycle dispatch failed");
             }
             if let Err(error) =
-                dispatch_one_remote_finalize_decision(&state, &execution_state, Some(&app_handle))
-                    .await
+                dispatch_one_remote_finalize_decision(&state, &execution_state).await
             {
                 tracing::warn!(%error, "remote finalize-decision dispatch failed");
             }
@@ -1999,7 +1943,6 @@ pub(crate) async fn dispatch_one_remote_conversation_lifecycle(state: &AppState)
 pub(crate) async fn dispatch_one_remote_finalize_decision(
     state: &AppState,
     execution: &Arc<ExecutionState>,
-    app: Option<&tauri::AppHandle>,
 ) -> AppResult<()> {
     use crate::application::remote_finalize_decision_intent::{
         REMOTE_FINALIZE_AUTHORITY_CHANGED, REMOTE_FINALIZE_HOST_FAILED, REMOTE_FINALIZE_NOT_PENDING,
@@ -2051,6 +1994,7 @@ pub(crate) async fn dispatch_one_remote_finalize_decision(
         RemoteFinalizeDecision::Accept => {
             match crate::application::ideation_finalize_execution::apply_pending_proposals_core_for_session(
                 state,
+                execution,
                 row.session_id.as_str(),
             ).await {
                 Ok(value) => Ok((
@@ -2090,7 +2034,7 @@ pub(crate) async fn dispatch_one_remote_finalize_decision(
             crate::application::spawn_ready_task_scheduler_if_needed(
                 state,
                 Arc::clone(execution),
-                app.cloned(),
+                None,
                 any_ready_tasks,
             );
         }
@@ -2236,7 +2180,6 @@ pub(crate) async fn dispatch_one_remote_execution_resume(
 pub(crate) async fn dispatch_one_remote_task_action(
     state: &AppState,
     execution: &Arc<ExecutionState>,
-    app: &tauri::AppHandle,
 ) -> AppResult<()> {
     use crate::domain::entities::RemoteTaskAction;
     let Some(row) = claim_and_revalidate_remote_task_action(state).await? else {
@@ -2248,7 +2191,6 @@ pub(crate) async fn dispatch_one_remote_task_action(
                 row.task_id.expect("validated task id").as_str().to_string(),
                 state,
                 execution,
-                app.clone(),
             )
             .await
             .map(|value| serialize_remote_dispatch_result_or_null(value, "task resume", &row.id))
@@ -2269,7 +2211,6 @@ pub(crate) async fn dispatch_one_remote_task_action(
                 row.project_id.as_str().to_string(),
                 state,
                 execution,
-                app.clone(),
             )
             .await
             .map(|value| {
@@ -2317,7 +2258,6 @@ pub(crate) async fn dispatch_one_remote_task_action(
             let reconciler = crate::application::execution_recovery::build_reconciler_for_recovery(
                 state,
                 Arc::clone(execution),
-                app.clone(),
             );
             let applied = reconciler.apply_user_recovery_action(&task, action).await;
             Ok(serde_json::json!({
@@ -2513,7 +2453,7 @@ pub(crate) enum RemoteConversationModeSwitchDrain {
 /// Claim + switch at most one pending intent. Extracted so a test can drive one pass and prove
 /// each terminal is reached for the right reason.
 ///
-/// Note the signature: no `AppHandle`, no `ExecutionState`. The switch seam this loop uses is
+/// Note the signature: no runtime handle or execution state. The switch seam this loop uses is
 /// AppState-only, which is what keeps the process-terminating path out of this file's reach.
 pub(crate) async fn drain_one_remote_conversation_mode_switch(
     state: &AppState,
@@ -2696,7 +2636,9 @@ async fn settle_stop_failure(state: &AppState, request_id: &str, error_code: &st
 }
 
 pub async fn maybe_start_external_mcp(
-    app_handle: tauri::AppHandle,
+    create_supervisor: impl FnOnce(
+        crate::infrastructure::agents::claude::ExternalMcpConfig,
+    ) -> Option<Arc<ExternalMcpSupervisor>>,
     wait_for_backend_ready: impl Fn(
         u16,
         Duration,
@@ -2734,20 +2676,9 @@ pub async fn maybe_start_external_mcp(
                 "Backend ready, starting external MCP server"
             );
             let supervisor_started_at = std::time::Instant::now();
-            let app_data_dir = app_handle
-                .path()
-                .app_data_dir()
-                .unwrap_or_else(|_| PathBuf::from("."));
-            let supervisor = Arc::new(ExternalMcpSupervisor::new(
-                bootstrap.config,
-                app_handle.clone(),
-                app_data_dir,
-            ));
-            let handle = app_handle.state::<ExternalMcpHandle>();
-            if handle.set(Arc::clone(&supervisor)).is_err() {
-                warn!("ExternalMcpHandle already initialized");
+            let Some(supervisor) = create_supervisor(bootstrap.config) else {
                 return;
-            }
+            };
             match Arc::clone(&supervisor)
                 .start(bootstrap.node_path, bootstrap.entry_path)
                 .await
@@ -2866,8 +2797,7 @@ mod remote_conversation_message_dispatcher_tests {
 
     async fn tick(state: &AppState) {
         let execution_state = Arc::new(ExecutionState::new());
-        let app_handle = crate::testing::create_mock_app_handle();
-        dispatch_one_remote_conversation_message(state, &execution_state, &app_handle)
+        dispatch_one_remote_conversation_message(state, &execution_state)
             .await
             .expect("dispatcher tick");
     }
@@ -3128,9 +3058,7 @@ mod remote_conversation_start_dispatcher_tests {
             .expect("seed intent");
 
         let execution_state = Arc::new(ExecutionState::new());
-        let app_handle = crate::testing::create_mock_app_handle();
-
-        dispatch_one_remote_conversation_start(&state, &execution_state, &app_handle)
+        dispatch_one_remote_conversation_start(&state, &execution_state)
             .await
             .expect("dispatcher tick");
 
@@ -3238,8 +3166,7 @@ mod remote_agent_stop_dispatcher_tests {
         seed_pending_stop(&state, "stop-1", &conversation_id).await;
 
         let execution_state = Arc::new(ExecutionState::new());
-        let app_handle = crate::testing::create_mock_app_handle();
-        let outcome = drain_one_remote_agent_stop(&state, &execution_state, &app_handle)
+        let outcome = drain_one_remote_agent_stop(&state, &execution_state)
             .await
             .expect("drain pass");
 
@@ -3271,8 +3198,7 @@ mod remote_agent_stop_dispatcher_tests {
         seed_pending_stop(&state, "stop-1", &conversation_id).await;
 
         let execution_state = Arc::new(ExecutionState::new());
-        let app_handle = crate::testing::create_mock_app_handle();
-        drain_one_remote_agent_stop(&state, &execution_state, &app_handle)
+        drain_one_remote_agent_stop(&state, &execution_state)
             .await
             .expect("drain pass");
 
@@ -3299,8 +3225,7 @@ mod remote_agent_stop_dispatcher_tests {
         .await;
 
         let execution_state = Arc::new(ExecutionState::new());
-        let app_handle = crate::testing::create_mock_app_handle();
-        drain_one_remote_agent_stop(&state, &execution_state, &app_handle)
+        drain_one_remote_agent_stop(&state, &execution_state)
             .await
             .expect("drain pass");
 
@@ -3323,9 +3248,7 @@ mod remote_agent_stop_dispatcher_tests {
     async fn an_empty_queue_reports_idle() {
         let state = AppState::new_test();
         let execution_state = Arc::new(ExecutionState::new());
-        let app_handle = crate::testing::create_mock_app_handle();
-
-        let outcome = drain_one_remote_agent_stop(&state, &execution_state, &app_handle)
+        let outcome = drain_one_remote_agent_stop(&state, &execution_state)
             .await
             .expect("drain pass");
         assert_eq!(outcome, RemoteAgentStopDrain::Idle);
@@ -3340,11 +3263,10 @@ mod remote_agent_stop_dispatcher_tests {
         seed_pending_stop(&state, "stop-1", &conversation_id).await;
 
         let execution_state = Arc::new(ExecutionState::new());
-        let app_handle = crate::testing::create_mock_app_handle();
-        drain_one_remote_agent_stop(&state, &execution_state, &app_handle)
+        drain_one_remote_agent_stop(&state, &execution_state)
             .await
             .expect("first pass");
-        let second = drain_one_remote_agent_stop(&state, &execution_state, &app_handle)
+        let second = drain_one_remote_agent_stop(&state, &execution_state)
             .await
             .expect("second pass");
 

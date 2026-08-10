@@ -72,6 +72,7 @@ fn build_runner_with_agent_run_repo(
             Arc::clone(&app_state.running_agent_registry),
             Arc::clone(&app_state.memory_event_repo),
         )
+        .with_events(Arc::clone(&app_state.events))
         .with_agent_conversation_workspace_repo(Some(Arc::clone(
             &app_state.agent_conversation_workspace_repo,
         ))),

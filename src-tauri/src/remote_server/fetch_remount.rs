@@ -228,6 +228,7 @@ impl SharedHttpAppState {
             app_state: Arc::clone(&self.app_state),
             execution_state: Arc::clone(&self.execution_state),
             delegation_service: Arc::clone(&self.delegation_service),
+            external_mcp_supervisor: None,
         }
     }
 

@@ -1,15 +1,17 @@
 use std::str::FromStr;
 use std::sync::Arc;
 
+use crate::application::active_project_state::ActiveProjectState;
 use crate::application::chat_service::uses_execution_slot;
 use crate::application::execution_control::*;
 use crate::application::execution_running::{
     context_matches_running_status_for_gc, prune_stale_execution_registry_entries,
     ExecutionCapacitySummary, ExecutionLaneUsage, RunningProcessesResponse,
 };
+use crate::application::execution_state::ExecutionState;
 use crate::application::execution_state::*;
 use crate::application::execution_task_navigation::resolve_agent_workspace_target_for_task;
-use crate::application::{ActiveProjectState, AppState, ExecutionState};
+use crate::application::AppState;
 use crate::domain::entities::{
     task_step::StepProgressSummary, ChatContextType, ChatConversationId, IdeationSessionId,
     InternalStatus, ProjectId, TaskId,

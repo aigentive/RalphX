@@ -54,9 +54,11 @@
 #![cfg(feature = "test-utils")]
 
 use std::os::unix::fs::PermissionsExt;
+use std::sync::Arc;
 
 use ralphx_lib::application::chat_service::ChatService;
 use ralphx_lib::application::{AppState, PendingPermissionInfo};
+use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{ChatContextType, ChatConversation, Project, RemoteScopeSet};
 use ralphx_lib::infrastructure::remote_host_client::{
     PairWireRequest, RemoteFetchRequest, RemoteHostClient, RemoteHostClientError,
@@ -774,7 +776,7 @@ async fn leg6_a_fake_cli_chat_turn_streams_to_a_remote_client_and_persists_only_
     // Tauri bus the capture bank is listening to.
     let service = host
         .state()
-        .build_chat_service_for_runtime::<tauri::test::MockRuntime>(None, Some(host.app_handle()))
+        .build_chat_service_with_execution_state(Arc::new(ExecutionState::new()))
         .with_cli_path(cli_path)
         .with_working_directory(&project_directory);
 

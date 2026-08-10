@@ -144,20 +144,25 @@ pub async fn finalize_proposals(
         .map(|v| v == "1")
         .unwrap_or(false);
 
-    let response = finalize_proposals_impl(&state.app_state, &req.session_id, is_external)
-        .await
-        .map_err(|e| {
-            error!(
-                "Failed to finalize proposals for session {}: {}",
-                req.session_id, e
-            );
-            let status = match &e {
-                crate::error::AppError::Validation(_) => StatusCode::BAD_REQUEST,
-                crate::error::AppError::NotFound(_) => StatusCode::NOT_FOUND,
-                _ => StatusCode::INTERNAL_SERVER_ERROR,
-            };
-            json_error(status, e.to_string())
-        })?;
+    let response = finalize_proposals_impl(
+        &state.app_state,
+        &state.execution_state,
+        &req.session_id,
+        is_external,
+    )
+    .await
+    .map_err(|e| {
+        error!(
+            "Failed to finalize proposals for session {}: {}",
+            req.session_id, e
+        );
+        let status = match &e {
+            crate::error::AppError::Validation(_) => StatusCode::BAD_REQUEST,
+            crate::error::AppError::NotFound(_) => StatusCode::NOT_FOUND,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        json_error(status, e.to_string())
+    })?;
 
     // Layer 2+3: persist and push ideation:proposals_ready (non-fatal, enriched)
     {
@@ -310,7 +315,7 @@ pub async fn finalize_proposals(
                 Arc::clone(&app_state_for_cleanup.task_repo),
                 Arc::clone(&app_state_for_cleanup.project_repo),
                 Arc::clone(&app_state_for_cleanup.running_agent_registry),
-                None,
+                Arc::clone(&app_state_for_cleanup.events),
             )
             .with_interactive_process_registry(Arc::clone(
                 &app_state_for_cleanup.interactive_process_registry,
@@ -336,7 +341,7 @@ pub async fn finalize_proposals(
     spawn_ready_task_scheduler_if_needed(
         &state.app_state,
         Arc::clone(&state.execution_state),
-        state.app_state.app_handle.as_ref().cloned(),
+        None,
         response.any_ready_tasks,
     );
 

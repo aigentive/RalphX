@@ -6,7 +6,8 @@ use crate::application::chat_service::{
     uses_execution_slot, ChatService, SendCallerContext, SendMessageOptions,
 };
 use crate::application::execution_running::context_matches_running_status_for_gc;
-use crate::application::{AppState, ChatServiceError, ExecutionState};
+use crate::application::execution_state::ExecutionState;
+use crate::application::{AppState, ChatServiceError};
 use crate::domain::entities::{
     app_state::ExecutionHaltMode, ChatContextType, ChatConversationId, IdeationSessionId,
     IdeationSessionStatus, InternalStatus, ProjectId, TaskId,

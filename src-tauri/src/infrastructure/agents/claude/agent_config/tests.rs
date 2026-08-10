@@ -967,6 +967,29 @@ fn test_embedded_config_keeps_explicit_execution_defaults_aligned_with_fallback(
 }
 
 #[test]
+fn test_embedded_config_parses_agent_completion_delivery_limits() {
+    let parsed =
+        parse_config_no_env_overrides(EMBEDDED_CONFIG).expect("embedded config should parse");
+
+    assert_eq!(
+        parsed.runtime.stream.agent_completion_correlation_ttl_secs,
+        60
+    );
+    assert_eq!(
+        parsed.runtime.stream.agent_completion_correlation_capacity,
+        1_024
+    );
+    assert_eq!(
+        parsed.runtime.stream.agent_completion_processed_ttl_secs,
+        900
+    );
+    assert_eq!(
+        parsed.runtime.stream.agent_completion_processed_capacity,
+        4_096
+    );
+}
+
+#[test]
 fn test_embedded_config_omits_agent_harness_defaults_and_uses_fallback() {
     let parsed =
         parse_config_no_env_overrides(EMBEDDED_CONFIG).expect("embedded config should parse");

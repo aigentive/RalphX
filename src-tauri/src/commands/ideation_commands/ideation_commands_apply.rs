@@ -29,32 +29,43 @@ pub use crate::application::ideation_finalize_execution::*;
 pub async fn apply_proposals_to_kanban(
     input: ApplyProposalsInput,
     state: State<'_, AppState>,
+    execution_state: State<'_, Arc<crate::commands::ExecutionState>>,
     app: tauri::AppHandle,
 ) -> Result<ApplyProposalsResultResponse, String> {
-    apply_proposals_to_kanban_for_state(input, &state, &app).await
+    apply_proposals_to_kanban_for_state(input, &state, &execution_state, &app).await
 }
 
 #[doc(hidden)]
 pub async fn apply_proposals_to_kanban_for_state(
     input: ApplyProposalsInput,
     state: &State<'_, AppState>,
+    execution_state: &State<'_, Arc<crate::commands::ExecutionState>>,
     app: &tauri::AppHandle,
 ) -> Result<ApplyProposalsResultResponse, String> {
-    apply_proposals_to_kanban_for_state_inner(input, state, app, None).await
+    apply_proposals_to_kanban_for_state_inner(input, state, execution_state, app, None).await
 }
 
 pub(crate) async fn apply_supervised_proposals_to_kanban_for_state(
     input: ApplyProposalsInput,
     conversation_id: String,
     state: &State<'_, AppState>,
+    execution_state: &State<'_, Arc<crate::commands::ExecutionState>>,
     app: &tauri::AppHandle,
 ) -> Result<ApplyProposalsResultResponse, String> {
-    apply_proposals_to_kanban_for_state_inner(input, state, app, Some(conversation_id)).await
+    apply_proposals_to_kanban_for_state_inner(
+        input,
+        state,
+        execution_state,
+        app,
+        Some(conversation_id),
+    )
+    .await
 }
 
 async fn apply_proposals_to_kanban_for_state_inner(
     input: ApplyProposalsInput,
     state: &State<'_, AppState>,
+    execution_state: &State<'_, Arc<crate::commands::ExecutionState>>,
     app: &tauri::AppHandle,
     supervised_task_pipeline_conversation_id: Option<String>,
 ) -> Result<ApplyProposalsResultResponse, String> {
@@ -62,9 +73,15 @@ async fn apply_proposals_to_kanban_for_state_inner(
 
     let result = match supervised_task_pipeline_conversation_id {
         Some(conversation_id) => {
-            apply_supervised_proposals_core(state.inner(), input, conversation_id).await
+            apply_supervised_proposals_core(
+                state.inner(),
+                execution_state.inner(),
+                input,
+                conversation_id,
+            )
+            .await
         }
-        None => apply_proposals_core(state.inner(), input).await,
+        None => apply_proposals_core(state.inner(), execution_state.inner(), input).await,
     }
     .map_err(|e| e.to_string())?;
 
@@ -76,7 +93,7 @@ async fn apply_proposals_to_kanban_for_state_inner(
             Arc::clone(&state.task_repo),
             Arc::clone(&state.project_repo),
             Arc::clone(&state.running_agent_registry),
-            Some(app.clone()),
+            Arc::clone(&state.events),
         )
         .with_interactive_process_registry(Arc::clone(&state.interactive_process_registry));
 

@@ -45,6 +45,7 @@ async fn setup_review_test_state() -> HttpServerState {
         app_state,
         execution_state,
         delegation_service: Default::default(),
+        external_mcp_supervisor: None,
     }
 }
 
@@ -55,6 +56,7 @@ async fn setup_review_scope_drift_state() -> (HttpServerState, Task) {
         app_state,
         execution_state,
         delegation_service: Default::default(),
+        external_mcp_supervisor: None,
     };
 
     let repo = setup_real_git_repo();

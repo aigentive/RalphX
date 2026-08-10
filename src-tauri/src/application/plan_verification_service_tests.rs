@@ -8,8 +8,8 @@ use crate::application::chat_service::SendQueuePolicy;
 use crate::application::plan_verification_service::{
     admit_automatic_plan_verification, ensure_plan_verification_for_acceptance,
     get_plan_verification_status, request_plan_verification, source_allows_verified_retry,
-    AutomaticPlanVerificationDisposition, PlanVerificationRequestOutcome,
-    PlanVerificationRequestSource, PlanVerificationStatusKind,
+    AutomaticPlanVerificationDisposition, PlanVerificationCompletionAdapter,
+    PlanVerificationRequestOutcome, PlanVerificationRequestSource, PlanVerificationStatusKind,
 };
 use crate::application::AppState;
 use crate::domain::entities::{
@@ -21,6 +21,10 @@ use crate::domain::services::EffectiveGatePolicy;
 use crate::domain::services::{QueueKey, QueuedMessage};
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::memory::MemoryQueuedMessageRepository;
+use crate::infrastructure::sqlite::{
+    SqliteAgentRunRepository, SqliteChatConversationRepository, SqliteIdeationSessionRepository,
+};
+use crate::testing::SqliteStateFixture;
 
 struct FailSecondQueueList {
     calls: AtomicUsize,
@@ -767,4 +771,115 @@ async fn detached_verification_actions_cannot_poison_owner_status_or_admission()
 
     assert_eq!(outcome, PlanVerificationRequestOutcome::Queued);
     assert_eq!(chat.call_count(), 1);
+}
+
+#[tokio::test]
+async fn terminal_adapter_admits_only_the_current_completed_plan_turn() {
+    let state = AppState::new_test();
+    let (_session, conversation, run) = completed_plan_workspace_run(&state, None).await;
+    let chat = mock_chat(&state);
+    let adapter = PlanVerificationCompletionAdapter::from_app_state(&state);
+
+    let disposition = adapter
+        .admit_automatic(&chat, &conversation.id, &run.id, true)
+        .await
+        .expect("explicit terminal adapter should preserve automatic admission");
+
+    assert_eq!(
+        disposition,
+        AutomaticPlanVerificationDisposition::VerificationPending
+    );
+    assert_eq!(
+        chat.call_count(),
+        1,
+        "only one verifier turn may be admitted"
+    );
+}
+
+#[tokio::test]
+async fn terminal_adapter_records_once_and_rejects_stale_verification_authority() {
+    let fixture = SqliteStateFixture::new("plan-verification-terminal-adapter", |db, state| {
+        let shared = db.shared_conn();
+        state.ideation_session_repo = Arc::new(SqliteIdeationSessionRepository::from_shared(
+            Arc::clone(&shared),
+        ));
+        state.chat_conversation_repo = Arc::new(SqliteChatConversationRepository::from_shared(
+            Arc::clone(&shared),
+        ));
+        state.agent_run_repo = Arc::new(SqliteAgentRunRepository::from_shared(shared));
+    });
+    let project = fixture
+        .db()
+        .seed_project("Plan verification terminal adapter");
+    fixture.db().with_connection(|connection| {
+        for (id, name) in [
+            ("plan-current", "Plan overview"),
+            ("plan-current-blueprint", "Implementation blueprint"),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO artifacts (
+                        id, type, name, content_type, content_text, created_by, version, created_at
+                     ) VALUES (?1, 'specification', ?2, 'inline', '# Plan', 'orchestrator', 1, '2026-08-04T00:00:00Z')",
+                    rusqlite::params![id, name],
+                )
+                .expect("plan artifact should be seeded");
+        }
+    });
+    let mut session = IdeationSession::new(project.id);
+    session.plan_artifact_id = Some(ArtifactId::from_string("plan-current"));
+    session.plan_blueprint_artifact_id = Some(ArtifactId::from_string("plan-current-blueprint"));
+    session.plan_contract_version = 2;
+    let session = fixture
+        .ideation_session_repo
+        .create(session)
+        .await
+        .expect("session should be created");
+    let conversation = fixture
+        .chat_conversation_repo
+        .create(ChatConversation::new_ideation(session.id.clone()))
+        .await
+        .unwrap();
+    let target = plan_bundle_action_target(&session);
+    let mut authoritative = AgentRun::new(conversation.id.clone());
+    authoritative.action_kind = Some(AgentRunActionKind::VerifyPlan);
+    authoritative.action_context_id = Some(session.id.as_str().to_string());
+    authoritative.action_target_id = Some(target.clone());
+    let authoritative = fixture.agent_run_repo.create(authoritative).await.unwrap();
+    let authoritative_id = authoritative.id.as_str();
+    let adapter = PlanVerificationCompletionAdapter::from_app_state(&fixture);
+
+    let first = adapter
+        .complete_verification(&session.id, &authoritative_id)
+        .await
+        .expect("current typed verification run must record proof");
+    let duplicate = adapter
+        .complete_verification(&session.id, &authoritative_id)
+        .await
+        .expect("the same authoritative completion must remain idempotent");
+    assert!(first.newly_recorded);
+    assert!(!duplicate.newly_recorded);
+
+    let mut stale = AgentRun::new(conversation.id);
+    stale.action_kind = Some(AgentRunActionKind::VerifyPlan);
+    stale.action_context_id = Some(session.id.as_str().to_string());
+    stale.action_target_id = Some("superseded-plan-target".to_string());
+    let stale = fixture.agent_run_repo.create(stale).await.unwrap();
+    let stale_id = stale.id.as_str();
+    let stale_error = adapter
+        .complete_verification(&session.id, &stale_id)
+        .await
+        .expect_err("stale action target must not overwrite current proof");
+    assert!(stale_error.to_string().contains("rejected"));
+    let persisted = fixture
+        .ideation_session_repo
+        .get_by_id(&session.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        persisted.verified_plan_agent_run_id.as_deref(),
+        Some(authoritative_id.as_str()),
+        "stale completion must leave the first authoritative proof intact"
+    );
 }

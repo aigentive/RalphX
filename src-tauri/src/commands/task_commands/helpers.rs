@@ -9,7 +9,9 @@ use crate::domain::entities::{
 };
 use tauri::{Emitter, State};
 
-pub use crate::application::task_lifecycle_events::emit_task_lifecycle_event;
+pub use crate::application::task_lifecycle_events::{
+    emit_task_lifecycle_event, emit_task_lifecycle_event_to_sink,
+};
 
 /// Default target for inject_task command
 pub fn default_target() -> String {

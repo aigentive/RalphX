@@ -3,7 +3,7 @@
 // Phase 82: Project-scoped execution with optional project_id parameters
 
 use std::sync::Arc;
-use tauri::{Emitter, State};
+use tauri::State;
 
 use crate::application::chat_service::ChatService;
 use crate::application::reconciliation::UserRecoveryAction;
@@ -13,15 +13,14 @@ use crate::domain::entities::{app_state::ExecutionHaltMode, InternalStatus, Proj
 use crate::domain::execution::ExecutionSettings;
 use crate::domain::state_machine::services::TaskScheduler;
 
-mod state;
-
-pub use state::{
-    ActiveProjectState, ExecutionCommandResponse, ExecutionSettingsResponse, ExecutionState,
-    ExecutionStatusResponse, GlobalExecutionSettingsResponse, UpdateExecutionSettingsInput,
+pub use crate::application::active_project_state::ActiveProjectState;
+pub use crate::application::execution_state::{
+    ExecutionCommandResponse, ExecutionSettingsResponse, ExecutionState, ExecutionStatusResponse,
+    GlobalExecutionSettingsResponse, UpdateExecutionSettingsInput,
     UpdateGlobalExecutionSettingsInput, AGENT_ACTIVE_STATUSES, AUTO_TRANSITION_STATES,
 };
 
-use state::sync_quota_from_project;
+use crate::application::execution_state::sync_quota_from_project;
 
 mod control_helpers;
 
@@ -29,8 +28,6 @@ pub use control_helpers::count_active_ideation_slots;
 pub use control_helpers::count_active_workspace_sessions;
 pub use control_helpers::project_has_execution_capacity_for_state;
 use control_helpers::*;
-
-mod recovery;
 
 use crate::application::execution_recovery::build_reconciler_for_recovery;
 pub use crate::application::execution_recovery::{
@@ -126,7 +123,6 @@ pub async fn recover_task_execution(
     task_id: String,
     execution_state: State<'_, Arc<ExecutionState>>,
     app_state: State<'_, AppState>,
-    app: tauri::AppHandle,
 ) -> Result<bool, String> {
     let task_id = crate::domain::entities::TaskId::from_string(task_id);
     let task = match app_state.task_repo.get_by_id(&task_id).await {
@@ -141,7 +137,7 @@ pub async fn recover_task_execution(
         )
         .await
         .map_err(|error| error.to_string())?;
-    let reconciler = build_reconciler_for_recovery(&app_state, Arc::clone(&execution_state), app);
+    let reconciler = build_reconciler_for_recovery(&app_state, Arc::clone(&execution_state));
 
     Ok(reconciler.recover_execution_stop(&task_id).await)
 }
@@ -153,7 +149,6 @@ pub async fn resolve_recovery_prompt(
     action: String,
     execution_state: State<'_, Arc<ExecutionState>>,
     app_state: State<'_, AppState>,
-    app: tauri::AppHandle,
 ) -> Result<bool, String> {
     let task_id = crate::domain::entities::TaskId::from_string(task_id);
     let action = match action.as_str() {
@@ -161,7 +156,7 @@ pub async fn resolve_recovery_prompt(
         "cancel" => UserRecoveryAction::Cancel,
         _ => return Err("Invalid recovery action".to_string()),
     };
-    let reconciler = build_reconciler_for_recovery(&app_state, Arc::clone(&execution_state), app);
+    let reconciler = build_reconciler_for_recovery(&app_state, Arc::clone(&execution_state));
 
     let task = match app_state.task_repo.get_by_id(&task_id).await {
         Ok(Some(task)) => task,

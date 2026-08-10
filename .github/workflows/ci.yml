@@ -381,7 +381,8 @@ jobs:
             --profile ci \
             --features test-utils \
             --test suite_ipc_commands \
-            ipc_contract
+            --test suite_commands \
+            -E 'test(ipc_contract) or test(agent_completion_event_runtime)'
 
   rust-lib-nextest-archive:
     name: Rust Lib Tests Archive

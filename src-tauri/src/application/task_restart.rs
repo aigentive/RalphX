@@ -1,15 +1,15 @@
 use std::path::Path;
 use std::sync::Arc;
-use tauri::Emitter;
 
 use crate::application::execution_recovery::{
     build_transition_service_for_recovery, categorize_resume_state, restart_transition_target,
     validate_resume, RestartDisposition, RestartResult, ResumeCategory, ResumeValidationWarning,
 };
+use crate::application::execution_state::ExecutionState;
 use crate::application::git_service::GitService;
 use crate::application::task_diff_base::ensure_task_has_non_empty_captured_diff;
 use crate::application::validation_service::validation_run_proves_current_completion;
-use crate::application::{AppState, ExecutionState};
+use crate::application::AppState;
 use crate::domain::entities::{
     AgentRunStatus, ChatContextType, ExecutionRecoveryMetadata, ExecutionRecoveryState,
     InternalStatus, Task, TaskId, TaskStep, TaskStepStatus, ValidationCacheMetadata,
@@ -308,10 +308,8 @@ async fn schedule_ready_tasks_for_project(
     execution_state: Arc<crate::application::ExecutionState>,
     project_id: Option<crate::domain::entities::ProjectId>,
 ) {
-    let scheduler = Arc::new(app_state.build_task_scheduler_for_runtime(
-        Arc::clone(&execution_state),
-        app_state.app_handle.clone(),
-    ));
+    let scheduler =
+        Arc::new(app_state.build_task_scheduler_for_runtime(Arc::clone(&execution_state), None));
     scheduler.set_self_ref(Arc::clone(&scheduler) as Arc<dyn TaskScheduler>);
     scheduler.set_active_project(project_id).await;
     scheduler.try_schedule_ready_tasks().await;
@@ -671,10 +669,10 @@ pub(crate) async fn restart_task_for_state(
     );
 
     // 8. Emit lifecycle event
-    if let Some(ref app) = state.app_handle {
-        let _ = app.emit(
-            "task:restarted",
-            serde_json::json!({
+    let _ = ralphx_events::emit_serialized(
+        state.events.as_ref(),
+        "task:restarted",
+        &serde_json::json!({
                 "taskId": updated_task.id.as_str(),
                 "projectId": updated_task.project_id.as_str(),
                 "resumedToStatus": transition_target.as_str(),
@@ -682,9 +680,8 @@ pub(crate) async fn restart_task_for_state(
                 "category": categorized.category,
                 "stopReason": stop_metadata.stop_reason,
                 "timestamp": chrono::Utc::now().to_rfc3339(),
-            }),
-        );
-    }
+        }),
+    );
 
     // 9. Return success result
     // Serialize task to JSON Value for flexible response

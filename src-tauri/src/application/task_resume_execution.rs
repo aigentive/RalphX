@@ -2,7 +2,6 @@ pub(crate) async fn resume_task_for_state(
     task_id: String,
     state: &AppState,
     execution_state: &Arc<ExecutionState>,
-    app: tauri::AppHandle,
 ) -> Result<TaskResponse, String> {
     let task_id = TaskId::from_string(task_id);
 
@@ -60,7 +59,7 @@ pub(crate) async fn resume_task_for_state(
             return Err(format!("Branch-update resume lost authority: {outcome:?}"));
         }
 
-        let transition_service = build_transition_service(state, execution_state, Some(&app));
+        let transition_service = build_transition_service(state, execution_state);
         if matches!(
             operation.phase,
             BranchUpdatePhase::ContinuationPending | BranchUpdatePhase::ContinuationInProgress
@@ -119,8 +118,8 @@ pub(crate) async fn resume_task_for_state(
             .await
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "Resumed branch-update task disappeared".to_string())?;
-        emit_task_lifecycle_event(
-            &app,
+        emit_task_lifecycle_event_to_sink(
+            state.events.as_ref(),
             "task:resumed",
             resumed.id.as_str(),
             resumed.project_id.as_str(),
@@ -155,10 +154,10 @@ pub(crate) async fn resume_task_for_state(
     }
 
     // Build transition service
-    let task_scheduler = build_task_scheduler(state, execution_state, &app);
+    let task_scheduler = build_task_scheduler(state, execution_state);
 
-    let transition_service = build_transition_service(state, execution_state, Some(&app))
-        .with_task_scheduler(task_scheduler);
+    let transition_service =
+        build_transition_service(state, execution_state).with_task_scheduler(task_scheduler);
 
     // Transition to restore status
     transition_service
@@ -190,8 +189,8 @@ pub(crate) async fn resume_task_for_state(
         .await;
 
     // Emit lifecycle event
-    emit_task_lifecycle_event(
-        &app,
+    emit_task_lifecycle_event_to_sink(
+        state.events.as_ref(),
         "task:resumed",
         restored_task.id.as_str(),
         restored_task.project_id.as_str(),
@@ -212,7 +211,6 @@ pub(crate) async fn resume_tasks_in_group_for_state(
     project_id: String,
     state: &AppState,
     execution_state: &Arc<ExecutionState>,
-    app: tauri::AppHandle,
 ) -> Result<BulkResumeResponse, String> {
     use crate::application::chat_service::PauseReason;
 
@@ -261,10 +259,10 @@ pub(crate) async fn resume_tasks_in_group_for_state(
         .filter(|t| t.internal_status == InternalStatus::Paused)
         .collect();
 
-    let task_scheduler = build_task_scheduler(state, execution_state, &app);
+    let task_scheduler = build_task_scheduler(state, execution_state);
 
-    let transition_service = build_transition_service(state, execution_state, Some(&app))
-        .with_task_scheduler(task_scheduler);
+    let transition_service =
+        build_transition_service(state, execution_state).with_task_scheduler(task_scheduler);
 
     let mut resumed_count = 0;
 
@@ -328,8 +326,8 @@ pub(crate) async fn resume_tasks_in_group_for_state(
             .execute_entry_actions(&task.id, &restored_task, restore_status)
             .await;
 
-        emit_task_lifecycle_event(
-            &app,
+        emit_task_lifecycle_event_to_sink(
+            state.events.as_ref(),
             "task:resumed",
             restored_task.id.as_str(),
             restored_task.project_id.as_str(),
@@ -338,9 +336,10 @@ pub(crate) async fn resume_tasks_in_group_for_state(
         resumed_count += 1;
     }
 
-    let _ = app.emit(
+    let _ = ralphx_events::emit_serialized(
+        state.events.as_ref(),
         "task:list_changed",
-        serde_json::json!({ "projectId": project_id }),
+        &serde_json::json!({ "projectId": project_id }),
     );
 
     Ok(BulkResumeResponse { resumed_count })
@@ -386,22 +385,16 @@ async fn get_restore_status_from_history(
 pub(crate) fn build_transition_service(
     state: &AppState,
     execution_state: &Arc<ExecutionState>,
-    app_handle: Option<&AppHandle>,
 ) -> TaskTransitionService {
-    state.build_transition_service_for_runtime(
-        Arc::clone(execution_state),
-        app_handle.cloned().or_else(|| state.app_handle.clone()),
-    )
+    state.build_transition_service_for_runtime(Arc::clone(execution_state), None)
 }
 
 pub(crate) fn build_task_scheduler(
     state: &AppState,
     execution_state: &Arc<ExecutionState>,
-    app: &AppHandle,
 ) -> Arc<dyn TaskScheduler> {
-    let scheduler_concrete = Arc::new(
-        state.build_task_scheduler_for_runtime(Arc::clone(execution_state), Some(app.clone())),
-    );
+    let scheduler_concrete =
+        Arc::new(state.build_task_scheduler_for_runtime(Arc::clone(execution_state), None));
     scheduler_concrete.set_self_ref(Arc::clone(&scheduler_concrete) as Arc<dyn TaskScheduler>);
     scheduler_concrete as Arc<dyn TaskScheduler>
 }
@@ -413,12 +406,11 @@ pub(crate) fn branch_update_status(direction: BranchUpdateDirection) -> Internal
 }
 use std::sync::Arc;
 
-use tauri::{AppHandle, Emitter};
-
 use crate::application::chat_service::PauseReason;
 use crate::application::execution_control::project_has_execution_capacity_for_state;
+use crate::application::execution_state::ExecutionState;
 use crate::application::task_command_types::{BulkResumeResponse, TaskResponse};
-use crate::application::{AppState, ExecutionState, TaskTransitionService};
+use crate::application::{AppState, TaskTransitionService};
 use crate::domain::entities::{
     BranchUpdateContinuation, BranchUpdateDirection, BranchUpdatePhase, InternalStatus, ProjectId,
     Task, TaskId,
@@ -427,4 +419,4 @@ use crate::domain::repositories::{BranchUpdateCasOutcome, ResumeBranchUpdate};
 use crate::domain::state_machine::services::TaskScheduler;
 use crate::domain::state_machine::transition_handler::set_trigger_origin;
 
-use super::task_lifecycle_events::emit_task_lifecycle_event;
+use super::task_lifecycle_events::emit_task_lifecycle_event_to_sink;

@@ -238,15 +238,10 @@ pub(super) async fn reconcile_plan_notifications(
     sessions: &[IdeationSession],
     mutation_authority: Option<&ArtifactMutationAuthority>,
 ) {
-    let publish_authority = mutation_authority.and_then(|value| {
-        crate::application::plan_approval_notification_service::PlanApprovalPublishAuthority::new(
-            value.agent_run_id.parse().ok()?,
-            value.conversation_id.parse().ok()?,
-        )
-        .into()
-    });
-    crate::application::plan_approval_notification_service::reconcile_plan_approval_on_publish(
-        &state.app_state,
+    let publish_authority = mutation_authority.and_then(|value| value.plan_approval_authority());
+    let approval_notification_deps = crate::application::plan_approval_notification_service::PlanApprovalNotificationDeps::from_app_state(&state.app_state);
+    crate::application::plan_approval_notification_service::reconcile_plan_approval_on_publish_with_deps(
+        &approval_notification_deps,
         None,
         current_artifact.id.as_str(),
         sessions,

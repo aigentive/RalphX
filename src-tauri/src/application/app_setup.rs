@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use ralphx_events::{BusEventSink, EventSink, InternalEventBus, TeeEventSink};
+use tauri::Manager;
 
 use crate::application::notification_service::WindowFocusState;
 use crate::application::runtime_wiring::{
@@ -17,9 +17,8 @@ use crate::application::startup_pipeline_launch::launch_startup_pipeline_from_ha
 use crate::application::startup_status::{StartupCoordinator, StartupFailureCode, StartupStage};
 use crate::application::AppPaths;
 use crate::commands::{ActiveProjectState, ExecutionState};
-use crate::shell::event_sink::TauriEventSink;
+use crate::shell::agent_completion_event_runtime::create_agent_completion_event_runtime;
 use crate::AppState;
-use tauri::Manager;
 use tracing::warn;
 
 const BUNDLED_PLUGIN_DIR_REL: &str = "plugins/app";
@@ -179,6 +178,9 @@ pub(crate) fn run_app_setup(
     startup_coordinator: Arc<StartupCoordinator>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let app_handle = app.handle().clone();
+    let _ = app.manage(crate::remote_server::registry::RemoteHostAppHandle(
+        app_handle.clone(),
+    ));
 
     // Remote event capture + the durable sequencer install in the async setup phase below
     // (`install_remote_stream_from_handle`), not here: this point runs before SQLite is open, and
@@ -291,11 +293,11 @@ fn launch_startup_attempt(
             return;
         }
 
-        let internal_event_bus = InternalEventBus::new();
-        let events: Arc<dyn EventSink> = Arc::new(TeeEventSink::new(vec![
-            Arc::new(TauriEventSink::new(app_handle.clone())) as Arc<dyn EventSink>,
-            Arc::new(BusEventSink::new(internal_event_bus.clone())) as Arc<dyn EventSink>,
-        ]));
+        let event_runtime = create_agent_completion_event_runtime(app_handle.clone());
+        let completion_bus = event_runtime.bus.clone();
+        let completion_correlation = Arc::clone(&event_runtime.correlation);
+        let events = event_runtime.sink;
+        let internal_event_bus = event_runtime.bus;
         let construction_handle = app_handle.clone();
         let construction_coordinator = Arc::clone(&startup_coordinator);
         let migration_boot_id = startup_coordinator.snapshot().boot_id;
@@ -424,12 +426,14 @@ fn launch_startup_attempt(
             Arc::clone(&startup_execution_state),
         );
         if let Err(error) = startup_coordinator.install_listeners(attempt_id, || {
-            crate::commands::agent_workspace_auto_review::install_agent_workspace_auto_review_listeners(
+            crate::commands::agent_workspace_completion_dispatch::
+                install_agent_workspace_completion_dispatch(
                 app_handle.clone(),
+                completion_bus,
+                completion_correlation,
             );
-            crate::commands::agent_workspace_auto_publish::install_agent_workspace_auto_publish_listeners(
-                app_handle.clone(),
-            );
+            crate::commands::agent_workspace_auto_publish::
+                install_agent_workspace_auto_publish_non_completion_sources(app_handle.clone());
         }) {
             tracing::debug!(%error, "Skipping startup listeners for inactive attempt");
             return;

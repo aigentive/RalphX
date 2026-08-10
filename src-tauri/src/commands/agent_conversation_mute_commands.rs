@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use chrono::Utc;
 use serde::Deserialize;
 use tauri::State;
@@ -9,8 +11,10 @@ use crate::commands::agent_sidebar_commands::{
 };
 use crate::commands::unified_chat_commands::AgentConversationWorkspaceResponse;
 use crate::commands::unified_chat_commands::{
-    agent_workspace_response_for_state, agent_workspace_response_without_repair_recovery_for_state,
+    agent_workspace_response_with_pr_supervision_for_state,
+    agent_workspace_response_without_repair_recovery_for_state,
 };
+use crate::commands::ExecutionState;
 use crate::domain::entities::{
     AgentConversationMute, AgentConversationWorkspace, ChatConversation, ChatConversationId,
 };
@@ -26,8 +30,9 @@ pub struct SetAgentConversationMutedInput {
 pub async fn set_agent_conversation_muted(
     input: SetAgentConversationMutedInput,
     state: State<'_, AppState>,
+    execution_state: State<'_, Arc<ExecutionState>>,
 ) -> Result<(), String> {
-    set_agent_conversation_muted_for_app_state(input, state.inner()).await
+    set_agent_conversation_muted_for_app_state(input, state.inner(), execution_state.inner()).await
 }
 
 /// The mute fingerprint needs the SAME workspace projection the sidebar read computes, and
@@ -48,19 +53,27 @@ pub async fn set_agent_conversation_muted(
 pub async fn set_agent_conversation_muted_for_app_state(
     input: SetAgentConversationMutedInput,
     state: &AppState,
+    execution_state: &Arc<ExecutionState>,
 ) -> Result<(), String> {
     let Some(target) = load_agent_conversation_mute_target(input, state).await? else {
         return Ok(());
     };
     let workspace = match target.workspace {
-        Some(workspace) => Some(agent_workspace_response_for_state(state, workspace).await?),
+        Some(workspace) => Some(
+            agent_workspace_response_with_pr_supervision_for_state(
+                state,
+                execution_state,
+                workspace,
+            )
+            .await?,
+        ),
         None => None,
     };
     finish_agent_conversation_mute(state, target.conversation, workspace).await
 }
 
 /// Spawn-free half of the pair: projects through the recovery-free builder ONLY. Its closure
-/// must never name `agent_workspace_response_for_state` — see the note above.
+/// must never name `agent_workspace_response_with_pr_supervision_for_state` — see the note above.
 #[doc(hidden)]
 pub async fn set_agent_conversation_muted_for_state_without_repair_recovery(
     input: SetAgentConversationMutedInput,

@@ -19,7 +19,7 @@ pub(crate) struct ArtifactMutationAuthority {
 }
 
 impl ArtifactMutationAuthority {
-    fn plan_approval_authority(
+    pub(crate) fn plan_approval_authority(
         &self,
     ) -> Option<crate::application::plan_approval_notification_service::PlanApprovalPublishAuthority>
     {
@@ -355,8 +355,9 @@ pub async fn update_plan_artifact_for_state(
         state.events.emit("plan:proposals_may_need_update",serde_json::json!({"artifactId":created.id.as_str(),"previousArtifactId":previous,"proposalIds":linked,"newVersion":created.metadata.version,"sessionId":sessions.first().map(|s|s.id.as_str()),"proposalsRelinked":true}));
     }
     let publish = authority.and_then(|v| v.plan_approval_authority());
-    crate::application::plan_approval_notification_service::reconcile_plan_approval_on_publish(
-        state,
+    let approval_notification_deps = crate::application::plan_approval_notification_service::PlanApprovalNotificationDeps::from_app_state(state);
+    crate::application::plan_approval_notification_service::reconcile_plan_approval_on_publish_with_deps(
+        &approval_notification_deps,
         None,
         created.id.as_str(),
         &sessions,

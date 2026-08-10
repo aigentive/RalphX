@@ -33,6 +33,7 @@ use axum::{
 
 use super::*;
 use crate::application::agent_conversation_workspace::AgentConversationWorkspaceBaseSelection;
+use crate::application::app_state::ApplicationExecutionState;
 use crate::application::agent_workspace_local_commit::{
     commit_agent_workspace_locally, AgentWorkspaceLocalCommitRequest,
 };
@@ -93,7 +94,7 @@ use crate::application::services::pr_merge_poller::import_agent_workspace_pr_com
 use crate::application::GitService;
 use crate::application::{AppState, ChatService};
 use crate::commands::unified_chat_commands::{
-    agent_workspace_response_for_state,
+    agent_workspace_response_with_pr_supervision_for_state,
     agent_workspace_response_without_repair_recovery_for_state,
     get_agent_conversation_workspace_freshness_for_app_state,
     publish_agent_conversation_workspace_for_app_state,
@@ -1306,8 +1307,12 @@ pub async fn check_agent_workspace_publish_readiness(
     Path(conversation_id): Path<String>,
 ) -> Result<Json<AgentWorkspacePublishReadinessResponse>, JsonError> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
-    let workspace =
-        load_agent_workspace_response(state.app_state.as_ref(), &conversation_id).await?;
+    let workspace = load_agent_workspace_response(
+        state.app_state.as_ref(),
+        &state.execution_state,
+        &conversation_id,
+    )
+    .await?;
     let freshness = get_agent_conversation_workspace_freshness_for_app_state(
         &conversation_id,
         Some("full"),
@@ -1401,8 +1406,13 @@ pub async fn update_agent_workspace_from_base(
             pr_url: None,
         })),
         Err(error) => {
-            action_response_for_needs_repair(state.app_state.as_ref(), &conversation_id, error)
-                .await
+            action_response_for_needs_repair(
+                state.app_state.as_ref(),
+                &state.execution_state,
+                &conversation_id,
+                error,
+            )
+            .await
         }
     }
 }
@@ -1413,8 +1423,12 @@ pub async fn publish_agent_workspace(
     Path(conversation_id): Path<String>,
 ) -> Result<Json<AgentWorkspacePublishActionResponse>, JsonError> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
-    let workspace =
-        load_agent_workspace_response(state.app_state.as_ref(), &conversation_id).await?;
+    let workspace = load_agent_workspace_response(
+        state.app_state.as_ref(),
+        &state.execution_state,
+        &conversation_id,
+    )
+    .await?;
     if let Some(response) = publish_action_response_for_existing_workspace_state(
         state.app_state.as_ref(),
         &conversation_id,
@@ -1451,13 +1465,22 @@ pub async fn publish_agent_workspace(
             pr_url: result.pr_url,
         })),
         Err(error) if error == AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE => {
-            let workspace =
-                load_agent_workspace_response(state.app_state.as_ref(), &conversation_id).await?;
+            let workspace = load_agent_workspace_response(
+                state.app_state.as_ref(),
+                &state.execution_state,
+                &conversation_id,
+            )
+            .await?;
             Ok(Json(publish_in_progress_response(workspace)))
         }
         Err(error) => {
-            action_response_for_needs_repair(state.app_state.as_ref(), &conversation_id, error)
-                .await
+            action_response_for_needs_repair(
+                state.app_state.as_ref(),
+                &state.execution_state,
+                &conversation_id,
+                error,
+            )
+            .await
         }
     }
 }
@@ -1485,9 +1508,13 @@ pub async fn commit_agent_workspace_locally_handler(
     )
     .await
     .map_err(|error| json_error(StatusCode::CONFLICT, error, None))?;
-    let workspace = agent_workspace_response_for_state(state.app_state.as_ref(), result.workspace)
-        .await
-        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error, None))?;
+    let workspace = agent_workspace_response_with_pr_supervision_for_state(
+        state.app_state.as_ref(),
+        &state.execution_state,
+        result.workspace,
+    )
+    .await
+    .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error, None))?;
     Ok(Json(CommitAgentWorkspaceLocallyResponse {
         success: true,
         workspace,
@@ -1510,9 +1537,13 @@ pub async fn get_agent_workspace_pr_fix_context(
         load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
     let target =
         resolve_agent_workspace_pr_fix_target(state.app_state.as_ref(), &workspace_entity).await?;
-    let workspace = agent_workspace_response_for_state(state.app_state.as_ref(), workspace_entity)
-        .await
-        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error, None))?;
+    let workspace = agent_workspace_response_with_pr_supervision_for_state(
+        state.app_state.as_ref(),
+        &state.execution_state,
+        workspace_entity,
+    )
+    .await
+    .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error, None))?;
     let events =
         load_agent_workspace_publication_events(state.app_state.as_ref(), &conversation_id).await?;
 
@@ -2661,8 +2692,12 @@ async fn complete_agent_workspace_pr_fix_legacy_for_test(
                 None,
             )
         })?;
-        let workspace =
-            load_agent_workspace_response(state.app_state.as_ref(), &conversation_id).await?;
+        let workspace = load_agent_workspace_response(
+            state.app_state.as_ref(),
+            &state.execution_state,
+            &conversation_id,
+        )
+        .await?;
         return Ok(Json(CompleteAgentWorkspacePrFixResponse {
             success: true,
             status: "blocked".to_string(),
@@ -2687,6 +2722,7 @@ async fn complete_agent_workspace_pr_fix_legacy_for_test(
                 if target.is_ideation_plan() {
                     return complete_ideation_plan_pr_fix_for_terminal_pr(
                         state.app_state.as_ref(),
+                        &state.execution_state,
                         &conversation_id,
                         &workspace,
                         &target,
@@ -2697,6 +2733,7 @@ async fn complete_agent_workspace_pr_fix_legacy_for_test(
                 }
                 return complete_pr_fix_for_terminal_pr(
                     state.app_state.as_ref(),
+                    &state.execution_state,
                     &conversation_id,
                     &workspace,
                     "merged",
@@ -2708,6 +2745,7 @@ async fn complete_agent_workspace_pr_fix_legacy_for_test(
                 if target.is_ideation_plan() {
                     return complete_ideation_plan_pr_fix_for_terminal_pr(
                         state.app_state.as_ref(),
+                        &state.execution_state,
                         &conversation_id,
                         &workspace,
                         &target,
@@ -2718,6 +2756,7 @@ async fn complete_agent_workspace_pr_fix_legacy_for_test(
                 }
                 return complete_pr_fix_for_terminal_pr(
                     state.app_state.as_ref(),
+                    &state.execution_state,
                     &conversation_id,
                     &workspace,
                     "closed",
@@ -2828,7 +2867,12 @@ async fn complete_agent_workspace_pr_fix_legacy_for_test(
     }
 
     if !workspace.auto_publish_enabled {
-        return completed_pr_fix_paused_response(state.app_state.as_ref(), &conversation_id).await;
+        return completed_pr_fix_paused_response(
+            state.app_state.as_ref(),
+            &state.execution_state,
+            &conversation_id,
+        )
+        .await;
     }
 
     if target.is_ideation_plan() {
@@ -2864,8 +2908,12 @@ async fn complete_agent_workspace_pr_fix_legacy_for_test(
                 .map_err(|error| {
                     json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
                 })?;
-            let workspace =
-                load_agent_workspace_response(state.app_state.as_ref(), &conversation_id).await?;
+            let workspace = load_agent_workspace_response(
+                state.app_state.as_ref(),
+                &state.execution_state,
+                &conversation_id,
+            )
+            .await?;
             Ok(Json(CompleteAgentWorkspacePrFixResponse {
                 success: true,
                 status: "published".to_string(),
@@ -2916,8 +2964,12 @@ async fn complete_agent_workspace_pr_fix_legacy_for_test(
                         None,
                     )
                 })?;
-            let workspace =
-                load_agent_workspace_response(state.app_state.as_ref(), &conversation_id).await?;
+            let workspace = load_agent_workspace_response(
+                state.app_state.as_ref(),
+                &state.execution_state,
+                &conversation_id,
+            )
+            .await?;
             Ok(Json(CompleteAgentWorkspacePrFixResponse {
                 success: true,
                 status: "publish_failed".to_string(),
@@ -2946,19 +2998,18 @@ fn schedule_pr_autofix_completion_recovery(
     else {
         return;
     };
-    let runtime_app_handle = state.app_state.app_handle.clone();
+    let runtime_app_handle = None;
     let transition_service = Arc::new(state.app_state.build_transition_service_for_runtime(
         Arc::clone(&state.execution_state),
         runtime_app_handle.clone(),
     ));
-    let chat_service: Arc<dyn ChatService> =
-        Arc::new(state.app_state.build_chat_service_for_runtime(
-            Some(Arc::clone(&state.execution_state)),
-            runtime_app_handle.clone(),
-        ));
+    let chat_service: Arc<dyn ChatService> = Arc::new(
+        state
+            .app_state
+            .build_chat_service_with_execution_state(Arc::clone(&state.execution_state)),
+    );
     let Some(deps) = build_agent_workspace_pr_supervision_recovery_deps(
         state.app_state.as_ref(),
-        runtime_app_handle,
         Some(transition_service),
         Some(chat_service),
         Some(resumer),
@@ -2976,6 +3027,7 @@ fn schedule_pr_autofix_completion_recovery(
 #[cfg(test)]
 async fn complete_ideation_plan_pr_fix_for_terminal_pr(
     state: &AppState,
+    execution_state: &Arc<ApplicationExecutionState>,
     conversation_id: &ChatConversationId,
     workspace: &AgentConversationWorkspace,
     target: &AgentWorkspacePrFixTarget,
@@ -3020,7 +3072,7 @@ async fn complete_ideation_plan_pr_fix_for_terminal_pr(
         )
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
-    let workspace = load_agent_workspace_response(state, conversation_id).await?;
+    let workspace = load_agent_workspace_response(state, execution_state, conversation_id).await?;
     Ok(Json(CompleteAgentWorkspacePrFixResponse {
         success: true,
         status: "skipped_terminal".to_string(),
@@ -3264,8 +3316,12 @@ async fn complete_ideation_plan_pr_fix_publish(
         }
     }
 
-    let workspace_response =
-        load_agent_workspace_response(state.app_state.as_ref(), conversation_id).await?;
+    let workspace_response = load_agent_workspace_response(
+        state.app_state.as_ref(),
+        &state.execution_state,
+        conversation_id,
+    )
+    .await?;
     Ok(Json(CompleteAgentWorkspacePrFixResponse {
         success: true,
         status: "published".to_string(),
@@ -3314,8 +3370,12 @@ async fn finish_ideation_plan_pr_fix_publish_failed(
         ))
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
-    let workspace_response =
-        load_agent_workspace_response(state.app_state.as_ref(), conversation_id).await?;
+    let workspace_response = load_agent_workspace_response(
+        state.app_state.as_ref(),
+        &state.execution_state,
+        conversation_id,
+    )
+    .await?;
     Ok(Json(CompleteAgentWorkspacePrFixResponse {
         success: true,
         status: "publish_failed".to_string(),
@@ -3416,6 +3476,7 @@ async fn settle_pr_fix_workspace_review_handoff(
             );
             let response = pr_fix_workspace_review_blocked_response(
                 state.app_state.as_ref(),
+                &state.execution_state,
                 conversation_id,
                 blocker,
                 "workspace_review_failed",
@@ -3460,6 +3521,7 @@ async fn settle_pr_fix_workspace_review_handoff(
             };
             pr_fix_workspace_review_waiting_response(
                 state.app_state.as_ref(),
+                &state.execution_state,
                 conversation_id,
                 message,
                 status,
@@ -3490,6 +3552,7 @@ async fn settle_pr_fix_workspace_review_handoff(
             })?;
             pr_fix_workspace_review_blocked_response(
                 state.app_state.as_ref(),
+                &state.execution_state,
                 conversation_id,
                 &blocker,
                 classification,
@@ -3503,11 +3566,12 @@ async fn settle_pr_fix_workspace_review_handoff(
 #[cfg(test)]
 async fn pr_fix_workspace_review_waiting_response(
     state: &AppState,
+    execution_state: &Arc<ApplicationExecutionState>,
     conversation_id: &ChatConversationId,
     message: &str,
     classification: &str,
 ) -> Result<Json<CompleteAgentWorkspacePrFixResponse>, JsonError> {
-    let workspace = load_agent_workspace_response(state, conversation_id).await?;
+    let workspace = load_agent_workspace_response(state, execution_state, conversation_id).await?;
     let pr_number = workspace.publication_pr_number;
     let pr_url = workspace.publication_pr_url.clone();
     Ok(Json(CompleteAgentWorkspacePrFixResponse {
@@ -3528,11 +3592,12 @@ async fn pr_fix_workspace_review_waiting_response(
 #[cfg(test)]
 async fn pr_fix_workspace_review_blocked_response(
     state: &AppState,
+    execution_state: &Arc<ApplicationExecutionState>,
     conversation_id: &ChatConversationId,
     message: &str,
     classification: &str,
 ) -> Result<Json<CompleteAgentWorkspacePrFixResponse>, JsonError> {
-    let workspace = load_agent_workspace_response(state, conversation_id).await?;
+    let workspace = load_agent_workspace_response(state, execution_state, conversation_id).await?;
     let pr_number = workspace.publication_pr_number;
     let pr_url = workspace.publication_pr_url.clone();
     Ok(Json(CompleteAgentWorkspacePrFixResponse {
@@ -3717,8 +3782,12 @@ async fn finish_pr_fix_waiting_for_workspace_review(
         ))
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
-    let workspace_response =
-        load_agent_workspace_response(state.app_state.as_ref(), conversation_id).await?;
+    let workspace_response = load_agent_workspace_response(
+        state.app_state.as_ref(),
+        &state.execution_state,
+        conversation_id,
+    )
+    .await?;
     let pr_number = workspace_response.publication_pr_number;
     let pr_url = workspace_response.publication_pr_url.clone();
     Ok(Json(CompleteAgentWorkspacePrFixResponse {
@@ -3982,8 +4051,12 @@ async fn finish_pr_fix_blocked_by_workspace_review(
         ))
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
-    let workspace_response =
-        load_agent_workspace_response(state.app_state.as_ref(), conversation_id).await?;
+    let workspace_response = load_agent_workspace_response(
+        state.app_state.as_ref(),
+        &state.execution_state,
+        conversation_id,
+    )
+    .await?;
     let pr_number = workspace_response.publication_pr_number;
     let pr_url = workspace_response.publication_pr_url.clone();
     Ok(Json(CompleteAgentWorkspacePrFixResponse {
@@ -4133,6 +4206,7 @@ pub(crate) async fn settle_workspace_review_publish_authorization(
     // Preserve a heap boundary as review settlement enters the durable repair continuation.
     if Box::pin(resume_durable_agent_workspace_repair_publish(
         state.app_state.as_ref(),
+        &state.execution_state,
         conversation_id,
         false,
     ))
@@ -4182,6 +4256,7 @@ mod tests;
 #[cfg(test)]
 async fn complete_pr_fix_for_terminal_pr(
     state: &AppState,
+    execution_state: &Arc<ApplicationExecutionState>,
     conversation_id: &ChatConversationId,
     workspace: &AgentConversationWorkspace,
     terminal_status: &str,
@@ -4209,7 +4284,7 @@ async fn complete_pr_fix_for_terminal_pr(
         ))
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
-    let workspace = load_agent_workspace_response(state, conversation_id).await?;
+    let workspace = load_agent_workspace_response(state, execution_state, conversation_id).await?;
     let pr_number = workspace.publication_pr_number;
     let pr_url = workspace.publication_pr_url.clone();
     Ok(Json(CompleteAgentWorkspacePrFixResponse {
@@ -4230,10 +4305,11 @@ async fn complete_pr_fix_for_terminal_pr(
 #[cfg(test)]
 async fn completed_pr_fix_paused_response(
     state: &AppState,
+    execution_state: &Arc<ApplicationExecutionState>,
     conversation_id: &ChatConversationId,
 ) -> Result<Json<CompleteAgentWorkspacePrFixResponse>, JsonError> {
     let message = "PR fix completed, but Auto Publish is paused. Manual Commit & Publish is required to update the pull request.";
-    let workspace = load_agent_workspace_response(state, conversation_id).await?;
+    let workspace = load_agent_workspace_response(state, execution_state, conversation_id).await?;
     let pr_number = workspace.publication_pr_number;
     let pr_url = workspace.publication_pr_url.clone();
     Ok(Json(CompleteAgentWorkspacePrFixResponse {
@@ -4253,10 +4329,11 @@ async fn completed_pr_fix_paused_response(
 
 async fn load_agent_workspace_response(
     state: &AppState,
+    execution_state: &Arc<ApplicationExecutionState>,
     conversation_id: &ChatConversationId,
 ) -> Result<AgentConversationWorkspaceResponse, JsonError> {
     let workspace = load_agent_workspace_entity(state, conversation_id).await?;
-    agent_workspace_response_for_state(state, workspace)
+    agent_workspace_response_with_pr_supervision_for_state(state, execution_state, workspace)
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error, None))
 }
@@ -5129,10 +5206,11 @@ fn publish_readiness_recommended_actions(
 
 async fn action_response_for_needs_repair(
     state: &AppState,
+    execution_state: &Arc<ApplicationExecutionState>,
     conversation_id: &ChatConversationId,
     error: String,
 ) -> Result<Json<AgentWorkspacePublishActionResponse>, JsonError> {
-    let workspace = load_agent_workspace_response(state, conversation_id).await?;
+    let workspace = load_agent_workspace_response(state, execution_state, conversation_id).await?;
     if workspace.publication_push_status.as_deref() != Some("needs_agent") {
         return Err(json_error(StatusCode::CONFLICT, error, None));
     }

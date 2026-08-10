@@ -292,6 +292,8 @@ mod startup_remote_queue_send_tests;
 #[cfg(test)]
 mod startup_remote_resume_tests;
 pub mod startup_runtime_builders;
+#[cfg(test)]
+mod startup_runtime_builders_tests;
 pub mod startup_status;
 pub mod startup_transition_factory;
 pub mod supervisor_service;

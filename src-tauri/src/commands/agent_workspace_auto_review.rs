@@ -4,8 +4,7 @@ use std::time::Duration;
 
 use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
-use serde::Deserialize;
-use tauri::{Emitter, Listener, Manager, Runtime};
+use tauri::{Emitter, Manager, Runtime};
 
 use crate::application::agent_workspace_review::{
     load_agent_workspace_review_context, workspace_review_mode_is_eligible,
@@ -13,7 +12,6 @@ use crate::application::agent_workspace_review::{
 use crate::application::agent_workspace_review_auto_merge::{
     start_guarded_agent_workspace_review, WorkspaceReviewStartOrigin,
 };
-use crate::application::chat_service::events::{AGENT_RUN_COMPLETED, AGENT_TURN_COMPLETED};
 use crate::application::git_service::git_cmd;
 use crate::application::AppState;
 use crate::commands::ExecutionState;
@@ -25,12 +23,6 @@ use crate::domain::entities::{
 use crate::domain::services::running_agent_registry::RunningAgentKey;
 
 const AUTO_REVIEW_COMPLETION_SETTLE_DELAY: Duration = Duration::from_millis(250);
-
-#[derive(Debug, Deserialize)]
-struct AgentCompletionPayload {
-    conversation_id: String,
-    context_type: ChatContextType,
-}
 
 pub(crate) struct AutoReviewGuard {
     conversation_id: String,
@@ -108,53 +100,13 @@ impl AutoReviewSkipReason {
     }
 }
 
-pub(crate) fn install_agent_workspace_auto_review_listeners<R>(app_handle: tauri::AppHandle<R>)
-where
-    R: Runtime,
-{
-    let run_completed_handle = app_handle.clone();
-    app_handle.listen_any(AGENT_RUN_COMPLETED, move |event| {
-        spawn_auto_review_from_completion_event(
-            run_completed_handle.clone(),
-            AGENT_RUN_COMPLETED,
-            event.payload(),
-        );
-    });
-
-    let turn_completed_handle = app_handle.clone();
-    app_handle.listen_any(AGENT_TURN_COMPLETED, move |event| {
-        spawn_auto_review_from_completion_event(
-            turn_completed_handle.clone(),
-            AGENT_TURN_COMPLETED,
-            event.payload(),
-        );
-    });
-}
-
-pub(crate) fn spawn_auto_review_from_completion_event<R>(
+pub(crate) fn spawn_auto_review_from_completion_payload<R>(
     app_handle: tauri::AppHandle<R>,
     event_name: &'static str,
-    payload: &str,
+    completed_conversation_id: ChatConversationId,
 ) where
     R: Runtime,
 {
-    let payload = match serde_json::from_str::<AgentCompletionPayload>(payload) {
-        Ok(payload) => payload,
-        Err(error) => {
-            tracing::warn!(
-                event_name,
-                error = %error,
-                "Skipping agent workspace auto-review: completion payload could not be parsed"
-            );
-            return;
-        }
-    };
-
-    if payload.context_type != ChatContextType::Project {
-        return;
-    }
-
-    let completed_conversation_id = ChatConversationId::from_string(payload.conversation_id);
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(AUTO_REVIEW_COMPLETION_SETTLE_DELAY).await;
         match resolve_workspace_conversation_id_for_review_event(

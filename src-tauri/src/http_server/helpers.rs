@@ -184,8 +184,8 @@ pub fn assert_session_mutable(session: &IdeationSession) -> AppResult<()> {
 
 /// Emit a `dependency:added` event to the frontend.
 ///
-/// Guards with `if let Some(handle) = &state.app_handle` so tests and HTTP-only
-/// contexts don't fail. Payload matches `DependencyEventSchema` in `useIdeationEvents.ts`:
+/// Delivers through the shared EventSink so HTTP-only and test contexts preserve the
+/// same non-fatal payload contract. Payload matches `DependencyEventSchema` in `useIdeationEvents.ts`:
 /// `{ proposalId: String, dependsOnId: String }`.
 pub fn emit_dependency_added(state: &AppState, proposal_id: &str, depends_on_id: &str) {
     crate::http_server::emit_app_event(
@@ -877,6 +877,7 @@ pub async fn archive_proposal_impl(
 /// - Errors from `apply_proposals_core`
 pub async fn finalize_proposals_impl(
     state: &AppState,
+    execution_state: &std::sync::Arc<crate::application::app_state::ApplicationExecutionState>,
     session_id: &str,
     _is_external: bool,
 ) -> AppResult<crate::http_server::types::FinalizeProposalsResponse> {
@@ -1031,7 +1032,7 @@ pub async fn finalize_proposals_impl(
         base_branch_override: None,
     };
 
-    let result = apply_proposals_core(state, input).await?;
+    let result = apply_proposals_core(state, execution_state, input).await?;
 
     let session_status = if result.session_converted {
         "accepted".to_string()
@@ -1127,10 +1128,13 @@ pub(crate) async fn automation_bridge_finalize_authorized(
 /// - Errors from `apply_proposals_core`
 pub async fn apply_pending_proposals_core_for_session(
     state: &AppState,
+    execution_state: &std::sync::Arc<crate::application::app_state::ApplicationExecutionState>,
     session_id: &str,
 ) -> AppResult<crate::commands::ideation_commands::ApplyProposalsResult> {
     crate::application::ideation_finalize_execution::apply_pending_proposals_core_for_session(
-        state, session_id,
+        state,
+        execution_state,
+        session_id,
     )
     .await
 }

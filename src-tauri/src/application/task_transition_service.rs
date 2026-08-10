@@ -21,13 +21,9 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::application::agent_client_bundle::{AgentClientBundle, AgentClientFactoryBundle};
 use crate::application::manual_role_default_service::ManualRoleDefaultService;
-use crate::application::runtime_factory::{
-    build_chat_service_with_fallback, ChatRuntimeFactoryDeps,
-};
+use crate::application::runtime_factory::{build_chat_service_from_deps, ChatRuntimeFactoryDeps};
 use crate::application::task_restart::FailedRecoveryEvidence;
-use crate::application::{
-    AppChatService, AppState, ChatService, GitService, InteractiveProcessRegistry,
-};
+use crate::application::{AppChatService, ChatService, GitService, InteractiveProcessRegistry};
 use crate::commands::ExecutionState;
 use crate::domain::agents::{AgentHarnessKind, AgenticClient};
 use crate::domain::entities::task_metadata::GIT_ISOLATION_ERROR_PREFIX;
@@ -81,7 +77,6 @@ fn build_transition_chat_service_fallback(
     running_agent_registry: Arc<dyn RunningAgentRegistry>,
     memory_event_repo: Arc<dyn MemoryEventRepository>,
     execution_state: Arc<ExecutionState>,
-    app_handle: Option<AppHandle>,
 ) -> AppChatService {
     let deps = ChatRuntimeFactoryDeps::from_core(
         chat_message_repo,
@@ -104,7 +99,7 @@ fn build_transition_chat_service_fallback(
         memory_event_repo,
     );
 
-    build_chat_service_with_fallback(&app_handle, Some(execution_state), &deps)
+    build_chat_service_from_deps(Some(execution_state), &deps)
 }
 
 struct ExecutionEntryGuard {
@@ -1089,17 +1084,6 @@ impl TaskTransitionService {
 
     fn rebuild_chat_service(&mut self) {
         let started_at = Instant::now();
-        if let Some(handle) = self._app_handle.as_ref() {
-            if let Some(app_state) = handle.try_state::<AppState>() {
-                self.chat_service = Arc::new(app_state.build_chat_service_for_runtime(
-                    Some(Arc::clone(&self.execution_state)),
-                    self._app_handle.clone(),
-                ));
-                Self::log_build_step("rebuild_chat_service_app_state", started_at);
-                return;
-            }
-        }
-
         let mut service = build_transition_chat_service_fallback(
             Arc::clone(&self.chat_message_repo),
             Arc::clone(&self.chat_attachment_repo),
@@ -1118,7 +1102,6 @@ impl TaskTransitionService {
             Arc::clone(&self.running_agent_registry),
             Arc::clone(&self.memory_event_repo),
             Arc::clone(&self.execution_state),
-            self._app_handle.clone(),
         );
 
         if let Some(repo) = self.execution_settings_repo.as_ref() {
@@ -1193,57 +1176,24 @@ impl TaskTransitionService {
 
         // Create the unified chat service for worker spawning
         let started_at = Instant::now();
-        let chat_service: Arc<dyn ChatService> = {
-            let service = if let Some(ref handle) = app_handle {
-                if let Some(app_state) = handle.try_state::<AppState>() {
-                    app_state.build_chat_service_for_runtime(
-                        Some(Arc::clone(&execution_state)),
-                        app_handle.clone(),
-                    )
-                } else {
-                    build_transition_chat_service_fallback(
-                        Arc::clone(&chat_message_repo),
-                        Arc::clone(&chat_attachment_repo),
-                        Arc::clone(&conversation_repo),
-                        Arc::clone(&agent_run_repo),
-                        Arc::clone(&project_repo),
-                        Arc::clone(&task_repo),
-                        Arc::clone(&task_dep_repo),
-                        Arc::clone(&ideation_session_repo),
-                        Arc::clone(&activity_event_repo),
-                        Arc::clone(&message_queue),
-                        Arc::clone(&running_agent_registry),
-                        Arc::clone(&memory_event_repo),
-                        Arc::clone(&execution_state),
-                        Some(handle.clone()),
-                    )
-                }
-            } else {
-                build_transition_chat_service_fallback(
-                    Arc::clone(&chat_message_repo),
-                    Arc::clone(&chat_attachment_repo),
-                    Arc::clone(&conversation_repo),
-                    Arc::clone(&agent_run_repo),
-                    Arc::clone(&project_repo),
-                    Arc::clone(&task_repo),
-                    Arc::clone(&task_dep_repo),
-                    Arc::clone(&ideation_session_repo),
-                    Arc::clone(&activity_event_repo),
-                    Arc::clone(&message_queue),
-                    Arc::clone(&running_agent_registry),
-                    Arc::clone(&memory_event_repo),
-                    Arc::clone(&execution_state),
-                    None,
-                )
-            };
-            Arc::new(service)
-        };
+        let chat_service: Arc<dyn ChatService> = Arc::new(build_transition_chat_service_fallback(
+            Arc::clone(&chat_message_repo),
+            Arc::clone(&chat_attachment_repo),
+            Arc::clone(&conversation_repo),
+            Arc::clone(&agent_run_repo),
+            Arc::clone(&project_repo),
+            Arc::clone(&task_repo),
+            Arc::clone(&task_dep_repo),
+            Arc::clone(&ideation_session_repo),
+            Arc::clone(&activity_event_repo),
+            Arc::clone(&message_queue),
+            Arc::clone(&running_agent_registry),
+            Arc::clone(&memory_event_repo),
+            Arc::clone(&execution_state),
+        ));
         Self::log_build_step("initial_chat_service", started_at);
 
-        let app_state = app_handle
-            .as_ref()
-            .and_then(|handle| handle.try_state::<AppState>());
-        let event_sink = app_state.as_ref().map(|state| Arc::clone(&state.events));
+        let event_sink = None;
         let throttled_emitter = app_handle.as_ref().and_then(|handle| {
             handle
                 .try_state::<Arc<crate::application::ThrottledEmitter>>()
@@ -1353,6 +1303,11 @@ impl TaskTransitionService {
         self
     }
 
+    pub(crate) fn with_chat_service(mut self, chat_service: Arc<dyn ChatService>) -> Self {
+        self.chat_service = chat_service;
+        self
+    }
+
     pub fn with_branch_update_repo(mut self, repo: Arc<dyn BranchUpdateRepository>) -> Self {
         self.chat_service.set_branch_update_repo(Arc::clone(&repo));
         self.branch_update_repo = Some(repo);
@@ -1423,23 +1378,6 @@ impl TaskTransitionService {
         mut self,
         repo: Arc<dyn ExecutionSettingsRepository>,
     ) -> Self {
-        let app_agent_lane_settings_repo = self
-            ._app_handle
-            .as_ref()
-            .and_then(|handle| handle.try_state::<AppState>())
-            .map(|app_state| Arc::clone(&app_state.agent_lane_settings_repo));
-        let app_agent_provider_settings_repo = self
-            ._app_handle
-            .as_ref()
-            .and_then(|handle| handle.try_state::<AppState>())
-            .map(|app_state| Arc::clone(&app_state.agent_provider_settings_repo));
-        if let Some(agent_lane_settings_repo) = app_agent_lane_settings_repo.as_ref() {
-            self.agent_lane_settings_repo = Some(Arc::clone(agent_lane_settings_repo));
-        }
-        if let Some(agent_provider_settings_repo) = app_agent_provider_settings_repo.as_ref() {
-            self.agent_provider_settings_repo = Some(Arc::clone(agent_provider_settings_repo));
-        }
-
         self.execution_settings_repo = Some(Arc::clone(&repo));
         self.rebuild_chat_service();
         self.rebuild_agent_spawner();
@@ -1494,35 +1432,16 @@ impl TaskTransitionService {
             || agent_lane_settings_repo.is_some()
             || agent_provider_settings_repo.is_some()
             || manual_role_default_service.is_some();
-        let app_agent_lane_settings_repo =
-            if execution_settings_repo.is_some() && agent_lane_settings_repo.is_none() {
-                self._app_handle
-                    .as_ref()
-                    .and_then(|handle| handle.try_state::<AppState>())
-                    .map(|app_state| Arc::clone(&app_state.agent_lane_settings_repo))
-            } else {
-                None
-            };
-        let app_agent_provider_settings_repo =
-            if execution_settings_repo.is_some() && agent_provider_settings_repo.is_none() {
-                self._app_handle
-                    .as_ref()
-                    .and_then(|handle| handle.try_state::<AppState>())
-                    .map(|app_state| Arc::clone(&app_state.agent_provider_settings_repo))
-            } else {
-                None
-            };
-
         if let Some(clients) = agent_clients {
             self.agent_client_factories = AgentClientFactoryBundle::from_client_bundle(&clients);
         }
         if let Some(repo) = execution_settings_repo {
             self.execution_settings_repo = Some(repo);
         }
-        if let Some(repo) = agent_lane_settings_repo.or(app_agent_lane_settings_repo) {
+        if let Some(repo) = agent_lane_settings_repo {
             self.agent_lane_settings_repo = Some(repo);
         }
-        if let Some(repo) = agent_provider_settings_repo.or(app_agent_provider_settings_repo) {
+        if let Some(repo) = agent_provider_settings_repo {
             self.agent_provider_settings_repo = Some(repo);
         }
         if let Some(defaults) = manual_role_default_service {
@@ -3676,10 +3595,8 @@ impl TaskTransitionService {
         // inner function fans out into every on_enter arm which, combined with
         // TaskServices and TransitionHandler state, can exceed the default 8 MB
         // thread stack in deeply-nested async call chains (e.g. StartupJobRunner).
-        Box::pin(self.execute_entry_actions_with_notification_context(
-            task_id, task, status, None,
-        ))
-        .await;
+        Box::pin(self.execute_entry_actions_with_notification_context(task_id, task, status, None))
+            .await;
     }
 
     async fn execute_entry_actions_with_notification_context(

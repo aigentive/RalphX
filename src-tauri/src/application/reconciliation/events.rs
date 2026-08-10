@@ -1,6 +1,5 @@
 // Evidence building, event recording, prompts, and lookups for reconciliation.
 
-use tauri::{Emitter, Manager};
 use tracing::warn;
 
 use crate::application::harness_runtime_registry::default_reconciliation_merger_timeout_secs;
@@ -348,16 +347,7 @@ impl ReconciliationRunner {
         context: RecoveryContext,
         reason: String,
     ) -> bool {
-        let notification_service = self.notification_service.clone().or_else(|| {
-            self.app_handle.as_ref().and_then(|handle| {
-                handle
-                    .try_state::<crate::application::AppState>()
-                    .map(|state| state.notification_service())
-            })
-        });
-        if notification_service.is_none() && self.app_handle.is_none() {
-            return false;
-        }
+        let notification_service = self.notification_service.clone();
 
         let instance_id = uuid::Uuid::new_v4().to_string();
         if !self
@@ -393,9 +383,7 @@ impl ReconciliationRunner {
             },
         };
 
-        if let Some(handle) = &self.app_handle {
-            let _ = handle.emit("recovery:prompt", payload);
-        }
+        let _ = ralphx_events::emit_serialized(self.events.as_ref(), "recovery:prompt", &payload);
         if let Some(notification_service) = notification_service {
             notification_service
                 .record(

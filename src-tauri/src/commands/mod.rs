@@ -16,6 +16,9 @@ mod agent_plan_commands_tests;
 pub mod agent_profile_commands;
 pub mod agent_sidebar_commands;
 pub mod agent_terminal_commands;
+pub(crate) mod agent_workspace_completion_dispatch;
+#[cfg(test)]
+mod agent_workspace_completion_dispatch_tests;
 pub(crate) mod agent_workspace_auto_publish;
 #[cfg(test)]
 mod agent_workspace_auto_publish_tests;
@@ -163,6 +166,12 @@ pub mod validation_commands;
 pub mod workflow_commands;
 pub mod workspace_open_commands;
 pub mod workspace_review_settings_commands;
+
+#[doc(hidden)]
+pub use agent_workspace_completion_dispatch::{
+    install_agent_workspace_completion_dispatch_for_test,
+    AgentWorkspaceCompletionDispatchTestHandle,
+};
 
 // Re-export commands for registration
 pub use crate::application::automation::api::{

@@ -41,13 +41,9 @@ async fn seed_claim(state: &AppState, message_id: &str) -> RemoteQueuedSendReque
 async fn remote_queue_send_entry_gone_settles_and_reentry_is_noop() {
     let state = AppState::new_test();
     let row = seed_claim(&state, "gone").await;
-    dispatch_one_remote_queued_send(
-        &state,
-        &Arc::new(ExecutionState::new()),
-        &crate::testing::create_mock_app_handle(),
-    )
-    .await
-    .unwrap();
+    dispatch_one_remote_queued_send(&state, &Arc::new(ExecutionState::new()))
+        .await
+        .unwrap();
     let settled = state
         .remote_queued_send_request_repo
         .get(&row.id)
@@ -59,13 +55,9 @@ async fn remote_queue_send_entry_gone_settles_and_reentry_is_noop() {
         settled.error_code.as_deref(),
         Some(crate::application::remote_queue_send_intent::REMOTE_QUEUE_SEND_ENTRY_GONE)
     );
-    dispatch_one_remote_queued_send(
-        &state,
-        &Arc::new(ExecutionState::new()),
-        &crate::testing::create_mock_app_handle(),
-    )
-    .await
-    .unwrap();
+    dispatch_one_remote_queued_send(&state, &Arc::new(ExecutionState::new()))
+        .await
+        .unwrap();
     assert_eq!(
         state
             .remote_queued_send_request_repo
@@ -98,13 +90,9 @@ async fn remote_queue_send_stale_claim_is_terminal_and_never_dispatched() {
             .unwrap(),
         1
     );
-    dispatch_one_remote_queued_send(
-        &state,
-        &Arc::new(ExecutionState::new()),
-        &crate::testing::create_mock_app_handle(),
-    )
-    .await
-    .unwrap();
+    dispatch_one_remote_queued_send(&state, &Arc::new(ExecutionState::new()))
+        .await
+        .unwrap();
     assert_eq!(
         state
             .remote_queued_send_request_repo
@@ -153,13 +141,9 @@ async fn remote_queue_send_run_changed_preserves_active_run_and_queue() {
         row.conversation_id.clone(),
     ));
     state.agent_run_repo.create(active.clone()).await.unwrap();
-    dispatch_one_remote_queued_send(
-        &state,
-        &Arc::new(ExecutionState::new()),
-        &crate::testing::create_mock_app_handle(),
-    )
-    .await
-    .unwrap();
+    dispatch_one_remote_queued_send(&state, &Arc::new(ExecutionState::new()))
+        .await
+        .unwrap();
     let settled = state
         .remote_queued_send_request_repo
         .get(&row.id)
@@ -199,13 +183,9 @@ async fn remote_queue_send_provider_disabled_preserves_queue() {
     state
         .message_queue
         .queue_back_existing(ChatContextType::Project, &row.conversation_id, queued);
-    dispatch_one_remote_queued_send(
-        &state,
-        &Arc::new(ExecutionState::new()),
-        &crate::testing::create_mock_app_handle(),
-    )
-    .await
-    .unwrap();
+    dispatch_one_remote_queued_send(&state, &Arc::new(ExecutionState::new()))
+        .await
+        .unwrap();
     let settled = state
         .remote_queued_send_request_repo
         .get(&row.id)

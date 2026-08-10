@@ -20,16 +20,27 @@ const WRAPPERS: &[Wrapper] = &[
     Wrapper::function("emit_serialized_http_event", Some(1)),
     Wrapper::function("emit_queue_changed", None),
     Wrapper::function("emit_task_lifecycle_event", Some(1)),
+    Wrapper::function("emit_task_lifecycle_event_to_sink", Some(1)),
     Wrapper::function("emit_ticketing_operation_event", None),
     Wrapper::method("TauriEventSink::emit", Some(1)),
+    // #993 correlated event-bus cutover: the Tauri emitter trait and the sink that fans a
+    // frontend event plus one internal-bus envelope. Both forward the caller's event name.
+    Wrapper::method("AppHandle::emit_completion_event", Some(0)),
+    Wrapper::method("CorrelatedTauriBusEventSink::emit", Some(0)),
     Wrapper::method("TauriFrameSink::emit", Some(1)),
     Wrapper::method("TauriLifecycleSink::emit", Some(1)),
     // `test-utils`-gated remote host fixture; same forwarding shape as `TauriEventSink::emit`,
     // and it lives outside a `_tests.rs` file only because the harness is a shared fixture.
     Wrapper::method("RemoteHostHarness::emit", Some(1)),
+    // Same shape and same reason as `RemoteHostHarness::emit`: a `#[doc(hidden)]` test handle
+    // that forwards to the sink, living outside a `_tests.rs` file because the fixture is shared.
+    Wrapper::method("AgentWorkspaceCompletionDispatchTestHandle::emit", Some(0)),
     Wrapper::method("ThrottledEmitter::new", None),
     Wrapper::method("ThrottledEmitter::emit", Some(0)),
     Wrapper::method("AppChatService::emit_event", Some(0)),
+    // Main's #993 event-bus cutover wraps the sink for the streaming path. Same forwarding
+    // shape as `AppChatService::emit_event`: `emit(&self, event: &str, payload)`.
+    Wrapper::method("ChatEventEmitter::emit", Some(0)),
     Wrapper::method("EnrichedEventEmitter::emit", Some(0)),
     Wrapper::method("EnrichedEventEmitter::emit_with_payload", Some(0)),
 ];

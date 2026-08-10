@@ -1,10 +1,8 @@
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
-use tauri::AppHandle;
-
 use crate::application::{AppState, ExecutionState, ReconciliationRunner, TaskTransitionService};
 use crate::domain::entities::{InternalStatus, Task};
+use serde::{Deserialize, Serialize};
 
 pub(crate) fn build_transition_service_for_recovery(
     app_state: &AppState,
@@ -12,7 +10,7 @@ pub(crate) fn build_transition_service_for_recovery(
 ) -> Arc<TaskTransitionService> {
     Arc::new(
         app_state
-            .build_transition_service_with_execution_state(execution_state)
+            .build_transition_service_for_runtime(execution_state, None)
             .with_step_repo(Arc::clone(&app_state.task_step_repo)),
     )
 }
@@ -20,7 +18,6 @@ pub(crate) fn build_transition_service_for_recovery(
 pub(crate) fn build_reconciler_for_recovery(
     app_state: &AppState,
     execution_state: Arc<ExecutionState>,
-    app: AppHandle,
 ) -> ReconciliationRunner {
     ReconciliationRunner::new(
         Arc::clone(&app_state.task_repo),
@@ -38,7 +35,7 @@ pub(crate) fn build_reconciler_for_recovery(
         Arc::clone(&app_state.agent_run_repo),
         build_transition_service_for_recovery(app_state, execution_state.clone()),
         execution_state,
-        Some(app),
+        None,
     )
     .with_prompt_tracker(Arc::clone(&app_state.recovery_prompt_tracker))
     .with_notification_service(app_state.notification_service())

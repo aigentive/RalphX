@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use ralphx_events::RecordingEventSink;
 use ralphx_lib::application::{
     AppState, InteractiveProcessKey, InteractiveProcessRegistry, StopMode, TaskCleanupService,
     TaskGroup,
@@ -38,7 +39,7 @@ async fn test_cleanup_single_task_deletes_from_db() {
         Arc::clone(&state.task_repo),
         Arc::clone(&state.project_repo),
         Arc::clone(&state.running_agent_registry),
-        None,
+        Arc::clone(&state.events),
     );
 
     service
@@ -66,7 +67,7 @@ async fn test_cleanup_task_ref_deletes_from_db() {
         Arc::clone(&state.task_repo),
         Arc::clone(&state.project_repo),
         Arc::clone(&state.running_agent_registry),
-        None,
+        Arc::clone(&state.events),
     );
     let agent_stopped = service.cleanup_task_ref(&created).await.unwrap();
     assert!(!agent_stopped); // backlog task has no active agent
@@ -119,7 +120,7 @@ async fn test_cleanup_tasks_batch() {
         Arc::clone(&state.task_repo),
         Arc::clone(&state.project_repo),
         Arc::clone(&state.running_agent_registry),
-        None,
+        Arc::clone(&state.events),
     );
 
     let report = service
@@ -178,7 +179,7 @@ async fn test_cleanup_tasks_in_group_by_session() {
         Arc::clone(&state.task_repo),
         Arc::clone(&state.project_repo),
         Arc::clone(&state.running_agent_registry),
-        None,
+        Arc::clone(&state.events),
     );
 
     let report = service
@@ -226,7 +227,7 @@ async fn test_cleanup_tasks_in_group_by_status() {
         Arc::clone(&state.task_repo),
         Arc::clone(&state.project_repo),
         Arc::clone(&state.running_agent_registry),
-        None,
+        Arc::clone(&state.events),
     );
 
     let group = TaskGroup::Status {
@@ -289,7 +290,7 @@ async fn test_cleanup_tasks_in_group_uncategorized() {
         Arc::clone(&state.task_repo),
         Arc::clone(&state.project_repo),
         Arc::clone(&state.running_agent_registry),
-        None,
+        Arc::clone(&state.events),
     );
 
     let report = service
@@ -336,7 +337,7 @@ async fn test_cleanup_skips_plan_merge_tasks() {
         Arc::clone(&state.task_repo),
         Arc::clone(&state.project_repo),
         Arc::clone(&state.running_agent_registry),
-        None,
+        Arc::clone(&state.events),
     );
 
     let group = TaskGroup::Status {
@@ -370,7 +371,7 @@ async fn test_cleanup_empty_batch() {
         Arc::clone(&state.task_repo),
         Arc::clone(&state.project_repo),
         Arc::clone(&state.running_agent_registry),
-        None,
+        Arc::clone(&state.events),
     );
 
     let report = service
@@ -391,7 +392,7 @@ async fn test_cleanup_empty_group() {
         Arc::clone(&state.task_repo),
         Arc::clone(&state.project_repo),
         Arc::clone(&state.running_agent_registry),
-        None,
+        Arc::clone(&state.events),
     );
 
     let group = TaskGroup::Status {
@@ -432,7 +433,7 @@ async fn test_cleanup_tasks_archives_task_idempotently() {
         Arc::clone(&state.task_repo),
         Arc::clone(&state.project_repo),
         Arc::clone(&state.running_agent_registry),
-        None,
+        Arc::clone(&state.events),
     );
 
     // Wrap the repo's delete to re-insert after deletion
@@ -521,7 +522,7 @@ async fn test_cleanup_removes_ipr_entry_for_executing_task() {
         Arc::clone(&state.task_repo),
         Arc::clone(&state.project_repo),
         Arc::clone(&state.running_agent_registry),
-        None,
+        Arc::clone(&state.events),
     )
     .with_interactive_process_registry(Arc::clone(&ipr));
 
@@ -612,7 +613,7 @@ async fn test_cleanup_batch_removes_all_ipr_entries() {
         Arc::clone(&state.task_repo),
         Arc::clone(&state.project_repo),
         Arc::clone(&state.running_agent_registry),
-        None,
+        Arc::clone(&state.events),
     )
     .with_interactive_process_registry(Arc::clone(&ipr));
 
@@ -666,7 +667,7 @@ async fn test_cleanup_without_ipr_does_not_panic() {
         Arc::clone(&state.task_repo),
         Arc::clone(&state.project_repo),
         Arc::clone(&state.running_agent_registry),
-        None,
+        Arc::clone(&state.events),
     );
 
     // Should not panic even without IPR
@@ -868,7 +869,7 @@ async fn test_stop_ideation_agent_ideation_key_cleanup() {
         Arc::clone(&state.task_repo),
         Arc::clone(&state.project_repo),
         Arc::clone(&state.running_agent_registry),
-        None,
+        Arc::clone(&state.events),
     )
     .with_interactive_process_registry(Arc::clone(&ipr));
 
@@ -919,7 +920,7 @@ async fn test_stop_ideation_agent_session_key_cleanup() {
         Arc::clone(&state.task_repo),
         Arc::clone(&state.project_repo),
         Arc::clone(&state.running_agent_registry),
-        None,
+        Arc::clone(&state.events),
     )
     .with_interactive_process_registry(Arc::clone(&ipr));
 
@@ -948,7 +949,7 @@ async fn test_stop_ideation_agent_no_process_returns_false() {
         Arc::clone(&state.task_repo),
         Arc::clone(&state.project_repo),
         Arc::clone(&state.running_agent_registry),
-        None,
+        Arc::clone(&state.events),
     )
     .with_interactive_process_registry(Arc::clone(&ipr));
 
@@ -972,7 +973,7 @@ async fn test_stop_ideation_agent_ipr_not_set_returns_false() {
         Arc::clone(&state.task_repo),
         Arc::clone(&state.project_repo),
         Arc::clone(&state.running_agent_registry),
-        None,
+        Arc::clone(&state.events),
     );
 
     let stopped = service.stop_ideation_session_agent(session_id).await;
@@ -1010,7 +1011,7 @@ async fn test_stop_ideation_agent_idempotent_second_call_returns_false() {
         Arc::clone(&state.task_repo),
         Arc::clone(&state.project_repo),
         Arc::clone(&state.running_agent_registry),
-        None,
+        Arc::clone(&state.events),
     )
     .with_interactive_process_registry(Arc::clone(&ipr));
 
@@ -1040,7 +1041,7 @@ async fn test_stop_ideation_agent_stop_err_still_returns_true() {
         Arc::clone(&state.task_repo),
         Arc::clone(&state.project_repo),
         err_registry,
-        None,
+        Arc::clone(&state.events),
     )
     .with_interactive_process_registry(Arc::clone(&ipr));
 
@@ -1058,15 +1059,14 @@ async fn test_stop_ideation_agent_stop_err_still_returns_true() {
 }
 
 /// Test 7 + 8: Event payload context_type correctness.
-/// Note: Tauri AppHandle is not constructable in unit tests, so event emission
-/// cannot be directly observed. These tests verify that the correct context_type
-/// is matched (i.e., the registry key used for stop() matches what was registered),
-/// which determines the event payload's context_type field.
+/// RecordingEventSink makes the emitted payload observable without a Tauri AppHandle.
 ///
 /// "ideation" key → stop() uses RunningAgentKey("ideation", ...) → events use "ideation"
 #[tokio::test]
 async fn test_stop_ideation_agent_event_context_type_ideation_key() {
-    let state = AppState::new_test();
+    let mut state = AppState::new_test();
+    let events = RecordingEventSink::new();
+    state.events = Arc::new(events.clone());
     let ipr = Arc::new(InteractiveProcessRegistry::new());
     let session_id = "event-ideation-session";
 
@@ -1090,15 +1090,21 @@ async fn test_stop_ideation_agent_event_context_type_ideation_key() {
         Arc::clone(&state.task_repo),
         Arc::clone(&state.project_repo),
         Arc::clone(&state.running_agent_registry),
-        None, // AppHandle not available in unit tests
+        Arc::clone(&state.events),
     )
     .with_interactive_process_registry(Arc::clone(&ipr));
 
     let stopped = service.stop_ideation_session_agent(session_id).await;
     assert!(stopped);
 
-    // The "ideation" registry entry was stopped — confirms context_type = "ideation" was used.
-    // In production, emitted events contain context_type = "ideation".
+    let recorded = events.events();
+    assert_eq!(recorded.len(), 2);
+    assert_eq!(recorded[0].event, "agent:stopped");
+    assert_eq!(recorded[0].payload["context_type"], "ideation");
+    assert_eq!(recorded[1].event, "agent:run_completed");
+    assert_eq!(recorded[1].payload["context_type"], "ideation");
+
+    // The "ideation" registry entry was stopped — confirms the matching registry key was used.
     assert!(
         !state
             .running_agent_registry
@@ -1119,7 +1125,9 @@ async fn test_stop_ideation_agent_event_context_type_ideation_key() {
 /// "session" key → stop() uses RunningAgentKey("session", ...) → events use "session"
 #[tokio::test]
 async fn test_stop_ideation_agent_event_context_type_session_key() {
-    let state = AppState::new_test();
+    let mut state = AppState::new_test();
+    let events = RecordingEventSink::new();
+    state.events = Arc::new(events.clone());
     let ipr = Arc::new(InteractiveProcessRegistry::new());
     let session_id = "event-session-session";
 
@@ -1143,15 +1151,21 @@ async fn test_stop_ideation_agent_event_context_type_session_key() {
         Arc::clone(&state.task_repo),
         Arc::clone(&state.project_repo),
         Arc::clone(&state.running_agent_registry),
-        None, // AppHandle not available in unit tests
+        Arc::clone(&state.events),
     )
     .with_interactive_process_registry(Arc::clone(&ipr));
 
     let stopped = service.stop_ideation_session_agent(session_id).await;
     assert!(stopped);
 
-    // The "session" registry entry was stopped — confirms context_type = "session" was used.
-    // In production, emitted events contain context_type = "session".
+    let recorded = events.events();
+    assert_eq!(recorded.len(), 2);
+    assert_eq!(recorded[0].event, "agent:stopped");
+    assert_eq!(recorded[0].payload["context_type"], "session");
+    assert_eq!(recorded[1].event, "agent:run_completed");
+    assert_eq!(recorded[1].payload["context_type"], "session");
+
+    // The "session" registry entry was stopped — confirms the matching registry key was used.
     assert!(
         !state
             .running_agent_registry
@@ -1198,7 +1212,7 @@ async fn test_stop_ideation_agent_probes_ideation_key_only() {
         Arc::clone(&state.task_repo),
         Arc::clone(&state.project_repo),
         Arc::clone(&state.running_agent_registry),
-        None,
+        Arc::clone(&state.events),
     )
     .with_interactive_process_registry(Arc::clone(&ipr));
 
@@ -1260,7 +1274,7 @@ async fn test_stop_ideation_agent_probes_session_key_only() {
         Arc::clone(&state.task_repo),
         Arc::clone(&state.project_repo),
         Arc::clone(&state.running_agent_registry),
-        None,
+        Arc::clone(&state.events),
     )
     .with_interactive_process_registry(Arc::clone(&ipr));
 
@@ -1295,11 +1309,12 @@ async fn test_stop_ideation_agent_probes_session_key_only() {
 
 // ── Call-site behavior tests ─────────────────────────────────────────────
 
-/// HTTP apply path: service created with None app_handle (no Tauri events emitted).
-/// The HTTP handler uses "session" key and passes None for app_handle.
+/// HTTP apply path: service uses the application event sink with the "session" key.
 #[tokio::test]
-async fn test_call_site_http_path_none_app_handle() {
-    let state = AppState::new_test();
+async fn test_call_site_http_path_emits_lifecycle_events() {
+    let mut state = AppState::new_test();
+    let events = RecordingEventSink::new();
+    state.events = Arc::new(events.clone());
     let ipr = Arc::new(InteractiveProcessRegistry::new());
     let session_id = "http-apply-session";
 
@@ -1320,18 +1335,22 @@ async fn test_call_site_http_path_none_app_handle() {
         )
         .await;
 
-    // HTTP path: TaskCleanupService::new(..., None) — no AppHandle
+    // HTTP path: TaskCleanupService::new(..., state.events).
     let service = TaskCleanupService::new(
         Arc::clone(&state.task_repo),
         Arc::clone(&state.project_repo),
         Arc::clone(&state.running_agent_registry),
-        None, // ← None as in HTTP handler (no AppHandle in HTTP context)
+        Arc::clone(&state.events),
     )
     .with_interactive_process_registry(Arc::clone(&ipr));
 
     let stopped = service.stop_ideation_session_agent(session_id).await;
 
     assert!(stopped, "HTTP path: helper returns true when process found");
+    let recorded = events.events();
+    assert_eq!(recorded.len(), 2);
+    assert_eq!(recorded[0].event, "agent:stopped");
+    assert_eq!(recorded[1].event, "agent:run_completed");
     assert!(
         !ipr.has_process(&ipr_key).await,
         "IPR entry removed in HTTP path"
@@ -1376,7 +1395,7 @@ async fn test_call_site_archive_path_cleanup_then_status_update() {
         Arc::clone(&state.task_repo),
         Arc::clone(&state.project_repo),
         Arc::clone(&state.running_agent_registry),
-        None,
+        Arc::clone(&state.events),
     )
     .with_interactive_process_registry(Arc::clone(&ipr));
 
@@ -1422,7 +1441,9 @@ async fn test_call_site_archive_path_cleanup_then_status_update() {
 /// When session_converted is false, IPR entry must remain untouched.
 #[tokio::test]
 async fn test_call_site_accept_path_only_when_session_converted() {
-    let state = AppState::new_test();
+    let mut state = AppState::new_test();
+    let events = RecordingEventSink::new();
+    state.events = Arc::new(events.clone());
     let ipr = Arc::new(InteractiveProcessRegistry::new());
     let session_id = "accept-session";
 
@@ -1434,7 +1455,7 @@ async fn test_call_site_accept_path_only_when_session_converted() {
         Arc::clone(&state.task_repo),
         Arc::clone(&state.project_repo),
         Arc::clone(&state.running_agent_registry),
-        None,
+        Arc::clone(&state.events),
     )
     .with_interactive_process_registry(Arc::clone(&ipr));
 
@@ -1443,6 +1464,10 @@ async fn test_call_site_accept_path_only_when_session_converted() {
     if session_converted {
         service.stop_ideation_session_agent(session_id).await;
     }
+    assert!(
+        events.events().is_empty(),
+        "The skipped cleanup path must not emit lifecycle events"
+    );
     assert!(
         ipr.has_process(&ipr_key).await,
         "IPR entry must remain when session_converted == false"
@@ -1460,6 +1485,10 @@ async fn test_call_site_accept_path_only_when_session_converted() {
     assert!(
         !ipr.has_process(&ipr_key).await,
         "IPR entry removed when session_converted == true"
+    );
+    assert!(
+        events.events().is_empty(),
+        "IPR-only cleanup must not emit lifecycle events without a running agent"
     );
 }
 
@@ -1493,7 +1522,7 @@ async fn test_call_site_reopen_path_cleanup_before_reopen() {
         Arc::clone(&state.task_repo),
         Arc::clone(&state.project_repo),
         Arc::clone(&state.running_agent_registry),
-        None,
+        Arc::clone(&state.events),
     )
     .with_interactive_process_registry(Arc::clone(&ipr));
 
@@ -1518,7 +1547,7 @@ async fn test_call_site_reopen_path_cleanup_before_reopen() {
         Arc::clone(&state.task_repo),
         Arc::clone(&state.project_repo),
         Arc::clone(&state.running_agent_registry),
-        None,
+        Arc::clone(&state.events),
     )
     .with_interactive_process_registry(Arc::clone(&ipr));
 

@@ -39,6 +39,9 @@
 use ralphx_remote_protocol::{Capability, ErrorCode, RiskClass, Scope};
 use serde_json::Value;
 
+#[derive(Clone)]
+pub(crate) struct RemoteHostAppHandle(pub tauri::AppHandle);
+
 /// An argument-sensitive authorization predicate, evaluated on parsed args BEFORE dispatch.
 ///
 /// Returns the scope the *specific request* requires, which may exceed the command's class
@@ -455,11 +458,9 @@ macro_rules! remote_commands {
     // populated it — a command demanding an `AppHandle` never runs without one.
     (@bind $app:ident, $args:ident, $spec:ident, (host_app_handle)) => {
         match $app
-            .state::<$crate::application::AppState>()
-            .app_handle
-            .clone()
+            .try_state::<$crate::remote_server::registry::RemoteHostAppHandle>()
         {
-            Some(handle) => handle,
+            Some(handle) => handle.0.clone(),
             None => {
                 return Err($crate::remote_server::registry::RemoteInvokeError::internal(
                     "The host application handle is unavailable; the command was not executed.",
@@ -1129,7 +1130,6 @@ crate::remote_commands! {
             (arg input: crate::commands::task_commands::types::AnswerUserQuestionInput),
             (app_state),
             (execution_state),
-            (host_app_handle),
         ],
         call: async,
         result: fallible,
@@ -1172,6 +1172,7 @@ crate::remote_commands! {
         params: [
             (arg input: crate::commands::automation_commands::AutomationIdInput),
             (app_state),
+            (execution_state),
         ],
         call: async,
         result: fallible,
@@ -3440,6 +3441,7 @@ crate::remote_commands! {
         params: [
             (arg input: crate::commands::automation_commands::AutomationRunScopedInput),
             (app_state),
+            (execution_state),
         ],
         call: async,
         result: fallible,

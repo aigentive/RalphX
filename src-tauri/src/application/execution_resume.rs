@@ -15,7 +15,7 @@ pub(crate) async fn resume_execution_for_state(
 
     // Build transition service for proper state machine transitions
     let transition_service =
-        app_state.build_transition_service_with_execution_state(Arc::clone(execution_state));
+        app_state.build_transition_service_for_runtime(Arc::clone(execution_state), None);
 
     // Find all Paused tasks (scoped to project if specified) and restore them
     // Note: Stopped tasks are NOT restored - they require manual restart
@@ -129,10 +129,10 @@ pub(crate) async fn resume_execution_for_state(
     execution_state.resume();
 
     // Emit status_changed event for real-time UI update with projectId
-    if let Some(ref handle) = app_state.app_handle {
-        let _ = handle.emit(
-            "execution:status_changed",
-            serde_json::json!({
+    let _ = ralphx_events::emit_serialized(
+        app_state.events.as_ref(),
+        "execution:status_changed",
+        &serde_json::json!({
                 "isPaused": execution_state.is_paused(),
                 "haltMode": "running",
                 "runningCount": execution_state.running_count(),
@@ -140,15 +140,12 @@ pub(crate) async fn resume_execution_for_state(
                 "reason": if previous_halt_mode == ExecutionHaltMode::Stopped { "started" } else { "resumed" },
                 "projectId": effective_project_id.as_ref().map(|p| p.as_str()),
                 "timestamp": chrono::Utc::now().to_rfc3339(),
-            }),
-        );
-    }
+        }),
+    );
 
     // Trigger scheduler to pick up waiting Ready tasks
-    let scheduler = Arc::new(app_state.build_task_scheduler_for_runtime(
-        Arc::clone(execution_state),
-        app_state.app_handle.clone(),
-    ));
+    let scheduler =
+        Arc::new(app_state.build_task_scheduler_for_runtime(Arc::clone(execution_state), None));
     scheduler.set_self_ref(Arc::clone(&scheduler) as Arc<dyn TaskScheduler>);
     // Set active project scope before scheduling to prevent cross-project scheduling
     scheduler
@@ -156,7 +153,7 @@ pub(crate) async fn resume_execution_for_state(
         .await;
     scheduler.try_schedule_ready_tasks().await;
 
-    if app_state.app_handle.is_some() {
+    {
         let execution_state_arc = Arc::clone(execution_state);
         if let Err(error) = resume_paused_workspace_queues_with_chat_service(
             effective_project_id.as_ref(),
@@ -283,15 +280,15 @@ pub(crate) async fn determine_paused_restore_status(
 }
 use std::sync::Arc;
 
-use tauri::Emitter;
-
+use crate::application::active_project_state::ActiveProjectState;
 use crate::application::chat_service::ChatService;
 use crate::application::execution_control::*;
+use crate::application::execution_state::ExecutionState;
 use crate::application::execution_state::{
     sync_quota_from_project, ExecutionCommandResponse, AGENT_ACTIVE_STATUSES,
 };
 use crate::application::execution_status::get_execution_status_for_state;
 use crate::application::task_resume_execution::prepare_resumed_task_for_entry_actions;
-use crate::application::{ActiveProjectState, AppState, ExecutionState};
+use crate::application::AppState;
 use crate::domain::entities::{app_state::ExecutionHaltMode, InternalStatus, ProjectId, Task};
 use crate::domain::state_machine::services::TaskScheduler;

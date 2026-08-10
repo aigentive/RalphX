@@ -1,4 +1,5 @@
 use chrono::Utc;
+use std::sync::Arc;
 
 use crate::application::AppState;
 use crate::commands::agent_conversation_mute_commands::{
@@ -8,6 +9,7 @@ use crate::commands::unified_chat_commands::{
     switch_agent_conversation_persona_for_state_rejecting_running_agent_with_flags,
     SwitchAgentConversationPersonaInput, PERSONA_SWITCH_AGENT_RUNNING_ERROR,
 };
+use crate::commands::ExecutionState;
 use crate::domain::agents::{AgentHarnessKind, ProviderSessionRef};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatContextType, ChatConversation,
@@ -60,6 +62,7 @@ async fn remote_mute_persists_the_same_row_shape_as_local_mute() {
             muted: true,
         },
         &local,
+        &Arc::new(ExecutionState::new()),
     )
     .await
     .expect("local mute");

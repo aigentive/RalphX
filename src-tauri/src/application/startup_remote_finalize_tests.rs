@@ -91,7 +91,7 @@ async fn remote_finalize_accept_creates_tasks_once_and_reentry_is_idle() {
         .expect("seed proposal");
     let id = request(&state, &session, RemoteFinalizeDecision::Accept).await;
 
-    dispatch_one_remote_finalize_decision(&state, &Arc::new(ExecutionState::new()), None)
+    dispatch_one_remote_finalize_decision(&state, &Arc::new(ExecutionState::new()))
         .await
         .expect("dispatch accept");
     let completed = state
@@ -110,7 +110,7 @@ async fn remote_finalize_accept_creates_tasks_once_and_reentry_is_idle() {
         "proposal task and merge task are created once"
     );
 
-    dispatch_one_remote_finalize_decision(&state, &Arc::new(ExecutionState::new()), None)
+    dispatch_one_remote_finalize_decision(&state, &Arc::new(ExecutionState::new()))
         .await
         .expect("re-entry is idle");
     assert_eq!(
@@ -158,7 +158,7 @@ async fn remote_finalize_accept_lost_pending_cas_creates_zero_tasks() {
         .await
         .expect("consume acceptance elsewhere");
 
-    dispatch_one_remote_finalize_decision(&state, &Arc::new(ExecutionState::new()), None)
+    dispatch_one_remote_finalize_decision(&state, &Arc::new(ExecutionState::new()))
         .await
         .expect("dispatch lost race");
     let failed = state
@@ -192,7 +192,7 @@ async fn remote_finalize_accept_repository_error_leaves_claim_unsettled() {
         .await
         .expect("inject proposal repository failure");
 
-    dispatch_one_remote_finalize_decision(&state, &Arc::new(ExecutionState::new()), None)
+    dispatch_one_remote_finalize_decision(&state, &Arc::new(ExecutionState::new()))
         .await
         .expect_err("repository failure must propagate");
     let starting = state
@@ -221,7 +221,7 @@ async fn remote_finalize_rejects_once_and_reentry_is_idle() {
     let state = AppState::new_test();
     let session = pending_session(&state).await;
     let id = request(&state, &session, RemoteFinalizeDecision::Reject).await;
-    dispatch_one_remote_finalize_decision(&state, &Arc::new(ExecutionState::new()), None)
+    dispatch_one_remote_finalize_decision(&state, &Arc::new(ExecutionState::new()))
         .await
         .expect("dispatch");
     let completed = state
@@ -242,7 +242,7 @@ async fn remote_finalize_rejects_once_and_reentry_is_idle() {
         .expect("session")
         .acceptance_status
         .is_none());
-    dispatch_one_remote_finalize_decision(&state, &Arc::new(ExecutionState::new()), None)
+    dispatch_one_remote_finalize_decision(&state, &Arc::new(ExecutionState::new()))
         .await
         .expect("idle");
     assert_eq!(
@@ -266,7 +266,7 @@ async fn remote_finalize_revalidation_and_stale_claim_fail_closed() {
         .update_status(&session.id, IdeationSessionStatus::Archived)
         .await
         .expect("archive");
-    dispatch_one_remote_finalize_decision(&state, &Arc::new(ExecutionState::new()), None)
+    dispatch_one_remote_finalize_decision(&state, &Arc::new(ExecutionState::new()))
         .await
         .expect("dispatch");
     assert_eq!(
@@ -297,7 +297,7 @@ async fn remote_finalize_revalidation_and_stale_claim_fail_closed() {
             .expect("sweep"),
         1
     );
-    dispatch_one_remote_finalize_decision(&state, &Arc::new(ExecutionState::new()), None)
+    dispatch_one_remote_finalize_decision(&state, &Arc::new(ExecutionState::new()))
         .await
         .expect("idle");
     let stale = state
@@ -323,7 +323,7 @@ async fn remote_finalize_reject_lost_pending_cas_settles_not_pending() {
         .update_acceptance_status(&session.id, Some(AcceptanceStatus::Pending), None)
         .await
         .expect("race");
-    dispatch_one_remote_finalize_decision(&state, &Arc::new(ExecutionState::new()), None)
+    dispatch_one_remote_finalize_decision(&state, &Arc::new(ExecutionState::new()))
         .await
         .expect("dispatch");
     assert_eq!(

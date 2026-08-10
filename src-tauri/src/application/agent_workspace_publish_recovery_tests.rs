@@ -4214,9 +4214,13 @@ mod extracted_inline_tests {
             .await
             .expect("terminalize owner run");
         assert_eq!(
-            recover_stale_transient_publish_statuses_for_state(&state, 0)
-                .await
-                .expect("terminal-owner recovery sweep"),
+            recover_stale_transient_publish_statuses_for_state_with_redrive_emitter(
+                &state,
+                0,
+                &|_conversation_id| Err("event bus unavailable".to_string()),
+            )
+            .await
+            .expect("terminal-owner recovery sweep"),
             1
         );
         let recovered = state
@@ -4269,9 +4273,13 @@ mod extracted_inline_tests {
             .expect("seed operation lease from a prior process");
 
         assert_eq!(
-            recover_stale_transient_publish_statuses_for_state(&state, 300)
-                .await
-                .expect("startup recovery sweep"),
+            recover_stale_transient_publish_statuses_for_state_with_redrive_emitter(
+                &state,
+                300,
+                &|_conversation_id| Err("event bus unavailable".to_string()),
+            )
+            .await
+            .expect("startup recovery sweep"),
             1,
             "missing process-local liveness must reclaim without the legacy five-minute wait"
         );
@@ -4287,9 +4295,13 @@ mod extracted_inline_tests {
             Some(AGENT_WORKSPACE_PUBLISH_REDRIVE_PENDING_STATUS)
         );
         assert_eq!(
-            recover_stale_transient_publish_statuses_for_state(&state, 300)
-                .await
-                .expect("pending re-drive remains eligible without duplicating recovery state"),
+            recover_stale_transient_publish_statuses_for_state_with_redrive_emitter(
+                &state,
+                300,
+                &|_conversation_id| Err("event bus unavailable".to_string()),
+            )
+            .await
+            .expect("pending re-drive remains eligible without duplicating recovery state"),
             0
         );
     }

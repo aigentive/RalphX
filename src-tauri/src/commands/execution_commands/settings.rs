@@ -1,4 +1,5 @@
 use super::*;
+use ralphx_events::emit_serialized;
 
 /// Set maximum concurrent tasks
 /// When capacity increases, triggers the scheduler to pick up waiting Ready tasks.
@@ -13,9 +14,8 @@ pub async fn set_max_concurrent(
     execution_state.set_max_concurrent(max);
 
     // Emit status_changed event for real-time UI update
-    if let Some(ref handle) = app_state.app_handle {
-        execution_state.emit_status_changed(handle, "max_concurrent_changed");
-    }
+    execution_state
+        .emit_status_changed_to_sink(app_state.events.as_ref(), "max_concurrent_changed");
 
     // If capacity increased, trigger scheduler to pick up waiting Ready tasks
     if max > old_max {
@@ -151,21 +151,20 @@ pub async fn update_execution_settings(
     }
 
     // Emit settings:execution:updated event for UI updates (include projectId for per-project)
-    if let Some(ref handle) = app_state.app_handle {
-        let _ = handle.emit(
-            "settings:execution:updated",
-            serde_json::json!({
-                "project_id": project_id.as_ref().map(|p| p.as_str()),
-                "max_concurrent_tasks": updated.max_concurrent_tasks,
-                "project_ideation_max": updated.project_ideation_max,
-                "auto_commit": updated.auto_commit,
-                "pause_on_failure": updated.pause_on_failure,
-                "agent_workspace_pr_autofix_default": updated.agent_workspace_pr_autofix_default,
-                "agent_workspace_pr_auto_merge_default": updated.agent_workspace_pr_auto_merge_default,
-                "timestamp": chrono::Utc::now().to_rfc3339(),
-            }),
-        );
-    }
+    let _ = emit_serialized(
+        app_state.events.as_ref(),
+        "settings:execution:updated",
+        &serde_json::json!({
+            "project_id": project_id.as_ref().map(|p| p.as_str()),
+            "max_concurrent_tasks": updated.max_concurrent_tasks,
+            "project_ideation_max": updated.project_ideation_max,
+            "auto_commit": updated.auto_commit,
+            "pause_on_failure": updated.pause_on_failure,
+            "agent_workspace_pr_autofix_default": updated.agent_workspace_pr_autofix_default,
+            "agent_workspace_pr_auto_merge_default": updated.agent_workspace_pr_auto_merge_default,
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+        }),
+    );
 
     Ok(ExecutionSettingsResponse::from(updated))
 }
@@ -233,30 +232,30 @@ pub async fn set_active_project(
     );
 
     // Emit events for UI sync
-    if let Some(ref handle) = app_state.app_handle {
-        let _ = handle.emit(
-            "execution:active_project_changed",
-            serde_json::json!({
-                "projectId": project_id.as_ref().map(|p| p.as_str()),
-                "timestamp": chrono::Utc::now().to_rfc3339(),
-            }),
-        );
+    let _ = emit_serialized(
+        app_state.events.as_ref(),
+        "execution:active_project_changed",
+        &serde_json::json!({
+            "projectId": project_id.as_ref().map(|p| p.as_str()),
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+        }),
+    );
 
-        // Emit execution:status_changed after sync so UI updates quota instantly
-        let _ = handle.emit(
-            "execution:status_changed",
-            serde_json::json!({
-                "isPaused": execution_state.is_paused(),
-                "runningCount": execution_state.running_count(),
-                "maxConcurrent": execution_state.max_concurrent(),
-                "globalMaxConcurrent": execution_state.global_max_concurrent(),
-                "workspaceMaxConcurrent": execution_state.workspace_max_concurrent(),
-                "reason": "active_project_changed",
-                "projectId": project_id.as_ref().map(|p| p.as_str()),
-                "timestamp": chrono::Utc::now().to_rfc3339(),
-            }),
-        );
-    }
+    // Emit execution:status_changed after sync so UI updates quota instantly
+    let _ = emit_serialized(
+        app_state.events.as_ref(),
+        "execution:status_changed",
+        &serde_json::json!({
+            "isPaused": execution_state.is_paused(),
+            "runningCount": execution_state.running_count(),
+            "maxConcurrent": execution_state.max_concurrent(),
+            "globalMaxConcurrent": execution_state.global_max_concurrent(),
+            "workspaceMaxConcurrent": execution_state.workspace_max_concurrent(),
+            "reason": "active_project_changed",
+            "projectId": project_id.as_ref().map(|p| p.as_str()),
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+        }),
+    );
 
     Ok(())
 }
@@ -359,18 +358,17 @@ pub async fn update_global_execution_settings(
     }
 
     // Emit event for UI sync
-    if let Some(ref handle) = app_state.app_handle {
-        let _ = handle.emit(
-            "settings:global_execution:updated",
-            serde_json::json!({
-                "global_max_concurrent": updated.global_max_concurrent,
-                "workspace_max_concurrent": updated.workspace_max_concurrent,
-                "global_ideation_max": updated.global_ideation_max,
-                "allow_ideation_borrow_idle_execution": updated.allow_ideation_borrow_idle_execution,
-                "timestamp": chrono::Utc::now().to_rfc3339(),
-            }),
-        );
-    }
+    let _ = emit_serialized(
+        app_state.events.as_ref(),
+        "settings:global_execution:updated",
+        &serde_json::json!({
+            "global_max_concurrent": updated.global_max_concurrent,
+            "workspace_max_concurrent": updated.workspace_max_concurrent,
+            "global_ideation_max": updated.global_ideation_max,
+            "allow_ideation_borrow_idle_execution": updated.allow_ideation_borrow_idle_execution,
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+        }),
+    );
 
     Ok(GlobalExecutionSettingsResponse::from(updated))
 }

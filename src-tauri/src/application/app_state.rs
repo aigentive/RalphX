@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Instant;
-use tauri::{AppHandle, Manager, Runtime};
+use tauri::AppHandle;
 use tokio::sync::Mutex;
 
 use super::services::PrPollerRegistry;
@@ -389,8 +389,8 @@ pub struct AppState {
     pub notification_settings_repo: Arc<dyn NotificationSettingsRepository>,
     /// Shared native window-focus signal used by desktop notification delivery.
     pub window_focus_state: Arc<WindowFocusState>,
-    /// Shared lazily initialized desktop dispatch service for paired AppStates.
-    /// Pre-AppHandle calls intentionally do not populate this cache, so later calls can use Tauri.
+    /// Shared desktop dispatch service. Production composes this before AppState
+    /// construction; test constructors lazily install their noop equivalent.
     pub(crate) notification_service_cache: Arc<OnceLock<Arc<NotificationService>>>,
     /// Task dependency repository
     pub task_dependency_repo: Arc<dyn TaskDependencyRepository>,
@@ -444,8 +444,6 @@ pub struct AppState {
     pub streaming_state_cache: crate::application::chat_service::StreamingStateCache,
     /// Interactive process registry for stdin-based multi-turn messaging
     pub interactive_process_registry: Arc<crate::application::InteractiveProcessRegistry>,
-    /// Tauri app handle for emitting events to frontend (None in tests)
-    pub app_handle: Option<AppHandle>,
     /// Provider-neutral event sink for backend UI/runtime events.
     pub events: Arc<dyn EventSink>,
     /// Shared backend event bus used by the event sink and later internal subscribers.
@@ -537,7 +535,6 @@ impl AppState {
 
     /// Returns the command-composed resumer only at the Workspace Review handoff boundary.
     /// Missing runtime composition fails closed before recovery can publish a PR fix.
-    #[cfg(test)]
     pub(crate) fn agent_workspace_pr_fix_review_publish_resumer(
         &self,
     ) -> AppResult<
@@ -658,25 +655,29 @@ impl AppState {
             .expect("Failed to configure workflow test database");
         Arc::new(SqliteAgentWorkflowRepository::new(conn))
     }
-    /// Returns this AppState's shared notification service when an AppHandle is available.
-    /// A pre-AppHandle call returns a transient Noop-backed service and is never cached.
+    /// Returns this AppState's precomposed notification service.
+    /// Test constructors return a transient Noop-backed service until one is installed.
     pub fn notification_service(&self) -> Arc<NotificationService> {
         if let Some(service) = self.notification_service_cache.get() {
             return Arc::clone(service);
         }
 
-        let Some(app_handle) = self.app_handle.as_ref() else {
-            return Arc::new(self.build_notification_service(None));
-        };
-
-        Arc::clone(
-            self.notification_service_cache.get_or_init(|| {
-                Arc::new(self.build_notification_service(Some(app_handle.clone())))
-            }),
-        )
+        Arc::new(Self::build_notification_service(
+            Arc::clone(&self.notification_repo),
+            Arc::clone(&self.notification_settings_repo),
+            Arc::clone(&self.window_focus_state),
+            Arc::clone(&self.project_repo),
+            None,
+        ))
     }
 
-    fn build_notification_service(&self, app_handle: Option<AppHandle>) -> NotificationService {
+    fn build_notification_service(
+        notification_repo: Arc<dyn NotificationRepository>,
+        notification_settings_repo: Arc<dyn NotificationSettingsRepository>,
+        window_focus_state: Arc<WindowFocusState>,
+        project_repo: Arc<dyn ProjectRepository>,
+        app_handle: Option<AppHandle>,
+    ) -> NotificationService {
         let emitter: Arc<dyn NotificationEventEmitter> = match app_handle.as_ref() {
             Some(app_handle) => Arc::new(TauriNotificationEventEmitter::new(app_handle.clone())),
             None => Arc::new(NoopNotificationEventEmitter),
@@ -687,16 +688,16 @@ impl AppState {
                 None => Arc::new(NoopDesktopNotifier),
             };
         NotificationService::new_with_desktop_dispatch(
-            Arc::clone(&self.notification_repo),
+            notification_repo,
             emitter,
-            Arc::clone(&self.notification_settings_repo),
-            Arc::clone(&self.window_focus_state),
+            notification_settings_repo,
+            window_focus_state,
             desktop_notifier,
             std::time::Duration::from_secs(
                 crate::infrastructure::agents::claude::stream_timeouts()
                     .desktop_notification_coalesce_window_secs,
             ),
-            Some(Arc::clone(&self.project_repo)),
+            Some(project_repo),
         )
     }
 
@@ -1262,7 +1263,7 @@ impl AppState {
     }
 
     pub fn build_chat_service(&self) -> AppChatService {
-        self.build_chat_service_for_runtime(None, self.app_handle.clone())
+        build_chat_service_from_deps(None, &ChatRuntimeFactoryDeps::from_app_state(self))
     }
 
     /// Build the delegation park service on demand.
@@ -1301,38 +1302,21 @@ impl AppState {
         )
     }
 
-    /// Build chat service with the app-managed execution halt state when available.
-    pub fn build_chat_service_with_managed_execution_state(&self) -> AppChatService {
-        let execution_state = self
-            .app_handle
-            .as_ref()
-            .and_then(|handle| handle.try_state::<Arc<ExecutionState>>())
-            .map(|state| state.inner().clone());
-        self.build_chat_service_for_runtime(execution_state, self.app_handle.clone())
-    }
-
-    pub fn build_chat_service_for_runtime<R: Runtime>(
-        &self,
-        execution_state: Option<Arc<ExecutionState>>,
-        app_handle: Option<AppHandle<R>>,
-    ) -> AppChatService<R> {
-        let deps = ChatRuntimeFactoryDeps::from_app_state(self);
-
-        build_chat_service_from_deps(app_handle, execution_state, &deps)
-    }
-
     pub fn build_chat_service_with_execution_state(
         &self,
         execution_state: Arc<ExecutionState>,
     ) -> AppChatService {
-        self.build_chat_service_for_runtime(Some(execution_state), self.app_handle.clone())
+        build_chat_service_from_deps(
+            Some(execution_state),
+            &ChatRuntimeFactoryDeps::from_app_state(self),
+        )
     }
 
     pub fn build_transition_service_with_execution_state(
         &self,
         execution_state: Arc<ExecutionState>,
     ) -> TaskTransitionService {
-        self.build_transition_service_for_runtime(execution_state, self.app_handle.clone())
+        self.build_transition_service_for_runtime(execution_state, None)
     }
 
     pub fn build_transition_service_for_runtime(
@@ -1385,7 +1369,7 @@ impl AppState {
             Arc::clone(&self.task_repo),
             Arc::clone(&self.project_repo),
             Arc::clone(&self.running_agent_registry),
-            app_handle.clone(),
+            Arc::clone(&self.events),
         )
         .with_interactive_process_registry(Arc::clone(&self.interactive_process_registry));
         TasksFeatureToggleService::new(self, transition_service, cleanup, app_handle)
@@ -1653,6 +1637,20 @@ impl AppState {
             Arc::clone(&ui_feature_flag_overrides_repo),
             Arc::clone(&events),
         );
+        let notification_repo: Arc<dyn NotificationRepository> = Arc::new(
+            SqliteNotificationRepository::from_shared(Arc::clone(&shared_conn)),
+        );
+        let notification_settings_repo: Arc<dyn NotificationSettingsRepository> = Arc::new(
+            SqliteNotificationSettingsRepository::from_shared(Arc::clone(&shared_conn)),
+        );
+        let window_focus_state = Arc::new(WindowFocusState::default());
+        let notification_service = Arc::new(Self::build_notification_service(
+            Arc::clone(&notification_repo),
+            Arc::clone(&notification_settings_repo),
+            Arc::clone(&window_focus_state),
+            Arc::clone(&project_repo),
+            Some(app_handle.clone()),
+        ));
         let state = Self {
             task_repo: Arc::clone(&task_repo),
             branch_update_repo: Arc::new(
@@ -1697,11 +1695,9 @@ impl AppState {
             ui_feature_flag_overrides_repo: Arc::clone(&ui_feature_flag_overrides_repo),
             managed_team: Arc::clone(&managed_team),
             agent_capability_gate: Arc::new(AgentCapabilityGate::default()),
-            notification_settings_repo: Arc::new(
-                SqliteNotificationSettingsRepository::from_shared(Arc::clone(&shared_conn)),
-            ),
-            window_focus_state: Arc::new(WindowFocusState::default()),
-            notification_service_cache: Arc::new(OnceLock::new()),
+            notification_settings_repo,
+            window_focus_state,
+            notification_service_cache: Arc::new(OnceLock::from(notification_service)),
             validation_run_repo: Arc::new(SqliteValidationRunRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
@@ -1874,9 +1870,7 @@ impl AppState {
             activity_event_repo: Arc::new(SqliteActivityEventRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
-            notification_repo: Arc::new(SqliteNotificationRepository::from_shared(Arc::clone(
-                &shared_conn,
-            ))),
+            notification_repo,
             task_dependency_repo: Arc::new(SqliteTaskDependencyRepository::from_shared(
                 Arc::clone(&shared_conn),
             )),
@@ -1967,7 +1961,6 @@ impl AppState {
             interactive_process_registry: Arc::new(
                 crate::application::InteractiveProcessRegistry::new(),
             ),
-            app_handle: Some(app_handle),
             events,
             internal_event_bus,
             app_paths,
@@ -2252,7 +2245,6 @@ impl AppState {
             interactive_process_registry: Arc::new(
                 crate::application::InteractiveProcessRegistry::new(),
             ),
-            app_handle: None,
             events,
             internal_event_bus,
             app_paths,
@@ -2505,7 +2497,6 @@ impl AppState {
             interactive_process_registry: Arc::new(
                 crate::application::InteractiveProcessRegistry::new(),
             ),
-            app_handle: None,
             events,
             internal_event_bus,
             app_paths,
@@ -2796,7 +2787,6 @@ impl AppState {
             interactive_process_registry: Arc::new(
                 crate::application::InteractiveProcessRegistry::new(),
             ),
-            app_handle: None,
             events,
             internal_event_bus,
             app_paths,
@@ -3034,7 +3024,6 @@ impl AppState {
             interactive_process_registry: Arc::new(
                 crate::application::InteractiveProcessRegistry::new(),
             ),
-            app_handle: None,
             events,
             internal_event_bus,
             app_paths,

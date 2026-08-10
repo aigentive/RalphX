@@ -351,7 +351,7 @@ async fn archive_current_execution_tasks(
         Arc::clone(&state.task_repo),
         Arc::clone(&state.project_repo),
         Arc::clone(&state.running_agent_registry),
-        state.app_handle.clone(),
+        Arc::clone(&state.events),
     )
     .with_interactive_process_registry(Arc::clone(&state.interactive_process_registry));
 

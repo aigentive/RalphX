@@ -29,6 +29,9 @@ pub struct HttpServerState {
     pub app_state: Arc<AppState>,
     pub execution_state: Arc<ExecutionState>,
     pub delegation_service: Arc<DelegationService>,
+    pub external_mcp_supervisor: Option<
+        Arc<dyn Fn() -> Option<Arc<crate::infrastructure::ExternalMcpSupervisor>> + Send + Sync>,
+    >,
 }
 
 #[cfg(test)]
@@ -38,7 +41,24 @@ impl HttpServerState {
             app_state,
             execution_state: Arc::new(ExecutionState::new()),
             delegation_service: Default::default(),
+            external_mcp_supervisor: None,
         }
+    }
+}
+
+impl HttpServerState {
+    pub(crate) fn build_chat_service(&self) -> crate::application::AppChatService {
+        let mut service = self
+            .app_state
+            .build_chat_service_with_execution_state(Arc::clone(&self.execution_state));
+        if let Some(supervisor) = self
+            .external_mcp_supervisor
+            .as_ref()
+            .and_then(|resolve| resolve())
+        {
+            service = service.with_external_mcp_supervisor(supervisor);
+        }
+        service
     }
 }
 

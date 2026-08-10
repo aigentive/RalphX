@@ -551,6 +551,7 @@ jobs:
           IPC_FILTER="$(
             printf '%s' \
               'test(ipc_contract) or ' \
+              'test(agent_completion_event_runtime) or ' \
               'test(release_notes_commands) or ' \
               'test(agent_workspace_repair_auto_publish) or ' \
               'test(agent_workspace_pr_review_notifications) or ' \

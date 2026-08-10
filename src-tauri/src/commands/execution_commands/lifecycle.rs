@@ -1,5 +1,6 @@
 use super::*;
 pub(crate) use crate::application::execution_resume::resume_execution_for_state;
+use ralphx_events::emit_serialized;
 
 /// Pause execution (stops picking up new tasks and transitions running tasks to Paused)
 /// This transitions all agent-active tasks to Paused status via TransitionHandler.
@@ -50,7 +51,7 @@ pub async fn pause_execution(
 
     // Build transition service for proper state machine transitions
     let transition_service =
-        app_state.build_transition_service_with_execution_state(Arc::clone(&execution_state));
+        app_state.build_transition_service_for_runtime(Arc::clone(&execution_state), None);
 
     // Find all tasks in agent-active states (scoped to project if specified)
     let projects_to_process = if let Some(ref pid) = effective_project_id {
@@ -111,20 +112,19 @@ pub async fn pause_execution(
 
     // Emit status_changed event for real-time UI update with projectId
     // This reflects the final state after all tasks have been paused
-    if let Some(ref handle) = app_state.app_handle {
-        let _ = handle.emit(
-            "execution:status_changed",
-            serde_json::json!({
-                "isPaused": execution_state.is_paused(),
-                "haltMode": "paused",
-                "runningCount": execution_state.running_count(),
-                "maxConcurrent": execution_state.max_concurrent(),
-                "reason": "paused",
-                "projectId": effective_project_id.as_ref().map(|p| p.as_str()),
-                "timestamp": chrono::Utc::now().to_rfc3339(),
-            }),
-        );
-    }
+    let _ = emit_serialized(
+        app_state.events.as_ref(),
+        "execution:status_changed",
+        &serde_json::json!({
+            "isPaused": execution_state.is_paused(),
+            "haltMode": "paused",
+            "runningCount": execution_state.running_count(),
+            "maxConcurrent": execution_state.max_concurrent(),
+            "reason": "paused",
+            "projectId": effective_project_id.as_ref().map(|p| p.as_str()),
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+        }),
+    );
 
     // Get current status
     let status = get_execution_status(
@@ -222,7 +222,7 @@ pub async fn stop_execution(
 
     // Build transition service for proper state machine transitions
     let transition_service =
-        app_state.build_transition_service_with_execution_state(Arc::clone(&execution_state));
+        app_state.build_transition_service_for_runtime(Arc::clone(&execution_state), None);
 
     // Find all tasks in agent-active states (scoped to project if specified)
     let projects_to_process = if let Some(ref pid) = effective_project_id {
@@ -271,20 +271,19 @@ pub async fn stop_execution(
 
     // Emit status_changed event for real-time UI update with projectId
     // This reflects the final state after all tasks have been stopped
-    if let Some(ref handle) = app_state.app_handle {
-        let _ = handle.emit(
-            "execution:status_changed",
-            serde_json::json!({
-                "isPaused": execution_state.is_paused(),
-                "haltMode": "stopped",
-                "runningCount": execution_state.running_count(),
-                "maxConcurrent": execution_state.max_concurrent(),
-                "reason": "stopped",
-                "projectId": effective_project_id.as_ref().map(|p| p.as_str()),
-                "timestamp": chrono::Utc::now().to_rfc3339(),
-            }),
-        );
-    }
+    let _ = emit_serialized(
+        app_state.events.as_ref(),
+        "execution:status_changed",
+        &serde_json::json!({
+            "isPaused": execution_state.is_paused(),
+            "haltMode": "stopped",
+            "runningCount": execution_state.running_count(),
+            "maxConcurrent": execution_state.max_concurrent(),
+            "reason": "stopped",
+            "projectId": effective_project_id.as_ref().map(|p| p.as_str()),
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+        }),
+    );
 
     // Get current status
     let status = get_execution_status(

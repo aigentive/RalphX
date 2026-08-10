@@ -331,6 +331,14 @@ pub struct StreamTimeoutsConfig {
     pub max_wall_clock_secs: u64,
     #[serde(default = "default_completion_grace_secs")]
     pub completion_grace_secs: u64,
+    #[serde(default = "default_agent_completion_correlation_ttl_secs")]
+    pub agent_completion_correlation_ttl_secs: u64,
+    #[serde(default = "default_agent_completion_correlation_capacity")]
+    pub agent_completion_correlation_capacity: usize,
+    #[serde(default = "default_agent_completion_processed_ttl_secs")]
+    pub agent_completion_processed_ttl_secs: u64,
+    #[serde(default = "default_agent_completion_processed_capacity")]
+    pub agent_completion_processed_capacity: usize,
     #[serde(default = "default_launch_reservation_lease_secs")]
     pub launch_reservation_lease_secs: u64,
     #[serde(default = "default_execution_attempt_start_tolerance_secs")]
@@ -365,6 +373,22 @@ fn default_streaming_persistence_debounce_ms() -> u64 {
 
 fn default_completion_grace_secs() -> u64 {
     30
+}
+
+fn default_agent_completion_correlation_ttl_secs() -> u64 {
+    60
+}
+
+fn default_agent_completion_correlation_capacity() -> usize {
+    1_024
+}
+
+fn default_agent_completion_processed_ttl_secs() -> u64 {
+    900
+}
+
+fn default_agent_completion_processed_capacity() -> usize {
+    4_096
 }
 
 fn default_launch_reservation_lease_secs() -> u64 {
@@ -423,6 +447,10 @@ impl Default for StreamTimeoutsConfig {
             streaming_persistence_debounce_ms: default_streaming_persistence_debounce_ms(),
             max_wall_clock_secs: 1800,
             completion_grace_secs: 30,
+            agent_completion_correlation_ttl_secs: default_agent_completion_correlation_ttl_secs(),
+            agent_completion_correlation_capacity: default_agent_completion_correlation_capacity(),
+            agent_completion_processed_ttl_secs: default_agent_completion_processed_ttl_secs(),
+            agent_completion_processed_capacity: default_agent_completion_processed_capacity(),
             launch_reservation_lease_secs: 30,
             execution_attempt_start_tolerance_secs: 1,
             desktop_notification_coalesce_window_secs:
@@ -1015,6 +1043,24 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
         cfg.stream.completion_grace_secs,
         "RALPHX_STREAM_COMPLETION_GRACE_SECS"
     );
+    env_u64!(
+        cfg.stream.agent_completion_correlation_ttl_secs,
+        "RALPHX_STREAM_AGENT_COMPLETION_CORRELATION_TTL_SECS"
+    );
+    if let Some(value) = lookup("RALPHX_STREAM_AGENT_COMPLETION_CORRELATION_CAPACITY") {
+        if let Ok(capacity) = value.parse::<usize>() {
+            cfg.stream.agent_completion_correlation_capacity = capacity;
+        }
+    }
+    env_u64!(
+        cfg.stream.agent_completion_processed_ttl_secs,
+        "RALPHX_STREAM_AGENT_COMPLETION_PROCESSED_TTL_SECS"
+    );
+    if let Some(value) = lookup("RALPHX_STREAM_AGENT_COMPLETION_PROCESSED_CAPACITY") {
+        if let Ok(capacity) = value.parse::<usize>() {
+            cfg.stream.agent_completion_processed_capacity = capacity;
+        }
+    }
     env_u64!(
         cfg.stream.launch_reservation_lease_secs,
         "RALPHX_STREAM_LAUNCH_RESERVATION_LEASE_SECS"

@@ -69,6 +69,98 @@
     },
     {
       "forbidden": [
+        "try_state::<AppState>",
+        "state::<AppState>",
+        "try_state::<ExecutionState>",
+        "state::<ExecutionState>"
+      ],
+      "id": "bounded_chat_runtime_no_managed_state_lookup",
+      "mode": "hard-zero",
+      "paths": [
+        "src-tauri/src/application/runtime_factory.rs",
+        "src-tauri/src/application/chat_service/mod.rs",
+        "src-tauri/src/application/chat_service/chat_service_handlers.rs",
+        "src-tauri/src/application/chat_service/chat_service_merge.rs",
+        "src-tauri/src/application/chat_service/chat_service_queue.rs",
+        "src-tauri/src/application/chat_service/chat_service_recovery.rs",
+        "src-tauri/src/application/chat_service/chat_service_send_background.rs",
+        "src-tauri/src/application/chat_service/chat_service_streaming.rs"
+      ]
+    },
+    {
+      "forbidden": [
+        "AppHandle"
+      ],
+      "id": "bounded_chat_start_runtime_no_app_handle",
+      "mode": "hard-zero",
+      "paths": [
+        "src-tauri/src/application/chat_service/mod.rs",
+        "src-tauri/src/application/chat_service/chat_service_context.rs",
+        "src-tauri/src/application/chat_service/chat_service_handlers.rs",
+        "src-tauri/src/application/chat_service/chat_service_merge.rs",
+        "src-tauri/src/application/chat_service/chat_service_queue.rs",
+        "src-tauri/src/application/chat_service/chat_service_recovery.rs",
+        "src-tauri/src/application/chat_service/chat_service_send_background.rs",
+        "src-tauri/src/application/chat_service/chat_service_streaming.rs",
+        "src-tauri/src/application/chat_service/chat_service_types.rs",
+        "src-tauri/src/application/agent_conversation_start_service/mod.rs",
+        "src-tauri/src/application/agent_conversation_start_service/start.rs",
+        "src-tauri/src/application/agent_conversation_start_service/finish_flow.rs",
+        "src-tauri/src/application/agent_conversation_start_service/project_setup.rs",
+        "src-tauri/src/application/agent_conversation_start_service/helpers/spawn_glue.rs",
+        "src-tauri/src/application/startup_background.rs",
+        "src-tauri/src/application/startup_runtime_builders.rs",
+        "src-tauri/src/application/chat_resumption.rs",
+        "src-tauri/src/application/task_cleanup_service.rs"
+      ]
+    },
+    {
+      "forbidden": [
+        "AppChatService<",
+        "BackgroundRunContext<",
+        "AgentConversationStartDeps<'a,",
+        "AgentConversationStartService<'a,",
+        "AgentConversationAutomationRunStarter<",
+        "AgentConversationAutomationRunResumer<",
+        "StartupSchedulerDeps<"
+      ],
+      "id": "bounded_chat_start_runtime_no_tauri_generics",
+      "mode": "hard-zero",
+      "paths": [
+        "src-tauri/src/application/chat_service/mod.rs",
+        "src-tauri/src/application/chat_service/chat_service_handlers.rs",
+        "src-tauri/src/application/chat_service/chat_service_send_background.rs",
+        "src-tauri/src/application/agent_conversation_start_service/mod.rs",
+        "src-tauri/src/application/agent_conversation_start_service/start.rs",
+        "src-tauri/src/application/agent_conversation_start_service/finish_flow.rs",
+        "src-tauri/src/application/agent_conversation_start_service/project_setup.rs",
+        "src-tauri/src/application/startup_background.rs",
+        "src-tauri/src/application/startup_runtime_builders.rs"
+      ]
+    },
+    {
+      "forbidden": [
+        "handle.emit(",
+        "app.emit(",
+        "app_handle.emit(",
+        "self.deps.app_handle.emit("
+      ],
+      "id": "bounded_completion_producers_no_direct_tauri_emit",
+      "mode": "hard-zero",
+      "paths": [
+        "src-tauri/src/application/chat_service/mod.rs",
+        "src-tauri/src/application/chat_service/chat_service_handlers.rs",
+        "src-tauri/src/application/chat_service/chat_service_queue.rs",
+        "src-tauri/src/application/chat_service/chat_service_send_background.rs",
+        "src-tauri/src/application/chat_service/chat_service_streaming.rs",
+        "src-tauri/src/application/agent_conversation_start_service/finish_flow.rs",
+        "src-tauri/src/application/agent_conversation_start_service/helpers/spawn_glue.rs",
+        "src-tauri/src/application/task_cleanup_service.rs",
+        "src-tauri/src/http_server/handlers/ideation/verification/lifecycle.rs"
+      ]
+    },
+    {
+      "forbidden": [
         "tauri::",
         "axum::"
       ],
@@ -94,16 +186,20 @@
   ],
   "schema_version": 1,
   "violations": {
+    "bounded_chat_runtime_no_managed_state_lookup": [],
+    "bounded_chat_start_runtime_no_app_handle": [],
+    "bounded_chat_start_runtime_no_tauri_generics": [],
+    "bounded_completion_producers_no_direct_tauri_emit": [],
     "root_application_no_commands_or_http_imports": [
       {
         "path": "src-tauri/src/application/app_setup.rs",
         "target": "crate::commands",
-        "text": "crate::commands::agent_workspace_auto_publish::install_agent_workspace_auto_publish_listeners("
+        "text": "crate::commands::agent_workspace_auto_publish::"
       },
       {
         "path": "src-tauri/src/application/app_setup.rs",
         "target": "crate::commands",
-        "text": "crate::commands::agent_workspace_auto_review::install_agent_workspace_auto_review_listeners("
+        "text": "crate::commands::agent_workspace_completion_dispatch::"
       },
       {
         "path": "src-tauri/src/application/app_setup.rs",
@@ -137,6 +233,11 @@
       },
       {
         "path": "src-tauri/src/application/chat_service/chat_service_merge.rs",
+        "target": "crate::commands",
+        "text": "use crate::commands::ExecutionState;"
+      },
+      {
+        "path": "src-tauri/src/application/chat_service/chat_service_merge_tests.rs",
         "target": "crate::commands",
         "text": "use crate::commands::ExecutionState;"
       },
@@ -1231,11 +1332,6 @@
         "path": "src-tauri/src/http_server/handlers/external/ideation_runtime/append.rs",
         "target": "crate::commands",
         "text": "use crate::commands::ideation_commands::{"
-      },
-      {
-        "path": "src-tauri/src/http_server/handlers/external/ideation_start/support.rs",
-        "target": "crate::commands",
-        "text": "execution_state: &std::sync::Arc<crate::commands::ExecutionState>,"
       },
       {
         "path": "src-tauri/src/http_server/handlers/external/mod.rs",

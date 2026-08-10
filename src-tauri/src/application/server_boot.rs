@@ -75,6 +75,12 @@ pub(crate) async fn start_server_boot(
 
     let (listener_ready_tx, listener_ready_rx) = oneshot::channel();
     let server_shutdown = shutdown.clone();
+    let external_mcp_handle = app_handle.clone();
+    let external_mcp_supervisor = Arc::new(move || {
+        external_mcp_handle
+            .try_state::<crate::infrastructure::ExternalMcpHandle>()
+            .and_then(|handle| handle.get().cloned())
+    });
 
     // Spawn only one server and wait for its concrete listener-bind result.
     tauri::async_runtime::spawn(async move {
@@ -83,6 +89,7 @@ pub(crate) async fn start_server_boot(
             http_execution_state,
             server_shutdown,
             Some(listener_ready_tx),
+            Some(external_mcp_supervisor),
         )
         .await
         {

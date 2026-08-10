@@ -1048,6 +1048,31 @@ fn emit_workspace_changed_when_done(
     }
 }
 
+struct WorkspaceChangedSinkGuard {
+    events: Arc<dyn ralphx_events::EventSink>,
+    conversation_id: String,
+}
+
+impl Drop for WorkspaceChangedSinkGuard {
+    fn drop(&mut self) {
+        let _ = ralphx_events::emit_serialized(
+            self.events.as_ref(),
+            "agent:workspace_changed",
+            &serde_json::json!({ "conversation_id": self.conversation_id }),
+        );
+    }
+}
+
+fn emit_workspace_changed_with_events_when_done(
+    events: Arc<dyn ralphx_events::EventSink>,
+    conversation_id: &ChatConversationId,
+) -> WorkspaceChangedSinkGuard {
+    WorkspaceChangedSinkGuard {
+        events,
+        conversation_id: conversation_id.as_str(),
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct AgentWorkspacePrFixReviewPublishCommandResumer {
     pub app_state: AppState,
@@ -1074,7 +1099,9 @@ impl AgentWorkspacePrFixReviewPublishResumer for AgentWorkspacePrFixReviewPublis
 /// Command composition for the normal publisher after the repair coordinator has already
 /// observed the exact repair-owned branch push. Application callers receive only this neutral
 /// contract, so their durable attempt/lease authority never depends outward on commands.
-pub(crate) struct AgentWorkspaceRepairPublishCommandContinuation;
+pub(crate) struct AgentWorkspaceRepairPublishCommandContinuation {
+    execution_state: Arc<ExecutionState>,
+}
 
 #[async_trait::async_trait]
 impl AgentWorkspaceRepairPublishContinuation for AgentWorkspaceRepairPublishCommandContinuation {
@@ -1086,6 +1113,7 @@ impl AgentWorkspaceRepairPublishContinuation for AgentWorkspaceRepairPublishComm
     ) -> Result<AgentWorkspaceRepairPrHandoffResult, PublishAfterRepairPushError> {
         let result = publish_agent_conversation_workspace_after_repair_push(
             state,
+            &self.execution_state,
             conversation_id,
             repair_handoff,
         )
@@ -1112,9 +1140,12 @@ impl AgentWorkspaceRepairPublishContinuation for AgentWorkspaceRepairPublishComm
 /// Installs the command-owned publisher at the runtime composition boundary. The shared Arc in
 /// `AppState` makes the same callback visible to the paired HTTP state.
 #[doc(hidden)]
-pub fn install_agent_workspace_repair_publish_continuation(state: &AppState) {
+pub fn install_agent_workspace_repair_publish_continuation(
+    state: &AppState,
+    execution_state: Arc<ExecutionState>,
+) {
     state.install_agent_workspace_repair_publish_continuation(Arc::new(
-        AgentWorkspaceRepairPublishCommandContinuation,
+        AgentWorkspaceRepairPublishCommandContinuation { execution_state },
     ));
 }
 
@@ -1123,17 +1154,29 @@ pub async fn agent_workspace_response_for_state(
     state: &AppState,
     workspace: AgentConversationWorkspace,
 ) -> Result<AgentConversationWorkspaceResponse, String> {
+    agent_workspace_response_without_repair_recovery_for_state(state, workspace).await
+}
+
+pub async fn agent_workspace_response_with_pr_supervision_for_state(
+    state: &AppState,
+    execution_state: &Arc<ExecutionState>,
+    workspace: AgentConversationWorkspace,
+) -> Result<AgentConversationWorkspaceResponse, String> {
     // A workspace response is a read boundary. Durable repair reconciliation can fetch, enqueue
     // an agent, or continue publication, so it is owned by the established background PR
     // supervision scheduler rather than by the response request.
     schedule_pr_supervision_recovery_for_workspace(
         state,
+        crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrSupervisionRuntime::from_state(
+            state,
+            Arc::clone(execution_state),
+        ),
         &workspace,
         AgentWorkspacePrSupervisionRecoveryTrigger::WorkspaceLoad,
         false,
     );
 
-    agent_workspace_response_without_repair_recovery_for_state(state, workspace).await
+    agent_workspace_response_for_state(state, workspace).await
 }
 
 /// Returns the persisted workspace and durable repair projection without starting recovery work.
@@ -1199,6 +1242,7 @@ pub(crate) async fn agent_workspace_response_without_repair_recovery_for_state(
 
 fn schedule_external_pr_reconciliation_for_workspace(
     state: &AppState,
+    execution_state: &Arc<ExecutionState>,
     workspace: &AgentConversationWorkspace,
     trigger: AgentWorkspaceExternalPrReconciliationTrigger,
     force: bool,
@@ -1210,9 +1254,13 @@ fn schedule_external_pr_reconciliation_for_workspace(
         return;
     };
     let recovery_state = state.clone();
+    let recovery_execution_state = Arc::clone(execution_state);
     schedule_agent_workspace_external_pr_reconciliation_with_lazy_deps(
         move || {
-            let chat_service: Arc<dyn ChatService> = Arc::new(recovery_state.build_chat_service());
+            let chat_service: Arc<dyn ChatService> = Arc::new(
+                recovery_state
+                    .build_chat_service_with_execution_state(Arc::clone(&recovery_execution_state)),
+            );
             AgentWorkspaceExternalPrReconciliationDeps {
                 workspace_repo: Arc::clone(&recovery_state.agent_conversation_workspace_repo),
                 chat_conversation_repo: Arc::clone(&recovery_state.chat_conversation_repo),
@@ -1231,7 +1279,8 @@ fn schedule_external_pr_reconciliation_for_workspace(
                     &recovery_state.agent_workspace_repair_repo,
                 )),
                 plan_branch_repo: Arc::clone(&recovery_state.plan_branch_repo),
-                app_handle: recovery_state.app_handle.clone(),
+                events: Arc::clone(&recovery_state.events),
+                durable_recovery_state: Some(Arc::new(recovery_state.clone())),
             }
         },
         workspace.conversation_id.clone(),
@@ -1242,6 +1291,7 @@ fn schedule_external_pr_reconciliation_for_workspace(
 
 fn schedule_pr_supervision_recovery_for_workspace(
     state: &AppState,
+    runtime: crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrSupervisionRuntime,
     workspace: &AgentConversationWorkspace,
     trigger: AgentWorkspacePrSupervisionRecoveryTrigger,
     force: bool,
@@ -1249,30 +1299,15 @@ fn schedule_pr_supervision_recovery_for_workspace(
     if state.github_service.is_none() {
         return;
     }
+    let resumer = state.agent_workspace_pr_fix_review_publish_resumer().ok();
     let recovery_state = state.clone();
     schedule_agent_workspace_pr_supervision_recovery_with_lazy_deps(
         move || {
-            let runtime_app_handle = recovery_state.app_handle.clone();
-            let execution_state = runtime_app_handle
-                .as_ref()
-                .and_then(|handle| handle.try_state::<Arc<ExecutionState>>())
-                .map(|state| state.inner().clone());
-            let transition_service = execution_state.as_ref().map(|execution_state| {
-                Arc::new(recovery_state.build_transition_service_for_runtime(
-                    Arc::clone(execution_state),
-                    runtime_app_handle.clone(),
-                ))
-            });
-            let chat_service: Arc<dyn ChatService> = Arc::new(
-                recovery_state
-                    .build_chat_service_for_runtime(execution_state, runtime_app_handle.clone()),
-            );
             build_agent_workspace_pr_supervision_recovery_deps(
                 &recovery_state,
-                runtime_app_handle,
-                transition_service,
-                Some(chat_service),
-                None,
+                Some(Arc::clone(&runtime.transition_service)),
+                Some(Arc::clone(&runtime.chat_service)),
+                resumer.clone(),
             )
             .expect("github service was checked before scheduling PR supervision recovery")
         },
@@ -1284,6 +1319,7 @@ fn schedule_pr_supervision_recovery_for_workspace(
 
 async fn schedule_external_pr_reconciliation_for_conversation_id(
     state: &AppState,
+    execution_state: &Arc<ExecutionState>,
     conversation_id: ChatConversationId,
     trigger: AgentWorkspaceExternalPrReconciliationTrigger,
     force: bool,
@@ -1297,12 +1333,19 @@ async fn schedule_external_pr_reconciliation_for_conversation_id(
         return Ok(());
     };
 
-    schedule_external_pr_reconciliation_for_workspace(state, &workspace, trigger, force);
+    schedule_external_pr_reconciliation_for_workspace(
+        state,
+        execution_state,
+        &workspace,
+        trigger,
+        force,
+    );
     Ok(())
 }
 
 async fn schedule_pr_supervision_recovery_for_conversation_id(
     state: &AppState,
+    execution_state: &Arc<ExecutionState>,
     conversation_id: ChatConversationId,
     trigger: AgentWorkspacePrSupervisionRecoveryTrigger,
     force: bool,
@@ -1316,7 +1359,16 @@ async fn schedule_pr_supervision_recovery_for_conversation_id(
         return Ok(());
     };
 
-    schedule_pr_supervision_recovery_for_workspace(state, &workspace, trigger, force);
+    schedule_pr_supervision_recovery_for_workspace(
+        state,
+        crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrSupervisionRuntime::from_state(
+            state,
+            Arc::clone(execution_state),
+        ),
+        &workspace,
+        trigger,
+        force,
+    );
     Ok(())
 }
 
@@ -3165,8 +3217,15 @@ pub(crate) fn create_chat_service<R: Runtime + 'static>(
     state: &AppState,
     app_handle: tauri::AppHandle<R>,
     execution_state: &Arc<ExecutionState>,
-) -> AppChatService<R> {
-    state.build_chat_service_for_runtime(Some(Arc::clone(execution_state)), Some(app_handle))
+) -> AppChatService {
+    let mut service = state.build_chat_service_with_execution_state(Arc::clone(execution_state));
+    if let Some(supervisor) = app_handle
+        .try_state::<crate::infrastructure::ExternalMcpHandle>()
+        .and_then(|handle| handle.get().cloned())
+    {
+        service = service.with_external_mcp_supervisor(supervisor);
+    }
+    service
 }
 
 /// Parse context type string to enum
@@ -3510,13 +3569,12 @@ async fn normalize_agent_runtime_selection(
 
 /// Start a project-backed agent conversation in an isolated feature worktree.
 #[tauri::command]
-pub async fn start_agent_conversation<R: Runtime + 'static>(
+pub async fn start_agent_conversation(
     input: StartAgentConversationInput,
     state: State<'_, AppState>,
     execution_state: State<'_, Arc<ExecutionState>>,
-    app: tauri::AppHandle<R>,
 ) -> Result<StartAgentConversationResponse, String> {
-    start_agent_conversation_for_state(input, state.inner(), execution_state.inner(), app).await
+    start_agent_conversation_for_state(input, state.inner(), execution_state.inner()).await
 }
 
 #[tauri::command]
@@ -3532,22 +3590,28 @@ pub async fn abort_seeded_agent_conversation(
 }
 
 #[doc(hidden)]
-pub(crate) async fn start_agent_conversation_for_state<R: Runtime + 'static>(
+pub(crate) async fn start_agent_conversation_for_state(
     input: StartAgentConversationInput,
     state: &AppState,
     execution_state: &Arc<ExecutionState>,
-    app: tauri::AppHandle<R>,
 ) -> Result<StartAgentConversationResponse, String> {
     let result = AgentConversationStartService::new(AgentConversationStartDeps {
         state,
         execution_state,
-        app_handle: app,
+        events: Arc::clone(&state.events),
     })
     .start(input)
     .await?;
 
     let workspace_response = match result.workspace {
-        Some(workspace) => Some(agent_workspace_response_for_state(state, workspace).await?),
+        Some(workspace) => Some(
+            agent_workspace_response_with_pr_supervision_for_state(
+                state,
+                execution_state,
+                workspace,
+            )
+            .await?,
+        ),
         None => None,
     };
 
@@ -3587,8 +3651,13 @@ pub async fn switch_agent_conversation_mode<R: Runtime + 'static>(
     app: tauri::AppHandle<R>,
 ) -> Result<SwitchAgentConversationModeResponse, String> {
     let service = create_chat_service(&state, app, &execution_state);
-    switch_agent_conversation_mode_for_state_stopping_running_agent(input, state.inner(), &service)
-        .await
+    switch_agent_conversation_mode_for_state_stopping_running_agent_with_execution_state(
+        input,
+        state.inner(),
+        execution_state.inner(),
+        &service,
+    )
+    .await
 }
 
 /// Switch the persona binding for a project-backed agent conversation.
@@ -3782,6 +3851,7 @@ pub async fn switch_agent_conversation_mode_for_state(
     switch_agent_conversation_mode_for_state_with_running_policy(
         input,
         state,
+        None,
         ModeSwitchRunningAgentPolicy::Reject,
         ModeSwitchInitiator::User,
     )
@@ -3797,6 +3867,24 @@ pub async fn switch_agent_conversation_mode_for_state_allowing_running(
     switch_agent_conversation_mode_for_state_with_running_policy(
         input,
         state,
+        None,
+        ModeSwitchRunningAgentPolicy::Allow,
+        initiator,
+    )
+    .await
+}
+
+#[doc(hidden)]
+pub(crate) async fn switch_agent_conversation_mode_for_state_allowing_running_with_execution_state(
+    input: SwitchAgentConversationModeInput,
+    state: &AppState,
+    execution_state: &Arc<ExecutionState>,
+    initiator: ModeSwitchInitiator,
+) -> Result<SwitchAgentConversationModeResponse, String> {
+    switch_agent_conversation_mode_for_state_with_running_policy(
+        input,
+        state,
+        Some(execution_state),
         ModeSwitchRunningAgentPolicy::Allow,
         initiator,
     )
@@ -3812,6 +3900,24 @@ pub async fn switch_agent_conversation_mode_for_state_stopping_running_agent(
     switch_agent_conversation_mode_for_state_with_running_policy(
         input,
         state,
+        None,
+        ModeSwitchRunningAgentPolicy::StopWithService(chat_service),
+        ModeSwitchInitiator::User,
+    )
+    .await
+}
+
+#[doc(hidden)]
+pub(crate) async fn switch_agent_conversation_mode_for_state_stopping_running_agent_with_execution_state(
+    input: SwitchAgentConversationModeInput,
+    state: &AppState,
+    execution_state: &Arc<ExecutionState>,
+    chat_service: &dyn ChatService,
+) -> Result<SwitchAgentConversationModeResponse, String> {
+    switch_agent_conversation_mode_for_state_with_running_policy(
+        input,
+        state,
+        Some(execution_state),
         ModeSwitchRunningAgentPolicy::StopWithService(chat_service),
         ModeSwitchInitiator::User,
     )
@@ -3834,6 +3940,7 @@ enum ModeSwitchRunningAgentPolicy<'a> {
 async fn switch_agent_conversation_mode_for_state_with_running_policy(
     input: SwitchAgentConversationModeInput,
     state: &AppState,
+    execution_state: Option<&Arc<ExecutionState>>,
     running_agent_policy: ModeSwitchRunningAgentPolicy<'_>,
     initiator: ModeSwitchInitiator,
 ) -> Result<SwitchAgentConversationModeResponse, String> {
@@ -4186,7 +4293,17 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
         .unwrap_or(conversation);
 
     let workspace_response = match workspace {
-        Some(workspace) => Some(agent_workspace_response_for_state(state, workspace).await?),
+        Some(workspace) => Some(match execution_state {
+            Some(execution_state) => {
+                agent_workspace_response_with_pr_supervision_for_state(
+                    state,
+                    execution_state,
+                    workspace,
+                )
+                .await?
+            }
+            None => agent_workspace_response_for_state(state, workspace).await?,
+        }),
         None => None,
     };
 
@@ -4919,6 +5036,7 @@ pub async fn restore_agent_conversation(
 pub async fn get_agent_conversation_workspace(
     conversation_id: String,
     state: State<'_, AppState>,
+    execution_state: State<'_, Arc<ExecutionState>>,
 ) -> Result<Option<AgentConversationWorkspaceResponse>, String> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let workspace = state
@@ -4931,12 +5049,18 @@ pub async fn get_agent_conversation_workspace(
         Some(workspace) => {
             schedule_external_pr_reconciliation_for_workspace(
                 state.inner(),
+                execution_state.inner(),
                 &workspace,
                 AgentWorkspaceExternalPrReconciliationTrigger::WorkspaceLoad,
                 false,
             );
             Ok(Some(
-                agent_workspace_response_for_state(state.inner(), workspace).await?,
+                agent_workspace_response_with_pr_supervision_for_state(
+                    state.inner(),
+                    execution_state.inner(),
+                    workspace,
+                )
+                .await?,
             ))
         }
         None => Ok(None),
@@ -4986,8 +5110,9 @@ async fn recheck_pr_health_for_state(
 pub async fn retry_pr_autofix_override(
     input: AgentWorkspaceRepairHoldActionInput,
     state: State<'_, AppState>,
+    execution_state: State<'_, Arc<ExecutionState>>,
 ) -> Result<AgentConversationWorkspaceResponse, String> {
-    apply_pr_autofix_hold_action(input, state.inner(), true).await
+    apply_pr_autofix_hold_action(input, state.inner(), execution_state.inner(), true).await
 }
 
 /// Stops the exact held PR autofix generation and leaves auto-merge disabled.
@@ -4995,8 +5120,9 @@ pub async fn retry_pr_autofix_override(
 pub async fn stop_pr_autofix_for_failure(
     input: AgentWorkspaceRepairHoldActionInput,
     state: State<'_, AppState>,
+    execution_state: State<'_, Arc<ExecutionState>>,
 ) -> Result<AgentConversationWorkspaceResponse, String> {
-    apply_pr_autofix_hold_action(input, state.inner(), false).await
+    apply_pr_autofix_hold_action(input, state.inner(), execution_state.inner(), false).await
 }
 
 /// Clears a continuation's publication-effect attention hold only when the UI's exact durable
@@ -5040,6 +5166,7 @@ pub async fn retry_agent_workspace_publication_effect(
 async fn apply_pr_autofix_hold_action(
     input: AgentWorkspaceRepairHoldActionInput,
     state: &AppState,
+    execution_state: &Arc<ExecutionState>,
     retry: bool,
 ) -> Result<AgentConversationWorkspaceResponse, String> {
     let conversation_id = ChatConversationId::from_string(input.conversation_id);
@@ -5076,6 +5203,7 @@ async fn apply_pr_autofix_hold_action(
     if retry {
         schedule_pr_supervision_recovery_for_conversation_id(
             state,
+            execution_state,
             conversation_id.clone(),
             AgentWorkspacePrSupervisionRecoveryTrigger::WorkspaceLoad,
             true,
@@ -5443,15 +5571,51 @@ pub async fn set_agent_conversation_workspace_pr_supervision(
     conversation_id: String,
     input: AgentConversationWorkspacePrSupervisionInput,
     state: State<'_, AppState>,
+    execution_state: State<'_, Arc<ExecutionState>>,
 ) -> Result<AgentConversationWorkspaceResponse, String> {
-    set_agent_conversation_workspace_pr_supervision_for_state(conversation_id, input, state.inner())
-        .await
+    set_agent_conversation_workspace_pr_supervision_for_state_with_execution_state(
+        conversation_id,
+        input,
+        state.inner(),
+        execution_state.inner(),
+    )
+    .await
 }
 
 pub async fn set_agent_conversation_workspace_pr_supervision_for_state(
     conversation_id: String,
     input: AgentConversationWorkspacePrSupervisionInput,
     state: &AppState,
+) -> Result<AgentConversationWorkspaceResponse, String> {
+    set_agent_conversation_workspace_pr_supervision_for_state_impl(
+        conversation_id,
+        input,
+        state,
+        None,
+    )
+    .await
+}
+
+async fn set_agent_conversation_workspace_pr_supervision_for_state_with_execution_state(
+    conversation_id: String,
+    input: AgentConversationWorkspacePrSupervisionInput,
+    state: &AppState,
+    execution_state: &Arc<ExecutionState>,
+) -> Result<AgentConversationWorkspaceResponse, String> {
+    set_agent_conversation_workspace_pr_supervision_for_state_impl(
+        conversation_id,
+        input,
+        state,
+        Some(execution_state),
+    )
+    .await
+}
+
+async fn set_agent_conversation_workspace_pr_supervision_for_state_impl(
+    conversation_id: String,
+    input: AgentConversationWorkspacePrSupervisionInput,
+    state: &AppState,
+    execution_state: Option<&Arc<ExecutionState>>,
 ) -> Result<AgentConversationWorkspaceResponse, String> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let auto_merge_method = normalize_agent_workspace_auto_merge_method(input.auto_merge_method)?;
@@ -5498,10 +5662,8 @@ pub async fn set_agent_conversation_workspace_pr_supervision_for_state(
         None
     };
 
-    let _workspace_changed_guard = state
-        .app_handle
-        .as_ref()
-        .map(|app| emit_workspace_changed_when_done(app, &conversation_id));
+    let _workspace_changed_guard =
+        emit_workspace_changed_with_events_when_done(Arc::clone(&state.events), &conversation_id);
 
     if let Some(target) = automation_target.as_ref() {
         sync_agent_workspace_publication_from_pr_automation_target(
@@ -5590,7 +5752,13 @@ pub async fn set_agent_conversation_workspace_pr_supervision_for_state(
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Agent conversation workspace not found".to_string())?;
-    agent_workspace_response_for_state(state, updated).await
+    match execution_state {
+        Some(execution_state) => {
+            agent_workspace_response_with_pr_supervision_for_state(state, execution_state, updated)
+                .await
+        }
+        None => agent_workspace_response_for_state(state, updated).await,
+    }
 }
 
 /// Set the durable Auto Review & Fix override for a project-backed agent workspace.
@@ -5599,11 +5767,13 @@ pub async fn set_agent_conversation_workspace_review_automation(
     conversation_id: String,
     input: AgentConversationWorkspaceReviewAutomationInput,
     state: State<'_, AppState>,
+    execution_state: State<'_, Arc<ExecutionState>>,
 ) -> Result<AgentConversationWorkspaceResponse, String> {
-    set_agent_conversation_workspace_review_automation_for_state(
+    set_agent_conversation_workspace_review_automation_for_state_with_execution_state(
         conversation_id,
         input,
         state.inner(),
+        execution_state.inner(),
     )
     .await
 }
@@ -5612,6 +5782,36 @@ pub async fn set_agent_conversation_workspace_review_automation_for_state(
     conversation_id: String,
     input: AgentConversationWorkspaceReviewAutomationInput,
     state: &AppState,
+) -> Result<AgentConversationWorkspaceResponse, String> {
+    set_agent_conversation_workspace_review_automation_for_state_impl(
+        conversation_id,
+        input,
+        state,
+        None,
+    )
+    .await
+}
+
+async fn set_agent_conversation_workspace_review_automation_for_state_with_execution_state(
+    conversation_id: String,
+    input: AgentConversationWorkspaceReviewAutomationInput,
+    state: &AppState,
+    execution_state: &Arc<ExecutionState>,
+) -> Result<AgentConversationWorkspaceResponse, String> {
+    set_agent_conversation_workspace_review_automation_for_state_impl(
+        conversation_id,
+        input,
+        state,
+        Some(execution_state),
+    )
+    .await
+}
+
+async fn set_agent_conversation_workspace_review_automation_for_state_impl(
+    conversation_id: String,
+    input: AgentConversationWorkspaceReviewAutomationInput,
+    state: &AppState,
+    execution_state: Option<&Arc<ExecutionState>>,
 ) -> Result<AgentConversationWorkspaceResponse, String> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let Some(workspace) = state
@@ -5637,7 +5837,13 @@ pub async fn set_agent_conversation_workspace_review_automation_for_state(
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "Agent conversation workspace not found".to_string())?;
-    agent_workspace_response_for_state(state, updated).await
+    match execution_state {
+        Some(execution_state) => {
+            agent_workspace_response_with_pr_supervision_for_state(state, execution_state, updated)
+                .await
+        }
+        None => agent_workspace_response_for_state(state, updated).await,
+    }
 }
 
 /// Enable or pause automatic publish behavior for a project-backed agent workspace.
@@ -5646,9 +5852,15 @@ pub async fn set_agent_conversation_workspace_auto_publish(
     conversation_id: String,
     input: AgentConversationWorkspaceAutoPublishInput,
     state: State<'_, AppState>,
+    execution_state: State<'_, Arc<ExecutionState>>,
 ) -> Result<AgentConversationWorkspaceResponse, String> {
-    set_agent_conversation_workspace_auto_publish_for_state(conversation_id, input, state.inner())
-        .await
+    set_agent_conversation_workspace_auto_publish_for_state_with_execution_state(
+        conversation_id,
+        input,
+        state.inner(),
+        execution_state.inner(),
+    )
+    .await
 }
 
 /// A preference enable may resume only the exact durable `Ready + Publish` generation. The
@@ -5723,6 +5935,36 @@ pub async fn set_agent_conversation_workspace_auto_publish_for_state(
     input: AgentConversationWorkspaceAutoPublishInput,
     state: &AppState,
 ) -> Result<AgentConversationWorkspaceResponse, String> {
+    set_agent_conversation_workspace_auto_publish_for_state_impl(
+        conversation_id,
+        input,
+        state,
+        None,
+    )
+    .await
+}
+
+async fn set_agent_conversation_workspace_auto_publish_for_state_with_execution_state(
+    conversation_id: String,
+    input: AgentConversationWorkspaceAutoPublishInput,
+    state: &AppState,
+    execution_state: &Arc<ExecutionState>,
+) -> Result<AgentConversationWorkspaceResponse, String> {
+    set_agent_conversation_workspace_auto_publish_for_state_impl(
+        conversation_id,
+        input,
+        state,
+        Some(execution_state),
+    )
+    .await
+}
+
+async fn set_agent_conversation_workspace_auto_publish_for_state_impl(
+    conversation_id: String,
+    input: AgentConversationWorkspaceAutoPublishInput,
+    state: &AppState,
+    execution_state: Option<&Arc<ExecutionState>>,
+) -> Result<AgentConversationWorkspaceResponse, String> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let Some(workspace) = state
         .agent_conversation_workspace_repo
@@ -5751,10 +5993,8 @@ pub async fn set_agent_conversation_workspace_auto_publish_for_state(
         return Err("Auto Publish cannot be changed for a closed or merged PR".to_string());
     }
 
-    let _workspace_changed_guard = state
-        .app_handle
-        .as_ref()
-        .map(|app| emit_workspace_changed_when_done(app, &conversation_id));
+    let _workspace_changed_guard =
+        emit_workspace_changed_with_events_when_done(Arc::clone(&state.events), &conversation_id);
 
     if let Some(target) = automation_target.as_ref() {
         sync_agent_workspace_publication_from_pr_automation_target(
@@ -5808,7 +6048,17 @@ pub async fn set_agent_conversation_workspace_auto_publish_for_state(
             .await
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "Agent conversation workspace not found".to_string())?;
-        return agent_workspace_response_for_state(state, updated).await;
+        return match execution_state {
+            Some(execution_state) => {
+                agent_workspace_response_with_pr_supervision_for_state(
+                    state,
+                    execution_state,
+                    updated,
+                )
+                .await
+            }
+            None => agent_workspace_response_for_state(state, updated).await,
+        };
     }
 
     if input.auto_publish_enabled == workspace.auto_publish_enabled {
@@ -5965,7 +6215,13 @@ pub async fn set_agent_conversation_workspace_auto_publish_for_state(
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Agent conversation workspace not found".to_string())?;
-    agent_workspace_response_for_state(state, updated).await
+    match execution_state {
+        Some(execution_state) => {
+            agent_workspace_response_with_pr_supervision_for_state(state, execution_state, updated)
+                .await
+        }
+        None => agent_workspace_response_for_state(state, updated).await,
+    }
 }
 
 /// Schedule a background publication reconciliation for a project-backed agent conversation.
@@ -5973,10 +6229,12 @@ pub async fn set_agent_conversation_workspace_auto_publish_for_state(
 pub async fn reconcile_agent_conversation_workspace_publication(
     conversation_id: String,
     state: State<'_, AppState>,
+    execution_state: State<'_, Arc<ExecutionState>>,
 ) -> Result<(), String> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
     schedule_external_pr_reconciliation_for_conversation_id(
         state.inner(),
+        execution_state.inner(),
         conversation_id.clone(),
         AgentWorkspaceExternalPrReconciliationTrigger::AgentRunCompleted,
         false,
@@ -5984,6 +6242,7 @@ pub async fn reconcile_agent_conversation_workspace_publication(
     .await?;
     schedule_pr_supervision_recovery_for_conversation_id(
         state.inner(),
+        execution_state.inner(),
         conversation_id,
         AgentWorkspacePrSupervisionRecoveryTrigger::AgentRunCompleted,
         true,
@@ -5996,6 +6255,7 @@ pub async fn reconcile_agent_conversation_workspace_publication(
 pub async fn list_agent_conversation_workspaces_by_project(
     project_id: String,
     state: State<'_, AppState>,
+    execution_state: State<'_, Arc<ExecutionState>>,
 ) -> Result<Vec<AgentConversationWorkspaceResponse>, String> {
     let project_id = ProjectId::from_string(project_id);
     let workspaces = state
@@ -6005,7 +6265,14 @@ pub async fn list_agent_conversation_workspaces_by_project(
         .map_err(|e| e.to_string())?;
     let mut responses = Vec::with_capacity(workspaces.len());
     for workspace in workspaces {
-        responses.push(agent_workspace_response_for_state(state.inner(), workspace).await?);
+        responses.push(
+            agent_workspace_response_with_pr_supervision_for_state(
+                state.inner(),
+                execution_state.inner(),
+                workspace,
+            )
+            .await?,
+        );
     }
     Ok(responses)
 }
@@ -6595,7 +6862,12 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
         return Ok(UpdateAgentConversationWorkspaceFromBaseResponse {
             target_ref: refreshed.base_ref.clone(),
             base_commit: refreshed.base_commit.clone().unwrap_or_default(),
-            workspace: agent_workspace_response_for_state(state, refreshed).await?,
+            workspace: agent_workspace_response_with_pr_supervision_for_state(
+                state,
+                execution_state,
+                refreshed,
+            )
+            .await?,
             updated: false,
             repair_started: true,
             base_status: BaseStatus::Valid.as_str().to_string(),
@@ -6722,7 +6994,12 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
             return Ok(UpdateAgentConversationWorkspaceFromBaseResponse {
                 target_ref: workspace.base_ref.clone(),
                 base_commit: workspace.base_commit.clone().unwrap_or_default(),
-                workspace: agent_workspace_response_for_state(state, workspace).await?,
+                workspace: agent_workspace_response_with_pr_supervision_for_state(
+                    state,
+                    execution_state,
+                    workspace,
+                )
+                .await?,
                 updated: false,
                 repair_started: true,
                 base_status: BaseStatus::Valid.as_str().to_string(),
@@ -7030,14 +7307,17 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
         .map_err(|e| e.to_string())?
         .unwrap_or(workspace);
 
-    let workspace_changed_emitter = state.app_handle.clone().map(|app_handle| {
-        Box::new(move |conversation_id: &ChatConversationId| {
-            let _ = app_handle.emit(
-                "agent:workspace_changed",
-                serde_json::json!({ "conversation_id": conversation_id.as_str() }),
-            );
-        }) as crate::commands::agent_workspace_auto_review::WorkspaceChangedEmitter
-    });
+    let workspace_changed_events = Arc::clone(&state.events);
+    let workspace_changed_emitter =
+        Some(
+            Box::new(move |conversation_id: &ChatConversationId| {
+                let _ = ralphx_events::emit_serialized(
+                    workspace_changed_events.as_ref(),
+                    "agent:workspace_changed",
+                    &serde_json::json!({ "conversation_id": conversation_id.as_str() }),
+                );
+            }) as crate::commands::agent_workspace_auto_review::WorkspaceChangedEmitter,
+        );
     crate::commands::agent_workspace_auto_review::spawn_auto_review_after_workspace_change(
         state.clone(),
         Arc::clone(execution_state),
@@ -7047,7 +7327,12 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
     );
 
     Ok(UpdateAgentConversationWorkspaceFromBaseResponse {
-        workspace: agent_workspace_response_for_state(state, refreshed).await?,
+        workspace: agent_workspace_response_with_pr_supervision_for_state(
+            state,
+            execution_state,
+            refreshed,
+        )
+        .await?,
         updated,
         repair_started: false,
         target_ref,
@@ -7094,6 +7379,7 @@ pub async fn publish_agent_conversation_workspace(
 pub async fn commit_agent_conversation_workspace_locally(
     input: CommitAgentConversationWorkspaceLocallyInput,
     state: State<'_, AppState>,
+    execution_state: State<'_, Arc<ExecutionState>>,
     app: tauri::AppHandle,
 ) -> Result<CommitAgentConversationWorkspaceLocallyResponse, String> {
     let conversation_id = ChatConversationId::from_string(input.conversation_id);
@@ -7117,7 +7403,12 @@ pub async fn commit_agent_conversation_workspace_locally(
         serde_json::json!({ "conversation_id": conversation_id.as_str() }),
     );
     Ok(CommitAgentConversationWorkspaceLocallyResponse {
-        workspace: agent_workspace_response_for_state(state.inner(), result.workspace).await?,
+        workspace: agent_workspace_response_with_pr_supervision_for_state(
+            state.inner(),
+            execution_state.inner(),
+            result.workspace,
+        )
+        .await?,
         outcome: result.outcome.as_str().to_string(),
         branch_name: result.branch_name,
         previous_head_sha: result.previous_head_sha,
@@ -7590,6 +7881,7 @@ async fn precompute_agent_conversation_workspace_pr_description_inner(
 pub async fn close_agent_workspace_pr(
     conversation_id: String,
     state: State<'_, AppState>,
+    execution_state: State<'_, Arc<ExecutionState>>,
     app: tauri::AppHandle,
 ) -> Result<AgentConversationWorkspaceResponse, String> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
@@ -7606,7 +7898,8 @@ pub async fn close_agent_workspace_pr(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Workspace disappeared after update".to_string())?;
 
-    agent_workspace_response_for_state(&state, updated).await
+    agent_workspace_response_with_pr_supervision_for_state(&state, execution_state.inner(), updated)
+        .await
 }
 
 async fn linked_plan_branch_has_unfinished_regular_tasks(
@@ -8215,7 +8508,12 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
     );
 
     Ok(PublishAgentConversationWorkspaceResponse {
-        workspace: agent_workspace_response_for_state(state, refreshed).await?,
+        workspace: agent_workspace_response_with_pr_supervision_for_state(
+            state,
+            execution_state,
+            refreshed,
+        )
+        .await?,
         commit_sha,
         pushed: true,
         created_pr: false,
@@ -8270,11 +8568,18 @@ pub async fn publish_agent_conversation_workspace_for_app_state_with_repair_inte
         )
         .await
         {
-            return durable_repair_publish_response(state, &conversation_id, false).await;
+            return durable_repair_publish_response(
+                state,
+                execution_state,
+                &conversation_id,
+                false,
+            )
+            .await;
         }
     }
     if let Some(response) = resume_durable_agent_workspace_repair_publish(
         state,
+        execution_state,
         &conversation_id,
         explicit_repair_publish,
     )
@@ -8295,6 +8600,7 @@ pub async fn publish_agent_conversation_workspace_for_app_state_with_repair_inte
 
 pub(crate) async fn resume_durable_agent_workspace_repair_publish(
     state: &AppState,
+    execution_state: &Arc<ExecutionState>,
     conversation_id: &ChatConversationId,
     explicit_publish: bool,
 ) -> Result<Option<PublishAgentConversationWorkspaceResponse>, String> {
@@ -8315,10 +8621,24 @@ pub(crate) async fn resume_durable_agent_workspace_repair_publish(
         AgentWorkspaceRepairPublishResumeOutcome::NoAttempt => return Ok(None),
         AgentWorkspaceRepairPublishResumeOutcome::Continue(attempt) => *attempt,
         AgentWorkspaceRepairPublishResumeOutcome::AwaitingReview => {
-            return durable_repair_publish_response(state, conversation_id, false).await.map(Some)
+            return durable_repair_publish_response(
+                state,
+                execution_state,
+                conversation_id,
+                false,
+            )
+            .await
+            .map(Some)
         }
         AgentWorkspaceRepairPublishResumeOutcome::Ready => {
-            return durable_repair_publish_response(state, conversation_id, false).await.map(Some)
+            return durable_repair_publish_response(
+                state,
+                execution_state,
+                conversation_id,
+                false,
+            )
+            .await
+            .map(Some)
         }
         AgentWorkspaceRepairPublishResumeOutcome::Blocked => {
             return Err("The durable workspace repair is blocked; retry that repair before publishing."
@@ -8355,6 +8675,7 @@ pub(crate) async fn resume_durable_agent_workspace_repair_publish(
         ),
         Some(_) => durable_repair_publish_response_with_prior_pr(
             state,
+            execution_state,
             conversation_id,
             before_pr_number,
             true,
@@ -8370,14 +8691,23 @@ pub(crate) async fn resume_durable_agent_workspace_repair_publish(
 
 async fn durable_repair_publish_response(
     state: &AppState,
+    execution_state: &Arc<ExecutionState>,
     conversation_id: &ChatConversationId,
     pushed: bool,
 ) -> Result<PublishAgentConversationWorkspaceResponse, String> {
-    durable_repair_publish_response_with_prior_pr(state, conversation_id, None, pushed).await
+    durable_repair_publish_response_with_prior_pr(
+        state,
+        execution_state,
+        conversation_id,
+        None,
+        pushed,
+    )
+    .await
 }
 
 async fn durable_repair_publish_response_with_prior_pr(
     state: &AppState,
+    execution_state: &Arc<ExecutionState>,
     conversation_id: &ChatConversationId,
     prior_pr_number: Option<i64>,
     pushed: bool,
@@ -8388,7 +8718,9 @@ async fn durable_repair_publish_response_with_prior_pr(
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| format!("Agent conversation workspace not found for {conversation_id}"))?;
-    let workspace = agent_workspace_response_for_state(state, workspace).await?;
+    let workspace =
+        agent_workspace_response_with_pr_supervision_for_state(state, execution_state, workspace)
+            .await?;
     Ok(PublishAgentConversationWorkspaceResponse {
         created_pr: prior_pr_number.is_none() && workspace.publication_pr_number.is_some(),
         commit_sha: None,
@@ -8405,14 +8737,14 @@ async fn durable_repair_publish_response_with_prior_pr(
 /// and poller startup; this entry only suppresses its otherwise unconditional second push.
 pub(crate) async fn publish_agent_conversation_workspace_after_repair_push(
     state: &AppState,
+    execution_state: &Arc<ExecutionState>,
     conversation_id: ChatConversationId,
     repair_handoff: AgentWorkspaceRepairPrHandoff,
 ) -> Result<PublishAgentConversationWorkspaceResponse, String> {
-    let execution_state = Arc::new(ExecutionState::new());
     // The normal publisher is large enough to overflow Linux debug-test stacks when inlined here.
     Box::pin(publish_agent_conversation_workspace_for_app_state_inner(
         state,
-        &execution_state,
+        execution_state,
         conversation_id,
         false,
         Some(repair_handoff),
@@ -10483,7 +10815,9 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
         }
     };
     let runtime_overrides = AgentWorkspaceRepairRuntimeOverrides::default();
-    if should_defer_agent_workspace_repair_message(state, workspace).await {
+    let execution_state = repair_service.runtime_execution_state();
+    if should_defer_agent_workspace_repair_message(state, execution_state.as_ref(), workspace).await
+    {
         let repair_run_id = AgentRunId::new();
         let dispatch = match reserve_agent_workspace_repair_dispatch(
             Arc::clone(&state.agent_workspace_repair_repo),
@@ -10521,6 +10855,7 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
             post_repair_action,
             Some(dispatch),
             Some(repair_run_id),
+            execution_state,
         )
         .await;
         return;
@@ -10659,17 +10994,13 @@ async fn settle_agent_workspace_publish_lease_status(
 
 async fn should_defer_agent_workspace_repair_message(
     state: &AppState,
+    execution_state: Option<&Arc<ExecutionState>>,
     workspace: &AgentConversationWorkspace,
 ) -> bool {
-    let execution_state = state
-        .app_handle
-        .as_ref()
-        .and_then(|handle| handle.try_state::<Arc<ExecutionState>>())
-        .map(|state| state.inner().clone());
     should_defer_agent_workspace_repair_message_for_registry(
-        state.app_handle.is_some(),
+        true,
         &state.running_agent_registry,
-        execution_state.as_ref(),
+        execution_state,
         workspace,
     )
     .await
@@ -10723,10 +11054,9 @@ async fn spawn_deferred_agent_workspace_repair_message(
     post_repair_action: AgentWorkspacePostRepairAction,
     dispatch: Option<AgentWorkspaceRepairAttempt>,
     repair_run_id: Option<AgentRunId>,
+    execution_state: Option<Arc<ExecutionState>>,
 ) {
-    let Some(app_handle) = state.app_handle.clone() else {
-        return;
-    };
+    let state = state.clone();
     let (Some(dispatch), Some(repair_run_id)) = (dispatch, repair_run_id) else {
         return;
     };
@@ -10740,18 +11070,8 @@ async fn spawn_deferred_agent_workspace_repair_message(
         let interactive_slot_key = agent_workspace_interactive_slot_key(&conversation_id);
         let wait_started = Instant::now();
         loop {
-            let Some(state) = app_handle.try_state::<AppState>() else {
-                tracing::warn!(
-                    conversation_id = conversation_id.as_str(),
-                    "Deferred agent workspace repair could not access AppState"
-                );
-                return;
-            };
-            let execution_state = app_handle
-                .try_state::<Arc<ExecutionState>>()
-                .map(|state| state.inner().clone());
             if agent_workspace_repair_wait_released(
-                state.inner(),
+                &state,
                 execution_state.as_ref(),
                 &key,
                 &interactive_slot_key,
@@ -10764,7 +11084,7 @@ async fn spawn_deferred_agent_workspace_repair_message(
                 let summary =
                     "Timed out waiting for active workspace agent turn before sending repair";
                 settle_agent_workspace_repair_dispatch_failure(
-                    state.inner(),
+                    &state,
                     dispatch,
                     summary,
                     AgentWorkspaceRepairDispatchSettlement::RetryableFailure,
@@ -10780,16 +11100,6 @@ async fn spawn_deferred_agent_workspace_repair_message(
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
 
-        let Some(state) = app_handle.try_state::<AppState>() else {
-            tracing::warn!(
-                conversation_id = conversation_id.as_str(),
-                "Deferred agent workspace repair could not access AppState after wait"
-            );
-            return;
-        };
-        let execution_state = app_handle
-            .try_state::<Arc<ExecutionState>>()
-            .map(|state| state.inner().clone());
         let repair_service = match execution_state {
             Some(execution_state) => state.build_chat_service_with_execution_state(execution_state),
             None => state.build_chat_service(),
@@ -10813,7 +11123,7 @@ async fn spawn_deferred_agent_workspace_repair_message(
                     let repair_summary =
                         post_repair_action.repair_send_failed_summary(&authority_error);
                     settle_agent_workspace_repair_dispatch_failure(
-                        state.inner(),
+                        &state,
                         dispatch,
                         &repair_summary,
                         classify_agent_workspace_repair_delivery(
@@ -10826,7 +11136,7 @@ async fn spawn_deferred_agent_workspace_repair_message(
                     return;
                 }
                 settle_agent_workspace_repair_dispatch_success(
-                    state.inner(),
+                    &state,
                     dispatch,
                     post_repair_action.deferred_repair_sent_summary(),
                 )
@@ -10841,7 +11151,7 @@ async fn spawn_deferred_agent_workspace_repair_message(
                 let repair_summary =
                     post_repair_action.repair_send_failed_summary(&repair_error.to_string());
                 settle_agent_workspace_repair_dispatch_failure(
-                    state.inner(),
+                    &state,
                     dispatch,
                     &repair_summary,
                     classify_agent_workspace_repair_delivery(

@@ -12,6 +12,7 @@ fn tauri_context() -> tauri::Context<tauri::test::MockRuntime> {
 }
 
 mod activity_commands;
+mod agent_completion_event_runtime;
 mod agent_profile_commands;
 mod artifact_commands;
 mod automation_commands;

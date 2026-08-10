@@ -658,7 +658,7 @@ pub async fn report_conflict(
     // 3. Transition to MergeConflict
     let transition_service = state
         .app_state
-        .build_transition_service_with_execution_state(Arc::clone(&state.execution_state));
+        .build_transition_service_for_runtime(Arc::clone(&state.execution_state), None);
 
     transition_service
         .transition_task(&task_id, InternalStatus::MergeConflict)
@@ -809,7 +809,7 @@ pub async fn report_incomplete(
     // 3. Transition to MergeIncomplete
     let transition_service = state
         .app_state
-        .build_transition_service_with_execution_state(Arc::clone(&state.execution_state));
+        .build_transition_service_for_runtime(Arc::clone(&state.execution_state), None);
 
     transition_service
         .transition_task(&task_id, InternalStatus::MergeIncomplete)
@@ -1062,10 +1062,11 @@ pub fn is_valid_git_sha(sha: &str) -> bool {
 /// paths (rebase retry, source-update retry, normal Merged, freshness routing)
 /// use the same service instance, avoiding duplicate construction.
 fn build_transition_service(state: &HttpServerState) -> TaskTransitionService {
-    let scheduler_concrete = std::sync::Arc::new(state.app_state.build_task_scheduler_for_runtime(
-        std::sync::Arc::clone(&state.execution_state),
-        state.app_state.app_handle.as_ref().cloned(),
-    ));
+    let scheduler_concrete = std::sync::Arc::new(
+        state
+            .app_state
+            .build_task_scheduler_for_runtime(std::sync::Arc::clone(&state.execution_state), None),
+    );
     scheduler_concrete.set_self_ref(
         std::sync::Arc::clone(&scheduler_concrete) as std::sync::Arc<dyn TaskScheduler>
     );
@@ -1073,9 +1074,7 @@ fn build_transition_service(state: &HttpServerState) -> TaskTransitionService {
 
     state
         .app_state
-        .build_transition_service_with_execution_state(std::sync::Arc::clone(
-            &state.execution_state,
-        ))
+        .build_transition_service_for_runtime(std::sync::Arc::clone(&state.execution_state), None)
         .with_task_scheduler(task_scheduler)
 }
 

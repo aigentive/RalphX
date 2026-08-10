@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use serde_json::json;
 use std::process::Command;
+use std::sync::Arc;
 
 use super::automation_commands::{
     automation_service, create_automation_draft_for_state, delete_automation_run,
@@ -20,6 +21,7 @@ use crate::application::automation::api::{
 use crate::application::automation::service::{AutomationDetail, AutomationScheduleOutcome};
 use crate::application::git_service::GitService;
 use crate::application::AppState;
+use crate::commands::ExecutionState;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
     AgentConversationWorkspaceMode, AgentRun, ArtifactId, Automation, AutomationId,
@@ -1402,6 +1404,7 @@ async fn resume_automation_run_command_maps_reopen_rejection_without_mutating_st
         .unwrap();
     let app = tauri::test::mock_builder()
         .manage(state)
+        .manage(Arc::new(ExecutionState::new()))
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("mock app should build");
 
@@ -1411,6 +1414,7 @@ async fn resume_automation_run_command_maps_reopen_rejection_without_mutating_st
             run_id: completed.id.to_string(),
         },
         app.state::<AppState>(),
+        app.state::<Arc<ExecutionState>>(),
     )
     .await
     .unwrap_err();
