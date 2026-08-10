@@ -1081,56 +1081,6 @@
     ],
     "root_infrastructure_no_upper_layer_imports": [
       {
-        "path": "src-tauri/src/infrastructure/agents/spawner.rs",
-        "target": "crate::application",
-        "text": "crate::application::ensure_provider_spawn_enabled("
-      },
-      {
-        "path": "src-tauri/src/infrastructure/agents/spawner.rs",
-        "target": "crate::application",
-        "text": "crate::application::managed_provider_cli::checked_managed_provider_cli_launch_path("
-      },
-      {
-        "path": "src-tauri/src/infrastructure/agents/spawner.rs",
-        "target": "crate::application",
-        "text": "crate::application::provider_env_file::load_provider_custom_env_file(settings)?;"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/agents/spawner.rs",
-        "target": "crate::application",
-        "text": "use crate::application::agent_lane_resolution::resolve_agent_spawn_settings;"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/agents/spawner.rs",
-        "target": "crate::application",
-        "text": "use crate::application::chat_service::uses_execution_slot;"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/agents/spawner.rs",
-        "target": "crate::application",
-        "text": "use crate::application::execution_state::ExecutionState;"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/agents/spawner.rs",
-        "target": "crate::application",
-        "text": "use crate::application::execution_state::context_matches_running_status_for_gc;"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/agents/spawner.rs",
-        "target": "crate::application",
-        "text": "use crate::application::harness_runtime_registry::resolve_harness_plugin_dir;"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/agents/spawner_tests.rs",
-        "target": "crate::application",
-        "text": "crate::application::managed_provider_cli::override_managed_codex_binary_path_for_tests("
-      },
-      {
-        "path": "src-tauri/src/infrastructure/agents/spawner_tests.rs",
-        "target": "crate::application",
-        "text": "use crate::application::execution_state::ExecutionState;"
-      },
-      {
         "path": "src-tauri/src/infrastructure/atlassian_client.rs",
         "target": "crate::application",
         "text": "use crate::application::{"

@@ -58,7 +58,7 @@ use crate::domain::state_machine::transition_handler::metadata_builder::{
 };
 use crate::domain::state_machine::transition_handler::set_trigger_origin;
 use crate::error::{AppError, AppResult};
-use crate::infrastructure::agents::spawner::AgenticClientSpawner;
+use crate::application::agents::spawner::AgenticClientSpawner;
 use ralphx_domain::entities::EventType;
 use ralphx_events::EventSink;
 

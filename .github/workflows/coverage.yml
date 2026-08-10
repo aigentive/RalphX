@@ -362,7 +362,7 @@ jobs:
               "src/domain/state_machine/transition_handler/on_enter_states/merge.rs",
               "src/infrastructure/agents/claude/mod.rs",
               "src/infrastructure/agents/codex/codex_cli_client.rs",
-              "src/infrastructure/agents/spawner.rs",
+              "src/application/agents/spawner.rs",
           }
 
           # Keep patch coverage focused on behavior instead of repeated
@@ -665,7 +665,7 @@ jobs:
               "src/http_server/types.rs",
               "src/infrastructure/agents/claude/mod.rs",
               "src/infrastructure/agents/codex/codex_cli_client.rs",
-              "src/infrastructure/agents/spawner.rs",
+              "src/application/agents/spawner.rs",
           }
 
           # Keep patch coverage focused on behavior instead of repeated

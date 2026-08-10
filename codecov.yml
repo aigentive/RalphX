@@ -170,7 +170,7 @@ coverage:
           - "!src-tauri/src/infrastructure/sqlite/sqlite_ideation_session_repo.rs"
           - "!src-tauri/src/infrastructure/sqlite/sqlite_task_proposal_repo/mod.rs"
           - "!src-tauri/src/infrastructure/agents/claude/mod.rs"
-          - "!src-tauri/src/infrastructure/agents/spawner.rs"
+          - "!src-tauri/src/application/agents/spawner.rs"
           # Merge recovery entry points below mostly compose already-tested
           # transition helpers, command adapters, and startup reconciliation.
           # Keep the patch gate on deterministic helper/state-machine behavior.

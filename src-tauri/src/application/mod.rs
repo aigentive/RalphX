@@ -4,6 +4,7 @@
 pub mod agent_client_bundle;
 pub mod delegation_park;
 pub mod agent_conversation_archive;
+pub mod agents;
 #[cfg(test)]
 mod agent_conversation_archive_tests;
 pub mod agent_conversation_fork;

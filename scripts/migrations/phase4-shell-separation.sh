@@ -137,8 +137,36 @@ step1() {
   log "commands -> shell symbol descents are applied as the fix-up layer."
 }
 
+step3() {
+  log "Moving the agent spawner into the application layer"
+  # The spawner drives lane resolution, execution slots and the harness runtime
+  # registry, all of which live in `application`. Its only reason to sit in
+  # `infrastructure` was history, and it was the last infrastructure -> commands
+  # importer. Its `crate::infrastructure::*` uses stay valid and become ordinary
+  # downward imports.
+  mkdir -p "$SRC/application/agents"
+  git -C "$REPO_ROOT" mv "src-tauri/src/infrastructure/agents/spawner.rs" \
+    "src-tauri/src/application/agents/spawner.rs"
+  git -C "$REPO_ROOT" mv "src-tauri/src/infrastructure/agents/spawner_tests.rs" \
+    "src-tauri/src/application/agents/spawner_tests.rs"
+
+  log "Repointing spawner paths"
+  # shellcheck disable=SC2046
+  rewrite "crate::infrastructure::agents::spawner::" "crate::application::agents::spawner::" $(crate_files)
+  # shellcheck disable=SC2046
+  rewrite "crate::infrastructure::agents::AgenticClientSpawner" \
+    "crate::application::agents::AgenticClientSpawner" $(crate_files)
+  # Integration suites reach the type through the crate's public path.
+  # shellcheck disable=SC2046
+  rewrite "ralphx_lib::infrastructure::agents::AgenticClientSpawner" \
+    "ralphx_lib::application::agents::AgenticClientSpawner" $(crate_files)
+
+  log "Step 3 mechanical pass done — module declarations are fix-up layer."
+}
+
 case "${1:-}" in
   step1) step1 ;;
+  step3) step3 ;;
   preflight) preflight ;;
-  *) die "usage: $(basename "$0") {preflight|step1}" ;;
+  *) die "usage: $(basename "$0") {preflight|step1|step3}" ;;
 esac
