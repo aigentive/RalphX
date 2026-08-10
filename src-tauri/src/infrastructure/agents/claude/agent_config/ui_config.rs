@@ -31,6 +31,9 @@ pub struct UiFeatureFlagsConfig {
     pub persona_switch_forces_fresh_provider_session: bool,
     /// Enable or disable projectless (standalone) conversations. Default: false.
     pub standalone_conversations: bool,
+    /// Enable or disable the remote multi-environment client UI. Default: false.
+    /// Phase-2 remote work ships dark behind this flag.
+    pub remote_environments: bool,
 }
 
 impl Default for UiFeatureFlagsConfig {
@@ -44,6 +47,11 @@ impl Default for UiFeatureFlagsConfig {
             agent_personas: false,
             persona_switch_forces_fresh_provider_session: false,
             standalone_conversations: false,
+            // Owner decision (2026-08-03): the remote-environments settings surfaces
+            // (Remote access + Connections panes and their hub cards) ship VISIBLE by
+            // default on this line. `remote_environments: false` in config or
+            // `RALPHX_UI_REMOTE_ENVIRONMENTS=false` still turns them off.
+            remote_environments: true,
         }
     }
 }

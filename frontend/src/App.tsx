@@ -4,12 +4,12 @@
  */
 
 import { Suspense, useMemo, useState, useEffect, useCallback, useRef } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useShallow } from "zustand/react/shallow";
-import { QueryClientProvider } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { getQueryClient } from "@/lib/queryClient";
 import { lazyWithRetry } from "@/lib/lazy-with-retry";
-import { EventProvider } from "@/providers/EventProvider";
+import { EnvironmentScopedProviders } from "@/providers/EnvironmentScopedProviders";
+import { RemoteConnectionBanner } from "@/components/remote/RemoteConnectionBanner";
 import { NotificationCenterPanel } from "@/components/notifications/NotificationCenterPanel";
 import { ExecutionControlBar } from "@/components/execution/ExecutionControlBar";
 import {
@@ -53,10 +53,13 @@ import { useMergePipeline } from "@/hooks/useMergePipeline";
 import { useProjects, projectKeys } from "@/hooks/useProjects";
 import { useAppKeyboardShortcuts } from "@/hooks/useAppKeyboardShortcuts";
 import { useFeatureFlags, isViewEnabled } from "@/hooks/useFeatureFlags";
+import { useIsRemoteEnvironment } from "@/hooks/useActiveEnvironment";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
+import { useRemoteProviderReadiness } from "@/hooks/useRemoteProviderReadiness";
 import { useTicketingCacheEvents } from "@/hooks/useTicketingEvents";
 import { useAutomationEvents } from "@/hooks/useAutomations";
 import { cn } from "@/lib/utils";
+import { initializeEnvironmentRuntime } from "@/lib/remote/environment-runtime";
 import {
   openTaskInAgents,
   navigateToIdeationSession,
@@ -80,7 +83,6 @@ import { ScreenshotGalleryTestPage } from "@/test-pages/ScreenshotGalleryTest";
 import { ChatActivityVisualTestPage } from "@/test-pages/ChatActivityVisualTest";
 import { preloadAutomationsView } from "@/components/automations/preloadAutomationsView";
 
-const queryClient = getQueryClient();
 const ATLASSIAN_AWARENESS_TOAST_KEY = "ralphx.atlassianIntegrationAwareness.v1";
 const LazyAutomationsView = lazyWithRetry(() => preloadAutomationsView());
 const LazyAgentsView = lazyWithRetry(async () => {
@@ -220,6 +222,7 @@ function AgentsRouteShell() {
 }
 
 function AppContent({ backgroundSettled }: { backgroundSettled: boolean }) {
+  const queryClient = useQueryClient();
   // Check for test page first (must happen before any hooks for ESLint compliance)
   const testPage = useMemo(() => getTestPage(), []);
 
@@ -227,6 +230,7 @@ function AppContent({ backgroundSettled }: { backgroundSettled: boolean }) {
   const toggleNotificationsPanel = useUiStore((s) => s.toggleNotificationsPanel);
   const setNotificationsPanelOpen = useUiStore((s) => s.setNotificationsPanelOpen);
   const executionStatus = useUiStore((s) => s.executionStatus);
+  const executionStatusKnown = useUiStore((s) => s.executionStatusKnown);
   const setExecutionStatus = useUiStore((s) => s.setExecutionStatus);
   const currentView = useUiStore((s) => s.currentView);
   const setCurrentView = useUiStore((s) => s.setCurrentView);
@@ -234,19 +238,29 @@ function AppContent({ backgroundSettled }: { backgroundSettled: boolean }) {
   const activeModal = useUiStore((s) => s.activeModal);
   const openModal = useUiStore((s) => s.openModal);
   const { data: featureFlags } = useFeatureFlags();
+  /**
+   * Project creation is host-impossible from a remote client (2.6-a): the wizard's
+   * folder picker (`openDialog`) reads THIS device's filesystem, so a path it returns
+   * means nothing to the host. The affordances are hidden at their render sites
+   * rather than guarded inside the handlers — a button that opens a wizard whose only
+   * input cannot be supplied is not an honest control.
+   */
+  const isRemoteEnvironment = useIsRemoteEnvironment();
+  const canCreateProjects = !isRemoteEnvironment;
 
   // Redirect to the default project view in production when the current view is disabled.
   // Ticketing remains directly reachable when a provider enables the dashboard
   // entry; provider availability is handled by the dashboard/sidebar surfaces.
   useEffect(() => {
     if (
-      currentView !== "ticketing" &&
-      !import.meta.env.DEV &&
-      !isViewEnabled(currentView, featureFlags)
+      (isRemoteEnvironment && (currentView === "ticketing" || currentView === "github")) ||
+      (currentView !== "ticketing" &&
+        !import.meta.env.DEV &&
+        !isViewEnabled(currentView, featureFlags))
     ) {
       setCurrentView(DEFAULT_APP_VIEW);
     }
-  }, [currentView, featureFlags, setCurrentView]);
+  }, [currentView, featureFlags, isRemoteEnvironment, setCurrentView]);
 
   // Welcome screen overlay state
   const showWelcomeOverlay = useUiStore((s) => s.showWelcomeOverlay);
@@ -296,7 +310,11 @@ function AppContent({ backgroundSettled }: { backgroundSettled: boolean }) {
   const shouldHydrateExecutionSettings = activeModal === "settings";
 
   // Fetch projects from backend
-  const { data: fetchedProjects, isLoading: isLoadingProjects } = useProjects();
+  const {
+    data: fetchedProjects,
+    isLoading: isLoadingProjects,
+    isError: isProjectsError,
+  } = useProjects();
   const activeProject = useMemo(
     () => fetchedProjects?.find((project) => project.id === currentProjectId) ?? null,
     [currentProjectId, fetchedProjects],
@@ -306,6 +324,9 @@ function AppContent({ backgroundSettled }: { backgroundSettled: boolean }) {
     isLoading: isLoadingProviderSettings,
     isPlaceholderData: isPlaceholderProviderSettings,
   } = useHarnessProviders();
+  // Only the remote gate consumes this; on the local environment the query stays disabled.
+  const { data: remoteProviderReadiness } =
+    useRemoteProviderReadiness(isRemoteEnvironment);
 
   // Project creation wizard state
   const [isProjectWizardOpen, setIsProjectWizardOpen] = useState(false);
@@ -332,11 +353,23 @@ function AppContent({ backgroundSettled }: { backgroundSettled: boolean }) {
   // Use TanStack Query data directly — the Zustand store sync via useEffect
   // can lag behind, causing a brief flash where store.projects is {} while
   // fetchedProjects already has data.
-  const hasNoProjects = !isLoadingProjects && (!fetchedProjects || fetchedProjects.length === 0);
-  const providerSetupRequired =
-    !isLoadingProviderSettings &&
-    !isPlaceholderProviderSettings &&
-    providerSettings.requiresOnboarding;
+  // A FAILED read is not an empty workspace. Under a remote environment an unavailable or
+  // erroring project read would otherwise render first-run onboarding over a populated host —
+  // the shape that made a connected client look unconfigured. Emptiness must be a successful
+  // answer, never the absence of one.
+  const hasNoProjects =
+    !isLoadingProjects &&
+    !isProjectsError &&
+    (!fetchedProjects || fetchedProjects.length === 0);
+  // `get_agent_provider_settings` is Denied on the facade, so a remote environment answers the
+  // onboarding question from the readiness projection instead. Fail closed the same way: an
+  // unresolved or failed readiness read never asserts that setup is required.
+  const providerSetupRequired = isRemoteEnvironment
+    ? remoteProviderReadiness !== undefined &&
+      !remoteProviderReadiness.onboardingComplete
+    : !isLoadingProviderSettings &&
+      !isPlaceholderProviderSettings &&
+      providerSettings.requiresOnboarding;
   const agentIssueReportContext = useMemo(() => {
     if (
       currentView !== "agents" ||
@@ -917,12 +950,7 @@ function AppContent({ backgroundSettled }: { backgroundSettled: boolean }) {
   }, []);
 
   const handleFetchBranches = useCallback(async (workingDirectory: string): Promise<string[]> => {
-    try {
-      const branches = await getGitBranches(workingDirectory);
-      return branches;
-    } catch {
-      return [];
-    }
+    return getGitBranches(workingDirectory);
   }, []);
 
   const handleDetectDefaultBranch = useCallback(async (workingDirectory: string): Promise<string> => {
@@ -984,6 +1012,7 @@ function AppContent({ backgroundSettled }: { backgroundSettled: boolean }) {
   const executionFooter = executionProjectId ? (
     <ExecutionControlBar
       projectId={executionProjectId}
+      statusKnown={executionStatusKnown}
       runningCount={executionStatus.runningCount}
       maxConcurrent={executionStatus.maxConcurrent}
       queuedCount={executionStatus.queuedCount}
@@ -1035,7 +1064,7 @@ function AppContent({ backgroundSettled }: { backgroundSettled: boolean }) {
             attentionCountStale={attentionItems.isError}
             notificationsPanelOpen={notificationsPanelOpen}
             onToggleNotificationsPanel={toggleNotificationsPanel}
-            onNewProject={handleOpenProjectWizard}
+            {...(canCreateProjects ? { onNewProject: handleOpenProjectWizard } : {})}
             onProjectSwitchIntent={preserveCurrentViewOnNextProjectSwitch}
             showProjectSelector={
               !hasNoProjects && !showWelcomeOverlay && !providerSetupRequired
@@ -1044,6 +1073,15 @@ function AppContent({ backgroundSettled }: { backgroundSettled: boolean }) {
 
           {/* Spacer for fixed header */}
           <div className="h-12 flex-shrink-0" />
+
+          {/*
+            Degraded-connection banner for the active REMOTE environment. Mounted once,
+            directly under the fixed-header spacer so it pushes the app body down rather
+            than overlaying it, and above the nav rail so it is never scrolled out of
+            view while the connection is down. Renders null on local / connected /
+            suspended / flag-off (2.7-a).
+          */}
+          <RemoteConnectionBanner />
 
           {/* App body: left nav rail + main content */}
           <div className="flex-1 flex overflow-hidden" style={{ backgroundColor: "var(--app-content-bg)" }}>
@@ -1208,7 +1246,8 @@ function AppContent({ backgroundSettled }: { backgroundSettled: boolean }) {
       )}
         </div>
 
-      {/* Project Creation Wizard */}
+      {/* Project Creation Wizard — host-only (2.6-a) */}
+      {canCreateProjects && (
       <ProjectCreationWizard
         isOpen={isProjectWizardOpen}
         onClose={handleCloseProjectWizard}
@@ -1220,6 +1259,7 @@ function AppContent({ backgroundSettled }: { backgroundSettled: boolean }) {
         error={projectCreationError}
         isFirstRun={hasNoProjects}
       />
+      )}
 
       {/* Settings Dialog - Modal overlay replacing routed settings view */}
       <SettingsDialog
@@ -1252,12 +1292,12 @@ function AppContent({ backgroundSettled }: { backgroundSettled: boolean }) {
 function App({ startupStatus }: { startupStatus?: StartupStatus }) {
   const backgroundSettled = startupStatus?.backgroundComplete ?? true;
 
+  useEffect(() => initializeEnvironmentRuntime(), []);
+
   return (
-    <QueryClientProvider client={queryClient}>
-      <EventProvider>
-        <AppContent backgroundSettled={backgroundSettled} />
-      </EventProvider>
-    </QueryClientProvider>
+    <EnvironmentScopedProviders>
+      <AppContent backgroundSettled={backgroundSettled} />
+    </EnvironmentScopedProviders>
   );
 }
 

@@ -191,9 +191,7 @@ impl MemoryArchiveJobRepository for SqliteMemoryArchiveJobRepository {
 
                 let (started_at, completed_at) = match status {
                     ArchiveJobStatus::Running => (Some(now.clone()), None),
-                    ArchiveJobStatus::Done | ArchiveJobStatus::Failed => {
-                        (None, Some(now.clone()))
-                    }
+                    ArchiveJobStatus::Done | ArchiveJobStatus::Failed => (None, Some(now.clone())),
                     ArchiveJobStatus::Pending => (None, None),
                 };
 

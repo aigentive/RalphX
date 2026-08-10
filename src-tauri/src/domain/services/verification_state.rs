@@ -48,11 +48,7 @@ where
         .get_verification_run_snapshot(&session.id, session.verification_generation)
         .await?
         .unwrap_or_else(|| {
-            build_blank_verification_snapshot(
-                session.verification_generation,
-                status,
-                in_progress,
-            )
+            build_blank_verification_snapshot(session.verification_generation, status, in_progress)
         }))
 }
 
@@ -63,8 +59,8 @@ pub async fn load_effective_verification_status<R>(
 where
     R: IdeationSessionRepository + ?Sized,
 {
-    Ok(repo
-        .get_verification_status(&session.id)
-        .await?
-        .unwrap_or((session.verification_status, session.verification_in_progress)))
+    Ok(repo.get_verification_status(&session.id).await?.unwrap_or((
+        session.verification_status,
+        session.verification_in_progress,
+    )))
 }

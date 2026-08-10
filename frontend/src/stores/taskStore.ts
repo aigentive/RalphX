@@ -8,6 +8,8 @@
 
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
+
+import { registerEnvIsolatedStore } from "@/lib/remote/env-state-isolation";
 import type { Task, InternalStatus } from "@/types/task";
 
 // ============================================================================
@@ -68,6 +70,8 @@ export const useTaskStore = create<TaskState & TaskActions>()(
       }),
   }))
 );
+
+registerEnvIsolatedStore({ name: "useTaskStore", reset: () => useTaskStore.setState(useTaskStore.getInitialState(), true) });
 
 // ============================================================================
 // Selectors (defined outside store for memoization)

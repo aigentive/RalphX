@@ -11,6 +11,8 @@ export const featureFlagsSchema = z.object({
   agentConversationWorkflows: z.boolean().default(false),
   standaloneConversations: z.boolean().default(false),
   agentConversationAutopilot: z.boolean().default(false),
+  // Defaults ON (owner decision, 2026-08-03) to match the backend's shipped default.
+  remoteEnvironments: z.boolean().default(true),
 });
 
 /**
@@ -24,10 +26,12 @@ export type FeatureFlags = Omit<
   | "agentConversationWorkflows"
   | "standaloneConversations"
   | "agentConversationAutopilot"
+  | "remoteEnvironments"
 > & {
   agentPersonas?: boolean;
   agentConversationTeam?: boolean;
   agentConversationWorkflows?: boolean;
   standaloneConversations?: boolean;
   agentConversationAutopilot?: boolean;
+  remoteEnvironments?: boolean;
 };

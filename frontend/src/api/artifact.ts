@@ -10,7 +10,11 @@ import {
 } from "@/types/artifact";
 import { ArtifactVersionSummarySchema } from "@/types/artifact";
 import type { ArtifactVersionSummary } from "@/types/artifact";
-import { backendApiUrl } from "@/api/backend";
+import { backendFetch } from "@/api/backend";
+import {
+  getTransportEnvironmentId,
+  isRemoteEnvironmentId,
+} from "@/lib/remote/active-environment";
 
 // ============================================================================
 // Response Schemas (matching Rust backend serialization with snake_case)
@@ -67,6 +71,63 @@ export const PlanComplexityAssessmentResponseSchema = z.object({
 export type PlanComplexityAssessmentResponse = z.infer<
   typeof PlanComplexityAssessmentResponseSchema
 >;
+
+const RemotePlanIntentSchema = z.object({
+  requestId: z.string(),
+  status: z.enum([
+    "pending",
+    "starting",
+    "completed",
+    "failed",
+    "failedStale",
+  ]),
+  errorCode: z.string().nullable().optional(),
+  result: z.unknown().nullable().optional(),
+  createdAt: z.string(),
+  updatedAt: z.string().optional(),
+  deduplicated: z.boolean().optional(),
+});
+
+export class RemotePlanIntentError extends Error {
+  readonly errorCode: string;
+
+  constructor(errorCode: string, message = errorCode) {
+    super(message);
+    this.name = "RemotePlanIntentError";
+    this.errorCode = errorCode;
+  }
+}
+
+function remotePlanFacadeEnabled(): boolean {
+  return isRemoteEnvironmentId(getTransportEnvironmentId());
+}
+
+async function settleRemotePlanIntent(
+  requestId: string,
+  pollCommand:
+    | "get_remote_plan_approval_request"
+    | "get_remote_plan_edit_request",
+): Promise<unknown> {
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    const request = RemotePlanIntentSchema.parse(
+      await invoke(pollCommand, { requestId }),
+    );
+    if (request.status === "completed") return request.result;
+    if (request.status === "failed" || request.status === "failedStale") {
+      const errorCode = request.errorCode ?? "REMOTE_PLAN_HOST_FAILED";
+      const messages: Record<string, string> = {
+        REMOTE_PLAN_APPROVAL_PLAN_CHANGED:
+          "Plan changed — refresh and approve again",
+        REMOTE_PLAN_EDIT_VERSION_CONFLICT: "Plan changed — reload before editing",
+        REMOTE_PLAN_EDIT_FROZEN:
+          "Plan is frozen — verification agent is actively working. Wait for the current round to complete.",
+      };
+      throw new RemotePlanIntentError(errorCode, messages[errorCode]);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  throw new Error("Timed out waiting for the host to settle the plan request");
+}
 
 // ============================================================================
 // Transform Functions (snake_case -> camelCase)
@@ -231,8 +292,8 @@ export const artifactApi = {
    * Planning sessions include backend-owned approval state.
    */
   getSessionPlan: async (sessionId: string): Promise<Artifact | null> => {
-    const response = await fetch(
-      backendApiUrl(`get_session_plan/${encodeURIComponent(sessionId)}`),
+    const response = await backendFetch(
+      `get_session_plan/${encodeURIComponent(sessionId)}`,
     );
     return parseHttpArtifactResponse(response);
   },
@@ -247,11 +308,28 @@ export const artifactApi = {
     blueprintArtifactVersion,
   }: {
     sessionId: string;
-    artifactId?: string | undefined;
+    artifactId: string;
     blueprintArtifactId?: string | undefined;
     blueprintArtifactVersion?: number | undefined;
   }): Promise<Artifact> => {
-    const response = await fetch(backendApiUrl("approve_plan_artifact"), {
+    if (remotePlanFacadeEnabled()) {
+      const requested = RemotePlanIntentSchema.parse(
+        await invoke("request_remote_plan_approval", {
+          input: {
+            sessionId,
+            artifactId,
+            blueprintArtifactId: blueprintArtifactId ?? null,
+            blueprintArtifactVersion: blueprintArtifactVersion ?? null,
+          },
+        }),
+      );
+      const result = await settleRemotePlanIntent(
+        requested.requestId,
+        "get_remote_plan_approval_request",
+      );
+      return transformArtifactResponse(ArtifactResponseSchema.parse(result));
+    }
+    const response = await backendFetch("approve_plan_artifact", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -272,14 +350,59 @@ export const artifactApi = {
     return artifact;
   },
 
+  updatePlanArtifact: async ({
+    artifactId,
+    content,
+    expectedVersion,
+  }: {
+    artifactId: string;
+    content: string;
+    expectedVersion: number;
+  }): Promise<Artifact> => {
+    if (remotePlanFacadeEnabled()) {
+      const requested = RemotePlanIntentSchema.parse(
+        await invoke("request_remote_plan_artifact_edit", {
+          input: { artifactId, content, expectedVersion },
+        }),
+      );
+      const result = await settleRemotePlanIntent(
+        requested.requestId,
+        "get_remote_plan_edit_request",
+      );
+      return transformArtifactResponse(ArtifactResponseSchema.parse(result));
+    }
+    const response = await backendFetch("update_plan_artifact", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        artifact_id: artifactId,
+        content,
+      }),
+    });
+    if (!response.ok) {
+      if (response.status === 409) {
+        throw new RemotePlanIntentError(
+          "REMOTE_PLAN_EDIT_FROZEN",
+          "Plan is frozen — verification agent is actively working. Wait for the current round to complete.",
+        );
+      }
+      throw new Error(`Failed to update plan: ${response.statusText}`);
+    }
+    return transformArtifactResponse(
+      ArtifactResponseSchema.parse(await response.json()),
+    );
+  },
+
   /**
    * Get the current approved Plan-mode complexity assessment, if one exists.
    */
   getPlanComplexityAssessment: async (
     sessionId: string,
   ): Promise<PlanComplexityAssessment | null> => {
-    const response = await fetch(
-      backendApiUrl(`plan_complexity_assessment/${encodeURIComponent(sessionId)}`),
+    const response = await backendFetch(
+      `plan_complexity_assessment/${encodeURIComponent(sessionId)}`,
     );
     if (!response.ok) {
       let message = response.statusText;

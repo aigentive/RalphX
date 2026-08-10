@@ -1,0 +1,596 @@
+[
+  {
+    "name": "task:created",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "task:status_changed",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "task:merge_progress",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "task:merge_phases",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "task:archived",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "task:restored",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "notification:created",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "notification:updated",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "agent:run_started",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "agent:run_completed",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "agent:turn_completed",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "agent:message_created",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "agent:task_started",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "agent:task_completed",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "agent:error",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "agent:queue_sent",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "agent:message_queued",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "agent:session_recovered",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "automation:updated",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "automation:deleted",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "ticketing:cache_invalidated",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "task_validation:event",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "proposal:created",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "step:created",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "plan_artifact:created",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "plan_artifact:approved",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "execution:status_changed",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "agent:conversation_created",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "agent:conversation_forked",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "agent:conversation_title_updated",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "agent:question_resolved",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "agent:stopped",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "agent:workspace_changed",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "automation:run:updated",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "dependency:added",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "dependency:removed",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "execution:error",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "execution:queue_changed",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "file:change",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "ideation:child_session_created",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "ideation:finalize_pending_confirmation",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "ideation:session_accepted",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "ideation:session_created",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "ideation:session_title_updated",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "merge:validation_start",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "merge:validation_step",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "notification:desktop_activated",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "persona:applied",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "persona:draft_updated",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "persona:injection_skipped",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "plan:merge_complete",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "plan_artifact:updated",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "plan_verification:status_changed",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "pr_review_artifact:created",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "pr_review_artifact:updated",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "project:analysis_complete",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "project:analysis_failed",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "proposal:deleted",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "proposal:priority_assessed",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "proposal:updated",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "proposals:reordered",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "qa:prep",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "qa:test",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "recovery:prompt",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "review:update",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "session:priorities_assessed",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "step:deleted",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "step:status_changed",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "step:updated",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "steps:reordered",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "supervisor:alert",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "supervisor:event",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "task:event",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "task:provider_error_paused",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "workspace_review_artifact:created",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "workspace_review_artifact:updated",
+    "delivery": "durable",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "agent:chunk",
+    "delivery": "transient",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "agent:usage_updated",
+    "delivery": "transient",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "agent:tool_call",
+    "delivery": "transient",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "agent:message",
+    "delivery": "transient",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "agent:hook",
+    "delivery": "transient",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "agent:ask_user_question",
+    "delivery": "transient",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "agent:heartbeat",
+    "delivery": "transient",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "agent:startup_progress",
+    "delivery": "transient",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "agent:workflow_progress",
+    "delivery": "transient",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "execution:stderr",
+    "delivery": "transient",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "permission:expired",
+    "delivery": "transient",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "permission:request",
+    "delivery": "transient",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "permission:resolved",
+    "delivery": "transient",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "agent_terminal:event",
+    "delivery": "transient",
+    "origin": "backend",
+    "excludedFromV1": true
+  },
+  {
+    "name": "task:updated",
+    "delivery": "localOnly",
+    "origin": "webview",
+    "excludedFromV1": false
+  },
+  {
+    "name": "ralphx://check-for-updates",
+    "delivery": "localOnly",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "ralphx://show-release-notes",
+    "delivery": "localOnly",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "gh-auth:login_prompt",
+    "delivery": "localOnly",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "remote:session_connected",
+    "delivery": "localOnly",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "remote:session_closed",
+    "delivery": "localOnly",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "remote:device_paired",
+    "delivery": "localOnly",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "remote:stream_frame",
+    "delivery": "localOnly",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "remote:stream_closed",
+    "delivery": "localOnly",
+    "origin": "backend",
+    "excludedFromV1": false
+  }
+]

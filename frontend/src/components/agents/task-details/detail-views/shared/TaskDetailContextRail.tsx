@@ -166,6 +166,15 @@ export function TaskContextRail({
       )}
 
       {showHistorical && <HistoricalLensCard viewMode={model.viewMode} />}
+      {model.isUnavailable && (
+        <RailSection title="Plan context">
+          <DetailCard variant="info">
+            <p className="text-[0.75rem] text-text-primary/50">
+              Plan, branch, and merge details could not be loaded.
+            </p>
+          </DetailCard>
+        </RailSection>
+      )}
       {showMerge && model.merge && <MergeCard merge={model.merge} />}
     </div>
   );

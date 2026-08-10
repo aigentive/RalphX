@@ -43,7 +43,7 @@ vi.mock("@tanstack/react-query", async (importOriginal) => {
 });
 vi.mock("@/hooks/useAttentionItems", () => ({ useAttentionItems: vi.fn() }));
 vi.mock("@/api/automations", () => ({ automationsApi: { resume: vi.fn() } }));
-vi.mock("@/api/permission", () => ({ permissionApi: { getPendingPermissions: vi.fn() } }));
+vi.mock("@/api/permission", () => ({ permissionApi: { getPendingPermissions: vi.fn(), listPendingPermissionGates: vi.fn() } }));
 vi.mock("@/hooks/useNotificationHistory", () => ({ useNotificationReadActions: vi.fn() }));
 vi.mock("@/hooks/useReviews", () => ({ useTasksAwaitingReview: vi.fn() }));
 vi.mock("@/lib/tauri", () => ({ api: { tasks: { get: vi.fn() } } }));
@@ -184,7 +184,9 @@ describe("NotificationCenterPanel first-paint behavior", () => {
     vi.mocked(api.tasks.get).mockRejectedValue(new Error("Task not found"));
     vi.mocked(automationsApi.resume).mockReset();
     vi.mocked(permissionApi.getPendingPermissions).mockReset();
+    vi.mocked(permissionApi.listPendingPermissionGates).mockReset();
     vi.mocked(permissionApi.getPendingPermissions).mockResolvedValue([]);
+    vi.mocked(permissionApi.listPendingPermissionGates).mockResolvedValue([]);
     useTaskStore.setState({ tasks: {} });
     useProjectStore.setState({ activeProjectId: "project-1" });
   });
@@ -558,7 +560,7 @@ describe("NotificationCenterPanel first-paint behavior", () => {
     const onClose = vi.fn();
     const reopen = vi.fn();
     window.addEventListener("ralphx:open-permission-dialog", reopen);
-    vi.mocked(permissionApi.getPendingPermissions).mockResolvedValue([
+    vi.mocked(permissionApi.listPendingPermissionGates).mockResolvedValue([
       { request_id: "request-1", tool_name: "Bash", tool_input: {} },
     ]);
     vi.mocked(useAttentionItems).mockReturnValue({ data: [permissionItem], isLoading: false } as ReturnType<typeof useAttentionItems>);
@@ -601,7 +603,7 @@ describe("NotificationCenterPanel first-paint behavior", () => {
     const onClose = vi.fn();
     const reopen = vi.fn();
     window.addEventListener("ralphx:open-permission-dialog", reopen);
-    vi.mocked(permissionApi.getPendingPermissions).mockResolvedValue([
+    vi.mocked(permissionApi.listPendingPermissionGates).mockResolvedValue([
       { request_id: "request-keyboard", tool_name: "Bash", tool_input: {} },
     ]);
     vi.mocked(useAttentionItems).mockReturnValue({

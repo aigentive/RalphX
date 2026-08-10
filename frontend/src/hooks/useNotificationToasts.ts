@@ -84,9 +84,14 @@ function markNotificationRead(
   notification: Notification,
   queryClient: ReturnType<typeof useQueryClient>,
 ) {
-  void notificationsApi.markRead(notification.id).finally(() => {
-    void queryClient.invalidateQueries({ queryKey: notificationKeys.all });
-  });
+  void notificationsApi
+    .markRead(notification.id)
+    .catch((error: unknown) => {
+      console.error("Failed to mark notification read:", error);
+    })
+    .finally(() => {
+      void queryClient.invalidateQueries({ queryKey: notificationKeys.all });
+    });
 }
 
 function dismissNotificationToast(notification: Notification) {

@@ -15,6 +15,7 @@ import { taskKeys } from "@/hooks/useTasks";
 import { executionKeys } from "@/hooks/useExecutionControl";
 import { FRESHNESS_BLOCKED_PREFIX, parseFreshnessBlockedReason } from "@/lib/freshness-blocked";
 import { resumeExecutionIfStopped } from "@/lib/task-actions/resume-execution-if-stopped";
+import { useAgentGate } from "@/hooks/useAgentGate";
 import type { Unsubscribe } from "@/lib/event-bus";
 
 // Minimum ms between toast notifications for the same task to avoid duplicates
@@ -23,6 +24,7 @@ const NOTIFICATION_COOLDOWN_MS = 60_000;
 export function useFreshnessBlockedNotification() {
   const bus = useEventBus();
   const queryClient = useQueryClient();
+  const executionResumeGate = useAgentGate("executionResume");
   // Map<taskId, lastNotifiedAt> — prevents duplicate toasts per session
   const notifiedRef = useRef(new Map<string, number>());
 
@@ -70,7 +72,9 @@ export function useFreshnessBlockedNotification() {
               onClick: async () => {
                 try {
                   await api.tasks.move(taskId, "ready");
-                  await resumeExecutionIfStopped(task.projectId);
+                  if (!executionResumeGate.gated) {
+                    await resumeExecutionIfStopped(task.projectId);
+                  }
                   // Allow re-notification after a manual reset
                   notifiedRef.current.delete(taskId);
                 } catch {
@@ -91,5 +95,5 @@ export function useFreshnessBlockedNotification() {
     return () => {
       unsubscribes.forEach((unsub) => unsub());
     };
-  }, [bus, queryClient]);
+  }, [bus, executionResumeGate.gated, queryClient]);
 }

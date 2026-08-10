@@ -1,16 +1,18 @@
 use super::*;
 use crate::application::chat_service::{ChatService, MockChatService};
-use crate::commands::execution_commands::lifecycle::{
-    determine_paused_restore_status, prepare_resumed_task_for_entry_actions,
-};
+use crate::application::execution_recovery::restart_transition_target;
+use crate::application::execution_resume::determine_paused_restore_status;
+use crate::application::execution_state::sync_project_quota;
+use crate::application::task_resume_execution::prepare_resumed_task_for_entry_actions;
+use crate::application::TaskTransitionService;
 use crate::domain::entities::{
     artifact::ArtifactId, AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun,
     AgentRunStatus, ChatContextType, ChatConversation, ChatConversationId, GitMode,
-    IdeationAnalysisBaseRefKind, IdeationSession, PlanBranch, PlanBranchId, PlanBranchStatus,
-    TaskStep, TaskStepStatus, ValidationCacheDecision, ValidationCommandCategory,
-    ValidationCommandResult, ValidationCommandSource, ValidationCommandStatus,
-    ValidationContextType, ValidationPurpose, ValidationRun, ValidationRunMode,
-    ValidationRunStatus,
+    IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionId, IdeationSessionStatus,
+    PlanBranch, PlanBranchId, PlanBranchStatus, TaskId, TaskStep, TaskStepStatus,
+    ValidationCacheDecision, ValidationCommandCategory, ValidationCommandResult,
+    ValidationCommandSource, ValidationCommandStatus, ValidationContextType, ValidationPurpose,
+    ValidationRun, ValidationRunMode, ValidationRunStatus,
 };
 use crate::domain::services::{QueueKey, QueuedMessage, RunningAgentKey};
 use crate::utils::path_safety::validate_absolute_non_root_path;

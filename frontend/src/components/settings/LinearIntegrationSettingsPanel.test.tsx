@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createElement } from "react";
 
 import { LinearIntegrationSettingsPanel } from "./LinearIntegrationSettingsPanel";
+import { LOCAL_ENVIRONMENT_ID, useEnvironmentStore } from "@/stores/environmentStore";
 
 const linearHook = vi.hoisted(() => ({
   saveSettingsAsync: vi.fn(),
@@ -64,6 +65,10 @@ function renderPanel() {
 
 describe("LinearIntegrationSettingsPanel", () => {
   beforeEach(() => {
+    useEnvironmentStore.setState({
+      activeEnvironmentId: LOCAL_ENVIRONMENT_ID,
+      environments: [{ id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" }],
+    });
     vi.clearAllMocks();
     linearHook.state.settings = {
       enabled: false,
@@ -125,6 +130,22 @@ describe("LinearIntegrationSettingsPanel", () => {
       apiToken: "lin_api_token",
     });
     expect(linearHook.validateAsync).toHaveBeenCalled();
+  });
+
+  it("does not expose or submit credentials from a remote environment", () => {
+    useEnvironmentStore.setState({
+      activeEnvironmentId: "studio",
+      environments: [
+        { id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" },
+        { id: "studio", name: "Studio Mac", kind: "remote" },
+      ],
+    });
+
+    renderPanel();
+
+    expect(screen.getByText("Linear credentials runs on Studio Mac")).toBeInTheDocument();
+    expect(screen.queryByLabelText("API token")).not.toBeInTheDocument();
+    expect(linearHook.saveSettingsAsync).not.toHaveBeenCalled();
   });
 
   it("shows backend validation failures after saving a token", async () => {

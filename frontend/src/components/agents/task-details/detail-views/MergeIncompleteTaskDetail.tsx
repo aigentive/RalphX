@@ -48,6 +48,8 @@ import { BranchBadge, BranchFlow } from "@/components/shared/BranchBadge";
 import { statusTint, withAlpha } from "@/lib/theme-colors";
 import { useMergePipeline } from "@/hooks/useMergePipeline";
 import { usePlanBranchForTask } from "@/hooks/usePlanBranchForTask";
+import { useAgentGate } from "@/hooks/useAgentGate";
+import { AgentGateTooltip } from "@/components/remote/AgentGateTooltip";
 
 interface MergeIncompleteTaskDetailProps {
   task: Task;
@@ -658,12 +660,15 @@ function ActionButtons({
   retryLabel?: string;
   showResolve?: boolean;
 }) {
+  const retryGate = useAgentGate("mergeRetry");
+  const resolveGate = useAgentGate("mergeResolveConflict");
+  const moveGate = useAgentGate("taskMove");
   return (
     <div className="flex gap-2 justify-end flex-wrap">
-      <Button
+      <AgentGateTooltip gated={retryGate.gated} reason={retryGate.reason}><Button
         data-testid="retry-merge-button"
         onClick={onRetry}
-        disabled={isProcessing}
+        disabled={isProcessing || retryGate.gated}
         className="h-9 px-4 gap-2 rounded-lg font-medium text-[0.8125rem]"
         style={{
           color: "white",
@@ -676,12 +681,12 @@ function ActionButtons({
           <RefreshCw className="w-4 h-4" />
         )}
         {retryLabel}
-      </Button>
+      </Button></AgentGateTooltip>
       {onRetrySkipValidation && (
-        <Button
+        <AgentGateTooltip gated={retryGate.gated} reason={retryGate.reason}><Button
           data-testid="retry-skip-validation-button"
           onClick={onRetrySkipValidation}
-          disabled={isProcessing}
+          disabled={isProcessing || retryGate.gated}
           className="h-9 px-4 gap-2 rounded-lg font-medium text-[0.8125rem]"
           style={{
             color: "white",
@@ -694,13 +699,13 @@ function ActionButtons({
             <SkipForward className="w-4 h-4" />
           )}
           Retry (Skip Validation)
-        </Button>
+        </Button></AgentGateTooltip>
       )}
       {showResolve && onResolve && (
-        <Button
+        <AgentGateTooltip gated={resolveGate.gated} reason={resolveGate.reason}><Button
           data-testid="resolve-merge-button"
           onClick={onResolve}
-          disabled={isProcessing}
+          disabled={isProcessing || resolveGate.gated}
           className="h-9 px-4 gap-2 rounded-lg font-medium text-[0.8125rem]"
           style={{
             color: "white",
@@ -713,12 +718,12 @@ function ActionButtons({
             <CheckCircle2 className="w-4 h-4" />
           )}
           Mark Resolved
-        </Button>
+        </Button></AgentGateTooltip>
       )}
-      <Button
+      <AgentGateTooltip gated={moveGate.gated} reason={moveGate.reason}><Button
         data-testid="cancel-task-button"
         onClick={onCancel}
-        disabled={isProcessing}
+        disabled={isProcessing || moveGate.gated}
         className="h-9 px-4 gap-2 rounded-lg font-medium text-[0.8125rem]"
         style={{
           color: "white",
@@ -731,7 +736,7 @@ function ActionButtons({
           <Ban className="w-4 h-4" />
         )}
         Cancel
-      </Button>
+      </Button></AgentGateTooltip>
     </div>
   );
 }
@@ -744,6 +749,7 @@ export function MergeIncompleteTaskDetail({
   const setHistoryState = useUiStore((state) => state.setTaskHistoryState);
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const retryGate = useAgentGate("mergeRetry");
   const { confirm } = useConfirmation();
 
   const mergeError = parseMergeError(task.metadata);
@@ -782,6 +788,7 @@ export function MergeIncompleteTaskDetail({
   const lastAttemptFailed = lastEvent?.kind === "attempt_failed";
 
   const handleRetryMerge = useCallback(async () => {
+    if (retryGate.gated) return;
     setIsProcessing(true);
     setError(null);
 
@@ -810,9 +817,10 @@ export function MergeIncompleteTaskDetail({
     } finally {
       setIsProcessing(false);
     }
-  }, [task.id, task.projectId, queryClient, setHistoryState]);
+  }, [task.id, task.projectId, queryClient, setHistoryState, retryGate.gated]);
 
   const handleRetrySkipValidation = useCallback(async () => {
+    if (retryGate.gated) return;
     setIsProcessing(true);
     setError(null);
 
@@ -843,7 +851,7 @@ export function MergeIncompleteTaskDetail({
     } finally {
       setIsProcessing(false);
     }
-  }, [task.id, task.projectId, queryClient, setHistoryState]);
+  }, [task.id, task.projectId, queryClient, setHistoryState, retryGate.gated]);
 
   const handleMarkResolved = useCallback(async () => {
     setIsProcessing(true);

@@ -8,7 +8,7 @@ import { AgentTerminalDrawer } from "./AgentTerminalDrawer";
 import { useAgentTerminalStore } from "./agentTerminalStore";
 
 const {
-  listenMock,
+  subscribeMock,
   openAgentTerminalMock,
   closeAgentTerminalMock,
   clearAgentTerminalMock,
@@ -17,8 +17,9 @@ const {
   writeAgentTerminalMock,
   terminalOpenMock,
   terminalEventSafeParseMock,
+  eventBusMock,
 } = vi.hoisted(() => ({
-  listenMock: vi.fn(),
+  subscribeMock: vi.fn(),
   openAgentTerminalMock: vi.fn(),
   closeAgentTerminalMock: vi.fn(),
   clearAgentTerminalMock: vi.fn(),
@@ -27,10 +28,13 @@ const {
   writeAgentTerminalMock: vi.fn(),
   terminalOpenMock: vi.fn(),
   terminalEventSafeParseMock: vi.fn(),
+  eventBusMock: { subscribe: vi.fn(), emit: vi.fn() },
 }));
 
-vi.mock("@tauri-apps/api/event", () => ({
-  listen: (...args: unknown[]) => listenMock(...args),
+eventBusMock.subscribe = subscribeMock;
+
+vi.mock("@/providers/EventProvider", () => ({
+  useEventBus: () => eventBusMock,
 }));
 
 vi.mock("@/api/terminal", () => ({
@@ -92,6 +96,8 @@ const workspace = (
   ...overrides,
 });
 
+const readyUnsubscribe = () => Object.assign(vi.fn(), { ready: Promise.resolve() });
+
 describe("AgentTerminalDrawer", () => {
   let rafCallbacks: FrameRequestCallback[];
 
@@ -113,7 +119,7 @@ describe("AgentTerminalDrawer", () => {
       },
     );
 
-    listenMock.mockReset();
+    subscribeMock.mockReset();
     openAgentTerminalMock.mockReset();
     closeAgentTerminalMock.mockReset();
     clearAgentTerminalMock.mockReset();
@@ -132,7 +138,7 @@ describe("AgentTerminalDrawer", () => {
       dragOverDock: null,
     });
 
-    listenMock.mockResolvedValue(vi.fn());
+    subscribeMock.mockReturnValue(readyUnsubscribe());
     terminalEventSafeParseMock.mockReturnValue({ success: false });
     openAgentTerminalMock.mockResolvedValue({
       status: "running",
@@ -270,9 +276,11 @@ describe("AgentTerminalDrawer", () => {
     const dockElement = document.createElement("div");
     document.body.appendChild(dockElement);
     let terminalEventListener: ((event: { payload: unknown }) => void) | null = null;
-    listenMock.mockImplementation((_eventName, listener) => {
-      terminalEventListener = listener as (event: { payload: unknown }) => void;
-      return Promise.resolve(vi.fn());
+    subscribeMock.mockImplementation((_eventName, listener) => {
+      terminalEventListener = (event) => {
+        (listener as (payload: unknown) => void)(event.payload);
+      };
+      return readyUnsubscribe();
     });
     terminalEventSafeParseMock.mockImplementation((payload) => ({
       success: true,
@@ -873,17 +881,11 @@ describe("AgentTerminalDrawer", () => {
     });
   });
 
-  it("swallows stale Tauri terminal listener cleanup failures", async () => {
+  it("unsubscribes from terminal events on unmount", async () => {
     const dockElement = document.createElement("div");
     document.body.appendChild(dockElement);
-    const cleanupError = new TypeError(
-      "undefined is not an object (evaluating 'listeners[eventId].handlerId')",
-    );
-    const staleUnlisten = vi.fn(() => {
-      throw cleanupError;
-    });
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    listenMock.mockResolvedValue(staleUnlisten);
+    const unsubscribe = readyUnsubscribe();
+    subscribeMock.mockReturnValue(unsubscribe);
 
     const { unmount } = render(
       <TooltipProvider>
@@ -914,63 +916,12 @@ describe("AgentTerminalDrawer", () => {
       await Promise.resolve();
     });
 
-    expect(() => unmount()).not.toThrow();
-    expect(staleUnlisten).toHaveBeenCalledTimes(1);
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining("Failed to unlisten"),
-      cleanupError,
+    expect(subscribeMock).toHaveBeenCalledWith(
+      "agent-terminal://event",
+      expect.any(Function),
     );
-  });
-
-  it("releases the terminal event listener when it resolves after unmount", async () => {
-    const dockElement = document.createElement("div");
-    document.body.appendChild(dockElement);
-    const lateUnlisten = vi.fn();
-    let resolveListen: (dispose: () => void) => void = () => undefined;
-    listenMock.mockReturnValue(
-      new Promise((resolve) => {
-        resolveListen = resolve;
-      }),
-    );
-
-    const { unmount } = render(
-      <TooltipProvider>
-        <AgentTerminalDrawer
-          conversationId="conversation-1"
-          workspace={workspace()}
-          height={220}
-          expanded={true}
-          onHeightChange={vi.fn()}
-          onExpand={vi.fn()}
-          onCollapse={vi.fn()}
-          placement="auto"
-          onPlacementChange={vi.fn()}
-          onPlacementDragStart={vi.fn()}
-          onPlacementDragEnd={vi.fn()}
-          dockElement={dockElement}
-        />
-      </TooltipProvider>,
-    );
-
-    await act(async () => {
-      await Promise.resolve();
-      rafCallbacks[0]?.(0);
-      await vi.runOnlyPendingTimersAsync();
-      await vi.dynamicImportSettled();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    expect(listenMock).toHaveBeenCalledTimes(1);
-
     unmount();
-
-    await act(async () => {
-      resolveListen(lateUnlisten);
-      await Promise.resolve();
-    });
-
-    expect(lateUnlisten).toHaveBeenCalledTimes(1);
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
   });
 
   it("requests visual collapse before waiting for the backend terminal close", async () => {

@@ -2,6 +2,8 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
 
+import { createEnvScopedStorage } from "@/lib/remote/env-scoped-storage";
+import { registerEnvIsolatedStore } from "@/lib/remote/env-state-isolation";
 import {
   normalizeAgentRuntimeForPersistence,
   type AgentEffort,
@@ -1112,6 +1114,7 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
     })),
     {
       name: "ralphx-agent-session-store",
+      storage: createEnvScopedStorage("ralphx-agent-session-store"),
       version: AGENT_SESSION_STORE_VERSION,
       migrate: migrateAgentSessionStore,
       merge: mergeAgentSessionStore,
@@ -1144,6 +1147,14 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
     }
   )
 );
+
+registerEnvIsolatedStore({
+  name: "useAgentSessionStore",
+  reset: () => useAgentSessionStore.setState(useAgentSessionStore.getInitialState(), true),
+  rehydrate: () => {
+    void useAgentSessionStore.persist.rehydrate();
+  },
+});
 
 export function selectArtifactState(conversationId: string | null) {
   return (state: AgentSessionState): AgentArtifactState =>

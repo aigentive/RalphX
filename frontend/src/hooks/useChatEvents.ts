@@ -55,6 +55,11 @@ import {
 } from "@/components/Chat/delegation-tool-calls";
 
 const SYNTHETIC_THINKING_BLOCK_INDEX = Number.MIN_SAFE_INTEGER;
+const TEAM_MEMBER_EVENTS = [
+  "team:member_updated",
+  "team:member_status",
+  "team:roster_updated",
+] as const;
 
 function stableSerialize(value: unknown): string {
   if (value == null || typeof value !== "object") {
@@ -699,11 +704,7 @@ export function useChatEvents({
     // Team state is server state. This hook is the single realtime writer for
     // its query cache; status consumers only read the cache. Member events are
     // independently guarded by conversation, parent run, generation, and seq.
-    for (const eventName of [
-      "team:member_updated",
-      "team:member_status",
-      "team:roster_updated",
-    ] as const) {
+    TEAM_MEMBER_EVENTS.map((eventName) => {
       unsubscribes.push(
         bus.subscribe<TeamMemberEventPayload>(eventName, (payload) => {
           reconcileTeamMemberEvent(
@@ -714,7 +715,7 @@ export function useChatEvents({
           );
         }),
       );
-    }
+    });
 
     // ── agent:tool_call ──────────────────────────────────────────────
     // Handles tool call accumulation for streaming display.

@@ -12,6 +12,8 @@ import {
 } from "@/lib/navigation";
 import { useProjectStore } from "@/stores/projectStore";
 import { useUiStore } from "@/stores/uiStore";
+import { AGENT_CONTROL_DISABLED_HINT } from "@/lib/remote/agent-gate";
+import { RemoteTransportError } from "@/lib/remote/transport-errors";
 import type { NotificationCategory, NotificationTarget } from "@/types/notifications";
 
 import {
@@ -28,7 +30,7 @@ vi.mock("@/components/automations/automationRunNavigation", () => ({
   requestAutomationRunOpen: vi.fn(),
 }));
 vi.mock("@/api/automations", () => ({ automationsApi: { resume: vi.fn() } }));
-vi.mock("@/api/permission", () => ({ permissionApi: { getPendingPermissions: vi.fn() } }));
+vi.mock("@/api/permission", () => ({ permissionApi: { listPendingPermissionGates: vi.fn() } }));
 vi.mock("@/lib/navigation", () => ({
   navigateToAgentConversation: vi.fn(),
   navigateToAgentPlan: vi.fn(),
@@ -53,7 +55,7 @@ describe("navigateNotification", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(openTaskInAgents).mockResolvedValue(true);
-    vi.mocked(permissionApi.getPendingPermissions).mockResolvedValue([]);
+    vi.mocked(permissionApi.listPendingPermissionGates).mockResolvedValue([]);
     vi.mocked(requestAutomationRunOpen).mockResolvedValue({ applied: true });
     vi.spyOn(useUiStore, "getState").mockReturnValue({ setCurrentView } as ReturnType<typeof useUiStore.getState>);
     vi.spyOn(useProjectStore, "getState").mockReturnValue({ activeProjectId: "project-1", selectProject } as ReturnType<typeof useProjectStore.getState>);
@@ -120,6 +122,27 @@ describe("navigateNotification", () => {
     expect(requestAutomationRunOpen).not.toHaveBeenCalled();
   });
 
+  it("reports the remote gate hint instead of a stale lifecycle rejection", async () => {
+    vi.mocked(automationsApi.resume).mockRejectedValue(new RemoteTransportError({
+      code: "REMOTE_FORBIDDEN",
+      message: "scope denied",
+      environmentId: "remote-1",
+      cmd: "resume_automation",
+    }));
+
+    await performNotificationPrimaryAction(
+      {
+        id: "automation-paused-remote",
+        category: "automation_paused",
+        target: { ...target, runId: undefined, conversationId: undefined },
+      },
+      new QueryClient(),
+    );
+
+    expect(toastError).toHaveBeenCalledWith(AGENT_CONTROL_DISABLED_HINT);
+    expect(toastError).not.toHaveBeenCalledWith("Automation is no longer resumable");
+  });
+
   it("keeps a supplied automation detail callback when opening a complete run", async () => {
     const onClose = vi.fn();
     const onOpenAutomationDetail = vi.fn();
@@ -142,7 +165,7 @@ describe("navigateNotification", () => {
     const onClose = vi.fn();
     const listener = vi.fn();
     window.addEventListener("ralphx:open-permission-dialog", listener);
-    vi.mocked(permissionApi.getPendingPermissions).mockResolvedValue([
+    vi.mocked(permissionApi.listPendingPermissionGates).mockResolvedValue([
       { request_id: "request-1", tool_name: "Bash", tool_input: {} },
     ]);
 
@@ -160,6 +183,7 @@ describe("navigateNotification", () => {
     expect(navigated).toBe(true);
     expect(listener).toHaveBeenCalledWith(expect.objectContaining({ detail: { requestId: "request-1" } }));
     expect(onClose).toHaveBeenCalledOnce();
+    expect(permissionApi.listPendingPermissionGates).toHaveBeenCalledOnce();
     window.removeEventListener("ralphx:open-permission-dialog", listener);
   });
 
@@ -172,8 +196,9 @@ describe("navigateNotification", () => {
     };
 
     await expect(navigateNotification(item, {} as QueryClient)).resolves.toBe(true);
-    vi.mocked(permissionApi.getPendingPermissions).mockRejectedValueOnce(new Error("offline"));
+    vi.mocked(permissionApi.listPendingPermissionGates).mockRejectedValueOnce(new Error("offline"));
     await expect(navigateNotification(item, {} as QueryClient)).resolves.toBe(false);
+    expect(toastError).toHaveBeenCalledWith("Unable to load pending permission requests");
   });
 
   it("routes task notifications through the shared Agents owner", async () => {

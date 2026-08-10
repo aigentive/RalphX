@@ -104,6 +104,8 @@ export interface MessageItemProps {
   ) => void) | undefined;
   /** File attachments for user messages */
   attachments?: MessageAttachment[];
+  /** The host has not exposed attachment metadata to this client. */
+  attachmentsUnavailable?: boolean;
   /** Structured project and integration references for user messages */
   composerReferences?: MessageComposerReferences;
   providerHarness?: string | null | undefined;
@@ -239,6 +241,7 @@ export const MessageItem = React.memo(function MessageItem({
   isContentThinkingGroupExpanded,
   onToggleContentThinkingGroup,
   attachments,
+  attachmentsUnavailable,
   composerReferences,
   providerHarness,
   providerSessionId,
@@ -648,8 +651,12 @@ export const MessageItem = React.memo(function MessageItem({
         )}
 
         {/* Render attachments for user messages */}
-        {isUser && attachments && attachments.length > 0 && (
-          <MessageAttachments attachments={attachments} align="end" />
+        {isUser && (attachmentsUnavailable || (attachments && attachments.length > 0)) && (
+          <MessageAttachments
+            attachments={attachments ?? []}
+            availability={attachmentsUnavailable ? "unavailable" : "available"}
+            align="end"
+          />
         )}
 
         {isUser && composerReferences && (
@@ -713,6 +720,7 @@ export const MessageItem = React.memo(function MessageItem({
     && prev.isContentThinkingGroupExpanded === next.isContentThinkingGroupExpanded
     && prev.onToggleContentThinkingGroup === next.onToggleContentThinkingGroup
     && prev.attachments === next.attachments
+    && prev.attachmentsUnavailable === next.attachmentsUnavailable
     && prev.composerReferences === next.composerReferences
     && prev.providerHarness === next.providerHarness
     && prev.providerSessionId === next.providerSessionId

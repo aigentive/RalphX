@@ -2,6 +2,10 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { z } from "zod";
+import {
+  getTransportEnvironmentId,
+  isRemoteEnvironmentId,
+} from "@/lib/remote/active-environment";
 import { DEFAULT_PROJECT_SETTINGS } from "@/types/settings";
 import {
   ExecutionStatusResponseSchema,
@@ -27,6 +31,15 @@ import type {
 } from "./execution.types";
 
 // Re-export types for convenience
+
+/**
+ * True while the active environment is remote, so execution operations with spawn-free
+ * facade twins use those twins instead of local-only commands.
+ */
+function remoteExecutionFacadeEnabled(): boolean {
+  return isRemoteEnvironmentId(getTransportEnvironmentId());
+}
+
 export type {
   ExecutionHaltMode,
   ExecutionStatusResponse,
@@ -72,6 +85,38 @@ async function typedInvokeWithTransform<TRaw, TResult>(
   return transform(validated);
 }
 
+const RemoteResumeIntentSchema = z.object({
+  requestId: z.string(),
+  status: z.enum(["pending", "starting", "completed", "failed", "failedStale"]),
+  errorCode: z.string().nullable().optional(),
+  result: z.unknown().nullable().optional(),
+});
+
+async function remoteExecutionResume(projectId?: string): Promise<ExecutionCommandResponse> {
+  const requested = RemoteResumeIntentSchema.parse(
+    await invoke("request_remote_execution_resume", {
+      input: { projectId: projectId ?? null },
+    })
+  );
+  for (let attempt = 0; attempt < 1800; attempt += 1) {
+    const request = attempt === 0 && requested.status !== "pending"
+      ? requested
+      : RemoteResumeIntentSchema.parse(
+          await invoke("get_remote_execution_resume_request", {
+            requestId: requested.requestId,
+          })
+        );
+    if (request.status === "completed") {
+      return transformExecutionCommand(ExecutionCommandResponseSchema.parse(request.result));
+    }
+    if (request.status === "failed" || request.status === "failedStale") {
+      throw new Error(request.errorCode ?? "REMOTE_RESUME_HOST_FAILED");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error("Timed out waiting for the host to resume execution");
+}
+
 // ============================================================================
 // API Object
 // ============================================================================
@@ -87,13 +132,22 @@ export const executionApi = {
    * @param projectId - Optional project ID to scope status to
    * @returns Execution status with pause state, running count, queued count
    */
-  getStatus: (projectId?: string): Promise<ExecutionStatusResponse> =>
-    typedInvokeWithTransform(
-      "get_execution_status",
-      { projectId: projectId ?? null },
-      ExecutionStatusResponseSchema,
-      transformExecutionStatus
-    ),
+  getStatus: (projectId?: string): Promise<ExecutionStatusResponse> => {
+    const args = { projectId: projectId ?? null };
+    return remoteExecutionFacadeEnabled()
+      ? typedInvokeWithTransform(
+          "get_remote_execution_status",
+          args,
+          ExecutionStatusResponseSchema,
+          transformExecutionStatus
+        )
+      : typedInvokeWithTransform(
+          "get_execution_status",
+          args,
+          ExecutionStatusResponseSchema,
+          transformExecutionStatus
+        );
+  },
 
   /**
    * Pause execution (stops picking up new tasks)
@@ -116,12 +170,14 @@ export const executionApi = {
    * @returns Command response with success and current status
    */
   resume: (projectId?: string): Promise<ExecutionCommandResponse> =>
-    typedInvokeWithTransform(
-      "resume_execution",
-      { projectId: projectId ?? null },
-      ExecutionCommandResponseSchema,
-      transformExecutionCommand
-    ),
+    remoteExecutionFacadeEnabled()
+      ? remoteExecutionResume(projectId)
+      : typedInvokeWithTransform(
+          "resume_execution",
+          { projectId: projectId ?? null },
+          ExecutionCommandResponseSchema,
+          transformExecutionCommand
+        ),
 
   /**
    * Stop execution (halts active work and requires manual restart)
@@ -174,13 +230,30 @@ export const executionApi = {
   updateSettings: (
     input: UpdateExecutionSettingsInput,
     projectId?: string
-  ): Promise<ExecutionSettingsResponse> =>
-    typedInvokeWithTransform(
-      "update_execution_settings",
-      { input: transformExecutionSettingsInput(input), projectId: projectId ?? null },
-      ExecutionSettingsResponseSchema,
-      transformExecutionSettings
-    ),
+  ): Promise<ExecutionSettingsResponse> => {
+    const args = {
+      input: transformExecutionSettingsInput(input),
+      projectId: projectId ?? null,
+    };
+    // `get_execution_settings` is registered, so under a remote environment the pane already
+    // shows the HOST's live values — but `update_execution_settings` is Elevated (it kicks
+    // the scheduler and drains pending ideation sessions, both spawn sinks) and unregistered,
+    // so saving them failed silently. The spawn-free twin persists and syncs the caps without
+    // arming queued work. Two literal call sites, because P-11 requires literal names.
+    return remoteExecutionFacadeEnabled()
+      ? typedInvokeWithTransform(
+          "update_remote_execution_settings",
+          args,
+          ExecutionSettingsResponseSchema,
+          transformExecutionSettings
+        )
+      : typedInvokeWithTransform(
+          "update_execution_settings",
+          args,
+          ExecutionSettingsResponseSchema,
+          transformExecutionSettings
+        );
+  },
 
   /**
    * Set the active project for scoped execution operations

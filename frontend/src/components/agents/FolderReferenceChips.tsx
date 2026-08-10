@@ -14,6 +14,8 @@ interface FolderReferenceChipsProps<T extends FolderReferenceChipLike> {
   references: T[];
   onRemove: (reference: T) => void;
   removingId?: string;
+  removeDisabled?: boolean;
+  removeDisabledReason?: string;
   testId?: string;
 }
 
@@ -21,6 +23,8 @@ export function FolderReferenceChips<T extends FolderReferenceChipLike>({
   references,
   onRemove,
   removingId,
+  removeDisabled = false,
+  removeDisabledReason,
   testId = "folder-reference-chips",
 }: FolderReferenceChipsProps<T>) {
   if (references.length === 0) return null;
@@ -37,7 +41,8 @@ export function FolderReferenceChips<T extends FolderReferenceChipLike>({
           description={reference.folderPath}
           contentTooltip={reference.folderPath}
           removeLabel={`Remove folder ${reference.displayName}`}
-          removeDisabled={removingId === reference.id}
+          removeDisabled={removeDisabled || removingId === reference.id}
+          {...(removeDisabledReason ? { removeDisabledReason } : {})}
           onRemove={() => onRemove(reference)}
         />
       ))}

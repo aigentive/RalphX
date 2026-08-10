@@ -135,6 +135,40 @@ pub(crate) async fn inspect_repository_capability(working_dir: &Path) -> Reposit
     }
 }
 
+pub(crate) fn cached_repository_capability(
+    project: &crate::domain::entities::Project,
+    capability: &RepositoryCapability,
+) -> crate::domain::entities::ProjectRepositoryCapability {
+    let (kind, fetch_url, push_url, message) = match capability {
+        RepositoryCapability::LocalOnly => ("local_only", None, None, None),
+        RepositoryCapability::Github {
+            fetch_url,
+            push_url,
+        } => ("github", fetch_url.clone(), Some(push_url.clone()), None),
+        RepositoryCapability::OtherRemote {
+            fetch_url,
+            push_url,
+        } => (
+            "other_remote",
+            fetch_url.clone(),
+            Some(push_url.clone()),
+            None,
+        ),
+        RepositoryCapability::InspectionFailed { message } => {
+            ("inspection_failed", None, None, Some(message.clone()))
+        }
+    };
+    crate::domain::entities::ProjectRepositoryCapability {
+        project_id: project.id.clone(),
+        kind: kind.to_string(),
+        fetch_url,
+        push_url,
+        message,
+        inspected_at: chrono::Utc::now(),
+        working_directory: project.working_directory.clone(),
+    }
+}
+
 /// Read the URLs Git will actually use for transport. Capability authorizes a
 /// mutation, so it must honor includes and `url.*.insteadOf`/`pushInsteadOf`
 /// rewrites rather than relying on literal `.git/config` values.

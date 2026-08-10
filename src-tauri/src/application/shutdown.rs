@@ -63,6 +63,7 @@ pub fn handle_run_event<R: tauri::Runtime>(
         tauri::RunEvent::ExitRequested { .. } => {
             trigger_startup_cancellation(app_handle);
             trigger_http_shutdown(app_handle);
+            release_remote_serve_mapping(app_handle);
         }
         // Final exit. Re-fire the HTTP shutdown trigger as a safety net in
         // case ExitRequested didn't fire on this code path (idempotent), then
@@ -73,6 +74,15 @@ pub fn handle_run_event<R: tauri::Runtime>(
             run_exit_cleanup(app_handle);
         }
         _ => {}
+    }
+}
+
+/// A clean quit must not leave the tailnet forward pointing at a port this process no longer
+/// owns (§5.3 item 2). Bounded and best-effort; the crash path stays covered by the
+/// start-time sweep.
+fn release_remote_serve_mapping<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) {
+    if let Some(handle) = app_handle.try_state::<crate::remote_server::RemoteListenerHandle>() {
+        crate::remote_server::release_serve_mapping_on_exit(handle.inner());
     }
 }
 

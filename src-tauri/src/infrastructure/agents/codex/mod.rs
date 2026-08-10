@@ -20,13 +20,11 @@ use crate::domain::agents::{
     LogicalEffort, CODEX_DEFAULT_APPROVAL_POLICY, CODEX_DEFAULT_SANDBOX_MODE,
 };
 use crate::infrastructure::agents::claude::{
-    SpawnableCommand, SpawnableStdinTransport,
-};
-use crate::infrastructure::agents::claude::{
     agent_names, claude_runtime_config, external_mcp_config, filter_interactive_tools,
     format_allowed_tools_arg_value, get_agent_config_for_profile, mcp_agent_type, node_utils,
     validate_mcp_tool_name,
 };
+use crate::infrastructure::agents::claude::{SpawnableCommand, SpawnableStdinTransport};
 use crate::infrastructure::agents::harness_agent_catalog::{
     internal_mcp_server_name, load_harness_agent_prompt_for_profile,
     render_agent_runtime_profile_context, resolve_project_root_from_plugin_dir,
@@ -494,8 +492,7 @@ pub fn compose_codex_prompt_for_profile_with_outcome(
         return CodexPromptComposition {
             prompt: prompt.to_string(),
             persona_injected: false,
-            persona_injection_skipped_reason: persona_block
-                .map(|_| "codex_plugin_dir_unavailable"),
+            persona_injection_skipped_reason: persona_block.map(|_| "codex_plugin_dir_unavailable"),
         };
     };
     let Some(agent_name) = agent_name else {
@@ -892,8 +889,7 @@ pub fn probe_codex_cli(cli_path: &Path) -> Result<CodexCliCapabilities, String> 
     let root_help = run_codex_command(cli_path, &["--help"])?;
     let exec_help = run_codex_optional_command(cli_path, &["exec", "--help"]);
     let features_output = run_codex_optional_command(cli_path, &["features", "list"]);
-    let refreshed_model_catalog_output =
-        run_codex_optional_command(cli_path, &["debug", "models"]);
+    let refreshed_model_catalog_output = run_codex_optional_command(cli_path, &["debug", "models"]);
     let bundled_model_catalog_output =
         run_codex_optional_command(cli_path, &["debug", "models", "--bundled"]);
     Ok(parse_codex_cli_capabilities(
@@ -1130,12 +1126,10 @@ fn effective_codex_reasoning_effort(config: &CodexExecCliConfig) -> Option<Logic
     if config.ultra_mode {
         return Some(LogicalEffort::Ultra);
     }
-    config
-        .reasoning_effort
-        .map(|effort| match effort {
-            LogicalEffort::Ultra => LogicalEffort::Max,
-            ordinary => ordinary,
-        })
+    config.reasoning_effort.map(|effort| match effort {
+        LogicalEffort::Ultra => LogicalEffort::Max,
+        ordinary => ordinary,
+    })
 }
 
 pub fn build_spawnable_codex_exec_command(

@@ -47,6 +47,13 @@ import type { ChatComposerFolder } from "@/stores/chatStore";
 import type { CapabilityIntent, TeamIntent, TeamMessageTarget } from "@/api/chat";
 import type { ManagedTeamMember } from "@/api/managed-team";
 import type { AgentStatus } from "@/stores/chatStore";
+import { useAgentGate } from "@/hooks/useAgentGate";
+import { AgentGateTooltip } from "@/components/remote/AgentGateTooltip";
+import { RemoteErrorBanner } from "@/components/remote/RemoteErrorBanner";
+import { reconcileUnknownOutcome } from "@/lib/remote/unknown-outcome";
+import { chatKeys } from "@/hooks/useChat";
+import { useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ChatAttachmentDropOverlay } from "@/components/Chat/ChatAttachmentDropOverlay";
@@ -410,6 +417,8 @@ export function AgentComposerSurface({
   className,
 }: AgentComposerSurfaceProps) {
   const { data: featureFlags } = useFeatureFlags();
+  // A-8: the environment-scoped client from the provider, never a key rewrite.
+  const queryClient = useQueryClient();
   const [folderReferencesEnabled, setFolderReferencesEnabled] = useState(false);
   const [folderError, setFolderError] = useState<string | null>(null);
   const addFolderReference = useAddConversationFolderReference();
@@ -477,16 +486,53 @@ export function AgentComposerSurface({
   const emptySubmitValue = emptySubmitMessage?.trim() ?? "";
   const hasSubmittableValue =
     value.trim().length > 0 || emptySubmitValue.length > 0;
+  /**
+   * Sending a message steers the agent, so it needs `ui:agent` (2.6-b). Folded into
+   * the EXISTING `sendDisabledReason` seam rather than added beside it: one reason
+   * string means one disabled-explanation path, and the keyboard submit at the top
+   * of `handleSend` is gated by the same value as the button.
+   */
+  const agentGate = useAgentGate("agentComposerSend");
+  /**
+   * Stopping is a BRAKE, so it resolves through its own affordance rather than the send gate:
+   * `request_remote_agent_stop` is `class: operate` and reachable without `ui:agent`,
+   * while sending needs `ui:agent`. Reusing the send gate here would have disabled Stop on
+   * exactly the devices that most need it. When the host does not expose the op at all this
+   * renders the unavailable hint instead of an enabled button that answers
+   * `REMOTE_COMMAND_UNAVAILABLE`.
+   */
+  const stopGate = useAgentGate("agentStop");
+  /** Visual stop-pending state. Flipped SYNCHRONOUSLY on click, before the await. */
+  const [stopPending, setStopPending] = useState(false);
+  const effectiveSendDisabledReason = agentGate.reason ?? sendDisabledReason;
+  /**
+   * The last send rejection, kept ONLY so the two remote codes the 2.6 mapper knows
+   * how to explain can be shown here. Every other rejection still surfaces through the
+   * parent exactly as before — `RemoteErrorBanner` renders nothing for them, so this
+   * state adds a surface without taking one over.
+   */
+  const [sendError, setSendError] = useState<unknown>(null);
   const canSubmit =
     hasSubmittableValue &&
     !isReadOnly &&
-    !sendDisabledReason &&
+    !effectiveSendDisabledReason &&
     (!isSubmitting || canSendWhileAgentActive);
   const attachmentDisabled =
     isReadOnly || (isSubmitting && !canSendWhileAgentActive);
   const folderReferencesSupported =
     (mode?.value === "persona_builder" && featureFlags.agentPersonas === true) ||
     (mode?.value !== "persona_builder" && Boolean(project.value?.trim()));
+  // The picker behind Add folder is a native dialog on THIS Mac, and the host does not expose
+  // `add_conversation_folder_reference` remotely, so under a remote environment the control can
+  // only ever produce a path the host cannot see. Hidden rather than disabled: there is no host
+  // setting that turns it on, which is exactly what `unavailable` means.
+  //
+  // Deliberately NOT folded into `folderReferencesSupported` — that flag also enables the
+  // conversation's folder-reference READ, which the host does serve remotely
+  // (`list_conversation_folder_references`), so existing references must keep rendering.
+  const folderReferenceAddGate = useAgentGate("folderReferenceAdd");
+  const folderReferenceRemoveGate = useAgentGate("folderReferenceRemove");
+  const canAddFolderReference = folderReferencesSupported && !folderReferenceAddGate.gated;
   const effectivePlaceholder = isReadOnly
     ? "Viewing historical state (read-only)"
     : questionMode
@@ -1165,15 +1211,36 @@ export function AgentComposerSurface({
     (integrationQuery.trim()
       ? "No matching integration items"
       : "Type to search Jira, Linear, ClickUp, Granola, or Confluence");
+  // A failed search is NOT an empty project. These three commands used to swallow their
+  // backend errors into an empty-but-successful result; that fail-open is fixed on the host,
+  // and rendering the rejection as "No matching files or folders" would reinstate exactly the
+  // same lie one layer up. Same shape as the integration error label directly above.
+  const pathSearchErrorLabel = pathEntriesQuery.isError
+    ? `File search failed: ${extractErrorMessage(
+        pathEntriesQuery.error,
+        "Unable to search project files",
+      )}`
+    : null;
+  const planSearchErrorLabel = planReferencesQuery.isError
+    ? `Plan search failed: ${extractErrorMessage(
+        planReferencesQuery.error,
+        "Unable to search plans",
+      )}`
+    : null;
+  const skillSearchErrorLabel = skillsQuery.isError
+    ? `Skill search failed: ${extractErrorMessage(
+        skillsQuery.error,
+        "Unable to list skills",
+      )}`
+    : null;
   const menuEmptyLabel =
     activeTrigger?.kind === "path"
-      ? "No matching files or folders"
+      ? (pathSearchErrorLabel ?? "No matching files or folders")
       : activeTrigger?.kind === "plan"
-        ? planQuery.trim()
-          ? "No matching plans"
-          : "Type to search plans"
+        ? (planSearchErrorLabel ??
+          (planQuery.trim() ? "No matching plans" : "Type to search plans"))
         : activeTrigger?.kind === "skill"
-          ? "No matching skills"
+          ? (skillSearchErrorLabel ?? "No matching skills")
           : activeTrigger?.kind === "integration"
             ? integrationEmptyLabel
             : "No matching commands";
@@ -1602,17 +1669,71 @@ export function AgentComposerSurface({
     };
   }, [conversationId, folderReferencesSupported]);
 
+  /**
+   * P-20: the send reached the host and the answer did not reach us, so the message may
+   * already be in the transcript. Re-sending would be a second message racing the host's
+   * dedup reservation, so the only legal move is to invalidate the conversation the send
+   * would have changed and let the host's transcript be the answer. Returns whether the
+   * error was an unknown outcome, in which case the caller must NOT fall through to its
+   * ordinary error handling (the inline banner deliberately says nothing about these
+   * two codes).
+   */
+  const handleUnknownSendOutcome = useCallback(
+    (error: unknown): boolean => {
+      const outcome = reconcileUnknownOutcome(error, {
+        queryClient,
+        queryKeys: conversationId
+          ? [chatKeys.conversation(conversationId)]
+          : [],
+      });
+      if (outcome.kind !== "reconciled") return false;
+      setSendError(null);
+      toast.info(outcome.message);
+      return true;
+    },
+    [conversationId, queryClient],
+  );
+
+  /**
+   * Runs the stop and SURFACES its failure.
+   *
+   * This used to be `void onStop?.()`, which discarded the promise: a rejected stop —
+   * including a remote host answering `REMOTE_COMMAND_UNAVAILABLE` — produced no UI at all.
+   * First-paint rules are preserved by ordering, not by discarding: the pending state flips
+   * synchronously in the click handler and the failure surfaces after the await.
+   */
+  const handleStop = useCallback(async () => {
+    try {
+      await onStop?.();
+    } catch (error) {
+      toast.error("Couldn't stop the agent", {
+        description: extractErrorMessage(
+          error,
+          "The agent is still running. Try again, or stop it on the host.",
+        ),
+        duration: 10000,
+      });
+    } finally {
+      setStopPending(false);
+    }
+  }, [onStop]);
+
   const handleSend = useCallback(async () => {
     const trimmedValue = value.trim();
     const messageValue = trimmedValue || emptySubmitValue;
     if (!messageValue) {
       if (shouldShowStop) {
-        await onStop?.();
+        setStopPending(true);
+        await handleStop();
       }
       return;
     }
 
-    if ((isSubmitting && !canSendWhileAgentActive) || isReadOnly || sendDisabledReason) {
+    if (
+      (isSubmitting && !canSendWhileAgentActive) ||
+      isReadOnly ||
+      effectiveSendDisabledReason
+    ) {
       return;
     }
 
@@ -1624,10 +1745,13 @@ export function AgentComposerSurface({
         ? onSend(outgoing.message, outgoing.options)
         : onSend(outgoing.message);
 
+    setSendError(null);
     if (questionMode || isControlled) {
       try {
         await sendOutgoing();
-      } catch {
+      } catch (error: unknown) {
+        if (handleUnknownSendOutcome(error)) return;
+        setSendError(error);
         return;
       }
       setSelectedInternalSkillNames(new Set());
@@ -1642,19 +1766,23 @@ export function AgentComposerSurface({
     try {
       await sendOutgoing();
       setSelectedExcerptReferences(new Map());
-    } catch {
-      // Errors surface through the parent; preserve the current interaction model.
+    } catch (error: unknown) {
+      // Errors still surface through the parent; this only adds the inline banner for
+      // the remote codes retrying cannot fix.
+      if (handleUnknownSendOutcome(error)) return;
+      setSendError(error);
     }
   }, [
     addHistoryEntry,
     canSendWhileAgentActive,
     clearValue,
     emptySubmitValue,
+    handleStop,
+    handleUnknownSendOutcome,
     isControlled,
     isReadOnly,
     isSubmitting,
     onSend,
-    onStop,
     prepareMessageForSend,
     questionMode,
     sendDisabledReason,
@@ -1960,6 +2088,10 @@ export function AgentComposerSurface({
             {folderReferences.data && (
               <FolderReferenceChips
                 references={folderReferences.data}
+                removeDisabled={folderReferenceRemoveGate.gated}
+                {...(folderReferenceRemoveGate.reason
+                  ? { removeDisabledReason: folderReferenceRemoveGate.reason }
+                  : {})}
                 {...(removeFolderReference.isPending &&
                 removeFolderReference.variables?.folderReferenceId
                   ? { removingId: removeFolderReference.variables.folderReferenceId }
@@ -2064,7 +2196,7 @@ export function AgentComposerSurface({
               enableAttachments={enableAttachments}
               attachmentDisabled={attachmentDisabled}
               onOpenAttachmentPicker={handleOpenAttachmentPicker}
-              showAddFolder={folderReferencesSupported}
+              showAddFolder={canAddFolderReference}
               onAddFolder={handleAddFolder}
               {...(onForkSession
                 ? {
@@ -2160,6 +2292,12 @@ export function AgentComposerSurface({
               />
             )}
 
+            <AgentGateTooltip
+              gated={shouldShowStop ? stopGate.gated : agentGate.gated}
+              reason={shouldShowStop ? stopGate.reason : agentGate.reason}
+              className="ml-auto inline-flex"
+              testId="agent-composer-send-gate"
+            >
             <Button
               type="button"
               className={cn(
@@ -2182,14 +2320,27 @@ export function AgentComposerSurface({
               }}
               onClick={() => {
                 if (shouldShowStop) {
-                  void onStop?.();
+                  // First paint wins: the pending state flips in this commit, the await (and
+                  // any failure toast) happens after.
+                  setStopPending(true);
+                  void handleStop();
                   return;
                 }
                 void handleSend();
               }}
-              disabled={shouldShowStop ? false : !canSubmit}
+              disabled={
+                shouldShowStop ? stopGate.gated || stopPending : !canSubmit
+              }
               data-testid={actionTestId}
-              aria-label={shouldShowStop ? "Stop agent" : submitLabel}
+              aria-label={
+                shouldShowStop
+                  ? stopGate.gated
+                    ? `Stop agent — ${stopGate.reason}`
+                    : "Stop agent"
+                  : agentGate.gated
+                    ? `${submitLabel} — ${agentGate.reason}`
+                    : submitLabel
+              }
             >
               {shouldShowStop ? (
                 <>
@@ -2212,9 +2363,15 @@ export function AgentComposerSurface({
                 </>
               )}
             </Button>
+            </AgentGateTooltip>
           </div>
         </div>
       </div>
+      <RemoteErrorBanner
+        error={sendError}
+        className="mt-2"
+        testId="agent-composer-remote-error"
+      />
       {isAttachmentDragging && (
         <ChatAttachmentDropOverlay roundedClassName="rounded-[22px]" />
       )}

@@ -16,6 +16,10 @@ import { useTicketingStore } from "@/stores/ticketingStore";
 
 import { TicketingDashboardView } from "./TicketingDashboardView";
 
+const { toastErrorMock } = vi.hoisted(() => ({ toastErrorMock: vi.fn() }));
+
+vi.mock("sonner", () => ({ toast: { error: toastErrorMock } }));
+
 vi.mock("@/api/atlassian", () => ({
   atlassianApi: {
     assignAgentConversationJiraIssue: vi.fn().mockResolvedValue(null),
@@ -1347,6 +1351,27 @@ describe("TicketingDashboardView", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
+  it("surfaces a failed quick assignment", async () => {
+    mockConnectedDashboard();
+    const assignToMe = vi.fn().mockRejectedValue(new Error("Assignment rejected"));
+    vi.mocked(ticketingHooks.useTicketingMutations).mockReturnValue({
+      transitionStatus: vi.fn(),
+      assignToMe,
+      clearAssignee: vi.fn(),
+      addComment: vi.fn(),
+      transitionStatusMutation: { isPending: false },
+      assignToMeMutation: { isPending: false },
+      clearAssigneeMutation: { isPending: false },
+      addCommentMutation: { isPending: false },
+      setLabelsMutation: { isPending: false },
+    } as unknown as ReturnType<typeof ticketingHooks.useTicketingMutations>);
+
+    renderDashboard();
+    fireEvent.click(screen.getByRole("button", { name: "Assign to me" }));
+
+    await waitFor(() => expect(toastErrorMock).toHaveBeenCalledWith("Assignment rejected"));
+  });
+
   it("flags a row as updated when it changed since the last open", () => {
     mockConnectedDashboard();
     useTicketingStore.setState({
@@ -1844,6 +1869,40 @@ describe("TicketingDashboardView", () => {
       expect(ticketingHooks.findTicketTransitionForColumn).toHaveBeenCalled();
     });
     expect(transitionStatus).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a failed ticket move", async () => {
+    mockConnectedDashboard();
+    const transition = {
+      toStateId: "done",
+      providerTransitionId: "transition-31",
+      name: "Done",
+      category: "done" as const,
+    };
+    vi.mocked(ticketingHooks.fetchTicketTransitionsForMove).mockResolvedValue([transition]);
+    vi.mocked(ticketingHooks.findTicketTransitionForColumn).mockReturnValue(transition);
+    const transitionStatus = vi.fn().mockRejectedValue(new Error("Move rejected"));
+    vi.mocked(ticketingHooks.useTicketingMutations).mockReturnValue({
+      transitionStatus,
+      assignToMe: vi.fn(),
+      clearAssignee: vi.fn(),
+      addComment: vi.fn(),
+      setLabels: vi.fn(),
+      transitionStatusMutation: { isPending: false },
+      assignToMeMutation: { isPending: false },
+      clearAssigneeMutation: { isPending: false },
+      addCommentMutation: { isPending: false },
+      setLabelsMutation: { isPending: false },
+    } as unknown as ReturnType<typeof ticketingHooks.useTicketingMutations>);
+
+    renderDashboard();
+    fireEvent.pointerDown(screen.getByRole("button", { name: /change status/i }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    fireEvent.click(await screen.findByRole("menuitem", { name: /to do/i }));
+
+    await waitFor(() => expect(toastErrorMock).toHaveBeenCalledWith("Move rejected"));
   });
 
   it("refreshes with only the provider when no container is selected", () => {

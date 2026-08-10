@@ -149,8 +149,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
-      # Coverage-instrumented lib builds exceed the hosted runner memory limit
-      # when Cargo compiles crates concurrently.
+      # Coverage-instrumented lib builds exceed the hosted runner memory limit when Cargo
+      # compiles crates concurrently. Observed on this branch, whose Rust surface is larger:
+      # the job went silent mid-compile and the runner was reaped (exit 143, "runner has
+      # received a shutdown signal") on 3 of 4 attempts at 4 parallel rustc processes,
+      # against the 16 GB on `ubuntu-latest`. Raise it back if the crate graph shrinks or
+      # the runner size grows.
       CARGO_BUILD_JOBS: "1"
       CARGO_TERM_COLOR: never
       RALPHX_TEST_MODE: "1"

@@ -36,6 +36,8 @@ import {
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { RemoteHostOnlyNotice } from "@/components/remote/RemoteHostOnlyNotice";
+import { useIsRemoteEnvironment } from "@/hooks/useActiveEnvironment";
 
 interface AgentIssueReportContext {
   projectId: string;
@@ -95,12 +97,13 @@ export function AgentIssueReportDialog({
   const [issueUrl, setIssueUrl] = useState<string | null>(null);
   const [isExporting, setIsExporting] = useState(false);
   const loadRequestRef = useRef(0);
+  const isRemoteEnvironment = useIsRemoteEnvironment();
 
   const reportConversationId = context?.conversationId ?? null;
   const reportProjectId = context?.projectId ?? null;
 
   useEffect(() => {
-    if (!open || !context) {
+    if (!open || !context || isRemoteEnvironment) {
       setDraft(null);
       setBody("");
       setIssueTitle("");
@@ -153,7 +156,7 @@ export function AgentIssueReportDialog({
     }
     const frame = window.requestAnimationFrame(startLoad);
     return () => window.cancelAnimationFrame(frame);
-  }, [open, context]);
+  }, [open, context, isRemoteEnvironment]);
 
   const redactionText = useMemo(() => {
     if (!draft || draft.redactionSummary.replacements.length === 0) {
@@ -243,7 +246,10 @@ export function AgentIssueReportDialog({
         </DialogHeader>
 
         <div className="min-h-0 overflow-hidden px-6 py-4">
-          {!context && (
+          {isRemoteEnvironment && (
+            <RemoteHostOnlyNotice subject="Issue reports" />
+          )}
+          {!isRemoteEnvironment && !context && (
             <div
               className="flex h-[280px] items-center justify-center rounded-md border text-sm"
               style={{
@@ -258,7 +264,7 @@ export function AgentIssueReportDialog({
             </div>
           )}
 
-          {context && (
+          {!isRemoteEnvironment && context && (
             <div className="flex h-full min-h-0 flex-col gap-3">
               <div
                 className="grid gap-2 rounded-md border px-3 py-2 text-xs sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]"
@@ -490,7 +496,7 @@ export function AgentIssueReportDialog({
           )}
         </div>
 
-        <DialogFooter>
+        {!isRemoteEnvironment && <DialogFooter>
           <Button variant="outline" onClick={handleCopy} disabled={!body}>
             <Clipboard className="h-4 w-4" />
             Copy
@@ -526,7 +532,7 @@ export function AgentIssueReportDialog({
             )}
             {submitPhase === "confirm" ? "Confirm and Create" : "Create GitHub Issue"}
           </Button>
-        </DialogFooter>
+        </DialogFooter>}
       </DialogContent>
     </Dialog>
   );

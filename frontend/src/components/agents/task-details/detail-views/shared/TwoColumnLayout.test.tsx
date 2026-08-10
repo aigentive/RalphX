@@ -33,6 +33,7 @@ function contextModel(): TaskDetailContextModel {
     taskContext: null,
     planBranch: null,
     isLoading: false,
+    isUnavailable: false,
     planArtifactId: null,
     sessionId: null,
     branch: {

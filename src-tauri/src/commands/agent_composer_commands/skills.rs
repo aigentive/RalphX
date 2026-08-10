@@ -321,7 +321,7 @@ fn read_installed_claude_plugins(claude_home: &Path) -> ClaudeInstalledPlugins {
     serde_json::from_str::<ClaudeInstalledPlugins>(&raw).unwrap_or_default()
 }
 
-fn read_claude_skill_dir(
+pub(super) fn read_claude_skill_dir(
     skills_root: &Path,
     scope: &str,
     name_prefix: Option<&str>,
@@ -335,7 +335,16 @@ fn read_claude_skill_dir(
     // codeql[rust/path-injection]
     let read_dir = match std::fs::read_dir(&safe_root) {
         Ok(read_dir) => read_dir,
-        Err(_) => return Ok(skills),
+        // An absent directory legitimately means "no skills live here". Any OTHER error —
+        // permissions, not-a-directory, IO — is a failure to LOOK, and reporting that as an
+        // empty skill list tells the user this project has no skills when nobody knows.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(skills),
+        Err(error) => {
+            return Err(format!(
+                "Failed to read Claude skill directory {}: {error}",
+                safe_root.display()
+            ));
+        }
     };
     for entry in read_dir.flatten() {
         let path = entry.path();
@@ -644,7 +653,7 @@ fn read_codex_plugin_skill_root(plugin_root: &Path) -> Option<(String, PathBuf)>
     Some((plugin_name, canonical_skills_dir))
 }
 
-fn read_codex_skill_dir(
+pub(super) fn read_codex_skill_dir(
     skills_root: &Path,
     scope: &str,
     name_prefix: Option<&str>,
@@ -659,7 +668,16 @@ fn read_codex_skill_dir(
     // codeql[rust/path-injection]
     let read_dir = match std::fs::read_dir(&safe_root) {
         Ok(read_dir) => read_dir,
-        Err(_) => return Ok(skills),
+        // An absent directory legitimately means "no skills live here". Any OTHER error —
+        // permissions, not-a-directory, IO — is a failure to LOOK, and reporting that as an
+        // empty skill list tells the user this project has no skills when nobody knows.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(skills),
+        Err(error) => {
+            return Err(format!(
+                "Failed to read Codex skill directory {}: {error}",
+                safe_root.display()
+            ));
+        }
     };
     for entry in read_dir.flatten() {
         let path = entry.path();

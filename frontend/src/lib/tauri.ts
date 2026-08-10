@@ -5,7 +5,6 @@
 // When running in a browser (without Tauri), this module automatically switches
 // to mock implementations for visual testing and development.
 
-import { invoke } from "@tauri-apps/api/core";
 import { z } from "zod";
 import { isWebMode } from "./tauri-detection";
 
@@ -16,42 +15,15 @@ export { isWebMode, isTauriMode } from "./tauri-detection";
 // Core Utilities
 // ============================================================================
 
-/**
- * Generic invoke wrapper with runtime Zod validation
- * @param cmd The Tauri command name
- * @param args The arguments to pass to the command
- * @param schema The Zod schema to validate the response
- * @returns The validated response
- * @throws If the response doesn't match the schema
- */
-export async function typedInvoke<T>(
-  cmd: string,
-  args: Record<string, unknown>,
-  schema: z.ZodType<T>
-): Promise<T> {
-  const result = await invoke(cmd, args);
-  return schema.parse(result);
-}
+// `typedInvoke` / `typedInvokeWithTransform` live in their own module so importing
+// them does not drag this barrel's entire API graph along; re-exported here so every
+// existing `from "@/lib/tauri"` call site is unaffected.
+export {
+  typedInvoke,
+  typedInvokeWithTransform,
+} from "./typed-invoke";
 
-/**
- * Generic invoke wrapper with runtime Zod validation and transform
- * @param cmd The Tauri command name
- * @param args The arguments to pass to the command
- * @param schema The Zod schema to validate the response (snake_case from backend)
- * @param transform Transform function to convert validated response to camelCase
- * @returns The transformed response
- * @throws If the response doesn't match the schema
- */
-export async function typedInvokeWithTransform<TRaw, TResult>(
-  cmd: string,
-  args: Record<string, unknown>,
-  schema: z.ZodType<TRaw>,
-  transform: (raw: TRaw) => TResult
-): Promise<TResult> {
-  const result = await invoke(cmd, args);
-  const validated = schema.parse(result);
-  return transform(validated);
-}
+import { typedInvoke } from "./typed-invoke";
 
 // ============================================================================
 // Shared Schemas

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { backendApiUrl } from "@/api/backend";
+import { backendFetch } from "@/api/backend";
 
 const AgentTaskStateSchema = z.enum(["open", "active", "done", "dropped"]);
 
@@ -111,7 +111,7 @@ function transformAgentTaskListSummary(
 }
 
 async function postJson<T>(endpoint: string, body: Record<string, unknown>): Promise<T> {
-  const response = await fetch(backendApiUrl(endpoint), {
+  const response = await backendFetch(endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),

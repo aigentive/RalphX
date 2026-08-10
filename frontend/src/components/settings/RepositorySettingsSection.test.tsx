@@ -26,6 +26,25 @@ vi.mock("@/hooks/useGitHubConnectionStatus", () => ({
   useGitHubConnectionStatus: vi.fn(),
 }));
 
+vi.mock("@/hooks/useAgentGate", () => ({
+  useAgentGate: () => ({ status: "enabled", gated: false, reason: null }),
+}));
+
+// `GitAuthRepairPanel` reads the bus through `useEventBus()` rather than raw `listen`, so
+// rendering it needs a bus in context. Mocked like the other hooks here — mounting the real
+// EventProvider would pull in every global listener this unit test has no business running.
+vi.mock("@/providers/EventProvider", () => ({
+  useEventBus: () => {
+    const unsubscribe = Object.assign(() => {}, {
+      ready: Promise.resolve(),
+    });
+    return {
+      subscribe: () => unsubscribe,
+      emit: () => {},
+    };
+  },
+}));
+
 const mockUpdateProject = vi.fn();
 vi.mock("@/stores/projectStore", () => ({
   useProjectStore: vi.fn(),
@@ -220,6 +239,43 @@ describe("RepositorySettingsSection", () => {
     expect(
       screen.getByText("https://github.com/user/repo.git")
     ).toBeInTheDocument();
+  });
+
+  it("renders an em dash for a remote snapshot with no URL and never fabricates an empty string", () => {
+    mockProjectCapability({
+      githubPrEnabled: false,
+      repositoryCapability: { kind: "otherRemote", fetchUrl: null, pushUrl: null },
+    });
+    render(<RepositorySettingsSection />, { wrapper: createWrapper() });
+
+    const row = screen.getByText("Remote URL").closest(".settings-row");
+    expect(row).toHaveTextContent("—");
+    expect(row).not.toHaveTextContent("Not configured");
+  });
+
+  it("renders the fetch URL when a remote snapshot has no distinct push URL", () => {
+    mockProjectCapability({
+      githubPrEnabled: false,
+      repositoryCapability: {
+        kind: "otherRemote",
+        fetchUrl: "https://gitlab.com/user/repo.git",
+        pushUrl: null,
+      },
+    });
+    render(<RepositorySettingsSection />, { wrapper: createWrapper() });
+
+    expect(screen.getByText("https://gitlab.com/user/repo.git")).toBeInTheDocument();
+  });
+
+  it("keeps the not-inspected Remote URL path unchanged", () => {
+    mockProjectCapability({
+      githubPrEnabled: false,
+      repositoryCapability: { kind: "notInspected" },
+    });
+    render(<RepositorySettingsSection />, { wrapper: createWrapper() });
+
+    const row = screen.getByText("Remote URL").closest(".settings-row");
+    expect(row).toHaveTextContent("—");
   });
 
   it("uses live local-only capability rather than the remote URL query to disable future PR mode", () => {
@@ -496,6 +552,20 @@ describe("RepositorySettingsSection", () => {
 
     const toggle = screen.getByTestId("github-pr-enabled");
     expect(toggle).toBeDisabled();
+  });
+
+  it("renders an honest not-inspected capability without a fabricated URL", () => {
+    mockProjectCapability({
+      githubPrEnabled: false,
+      repositoryCapability: { kind: "notInspected" },
+    });
+
+    render(<RepositorySettingsSection />, { wrapper: createWrapper() });
+
+    expect(screen.getByTestId("github-pr-enabled")).toBeDisabled();
+    expect(screen.getByText("The host has not inspected this repository yet.")).toBeInTheDocument();
+    expect(screen.getByText("Not inspected yet")).toBeInTheDocument();
+    expect(screen.getByText("—")).toBeInTheDocument();
   });
 
   it("commits base branch on blur and shows success toast", async () => {

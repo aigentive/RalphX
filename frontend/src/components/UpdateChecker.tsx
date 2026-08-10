@@ -7,7 +7,7 @@ import {
 } from "@/api/release-notes";
 import type { UpdateChannel } from "@/api/update-channel";
 import { ReleaseNotesDialog } from "@/components/ReleaseNotesDialog";
-import { useUpdateChannel } from "@/hooks/useUpdateChannel";
+import { useClientUpdateChannel } from "@/hooks/useClientUpdateChannel";
 import { useUiStore } from "@/stores/uiStore";
 import { installUpdate } from "./UpdateChecker.install";
 import { useUpdateCheckerNativeEvents } from "./UpdateChecker.events";
@@ -60,7 +60,7 @@ export function UpdateChecker({
     isSettled: isUpdateChannelSettled,
     isError: isUpdateChannelError,
     loadError: updateChannelError,
-  } = useUpdateChannel();
+  } = useClientUpdateChannel();
   const checkInFlight = useRef(false);
   const notifiedVersion = useRef<string | null>(null);
   const lastCheckAt = useRef<number | null>(null);

@@ -1,14 +1,30 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 
 import { chatApi } from "@/api/chat";
+import { isRemoteEnvironmentActive } from "@/hooks/useActiveEnvironment";
+import { useEnvironmentStore } from "@/stores/environmentStore";
 
 import {
   getAgentConversationStoreKey,
   type AgentConversation,
 } from "./agentConversations";
 import { reconcileAgentConversationRuntimeStatus } from "./agentConversationRuntimeStore";
+import { reconcileAgentConversationRuntimeIndexes } from "./agentConversationRuntimeReconcile";
 
 const AGENT_SIDEBAR_LIVENESS_POLL_MS = 5_000;
+
+const knownConversationSets = new Map<symbol, AgentConversation[]>();
+
+export function getKnownAgentSidebarConversations(): AgentConversation[] {
+  const seen = new Set<string>();
+  return [...knownConversationSets.values()].flatMap((conversations) =>
+    conversations.filter((conversation) => {
+      if (seen.has(conversation.id)) return false;
+      seen.add(conversation.id);
+      return true;
+    }),
+  );
+}
 
 export function useAgentSidebarRunningStates(
   conversations: AgentConversation[],
@@ -34,7 +50,46 @@ export function useAgentSidebarRunningStates(
   }, [conversations]);
 
   useEffect(() => {
+    if (!isVisible) return undefined;
+    const owner = Symbol("agent-sidebar-runtime-conversations");
+    knownConversationSets.set(owner, agentConversations);
+    return () => {
+      knownConversationSets.delete(owner);
+    };
+  }, [agentConversations, isVisible]);
+
+  const conversationIds = agentConversations
+    .map((conversation) => conversation.id)
+    .join("\u0000");
+  const lastRemoteReconcileIds = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (
+      !isVisible ||
+      agentConversations.length === 0 ||
+      !isRemoteEnvironmentActive()
+    ) {
+      lastRemoteReconcileIds.current = null;
+      return;
+    }
+    if (lastRemoteReconcileIds.current === conversationIds) return;
+    lastRemoteReconcileIds.current = conversationIds;
+
+    const environmentId = useEnvironmentStore.getState().activeEnvironmentId;
+    void reconcileAgentConversationRuntimeIndexes(
+      environmentId,
+      agentConversations,
+    );
+    // `agentConversations` is a dependency for correctness, but the id-set guard above is
+    // what decides whether a fan-out actually runs: a re-created array with the same ids
+    // returns early, so this never re-fetches on identity churn alone.
+  }, [agentConversations, conversationIds, isVisible]);
+
+  useEffect(() => {
     if (!isVisible || agentConversations.length === 0) {
+      return undefined;
+    }
+    if (isRemoteEnvironmentActive()) {
       return undefined;
     }
 

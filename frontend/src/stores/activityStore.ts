@@ -7,6 +7,8 @@
 
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
+
+import { registerEnvIsolatedStore } from "@/lib/remote/env-state-isolation";
 import type { AgentMessageEvent, SupervisorAlertEvent } from "@/types/events";
 
 // ============================================================================
@@ -136,3 +138,5 @@ export const useActivityStore = create<ActivityState & ActivityActions>()(
       ),
   }))
 );
+
+registerEnvIsolatedStore({ name: "useActivityStore", reset: () => useActivityStore.setState(useActivityStore.getInitialState(), true) });

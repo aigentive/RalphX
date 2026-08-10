@@ -3,8 +3,8 @@ use ralphx_lib::application::chat_service::{
     AutoCompleteGuard, MergeVerification,
 };
 use ralphx_lib::application::git_service::checkout_free::update_branch_ref;
-use ralphx_lib::application::GitService;
 use ralphx_lib::application::interactive_process_registry::InteractiveProcessKey;
+use ralphx_lib::application::GitService;
 use ralphx_lib::application::InteractiveProcessRegistry;
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::*;
@@ -470,7 +470,12 @@ async fn test_merge_resolve_branch_fast_forwards_target_before_verification() {
     let task_id = "task-rc7-test";
 
     // Create a task branch with a file that conflicts with main
-    create_branch_with_change(repo, "task/rc7", "shared.txt", "task version of shared.txt\n");
+    create_branch_with_change(
+        repo,
+        "task/rc7",
+        "shared.txt",
+        "task version of shared.txt\n",
+    );
 
     // Create a conflicting commit on main
     fs::write(repo.join("shared.txt"), "main version of shared.txt\n").unwrap();
@@ -565,8 +570,9 @@ async fn test_merge_resolve_branch_fast_forwards_target_before_verification() {
     );
 
     // THE FIX: fast-forward target branch to merge-resolve HEAD
-    let resolve_sha_from_git =
-        GitService::get_branch_sha(repo, &resolve_branch).await.unwrap();
+    let resolve_sha_from_git = GitService::get_branch_sha(repo, &resolve_branch)
+        .await
+        .unwrap();
     assert_eq!(
         resolve_sha, resolve_sha_from_git,
         "merge-resolve branch SHA should match the commit we just made"
@@ -584,10 +590,7 @@ async fn test_merge_resolve_branch_fast_forwards_target_before_verification() {
                 "Target branch HEAD should match merge-resolve HEAD after fast-forward"
             );
         }
-        other => panic!(
-            "Expected Merged after fast-forward, got: {:?}",
-            other
-        ),
+        other => panic!("Expected Merged after fast-forward, got: {:?}", other),
     }
 
     // Verify main branch now points to the merge-resolve commit
@@ -625,7 +628,10 @@ async fn test_merge_resolve_branch_fast_forwards_target_before_verification() {
 
 // ---- Shared watcher test helpers ------------------------------------------
 
-fn make_test_repos() -> (Arc<memory::MemoryTaskRepository>, Arc<memory::MemoryProjectRepository>) {
+fn make_test_repos() -> (
+    Arc<memory::MemoryTaskRepository>,
+    Arc<memory::MemoryProjectRepository>,
+) {
     (
         Arc::new(MemoryTaskRepository::new()),
         Arc::new(MemoryProjectRepository::new()),
@@ -709,17 +715,14 @@ async fn advance_until_done(watcher: &tokio::task::JoinHandle<()>, max_secs: u64
 /// Use this (without `tokio::time::pause()`) for tests that invoke real git subprocess calls,
 /// since `tokio::time::timeout` inside `git_cmd::run()` uses mock time and fires too early.
 async fn wait_until_done(watcher: &tokio::task::JoinHandle<()>, timeout_secs: u64) -> bool {
-    let result = tokio::time::timeout(
-        std::time::Duration::from_secs(timeout_secs),
-        async {
-            loop {
-                if watcher.is_finished() {
-                    return;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    let result = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), async {
+        loop {
+            if watcher.is_finished() {
+                return;
             }
-        },
-    )
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
     .await;
     result.is_ok()
 }
@@ -763,7 +766,10 @@ async fn watcher_context_returns_none_for_missing_project() {
     )
     .await;
 
-    assert!(result.is_none(), "Should return None when project is missing");
+    assert!(
+        result.is_none(),
+        "Should return None when project is missing"
+    );
 }
 
 /// Returns (source_branch, target_branch, repo_path) for a valid task+project.
@@ -772,13 +778,9 @@ async fn watcher_context_returns_source_target_and_repo_path() {
     let dir = setup_test_repo();
     let (task_repo, project_repo) = make_test_repos();
 
-    let task_id = seed_project_and_merging_task(
-        &task_repo,
-        &project_repo,
-        dir.path(),
-        "task/feature-x",
-    )
-    .await;
+    let task_id =
+        seed_project_and_merging_task(&task_repo, &project_repo, dir.path(), "task/feature-x")
+            .await;
 
     let result = resolve_watcher_context(
         &task_id,
@@ -788,9 +790,15 @@ async fn watcher_context_returns_source_target_and_repo_path() {
     )
     .await;
 
-    assert!(result.is_some(), "Should resolve context for valid task+project");
+    assert!(
+        result.is_some(),
+        "Should resolve context for valid task+project"
+    );
     let (source, target, path) = result.unwrap();
-    assert_eq!(source, "task/feature-x", "Source branch from task.task_branch");
+    assert_eq!(
+        source, "task/feature-x",
+        "Source branch from task.task_branch"
+    );
     assert_eq!(target, "main", "Target branch from project.base_branch");
     assert_eq!(
         path,
@@ -812,13 +820,8 @@ async fn watcher_exits_when_no_ipr_entry() {
     let (task_repo, project_repo) = make_test_repos();
     let ipr = Arc::new(InteractiveProcessRegistry::new());
 
-    let task_id = seed_project_and_merging_task(
-        &task_repo,
-        &project_repo,
-        dir.path(),
-        "task-branch",
-    )
-    .await;
+    let task_id =
+        seed_project_and_merging_task(&task_repo, &project_repo, dir.path(), "task-branch").await;
 
     // No IPR entry registered — watcher should exit at first poll because has_process=false.
     // Use 1ms grace/poll so only a few mock-seconds of advancement are needed.
@@ -835,7 +838,10 @@ async fn watcher_exits_when_no_ipr_entry() {
 
     // Advance a few mock-seconds — watcher exits immediately after first poll (no IPR).
     let finished = advance_until_done(&watcher, 10).await;
-    assert!(finished, "Watcher should exit when no IPR entry is registered");
+    assert!(
+        finished,
+        "Watcher should exit when no IPR entry is registered"
+    );
 }
 
 // ---- Watcher loop: exit when task leaves Merging ---------------------------
@@ -851,13 +857,8 @@ async fn watcher_exits_without_closing_ipr_when_task_leaves_merging() {
     let (task_repo, project_repo) = make_test_repos();
     let ipr = Arc::new(InteractiveProcessRegistry::new());
 
-    let task_id = seed_project_and_merging_task(
-        &task_repo,
-        &project_repo,
-        dir.path(),
-        "task-branch",
-    )
-    .await;
+    let task_id =
+        seed_project_and_merging_task(&task_repo, &project_repo, dir.path(), "task-branch").await;
 
     let key = InteractiveProcessKey::new("merge", &task_id);
     let mut child = register_ipr_cat(&ipr, &key).await;
@@ -892,7 +893,10 @@ async fn watcher_exits_without_closing_ipr_when_task_leaves_merging() {
     // Advance 2 more mock-seconds to fire the next poll — watcher detects non-Merging.
     let finished = advance_until_done(&watcher, 5).await;
 
-    assert!(finished, "Watcher should exit when task leaves Merging state");
+    assert!(
+        finished,
+        "Watcher should exit when task leaves Merging state"
+    );
     assert!(
         ipr.has_process(&key).await,
         "Watcher must NOT close IPR when task leaves Merging (state change, not success)"
@@ -921,13 +925,8 @@ async fn watcher_closes_ipr_when_merge_verified_on_target() {
     let (task_repo, project_repo) = make_test_repos();
     let ipr = Arc::new(InteractiveProcessRegistry::new());
 
-    let task_id = seed_project_and_merging_task(
-        &task_repo,
-        &project_repo,
-        repo,
-        "task-branch",
-    )
-    .await;
+    let task_id =
+        seed_project_and_merging_task(&task_repo, &project_repo, repo, "task-branch").await;
 
     let key = InteractiveProcessKey::new("merge", &task_id);
     let mut child = register_ipr_cat(&ipr, &key).await;
@@ -1028,7 +1027,10 @@ async fn watcher_skips_merge_check_in_validation_recovery_mode() {
     // Clean up: remove IPR entry so watcher exits
     ipr.remove(&key).await;
     let finished = wait_until_done(&watcher, 5).await;
-    assert!(finished, "Watcher should exit after IPR is removed externally");
+    assert!(
+        finished,
+        "Watcher should exit after IPR is removed externally"
+    );
 
     let _ = child.kill().await;
 }
@@ -1050,13 +1052,8 @@ async fn watcher_keeps_running_when_merge_not_verified() {
     let (task_repo, project_repo) = make_test_repos();
     let ipr = Arc::new(InteractiveProcessRegistry::new());
 
-    let task_id = seed_project_and_merging_task(
-        &task_repo,
-        &project_repo,
-        repo,
-        "task-branch",
-    )
-    .await;
+    let task_id =
+        seed_project_and_merging_task(&task_repo, &project_repo, repo, "task-branch").await;
 
     let key = InteractiveProcessKey::new("merge", &task_id);
     let mut child = register_ipr_cat(&ipr, &key).await;
@@ -1088,7 +1085,10 @@ async fn watcher_keeps_running_when_merge_not_verified() {
     // Clean up: remove IPR entry so watcher exits
     ipr.remove(&key).await;
     let finished = wait_until_done(&watcher, 5).await;
-    assert!(finished, "Watcher should exit after IPR is removed externally");
+    assert!(
+        finished,
+        "Watcher should exit after IPR is removed externally"
+    );
 
     let _ = child.kill().await;
 }
@@ -1105,8 +1105,7 @@ async fn test_no_merge_resolve_branch_verification_works_normally() {
     merge_branch(repo, "task/normal");
 
     // No merge-resolve branch exists — get_branch_sha should fail
-    let resolve_result =
-        GitService::get_branch_sha(repo, "merge-resolve/task-normal").await;
+    let resolve_result = GitService::get_branch_sha(repo, "merge-resolve/task-normal").await;
     assert!(
         resolve_result.is_err(),
         "merge-resolve branch should not exist for normal merges"
@@ -1166,7 +1165,10 @@ async fn test_merge_resolve_cleanup_after_fast_forward() {
 
     // Verify branch exists
     let branch_exists = GitService::get_branch_sha(repo, &resolve_branch).await;
-    assert!(branch_exists.is_ok(), "merge-resolve branch should exist before cleanup");
+    assert!(
+        branch_exists.is_ok(),
+        "merge-resolve branch should exist before cleanup"
+    );
 
     // Cleanup: delete worktree then branch (mirrors the fix)
     GitService::delete_worktree(repo, &wt_path)
@@ -1177,7 +1179,10 @@ async fn test_merge_resolve_cleanup_after_fast_forward() {
         .expect("delete branch");
 
     // Verify cleanup
-    assert!(!wt_path.exists(), "Worktree directory should be removed after cleanup");
+    assert!(
+        !wt_path.exists(),
+        "Worktree directory should be removed after cleanup"
+    );
     let branch_after = GitService::get_branch_sha(repo, &resolve_branch).await;
     assert!(
         branch_after.is_err(),
@@ -1317,7 +1322,10 @@ fn test_source_update_max_retries_escalates_to_incomplete() {
         .get("source_update_conflict")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    assert!(is_source_update, "source_update_conflict flag should be set");
+    assert!(
+        is_source_update,
+        "source_update_conflict flag should be set"
+    );
 
     let retry_count = meta
         .get("source_update_retry_count")
@@ -1348,7 +1356,10 @@ fn test_source_update_max_retries_escalates_to_incomplete() {
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
     assert_eq!(retry_missing, 0, "Missing key should default to 0");
-    assert!(retry_missing < 2, "Default 0 should NOT trigger max retry guard");
+    assert!(
+        retry_missing < 2,
+        "Default 0 should NOT trigger max retry guard"
+    );
 }
 
 // ============================================================================

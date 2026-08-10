@@ -379,7 +379,77 @@
       {
         "path": "src-tauri/src/application/startup_background.rs",
         "target": "crate::commands",
+        "text": "crate::commands::remote_agent_stop_commands::REMOTE_AGENT_STOP_CONVERSATION_GONE,"
+      },
+      {
+        "path": "src-tauri/src/application/startup_background.rs",
+        "target": "crate::commands",
+        "text": "crate::commands::remote_agent_stop_commands::REMOTE_AGENT_STOP_HOST_STOP_FAILED,"
+      },
+      {
+        "path": "src-tauri/src/application/startup_background.rs",
+        "target": "crate::commands",
+        "text": "crate::commands::remote_agent_stop_commands::REMOTE_AGENT_STOP_LOOKUP_FAILED,"
+      },
+      {
+        "path": "src-tauri/src/application/startup_background.rs",
+        "target": "crate::commands",
+        "text": "crate::commands::remote_conversation_message_commands::REMOTE_CONV_MESSAGE_HOST_SEND_FAILED,"
+      },
+      {
+        "path": "src-tauri/src/application/startup_background.rs",
+        "target": "crate::commands",
+        "text": "crate::commands::remote_conversation_mode_switch_commands::REMOTE_MODE_SWITCH_HOST_SWITCH_FAILED,"
+      },
+      {
+        "path": "src-tauri/src/application/startup_background.rs",
+        "target": "crate::commands",
+        "text": "crate::commands::unified_chat_commands::SwitchAgentConversationModeInput {"
+      },
+      {
+        "path": "src-tauri/src/application/startup_background.rs",
+        "target": "crate::commands",
+        "text": "let result = crate::commands::unified_chat_commands::switch_agent_conversation_mode_for_state("
+      },
+      {
+        "path": "src-tauri/src/application/startup_background.rs",
+        "target": "crate::commands",
+        "text": "let service = crate::commands::unified_chat_commands::create_chat_service("
+      },
+      {
+        "path": "src-tauri/src/application/startup_background.rs",
+        "target": "crate::commands",
+        "text": "let snapshot = crate::commands::agent_model_commands::load_agent_model_registry(state)"
+      },
+      {
+        "path": "src-tauri/src/application/startup_background.rs",
+        "target": "crate::commands",
         "text": "use crate::commands::ExecutionState;"
+      },
+      {
+        "path": "src-tauri/src/application/startup_background.rs",
+        "target": "crate::commands",
+        "text": "use crate::commands::remote_agent_stop_commands::REMOTE_AGENT_STOP_CONVERSATION_GONE;"
+      },
+      {
+        "path": "src-tauri/src/application/startup_background.rs",
+        "target": "crate::commands",
+        "text": "use crate::commands::remote_conversation_message_commands::{"
+      },
+      {
+        "path": "src-tauri/src/application/startup_background.rs",
+        "target": "crate::commands",
+        "text": "use crate::commands::remote_conversation_mode_switch_commands::{"
+      },
+      {
+        "path": "src-tauri/src/application/startup_background.rs",
+        "target": "crate::commands",
+        "text": "use crate::commands::remote_conversation_start_commands::REMOTE_CONV_START_PROVIDER_NOT_ENABLED;"
+      },
+      {
+        "path": "src-tauri/src/application/startup_background.rs",
+        "target": "crate::commands",
+        "text": "use crate::commands::remote_conversation_start_commands::{"
       },
       {
         "path": "src-tauri/src/application/startup_jobs.rs",

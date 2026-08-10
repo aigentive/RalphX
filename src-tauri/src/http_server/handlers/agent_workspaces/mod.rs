@@ -11,7 +11,9 @@ mod workspace_review_context;
 #[cfg(test)]
 use pr_review::ensure_review_artifact_for_head;
 pub use pr_review::*;
-pub use workspace_review_context::get_agent_workspace_review_context;
+pub use workspace_review_context::{
+    get_agent_workspace_review_context, get_agent_workspace_review_context_remote_snapshot,
+};
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -103,6 +105,13 @@ use crate::commands::unified_chat_commands::{
     AgentConversationWorkspacePublicationEventResponse, AgentConversationWorkspaceResponse,
     AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE,
 };
+
+async fn agent_workspace_response_for_remote_snapshot(
+    state: &AppState,
+    workspace: AgentConversationWorkspace,
+) -> Result<AgentConversationWorkspaceResponse, String> {
+    agent_workspace_response_without_repair_recovery_for_state(state, workspace).await
+}
 use crate::domain::agents::{
     AgentHarnessKind, LogicalEffort, ManualRoleRuntimeOverride, ManualServiceTier,
 };

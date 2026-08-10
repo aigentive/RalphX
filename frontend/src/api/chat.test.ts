@@ -59,6 +59,9 @@ import {
   importAgentConversationPlan,
   sendAgentMessage,
   getQueuedAgentMessages,
+  listRemoteQueuedAgentMessages,
+  cancelRemoteQueuedAgentMessage,
+  sendRemoteQueuedAgentMessageNow,
   deleteQueuedAgentMessage,
   sendQueuedAgentMessageNow,
   isChatServiceAvailable,
@@ -3472,6 +3475,84 @@ describe("chat api", () => {
     mockInvoke.mockResolvedValue(true);
     const result = await deleteQueuedAgentMessage("project", "p1", "q1");
     expect(result).toBe(true);
+  });
+
+  it("lists remote queued messages with the real snake_case shape and explicit nulls", async () => {
+    mockInvoke.mockResolvedValue([
+      {
+        id: "remote-q1",
+        content: "Queued remotely",
+        created_at: "2026-08-05T09:30:00Z",
+        is_editing: false,
+        composer_selection_snapshot: null,
+        attachment_ids: [],
+      },
+    ]);
+
+    const result = await listRemoteQueuedAgentMessages("conversation-1");
+
+    expect(result).toEqual([
+      {
+        id: "remote-q1",
+        content: "Queued remotely",
+        createdAt: "2026-08-05T09:30:00Z",
+        isEditing: false,
+        attachmentIds: [],
+      },
+    ]);
+    expect(mockInvoke).toHaveBeenCalledWith("list_remote_queued_agent_messages", {
+      conversationId: "conversation-1",
+    });
+  });
+
+  it("cancels a remote queued message with flat camelCase args", async () => {
+    mockInvoke.mockResolvedValue({ deleted: false });
+
+    expect(await cancelRemoteQueuedAgentMessage("conversation-1", "q1")).toBe(false);
+    expect(mockInvoke).toHaveBeenCalledWith("cancel_remote_queued_agent_message", {
+      conversationId: "conversation-1",
+      messageId: "q1",
+    });
+  });
+
+  it("polls remote send-now to completed settlement with explicit nullable fields", async () => {
+    vi.useFakeTimers();
+    mockInvoke
+      .mockResolvedValueOnce({
+        requestId: "request-1",
+        status: "pending",
+        deduplicated: false,
+        createdAt: "2026-08-05T09:30:00Z",
+      })
+      .mockResolvedValueOnce({
+        requestId: "request-1",
+        status: "completed",
+        errorCode: null,
+        result: { runId: "run-next" },
+        createdAt: "2026-08-05T09:30:00Z",
+        updatedAt: "2026-08-05T09:30:01Z",
+      });
+
+    const pending = sendRemoteQueuedAgentMessageNow(
+      "conversation-1",
+      "q1",
+      "run-active",
+    );
+    await vi.advanceTimersByTimeAsync(400);
+    await expect(pending).resolves.toEqual({
+      status: "completed",
+      runId: "run-next",
+      rehydrateQueue: false,
+    });
+    expect(mockInvoke).toHaveBeenNthCalledWith(1, "request_remote_queued_message_send", {
+      conversationId: "conversation-1",
+      queuedMessageId: "q1",
+      expectedActiveRunId: "run-active",
+    });
+    expect(mockInvoke).toHaveBeenNthCalledWith(2, "get_remote_queued_message_send_request", {
+      requestId: "request-1",
+    });
+    vi.useRealTimers();
   });
 
   it("sends queued message immediately", async () => {

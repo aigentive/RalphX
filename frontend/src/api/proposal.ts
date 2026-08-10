@@ -286,11 +286,11 @@ export async function updateTaskProposal(
 }
 
 /**
- * Delete a task proposal
+ * Archive a task proposal
  * @param proposalId The proposal ID
  */
-export async function deleteTaskProposal(proposalId: string): Promise<void> {
-  await invoke("delete_task_proposal", { id: proposalId });
+export async function archiveTaskProposal(proposalId: string): Promise<void> {
+  await invoke("archive_task_proposal", { id: proposalId });
 }
 
 /**
@@ -338,21 +338,6 @@ export async function assessAllPriorities(
     z.array(PriorityAssessmentResponseSchema)
   );
   return raw.map(transformPriorityAssessment);
-}
-
-/**
- * Add a dependency between proposals
- * @param proposalId The proposal that depends on another
- * @param dependsOnId The proposal that is depended on
- */
-export async function addProposalDependency(
-  proposalId: string,
-  dependsOnId: string
-): Promise<void> {
-  await invoke("add_proposal_dependency", {
-    proposalId,
-    dependsOnId,
-  });
 }
 
 /**
@@ -418,11 +403,10 @@ export async function applyProposalsToKanban(
 export const proposalApi = {
   createTaskProposal,
   updateTaskProposal,
-  deleteTaskProposal,
+  archiveTaskProposal,
   reorderProposals,
   assessProposalPriority,
   assessAllPriorities,
-  addProposalDependency,
   removeProposalDependency,
   analyzeDependencies,
   applyProposalsToKanban,

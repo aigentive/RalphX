@@ -27,6 +27,7 @@ import { useAgentTerminalStore } from "./agentTerminalStore";
 import { useProjectStore } from "@/stores/projectStore";
 import type { AgentConversation } from "./agentConversations";
 import { AgentsView } from "./AgentsView";
+import { LOCAL_ENVIRONMENT_ID, useEnvironmentStore } from "@/stores/environmentStore";
 import {
   agentProjectFixture as project,
   agentRuntimeFixture as runtime,
@@ -1682,6 +1683,15 @@ export function selectSidebarConversationRow() {
 
 export function setupAgentsViewTest() {
   eventSubscriptions.clear();
+  // Environment state is global and survives between tests in a file, so a suite that drives a
+  // remote environment would otherwise leave every later test rendering remote copy. Own it here
+  // rather than in each test: the default for these suites is the local environment.
+  useEnvironmentStore.setState({
+    activeEnvironmentId: LOCAL_ENVIRONMENT_ID,
+    environments: [{ id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" }],
+    connectionPresentations: {},
+    effectiveScopes: {},
+  });
   mockSidebarBreakpoint({ isLarge: true, isMedium: true });
   window.localStorage.clear();
   useProjectAgentConversationsMock.mockReset();

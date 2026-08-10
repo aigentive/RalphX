@@ -1,0 +1,8 @@
+{
+  "descriptor":{"environmentId":"env-1","appVersion":"0.81.0","protocolVersion":1,"minClientProtocol":1,"platform":"macos"},
+  "scopes":["ui:read","ui:operate","ui:agent","ui:elevated"],
+  "riskClasses":["read","operate","pathScoped","agentControl","elevated","denied"],
+  "capabilities":["spawnsProcess","writesArbitraryPath","mutatesWorkingDirectory","configuresFutureProcessAuthority","touchesCredentials","ptyControl","agentControl","seedsSpawnTriggeringState","mutatesAgentConsumedContent","hostManagement","deletesEntity"],
+  "resetReasons":["cursor_pruned","epoch_changed","after_seq_gt_max","read_error","revoked","host_disabled"],
+  "errorCodes":["REMOTE_COMMAND_UNAVAILABLE","REMOTE_FORBIDDEN","REMOTE_UNAUTHORIZED","REMOTE_UNREACHABLE","REMOTE_VERSION_MISMATCH","REMOTE_TIMEOUT_UNKNOWN","REMOTE_REQUEST_IN_PROGRESS","REMOTE_REQUEST_ID_REUSED","REMOTE_INVALID_ARGUMENTS","REMOTE_INTERNAL_ERROR"]
+}

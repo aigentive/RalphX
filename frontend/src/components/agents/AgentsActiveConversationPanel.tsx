@@ -34,7 +34,7 @@ import type {
 } from "@/api/chat";
 import { chatApi } from "@/api/chat";
 import { manualRoleDefaultsApi } from "@/api/manual-role-defaults";
-import { artifactApi } from "@/api/artifact";
+import { artifactApi, RemotePlanIntentError } from "@/api/artifact";
 import {
   automationsApi,
   type Automation,
@@ -56,6 +56,7 @@ import type {
 } from "@/types/ask-user-question";
 import type { AgentRunCompletedPayload } from "@/types/events";
 import { Button } from "@/components/ui/button";
+import { RemoteHostOnlyNotice } from "@/components/remote/RemoteHostOnlyNotice";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   fallbackBranchBaseOptions,
@@ -70,8 +71,10 @@ import {
 } from "@/lib/codex-fast-mode";
 import { formatQueuedMessageExcerpt } from "@/lib/queuedMessageExcerpt";
 import { useAgentModels } from "@/hooks/useAgentModels";
+import { useAgentGate } from "@/hooks/useAgentGate";
 import { useConfirmation } from "@/hooks/useConfirmation";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
+import { useIsRemoteEnvironment } from "@/hooks/useActiveEnvironment";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
 import { useManagedTeamStatus } from "@/hooks/useManagedTeam";
 import {
@@ -861,11 +864,21 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   terminalArchivedReason,
   terminalUnavailableReason,
 }: AgentsActiveConversationPanelProps) {
+  const isRemoteEnvironment = useIsRemoteEnvironment();
   const resolvedConversationModeLocked = isConversationModeLocked(
     activeConversation,
     activeWorkspace,
   );
   const queryClient = useQueryClient();
+  // Switching a conversation's mode reaches `ensure_git_worktree` on the host, so remotely it
+  // travels as the WP5a spawn-free intent. The gate is resolved from the intent's presence on
+  // the facade: a host that predates it, or a device without `ui:agent`, gets a disabled picker
+  // carrying the reason instead of a control whose every click ends in a refusal.
+  const modeSwitchGate = useAgentGate("conversationModeSwitch");
+  const planApproveGate = useAgentGate("planApprove");
+  const planDirectImplementationGate = useAgentGate("planDirectImplementation");
+  const planTaskPipelineGate = useAgentGate("planTaskPipeline");
+  const conversationForkGate = useAgentGate("conversationFork");
   const ideationSettingsQuery = useIdeationSettings();
   const tasksEnabled =
     !ideationSettingsQuery.isLoading &&
@@ -1378,6 +1391,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     provider: selectableComposerRuntime.provider,
     providerOptions,
     isReady: providerSettingsReady,
+    isRemoteEnvironment,
   });
   const composerCodexFastModeAvailability = codexFastModeAvailabilityForProvider({
     provider: codexProviderSettings,
@@ -1687,7 +1701,10 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
         (!isFocusedChildChat ? selectedConversationId : null);
   const queuedMessages = useChatStore(queuedMessagesSelector);
   const executionHaltState = useUiStore((s) =>
-    getAgentQueueHaltState(s.executionStatus)
+    getAgentQueueHaltState({
+      ...s.executionStatus,
+      isKnown: s.executionStatusKnown,
+    })
   );
   const queuedInitialPrompt = queuedMessages[0]?.content ?? null;
   const emptyState = useMemo(
@@ -1929,7 +1946,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     queryFn: () =>
       chatApi.getAgentWorkspacePrReviewContext(activeWorkspace!.conversationId),
     enabled: Boolean(
-      !isFocusedChildChat &&
+      !isRemoteEnvironment &&
+        !isFocusedChildChat &&
         activeConversation.contextType === "project" &&
         activeWorkspace?.conversationId &&
         activeWorkspace.mode === "review_pr",
@@ -2036,7 +2054,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   });
 
   const handleApprovePlanFromQuestion = useCallback(async () => {
-    if (!planApprovalSessionId || !planApprovalArtifact || !canApproveComposerPlan) {
+    if (planApproveGate.gated || !planApprovalSessionId || !planApprovalArtifact || !canApproveComposerPlan) {
       return;
     }
     setIsApprovingPlan(true);
@@ -2063,18 +2081,31 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       toast.success("Plan approved");
     } catch (err) {
       console.error("Failed to approve plan:", err);
+      if (
+        err instanceof RemotePlanIntentError &&
+        err.errorCode === "REMOTE_PLAN_APPROVAL_PLAN_CHANGED"
+      ) {
+        await queryClient.invalidateQueries({
+          queryKey: ["agents", "session-plan", planApprovalSessionId],
+        });
+      }
       toast.error(err instanceof Error ? err.message : "Failed to approve plan");
     } finally {
       setIsApprovingPlan(false);
     }
   }, [
+    planApproveGate.gated,
     canApproveComposerPlan,
     planApprovalArtifact,
     planApprovalSessionId,
     queryClient,
   ]);
   const handleCreatePlanProposals = useCallback(() => {
-    if (!planApprovalSessionId || !canCreatePlanProposals) {
+    if (
+      planTaskPipelineGate.gated ||
+      !planApprovalSessionId ||
+      !canCreatePlanProposals
+    ) {
       return;
     }
     let workspaceActivationCompleted = activeWorkspace?.mode === "tasks";
@@ -2112,11 +2143,13 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     onConversationModeSwitched,
     onFocusIdeationSessionForConversation,
     planApprovalSessionId,
+    planTaskPipelineGate.gated,
     queryClient,
     confirmCreateProposals,
   ]);
   const handleImplementPlanDirectly = useCallback(() => {
     if (
+      planDirectImplementationGate.gated ||
       !planApprovalSessionId ||
       !activeProjectId ||
       !activeWorkspace?.conversationId ||
@@ -2174,6 +2207,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     canImplementPlanDirectly,
     onConversationModeSwitched,
     planApprovalSessionId,
+    planDirectImplementationGate.gated,
     queryClient,
     modelRegistry,
     confirmImplementDirectly,
@@ -2281,7 +2315,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
           icon: CheckCircle2,
           isPrimary: true,
           isPending: isApprovingPlan,
-          disabled: false,
+          disabled: planApproveGate.gated,
           onClick: () => {
             void handleApprovePlanFromQuestion();
           },
@@ -2314,7 +2348,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                 planComplexityQuery.data?.recommendedAction !==
                 "create_proposals"),
             isPending: isImplementingPlanDirectly,
-            disabled: isPlanRecommendationPending,
+            disabled:
+              isPlanRecommendationPending ||
+              planDirectImplementationGate.gated,
             onClick: () => {
               void handleImplementPlanDirectly();
             },
@@ -2330,7 +2366,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
             planComplexityQuery.data?.recommendedAction ===
             "create_proposals",
           isPending: isCreatingPlanProposals,
-          disabled: isPlanRecommendationPending,
+          disabled:
+            isPlanRecommendationPending || planTaskPipelineGate.gated,
           onClick: () => {
             void handleCreatePlanProposals();
           },
@@ -2364,6 +2401,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     isStartingPlanVerification,
     planApprovalArtifact,
     planApprovalSessionId,
+    planDirectImplementationGate.gated,
+    planTaskPipelineGate.gated,
     planComplexityQuery.data?.recommendedAction,
     tasksEnabled,
     planVerificationInProgress,
@@ -2482,13 +2521,14 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       onClick: () => {
         void handleApprovePlanFromQuestion();
       },
-      disabled: isApprovingPlan,
+      disabled: isApprovingPlan || planApproveGate.gated,
       isPending: isApprovingPlan,
     };
   }, [
     canApproveComposerPlan,
     handleApprovePlanFromQuestion,
     isApprovingPlan,
+    planApproveGate.gated,
   ]);
 
   const continuePlanModeConversation = useCallback(
@@ -2925,6 +2965,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                 followup: string,
                 options?: AgentComposerSendOptions,
               ) => {
+                if (conversationForkGate.gated) return;
                 const confirmed = await confirm({
                   title: "Fork session?",
                   description:
@@ -3018,13 +3059,20 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                   {!isFocusedChildChat &&
                     activeWorkspace?.mode === "review_pr" &&
                     activeWorkspace.conversationId && (
-                      <AgentWorkspacePrReviewCard
-                        conversationId={activeWorkspace.conversationId}
-                        context={reviewPrContext}
-                        isLoading={reviewPrContextQuery.isLoading}
-                        isFetching={reviewPrContextQuery.isFetching}
-                        error={reviewPrContextQuery.error}
-                      />
+                      isRemoteEnvironment ? (
+                        <RemoteHostOnlyNotice
+                          subject={`PR #${activeWorkspace.sourcePullRequest?.number ?? activeWorkspace.publicationPrNumber ?? "—"} review`}
+                          detail="Pull request review runs on the host and is read-only from this device."
+                        />
+                      ) : (
+                        <AgentWorkspacePrReviewCard
+                          conversationId={activeWorkspace.conversationId}
+                          context={reviewPrContext}
+                          isLoading={reviewPrContextQuery.isLoading}
+                          isFetching={reviewPrContextQuery.isFetching}
+                          error={reviewPrContextQuery.error}
+                        />
+                      )
                     )}
                   <AgentsComposerWorkspaceChangesCard
                     conversationId={selectedConversationId}
@@ -3047,12 +3095,19 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                     onPreloadPublishPane={onPreloadArtifacts}
                   />
                   {shouldShowPlanComposerCta && (
-                    <PlanComposerCtaRow
-                      hint={planComposerHint}
-                      actions={planComposerCtaActions}
-                      viewPlanAction={planComposerViewPlanAction}
-                      suppressDetails={!tasksEnabled && isPlanApproved}
-                    />
+                    <>
+                      {(planDirectImplementationGate.status === "unavailable" ||
+                        planTaskPipelineGate.status === "unavailable") &&
+                        isPlanApproved && (
+                          <RemoteHostOnlyNotice subject="Plan implementation continuations" />
+                        )}
+                      <PlanComposerCtaRow
+                        hint={planComposerHint}
+                        actions={planComposerCtaActions}
+                        viewPlanAction={planComposerViewPlanAction}
+                        suppressDetails={!tasksEnabled && isPlanApproved}
+                      />
+                    </>
                   )}
                   {shouldShowAutomationComposerCta && (
                     <PlanComposerCtaRow
@@ -3148,7 +3203,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                     {...(!isFocusedChildChat
                       ? {
                           onForkSession: () => runForkCommand(""),
-                          forkSessionDisabled: isForkingConversation,
+                          forkSessionDisabled: isForkingConversation || conversationForkGate.gated,
                         }
                       : {})}
                     placeholder={
@@ -3246,6 +3301,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                               Boolean(activeAutomationRunId) ||
                               composerProps.isSending ||
                               composerProps.agentStatus === "generating" ||
+                              modeSwitchGate.gated ||
                               switchingConversationModeId ===
                                 selectedConversationId,
                           },
@@ -3259,7 +3315,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                               id: "fork",
                               label: "/fork",
                               description: "Fork this agent conversation",
-                              disabled: isForkingConversation,
+                              disabled: isForkingConversation || conversationForkGate.gated,
                               onSelect: () => runForkCommand(""),
                             },
                           ]

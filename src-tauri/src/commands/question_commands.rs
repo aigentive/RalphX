@@ -485,3 +485,15 @@ pub async fn get_pending_questions(
     let pending = state.question_state.get_pending_info().await;
     Ok(pending)
 }
+
+// Tauri Read facade: remote clients consume this indirectly through the registered command surface.
+#[tauri::command]
+pub async fn list_pending_question_gates(
+    state: State<'_, AppState>,
+) -> Result<Vec<PendingQuestionInfo>, String> {
+    state
+        .question_state
+        .get_pending_info_strict()
+        .await
+        .map_err(|error| error.to_string())
+}

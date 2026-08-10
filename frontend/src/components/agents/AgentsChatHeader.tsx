@@ -32,6 +32,7 @@ import {
 import type { AgentConversationWorkspace, WorkspaceOpenTarget } from "@/api/chat";
 import * as chatApi from "@/api/chat";
 import { ChatSessionChips } from "@/components/Chat/ChatSessionChips";
+import { useIsRemoteEnvironment } from "@/hooks/useActiveEnvironment";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -48,6 +49,7 @@ import { formatBranchDisplay } from "@/lib/branch-utils";
 import { withAlpha } from "@/lib/theme-colors";
 import { cn } from "@/lib/utils";
 import { useConversationTicket } from "@/hooks/useTicketing";
+import { useAgentGate } from "@/hooks/useAgentGate";
 import { useChatStore } from "@/stores/chatStore";
 import type { AgentArtifactTab } from "@/stores/agentSessionStore";
 import type { ModelDisplay } from "@/types/chat-conversation";
@@ -320,6 +322,7 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
   showTitle = true,
   workspaceControl,
 }: AgentsChatHeaderProps) {
+  const isRemoteEnvironment = useIsRemoteEnvironment();
   const terminalTooltip =
     terminalUnavailableReason ??
     terminalArchivedReason ??
@@ -417,8 +420,9 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
   const isSending = useChatStore((state) =>
     conversationStoreKey ? state.isSending[conversationStoreKey] ?? false : false,
   );
+  const conversationTicketGate = useAgentGate("ticketingConversationRead");
   const conversationTicketQuery = useConversationTicket(conversation?.id, {
-    enabled: Boolean(conversation),
+    enabled: Boolean(conversation) && !conversationTicketGate.gated,
   });
   const linkedTicket = conversationTicketQuery.data ?? null;
   const isAgentActive = isSending || agentStatus === "generating";
@@ -587,6 +591,11 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
           </Tooltip>
         )}
 
+        {/* The built-in terminal is module-excluded from v1 remoting (2.6-a): it
+            drives a PTY on the machine running the app, so a remote client has
+            nothing to attach to. Hidden rather than disabled — there is no host
+            action that would turn it on. */}
+        {!isRemoteEnvironment && (
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
@@ -608,6 +617,7 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
             {terminalTooltip}
           </TooltipContent>
         </Tooltip>
+        )}
 
         {showWorkspaceOpenControl && onOpenWorkspaceTarget && (
           <AgentsWorkspaceOpenControl

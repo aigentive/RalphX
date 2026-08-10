@@ -15,6 +15,9 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { RemoteHostOnlyNotice } from "@/components/remote/RemoteHostOnlyNotice";
+import { useIsRemoteEnvironment } from "@/hooks/useActiveEnvironment";
+import { useAgentGate } from "@/hooks/useAgentGate";
 
 interface RecoveryPromptDialogProps {
   taskId?: string | undefined;
@@ -30,6 +33,9 @@ export function RecoveryPromptDialog({
   const setPromptSurface = useUiStore((s) => s.setRecoveryPromptSurface);
   const clearPrompt = useUiStore((s) => s.clearRecoveryPrompt);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const isRemoteEnvironment = useIsRemoteEnvironment();
+  const recoveryGate = useAgentGate("recoveryPromptResolve");
+  const showHostOnlyNotice = isRemoteEnvironment && recoveryGate.status === "unavailable";
 
   useEffect(() => {
     if (!prompt || !taskId || prompt.taskId !== taskId) return;
@@ -48,7 +54,10 @@ export function RecoveryPromptDialog({
       if (!prompt) return;
       setIsSubmitting(true);
       try {
-        await resolveRecoveryPrompt(prompt.taskId, action);
+        const applied = await resolveRecoveryPrompt(prompt.taskId, action);
+        if (!applied && isRemoteEnvironment) {
+          toast.info("Recovery was resolved on the host");
+        }
         clearPrompt();
       } catch {
         toast.error("Failed to apply recovery action");
@@ -56,7 +65,7 @@ export function RecoveryPromptDialog({
         setIsSubmitting(false);
       }
     },
-    [prompt, clearPrompt]
+    [prompt, clearPrompt, isRemoteEnvironment]
   );
 
   if (!prompt) {
@@ -77,22 +86,31 @@ export function RecoveryPromptDialog({
           <DialogTitle>Recovery required</DialogTitle>
           <DialogDescription>{prompt.reason}</DialogDescription>
         </DialogHeader>
+        {showHostOnlyNotice ? (
+          <RemoteHostOnlyNotice subject="Recovery actions" />
+        ) : null}
         <DialogFooter className="gap-2 sm:gap-2">
+          {showHostOnlyNotice ? (
+            <Button type="button" onClick={clearPrompt}>Dismiss</Button>
+          ) : (
+            <>
           <Button
             type="button"
             variant="secondary"
             onClick={() => handleAction(prompt.secondaryAction.id)}
-            disabled={isSubmitting}
+            disabled={isSubmitting || recoveryGate.status !== "enabled"}
           >
             {prompt.secondaryAction.label}
           </Button>
           <Button
             type="button"
             onClick={() => handleAction(prompt.primaryAction.id)}
-            disabled={isSubmitting}
+            disabled={isSubmitting || recoveryGate.status !== "enabled"}
           >
             {prompt.primaryAction.label}
           </Button>
+            </>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

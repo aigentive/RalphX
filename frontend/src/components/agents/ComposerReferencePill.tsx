@@ -16,6 +16,7 @@ export function ComposerReferencePill({
   contentTooltip,
   removeLabel,
   removeDisabled = false,
+  removeDisabledReason,
   onRemove,
 }: {
   testId: string;
@@ -26,6 +27,7 @@ export function ComposerReferencePill({
   contentTooltip?: string;
   removeLabel: string;
   removeDisabled?: boolean;
+  removeDisabledReason?: string;
   onRemove: () => void;
 }) {
   const content = (
@@ -89,7 +91,7 @@ export function ComposerReferencePill({
           </button>
         </TooltipTrigger>
         <TooltipContent side="top" className="text-xs">
-          {removeLabel}
+          {removeDisabledReason ?? removeLabel}
         </TooltipContent>
       </Tooltip>
     </span>

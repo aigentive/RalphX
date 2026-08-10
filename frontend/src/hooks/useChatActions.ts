@@ -11,8 +11,8 @@
 import { useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { useChatStore } from "@/stores/chatStore";
-import { chatApi, stopAgent } from "@/api/chat";
+import { selectActiveAgentRunId, useChatStore } from "@/stores/chatStore";
+import { chatApi, RemoteQueuedMessageSendError, stopAgent } from "@/api/chat";
 import { recoverTaskExecution } from "@/api/recovery";
 import {
   addOptimisticUserMessageToConversationCache,
@@ -27,6 +27,11 @@ import {
 } from "@/components/Chat/MessageReferences.parse";
 import { extractErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
+import {
+  getTransportEnvironmentId,
+  isRemoteEnvironmentId,
+} from "@/lib/remote/active-environment";
+import { remoteErrorBannerProps } from "@/lib/remote/agent-gate";
 import { isPersonaUnavailableError } from "@/lib/personaErrors";
 import { isMessageDeliveredNotPersistedError } from "@/lib/sendDeliveryErrors";
 import type { ContextType } from "@/types/chat-conversation";
@@ -113,11 +118,33 @@ export function useChatActions({
   const queryClient = useQueryClient();
   const queueMessage = useChatStore((s) => s.queueMessage);
   const deleteQueuedMessage = useChatStore((s) => s.deleteQueuedMessage);
+  const setQueuedMessages = useChatStore((s) => s.setQueuedMessages);
   const startEditingQueuedMessage = useChatStore((s) => s.startEditingQueuedMessage);
   const setActiveConversation = useChatStore((s) => s.setActiveConversation);
   const setAgentRunning = useChatStore((s) => s.setAgentRunning);
   const setSending = useChatStore((s) => s.setSending);
+  const activeAgentRunId = useChatStore(selectActiveAgentRunId(storeContextKey));
   const backendQueueContextId = queueContextId ?? contextId;
+
+  const hydrateRemoteQueue = useCallback(async () => {
+    const messages = await chatApi.listRemoteQueuedAgentMessages(
+      backendQueueContextId,
+    );
+    setQueuedMessages(
+      storeContextKey,
+      messages.map((message) => ({
+        id: message.id,
+        content: message.content,
+        createdAt: message.createdAt,
+        isEditing: message.isEditing,
+        source: "backend" as const,
+        attachmentIds: [...(message.attachmentIds ?? [])],
+        ...(message.composerSelectionSnapshot
+          ? { composerSelectionSnapshot: message.composerSelectionSnapshot }
+          : {}),
+      })),
+    );
+  }, [backendQueueContextId, setQueuedMessages, storeContextKey]);
 
   const reportSendFailure = useCallback((err: unknown) => {
     const message = extractErrorMessage(err, "The agent runtime could not start.");
@@ -457,7 +484,13 @@ export function useChatActions({
 
   // ── Stop Agent ───────────────────────────────────────────────────
   const handleStopAgent = useCallback(async () => {
-    // Always attempt immediate run cancellation
+    // Always attempt immediate run cancellation.
+    //
+    // A failed BRAKE is the one failure a user must never miss: they asked for the agent to
+    // stop, the host refused or could not, and the run is still burning tokens. This used to
+    // `logger.warn` and return, which made a remote `REMOTE_COMMAND_UNAVAILABLE` — and every
+    // other stop failure — completely invisible. It surfaces through the same toast channel
+    // the rest of this hook's chat failures use.
     try {
       await stopAgent(contextType, backendQueueContextId);
     } catch (err) {
@@ -466,6 +499,13 @@ export function useChatActions({
         contextId,
         queueContextId: backendQueueContextId,
         error: err,
+      });
+      toast.error("Couldn't stop the agent", {
+        description: extractErrorMessage(
+          err,
+          "The agent is still running. Try again, or stop it on the host.",
+        ),
+        duration: 10000,
       });
     }
 
@@ -479,10 +519,50 @@ export function useChatActions({
     }
   }, [contextType, contextId, backendQueueContextId, selectedTaskId]);
 
+  /**
+   * Surfaces a failed queue mutation. Typed transport codes reuse the gate's own copy;
+   * everything else carries the host's message. Never invents a new "not available" phrasing.
+   */
+  const reportQueueMutationFailure = useCallback(
+    (title: string, err: unknown) => {
+      const banner = remoteErrorBannerProps(err);
+      toast.error(banner?.title ?? title, {
+        description:
+          banner?.body ??
+          extractErrorMessage(err, "The queued message is unchanged. Try again."),
+        duration: 10000,
+      });
+    },
+    []
+  );
+
   // ── Delete Queued Message ────────────────────────────────────────
   const handleDeleteQueuedMessage = useCallback(
     async (messageId: string) => {
-      // Delete from local store immediately (optimistic)
+      // FAIL CLOSED under a remote environment: prove the host dropped the turn BEFORE the
+      // chip disappears. The optimistic order below deletes locally and swallows the host
+      // failure, which on a paired device meant a turn the user watched vanish was still
+      // queued on the host and still delivered to the agent. Mirrors
+      // `handleSendQueuedMessageNow`, which already keeps local state truthful on failure.
+      if (isRemoteEnvironmentId(getTransportEnvironmentId())) {
+        try {
+          const deleted = await chatApi.cancelRemoteQueuedAgentMessage(
+            backendQueueContextId,
+            messageId,
+          );
+          deleteQueuedMessage(storeContextKey, messageId);
+          if (!deleted) {
+            toast.warning("Message already sent");
+          }
+        } catch (err) {
+          // The chip stays: it is describing a turn that really is still queued.
+          reportQueueMutationFailure("Couldn't delete the queued message", err);
+          return;
+        }
+        return;
+      }
+
+      // Local: unchanged. Delete from local store immediately (optimistic)
       deleteQueuedMessage(storeContextKey, messageId);
 
       // Delete from backend using the same ID
@@ -492,7 +572,13 @@ export function useChatActions({
         // Silently ignore — local state already updated
       }
     },
-    [deleteQueuedMessage, storeContextKey, contextType, backendQueueContextId]
+    [
+      deleteQueuedMessage,
+      storeContextKey,
+      contextType,
+      backendQueueContextId,
+      reportQueueMutationFailure,
+    ]
   );
 
   // ── Send Queued Message Now ─────────────────────────────────────
@@ -503,6 +589,52 @@ export function useChatActions({
       attachmentIds?: string[],
       selectionSnapshot?: ComposerSelectionSnapshot,
     ) => {
+      if (isRemoteEnvironmentId(getTransportEnvironmentId())) {
+        deleteQueuedMessage(storeContextKey, messageId);
+        setSending(storeContextKey, true);
+        try {
+          const outcome = await chatApi.sendRemoteQueuedAgentMessageNow(
+            backendQueueContextId,
+            messageId,
+            activeAgentRunId,
+          );
+          if (outcome.status === "alreadySent") {
+            toast.warning("Message already sent");
+          } else {
+            setAgentRunning(storeContextKey, true);
+          }
+          if (outcome.rehydrateQueue) {
+            await hydrateRemoteQueue();
+          }
+        } catch (err) {
+          const hostWillRehydrate =
+            err instanceof RemoteQueuedMessageSendError &&
+            err.restoredToFront &&
+            err.rehydrateQueue;
+          if (
+            err instanceof RemoteQueuedMessageSendError &&
+            err.errorCode === "REMOTE_QUEUE_SEND_RUN_CHANGED"
+          ) {
+            toast.error("The agent moved on — refresh");
+          } else {
+            reportQueueMutationFailure("Couldn't send the queued message", err);
+          }
+          if (hostWillRehydrate) {
+            await hydrateRemoteQueue();
+          } else if (content) {
+            queueAcceptedMessage(
+              content,
+              messageId,
+              attachmentIds,
+              selectionSnapshot,
+            );
+          }
+        } finally {
+          setSending(storeContextKey, false);
+        }
+        return;
+      }
+
       deleteQueuedMessage(storeContextKey, messageId);
       setSending(storeContextKey, true);
 
@@ -541,6 +673,8 @@ export function useChatActions({
     },
     [
       backendQueueContextId,
+      activeAgentRunId,
+      hydrateRemoteQueue,
       contextType,
       deleteQueuedMessage,
       queueAcceptedMessage,
@@ -559,15 +693,38 @@ export function useChatActions({
       attachmentIds?: string[],
       selectionSnapshot?: ComposerSelectionSnapshot,
     ) => {
-      // Delete old message from backend
-      try {
-        await chatApi.deleteQueuedAgentMessage(contextType, backendQueueContextId, messageId);
-      } catch {
-        // Silently ignore
-      }
+      // The edit is delete-then-send, and the delete is the step that decides it. Under a
+      // remote environment a swallowed delete failure was a DOUBLE TURN: the original stayed
+      // queued on the host, the local chip was removed anyway, and the rewritten content was
+      // sent unconditionally — so the agent received both. Abort the whole edit instead, and
+      // leave the queue exactly as the host still has it.
+      if (isRemoteEnvironmentId(getTransportEnvironmentId())) {
+        try {
+          const deleted = await chatApi.cancelRemoteQueuedAgentMessage(
+            backendQueueContextId,
+            messageId,
+          );
+          if (!deleted) {
+            deleteQueuedMessage(storeContextKey, messageId);
+            toast.warning("Message already sent");
+            return;
+          }
+        } catch (err) {
+          reportQueueMutationFailure("Couldn't edit the queued message", err);
+          return;
+        }
+        deleteQueuedMessage(storeContextKey, messageId);
+      } else {
+        // Local: unchanged. Delete old message from backend
+        try {
+          await chatApi.deleteQueuedAgentMessage(contextType, backendQueueContextId, messageId);
+        } catch {
+          // Silently ignore
+        }
 
-      // Delete from local store
-      deleteQueuedMessage(storeContextKey, messageId);
+        // Delete from local store
+        deleteQueuedMessage(storeContextKey, messageId);
+      }
 
       // Send the edited content via sendAgentMessage (delete-before-send pattern)
       setSending(storeContextKey, true);
@@ -605,6 +762,7 @@ export function useChatActions({
       setSending,
       sendOptions,
       reportSendFailure,
+      reportQueueMutationFailure,
     ]
   );
 

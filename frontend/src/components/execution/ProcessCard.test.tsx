@@ -2,13 +2,29 @@
  * ProcessCard component tests
  */
 
+import { createElement, type ReactElement } from "react";
+
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, act } from "@testing-library/react";
+import {
+  render as rtlRender,
+  screen,
+  fireEvent,
+  act,
+} from "@testing-library/react";
 import { ProcessCard } from "./ProcessCard";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import type { RunningProcess } from "@/api/running-processes";
 
+// The pause control is an icon-only button, so it carries the app tooltip (icon-only
+// buttons rule). `Tooltip` throws without a provider; production gets one from App.tsx.
+function render(ui: ReactElement): ReturnType<typeof rtlRender> {
+  return rtlRender(createElement(TooltipProvider, null, ui));
+}
+
 // Mock process data helper
-function createMockProcess(overrides?: Partial<RunningProcess>): RunningProcess {
+function createMockProcess(
+  overrides?: Partial<RunningProcess>,
+): RunningProcess {
   return {
     taskId: "task-123",
     title: "Test Task",
@@ -59,11 +75,7 @@ describe("ProcessCard", () => {
     it("renders with correct test id", () => {
       const process = createMockProcess();
       render(
-        <ProcessCard
-          process={process}
-          onPause={vi.fn()}
-          onStop={vi.fn()}
-        />
+        <ProcessCard process={process} onPause={vi.fn()} onStop={vi.fn()} />,
       );
       expect(screen.getByTestId("process-card-task-123")).toBeInTheDocument();
     });
@@ -71,11 +83,7 @@ describe("ProcessCard", () => {
     it("displays task title", () => {
       const process = createMockProcess({ title: "Implement auth system" });
       render(
-        <ProcessCard
-          process={process}
-          onPause={vi.fn()}
-          onStop={vi.fn()}
-        />
+        <ProcessCard process={process} onPause={vi.fn()} onStop={vi.fn()} />,
       );
       expect(screen.getByText("Implement auth system")).toBeInTheDocument();
     });
@@ -83,11 +91,7 @@ describe("ProcessCard", () => {
     it("displays status badge for executing status", () => {
       const process = createMockProcess({ internalStatus: "executing" });
       render(
-        <ProcessCard
-          process={process}
-          onPause={vi.fn()}
-          onStop={vi.fn()}
-        />
+        <ProcessCard process={process} onPause={vi.fn()} onStop={vi.fn()} />,
       );
       expect(screen.getByText("Executing")).toBeInTheDocument();
     });
@@ -95,11 +99,7 @@ describe("ProcessCard", () => {
     it("displays status badge for re_executing status", () => {
       const process = createMockProcess({ internalStatus: "re_executing" });
       render(
-        <ProcessCard
-          process={process}
-          onPause={vi.fn()}
-          onStop={vi.fn()}
-        />
+        <ProcessCard process={process} onPause={vi.fn()} onStop={vi.fn()} />,
       );
       expect(screen.getByText("Re-executing")).toBeInTheDocument();
     });
@@ -107,11 +107,7 @@ describe("ProcessCard", () => {
     it("displays status badge for reviewing status", () => {
       const process = createMockProcess({ internalStatus: "reviewing" });
       render(
-        <ProcessCard
-          process={process}
-          onPause={vi.fn()}
-          onStop={vi.fn()}
-        />
+        <ProcessCard process={process} onPause={vi.fn()} onStop={vi.fn()} />,
       );
       expect(screen.getByText("Reviewing")).toBeInTheDocument();
     });
@@ -148,11 +144,7 @@ describe("ProcessCard", () => {
         },
       });
       render(
-        <ProcessCard
-          process={process}
-          onPause={vi.fn()}
-          onStop={vi.fn()}
-        />
+        <ProcessCard process={process} onPause={vi.fn()} onStop={vi.fn()} />,
       );
       // shows completed/total regardless of which step is active
       expect(screen.getByText(/2\/7 steps/)).toBeInTheDocument();
@@ -174,11 +166,7 @@ describe("ProcessCard", () => {
         },
       });
       render(
-        <ProcessCard
-          process={process}
-          onPause={vi.fn()}
-          onStop={vi.fn()}
-        />
+        <ProcessCard process={process} onPause={vi.fn()} onStop={vi.fn()} />,
       );
       expect(screen.getByText(/5\/7 steps/)).toBeInTheDocument();
     });
@@ -199,11 +187,7 @@ describe("ProcessCard", () => {
         },
       });
       render(
-        <ProcessCard
-          process={process}
-          onPause={vi.fn()}
-          onStop={vi.fn()}
-        />
+        <ProcessCard process={process} onPause={vi.fn()} onStop={vi.fn()} />,
       );
       expect(screen.getByText(/1\/3 steps/)).toBeInTheDocument();
     });
@@ -211,11 +195,7 @@ describe("ProcessCard", () => {
     it("handles process without step progress", () => {
       const process = createMockProcess({ stepProgress: null });
       render(
-        <ProcessCard
-          process={process}
-          onPause={vi.fn()}
-          onStop={vi.fn()}
-        />
+        <ProcessCard process={process} onPause={vi.fn()} onStop={vi.fn()} />,
       );
       // Should not display step progress
       expect(screen.queryByText(/Step/)).not.toBeInTheDocument();
@@ -226,11 +206,7 @@ describe("ProcessCard", () => {
     it("displays initial elapsed time correctly", () => {
       const process = createMockProcess({ elapsedSeconds: 134 });
       render(
-        <ProcessCard
-          process={process}
-          onPause={vi.fn()}
-          onStop={vi.fn()}
-        />
+        <ProcessCard process={process} onPause={vi.fn()} onStop={vi.fn()} />,
       );
       // 134 seconds = 2m 14s
       expect(screen.getByText(/2m 14s/)).toBeInTheDocument();
@@ -239,11 +215,7 @@ describe("ProcessCard", () => {
     it("updates elapsed time every second", async () => {
       const process = createMockProcess({ elapsedSeconds: 60 });
       render(
-        <ProcessCard
-          process={process}
-          onPause={vi.fn()}
-          onStop={vi.fn()}
-        />
+        <ProcessCard process={process} onPause={vi.fn()} onStop={vi.fn()} />,
       );
 
       // Initial: 1m 0s
@@ -265,11 +237,7 @@ describe("ProcessCard", () => {
     it("formats elapsed time under 1 minute as seconds only", () => {
       const process = createMockProcess({ elapsedSeconds: 45 });
       render(
-        <ProcessCard
-          process={process}
-          onPause={vi.fn()}
-          onStop={vi.fn()}
-        />
+        <ProcessCard process={process} onPause={vi.fn()} onStop={vi.fn()} />,
       );
       expect(screen.getByText(/45s/)).toBeInTheDocument();
     });
@@ -277,11 +245,7 @@ describe("ProcessCard", () => {
     it("handles null elapsed time", () => {
       const process = createMockProcess({ elapsedSeconds: null });
       render(
-        <ProcessCard
-          process={process}
-          onPause={vi.fn()}
-          onStop={vi.fn()}
-        />
+        <ProcessCard process={process} onPause={vi.fn()} onStop={vi.fn()} />,
       );
       expect(screen.getByText(/—/)).toBeInTheDocument();
     });
@@ -291,11 +255,7 @@ describe("ProcessCard", () => {
     it("displays scheduler origin badge", () => {
       const process = createMockProcess({ triggerOrigin: "scheduler" });
       render(
-        <ProcessCard
-          process={process}
-          onPause={vi.fn()}
-          onStop={vi.fn()}
-        />
+        <ProcessCard process={process} onPause={vi.fn()} onStop={vi.fn()} />,
       );
       expect(screen.getByText("Scheduled")).toBeInTheDocument();
     });
@@ -303,11 +263,7 @@ describe("ProcessCard", () => {
     it("displays revision origin badge", () => {
       const process = createMockProcess({ triggerOrigin: "revision" });
       render(
-        <ProcessCard
-          process={process}
-          onPause={vi.fn()}
-          onStop={vi.fn()}
-        />
+        <ProcessCard process={process} onPause={vi.fn()} onStop={vi.fn()} />,
       );
       expect(screen.getByText("Revision")).toBeInTheDocument();
     });
@@ -315,11 +271,7 @@ describe("ProcessCard", () => {
     it("displays recovery origin badge", () => {
       const process = createMockProcess({ triggerOrigin: "recovery" });
       render(
-        <ProcessCard
-          process={process}
-          onPause={vi.fn()}
-          onStop={vi.fn()}
-        />
+        <ProcessCard process={process} onPause={vi.fn()} onStop={vi.fn()} />,
       );
       expect(screen.getByText("Recovered")).toBeInTheDocument();
     });
@@ -327,11 +279,7 @@ describe("ProcessCard", () => {
     it("displays retry origin badge", () => {
       const process = createMockProcess({ triggerOrigin: "retry" });
       render(
-        <ProcessCard
-          process={process}
-          onPause={vi.fn()}
-          onStop={vi.fn()}
-        />
+        <ProcessCard process={process} onPause={vi.fn()} onStop={vi.fn()} />,
       );
       expect(screen.getByText("Retried")).toBeInTheDocument();
     });
@@ -339,11 +287,7 @@ describe("ProcessCard", () => {
     it("displays QA origin badge", () => {
       const process = createMockProcess({ triggerOrigin: "qa" });
       render(
-        <ProcessCard
-          process={process}
-          onPause={vi.fn()}
-          onStop={vi.fn()}
-        />
+        <ProcessCard process={process} onPause={vi.fn()} onStop={vi.fn()} />,
       );
       expect(screen.getByText("QA Cycle")).toBeInTheDocument();
     });
@@ -351,11 +295,7 @@ describe("ProcessCard", () => {
     it("does not display origin badge when null", () => {
       const process = createMockProcess({ triggerOrigin: null });
       render(
-        <ProcessCard
-          process={process}
-          onPause={vi.fn()}
-          onStop={vi.fn()}
-        />
+        <ProcessCard process={process} onPause={vi.fn()} onStop={vi.fn()} />,
       );
       expect(screen.queryByText("Scheduled")).not.toBeInTheDocument();
     });
@@ -363,13 +303,11 @@ describe("ProcessCard", () => {
 
   describe("branch name display", () => {
     it("displays branch name when provided", () => {
-      const process = createMockProcess({ taskBranch: "ralphx/app/task-abc123" });
+      const process = createMockProcess({
+        taskBranch: "ralphx/app/task-abc123",
+      });
       render(
-        <ProcessCard
-          process={process}
-          onPause={vi.fn()}
-          onStop={vi.fn()}
-        />
+        <ProcessCard process={process} onPause={vi.fn()} onStop={vi.fn()} />,
       );
       expect(screen.getByText("ralphx/app/task-abc123")).toBeInTheDocument();
     });
@@ -377,11 +315,7 @@ describe("ProcessCard", () => {
     it("does not display branch name when null", () => {
       const process = createMockProcess({ taskBranch: null });
       render(
-        <ProcessCard
-          process={process}
-          onPause={vi.fn()}
-          onStop={vi.fn()}
-        />
+        <ProcessCard process={process} onPause={vi.fn()} onStop={vi.fn()} />,
       );
       expect(screen.queryByText(/ralphx/)).not.toBeInTheDocument();
     });
@@ -391,11 +325,7 @@ describe("ProcessCard", () => {
     it("renders pause button with correct test id", () => {
       const process = createMockProcess();
       render(
-        <ProcessCard
-          process={process}
-          onPause={vi.fn()}
-          onStop={vi.fn()}
-        />
+        <ProcessCard process={process} onPause={vi.fn()} onStop={vi.fn()} />,
       );
       expect(screen.getByTestId("pause-button-task-123")).toBeInTheDocument();
     });
@@ -403,11 +333,7 @@ describe("ProcessCard", () => {
     it("renders stop button with correct test id", () => {
       const process = createMockProcess();
       render(
-        <ProcessCard
-          process={process}
-          onPause={vi.fn()}
-          onStop={vi.fn()}
-        />
+        <ProcessCard process={process} onPause={vi.fn()} onStop={vi.fn()} />,
       );
       expect(screen.getByTestId("stop-button-task-123")).toBeInTheDocument();
     });
@@ -416,11 +342,7 @@ describe("ProcessCard", () => {
       const onPause = vi.fn();
       const process = createMockProcess({ taskId: "task-abc" });
       render(
-        <ProcessCard
-          process={process}
-          onPause={onPause}
-          onStop={vi.fn()}
-        />
+        <ProcessCard process={process} onPause={onPause} onStop={vi.fn()} />,
       );
 
       fireEvent.click(screen.getByTestId("pause-button-task-abc"));
@@ -432,11 +354,7 @@ describe("ProcessCard", () => {
       const onStop = vi.fn();
       const process = createMockProcess({ taskId: "task-xyz" });
       render(
-        <ProcessCard
-          process={process}
-          onPause={vi.fn()}
-          onStop={onStop}
-        />
+        <ProcessCard process={process} onPause={vi.fn()} onStop={onStop} />,
       );
 
       fireEvent.click(screen.getByTestId("stop-button-task-xyz"));
@@ -452,7 +370,7 @@ describe("ProcessCard", () => {
           onPause={vi.fn()}
           onStop={vi.fn()}
           isLoading
-        />
+        />,
       );
 
       const pauseButton = screen.getByTestId("pause-button-task-123");
@@ -470,7 +388,7 @@ describe("ProcessCard", () => {
           onPause={vi.fn()}
           onStop={vi.fn()}
           isLoading={false}
-        />
+        />,
       );
 
       const pauseButton = screen.getByTestId("pause-button-task-123");
@@ -484,14 +402,17 @@ describe("ProcessCard", () => {
   describe("click-to-navigate", () => {
     it("calls onNavigate with process.taskId when card row is clicked", () => {
       const onNavigate = vi.fn();
-      const process = createMockProcess({ taskId: "task-nav-123", title: "Navigate to me" });
+      const process = createMockProcess({
+        taskId: "task-nav-123",
+        title: "Navigate to me",
+      });
       render(
         <ProcessCard
           process={process}
           onPause={vi.fn()}
           onStop={vi.fn()}
           onNavigate={onNavigate}
-        />
+        />,
       );
 
       fireEvent.click(screen.getByTestId("process-card-task-nav-123"));
@@ -503,11 +424,7 @@ describe("ProcessCard", () => {
     it("title is rendered as a span element", () => {
       const process = createMockProcess({ title: "My Task" });
       render(
-        <ProcessCard
-          process={process}
-          onPause={vi.fn()}
-          onStop={vi.fn()}
-        />
+        <ProcessCard process={process} onPause={vi.fn()} onStop={vi.fn()} />,
       );
 
       const titleEl = screen.getByText("My Task");
@@ -523,7 +440,7 @@ describe("ProcessCard", () => {
           onPause={vi.fn()}
           onStop={vi.fn()}
           onNavigate={onNavigate}
-        />
+        />,
       );
 
       fireEvent.click(screen.getByTestId("pause-button-task-sp-pause"));
@@ -539,7 +456,7 @@ describe("ProcessCard", () => {
           onPause={vi.fn()}
           onStop={vi.fn()}
           onNavigate={onNavigate}
-        />
+        />,
       );
 
       fireEvent.click(screen.getByTestId("stop-button-task-sp-stop"));

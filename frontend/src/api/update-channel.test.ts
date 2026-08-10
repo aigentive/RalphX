@@ -1,7 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { updateChannelApi } from "./update-channel";
+import { invokeClientLocal } from "@/lib/remote/client-local-invoke";
+import { getClientUpdateChannel, updateChannelApi } from "./update-channel";
+
+vi.mock("@/lib/remote/client-local-invoke", () => ({ invokeClientLocal: vi.fn() }));
 
 describe("updateChannelApi", () => {
   beforeEach(() => {
@@ -13,6 +16,13 @@ describe("updateChannelApi", () => {
 
     await expect(updateChannelApi.get()).resolves.toBe("nightly");
     expect(invoke).toHaveBeenCalledWith("get_update_channel", {});
+  });
+
+  it("loads the client-owned channel through the explicit local primitive", async () => {
+    vi.mocked(invokeClientLocal).mockResolvedValue("nightly");
+    await expect(getClientUpdateChannel()).resolves.toBe("nightly");
+    expect(invokeClientLocal).toHaveBeenCalledWith("get_update_channel", {});
+    expect(invoke).not.toHaveBeenCalled();
   });
 
   it("saves a selected channel with the camel-case Tauri argument", async () => {

@@ -38,6 +38,7 @@ use crate::application::GranolaIntegrationService;
 use crate::application::LinearIntegrationService;
 use crate::application::PermissionState;
 use crate::application::QuestionState;
+use crate::application::RemoteEnvironmentService;
 use crate::application::ResumeValidator;
 use crate::application::TaskSchedulerService;
 use crate::application::TaskTransitionService;
@@ -71,16 +72,23 @@ use crate::domain::repositories::{
     DelegatedSessionRepository, DelegationParkRepository, ExecutionPlanRepository,
     ExecutionSettingsRepository, ExternalEventsRepository, GlobalExecutionSettingsRepository,
     IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
-    IdeationSettingsRepository, ManualRoleDefaultRepository, McpPolicyRepository,
-    MemoryArchiveRepository, MemoryEntryRepository, MemoryEventRepository, MethodologyRepository,
-    NotificationRepository, NotificationSettingsRepository, OrphanWorktreeCleanupMarkerRepository,
-    PersonaRepository, PlanArtifactApprovalRepository, PlanBranchRepository,
-    PlanSelectionStatsRepository, ProcessRepository, ProjectRepository,
-    ProposalDependencyRepository, QueuedMessageRepository, ReviewRepository,
-    ReviewSettingsRepository, SessionLinkRepository, TaskDependencyRepository,
-    TaskProposalRepository, TaskQARepository, TaskRepository, TaskStepRepository,
-    TicketCanonicalBranchRepository, UiFeatureFlagOverridesRepository, ValidationRunRepository,
-    WebhookRegistrationRepository, WorkflowRepository, WorkspaceReviewRuntimeSettingsRepository,
+    IdeationSettingsRepository, ManualRoleDefaultRepository, McpCatalogSnapshotRepository,
+    McpPolicyRepository, MemoryArchiveRepository, MemoryEntryRepository, MemoryEventRepository,
+    MethodologyRepository, NotificationRepository, NotificationSettingsRepository,
+    OrphanWorktreeCleanupMarkerRepository, PersonaRepository, PlanArtifactApprovalRepository,
+    PlanBranchRepository, PlanSelectionStatsRepository, ProcessRepository, ProjectRepository,
+    ProjectRepositoryCapabilityRepository, ProposalDependencyRepository, QueuedMessageRepository,
+    RemoteAgentStopRequestRepository, RemoteAutomationDraftRequestRepository,
+    RemoteAutomationRunRequestRepository, RemoteConversationLifecycleRequestRepository,
+    RemoteConversationMessageRequestRepository, RemoteConversationModeSwitchRequestRepository,
+    RemoteConversationStartRequestRepository, RemoteExecutionResumeRequestRepository,
+    RemoteFinalizeDecisionRequestRepository, RemotePlanApprovalRequestRepository,
+    RemotePlanEditRequestRepository, RemoteQueuedSendRequestRepository,
+    RemoteTaskActionRequestRepository, ReviewRepository, ReviewSettingsRepository,
+    SessionLinkRepository, TaskDependencyRepository, TaskProposalRepository, TaskQARepository,
+    TaskRepository, TaskStepRepository, TicketCanonicalBranchRepository,
+    UiFeatureFlagOverridesRepository, ValidationRunRepository, WebhookRegistrationRepository,
+    WorkflowRepository, WorkspaceReviewRuntimeSettingsRepository,
 };
 use crate::domain::services::{
     GithubServiceTrait, MemoryRunningAgentRegistry, MessageQueue, RunningAgentRegistry,
@@ -106,16 +114,24 @@ use crate::infrastructure::memory::{
     MemoryGranolaIntegrationSettingsRepository, MemoryIdeationEffortSettingsRepository,
     MemoryIdeationModelSettingsRepository, MemoryIdeationSessionRepository,
     MemoryIdeationSettingsRepository, MemoryLinearIntegrationSettingsRepository,
-    MemoryManualRoleDefaultRepository, MemoryMcpPolicyRepository, MemoryMethodologyRepository,
-    MemoryNotificationRepository, MemoryNotificationSettingsRepository,
-    MemoryOrphanWorktreeCleanupMarkerRepository, MemoryPermissionRepository,
-    MemoryPersonaRepository, MemoryPlanArtifactApprovalRepository, MemoryPlanBranchRepository,
-    MemoryPlanSelectionStatsRepository, MemoryProcessRepository, MemoryProjectRepository,
+    MemoryManualRoleDefaultRepository, MemoryMcpCatalogSnapshotRepository,
+    MemoryMcpPolicyRepository, MemoryMethodologyRepository, MemoryNotificationRepository,
+    MemoryNotificationSettingsRepository, MemoryOrphanWorktreeCleanupMarkerRepository,
+    MemoryPermissionRepository, MemoryPersonaRepository, MemoryPlanArtifactApprovalRepository,
+    MemoryPlanBranchRepository, MemoryPlanSelectionStatsRepository, MemoryProcessRepository,
+    MemoryProjectRepository, MemoryProjectRepositoryCapabilityRepository,
     MemoryProposalDependencyRepository, MemoryQuestionRepository, MemoryQueuedMessageRepository,
-    MemoryReviewIssueRepository, MemoryReviewRepository, MemoryReviewSettingsRepository,
-    MemorySecretStore, MemorySessionLinkRepository, MemoryTaskDependencyRepository,
-    MemoryTaskProposalRepository, MemoryTaskQARepository, MemoryTaskRepository,
-    MemoryTaskStepRepository, MemoryTicketCanonicalBranchRepository,
+    MemoryRemoteAgentStopRequestRepository, MemoryRemoteAutomationDraftRequestRepository,
+    MemoryRemoteAutomationRunRequestRepository, MemoryRemoteConversationLifecycleRequestRepository,
+    MemoryRemoteConversationMessageRequestRepository,
+    MemoryRemoteConversationModeSwitchRequestRepository,
+    MemoryRemoteConversationStartRequestRepository, MemoryRemoteExecutionResumeRequestRepository,
+    MemoryRemoteFinalizeDecisionRequestRepository, MemoryRemotePlanApprovalRequestRepository,
+    MemoryRemotePlanEditRequestRepository, MemoryRemoteQueuedSendRequestRepository,
+    MemoryRemoteTaskActionRequestRepository, MemoryReviewIssueRepository, MemoryReviewRepository,
+    MemoryReviewSettingsRepository, MemorySecretStore, MemorySessionLinkRepository,
+    MemoryTaskDependencyRepository, MemoryTaskProposalRepository, MemoryTaskQARepository,
+    MemoryTaskRepository, MemoryTaskStepRepository, MemoryTicketCanonicalBranchRepository,
     MemoryTicketingStatusCatalogRepository, MemoryUiFeatureFlagOverridesRepository,
     MemoryValidationRunRepository, MemoryWebhookRegistrationRepository, MemoryWorkflowRepository,
     MemoryWorkspaceReviewRuntimeSettingsRepository,
@@ -143,13 +159,22 @@ use crate::infrastructure::sqlite::{
     SqliteIdeationEffortSettingsRepository, SqliteIdeationModelSettingsRepository,
     SqliteIdeationSessionRepository, SqliteIdeationSettingsRepository,
     SqliteLinearIntegrationSettingsRepository, SqliteManualRoleDefaultRepository,
-    SqliteMcpPolicyRepository, SqliteMemoryArchiveRepository, SqliteMemoryEntryRepository,
-    SqliteMemoryEventRepository, SqliteMethodologyRepository, SqliteNotificationRepository,
-    SqliteNotificationSettingsRepository, SqliteOrphanWorktreeCleanupMarkerRepository,
-    SqlitePermissionRepository, SqlitePersonaRepository, SqlitePlanArtifactApprovalRepository,
-    SqlitePlanBranchRepository, SqlitePlanSelectionStatsRepository, SqliteProcessRepository,
-    SqliteProjectRepository, SqliteProposalDependencyRepository, SqliteQuestionRepository,
-    SqliteQueuedMessageRepository, SqliteReviewIssueRepository, SqliteReviewRepository,
+    SqliteMcpCatalogSnapshotRepository, SqliteMcpPolicyRepository, SqliteMemoryArchiveRepository,
+    SqliteMemoryEntryRepository, SqliteMemoryEventRepository, SqliteMethodologyRepository,
+    SqliteNotificationRepository, SqliteNotificationSettingsRepository,
+    SqliteOrphanWorktreeCleanupMarkerRepository, SqlitePermissionRepository,
+    SqlitePersonaRepository, SqlitePlanArtifactApprovalRepository, SqlitePlanBranchRepository,
+    SqlitePlanSelectionStatsRepository, SqliteProcessRepository, SqliteProjectRepository,
+    SqliteProjectRepositoryCapabilityRepository, SqliteProposalDependencyRepository,
+    SqliteQuestionRepository, SqliteQueuedMessageRepository,
+    SqliteRemoteAgentStopRequestRepository, SqliteRemoteAutomationDraftRequestRepository,
+    SqliteRemoteAutomationRunRequestRepository, SqliteRemoteConversationLifecycleRequestRepository,
+    SqliteRemoteConversationMessageRequestRepository,
+    SqliteRemoteConversationModeSwitchRequestRepository,
+    SqliteRemoteConversationStartRequestRepository, SqliteRemoteExecutionResumeRequestRepository,
+    SqliteRemoteFinalizeDecisionRequestRepository, SqliteRemotePlanApprovalRequestRepository,
+    SqliteRemotePlanEditRequestRepository, SqliteRemoteQueuedSendRequestRepository,
+    SqliteRemoteTaskActionRequestRepository, SqliteReviewIssueRepository, SqliteReviewRepository,
     SqliteReviewSettingsRepository, SqliteRunningAgentRegistry, SqliteSessionLinkRepository,
     SqliteTaskDependencyRepository, SqliteTaskProposalRepository, SqliteTaskQARepository,
     SqliteTaskRepository, SqliteTaskStepRepository, SqliteTicketCanonicalBranchRepository,
@@ -199,8 +224,12 @@ pub struct AppState {
     pub task_step_repo: Arc<dyn TaskStepRepository>,
     /// Project repository (SQLite in production, in-memory for tests)
     pub project_repo: Arc<dyn ProjectRepository>,
+    pub project_repository_capability_repo: Arc<dyn ProjectRepositoryCapabilityRepository>,
     /// API key repository for external API authentication
     pub api_key_repo: Arc<dyn ApiKeyRepository>,
+    /// Client-side remote environment registry, pairing, reconciler, and the
+    /// active-environment authority for the Rust proxy surface (PR 2.1).
+    pub remote_environment_service: Arc<RemoteEnvironmentService>,
     /// Native Atlassian/Jira/Confluence integration service.
     pub atlassian_integration_service: Arc<AtlassianIntegrationService>,
     /// Native Linear integration service.
@@ -269,6 +298,8 @@ pub struct AppState {
     pub manual_role_default_repo: Arc<dyn ManualRoleDefaultRepository>,
     /// Provider-native MCP deny/override policy at global and project scopes.
     pub mcp_policy_repo: Arc<dyn McpPolicyRepository>,
+    /// Last successful host-local MCP catalog build by project scope and provider.
+    pub mcp_catalog_snapshot_repo: Arc<dyn McpCatalogSnapshotRepository>,
     /// Provider/model compatibility and custom model registry
     pub agent_model_registry_repo: Arc<dyn AgentModelRegistryRepository>,
     /// Global enabled/default provider settings
@@ -319,6 +350,25 @@ pub struct AppState {
     pub agent_conversation_granola_note_repo: Arc<dyn AgentConversationGranolaNoteRepository>,
     /// Derived attention-state mute repository for agent conversations
     pub agent_conversation_mute_repo: Arc<dyn AgentConversationMuteRepository>,
+    /// Remote-initiated conversation start requests (device-queued, backend-claimed)
+    pub remote_conversation_start_request_repo: Arc<dyn RemoteConversationStartRequestRepository>,
+    pub remote_conversation_message_request_repo:
+        Arc<dyn RemoteConversationMessageRequestRepository>,
+    pub remote_agent_stop_request_repo: Arc<dyn RemoteAgentStopRequestRepository>,
+    pub remote_conversation_mode_switch_request_repo:
+        Arc<dyn RemoteConversationModeSwitchRequestRepository>,
+    pub remote_execution_resume_request_repo:
+        Arc<dyn RemoteExecutionResumeRequestRepository>,
+    pub remote_plan_approval_request_repo: Arc<dyn RemotePlanApprovalRequestRepository>,
+    pub remote_finalize_decision_request_repo: Arc<dyn RemoteFinalizeDecisionRequestRepository>,
+    pub remote_automation_run_request_repo: Arc<dyn RemoteAutomationRunRequestRepository>,
+    pub remote_automation_draft_request_repo: Arc<dyn RemoteAutomationDraftRequestRepository>,
+    pub remote_conversation_lifecycle_request_repo:
+        Arc<dyn RemoteConversationLifecycleRequestRepository>,
+    pub remote_plan_edit_request_repo: Arc<dyn RemotePlanEditRequestRepository>,
+    pub remote_queued_send_request_repo: Arc<dyn RemoteQueuedSendRequestRepository>,
+    pub remote_task_action_request_repo: Arc<dyn RemoteTaskActionRequestRepository>,
+    pub recovery_prompt_tracker: Arc<crate::application::reconciliation::RecoveryPromptTracker>,
     /// Per-ticket canonical branch that all conversations for a ticket base off of
     pub ticket_canonical_branch_repo: Arc<dyn TicketCanonicalBranchRepository>,
     /// Startup orphan agent-worktree cleanup backoff markers
@@ -775,6 +825,55 @@ impl AppState {
 
     fn mock_agent_clients() -> AgentClientBundle {
         AgentClientBundle::standard_mock_runtime_clients()
+    }
+
+    fn production_remote_environment_service(
+        shared_conn: &Arc<Mutex<rusqlite::Connection>>,
+        app_handle: &AppHandle,
+    ) -> Arc<RemoteEnvironmentService> {
+        let host_client: Arc<dyn crate::infrastructure::RemoteHostClient> =
+            match crate::infrastructure::HyperRemoteHostClient::new() {
+                Ok(client) => Arc::new(client),
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "Remote host HTTP client unavailable; pairing will fail until TLS roots are available"
+                    );
+                    Arc::new(crate::infrastructure::UnavailableRemoteHostClient::new(
+                        error,
+                    ))
+                }
+            };
+        // Constructing the relay spawns nothing (rule 17): sessions are spawned from
+        // the async `connect` path only. Frames land on the webview's local bus.
+        let relay = Arc::new(crate::application::RemoteEventRelay::new(
+            Arc::new(crate::infrastructure::TungsteniteRemoteWsClient::new()),
+            Arc::new(crate::application::TauriFrameSink(app_handle.clone())),
+        ));
+        Arc::new(RemoteEnvironmentService::new(
+            Arc::new(
+                crate::infrastructure::sqlite::SqliteRemoteEnvironmentRepository::from_shared(
+                    Arc::clone(shared_conn),
+                ),
+            ),
+            Arc::new(MacosKeychainSecretStore::new()),
+            host_client,
+            relay,
+        ))
+    }
+
+    fn memory_remote_environment_service() -> Arc<RemoteEnvironmentService> {
+        Arc::new(RemoteEnvironmentService::new(
+            Arc::new(crate::infrastructure::memory::MemoryRemoteEnvironmentRepository::new()),
+            Arc::new(MemorySecretStore::new()),
+            Arc::new(crate::infrastructure::UnavailableRemoteHostClient::new(
+                "remote host client is not wired in tests",
+            )),
+            Arc::new(crate::application::RemoteEventRelay::new(
+                Arc::new(crate::infrastructure::remote_ws_client::MockRemoteWsClient::new()),
+                Arc::new(crate::application::NoopFrameSink),
+            )),
+        ))
     }
 
     fn production_atlassian_integration_service(
@@ -1500,8 +1599,15 @@ impl AppState {
         let project_repo: Arc<dyn ProjectRepository> = Arc::new(
             SqliteProjectRepository::from_shared(Arc::clone(&shared_conn)),
         );
+        let project_repository_capability_repo: Arc<dyn ProjectRepositoryCapabilityRepository> =
+            Arc::new(SqliteProjectRepositoryCapabilityRepository::from_shared(
+                Arc::clone(&shared_conn),
+            ));
         let mcp_policy_repo: Arc<dyn McpPolicyRepository> = Arc::new(
             SqliteMcpPolicyRepository::from_shared(Arc::clone(&shared_conn)),
+        );
+        let mcp_catalog_snapshot_repo: Arc<dyn McpCatalogSnapshotRepository> = Arc::new(
+            SqliteMcpCatalogSnapshotRepository::from_shared(Arc::clone(&shared_conn)),
         );
         let agent_provider_settings_repo: Arc<dyn AgentProviderSettingsRepository> = Arc::new(
             SqliteAgentProviderSettingsRepository::from_shared(Arc::clone(&shared_conn)),
@@ -1556,9 +1662,14 @@ impl AppState {
                     .with_tasks_feature_policy(),
             ),
             project_repo: Arc::clone(&project_repo),
+            project_repository_capability_repo,
             api_key_repo: Arc::new(SqliteApiKeyRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
+            remote_environment_service: Self::production_remote_environment_service(
+                &shared_conn,
+                &app_handle,
+            ),
             atlassian_integration_service: Self::production_atlassian_integration_service(
                 &shared_conn,
             ),
@@ -1648,6 +1759,7 @@ impl AppState {
                 Arc::clone(&shared_conn),
             )),
             mcp_policy_repo,
+            mcp_catalog_snapshot_repo,
             agent_model_registry_repo: Arc::new(SqliteAgentModelRegistryRepository::from_shared(
                 Arc::clone(&shared_conn),
             )),
@@ -1686,6 +1798,58 @@ impl AppState {
             ),
             agent_conversation_mute_repo: Arc::new(
                 SqliteAgentConversationMuteRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
+            remote_conversation_start_request_repo: Arc::new(
+                SqliteRemoteConversationStartRequestRepository::from_shared(Arc::clone(
+                    &shared_conn,
+                )),
+            ),
+            remote_conversation_message_request_repo: Arc::new(
+                SqliteRemoteConversationMessageRequestRepository::from_shared(Arc::clone(
+                    &shared_conn,
+                )),
+            ),
+            remote_agent_stop_request_repo: Arc::new(
+                SqliteRemoteAgentStopRequestRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
+            remote_conversation_mode_switch_request_repo: Arc::new(
+                SqliteRemoteConversationModeSwitchRequestRepository::from_shared(Arc::clone(
+                    &shared_conn,
+                )),
+            ),
+            remote_execution_resume_request_repo: Arc::new(
+                SqliteRemoteExecutionResumeRequestRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
+            remote_plan_approval_request_repo: Arc::new(
+                SqliteRemotePlanApprovalRequestRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
+            remote_finalize_decision_request_repo: Arc::new(
+                SqliteRemoteFinalizeDecisionRequestRepository::from_shared(Arc::clone(
+                    &shared_conn,
+                )),
+            ),
+            remote_automation_run_request_repo: Arc::new(
+                SqliteRemoteAutomationRunRequestRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
+            remote_automation_draft_request_repo: Arc::new(
+                SqliteRemoteAutomationDraftRequestRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
+            remote_conversation_lifecycle_request_repo: Arc::new(
+                SqliteRemoteConversationLifecycleRequestRepository::from_shared(Arc::clone(
+                    &shared_conn,
+                )),
+            ),
+            remote_plan_edit_request_repo: Arc::new(
+                SqliteRemotePlanEditRequestRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
+            remote_queued_send_request_repo: Arc::new(
+                SqliteRemoteQueuedSendRequestRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
+            remote_task_action_request_repo: Arc::new(
+                SqliteRemoteTaskActionRequestRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
+            recovery_prompt_tracker: Arc::new(
+                crate::application::reconciliation::RecoveryPromptTracker::default(),
             ),
             ticket_canonical_branch_repo: Arc::new(
                 SqliteTicketCanonicalBranchRepository::from_shared(Arc::clone(&shared_conn)),
@@ -1883,7 +2047,11 @@ impl AppState {
             ))),
             task_step_repo: Arc::new(MemoryTaskStepRepository::new()),
             project_repo: Arc::new(MemoryProjectRepository::new()),
+            project_repository_capability_repo: Arc::new(
+                MemoryProjectRepositoryCapabilityRepository::new(),
+            ),
             api_key_repo: Arc::new(MemoryApiKeyRepository::new()),
+            remote_environment_service: Self::memory_remote_environment_service(),
             atlassian_integration_service: Self::memory_atlassian_integration_service(),
             linear_integration_service: Self::memory_linear_integration_service(),
             clickup_integration_service: Self::memory_clickup_integration_service(),
@@ -1944,6 +2112,7 @@ impl AppState {
             agent_lane_settings_repo: Arc::new(MemoryAgentLaneSettingsRepository::new()),
             manual_role_default_repo: Arc::new(MemoryManualRoleDefaultRepository::new()),
             mcp_policy_repo: Arc::new(MemoryMcpPolicyRepository::new()),
+            mcp_catalog_snapshot_repo: Arc::new(MemoryMcpCatalogSnapshotRepository::new()),
             agent_model_registry_repo: Arc::new(MemoryAgentModelRegistryRepository::new()),
             agent_provider_settings_repo: Arc::new(
                 MemoryAgentProviderSettingsRepository::with_all_providers_enabled(
@@ -1973,6 +2142,46 @@ impl AppState {
                 MemoryAgentConversationGranolaNoteRepository::new(),
             ),
             agent_conversation_mute_repo: Arc::new(MemoryAgentConversationMuteRepository::new()),
+            remote_conversation_start_request_repo: Arc::new(
+                MemoryRemoteConversationStartRequestRepository::new(),
+            ),
+            remote_conversation_message_request_repo: Arc::new(
+                MemoryRemoteConversationMessageRequestRepository::new(),
+            ),
+            remote_agent_stop_request_repo: Arc::new(MemoryRemoteAgentStopRequestRepository::new()),
+            remote_conversation_mode_switch_request_repo: Arc::new(
+                MemoryRemoteConversationModeSwitchRequestRepository::new(),
+            ),
+            remote_execution_resume_request_repo: Arc::new(
+                MemoryRemoteExecutionResumeRequestRepository::default(),
+            ),
+            remote_plan_approval_request_repo: Arc::new(
+                MemoryRemotePlanApprovalRequestRepository::default(),
+            ),
+            remote_finalize_decision_request_repo: Arc::new(
+                MemoryRemoteFinalizeDecisionRequestRepository::default(),
+            ),
+            remote_automation_run_request_repo: Arc::new(
+                MemoryRemoteAutomationRunRequestRepository::default(),
+            ),
+            remote_automation_draft_request_repo: Arc::new(
+                MemoryRemoteAutomationDraftRequestRepository::default(),
+            ),
+            remote_conversation_lifecycle_request_repo: Arc::new(
+                MemoryRemoteConversationLifecycleRequestRepository::default(),
+            ),
+            remote_plan_edit_request_repo: Arc::new(
+                MemoryRemotePlanEditRequestRepository::default(),
+            ),
+            remote_queued_send_request_repo: Arc::new(
+                MemoryRemoteQueuedSendRequestRepository::default(),
+            ),
+            remote_task_action_request_repo: Arc::new(
+                MemoryRemoteTaskActionRequestRepository::default(),
+            ),
+            recovery_prompt_tracker: Arc::new(
+                crate::application::reconciliation::RecoveryPromptTracker::default(),
+            ),
             ticket_canonical_branch_repo: Arc::new(MemoryTicketCanonicalBranchRepository::new()),
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 MemoryOrphanWorktreeCleanupMarkerRepository::new(),
@@ -2090,7 +2299,11 @@ impl AppState {
             ))),
             task_step_repo: Arc::new(MemoryTaskStepRepository::new()),
             project_repo: Arc::new(MemoryProjectRepository::new()),
+            project_repository_capability_repo: Arc::new(
+                MemoryProjectRepositoryCapabilityRepository::new(),
+            ),
             api_key_repo: Arc::new(MemoryApiKeyRepository::new()),
+            remote_environment_service: Self::memory_remote_environment_service(),
             atlassian_integration_service: Self::memory_atlassian_integration_service(),
             linear_integration_service: Self::memory_linear_integration_service(),
             clickup_integration_service: Self::memory_clickup_integration_service(),
@@ -2151,6 +2364,7 @@ impl AppState {
             agent_lane_settings_repo: Arc::new(MemoryAgentLaneSettingsRepository::new()),
             manual_role_default_repo: Arc::new(MemoryManualRoleDefaultRepository::new()),
             mcp_policy_repo: Arc::new(MemoryMcpPolicyRepository::new()),
+            mcp_catalog_snapshot_repo: Arc::new(MemoryMcpCatalogSnapshotRepository::new()),
             agent_model_registry_repo: Arc::new(MemoryAgentModelRegistryRepository::new()),
             agent_provider_settings_repo: Arc::new(
                 MemoryAgentProviderSettingsRepository::with_all_providers_enabled(
@@ -2180,6 +2394,46 @@ impl AppState {
                 MemoryAgentConversationGranolaNoteRepository::new(),
             ),
             agent_conversation_mute_repo: Arc::new(MemoryAgentConversationMuteRepository::new()),
+            remote_conversation_start_request_repo: Arc::new(
+                MemoryRemoteConversationStartRequestRepository::new(),
+            ),
+            remote_conversation_message_request_repo: Arc::new(
+                MemoryRemoteConversationMessageRequestRepository::new(),
+            ),
+            remote_agent_stop_request_repo: Arc::new(MemoryRemoteAgentStopRequestRepository::new()),
+            remote_conversation_mode_switch_request_repo: Arc::new(
+                MemoryRemoteConversationModeSwitchRequestRepository::new(),
+            ),
+            remote_execution_resume_request_repo: Arc::new(
+                MemoryRemoteExecutionResumeRequestRepository::default(),
+            ),
+            remote_plan_approval_request_repo: Arc::new(
+                MemoryRemotePlanApprovalRequestRepository::default(),
+            ),
+            remote_finalize_decision_request_repo: Arc::new(
+                MemoryRemoteFinalizeDecisionRequestRepository::default(),
+            ),
+            remote_automation_run_request_repo: Arc::new(
+                MemoryRemoteAutomationRunRequestRepository::default(),
+            ),
+            remote_automation_draft_request_repo: Arc::new(
+                MemoryRemoteAutomationDraftRequestRepository::default(),
+            ),
+            remote_conversation_lifecycle_request_repo: Arc::new(
+                MemoryRemoteConversationLifecycleRequestRepository::default(),
+            ),
+            remote_plan_edit_request_repo: Arc::new(
+                MemoryRemotePlanEditRequestRepository::default(),
+            ),
+            remote_queued_send_request_repo: Arc::new(
+                MemoryRemoteQueuedSendRequestRepository::default(),
+            ),
+            remote_task_action_request_repo: Arc::new(
+                MemoryRemoteTaskActionRequestRepository::default(),
+            ),
+            recovery_prompt_tracker: Arc::new(
+                crate::application::reconciliation::RecoveryPromptTracker::default(),
+            ),
             ticket_canonical_branch_repo: Arc::new(MemoryTicketCanonicalBranchRepository::new()),
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 MemoryOrphanWorktreeCleanupMarkerRepository::new(),
@@ -2307,7 +2561,11 @@ impl AppState {
             project_repo: Arc::new(SqliteProjectRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
+            project_repository_capability_repo: Arc::new(
+                SqliteProjectRepositoryCapabilityRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
             api_key_repo: Arc::new(MemoryApiKeyRepository::new()),
+            remote_environment_service: Self::memory_remote_environment_service(),
             atlassian_integration_service: Self::memory_atlassian_integration_service(),
             linear_integration_service: Self::memory_linear_integration_service(),
             clickup_integration_service: Self::memory_clickup_integration_service(),
@@ -2368,6 +2626,7 @@ impl AppState {
             agent_lane_settings_repo: Arc::new(MemoryAgentLaneSettingsRepository::new()),
             manual_role_default_repo: Arc::new(MemoryManualRoleDefaultRepository::new()),
             mcp_policy_repo: Arc::new(MemoryMcpPolicyRepository::new()),
+            mcp_catalog_snapshot_repo: Arc::new(MemoryMcpCatalogSnapshotRepository::new()),
             agent_model_registry_repo: Arc::new(MemoryAgentModelRegistryRepository::new()),
             agent_provider_settings_repo: Arc::new(
                 MemoryAgentProviderSettingsRepository::with_all_providers_enabled(
@@ -2400,6 +2659,58 @@ impl AppState {
             ),
             agent_conversation_mute_repo: Arc::new(
                 SqliteAgentConversationMuteRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
+            remote_conversation_start_request_repo: Arc::new(
+                SqliteRemoteConversationStartRequestRepository::from_shared(Arc::clone(
+                    &shared_conn,
+                )),
+            ),
+            remote_conversation_message_request_repo: Arc::new(
+                SqliteRemoteConversationMessageRequestRepository::from_shared(Arc::clone(
+                    &shared_conn,
+                )),
+            ),
+            remote_agent_stop_request_repo: Arc::new(
+                SqliteRemoteAgentStopRequestRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
+            remote_conversation_mode_switch_request_repo: Arc::new(
+                SqliteRemoteConversationModeSwitchRequestRepository::from_shared(Arc::clone(
+                    &shared_conn,
+                )),
+            ),
+            remote_execution_resume_request_repo: Arc::new(
+                SqliteRemoteExecutionResumeRequestRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
+            remote_plan_approval_request_repo: Arc::new(
+                SqliteRemotePlanApprovalRequestRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
+            remote_finalize_decision_request_repo: Arc::new(
+                SqliteRemoteFinalizeDecisionRequestRepository::from_shared(Arc::clone(
+                    &shared_conn,
+                )),
+            ),
+            remote_automation_run_request_repo: Arc::new(
+                SqliteRemoteAutomationRunRequestRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
+            remote_automation_draft_request_repo: Arc::new(
+                SqliteRemoteAutomationDraftRequestRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
+            remote_conversation_lifecycle_request_repo: Arc::new(
+                SqliteRemoteConversationLifecycleRequestRepository::from_shared(Arc::clone(
+                    &shared_conn,
+                )),
+            ),
+            remote_plan_edit_request_repo: Arc::new(
+                SqliteRemotePlanEditRequestRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
+            remote_queued_send_request_repo: Arc::new(
+                SqliteRemoteQueuedSendRequestRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
+            remote_task_action_request_repo: Arc::new(
+                SqliteRemoteTaskActionRequestRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
+            recovery_prompt_tracker: Arc::new(
+                crate::application::reconciliation::RecoveryPromptTracker::default(),
             ),
             ticket_canonical_branch_repo: Arc::new(
                 SqliteTicketCanonicalBranchRepository::from_shared(Arc::clone(&shared_conn)),
@@ -2523,7 +2834,11 @@ impl AppState {
             branch_update_repo: Arc::new(MemoryBranchUpdateRepository::new()),
             task_step_repo: Arc::new(MemoryTaskStepRepository::new()),
             project_repo,
+            project_repository_capability_repo: Arc::new(
+                MemoryProjectRepositoryCapabilityRepository::new(),
+            ),
             api_key_repo: Arc::new(MemoryApiKeyRepository::new()),
+            remote_environment_service: Self::memory_remote_environment_service(),
             atlassian_integration_service: Self::memory_atlassian_integration_service(),
             linear_integration_service: Self::memory_linear_integration_service(),
             clickup_integration_service: Self::memory_clickup_integration_service(),
@@ -2568,6 +2883,7 @@ impl AppState {
             agent_lane_settings_repo: Arc::new(MemoryAgentLaneSettingsRepository::new()),
             manual_role_default_repo: Arc::new(MemoryManualRoleDefaultRepository::new()),
             mcp_policy_repo: Arc::new(MemoryMcpPolicyRepository::new()),
+            mcp_catalog_snapshot_repo: Arc::new(MemoryMcpCatalogSnapshotRepository::new()),
             agent_model_registry_repo: Arc::new(MemoryAgentModelRegistryRepository::new()),
             agent_provider_settings_repo: Arc::new(
                 MemoryAgentProviderSettingsRepository::with_all_providers_enabled(
@@ -2595,6 +2911,46 @@ impl AppState {
                 MemoryAgentConversationGranolaNoteRepository::new(),
             ),
             agent_conversation_mute_repo: Arc::new(MemoryAgentConversationMuteRepository::new()),
+            remote_conversation_start_request_repo: Arc::new(
+                MemoryRemoteConversationStartRequestRepository::new(),
+            ),
+            remote_conversation_message_request_repo: Arc::new(
+                MemoryRemoteConversationMessageRequestRepository::new(),
+            ),
+            remote_agent_stop_request_repo: Arc::new(MemoryRemoteAgentStopRequestRepository::new()),
+            remote_conversation_mode_switch_request_repo: Arc::new(
+                MemoryRemoteConversationModeSwitchRequestRepository::new(),
+            ),
+            remote_execution_resume_request_repo: Arc::new(
+                MemoryRemoteExecutionResumeRequestRepository::default(),
+            ),
+            remote_plan_approval_request_repo: Arc::new(
+                MemoryRemotePlanApprovalRequestRepository::default(),
+            ),
+            remote_finalize_decision_request_repo: Arc::new(
+                MemoryRemoteFinalizeDecisionRequestRepository::default(),
+            ),
+            remote_automation_run_request_repo: Arc::new(
+                MemoryRemoteAutomationRunRequestRepository::default(),
+            ),
+            remote_automation_draft_request_repo: Arc::new(
+                MemoryRemoteAutomationDraftRequestRepository::default(),
+            ),
+            remote_conversation_lifecycle_request_repo: Arc::new(
+                MemoryRemoteConversationLifecycleRequestRepository::default(),
+            ),
+            remote_plan_edit_request_repo: Arc::new(
+                MemoryRemotePlanEditRequestRepository::default(),
+            ),
+            remote_queued_send_request_repo: Arc::new(
+                MemoryRemoteQueuedSendRequestRepository::default(),
+            ),
+            remote_task_action_request_repo: Arc::new(
+                MemoryRemoteTaskActionRequestRepository::default(),
+            ),
+            recovery_prompt_tracker: Arc::new(
+                crate::application::reconciliation::RecoveryPromptTracker::default(),
+            ),
             ticket_canonical_branch_repo: Arc::new(MemoryTicketCanonicalBranchRepository::new()),
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 MemoryOrphanWorktreeCleanupMarkerRepository::new(),

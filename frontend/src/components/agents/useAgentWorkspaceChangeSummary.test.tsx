@@ -87,6 +87,41 @@ describe("useAgentWorkspaceChangeSummary", () => {
     mockGetCumulativeFiles.mockResolvedValue([]);
   });
 
+  it("keeps failed staged and unstaged reads unknown instead of laundering them as empty", async () => {
+    mockGetStagedFiles.mockRejectedValue(new Error("staged unavailable"));
+    mockGetUnstagedFiles.mockRejectedValue(new Error("unstaged unavailable"));
+
+    const { result } = renderHook(
+      () =>
+        useAgentWorkspaceChangeSummary({
+          conversationId: "conversation-failed",
+          review: makeReview(),
+        }),
+      { wrapper: makeWrapper() },
+    );
+
+    await waitFor(() => {
+      expect(result.current.stagedFilesKnowledge).toBe("unknown");
+      expect(result.current.unstagedFilesKnowledge).toBe("unknown");
+    });
+  });
+
+  it("reports genuine empty staged and unstaged reads as known empty", async () => {
+    const { result } = renderHook(
+      () =>
+        useAgentWorkspaceChangeSummary({
+          conversationId: "conversation-empty",
+          review: makeReview(),
+        }),
+      { wrapper: makeWrapper() },
+    );
+
+    await waitFor(() => {
+      expect(result.current.stagedFilesKnowledge).toBe("knownEmpty");
+      expect(result.current.unstagedFilesKnowledge).toBe("knownEmpty");
+    });
+  });
+
   it("uses live unstaged summary totals without hydrating file lists", () => {
     const liveSummary = makeLiveSummary({
       unstaged: { fileCount: 2, additions: 7, deletions: 3 },

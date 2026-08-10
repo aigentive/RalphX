@@ -1,7 +1,18 @@
 import { invoke } from "@tauri-apps/api/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { automationsApi } from "./automations";
+const environment = vi.hoisted(() => ({ remote: false }));
+
+vi.mock("@/lib/remote/active-environment", () => ({
+  getTransportEnvironmentId: () => (environment.remote ? "remote-1" : "local"),
+  isRemoteEnvironmentId: (id: string) => id !== "local",
+}));
+
+import {
+  AutomationConfigVersionConflictError,
+  automationsApi,
+  transformAutomation,
+} from "./automations";
 import { backendApiUrl } from "./backend";
 
 const fetchMock = vi.fn();
@@ -106,8 +117,34 @@ function jsonResponse(body: unknown, init: ResponseInit = {}) {
   });
 }
 
+function detailResponse(overrides: Record<string, unknown> = {}) {
+  return {
+    automation: automationResponse(),
+    runs: [runResponse()],
+    usage: usageResponse(),
+    pipeline: null,
+    ...overrides,
+  };
+}
+
+function remoteRunRequest(
+  status: "completed" | "failed",
+  errorCode: string | null,
+  result: Record<string, unknown> | null,
+) {
+  return {
+    requestId: "automation-request-1",
+    status,
+    errorCode,
+    result,
+    createdAt: "2026-08-05T09:30:00Z",
+    updatedAt: "2026-08-05T09:30:01Z",
+  };
+}
+
 describe("automationsApi", () => {
   beforeEach(() => {
+    environment.remote = false;
     vi.mocked(invoke).mockReset();
     fetchMock.mockReset();
     vi.stubGlobal("fetch", fetchMock);
@@ -184,6 +221,93 @@ describe("automationsApi", () => {
         },
       },
     });
+  });
+
+  it("creates a remote automation draft, polls settlement, and returns the navigation response", async () => {
+    environment.remote = true;
+    vi.useFakeTimers();
+    vi.mocked(invoke)
+      .mockResolvedValueOnce({
+        requestId: "draft-request-1",
+        automationId: "automation-new",
+        status: "pending",
+        deduplicated: false,
+        createdAt: "2026-08-05T09:30:00Z",
+      })
+      .mockResolvedValueOnce({
+        requestId: "draft-request-1",
+        automationId: "automation-new",
+        status: "completed",
+        errorCode: null,
+        result: { automationId: "automation-new" },
+        createdAt: "2026-08-05T09:30:00Z",
+        updatedAt: "2026-08-05T09:30:01Z",
+      })
+      .mockResolvedValueOnce(
+        detailResponse({
+          automation: automationResponse({ id: "automation-new" }),
+          runs: [],
+        }),
+      );
+
+    const pending = automationsApi.createDraft({
+      projectId: "project-1",
+      name: "Remote draft",
+      authoringMode: "reviewed",
+    });
+    await vi.advanceTimersByTimeAsync(400);
+    await expect(pending).resolves.toEqual(
+      expect.objectContaining({
+        automation: expect.objectContaining({ id: "automation-new" }),
+        setupConversationId: "conversation-setup-1",
+      }),
+    );
+    expect(invoke).toHaveBeenNthCalledWith(1, "request_remote_automation_draft", {
+      projectId: "project-1",
+      name: "Remote draft",
+      authoringMode: "reviewed",
+      baseRefKind: "project_default",
+      baseBranchMode: "isolated",
+      baseBranch: null,
+    });
+    expect(invoke).toHaveBeenNthCalledWith(
+      2,
+      "get_remote_automation_draft_request",
+      { requestId: "draft-request-1" },
+    );
+    expect(invoke).toHaveBeenNthCalledWith(3, "get_automation", {
+      input: { id: "automation-new" },
+    });
+    vi.useRealTimers();
+  });
+
+  it("surfaces HOST_FAILED from remote automation draft creation", async () => {
+    environment.remote = true;
+    vi.useFakeTimers();
+    vi.mocked(invoke)
+      .mockResolvedValueOnce({
+        requestId: "draft-request-1",
+        automationId: "automation-new",
+        status: "pending",
+        deduplicated: false,
+        createdAt: "2026-08-05T09:30:00Z",
+      })
+      .mockResolvedValueOnce({
+        requestId: "draft-request-1",
+        automationId: "automation-new",
+        status: "failed",
+        errorCode: "REMOTE_AUTOMATION_DRAFT_HOST_FAILED",
+        result: null,
+        createdAt: "2026-08-05T09:30:00Z",
+        updatedAt: "2026-08-05T09:30:01Z",
+      });
+
+    const expectation = expect(
+      automationsApi.createDraft({ projectId: "project-1" })
+    ).rejects.toThrow("REMOTE_AUTOMATION_DRAFT_HOST_FAILED");
+    await vi.advanceTimersByTimeAsync(400);
+    await expectation;
+    vi.useRealTimers();
   });
 
   it("sends camelCase Tauri command inputs for updates and pause reasons", async () => {
@@ -322,6 +446,115 @@ describe("automationsApi", () => {
     });
   });
 
+  it("polls a remote run-now request to scheduled settlement with the latest visible run", async () => {
+    environment.remote = true;
+    vi.useFakeTimers();
+    vi.mocked(invoke)
+      .mockResolvedValueOnce(detailResponse())
+      .mockResolvedValueOnce({
+        requestId: "automation-request-1",
+        status: "pending",
+        deduplicated: false,
+        createdAt: "2026-08-05T09:30:00Z",
+      })
+      .mockResolvedValueOnce(
+        remoteRunRequest("completed", null, { scheduled: true }),
+      );
+
+    const pending = automationsApi.triggerRunNow("automation-1");
+    await vi.advanceTimersByTimeAsync(400);
+    await expect(pending).resolves.toEqual({ scheduled: true, reason: null });
+    expect(invoke).toHaveBeenNthCalledWith(2, "request_remote_automation_run", {
+      automationId: "automation-1",
+      kind: "runNow",
+      expectedRunId: "automation-run-1",
+    });
+    vi.useRealTimers();
+  });
+
+  it("treats remote RUN_IN_FLIGHT as the local not-scheduled response", async () => {
+    environment.remote = true;
+    vi.useFakeTimers();
+    vi.mocked(invoke)
+      .mockResolvedValueOnce(detailResponse())
+      .mockResolvedValueOnce({
+        requestId: "automation-request-1",
+        status: "pending",
+        deduplicated: false,
+        createdAt: "2026-08-05T09:30:00Z",
+      })
+      .mockResolvedValueOnce(
+        remoteRunRequest("completed", null, {
+          scheduled: false,
+          reason: "run in flight",
+          code: "REMOTE_AUTOMATION_RUN_RUN_IN_FLIGHT",
+          benign: true,
+        }),
+      );
+
+    const pending = automationsApi.triggerRunNow("automation-1");
+    await vi.advanceTimersByTimeAsync(400);
+    await expect(pending).resolves.toEqual({
+      scheduled: false,
+      reason: "run in flight",
+    });
+    vi.useRealTimers();
+  });
+
+  it("refetches detail and surfaces remote RUN_CHANGED with refresh guidance", async () => {
+    environment.remote = true;
+    vi.useFakeTimers();
+    vi.mocked(invoke)
+      .mockResolvedValueOnce(detailResponse())
+      .mockResolvedValueOnce({
+        requestId: "automation-request-1",
+        status: "pending",
+        deduplicated: false,
+        createdAt: "2026-08-05T09:30:00Z",
+      })
+      .mockResolvedValueOnce(
+        remoteRunRequest("failed", "REMOTE_AUTOMATION_RUN_RUN_CHANGED", null),
+      )
+      .mockResolvedValueOnce(detailResponse());
+
+    const expectation = expect(
+      automationsApi.triggerRunNow("automation-1")
+    ).rejects.toThrow("The automation moved on — refresh");
+    await vi.advanceTimersByTimeAsync(400);
+    await expectation;
+    expect(invoke).toHaveBeenLastCalledWith("get_automation", {
+      input: { id: "automation-1" },
+    });
+    vi.useRealTimers();
+  });
+
+  it("surfaces the local plan-gate copy for remote PLAN_GATE_PAUSED", async () => {
+    environment.remote = true;
+    vi.mocked(invoke)
+      .mockResolvedValueOnce(detailResponse())
+      .mockRejectedValueOnce("REMOTE_AUTOMATION_RUN_PLAN_GATE_PAUSED");
+
+    await expect(automationsApi.triggerRunNow("automation-1")).rejects.toThrow(
+      "This automation is paused at the plan gate. Review the run plan and approve it from the plan artifact pane.",
+    );
+  });
+
+  it("treats remote retry ALREADY_SETTLED as benign and refetches detail", async () => {
+    environment.remote = true;
+    vi.mocked(invoke)
+      .mockResolvedValueOnce(detailResponse())
+      .mockRejectedValueOnce("REMOTE_AUTOMATION_RUN_ALREADY_SETTLED")
+      .mockResolvedValueOnce(detailResponse());
+
+    await expect(automationsApi.retryJudge("automation-1")).resolves.toEqual({
+      scheduled: false,
+      reason: "latest judge is not failed",
+    });
+    expect(invoke).toHaveBeenLastCalledWith("get_automation", {
+      input: { id: "automation-1" },
+    });
+  });
+
   it("transforms automation detail runs", async () => {
     vi.mocked(invoke).mockResolvedValue({
       automation: automationResponse({
@@ -425,16 +658,20 @@ describe("automationsApi", () => {
     fetchMock.mockResolvedValue(jsonResponse(automationResponse({ name: "Updated" })));
 
     await expect(
-      automationsApi.setupAgent.updateAutomation("conversation-setup-1", {
-        name: "Updated",
-        maxRuns: 9,
-        providerHarness: "codex",
-        modelId: "gpt-5.5",
-        logicalEffort: "xhigh",
-        runMode: "plan",
-        goalItemsJson:
-          '[{"id":"phase-1","title":"Build shared context model","status":"pending"}]',
-      }),
+      automationsApi.setupAgent.updateAutomation(
+        "conversation-setup-1",
+        transformAutomation(automationResponse()),
+        {
+          name: "Updated",
+          maxRuns: 9,
+          providerHarness: "codex",
+          modelId: "gpt-5.5",
+          logicalEffort: "xhigh",
+          runMode: "plan",
+          goalItemsJson:
+            '[{"id":"phase-1","title":"Build shared context model","status":"pending"}]',
+        },
+      ),
     ).resolves.toEqual(
       expect.objectContaining({
         name: "Updated",
@@ -461,6 +698,57 @@ describe("automationsApi", () => {
     });
     const [, init] = fetchMock.mock.calls[0]!;
     expect(JSON.parse(String((init as RequestInit).body))).not.toHaveProperty("id");
+  });
+
+  it("uses the direct version-guarded command for remote setup edits", async () => {
+    environment.remote = true;
+    vi.mocked(invoke).mockResolvedValue(automationResponse({ name: "Updated" }));
+    const loaded = transformAutomation(automationResponse());
+
+    await automationsApi.setupAgent.updateAutomation(
+      "conversation-setup-1",
+      loaded,
+      {
+        name: "Updated",
+        maxRuns: 9,
+        providerHarness: "codex",
+        modelId: "gpt-5.5",
+      },
+    );
+
+    expect(invoke).toHaveBeenCalledWith("update_automation_config", {
+      input: {
+        automationId: "automation-1",
+        expectedUpdatedAt: "2026-07-05T00:00:01Z",
+        settings: { name: "Updated", maxRuns: 9 },
+        config: { providerHarness: "codex", modelId: "gpt-5.5" },
+      },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("surfaces remote automation version conflicts as a typed reload error", async () => {
+    environment.remote = true;
+    vi.mocked(invoke).mockRejectedValue(
+      "REMOTE_AUTOMATION_CONFIG_VERSION_CONFLICT",
+    );
+
+    await expect(
+      automationsApi.setupAgent.updateAutomation(
+        "conversation-setup-1",
+        transformAutomation(automationResponse()),
+        { name: "Updated" },
+      ),
+    ).rejects.toEqual(
+      expect.objectContaining({
+        name: "AutomationConfigVersionConflictError",
+        message: "Automation changed — reload",
+        errorCode: "REMOTE_AUTOMATION_CONFIG_VERSION_CONFLICT",
+      }),
+    );
+    expect(new AutomationConfigVersionConflictError()).toBeInstanceOf(
+      AutomationConfigVersionConflictError,
+    );
   });
 
   it("uses setup-agent finalize with only injected caller identity", async () => {

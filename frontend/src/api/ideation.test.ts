@@ -559,12 +559,12 @@ describe("ideationApi.proposals", () => {
   });
 
   describe("delete", () => {
-    it("should call delete_task_proposal with id", async () => {
+    it("should call archive_task_proposal with id", async () => {
       mockInvoke.mockResolvedValue(undefined);
 
-      await ideationApi.proposals.delete("proposal-1");
+      await ideationApi.proposals.archive("proposal-1");
 
-      expect(mockInvoke).toHaveBeenCalledWith("delete_task_proposal", {
+      expect(mockInvoke).toHaveBeenCalledWith("archive_task_proposal", {
         id: "proposal-1",
       });
     });
@@ -622,19 +622,6 @@ describe("ideationApi.proposals", () => {
 describe("ideationApi.dependencies", () => {
   beforeEach(() => {
     mockInvoke.mockReset();
-  });
-
-  describe("add", () => {
-    it("should call add_proposal_dependency with proposal_id and depends_on_id", async () => {
-      mockInvoke.mockResolvedValue(undefined);
-
-      await ideationApi.dependencies.add("proposal-1", "proposal-2");
-
-      expect(mockInvoke).toHaveBeenCalledWith("add_proposal_dependency", {
-        proposalId: "proposal-1",
-        dependsOnId: "proposal-2",
-      });
-    });
   });
 
   describe("remove", () => {

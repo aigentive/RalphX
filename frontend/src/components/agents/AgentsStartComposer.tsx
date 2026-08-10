@@ -23,6 +23,8 @@ import type { AutomationAuthoringMode } from "@/api/automations";
 import type { ComposerRoleDefault } from "@/api/manual-role-defaults.types";
 import type { Project } from "@/types/project";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
+import { useIsRemoteEnvironment } from "@/hooks/useActiveEnvironment";
+import { useAgentGate } from "@/hooks/useAgentGate";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
 import { useStartComposerRoleDefault } from "@/hooks/useManualRoleDefaults";
 import { useConfirmation } from "@/hooks/useConfirmation";
@@ -31,6 +33,7 @@ import {
   PERSONA_UNAVAILABLE_PREFIX,
   isPersonaUnavailableError,
 } from "@/lib/personaErrors";
+import { REMOTE_UNAVAILABLE_HINT } from "@/lib/remote/agent-gate";
 import { withAlpha } from "@/lib/theme-colors";
 import {
   useAgentSessionStore,
@@ -330,6 +333,13 @@ export function AgentsStartComposer({
     isLoading: isLoadingProviderSettings,
     isPlaceholderData: isPlaceholderProviderSettings,
   } = useHarnessProviders({ refreshRuntime: true });
+  const isRemoteEnvironment = useIsRemoteEnvironment();
+  // Starting a conversation steers an agent, so it needs `ui:agent` remotely and is
+  // `unavailable` on a host that has not registered the spawn-free start command (older
+  // host row, §3.2). `useAgentGate` resolves both from the live confirmed scopes; the reason
+  // rides the existing `sendDisabledReason` seam so the Start button and its keyboard submit
+  // are gated by one value. Local environments always resolve `enabled`.
+  const startGate = useAgentGate("startConversation");
   const startConversationFailure = useAgentSessionStore(
     (s) => s.startConversationFailure
   );
@@ -386,8 +396,11 @@ export function AgentsStartComposer({
       buildAgentProviderAvailabilityOptions({
         providers: configuredProviders,
         isReady: providerSettingsReady,
+        // Remote hosts serve stored config only; availability is decided from `enabled`, and
+        // the copy claims configuration rather than CLI validation (which is unavailable).
+        mode: isRemoteEnvironment ? "remote" : "local",
       }),
-    [configuredProviders, providerSettingsReady]
+    [configuredProviders, providerSettingsReady, isRemoteEnvironment]
   );
   const normalizedRuntime = useMemo(() => {
     const runtime = normalizeRuntimeForPersistence(
@@ -430,6 +443,7 @@ export function AgentsStartComposer({
     provider,
     providerOptions,
     isReady: providerSettingsReady,
+    isRemoteEnvironment,
   });
   const codexProviderSettings = configuredProviders.find(
     (entry) => entry.provider === "codex",
@@ -1462,37 +1476,47 @@ export function AgentsStartComposer({
               ? { emptySubmitMessage: reviewPrDefaultPrompt }
               : {})}
             mode={{
-              value: mode,
-              onValueChange: (value) => {
-                clearStartError();
-                const nextMode = value as AgentConversationWorkspaceMode;
-                if (nextMode !== mode) {
-                  setRoleOverrideKey(null);
-                }
-                setMode(nextMode);
-                if (nextMode !== "automation") {
-                  setAutomationAuthoringMode(null);
-                }
-              },
-              options: startModeOptions.filter(
-                (option) => option.id !== "persona_builder" || featureFlags.agentPersonas,
-              ).map((option) => ({
-                ...option,
-                ...(projectId === null && option.requiresProject
-                  ? {
-                      disabled: true,
-                      disabledReason: "Requires a project",
-                    }
-                  : {}),
-              })),
-              secondaryOptionIds: startModeOptions
-                .filter(
-                  (option) =>
-                    !PRIMARY_AGENT_START_MODE_IDS.includes(option.id),
-                )
-                .map((option) => option.id),
-              testId: "agents-start-mode",
-            }}
+                    value: mode,
+                    onValueChange: (value) => {
+                      clearStartError();
+                      const nextMode = value as AgentConversationWorkspaceMode;
+                      if (nextMode !== mode) {
+                        setRoleOverrideKey(null);
+                      }
+                      setMode(nextMode);
+                      if (nextMode !== "automation") {
+                        setAutomationAuthoringMode(null);
+                      }
+                    },
+                    options: startModeOptions
+                      .filter(
+                        (option) =>
+                          option.id !== "persona_builder" ||
+                          featureFlags.agentPersonas,
+                      )
+                      .map((option) => ({
+                        ...option,
+                        ...(isRemoteEnvironment &&
+                        (option.id === "automation" || option.id === "review_pr")
+                          ? {
+                              disabled: true,
+                              disabledReason: REMOTE_UNAVAILABLE_HINT,
+                            }
+                          : projectId === null && option.requiresProject
+                          ? {
+                              disabled: true,
+                              disabledReason: "Requires a project",
+                            }
+                          : {}),
+                      })),
+                    secondaryOptionIds: startModeOptions
+                      .filter(
+                        (option) =>
+                          !PRIMARY_AGENT_START_MODE_IDS.includes(option.id),
+                      )
+                      .map((option) => option.id),
+                    testId: "agents-start-mode",
+                  }}
             {...(mode !== "persona_builder" && projectId && capabilityOptions.length > 1
               ? {
                   capability: {
@@ -1579,7 +1603,7 @@ export function AgentsStartComposer({
               testId: "agents-start-effort",
               className: "max-w-[148px] flex-none",
             }}
-            {...(provider === "codex"
+            {...(provider === "codex" && !isRemoteEnvironment
               ? {
                   speed: {
                     value:
@@ -1633,9 +1657,12 @@ export function AgentsStartComposer({
               onReset: handleResetRoleDefault,
             }}
             sendDisabledReason={
-              isResettingRoleDefault
+              // The remote Start gate wins: an `unavailable`/`gated` host means the action
+              // cannot run at all, which is more actionable than a provider-status note.
+              startGate.reason ??
+              (isResettingRoleDefault
                 ? "Resetting the current role default"
-                : providerStatusMessage
+                : providerStatusMessage)
             }
           />
 

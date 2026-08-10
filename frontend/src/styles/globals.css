@@ -541,6 +541,22 @@ input[data-agent-sidebar-search="true"]:focus-visible {
   100% { transform: scale(1); }
 }
 
+/* The environment switcher's syncing dot: calm accent pulse, opacity only. */
+@keyframes remote-sync-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.45; }
+}
+
+.remote-syncing-dot {
+  animation: remote-sync-pulse 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .remote-syncing-dot {
+    animation: none;
+  }
+}
+
 @keyframes executing-pulse {
   0%, 100% {
     box-shadow: var(--shadow-pulse-accent-base);

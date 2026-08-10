@@ -1164,6 +1164,37 @@ fn runtime_config_env_override_agent_personas_true_and_false() {
     assert!(!agent_personas_after_env(None));
 }
 
+fn remote_environments_after_env(value: Option<&str>) -> bool {
+    let mut cfg = AllRuntimeConfig {
+        stream: StreamTimeoutsConfig::default(),
+        reconciliation: ReconciliationConfig::default(),
+        git: GitRuntimeConfig::default(),
+        scheduler: SchedulerConfig::default(),
+        supervisor: SupervisorRuntimeConfig::default(),
+        limits: LimitsConfig::default(),
+        verification: VerificationConfig::default(),
+        external_mcp: ExternalMcpConfig::default(),
+        child_session_activity_threshold_secs: None,
+        ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
+    };
+    apply_env_overrides_with(&mut cfg, &|name| match name {
+        "RALPHX_UI_REMOTE_ENVIRONMENTS" => value.map(str::to_string),
+        _ => None,
+    });
+    cfg.ui_feature_flags.remote_environments
+}
+
+#[test]
+fn runtime_config_env_override_remote_environments_true_and_false() {
+    assert!(remote_environments_after_env(Some("true")));
+    assert!(remote_environments_after_env(Some("1")));
+    assert!(!remote_environments_after_env(Some("false")));
+    // No env var → the shipped default, which is ON (owner decision, 2026-08-03).
+    assert!(remote_environments_after_env(None));
+}
+
 #[test]
 fn runtime_config_env_override_persona_switch_fresh_session_fallback() {
     let mut cfg = AllRuntimeConfig {

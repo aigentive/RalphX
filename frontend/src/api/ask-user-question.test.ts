@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { mockInvoke } = vi.hoisted(() => ({
   mockInvoke: vi.fn(),
@@ -9,10 +9,18 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 import { askUserQuestionApi } from "./ask-user-question";
+import {
+  resetTransportEnvironmentId,
+  setTransportEnvironmentId,
+} from "@/lib/remote/active-environment";
 
 describe("askUserQuestionApi", () => {
   beforeEach(() => {
     mockInvoke.mockReset();
+  });
+
+  afterEach(() => {
+    resetTransportEnvironmentId();
   });
 
   it("resolves MCP questions through the backend command", async () => {
@@ -41,6 +49,58 @@ describe("askUserQuestionApi", () => {
         requestId: "req-1",
         selectedOptions: ["approve"],
         customResponse: "Looks good",
+        skipped: false,
+      },
+    });
+  });
+
+  it("resolves remote MCP questions through the wrapped spawn-free twin", async () => {
+    setTransportEnvironmentId("remote-1");
+    const response = {
+      success: true,
+      message: "Question req-remote resolved",
+      deliveredToWaitingAgent: false,
+      planModeProposalHandled: false,
+    };
+    mockInvoke.mockResolvedValueOnce(response);
+
+    await expect(
+      askUserQuestionApi.resolveQuestion({
+        requestId: "req-remote",
+        selectedOptions: [],
+        skipped: true,
+      }),
+    ).resolves.toEqual(response);
+
+    expect(mockInvoke).toHaveBeenCalledWith("resolve_remote_user_question", {
+      input: {
+        requestId: "req-remote",
+        selectedOptions: [],
+        customResponse: undefined,
+        skipped: true,
+      },
+    });
+  });
+
+  it("routes remote dismiss responses through the same wrapped twin", async () => {
+    setTransportEnvironmentId("remote-1");
+    mockInvoke.mockResolvedValueOnce({
+      success: true,
+      message: null,
+      deliveredToWaitingAgent: true,
+    });
+
+    await askUserQuestionApi.resolveQuestion({
+      requestId: "req-dismiss",
+      selectedOptions: [],
+      customResponse: "[dismissed]",
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith("resolve_remote_user_question", {
+      input: {
+        requestId: "req-dismiss",
+        selectedOptions: [],
+        customResponse: "[dismissed]",
         skipped: false,
       },
     });

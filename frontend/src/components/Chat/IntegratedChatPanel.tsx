@@ -120,6 +120,7 @@ import {
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
 import { usePersonas, useSwitchConversationPersona } from "@/hooks/usePersonas";
 import { useConfirmation } from "@/hooks/useConfirmation";
+import { useAgentGate } from "@/hooks/useAgentGate";
 import { usePersonaRunEvents } from "@/hooks/usePersonaRunEvents";
 import { useIdeationStore } from "@/stores/ideationStore";
 import { PersonaUnavailableNotice } from "@/components/personas/PersonaUnavailableNotice";
@@ -349,6 +350,8 @@ export function IntegratedChatPanel({
   onUserMessageSent,
   onQuestionAnswered,
 }: IntegratedChatPanelProps) {
+  const attachmentUploadGate = useAgentGate("attachmentUpload");
+  const attachmentMetadataReadGate = useAgentGate("attachmentMetadataRead");
   const { chromeRef, containerRef, registerTranscriptSpacer } =
     useChatBottomInset();
   const bus = useEventBus();
@@ -1249,6 +1252,7 @@ export function IntegratedChatPanel({
 
   // Question UI state — chip selection, input sync, question-aware send
   const {
+    agentGate: questionAnswerGate,
     selectedOptions,
     questionInputValue,
     setQuestionInputValue,
@@ -1781,6 +1785,7 @@ export function IntegratedChatPanel({
                     : null
                 }
                 onInitialPaintReady={handleTranscriptInitialPaintReady}
+                attachmentMetadataReadAvailable={!attachmentMetadataReadGate.gated}
                 firstItemIndex={primaryTranscriptWindow.loadedStartIndex}
                 failedRun={failedRunProp}
                 onDismissFailedRun={setDismissedErrorId}
@@ -1929,6 +1934,7 @@ export function IntegratedChatPanel({
                       onDismiss={dismissQuestion}
                       answeredValue={answeredQuestion}
                       onDismissAnswered={clearAnswered}
+                      disabledReason={questionAnswerGate.reason}
                       {...(questionBannerAction !== undefined && {
                         planApprovalAction: questionBannerAction,
                       })}
@@ -1968,7 +1974,7 @@ export function IntegratedChatPanel({
                           getContextConfig(currentContextType).placeholder,
                         autoFocus: autoFocusInput,
                         enableAttachments:
-                          !!effectiveConversationId && !isHistoryMode,
+                          !!effectiveConversationId && !isHistoryMode && !attachmentUploadGate.gated,
                         attachments,
                         onFilesSelected: uploadFiles,
                         onRemoveAttachment: removeAttachment,
@@ -2039,7 +2045,7 @@ export function IntegratedChatPanel({
                             : {})}
                         autoFocus={autoFocusInput}
                         enableAttachments={
-                          !!effectiveConversationId && !isHistoryMode
+                          !!effectiveConversationId && !isHistoryMode && !attachmentUploadGate.gated
                         }
                         attachments={attachments}
                         onFilesSelected={uploadFiles}

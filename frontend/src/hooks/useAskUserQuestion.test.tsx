@@ -9,6 +9,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import { useAskUserQuestion } from "./useAskUserQuestion";
 import { useUiStore } from "@/stores/uiStore";
+import { LOCAL_ENVIRONMENT_ID } from "@/stores/environmentStore";
+import { requestPendingGateReconcile } from "@/lib/remote/pending-gate-reconcile";
+import { RemoteTransportError } from "@/lib/remote/transport-errors";
 import type { AskUserQuestionPayload, AskUserQuestionResponse } from "@/types/ask-user-question";
 
 // Mock EventBus
@@ -47,6 +50,7 @@ vi.mock("@/lib/tauri", () => ({
       resolveQuestion: vi.fn(),
       answerQuestion: vi.fn(),
       getPendingQuestions: vi.fn().mockResolvedValue([]),
+      listPendingQuestionGates: vi.fn().mockResolvedValue([]),
     },
   },
 }));
@@ -55,6 +59,7 @@ import { api } from "@/lib/tauri";
 const mockResolve = vi.mocked(api.askUserQuestion.resolveQuestion);
 const mockAnswer = vi.mocked(api.askUserQuestion.answerQuestion);
 const mockGetPending = vi.mocked(api.askUserQuestion.getPendingQuestions);
+const mockListGates = vi.mocked(api.askUserQuestion.listPendingQuestionGates);
 
 // Helper to emit events
 function emitEvent(eventName: string, payload: unknown) {
@@ -92,6 +97,7 @@ describe("useAskUserQuestion", () => {
     });
     mockAnswer.mockResolvedValue(undefined);
     mockGetPending.mockResolvedValue([]);
+    mockListGates.mockResolvedValue([]);
     // Reset store state
     useUiStore.setState({
       activeQuestions: {},
@@ -1134,6 +1140,103 @@ describe("useAskUserQuestion", () => {
       expect(useUiStore.getState().activeQuestions[TEST_SESSION]).toEqual(validPayload);
       // getPendingQuestions should not have been called
       expect(mockGetPending).not.toHaveBeenCalled();
+    });
+  });
+
+  // ==========================================================================
+  // P-21: authoritative gate reconciliation on (re)connect (PR 2.7-c)
+  // ==========================================================================
+
+  describe("pending-gate reconciliation", () => {
+    async function reconcile(environmentId = LOCAL_ENVIRONMENT_ID) {
+      await act(async () => {
+        requestPendingGateReconcile(environmentId);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+    }
+
+    it("adopts a question raised while this client was disconnected", async () => {
+      // A fresh requestId: the module-level answered-guard is deliberately long-lived,
+      // and reusing an id another test already answered would be filtered by design.
+      const raisedOffline = { ...validPayload, requestId: "req-raised-offline" };
+      renderHook(() => useAskUserQuestion(TEST_SESSION));
+      expect(useUiStore.getState().activeQuestions[TEST_SESSION]).toBeUndefined();
+
+      mockListGates.mockResolvedValue([raisedOffline]);
+      await reconcile();
+
+      expect(useUiStore.getState().activeQuestions[TEST_SESSION]).toEqual(
+        raisedOffline
+      );
+    });
+
+    it("drops a question the host no longer lists", async () => {
+      renderHook(() => useAskUserQuestion(TEST_SESSION));
+      act(() => {
+        useUiStore.getState().setActiveQuestion(TEST_SESSION, validPayload);
+      });
+
+      mockListGates.mockResolvedValue([]);
+      await reconcile();
+
+      expect(useUiStore.getState().activeQuestions[TEST_SESSION]).toBeUndefined();
+    });
+
+    it("FAILS CLOSED on a read error: the banner stays up", async () => {
+      renderHook(() => useAskUserQuestion(TEST_SESSION));
+      act(() => {
+        useUiStore.getState().setActiveQuestion(TEST_SESSION, validPayload);
+      });
+
+      mockListGates.mockRejectedValue(new Error("question state unreadable"));
+      await reconcile();
+
+      // Clearing a live gate on unreadable state leaves an agent waiting forever on an
+      // answer nobody can see it needs.
+      expect(useUiStore.getState().activeQuestions[TEST_SESSION]).toEqual(
+        validPayload
+      );
+    });
+
+    // Both gate lists ARE on the registered facade surface (3.1 batch 1), so
+    // REMOTE_COMMAND_UNAVAILABLE from them is a regression, not a capability gap.
+    it("surfaces REMOTE_COMMAND_UNAVAILABLE instead of swallowing it", async () => {
+      const { toast } = await import("sonner");
+      renderHook(() => useAskUserQuestion(TEST_SESSION));
+      act(() => {
+        useUiStore.getState().setActiveQuestion(TEST_SESSION, validPayload);
+      });
+
+      mockListGates.mockRejectedValue(
+        new RemoteTransportError({
+          code: "REMOTE_COMMAND_UNAVAILABLE",
+          message: "not registered on this host",
+          environmentId: LOCAL_ENVIRONMENT_ID,
+        })
+      );
+      await reconcile();
+
+      // Fail closed either way: the pending question is never cleared by a failed read.
+      expect(useUiStore.getState().activeQuestions[TEST_SESSION]).toEqual(
+        validPayload
+      );
+      expect(vi.mocked(toast.error)).toHaveBeenCalled();
+    });
+
+    it("ignores a BACKGROUND environment's connect (SCOPE negative)", async () => {
+      renderHook(() => useAskUserQuestion(TEST_SESSION));
+      act(() => {
+        useUiStore.getState().setActiveQuestion(TEST_SESSION, validPayload);
+      });
+
+      mockListGates.mockResolvedValue([]);
+      await reconcile("some-other-environment");
+
+      expect(mockListGates).not.toHaveBeenCalled();
+      expect(useUiStore.getState().activeQuestions[TEST_SESSION]).toEqual(
+        validPayload
+      );
     });
   });
 });

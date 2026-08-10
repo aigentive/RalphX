@@ -51,6 +51,28 @@ pub(crate) async fn start_server_boot(
         .ensure_current(attempt_id)
         .map_err(|error| AppError::Infrastructure(error.to_string()))?;
 
+    // R-8 (PR 1.5-B): publish the very Arcs :3847 is about to serve from, so the remote
+    // listener's curated `/api` remount can reuse them instead of building a third `AppState`.
+    // Registered here because this is the one seam holding both Arcs and the `AppHandle`.
+    // Idempotent, mirroring `HttpShutdownHandle` above: a second boot attempt reuses the
+    // existing registration rather than failing the start.
+    if app_handle
+        .try_state::<Arc<crate::remote_server::fetch_remount::SharedHttpAppState>>()
+        .is_none()
+    {
+        let shared = Arc::new(
+            crate::remote_server::fetch_remount::SharedHttpAppState::new(
+                Arc::clone(&http_app_state),
+                Arc::clone(&http_execution_state),
+            ),
+        );
+        if !app_handle.manage(shared) {
+            tracing::warn!(
+                "shared :3847 AppState was already registered; keeping the existing registration"
+            );
+        }
+    }
+
     let (listener_ready_tx, listener_ready_rx) = oneshot::channel();
     let server_shutdown = shutdown.clone();
     let external_mcp_handle = app_handle.clone();

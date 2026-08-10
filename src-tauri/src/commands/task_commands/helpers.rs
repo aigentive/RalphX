@@ -7,8 +7,11 @@ use crate::application::AppState;
 use crate::domain::entities::{
     ChatContextType, IdeationSessionId, InternalStatus, ProjectId, TaskId,
 };
-use ralphx_events::{emit_serialized, EventSink};
 use tauri::{Emitter, State};
+
+pub use crate::application::task_lifecycle_events::{
+    emit_task_lifecycle_event, emit_task_lifecycle_event_to_sink,
+};
 
 /// Default target for inject_task command
 pub fn default_target() -> String {
@@ -143,40 +146,6 @@ pub async fn count_slot_consuming_queued_messages_for_project(
     }
 
     Ok(count)
-}
-
-/// Emit a task lifecycle event (archived, restored, deleted).
-///
-/// These events share a common payload structure with task and project IDs.
-pub fn emit_task_lifecycle_event(
-    app: &tauri::AppHandle,
-    event_name: &str,
-    task_id: &str,
-    project_id: &str,
-) {
-    let _ = app.emit(
-        event_name,
-        serde_json::json!({
-            "taskId": task_id,
-            "projectId": project_id,
-        }),
-    );
-}
-
-pub fn emit_task_lifecycle_event_to_sink(
-    events: &dyn EventSink,
-    event_name: &str,
-    task_id: &str,
-    project_id: &str,
-) {
-    let _ = emit_serialized(
-        events,
-        event_name,
-        &serde_json::json!({
-            "taskId": task_id,
-            "projectId": project_id,
-        }),
-    );
 }
 
 /// Maps an InternalStatus to a user-friendly label for the status dropdown

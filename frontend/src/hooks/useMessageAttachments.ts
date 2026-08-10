@@ -7,21 +7,33 @@
 
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { chatApi, type ChatAttachmentResponse } from "@/api/chat";
+import {
+  chatApi,
+  type ChatAttachmentResponse,
+  type RemoteChatAttachmentResponse,
+} from "@/api/chat";
 import type { ChatMessageData } from "@/components/Chat/ChatMessageList";
 import type { MessageAttachment } from "@/components/Chat/MessageAttachments";
+import { useIsRemoteEnvironment } from "@/hooks/useActiveEnvironment";
 
 const MESSAGE_ATTACHMENTS_QUERY_VERSION = "preview-v2";
+
+export interface MessageAttachmentsResult {
+  attachments: Map<string, MessageAttachment[]>;
+  unavailableMessageIds: Set<string>;
+}
 
 /**
  * Transform ChatAttachmentResponse from backend to MessageAttachment for UI
  */
-function transformAttachment(attachment: ChatAttachmentResponse): MessageAttachment {
+function transformAttachment(
+  attachment: ChatAttachmentResponse | RemoteChatAttachmentResponse,
+): MessageAttachment {
   const base = {
     id: attachment.id,
     fileName: attachment.fileName,
     fileSize: attachment.fileSize,
-    filePath: attachment.filePath,
+    ...("filePath" in attachment && { filePath: attachment.filePath }),
   };
 
   // Only include optional properties when they have values
@@ -41,8 +53,9 @@ function transformAttachment(attachment: ChatAttachmentResponse): MessageAttachm
 export function useMessageAttachments(
   messages: ChatMessageData[],
   conversationId: string | null,
-  options: { enabled?: boolean } = {}
+  options: { enabled?: boolean; metadataReadAvailable?: boolean } = {}
 ) {
+  const isRemoteEnvironment = useIsRemoteEnvironment();
   const userMessageAttachmentTargets = useMemo(
     () =>
       messages
@@ -70,25 +83,37 @@ export function useMessageAttachments(
       "message-attachments",
       conversationId,
       MESSAGE_ATTACHMENTS_QUERY_VERSION,
+      isRemoteEnvironment ? "remote" : "local",
+      options.metadataReadAvailable ?? true,
       userMessageAttachmentKey,
     ],
     queryFn: async () => {
       const attachmentsMap = new Map<string, MessageAttachment[]>();
+      const unavailableMessageIds = new Set<string>();
 
       await Promise.all(
         userMessageAttachmentTargets.map(async (target) => {
+          if (isRemoteEnvironment && options.metadataReadAvailable === false) {
+            unavailableMessageIds.add(target.renderMessageId);
+            return;
+          }
           try {
-            const attachments = await chatApi.listMessageAttachments(target.lookupMessageId);
+            const attachments = isRemoteEnvironment
+              ? await chatApi.listRemoteMessageAttachments(target.lookupMessageId)
+              : await chatApi.listMessageAttachments(target.lookupMessageId);
             if (attachments.length > 0) {
               attachmentsMap.set(target.renderMessageId, attachments.map(transformAttachment));
             }
           } catch {
-            // Silently ignore — attachment fetching is optional
+            unavailableMessageIds.add(target.renderMessageId);
           }
         })
       );
 
-      return attachmentsMap;
+      return {
+        attachments: attachmentsMap,
+        unavailableMessageIds,
+      } satisfies MessageAttachmentsResult;
     },
     enabled:
       !!conversationId &&

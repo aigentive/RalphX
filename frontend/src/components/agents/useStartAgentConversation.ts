@@ -437,6 +437,7 @@ export function useStartAgentConversation({
         if (automationDraft) {
           await automationsApi.setupAgent.updateAutomation(
             setupConversationId!,
+            automationDraft.automation,
             {
               providerHarness: normalizedRuntime.provider,
               modelId: normalizedRuntime.modelId,

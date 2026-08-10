@@ -14,13 +14,14 @@ use crate::domain::agents::{
     NativeMcpState, RALPHX_MCP_SERVER_IDS,
 };
 use crate::domain::entities::ProjectId;
+use crate::domain::repositories::McpCatalogSnapshot;
 
 pub(crate) struct ProviderCatalogDiscovery {
     pub(crate) servers: Vec<NativeMcpServerSnapshot>,
     pub(crate) diagnostic: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct McpCatalogResponse {
     pub eligible_providers: Vec<String>,
     pub eligible_default_provider: Option<String>,
@@ -31,7 +32,7 @@ pub struct McpCatalogResponse {
     pub servers: Vec<McpServerResponse>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct McpServerResponse {
     pub provider: String,
     pub server_id: String,
@@ -50,7 +51,7 @@ pub struct McpServerResponse {
     pub repair_status: Option<McpRepairStatus>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct McpToolResponse {
     pub tool_name: String,
     pub configured_state: McpOverrideState,
@@ -428,7 +429,7 @@ async fn build_catalog(
             ));
         }
     }
-    Ok(McpCatalogResponse {
+    let response = McpCatalogResponse {
         eligible_providers: eligibility
             .providers
             .iter()
@@ -440,7 +441,37 @@ async fn build_catalog(
         provider_diagnostics,
         policy_diagnostics,
         servers,
-    })
+    };
+    persist_catalog_snapshot(state, project_id, provider_filter, response).await
+}
+
+#[doc(hidden)]
+pub(crate) async fn persist_catalog_snapshot(
+    state: &AppState,
+    project_id: Option<&str>,
+    provider_filter: Option<AgentHarnessKind>,
+    response: McpCatalogResponse,
+) -> Result<McpCatalogResponse, String> {
+    let response_json = serde_json::to_string(&response)
+        .map_err(|error| format!("catalog_snapshot_serialize_failed: {error}"))?;
+    let captured_at = chrono::Utc::now().to_rfc3339();
+    let providers = match provider_filter {
+        Some(provider) => BTreeSet::from([provider.to_string()]),
+        None => response.eligible_providers.iter().cloned().collect(),
+    };
+    for provider in providers {
+        state
+            .mcp_catalog_snapshot_repo
+            .upsert(McpCatalogSnapshot {
+                scope_project_id: project_id.map(str::to_string),
+                provider,
+                response_json: response_json.clone(),
+                captured_at: captured_at.clone(),
+            })
+            .await
+            .map_err(|error| format!("catalog_snapshot_write_failed: {error}"))?;
+    }
+    Ok(response)
 }
 
 async fn discover_provider_catalog(

@@ -29,9 +29,12 @@ const { mocks } = vi.hoisted(() => ({
       mutateAsync: vi.fn().mockResolvedValue(false),
       isPending: false,
     },
-    listen: vi.fn(),
+    subscribe: vi.fn(),
+    eventBus: { subscribe: vi.fn(), emit: vi.fn() },
   },
 }));
+
+mocks.eventBus.subscribe = mocks.subscribe;
 
 vi.mock("@/hooks/useGithubSettings", () => ({
   useGitAuthDiagnostics: () => mocks.diagnostics,
@@ -45,8 +48,8 @@ vi.mock("@/hooks/useGitHubConnectionStatus", () => ({
   useGitHubConnectionStatus: () => mocks.ghAuth,
 }));
 
-vi.mock("@tauri-apps/api/event", () => ({
-  listen: (...args: unknown[]) => mocks.listen(...args),
+vi.mock("@/providers/EventProvider", () => ({
+  useEventBus: () => mocks.eventBus,
 }));
 
 vi.mock("sonner", () => ({
@@ -84,8 +87,11 @@ vi.mock("@/hooks/useConfirmation", () => ({
 
 import { GitAuthRepairPanel } from "./GitAuthRepairPanel";
 
+const readyUnsubscribe = () => Object.assign(vi.fn(), { ready: Promise.resolve() });
+
 beforeEach(() => {
-  mocks.listen.mockReset();
+  mocks.subscribe.mockReset();
+  mocks.subscribe.mockReturnValue(readyUnsubscribe());
   mocks.loginGh.mutateAsync.mockReset();
   mocks.loginGh.mutateAsync.mockResolvedValue(undefined);
   mocks.resumeDeferred.mutateAsync.mockReset();
@@ -119,18 +125,60 @@ beforeEach(() => {
 });
 
 describe("GitAuthRepairPanel — Sign in", () => {
+  it("subscribes to login prompts for the sign-in operation and unsubscribes after it settles", async () => {
+    const user = userEvent.setup();
+    const unsubscribe = readyUnsubscribe();
+    let loginPromptHandler: ((event: { payload: unknown }) => void) | undefined;
+    let resolveLogin: (() => void) | undefined;
+    mocks.subscribe.mockImplementation((_event, handler) => {
+      loginPromptHandler = (event) => {
+        (handler as (payload: unknown) => void)(event.payload);
+      };
+      return unsubscribe;
+    });
+    mocks.loginGh.mutateAsync.mockReturnValue(
+      new Promise<void>((resolve) => {
+        resolveLogin = resolve;
+      }),
+    );
+
+    render(<GitAuthRepairPanel projectId="proj-1" />);
+    const clickPromise = user.click(screen.getByTestId("git-auth-login-gh"));
+
+    await waitFor(() =>
+      expect(mocks.subscribe).toHaveBeenCalledWith(
+        "gh-auth:login_prompt",
+        expect.any(Function),
+      ),
+    );
+    loginPromptHandler?.({
+      payload: { code: "ABCD-1234", url: "https://github.com/login/device" },
+    });
+    expect(await screen.findByTestId("gh-auth-login-prompt")).toHaveTextContent(
+      "ABCD-1234",
+    );
+    expect(unsubscribe).not.toHaveBeenCalled();
+
+    resolveLogin?.();
+    await clickPromise;
+
+    await waitFor(() => expect(unsubscribe).toHaveBeenCalledTimes(1));
+  });
+
   it("clicking Sign in invokes the login mutation and opens the listen pipe", async () => {
     const user = userEvent.setup();
     let listenCallback: ((event: { payload: unknown }) => void) | null = null;
-    mocks.listen.mockImplementation((_event, cb) => {
-      listenCallback = cb as typeof listenCallback;
-      return Promise.resolve(() => undefined);
+    mocks.subscribe.mockImplementation((_event, cb) => {
+      listenCallback = (event) => {
+        (cb as (payload: unknown) => void)(event.payload);
+      };
+      return readyUnsubscribe();
     });
 
     render(<GitAuthRepairPanel projectId="proj-1" />);
     await user.click(screen.getByTestId("git-auth-login-gh"));
 
-    expect(mocks.listen).toHaveBeenCalledWith("gh-auth:login_prompt", expect.any(Function));
+    expect(mocks.subscribe).toHaveBeenCalledWith("gh-auth:login_prompt", expect.any(Function));
     expect(mocks.loginGh.mutateAsync).toHaveBeenCalled();
 
     // Simulate the device-code event payload arriving — it should render GhAuthLoginPrompt.
@@ -376,7 +424,7 @@ describe("GitAuthRepairPanel — Sign in", () => {
   it("Sign in mutation failure surfaces an error toast", async () => {
     const user = userEvent.setup();
     const sonner = await import("sonner");
-    mocks.listen.mockResolvedValue(() => undefined);
+    mocks.subscribe.mockReturnValue(readyUnsubscribe());
     mocks.loginGh.mutateAsync.mockReset();
     mocks.loginGh.mutateAsync.mockRejectedValue(new Error("nope"));
 

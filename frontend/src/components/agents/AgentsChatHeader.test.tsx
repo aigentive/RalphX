@@ -9,6 +9,7 @@ import { useChatStore } from "@/stores/chatStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { useTicketingStore } from "@/stores/ticketingStore";
 import { useUiStore } from "@/stores/uiStore";
+import { LOCAL_ENVIRONMENT_ID, useEnvironmentStore } from "@/stores/environmentStore";
 import { toast } from "sonner";
 import { AgentsChatFocusBar, AgentsChatHeader } from "./AgentsChatHeader";
 import { AgentsChatHeaderController } from "./AgentsChatHeaderController";
@@ -94,6 +95,10 @@ function conversationStats(
 
 describe("AgentsChatHeader", () => {
   beforeEach(() => {
+    useEnvironmentStore.setState({
+      activeEnvironmentId: LOCAL_ENVIRONMENT_ID,
+      environments: [{ id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" }],
+    });
     vi.mocked(useConversationTicket).mockReturnValue({
       data: null,
       isLoading: false,
@@ -1100,18 +1105,25 @@ describe("AgentsChatHeader", () => {
     const builtInTerminal = screen.getByRole("menuitem", {
       name: "Built-in Terminal unavailable: Terminal is unavailable for this workspace",
     });
-    expect(builtInTerminal).toHaveAttribute("data-disabled");
-    expect(builtInTerminal).toHaveAttribute(
-      "title",
-      "Terminal is unavailable for this workspace",
-    );
+    // Soft-disabled, not Radix-`disabled`: `data-disabled` would apply
+    // `pointer-events: none` and drop the item out of the roving-focus order, which is
+    // exactly what made the old `title` explanation unreachable.
+    expect(builtInTerminal).not.toHaveAttribute("data-disabled");
+    expect(builtInTerminal).toHaveAttribute("aria-disabled", "true");
+    expect(builtInTerminal).not.toHaveAttribute("title");
 
     fireEvent.pointerEnter(builtInTerminal);
     fireEvent.focus(builtInTerminal);
     fireEvent.click(builtInTerminal);
+    fireEvent.keyDown(builtInTerminal, { key: "Enter" });
 
     expect(preloadTerminal).not.toHaveBeenCalled();
     expect(toggleTerminal).not.toHaveBeenCalled();
+
+    // The reason is reachable through the app tooltip, on hover and on focus.
+    expect(
+      screen.getByTestId("agents-built-in-terminal-explanation"),
+    ).toHaveTextContent("Terminal is unavailable for this workspace");
   });
 
   it("shows an opening state while launching a workspace target", () => {
@@ -1201,6 +1213,30 @@ describe("AgentsChatHeader", () => {
       await vi.advanceTimersByTimeAsync(1);
     });
     expect(openButton).not.toBeDisabled();
+  });
+
+  it("does not query denied workspace targets remotely and still renders the host-only control", async () => {
+    useEnvironmentStore.setState({
+      activeEnvironmentId: "remote-1",
+      environments: [{ id: "remote-1", name: "Studio", kind: "remote" }],
+    });
+    const listTargets = vi.spyOn(chatApi, "listWorkspaceOpenTargets");
+    renderWithProviders(
+      <AgentsChatHeaderController
+        conversation={conversation({ id: "conversation-1" })}
+        workspace={conversationWorkspace({ mode: "edit" })}
+        hasAutoOpenArtifacts={false}
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onPublishWorkspace={vi.fn().mockResolvedValue(undefined)}
+        onOpenPublishPane={vi.fn()}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+      />,
+    );
+    const openButton = await screen.findByTestId("agents-open-workspace");
+    expect(openButton).toBeDisabled();
+    expect(openButton).toHaveAccessibleName(/available on the host mac/i);
+    expect(listTargets).not.toHaveBeenCalled();
   });
 
   it("opens the workspace using the workspace owner conversation id", async () => {

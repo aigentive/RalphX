@@ -7,6 +7,7 @@
  * - Calls update_plan_artifact HTTP endpoint on save
  */
 
+import { useAgentGate } from "@/hooks/useAgentGate";
 import { useState, useCallback } from "react";
 import { Save, X, Eye, Edit2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -15,8 +16,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Card } from "@/components/ui/card";
-import { backendApiUrl } from "@/api/backend";
-import { ArtifactResponseSchema, transformArtifactResponse } from "@/api/artifact";
+import { artifactApi, RemotePlanIntentError } from "@/api/artifact";
 import type { Artifact } from "@/types/artifact";
 import { PlanTemplateSelector } from "./PlanTemplateSelector";
 
@@ -147,6 +147,7 @@ const markdownComponents = {
 // ============================================================================
 
 export function PlanEditor({ plan, onSave, onCancel, isNewPlan = false }: PlanEditorProps) {
+  const agentGate = useAgentGate("planArtifactEdit");
   // Get initial content
   const initialContent = plan.content.type === "inline" ? plan.content.text : "";
 
@@ -165,6 +166,9 @@ export function PlanEditor({ plan, onSave, onCancel, isNewPlan = false }: PlanEd
 
   // Handle save - call HTTP endpoint
   const handleSave = useCallback(async () => {
+    if (agentGate.gated) {
+      return;
+    }
     if (!hasChanges) {
       onCancel();
       return;
@@ -174,36 +178,31 @@ export function PlanEditor({ plan, onSave, onCancel, isNewPlan = false }: PlanEd
     setError(null);
 
     try {
-      // Call the HTTP endpoint to update plan artifact
-      const response = await fetch(backendApiUrl("update_plan_artifact"), {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          artifact_id: plan.id,
-          content,
-        }),
+      // This plan route creates a new version, repoints sessions/proposals, resets
+      // verification, and emits plan events. `update_artifact` only mutates one row
+      // in place, so its superficially similar id/content shape is not compatible.
+      const updatedPlan = await artifactApi.updatePlanArtifact({
+        artifactId: plan.id,
+        content,
+        expectedVersion: plan.metadata.version,
       });
-
-      if (!response.ok) {
-        if (response.status === 409) {
-          toast.error("Plan is frozen — verification agent is actively working. Wait for the current round to complete.");
-          return;
-        }
-        throw new Error(`Failed to update plan: ${response.statusText}`);
-      }
-
-      const data = ArtifactResponseSchema.parse(await response.json());
-      const updatedPlan: Artifact = transformArtifactResponse(data);
 
       onSave(updatedPlan);
     } catch (err) {
+      if (
+        err instanceof RemotePlanIntentError &&
+        err.errorCode === "REMOTE_PLAN_EDIT_FROZEN"
+      ) {
+        toast.error(
+          "Plan is frozen — verification agent is actively working. Wait for the current round to complete.",
+        );
+        return;
+      }
       setError(err instanceof Error ? err.message : "Failed to save plan");
     } finally {
       setIsSaving(false);
     }
-  }, [plan.id, content, hasChanges, onSave, onCancel]);
+  }, [agentGate.gated, plan.id, content, hasChanges, onSave, onCancel]);
 
   // Handle cancel
   const handleCancel = useCallback(() => {
@@ -263,7 +262,8 @@ export function PlanEditor({ plan, onSave, onCancel, isNewPlan = false }: PlanEd
             variant="default"
             size="sm"
             onClick={handleSave}
-            disabled={isSaving || !hasChanges}
+            disabled={isSaving || !hasChanges || agentGate.gated}
+            title={agentGate.reason ?? undefined}
             className="bg-[var(--accent-primary)] hover:bg-[var(--accent-hover)] text-white"
           >
             <Save className="h-4 w-4 mr-1.5" />

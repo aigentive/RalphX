@@ -21,21 +21,22 @@ export const RepositoryCapabilityResponseSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("github"),
     fetch_url: z.string().nullable(),
-    push_url: z.string(),
+    push_url: z.string().nullable(),
   }),
   z.object({
     kind: z.literal("other_remote"),
     fetch_url: z.string().nullable(),
-    push_url: z.string(),
+    push_url: z.string().nullable(),
   }),
   z.object({ kind: z.literal("inspection_failed"), message: z.string() }),
 ]);
 
 export type RepositoryCapability =
   | { kind: "localOnly" }
-  | { kind: "github"; fetchUrl: string | null; pushUrl: string }
-  | { kind: "otherRemote"; fetchUrl: string | null; pushUrl: string }
-  | { kind: "inspectionFailed"; message: string };
+  | { kind: "github"; fetchUrl: string | null; pushUrl: string | null }
+  | { kind: "otherRemote"; fetchUrl: string | null; pushUrl: string | null }
+  | { kind: "inspectionFailed"; message: string }
+  | { kind: "notInspected" };
 
 export type ProjectWorkspacePublishMode =
   | { kind: "persistedPr" }
@@ -43,11 +44,8 @@ export type ProjectWorkspacePublishMode =
   | { kind: "localCommit"; guidance: string }
   | { kind: "unavailable"; guidance: string };
 
-const UNKNOWN_REPOSITORY_CAPABILITY_MESSAGE =
-  "Repository capability is unavailable. Refresh the project before starting a PR workflow.";
 const UNKNOWN_REPOSITORY_CAPABILITY: RepositoryCapability = {
-  kind: "inspectionFailed",
-  message: UNKNOWN_REPOSITORY_CAPABILITY_MESSAGE,
+  kind: "notInspected",
 };
 
 export function transformRepositoryCapability(
@@ -96,6 +94,16 @@ export const ProjectResponseSchema = z.object({
   analyzed_at: z.string().nullish(),
   github_pr_enabled: z.boolean().default(false),
   repository_capability: RepositoryCapabilityResponseSchema.optional(),
+  repository_capability_snapshot: z
+    .object({
+      kind: z.enum(["local_only", "github", "other_remote", "inspection_failed"]),
+      has_remote: z.boolean(),
+      fetch_url: z.string().optional(),
+      push_url: z.string().optional(),
+      inspected_at: z.string().datetime({ offset: true }),
+      message: z.string().optional(),
+    })
+    .nullish(),
   // Accept RFC3339 timestamps with offset (e.g., +00:00) not just Z
   created_at: z.string().datetime({ offset: true }),
   updated_at: z.string().datetime({ offset: true }),
@@ -177,12 +185,30 @@ export function transformProject(
     customAnalysis: response.custom_analysis ?? null,
     analyzedAt: response.analyzed_at ?? null,
     githubPrEnabled: response.github_pr_enabled,
-    repositoryCapability: transformRepositoryCapability(
-      response.repository_capability ?? {
-        kind: "inspection_failed",
-        message: UNKNOWN_REPOSITORY_CAPABILITY_MESSAGE,
-      },
-    ),
+    repositoryCapability: response.repository_capability
+      ? transformRepositoryCapability(response.repository_capability)
+      : response.repository_capability_snapshot
+        ? response.repository_capability_snapshot.kind === "github"
+          ? {
+              kind: "github",
+              fetchUrl: response.repository_capability_snapshot.fetch_url ?? null,
+              pushUrl: response.repository_capability_snapshot.push_url ?? null,
+            }
+          : response.repository_capability_snapshot.kind === "other_remote"
+            ? {
+                kind: "otherRemote",
+                fetchUrl: response.repository_capability_snapshot.fetch_url ?? null,
+                pushUrl: response.repository_capability_snapshot.push_url ?? null,
+              }
+            : response.repository_capability_snapshot.kind === "local_only"
+              ? { kind: "localOnly" }
+              : {
+                  kind: "inspectionFailed",
+                  message:
+                    response.repository_capability_snapshot.message ??
+                    "Repository inspection failed",
+                }
+        : UNKNOWN_REPOSITORY_CAPABILITY,
     createdAt: response.created_at,
     updatedAt: response.updated_at,
   };

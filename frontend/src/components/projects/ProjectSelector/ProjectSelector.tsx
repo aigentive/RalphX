@@ -26,6 +26,9 @@ export interface ProjectSelectorProps {
   className?: string;
   /** Dropdown alignment - defaults to center */
   align?: "start" | "center" | "end";
+  /** Controlled top-bar menu state. */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }
 
 export function ProjectSelector({
@@ -33,6 +36,8 @@ export function ProjectSelector({
   onBeforeProjectChange,
   className = "",
   align = "center",
+  open,
+  onOpenChange,
 }: ProjectSelectorProps) {
   // Store state (selection only)
   const activeProjectId = useProjectStore((s) => s.activeProjectId);
@@ -87,6 +92,8 @@ export function ProjectSelector({
       onNewProject={onNewProject}
       className={className}
       align={align}
+      {...(open !== undefined ? { open } : {})}
+      {...(onOpenChange ? { onOpenChange } : {})}
       variant="navbar"
       placeholder="Select Project"
       testId="project-selector-trigger"

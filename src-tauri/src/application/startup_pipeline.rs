@@ -249,6 +249,83 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     }
     startup_phase_completed("legacy_claude_mcp_reconciliation", phase_started_at);
 
+    // The host-owned driver for spawn-free remote conversation starts is a LIVE operational
+    // driver, not recovery work: it polls a durable intent table and starts chat-mode
+    // conversations on the host. It must run whenever the host is (or becomes) reachable, so it is
+    // spawned here — in the always-run prefix, BEFORE the recovery-disabled early return below —
+    // not in the recovery pipeline. Otherwise a host with `RALPHX_DISABLE_STARTUP_RECOVERY` set
+    // (routine in dev) leaves every remote start intent stuck `pending` and the conversation blank.
+    // `try_start_recurring_service` inside the spawn dedupes if the recovery path ever reaches it.
+    {
+        let phase_started_at = startup_phase_started("remote_conversation_start_dispatcher_spawn");
+        startup_background::spawn_remote_conversation_start_dispatcher(
+            deps.app_state.clone(),
+            Arc::clone(&deps.execution_state),
+        );
+        startup_phase_completed(
+            "remote_conversation_start_dispatcher_spawn",
+            phase_started_at,
+        );
+    }
+
+    // Same reasoning as the start dispatcher above, and the same placement for the same reason:
+    // the continuation driver is a LIVE operational loop, not recovery work. A host running with
+    // `RALPHX_DISABLE_STARTUP_RECOVERY` (routine in dev) would otherwise leave every remote
+    // follow-up message stuck `pending`, which is exactly the ghost-message hazard WP1 exists to
+    // remove.
+    {
+        let phase_started_at =
+            startup_phase_started("remote_conversation_message_dispatcher_spawn");
+        startup_background::spawn_remote_conversation_message_dispatcher(
+            deps.app_state.clone(),
+            Arc::clone(&deps.execution_state),
+        );
+        startup_phase_completed(
+            "remote_conversation_message_dispatcher_spawn",
+            phase_started_at,
+        );
+    }
+
+    // The remote agent-STOP dispatcher is a brake driver, and the same always-run reasoning
+    // applies with more force: a host with `RALPHX_DISABLE_STARTUP_RECOVERY` set that never
+    // drains stop intents leaves a paired device unable to halt a runaway agent at all.
+    {
+        let phase_started_at = startup_phase_started("remote_agent_stop_dispatcher_spawn");
+        startup_background::spawn_remote_agent_stop_dispatcher(
+            deps.app_state.clone(),
+            Arc::clone(&deps.execution_state),
+        );
+        startup_phase_completed("remote_agent_stop_dispatcher_spawn", phase_started_at);
+    }
+
+    // The remote MODE SWITCH dispatcher (WP5a), same always-run placement and the same reason.
+    {
+        let phase_started_at = startup_phase_started("remote_resume_dispatchers_spawn");
+        startup_background::spawn_remote_resume_dispatchers(
+            deps.app_state.clone(),
+            Arc::clone(&deps.active_project_state),
+            Arc::clone(&deps.execution_state),
+        );
+        startup_phase_completed("remote_resume_dispatchers_spawn", phase_started_at);
+    }
+
+    // The remote MODE SWITCH dispatcher (WP5a), same always-run placement and the same reason.
+    // Existing remote conversations still rely on this loop to drain switch intents. Note it
+    // takes neither the execution state nor the app
+    // handle: its switch seam is AppState-only, which is what keeps the process-terminating path
+    // out of this loop.
+    {
+        let phase_started_at =
+            startup_phase_started("remote_conversation_mode_switch_dispatcher_spawn");
+        startup_background::spawn_remote_conversation_mode_switch_dispatcher(
+            deps.app_state.clone(),
+        );
+        startup_phase_completed(
+            "remote_conversation_mode_switch_dispatcher_spawn",
+            phase_started_at,
+        );
+    }
+
     if startup_jobs::is_startup_recovery_disabled() {
         info!(
             env_var = startup_jobs::RALPHX_DISABLE_STARTUP_RECOVERY_ENV,
@@ -1117,6 +1194,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
             interactive_process_registry: Arc::clone(&interactive_process_registry),
             review_repo: Arc::clone(&review_repo),
             notification_service: app_state.notification_service(),
+            recovery_prompt_tracker: Arc::clone(&app_state.recovery_prompt_tracker),
             events: Arc::clone(&app_state.events),
             chat_runtime_deps: ChatRuntimeFactoryDeps::from_app_state(&app_state),
         },
@@ -1189,6 +1267,10 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         );
         startup_phase_completed("agent_workspace_bridge_dispatcher_spawn", phase_started_at);
     }
+
+    // The remote conversation-start dispatcher is spawned earlier, in the always-run startup
+    // prefix (before the recovery-disabled early return), because it is a live driver rather than
+    // recovery work — see the note above the `is_startup_recovery_disabled` check.
 
     if mode == StartupPipelineMode::Full {
         let phase_started_at = startup_phase_started("cleanup_loop_spawn");

@@ -8,6 +8,7 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BasicTaskDetail } from "./BasicTaskDetail";
 import type { Task } from "@/types/task";
+import { LOCAL_ENVIRONMENT_ID, useEnvironmentStore } from "@/stores/environmentStore";
 
 vi.mock("@/hooks/useTaskSteps", () => ({
   useTaskSteps: vi.fn(),
@@ -158,6 +159,10 @@ function TestWrapper({ children }: { children: React.ReactNode }) {
 
 describe("BasicTaskDetail", () => {
   beforeEach(() => {
+    useEnvironmentStore.setState({
+      activeEnvironmentId: LOCAL_ENVIRONMENT_ID,
+      environments: [{ id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" }],
+    });
     vi.clearAllMocks();
     mockApiExecutionGetStatus.mockResolvedValue(runningExecutionStatus);
     mockApiExecutionResume.mockResolvedValue({
@@ -601,6 +606,32 @@ describe("BasicTaskDetail", () => {
       }
     );
 
+    it("closes the validation dialog and surfaces a resume failure", async () => {
+      const user = userEvent.setup();
+      const metadata = JSON.stringify({
+        stop_metadata: JSON.stringify({
+          stopped_from_status: "merging",
+          stopped_at: "2026-07-21T00:00:00Z",
+        }),
+      });
+      mockApiExecutionGetStatus.mockResolvedValue(stoppedExecutionStatus);
+      mockApiExecutionResume.mockRejectedValue(new Error("resume unavailable"));
+      render(
+        <BasicTaskDetail
+          task={createTestTask({ internalStatus: "stopped", metadata })}
+        />,
+        { wrapper: TestWrapper },
+      );
+
+      await user.click(screen.getByTestId("restart-button"));
+      await user.click(screen.getByTestId("force-resume-button"));
+
+      await waitFor(() => {
+        expect(screen.queryByTestId("resume-validation-dialog")).not.toBeInTheDocument();
+      });
+      expect(screen.getByText("resume unavailable")).toBeInTheDocument();
+    });
+
     it("resumes execution after restart when the project is globally stopped", async () => {
       const user = userEvent.setup();
       const task = createTestTask({ internalStatus: "failed" });
@@ -620,6 +651,7 @@ describe("BasicTaskDetail", () => {
         expect(mockApiExecutionResume).toHaveBeenCalledWith(task.projectId);
       });
     });
+
   });
 
   describe("restart note textarea", () => {

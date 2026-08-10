@@ -149,6 +149,9 @@ New pattern → add one-liner here. Pattern name + rule only.
 | Artifacts test quiesce | `artifacts_handlers` plan-mutation tests that create a plan first must quiesce auto-verify (reset parent + archive/unregister verification children) unless the test is explicitly asserting freeze/bypass behavior |
 | Plan bundle authority | `plan_artifact_id` remains the Overview compatibility anchor; v2 plan actions derive authority from the exact Overview + `plan_blueprint_artifact_id` pair and fail closed when either member is missing |
 | SQLite write transactions | `DbConnection::run_transaction()` uses `BEGIN IMMEDIATE`; keep read-then-write sync-helper flows inside it to avoid WAL upgrade failures surfaced as `database is locked` |
+| Remote facade registration | `:3849` commands are allowlisted in `remote_server/registry.rs` against existing command fns with a `capability_ledger.rs` class; a `Denied`/over-privileged entry fails compilation |
+| Remote event classification | Delivery class comes from the checked-in classification table (`ralphx-remote-protocol`); Durable → sequencer + `remote_event_log`, Transient → broadcast, no seq, never persisted |
+| Remote two-instance fixture | Tests needing a real host boot `remote_server::harness` (`test-utils`): production constructors, real loopback listener, `RemoteHostHarness` + `ScriptedClient`. ❌ Hand-rolled routers or auth bypasses |
 
 ## Code Quality
 Keep work inside the requested feature/refactor/polish scope. File limits + migration rules: `.claude/rules/code-quality-standards.md`.

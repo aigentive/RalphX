@@ -51,6 +51,9 @@ export interface FileDiff {
   oldTotalLines: number;
   newTotalLines: number;
   isBinary: boolean;
+  snapshotCapturedAt?: string;
+  snapshotCacheVersion?: string;
+  snapshotContextSource?: AgentWorkspaceContextSource;
 }
 
 export interface ConflictDiff {
@@ -84,6 +87,9 @@ export interface FileDiffPage {
   oldTotalLines: number;
   newTotalLines: number;
   isBinary: boolean;
+  snapshotCapturedAt?: string;
+  snapshotCacheVersion?: string;
+  snapshotContextSource?: AgentWorkspaceContextSource;
 }
 
 // ── GitHub PR annotation types ─────────────────────────────────────────────
@@ -170,7 +176,19 @@ export interface AgentWorkspaceReview {
   baseRef: string;
   headRef: string;
   supportsWorktreeModes?: boolean;
+  snapshotCapturedAt?: string;
+  snapshotCacheVersion?: string;
+  snapshotContextSource?: AgentWorkspaceContextSource;
 }
+
+export type AgentWorkspaceContextSource =
+  | "worktree"
+  | "local_branch"
+  | "plan_branch"
+  | "pull_request_head"
+  | "github_patch"
+  | "terminal_pull_request_head"
+  | "repair_worktree";
 
 export interface AgentWorkspaceChangeBucketSummary {
   fileCount: number;
@@ -196,4 +214,7 @@ export interface AgentWorkspaceChangeSummary {
   unstaged: AgentWorkspaceChangeBucketSummary;
   conflicted?: AgentWorkspaceConflictSummary;
   repairState?: AgentWorkspaceRepairState;
+  snapshotCapturedAt?: string;
+  snapshotCacheVersion?: string;
+  snapshotContextSource?: AgentWorkspaceContextSource;
 }

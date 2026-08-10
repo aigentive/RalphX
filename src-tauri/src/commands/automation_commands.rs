@@ -1,13 +1,8 @@
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use std::sync::Arc;
 use tauri::State;
 
-use crate::application::agent_conversation_start_service::AgentWorkspaceSourcePullRequestInput;
-use crate::application::agent_conversation_workspace::{
-    prepare_agent_conversation_workspace_with_setup_mode_and_defaults,
-    AgentConversationWorkspaceBaseSelection, AgentConversationWorkspacePrAutomationDefaults,
-    AgentConversationWorkspaceSetupMode,
-};
 pub(crate) use crate::application::automation::actions::{
     retry_automation_judge_for_state, retry_automation_plan_judge_for_state,
     trigger_automation_run_now_for_state,
@@ -17,22 +12,22 @@ use crate::application::automation::api::{
     automation_service_for_state, AutomationDetailResponse, AutomationResponse,
     AutomationRunResponse, AutomationScheduleResponse, CreateAutomationDraftResponse,
 };
-use crate::application::automation::decomposition_verifier::AutomationAuthoringMode;
 use crate::application::automation::delete::{
     delete_automation_run_with_archive, delete_automation_with_archive,
 };
 use crate::application::automation::reopen::reopen_automation_run;
 use crate::application::automation::resume_orchestrator::resume_automation_smart;
 use crate::application::automation::service::{
-    AutomationService, CreateAutomationDraftInput as ServiceCreateDraftInput,
+    AutomationService, UpdateAutomationConfigInput as ServiceUpdateConfigInput,
     UpdateAutomationSettingsInput as ServiceUpdateSettingsInput,
+};
+pub use crate::application::automation_draft_creation::{
+    create_automation_draft_for_state, CreateAutomationDraftInput,
 };
 use crate::application::AppState;
 use crate::commands::ExecutionState;
 use crate::domain::entities::{
-    AgentConversationWorkspaceBranchMode, AgentConversationWorkspaceMode, AutomationId,
-    AutomationPlanApprovalMode, AutomationPrMergeMode, AutomationRunId, ChatConversation,
-    IdeationAnalysisBaseRefKind, ProjectId,
+    AutomationId, AutomationPlanApprovalMode, AutomationPrMergeMode, AutomationRunId, ProjectId,
 };
 
 #[derive(Debug, Clone, Deserialize)]
@@ -40,26 +35,6 @@ use crate::domain::entities::{
 pub struct ListAutomationsInput {
     #[serde(default)]
     pub project_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateAutomationDraftInput {
-    pub project_id: String,
-    #[serde(default)]
-    pub name: Option<String>,
-    #[serde(default)]
-    pub authoring_mode: Option<String>,
-    #[serde(default)]
-    pub base_ref_kind: Option<String>,
-    #[serde(default)]
-    pub base_branch_mode: Option<String>,
-    #[serde(default)]
-    pub base_ref: Option<String>,
-    #[serde(default)]
-    pub base_display_name: Option<String>,
-    #[serde(default)]
-    pub base_source_pull_request: Option<AgentWorkspaceSourcePullRequestInput>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -84,6 +59,74 @@ pub struct UpdateAutomationSettingsInput {
     pub pr_merge_mode: Option<String>,
     #[serde(default)]
     pub plan_deep_verification: Option<bool>,
+}
+
+pub const REMOTE_AUTOMATION_CONFIG_LOOKUP_FAILED: &str = "REMOTE_AUTOMATION_CONFIG_LOOKUP_FAILED";
+pub const REMOTE_AUTOMATION_CONFIG_NOT_FOUND: &str = "REMOTE_AUTOMATION_CONFIG_NOT_FOUND";
+pub const REMOTE_AUTOMATION_CONFIG_VERSION_CONFLICT: &str =
+    "REMOTE_AUTOMATION_CONFIG_VERSION_CONFLICT";
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateAutomationSettingsPatchInput {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub max_runs: Option<i64>,
+    #[serde(default)]
+    pub max_consecutive_failures: Option<i64>,
+    #[serde(default)]
+    pub plan_approval_mode: Option<String>,
+    #[serde(default)]
+    pub pr_merge_mode: Option<String>,
+    #[serde(default)]
+    pub plan_deep_verification: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateAutomationConfigPatchInput {
+    #[serde(default)]
+    pub goal_prompt: Option<String>,
+    #[serde(default)]
+    pub first_run_prompt: Option<String>,
+    #[serde(default)]
+    pub provider_harness: Option<String>,
+    #[serde(default)]
+    pub model_id: Option<String>,
+    #[serde(default)]
+    pub logical_effort: Option<String>,
+    #[serde(default)]
+    pub run_mode: Option<String>,
+    #[serde(default)]
+    pub base_ref_kind: Option<String>,
+    #[serde(default)]
+    pub base_ref: Option<String>,
+    #[serde(default)]
+    pub base_display_name: Option<String>,
+    #[serde(default)]
+    pub goal_items_json: Option<String>,
+    #[serde(default)]
+    pub chain_mode: Option<String>,
+    #[serde(default)]
+    pub completion_signal: Option<String>,
+    #[serde(default)]
+    pub setup_analysis_summary: Option<String>,
+    #[serde(default)]
+    pub spec_artifact_id: Option<String>,
+    #[serde(default)]
+    pub spec_content: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateAutomationConfigInput {
+    pub automation_id: String,
+    pub expected_updated_at: DateTime<Utc>,
+    #[serde(default)]
+    pub settings: Option<UpdateAutomationSettingsPatchInput>,
+    #[serde(default)]
+    pub config: Option<UpdateAutomationConfigPatchInput>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -146,134 +189,6 @@ pub async fn create_automation_draft(
     create_automation_draft_for_state(input, &state).await
 }
 
-pub(crate) async fn create_automation_draft_for_state(
-    input: CreateAutomationDraftInput,
-    state: &AppState,
-) -> Result<CreateAutomationDraftResponse, String> {
-    let project_id = parse_project_id(&input.project_id)?;
-    let authoring_mode = input
-        .authoring_mode
-        .as_deref()
-        .map(|value| {
-            AutomationAuthoringMode::parse(value)
-                .ok_or_else(|| format!("invalid automation authoring mode: {value}"))
-        })
-        .transpose()?;
-    if input
-        .name
-        .as_deref()
-        .is_some_and(|name| name.trim().is_empty())
-    {
-        return Err("automation name cannot be empty".to_string());
-    }
-    let base_ref_kind = input
-        .base_ref_kind
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::parse::<IdeationAnalysisBaseRefKind>)
-        .transpose()?;
-    let base_branch_mode = input
-        .base_branch_mode
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::parse::<AgentConversationWorkspaceBranchMode>)
-        .transpose()?;
-    let base_ref = trim_optional(input.base_ref);
-    let base_display_name = trim_optional(input.base_display_name);
-    let base_source_pull_request = input
-        .base_source_pull_request
-        .map(|pull_request| pull_request.normalize(base_ref_kind, base_ref.as_deref()))
-        .transpose()?;
-    let project = state
-        .project_repo
-        .get_by_id(&project_id)
-        .await
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| format!("Project not found: {}", project_id))?;
-    let automation_id = AutomationId::new();
-    let mut setup_conversation = ChatConversation::new_project(project_id.clone());
-    let setup_title = input
-        .name
-        .as_deref()
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .unwrap_or("Automation setup");
-    setup_conversation.set_title(setup_title.to_string());
-    setup_conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::Automation));
-    setup_conversation.automation_id = Some(automation_id.clone());
-    let setup_conversation = state
-        .chat_conversation_repo
-        .create(setup_conversation)
-        .await
-        .map_err(|error| error.to_string())?;
-
-    let setup_conversation_id = setup_conversation.id;
-    let setup_workspace = match prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
-        &project,
-        &setup_conversation_id,
-        AgentConversationWorkspaceMode::Automation,
-        AgentConversationWorkspaceBaseSelection {
-            kind: base_ref_kind.or(Some(IdeationAnalysisBaseRefKind::ProjectDefault)),
-            branch_mode: base_branch_mode.or(Some(AgentConversationWorkspaceBranchMode::Isolated)),
-            base_ref,
-            display_name: base_display_name,
-            source_pull_request: base_source_pull_request,
-        },
-        AgentConversationWorkspaceSetupMode::Deferred,
-        AgentConversationWorkspacePrAutomationDefaults::default(),
-        false,
-    )
-    .await
-    {
-        Ok(workspace) => workspace,
-        Err(error) => {
-            let _ = state
-                .chat_conversation_repo
-                .delete(&setup_conversation_id)
-                .await;
-            return Err(error.to_string());
-        }
-    };
-    let setup_branch = setup_workspace.branch_name.clone();
-    if let Err(error) = state
-        .agent_conversation_workspace_repo
-        .create_or_update(setup_workspace)
-        .await
-    {
-        let _ = state
-            .chat_conversation_repo
-            .delete(&setup_conversation_id)
-            .await;
-        return Err(error.to_string());
-    }
-
-    let result = automation_service(state)
-        .create_draft(ServiceCreateDraftInput {
-            id: Some(automation_id),
-            project_id,
-            name: input.name,
-            setup_conversation_id: Some(setup_conversation_id),
-            base_ref_kind: Some(IdeationAnalysisBaseRefKind::LocalBranch.to_string()),
-            base_ref: Some(setup_branch.clone()),
-            base_display_name: Some(format!("Automation branch ({setup_branch})")),
-            authoring_mode,
-        })
-        .await;
-
-    match result {
-        Ok(automation) => Ok(CreateAutomationDraftResponse::from(automation)),
-        Err(error) => {
-            let _ = state
-                .chat_conversation_repo
-                .delete(&setup_conversation_id)
-                .await;
-            Err(error.to_string())
-        }
-    }
-}
-
 #[tauri::command]
 pub async fn update_automation_settings(
     input: UpdateAutomationSettingsInput,
@@ -295,6 +210,74 @@ pub async fn update_automation_settings(
         .await
         .map(AutomationResponse::from)
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn update_automation_config(
+    input: UpdateAutomationConfigInput,
+    state: State<'_, AppState>,
+) -> Result<AutomationResponse, String> {
+    update_automation_config_for_state(&state, input).await
+}
+
+#[doc(hidden)]
+pub async fn update_automation_config_for_state(
+    state: &AppState,
+    input: UpdateAutomationConfigInput,
+) -> Result<AutomationResponse, String> {
+    let id = parse_automation_id(&input.automation_id)?;
+    let current = state
+        .automation_repo
+        .get_by_id(&id)
+        .await
+        .map_err(|_| REMOTE_AUTOMATION_CONFIG_LOOKUP_FAILED.to_string())?
+        .ok_or_else(|| REMOTE_AUTOMATION_CONFIG_NOT_FOUND.to_string())?;
+    if current.updated_at != input.expected_updated_at {
+        return Err(REMOTE_AUTOMATION_CONFIG_VERSION_CONFLICT.to_string());
+    }
+
+    let service = automation_service(state);
+    let mut updated = current;
+    if let Some(settings) = input.settings {
+        let plan_approval_mode = parse_plan_approval_mode(settings.plan_approval_mode)?;
+        let pr_merge_mode = parse_pr_merge_mode(settings.pr_merge_mode)?;
+        updated = service
+            .update_settings(ServiceUpdateSettingsInput {
+                id: id.clone(),
+                name: settings.name,
+                max_runs: settings.max_runs,
+                max_consecutive_failures: settings.max_consecutive_failures,
+                plan_approval_mode,
+                pr_merge_mode,
+                plan_deep_verification: settings.plan_deep_verification,
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    if let Some(config) = input.config {
+        updated = service
+            .update_config(ServiceUpdateConfigInput {
+                id,
+                goal_prompt: config.goal_prompt,
+                first_run_prompt: config.first_run_prompt,
+                provider_harness: config.provider_harness,
+                model_id: config.model_id,
+                logical_effort: config.logical_effort,
+                run_mode: config.run_mode,
+                base_ref_kind: config.base_ref_kind,
+                base_ref: config.base_ref,
+                base_display_name: config.base_display_name,
+                goal_items_json: config.goal_items_json,
+                chain_mode: config.chain_mode,
+                completion_signal: config.completion_signal,
+                setup_analysis_summary: config.setup_analysis_summary,
+                spec_artifact_id: config.spec_artifact_id,
+                spec_content: config.spec_content,
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(AutomationResponse::from(updated))
 }
 
 #[tauri::command]
@@ -485,7 +468,8 @@ pub(crate) fn parse_automation_run_id(value: &str) -> Result<AutomationRunId, St
     Ok(AutomationRunId::from_string(trimmed.to_string()))
 }
 
-pub(crate) fn parse_project_id(value: &str) -> Result<ProjectId, String> {
+#[doc(hidden)]
+pub fn parse_project_id(value: &str) -> Result<ProjectId, String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return Err("project id is required".to_string());

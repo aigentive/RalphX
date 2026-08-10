@@ -20,9 +20,7 @@ pub use test_prompts::{
 };
 
 #[cfg(any(test, feature = "test-utils"))]
-pub use crate::infrastructure::sqlite::{
-    SqliteBranchUpdateRepository, SqliteTaskRepository,
-};
+pub use crate::infrastructure::sqlite::{SqliteBranchUpdateRepository, SqliteTaskRepository};
 
 #[cfg(any(test, feature = "test-utils"))]
 pub fn memory_branch_update_repository(

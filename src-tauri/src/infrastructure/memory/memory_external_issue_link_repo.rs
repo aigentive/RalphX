@@ -175,9 +175,8 @@ fn matches_ticket_operation(
         && operation.external_kind == external_kind
         && operation.external_id == external_id
         && external_key.is_none_or(|key| operation.external_key.as_deref() == Some(key))
-        && local_project_id.is_none_or(|project_id| {
-            operation.local_project_id.as_deref() == Some(project_id)
-        })
+        && local_project_id
+            .is_none_or(|project_id| operation.local_project_id.as_deref() == Some(project_id))
 }
 
 #[async_trait]

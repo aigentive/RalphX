@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Info, TriangleAlert } from "lucide-react";
+import { toast } from "sonner";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   isPermissionGranted,
@@ -142,34 +143,74 @@ function InlineNotice({
 export function NotificationSettingsPanel() {
   const { data } = useNotificationSettings();
   const { data: projects = [] } = useProjects();
-  const { mutate: updateSettings, isPending } = useUpdateNotificationSettings();
+  const {
+    mutate: updateSettings,
+    mutateAsync: updateSettingsAsync,
+    isPending,
+  } = useUpdateNotificationSettings();
   const [permissionDenied, setPermissionDenied] = useState(false);
   const settings = data ?? DEFAULT_NOTIFICATION_SETTINGS;
   const desktopChildrenDisabled = !settings.desktop_enabled || isPending;
 
+  /**
+   * The macOS permission probe is ADVISORY, and it is local.
+   *
+   * `plugin:notification|*` is pinned to this device by the `plugin:` prefix rule in
+   * `lib/remote/local-only-commands.ts`, so under a remote environment it now reads THIS
+   * Mac's grant instead of rejecting at the host. Two failure rules follow from that:
+   *
+   * - a failed probe must never gate the durable write. `update_notification_settings` is a
+   *   registered facade op; letting the probe short-circuit it is what made this toggle a
+   *   silent no-op — the switch animated, nothing persisted, and reopening the pane showed
+   *   it off again.
+   * - a failed READ is not a denial. Rendering "permission is denied in macOS" off an error
+   *   would assert an OS fact we did not establish, so unknown stays quiet.
+   */
   const requestDesktopPermissionIfNeeded = async () => {
-    if (await isPermissionGranted()) {
-      setPermissionDenied(false);
-      return;
-    }
+    try {
+      if (await isPermissionGranted()) {
+        setPermissionDenied(false);
+        return;
+      }
 
-    const permission = await requestPermission();
-    setPermissionDenied(permission !== "granted");
+      const permission = await requestPermission();
+      setPermissionDenied(permission !== "granted");
+    } catch (error) {
+      console.warn("Could not read the macOS notification permission", error);
+      setPermissionDenied(false);
+    }
   };
 
   useEffect(() => {
     if (!data?.desktop_enabled) return;
 
-    void isPermissionGranted().then((granted) => {
-      setPermissionDenied(!granted);
-    });
+    void isPermissionGranted()
+      .then((granted) => {
+        setPermissionDenied(!granted);
+      })
+      // Missing before: this rejected on every mount of the pane under a remote environment,
+      // producing an unhandled rejection and no user-visible signal at all.
+      .catch((error: unknown) => {
+        console.warn("Could not read the macOS notification permission", error);
+      });
   }, [data?.desktop_enabled]);
 
   const updateDesktopEnabled = async (enabled: boolean) => {
     if (enabled) {
       await requestDesktopPermissionIfNeeded();
     }
-    updateSettings({ desktopEnabled: enabled });
+    // `mutateAsync`, so a rejected write reaches the caller instead of being swallowed by
+    // `mutate`'s fire-and-forget contract.
+    await updateSettingsAsync({ desktopEnabled: enabled });
+  };
+
+  const handleDesktopEnabledChange = (enabled: boolean) => {
+    // Deliberately not `void`-discarded: a rejected write used to disappear, leaving the
+    // switch to snap back with no explanation.
+    updateDesktopEnabled(enabled).catch((error: unknown) => {
+      console.error("Failed to update the desktop-notification setting", error);
+      toast.error("Could not update desktop notifications.");
+    });
   };
 
   const updateProjectMuted = (projectId: string, muted: boolean) => {
@@ -187,7 +228,7 @@ export function NotificationSettingsPanel() {
         description="Native macOS alerts when RalphX needs you."
         checked={settings.desktop_enabled}
         disabled={isPending}
-        onChange={(enabled) => void updateDesktopEnabled(enabled)}
+        onChange={handleDesktopEnabledChange}
       />
       <ToggleSettingRow
         id="notification-desktop-only-unfocused"

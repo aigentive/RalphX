@@ -2,6 +2,9 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { useUiStore } from "@/stores/uiStore";
+import { LOCAL_ENVIRONMENT_ID, useEnvironmentStore } from "@/stores/environmentStore";
+
 import { IntegrationsHubSection } from "./IntegrationsHubSection";
 
 const hooks = vi.hoisted(() => ({
@@ -12,6 +15,16 @@ const hooks = vi.hoisted(() => ({
   granola: { connected: false, isLoading: false },
   apiKeys: { data: undefined as unknown, isLoading: false },
 }));
+
+// `remoteEnvironments` is client-owned: the hub reads it from uiStore, never from
+// `useFeatureFlags()` (which strips client-owned keys to `undefined`). Driving the
+// real store here is what keeps that authority honest.
+function setRemoteFlag(enabled: boolean) {
+  useUiStore.getState().setFeatureFlags({
+    ...useUiStore.getState().featureFlags,
+    remoteEnvironments: enabled,
+  });
+}
 
 vi.mock("@/hooks/useAtlassianIntegration", async () => {
   const actual = await vi.importActual<
@@ -37,7 +50,6 @@ vi.mock("@/hooks/useGranolaIntegration", () => ({
 vi.mock("@/hooks/useApiKeys", () => ({
   useApiKeys: () => hooks.apiKeys,
 }));
-
 function renderHub() {
   const onNavigate = vi.fn();
   const onWarmSection = vi.fn();
@@ -56,12 +68,34 @@ function card(name: string): HTMLElement {
 
 describe("IntegrationsHubSection", () => {
   beforeEach(() => {
+    useEnvironmentStore.setState({
+      activeEnvironmentId: LOCAL_ENVIRONMENT_ID,
+      environments: [{ id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" }],
+    });
     hooks.atlassian = { settings: undefined, isLoading: false };
     hooks.github = { data: undefined, isLoading: false };
     hooks.linear = { settings: undefined, isLoading: false };
     hooks.clickup = { connected: false, isLoading: false };
     hooks.granola = { connected: false, isLoading: false };
     hooks.apiKeys = { data: undefined, isLoading: false };
+    setRemoteFlag(false);
+  });
+
+  it("hides the remote cards while remoteEnvironments is off", () => {
+    renderHub();
+    expect(
+      screen.queryByTestId("integration-card-remote-access"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("integration-card-connections"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("adds the remote cards when the client-owned flag is on", () => {
+    setRemoteFlag(true);
+    renderHub();
+    expect(card("remote-access")).toBeInTheDocument();
+    expect(card("connections")).toBeInTheDocument();
   });
 
   it("renders a card for every integration and external-access target", () => {
@@ -133,6 +167,23 @@ describe("IntegrationsHubSection", () => {
     expect(
       within(card("github")).getByRole("button", { name: /set up github/i }),
     ).toBeEnabled();
+  });
+
+  it("renders failed remote reads as unavailable without false configuration claims", () => {
+    useEnvironmentStore.setState({
+      activeEnvironmentId: "studio",
+      environments: [
+        { id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" },
+        { id: "studio", name: "Studio Mac", kind: "remote" },
+      ],
+    });
+    renderHub();
+
+    for (const id of ["integrations", "github", "linear", "clickup", "granola", "api-keys"]) {
+      expect(within(card(id)).getByText("Available on the host Mac")).toBeInTheDocument();
+    }
+    expect(screen.queryByText("Not authenticated")).not.toBeInTheDocument();
+    expect(screen.queryByText("Not configured")).not.toBeInTheDocument();
   });
 
   it("summarises stored API keys once the list resolves", () => {

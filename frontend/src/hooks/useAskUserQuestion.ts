@@ -12,8 +12,19 @@ import { toast } from "sonner";
 import { useEventBus } from "@/providers/EventProvider";
 import { api } from "@/lib/tauri";
 import { useUiStore } from "@/stores/uiStore";
+import { useEnvironmentStore } from "@/stores/environmentStore";
+import {
+  onPendingGateReconcile,
+} from "@/lib/remote/pending-gate-reconcile";
+import { remoteErrorBannerProps } from "@/lib/remote/agent-gate";
+import {
+  getTransportEnvironmentId,
+  isRemoteEnvironmentId,
+} from "@/lib/remote/active-environment";
+import { isRemoteTransportError } from "@/lib/remote/transport-errors";
 import {
   AskUserQuestionPayloadSchema,
+  type AskUserQuestionPayload,
   type AskUserQuestionResponse,
 } from "@/types/ask-user-question";
 
@@ -35,6 +46,27 @@ export interface SubmitQuestionAnswerResult {
  */
 const answeredRequestIds = new Map<string, number>();
 const ANSWERED_TTL_MS = 5 * 60 * 1000;
+const PLAN_MODE_PROPOSAL_KIND = "plan_mode_proposal";
+const PLAN_MODE_PROPOSAL_ACCEPT_VALUE = "switch_to_plan";
+const REMOTE_PLAN_MODE_PROPOSAL_REQUIRES_HOST =
+  "accepting a plan-mode proposal prepares a workspace on the host — answer it from the host";
+
+function isRemotePlanModeProposalAcceptance(
+  question: AskUserQuestionPayload,
+  response: AskUserQuestionResponse,
+): boolean {
+  return (
+    isRemoteEnvironmentId(getTransportEnvironmentId()) &&
+    question.metadata?.kind === PLAN_MODE_PROPOSAL_KIND &&
+    response.skipped !== true &&
+    response.selectedOptions.includes(PLAN_MODE_PROPOSAL_ACCEPT_VALUE)
+  );
+}
+
+function isRemotePlanModeProposalRefusal(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes(REMOTE_PLAN_MODE_PROPOSAL_REQUIRES_HOST);
+}
 
 function pruneAnsweredRequestIds() {
   const cutoff = Date.now() - ANSWERED_TTL_MS;
@@ -114,6 +146,59 @@ export function useAskUserQuestion(currentSessionId: string | undefined) {
   // Run once per session ID change — intentionally excludes activeQuestion to avoid loops
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentSessionId]);
+
+  /**
+   * P-21 (2.7-c): AUTHORITATIVE reconciliation on every (re)connect.
+   *
+   * A question gate raised while this client was disconnected produced no event we ever
+   * saw, and one resolved while we were away produced none either. The visibility-based
+   * reconcile below only ever CLEARS, and only when the app is refocused; a reconnect
+   * that happens while the window is already visible reaches neither.
+   *
+   * FAIL CLOSED: the strict command raises rather than answering `[]`. On failure the
+   * banner that is already up stays up and the user is told, because clearing a live
+   * gate on an unreadable state is how an agent ends up waiting forever on an answer
+   * nobody can see it needs.
+   */
+  useEffect(() => {
+    if (!currentSessionId) return undefined;
+
+    return onPendingGateReconcile(({ environmentId }) => {
+      if (environmentId !== useEnvironmentStore.getState().activeEnvironmentId) {
+        // SCOPE: a background environment's connect must not rewrite this banner.
+        return;
+      }
+      const preCallRequestId =
+        useUiStore.getState().activeQuestions[currentSessionId]?.requestId;
+
+      api.askUserQuestion
+        .listPendingQuestionGates()
+        .then((questions) => {
+          const match = questions.find((q) => q.sessionId === currentSessionId);
+          if (match) {
+            if (answeredRequestIds.has(match.requestId)) return;
+            cancelAutoDismissTimer();
+            setActiveQuestion(currentSessionId, match);
+            return;
+          }
+          // Absent from the authoritative set = resolved or expired. Drop it, unless a
+          // live event replaced it while this call was in flight.
+          const current = useUiStore.getState().activeQuestions[currentSessionId];
+          if (current && current.requestId === preCallRequestId) {
+            clearActiveQuestion(currentSessionId);
+          }
+        })
+        .catch((error: unknown) => {
+          console.error("Failed to reconcile pending questions:", error);
+          toast.error("Couldn't refresh the pending question");
+        });
+    });
+  }, [
+    cancelAutoDismissTimer,
+    clearActiveQuestion,
+    currentSessionId,
+    setActiveQuestion,
+  ]);
 
   // Reconcile on window focus: detect resolved/removed questions when returning to the app.
   useEffect(() => {
@@ -216,6 +301,11 @@ export function useAskUserQuestion(currentSessionId: string | undefined) {
       let deliveredToWaitingAgent = true;
       let planModeProposalHandled = false;
 
+      if (isRemotePlanModeProposalAcceptance(activeQuestion, response)) {
+        toast.error(REMOTE_PLAN_MODE_PROPOSAL_REQUIRES_HOST, { duration: 8000 });
+        return { success: false, deliveredToWaitingAgent: false };
+      }
+
       setIsLoading(true);
       try {
         if (response.requestId) {
@@ -252,14 +342,44 @@ export function useAskUserQuestion(currentSessionId: string | undefined) {
           }, 3500);
         }
         return { success: true, deliveredToWaitingAgent, planModeProposalHandled };
-      } catch {
-        // Check if the question was already cleaned up (e.g., by useAgentEvents on agent death).
+      } catch (error: unknown) {
         const currentQuestion = useUiStore.getState().activeQuestions[currentSessionId];
-        if (currentQuestion?.requestId === submittedRequestId) {
-          // Stale question still showing — dismiss it with feedback.
-          toast.error("Agent session expired — question is no longer active", { duration: 5000 });
-          clearActiveQuestion(currentSessionId);
+        if (currentQuestion?.requestId !== submittedRequestId) {
+          // Already replaced or cleared by an authoritative path — nothing of ours to write.
+          return { success: false, deliveredToWaitingAgent: false };
         }
+
+        // FAIL CLOSED (stateful-workflow-review): a TRANSPORT failure is not evidence about
+        // the gate. `RemoteTransportError` is raised by the wrapper itself — a registered
+        // command that ran on the host and returned `Err` rejects with that `Err`, never with
+        // this type — so it says the request did not reach a verdict, and says nothing at all
+        // about whether the agent is still blocked. Clearing the banner on it was a
+        // false-terminal write: the host agent keeps waiting on an answer nobody can see it
+        // needs, and the user is told a session expired that did not. Keep the banner up, keep
+        // the requestId out of `answeredRequestIds` so reconcile can still restore it, surface
+        // the failure, and leave retry possible.
+        if (isRemoteTransportError(error)) {
+          const banner = remoteErrorBannerProps(error);
+          if (banner) {
+            toast.error(banner.title, { description: banner.body, duration: 8000 });
+          } else {
+            toast.error("Couldn't send your answer", {
+              description: "The question is still waiting — try again.",
+              duration: 8000,
+            });
+          }
+          return { success: false, deliveredToWaitingAgent: false };
+        }
+
+        if (isRemotePlanModeProposalRefusal(error)) {
+          toast.error(REMOTE_PLAN_MODE_PROPOSAL_REQUIRES_HOST, { duration: 8000 });
+          return { success: false, deliveredToWaitingAgent: false };
+        }
+
+        // A host-produced `Err` IS authoritative about this gate (the host read its own
+        // question state to answer). Preserve the existing local behaviour.
+        toast.error("Agent session expired — question is no longer active", { duration: 5000 });
+        clearActiveQuestion(currentSessionId);
         return { success: false, deliveredToWaitingAgent: false };
       } finally {
         setIsLoading(false);
@@ -283,19 +403,47 @@ export function useAskUserQuestion(currentSessionId: string | undefined) {
 
     // If there's an active question with a requestId, send dismiss to backend
     if (question?.requestId) {
-      answeredRequestIds.set(question.requestId, Date.now());
-      pruneAnsweredRequestIds();
       try {
         await api.askUserQuestion.resolveQuestion({
           requestId: question.requestId,
           selectedOptions: [],
           customResponse: "[dismissed]",
         });
-      } catch {
-        // Best-effort dismiss — don't block UI
+        // Suppress re-hydration only AFTER the host confirmed the dismissal. Recording it
+        // up front was a false-terminal write with a 5-minute blast radius: a transport
+        // refusal left the gate live on the host while this client suppressed every
+        // rehydration and reconcile of it for `ANSWERED_TTL_MS`, so the banner could not
+        // come back and the agent waited on an answer nobody could see it needed.
+        answeredRequestIds.set(question.requestId, Date.now());
+        pruneAnsweredRequestIds();
+      } catch (error: unknown) {
+        if (!isRemoteTransportError(error)) {
+          // A host-produced `Err` is authoritative about this gate — it is gone either way.
+          answeredRequestIds.set(question.requestId, Date.now());
+          pruneAnsweredRequestIds();
+          return;
+        }
+        // Transport failure: the gate is untouched on the host. Put the banner back rather
+        // than leaving a still-blocked agent invisible, and say why.
+        setActiveQuestion(currentSessionId, question);
+        const banner = remoteErrorBannerProps(error);
+        if (banner) {
+          toast.error(banner.title, { description: banner.body, duration: 8000 });
+        } else {
+          toast.error("Couldn't dismiss the question", {
+            description: "The question is still waiting — try again.",
+            duration: 8000,
+          });
+        }
       }
     }
-  }, [currentSessionId, activeQuestion, dismissQuestionAction, cancelAutoDismissTimer]);
+  }, [
+    currentSessionId,
+    activeQuestion,
+    dismissQuestionAction,
+    cancelAutoDismissTimer,
+    setActiveQuestion,
+  ]);
 
   /**
    * Clear just the answered summary for this session

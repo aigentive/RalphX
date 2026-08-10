@@ -3,6 +3,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { manualRoleDefaultsApi } from "@/api/manual-role-defaults";
 import type { ManualRoleDefault } from "@/api/manual-role-defaults.types";
+import { isRemotelyAvailable } from "@/lib/remote/agent-gate";
+import { isRemoteEnvironmentActive } from "@/hooks/useActiveEnvironment";
 
 export const manualRoleDefaultKeys = {
   all: ["agent", "manual-role-defaults"] as const,
@@ -45,11 +47,18 @@ export function useConversationRoleDefault(conversationId: string | null) {
 export function useManualRoleDefaults(projectId: string | null) {
   const queryClient = useQueryClient();
   const queryKey = manualRoleDefaultKeys.scope(projectId);
+  // Role defaults are a host-only surface: `get_manual_role_defaults` is not on the remote
+  // facade, so firing this query from a paired client only produced a raw
+  // `REMOTE_COMMAND_UNAVAILABLE` banner in Settings and burned a paced request on every
+  // mount and reconnect sweep. Derived from absence, never a hardcoded name list.
+  const isRemotelyUnavailable =
+    isRemoteEnvironmentActive() && !isRemotelyAvailable("get_manual_role_defaults");
   const query = useQuery({
     queryKey,
     queryFn: () => manualRoleDefaultsApi.list(projectId),
     placeholderData: () => undefined,
     staleTime: 30_000,
+    enabled: !isRemotelyUnavailable,
   });
 
   const updateMutation = useMutation({
@@ -99,7 +108,11 @@ export function useManualRoleDefaults(projectId: string | null) {
 
   return {
     catalog: query.data ?? null,
-    isLoading: query.isLoading,
+    /** True when the host does not expose role defaults remotely — render the host-only
+     *  notice instead of a load error or an empty catalog. */
+    isHostOnly: isRemotelyUnavailable,
+    // A disabled query reports `isLoading` forever; a host-only surface is not loading.
+    isLoading: isRemotelyUnavailable ? false : query.isLoading,
     isError: query.isError,
     error: query.error,
     saveError:

@@ -307,4 +307,24 @@ describe("TaskDetailContextRail", () => {
     expect(screen.getByText("Waiting on PR")).toBeInTheDocument();
     expect(screen.getByText("Plan, branch, and PR values show the latest task context.")).toBeInTheDocument();
   });
+
+  it("keeps failed context reads distinct from absent plan context", async () => {
+    mockTaskContextApi.getTaskContext.mockRejectedValue({
+      outcome: "commandError",
+      error: "REMOTE_INTERNAL_ERROR: task context unavailable",
+    });
+    mockPlanBranchApi.getByProject.mockRejectedValue({
+      outcome: "commandError",
+      error: "REMOTE_INTERNAL_ERROR: plan branches unavailable",
+    });
+
+    renderRail(createTask({ taskBranch: null, mergeCommitSha: null, completedAt: null }), {
+      kind: "current",
+    });
+
+    expect(
+      await screen.findByText("Plan, branch, and merge details could not be loaded."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Plan branch")).not.toBeInTheDocument();
+  });
 });

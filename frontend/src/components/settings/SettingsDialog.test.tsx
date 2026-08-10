@@ -19,10 +19,12 @@ import { DEFAULT_PROJECT_SETTINGS } from "@/types/settings";
 import {
   SETTINGS_NAV,
   SETTINGS_SECTIONS,
+  isSettingsSectionVisible,
   navForSection,
   sectionMeta,
 } from "./settings-registry";
 import { sectionModuleLoaders } from "./SettingsDialog.performance";
+import { LOCAL_ENVIRONMENT_ID, useEnvironmentStore } from "@/stores/environmentStore";
 
 const featureFlags = vi.hoisted(() => ({ agentPersonas: false }));
 const settingsTasksEnabledRef = vi.hoisted(() => ({ current: true }));
@@ -58,6 +60,9 @@ const uiState = vi.hoisted(() => ({
   activeModal: null as string | null,
   modalContext: undefined as Record<string, unknown> | undefined,
   closeModal: vi.fn(),
+  // Client-owned flags live here, not in the env-scoped `useFeatureFlags()` query
+  // (which strips them). The nav leaf gate reads this copy.
+  featureFlags: {} as Record<string, boolean>,
 }));
 
 vi.mock("@/stores/uiStore", () => ({
@@ -195,6 +200,7 @@ describe("SettingsDialog", () => {
     uiState.modalContext = undefined;
     uiState.closeModal = mockCloseModal;
     featureFlags.agentPersonas = false;
+    uiState.featureFlags = {};
     settingsTasksEnabledRef.current = true;
     vi.mocked(invoke).mockResolvedValue(undefined);
   });
@@ -568,9 +574,16 @@ describe("SettingsDialog", () => {
   // --------------------------------------------------------------------------
 
   describe("Leaf reachability after nav consolidation", () => {
-    /** Every leaf id that existed before the seven-entry nav landed. */
+    /**
+     * Every leaf id that existed before the seven-entry nav landed.
+     *
+     * Feature-flag-gated sections are excluded: with their flag off they are deliberately
+     * absent from the nav and the hub, so "reachable" is not a claim that applies to them.
+     * `isSettingsSectionVisible({})` is the same gate the dialog itself consults, so a
+     * section that later loses its flag re-enters this list automatically.
+     */
     const LEGACY_LEAF_IDS = SETTINGS_SECTIONS.map((s) => s.id).filter(
-      (id) => id !== "integrations-hub",
+      (id) => id !== "integrations-hub" && isSettingsSectionVisible(id, {}),
     );
 
     it.each(LEGACY_LEAF_IDS)(
@@ -693,6 +706,83 @@ describe("SettingsDialog", () => {
           "granola",
         ),
       );
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // Remote environment notice
+  // --------------------------------------------------------------------------
+
+  describe("remote environment notice", () => {
+    /**
+     * Dialog-level, so it holds for EVERY section. The panes whose commands the facade
+     * refuses (providers, ticketing, GitHub) used to sit on their loading state forever with
+     * nothing saying why; the strip is the one place that answers "whose settings are these".
+     */
+    function activateRemote(): void {
+      useEnvironmentStore.setState({
+        activeEnvironmentId: "env-remote",
+        environments: [
+          { id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" },
+          { id: "env-remote", name: "100.95.136.117:3849", kind: "remote" },
+        ],
+      });
+    }
+
+    it("shows the notice on the local environment never", () => {
+      uiState.activeModal = "settings";
+      render(<SettingsDialog {...defaultProps} />);
+      expect(
+        screen.queryByTestId("settings-remote-environment-notice"),
+      ).not.toBeInTheDocument();
+    });
+
+    it.each(["integrations-hub", "updates", "accessibility", "notifications"])(
+      "shows the notice on %s under a remote environment",
+      (section) => {
+        activateRemote();
+        uiState.activeModal = "settings";
+        uiState.modalContext = { section };
+        render(<SettingsDialog {...defaultProps} />);
+
+        const notice = screen.getByTestId("settings-remote-environment-notice");
+        expect(notice).toBeInTheDocument();
+        expect(notice).toHaveAttribute("data-tone", "warning");
+        expect(notice).toHaveTextContent("100.95.136.117:3849");
+      },
+    );
+  });
+
+  // --------------------------------------------------------------------------
+  // Client-owned flag gate
+  // --------------------------------------------------------------------------
+
+  describe("remoteEnvironments leaf gate", () => {
+    /**
+     * The gate reads `uiStore`, NOT `useFeatureFlags()` — that query strips
+     * client-owned flags, so wiring the gate to it left both leaves permanently
+     * hidden with `remote_environments: true` in config. Driving the store copy is
+     * what makes this test able to fail.
+     */
+    function leafOptionNames(): string[] {
+      return Array.from(
+        screen.getByRole("combobox", { name: "Settings section" }).querySelectorAll("option"),
+      ).map((option) => option.textContent ?? "");
+    }
+
+    it("hides both leaves while the flag is off", () => {
+      uiState.activeModal = "settings";
+      render(<SettingsDialog {...defaultProps} />);
+      expect(leafOptionNames()).not.toContain("Remote Access");
+      expect(leafOptionNames()).not.toContain("Connections");
+    });
+
+    it("offers both leaves once the client-owned flag is on", () => {
+      uiState.featureFlags = { remoteEnvironments: true };
+      uiState.activeModal = "settings";
+      render(<SettingsDialog {...defaultProps} />);
+      expect(leafOptionNames()).toContain("Remote Access");
+      expect(leafOptionNames()).toContain("Connections");
     });
   });
 

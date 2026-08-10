@@ -165,9 +165,9 @@ pub async fn update_task_proposal(
         .map_err(|e| e.to_string())
 }
 
-/// Delete a task proposal
+/// Archive a task proposal
 #[tauri::command]
-pub async fn delete_task_proposal(id: String, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn archive_task_proposal(id: String, state: State<'_, AppState>) -> Result<(), String> {
     let proposal_id = TaskProposalId::from_string(id);
 
     // Delegates all checks (including assert_session_mutable), ARCHIVE, event emission,

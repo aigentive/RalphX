@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
 import { useTicketingProviders } from "@/hooks/useTicketing";
 import { useGranolaIntegration } from "@/hooks/useGranolaIntegration";
+import { useIsRemoteEnvironment } from "@/hooks/useActiveEnvironment";
 import { hasValidTicketingProvider } from "@/lib/ticketing-provider-state";
 import { useProjectStore } from "@/stores/projectStore";
 import { ALL_NAV_ITEMS } from "./nav-items";
@@ -114,6 +115,7 @@ export function LeftNavRail({
   );
   const { connected: hasGranolaDashboardProvider } = useGranolaIntegration();
   const hasTicketingDashboardProvider = hasValidTicketingProvider(ticketingProviders);
+  const isRemoteEnvironment = useIsRemoteEnvironment();
 
   const visibleItems = hideViews
     ? []
@@ -122,7 +124,7 @@ export function LeftNavRail({
   const primaryItems = visibleItems.filter((item) => !dashboardViews.has(item.view));
   const dashboardItems = visibleItems.filter((item) => {
     if (item.view === "github") {
-      return true;
+      return !isRemoteEnvironment;
     }
     if (item.view === "granola") {
       return hasGranolaDashboardProvider;

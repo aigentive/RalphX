@@ -384,6 +384,9 @@ vi.mock("@/hooks/useQuestionInput", () => ({
   useQuestionInput: (params: UseQuestionInputParams) => {
     mockQuestionInputParams.push(params);
     return {
+      // The hook owns the `questionAnswer` gate and the panel renders its `reason` as the
+      // banner's disabled copy, so the mock must carry it — a bare object throws on render.
+      agentGate: { status: "enabled", gated: false, reason: null },
       selectedOptions: new Set(),
       questionInputValue: "",
       setQuestionInputValue: vi.fn(),
@@ -417,6 +420,10 @@ vi.mock("@/api/chat", () => ({
     getConversationStats: vi.fn().mockResolvedValue(null),
     getAgentRunStatus: vi.fn().mockResolvedValue(null),
     sendAgentMessage: vi.fn().mockResolvedValue({ conversationId: "conv-1" }),
+    // Queue hydration reads both branches (Wave B3c): the local getter and the remote
+    // snapshot twin. A mock missing either turns every panel mount into a TypeError.
+    getQueuedAgentMessages: vi.fn().mockResolvedValue([]),
+    listRemoteQueuedAgentMessages: vi.fn().mockResolvedValue([]),
   },
   stopAgent: vi.fn().mockResolvedValue(true),
 }));

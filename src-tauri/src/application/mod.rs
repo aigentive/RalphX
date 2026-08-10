@@ -1,8 +1,8 @@
 // Application layer - dependency injection and service orchestration
 // This layer bridges the domain and infrastructure layers
 
+pub mod active_project_state;
 pub mod agent_client_bundle;
-pub mod delegation_park;
 pub mod agent_conversation_archive;
 #[cfg(test)]
 mod agent_conversation_archive_tests;
@@ -17,41 +17,34 @@ pub mod agent_conversation_workspace_base;
 pub(crate) mod agent_conversation_workspace_restart;
 pub mod agent_issue_report;
 pub mod agent_lane_resolution;
+pub mod agent_lane_settings_bootstrap;
 pub(crate) mod agent_plan_context;
 #[cfg(test)]
 mod agent_plan_context_tests;
-pub mod manual_role_default_service;
-pub mod manual_router_config;
-pub mod mcp_policy_config;
-pub mod mcp_policy_agent_client;
-pub mod mcp_policy_service;
-#[cfg(test)]
-mod mcp_policy_agent_client_tests;
-#[cfg(test)]
-mod mcp_policy_config_tests;
-#[cfg(test)]
-mod mcp_policy_service_tests;
-pub mod agent_lane_settings_bootstrap;
+pub(crate) mod agent_planning_session_titles;
 pub(crate) mod agent_runtime_context;
-#[cfg(test)]
-mod agent_runtime_context_tests;
 #[cfg(test)]
 mod agent_runtime_context_branch_status_tests;
 #[cfg(test)]
 mod agent_runtime_context_linked_plan_tests;
 #[cfg(test)]
 mod agent_runtime_context_team_tests;
-pub(crate) mod agent_planning_session_titles;
+#[cfg(test)]
+mod agent_runtime_context_tests;
 pub mod agent_task_assignment_recovery;
 pub(crate) mod agent_task_pipeline_service;
 pub mod agent_task_service;
 pub mod agent_terminal;
+pub(crate) mod agent_workspace_base_staleness;
+#[cfg(test)]
+mod agent_workspace_base_staleness_tests;
 pub mod agent_workspace_bridge;
+pub(crate) mod agent_workspace_ci_rerun;
+pub mod agent_workspace_continuation;
+pub mod agent_workspace_external_pr_reconciliation;
 pub mod agent_workspace_local_commit;
 #[cfg(test)]
 mod agent_workspace_local_commit_tests;
-pub mod agent_workspace_continuation;
-pub mod agent_workspace_external_pr_reconciliation;
 pub(crate) mod agent_workspace_pr_reopen;
 pub(crate) mod agent_workspace_pr_reopen_restore;
 #[cfg(test)]
@@ -63,18 +56,11 @@ mod agent_workspace_pr_autofix_attempt_tests;
 pub mod agent_workspace_pr_description;
 #[cfg(test)]
 pub(crate) mod agent_workspace_pr_metadata_reconciliation;
-pub(crate) mod agent_workspace_terminal_cleanup;
-#[cfg(test)]
-mod agent_workspace_terminal_cleanup_tests;
 pub(crate) mod agent_workspace_pr_supervision_recovery;
 pub(crate) mod agent_workspace_publish_lease;
 #[cfg(test)]
 mod agent_workspace_publish_lease_tests;
 pub mod agent_workspace_publish_recovery;
-pub(crate) mod agent_workspace_base_staleness;
-#[cfg(test)]
-mod agent_workspace_base_staleness_tests;
-pub(crate) mod agent_workspace_ci_rerun;
 pub(crate) mod agent_workspace_publish_repair_state;
 pub mod agent_workspace_review;
 pub(crate) mod agent_workspace_review_approval;
@@ -103,6 +89,9 @@ mod agent_workspace_review_run_guard_tests;
 mod agent_workspace_review_unfinished_git_recovery_tests;
 #[cfg(test)]
 mod agent_workspace_review_unfinished_git_tests;
+pub(crate) mod agent_workspace_terminal_cleanup;
+#[cfg(test)]
+mod agent_workspace_terminal_cleanup_tests;
 pub mod app_paths;
 #[cfg(test)]
 mod app_paths_tests;
@@ -110,19 +99,30 @@ pub mod app_setup;
 #[cfg(test)]
 mod app_setup_tests;
 pub mod app_state;
+pub mod delegation_park;
+pub mod manual_role_default_service;
+pub mod manual_router_config;
+pub mod mcp_policy_agent_client;
+#[cfg(test)]
+mod mcp_policy_agent_client_tests;
+pub mod mcp_policy_config;
+#[cfg(test)]
+mod mcp_policy_config_tests;
+pub mod mcp_policy_service;
+#[cfg(test)]
+mod mcp_policy_service_tests;
+pub use active_project_state::ActiveProjectState;
 pub mod apply_service;
 pub mod atlassian_integration_service;
 pub mod attention_service;
 pub mod automation;
+pub mod automation_draft_creation;
 pub mod branch_update_executor;
 #[cfg(test)]
 mod branch_update_executor_tests;
 pub mod branch_update_workflow;
 pub mod builder_attachment_materializer;
 pub mod chat_attachment_service;
-pub(crate) mod conversation_reference_inheritance;
-#[cfg(test)]
-mod conversation_reference_inheritance_tests;
 pub mod chat_attachment_storage;
 pub mod chat_resumption;
 pub mod chat_service;
@@ -131,6 +131,9 @@ pub mod clickup_integration_service;
 pub mod conversation_folder_reference_service;
 #[cfg(test)]
 mod conversation_folder_reference_service_tests;
+pub(crate) mod conversation_reference_inheritance;
+#[cfg(test)]
+mod conversation_reference_inheritance_tests;
 pub mod dependency_service;
 #[cfg(target_os = "macos")]
 pub(crate) mod desktop_notification;
@@ -138,7 +141,15 @@ pub(crate) mod desktop_notification;
 pub(crate) mod dev_dock_icon;
 pub mod diff_service;
 pub mod event_cleanup_service;
+pub mod execution_control;
+pub mod execution_recovery;
+pub(crate) mod execution_resume;
+pub mod execution_running;
 pub mod execution_settings_bootstrap;
+pub mod execution_state;
+pub mod execution_status;
+pub(crate) mod execution_task_navigation;
+pub use execution_state::ExecutionState;
 pub mod external_issue_link_service;
 pub(crate) mod git_artifact_cleanup;
 pub mod git_mutation_recovery;
@@ -153,6 +164,8 @@ pub mod http_shutdown;
 #[cfg(test)]
 mod http_shutdown_tests;
 pub mod ideation_effort_bootstrap;
+pub mod ideation_finalize_execution;
+pub mod ideation_finalize_types;
 pub mod ideation_harness_availability;
 pub mod ideation_model_bootstrap;
 pub mod ideation_service;
@@ -192,6 +205,7 @@ pub mod plan_approval_notification_service;
 #[cfg(test)]
 mod plan_approval_notification_service_tests;
 pub(crate) mod plan_artifact_approval;
+pub(crate) mod plan_artifact_edit;
 pub(crate) mod plan_complexity_assessment;
 pub(crate) mod plan_pr_description;
 pub mod plan_ranking;
@@ -218,6 +232,16 @@ pub mod question_state;
 pub mod ready_task_scheduler;
 pub mod reconciliation;
 pub mod recovery_queue;
+pub mod remote_automation_draft_intent;
+pub mod remote_automation_run_intent;
+pub mod remote_conversation_lifecycle_intent;
+pub mod remote_environment_service;
+pub mod remote_event_relay;
+pub mod remote_finalize_decision_intent;
+pub mod remote_plan_approval_intent;
+pub mod remote_plan_edit_intent;
+pub mod remote_queue_send_intent;
+pub mod remote_resume_intent;
 pub mod resume_validator;
 pub mod review_issue_service;
 pub mod review_service;
@@ -255,6 +279,22 @@ pub mod startup_pipeline;
 pub mod startup_pipeline_launch;
 #[cfg(test)]
 mod startup_pipeline_tests;
+#[cfg(test)]
+mod startup_remote_automation_draft_tests;
+#[cfg(test)]
+mod startup_remote_automation_run_tests;
+#[cfg(test)]
+mod startup_remote_conversation_lifecycle_tests;
+#[cfg(test)]
+mod startup_remote_finalize_tests;
+#[cfg(test)]
+mod startup_remote_plan_edit_tests;
+#[cfg(test)]
+mod startup_remote_plan_tests;
+#[cfg(test)]
+mod startup_remote_queue_send_tests;
+#[cfg(test)]
+mod startup_remote_resume_tests;
 pub mod startup_runtime_builders;
 #[cfg(test)]
 mod startup_runtime_builders_tests;
@@ -262,12 +302,15 @@ pub mod startup_status;
 pub mod startup_transition_factory;
 pub mod supervisor_service;
 pub mod task_cleanup_service;
+pub mod task_command_types;
 pub mod task_context_service;
 pub(crate) mod task_diff_base;
 #[cfg(test)]
 mod task_diff_base_tests;
+pub(crate) mod task_lifecycle_events;
 pub mod task_notification_producer;
 pub mod task_restart;
+pub(crate) mod task_resume_execution;
 pub mod task_scheduler_service;
 pub mod task_transition_service;
 pub(crate) mod tasks_feature_policy;
@@ -393,6 +436,13 @@ pub use question_state::{PendingQuestionInfo, QuestionAnswer, QuestionOption, Qu
 pub use ready_task_scheduler::spawn_ready_task_scheduler_if_needed;
 pub use reconciliation::ReconciliationRunner;
 pub use recovery_queue::{ProcessSummary, RecoveryItem, RecoveryPriority, RecoveryQueue};
+pub use remote_environment_service::{
+    RemoteEnvironmentError, RemoteEnvironmentReconcileReport, RemoteEnvironmentService,
+    LOCAL_ENVIRONMENT_ID,
+};
+pub use remote_event_relay::{
+    NoopFrameSink, RemoteConnectOutcome, RemoteEventRelay, RemoteFrameSink, TauriFrameSink,
+};
 pub use resume_validator::{ResumeValidationResult, ResumeValidator};
 pub use review_issue_service::{CreateIssueInput, ReviewIssueService};
 pub use review_service::ReviewService;
@@ -446,20 +496,20 @@ mod agent_planning_session_titles_tests;
 #[cfg(test)]
 mod agent_terminal_tests;
 #[cfg(test)]
+#[path = "agent_workspace_ci_rerun_tests.rs"]
+mod agent_workspace_ci_rerun_tests;
+#[cfg(test)]
 mod agent_workspace_continuation_tests;
 #[cfg(test)]
 mod agent_workspace_external_pr_reconciliation_tests;
-#[cfg(test)]
-mod agent_workspace_publication_reconciliation_tests;
 #[cfg(test)]
 mod agent_workspace_pr_metadata_reconciliation_tests;
 #[cfg(test)]
 mod agent_workspace_pr_supervision_recovery_tests;
 #[cfg(test)]
-mod agent_workspace_publish_recovery_tests;
+mod agent_workspace_publication_reconciliation_tests;
 #[cfg(test)]
-#[path = "agent_workspace_ci_rerun_tests.rs"]
-mod agent_workspace_ci_rerun_tests;
+mod agent_workspace_publish_recovery_tests;
 #[cfg(test)]
 mod agent_workspace_publish_repair_state_tests;
 #[cfg(test)]
@@ -479,21 +529,21 @@ mod granola_integration_prompt_tests;
 #[cfg(test)]
 mod granola_integration_service_tests;
 #[cfg(test)]
-pub(crate) mod harness_runtime_test_support;
-#[cfg(test)]
 mod harness_runtime_registry_tests;
+#[cfg(test)]
+pub(crate) mod harness_runtime_test_support;
 #[cfg(test)]
 mod ideation_harness_availability_tests;
 #[cfg(test)]
 mod ideation_workspace_tests;
+#[cfg(test)]
+mod integration_reference_expansion_edge_tests;
 #[cfg(test)]
 mod integration_reference_expansion_tests;
 #[cfg(test)]
 mod manual_role_default_service_tests;
 #[cfg(test)]
 mod manual_router_config_tests;
-#[cfg(test)]
-mod integration_reference_expansion_edge_tests;
 #[cfg(test)]
 mod orphan_worktree_cleanup_tests;
 #[cfg(test)]

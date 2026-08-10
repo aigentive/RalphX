@@ -13,9 +13,9 @@ mod support;
 #[path = "../common/mod.rs"]
 mod common;
 
-mod pr_mode_integration;
-mod pr_mode_fallback;
 mod pr_mode_acceptance_paths;
+mod pr_mode_fallback;
+mod pr_mode_integration;
 mod pr_poller_tests;
 mod pr_reconciler_tests;
 mod project_pr_template;

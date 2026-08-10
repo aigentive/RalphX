@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AgentIssueReportDialog } from "./AgentIssueReportDialog";
 import type { AgentIssueReportDraft } from "@/api/agent-issue-report";
+import { LOCAL_ENVIRONMENT_ID, useEnvironmentStore } from "@/stores/environmentStore";
 
 const mocks = vi.hoisted(() => ({
   build: vi.fn(),
@@ -86,6 +87,21 @@ describe("AgentIssueReportDialog", () => {
       configurable: true,
       value: vi.fn(),
     });
+    useEnvironmentStore.setState({
+      activeEnvironmentId: LOCAL_ENVIRONMENT_ID,
+      environments: [{ id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" }],
+    });
+  });
+
+  it("renders a host-only notice remotely without building a report", () => {
+    useEnvironmentStore.setState({
+      activeEnvironmentId: "remote-1",
+      environments: [{ id: "remote-1", name: "Studio", kind: "remote" }],
+    });
+    render(<AgentIssueReportDialog open onOpenChange={vi.fn()} context={{ projectId: "project-1", conversationId: "conversation-12345678" }} />);
+    expect(screen.getByTestId("remote-host-only-notice")).toHaveTextContent("Studio");
+    expect(mocks.build).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("agent-issue-report-submit")).not.toBeInTheDocument();
   });
 
   it("submits the edited markdown only after explicit confirmation", async () => {

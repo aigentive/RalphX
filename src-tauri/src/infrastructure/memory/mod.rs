@@ -4,56 +4,39 @@
 pub mod memory_active_plan_repo;
 pub mod memory_activity_event_repo;
 pub mod memory_agent_conversation_granola_note_repo;
-pub mod memory_agent_conversation_mute_repo;
 pub mod memory_agent_conversation_issue_repo;
 pub mod memory_agent_conversation_jira_issue_repo;
 pub mod memory_agent_conversation_linear_issue_repo;
+pub mod memory_agent_conversation_mute_repo;
 pub mod memory_agent_conversation_workspace_repo;
 pub mod memory_agent_lane_settings_repo;
-pub mod memory_manual_role_default_repo;
-pub mod memory_mcp_policy_repo;
 pub mod memory_agent_model_registry_repo;
 pub mod memory_agent_profile_repo;
 pub mod memory_agent_provider_settings_repo;
+pub mod memory_agent_remote_agent_stop_request_repo;
+pub mod memory_agent_remote_conversation_message_request_repo;
+pub mod memory_agent_remote_conversation_mode_switch_request_repo;
+pub mod memory_agent_remote_conversation_start_request_repo;
 pub mod memory_agent_run_repo;
 pub mod memory_agent_task_repo;
-pub mod memory_team_repo;
-pub mod memory_team_coordination_transition_repo;
-pub mod memory_team_run_binding_repo;
-pub mod memory_team_message_repo;
-pub mod memory_team_wake_batch_repo;
-pub mod memory_team_workspace_reservation_repo;
-#[cfg(test)]
-mod memory_team_repo_tests;
-#[cfg(test)]
-mod memory_team_run_binding_repo_tests;
-#[cfg(test)]
-mod memory_team_message_repo_tests;
-#[cfg(test)]
-mod memory_team_wake_batch_repo_tests;
-#[cfg(test)]
-mod memory_team_workspace_reservation_repo_tests;
 pub mod memory_api_key_repo;
 pub mod memory_app_state_repo;
 #[cfg(test)]
 mod memory_app_state_repo_tests;
-pub mod memory_automation_repo;
-#[cfg(test)]
-mod memory_automation_repo_tests;
 pub mod memory_artifact_bucket_repo;
 pub mod memory_artifact_flow_repo;
 pub mod memory_artifact_repo;
-pub mod memory_branch_update_repo;
 pub mod memory_atlassian_integration_settings_repo;
+pub mod memory_automation_repo;
+#[cfg(test)]
+mod memory_automation_repo_tests;
+pub mod memory_branch_update_repo;
 pub mod memory_chat_attachment_repo;
 pub mod memory_chat_conversation_repo;
-pub mod memory_conversation_folder_reference_repo;
 pub mod memory_chat_message_repo;
 pub mod memory_chat_timeline_repo;
-pub mod memory_persona_repo;
-#[cfg(test)]
-mod memory_persona_repo_tests;
 pub mod memory_clickup_integration_settings_repo;
+pub mod memory_conversation_folder_reference_repo;
 pub mod memory_delegated_session_repo;
 pub mod memory_delegation_park_repo;
 #[cfg(test)]
@@ -68,24 +51,42 @@ pub mod memory_ideation_model_settings_repo;
 pub mod memory_ideation_session_repo;
 pub mod memory_ideation_settings_repo;
 pub mod memory_linear_integration_settings_repo;
+pub mod memory_manual_role_default_repo;
+pub mod memory_mcp_catalog_snapshot_repo;
+pub mod memory_mcp_policy_repo;
 pub mod memory_memory_archive_job_repo;
 pub mod memory_memory_entry_repo;
 pub mod memory_memory_event_repo;
+pub mod memory_methodology_repo;
 pub mod memory_notification_repo;
 pub mod memory_notification_settings_repo;
-pub mod memory_methodology_repo;
 pub mod memory_orphan_worktree_cleanup_marker_repo;
 pub mod memory_permission_repo;
+pub mod memory_persona_repo;
+#[cfg(test)]
+mod memory_persona_repo_tests;
 pub mod memory_plan_artifact_approval_repo;
 pub mod memory_plan_branch_repo;
-#[cfg(test)]
-mod memory_restart_repository_tests;
 pub mod memory_plan_selection_stats_repo;
 pub mod memory_process_repo;
 pub mod memory_project_repo;
+pub mod memory_project_repository_capability_repo;
 pub mod memory_proposal_dependency_repo;
 pub mod memory_question_repo;
 pub mod memory_queued_message_repo;
+pub mod memory_remote_automation_draft_request_repo;
+pub mod memory_remote_automation_run_request_repo;
+pub mod memory_remote_conversation_lifecycle_request_repo;
+pub mod memory_remote_environment_repo;
+#[cfg(test)]
+mod memory_remote_environment_repo_tests;
+pub mod memory_remote_finalize_decision_request_repo;
+pub mod memory_remote_plan_approval_request_repo;
+pub mod memory_remote_plan_edit_request_repo;
+pub mod memory_remote_queued_send_request_repo;
+pub mod memory_remote_resume_request_repo;
+#[cfg(test)]
+mod memory_restart_repository_tests;
 pub mod memory_review_issue_repo;
 pub mod memory_review_repo;
 pub mod memory_review_settings_repo;
@@ -96,9 +97,25 @@ pub mod memory_task_proposal_repo;
 pub mod memory_task_qa_repo;
 pub mod memory_task_repo;
 pub mod memory_task_step_repo;
-pub mod memory_ui_feature_flag_overrides_repo;
+pub mod memory_team_coordination_transition_repo;
+pub mod memory_team_message_repo;
+#[cfg(test)]
+mod memory_team_message_repo_tests;
+pub mod memory_team_repo;
+#[cfg(test)]
+mod memory_team_repo_tests;
+pub mod memory_team_run_binding_repo;
+#[cfg(test)]
+mod memory_team_run_binding_repo_tests;
+pub mod memory_team_wake_batch_repo;
+#[cfg(test)]
+mod memory_team_wake_batch_repo_tests;
+pub mod memory_team_workspace_reservation_repo;
+#[cfg(test)]
+mod memory_team_workspace_reservation_repo_tests;
 pub mod memory_ticket_canonical_branch_repo;
 pub mod memory_ticketing_status_catalog_repo;
+pub mod memory_ui_feature_flag_overrides_repo;
 pub mod memory_validation_run_repo;
 pub mod memory_webhook_registration_repo;
 pub mod memory_workflow_repo;
@@ -108,14 +125,29 @@ pub mod memory_workspace_review_runtime_settings_repo;
 pub use memory_active_plan_repo::MemoryActivePlanRepository;
 pub use memory_activity_event_repo::MemoryActivityEventRepository;
 pub use memory_agent_conversation_granola_note_repo::MemoryAgentConversationGranolaNoteRepository;
-pub use memory_agent_conversation_mute_repo::MemoryAgentConversationMuteRepository;
 pub use memory_agent_conversation_issue_repo::MemoryAgentConversationIssueRepository;
 pub use memory_agent_conversation_jira_issue_repo::MemoryAgentConversationJiraIssueRepository;
 pub use memory_agent_conversation_linear_issue_repo::MemoryAgentConversationLinearIssueRepository;
+pub use memory_agent_conversation_mute_repo::MemoryAgentConversationMuteRepository;
 pub use memory_agent_conversation_workspace_repo::MemoryAgentConversationWorkspaceRepository;
 pub use memory_agent_lane_settings_repo::MemoryAgentLaneSettingsRepository;
+pub use memory_agent_remote_agent_stop_request_repo::MemoryRemoteAgentStopRequestRepository;
+pub use memory_agent_remote_conversation_message_request_repo::MemoryRemoteConversationMessageRequestRepository;
+pub use memory_agent_remote_conversation_mode_switch_request_repo::MemoryRemoteConversationModeSwitchRequestRepository;
+pub use memory_agent_remote_conversation_start_request_repo::MemoryRemoteConversationStartRequestRepository;
 pub use memory_manual_role_default_repo::MemoryManualRoleDefaultRepository;
+pub use memory_mcp_catalog_snapshot_repo::MemoryMcpCatalogSnapshotRepository;
 pub use memory_mcp_policy_repo::MemoryMcpPolicyRepository;
+pub use memory_remote_automation_draft_request_repo::MemoryRemoteAutomationDraftRequestRepository;
+pub use memory_remote_automation_run_request_repo::MemoryRemoteAutomationRunRequestRepository;
+pub use memory_remote_conversation_lifecycle_request_repo::MemoryRemoteConversationLifecycleRequestRepository;
+pub use memory_remote_finalize_decision_request_repo::MemoryRemoteFinalizeDecisionRequestRepository;
+pub use memory_remote_plan_approval_request_repo::MemoryRemotePlanApprovalRequestRepository;
+pub use memory_remote_plan_edit_request_repo::MemoryRemotePlanEditRequestRepository;
+pub use memory_remote_queued_send_request_repo::MemoryRemoteQueuedSendRequestRepository;
+pub use memory_remote_resume_request_repo::{
+    MemoryRemoteExecutionResumeRequestRepository, MemoryRemoteTaskActionRequestRepository,
+};
 
 #[cfg(test)]
 mod memory_mcp_policy_repo_tests;
@@ -124,27 +156,20 @@ pub use memory_agent_profile_repo::MemoryAgentProfileRepository;
 pub use memory_agent_provider_settings_repo::MemoryAgentProviderSettingsRepository;
 pub use memory_agent_run_repo::MemoryAgentRunRepository;
 pub use memory_agent_task_repo::MemoryAgentTaskRepository;
-pub use memory_team_repo::MemoryTeamRepository;
-pub use memory_team_coordination_transition_repo::MemoryTeamCoordinationTransitionRepository;
-pub use memory_team_run_binding_repo::MemoryTeamRunBindingRepository;
-pub use memory_team_message_repo::MemoryTeamMessageRepository;
-pub use memory_team_wake_batch_repo::MemoryTeamWakeBatchRepository;
-pub use memory_team_workspace_reservation_repo::MemoryTeamWorkspaceReservationRepository;
 pub use memory_api_key_repo::MemoryApiKeyRepository;
 pub use memory_app_state_repo::MemoryAppStateRepository;
-pub use memory_automation_repo::{MemoryAutomationRepository, MemoryAutomationRunRepository};
 pub use memory_artifact_bucket_repo::MemoryArtifactBucketRepository;
 pub use memory_artifact_flow_repo::MemoryArtifactFlowRepository;
 pub use memory_artifact_repo::MemoryArtifactRepository;
-pub use memory_branch_update_repo::MemoryBranchUpdateRepository;
 pub use memory_atlassian_integration_settings_repo::MemoryAtlassianIntegrationSettingsRepository;
+pub use memory_automation_repo::{MemoryAutomationRepository, MemoryAutomationRunRepository};
+pub use memory_branch_update_repo::MemoryBranchUpdateRepository;
 pub use memory_chat_attachment_repo::MemoryChatAttachmentRepository;
-pub use memory_conversation_folder_reference_repo::MemoryConversationFolderReferenceRepository;
 pub use memory_chat_conversation_repo::MemoryChatConversationRepository;
 pub use memory_chat_message_repo::MemoryChatMessageRepository;
 pub use memory_chat_timeline_repo::MemoryChatTimelineRepository;
-pub use memory_persona_repo::MemoryPersonaRepository;
 pub use memory_clickup_integration_settings_repo::MemoryClickUpIntegrationSettingsRepository;
+pub use memory_conversation_folder_reference_repo::MemoryConversationFolderReferenceRepository;
 pub use memory_delegated_session_repo::MemoryDelegatedSessionRepository;
 pub use memory_delegation_park_repo::MemoryDelegationParkRepo;
 pub use memory_execution_plan_repo::MemoryExecutionPlanRepository;
@@ -162,19 +187,22 @@ pub use memory_linear_integration_settings_repo::MemoryLinearIntegrationSettings
 pub use memory_memory_archive_job_repo::InMemoryMemoryArchiveJobRepository;
 pub use memory_memory_entry_repo::InMemoryMemoryEntryRepository;
 pub use memory_memory_event_repo::InMemoryMemoryEventRepository;
+pub use memory_methodology_repo::MemoryMethodologyRepository;
 pub use memory_notification_repo::MemoryNotificationRepository;
 pub use memory_notification_settings_repo::MemoryNotificationSettingsRepository;
-pub use memory_methodology_repo::MemoryMethodologyRepository;
 pub use memory_orphan_worktree_cleanup_marker_repo::MemoryOrphanWorktreeCleanupMarkerRepository;
 pub use memory_permission_repo::MemoryPermissionRepository;
+pub use memory_persona_repo::MemoryPersonaRepository;
 pub use memory_plan_artifact_approval_repo::MemoryPlanArtifactApprovalRepository;
 pub use memory_plan_branch_repo::MemoryPlanBranchRepository;
 pub use memory_plan_selection_stats_repo::MemoryPlanSelectionStatsRepository;
 pub use memory_process_repo::MemoryProcessRepository;
 pub use memory_project_repo::MemoryProjectRepository;
+pub use memory_project_repository_capability_repo::MemoryProjectRepositoryCapabilityRepository;
 pub use memory_proposal_dependency_repo::MemoryProposalDependencyRepository;
 pub use memory_question_repo::MemoryQuestionRepository;
 pub use memory_queued_message_repo::MemoryQueuedMessageRepository;
+pub use memory_remote_environment_repo::MemoryRemoteEnvironmentRepository;
 pub use memory_review_issue_repo::MemoryReviewIssueRepository;
 pub use memory_review_repo::MemoryReviewRepository;
 pub use memory_review_settings_repo::MemoryReviewSettingsRepository;
@@ -185,9 +213,15 @@ pub use memory_task_proposal_repo::MemoryTaskProposalRepository;
 pub use memory_task_qa_repo::MemoryTaskQARepository;
 pub use memory_task_repo::MemoryTaskRepository;
 pub use memory_task_step_repo::MemoryTaskStepRepository;
-pub use memory_ui_feature_flag_overrides_repo::MemoryUiFeatureFlagOverridesRepository;
+pub use memory_team_coordination_transition_repo::MemoryTeamCoordinationTransitionRepository;
+pub use memory_team_message_repo::MemoryTeamMessageRepository;
+pub use memory_team_repo::MemoryTeamRepository;
+pub use memory_team_run_binding_repo::MemoryTeamRunBindingRepository;
+pub use memory_team_wake_batch_repo::MemoryTeamWakeBatchRepository;
+pub use memory_team_workspace_reservation_repo::MemoryTeamWorkspaceReservationRepository;
 pub use memory_ticket_canonical_branch_repo::MemoryTicketCanonicalBranchRepository;
 pub use memory_ticketing_status_catalog_repo::MemoryTicketingStatusCatalogRepository;
+pub use memory_ui_feature_flag_overrides_repo::MemoryUiFeatureFlagOverridesRepository;
 pub use memory_validation_run_repo::MemoryValidationRunRepository;
 pub use memory_webhook_registration_repo::MemoryWebhookRegistrationRepository;
 pub use memory_workflow_repo::MemoryWorkflowRepository;

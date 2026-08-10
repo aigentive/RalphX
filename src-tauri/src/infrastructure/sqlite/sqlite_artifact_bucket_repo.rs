@@ -181,12 +181,7 @@ impl ArtifactBucketRepository for SqliteArtifactBucketRepository {
                 conn.execute(
                     "UPDATE artifact_buckets SET name = ?2, config_json = ?3, is_system = ?4
                      WHERE id = ?1",
-                    rusqlite::params![
-                        id,
-                        name,
-                        config_json,
-                        if is_system { 1 } else { 0 },
-                    ],
+                    rusqlite::params![id, name, config_json, if is_system { 1 } else { 0 },],
                 )?;
                 Ok(())
             })

@@ -1,0 +1,302 @@
+/**
+ * The remote half of the workspace shell's two boot reads.
+ *
+ * Like `chat-remote-transcript.test.ts`, this exercises the REAL transport wrapper —
+ * `@tauri-apps/api/core` is aliased to `lib/remote/invoke`, so a remote environment routes
+ * through `networkInvoke` and out via the `remote_invoke` primitive. Mocking the API module
+ * would prove nothing about the routing, which is the only thing in question.
+ *
+ * What is being pinned: `list_projects` is ledgered Elevated (its `project_response` runs
+ * `inspect_repository_capability`) and `get_agent_provider_settings` is Denied, so both are
+ * unregistered on the facade. A client that calls them remotely gets
+ * REMOTE_COMMAND_UNAVAILABLE, reads it as an empty workspace, and renders first-run
+ * onboarding over a populated host — which is exactly what shipped. The spawn-free twins in
+ * `commands/remote_workspace_commands.rs` are what a paired device must call instead.
+ */
+
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.unmock("@tauri-apps/api/core");
+
+const { primitiveInvoke } = vi.hoisted(() => ({
+  primitiveInvoke: vi.fn<(cmd: string, args?: unknown) => Promise<unknown>>(),
+}));
+
+vi.mock("#tauri-core-primitive", async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, invoke: primitiveInvoke };
+});
+
+import { executionApi } from "@/api/execution";
+import { projectsApi } from "@/api/projects";
+import { LOCAL_ENVIRONMENT_ID, useEnvironmentStore } from "@/stores/environmentStore";
+
+const REMOTE_ID = "env-remote";
+
+/**
+ * Snake_case on purpose: the host's `RemoteProjectView` carries no `rename_all`, matching
+ * `ProjectResponse`, so the SAME Zod schema and transform parse both answers. The projection
+ * differs from the local one only by the fields it drops — `repository_capability`, whose
+ * computation is the spawn carrier — never by their names.
+ */
+const RAW_PROJECT = {
+  id: "project-1",
+  name: "RalphX",
+  working_directory: "/Users/host/code/ralphx",
+  git_mode: "worktree",
+  base_branch: "main",
+  use_feature_branches: true,
+  merge_validation_mode: "block",
+  github_pr_enabled: false,
+  detected_analysis: null,
+  custom_analysis: null,
+  analyzed_at: null,
+  created_at: "2026-07-30T12:00:00+00:00",
+  updated_at: "2026-07-30T12:00:00+00:00",
+} as const;
+
+const RAW_STOPPED_EXECUTION_STATUS = {
+  is_paused: true,
+  halt_mode: "stopped",
+  running_count: 0,
+  max_concurrent: 3,
+  global_max_concurrent: 6,
+  queued_count: 2,
+  queued_message_count: 1,
+  can_start_task: false,
+  ideation_active: 0,
+  ideation_idle: 0,
+  ideation_waiting: 0,
+  ideation_max_project: 2,
+  ideation_max_global: 4,
+} as const;
+
+function useRemoteEnvironment(): void {
+  useEnvironmentStore.setState({
+    activeEnvironmentId: REMOTE_ID,
+    environments: [
+      { id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" },
+      { id: REMOTE_ID, name: "Studio Mac", kind: "remote" },
+    ],
+    connectionPresentations: {
+      [REMOTE_ID]: {
+        presentation: "connected",
+        blockedFailure: null,
+        blockedMessage: null,
+      },
+    },
+    effectiveScopes: { [REMOTE_ID]: ["ui:read", "ui:operate"] },
+  });
+}
+
+function useLocalEnvironment(): void {
+  useEnvironmentStore.setState({
+    activeEnvironmentId: LOCAL_ENVIRONMENT_ID,
+    environments: [{ id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" }],
+    effectiveScopes: {},
+    connectionPresentations: {},
+  });
+}
+
+function wireInput(callIndex = 0): Record<string, unknown> {
+  const args = primitiveInvoke.mock.calls[callIndex]?.[1] as {
+    input: Record<string, unknown>;
+  };
+  return args.input;
+}
+
+function remoteOk(result: unknown): void {
+  primitiveInvoke.mockResolvedValue({ outcome: "ok", result });
+}
+
+beforeEach(() => {
+  primitiveInvoke.mockReset();
+  useLocalEnvironment();
+});
+
+describe("workspace shell read routing", () => {
+  it("lists projects via list_remote_projects, never the unregistered local one", async () => {
+    useRemoteEnvironment();
+    remoteOk([RAW_PROJECT]);
+
+    const projects = await projectsApi.list();
+
+    expect(primitiveInvoke).toHaveBeenCalledTimes(1);
+    expect(primitiveInvoke.mock.calls[0]?.[0]).toBe("remote_invoke");
+    expect(wireInput().cmd).toBe("list_remote_projects");
+    expect(projects).toHaveLength(1);
+    expect(projects[0]?.name).toBe("RalphX");
+    expect(projects[0]?.workingDirectory).toBe("/Users/host/code/ralphx");
+  });
+
+  it("keeps calling the local list_projects on the local environment", async () => {
+    primitiveInvoke.mockResolvedValue([RAW_PROJECT]);
+
+    await projectsApi.list();
+
+    expect(primitiveInvoke.mock.calls[0]?.[0]).toBe("list_projects");
+  });
+
+  it("reads one project via get_remote_project, never the unregistered local one", async () => {
+    useRemoteEnvironment();
+    remoteOk(RAW_PROJECT);
+
+    const project = await projectsApi.get("project-1");
+
+    expect(primitiveInvoke.mock.calls[0]?.[0]).toBe("remote_invoke");
+    expect(wireInput().cmd).toBe("get_remote_project");
+    // The twin's param is `id`, matching the host fn's own signature.
+    expect(wireInput().args).toEqual({ id: "project-1" });
+    expect(project.name).toBe("RalphX");
+  });
+
+  it("preserves remote snapshot URLs and the durable PR setting through the real envelope", async () => {
+    useRemoteEnvironment();
+    remoteOk({
+      ...RAW_PROJECT,
+      github_pr_enabled: true,
+      repository_capability_snapshot: {
+        kind: "github",
+        has_remote: true,
+        fetch_url: "https://github.com/ralphx/ralphx.git",
+        push_url: "git@github.com:ralphx/ralphx.git",
+        inspected_at: "2026-08-05T18:00:00+00:00",
+        // The host omits `message` when there is none (serde skip_serializing_if), so a
+        // realistic success payload has no key here at all — not an explicit null.
+      },
+    });
+
+    const project = await projectsApi.get("project-1");
+
+    expect(project.githubPrEnabled).toBe(true);
+    expect(project.repositoryCapability).toEqual({
+      kind: "github",
+      fetchUrl: "https://github.com/ralphx/ralphx.git",
+      pushUrl: "git@github.com:ralphx/ralphx.git",
+    });
+    expect(primitiveInvoke.mock.calls[0]?.[0]).toBe("remote_invoke");
+    expect(wireInput().cmd).toBe("get_remote_project");
+    expect(wireInput().args).toEqual({ id: "project-1" });
+  });
+
+  // Wave C2 retired `repository_capability_kind`: the host derived it from the
+  // github_pr_enabled USER PREFERENCE, so it asserted a capability nothing had inspected.
+  // An older host still sending it must not be believed.
+  it("refuses to trust the retired preference-derived capability field", async () => {
+    useRemoteEnvironment();
+    remoteOk({
+      ...RAW_PROJECT,
+      github_pr_enabled: true,
+      repository_capability_kind: "github",
+    });
+
+    const project = await projectsApi.get("project-1");
+
+    expect(project.repositoryCapability?.kind).toBe("notInspected");
+  });
+
+  it("reports not-inspected when the remote twin omits the capability kind", async () => {
+    useRemoteEnvironment();
+    remoteOk(RAW_PROJECT);
+
+    const project = await projectsApi.get("project-1");
+
+    expect(project.repositoryCapability?.kind).toBe("notInspected");
+  });
+
+  it("keeps calling the local get_project on the local environment", async () => {
+    primitiveInvoke.mockResolvedValue(RAW_PROJECT);
+
+    await projectsApi.get("project-1");
+
+    expect(primitiveInvoke.mock.calls[0]?.[0]).toBe("get_project");
+    expect(primitiveInvoke.mock.calls[0]?.[1]).toEqual({ id: "project-1" });
+  });
+
+  it("reads provider readiness via the projection, never the Denied settings command", async () => {
+    useRemoteEnvironment();
+    remoteOk({ onboardingComplete: true, enabledProviderCount: 2 });
+
+    const readiness = await projectsApi.remoteProviderReadiness();
+
+    expect(wireInput().cmd).toBe("get_remote_provider_readiness");
+    expect(readiness).toEqual({ onboardingComplete: true, enabledProviderCount: 2 });
+  });
+
+  it("saves execution settings via the spawn-free twin, never the Elevated local command", async () => {
+    useRemoteEnvironment();
+    remoteOk({
+      max_concurrent_tasks: 3,
+      project_ideation_max: 2,
+      auto_commit: true,
+      pause_on_failure: false,
+      agent_workspace_pr_autofix_default: false,
+      agent_workspace_pr_auto_merge_default: false,
+    });
+
+    // `get_execution_settings` is registered, so the pane already shows host values; before
+    // this the save silently went nowhere because `update_execution_settings` is Elevated.
+    await executionApi.updateSettings(
+      {
+        maxConcurrentTasks: 3,
+        projectIdeationMax: 2,
+        autoCommit: true,
+        pauseOnFailure: false,
+        agentWorkspacePrAutofixDefault: false,
+        agentWorkspacePrAutoMergeDefault: false,
+      },
+      "project-1",
+    );
+
+    expect(wireInput().cmd).toBe("update_remote_execution_settings");
+  });
+
+  it("reads remote execution status through the spawn-free twin", async () => {
+    useRemoteEnvironment();
+    remoteOk(RAW_STOPPED_EXECUTION_STATUS);
+
+    const status = await executionApi.getStatus("project-1");
+
+    expect(wireInput().cmd).toBe("get_remote_execution_status");
+    expect(wireInput().args).toEqual({ projectId: "project-1" });
+    expect(status.haltMode).toBe("stopped");
+  });
+
+  it("keeps reading execution status through the original local command", async () => {
+    primitiveInvoke.mockResolvedValue(RAW_STOPPED_EXECUTION_STATUS);
+
+    await executionApi.getStatus("project-1");
+
+    expect(primitiveInvoke.mock.calls[0]?.[0]).toBe("get_execution_status");
+    expect(primitiveInvoke.mock.calls[0]?.[1]).toEqual({ projectId: "project-1" });
+  });
+
+  it("surfaces a failed remote execution-status twin read", async () => {
+    useRemoteEnvironment();
+    primitiveInvoke.mockRejectedValue("REMOTE_INTERNAL_ERROR: scheduler unavailable");
+
+    await expect(executionApi.getStatus("project-1")).rejects.toBeDefined();
+    expect(wireInput().cmd).toBe("get_remote_execution_status");
+  });
+
+  it("names a project the host does not have instead of dumping a schema error", async () => {
+    useRemoteEnvironment();
+    // `get_remote_project` answers `null` for an id the host does not have — common when the
+    // client's selection predates the environment switch. Parsing it as a required object
+    // surfaced a raw "expected object, received null" dump at the root path.
+    remoteOk(null);
+
+    await expect(projectsApi.get("project-missing")).rejects.toThrow(
+      /was not found on this host/,
+    );
+  });
+
+  it("surfaces a failed project read instead of returning an empty workspace", async () => {
+    useRemoteEnvironment();
+    primitiveInvoke.mockRejectedValue("REMOTE_INTERNAL_ERROR: host database is down");
+
+    // The whole bug class: a rejected read that resolves to [] renders as "first run", so a
+    // populated host would show onboarding. It must reject.
+    await expect(projectsApi.list()).rejects.toBeDefined();
+  });
+});

@@ -136,6 +136,35 @@ describe("ReleaseNotesDialog", () => {
     expect(screen.getByTestId("release-notes-dialog-body")).toBeInTheDocument();
   });
 
+  it("reports unavailable local release reads instead of presenting known-empty details", async () => {
+    mocks.listReleaseNotesVersions.mockRejectedValue({
+      outcome: "commandError",
+      error: "REMOTE_COMMAND_UNAVAILABLE",
+    });
+    mocks.getVersion.mockRejectedValue({
+      outcome: "commandError",
+      error: "REMOTE_COMMAND_UNAVAILABLE",
+    });
+
+    render(<ReleaseNotesDialog open={true} onClose={vi.fn()} />);
+    await flushAll();
+
+    expect(screen.getByTestId("release-notes-local-data-unavailable")).toHaveTextContent(
+      "Some release details could not be loaded.",
+    );
+    expect(screen.queryByText("current")).not.toBeInTheDocument();
+  });
+
+  it("does not show the unavailable state for successful empty local release data", async () => {
+    mocks.listReleaseNotesVersions.mockResolvedValue([]);
+    mocks.getVersion.mockResolvedValue("0.8.0");
+
+    render(<ReleaseNotesDialog open={true} onClose={vi.fn()} />);
+    await flushAll();
+
+    expect(screen.queryByTestId("release-notes-local-data-unavailable")).not.toBeInTheDocument();
+  });
+
   it("shows sidebar with version buttons", async () => {
     render(<ReleaseNotesDialog open={true} onClose={vi.fn()} />);
     await flushAll();

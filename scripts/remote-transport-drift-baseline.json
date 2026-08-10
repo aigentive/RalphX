@@ -1,0 +1,4 @@
+{
+  "note": "P-11 COMPLETE (PR 3.1-b batch 14). Every invoke command name resolves to a registration, a reason-coded local-only row, or a host-denied/deferred/audit-refused ledger row. This list MUST stay empty — it is no longer a ratchet, it is a permanent zero.",
+  "unclassifiedCommands": []
+}

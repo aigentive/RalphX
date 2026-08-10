@@ -19,15 +19,18 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { RemoteHostOnlyNotice } from "@/components/remote/RemoteHostOnlyNotice";
+import { useIsRemoteEnvironment } from "@/hooks/useActiveEnvironment";
+import { useClientOwnedFeatureFlag } from "@/lib/remote/feature-flag-authority";
 import { useUiStore } from "@/stores/uiStore";
 import type { ProjectSettings } from "@/types/settings";
 
 import {
   DEFAULT_SETTINGS_SECTION,
-  SETTINGS_NAV,
   navForSection,
   resolveSettingsDestination,
   sectionMeta,
+  visibleSettingsNav,
   type SettingsDestination,
   type SettingsSectionId,
 } from "./settings-registry";
@@ -164,6 +167,15 @@ export default function SettingsDialog({
     }
   }, [isOpen, modalContext, persistActiveSection]);
 
+  // `remoteEnvironments` is client-owned: `useFeatureFlags()` strips it, so the
+  // gate reads the local uiStore copy instead.
+  const remoteEnvironments = useClientOwnedFeatureFlag("remoteEnvironments");
+  const isRemoteEnvironment = useIsRemoteEnvironment();
+  // Nav entries with `remoteEnvironments`-gated leaves stripped. The rail itself
+  // renders the full seven entries (no gated entry is leaf-only), so only the
+  // mobile leaf picker consumes the filtered list.
+  const navEntries = visibleSettingsNav({ remoteEnvironments });
+
   const activeNav = navForSection(activeSection);
   const activeSectionMeta = sectionMeta(activeSection);
 
@@ -225,8 +237,28 @@ export default function SettingsDialog({
           </TooltipProvider>
         </div>
 
-        {/* Body */}
-        <div className="settings-modal__body flex-1 overflow-hidden">
+        {/* ONE grid item, because `.settings-modal` defines exactly two rows
+            (`62px minmax(0, 1fr)`). A notice rendered as a third flow child would take the
+            `1fr` row for itself and push the body into an implicit auto row — which is
+            precisely how it grew to fill the dialog. Wrapping keeps the row count fixed
+            whether or not the notice renders. */}
+        <div className="flex min-h-0 flex-col overflow-hidden">
+          {/* Whose settings these are. Dialog-level rather than per-pane: EVERY section here
+              reads the active environment, so the answer qualifies the whole dialog, and the
+              panes that are host-only would otherwise each have to say so themselves. */}
+          {isRemoteEnvironment && (
+            <RemoteHostOnlyNotice
+              subject="Workspace settings"
+              verb="run"
+              detail="You are viewing the machine you are connected to. Appearance, accessibility, and app updates stay with this Mac."
+              layout="strip"
+              className="w-full shrink-0"
+              testId="settings-remote-environment-notice"
+            />
+          )}
+
+          {/* Body */}
+          <div className="settings-modal__body min-h-0 flex-1 overflow-hidden">
           {/* Left rail — hidden below lg breakpoint */}
           <SettingsNavRail
             activeSection={activeSection}
@@ -242,7 +274,7 @@ export default function SettingsDialog({
               onChange={(e) => setActiveSection(e.target.value as SettingsSectionId)}
               className="settings-input w-full focus:outline-none"
             >
-              {SETTINGS_NAV.map((nav) => (
+              {navEntries.map((nav) => (
                 <optgroup key={nav.id} label={nav.label}>
                   {nav.leaves.map((leafId) => (
                     <option key={leafId} value={leafId}>
@@ -278,6 +310,7 @@ export default function SettingsDialog({
                 </SettingsNavPage>
               </div>
             </ScrollArea>
+          </div>
           </div>
         </div>
 

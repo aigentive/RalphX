@@ -38,9 +38,21 @@ export interface AgentWorkspaceChangeSummaryState {
   conflictedCount: number | undefined;
   stagedCount: number | undefined;
   unstagedCount: number | undefined;
+  stagedFilesKnowledge: WorktreeFilesKnowledge;
+  unstagedFilesKnowledge: WorktreeFilesKnowledge;
   totalAdditions: number;
   totalDeletions: number;
   worktreeChangeSignature?: string | undefined;
+}
+
+export type WorktreeFilesKnowledge = "knownEmpty" | "knownNonempty" | "unknown";
+
+function getWorktreeFilesKnowledge(
+  count: number | undefined,
+  isError: boolean,
+): WorktreeFilesKnowledge {
+  if (isError || count === undefined) return "unknown";
+  return count === 0 ? "knownEmpty" : "knownNonempty";
 }
 
 export interface AgentWorkspaceChangeFacts {
@@ -256,6 +268,14 @@ export function useAgentWorkspaceChangeSummary({
   const conflictedFilePaths = enabled
     ? liveSummary?.conflicted?.files
     : undefined;
+  const stagedFilesKnowledge = getWorktreeFilesKnowledge(
+    stagedCount,
+    stagedFilesQuery.isError,
+  );
+  const unstagedFilesKnowledge = getWorktreeFilesKnowledge(
+    unstagedCount,
+    unstagedFilesQuery.isError,
+  );
   const preferredMode = useMemo<DiffFilterMode>(() => {
     if (!supportsWorktreeModes || hasUserSelectedMode || selectedMode !== "uncommitted") {
       return selectedMode;
@@ -266,12 +286,16 @@ export function useAgentWorkspaceChangeSummary({
     if (unstagedCount !== undefined && unstagedCount > 0) {
       return "unstaged";
     }
-    const unstagedKnownEmpty = unstagedCount === 0 || unstagedFilesQuery.isError;
-    if (unstagedKnownEmpty && stagedCount !== undefined && stagedCount > 0) {
+    if (
+      unstagedFilesKnowledge === "knownEmpty" &&
+      stagedFilesKnowledge === "knownNonempty"
+    ) {
       return "staged";
     }
-    const stagedKnownEmpty = stagedCount === 0 || stagedFilesQuery.isError;
-    if (unstagedKnownEmpty && stagedKnownEmpty) {
+    if (
+      unstagedFilesKnowledge === "knownEmpty" &&
+      stagedFilesKnowledge === "knownEmpty"
+    ) {
       return "uncommitted";
     }
     return selectedMode;
@@ -279,11 +303,10 @@ export function useAgentWorkspaceChangeSummary({
     hasUserSelectedMode,
     selectedMode,
     shouldAutoPreferConflicted,
-    stagedCount,
-    stagedFilesQuery.isError,
+    stagedFilesKnowledge,
     supportsWorktreeModes,
     unstagedCount,
-    unstagedFilesQuery.isError,
+    unstagedFilesKnowledge,
   ]);
   const effectiveMode =
     !supportsWorktreeModes &&
@@ -457,6 +480,8 @@ export function useAgentWorkspaceChangeSummary({
     conflictedCount,
     stagedCount,
     unstagedCount,
+    stagedFilesKnowledge,
+    unstagedFilesKnowledge,
     totalAdditions,
     totalDeletions,
     worktreeChangeSignature,

@@ -3,6 +3,10 @@ import { chatApi, type QueuedMessageResponse } from "@/api/chat";
 import { useChatStore, type QueuedMessage } from "@/stores/chatStore";
 import type { ContextType } from "@/types/chat-conversation";
 import { logger } from "@/lib/logger";
+import {
+  getTransportEnvironmentId,
+  isRemoteEnvironmentId,
+} from "@/lib/remote/active-environment";
 
 interface UseQueuedMessagesHydrationOptions {
   contextType: ContextType;
@@ -25,6 +29,16 @@ function toQueuedMessage(message: QueuedMessageResponse): QueuedMessage {
   };
 }
 
+export function loadQueuedMessagesForHydration(
+  contextType: ContextType,
+  contextId: string,
+): Promise<QueuedMessageResponse[]> {
+  if (isRemoteEnvironmentId(getTransportEnvironmentId())) {
+    return chatApi.listRemoteQueuedAgentMessages(contextId);
+  }
+  return chatApi.getQueuedAgentMessages(contextType, contextId);
+}
+
 export function useQueuedMessagesHydration({
   contextType,
   contextId,
@@ -37,7 +51,8 @@ export function useQueuedMessagesHydration({
     if (!enabled || !contextId || !storeContextKey) {
       return;
     }
-    const getQueuedAgentMessages = chatApi.getQueuedAgentMessages;
+    const isRemote = isRemoteEnvironmentId(getTransportEnvironmentId());
+    const getQueuedAgentMessages = loadQueuedMessagesForHydration;
     if (typeof getQueuedAgentMessages !== "function") {
       logger.debug?.("[chat] Skipping queued message hydration; API is unavailable", {
         contextType,
@@ -54,6 +69,9 @@ export function useQueuedMessagesHydration({
         setQueuedMessages(storeContextKey, messages.map(toQueuedMessage));
       })
       .catch((error) => {
+        if (isRemote) {
+          throw error;
+        }
         logger.debug?.("[chat] Failed to hydrate queued messages", {
           contextType,
           contextId,

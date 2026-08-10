@@ -51,7 +51,8 @@ fn single_secret_line() {
     let mut buf = Vec::new();
     {
         let mut w = make_writer(&mut buf);
-        w.write_all(b"token: sk-ant-AAAAAAAAAAAAAAAAAAAAA\n").unwrap();
+        w.write_all(b"token: sk-ant-AAAAAAAAAAAAAAAAAAAAA\n")
+            .unwrap();
         w.flush().unwrap();
     }
     let out = String::from_utf8(buf).unwrap();
@@ -192,8 +193,7 @@ fn subscriber_integration_redacts_secrets() {
     let buf = SharedBuf(Arc::new(Mutex::new(Vec::new())));
     let writer = RedactingMakeWriter::new(buf.clone());
 
-    let subscriber = Registry::default()
-        .with(fmt::layer().with_writer(writer).with_ansi(false));
+    let subscriber = Registry::default().with(fmt::layer().with_writer(writer).with_ansi(false));
 
     tracing::subscriber::with_default(subscriber, || {
         tracing::info!("ANTHROPIC_AUTH_TOKEN: sk-ant-AAAAAAAAAAAAAAAAAAAAA");
@@ -216,8 +216,7 @@ fn subscriber_integration_non_secret_unchanged() {
     let buf = SharedBuf(Arc::new(Mutex::new(Vec::new())));
     let writer = RedactingMakeWriter::new(buf.clone());
 
-    let subscriber = Registry::default()
-        .with(fmt::layer().with_writer(writer).with_ansi(false));
+    let subscriber = Registry::default().with(fmt::layer().with_writer(writer).with_ansi(false));
 
     tracing::subscriber::with_default(subscriber, || {
         tracing::info!("Hello, world!");

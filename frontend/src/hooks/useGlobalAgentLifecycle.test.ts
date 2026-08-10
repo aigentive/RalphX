@@ -34,9 +34,15 @@ const chatStoreMocks = vi.hoisted(() => ({
   setActiveAgentRun: vi.fn(),
   clearActiveAgentRun: vi.fn(),
   setEffectiveModel: vi.fn(),
+  isSending: {} as Record<string, boolean>,
+  setAgentRunning: vi.fn(),
 }));
 
 vi.mock("@/stores/chatStore", () => ({
+  selectAgentStatus:
+    (storeKey: string) =>
+    (state: typeof chatStoreMocks): string =>
+      state.agentStatus[storeKey] ?? "idle",
   useChatStore: Object.assign(
     vi.fn((selector: (s: typeof chatStoreMocks) => unknown) => selector(chatStoreMocks)),
     { getState: () => chatStoreMocks }
@@ -56,6 +62,21 @@ vi.mock("@/stores/uiStore", () => ({
 
 vi.mock("sonner", () => ({
   toast: { success: vi.fn(), warning: vi.fn(), error: vi.fn(), info: vi.fn() },
+}));
+
+const runtimeReconcileMocks = vi.hoisted(() => ({
+  getRuntimeIndex: vi.fn(),
+  knownConversations: vi.fn(),
+}));
+
+vi.mock("@/api/chat", () => ({
+  chatApi: {
+    getAgentConversationRuntimeIndex: runtimeReconcileMocks.getRuntimeIndex,
+  },
+}));
+
+vi.mock("@/components/agents/useAgentSidebarRunningStates", () => ({
+  getKnownAgentSidebarConversations: runtimeReconcileMocks.knownConversations,
 }));
 
 // Capture event bus subscriptions so tests can fire events manually
@@ -104,6 +125,10 @@ import { useGlobalAgentLifecycle } from "./useGlobalAgentLifecycle";
 import { agentSidebarConversationKeys } from "./agentSidebarConversationKeys";
 import { useIdeationStore } from "@/stores/ideationStore";
 import { toast } from "sonner";
+import { requestRuntimeIndexReconcile } from "@/lib/remote/runtime-index-reconcile";
+import { RemoteTransportError } from "@/lib/remote/transport-errors";
+import { selectAgentStatus } from "@/stores/chatStore";
+import { useEnvironmentStore } from "@/stores/environmentStore";
 
 // ============================================================================
 // Helpers
@@ -173,11 +198,23 @@ describe("useGlobalAgentLifecycle", () => {
     chatStoreMocks.setActiveAgentRun.mockClear();
     chatStoreMocks.clearActiveAgentRun.mockClear();
     chatStoreMocks.setEffectiveModel.mockClear();
+    chatStoreMocks.setAgentRunning.mockClear();
     chatStoreMocks.agentStatus = {};
     chatStoreMocks.activeAgentRunIds = {};
     chatStoreMocks.activeAgentRunHarnesses = {};
     chatStoreMocks.lastAgentEventTimestamp = {};
     chatStoreMocks.activeConversationIds = {};
+    chatStoreMocks.isSending = {};
+    chatStoreMocks.setAgentStatus.mockImplementation((key, status) => {
+      chatStoreMocks.agentStatus[key] = status;
+    });
+    chatStoreMocks.setAgentRunning.mockImplementation((key, running) => {
+      if (running) chatStoreMocks.agentStatus[key] = "generating";
+      else delete chatStoreMocks.agentStatus[key];
+    });
+    runtimeReconcileMocks.getRuntimeIndex.mockReset();
+    runtimeReconcileMocks.knownConversations.mockReset();
+    runtimeReconcileMocks.knownConversations.mockReturnValue([]);
     uiStoreMocks.clearActiveQuestion.mockClear();
     vi.mocked(toast.error).mockClear();
 
@@ -189,6 +226,230 @@ describe("useGlobalAgentLifecycle", () => {
       planArtifact: null,
       activeVerificationChildId: {},
     });
+  });
+
+  it("authoritatively reconciles known remote conversations and fails closed", async () => {
+    useEnvironmentStore.setState({
+      activeEnvironmentId: "env-remote",
+      environments: [{ id: "env-remote", name: "Remote", kind: "remote" }],
+    });
+    runtimeReconcileMocks.knownConversations.mockReturnValue([
+      {
+        id: "conv-live",
+        contextType: "project",
+        contextId: "conv-live",
+      },
+    ]);
+    const runningRow = {
+      id: "run-1",
+      group: "main",
+      kind: "workspace",
+      lifecycle: "running",
+      statusLabel: "Agent working",
+      title: "Agent run",
+      mode: "agent",
+      orderIndex: 0,
+      orderStartedAt: null,
+      completedAt: null,
+      conversationId: "conv-live",
+      contextType: "project",
+      contextId: "conv-live",
+      taskId: null,
+      agentRunId: "run-1",
+      parentSessionId: null,
+      childSessionId: null,
+      providerHarness: null,
+      providerSessionId: null,
+      errorMessage: null,
+    } as const;
+    runtimeReconcileMocks.getRuntimeIndex
+      .mockResolvedValueOnce({ conversationId: "conv-live", rows: [runningRow] })
+      .mockResolvedValueOnce({ conversationId: "conv-live", rows: [] })
+      .mockRejectedValueOnce(new Error("host read failed"));
+    renderHook(() => useGlobalAgentLifecycle());
+
+    await act(async () => {
+      requestRuntimeIndexReconcile("env-remote");
+    });
+    expect(
+      selectAgentStatus("project:conv-live")(chatStoreMocks),
+    ).toBe("generating");
+
+    await act(async () => {
+      requestRuntimeIndexReconcile("env-remote");
+    });
+    expect(selectAgentStatus("project:conv-live")(chatStoreMocks)).toBe("idle");
+
+    chatStoreMocks.agentStatus["project:conv-live"] = "generating";
+    await act(async () => {
+      requestRuntimeIndexReconcile("env-remote");
+    });
+    expect(
+      selectAgentStatus("project:conv-live")(chatStoreMocks),
+    ).toBe("generating");
+  });
+
+  it("stops fetching and writing when the environment switches mid-reconcile", async () => {
+    useEnvironmentStore.setState({
+      activeEnvironmentId: "env-remote",
+      environments: [
+        { id: "local", name: "This Mac", kind: "local" },
+        { id: "env-remote", name: "Remote", kind: "remote" },
+      ],
+    });
+    runtimeReconcileMocks.knownConversations.mockReturnValue([
+      { id: "conv-first", contextType: "project", contextId: "conv-first" },
+      { id: "conv-second", contextType: "project", contextId: "conv-second" },
+    ]);
+    runtimeReconcileMocks.getRuntimeIndex.mockResolvedValue({
+      conversationId: "conv-first",
+      rows: [{
+        id: "run-1",
+        group: "main",
+        kind: "workspace",
+        lifecycle: "running",
+        statusLabel: "Agent working",
+        title: "Agent run",
+        mode: "agent",
+        orderIndex: 0,
+        orderStartedAt: null,
+        completedAt: null,
+        conversationId: "conv-first",
+        contextType: "project",
+        contextId: "conv-first",
+        taskId: null,
+        agentRunId: "run-1",
+        parentSessionId: null,
+        childSessionId: null,
+        providerHarness: null,
+        providerSessionId: null,
+        errorMessage: null,
+      }],
+    });
+    chatStoreMocks.setActiveConversation.mockImplementationOnce(() => {
+      useEnvironmentStore.setState({ activeEnvironmentId: "local" });
+    });
+    renderHook(() => useGlobalAgentLifecycle());
+
+    await act(async () => {
+      requestRuntimeIndexReconcile("env-remote");
+    });
+
+    expect(runtimeReconcileMocks.getRuntimeIndex).toHaveBeenCalledTimes(1);
+    expect(chatStoreMocks.setActiveConversation).not.toHaveBeenCalledWith(
+      "project:conv-second",
+      "conv-second",
+    );
+  });
+
+  it("lets a newer reconcile generation prevent an older snapshot write", async () => {
+    useEnvironmentStore.setState({
+      activeEnvironmentId: "env-remote",
+      environments: [{ id: "env-remote", name: "Remote", kind: "remote" }],
+    });
+    runtimeReconcileMocks.knownConversations.mockReturnValue([
+      { id: "conv-live", contextType: "project", contextId: "conv-live" },
+    ]);
+    let resolveOld!: (value: unknown) => void;
+    runtimeReconcileMocks.getRuntimeIndex
+      .mockImplementationOnce(
+        () => new Promise((resolve) => { resolveOld = resolve; }),
+      )
+      .mockResolvedValueOnce({ conversationId: "conv-live", rows: [] });
+    renderHook(() => useGlobalAgentLifecycle());
+
+    act(() => requestRuntimeIndexReconcile("env-remote"));
+    await act(async () => {
+      requestRuntimeIndexReconcile("env-remote");
+    });
+    chatStoreMocks.setActiveConversation.mockClear();
+
+    await act(async () => {
+      resolveOld({
+        conversationId: "conv-live",
+        rows: [{
+          id: "old-run",
+          group: "main",
+          kind: "workspace",
+          lifecycle: "running",
+          statusLabel: "Agent working",
+          title: "Old run",
+          mode: "agent",
+          orderIndex: 0,
+          orderStartedAt: null,
+          completedAt: null,
+          conversationId: "conv-live",
+          contextType: "project",
+          contextId: "conv-live",
+          taskId: null,
+          agentRunId: "old-run",
+          parentSessionId: null,
+          childSessionId: null,
+          providerHarness: null,
+          providerSessionId: null,
+          errorMessage: null,
+        }],
+      });
+    });
+
+    expect(chatStoreMocks.setActiveConversation).not.toHaveBeenCalled();
+    expect(chatStoreMocks.setAgentStatus).not.toHaveBeenCalledWith(
+      "project:conv-live",
+      "generating",
+    );
+  });
+
+  it("ignores background environments and stops fan-out after command unavailable", async () => {
+    useEnvironmentStore.setState({
+      activeEnvironmentId: "env-active",
+      environments: [{ id: "env-active", name: "Remote", kind: "remote" }],
+    });
+    runtimeReconcileMocks.knownConversations.mockReturnValue([
+      { id: "conv-1", contextType: "project", contextId: "conv-1" },
+      { id: "conv-2", contextType: "project", contextId: "conv-2" },
+    ]);
+    runtimeReconcileMocks.getRuntimeIndex.mockRejectedValue(
+      new RemoteTransportError({
+        code: "REMOTE_COMMAND_UNAVAILABLE",
+        message: "not registered",
+        environmentId: "env-active",
+        cmd: "get_agent_conversation_runtime_index",
+      }),
+    );
+    renderHook(() => useGlobalAgentLifecycle());
+
+    await act(async () => {
+      requestRuntimeIndexReconcile("env-background");
+    });
+    expect(runtimeReconcileMocks.getRuntimeIndex).not.toHaveBeenCalled();
+
+    await act(async () => {
+      requestRuntimeIndexReconcile("env-active");
+    });
+    expect(runtimeReconcileMocks.getRuntimeIndex).toHaveBeenCalledTimes(1);
+    expect(runtimeReconcileMocks.getRuntimeIndex).toHaveBeenCalledWith("conv-1");
+  });
+
+  it("shows one toast when multiple conversations fail in one reconcile", async () => {
+    useEnvironmentStore.setState({
+      activeEnvironmentId: "env-active",
+      environments: [{ id: "env-active", name: "Remote", kind: "remote" }],
+    });
+    runtimeReconcileMocks.knownConversations.mockReturnValue([
+      { id: "conv-1", contextType: "project", contextId: "conv-1" },
+      { id: "conv-2", contextType: "project", contextId: "conv-2" },
+    ]);
+    runtimeReconcileMocks.getRuntimeIndex.mockRejectedValue(
+      new Error("host read failed"),
+    );
+    renderHook(() => useGlobalAgentLifecycle());
+
+    await act(async () => {
+      requestRuntimeIndexReconcile("env-active");
+    });
+
+    expect(runtimeReconcileMocks.getRuntimeIndex).toHaveBeenCalledTimes(2);
+    expect(toast.error).toHaveBeenCalledTimes(1);
   });
 
   // --------------------------------------------------------------------------

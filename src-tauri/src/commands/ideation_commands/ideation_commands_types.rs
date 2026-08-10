@@ -3,6 +3,9 @@
 
 use serde::{Deserialize, Serialize};
 
+pub use crate::application::ideation_finalize_types::{
+    ApplyProposalsInput, ApplyProposalsResult, ApplyProposalsResultResponse,
+};
 use crate::domain::entities::{
     DependencyGraph, IdeationAnalysisBaseRefKind, IdeationSession, TaskProposal,
 };
@@ -427,71 +430,6 @@ impl From<DependencyGraph> for DependencyGraphResponse {
                     .map(|c| c.into_iter().map(|id| id.as_str().to_string()).collect())
                     .collect()
             }),
-        }
-    }
-}
-
-/// Input for apply proposals
-#[derive(Debug, Deserialize)]
-pub struct ApplyProposalsInput {
-    pub session_id: String,
-    pub proposal_ids: Vec<String>,
-    pub target_column: String,
-    /// Per-plan override for base branch (None = use project default)
-    #[serde(default)]
-    pub base_branch_override: Option<String>,
-}
-
-/// Core result of apply proposals — transport-agnostic, usable from Tauri IPC and HTTP contexts.
-///
-/// Contains all information produced by [`apply_proposals_core`], plus context fields required
-/// by Tauri-specific side effects (scheduler trigger, session namer).
-#[derive(Debug)]
-pub struct ApplyProposalsResult {
-    pub created_task_ids: Vec<String>,
-    /// Number of proposal-to-proposal dependency edges created (excludes merge task edges).
-    pub dependencies_created: usize,
-    /// Number of plan tasks created (excludes the auto-generated merge task).
-    pub tasks_created: usize,
-    /// Human-readable summary of the finalization result.
-    pub message: Option<String>,
-    pub warnings: Vec<String>,
-    pub session_converted: bool,
-    pub execution_plan_id: Option<String>,
-    /// Project ID — for Tauri `emit_queue_changed` and HTTP scope validation.
-    pub project_id: String,
-    /// Session ID — for Tauri session namer re-trigger.
-    pub session_id: String,
-    /// Whether any tasks were set to Ready status — triggers Tauri scheduler.
-    pub any_ready_tasks: bool,
-    /// Whether the session title was set by the user — suppresses session namer.
-    pub is_user_title: bool,
-    /// Applied proposal titles — context for session namer prompt.
-    pub proposal_titles: Vec<String>,
-}
-
-/// Response for apply proposals
-#[derive(Debug, Serialize)]
-pub struct ApplyProposalsResultResponse {
-    pub created_task_ids: Vec<String>,
-    pub dependencies_created: usize,
-    pub tasks_created: usize,
-    pub message: Option<String>,
-    pub warnings: Vec<String>,
-    pub session_converted: bool,
-    pub execution_plan_id: Option<String>,
-}
-
-impl From<ApplyProposalsResult> for ApplyProposalsResultResponse {
-    fn from(r: ApplyProposalsResult) -> Self {
-        Self {
-            created_task_ids: r.created_task_ids,
-            dependencies_created: r.dependencies_created,
-            tasks_created: r.tasks_created,
-            message: r.message,
-            warnings: r.warnings,
-            session_converted: r.session_converted,
-            execution_plan_id: r.execution_plan_id,
         }
     }
 }

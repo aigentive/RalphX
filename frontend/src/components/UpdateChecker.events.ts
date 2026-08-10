@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { useEventBus } from "@/providers/EventProvider";
 
 const UPDATE_CHECK_EVENT = "ralphx://check-for-updates";
 const RELEASE_NOTES_EVENT = "ralphx://show-release-notes";
@@ -13,37 +13,24 @@ export function useUpdateCheckerNativeEvents({
   enabled?: boolean;
   openCurrentReleaseNotes: () => void;
 }) {
+  const eventBus = useEventBus();
+
   useEffect(() => {
     if (!enabled) {
       return undefined;
     }
 
-    const unlisteners: UnlistenFn[] = [];
-    let isMounted = true;
-
-    void listen(UPDATE_CHECK_EVENT, () => {
+    const unsubscribeUpdateCheck = eventBus.subscribe(UPDATE_CHECK_EVENT, () => {
       void checkForUpdates({ manual: true, force: true });
-    }).then((unlisten) => {
-      if (isMounted) {
-        unlisteners.push(unlisten);
-      } else {
-        unlisten();
-      }
     });
 
-    void listen(RELEASE_NOTES_EVENT, () => {
+    const unsubscribeReleaseNotes = eventBus.subscribe(RELEASE_NOTES_EVENT, () => {
       void openCurrentReleaseNotes();
-    }).then((unlisten) => {
-      if (isMounted) {
-        unlisteners.push(unlisten);
-      } else {
-        unlisten();
-      }
     });
 
     return () => {
-      isMounted = false;
-      unlisteners.forEach((unlisten) => unlisten());
+      unsubscribeUpdateCheck();
+      unsubscribeReleaseNotes();
     };
-  }, [checkForUpdates, enabled, openCurrentReleaseNotes]);
+  }, [checkForUpdates, enabled, eventBus, openCurrentReleaseNotes]);
 }

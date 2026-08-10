@@ -569,6 +569,48 @@ async fn coordinated_full_context(
     }
 }
 
+/// The PERSISTED-ONLY workspace Review context — never recomputes, never spawns.
+///
+/// [`load_agent_workspace_review_presentation_context`] falls through to
+/// `calculate_generation_fenced_context`, which resolves the review target with
+/// `resolve_review_target` — a `git` command lane. That is the correct behaviour for the local
+/// UI, and it is exactly what the remote fetch remount must never reach: the detector-(c)
+/// process floor is absolute, and the 29 `diff_commands` sit denied for precisely this "may
+/// spawn git" reason.
+///
+/// This variant is the read-only subset: it serves the monitor row the host already persisted
+/// (which carries `review_artifact_id` / `review_requested_changes_artifact_id`, the ids the
+/// client needs to open a review), and when no target snapshot exists it says so instead of
+/// computing one. Every branch is a repository read.
+///
+/// Fail-closed carry-over: `status_snapshot` still refuses (`AppError::Conflict`) when the
+/// monitor claims `Reviewing` without a persisted target, so an in-flight review is never
+/// rendered as an idle one.
+pub async fn load_persisted_workspace_review_snapshot_context(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+) -> AppResult<AgentWorkspaceReviewContext> {
+    let workspace = load_current_workspace_review_eligible(state, workspace).await?;
+    let workspace = &workspace;
+    let generation = load_monitor_generation(state, workspace).await?;
+    if let Some(context) = status_snapshot(workspace, &generation)? {
+        return Ok(context);
+    }
+    let monitor = match generation {
+        MonitorGeneration::Present(monitor) => *monitor,
+        MonitorGeneration::Missing => AgentWorkspaceReviewMonitor::new(
+            workspace.conversation_id.clone(),
+            workspace.project_id.clone(),
+        ),
+    };
+    Ok(build_context(
+        workspace,
+        monitor,
+        None,
+        AgentWorkspaceReviewGoalContext::default(),
+    ))
+}
+
 pub async fn load_agent_workspace_review_presentation_context(
     state: &AppState,
     workspace: &AgentConversationWorkspace,

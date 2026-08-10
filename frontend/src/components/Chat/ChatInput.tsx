@@ -15,6 +15,8 @@ import {
   useEffect,
   type ReactNode,
 } from "react";
+import { AgentGateTooltip } from "@/components/remote/AgentGateTooltip";
+import { useAgentGate } from "@/hooks/useAgentGate";
 import { useChatAttachmentDrop } from "@/hooks/useChatAttachmentDrop";
 import { ChatAttachmentPicker } from "./ChatAttachmentPicker";
 import { ChatAttachmentDropOverlay } from "./ChatAttachmentDropOverlay";
@@ -240,8 +242,8 @@ export function ChatInput({
   // Handle sending or queueing message
   const handleSend = useCallback(async () => {
     const trimmedValue = value.trim();
-    // Block if no content, or if sending and agent not alive (can't queue or interact)
-    if (!trimmedValue || (isSending && !isAgentAlive)) return;
+    // Block if no content, gated, or if sending and agent not alive
+    if (!trimmedValue || agentGate.gated || (isSending && !isAgentAlive)) return;
 
     // Clear input immediately (optimistic UI)
     const clearInput = () => {
@@ -277,6 +279,8 @@ export function ChatInput({
     questionMode,
   ]);
 
+  const queuedEditGate = useAgentGate("queuedMessageEdit");
+
   // Handle keyboard shortcuts
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -286,21 +290,32 @@ export function ChatInput({
       } else if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         handleSend();
-      } else if (e.key === "ArrowUp" && !value && hasQueuedMessages) {
+      } else if (
+        e.key === "ArrowUp" &&
+        !value &&
+        hasQueuedMessages &&
+        !queuedEditGate.gated
+      ) {
         // Up arrow in empty input: edit last queued message
         e.preventDefault();
         onEditLastQueued?.();
       }
     },
-    [handleSend, value, hasQueuedMessages, onEditLastQueued]
+    [handleSend, value, hasQueuedMessages, onEditLastQueued, queuedEditGate.gated]
   );
 
   // Track focus state for unified container border highlight
   const [isFocused, setIsFocused] = useState(false);
 
   // Allow typing and queueing/sending when agent is alive (generating or waiting), but not in read-only mode
-  const isDisabled = isReadOnly || (isSending && !isAgentAlive);
-  const canSend = value.trim().length > 0 && !isReadOnly && (!isSending || isAgentAlive);
+  // Sending a chat message steers the agent — `ui:agent` required (2.6-b).
+  const agentGate = useAgentGate("chatSend");
+  const isDisabled = isReadOnly || agentGate.gated || (isSending && !isAgentAlive);
+  const canSend =
+    value.trim().length > 0 &&
+    !isReadOnly &&
+    !agentGate.gated &&
+    (!isSending || isAgentAlive);
   const attachmentDropEnabled = enableAttachments && !isReadOnly && onFilesSelected !== undefined;
   const { isDragging: isAttachmentDragging, dropProps: attachmentDropProps } = useChatAttachmentDrop({
     enabled: attachmentDropEnabled,
@@ -397,6 +412,7 @@ export function ChatInput({
 
         {/* Send button */}
         <div className="flex items-center">
+          <AgentGateTooltip gated={agentGate.gated} reason={agentGate.reason}>
           <button
             data-testid="chat-input-send"
             type="button"
@@ -416,6 +432,7 @@ export function ChatInput({
           >
             {isSending ? <LoadingSpinner /> : <SendIcon />}
           </button>
+          </AgentGateTooltip>
         </div>
       </div>
 

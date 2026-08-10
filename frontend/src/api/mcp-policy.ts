@@ -1,7 +1,15 @@
 import { typedInvoke } from "@/lib/tauri";
+import {
+  getTransportEnvironmentId,
+  isRemoteEnvironmentId,
+} from "@/lib/remote/active-environment";
 
 import type { Harness } from "./ideation-harness";
-import { McpMutationResponseSchema, RawMcpCatalogSchema } from "./mcp-policy.schemas";
+import {
+  McpMutationResponseSchema,
+  RawMcpCatalogSchema,
+  RawRemoteMcpCatalogSchema,
+} from "./mcp-policy.schemas";
 import { transformMcpCatalog } from "./mcp-policy.transforms";
 import type {
   McpCatalog,
@@ -16,9 +24,20 @@ async function catalog(command: string, input: object): Promise<McpCatalog> {
   return transformMcpCatalog(raw);
 }
 
+async function remoteCatalog(input: McpScopeInput): Promise<McpCatalog | null> {
+  const raw = await typedInvoke(
+    "get_remote_mcp_catalog",
+    { input },
+    RawRemoteMcpCatalogSchema,
+  );
+  return raw.snapshot === null ? null : transformMcpCatalog(raw.snapshot);
+}
+
 export const mcpPolicyApi = {
-  get(input: McpScopeInput): Promise<McpCatalog> {
-    return catalog("get_mcp_catalog", input);
+  get(input: McpScopeInput): Promise<McpCatalog | null> {
+    return isRemoteEnvironmentId(getTransportEnvironmentId())
+      ? remoteCatalog(input)
+      : catalog("get_mcp_catalog", input);
   },
   refresh(input: McpScopeInput & { provider: Harness }): Promise<McpCatalog> {
     return catalog("refresh_mcp_catalog", input);

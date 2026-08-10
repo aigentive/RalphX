@@ -39,6 +39,8 @@ import { useValidationEvents } from "@/hooks/useValidationEvents";
 import { ReviewFeedbackBody } from "@/components/reviews/ReviewFeedbackBody";
 import { getReviewFeedbackHeading } from "@/lib/review-feedback";
 import { getStepProgressDisplay } from "@/types/task-step";
+import { useAgentGate } from "@/hooks/useAgentGate";
+import { AgentGateTooltip } from "@/components/remote/AgentGateTooltip";
 
 interface ExecutionTaskDetailProps {
   task: Task;
@@ -60,6 +62,8 @@ function ActionButtonsCard({
   const queryClient = useQueryClient();
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const [error, setError] = useState<string | null>(null);
+  const stopGate = useAgentGate("taskStop");
+  const moveGate = useAgentGate("taskMove");
 
   const stopMutation = useMutation({
     mutationFn: async () => {
@@ -136,22 +140,22 @@ function ActionButtonsCard({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuItem
+              <AgentGateTooltip gated={stopGate.gated} reason={stopGate.reason} className="flex"><DropdownMenuItem
                 data-testid="stop-action"
                 onClick={handleStop}
-                disabled={isLoading}
+                disabled={isLoading || stopGate.gated}
               >
                 <Square className="w-4 h-4 mr-2" />
                 <span>Stop</span>
-              </DropdownMenuItem>
-              <DropdownMenuItem
+              </DropdownMenuItem></AgentGateTooltip>
+              <AgentGateTooltip gated={moveGate.gated} reason={moveGate.reason} className="flex"><DropdownMenuItem
                 data-testid="cancel-action"
                 onClick={handleCancel}
-                disabled={isLoading}
+                disabled={isLoading || moveGate.gated}
               >
                 <Ban className="w-4 h-4 mr-2" />
                 <span>Cancel</span>
-              </DropdownMenuItem>
+              </DropdownMenuItem></AgentGateTooltip>
             </DropdownMenuContent>
           </DropdownMenu>
         </div>

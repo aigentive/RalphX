@@ -15,6 +15,7 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ChatInput } from "./ChatInput";
+import { LOCAL_ENVIRONMENT_ID, useEnvironmentStore } from "@/stores/environmentStore";
 
 vi.mock("@tauri-apps/api/webview", () => ({
   getCurrentWebview: () => ({
@@ -34,6 +35,12 @@ describe("ChatInput", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    useEnvironmentStore.setState({
+      activeEnvironmentId: LOCAL_ENVIRONMENT_ID,
+      environments: [{ id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" }],
+      effectiveScopes: {},
+      connectionPresentations: {},
+    });
   });
 
   const makeDropEvent = (files: File[]) => ({
@@ -470,6 +477,43 @@ describe("ChatInput", () => {
 
       const textarea = screen.getByTestId("chat-input-textarea");
       textarea.focus();
+      await user.keyboard("{ArrowUp}");
+
+      expect(onEditLastQueued).toHaveBeenCalled();
+    });
+
+    // Wave B3 registered the queue twins, so `queuedMessageEdit` (backed by
+    // cancel_remote_queued_agent_message, authority-reducing at ui:operate) is REACHABLE on a
+    // paired client. This test used to assert the opposite; it now pins the capability rather
+    // than the old refusal, and the unavailable path is covered where the op is genuinely
+    // absent from the manifest.
+    it("enters queued edit from ArrowUp on a paired client now that the queue twins are registered", async () => {
+      useEnvironmentStore.setState({
+        activeEnvironmentId: "remote-studio",
+        environments: [
+          { id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" },
+          { id: "remote-studio", name: "Studio Mac", kind: "remote" },
+        ],
+        effectiveScopes: { "remote-studio": ["ui:read", "ui:operate", "ui:agent"] },
+        connectionPresentations: {
+          "remote-studio": {
+            presentation: "connected",
+            blockedFailure: null,
+            blockedMessage: null,
+          },
+        },
+      });
+      const user = userEvent.setup();
+      const onEditLastQueued = vi.fn();
+      render(
+        <ChatInput
+          {...defaultProps}
+          hasQueuedMessages={true}
+          onEditLastQueued={onEditLastQueued}
+        />
+      );
+
+      screen.getByTestId("chat-input-textarea").focus();
       await user.keyboard("{ArrowUp}");
 
       expect(onEditLastQueued).toHaveBeenCalled();

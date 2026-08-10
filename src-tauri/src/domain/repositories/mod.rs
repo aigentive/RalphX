@@ -1,19 +1,24 @@
 // Repository traits - domain layer abstractions for data persistence
 // These traits define the contract; implementations live in infrastructure layer
 
-pub mod orphan_worktree_cleanup_marker_repository;
 pub mod delegation_park_repository;
+pub mod mcp_catalog_snapshot_repository;
+pub mod orphan_worktree_cleanup_marker_repository;
 pub mod permission_repository;
+pub mod project_repository_capability_repository;
 pub mod question_repository;
 pub mod queued_message_repository;
+pub mod remote_environment_repository;
 pub mod ui_feature_flag_overrides_repository;
 
+pub use delegation_park_repository::DelegationParkRepository;
+pub use mcp_catalog_snapshot_repository::{McpCatalogSnapshot, McpCatalogSnapshotRepository};
 pub use orphan_worktree_cleanup_marker_repository::{
     OrphanWorktreeCleanupMarker, OrphanWorktreeCleanupMarkerKey,
     OrphanWorktreeCleanupMarkerRepository,
 };
-pub use delegation_park_repository::DelegationParkRepository;
 pub use permission_repository::PermissionRepository;
+pub use project_repository_capability_repository::ProjectRepositoryCapabilityRepository;
 pub use question_repository::QuestionRepository;
 pub use queued_message_repository::QueuedMessageRepository;
 pub use ralphx_domain::repositories::*;
@@ -32,4 +37,5 @@ pub use ralphx_domain::repositories::{
     task_dependency_repository, task_proposal_repository, task_qa_repository, task_repository,
     task_step_repository, workflow_repository,
 };
+pub use remote_environment_repository::{RemoteEnvironmentRepository, UpsertPairedEnvironment};
 pub use ui_feature_flag_overrides_repository::UiFeatureFlagOverridesRepository;

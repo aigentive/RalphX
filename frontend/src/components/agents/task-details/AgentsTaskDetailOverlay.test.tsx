@@ -1,14 +1,29 @@
+import { resetTransportEnvironmentId } from "@/lib/remote/active-environment";
+import { resetQueryClient } from "@/lib/queryClient";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useState, type ComponentProps } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useUiStore } from "@/stores/uiStore";
+import {
+  LOCAL_ENVIRONMENT_ID,
+  useEnvironmentStore,
+} from "@/stores/environmentStore";
 import type { Task } from "@/types/task";
 import type { TaskHistoryState } from "@/types/task-history";
 
 import { AgentsTaskDetailOverlay } from "./AgentsTaskDetailOverlay";
+
+// Gate tests park the store on a remote environment; without this the next file in
+// the same worker inherits it and resolves a different keyed QueryClient. That is
+// what broke EnvironmentScopedProviders under CI sharding.
+afterEach(() => {
+  resetQueryClient();
+  resetTransportEnvironmentId();
+  useEnvironmentStore.setState({ activeEnvironmentId: LOCAL_ENVIRONMENT_ID });
+});
 
 const {
   useTasksMock,
@@ -209,6 +224,79 @@ describe("AgentsTaskDetailOverlay historical runtime focus", () => {
     useUiStore.setState({
       taskHistoryState: null,
     });
+    useEnvironmentStore.setState({
+      activeEnvironmentId: LOCAL_ENVIRONMENT_ID,
+      environments: [
+        { id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" },
+      ],
+      effectiveScopes: {},
+      connectionPresentations: {},
+    });
+  });
+
+  it("disables archive, shows the reason, and does not mutate while gated", async () => {
+    const mutate = vi.fn();
+    useTaskMutationMock.mockReturnValue({
+      updateMutation: { mutate: vi.fn(), isPending: false },
+      moveMutation: { mutate: vi.fn(), isPending: false },
+      archiveMutation: { mutate },
+      restoreMutation: { mutate: vi.fn() },
+      isArchiving: false,
+      isRestoring: false,
+    });
+    useEnvironmentStore.setState({
+      activeEnvironmentId: "remote",
+      environments: [{ id: "remote", name: "Remote", kind: "remote" }],
+      effectiveScopes: { remote: ["ui:read", "ui:operate"] },
+      connectionPresentations: {
+        remote: {
+          presentation: "connected",
+          blockedFailure: null,
+          blockedMessage: null,
+        },
+      },
+    });
+    renderOverlay();
+    const button = screen.getByTestId("task-overlay-archive-button");
+    // Soft-disabled so the reason stays reachable; a real `disabled` would hide it.
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    expect(button).not.toBeDisabled();
+    button.focus();
+    expect(
+      (await screen.findAllByText(/agent control/i)).length,
+    ).toBeGreaterThan(0);
+    fireEvent.click(button);
+    expect(mutate).not.toHaveBeenCalled();
+  });
+
+  it("keeps archive live and mutates when the gate is granted", async () => {
+    const mutate = vi.fn();
+    useTaskMutationMock.mockReturnValue({
+      updateMutation: { mutate: vi.fn(), isPending: false },
+      moveMutation: { mutate: vi.fn(), isPending: false },
+      archiveMutation: { mutate },
+      restoreMutation: { mutate: vi.fn() },
+      isArchiving: false,
+      isRestoring: false,
+    });
+    useEnvironmentStore.setState({
+      activeEnvironmentId: "remote",
+      environments: [{ id: "remote", name: "Remote", kind: "remote" }],
+      effectiveScopes: { remote: ["ui:read", "ui:operate", "ui:agent"] },
+      connectionPresentations: {
+        remote: {
+          presentation: "connected",
+          blockedFailure: null,
+          blockedMessage: null,
+        },
+      },
+    });
+    renderOverlay();
+    fireEvent.click(screen.getByTestId("task-overlay-archive-button"));
+    fireEvent.click(await screen.findByRole("button", { name: "Archive" }));
+    await waitFor(() =>
+      expect(mutate).toHaveBeenCalledWith("task-1", expect.any(Object)),
+    );
   });
 
   it.each([
@@ -236,7 +324,9 @@ describe("AgentsTaskDetailOverlay historical runtime focus", () => {
 
     renderOverlay({ onFocusTaskRuntime });
 
-    fireEvent.click(screen.getByRole("button", { name: "Select no transcript" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Select no transcript" }),
+    );
 
     expect(onFocusTaskRuntime).not.toHaveBeenCalled();
     expect(screen.getByTestId("history-mode-banner")).toHaveTextContent(
@@ -298,6 +388,8 @@ describe("AgentsTaskDetailOverlay historical runtime focus", () => {
 
     expect(screen.queryByTestId("mock-task-edit-form")).not.toBeInTheDocument();
     expect(screen.getByTestId("mock-task-detail-panel")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Edit task" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Edit task" }),
+    ).not.toBeInTheDocument();
   });
 });

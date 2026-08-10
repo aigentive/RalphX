@@ -1,6 +1,8 @@
 import { Loader2, RefreshCw } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { RemoteHostOnlyNotice } from "@/components/remote/RemoteHostOnlyNotice";
+import { useIsRemoteEnvironment } from "@/hooks/useActiveEnvironment";
 import { useGitHubConnectionStatus } from "@/hooks/useGitHubConnectionStatus";
 
 import {
@@ -19,8 +21,12 @@ function describeError(error: unknown): string {
 }
 
 export function GitHubIntegrationSettingsPanel() {
+  const isRemoteEnvironment = useIsRemoteEnvironment();
   const { data, error, isError, isLoading, isFetching, refetch } =
     useGitHubConnectionStatus();
+  if (isRemoteEnvironment) {
+    return <RemoteHostOnlyNotice subject="GitHub CLI status" detail="GitHub authentication is checked on the host and is not available remotely." />;
+  }
   const ghInstalled = data?.ghInstalled ?? false;
   const state = data?.state;
   const connected = state === "authenticated";

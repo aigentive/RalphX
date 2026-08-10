@@ -2,8 +2,10 @@ import { useState } from "react";
 import { KeyRound, Loader2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { RemoteHostOnlyNotice } from "@/components/remote/RemoteHostOnlyNotice";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { useIsRemoteEnvironment } from "@/hooks/useActiveEnvironment";
 import { useClickUpIntegration } from "@/hooks/useClickUpIntegration";
 
 import {
@@ -24,6 +26,7 @@ function errorMessage(error: unknown, fallback: string): string {
 }
 
 export function ClickUpIntegrationSettingsPanel() {
+  const isRemoteEnvironment = useIsRemoteEnvironment();
   const {
     settings,
     isLoading,
@@ -143,6 +146,10 @@ export function ClickUpIntegrationSettingsPanel() {
         </div>
       </SettingsSection>
     );
+  }
+
+  if (isRemoteEnvironment) {
+    return <RemoteHostOnlyNotice subject="ClickUp credentials" />;
   }
 
   return (

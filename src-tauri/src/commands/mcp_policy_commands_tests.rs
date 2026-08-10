@@ -4,9 +4,10 @@ use crate::domain::agents::{
 };
 
 use super::mcp_policy_commands::{
-    ensure_project_scope_exists, known_policy_tools, mutable_key, policy_server_ids,
-    response_contains_sensitive_definition_fields, select_codex_catalog, to_server_response,
-    to_server_response_with_scope_for_test, validate_legacy_repair_request,
+    ensure_project_scope_exists, known_policy_tools, mutable_key, persist_catalog_snapshot,
+    policy_server_ids, response_contains_sensitive_definition_fields, select_codex_catalog,
+    to_server_response, to_server_response_with_scope_for_test, validate_legacy_repair_request,
+    McpCatalogResponse,
 };
 use crate::application::AppState;
 
@@ -161,6 +162,41 @@ async fn project_scoped_mutations_reject_unknown_projects_before_writes() {
         .expect_err("unknown project scope must fail closed");
 
     assert!(error.contains("project_not_found"));
+}
+
+#[tokio::test]
+async fn successful_snapshot_write_through_returns_the_local_catalog_unchanged() {
+    let state = AppState::new_test();
+    let response = McpCatalogResponse {
+        eligible_providers: vec!["codex".to_string()],
+        eligible_default_provider: Some("codex".to_string()),
+        probed_at: "2026-08-05T18:00:00+00:00".to_string(),
+        probe_stale: false,
+        provider_diagnostics: Default::default(),
+        policy_diagnostics: vec!["captured policy".to_string()],
+        servers: Vec::new(),
+    };
+
+    let returned = persist_catalog_snapshot(
+        &state,
+        None,
+        Some(AgentHarnessKind::Codex),
+        response.clone(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(returned, response);
+    let stored = state
+        .mcp_catalog_snapshot_repo
+        .get(None, "codex")
+        .await
+        .unwrap()
+        .expect("snapshot written");
+    assert_eq!(
+        serde_json::from_str::<McpCatalogResponse>(&stored.response_json).unwrap(),
+        response
+    );
 }
 
 #[test]

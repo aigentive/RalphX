@@ -178,11 +178,7 @@ async fn test_registry_cleanup_before_respawn_prevents_thrash() {
 
     // Without cleanup: try_register returns Err because the slot is occupied
     let result_without_cleanup = registry
-        .try_register(
-            key.clone(),
-            "conv-new".to_string(),
-            "run-new".to_string(),
-        )
+        .try_register(key.clone(), "conv-new".to_string(), "run-new".to_string())
         .await;
     assert!(
         result_without_cleanup.is_err(),
@@ -204,11 +200,7 @@ async fn test_registry_cleanup_before_respawn_prevents_thrash() {
 
     // After cleanup: try_register succeeds and the new agent can be spawned
     let result_after_cleanup = registry
-        .try_register(
-            key.clone(),
-            "conv-new".to_string(),
-            "run-new".to_string(),
-        )
+        .try_register(key.clone(), "conv-new".to_string(), "run-new".to_string())
         .await;
     assert!(
         result_after_cleanup.is_ok(),
@@ -260,8 +252,9 @@ async fn test_load_execution_run_uses_registry_when_metadata_missing() {
     // to the conversation lookup. This test verifies that fallback returns the
     // REGISTRY's running agent (not None / not the stale one).
     use crate::application::AppState;
-    use crate::domain::entities::{AgentRun, AgentRunStatus, ChatConversationId, InternalStatus, Project, Task};
-
+    use crate::domain::entities::{
+        AgentRun, AgentRunStatus, ChatConversationId, InternalStatus, Project, Task,
+    };
 
     let app_state = AppState::new_test();
     let execution_state = Arc::new(ExecutionState::new());
@@ -269,7 +262,11 @@ async fn test_load_execution_run_uses_registry_when_metadata_missing() {
 
     // Create a project and task in Executing state.
     let project = Project::new("Test Project".to_string(), "/test/path".to_string());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
     let mut task = Task::new(project.id.clone(), "Race Condition Task".to_string());
     task.internal_status = InternalStatus::Executing;
     app_state.task_repo.create(task.clone()).await.unwrap();
@@ -277,7 +274,12 @@ async fn test_load_execution_run_uses_registry_when_metadata_missing() {
     // Simulate the async race: status transition recorded but agent_run_id not yet linked.
     app_state
         .task_repo
-        .persist_status_change(&task.id, InternalStatus::Ready, InternalStatus::Executing, "test")
+        .persist_status_change(
+            &task.id,
+            InternalStatus::Ready,
+            InternalStatus::Executing,
+            "test",
+        )
         .await
         .unwrap();
 
@@ -325,15 +327,21 @@ async fn test_reconciliation_skips_fresh_registry_entry() {
     // run_status=Running + registry_running=true. has_conflict() must be false so
     // reconciliation does NOT kill or re-spawn the healthy agent.
     use crate::application::AppState;
-    use crate::domain::entities::{AgentRun, AgentRunStatus, ChatContextType, ChatConversationId, InternalStatus, Project, Task};
-
+    use crate::domain::entities::{
+        AgentRun, AgentRunStatus, ChatContextType, ChatConversationId, InternalStatus, Project,
+        Task,
+    };
 
     let app_state = AppState::new_test();
     let execution_state = Arc::new(ExecutionState::with_max_concurrent(2));
     let reconciler = build_reconciler_for_tests(&app_state, &execution_state);
 
     let project = Project::new("Test Project".to_string(), "/test/path".to_string());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
     let mut task = Task::new(project.id.clone(), "Fresh Agent Task".to_string());
     task.internal_status = InternalStatus::Executing;
     app_state.task_repo.create(task.clone()).await.unwrap();
@@ -341,7 +349,12 @@ async fn test_reconciliation_skips_fresh_registry_entry() {
     // History entry without agent_run_id (async race window).
     app_state
         .task_repo
-        .persist_status_change(&task.id, InternalStatus::Ready, InternalStatus::Executing, "test")
+        .persist_status_change(
+            &task.id,
+            InternalStatus::Ready,
+            InternalStatus::Executing,
+            "test",
+        )
         .await
         .unwrap();
 
@@ -353,7 +366,14 @@ async fn test_reconciliation_skips_fresh_registry_entry() {
     let key = RunningAgentKey::new("task_execution", task.id.as_str());
     app_state
         .running_agent_registry
-        .register(key.clone(), 12345, "conv-fresh".to_string(), fresh_run.id.as_str(), None, None)
+        .register(
+            key.clone(),
+            12345,
+            "conv-fresh".to_string(),
+            fresh_run.id.as_str(),
+            None,
+            None,
+        )
         .await;
 
     // load_execution_run uses registry fallback → Running run.
@@ -389,15 +409,21 @@ async fn test_reconciliation_kills_stale_registry_entry() {
     // run_status=Cancelled + registry_running=true → has_conflict() == true.
     // Reconciliation then takes corrective action (re-spawn / escalation).
     use crate::application::AppState;
-    use crate::domain::entities::{AgentRun, AgentRunStatus, ChatContextType, ChatConversationId, InternalStatus, Project, Task};
-
+    use crate::domain::entities::{
+        AgentRun, AgentRunStatus, ChatContextType, ChatConversationId, InternalStatus, Project,
+        Task,
+    };
 
     let app_state = AppState::new_test();
     let execution_state = Arc::new(ExecutionState::with_max_concurrent(2));
     let reconciler = build_reconciler_for_tests(&app_state, &execution_state);
 
     let project = Project::new("Test Project".to_string(), "/test/path".to_string());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
     let mut task = Task::new(project.id.clone(), "Stale Agent Task".to_string());
     task.internal_status = InternalStatus::Executing;
     app_state.task_repo.create(task.clone()).await.unwrap();
@@ -405,7 +431,12 @@ async fn test_reconciliation_kills_stale_registry_entry() {
     // History entry without agent_run_id (same race condition scenario).
     app_state
         .task_repo
-        .persist_status_change(&task.id, InternalStatus::Ready, InternalStatus::Executing, "test")
+        .persist_status_change(
+            &task.id,
+            InternalStatus::Ready,
+            InternalStatus::Executing,
+            "test",
+        )
         .await
         .unwrap();
 
@@ -419,7 +450,14 @@ async fn test_reconciliation_kills_stale_registry_entry() {
     let key = RunningAgentKey::new("task_execution", task.id.as_str());
     app_state
         .running_agent_registry
-        .register(key.clone(), 99999, "conv-stale".to_string(), stale_run.id.as_str(), None, None)
+        .register(
+            key.clone(),
+            99999,
+            "conv-stale".to_string(),
+            stale_run.id.as_str(),
+            None,
+            None,
+        )
         .await;
 
     // load_execution_run finds Cancelled run via registry fallback.

@@ -85,6 +85,7 @@ import {
 import { useNotificationEvents } from "@/hooks/useNotificationEvents";
 import { useNotificationToasts } from "@/hooks/useNotificationToasts";
 import { useUsageStatsEvents } from "@/hooks/useUsageStatsEvents";
+import { createEventBus } from "@/lib/event-bus";
 
 describe("EventProvider", () => {
   beforeEach(() => {
@@ -180,6 +181,26 @@ describe("EventProvider", () => {
     expect(screen.getByTestId("outer")).toContainElement(
       screen.getByTestId("inner")
     );
+  });
+
+  it("creates the bus for an explicit environment", () => {
+    render(
+      <EventProvider environmentId="env-b">
+        <div>Test</div>
+      </EventProvider>,
+    );
+
+    expect(createEventBus).toHaveBeenCalledWith("env-b");
+  });
+
+  it("preserves the default bus creation call when no environment is provided", () => {
+    render(
+      <EventProvider>
+        <div>Test</div>
+      </EventProvider>,
+    );
+
+    expect(createEventBus).toHaveBeenCalledWith();
   });
 });
 

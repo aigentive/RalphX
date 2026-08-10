@@ -146,6 +146,7 @@ pub(crate) struct StartupReconciliationDeps {
     pub interactive_process_registry: Arc<InteractiveProcessRegistry>,
     pub review_repo: Arc<dyn ReviewRepository>,
     pub notification_service: Arc<NotificationService>,
+    pub recovery_prompt_tracker: Arc<crate::application::reconciliation::RecoveryPromptTracker>,
     pub events: Arc<dyn EventSink>,
     pub chat_runtime_deps: ChatRuntimeFactoryDeps,
 }
@@ -171,6 +172,7 @@ pub(crate) fn build_startup_reconciliation_runner(
         deps.execution_state,
         None,
     )
+    .with_prompt_tracker(deps.recovery_prompt_tracker)
     .with_events(deps.events)
     .with_chat_runtime_deps(deps.chat_runtime_deps)
     .with_notification_service(deps.notification_service)

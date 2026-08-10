@@ -5,6 +5,11 @@ import { requestAutomationRunOpen } from "@/components/automations/automationRun
 import { automationsApi } from "@/api/automations";
 import { permissionApi } from "@/api/permission";
 import {
+  REMOTE_UNAVAILABLE_HINT,
+  remoteErrorBannerProps,
+} from "@/lib/remote/agent-gate";
+import { isRemoteTransportError } from "@/lib/remote/transport-errors";
+import {
   navigateToAgentConversation,
   navigateToAgentPlan,
   navigateToIdeationSession,
@@ -66,9 +71,14 @@ export async function performNotificationPrimaryAction(
     toast.success("Automation resumed");
     options.onClose?.();
     return true;
-  } catch {
+  } catch (error) {
     void queryClient.invalidateQueries({ queryKey: ATTENTION_QUERY_KEY });
-    toast.error("Automation is no longer resumable");
+    const remoteBanner = remoteErrorBannerProps(error);
+    toast.error(
+      isRemoteTransportError(error)
+        ? (remoteBanner?.body ?? REMOTE_UNAVAILABLE_HINT)
+        : "Automation is no longer resumable",
+    );
     return false;
   }
 }
@@ -84,8 +94,9 @@ export async function navigateNotification(
     if (!requestId) return false;
     let pending;
     try {
-      pending = await permissionApi.getPendingPermissions();
+      pending = await permissionApi.listPendingPermissionGates();
     } catch {
+      toast.error("Unable to load pending permission requests");
       return false;
     }
     if (!pending.some((request) => request.request_id === requestId)) {

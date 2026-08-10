@@ -9,13 +9,19 @@ const { projects } = vi.hoisted(() => ({
   ],
 }));
 
-const { invokeMock, isPermissionGrantedMock, requestPermissionMock, openUrlMock } =
-  vi.hoisted(() => ({
-    invokeMock: vi.fn(),
-    isPermissionGrantedMock: vi.fn(),
-    requestPermissionMock: vi.fn(),
-    openUrlMock: vi.fn(),
-  }));
+const {
+  invokeMock,
+  isPermissionGrantedMock,
+  requestPermissionMock,
+  openUrlMock,
+  toastErrorMock,
+} = vi.hoisted(() => ({
+  invokeMock: vi.fn(),
+  isPermissionGrantedMock: vi.fn(),
+  requestPermissionMock: vi.fn(),
+  openUrlMock: vi.fn(),
+  toastErrorMock: vi.fn(),
+}));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
 vi.mock("@tauri-apps/plugin-notification", () => ({
@@ -23,6 +29,7 @@ vi.mock("@tauri-apps/plugin-notification", () => ({
   requestPermission: requestPermissionMock,
 }));
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: openUrlMock }));
+vi.mock("sonner", () => ({ toast: { error: toastErrorMock } }));
 vi.mock("@/hooks/useProjects", () => ({ useProjects: () => ({ data: projects }) }));
 
 import { NotificationSettingsPanel } from "./NotificationSettingsPanel";
@@ -58,6 +65,7 @@ describe("NotificationSettingsPanel", () => {
     isPermissionGrantedMock.mockReset().mockResolvedValue(true);
     requestPermissionMock.mockReset().mockResolvedValue("granted");
     openUrlMock.mockReset();
+    toastErrorMock.mockReset();
     invokeMock.mockImplementation((command: string) => {
       if (command === "get_notification_settings") return Promise.resolve(defaults);
       if (command === "update_notification_settings") return Promise.resolve(defaults);
@@ -179,5 +187,100 @@ describe("NotificationSettingsPanel", () => {
     expect(openUrlMock).toHaveBeenCalledWith(
       "x-apple.systempreferences:com.apple.Notifications-Settings.extension",
     );
+  });
+});
+
+/**
+ * The macOS permission probe is advisory and must not be able to eat the durable write.
+ *
+ * Before Phase 2, `plugin:notification|*` travelled to the host and rejected there, and the
+ * rejection short-circuited `updateDesktopEnabled` BEFORE `update_notification_settings` — a
+ * registered facade op that would have succeeded. The switch animated, nothing persisted, and
+ * reopening the pane showed it off again. The `plugin:` prefix rule now keeps the probe local;
+ * these cases pin the failure handling that has to hold regardless of why it rejects.
+ */
+describe("NotificationSettingsPanel — permission probe failures", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+    isPermissionGrantedMock.mockReset().mockResolvedValue(true);
+    requestPermissionMock.mockReset().mockResolvedValue("granted");
+    openUrlMock.mockReset();
+    toastErrorMock.mockReset();
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "get_notification_settings") return Promise.resolve(defaults);
+      if (command === "update_notification_settings") return Promise.resolve(defaults);
+      return Promise.reject(new Error(`Unexpected command: ${command}`));
+    });
+  });
+
+  it("still persists the setting when the permission probe rejects", async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "get_notification_settings") {
+        return Promise.resolve({ ...defaults, desktop_enabled: false });
+      }
+      return Promise.resolve({ ...defaults, desktop_enabled: true });
+    });
+    isPermissionGrantedMock.mockRejectedValue(new Error("probe unavailable"));
+
+    renderPanel();
+    await waitFor(() =>
+      expect(screen.getByLabelText("Enable desktop notifications")).toHaveAttribute(
+        "aria-checked",
+        "false",
+      ),
+    );
+    fireEvent.click(screen.getByLabelText("Enable desktop notifications"));
+
+    // The whole defect: this write never happened.
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("update_notification_settings", {
+        input: { desktopEnabled: true },
+      }),
+    );
+  });
+
+  it("does not claim macOS DENIED permission when the probe merely failed", async () => {
+    isPermissionGrantedMock.mockRejectedValue(new Error("probe unavailable"));
+
+    renderPanel();
+    await screen.findByLabelText("Enable desktop notifications");
+    await waitFor(() => expect(isPermissionGrantedMock).toHaveBeenCalled());
+
+    // A failed read is not a denial: asserting an OS fact we never established would send the
+    // user to System Settings to fix something that may not be broken.
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("surfaces a failed write instead of discarding the rejected promise", async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "get_notification_settings") return Promise.resolve(defaults);
+      if (command === "update_notification_settings") {
+        return Promise.reject(new Error("REMOTE_FORBIDDEN"));
+      }
+      return Promise.reject(new Error(`Unexpected command: ${command}`));
+    });
+
+    renderPanel();
+    fireEvent.click(await screen.findByLabelText("Enable desktop notifications"));
+
+    await waitFor(() =>
+      expect(toastErrorMock).toHaveBeenCalledWith("Could not update desktop notifications."),
+    );
+  });
+
+  it("keeps the mount-time probe from rejecting unhandled", async () => {
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+    isPermissionGrantedMock.mockRejectedValue(new Error("probe unavailable"));
+
+    try {
+      renderPanel();
+      await screen.findByLabelText("Enable desktop notifications");
+      await waitFor(() => expect(isPermissionGrantedMock).toHaveBeenCalled());
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off("unhandledRejection", unhandled);
+    }
   });
 });

@@ -2,6 +2,7 @@ import { Folder, Sparkles, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useAgentGate } from "@/hooks/useAgentGate";
 import type { Persona, PersonaUsage } from "@/types/persona";
 
 function relativeTime(timestamp: string): string {
@@ -106,6 +107,9 @@ export function PersonaRow({
   onRestore?: (persona: Persona) => void;
   refineDisabledReason?: string;
 }) {
+  const approveGate = useAgentGate("personaApprove");
+  const archiveGate = useAgentGate("personaArchive");
+  const unarchiveGate = useAgentGate("personaUnarchive");
   const active = persona.status === "active";
   const archived = persona.status === "archived";
   const actionLabel = active ? "Archive" : "Delete";
@@ -191,16 +195,28 @@ export function PersonaRow({
       <div className="flex items-center gap-1">
         {archived ? (
           onRestore && (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              aria-label={`Restore ${persona.name}`}
-              onClick={() => onRestore(persona)}
-              className="text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-            >
-              Restore
-            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  aria-label={`Restore ${persona.name}`}
+                  onClick={() => {
+                    if (unarchiveGate.gated) return;
+                    onRestore(persona);
+                  }}
+                  aria-disabled={unarchiveGate.gated || undefined}
+                  data-disabled-explained={unarchiveGate.gated ? "true" : undefined}
+                  className={`text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]${unarchiveGate.gated ? " opacity-50" : ""}`}
+                >
+                  Restore
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                {unarchiveGate.gated ? unarchiveGate.reason : `Restore ${persona.name}`}
+              </TooltipContent>
+            </Tooltip>
           )
         ) : (
           <>
@@ -218,16 +234,28 @@ export function PersonaRow({
                 refineButton
               ))}
             {!active && (
-              <Button
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
                 type="button"
                 variant="ghost"
                 size="sm"
                 aria-label={`Activate ${persona.name}`}
-                onClick={() => onActivate(persona)}
-                className="text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-              >
-                Activate
-              </Button>
+                    onClick={() => {
+                      if (approveGate.gated) return;
+                      onActivate(persona);
+                    }}
+                    aria-disabled={approveGate.gated || undefined}
+                    data-disabled-explained={approveGate.gated ? "true" : undefined}
+                    className={`text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]${approveGate.gated ? " opacity-50" : ""}`}
+                  >
+                    Activate
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {approveGate.gated ? approveGate.reason : `Activate ${persona.name}`}
+                </TooltipContent>
+              </Tooltip>
             )}
             <Button
               type="button"
@@ -246,13 +274,22 @@ export function PersonaRow({
                   variant="ghost"
                   size="icon-sm"
                   aria-label={`${actionLabel} ${persona.name}`}
-                  onClick={() => onRemove(persona)}
-                  className="text-[var(--text-muted)] hover:bg-[var(--status-error-muted)] hover:text-[var(--status-error)]"
+                  onClick={() => {
+                    if (active && archiveGate.gated) return;
+                    onRemove(persona);
+                  }}
+                  aria-disabled={(active && archiveGate.gated) || undefined}
+                  data-disabled-explained={active && archiveGate.gated ? "true" : undefined}
+                  className={`text-[var(--text-muted)] hover:bg-[var(--status-error-muted)] hover:text-[var(--status-error)]${active && archiveGate.gated ? " opacity-50" : ""}`}
                 >
                   <Trash2 aria-hidden="true" />
                 </Button>
               </TooltipTrigger>
-              <TooltipContent>{actionLabel} {persona.name}</TooltipContent>
+              <TooltipContent>
+                {active && archiveGate.gated
+                  ? archiveGate.reason
+                  : `${actionLabel} ${persona.name}`}
+              </TooltipContent>
             </Tooltip>
           </>
         )}

@@ -37,7 +37,10 @@ async fn upsert_and_get_project_row() {
 
     // Upsert project-specific row
     let project_id = "proj-abc";
-    let result = repo.upsert(Some(project_id), "low", "inherit").await.unwrap();
+    let result = repo
+        .upsert(Some(project_id), "low", "inherit")
+        .await
+        .unwrap();
     assert_eq!(result.primary_effort, EffortLevel::Low);
     assert_eq!(result.verifier_effort, EffortLevel::Inherit);
     assert!(result.project_id.is_some());

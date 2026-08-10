@@ -10,13 +10,13 @@ fn merged_suite_requires_nextest() {
 #[path = "../support/mod.rs"]
 mod support;
 
-mod ideation_service;
-mod ideation_capacity_counting;
-mod ideation_webhook_enrichment_test;
-mod ideation_model_override;
-mod ideation_commands;
-mod ideation_runtime_handlers;
-mod external_ideation_runtime_handlers;
-mod ideation_plan_delivery_test;
-mod ideation_handlers;
 mod apply_service;
+mod external_ideation_runtime_handlers;
+mod ideation_capacity_counting;
+mod ideation_commands;
+mod ideation_handlers;
+mod ideation_model_override;
+mod ideation_plan_delivery_test;
+mod ideation_runtime_handlers;
+mod ideation_service;
+mod ideation_webhook_enrichment_test;

@@ -251,9 +251,6 @@ mod v20260509090000_release_notes_seen_version_tests;
 mod v20260510185257_chat_message_blocks_timeline;
 #[cfg(test)]
 mod v20260510185257_chat_message_blocks_timeline_tests;
-mod v20260730025727_chat_message_blocks_thinking_kind;
-#[cfg(test)]
-mod v20260730025727_chat_message_blocks_thinking_kind_tests;
 mod v20260512093000_startup_local_cleanup_markers;
 #[cfg(test)]
 mod v20260512093000_startup_local_cleanup_markers_tests;
@@ -560,6 +557,21 @@ mod v20260725164704_agent_workspace_repair_attempts_tests;
 mod v20260727115037_agent_workspace_publication_metadata_receipts;
 #[cfg(test)]
 mod v20260727115037_agent_workspace_publication_metadata_receipts_tests;
+mod v20260727161131_remote_host_settings;
+#[cfg(test)]
+mod v20260727161131_remote_host_settings_tests;
+mod v20260727180000_remote_auth;
+#[cfg(test)]
+mod v20260727180000_remote_auth_tests;
+mod v20260727191500_remote_environments;
+#[cfg(test)]
+mod v20260727191500_remote_environments_tests;
+mod v20260727213000_remote_event_log;
+#[cfg(test)]
+mod v20260727213000_remote_event_log_tests;
+mod v20260728120000_remote_request_dedup;
+#[cfg(test)]
+mod v20260728120000_remote_request_dedup_tests;
 mod v20260728155615_agent_conversation_mutes;
 #[cfg(test)]
 mod v20260728155615_agent_conversation_mutes_tests;
@@ -572,6 +584,9 @@ mod v20260728183000_workspace_review_plan_context_tests;
 mod v20260730000304_chat_message_blocks_created_at_index;
 #[cfg(test)]
 mod v20260730000304_chat_message_blocks_created_at_index_tests;
+mod v20260730025727_chat_message_blocks_thinking_kind;
+#[cfg(test)]
+mod v20260730025727_chat_message_blocks_thinking_kind_tests;
 mod v20260730151837_agent_workspace_repair_ci_rerun_reservations;
 #[cfg(test)]
 mod v20260730151837_agent_workspace_repair_ci_rerun_reservations_tests;
@@ -600,6 +615,18 @@ mod v20260731111346_purge_empty_thinking_blocks_tests;
 mod v20260731125157_add_workspace_repair_fingerprint_state_tests;
 #[cfg(test)]
 mod v20260801021420_delegation_parks_tests;
+mod v20260801120000_remote_conversation_start_requests;
+#[cfg(test)]
+mod v20260801120000_remote_conversation_start_requests_tests;
+mod v20260801120200_remote_agent_stop_requests;
+#[cfg(test)]
+mod v20260801120200_remote_agent_stop_requests_tests;
+mod v20260801130000_remote_conversation_message_requests;
+#[cfg(test)]
+mod v20260801130000_remote_conversation_message_requests_tests;
+mod v20260801140000_remote_conversation_mode_switch_requests;
+#[cfg(test)]
+mod v20260801140000_remote_conversation_mode_switch_requests_tests;
 #[cfg(test)]
 mod v20260801211636_delegation_park_wake_claimed_at_tests;
 #[cfg(test)]
@@ -614,13 +641,46 @@ mod v20260802215754_add_workspace_review_automation_override_tests;
 mod v20260803113302_agent_workspace_publish_lease_tests;
 #[cfg(test)]
 mod v20260804073002_jira_link_acceptance_criteria_backfill_tests;
+mod v20260804105225_remote_resume_requests;
+#[cfg(test)]
+mod v20260804105225_remote_resume_requests_tests;
 mod v20260804120000_agent_workspace_base_stale_target;
 #[cfg(test)]
 mod v20260804120000_agent_workspace_base_stale_target_tests;
 #[cfg(test)]
 mod v20260804125852_delegated_session_job_identity_tests;
+mod v20260805120000_remote_finalize_decision_requests;
+#[cfg(test)]
+mod v20260805120000_remote_finalize_decision_requests_tests;
+mod v20260805130000_remote_plan_edit_requests;
+#[cfg(test)]
+mod v20260805130000_remote_plan_edit_requests_tests;
+mod v20260805140000_remote_queued_send_requests;
+#[cfg(test)]
+mod v20260805140000_remote_queued_send_requests_tests;
+mod v20260805150000_remote_automation_run_requests;
+#[cfg(test)]
+mod v20260805150000_remote_automation_run_requests_tests;
+mod v20260805160000_remote_automation_draft_requests;
+#[cfg(test)]
+mod v20260805160000_remote_automation_draft_requests_tests;
+mod v20260805170000_remote_recovery_action;
+#[cfg(test)]
+mod v20260805170000_remote_recovery_action_tests;
+mod v20260805180000_remote_conversation_lifecycle_requests;
+#[cfg(test)]
+mod v20260805180000_remote_conversation_lifecycle_requests_tests;
+mod v20260805190000_project_repository_capability;
+#[cfg(test)]
+mod v20260805190000_project_repository_capability_tests;
+mod v20260805191000_mcp_catalog_snapshot;
+#[cfg(test)]
+mod v20260805191000_mcp_catalog_snapshot_tests;
 #[cfg(test)]
 mod v20260806071104_agent_workspace_repair_effect_failed_completed_at_tests;
+mod v20260806080000_remote_plan_approval_requests;
+#[cfg(test)]
+mod v20260806080000_remote_plan_approval_requests_tests;
 #[cfg(test)]
 mod v20260806154753_add_agent_workspace_stale_base_detected_at_tests;
 #[cfg(test)]
@@ -1859,6 +1919,31 @@ const MIGRATIONS: &[Migration] = &[
         migrate: v20260727115037_agent_workspace_publication_metadata_receipts::migrate,
     },
     Migration {
+        version: 20260727161131,
+        name: "remote_host_settings",
+        migrate: v20260727161131_remote_host_settings::migrate,
+    },
+    Migration {
+        version: 20260727180000,
+        name: "remote_auth",
+        migrate: v20260727180000_remote_auth::migrate,
+    },
+    Migration {
+        version: 20260727191500,
+        name: "remote_environments",
+        migrate: v20260727191500_remote_environments::migrate,
+    },
+    Migration {
+        version: 20260727213000,
+        name: "remote_event_log",
+        migrate: v20260727213000_remote_event_log::migrate,
+    },
+    Migration {
+        version: 20260728120000,
+        name: "remote_request_dedup",
+        migrate: v20260728120000_remote_request_dedup::migrate,
+    },
+    Migration {
         version: 20260728155615,
         name: "agent_conversation_mutes",
         migrate: v20260728155615_agent_conversation_mutes::migrate,
@@ -1914,6 +1999,26 @@ const MIGRATIONS: &[Migration] = &[
         migrate: v20260801021420_delegation_parks::migrate,
     },
     Migration {
+        version: 20260801120000,
+        name: "remote_conversation_start_requests",
+        migrate: v20260801120000_remote_conversation_start_requests::migrate,
+    },
+    Migration {
+        version: 20260801120200,
+        name: "remote_agent_stop_requests",
+        migrate: v20260801120200_remote_agent_stop_requests::migrate,
+    },
+    Migration {
+        version: 20260801130000,
+        name: "remote_conversation_message_requests",
+        migrate: v20260801130000_remote_conversation_message_requests::migrate,
+    },
+    Migration {
+        version: 20260801140000,
+        name: "remote_conversation_mode_switch_requests",
+        migrate: v20260801140000_remote_conversation_mode_switch_requests::migrate,
+    },
+    Migration {
         version: 20260801211636,
         name: "delegation_park_wake_claimed_at",
         migrate: v20260801211636_delegation_park_wake_claimed_at::migrate,
@@ -1949,6 +2054,11 @@ const MIGRATIONS: &[Migration] = &[
         migrate: v20260804073002_jira_link_acceptance_criteria_backfill::migrate,
     },
     Migration {
+        version: 20260804105225,
+        name: "remote_resume_requests",
+        migrate: v20260804105225_remote_resume_requests::migrate,
+    },
+    Migration {
         version: 20260804120000,
         name: "agent_workspace_base_stale_target",
         migrate: v20260804120000_agent_workspace_base_stale_target::migrate,
@@ -1959,9 +2069,59 @@ const MIGRATIONS: &[Migration] = &[
         migrate: v20260804125852_delegated_session_job_identity::migrate,
     },
     Migration {
+        version: 20260805120000,
+        name: "remote_finalize_decision_requests",
+        migrate: v20260805120000_remote_finalize_decision_requests::migrate,
+    },
+    Migration {
+        version: 20260805130000,
+        name: "remote_plan_edit_requests",
+        migrate: v20260805130000_remote_plan_edit_requests::migrate,
+    },
+    Migration {
+        version: 20260805140000,
+        name: "remote_queued_send_requests",
+        migrate: v20260805140000_remote_queued_send_requests::migrate,
+    },
+    Migration {
+        version: 20260805150000,
+        name: "remote_automation_run_requests",
+        migrate: v20260805150000_remote_automation_run_requests::migrate,
+    },
+    Migration {
+        version: 20260805160000,
+        name: "remote_automation_draft_requests",
+        migrate: v20260805160000_remote_automation_draft_requests::migrate,
+    },
+    Migration {
+        version: 20260805170000,
+        name: "remote_recovery_action",
+        migrate: v20260805170000_remote_recovery_action::migrate,
+    },
+    Migration {
+        version: 20260805180000,
+        name: "remote_conversation_lifecycle_requests",
+        migrate: v20260805180000_remote_conversation_lifecycle_requests::migrate,
+    },
+    Migration {
+        version: 20260805190000,
+        name: "project_repository_capability",
+        migrate: v20260805190000_project_repository_capability::migrate,
+    },
+    Migration {
+        version: 20260805191000,
+        name: "mcp_catalog_snapshot",
+        migrate: v20260805191000_mcp_catalog_snapshot::migrate,
+    },
+    Migration {
         version: 20260806071104,
         name: "agent_workspace_repair_effect_failed_completed_at",
         migrate: v20260806071104_agent_workspace_repair_effect_failed_completed_at::migrate,
+    },
+    Migration {
+        version: 20260806080000,
+        name: "remote_plan_approval_requests",
+        migrate: v20260806080000_remote_plan_approval_requests::migrate,
     },
     Migration {
         version: 20260806154753,

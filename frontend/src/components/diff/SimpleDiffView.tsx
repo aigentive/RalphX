@@ -12,6 +12,7 @@ import * as ScrollAreaPrimitive from "@radix-ui/react-scroll-area";
 import { Virtuoso } from "react-virtuoso";
 import { Button } from "@/components/ui/button";
 import { diffApi } from "@/api/diff";
+import { isRemoteTransportError } from "@/lib/remote/transport-errors";
 import type {
   DiffHunk,
   DiffLine,
@@ -46,6 +47,8 @@ export interface SimpleDiffViewProps {
   conversationId?: string | undefined;
   filePath?: string | undefined;
   refKind?: DiffRefKind | undefined;
+  snapshotUnavailable?: boolean | undefined;
+  snapshotCapturedAt?: string | undefined;
   /** Own the vertical scroll container. Inline virtualized callers disable this. */
   scrollContainer?: boolean | undefined;
   /** GitHub review/check annotations already filtered to this file. */
@@ -64,7 +67,20 @@ export interface SimpleDiffViewProps {
   stickyGutter?: boolean | undefined;
 }
 
-type GapState = "loading" | "error" | RangeLine[];
+function formatSnapshotAge(capturedAt: string): string {
+  const elapsedSeconds = Math.max(
+    0,
+    Math.round((Date.now() - new Date(capturedAt).getTime()) / 1_000),
+  );
+  if (elapsedSeconds < 60) return "just now";
+  const elapsedMinutes = Math.round(elapsedSeconds / 60);
+  if (elapsedMinutes < 60) return `${elapsedMinutes}m ago`;
+  const elapsedHours = Math.round(elapsedMinutes / 60);
+  if (elapsedHours < 24) return `${elapsedHours}h ago`;
+  return `${Math.round(elapsedHours / 24)}d ago`;
+}
+
+type GapState = "loading" | { error: unknown } | RangeLine[];
 
 type Variant = DiffRenderVariant;
 export const DIFF_ROW_VIRTUALIZATION_THRESHOLD = 1_000;
@@ -90,7 +106,11 @@ type DiffVirtualRow =
     }
   | { type: "line"; key: string; line: DiffLine }
   | { type: "range-line"; key: string; line: DiffLine }
-  | ({ type: "gap-collapsed" | "gap-loading" | "gap-error" | "gap-hide"; key: string } & GapRowBase);
+  | ({
+      type: "gap-collapsed" | "gap-loading" | "gap-error" | "gap-hide";
+      key: string;
+      error?: unknown;
+    } & GapRowBase);
 type GapVirtualRow = Extract<
   DiffVirtualRow,
   { type: "gap-collapsed" | "gap-loading" | "gap-error" | "gap-hide" }
@@ -141,8 +161,13 @@ function pushGapRows(
   const state = gapCache.get(gap.gapKey);
   const isCollapsed = collapsedGaps.has(gap.gapKey);
 
-  if (state === "error") {
-    rows.push({ type: "gap-error", key: `gap-${gap.gapKey}-error`, ...gap });
+  if (state !== undefined && !Array.isArray(state) && state !== "loading") {
+    rows.push({
+      type: "gap-error",
+      key: `gap-${gap.gapKey}-error`,
+      error: state.error,
+      ...gap,
+    });
     return;
   }
 
@@ -266,6 +291,8 @@ export function SimpleDiffView({
   conversationId,
   filePath,
   refKind,
+  snapshotUnavailable = false,
+  snapshotCapturedAt,
   scrollContainer = true,
   annotations = [],
   density = "standard",
@@ -357,8 +384,8 @@ export function SimpleDiffView({
             return next;
           });
         })
-        .catch(() => {
-          setGapData(gapKey, "error");
+        .catch((error: unknown) => {
+          setGapData(gapKey, { error });
         });
     },
     [canFetch, conversationId, filePath, refKind]
@@ -408,6 +435,20 @@ export function SimpleDiffView({
     );
   }
 
+  // An uncaptured snapshot also has zero hunks, so this MUST come before the empty-state
+  // return below — otherwise absence renders as the claim "No changes".
+  if (snapshotUnavailable) {
+    return (
+      <div
+        data-testid="simple-diff-snapshot-unavailable"
+        className="flex items-center justify-center px-3 py-6 text-xs"
+        style={{ color: "var(--text-muted)" }}
+      >
+        The host has not captured this file diff yet. Open this file on the host to capture it.
+      </div>
+    );
+  }
+
   if (hunks.length === 0) {
     return (
       <div
@@ -446,7 +487,7 @@ export function SimpleDiffView({
         data-testid="diff-gap"
       >
         {/* Error state */}
-        {state === "error" && (
+        {state !== undefined && !Array.isArray(state) && state !== "loading" && (
           <div
             data-testid="gap-error"
             className="flex items-center gap-2 px-3 py-1.5 text-[0.6875rem]"
@@ -455,16 +496,24 @@ export function SimpleDiffView({
               color: "var(--text-muted)",
             }}
           >
-            <span>Could not load context lines.</span>
-            <button
-              type="button"
-              aria-label="Retry loading lines"
-              className="underline hover:no-underline"
-              style={{ color: "var(--text-secondary)" }}
-              onClick={() => retryGap(gapKey, fromNewLine, toNewLine)}
-            >
-              Retry
-            </button>
+            <span>
+              {isRemoteTransportError(state.error) &&
+              state.error.code === "REMOTE_COMMAND_UNAVAILABLE"
+                ? "Context lines are available only on the host."
+                : "Could not load context lines."}
+            </span>
+            {(!isRemoteTransportError(state.error) ||
+              state.error.code !== "REMOTE_COMMAND_UNAVAILABLE") && (
+              <button
+                type="button"
+                aria-label="Retry loading lines"
+                className="underline hover:no-underline"
+                style={{ color: "var(--text-secondary)" }}
+                onClick={() => retryGap(gapKey, fromNewLine, toNewLine)}
+              >
+                Retry
+              </button>
+            )}
           </div>
         )}
 
@@ -518,7 +567,8 @@ export function SimpleDiffView({
         )}
 
         {/* Collapsed or not-yet-fetched */}
-        {(!hasData || isCollapsed) && state !== "loading" && state !== "error" && (
+        {(!hasData || isCollapsed) && state !== "loading" &&
+          (state === undefined || Array.isArray(state)) && (
           <div
             data-testid="diff-gap-control"
             style={{ borderBottom: "1px solid var(--overlay-faint)" }}
@@ -565,6 +615,9 @@ export function SimpleDiffView({
 
   function renderVirtualGapRow(row: GapVirtualRow) {
     if (row.type === "gap-error") {
+      const isUnavailable =
+        isRemoteTransportError(row.error) &&
+        row.error.code === "REMOTE_COMMAND_UNAVAILABLE";
       return (
         <div data-testid="diff-gap">
           <div
@@ -575,16 +628,22 @@ export function SimpleDiffView({
               color: "var(--text-muted)",
             }}
           >
-            <span>Could not load context lines.</span>
-            <button
-              type="button"
-              aria-label="Retry loading lines"
-              className="underline hover:no-underline"
-              style={{ color: "var(--text-secondary)" }}
-              onClick={() => retryGap(row.gapKey, row.fromNewLine, row.toNewLine)}
-            >
-              Retry
-            </button>
+            <span>
+              {isUnavailable
+                ? "Context lines are available only on the host."
+                : "Could not load context lines."}
+            </span>
+            {!isUnavailable && (
+              <button
+                type="button"
+                aria-label="Retry loading lines"
+                className="underline hover:no-underline"
+                style={{ color: "var(--text-secondary)" }}
+                onClick={() => retryGap(row.gapKey, row.fromNewLine, row.toNewLine)}
+              >
+                Retry
+              </button>
+            )}
           </div>
         </div>
       );
@@ -710,6 +769,12 @@ export function SimpleDiffView({
 
   // ── Main render ────────────────────────────────────────────────────────
 
+  const snapshotAgeLabel = snapshotCapturedAt ? (
+    <p className="px-3 pt-2 text-xs" style={{ color: "var(--text-muted)" }}>
+      Diff as of {formatSnapshotAge(snapshotCapturedAt)} (host snapshot)
+    </p>
+  ) : null;
+
   if (shouldVirtualizeRows) {
     return (
       <div className={scrollContainer ? "h-full overflow-hidden" : "w-full overflow-hidden"}>
@@ -724,6 +789,7 @@ export function SimpleDiffView({
           data-testid="simple-diff-virtualized"
           style={{ backgroundColor: "var(--bg-base)" }}
         >
+          {snapshotAgeLabel}
           {showWrapToggle && (
             <div
               className="px-3 py-2 border-b"
@@ -763,6 +829,7 @@ export function SimpleDiffView({
         data-wrap-lines={wrapLines}
         style={{ backgroundColor: "var(--bg-base)" }}
       >
+        {snapshotAgeLabel}
         {showWrapToggle && (
           <div
             className="px-3 py-2 border-b"

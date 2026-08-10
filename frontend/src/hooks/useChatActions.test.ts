@@ -28,13 +28,16 @@ vi.mock("@tanstack/react-query", () => ({
 const mockActions = {
   queueMessage: vi.fn(),
   deleteQueuedMessage: vi.fn(),
+  setQueuedMessages: vi.fn(),
   startEditingQueuedMessage: vi.fn(),
   setActiveConversation: vi.fn(),
   setAgentRunning: vi.fn(),
   setSending: vi.fn(),
+  activeAgentRunIds: {},
 };
 vi.mock("@/stores/chatStore", () => ({
   useChatStore: (selector: (state: typeof mockActions) => unknown) => selector(mockActions),
+  selectActiveAgentRunId: () => () => undefined,
 }));
 
 const mockSendAgentMessage = vi.fn();
@@ -43,10 +46,12 @@ const mockSendQueuedAgentMessageNow = vi.fn();
 const mockStopAgent = vi.fn();
 
 vi.mock("@/api/chat", () => ({
+  RemoteQueuedMessageSendError: class RemoteQueuedMessageSendError extends Error {},
   chatApi: {
     sendAgentMessage: (...args: unknown[]) => mockSendAgentMessage(...args),
     deleteQueuedAgentMessage: (...args: unknown[]) => mockDeleteQueuedAgentMessage(...args),
     sendQueuedAgentMessageNow: (...args: unknown[]) => mockSendQueuedAgentMessageNow(...args),
+    listRemoteQueuedAgentMessages: vi.fn(),
   },
   stopAgent: (...args: unknown[]) => mockStopAgent(...args),
 }));
@@ -649,6 +654,46 @@ describe("useChatActions", () => {
 
       expect(mockStopAgent).toHaveBeenCalledWith("ideation", "session-1");
       expect(mockRecoverTaskExecution).not.toHaveBeenCalled();
+    });
+
+    /**
+     * The brake failing is the one failure a user must never miss. This used to `logger.warn`
+     * and return, so a remote `REMOTE_COMMAND_UNAVAILABLE` — and every other stop failure —
+     * was completely invisible while the agent kept burning tokens.
+     */
+    it("surfaces a stop failure to the user instead of swallowing it", async () => {
+      mockStopAgent.mockRejectedValueOnce(
+        new Error("This action runs only on the host — it is not available remotely."),
+      );
+      const { result } = setup({
+        contextType: "ideation",
+        contextId: "session-1",
+      });
+
+      await act(async () => {
+        await result.current.handleStopAgent();
+      });
+
+      expect(mockToastError).toHaveBeenCalledWith(
+        "Couldn't stop the agent",
+        expect.objectContaining({
+          description:
+            "This action runs only on the host — it is not available remotely.",
+        }),
+      );
+    });
+
+    it("does not toast when the stop succeeds", async () => {
+      const { result } = setup({
+        contextType: "ideation",
+        contextId: "session-1",
+      });
+
+      await act(async () => {
+        await result.current.handleStopAgent();
+      });
+
+      expect(mockToastError).not.toHaveBeenCalled();
     });
 
     it("task_execution mode also calls recoverTaskExecution", async () => {

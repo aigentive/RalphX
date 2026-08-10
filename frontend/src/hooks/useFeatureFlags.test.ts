@@ -154,6 +154,8 @@ describe("featureFlagsSchema", () => {
       agentConversationWorkflows: false,
       standaloneConversations: false,
       agentConversationAutopilot: false,
+      // Defaults ON since 2026-08-03 (owner decision) — matches the backend default.
+      remoteEnvironments: true,
     });
     expect("ideationPage" in flags).toBe(false);
     expect("battleMode" in flags).toBe(false);

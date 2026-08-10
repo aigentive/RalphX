@@ -349,16 +349,14 @@ impl ReconciliationRunner {
     ) -> bool {
         let notification_service = self.notification_service.clone();
 
-        let key = format!("{}:{:?}", task.id.as_str(), status);
-        let instance_id = {
-            let mut prompted = self.prompt_tracker.lock().await;
-            if prompted.contains_key(&key) {
-                return false;
-            }
-            let instance_id = uuid::Uuid::new_v4().to_string();
-            prompted.insert(key, instance_id.clone());
-            instance_id
-        };
+        let instance_id = uuid::Uuid::new_v4().to_string();
+        if !self
+            .prompt_tracker
+            .insert_if_absent(task.id.as_str(), status, instance_id.clone())
+            .await
+        {
+            return false;
+        }
 
         let context_type = match context {
             RecoveryContext::Execution => "execution",
@@ -403,9 +401,7 @@ impl ReconciliationRunner {
     }
 
     pub(crate) async fn clear_prompt_marker(&self, task_id: &str, status: InternalStatus) {
-        let key = format!("{}:{:?}", task_id, status);
-        let mut prompted = self.prompt_tracker.lock().await;
-        prompted.remove(&key);
+        self.prompt_tracker.remove(task_id, status).await;
     }
 
     pub(crate) async fn lookup_latest_run_for_task_context(

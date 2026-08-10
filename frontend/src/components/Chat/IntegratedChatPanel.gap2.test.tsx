@@ -171,6 +171,10 @@ vi.mock("@/api/chat", () => ({
     listConversations: vi.fn().mockResolvedValue([]),
     getAgentRunStatus: (...args: unknown[]) => mockGetAgentRunStatus(...args),
     sendAgentMessage: vi.fn().mockResolvedValue({ conversationId: "conv-1" }),
+    // Queue hydration reads both branches (Wave B3c); a mock missing either turns every
+    // panel mount into a TypeError.
+    getQueuedAgentMessages: vi.fn().mockResolvedValue([]),
+    listRemoteQueuedAgentMessages: vi.fn().mockResolvedValue([]),
   },
   stopAgent: vi.fn().mockResolvedValue(true),
 }));

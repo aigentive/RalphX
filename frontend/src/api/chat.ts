@@ -20,7 +20,12 @@ import type { ToolCallDetailRef } from "../components/Chat/tool-widgets/shared.c
 import type { ContentBlockItem } from "../components/Chat/MessageItem";
 import type { MessageAttachment } from "../components/Chat/MessageAttachments";
 import { isWebMode } from "@/lib/tauri-detection";
-import { backendApiUrl } from "@/api/backend";
+import { backendFetch } from "@/api/backend";
+import {
+  getTransportEnvironmentId,
+  isRemoteEnvironmentId,
+} from "@/lib/remote/active-environment";
+import { RemoteTransportError } from "@/lib/remote/transport-errors";
 import {
   ArtifactResponseSchema,
   transformArtifactResponse,
@@ -374,10 +379,22 @@ export function parseContentBlocks(raw: unknown): ContentBlockItem[] {
     const item: ContentBlockItem = {
       type: block.type,
       text: block.text,
-      durationMs: typeof block.duration_ms === "number" ? block.duration_ms : block.durationMs,
-      isSettled: typeof block.is_settled === "boolean" ? block.is_settled : block.isSettled,
-      estimatedTokens: typeof block.estimated_tokens === "number" ? block.estimated_tokens : block.estimatedTokens,
-      reasoningTokens: typeof block.reasoning_tokens === "number" ? block.reasoning_tokens : block.reasoningTokens,
+      durationMs:
+        typeof block.duration_ms === "number"
+          ? block.duration_ms
+          : block.durationMs,
+      isSettled:
+        typeof block.is_settled === "boolean"
+          ? block.is_settled
+          : block.isSettled,
+      estimatedTokens:
+        typeof block.estimated_tokens === "number"
+          ? block.estimated_tokens
+          : block.estimatedTokens,
+      reasoningTokens:
+        typeof block.reasoning_tokens === "number"
+          ? block.reasoning_tokens
+          : block.reasoningTokens,
       id: block.id,
       name: block.name,
       arguments: block.arguments ?? block.input,
@@ -455,10 +472,7 @@ export type AgentSidebarPublicationState =
   "active" | "draft" | "merged" | "closed" | "uncommitted" | "unpushed";
 
 export type AgentSidebarGroupBy =
-  | "project"
-  | "publication"
-  | "automation"
-  | "inbox";
+  "project" | "publication" | "automation" | "inbox";
 export type AgentSidebarSort = "latest" | "az" | "za";
 export type AgentSidebarAttentionLane = "needs" | "working" | "stale" | "done";
 
@@ -564,18 +578,27 @@ const ConversationActiveStateResponseSchema = z.object({
   is_active: z.boolean(),
   run_id: z.string().min(1).optional(),
   tool_calls: z.array(z.unknown()).default([]),
-  streaming_tasks: z.array(z.custom<ActiveStreamingTaskResponse>((value) => {
-    if (value == null || typeof value !== "object") return false;
-    const record = value as Record<string, unknown>;
-    return typeof record.tool_use_id === "string"
-      && typeof record.status === "string"
-      && (record.started_at == null || typeof record.started_at === "string")
-      && (record.completed_at == null || typeof record.completed_at === "string")
-      && (record.timestamp_provenance == null
-        || record.timestamp_provenance === "delegated_run"
-        || record.timestamp_provenance === "delegation_job")
-      && (record.seq == null || (typeof record.seq === "number" && Number.isFinite(record.seq)));
-  })).default([]),
+  streaming_tasks: z
+    .array(
+      z.custom<ActiveStreamingTaskResponse>((value) => {
+        if (value == null || typeof value !== "object") return false;
+        const record = value as Record<string, unknown>;
+        return (
+          typeof record.tool_use_id === "string" &&
+          typeof record.status === "string" &&
+          (record.started_at == null ||
+            typeof record.started_at === "string") &&
+          (record.completed_at == null ||
+            typeof record.completed_at === "string") &&
+          (record.timestamp_provenance == null ||
+            record.timestamp_provenance === "delegated_run" ||
+            record.timestamp_provenance === "delegation_job") &&
+          (record.seq == null ||
+            (typeof record.seq === "number" && Number.isFinite(record.seq)))
+        );
+      }),
+    )
+    .default([]),
   partial_text: z.string().default(""),
   partial_text_segments: z.array(z.string()).default([]),
   partial_thinking_segments: z.array(z.string()).default([]),
@@ -592,8 +615,8 @@ const ConversationActiveStateResponseSchema = z.object({
 export async function getConversationActiveState(
   conversationId: string,
 ): Promise<ConversationActiveStateResponse> {
-  const res = await fetch(
-    backendApiUrl(`conversations/${conversationId}/active-state`),
+  const res = await backendFetch(
+    `conversations/${conversationId}/active-state`,
   );
   if (!res.ok) {
     throw new Error(`Failed to get conversation active state: ${res.status}`);
@@ -605,11 +628,12 @@ export async function getConversationActiveState(
     tool_calls: parsed.tool_calls,
     streaming_tasks: parsed.streaming_tasks,
     partial_text: parsed.partial_text,
-    partial_text_segments: parsed.partial_text_segments.length > 0
-      ? parsed.partial_text_segments
-      : parsed.partial_text.length > 0
-        ? [parsed.partial_text]
-        : [],
+    partial_text_segments:
+      parsed.partial_text_segments.length > 0
+        ? parsed.partial_text_segments
+        : parsed.partial_text.length > 0
+          ? [parsed.partial_text]
+          : [],
     partial_thinking_segments: parsed.partial_thinking_segments,
   };
 }
@@ -665,10 +689,8 @@ export async function getChildSessionStatus(
     }
   }
 
-  const res = await fetch(
-    backendApiUrl(
-      `ideation/sessions/${sessionId}/child-status?include_messages=true&message_limit=5`,
-    ),
+  const res = await backendFetch(
+    `ideation/sessions/${sessionId}/child-status?include_messages=true&message_limit=5`,
   );
   if (!res.ok) {
     throw new Error(`Failed to get child session status: ${res.status}`);
@@ -825,8 +847,7 @@ function transformConversation(raw: RawConversation): ChatConversation {
     lastRunPersonaVersion: raw.last_run_persona_version ?? null,
     lastRunPersonaContentHash: raw.last_run_persona_content_hash ?? null,
     lastRunPersonaInjected: raw.last_run_persona_injected ?? null,
-    lastRunPersonaSkippedReason:
-      raw.last_run_persona_skipped_reason ?? null,
+    lastRunPersonaSkippedReason: raw.last_run_persona_skipped_reason ?? null,
     personaRuns: raw.persona_runs.map((run) => ({
       id: run.run_id,
       personaId: run.persona_id,
@@ -1230,12 +1251,15 @@ const AgentMessageSchema = z.object({
   cache_creation_tokens: z.number().nullable().optional(),
   cache_read_tokens: z.number().nullable().optional(),
   estimated_usd: z.number().nullable().optional(),
-  usage_provenance: z.enum([
-    "provider_turn_delta",
-    "derived_cumulative_delta",
-    "provider_snapshot_fallback",
-    "cumulative_baseline_only",
-  ]).nullable().optional(),
+  usage_provenance: z
+    .enum([
+      "provider_turn_delta",
+      "derived_cumulative_delta",
+      "provider_snapshot_fallback",
+      "cumulative_baseline_only",
+    ])
+    .nullable()
+    .optional(),
   created_at: z.string(),
 });
 
@@ -1285,12 +1309,15 @@ const AgentTimelineItemSchema = z.object({
   cache_creation_tokens: z.number().nullable().optional(),
   cache_read_tokens: z.number().nullable().optional(),
   estimated_usd: z.number().nullable().optional(),
-  usage_provenance: z.enum([
-    "provider_turn_delta",
-    "derived_cumulative_delta",
-    "provider_snapshot_fallback",
-    "cumulative_baseline_only",
-  ]).nullable().optional(),
+  usage_provenance: z
+    .enum([
+      "provider_turn_delta",
+      "derived_cumulative_delta",
+      "provider_snapshot_fallback",
+      "cumulative_baseline_only",
+    ])
+    .nullable()
+    .optional(),
   created_at: z.string(),
   updated_at: z.string(),
   finalized_at: z.string().nullable().optional(),
@@ -1467,6 +1494,56 @@ function transformConversationTimelinePage(
 }
 
 /**
+ * The remote half of the transcript reads (the client side of PR 3.2's read surface).
+ *
+ * The local `get_agent_conversation*` / `list_agent_conversations*` commands are
+ * DELIBERATELY unregistered on the facade — each opens by waking the conversation's
+ * agent workspace, which reaches a live-agent steer sink, and their absence is asserted
+ * rather than merely omitted (`remote_server/registry.rs`,
+ * `the_local_transcript_reads_stay_unregistered`). Calling them from a paired device
+ * answers `REMOTE_COMMAND_UNAVAILABLE`, i.e. the Agents surface cannot load a
+ * conversation at all.
+ *
+ * The host exposes spawn-free twins in `commands/remote_transcript_commands.rs` which
+ * delegate to the SAME `*_for_app_state` seams the local commands use — identical
+ * argument names, identical response payloads, no forked logic. Switching transports is
+ * therefore a command-name choice and nothing else: the zod schemas and transforms below
+ * are shared verbatim, and no extra await enters the transcript-hydration path.
+ *
+ * Each call site branches into TWO `typedInvoke` calls with literal command names rather
+ * than computing one name. P-11 requires every production command name to be statically
+ * enumerable — `scripts/check-remote-transport-drift.mjs` reads the invoke ARGUMENT, so a
+ * helper returning the name is a hole in the proof that no command reaches the facade
+ * unclassified, and the scanner fails the build on it. The duplication is the gate's price
+ * and is deliberate; this mirrors the `sendAgentMessage`/`sendRemoteChatMessage` split.
+ */
+function remoteTranscriptReadsEnabled(): boolean {
+  return isRemoteEnvironmentId(getTransportEnvironmentId());
+}
+
+/**
+ * Page bounds the host enforces on the remote reads (`remote_transcript_commands.rs`
+ * `DEFAULT_PAGE_LIMIT`/`MAX_PAGE_LIMIT`). The host CLAMPS rather than rejects, so an
+ * over-wide request would come back narrower than asked without saying so, and the
+ * infinite-query cursors would be computed against a page the client never requested.
+ * Clamping here keeps the request we send the request the host actually runs.
+ *
+ * Local reads are untouched: the local commands apply their own bounds, and narrowing
+ * them from the client would be a behaviour change nobody asked for.
+ */
+const REMOTE_MIN_PAGE_LIMIT = 1;
+const REMOTE_MAX_PAGE_LIMIT = 200;
+
+function wirePageLimit(limit: number): number {
+  if (!remoteTranscriptReadsEnabled()) return limit;
+  if (!Number.isFinite(limit)) return REMOTE_MAX_PAGE_LIMIT;
+  return Math.min(
+    Math.max(Math.trunc(limit), REMOTE_MIN_PAGE_LIMIT),
+    REMOTE_MAX_PAGE_LIMIT,
+  );
+}
+
+/**
  * List all conversations for a given context
  * @param contextType The context type
  * @param contextId The context ID
@@ -1477,11 +1554,11 @@ export async function listConversations(
   contextId: string,
   includeArchived = false,
 ): Promise<ChatConversation[]> {
-  const raw = await typedInvoke(
-    "list_agent_conversations",
-    { contextType, contextId, includeArchived },
-    z.array(ChatConversationResponseSchema),
-  );
+  const args = { contextType, contextId, includeArchived };
+  const schema = z.array(ChatConversationResponseSchema);
+  const raw = remoteTranscriptReadsEnabled()
+    ? await typedInvoke("list_remote_agent_conversations", args, schema)
+    : await typedInvoke("list_agent_conversations", args, schema);
   return raw.map(transformConversation);
 }
 
@@ -1498,19 +1575,26 @@ export async function listConversationsPage(
   archivedOnly = false,
 ): Promise<ConversationListPageResponse> {
   const normalizedSearch = search?.trim();
-  const raw = await typedInvoke(
-    "list_agent_conversations_page",
-    {
-      contextType,
-      contextId,
-      includeArchived,
-      ...(archivedOnly ? { archivedOnly } : {}),
-      limit,
-      offset,
-      ...(normalizedSearch ? { search: normalizedSearch } : {}),
-    },
-    ConversationListPageResponseSchema,
-  );
+  const args = {
+    contextType,
+    contextId,
+    includeArchived,
+    ...(archivedOnly ? { archivedOnly } : {}),
+    limit: wirePageLimit(limit),
+    offset,
+    ...(normalizedSearch ? { search: normalizedSearch } : {}),
+  };
+  const raw = remoteTranscriptReadsEnabled()
+    ? await typedInvoke(
+        "list_remote_agent_conversations_page",
+        args,
+        ConversationListPageResponseSchema,
+      )
+    : await typedInvoke(
+        "list_agent_conversations_page",
+        args,
+        ConversationListPageResponseSchema,
+      );
   return transformConversationListPage(raw);
 }
 
@@ -1537,14 +1621,14 @@ export async function getConversation(conversationId: string): Promise<{
   conversation: ChatConversation;
   messages: ChatMessageResponse[];
 }> {
-  const raw = await typedInvoke(
-    "get_agent_conversation",
-    { conversationId },
-    z.object({
-      conversation: ChatConversationResponseSchema,
-      messages: z.array(AgentMessageSchema),
-    }),
-  );
+  const args = { conversationId };
+  const schema = z.object({
+    conversation: ChatConversationResponseSchema,
+    messages: z.array(AgentMessageSchema),
+  });
+  const raw = remoteTranscriptReadsEnabled()
+    ? await typedInvoke("get_remote_agent_conversation", args, schema)
+    : await typedInvoke("get_agent_conversation", args, schema);
 
   return {
     conversation: transformConversation(raw.conversation),
@@ -1564,11 +1648,27 @@ export async function getConversationMessagesPage(
   limit: number,
   offset = 0,
 ): Promise<ConversationMessagesPageResponse> {
-  const raw = await typedInvoke(
-    "get_agent_conversation_messages_page",
-    { conversationId, limit, offset },
-    ConversationMessagesPageResponseSchema,
-  );
+  const args = { conversationId, limit: wirePageLimit(limit), offset };
+  // Both commands return `Option`, so an unknown conversation id answers `null` on the
+  // wire. Parsing it as a required object turned that into a raw schema dump; name the
+  // condition instead. Null is NOT coerced to an empty page — that would render a real
+  // conversation as empty and hide the mismatch.
+  const raw = remoteTranscriptReadsEnabled()
+    ? await typedInvoke(
+        "get_remote_agent_conversation_messages_page",
+        args,
+        ConversationMessagesPageResponseSchema.nullable(),
+      )
+    : await typedInvoke(
+        "get_agent_conversation_messages_page",
+        args,
+        ConversationMessagesPageResponseSchema.nullable(),
+      );
+  if (raw === null) {
+    throw new Error(
+      `Conversation ${conversationId} was not found on this host.`,
+    );
+  }
 
   return transformConversationMessagesPage(raw);
 }
@@ -1582,11 +1682,25 @@ export async function getConversationTimelinePage(
   limit: number,
   beforeSequence: number | null = null,
 ): Promise<ConversationTimelinePageResponse> {
-  const raw = await typedInvoke(
-    "get_agent_conversation_timeline_page",
-    { conversationId, limit, beforeSequence },
-    ConversationTimelinePageResponseSchema,
-  );
+  const args = { conversationId, limit: wirePageLimit(limit), beforeSequence };
+  // `Option` on both sides — see `getConversationMessagesPage` for why null is named
+  // rather than coerced into an empty page.
+  const raw = remoteTranscriptReadsEnabled()
+    ? await typedInvoke(
+        "get_remote_agent_conversation_timeline_page",
+        args,
+        ConversationTimelinePageResponseSchema.nullable(),
+      )
+    : await typedInvoke(
+        "get_agent_conversation_timeline_page",
+        args,
+        ConversationTimelinePageResponseSchema.nullable(),
+      );
+  if (raw === null) {
+    throw new Error(
+      `Conversation ${conversationId} was not found on this host.`,
+    );
+  }
 
   return transformConversationTimelinePage(raw);
 }
@@ -1726,6 +1840,50 @@ const ArchiveConversationResponseSchema = z.object({
   }),
 });
 
+const RemoteConversationLifecycleStatusSchema = z.enum([
+  "pending",
+  "starting",
+  "completed",
+  "failed",
+  "failedStale",
+]);
+const RemoteConversationLifecycleIntentSchema = z
+  .object({
+    requestId: z.string(),
+    allocatedConversationId: z.string().nullable(),
+    status: RemoteConversationLifecycleStatusSchema,
+    deduplicated: z.boolean(),
+    createdAt: z.string(),
+  })
+  .strict();
+const RemoteConversationLifecycleRequestSchema = z
+  .object({
+    requestId: z.string(),
+    kind: z.enum(["archive", "fork"]),
+    conversationId: z.string(),
+    allocatedConversationId: z.string().nullable(),
+    status: RemoteConversationLifecycleStatusSchema,
+    errorCode: z.string().nullable(),
+    result: z.record(z.string(), z.unknown()).nullable(),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+  })
+  .strict();
+
+async function pollRemoteConversationLifecycle(requestId: string) {
+  for (let attempt = 0; attempt < 240; attempt += 1) {
+    const request = await typedInvoke(
+      "get_remote_conversation_lifecycle_request",
+      { requestId },
+      RemoteConversationLifecycleRequestSchema,
+    );
+    if (["completed", "failed", "failedStale"].includes(request.status))
+      return request;
+    await new Promise((resolve) => setTimeout(resolve, 750));
+  }
+  throw new Error("Timed out waiting for the host conversation operation");
+}
+
 export interface ArchiveConversationResult {
   conversation: ChatConversation;
   cleanup: {
@@ -1740,6 +1898,44 @@ export async function archiveConversation(
   conversationId: string,
   options: { closePullRequest: boolean },
 ): Promise<ArchiveConversationResult> {
+  if (isRemoteEnvironmentId(getTransportEnvironmentId())) {
+    let intent: z.infer<typeof RemoteConversationLifecycleIntentSchema>;
+    try {
+      intent = await typedInvoke(
+        "request_remote_conversation_archive",
+        {
+          input: { conversationId, closePullRequest: options.closePullRequest },
+        },
+        RemoteConversationLifecycleIntentSchema,
+      );
+    } catch (error) {
+      if (error !== "REMOTE_CONVERSATION_LIFECYCLE_ALREADY_ARCHIVED")
+        throw error;
+      const { conversation } = await getConversation(conversationId);
+      return {
+        conversation,
+        cleanup: {
+          runtimeShutdownSucceeded: true,
+          cleanupClaim: "not_claimed",
+          localCleanup: "cleaned",
+          message: null,
+        },
+      };
+    }
+    const request = await pollRemoteConversationLifecycle(intent.requestId);
+    if (request.status !== "completed")
+      throw new Error(request.errorCode ?? `Archive ${request.status}`);
+    const { conversation } = await getConversation(conversationId);
+    return {
+      conversation,
+      cleanup: {
+        runtimeShutdownSucceeded: true,
+        cleanupClaim: "not_claimed",
+        localCleanup: "cleaned",
+        message: null,
+      },
+    };
+  }
   const raw = await typedInvoke(
     "archive_agent_conversation",
     { conversationId, closePullRequest: options.closePullRequest },
@@ -1771,6 +1967,14 @@ export async function setAgentConversationMuted(
   conversationId: string,
   muted: boolean,
 ): Promise<void> {
+  if (isRemoteEnvironmentId(getTransportEnvironmentId())) {
+    await typedInvoke(
+      "set_remote_agent_conversation_muted",
+      { input: { conversationId, muted } },
+      z.null(),
+    );
+    return;
+  }
   await typedInvoke(
     "set_agent_conversation_muted",
     { input: { conversationId, muted } },
@@ -1812,18 +2016,20 @@ const ComposerSelectionSnapshotSchema = z.object({
   content: z.string(),
 });
 
-const QueuedMessageResponseSchema = z.object({
+export const QueuedMessageResponseSchema = z.object({
   id: z.string(),
   content: z.string(),
   created_at: z.string(),
   is_editing: z.boolean(),
-  composer_selection_snapshot: ComposerSelectionSnapshotSchema.optional(),
+  composer_selection_snapshot: ComposerSelectionSnapshotSchema.nullish(),
   attachment_ids: z.array(z.string()).optional().default([]),
 });
 
 type RawQueuedMessage = z.infer<typeof QueuedMessageResponseSchema>;
 
-function transformQueuedMessage(raw: RawQueuedMessage): QueuedMessageResponse {
+export function transformQueuedMessage(
+  raw: RawQueuedMessage,
+): QueuedMessageResponse {
   const selection = raw.composer_selection_snapshot;
   return {
     id: raw.id,
@@ -1933,14 +2139,18 @@ export const chatApi = {
   startAgentTaskPipeline,
   sendAgentMessage,
   getQueuedAgentMessages,
+  listRemoteQueuedAgentMessages,
   deleteQueuedAgentMessage,
+  cancelRemoteQueuedAgentMessage,
   sendQueuedAgentMessageNow,
+  sendRemoteQueuedAgentMessageNow,
   // Agent lifecycle
   isChatServiceAvailable,
   stopAgent,
   isAgentRunning,
   // Attachments
   listMessageAttachments,
+  listRemoteMessageAttachments,
   // Active state
   getConversationActiveState,
   // Child session
@@ -2088,11 +2298,7 @@ export interface AgentConversationSourcePullRequest {
 }
 
 export type AgentWorkspaceMaintenanceOperationSource =
-  | "base_update"
-  | "publish"
-  | "pr_conflict"
-  | "pr_autofix"
-  | "legacy";
+  "base_update" | "publish" | "pr_conflict" | "pr_autofix" | "legacy";
 export type AgentWorkspaceMaintenanceOperationStage =
   | "updating_base"
   | "repairing"
@@ -2103,10 +2309,7 @@ export type AgentWorkspaceMaintenanceOperationStage =
   | "blocked"
   | "held";
 export type AgentWorkspaceMaintenanceOperationStatus =
-  | "active"
-  | "ready"
-  | "blocked"
-  | "held";
+  "active" | "ready" | "blocked" | "held";
 export type AgentWorkspaceMaintenanceOperationHoldReason =
   | "pr_autofix_unchanged_health"
   | "pr_autofix_pre_existing_on_base"
@@ -2189,10 +2392,7 @@ export interface AgentConversationWorkspace {
 }
 
 export type AgentWorkspacePublicationMetadataPhase =
-  | "prepared"
-  | "mutating"
-  | "reconciling"
-  | "settled";
+  "prepared" | "mutating" | "reconciling" | "settled";
 
 export type AgentWorkspacePublicationMetadataState =
   | "not_attempted"
@@ -2422,9 +2622,7 @@ export type AgentWorkspacePrReviewActionStatus =
   | "superseded";
 
 export type AgentWorkspacePrReviewActionHeadStatus =
-  | "current"
-  | "stale"
-  | "unverified";
+  "current" | "stale" | "unverified";
 
 export interface AgentWorkspacePrReviewMonitor {
   conversationId: string;
@@ -2704,7 +2902,13 @@ const AgentConversationWorkspaceSourcePullRequestResponseSchema = z.object({
 export const AgentWorkspaceMaintenanceOperationResponseSchema = z.object({
   operation_id: z.string(),
   generation: z.number().int().positive(),
-  source: z.enum(["base_update", "publish", "pr_conflict", "pr_autofix", "legacy"]),
+  source: z.enum([
+    "base_update",
+    "publish",
+    "pr_conflict",
+    "pr_autofix",
+    "legacy",
+  ]),
   stage: z.enum([
     "updating_base",
     "repairing",
@@ -2769,14 +2973,19 @@ export const AgentConversationWorkspaceResponseSchema = z.object({
   publication_pr_url: z.string().nullable(),
   publication_pr_status: z.string().nullable(),
   publication_push_status: z.string().nullable(),
-  maintenance_operation: AgentWorkspaceMaintenanceOperationResponseSchema.nullable()
-    .optional()
-    .default(null),
+  maintenance_operation:
+    AgentWorkspaceMaintenanceOperationResponseSchema.nullable()
+      .optional()
+      .default(null),
   pr_autofix_fingerprint_spend:
     AgentWorkspacePrAutofixFingerprintSpendResponseSchema.nullable()
       .optional()
       .default(null),
-  publication_metadata_attempt_id: z.string().nullable().optional().default(null),
+  publication_metadata_attempt_id: z
+    .string()
+    .nullable()
+    .optional()
+    .default(null),
   publication_metadata_phase: z
     .enum(["prepared", "mutating", "reconciling", "settled"])
     .nullable()
@@ -3024,7 +3233,11 @@ const AgentWorkspaceReviewMonitorResponseSchema = z.object({
     .nullable()
     .optional()
     .default(null),
-  review_gate_bypassed_artifact_id: z.string().nullable().optional().default(null),
+  review_gate_bypassed_artifact_id: z
+    .string()
+    .nullable()
+    .optional()
+    .default(null),
   review_gate_bypassed_artifact_version: z
     .number()
     .nullable()
@@ -3057,7 +3270,13 @@ const AgentWorkspaceReviewMonitorResponseSchema = z.object({
   last_run_id: z.string().nullable(),
   last_error: z.string().nullable(),
   auto_merge_guard_status: z
-    .enum(["pausing", "paused_for_review", "awaiting_publish", "restoring", "restore_failed"])
+    .enum([
+      "pausing",
+      "paused_for_review",
+      "awaiting_publish",
+      "restoring",
+      "restore_failed",
+    ])
     .nullable()
     .optional()
     .default(null),
@@ -3068,7 +3287,11 @@ const AgentWorkspaceReviewMonitorResponseSchema = z.object({
     .nullable()
     .optional()
     .default(null),
-  auto_merge_guard_diff_fingerprint: z.string().nullable().optional().default(null),
+  auto_merge_guard_diff_fingerprint: z
+    .string()
+    .nullable()
+    .optional()
+    .default(null),
   auto_merge_guard_head_sha: z.string().nullable().optional().default(null),
   auto_merge_guard_last_error: z.string().nullable().optional().default(null),
   created_at: z.string(),
@@ -3198,6 +3421,201 @@ export const StartAgentConversationResponseSchema = z.object({
   send_result: SendAgentMessageResponseSchema,
 });
 
+/**
+ * The remote spawn-free conversation-start seam (contract §2).
+ *
+ * A paired remote client cannot reach the local process-spawn sink, so it never calls
+ * `start_agent_conversation`. Instead it PERSISTS a start-intent through
+ * `request_remote_agent_conversation_start` (the host seeds its own conversation and a
+ * host-owned dispatcher does the actual spawn), then POLLS
+ * `get_remote_conversation_start_request` until the intent reaches a terminal state.
+ *
+ * Status values are the host enum serialized camelCase
+ * (`RemoteConversationStartStatus`, `serde(rename_all = "camelCase")`).
+ */
+export const RemoteConversationStartStatusSchema = z.enum([
+  "pending",
+  "starting",
+  "started",
+  "failed",
+  "cancelled",
+  "failedStale",
+]);
+export type RemoteConversationStartStatus = z.infer<
+  typeof RemoteConversationStartStatusSchema
+>;
+
+/** Non-`started` terminal states — each carries an `errorCode` the composer can retry from. */
+const REMOTE_CONVERSATION_START_TERMINAL_STATUSES = [
+  "started",
+  "failed",
+  "cancelled",
+  "failedStale",
+] as const;
+
+/** Response of `request_remote_agent_conversation_start` — the persisted-intent handle. */
+const RequestRemoteAgentConversationStartResponseSchema = z
+  .object({
+    startRequestId: z.string(),
+    conversationId: z.string(),
+    status: RemoteConversationStartStatusSchema,
+    createdAt: z.string(),
+  })
+  .strict();
+
+/** Response of `get_remote_conversation_start_request` — the post-submit poll target (§2.7). */
+const GetRemoteConversationStartRequestResponseSchema = z
+  .object({
+    id: z.string(),
+    conversationId: z.string(),
+    status: RemoteConversationStartStatusSchema,
+    errorCode: z.string().nullable(),
+    agentRunId: z.string().nullable(),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+  })
+  .strict();
+
+type RemoteConversationStartRequest = z.infer<
+  typeof GetRemoteConversationStartRequestResponseSchema
+>;
+
+/**
+ * Remote CONTINUATION of an existing conversation (WP1).
+ *
+ * `send_remote_chat_message` only reaches a conversation a run is already serving; once the
+ * agent finished its turn the remote surface used to dead-end on
+ * `REMOTE_CHAT_SEND_NOT_STEERABLE`. The idle case now persists a continuation intent through
+ * `request_remote_agent_conversation_message` and polls
+ * `get_remote_conversation_message_request` to a terminal state — the host owns the send.
+ *
+ * Status values are the host enum serialized camelCase (`RemoteConversationMessageStatus`).
+ */
+export const RemoteConversationMessageStatusSchema = z.enum([
+  "pending",
+  "dispatching",
+  "dispatched",
+  "failed",
+  "cancelled",
+  "failedStale",
+]);
+export type RemoteConversationMessageStatus = z.infer<
+  typeof RemoteConversationMessageStatusSchema
+>;
+
+/**
+ * Terminal states. `dispatched` is the only success; every other terminal state is a VISIBLE
+ * failure the composer must surface, because a persisted-but-never-delivered turn shown as a
+ * sent message is precisely the hazard this intent table exists to prevent.
+ */
+const REMOTE_CONVERSATION_MESSAGE_TERMINAL_STATUSES = [
+  "dispatched",
+  "failed",
+  "cancelled",
+  "failedStale",
+] as const;
+
+/** Response of `request_remote_agent_conversation_message` — the persisted-intent handle. */
+const RequestRemoteAgentConversationMessageResponseSchema = z
+  .object({
+    messageRequestId: z.string(),
+    conversationId: z.string(),
+    status: RemoteConversationMessageStatusSchema,
+    createdAt: z.string(),
+  })
+  .strict();
+
+/** Response of `get_remote_conversation_message_request` — the post-submit poll target. */
+const GetRemoteConversationMessageRequestResponseSchema = z
+  .object({
+    id: z.string(),
+    conversationId: z.string(),
+    status: RemoteConversationMessageStatusSchema,
+    errorCode: z.string().nullable(),
+    agentRunId: z.string().nullable(),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+  })
+  .strict();
+
+type RemoteConversationMessageRequest = z.infer<
+  typeof GetRemoteConversationMessageRequestResponseSchema
+>;
+
+/**
+ * Remote conversation MODE SWITCH (WP5a).
+ *
+ * `switch_agent_conversation_mode` prepares the conversation workspace (`GitService::ref_exists`,
+ * `ensure_git_worktree`) and is host-denied by the absolute process floor. Combined with the
+ * start intent host-pinning `mode` to `"chat"`, a paired device could reach chat and NOTHING
+ * else — Edit, Plan and Ideation were unreachable. The switch now persists an intent through
+ * `request_remote_agent_conversation_mode_switch` and polls
+ * `get_remote_conversation_mode_switch_request` to a terminal state — the host owns the worktree.
+ *
+ * Status values are the host enum serialized camelCase
+ * (`RemoteConversationModeSwitchStatus`).
+ */
+export const RemoteConversationModeSwitchStatusSchema = z.enum([
+  "pending",
+  "switching",
+  "switched",
+  "alreadyInMode",
+  "failed",
+  "cancelled",
+  "failedStale",
+]);
+export type RemoteConversationModeSwitchStatus = z.infer<
+  typeof RemoteConversationModeSwitchStatusSchema
+>;
+
+/**
+ * Terminal states. `switched` and `alreadyInMode` are BOTH successes: the second means the
+ * conversation was already where the user asked it to be, which is the ordinary outcome of a
+ * re-fired picker or a second device. Treating it as a failure would show an error toast for a
+ * no-op. Every other terminal state is a VISIBLE failure.
+ */
+const REMOTE_CONVERSATION_MODE_SWITCH_TERMINAL_STATUSES = [
+  "switched",
+  "alreadyInMode",
+  "failed",
+  "cancelled",
+  "failedStale",
+] as const;
+
+/** The two terminal states the client may render as "the mode is now what you asked for". */
+const REMOTE_CONVERSATION_MODE_SWITCH_SUCCESS_STATUSES = [
+  "switched",
+  "alreadyInMode",
+] as const;
+
+/** Response of `request_remote_agent_conversation_mode_switch` — the persisted-intent handle. */
+const RequestRemoteAgentConversationModeSwitchResponseSchema = z
+  .object({
+    modeSwitchRequestId: z.string(),
+    conversationId: z.string(),
+    status: RemoteConversationModeSwitchStatusSchema,
+    deduplicated: z.boolean(),
+    createdAt: z.string(),
+  })
+  .strict();
+
+/** Response of `get_remote_conversation_mode_switch_request` — the post-submit poll target. */
+const GetRemoteConversationModeSwitchRequestResponseSchema = z
+  .object({
+    id: z.string(),
+    conversationId: z.string(),
+    targetMode: z.string(),
+    status: RemoteConversationModeSwitchStatusSchema,
+    errorCode: z.string().nullable(),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+  })
+  .strict();
+
+type RemoteConversationModeSwitchRequest = z.infer<
+  typeof GetRemoteConversationModeSwitchRequestResponseSchema
+>;
+
 const ForkAgentConversationResponseSchema = z.object({
   parent_conversation: ChatConversationResponseSchema,
   conversation: ChatConversationResponseSchema,
@@ -3217,7 +3635,9 @@ const AgentConversationPlanSeedResponseSchema = z.object({
   workspace: AgentConversationWorkspaceResponseSchema,
   session_id: z.string(),
   artifact: ArtifactResponseSchema,
-  blueprint_artifact: ArtifactResponseSchema.nullable().optional().default(null),
+  blueprint_artifact: ArtifactResponseSchema.nullable()
+    .optional()
+    .default(null),
 });
 
 const PublishAgentConversationWorkspaceResponseSchema = z.object({
@@ -3384,7 +3804,8 @@ function transformAgentConversationWorkspace(
           holdReason: raw.maintenance_operation.hold_reason,
           summary: raw.maintenance_operation.summary,
           blocker: raw.maintenance_operation.blocker,
-          automaticContinuation: raw.maintenance_operation.automatic_continuation,
+          automaticContinuation:
+            raw.maintenance_operation.automatic_continuation,
           startedAt: raw.maintenance_operation.started_at,
           updatedAt: raw.maintenance_operation.updated_at,
         }
@@ -3502,7 +3923,9 @@ export function startAgentConversationInvokeInput(
     ...(input.modelId ? { modelOverride: input.modelId } : {}),
     ...(input.logicalEffort ? { logicalEffort: input.logicalEffort } : {}),
     ...(input.personaId ? { personaId: input.personaId } : {}),
-    ...(input.sourcePersonaId ? { sourcePersonaId: input.sourcePersonaId } : {}),
+    ...(input.sourcePersonaId
+      ? { sourcePersonaId: input.sourcePersonaId }
+      : {}),
     ...(input.codexFastMode != null
       ? { codexFastMode: input.codexFastMode }
       : {}),
@@ -3750,8 +4173,7 @@ function transformAgentWorkspaceReviewMonitor(
     reviewArtifactId: raw.review_artifact_id,
     reviewArtifactVersion: raw.review_artifact_version,
     reviewArtifactUpdatedAt: raw.review_artifact_updated_at,
-    reviewRequestedChangesArtifactId:
-      raw.review_requested_changes_artifact_id,
+    reviewRequestedChangesArtifactId: raw.review_requested_changes_artifact_id,
     reviewRequestedChangesArtifactVersion:
       raw.review_requested_changes_artifact_version,
     reviewRequestedChangesArtifactUpdatedAt:
@@ -3761,7 +4183,8 @@ function transformAgentWorkspaceReviewMonitor(
     reviewGateBypassedDiffFingerprint:
       raw.review_gate_bypassed_diff_fingerprint,
     reviewGateBypassedArtifactId: raw.review_gate_bypassed_artifact_id,
-    reviewGateBypassedArtifactVersion: raw.review_gate_bypassed_artifact_version,
+    reviewGateBypassedArtifactVersion:
+      raw.review_gate_bypassed_artifact_version,
     reviewedHeadSha: raw.reviewed_head_sha,
     reviewedDiffFingerprint: raw.reviewed_diff_fingerprint,
     selectedSourceBaseRef: raw.selected_source_base_ref,
@@ -3919,11 +4342,24 @@ function transformUpdateAgentConversationWorkspaceFromBaseResponse(
 export async function getAgentConversationWorkspace(
   conversationId: string,
 ): Promise<AgentConversationWorkspace | null> {
-  const raw = await typedInvoke(
-    "get_agent_conversation_workspace",
-    { conversationId },
-    AgentConversationWorkspaceResponseSchema.nullable(),
-  );
+  const args = { conversationId };
+  const remote = remoteTranscriptReadsEnabled();
+  const raw = remote
+    ? await typedInvoke(
+        "get_remote_agent_conversation_workspace",
+        args,
+        AgentConversationWorkspaceResponseSchema.nullable(),
+      )
+    : await typedInvoke(
+        "get_agent_conversation_workspace",
+        args,
+        AgentConversationWorkspaceResponseSchema.nullable(),
+      );
+  if (remote && !raw) {
+    throw new Error(
+      `Agent workspace ${conversationId} was not found on this host.`,
+    );
+  }
   return raw ? transformAgentConversationWorkspace(raw) : null;
 }
 
@@ -3975,33 +4411,53 @@ export async function listAgentSidebarConversations(
   input: AgentSidebarConversationsInput,
 ): Promise<AgentSidebarConversationGroupsResponse> {
   const normalizedSearch = input.search?.trim();
-  const raw = await typedInvoke(
-    "list_agent_sidebar_conversations",
-    {
-      input: {
-        projectIds: input.projectIds,
-        includeArchived: input.includeArchived ?? false,
-        archivedOnly: input.archivedOnly ?? false,
-        ...(normalizedSearch ? { search: normalizedSearch } : {}),
-        ...(input.publicationStates
-          ? { publicationStates: input.publicationStates }
-          : {}),
-        ...(input.groupBy ? { groupBy: input.groupBy } : {}),
-        ...(input.sort ? { sort: input.sort } : {}),
-        ...(input.limitPerGroup != null
-          ? { limitPerGroup: input.limitPerGroup }
-          : {}),
-        ...(input.offsets ? { offsets: input.offsets } : {}),
-        ...(input.pinnedConversationIds
-          ? { pinnedConversationIds: input.pinnedConversationIds }
-          : {}),
-        ...(input.priorityConversationIds
-          ? { priorityConversationIds: input.priorityConversationIds }
-          : {}),
-      },
+  // Pins and priorities are client-local, env-scoped UI state (agentSessionStore). Sending a
+  // remote viewer's own pins to the host reorders the host's conversations away from the order the
+  // host itself renders — same data, different within-group boosting. On a remote environment we
+  // omit them so the host's native sort/grouping is preserved verbatim. (Mirroring the host's
+  // pinned-to-top items would require host-persisted pin state; that is a separate follow-up.)
+  const isRemote = remoteTranscriptReadsEnabled();
+  const args = {
+    input: {
+      projectIds: input.projectIds,
+      includeArchived: input.includeArchived ?? false,
+      archivedOnly: input.archivedOnly ?? false,
+      ...(normalizedSearch ? { search: normalizedSearch } : {}),
+      ...(input.publicationStates
+        ? { publicationStates: input.publicationStates }
+        : {}),
+      ...(input.groupBy ? { groupBy: input.groupBy } : {}),
+      ...(input.sort ? { sort: input.sort } : {}),
+      ...(input.limitPerGroup != null
+        ? { limitPerGroup: input.limitPerGroup }
+        : {}),
+      ...(input.offsets ? { offsets: input.offsets } : {}),
+      ...(!isRemote && input.pinnedConversationIds
+        ? { pinnedConversationIds: input.pinnedConversationIds }
+        : {}),
+      ...(!isRemote && input.priorityConversationIds
+        ? { priorityConversationIds: input.priorityConversationIds }
+        : {}),
     },
-    AgentSidebarConversationGroupsResponseSchema,
-  );
+  };
+  // Two literal command names, not a computed one: the local
+  // `list_agent_sidebar_conversations` is unregistered on the facade (it schedules PR-supervision
+  // recovery), so a paired device must call the spawn-free, worktree_path-blanking twin
+  // `list_remote_agent_sidebar_conversations`. The projected payload differs only in that
+  // `worktree_path` is blanked, which the sidebar UI does not render, so the schema and transform
+  // below are shared verbatim. Duplicating the invoke keeps every command name statically
+  // enumerable for the P-11 transport-drift scan (see `remoteTranscriptReadsEnabled`).
+  const raw = isRemote
+    ? await typedInvoke(
+        "list_remote_agent_sidebar_conversations",
+        args,
+        AgentSidebarConversationGroupsResponseSchema,
+      )
+    : await typedInvoke(
+        "list_agent_sidebar_conversations",
+        args,
+        AgentSidebarConversationGroupsResponseSchema,
+      );
   return transformAgentSidebarConversationGroups(raw);
 }
 
@@ -4035,18 +4491,39 @@ async function fetchAgentWorkspaceJson<T>(
   schema: z.ZodType<T>,
   init?: RequestInit,
 ): Promise<T> {
-  const response = await fetch(backendApiUrl(path), init);
+  const response = await backendFetch(path, init);
   if (!response.ok) {
     let detail: string | null = null;
+    let envelopeCode: string | null = null;
     try {
       const raw = (await response.json()) as {
         error?: string;
         message?: string;
         detail?: string;
+        code?: string;
       };
       detail = raw.detail ?? raw.message ?? raw.error ?? null;
+      envelopeCode = typeof raw.code === "string" ? raw.code : null;
     } catch {
       detail = null;
+    }
+    // A remote host answers routes it does not mount with the typed
+    // `REMOTE_COMMAND_UNAVAILABLE` envelope (`remote_server/mod.rs`). Surface it as
+    // the typed transport error so the hydration barrier and the remote gates read
+    // it as a capability boundary — flattening it into the generic HTTP error made
+    // the barrier treat "this host doesn't expose that route" as host unhealth and
+    // loop "Reconnecting…" forever.
+    const environmentId = getTransportEnvironmentId();
+    if (
+      isRemoteEnvironmentId(environmentId) &&
+      envelopeCode === "REMOTE_COMMAND_UNAVAILABLE"
+    ) {
+      throw new RemoteTransportError({
+        code: "REMOTE_COMMAND_UNAVAILABLE",
+        message: detail ?? "This remote route is not available.",
+        environmentId,
+        cmd: path,
+      });
     }
     throw new AgentWorkspaceHttpError(
       response.status,
@@ -4122,8 +4599,7 @@ export async function startAgentWorkspaceReview(
               will_disable_auto_merge:
                 options.confirmation.willDisableAutoMerge,
               merge_method: options.confirmation.mergeMethod,
-              restore_after_publish:
-                options.confirmation.restoreAfterPublish,
+              restore_after_publish: options.confirmation.restoreAfterPublish,
             }
           : undefined,
         runtime_override: options.runtimeOverride
@@ -4704,6 +5180,130 @@ export async function closeAgentWorkspacePr(
   return transformAgentConversationWorkspace(raw);
 }
 
+/**
+ * A remote conversation-start intent that reached a non-`started` terminal state. The host
+ * classifies the failure as `errorCode`; the composer shows it with a retry affordance and
+ * keeps the type (rather than a plain `Error`) so callers can branch on `status`.
+ */
+export class RemoteConversationStartError extends Error {
+  readonly status: RemoteConversationStartStatus;
+  readonly errorCode: string | null;
+  constructor(status: RemoteConversationStartStatus, errorCode: string | null) {
+    super(errorCode ?? `Conversation start ${status}`);
+    this.name = "RemoteConversationStartError";
+    this.status = status;
+    this.errorCode = errorCode;
+  }
+}
+
+/**
+ * Projects a start request onto the spawn-free remote input (contract §2.1/§2.5). Only
+ * client-settable fields cross: project, content, title, and the provider/model/effort
+ * NAMES and known mode the host re-validates before spawn. First-turn role, team intent,
+ * base/branch, persona, attachments, and `refreshRuntime` are host-forced or absent by design
+ * and MUST NOT be forwarded.
+ */
+function remoteConversationStartInvokeInput(
+  input: StartAgentConversationInput,
+) {
+  if (!input.projectId) {
+    throw new Error("A project is required to start a conversation remotely.");
+  }
+  return {
+    projectId: input.projectId,
+    content: input.content,
+    ...(input.title ? { title: input.title } : {}),
+    ...(input.providerHarness ? { provider: input.providerHarness } : {}),
+    ...(input.modelId ? { modelOverride: input.modelId } : {}),
+    ...(input.logicalEffort ? { logicalEffort: input.logicalEffort } : {}),
+    mode: input.mode ?? "chat",
+  };
+}
+
+const REMOTE_CONVERSATION_START_POLL_INTERVAL_MS = 750;
+/** ~3 minutes at the poll interval — a host that has not settled by then is surfaced as a timeout. */
+const REMOTE_CONVERSATION_START_MAX_POLLS = 240;
+
+function isTerminalRemoteConversationStartStatus(
+  status: RemoteConversationStartStatus,
+): boolean {
+  return (
+    REMOTE_CONVERSATION_START_TERMINAL_STATUSES as readonly string[]
+  ).includes(status);
+}
+
+function remoteConversationStartPollDelay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Polls the host-side start intent to a terminal state. The first read is immediate (so a
+ * host that started synchronously returns without a delay); subsequent reads back off by a
+ * fixed interval. Fail-closed: a repo/read error propagates rather than reading as "not
+ * started yet" forever.
+ */
+async function pollRemoteConversationStart(
+  startRequestId: string,
+): Promise<RemoteConversationStartRequest> {
+  for (
+    let attempt = 0;
+    attempt < REMOTE_CONVERSATION_START_MAX_POLLS;
+    attempt += 1
+  ) {
+    // Literal command name (P-11): the status read is a pure host-side repository read.
+    const request = await typedInvoke(
+      "get_remote_conversation_start_request",
+      { startRequestId },
+      GetRemoteConversationStartRequestResponseSchema,
+    );
+    if (isTerminalRemoteConversationStartStatus(request.status)) {
+      return request;
+    }
+    await remoteConversationStartPollDelay(
+      REMOTE_CONVERSATION_START_POLL_INTERVAL_MS,
+    );
+  }
+  throw new Error(
+    "Timed out waiting for the host to start the conversation. It may still be starting — reopen it from the sidebar.",
+  );
+}
+
+/**
+ * The remote half of `startAgentConversation` (contract §3.1). Persists a start-intent on
+ * the host, polls it to completion, then navigates into the seeded conversation through the
+ * SAME remote transcript read the rest of the Agents surface uses. No local seeded-create
+ * runs — the host command seeds its own conversation.
+ */
+async function startRemoteAgentConversation(
+  input: StartAgentConversationInput,
+): Promise<StartAgentConversationResult> {
+  // Literal command name (P-11): persists a start-intent — no client-side spawn sink.
+  const started = await typedInvoke(
+    "request_remote_agent_conversation_start",
+    { input: remoteConversationStartInvokeInput(input) },
+    RequestRemoteAgentConversationStartResponseSchema,
+  );
+  const request = await pollRemoteConversationStart(started.startRequestId);
+  if (request.status !== "started") {
+    throw new RemoteConversationStartError(
+      request.status,
+      request.errorCode ?? null,
+    );
+  }
+  const { conversation } = await getConversation(request.conversationId);
+  return {
+    conversation,
+    workspace: null,
+    sendResult: {
+      conversationId: request.conversationId,
+      agentRunId: request.agentRunId ?? "",
+      isNewConversation: true,
+      wasQueued: false,
+      queuedAsPending: false,
+    },
+  };
+}
+
 const ReopenAgentWorkspacePrResponseSchema = z.object({
   outcome: z.enum([
     "latch_cleared",
@@ -4720,9 +5320,7 @@ const ReopenAgentWorkspacePrResponseSchema = z.object({
 });
 
 export type ReopenLocalWorkspaceState =
-  | "already_present"
-  | "restored"
-  | "restore_failed";
+  "already_present" | "restored" | "restore_failed";
 
 export interface ReopenAgentWorkspacePrResult {
   outcome:
@@ -4746,12 +5344,22 @@ export async function reopenAgentWorkspacePr(
     { input: { conversationId, reopenOnGithub } },
     ReopenAgentWorkspacePrResponseSchema,
   );
-  return { ...raw, workspace: transformAgentConversationWorkspace(raw.workspace) };
+  return {
+    ...raw,
+    workspace: transformAgentConversationWorkspace(raw.workspace),
+  };
 }
 
 export async function startAgentConversation(
   input: StartAgentConversationInput,
 ): Promise<StartAgentConversationResult> {
+  // Two literal `typedInvoke` sites (P-11): a remote environment persists a start-intent and
+  // polls the host to completion (the host owns the spawn); local starts inline. The remote
+  // branch deliberately skips `startAgentConversationInvokeInput` — its base/persona/team/
+  // attachment fields are host-forced or absent under the spawn-free contract.
+  if (isRemoteEnvironmentId(getTransportEnvironmentId())) {
+    return startRemoteAgentConversation(input);
+  }
   const raw = await typedInvoke(
     "start_agent_conversation",
     {
@@ -4765,6 +5373,33 @@ export async function startAgentConversation(
 export async function forkAgentConversation(
   conversationId: string,
 ): Promise<ForkAgentConversationResult> {
+  if (isRemoteEnvironmentId(getTransportEnvironmentId())) {
+    const intent = await typedInvoke(
+      "request_remote_conversation_fork",
+      { input: { conversationId } },
+      RemoteConversationLifecycleIntentSchema,
+    );
+    const request = await pollRemoteConversationLifecycle(intent.requestId);
+    if (request.status !== "completed")
+      throw new Error(request.errorCode ?? `Fork ${request.status}`);
+    const childId =
+      request.allocatedConversationId ?? intent.allocatedConversationId;
+    if (!childId)
+      throw new Error("Fork completed without an allocated conversation id");
+    const [{ conversation: parentConversation }, { conversation }] =
+      await Promise.all([
+        getConversation(conversationId),
+        getConversation(childId),
+      ]);
+    return {
+      parentConversation,
+      conversation,
+      workspace: null,
+      providerSessionForked: false,
+      copiedMessageCount: 0,
+      copiedTimelineItemCount: 0,
+    };
+  }
   const raw = await typedInvoke(
     "fork_agent_conversation",
     {
@@ -4777,9 +5412,124 @@ export async function forkAgentConversation(
   return transformForkAgentConversationResponse(raw);
 }
 
+export class RemoteConversationModeSwitchError extends Error {
+  readonly status: RemoteConversationModeSwitchStatus;
+  readonly errorCode: string | null;
+  constructor(
+    status: RemoteConversationModeSwitchStatus,
+    errorCode: string | null,
+  ) {
+    super(errorCode ?? `Mode switch ${status}`);
+    this.name = "RemoteConversationModeSwitchError";
+    this.status = status;
+    this.errorCode = errorCode;
+  }
+}
+
+const REMOTE_CONVERSATION_MODE_SWITCH_POLL_INTERVAL_MS = 750;
+/** ~3 minutes — worktree preparation on the host can legitimately take a while. */
+const REMOTE_CONVERSATION_MODE_SWITCH_MAX_POLLS = 240;
+
+function isTerminalRemoteConversationModeSwitchStatus(
+  status: RemoteConversationModeSwitchStatus,
+): boolean {
+  return (
+    REMOTE_CONVERSATION_MODE_SWITCH_TERMINAL_STATUSES as readonly string[]
+  ).includes(status);
+}
+
+/**
+ * Polls the host-side mode-switch intent to a terminal state. Fail-closed: a repo/read error
+ * propagates rather than reading as "still switching" forever.
+ */
+async function pollRemoteConversationModeSwitch(
+  modeSwitchRequestId: string,
+): Promise<RemoteConversationModeSwitchRequest> {
+  for (
+    let attempt = 0;
+    attempt < REMOTE_CONVERSATION_MODE_SWITCH_MAX_POLLS;
+    attempt += 1
+  ) {
+    // Literal command name (P-11): the status read is a pure host-side repository read.
+    const request = await typedInvoke(
+      "get_remote_conversation_mode_switch_request",
+      { modeSwitchRequestId },
+      GetRemoteConversationModeSwitchRequestResponseSchema,
+    );
+    if (isTerminalRemoteConversationModeSwitchStatus(request.status)) {
+      return request;
+    }
+    await remoteConversationStartPollDelay(
+      REMOTE_CONVERSATION_MODE_SWITCH_POLL_INTERVAL_MS,
+    );
+  }
+  throw new Error(
+    "Timed out waiting for the host to switch the conversation mode. It may still be switching — check the conversation shortly.",
+  );
+}
+
+/**
+ * The remote half of `switchAgentConversationMode` (WP5a). Persists a mode-switch intent on
+ * the host, polls it to a terminal state (the host owns the worktree preparation), then
+ * re-reads the conversation through the registered remote transcript read. `base` and
+ * `runtimeOverride` are host-forced under the spawn-free contract and MUST NOT cross the
+ * wire; no production remote caller passes them, so their presence is a programming error
+ * surfaced loudly rather than dropped silently.
+ */
+async function switchRemoteAgentConversationMode(
+  input: SwitchAgentConversationModeInput,
+): Promise<SwitchAgentConversationModeResult> {
+  if (input.base || input.runtimeOverride) {
+    throw new Error(
+      "base/runtimeOverride cannot be set on a remote mode switch — the host owns workspace preparation.",
+    );
+  }
+  const { conversation: current } = await getConversation(input.conversationId);
+  if (current.contextType !== "project") {
+    throw new Error(
+      "Only project conversations can switch modes on a remote host.",
+    );
+  }
+  // Literal command name (P-11): persists a mode-switch intent — no client-side spawn sink.
+  const requested = await typedInvoke(
+    "request_remote_agent_conversation_mode_switch",
+    {
+      input: {
+        conversationId: input.conversationId,
+        projectId: current.contextId,
+        mode: input.mode,
+      },
+    },
+    RequestRemoteAgentConversationModeSwitchResponseSchema,
+  );
+  const request = await pollRemoteConversationModeSwitch(
+    requested.modeSwitchRequestId,
+  );
+  if (
+    !(
+      REMOTE_CONVERSATION_MODE_SWITCH_SUCCESS_STATUSES as readonly string[]
+    ).includes(request.status)
+  ) {
+    throw new RemoteConversationModeSwitchError(
+      request.status,
+      request.errorCode ?? null,
+    );
+  }
+  const { conversation } = await getConversation(input.conversationId);
+  // The workspace re-hydrates through the call sites' query invalidations; the switch result
+  // deliberately reports `null` rather than a stale optimistic copy.
+  return { conversation, workspace: null };
+}
+
 export async function switchAgentConversationMode(
   input: SwitchAgentConversationModeInput,
 ): Promise<SwitchAgentConversationModeResult> {
+  // Two literal `typedInvoke` sites (P-11): a remote environment persists a mode-switch
+  // intent and polls the host to completion (the host owns the worktree preparation);
+  // local switches inline.
+  if (isRemoteEnvironmentId(getTransportEnvironmentId())) {
+    return switchRemoteAgentConversationMode(input);
+  }
   const raw = await typedInvoke(
     "switch_agent_conversation_mode",
     {
@@ -4787,7 +5537,11 @@ export async function switchAgentConversationMode(
         conversationId: input.conversationId,
         mode: input.mode,
         ...(input.runtimeOverride
-          ? { runtimeOverride: roleRuntimeOverrideInvokeInput(input.runtimeOverride) }
+          ? {
+              runtimeOverride: roleRuntimeOverrideInvokeInput(
+                input.runtimeOverride,
+              ),
+            }
           : {}),
         ...(input.base
           ? {
@@ -4877,7 +5631,11 @@ export async function activateAgentTaskPipeline(input: {
         conversationId: input.conversationId,
         sessionId: input.sessionId,
         ...(input.runtimeOverride
-          ? { runtimeOverride: roleRuntimeOverrideInvokeInput(input.runtimeOverride) }
+          ? {
+              runtimeOverride: roleRuntimeOverrideInvokeInput(
+                input.runtimeOverride,
+              ),
+            }
           : {}),
       },
     },
@@ -4965,6 +5723,307 @@ export async function startAgentTaskPipeline(input: {
   };
 }
 
+const SendRemoteChatMessageResponseSchema = z
+  .object({
+    conversationId: z.string(),
+    queuedMessageId: z.string(),
+    agentRunId: z.string(),
+    createdAt: z.string(),
+  })
+  .passthrough();
+
+/**
+ * Human copy for the host's spawn-free-send refusals.
+ *
+ * The host answers with stable codes; a user who taps send after the agent has finished
+ * its turn should not be shown `REMOTE_CHAT_SEND_NOT_STEERABLE`. Unrecognised errors pass
+ * through untouched — inventing prose for an error we do not understand would hide it.
+ */
+const REMOTE_CHAT_SEND_MESSAGES: Readonly<Record<string, string>> = {
+  REMOTE_CHAT_SEND_NOT_STEERABLE:
+    "That agent isn't running right now — remote sends can only reach a conversation the host has already started.",
+  REMOTE_CHAT_SEND_CONVERSATION_ARCHIVED:
+    "This conversation is archived. Restore it on the host to keep talking.",
+  REMOTE_CHAT_SEND_CONVERSATION_NOT_FOUND:
+    "That conversation no longer exists on the host.",
+  REMOTE_CHAT_SEND_LOOKUP_FAILED:
+    "The host couldn't confirm whether that conversation is live, so nothing was sent.",
+  REMOTE_CHAT_SEND_ENQUEUE_FAILED:
+    "The host couldn't queue that message. Try again.",
+  REMOTE_CHAT_SEND_EMPTY_CONTENT: "Type a message before sending.",
+  REMOTE_CHAT_SEND_ROLE_NOT_PERMITTED:
+    "Remote devices can only send your own messages.",
+};
+
+/** The readable refusal for a known host code, or `null` to leave the error alone. */
+function remoteChatSendRefusal(error: unknown): Error | null {
+  if (error instanceof RemoteTransportError) return null;
+  const raw = error instanceof Error ? error.message : String(error);
+  const copy = REMOTE_CHAT_SEND_MESSAGES[raw.trim()];
+  return copy === undefined ? null : new Error(copy);
+}
+
+/**
+ * A remote continuation intent that reached a non-`dispatched` terminal state. The host
+ * classifies the failure as `errorCode`; the type (rather than a plain `Error`) is kept so the
+ * composer can branch on `status` and offer a retry.
+ */
+export class RemoteConversationMessageError extends Error {
+  readonly status: RemoteConversationMessageStatus;
+  readonly errorCode: string | null;
+  constructor(
+    status: RemoteConversationMessageStatus,
+    errorCode: string | null,
+  ) {
+    super(
+      REMOTE_CONV_MESSAGE_MESSAGES[errorCode ?? ""] ??
+        REMOTE_CONV_MESSAGE_STATUS_MESSAGES[status] ??
+        errorCode ??
+        `Message ${status}`,
+    );
+    this.name = "RemoteConversationMessageError";
+    this.status = status;
+    this.errorCode = errorCode;
+  }
+}
+
+/**
+ * Human copy for the host's continuation refusals, whether they arrive as a synchronous
+ * command error or as a terminal `errorCode` on the polled intent. Unrecognised codes pass
+ * through untouched — inventing prose for an error we do not understand would hide it.
+ */
+const REMOTE_CONV_MESSAGE_MESSAGES: Readonly<Record<string, string>> = {
+  REMOTE_CONV_MESSAGE_EMPTY_CONTENT: "Type a message before sending.",
+  REMOTE_CONV_MESSAGE_CONVERSATION_NOT_FOUND:
+    "That conversation no longer exists on the host.",
+  REMOTE_CONV_MESSAGE_CONVERSATION_ARCHIVED:
+    "This conversation is archived. Restore it on the host to keep talking.",
+  REMOTE_CONV_MESSAGE_PROJECT_MISMATCH:
+    "That conversation belongs to a different project on the host.",
+  REMOTE_CONV_MESSAGE_PROVIDER_NOT_ENABLED:
+    "The provider this conversation uses is turned off on the host.",
+  REMOTE_CONV_MESSAGE_MODEL_NOT_ENABLED:
+    "That model is not enabled on the host. Pick another one and send again.",
+  REMOTE_CONV_MESSAGE_LOOKUP_FAILED:
+    "The host couldn't check this conversation, so nothing was sent.",
+  REMOTE_CONV_MESSAGE_ENQUEUE_FAILED:
+    "The host couldn't accept that message. Try again.",
+  REMOTE_CONV_MESSAGE_RUN_WENT_LIVE:
+    "The agent started working before your message went out. Send it again to reach the live run.",
+  REMOTE_CONV_MESSAGE_HOST_SEND_FAILED:
+    "The host couldn't start the agent for that message, so it was never delivered. Try again.",
+};
+
+/**
+ * Fallback copy per terminal status, for a failure the host settled without an `errorCode`.
+ * Nothing here may read as success: the whole point of surfacing terminal states is that a
+ * message no agent ever saw must not look sent.
+ */
+const REMOTE_CONV_MESSAGE_STATUS_MESSAGES: Readonly<
+  Partial<Record<RemoteConversationMessageStatus, string>>
+> = {
+  failed: "The host couldn't deliver that message. Try again.",
+  cancelled: "That message was cancelled on the host and never delivered.",
+  failedStale:
+    "The host restarted before delivering that message, so it was never sent. Send it again.",
+};
+
+const REMOTE_CONVERSATION_MESSAGE_POLL_INTERVAL_MS = 750;
+/** ~3 minutes at the poll interval — a host that has not settled by then is surfaced as a timeout. */
+const REMOTE_CONVERSATION_MESSAGE_MAX_POLLS = 240;
+
+function isTerminalRemoteConversationMessageStatus(
+  status: RemoteConversationMessageStatus,
+): boolean {
+  return (
+    REMOTE_CONVERSATION_MESSAGE_TERMINAL_STATUSES as readonly string[]
+  ).includes(status);
+}
+
+function remoteConversationMessagePollDelay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Polls a continuation intent to a terminal state. The first read is immediate; subsequent
+ * reads back off by a fixed interval. Fail-closed: a read error propagates rather than reading
+ * as "not dispatched yet" forever.
+ */
+async function pollRemoteConversationMessage(
+  messageRequestId: string,
+): Promise<RemoteConversationMessageRequest> {
+  for (
+    let attempt = 0;
+    attempt < REMOTE_CONVERSATION_MESSAGE_MAX_POLLS;
+    attempt += 1
+  ) {
+    // Literal command name (P-11): the status read is a pure host-side repository read.
+    const request = await typedInvoke(
+      "get_remote_conversation_message_request",
+      { messageRequestId },
+      GetRemoteConversationMessageRequestResponseSchema,
+    );
+    if (isTerminalRemoteConversationMessageStatus(request.status)) {
+      return request;
+    }
+    await remoteConversationMessagePollDelay(
+      REMOTE_CONVERSATION_MESSAGE_POLL_INTERVAL_MS,
+    );
+  }
+  throw new Error(
+    "Timed out waiting for the host to deliver that message. Check the conversation before sending again.",
+  );
+}
+
+/** The readable refusal for a known continuation code, or `null` to leave the error alone. */
+function remoteConversationMessageRefusal(error: unknown): Error | null {
+  if (error instanceof RemoteTransportError) return null;
+  const raw = error instanceof Error ? error.message : String(error);
+  const copy = REMOTE_CONV_MESSAGE_MESSAGES[raw.trim()];
+  return copy === undefined ? null : new Error(copy);
+}
+
+/**
+ * The idle half of the remote send: persist a continuation intent, then poll it to a terminal
+ * state before reporting anything to the composer.
+ *
+ * The poll is not optional politeness. Returning as soon as the intent is persisted would show
+ * the user a sent message whose delivery is still unproven — the exact false-success the
+ * chat-send design (§7) names as this queue's main hazard.
+ */
+async function continueRemoteConversation(
+  content: string,
+  conversationId: string,
+  projectId: string,
+  options?: SendAgentMessageOptions,
+): Promise<SendAgentMessageResult> {
+  // Literal command name (P-11): persists a continuation intent — no client-side spawn sink.
+  // UX-5: the composer's model/effort selections TRAVEL here instead of being dropped.
+  const requested = await typedInvoke(
+    "request_remote_agent_conversation_message",
+    {
+      input: {
+        conversationId,
+        projectId,
+        content,
+        ...(options?.modelId ? { modelOverride: options.modelId } : {}),
+        ...(options?.logicalEffort
+          ? { logicalEffort: options.logicalEffort }
+          : {}),
+      },
+    },
+    RequestRemoteAgentConversationMessageResponseSchema,
+  ).catch((error: unknown) => {
+    throw remoteConversationMessageRefusal(error) ?? error;
+  });
+
+  const request = await pollRemoteConversationMessage(
+    requested.messageRequestId,
+  );
+  if (request.status !== "dispatched") {
+    throw new RemoteConversationMessageError(
+      request.status,
+      request.errorCode ?? null,
+    );
+  }
+
+  return {
+    conversationId: request.conversationId,
+    agentRunId: request.agentRunId ?? "",
+    isNewConversation: false,
+    wasQueued: false,
+    queuedAsPending: false,
+  };
+}
+
+/**
+ * The remote half of {@link sendAgentMessage}.
+ *
+ * `send_agent_message` is not, and will not be, registered on the remote facade — it
+ * reaches a process-launch sink, and the facade's detector-(c) floor admits no
+ * exceptions. A paired device therefore uses two spawn-free host commands, chosen by the
+ * HOST rather than by client-side liveness inference:
+ *
+ * - a run is live ⇒ `send_remote_chat_message` queues the turn into the queue that run drains;
+ * - the conversation is idle ⇒ `request_remote_agent_conversation_message` persists a
+ *   continuation intent a host dispatcher sends through the provider-session resume seam.
+ *
+ * The live path is attempted FIRST and its `REMOTE_CHAT_SEND_NOT_STEERABLE` refusal is the
+ * branch condition. That ordering is deliberate: the host is the only authority on run
+ * liveness, and a client that guessed would either double a turn (guessing idle while a run
+ * drains the queue) or strand one (guessing live with nothing to drain it). The idle command
+ * independently refuses with `REMOTE_CONV_MESSAGE_RUN_ALREADY_LIVE` if a run goes live inside
+ * the race window, so both directions fail closed.
+ *
+ * Starting a conversation stays host-only, so a send with no conversation id is refused here
+ * rather than silently creating one.
+ *
+ * Options that only a host-side send can honour — attachments, team intent, composer
+ * references — are still not forwarded, because neither facade command accepts them. Model and
+ * effort DO travel on the idle path (UX-5).
+ */
+async function sendRemoteChatMessage(
+  content: string,
+  conversationId: string | null | undefined,
+  projectId: string,
+  options?: SendAgentMessageOptions,
+): Promise<SendAgentMessageResult> {
+  if (!conversationId) {
+    throw new RemoteTransportError({
+      code: "REMOTE_COMMAND_UNAVAILABLE",
+      message:
+        "Starting a conversation runs only on the host — open an existing conversation to send from here.",
+      environmentId: getTransportEnvironmentId(),
+      cmd: "send_remote_chat_message",
+    });
+  }
+
+  let raw: z.infer<typeof SendRemoteChatMessageResponseSchema>;
+  try {
+    raw = await typedInvoke(
+      "send_remote_chat_message",
+      {
+        input: {
+          conversationId,
+          content,
+          // Server-pinned to "user" at dispatch. Sent explicitly so the wire shape is
+          // self-describing; the host overwrites whatever arrives here.
+          role: "user",
+        },
+      },
+      SendRemoteChatMessageResponseSchema,
+    );
+  } catch (error: unknown) {
+    // A RemoteTransportError must reach the caller INTACT — the composer's unknown-outcome
+    // reconcile and the remote error banner both discriminate on its type, and rewrapping it
+    // here would silently convert a "did that go through?" into an ordinary failure. It also
+    // must NOT fall through to the idle path: an unknown outcome may already have queued the
+    // turn, and continuing would risk sending it twice.
+    if (error instanceof RemoteTransportError) throw error;
+    const code = (
+      error instanceof Error ? error.message : String(error)
+    ).trim();
+    if (code === "REMOTE_CHAT_SEND_NOT_STEERABLE") {
+      return continueRemoteConversation(
+        content,
+        conversationId,
+        projectId,
+        options,
+      );
+    }
+    throw remoteChatSendRefusal(error) ?? error;
+  }
+
+  return {
+    conversationId: raw.conversationId,
+    agentRunId: raw.agentRunId,
+    isNewConversation: false,
+    wasQueued: true,
+    queuedAsPending: false,
+    queuedMessageId: raw.queuedMessageId,
+  };
+}
+
 /**
  * Send a message using the unified agent API
  * Returns immediately with conversation_id and agent_run_id.
@@ -4982,6 +6041,18 @@ export async function sendAgentMessage(
   attachmentIds?: string[],
   options?: SendAgentMessageOptions,
 ): Promise<SendAgentMessageResult> {
+  if (isRemoteEnvironmentId(getTransportEnvironmentId())) {
+    // `contextId` IS the project id for the Project context, which is the only context the
+    // remote Agents surface exposes. It is passed explicitly so the host can prove the named
+    // conversation belongs to it rather than trusting the conversation id alone.
+    return sendRemoteChatMessage(
+      content,
+      options?.conversationId,
+      contextId,
+      options,
+    );
+  }
+
   const raw = await typedInvoke(
     "send_agent_message",
     {
@@ -5005,7 +6076,11 @@ export async function sendAgentMessage(
           ? { codexFastMode: options.codexFastMode }
           : {}),
         ...(options?.runtimeOverride
-          ? { runtimeOverride: roleRuntimeOverrideInvokeInput(options.runtimeOverride) }
+          ? {
+              runtimeOverride: roleRuntimeOverrideInvokeInput(
+                options.runtimeOverride,
+              ),
+            }
           : {}),
         ...(options?.suppressUserMessage ? { suppressUserMessage: true } : {}),
         ...(options?.requireApprovedLinkedPlan
@@ -5068,6 +6143,157 @@ export async function getQueuedAgentMessages(
   return raw.map(transformQueuedMessage);
 }
 
+export async function listRemoteQueuedAgentMessages(
+  conversationId: string,
+): Promise<QueuedMessageResponse[]> {
+  const raw = await typedInvoke(
+    "list_remote_queued_agent_messages",
+    { conversationId },
+    z.array(QueuedMessageResponseSchema),
+  );
+  return raw.map(transformQueuedMessage);
+}
+
+export async function cancelRemoteQueuedAgentMessage(
+  conversationId: string,
+  messageId: string,
+): Promise<boolean> {
+  const response = await typedInvoke(
+    "cancel_remote_queued_agent_message",
+    { conversationId, messageId },
+    z.object({ deleted: z.boolean() }).strict(),
+  );
+  return response.deleted;
+}
+
+const RemoteQueuedMessageSendStatusSchema = z.enum([
+  "pending",
+  "starting",
+  "completed",
+  "failed",
+  "failedStale",
+]);
+const RemoteQueuedMessageSendResultSchema = z
+  .object({
+    benign: z.boolean().optional(),
+    rehydrateQueue: z.boolean().optional(),
+    restoredToFront: z.boolean().optional(),
+    runId: z.string().optional(),
+  })
+  .passthrough();
+const RequestRemoteQueuedMessageSendResponseSchema = z
+  .object({
+    requestId: z.string(),
+    status: RemoteQueuedMessageSendStatusSchema,
+    deduplicated: z.boolean(),
+    createdAt: z.string(),
+  })
+  .strict();
+const GetRemoteQueuedMessageSendRequestResponseSchema = z
+  .object({
+    requestId: z.string(),
+    status: RemoteQueuedMessageSendStatusSchema,
+    errorCode: z.string().nullable(),
+    result: RemoteQueuedMessageSendResultSchema.nullable(),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+  })
+  .strict();
+
+export interface RemoteQueuedMessageSendOutcome {
+  status: "completed" | "alreadySent";
+  runId: string | null;
+  rehydrateQueue: boolean;
+}
+
+export class RemoteQueuedMessageSendError extends Error {
+  readonly errorCode: string | null;
+  readonly restoredToFront: boolean;
+  readonly rehydrateQueue: boolean;
+
+  constructor(
+    errorCode: string | null,
+    result: z.infer<typeof RemoteQueuedMessageSendResultSchema> | null,
+  ) {
+    super(errorCode ?? "The host could not send the queued message");
+    this.name = "RemoteQueuedMessageSendError";
+    this.errorCode = errorCode;
+    this.restoredToFront = result?.restoredToFront === true;
+    this.rehydrateQueue = result?.rehydrateQueue === true;
+  }
+}
+
+const REMOTE_QUEUED_SEND_POLL_INTERVAL_MS = 400;
+const REMOTE_QUEUED_SEND_MAX_POLLS = 60;
+
+export async function sendRemoteQueuedAgentMessageNow(
+  conversationId: string,
+  queuedMessageId: string,
+  expectedActiveRunId?: string,
+): Promise<RemoteQueuedMessageSendOutcome> {
+  let requested: z.infer<typeof RequestRemoteQueuedMessageSendResponseSchema>;
+  try {
+    requested = await typedInvoke(
+      "request_remote_queued_message_send",
+      {
+        conversationId,
+        queuedMessageId,
+        expectedActiveRunId: expectedActiveRunId ?? null,
+      },
+      RequestRemoteQueuedMessageSendResponseSchema,
+    );
+  } catch (error) {
+    if (error instanceof RemoteTransportError) throw error;
+    const errorCode =
+      typeof error === "string"
+        ? error
+        : error instanceof Error
+          ? error.message
+          : null;
+    throw new RemoteQueuedMessageSendError(errorCode, null);
+  }
+  let request: z.infer<typeof GetRemoteQueuedMessageSendRequestResponseSchema> =
+    {
+      requestId: requested.requestId,
+      status: requested.status,
+      errorCode: null,
+      result: null,
+      createdAt: requested.createdAt,
+      updatedAt: requested.createdAt,
+    };
+  for (let attempt = 0; attempt < REMOTE_QUEUED_SEND_MAX_POLLS; attempt += 1) {
+    if (["completed", "failed", "failedStale"].includes(request.status)) break;
+    await new Promise((resolve) =>
+      setTimeout(resolve, REMOTE_QUEUED_SEND_POLL_INTERVAL_MS),
+    );
+    request = await typedInvoke(
+      "get_remote_queued_message_send_request",
+      { requestId: requested.requestId },
+      GetRemoteQueuedMessageSendRequestResponseSchema,
+    );
+  }
+  if (!["completed", "failed", "failedStale"].includes(request.status)) {
+    throw new Error(
+      "Timed out waiting for the host to send the queued message. Refresh to check its state.",
+    );
+  }
+  if (request.status === "completed") {
+    return {
+      status: "completed",
+      runId: request.result?.runId ?? null,
+      rehydrateQueue: request.result?.rehydrateQueue === true,
+    };
+  }
+  if (request.errorCode === "REMOTE_QUEUE_SEND_ALREADY_SENT") {
+    return {
+      status: "alreadySent",
+      runId: null,
+      rehydrateQueue: request.result?.rehydrateQueue === true,
+    };
+  }
+  throw new RemoteQueuedMessageSendError(request.errorCode, request.result);
+}
+
 /**
  * Delete a queued message before it's sent
  *
@@ -5114,6 +6340,140 @@ export async function isChatServiceAvailable(): Promise<boolean> {
 }
 
 /**
+ * The remote spawn-free STOP seam (WP2).
+ *
+ * `stop_agent` reaches `Command::new(resolve_pkill_cli_path())` on the host and stays
+ * unregistered by the absolute process floor, so a paired device never calls it. It persists a
+ * STOP INTENT through `request_remote_agent_stop` — registered at `ui:operate`, i.e. reachable
+ * from the DEFAULT "viewer with brakes" pairing — and polls `get_remote_agent_stop_request`
+ * until the host-owned dispatcher settles it.
+ *
+ * Status values are the host enum serialized camelCase (`RemoteAgentStopStatus`).
+ */
+export const RemoteAgentStopStatusSchema = z.enum([
+  "pending",
+  "stopping",
+  "stopped",
+  "noLiveRun",
+  "failed",
+  "cancelled",
+  "failedStale",
+]);
+export type RemoteAgentStopStatus = z.infer<typeof RemoteAgentStopStatusSchema>;
+
+/**
+ * Terminal states. `noLiveRun` is BENIGN — the brake was pulled and nothing was running — and
+ * is deliberately grouped with `stopped` rather than with the failures: showing "couldn't stop
+ * the agent" for the ordinary finished-between-tap-and-drain race would train users to ignore
+ * the error.
+ */
+const REMOTE_AGENT_STOP_SUCCESS_STATUSES = ["stopped", "noLiveRun"] as const;
+const REMOTE_AGENT_STOP_TERMINAL_STATUSES = [
+  ...REMOTE_AGENT_STOP_SUCCESS_STATUSES,
+  "failed",
+  "cancelled",
+  "failedStale",
+] as const;
+
+const RequestRemoteAgentStopResponseSchema = z
+  .object({
+    stopRequestId: z.string(),
+    conversationId: z.string(),
+    status: RemoteAgentStopStatusSchema,
+    deduplicated: z.boolean(),
+    createdAt: z.string(),
+  })
+  .strict();
+
+const GetRemoteAgentStopRequestResponseSchema = z
+  .object({
+    id: z.string(),
+    conversationId: z.string(),
+    status: RemoteAgentStopStatusSchema,
+    errorCode: z.string().nullable(),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+  })
+  .strict();
+
+/**
+ * A remote stop intent that reached a non-success terminal state. Typed (rather than a plain
+ * `Error`) so callers can branch on `status` — the brake failing is exactly the class of
+ * failure that used to be swallowed at both call sites.
+ */
+export class RemoteAgentStopError extends Error {
+  readonly status: RemoteAgentStopStatus;
+  readonly errorCode: string | null;
+  constructor(status: RemoteAgentStopStatus, errorCode: string | null) {
+    super(errorCode ?? `Stop request ${status}`);
+    this.name = "RemoteAgentStopError";
+    this.status = status;
+    this.errorCode = errorCode;
+  }
+}
+
+const REMOTE_AGENT_STOP_POLL_INTERVAL_MS = 400;
+/** ~24s at the poll interval. A brake that has not bitten by then is surfaced, not hidden. */
+const REMOTE_AGENT_STOP_MAX_POLLS = 60;
+
+function isTerminalRemoteAgentStopStatus(
+  status: RemoteAgentStopStatus,
+): boolean {
+  return (REMOTE_AGENT_STOP_TERMINAL_STATUSES as readonly string[]).includes(
+    status,
+  );
+}
+
+function remoteAgentStopPollDelay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * The remote half of {@link stopAgent}. Persists a stop-intent and polls it to a terminal
+ * state. Fail-closed: a read error propagates rather than reading as "not stopped yet" forever,
+ * and a non-success terminal throws {@link RemoteAgentStopError} so the caller can surface it.
+ */
+async function stopRemoteAgent(conversationId: string): Promise<boolean> {
+  // Literal command name (P-11): persists a stop-intent — no client-side process sink.
+  const requested = await typedInvoke(
+    "request_remote_agent_stop",
+    { input: { conversationId } },
+    RequestRemoteAgentStopResponseSchema,
+  );
+
+  let request = {
+    status: requested.status as RemoteAgentStopStatus,
+    errorCode: null as string | null,
+  };
+  for (let attempt = 0; attempt < REMOTE_AGENT_STOP_MAX_POLLS; attempt += 1) {
+    if (isTerminalRemoteAgentStopStatus(request.status)) break;
+    await remoteAgentStopPollDelay(REMOTE_AGENT_STOP_POLL_INTERVAL_MS);
+    // Literal command name (P-11): the status read is a pure host-side repository read.
+    const polled = await typedInvoke(
+      "get_remote_agent_stop_request",
+      { stopRequestId: requested.stopRequestId },
+      GetRemoteAgentStopRequestResponseSchema,
+    );
+    request = { status: polled.status, errorCode: polled.errorCode };
+  }
+
+  if (!isTerminalRemoteAgentStopStatus(request.status)) {
+    throw new Error(
+      "Timed out waiting for the host to stop the agent. It may still be stopping — reopen the conversation to check.",
+    );
+  }
+  if (
+    !(REMOTE_AGENT_STOP_SUCCESS_STATUSES as readonly string[]).includes(
+      request.status,
+    )
+  ) {
+    throw new RemoteAgentStopError(request.status, request.errorCode);
+  }
+  // `stopped` terminated a run; `noLiveRun` found none. Same shape the local command returns.
+  return request.status === "stopped";
+}
+
+/**
  * Stop a running agent for a context
  * Sends SIGTERM to the running agent process.
  *
@@ -5125,6 +6485,17 @@ export async function stopAgent(
   contextType: ContextType,
   contextId: string,
 ): Promise<boolean> {
+  // Two literal `typedInvoke` sites live in `stopRemoteAgent` (P-11): a remote environment
+  // persists a stop-intent and polls the host, which owns the terminating path. Only `project`
+  // conversations exist on the remote Agents surface, and for those the backend queue context
+  // id IS the conversation id — the intent takes no `contextType`, so any other context must
+  // keep the local command rather than be silently re-aimed at a conversation.
+  if (
+    isRemoteEnvironmentId(getTransportEnvironmentId()) &&
+    contextType === "project"
+  ) {
+    return stopRemoteAgent(contextId);
+  }
   return typedInvoke("stop_agent", { contextType, contextId }, z.boolean());
 }
 
@@ -5461,6 +6832,11 @@ export interface ChatAttachmentResponse {
   createdAt: string;
 }
 
+export type RemoteChatAttachmentResponse = Omit<
+  ChatAttachmentResponse,
+  "filePath"
+>;
+
 const ChatAttachmentResponseSchema = z.object({
   id: z.string(),
   conversationId: z.string(),
@@ -5485,5 +6861,16 @@ export async function listMessageAttachments(
     "list_message_attachments",
     { messageId },
     z.array(ChatAttachmentResponseSchema),
+  );
+}
+
+/** List host attachment metadata without exposing a host filesystem path. */
+export async function listRemoteMessageAttachments(
+  messageId: string,
+): Promise<RemoteChatAttachmentResponse[]> {
+  return typedInvoke(
+    "list_remote_message_attachments",
+    { messageId },
+    z.array(ChatAttachmentResponseSchema.omit({ filePath: true })),
   );
 }

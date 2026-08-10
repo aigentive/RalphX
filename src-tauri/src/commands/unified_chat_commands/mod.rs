@@ -110,12 +110,12 @@ use crate::application::agent_workspace_publish_repair_state::{
     resume_ready_agent_workspace_repair_for_publish,
     retry_agent_workspace_pr_autofix_hold_override,
     retry_agent_workspace_publication_effect as retry_agent_workspace_publication_effect_service,
-    settle_agent_workspace_repair_dispatch_outcome,
-    start_or_join_agent_workspace_repair, stop_agent_workspace_pr_autofix_for_hold,
-    AgentWorkspacePrAutofixHoldActionOutcome, AgentWorkspaceRepairDispatchOutcome,
-    AgentWorkspaceRepairDispatchSettlement, AgentWorkspaceRepairPublishResumeOutcome,
-    AgentWorkspaceRepairStartOutcome, AgentWorkspaceRepairStartRequest,
-    AgentWorkspaceRepairTransitionOutcome, PublishAuthority, DEFERRED_REPAIR_WAIT_TIMEOUT_SECS,
+    settle_agent_workspace_repair_dispatch_outcome, start_or_join_agent_workspace_repair,
+    stop_agent_workspace_pr_autofix_for_hold, AgentWorkspacePrAutofixHoldActionOutcome,
+    AgentWorkspaceRepairDispatchOutcome, AgentWorkspaceRepairDispatchSettlement,
+    AgentWorkspaceRepairPublishResumeOutcome, AgentWorkspaceRepairStartOutcome,
+    AgentWorkspaceRepairStartRequest, AgentWorkspaceRepairTransitionOutcome, PublishAuthority,
+    DEFERRED_REPAIR_WAIT_TIMEOUT_SECS,
 };
 use crate::application::agent_workspace_review::{
     load_workspace_review_publish_blocker, lock_workspace_review_lifecycle,
@@ -192,7 +192,7 @@ use crate::domain::services::pr_publish_service::{
 use crate::domain::services::{
     normalize_title_with_jira_key, primary_jira_key_from_composer_metadata,
     AgentWorkspacePrPublisher, ComposerArtifactReference, ComposerExcerptReference,
-    ComposerIntegrationReference, ComposerProjectReference, ComposerSelectionSnapshot,
+    ComposerIntegrationReference, ComposerProjectReference, ComposerSelectionSnapshot, QueueKey,
     QueuedMessage, RunningAgentKey, RunningAgentRegistry,
 };
 use crate::domain::state_machine::transition_handler::get_trigger_origin;
@@ -2642,23 +2642,24 @@ async fn reconcile_delegated_timeline_item_result(
     state: &AppState,
     item: &mut ChatTimelineItem,
     snapshot_cache: &mut HashMap<String, DelegatedToolRuntimeSnapshot>,
-) {
+) -> crate::AppResult<()> {
     let Some(tool_name) = item.tool_name.as_deref() else {
-        return;
+        return Ok(());
     };
     if !is_delegate_start_tool_name(tool_name) {
-        return;
+        return Ok(());
     }
     let Some(mut result) = item
         .result_json
         .as_deref()
         .and_then(|raw| serde_json::from_str::<JsonValue>(raw).ok())
     else {
-        return;
+        return Ok(());
     };
 
-    reconcile_delegated_result_value(state, &mut result, snapshot_cache).await;
+    reconcile_delegated_result_value(state, &mut result, snapshot_cache).await?;
     item.result_json = Some(result.to_string());
+    Ok(())
 }
 
 /// Response for agent run status
@@ -2750,65 +2751,72 @@ fn delegated_total_tokens_from_run(run: &crate::domain::entities::AgentRun) -> O
     run.processed_tokens()
 }
 
+/// Loads the live delegated-run state a persisted `delegate_start` tool result is re-rendered
+/// against.
+///
+/// **Every repository error propagates.** `Ok(None)` means "this delegation is not resolvable"
+/// — the session row is gone, the conversation is not a delegation, or the referenced run
+/// belongs to another conversation — and callers correctly answer that by serving the persisted
+/// result unenriched. A repository OUTAGE is not that: swallowing it (the pre-WP3
+/// `.ok().flatten()` shape) served the STALE persisted tool result as though it were current
+/// live state, which is the fail-open the capability ledger refused these commands over.
 async fn load_delegated_tool_runtime_snapshot(
     state: &AppState,
     delegated_session_id: &str,
     delegated_conversation_id: Option<&str>,
     delegated_agent_run_id: Option<&str>,
-) -> Option<DelegatedToolRuntimeSnapshot> {
-    let session = state
+) -> crate::AppResult<Option<DelegatedToolRuntimeSnapshot>> {
+    let Some(session) = state
         .delegated_session_repo
         .get_by_id(&DelegatedSessionId::from_string(delegated_session_id))
-        .await
-        .ok()
-        .flatten()?;
+        .await?
+    else {
+        return Ok(None);
+    };
 
     let conversation = if let Some(conversation_id) = delegated_conversation_id {
         state
             .chat_conversation_repo
             .get_by_id(&ChatConversationId::from_string(conversation_id))
-            .await
-            .ok()
-            .flatten()
+            .await?
     } else {
         state
             .chat_conversation_repo
             .get_active_for_context(ChatContextType::Delegation, delegated_session_id)
-            .await
-            .ok()
-            .flatten()
-    }?;
+            .await?
+    };
+    let Some(conversation) = conversation else {
+        return Ok(None);
+    };
     if conversation.context_type != ChatContextType::Delegation
         || conversation.context_id != delegated_session_id
     {
-        return None;
+        return Ok(None);
     }
     let conversation_id = conversation.id.as_str();
     let latest_run = if let Some(run_id) = delegated_agent_run_id {
-        let run = state
+        let Some(run) = state
             .agent_run_repo
             .get_by_id(&AgentRunId::from_string(run_id))
-            .await
-            .ok()
-            .flatten()?;
+            .await?
+        else {
+            return Ok(None);
+        };
         if run.conversation_id != conversation.id {
-            return None;
+            return Ok(None);
         }
         Some(run)
     } else {
         state
             .agent_run_repo
             .get_latest_for_conversation(&conversation.id)
-            .await
-            .ok()
-            .flatten()
+            .await?
     };
 
     let recent_messages = state
         .chat_message_repo
         .get_by_conversation(&conversation.id)
         .await
-        .ok()
         .map(|messages| {
             messages
                 .into_iter()
@@ -2832,8 +2840,7 @@ async fn load_delegated_tool_runtime_snapshot(
                 })
                 .into_iter()
                 .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+        })?;
 
     let latest_run_json = latest_run.as_ref().map(|run| {
         serde_json::json!({
@@ -2861,7 +2868,7 @@ async fn load_delegated_tool_runtime_snapshot(
         })
     });
 
-    Some(DelegatedToolRuntimeSnapshot {
+    Ok(Some(DelegatedToolRuntimeSnapshot {
         session_id: session.id.as_str().to_string(),
         conversation_id: Some(conversation_id),
         agent_run_id: latest_run.as_ref().map(|run| run.id.as_str()),
@@ -2885,7 +2892,7 @@ async fn load_delegated_tool_runtime_snapshot(
             .or_else(|| session.completed_at.map(|timestamp| timestamp.to_rfc3339())),
         latest_run: latest_run_json,
         recent_messages,
-    })
+    }))
 }
 
 fn merge_delegated_snapshot_wrapped_fields(
@@ -3025,15 +3032,15 @@ async fn reconcile_delegated_result_value(
     state: &AppState,
     result: &mut JsonValue,
     snapshot_cache: &mut HashMap<String, DelegatedToolRuntimeSnapshot>,
-) {
+) -> crate::AppResult<()> {
     let Some(parsed_result) = parse_wrapped_mcp_result_object(result) else {
-        return;
+        return Ok(());
     };
 
     let delegated_session_id = get_string_field(&parsed_result, "delegated_session_id")
         .or_else(|| get_string_field(&parsed_result, "delegatedSessionId"));
     let Some(delegated_session_id) = delegated_session_id else {
-        return;
+        return Ok(());
     };
     let delegated_conversation_id = get_string_field(&parsed_result, "delegated_conversation_id")
         .or_else(|| get_string_field(&parsed_result, "delegatedConversationId"));
@@ -3049,31 +3056,39 @@ async fn reconcile_delegated_result_value(
             delegated_conversation_id,
             delegated_agent_run_id,
         )
-        .await
+        .await?
         else {
-            return;
+            return Ok(());
         };
         snapshot_cache.insert(delegated_session_id.to_string(), snapshot.clone());
         snapshot
     };
 
     merge_delegated_snapshot_into_result(result, &snapshot);
+    Ok(())
 }
 
 async fn reconcile_delegated_result_payloads(
     state: &AppState,
     tool_calls: Option<String>,
     content_blocks: Option<String>,
-) -> (Option<JsonValue>, Option<JsonValue>) {
+) -> crate::AppResult<(Option<JsonValue>, Option<JsonValue>)> {
     let mut snapshot_cache = HashMap::<String, DelegatedToolRuntimeSnapshot>::new();
 
     async fn reconcile_value_array(
         state: &AppState,
         raw: Option<String>,
         snapshot_cache: &mut HashMap<String, DelegatedToolRuntimeSnapshot>,
-    ) -> Option<JsonValue> {
-        let mut parsed = serde_json::from_str::<JsonValue>(&raw?).ok()?;
-        let items = parsed.as_array_mut()?;
+    ) -> crate::AppResult<Option<JsonValue>> {
+        let Some(raw) = raw else {
+            return Ok(None);
+        };
+        let Ok(mut parsed) = serde_json::from_str::<JsonValue>(&raw) else {
+            return Ok(None);
+        };
+        let Some(items) = parsed.as_array_mut() else {
+            return Ok(None);
+        };
 
         for item in items.iter_mut() {
             let Some(item_object) = item.as_object_mut() else {
@@ -3089,15 +3104,15 @@ async fn reconcile_delegated_result_payloads(
             let Some(result) = item_object.get_mut("result") else {
                 continue;
             };
-            reconcile_delegated_result_value(state, result, snapshot_cache).await;
+            reconcile_delegated_result_value(state, result, snapshot_cache).await?;
         }
 
-        Some(parsed)
+        Ok(Some(parsed))
     }
 
-    let tool_calls = reconcile_value_array(state, tool_calls, &mut snapshot_cache).await;
-    let content_blocks = reconcile_value_array(state, content_blocks, &mut snapshot_cache).await;
-    (tool_calls, content_blocks)
+    let tool_calls = reconcile_value_array(state, tool_calls, &mut snapshot_cache).await?;
+    let content_blocks = reconcile_value_array(state, content_blocks, &mut snapshot_cache).await?;
+    Ok((tool_calls, content_blocks))
 }
 
 fn maybe_preview_tool_result(
@@ -3693,13 +3708,48 @@ pub async fn switch_agent_conversation_persona_for_state_stopping_running_agent(
 }
 
 #[doc(hidden)]
+pub async fn switch_agent_conversation_persona_for_state_rejecting_running_agent(
+    input: SwitchAgentConversationPersonaInput,
+    state: &AppState,
+) -> Result<SwitchAgentConversationPersonaResponse, String> {
+    switch_agent_conversation_persona_for_state_with_running_policy(
+        input,
+        state,
+        None,
+        agent_personas_enabled(),
+        ui_feature_flags_config().persona_switch_forces_fresh_provider_session,
+        true,
+    )
+    .await
+}
+
+#[doc(hidden)]
 pub async fn switch_agent_conversation_persona_for_state_with_provider_session_reset(
     input: SwitchAgentConversationPersonaInput,
     state: &AppState,
     chat_service: &dyn ChatService,
     force_fresh_provider_session: bool,
 ) -> Result<SwitchAgentConversationPersonaResponse, String> {
-    if !agent_personas_enabled() {
+    switch_agent_conversation_persona_for_state_with_running_policy(
+        input,
+        state,
+        Some(chat_service),
+        agent_personas_enabled(),
+        force_fresh_provider_session,
+        false,
+    )
+    .await
+}
+
+async fn switch_agent_conversation_persona_for_state_with_running_policy(
+    input: SwitchAgentConversationPersonaInput,
+    state: &AppState,
+    chat_service: Option<&dyn ChatService>,
+    personas_enabled: bool,
+    force_fresh_provider_session: bool,
+    reject_running_agent: bool,
+) -> Result<SwitchAgentConversationPersonaResponse, String> {
+    if !personas_enabled {
         return Err(crate::error::AppError::FeatureDisabled(format!(
             "{PERSONA_FEATURE_DISABLED_PREFIX} agent personas feature is disabled]"
         ))
@@ -3738,7 +3788,11 @@ pub async fn switch_agent_conversation_persona_for_state_with_provider_session_r
         conversation.id.as_str(),
     );
     if state.running_agent_registry.is_running(&running_key).await {
+        if reject_running_agent {
+            return Err(PERSONA_SWITCH_AGENT_RUNNING_ERROR.to_string());
+        }
         let stopped = chat_service
+            .expect("the local persona switch supplies its stop service")
             .stop_agent(ChatContextType::Project, &conversation.id.as_str())
             .await
             .map_err(|error| error.to_string())?;
@@ -3760,6 +3814,12 @@ pub async fn switch_agent_conversation_persona_for_state_with_provider_session_r
         )
         .await
         .map_err(|error| error.to_string())?;
+    // The remote Reject policy intentionally does not roll back the binding if a run starts
+    // after the first check. The local stop policy has the equivalent TOCTOU window; stopping
+    // remains the explicit request_remote_agent_stop action, never a persona-dropdown effect.
+    if reject_running_agent && state.running_agent_registry.is_running(&running_key).await {
+        return Err(PERSONA_SWITCH_AGENT_RUNNING_ERROR.to_string());
+    }
     if force_fresh_provider_session {
         state
             .chat_conversation_repo
@@ -3778,6 +3838,24 @@ pub async fn switch_agent_conversation_persona_for_state_with_provider_session_r
     Ok(SwitchAgentConversationPersonaResponse {
         conversation: agent_conversation_response_for_state(state, conversation).await?,
     })
+}
+
+#[doc(hidden)]
+pub async fn switch_agent_conversation_persona_for_state_rejecting_running_agent_with_flags(
+    input: SwitchAgentConversationPersonaInput,
+    state: &AppState,
+    personas_enabled: bool,
+    force_fresh_provider_session: bool,
+) -> Result<SwitchAgentConversationPersonaResponse, String> {
+    switch_agent_conversation_persona_for_state_with_running_policy(
+        input,
+        state,
+        None,
+        personas_enabled,
+        force_fresh_provider_session,
+        true,
+    )
+    .await
 }
 
 #[doc(hidden)]
@@ -4674,6 +4752,51 @@ pub async fn delete_queued_agent_message(
         .map_err(|e| e.to_string())
 }
 
+/// Pure-`&AppState` seam for reading queued messages without constructing spawn authority.
+pub async fn list_queued_agent_messages_for_state(
+    state: &AppState,
+    context_type: ChatContextType,
+    context_id: &str,
+) -> Result<Vec<QueuedMessageResponse>, String> {
+    let key = QueueKey::new(context_type, context_id);
+    let durable = state
+        .queued_message_repo
+        .list(&key)
+        .await
+        .map_err(|error| error.to_string())?;
+    let memory = state.message_queue.get_queued(context_type, context_id);
+    let mut seen: HashSet<String> = durable.iter().map(|message| message.id.clone()).collect();
+    let mut merged = durable;
+    merged.extend(
+        memory
+            .into_iter()
+            .filter(|message| seen.insert(message.id.clone())),
+    );
+    Ok(visible_queued_message_responses(merged))
+}
+
+/// Pure-`&AppState` seam for removing a queued message without constructing spawn authority.
+///
+/// Durable storage is deleted first. Reversing this order could return an error after removing
+/// only the memory copy, allowing the still-durable row to resurrect after restart.
+pub async fn delete_queued_agent_message_for_state(
+    state: &AppState,
+    context_type: ChatContextType,
+    context_id: &str,
+    message_id: &str,
+) -> Result<bool, String> {
+    let key = QueueKey::new(context_type, context_id);
+    let durable_deleted = state
+        .queued_message_repo
+        .delete(&key, message_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let memory_deleted = state
+        .message_queue
+        .delete(context_type, context_id, message_id);
+    Ok(durable_deleted || memory_deleted)
+}
+
 /// Send a queued message immediately, interrupting the active provider process.
 async fn send_queued_agent_message_now_for_state<R: Runtime + 'static>(
     context_type: String,
@@ -4721,29 +4844,40 @@ pub async fn list_agent_conversations(
     context_id: String,
     include_archived: Option<bool>,
     state: State<'_, AppState>,
-    execution_state: State<'_, Arc<ExecutionState>>,
-    app: tauri::AppHandle,
 ) -> Result<Vec<AgentConversationResponse>, String> {
-    let context_type_enum = parse_context_type(&context_type)?;
+    list_agent_conversations_for_app_state(
+        state.inner(),
+        parse_context_type(&context_type)?,
+        &context_id,
+        include_archived.unwrap_or(false),
+    )
+    .await
+}
 
-    let include_archived = include_archived.unwrap_or(false);
-    let conversations = if include_archived {
-        state
-            .chat_conversation_repo
-            .get_by_context_filtered(context_type_enum, &context_id, true)
-            .await
-            .map_err(|e| e.to_string())?
-    } else {
-        let service = create_chat_service(&state, app, &execution_state);
-        service
-            .list_conversations(context_type_enum, &context_id)
-            .await
-            .map_err(|e| e.to_string())?
-    };
-
-    let conversations =
-        filter_agent_list_visible_conversations(state.inner(), conversations).await?;
-    agent_conversation_responses_for_state(state.inner(), conversations).await
+/// Pure-`&AppState` seam for the conversation list.
+///
+/// Takes no `tauri::AppHandle`, no `ExecutionState`, and builds no chat service, so the absence
+/// of spawn/steer authority is checkable from the signature. See `remote_transcript_commands`.
+///
+/// This seam is a mechanical extraction, not a rewrite. The command previously built a chat
+/// service purely to call its `list_conversations`, which is a straight delegation to
+/// `chat_conversation_repo.get_by_context` — and `get_by_context(t, c)` is the same query as
+/// `get_by_context_filtered(t, c, false)` in both the SQLite and in-memory repositories
+/// (identical predicate, identical ordering). Collapsing the two branches therefore changes no
+/// result, and drops two spawn-authority carriers from a read command.
+pub async fn list_agent_conversations_for_app_state(
+    state: &AppState,
+    context_type: ChatContextType,
+    context_id: &str,
+    include_archived: bool,
+) -> Result<Vec<AgentConversationResponse>, String> {
+    let conversations = state
+        .chat_conversation_repo
+        .get_by_context_filtered(context_type, context_id, include_archived)
+        .await
+        .map_err(|e| e.to_string())?;
+    let conversations = filter_agent_list_visible_conversations(state, conversations).await?;
+    agent_conversation_responses_for_state(state, conversations).await
 }
 
 /// List a page of conversations for a context with optional title search.
@@ -4758,25 +4892,47 @@ pub async fn list_agent_conversations_page(
     search: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<AgentConversationListPageResponse, String> {
-    let context_type_enum = parse_context_type(&context_type)?;
-    let archived_only = archived_only.unwrap_or(false);
-    let include_archived = include_archived.unwrap_or(false) || archived_only;
-    let offset = offset.unwrap_or(0);
-    let limit = limit.unwrap_or(6);
+    list_agent_conversations_page_for_app_state(
+        state.inner(),
+        parse_context_type(&context_type)?,
+        &context_id,
+        include_archived.unwrap_or(false),
+        archived_only.unwrap_or(false),
+        offset.unwrap_or(0),
+        limit.unwrap_or(6),
+        search.as_deref(),
+    )
+    .await
+}
+
+/// Pure-`&AppState` seam for the paged conversation list. See the note on
+/// `list_agent_conversations_for_app_state` for why this carries no spawn authority.
+#[allow(clippy::too_many_arguments)]
+pub async fn list_agent_conversations_page_for_app_state(
+    state: &AppState,
+    context_type: ChatContextType,
+    context_id: &str,
+    include_archived: bool,
+    archived_only: bool,
+    offset: u32,
+    limit: u32,
+    search: Option<&str>,
+) -> Result<AgentConversationListPageResponse, String> {
+    let include_archived = include_archived || archived_only;
 
     let mut conversations = state
         .chat_conversation_repo
-        .get_by_context_filtered(context_type_enum, &context_id, include_archived)
+        .get_by_context_filtered(context_type, context_id, include_archived)
         .await
         .map_err(|e| e.to_string())?;
-    conversations = filter_agent_list_visible_conversations(state.inner(), conversations)
+    conversations = filter_agent_list_visible_conversations(state, conversations)
         .await?
         .into_iter()
         .filter(|conversation| {
             if archived_only && !conversation.is_archived() {
                 return false;
             }
-            conversation_matches_agent_list_search(conversation, search.as_deref())
+            conversation_matches_agent_list_search(conversation, search)
         })
         .collect();
     let total = i64::try_from(conversations.len()).unwrap_or(i64::MAX);
@@ -4790,7 +4946,7 @@ pub async fn list_agent_conversations_page(
     let has_more = i64::from(offset.saturating_add(limit)) < total;
 
     Ok(AgentConversationListPageResponse {
-        conversations: agent_conversation_responses_for_state(state.inner(), conversations).await?,
+        conversations: agent_conversation_responses_for_state(state, conversations).await?,
         total,
         limit,
         offset,
@@ -5004,7 +5160,10 @@ pub async fn retry_agent_workspace_publication_effect(
     )
     .await
     .map_err(|error| error.to_string())?;
-    if !matches!(outcome, AgentWorkspacePrAutofixHoldActionOutcome::Applied(_)) {
+    if !matches!(
+        outcome,
+        AgentWorkspacePrAutofixHoldActionOutcome::Applied(_)
+    ) {
         return Err(
             "The workspace repair publication-effect hold changed before this action could be applied."
                 .to_string(),
@@ -11192,8 +11351,30 @@ pub async fn get_agent_conversation(
         );
     }
 
-    let conversation = service
-        .get_conversation_with_messages(&conversation_id)
+    get_agent_conversation_for_app_state(&state, conversation_id).await
+}
+
+/// The pure-read half of [`get_agent_conversation`].
+///
+/// Mechanically extracted so the remote facade has a transcript read that provably never
+/// reaches the agent-wake sink. Behaviour is unchanged for the local command above: the
+/// `AppChatService::get_conversation_with_messages` this replaces is itself a straight
+/// delegation to the same `chat_service_repository` free function, so no repository call,
+/// ordering, or error mapping differs.
+///
+/// Takes `&AppState` and nothing else — no `AppHandle`, no `ExecutionState`, no `ChatService`
+/// — which is what makes the absence of spawn/steer authority checkable by reading the
+/// signature. See `remote_transcript_commands`.
+pub async fn get_agent_conversation_for_app_state(
+    state: &AppState,
+    conversation_id: ChatConversationId,
+) -> Result<Option<AgentConversationWithMessagesResponse>, String> {
+    let conversation =
+        crate::application::chat_service::chat_service_repository::get_conversation_with_messages(
+            std::sync::Arc::clone(&state.chat_conversation_repo),
+            std::sync::Arc::clone(&state.chat_message_repo),
+            &conversation_id,
+        )
         .await
         .map_err(|e| e.to_string())?;
 
@@ -11204,11 +11385,12 @@ pub async fn get_agent_conversation(
     let mut messages = Vec::with_capacity(cwm.messages.len());
     for message in cwm.messages {
         let (tool_calls, content_blocks) = reconcile_delegated_result_payloads(
-            &state,
+            state,
             message.tool_calls.clone(),
             message.content_blocks.clone(),
         )
-        .await;
+        .await
+        .map_err(|error| error.to_string())?;
 
         messages.push(AgentMessageResponse {
             id: message.id.as_str().to_string(),
@@ -11241,8 +11423,7 @@ pub async fn get_agent_conversation(
     }
 
     Ok(Some(AgentConversationWithMessagesResponse {
-        conversation: agent_conversation_response_for_state(state.inner(), cwm.conversation)
-            .await?,
+        conversation: agent_conversation_response_for_state(state, cwm.conversation).await?,
         messages,
     }))
 }
@@ -11334,7 +11515,8 @@ pub async fn get_agent_conversation_messages_page_for_app_state(
             message.tool_calls.clone(),
             message.content_blocks.clone(),
         )
-        .await;
+        .await
+        .map_err(|error| error.to_string())?;
         let (tool_calls, content_blocks) = preview_tool_payloads_for_message(
             &conversation_id.as_str(),
             message.id.as_str(),
@@ -11447,7 +11629,9 @@ pub async fn get_agent_conversation_timeline_page_for_app_state(
     let mut items = page.items;
     let mut snapshot_cache = HashMap::new();
     for item in &mut items {
-        reconcile_delegated_timeline_item_result(state, item, &mut snapshot_cache).await;
+        reconcile_delegated_timeline_item_result(state, item, &mut snapshot_cache)
+            .await
+            .map_err(|error| error.to_string())?;
     }
 
     Ok(Some(AgentConversationTimelinePageResponse {
@@ -11495,7 +11679,8 @@ pub async fn get_agent_message_tool_call_detail(
         message.tool_calls.clone(),
         message.content_blocks.clone(),
     )
-    .await;
+    .await
+    .map_err(|error| error.to_string())?;
     let detail = find_tool_call_detail(
         tool_calls.as_ref(),
         content_blocks.as_ref(),
@@ -11544,7 +11729,9 @@ pub async fn get_agent_timeline_item_tool_call_detail_for_app_state(
     }
 
     let mut item = item;
-    reconcile_delegated_timeline_item_result(state, &mut item, &mut HashMap::new()).await;
+    reconcile_delegated_timeline_item_result(state, &mut item, &mut HashMap::new())
+        .await
+        .map_err(|error| error.to_string())?;
     let detail_message_id = item.message_id.as_ref().map(|id| id.as_str().to_string());
     let block = timeline_item_content_block(
         &item,
@@ -11564,8 +11751,6 @@ pub async fn get_agent_run_status_unified(
     app: tauri::AppHandle,
 ) -> Result<Option<AgentRunStatusResponse>, String> {
     use crate::domain::entities::ChatConversationId;
-    use crate::domain::services::RunningAgentKey;
-    use crate::infrastructure::agents::claude::model_labels::model_id_to_label;
 
     let conv_id = ChatConversationId::from_string(&conversation_id);
 
@@ -11579,22 +11764,8 @@ pub async fn get_agent_run_status_unified(
         return Ok(None);
     };
 
-    // Look up conversation to get context_type/context_id for registry lookup
-    let (model_id, model_label) =
-        if let Ok(Some(conv)) = state.chat_conversation_repo.get_by_id(&conv_id).await {
-            let runtime_context_id = if conv.context_type == ChatContextType::Project {
-                conv.id.as_str().to_string()
-            } else {
-                conv.context_id.clone()
-            };
-            let key = RunningAgentKey::new(conv.context_type.to_string(), runtime_context_id);
-            let agent_info = state.running_agent_registry.get(&key).await;
-            let mid = agent_info.and_then(|info| info.model);
-            let mlabel = mid.as_deref().map(|id| model_id_to_label(id));
-            (mid, mlabel)
-        } else {
-            (None, None)
-        };
+    // Look up conversation to get context_type/context_id for registry lookup.
+    let (model_id, model_label) = resolve_agent_run_model_fields(&state, &conv_id).await?;
 
     Ok(Some(AgentRunStatusResponse {
         id: run.id.as_str().to_string(),
@@ -11704,6 +11875,43 @@ pub async fn is_agent_running(
     Ok(service.is_agent_running(context_type, &context_id).await)
 }
 
+/// Resolve the model id/label a run is executing under, from the conversation's registry entry.
+///
+/// `Ok((None, None))` means "the conversation is gone, or no agent is registered for it" —
+/// genuinely unknown. A repository ERROR is not that, and must not be spelled the same way: the
+/// caller renders these fields as the model the user is talking to, so a failed lookup silently
+/// nulling them shows a confident wrong answer. The sibling `get_active_run` call directly
+/// above already propagates.
+async fn resolve_agent_run_model_fields(
+    state: &AppState,
+    conv_id: &ChatConversationId,
+) -> Result<(Option<String>, Option<String>), String> {
+    let Some(conv) = state
+        .chat_conversation_repo
+        .get_by_id(conv_id)
+        .await
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok((None, None));
+    };
+
+    let runtime_context_id = if conv.context_type == ChatContextType::Project {
+        conv.id.as_str().to_string()
+    } else {
+        conv.context_id.clone()
+    };
+    let key = RunningAgentKey::new(conv.context_type.to_string(), runtime_context_id);
+    let model_id = state
+        .running_agent_registry
+        .get(&key)
+        .await
+        .and_then(|info| info.model);
+    let model_label = model_id
+        .as_deref()
+        .map(crate::infrastructure::agents::claude::model_labels::model_id_to_label);
+    Ok((model_id, model_label))
+}
+
 /// Bulk-check whether agents are running for the requested context ids.
 #[tauri::command]
 pub async fn get_agent_running_states(
@@ -11726,9 +11934,10 @@ pub async fn get_agent_running_states_for_service(
 ) -> Result<HashMap<String, AgentRunningState>, String> {
     let context_type = parse_context_type(&context_type)?;
 
-    Ok(service
+    service
         .get_agent_running_states(context_type, &context_ids)
-        .await)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -11950,7 +12159,8 @@ async fn add_ideation_runtime_item(
             ChatContextType::Ideation,
             std::slice::from_ref(&session_id_str),
         )
-        .await;
+        .await
+        .map_err(|error| error.to_string())?;
     let running_state = states
         .get(&session_id_str)
         .copied()
@@ -12090,13 +12300,16 @@ async fn add_task_runtime_items(
         .collect::<Vec<_>>();
     let execution_states = service
         .get_agent_running_states(ChatContextType::TaskExecution, &task_id_strings)
-        .await;
+        .await
+        .map_err(|error| error.to_string())?;
     let review_states = service
         .get_agent_running_states(ChatContextType::Review, &task_id_strings)
-        .await;
+        .await
+        .map_err(|error| error.to_string())?;
     let merge_states = service
         .get_agent_running_states(ChatContextType::Merge, &task_id_strings)
-        .await;
+        .await
+        .map_err(|error| error.to_string())?;
 
     for task in tasks {
         let candidates = [

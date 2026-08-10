@@ -10,6 +10,11 @@ import type { Artifact } from "@/types/artifact";
 
 vi.mock("@/api/backend", () => ({
   backendApiUrl: (endpoint: string) => `http://backend.test/api/${endpoint}`,
+  // PR 2.2: the component now goes through the environment-aware seam. The double
+  // keeps forwarding to the global fetch mock so the assertions below still describe
+  // the request that leaves the app.
+  backendFetch: (endpoint: string, ...init: [init?: RequestInit]) =>
+    fetch(`http://backend.test/api/${endpoint}`, ...init),
 }));
 
 // Mock fetch

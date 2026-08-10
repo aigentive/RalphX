@@ -17,6 +17,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { formatQueuedMessageExcerpt } from "@/lib/queuedMessageExcerpt";
+import { useAgentGate } from "@/hooks/useAgentGate";
 import type { QueuedMessage as QueuedMessageType } from "@/stores/chatStore";
 
 // ============================================================================
@@ -67,6 +68,18 @@ export interface QueuedMessageProps {
 // ============================================================================
 
 export function QueuedMessage({ message, onEdit, onDelete, onSendNow }: QueuedMessageProps) {
+  // The B3 queue twins make these controls available on current paired hosts. Keep all three
+  // gates as capability absence remains the compatibility signal for an older host.
+  const deleteGate = useAgentGate("queuedMessageDelete");
+  const editGate = useAgentGate("queuedMessageEdit");
+  const sendNowGate = useAgentGate("queuedMessageSendNow");
+  const queueMutationHint = deleteGate.gated
+    ? deleteGate.reason
+    : editGate.gated
+      ? editGate.reason
+      : sendNowGate.gated
+        ? sendNowGate.reason
+        : null;
   const [isEditing, setIsEditing] = useState(message.isEditing);
   const [editContent, setEditContent] = useState(message.content);
   const previewContent = formatQueuedMessageExcerpt(message.content);
@@ -242,7 +255,7 @@ export function QueuedMessage({ message, onEdit, onDelete, onSendNow }: QueuedMe
               </>
             ) : (
               <>
-                {onSendNow && (
+                {onSendNow && !sendNowGate.gated && (
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <button
@@ -258,36 +271,49 @@ export function QueuedMessage({ message, onEdit, onDelete, onSendNow }: QueuedMe
                     <TooltipContent side="top">Send now</TooltipContent>
                   </Tooltip>
                 )}
+                {queueMutationHint && (
+                  <span
+                    data-testid="queued-message-unavailable-hint"
+                    className="text-[0.6875rem] max-w-[16rem] text-right"
+                    style={{ color: "var(--text-muted)" }}
+                  >
+                    {queueMutationHint}
+                  </span>
+                )}
                 {/* Edit button */}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      data-testid="queued-message-edit"
-                      onClick={handleStartEdit}
-                      className="p-1 rounded transition-colors hover:bg-opacity-80"
-                      style={{ color: "var(--text-muted)" }}
-                      aria-label="Edit message"
-                    >
-                      <Pencil size={16} />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top">Edit message</TooltipContent>
-                </Tooltip>
+                {!editGate.gated && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        data-testid="queued-message-edit"
+                        onClick={handleStartEdit}
+                        className="p-1 rounded transition-colors hover:bg-opacity-80"
+                        style={{ color: "var(--text-muted)" }}
+                        aria-label="Edit message"
+                      >
+                        <Pencil size={16} />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top">Edit message</TooltipContent>
+                  </Tooltip>
+                )}
                 {/* Delete button */}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      data-testid="queued-message-delete"
-                      onClick={handleDelete}
-                      className="p-1 rounded transition-colors hover:bg-opacity-80"
-                      style={{ color: "var(--status-error)" }}
-                      aria-label="Delete message"
-                    >
-                      <X size={16} />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top">Delete message</TooltipContent>
-                </Tooltip>
+                {!deleteGate.gated && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        data-testid="queued-message-delete"
+                        onClick={handleDelete}
+                        className="p-1 rounded transition-colors hover:bg-opacity-80"
+                        style={{ color: "var(--status-error)" }}
+                        aria-label="Delete message"
+                      >
+                        <X size={16} />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top">Delete message</TooltipContent>
+                  </Tooltip>
+                )}
               </>
             )}
           </div>

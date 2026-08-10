@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 
 import { chatApi } from "@/api/chat";
 
@@ -8,6 +9,7 @@ import { invalidateWorkspaceQueries } from "./agentWorkspaceQueries";
 import { agentSidebarConversationKeys } from "./useAgentSidebarPublicationGroup";
 
 const PUBLICATION_POLL_MS = 5_000;
+const PUBLICATION_POLL_ERROR_TOAST_ID = "agent-sidebar-publication-poll-error";
 
 export function workspacePublicationFingerprint(
   state: string,
@@ -52,6 +54,7 @@ export function useAgentSidebarPublicationPolling(
         .getBulkWorkspacePublicationStates(conversationIds)
         .then((states) => {
           if (cancelled) return;
+          toast.dismiss(PUBLICATION_POLL_ERROR_TOAST_ID);
 
           const changedConversationIds: string[] = [];
           const cached = currentStatesRef.current;
@@ -75,7 +78,13 @@ export function useAgentSidebarPublicationPolling(
             }
           }
         })
-        .catch(() => {})
+        .catch(() => {
+          if (!cancelled) {
+            toast.error("Pull request status could not be refreshed.", {
+              id: PUBLICATION_POLL_ERROR_TOAST_ID,
+            });
+          }
+        })
         .finally(() => {
           inFlight = false;
         });

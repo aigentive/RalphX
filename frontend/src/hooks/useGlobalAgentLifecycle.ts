@@ -19,9 +19,13 @@
 import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
+import { reconcileAgentConversationRuntimeIndexes } from "@/components/agents/agentConversationRuntimeReconcile";
+import { getKnownAgentSidebarConversations } from "@/components/agents/useAgentSidebarRunningStates";
 import { agentSidebarConversationKeys } from "@/hooks/agentSidebarConversationKeys";
+import { isRemoteEnvironmentActive } from "@/hooks/useActiveEnvironment";
 import { useEventBus } from "@/providers/EventProvider";
 import { useChatStore } from "@/stores/chatStore";
+import { useEnvironmentStore } from "@/stores/environmentStore";
 import { useIdeationStore } from "@/stores/ideationStore";
 import { buildStoreKey, parseStoreKey } from "@/lib/chat-context-registry";
 import { buildAgentEventStoreKey } from "@/lib/agent-store-key";
@@ -33,6 +37,7 @@ import type {
   AgentRunStartedPayload,
 } from "@/types/events";
 import { logger } from "@/lib/logger";
+import { onRuntimeIndexReconcile } from "@/lib/remote/runtime-index-reconcile";
 import { roleVerb } from "@/components/Chat/run-attribution";
 
 type TerminalLifecyclePayload = {
@@ -76,6 +81,32 @@ export function useGlobalAgentLifecycle() {
 
   useEffect(() => {
     const unsubscribes: Unsubscribe[] = [];
+
+    const detachRuntimeIndexReconcile = onRuntimeIndexReconcile(
+      ({ environmentId }) => {
+        if (
+          environmentId !==
+          useEnvironmentStore.getState().activeEnvironmentId
+        ) {
+          return;
+        }
+        if (!isRemoteEnvironmentActive()) {
+          return;
+        }
+
+        void reconcileAgentConversationRuntimeIndexes(
+          environmentId,
+          getKnownAgentSidebarConversations(),
+          (error, conversation) => {
+            logger.error(
+              `[GlobalAgentLifecycle] Failed to reconcile runtime index for ${conversation.id}`,
+              error,
+            );
+            toast.error("Couldn't refresh agent activity");
+          },
+        );
+      },
+    );
 
     // Reverse lookup: when a verification child session terminates, find any parent that has
     // it as activeVerificationChildId and clean up parent's synthetic generating state.
@@ -481,6 +512,7 @@ export function useGlobalAgentLifecycle() {
     );
 
     return () => {
+      detachRuntimeIndexReconcile();
       unsubscribes.forEach((unsub) => unsub());
     };
   }, [bus, queryClient]);

@@ -13,7 +13,8 @@ use super::{
     emit_agent_conversation_fork_events, ensure_plan_workspace_planning_session_link_for_send,
     existing_pr_retarget_block_reason, filter_agent_list_visible_conversations,
     fork_agent_conversation, fork_agent_conversation_response_for_state,
-    fork_terminal_agent_conversation_for_send, get_agent_conversation_runtime_index_for_app_state,
+    fork_terminal_agent_conversation_for_send, get_agent_conversation_messages_page_for_app_state,
+    get_agent_conversation_runtime_index_for_app_state,
     get_agent_conversation_runtime_statuses_for_app_state,
     get_agent_conversation_summary_for_app_state,
     get_agent_conversation_timeline_page_for_app_state, get_agent_conversation_workspace_freshness,
@@ -11836,9 +11837,143 @@ async fn delegate_timeline_hydration_rejects_a_run_from_another_conversation() {
         Some(&delegated_conversation.id.as_str()),
         Some(&foreign_run.id.as_str()),
     )
-    .await;
+    .await
+    .expect("a cross-conversation run is an ABSENCE, not a repository failure");
 
     assert!(snapshot.is_none());
+}
+
+// ---------------------------------------------------------------------------------------
+// WP3 — a delegated-tool repository OUTAGE must never be rendered as live state
+// ---------------------------------------------------------------------------------------
+
+/// Fails only the delegated-session read; nothing else in these tests is reached.
+///
+/// This is the first of the five reads `load_delegated_tool_runtime_snapshot` used to swallow
+/// with `.ok().flatten()`. All five now share one `?` seam, so pinning the first proves the
+/// seam; the pre-WP3 behaviour returned `Ok(...)` carrying the STALE persisted `"status":
+/// "running"` from the tool result, which is the fail-open the ledger refused.
+struct FailingDelegatedSessionRepo;
+
+#[async_trait::async_trait]
+#[allow(unused_variables)]
+impl crate::domain::repositories::DelegatedSessionRepository for FailingDelegatedSessionRepo {
+    async fn get_by_id(
+        &self,
+        id: &crate::domain::entities::DelegatedSessionId,
+    ) -> crate::AppResult<Option<DelegatedSession>> {
+        Err(crate::AppError::Database(
+            "simulated delegated-session outage".to_string(),
+        ))
+    }
+    async fn create(&self, session: DelegatedSession) -> crate::AppResult<DelegatedSession> {
+        unimplemented!("create")
+    }
+    async fn get_by_parent_context(
+        &self,
+        parent_context_type: &str,
+        parent_context_id: &str,
+    ) -> crate::AppResult<Vec<DelegatedSession>> {
+        unimplemented!("get_by_parent_context")
+    }
+    async fn update_provider_session_id(
+        &self,
+        id: &crate::domain::entities::DelegatedSessionId,
+        provider_session_id: Option<String>,
+    ) -> crate::AppResult<()> {
+        unimplemented!("update_provider_session_id")
+    }
+    async fn update_status(
+        &self,
+        id: &crate::domain::entities::DelegatedSessionId,
+        status: &str,
+        error: Option<String>,
+        completed_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> crate::AppResult<()> {
+        unimplemented!("update_status")
+    }
+    async fn list_active_by_caller_conversation(
+        &self,
+        caller_conversation_id: &str,
+    ) -> crate::AppResult<Vec<DelegatedSession>> {
+        unimplemented!("list_active_by_caller_conversation")
+    }
+    async fn update_job_identity(
+        &self,
+        id: &crate::domain::entities::DelegatedSessionId,
+        job_id: String,
+        parent_agent_run_id: Option<String>,
+    ) -> crate::AppResult<()> {
+        unimplemented!("update_job_identity")
+    }
+}
+
+/// The timeline tool-call detail read — `get_agent_timeline_item_tool_call_detail`'s production
+/// seam — must FAIL, not serve the persisted `"running"` snapshot as current.
+#[tokio::test]
+async fn timeline_tool_call_detail_fails_closed_on_a_delegated_repository_outage() {
+    let mut state = AppState::new_test();
+    let (conversation_id, item_id, _, _) =
+        seed_delegated_timeline_tool(&state, AgentRunStatus::Completed).await;
+    state.delegated_session_repo = std::sync::Arc::new(FailingDelegatedSessionRepo);
+
+    let result =
+        get_agent_timeline_item_tool_call_detail_for_app_state(&state, conversation_id, item_id)
+            .await;
+
+    let error = result.expect_err(
+        "a delegated-session repository outage must surface as an error, not as the stale          persisted tool result",
+    );
+    assert!(
+        error.contains("simulated delegated-session outage"),
+        "the outage must be reported to the caller: {error}"
+    );
+}
+
+/// A3/L2: the transcript trio shares this seam, and its module doc claims "the seams propagate
+/// repository errors. A remote client is never told 'no messages' when the truth is 'the query
+/// failed'." Before WP3 that claim was false for the five delegated-tool reads. This pins it on
+/// the messages-page seam the registered `get_remote_agent_conversation_messages_page` twin calls.
+#[tokio::test]
+async fn transcript_messages_page_fails_closed_on_a_delegated_repository_outage() {
+    let mut state = AppState::new_test();
+    let project_id = ProjectId::new();
+    let parent = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project_id.clone()))
+        .await
+        .expect("create parent conversation");
+    let mut message =
+        ChatMessage::orchestrator_in_session(IdeationSessionId::new(), "delegated the work");
+    message.session_id = None;
+    message.conversation_id = Some(parent.id.clone());
+    message.tool_calls = Some(
+        json!([{
+            "id": "delegate-tool-1",
+            "name": "mcp__ralphx__delegate_start",
+            "result": {
+                "delegated_session_id": "session-that-cannot-be-read",
+                "status": "running"
+            }
+        }])
+        .to_string(),
+    );
+    state
+        .chat_message_repo
+        .create(message)
+        .await
+        .expect("create parent message");
+    state.delegated_session_repo = std::sync::Arc::new(FailingDelegatedSessionRepo);
+
+    let error = get_agent_conversation_messages_page_for_app_state(&state, parent.id, 10, 0)
+        .await
+        .expect_err(
+            "the transcript read must propagate the delegated-tool repository error its module              doc claims it propagates",
+        );
+    assert!(
+        error.contains("simulated delegated-session outage"),
+        "the outage must be reported to the caller: {error}"
+    );
 }
 
 #[tokio::test]
@@ -12498,4 +12633,37 @@ async fn timeline_item_detail_uses_preview_fallbacks_for_partial_tool_payload() 
     assert_eq!(tool["result"], "preview result");
     assert_eq!(tool["detail_ref"]["message_id"], item.id.to_string());
     assert_eq!(tool["detail_ref"]["content_block_index"], 2);
+}
+
+/// A failed conversation lookup must refuse, not null the model fields.
+///
+/// `if let Ok(Some(conv)) = ...` collapsed a genuine "conversation absent" and a repository
+/// ERROR into the same `(None, None)`, which the run-status card renders as the model the user
+/// is talking to. A confident wrong answer, from the same function whose sibling read directly
+/// above already propagates with `?`.
+#[tokio::test]
+async fn agent_run_model_fields_propagate_a_conversation_lookup_failure() {
+    use crate::domain::entities::ChatConversationId;
+    use crate::infrastructure::memory::MemoryChatConversationRepository;
+
+    let mut state = crate::application::AppState::new_test();
+    let repo = std::sync::Arc::new(MemoryChatConversationRepository::new());
+    let conversation_id = ChatConversationId::new();
+    repo.fail_get_by_id(conversation_id.clone()).await;
+    state.chat_conversation_repo = repo;
+
+    let error = super::resolve_agent_run_model_fields(&state, &conversation_id)
+        .await
+        .expect_err("a failed conversation lookup must not null the model fields");
+    assert!(
+        error.contains("injected conversation lookup failure"),
+        "the refusal must carry the underlying cause, got: {error}"
+    );
+
+    // The absent case is still the quiet one — the fix must not turn "no conversation" into an
+    // error, which would break the legitimate `Ok(None)` path.
+    let absent = super::resolve_agent_run_model_fields(&state, &ChatConversationId::new())
+        .await
+        .expect("an absent conversation is not a failure");
+    assert_eq!(absent, (None, None));
 }

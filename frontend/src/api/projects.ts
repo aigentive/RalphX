@@ -20,11 +20,31 @@ import {
 } from "@/types/workflow";
 import { TauriVoidSchema, typedInvoke, typedInvokeWithTransform } from "@/lib/tauri";
 import {
+  getTransportEnvironmentId,
+  isRemoteEnvironmentId,
+} from "@/lib/remote/active-environment";
+import {
   CreateWorkflowInputSchema,
   UpdateWorkflowInputSchema,
   type CreateWorkflowInput,
   type UpdateWorkflowInput,
 } from "@/lib/api/workflows";
+
+/**
+ * True while the active environment is remote, so the shell's boot reads must use the
+ * spawn-free twins rather than their Elevated/Denied local counterparts.
+ */
+function remoteShellReadsEnabled(): boolean {
+  return isRemoteEnvironmentId(getTransportEnvironmentId());
+}
+
+/** Two scalars — deliberately not the provider settings surface. */
+export const RemoteProviderReadinessSchema = z.object({
+  onboardingComplete: z.boolean(),
+  enabledProviderCount: z.number(),
+});
+
+export type RemoteProviderReadiness = z.infer<typeof RemoteProviderReadinessSchema>;
 
 /**
  * Project list schema for array responses (snake_case from backend)
@@ -123,29 +143,92 @@ export async function searchGithubPullRequests(
  */
 export const projectsApi = {
   /**
-   * List all projects
+   * List all projects.
+   *
+   * Under a remote environment this must call the spawn-free twin: `list_projects` runs
+   * `inspect_repository_capability` per project, which is why it is ledgered Elevated and
+   * left unregistered on the facade. Calling it remotely answers REMOTE_COMMAND_UNAVAILABLE,
+   * which the shell reads as an empty workspace and renders as first-run onboarding.
+   *
+   * Both answers parse with the SAME schema and transform — the host's projection carries
+   * snake_case field names identical to `ProjectResponse` and differs only by dropping
+   * `repository_capability` (which the schema already marks optional).
+   *
    * @returns Array of projects
    */
-  list: () =>
-    typedInvokeWithTransform(
-      "list_projects",
+  list: (): Promise<Project[]> =>
+    // Two literal call sites, not a computed name: the P-11 drift scan requires every
+    // production command name to be a literal so the census can classify it.
+    remoteShellReadsEnabled()
+      ? typedInvokeWithTransform(
+          "list_remote_projects",
+          {},
+          ProjectListResponseSchema,
+          transformProjectList
+        )
+      : typedInvokeWithTransform(
+          "list_projects",
+          {},
+          ProjectListResponseSchema,
+          transformProjectList
+        ),
+
+  /**
+   * Whether the ACTIVE environment's host has a usable provider.
+   *
+   * Remote-only by construction: locally the shell reads the full provider settings, which
+   * are `Denied` on the facade (CLI probes, provider identities, credential surface). The
+   * onboarding gate only ever asked a boolean, so the remote answer is a boolean.
+   */
+  remoteProviderReadiness: () =>
+    typedInvoke(
+      "get_remote_provider_readiness",
       {},
-      ProjectListResponseSchema,
-      transformProjectList
+      RemoteProviderReadinessSchema
     ),
 
   /**
-   * Get a single project by ID
+   * Get a single project by ID.
+   *
+   * Same split as `list` above: `get_project` shares `list_projects`' single spawn carrier
+   * (`project_response` → `inspect_repository_capability`), so it is ledgered Elevated and
+   * unregistered on the facade. Calling it remotely answers REMOTE_COMMAND_UNAVAILABLE, which
+   * every project-scoped route reads as "this project does not exist".
+   *
+   * Two literal call sites, not a computed name (P-11 drift scan). Both answers parse with the
+   * SAME schema and transform — the host's projection carries snake_case names identical to
+   * `ProjectResponse` and differs only by dropping `repository_capability`, which the schema
+   * already marks optional.
+   *
    * @param projectId The project ID
    * @returns The project
    */
   get: (projectId: string) =>
-    typedInvokeWithTransform(
-      "get_project",
-      { projectId },
-      ProjectResponseSchema,
-      transformProject
-    ),
+    remoteShellReadsEnabled()
+      ? typedInvokeWithTransform(
+          "get_remote_project",
+          { id: projectId },
+          // The host answers `null` for a project id it does not have — common on a client
+          // whose selection predates the environment switch. Name it instead of dumping a
+          // schema error.
+          ProjectResponseSchema.nullable(),
+          (raw) => {
+            if (raw === null) {
+              throw new Error(`Project ${projectId} was not found on this host.`);
+            }
+            return transformProject(raw);
+          }
+        )
+      : // `id`, not `projectId`: the local command's param is `id: String`, and Tauri binds a
+        // flat param by its exact name or its camelCase form — `projectId` matches neither and
+        // deserializes from `null`. Pre-existing and unnoticed because `useProject` has no
+        // production consumer; fixed here rather than mirrored into the remote branch.
+        typedInvokeWithTransform(
+          "get_project",
+          { id: projectId },
+          ProjectResponseSchema,
+          transformProject
+        ),
 
   /**
    * Create a new project
@@ -186,13 +269,6 @@ export const projectsApi = {
       ProjectResponseSchema,
       transformProject
     ),
-
-  /**
-   * Delete a project
-   * @param projectId The project ID
-   */
-  delete: (projectId: string) =>
-    typedInvoke("delete_project", { id: projectId }, z.void()),
 
   /**
    * Read the project's fixed pull request template file.

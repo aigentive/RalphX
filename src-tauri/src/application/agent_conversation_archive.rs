@@ -238,7 +238,7 @@ pub(crate) async fn close_agent_workspace_pr_for_restart(
     Ok(())
 }
 
-fn workspace_allows_pr_closure(workspace: &AgentConversationWorkspace) -> bool {
+pub(crate) fn workspace_allows_pr_closure(workspace: &AgentConversationWorkspace) -> bool {
     workspace.mode != AgentConversationWorkspaceMode::ReviewPr
 }
 

@@ -1,9 +1,24 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { Automation, AutomationDetail, AutomationRun } from "@/api/automations";
+import type {
+  Automation,
+  AutomationDetail,
+  AutomationRun,
+} from "@/api/automations";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { AGENT_CONTROL_DISABLED_HINT } from "@/lib/remote/agent-gate";
+import {
+  LOCAL_ENVIRONMENT_ID,
+  useEnvironmentStore,
+} from "@/stores/environmentStore";
 import { AgentsAutomationPanel } from "./AgentsAutomationPanel";
 
 const {
@@ -314,23 +329,41 @@ function renderPanel({
 
 describe("AgentsAutomationPanel", () => {
   beforeEach(() => {
+    useEnvironmentStore.setState({
+      activeEnvironmentId: LOCAL_ENVIRONMENT_ID,
+      environments: [
+        { id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" },
+      ],
+      effectiveScopes: {},
+      connectionPresentations: {},
+    });
     vi.clearAllMocks();
     useArtifactMock.mockReturnValue({
       data: null,
       isLoading: false,
       isError: false,
     });
-    pauseAutomationMock.mockResolvedValue(automationFixture({ status: "paused" }));
-    resumeAutomationMock.mockResolvedValue(automationFixture({ status: "active" }));
-    stopAutomationMock.mockResolvedValue(automationFixture({ status: "stopped" }));
+    pauseAutomationMock.mockResolvedValue(
+      automationFixture({ status: "paused" }),
+    );
+    resumeAutomationMock.mockResolvedValue(
+      automationFixture({ status: "active" }),
+    );
+    stopAutomationMock.mockResolvedValue(
+      automationFixture({ status: "stopped" }),
+    );
     restartAutomationMock.mockResolvedValue({ scheduled: true, reason: null });
     triggerRunNowMock.mockResolvedValue({ scheduled: true, reason: null });
     retryJudgeMock.mockResolvedValue({ scheduled: true, reason: null });
     retryPlanJudgeMock.mockResolvedValue({ scheduled: true, reason: null });
     deleteAutomationMock.mockResolvedValue(undefined);
-    cancelRunMock.mockResolvedValue(automationRunFixture({ status: "cancelled" }));
+    cancelRunMock.mockResolvedValue(
+      automationRunFixture({ status: "cancelled" }),
+    );
     updateSettingsMock.mockResolvedValue(automationFixture({ maxRuns: 8 }));
-    updateAutomationSetupMock.mockResolvedValue(automationFixture({ status: "draft" }));
+    updateAutomationSetupMock.mockResolvedValue(
+      automationFixture({ status: "draft" }),
+    );
     sendAgentMessageMock.mockResolvedValue({
       conversationId: "conversation-setup",
       agentRunId: "run-setup",
@@ -373,16 +406,18 @@ describe("AgentsAutomationPanel", () => {
     expect(screen.getByTestId("agents-automation-spec")).toHaveTextContent(
       "No spec linked yet.",
     );
-    expect(screen.getByTestId("agents-automation-setup-summary")).toHaveTextContent(
-      "Configure selected artifact context for chat.",
-    );
+    expect(
+      screen.getByTestId("agents-automation-setup-summary"),
+    ).toHaveTextContent("Configure selected artifact context for chat.");
     expect(screen.getByTestId("agents-automation-first-run")).toHaveTextContent(
       "Build the shared context model in a scoped PR.",
     );
     expect(screen.getByTestId("agents-automation-stage")).toHaveTextContent(
       "Waiting for PR #593 to merge",
     );
-    expect(screen.queryByTestId("agents-automation-failure")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-automation-failure"),
+    ).not.toBeInTheDocument();
     expect(screen.getByTestId("agents-automation-pause")).toBeInTheDocument();
     expect(screen.getByTestId("agents-automation-stop")).toBeInTheDocument();
 
@@ -390,6 +425,74 @@ describe("AgentsAutomationPanel", () => {
 
     expect(onOpenAutomation).toHaveBeenCalledWith("automation-1");
     expect(useAutomationEventsMock).not.toHaveBeenCalled();
+  });
+
+  it("enables registered Run now while Resume follows agent-control scope", () => {
+    useEnvironmentStore.setState({
+      activeEnvironmentId: "remote-1",
+      environments: [{ id: "remote-1", name: "Studio", kind: "remote" }],
+      effectiveScopes: { "remote-1": ["ui:read", "ui:operate", "ui:agent"] },
+      connectionPresentations: {
+        "remote-1": {
+          presentation: "connected",
+          blockedFailure: null,
+          blockedMessage: null,
+        },
+      },
+    });
+    // "Run now" renders only via isIdleAfterCancelledRun (active automation + cancelled
+    // run); the Resume affordance renders only for a paused automation. The two states are
+    // mutually exclusive, so each gets its own render.
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        automation: automationFixture({ status: "active" }),
+        runs: [
+          automationRunFixture({
+            status: "cancelled",
+            finishedAt: "2026-07-05T11:00:00Z",
+          }),
+        ],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    const { unmount } = renderPanel();
+
+    // Wave B4 registered request_remote_automation_run, so Run now is reachable with ui:agent.
+    expect(screen.getByRole("button", { name: "Run now" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Run now" })).not.toHaveAttribute(
+      "title",
+    );
+
+    unmount();
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        automation: automationFixture({ status: "paused" }),
+        runs: [
+          automationRunFixture({
+            status: "cancelled",
+            finishedAt: "2026-07-05T11:00:00Z",
+          }),
+        ],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+    const withAgentScope = renderPanel();
+
+    expect(screen.getByTestId("agents-automation-resume")).toBeEnabled();
+
+    withAgentScope.unmount();
+    useEnvironmentStore.setState({
+      effectiveScopes: { "remote-1": ["ui:read", "ui:operate"] },
+    });
+    renderPanel();
+    expect(screen.getByTestId("agents-automation-resume")).toBeDisabled();
+    expect(screen.getByTestId("agents-automation-resume")).toHaveAttribute(
+      "title",
+      AGENT_CONTROL_DISABLED_HINT,
+    );
   });
 
   it("lists every run with its status, newest first", () => {
@@ -441,8 +544,12 @@ describe("AgentsAutomationPanel", () => {
       name: "Open PR #100 in browser",
     });
     expect(prLink).toHaveTextContent("PR #100");
-    expect(within(rows[0]!).queryByRole("button", { name: /Open PR #/ })).not.toBeInTheDocument();
-    expect(within(rows[1]!).queryByRole("button", { name: /Open PR #/ })).not.toBeInTheDocument();
+    expect(
+      within(rows[0]!).queryByRole("button", { name: /Open PR #/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(rows[1]!).queryByRole("button", { name: /Open PR #/ }),
+    ).not.toBeInTheDocument();
 
     fireEvent.click(prLink);
 
@@ -482,7 +589,11 @@ describe("AgentsAutomationPanel", () => {
     const rows = within(
       screen.getByTestId("agents-automation-runs-list"),
     ).getAllByRole("listitem");
-    const [running, failed, merged] = rows as [HTMLElement, HTMLElement, HTMLElement];
+    const [running, failed, merged] = rows as [
+      HTMLElement,
+      HTMLElement,
+      HTMLElement,
+    ];
 
     // Running/open → soft accent (orange).
     expect(running.style.backgroundColor).toContain("--accent-muted");
@@ -704,9 +815,21 @@ describe("AgentsAutomationPanel", () => {
         }),
         runs: [
           automationRunFixture({ id: "run-1", runIndex: 1, status: "merged" }),
-          automationRunFixture({ id: "run-2", runIndex: 2, status: "agent_failed" }),
-          automationRunFixture({ id: "run-3", runIndex: 3, status: "agent_failed" }),
-          automationRunFixture({ id: "run-4", runIndex: 4, status: "agent_failed" }),
+          automationRunFixture({
+            id: "run-2",
+            runIndex: 2,
+            status: "agent_failed",
+          }),
+          automationRunFixture({
+            id: "run-3",
+            runIndex: 3,
+            status: "agent_failed",
+          }),
+          automationRunFixture({
+            id: "run-4",
+            runIndex: 4,
+            status: "agent_failed",
+          }),
         ],
       }),
       isLoading: false,
@@ -718,7 +841,9 @@ describe("AgentsAutomationPanel", () => {
     const input = screen.getByLabelText("Max runs");
     expect(input).toHaveValue(4);
     // Cannot save the unchanged value.
-    expect(screen.getByTestId("agents-automation-max-runs-save")).toBeDisabled();
+    expect(
+      screen.getByTestId("agents-automation-max-runs-save"),
+    ).toBeDisabled();
 
     fireEvent.change(input, { target: { value: "8" } });
     fireEvent.click(screen.getByTestId("agents-automation-max-runs-save"));
@@ -752,9 +877,12 @@ describe("AgentsAutomationPanel", () => {
       "Adversarially verify each run plan before it can be approved.",
     );
 
-    fireEvent.change(screen.getByTestId("agents-automation-plan-approval-mode"), {
-      target: { value: "automatic" },
-    });
+    fireEvent.change(
+      screen.getByTestId("agents-automation-plan-approval-mode"),
+      {
+        target: { value: "automatic" },
+      },
+    );
     await waitFor(() =>
       expect(updateSettingsMock).toHaveBeenCalledWith({
         id: "automation-1",
@@ -772,7 +900,9 @@ describe("AgentsAutomationPanel", () => {
       }),
     );
 
-    fireEvent.click(screen.getByTestId("agents-automation-plan-deep-verification"));
+    fireEvent.click(
+      screen.getByTestId("agents-automation-plan-deep-verification"),
+    );
     await waitFor(() =>
       expect(updateSettingsMock).toHaveBeenCalledWith({
         id: "automation-1",
@@ -808,11 +938,11 @@ describe("AgentsAutomationPanel", () => {
     expect(prMergeSelect).not.toBeDisabled();
     expect(deepVerificationSwitch).not.toBeDisabled();
 
-    pendingUpdate.resolve(
-      automationFixture({ planApprovalMode: "automatic" }),
-    );
+    pendingUpdate.resolve(automationFixture({ planApprovalMode: "automatic" }));
     await waitFor(() =>
-      expect(toastSuccessMock).toHaveBeenCalledWith("Automation settings updated"),
+      expect(toastSuccessMock).toHaveBeenCalledWith(
+        "Automation settings updated",
+      ),
     );
   });
 
@@ -850,7 +980,9 @@ describe("AgentsAutomationPanel", () => {
 
     renderPanel();
 
-    expect(screen.getByTestId("agents-automation-pr-merge-mode")).toBeDisabled();
+    expect(
+      screen.getByTestId("agents-automation-pr-merge-mode"),
+    ).toBeDisabled();
     expect(screen.getByTestId("agents-automation-settings")).toHaveTextContent(
       "Stacked PR chains require manual merge",
     );
@@ -888,7 +1020,9 @@ describe("AgentsAutomationPanel", () => {
       ),
     ).toBeInTheDocument();
     expect(screen.getByText("Awaiting plan approval")).toBeInTheDocument();
-    expect(screen.getByTestId("agents-automation-run-3-cancel")).toBeInTheDocument();
+    expect(
+      screen.getByTestId("agents-automation-run-3-cancel"),
+    ).toBeInTheDocument();
     expect(screen.getByLabelText("Open run conversation")).toHaveClass(
       "cursor-pointer",
     );
@@ -956,7 +1090,9 @@ describe("AgentsAutomationPanel", () => {
       expect(
         within(row).getByRole("button", { name: "Open run conversation" }),
       ).toBeInTheDocument();
-      fireEvent.click(screen.getByTestId(`agents-automation-run-${runIndex}-status`));
+      fireEvent.click(
+        screen.getByTestId(`agents-automation-run-${runIndex}-status`),
+      );
     }
 
     expect(onFocusAutomationRun).toHaveBeenNthCalledWith(
@@ -1062,9 +1198,9 @@ describe("AgentsAutomationPanel", () => {
 
       renderPanel({ onFocusAutomationRun });
 
-      expect(screen.getByTestId("agents-automation-plan-gate-paused")).toHaveTextContent(
-        `${pausedCopy} Judge could not parse the verdict.`,
-      );
+      expect(
+        screen.getByTestId("agents-automation-plan-gate-paused"),
+      ).toHaveTextContent(`${pausedCopy} Judge could not parse the verdict.`);
 
       fireEvent.click(screen.getByTestId("agents-automation-plan-gate-open"));
 
@@ -1128,7 +1264,9 @@ describe("AgentsAutomationPanel", () => {
 
     const spec = screen.getByTestId("agents-automation-spec");
     expect(spec).toHaveTextContent("Release automation spec");
-    expect(spec).toHaveTextContent("Build the shared context model in a scoped PR.");
+    expect(spec).toHaveTextContent(
+      "Build the shared context model in a scoped PR.",
+    );
     expect(useArtifactMock).toHaveBeenCalledWith("artifact-spec-1");
   });
 
@@ -1176,9 +1314,9 @@ describe("AgentsAutomationPanel", () => {
     expect(within(phases).getByText("In progress")).toBeInTheDocument();
 
     const spec = screen.getByTestId("agents-automation-spec");
-    expect(within(spec).getByTestId("automation-spec-toggle")).toHaveTextContent(
-      "Show full spec",
-    );
+    expect(
+      within(spec).getByTestId("automation-spec-toggle"),
+    ).toHaveTextContent("Show full spec");
     expect(
       within(spec).queryByTestId("automation-spec-markdown"),
     ).not.toBeInTheDocument();
@@ -1205,27 +1343,42 @@ describe("AgentsAutomationPanel", () => {
     expect(screen.getByTestId("agents-automation-setup")).toHaveTextContent(
       "Automation setup",
     );
-    expect(screen.getByTestId("agents-automation-runtime-selector")).toBeInTheDocument();
     expect(
-      (screen.getByTestId("agents-automation-provider") as HTMLSelectElement).value,
+      screen.getByTestId("agents-automation-runtime-selector"),
+    ).toBeInTheDocument();
+    expect(
+      (screen.getByTestId("agents-automation-provider") as HTMLSelectElement)
+        .value,
     ).toBe("codex");
     expect(
-      (screen.getByTestId("agents-automation-model") as HTMLSelectElement).value,
+      (screen.getByTestId("agents-automation-model") as HTMLSelectElement)
+        .value,
     ).toBe("gpt-5.5");
     expect(
-      (screen.getByTestId("agents-automation-effort") as HTMLSelectElement).value,
+      (screen.getByTestId("agents-automation-effort") as HTMLSelectElement)
+        .value,
     ).toBe("xhigh");
 
     fireEvent.click(screen.getByTestId("agents-automation-run-mode-plan"));
 
+    // Wave D1 routes draft edits through update_automation_config with the current config envelope.
     await waitFor(() =>
-      expect(updateAutomationSetupMock).toHaveBeenCalledWith("conversation-setup", {
-        runMode: "plan",
-        completionSignal: "agent_completed",
-      }),
+      expect(updateAutomationSetupMock).toHaveBeenCalledWith(
+        "conversation-setup",
+        expect.objectContaining({
+          id: "automation-1",
+          setupConversationId: "conversation-setup",
+        }),
+        {
+          runMode: "plan",
+          completionSignal: "agent_completed",
+        },
+      ),
     );
     await waitFor(() =>
-      expect(toastSuccessMock).toHaveBeenCalledWith("Automation will run as Plan"),
+      expect(toastSuccessMock).toHaveBeenCalledWith(
+        "Automation will run as Plan",
+      ),
     );
 
     updateAutomationSetupMock.mockClear();
@@ -1235,14 +1388,20 @@ describe("AgentsAutomationPanel", () => {
     });
 
     await waitFor(() =>
-      expect(updateAutomationSetupMock).toHaveBeenCalledWith("conversation-setup", {
-        providerHarness: "claude",
-        modelId: "sonnet",
-        logicalEffort: "medium",
-      }),
+      expect(updateAutomationSetupMock).toHaveBeenCalledWith(
+        "conversation-setup",
+        expect.any(Object),
+        {
+          providerHarness: "claude",
+          modelId: "sonnet",
+          logicalEffort: "medium",
+        },
+      ),
     );
     await waitFor(() =>
-      expect(toastSuccessMock).toHaveBeenCalledWith("Automation run agent updated"),
+      expect(toastSuccessMock).toHaveBeenCalledWith(
+        "Automation run agent updated",
+      ),
     );
 
     updateAutomationSetupMock.mockClear();
@@ -1252,14 +1411,20 @@ describe("AgentsAutomationPanel", () => {
     });
 
     await waitFor(() =>
-      expect(updateAutomationSetupMock).toHaveBeenCalledWith("conversation-setup", {
-        providerHarness: "codex",
-        modelId: "gpt-5.5",
-        logicalEffort: "high",
-      }),
+      expect(updateAutomationSetupMock).toHaveBeenCalledWith(
+        "conversation-setup",
+        expect.any(Object),
+        {
+          providerHarness: "codex",
+          modelId: "gpt-5.5",
+          logicalEffort: "high",
+        },
+      ),
     );
     await waitFor(() =>
-      expect(toastSuccessMock).toHaveBeenCalledWith("Automation run agent updated"),
+      expect(toastSuccessMock).toHaveBeenCalledWith(
+        "Automation run agent updated",
+      ),
     );
   });
 
@@ -1302,9 +1467,9 @@ describe("AgentsAutomationPanel", () => {
     renderPanel();
 
     expect(useAskUserQuestionMock).toHaveBeenCalledWith("conversation-setup");
-    expect(screen.getByTestId("agents-automation-proposal-cta")).toHaveTextContent(
-      "Apply the proposed goal and phases",
-    );
+    expect(
+      screen.getByTestId("agents-automation-proposal-cta"),
+    ).toHaveTextContent("Apply the proposed goal and phases");
 
     fireEvent.click(screen.getByTestId("agents-automation-proposal-update"));
 
@@ -1336,9 +1501,9 @@ describe("AgentsAutomationPanel", () => {
 
     renderPanel();
 
-    expect(screen.getByTestId("agents-automation-proposal-cta")).toHaveTextContent(
-      "Save the latest proposed goal and phases",
-    );
+    expect(
+      screen.getByTestId("agents-automation-proposal-cta"),
+    ).toHaveTextContent("Save the latest proposed goal and phases");
 
     fireEvent.click(screen.getByTestId("agents-automation-proposal-update"));
 
@@ -1356,7 +1521,9 @@ describe("AgentsAutomationPanel", () => {
         },
       ),
     );
-    expect(toastSuccessMock).toHaveBeenCalledWith("Automation update requested");
+    expect(toastSuccessMock).toHaveBeenCalledWith(
+      "Automation update requested",
+    );
   });
 
   it("renders loading and error states without action controls", () => {
@@ -1368,8 +1535,12 @@ describe("AgentsAutomationPanel", () => {
 
     renderPanel();
 
-    expect(screen.getByTestId("agents-automation-panel-loading")).toBeInTheDocument();
-    expect(screen.queryByTestId("agents-automation-pause")).not.toBeInTheDocument();
+    expect(
+      screen.getByTestId("agents-automation-panel-loading"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-automation-pause"),
+    ).not.toBeInTheDocument();
 
     useAutomationDetailMock.mockReturnValueOnce({
       data: undefined,
@@ -1380,7 +1551,9 @@ describe("AgentsAutomationPanel", () => {
     renderPanel();
 
     expect(screen.getByText("Could not load automation.")).toBeInTheDocument();
-    expect(screen.queryByTestId("agents-automation-open")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-automation-open"),
+    ).not.toBeInTheDocument();
   });
 
   it("resumes paused automations and summarizes runs without PRs", async () => {
@@ -1401,12 +1574,16 @@ describe("AgentsAutomationPanel", () => {
     expect(screen.getByText("Paused")).toBeInTheDocument();
     // "Running" appears both in the Current PR summary and the runs list row.
     expect(screen.getAllByText("Running").length).toBeGreaterThan(0);
-    expect(screen.queryByTestId("agents-automation-pause")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-automation-pause"),
+    ).not.toBeInTheDocument();
     expect(screen.getByTestId("agents-automation-resume")).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId("agents-automation-resume"));
 
-    await waitFor(() => expect(resumeAutomationMock).toHaveBeenCalledWith("automation-1"));
+    await waitFor(() =>
+      expect(resumeAutomationMock).toHaveBeenCalledWith("automation-1"),
+    );
     expect(toastSuccessMock).toHaveBeenCalledWith("Automation resumed");
   });
 
@@ -1425,10 +1602,14 @@ describe("AgentsAutomationPanel", () => {
 
     fireEvent.click(screen.getByTestId("agents-automation-stop"));
     expect(await screen.findByText("Cancel automation?")).toBeInTheDocument();
-    expect(screen.getByText(/cancelled run cannot be resumed/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/cancelled run cannot be resumed/i),
+    ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Cancel automation" }));
 
-    await waitFor(() => expect(stopAutomationMock).toHaveBeenCalledWith("automation-1"));
+    await waitFor(() =>
+      expect(stopAutomationMock).toHaveBeenCalledWith("automation-1"),
+    );
     expect(toastSuccessMock).toHaveBeenCalledWith("Automation cancelled");
   });
 
@@ -1453,7 +1634,9 @@ describe("AgentsAutomationPanel", () => {
 
     const failure = screen.getByTestId("agents-automation-failure");
     expect(failure).toHaveTextContent("Publish step exited with code 1");
-    expect(screen.queryByTestId("agents-automation-paused")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-automation-paused"),
+    ).not.toBeInTheDocument();
   });
 
   it("shows the paused reason when paused without a failed run", () => {
@@ -1464,7 +1647,13 @@ describe("AgentsAutomationPanel", () => {
           pausedReasonCode: "release_freeze",
           pausedReasonDetail: "Waiting on base branch",
         }),
-        runs: [automationRunFixture({ status: "running", judgeState: "none", prNumber: null })],
+        runs: [
+          automationRunFixture({
+            status: "running",
+            judgeState: "none",
+            prNumber: null,
+          }),
+        ],
       }),
       isLoading: false,
       isError: false,
@@ -1475,13 +1664,21 @@ describe("AgentsAutomationPanel", () => {
     expect(screen.getByTestId("agents-automation-paused")).toHaveTextContent(
       "Paused: release_freeze - Waiting on base branch",
     );
-    expect(screen.queryByTestId("agents-automation-failure")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-automation-failure"),
+    ).not.toBeInTheDocument();
   });
 
   it("does not render a failure or paused line for a healthy running automation", () => {
     useAutomationDetailMock.mockReturnValue({
       data: automationDetailFixture({
-        runs: [automationRunFixture({ status: "running", judgeState: "none", prNumber: null })],
+        runs: [
+          automationRunFixture({
+            status: "running",
+            judgeState: "none",
+            prNumber: null,
+          }),
+        ],
       }),
       isLoading: false,
       isError: false,
@@ -1489,15 +1686,23 @@ describe("AgentsAutomationPanel", () => {
 
     renderPanel();
 
-    expect(screen.getByTestId("agents-automation-stage")).toHaveTextContent("Run 3 in progress");
-    expect(screen.queryByTestId("agents-automation-failure")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("agents-automation-paused")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agents-automation-stage")).toHaveTextContent(
+      "Run 3 in progress",
+    );
+    expect(
+      screen.queryByTestId("agents-automation-failure"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-automation-paused"),
+    ).not.toBeInTheDocument();
   });
 
   it("surfaces an idle-after-cancelled banner only for active automations", () => {
     useAutomationDetailMock.mockReturnValue({
       data: automationDetailFixture({
-        runs: [automationRunFixture({ status: "cancelled", judgeState: "none" })],
+        runs: [
+          automationRunFixture({ status: "cancelled", judgeState: "none" }),
+        ],
       }),
       isLoading: false,
       isError: false,
@@ -1505,7 +1710,9 @@ describe("AgentsAutomationPanel", () => {
 
     const activeView = renderPanel();
 
-    expect(screen.getByTestId("agents-automation-idle-after-cancelled")).toHaveTextContent(
+    expect(
+      screen.getByTestId("agents-automation-idle-after-cancelled"),
+    ).toHaveTextContent(
       "The last run was cancelled. Run now starts a new run from that run's prompt; it does not resume the cancelled run.",
     );
     activeView.unmount();
@@ -1513,7 +1720,9 @@ describe("AgentsAutomationPanel", () => {
     useAutomationDetailMock.mockReturnValue({
       data: automationDetailFixture({
         automation: automationFixture({ status: "paused" }),
-        runs: [automationRunFixture({ status: "cancelled", judgeState: "none" })],
+        runs: [
+          automationRunFixture({ status: "cancelled", judgeState: "none" }),
+        ],
       }),
       isLoading: false,
       isError: false,
@@ -1544,7 +1753,9 @@ describe("AgentsAutomationPanel", () => {
   it("starts a fresh run from the active cancelled-run notice", async () => {
     useAutomationDetailMock.mockReturnValue({
       data: automationDetailFixture({
-        runs: [automationRunFixture({ status: "cancelled", judgeState: "none" })],
+        runs: [
+          automationRunFixture({ status: "cancelled", judgeState: "none" }),
+        ],
       }),
       isLoading: false,
       isError: false,
@@ -1552,18 +1763,23 @@ describe("AgentsAutomationPanel", () => {
 
     renderPanel();
     fireEvent.click(
-      within(screen.getByTestId("agents-automation-idle-after-cancelled"))
-        .getByRole("button", { name: "Run now" }),
+      within(
+        screen.getByTestId("agents-automation-idle-after-cancelled"),
+      ).getByRole("button", { name: "Run now" }),
     );
 
-    await waitFor(() => expect(triggerRunNowMock).toHaveBeenCalledWith("automation-1"));
+    await waitFor(() =>
+      expect(triggerRunNowMock).toHaveBeenCalledWith("automation-1"),
+    );
   });
 
   it("restarts a stopped automation as a new run", async () => {
     useAutomationDetailMock.mockReturnValue({
       data: automationDetailFixture({
         automation: automationFixture({ status: "stopped" }),
-        runs: [automationRunFixture({ status: "cancelled", judgeState: "none" })],
+        runs: [
+          automationRunFixture({ status: "cancelled", judgeState: "none" }),
+        ],
       }),
       isLoading: false,
       isError: false,
@@ -1572,8 +1788,12 @@ describe("AgentsAutomationPanel", () => {
     renderPanel();
     fireEvent.click(screen.getByTestId("agents-automation-restart"));
 
-    await waitFor(() => expect(restartAutomationMock).toHaveBeenCalledWith("automation-1"));
-    expect(toastSuccessMock).toHaveBeenCalledWith("Automation restarted with a new run");
+    await waitFor(() =>
+      expect(restartAutomationMock).toHaveBeenCalledWith("automation-1"),
+    );
+    expect(toastSuccessMock).toHaveBeenCalledWith(
+      "Automation restarted with a new run",
+    );
   });
 
   it("reports deferred restart, run-now, and judge-retry outcomes", async () => {
@@ -1584,7 +1804,9 @@ describe("AgentsAutomationPanel", () => {
     useAutomationDetailMock.mockReturnValue({
       data: automationDetailFixture({
         automation: automationFixture({ status: "stopped" }),
-        runs: [automationRunFixture({ status: "cancelled", judgeState: "none" })],
+        runs: [
+          automationRunFixture({ status: "cancelled", judgeState: "none" }),
+        ],
       }),
       isLoading: false,
       isError: false,
@@ -1593,7 +1815,9 @@ describe("AgentsAutomationPanel", () => {
     const restartView = renderPanel();
     fireEvent.click(screen.getByTestId("agents-automation-restart"));
     await waitFor(() =>
-      expect(toastInfoMock).toHaveBeenCalledWith("restart prerequisites changed"),
+      expect(toastInfoMock).toHaveBeenCalledWith(
+        "restart prerequisites changed",
+      ),
     );
     restartView.unmount();
 
@@ -1603,7 +1827,9 @@ describe("AgentsAutomationPanel", () => {
     });
     useAutomationDetailMock.mockReturnValue({
       data: automationDetailFixture({
-        runs: [automationRunFixture({ status: "cancelled", judgeState: "none" })],
+        runs: [
+          automationRunFixture({ status: "cancelled", judgeState: "none" }),
+        ],
       }),
       isLoading: false,
       isError: false,
@@ -1611,7 +1837,9 @@ describe("AgentsAutomationPanel", () => {
 
     const runNowView = renderPanel();
     fireEvent.click(screen.getByRole("button", { name: "Run now" }));
-    await waitFor(() => expect(toastInfoMock).toHaveBeenCalledWith("run in flight"));
+    await waitFor(() =>
+      expect(toastInfoMock).toHaveBeenCalledWith("run in flight"),
+    );
     runNowView.unmount();
 
     retryJudgeMock.mockResolvedValueOnce({
@@ -1620,16 +1848,22 @@ describe("AgentsAutomationPanel", () => {
     });
     useAutomationDetailMock.mockReturnValue({
       data: automationDetailFixture({
-        runs: [automationRunFixture({ status: "completed", judgeState: "failed" })],
+        runs: [
+          automationRunFixture({ status: "completed", judgeState: "failed" }),
+        ],
       }),
       isLoading: false,
       isError: false,
     });
 
     const terminalJudgeView = renderPanel();
-    fireEvent.click(screen.getByRole("button", { name: "Retry terminal judge" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Retry terminal judge" }),
+    );
     await waitFor(() =>
-      expect(toastInfoMock).toHaveBeenCalledWith("terminal judge already retried"),
+      expect(toastInfoMock).toHaveBeenCalledWith(
+        "terminal judge already retried",
+      ),
     );
     terminalJudgeView.unmount();
 
@@ -1664,10 +1898,14 @@ describe("AgentsAutomationPanel", () => {
     renderPanel();
 
     fireEvent.click(screen.getByTestId("agents-automation-stop"));
-    fireEvent.click(await screen.findByRole("button", { name: "Cancel automation" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Cancel automation" }),
+    );
 
     await waitFor(() =>
-      expect(toastErrorMock).toHaveBeenCalledWith("Failed to cancel automation"),
+      expect(toastErrorMock).toHaveBeenCalledWith(
+        "Failed to cancel automation",
+      ),
     );
   });
 
@@ -1679,7 +1917,9 @@ describe("AgentsAutomationPanel", () => {
       errorMessage: "Failed to restart automation",
       detail: automationDetailFixture({
         automation: automationFixture({ status: "stopped" }),
-        runs: [automationRunFixture({ status: "cancelled", judgeState: "none" })],
+        runs: [
+          automationRunFixture({ status: "cancelled", judgeState: "none" }),
+        ],
       }),
     },
     {
@@ -1688,7 +1928,9 @@ describe("AgentsAutomationPanel", () => {
       apiMock: triggerRunNowMock,
       errorMessage: "Failed to run automation",
       detail: automationDetailFixture({
-        runs: [automationRunFixture({ status: "cancelled", judgeState: "none" })],
+        runs: [
+          automationRunFixture({ status: "cancelled", judgeState: "none" }),
+        ],
       }),
     },
     {
@@ -1697,7 +1939,9 @@ describe("AgentsAutomationPanel", () => {
       apiMock: retryJudgeMock,
       errorMessage: "Failed to retry terminal judge",
       detail: automationDetailFixture({
-        runs: [automationRunFixture({ status: "completed", judgeState: "failed" })],
+        runs: [
+          automationRunFixture({ status: "completed", judgeState: "failed" }),
+        ],
       }),
     },
     {
@@ -1716,19 +1960,24 @@ describe("AgentsAutomationPanel", () => {
         ],
       }),
     },
-  ])("reports a rejected $name action", async ({ actionName, apiMock, detail, errorMessage }) => {
-    apiMock.mockRejectedValueOnce(new Error(`${actionName} failed`));
-    useAutomationDetailMock.mockReturnValue({
-      data: detail,
-      isLoading: false,
-      isError: false,
-    });
-    renderPanel();
+  ])(
+    "reports a rejected $name action",
+    async ({ actionName, apiMock, detail, errorMessage }) => {
+      apiMock.mockRejectedValueOnce(new Error(`${actionName} failed`));
+      useAutomationDetailMock.mockReturnValue({
+        data: detail,
+        isLoading: false,
+        isError: false,
+      });
+      renderPanel();
 
-    fireEvent.click(screen.getByRole("button", { name: actionName }));
+      fireEvent.click(screen.getByRole("button", { name: actionName }));
 
-    await waitFor(() => expect(toastErrorMock).toHaveBeenCalledWith(errorMessage));
-  });
+      await waitFor(() =>
+        expect(toastErrorMock).toHaveBeenCalledWith(errorMessage),
+      );
+    },
+  );
 
   it("renders terminal automations without mutation controls", () => {
     useAutomationDetailMock.mockReturnValue({
@@ -1748,10 +1997,18 @@ describe("AgentsAutomationPanel", () => {
     expect(screen.getByText("Completed")).toBeInTheDocument();
     expect(screen.getByText("0 of 3")).toBeInTheDocument();
     expect(screen.getByText("No PR yet")).toBeInTheDocument();
-    expect(screen.queryByTestId("agents-automation-pause")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("agents-automation-resume")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("agents-automation-stop")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("agents-automation-delete")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-automation-pause"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-automation-resume"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-automation-stop"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-automation-delete"),
+    ).not.toBeInTheDocument();
     expect(screen.getByTestId("agents-automation-open")).toBeDisabled();
   });
 
@@ -1776,17 +2033,25 @@ describe("AgentsAutomationPanel", () => {
 
     fireEvent.click(deleteButton);
 
-    expect(await screen.findByText("Delete draft automation?")).toBeInTheDocument();
     expect(
-      screen.getByText(/Archives the setup conversation and 0 run conversations\./),
+      await screen.findByText("Delete draft automation?"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /Archives the setup conversation and 0 run conversations\./,
+      ),
     ).toBeInTheDocument();
     expect(screen.getByText(/Archives the linked spec\./)).toBeInTheDocument();
     expect(
-      screen.getByText(/Permanently removes the automation and its run history\./),
+      screen.getByText(
+        /Permanently removes the automation and its run history\./,
+      ),
     ).toBeInTheDocument();
 
     const dialog = screen.getByRole("alertdialog");
-    fireEvent.click(within(dialog).getByRole("button", { name: "Delete draft" }));
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Delete draft" }),
+    );
 
     await waitFor(() =>
       expect(deleteAutomationMock).toHaveBeenCalledWith("automation-1"),
@@ -1799,6 +2064,8 @@ describe("AgentsAutomationPanel", () => {
   it("does not show a delete action for non-draft automations", () => {
     renderPanel();
 
-    expect(screen.queryByTestId("agents-automation-delete")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-automation-delete"),
+    ).not.toBeInTheDocument();
   });
 });

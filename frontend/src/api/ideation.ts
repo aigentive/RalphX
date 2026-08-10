@@ -2,7 +2,11 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { z } from "zod";
-import { backendApiUrl } from "@/api/backend";
+import { backendFetch } from "@/api/backend";
+import {
+  getTransportEnvironmentId,
+  isRemoteEnvironmentId,
+} from "@/lib/remote/active-environment";
 import { IdeationSettingsResponseSchema } from "../types/ideation-config";
 import type { IdeationSettings } from "../types/ideation-config";
 import {
@@ -13,9 +17,7 @@ import {
   DependencyGraphResponseSchema,
   ApplyProposalsResultResponseSchema,
   RestartImplementationResultResponseSchema,
-  CreateChildSessionResponseSchema,
   LatestChildSessionIdResponseSchema,
-  ParentSessionContextResponseSchema,
   VerificationResponseSchema,
   SessionListResponseSchema,
 } from "./ideation.schemas";
@@ -29,8 +31,6 @@ import {
   transformApplyResult,
   transformRestartImplementationResult,
   transformIdeationSettings,
-  transformCreateChildSession,
-  transformParentSessionContext,
 } from "./ideation.transforms";
 import {
   ExecutionTaskAgentWorkspaceSchema,
@@ -54,10 +54,7 @@ import type {
   UpdateProposalInput,
   ApplyProposalsInput,
   IdeationAnalysisBaseSelection,
-  CreateChildSessionResponse,
   LatestChildSessionIdResponse,
-  ParentSessionContextResponse,
-  CreateChildSessionInput,
   VerificationStatusResponse,
 } from "./ideation.types";
 
@@ -116,6 +113,76 @@ function toVerificationStatusResponse(
     completedAt: raw.completed_at,
     error: raw.error,
   };
+}
+
+const RemoteFinalizeIntentSchema = z.object({
+  requestId: z.string(),
+  status: z.enum([
+    "pending",
+    "starting",
+    "completed",
+    "failed",
+    "failedStale",
+  ]),
+  errorCode: z.string().nullable().optional(),
+  result: z.unknown().nullable().optional(),
+  createdAt: z.string(),
+  updatedAt: z.string().optional(),
+  deduplicated: z.boolean().optional(),
+});
+
+export class RemoteFinalizeIntentError extends Error {
+  readonly errorCode: string;
+
+  constructor(errorCode: string) {
+    super(
+      errorCode === "REMOTE_FINALIZE_NOT_PENDING"
+        ? "No longer awaiting confirmation"
+        : errorCode,
+    );
+    this.name = "RemoteFinalizeIntentError";
+    this.errorCode = errorCode;
+  }
+}
+
+function remoteIdeationFacadeEnabled(): boolean {
+  return isRemoteEnvironmentId(getTransportEnvironmentId());
+}
+
+async function remoteFinalizeDecision(
+  sessionId: string,
+  decision: "accept" | "reject",
+): Promise<{ status: string; sessionId: string }> {
+  const requested = RemoteFinalizeIntentSchema.parse(
+    await invoke("request_remote_ideation_finalize_decision", {
+      input: { sessionId, decision },
+    }),
+  );
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    const request = RemoteFinalizeIntentSchema.parse(
+      await invoke("get_remote_ideation_finalize_request", {
+        requestId: requested.requestId,
+      }),
+    );
+    if (request.status === "completed") {
+      if (decision === "reject") {
+        const result = z
+          .object({ status: z.string(), sessionId: z.string() })
+          .parse(request.result);
+        return result;
+      }
+      return { status: "accepted", sessionId };
+    }
+    if (request.status === "failed" || request.status === "failedStale") {
+      throw new RemoteFinalizeIntentError(
+        request.errorCode ?? "REMOTE_FINALIZE_HOST_FAILED",
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  throw new Error(
+    "Timed out waiting for the host to settle the finalize decision",
+  );
 }
 
 // ============================================================================
@@ -296,42 +363,6 @@ export const ideationApi = {
     },
 
     /**
-     * Create a child session linked to this parent session
-     * @param input Child session creation parameters
-     * @returns The created child session with optional parent context
-     */
-    createChild: async (input: CreateChildSessionInput): Promise<CreateChildSessionResponse> => {
-      const raw = await typedInvoke(
-        "create_child_session",
-        {
-          input: {
-            parent_session_id: input.parentSessionId,
-            title: input.title,
-            description: input.description,
-            inherit_context: input.inheritContext,
-          },
-        },
-        CreateChildSessionResponseSchema
-      );
-      return transformCreateChildSession(raw);
-    },
-
-    /**
-     * Get the parent session context for a child session
-     * Includes parent metadata, plan content, and proposals summary
-     * @param sessionId The child session ID
-     * @returns Parent session context or null if session has no parent
-     */
-    getParentContext: async (sessionId: string): Promise<ParentSessionContextResponse | null> => {
-      const raw = await typedInvoke(
-        "get_parent_session_context",
-        { session_id: sessionId },
-        ParentSessionContextResponseSchema.nullable()
-      );
-      return raw ? transformParentSessionContext(raw) : null;
-    },
-
-    /**
      * Get all child sessions of this session
      * @param sessionId The parent session ID
      * @returns Array of child sessions
@@ -451,11 +482,11 @@ export const ideationApi = {
     },
 
     /**
-     * Delete a proposal
+     * Archive a proposal
      * @param proposalId The proposal ID
      */
-    delete: async (proposalId: string): Promise<void> => {
-      await invoke("delete_task_proposal", { id: proposalId });
+    archive: async (proposalId: string): Promise<void> => {
+      await invoke("archive_task_proposal", { id: proposalId });
     },
 
     /**
@@ -503,18 +534,6 @@ export const ideationApi = {
    * Proposal dependency operations
    */
   dependencies: {
-    /**
-     * Add a dependency between proposals
-     * @param proposalId The proposal that depends on another
-     * @param dependsOnId The proposal that is depended on
-     */
-    add: async (proposalId: string, dependsOnId: string): Promise<void> => {
-      await invoke("add_proposal_dependency", {
-        proposalId,
-        dependsOnId,
-      });
-    },
-
     /**
      * Remove a dependency between proposals
      * @param proposalId The proposal that depends on another
@@ -723,8 +742,8 @@ export const ideationApi = {
     getStatus: async (
       sessionId: string
     ): Promise<VerificationStatusResponse> => {
-      const res = await fetch(
-        backendApiUrl(`ideation/sessions/${sessionId}/verification`)
+      const res = await backendFetch(
+        `ideation/sessions/${sessionId}/verification`
       );
       if (!res.ok) {
         throw new Error(`Failed to get verification status: ${res.status}`);
@@ -745,8 +764,11 @@ export const ideationApi = {
      * Atomically transitions acceptance_status Pending → Accepted, then creates tasks.
      */
     accept: async (sessionId: string): Promise<{ status: string; sessionId: string }> => {
-      const res = await fetch(
-        backendApiUrl(`ideation/sessions/${sessionId}/accept-finalize`),
+      if (remoteIdeationFacadeEnabled()) {
+        return remoteFinalizeDecision(sessionId, "accept");
+      }
+      const res = await backendFetch(
+        `ideation/sessions/${sessionId}/accept-finalize`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -766,8 +788,11 @@ export const ideationApi = {
      * Resets acceptance_status to null, allowing the agent to re-finalize.
      */
     reject: async (sessionId: string): Promise<{ status: string; sessionId: string }> => {
-      const res = await fetch(
-        backendApiUrl(`ideation/sessions/${sessionId}/reject-finalize`),
+      if (remoteIdeationFacadeEnabled()) {
+        return remoteFinalizeDecision(sessionId, "reject");
+      }
+      const res = await backendFetch(
+        `ideation/sessions/${sessionId}/reject-finalize`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },

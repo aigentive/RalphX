@@ -11,6 +11,7 @@ import { renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createElement } from "react";
 import type { ReactNode } from "react";
+import { LOCAL_ENVIRONMENT_ID, useEnvironmentStore } from "@/stores/environmentStore";
 import { prKeys } from "./usePullRequestDetail";
 import {
   useGitRemoteUrl,
@@ -38,6 +39,13 @@ function createWrapper(queryClient?: QueryClient) {
   return ({ children }: { children: ReactNode }) =>
     createElement(QueryClientProvider, { client }, children);
 }
+
+beforeEach(() => {
+  useEnvironmentStore.setState({
+    activeEnvironmentId: LOCAL_ENVIRONMENT_ID,
+    environments: [{ id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" }],
+  });
+});
 
 // ============================================================================
 // useGitRemoteUrl
@@ -140,6 +148,24 @@ describe("useGitAuthDiagnostics", () => {
       projectId: "proj-1",
     });
     expect(result.current.data).toEqual(diagnostics);
+  });
+
+  it("never invokes or refetches diagnostics for a remote environment", async () => {
+    useEnvironmentStore.setState({
+      activeEnvironmentId: "studio",
+      environments: [
+        { id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" },
+        { id: "studio", name: "Studio Mac", kind: "remote" },
+      ],
+    });
+
+    const { result } = renderHook(() => useGitAuthDiagnostics("proj-1"), {
+      wrapper: createWrapper(),
+    });
+    window.dispatchEvent(new Event("focus"));
+
+    expect(result.current.fetchStatus).toBe("idle");
+    expect(invoke).not.toHaveBeenCalled();
   });
 });
 

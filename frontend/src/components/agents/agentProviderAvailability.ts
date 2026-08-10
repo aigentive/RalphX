@@ -23,19 +23,36 @@ export interface AgentProviderAvailabilityOption {
   fastModeSupportedModels?: readonly string[];
 }
 
+/**
+ * How provider availability is decided.
+ *
+ * - `"local"`: the host ran CLI probes, so `available`/`binaryFound`/`status` are live truth.
+ * - `"remote"`: the host served stored config only (`list_remote_agent_providers`). Probe truth
+ *   is unavailable BY DESIGN — a remote provider is selectable iff it is `enabled`, the copy
+ *   claims configuration rather than validation, and a start-time failure surfaces later through
+ *   the conversation-start intent status. `available`/`binaryFound` are NOT consulted here.
+ */
+export type AgentProviderAvailabilityMode = "local" | "remote";
+
 export function buildAgentProviderAvailabilityOptions({
   providers,
   isReady,
+  mode = "local",
 }: {
   providers: readonly AgentProviderSettingsResponse[];
   isReady: boolean;
+  mode?: AgentProviderAvailabilityMode;
 }): AgentProviderAvailabilityOption[] {
   return AGENT_PROVIDER_OPTIONS.map((option) => {
     const provider = providers.find((item) => item.provider === option.id);
     const disabledReason = provider
-      ? providerUnavailableReason(provider)
+      ? mode === "remote"
+        ? remoteProviderUnavailableReason(provider)
+        : providerUnavailableReason(provider)
       : isReady
-        ? "Provider is not configured."
+        ? mode === "remote"
+          ? "Not configured on this host."
+          : "Provider is not configured."
         : "Checking provider status.";
 
     return {
@@ -138,11 +155,24 @@ export function getProviderAvailabilityMessage({
   provider,
   providerOptions,
   isReady,
+  isRemoteEnvironment = false,
 }: {
   provider: AgentProvider;
   providerOptions: readonly AgentProviderAvailabilityOption[];
   isReady: boolean;
+  /**
+   * Remote clients cannot verify a provider's CLI: `harness-providers.ts` deliberately
+   * projects `available: false` rather than faking it true, so every option arrives
+   * disabled with a "Configured on this host" note. Treating that as a SEND BLOCKER left
+   * the composer permanently dead on a paired device. The host is the authority — the
+   * start and continuation intents re-validate provider/model at claim time and fail
+   * closed with typed errors — so remotely this is informational only.
+   */
+  isRemoteEnvironment?: boolean;
 }): string | null {
+  if (isRemoteEnvironment) {
+    return null;
+  }
   if (!isReady) {
     return "Checking provider readiness.";
   }
@@ -167,6 +197,20 @@ function providerUnavailableReason(
   }
   if (!provider.available) {
     return provider.error ?? provider.status ?? "CLI validation failed.";
+  }
+  return null;
+}
+
+/**
+ * Remote selectability rests on stored enablement alone. The host did not probe the CLI, so
+ * `available`/`binaryFound`/`status` carry no validation truth and are deliberately ignored;
+ * an enabled provider is offered and the copy says so honestly.
+ */
+function remoteProviderUnavailableReason(
+  provider: AgentProviderSettingsResponse,
+): string | null {
+  if (!provider.enabled) {
+    return "Enable this provider on the host.";
   }
   return null;
 }

@@ -4,6 +4,7 @@
  * Design: Dark glass aesthetic with backdrop blur, warm orange accent
  */
 
+import { useAgentGate } from "@/hooks/useAgentGate";
 import React, { useEffect, useCallback, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -101,6 +102,7 @@ export const ProposalDetailSheet = React.memo(function ProposalDetailSheet({
   onDelete,
   onNavigateToTask,
 }: ProposalDetailSheetProps) {
+  const agentGate = useAgentGate("proposalEdit");
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
 
   const handleKeyDown = useCallback(
@@ -191,8 +193,9 @@ export const ProposalDetailSheet = React.memo(function ProposalDetailSheet({
                 style={{ color: "var(--text-muted)" }}
                 onMouseEnter={(e) => { e.currentTarget.style.background = "var(--overlay-weak)"; e.currentTarget.style.color = "var(--text-secondary)"; }}
                 onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-muted)"; }}
-                onClick={() => onEdit(proposal.id)}
-                title="Edit proposal"
+                disabled={agentGate.gated}
+                onClick={() => { if (agentGate.gated) return; onEdit(proposal.id); }}
+                title={agentGate.reason ?? "Edit proposal"}
               >
                 <FileEdit className="w-3.5 h-3.5" />
               </Button>

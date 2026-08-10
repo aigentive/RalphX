@@ -96,7 +96,10 @@ async fn memory_repo_upsert_records_pending_succeeded_and_failed_completion() {
         .await
         .unwrap();
     assert_eq!(failed.status, ProviderTicketOperationStatus::Failed);
-    assert_eq!(failed.error_message.as_deref(), Some("provider unavailable"));
+    assert_eq!(
+        failed.error_message.as_deref(),
+        Some("provider unavailable")
+    );
     assert!(failed.completed_at.is_some());
 }
 
@@ -139,7 +142,10 @@ async fn memory_repo_update_status_completes_only_terminal_statuses() {
         .await
         .unwrap()
         .expect("operation should update");
-    assert_eq!(back_to_pending.status, ProviderTicketOperationStatus::Pending);
+    assert_eq!(
+        back_to_pending.status,
+        ProviderTicketOperationStatus::Pending
+    );
     assert!(
         back_to_pending.completed_at.is_none(),
         "pending status must clear completed_at"
@@ -246,13 +252,7 @@ async fn memory_repo_list_ticket_operations_filters_by_all_dimensions() {
 
     // A mismatching required dimension (provider) returns nothing.
     let no_match = repo
-        .list_provider_ticket_operations_for_ticket(
-            "github",
-            "issue",
-            "PROJ-123",
-            None,
-            None,
-        )
+        .list_provider_ticket_operations_for_ticket("github", "issue", "PROJ-123", None, None)
         .await
         .unwrap();
     assert!(no_match.is_empty());

@@ -20,6 +20,8 @@ import {
   X,
 } from "lucide-react";
 import type { ElementType } from "react";
+import { useIsRemoteEnvironment } from "@/hooks/useActiveEnvironment";
+import { RemoteHostOnlyNotice } from "@/components/remote/RemoteHostOnlyNotice";
 import {
   memo,
   Suspense,
@@ -33,7 +35,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
-import { artifactApi } from "@/api/artifact";
+import { artifactApi, RemotePlanIntentError } from "@/api/artifact";
 import { lazyWithRetry } from "@/lib/lazy-with-retry";
 import { atlassianApi } from "@/api/atlassian";
 import { clickupApi } from "@/api/clickup";
@@ -85,6 +87,7 @@ import {
   planBundleTabId,
 } from "@/components/Ideation/planBundleTabIds";
 import { useChatStore } from "@/stores/chatStore";
+import { useAgentGate } from "@/hooks/useAgentGate";
 import {
   selectActivePlanId,
   selectActiveExecutionPlanId,
@@ -709,6 +712,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   onTaskArtifactSelectionChange,
   onClose,
 }: AgentsArtifactPaneProps) {
+  const isRemoteEnvironment = useIsRemoteEnvironment();
   const queryClient = useQueryClient();
   const { data: featureFlags } = useFeatureFlags();
   const { registry: modelRegistry } = useAgentModels();
@@ -766,6 +770,9 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       : null;
   const canHydrateIdeationArtifacts = Boolean(
     conversation?.contextType === "ideation" ||
+    conversation?.agentMode === "ideation" ||
+    conversation?.agentMode === "tasks" ||
+    conversation?.agentMode === "plan" ||
     focusedIdeationSessionId ||
     focusedRunTarget ||
     scopedWorkspace?.mode === "ideation" ||
@@ -1602,10 +1609,12 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           available: availableTab?.enabled === true,
           unavailableReason:
             availableTab?.disabledReason ??
-            ARTIFACT_TAB_UNAVAILABLE_REASONS[definition.id],
+            (isRemoteEnvironment && ["jira", "linear", "clickup", "granola"].includes(definition.id)
+              ? `${definition.label} integration runs on the host.`
+              : ARTIFACT_TAB_UNAVAILABLE_REASONS[definition.id]),
         };
       }),
-    [availableTabs],
+    [availableTabs, isRemoteEnvironment],
   );
   const allAvailableTabsHidden =
     enabledAvailableTabIds.length > 0 && shownEnabledTabs.length === 0;
@@ -3061,6 +3070,12 @@ function AgentPlanPanel({
     ((conversationId: string, sessionId: string) => void) | undefined;
   onOpenTasks: () => void;
 }) {
+  const planApproveGate = useAgentGate("planApprove");
+  const planDirectImplementationGate = useAgentGate("planDirectImplementation");
+  const planTaskPipelineGate = useAgentGate("planTaskPipeline");
+  const executionPauseGate = useAgentGate("executionPlanPause");
+  const executionResumeGate = useAgentGate("executionPlanResume");
+  const executionStopGate = useAgentGate("executionPlanStop");
   const generatedPlanBundleTabsId = useId();
   const planBundleTabsId = `agents-plan-bundle-${generatedPlanBundleTabsId.replace(
     /:/g,
@@ -3168,7 +3183,7 @@ function AgentPlanPanel({
   });
 
   const handleCreateProposals = useCallback(() => {
-    if (!session) return;
+    if (planTaskPipelineGate.gated || !session) return;
     let workspaceActivationCompleted = workspace?.mode === "tasks";
     let committedRuntimeOverride:
       | import("@/api/manual-role-defaults.types").ManualRoleRuntimeSelection
@@ -3210,6 +3225,7 @@ function AgentPlanPanel({
   }, [
     onConversationModeSwitched,
     onFocusIdeationSessionForConversation,
+    planTaskPipelineGate.gated,
     queryClient,
     session,
     workspace,
@@ -3351,7 +3367,7 @@ function AgentPlanPanel({
   const workspaceConversationId = workspace?.conversationId ?? null;
 
   const handleApprovePlan = useCallback(async () => {
-    if (!session || !planArtifact || !canApprovePlan) {
+    if (planApproveGate.gated || !session || !planArtifact || !canApprovePlan) {
       return;
     }
     setIsApprovingPlan(true);
@@ -3379,16 +3395,29 @@ function AgentPlanPanel({
       toast.success("Plan approved");
     } catch (err) {
       console.error("Failed to approve plan:", err);
+      if (
+        err instanceof RemotePlanIntentError &&
+        err.errorCode === "REMOTE_PLAN_APPROVAL_PLAN_CHANGED"
+      ) {
+        await queryClient.invalidateQueries({
+          queryKey: ["agents", "session-plan", session.id],
+        });
+      }
       toast.error(
         err instanceof Error ? err.message : "Failed to approve plan",
       );
     } finally {
       setIsApprovingPlan(false);
     }
-  }, [canApprovePlan, onPlanUpdated, planArtifact, queryClient, session]);
+  }, [canApprovePlan, onPlanUpdated, planApproveGate.gated, planArtifact, queryClient, session]);
 
   const handleImplementDirectly = useCallback(() => {
-    if (!session || !workspace?.conversationId || !canImplementDirectly) {
+    if (
+      planDirectImplementationGate.gated ||
+      !session ||
+      !workspace?.conversationId ||
+      !canImplementDirectly
+    ) {
       return;
     }
     let pinnedActivation: DirectImplementationActivationSnapshot | undefined;
@@ -3441,6 +3470,7 @@ function AgentPlanPanel({
     });
   }, [
     canImplementDirectly,
+    planDirectImplementationGate.gated,
     confirmImplementDirectly,
     modelRegistry,
     onConversationModeSwitched,
@@ -3610,7 +3640,7 @@ function AgentPlanPanel({
   }, [loadActivePlan, queryClient, session, workspaceConversationId]);
 
   const handlePauseExecutionPlan = useCallback(() => {
-    if (!session || !canPauseExecutionPlan) {
+    if (!session || !canPauseExecutionPlan || executionPauseGate.gated) {
       return;
     }
 
@@ -3641,11 +3671,12 @@ function AgentPlanPanel({
     confirm,
     invalidateExecutionPlanControlQueries,
     pauseExecutionPlanMutation,
+    executionPauseGate.gated,
     session,
   ]);
 
   const handleResumeExecutionPlan = useCallback(() => {
-    if (!session || !canResumeExecutionPlan) {
+    if (!session || !canResumeExecutionPlan || executionResumeGate.gated) {
       return;
     }
 
@@ -3676,11 +3707,12 @@ function AgentPlanPanel({
     confirm,
     invalidateExecutionPlanControlQueries,
     resumeExecutionPlanMutation,
+    executionResumeGate.gated,
     session,
   ]);
 
   const handleStopExecutionPlan = useCallback(() => {
-    if (!session || !canStopExecutionPlan) {
+    if (!session || !canStopExecutionPlan || executionStopGate.gated) {
       return;
     }
 
@@ -3713,6 +3745,7 @@ function AgentPlanPanel({
     invalidateExecutionPlanControlQueries,
     session,
     stopExecutionPlanMutation,
+    executionStopGate.gated,
   ]);
 
   const planLifecycleState = useMemo<PlanLifecycleState | null>(() => {
@@ -3758,7 +3791,12 @@ function AgentPlanPanel({
     !hasImplementationAttempt,
   );
   const handleStartTasks = useCallback(async () => {
-    if (!canStartTasks || !session || !workspace?.conversationId) {
+    if (
+      planTaskPipelineGate.gated ||
+      !canStartTasks ||
+      !session ||
+      !workspace?.conversationId
+    ) {
       return;
     }
     setIsStartingTasks(true);
@@ -3786,7 +3824,14 @@ function AgentPlanPanel({
     } finally {
       setIsStartingTasks(false);
     }
-  }, [canStartTasks, proposals, queryClient, session, workspace]);
+  }, [
+    canStartTasks,
+    planTaskPipelineGate.gated,
+    proposals,
+    queryClient,
+    session,
+    workspace,
+  ]);
   const planLifecycleActions = useMemo<PlanLifecycleAction[]>(() => {
     if (!planLifecycleState || planLifecycleState === "accepted") {
       return [];
@@ -3803,6 +3848,7 @@ function AgentPlanPanel({
           void handleStartTasks();
         },
         icon: Play,
+        disabled: planTaskPipelineGate.gated,
         loading: isStartingTasks,
         primary: true,
         testId: "plan-lifecycle-start-tasks-button",
@@ -3838,6 +3884,7 @@ function AgentPlanPanel({
             void handleApprovePlan();
           },
           icon: Sparkles,
+          disabled: planApproveGate.gated,
           loading: isApprovingPlan,
           primary: true,
           testId: "plan-lifecycle-approve-button",
@@ -3858,7 +3905,7 @@ function AgentPlanPanel({
               void handleCreateProposals();
             },
             icon: ListPlus,
-            disabled: isPlanRecommendationPending,
+            disabled: isPlanRecommendationPending || planTaskPipelineGate.gated,
             primary:
               !isPlanRecommendationPending &&
               (primaryPlanAction === "create_proposals" ||
@@ -3876,7 +3923,8 @@ function AgentPlanPanel({
             void handleImplementDirectly();
           },
           icon: Rocket,
-          disabled: isPlanRecommendationPending,
+          disabled:
+            isPlanRecommendationPending || planDirectImplementationGate.gated,
           loading: isImplementingPlanDirectly,
           primary:
             !isPlanRecommendationPending &&
@@ -3916,6 +3964,9 @@ function AgentPlanPanel({
     isStartingPlanVerification,
     isStartingTasks,
     planLifecycleState,
+    planApproveGate.gated,
+    planDirectImplementationGate.gated,
+    planTaskPipelineGate.gated,
     primaryPlanAction,
     proposals.length,
     showCreateProposalsLifecycleAction,
@@ -3935,7 +3986,8 @@ function AgentPlanPanel({
         label: resumeExecutionPlanMutation.isPending ? "Resuming..." : "Resume",
         onClick: handleResumeExecutionPlan,
         icon: Play,
-        disabled,
+        disabled: disabled || executionResumeGate.gated,
+        disabledReason: executionResumeGate.reason,
         loading: resumeExecutionPlanMutation.isPending,
         primary: true,
         testId: "plan-lifecycle-resume-button",
@@ -3947,7 +3999,8 @@ function AgentPlanPanel({
         label: pauseExecutionPlanMutation.isPending ? "Pausing..." : "Pause",
         onClick: handlePauseExecutionPlan,
         icon: Pause,
-        disabled,
+        disabled: disabled || executionPauseGate.gated,
+        disabledReason: executionPauseGate.reason,
         loading: pauseExecutionPlanMutation.isPending,
         testId: "plan-lifecycle-pause-button",
       });
@@ -3958,7 +4011,8 @@ function AgentPlanPanel({
         label: stopExecutionPlanMutation.isPending ? "Stopping..." : "Stop",
         onClick: handleStopExecutionPlan,
         icon: Square,
-        disabled,
+        disabled: disabled || executionStopGate.gated,
+        disabledReason: executionStopGate.reason,
         loading: stopExecutionPlanMutation.isPending,
         tone: "danger",
         testId: "plan-lifecycle-stop-button",
@@ -3969,6 +4023,12 @@ function AgentPlanPanel({
     canPauseExecutionPlan,
     canResumeExecutionPlan,
     canStopExecutionPlan,
+    executionPauseGate.gated,
+    executionPauseGate.reason,
+    executionResumeGate.gated,
+    executionResumeGate.reason,
+    executionStopGate.gated,
+    executionStopGate.reason,
     handlePauseExecutionPlan,
     handleResumeExecutionPlan,
     handleStopExecutionPlan,
@@ -4035,25 +4095,32 @@ function AgentPlanPanel({
         ) : (
           <>
             {planLifecycleState && (
-              <PlanLifecycleBanner
-                state={planLifecycleState}
-                title={planLifecycleTitle}
-                description={planLifecycleDescription}
-                actions={planLifecycleActions}
-                {...(planLifecycleState === "accepted" && {
-                  counts: implementationTaskCounts,
-                  acceptedRuntimeCounts: planRuntimeControlCounts,
-                  acceptedFooterActions,
-                  acceptedAt: session?.convertedAt ?? null,
-                  onViewWork: onOpenTasks,
-                })}
-                {...(canRestartImplementation && {
-                  onRestartImplementation: handleRestartImplementation,
-                  canRestartImplementation,
-                  isRestartingImplementation:
-                    restartImplementationMutation.isPending,
-                })}
-              />
+              <>
+                {planLifecycleState === "approved" &&
+                  (planDirectImplementationGate.status === "unavailable" ||
+                    planTaskPipelineGate.status === "unavailable") && (
+                    <RemoteHostOnlyNotice subject="Plan implementation continuations" />
+                  )}
+                <PlanLifecycleBanner
+                  state={planLifecycleState}
+                  title={planLifecycleTitle}
+                  description={planLifecycleDescription}
+                  actions={planLifecycleActions}
+                  {...(planLifecycleState === "accepted" && {
+                    counts: implementationTaskCounts,
+                    acceptedRuntimeCounts: planRuntimeControlCounts,
+                    acceptedFooterActions,
+                    acceptedAt: session?.convertedAt ?? null,
+                    onViewWork: onOpenTasks,
+                  })}
+                  {...(canRestartImplementation && {
+                    onRestartImplementation: handleRestartImplementation,
+                    canRestartImplementation,
+                    isRestartingImplementation:
+                      restartImplementationMutation.isPending,
+                  })}
+                />
+              </>
             )}
             {isAutomationRunConversation ? (
               <div

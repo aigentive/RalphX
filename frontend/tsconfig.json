@@ -29,7 +29,9 @@
     "ignoreDeprecations": "6.0",
     "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": ["src/*"],
+      /* The un-aliased Tauri core, for the transport wrapper only (PR 2.2). */
+      "#tauri-core-primitive": ["./node_modules/@tauri-apps/api/core"]
     }
   },
   "include": ["src"],

@@ -62,17 +62,18 @@ describe("ProposalWidget", () => {
     expect(screen.getByText(/priority → high/)).toBeInTheDocument();
   });
 
-  it("shows title with strikethrough for delete when title is in MCP-wrapped result", () => {
+  it("shows title with strikethrough for archive when title is in MCP-wrapped result", () => {
     const toolCall = makeToolCall({
-      name: "delete_task_proposal",
+      name: "archive_task_proposal",
       arguments: { proposal_id: "p1" },
-      result: mcpWrap({ id: "p1", title: "Deleted Proposal" }),
+      result: mcpWrap({ id: "p1", title: "Archived Proposal" }),
     });
 
     const { container } = render(<ProposalWidget toolCall={toolCall} />);
 
-    expect(screen.getByText("Deleted Proposal")).toBeInTheDocument();
-    expect(screen.getByText("Deleted")).toBeInTheDocument();
+    // Wave D1 renamed delete_task_proposal to archive_task_proposal and its user-visible verb.
+    expect(screen.getByText("Archived Proposal")).toBeInTheDocument();
+    expect(screen.getByText("Archived")).toBeInTheDocument();
     // Title span has line-through style
     const titleSpan = container.querySelector('span[style*="line-through"]');
     expect(titleSpan).toBeInTheDocument();

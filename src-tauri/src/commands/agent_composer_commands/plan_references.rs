@@ -7,8 +7,7 @@ use super::types::{
 use crate::application::agent_plan_context::{lookup_plan_approval, plan_reference_status};
 use crate::application::AppState;
 use crate::domain::entities::{
-    ArtifactId, IdeationSession, IdeationSessionFlow, IdeationSessionStatus, ProjectId,
-    SessionPurpose,
+    IdeationSession, IdeationSessionFlow, IdeationSessionStatus, ProjectId, SessionPurpose,
 };
 
 const DEFAULT_PLAN_REFERENCE_LIMIT: usize = 12;
@@ -18,6 +17,14 @@ const MAX_PLAN_REFERENCE_LIMIT: usize = 50;
 pub async fn search_agent_composer_plan_references(
     input: SearchAgentComposerPlanReferencesInput,
     state: State<'_, AppState>,
+) -> Result<SearchAgentComposerPlanReferencesResponse, String> {
+    search_agent_composer_plan_references_for_app_state(&state, input).await
+}
+
+/// The command body, against a plain `AppState` so its error paths are reachable in tests.
+pub async fn search_agent_composer_plan_references_for_app_state(
+    state: &AppState,
+    input: SearchAgentComposerPlanReferencesInput,
 ) -> Result<SearchAgentComposerPlanReferencesResponse, String> {
     let project_id = ProjectId::from_string(input.project_id);
     let query = normalize_query(&input.query);
@@ -46,11 +53,15 @@ pub async fn search_agent_composer_plan_references(
             continue;
         };
 
+        // NOT `unwrap_or_else(seed_id)`: falling back to the pre-resolution id made the
+        // following `get_by_id` miss and `continue`, so a resolver outage dropped sessions from
+        // the list silently — and `truncated` is computed from `limit` alone, so the short list
+        // shipped looking complete. The sibling resolver call below already propagates.
         let latest_artifact_id = state
             .artifact_repo
             .resolve_latest_artifact_id(seed_artifact_id)
             .await
-            .unwrap_or_else(|_| ArtifactId::from_string(seed_artifact_id.as_str()));
+            .map_err(|error| error.to_string())?;
         let Some(artifact) = state
             .artifact_repo
             .get_by_id(&latest_artifact_id)
@@ -83,7 +94,7 @@ pub async fn search_agent_composer_plan_references(
                 } else {
                     None
                 };
-                lookup_plan_approval(&state, &session.id, &artifact, blueprint.as_ref()).await?
+                lookup_plan_approval(state, &session.id, &artifact, blueprint.as_ref()).await?
             } else {
                 None
             }

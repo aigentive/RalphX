@@ -117,7 +117,7 @@ export function useProposalMutations() {
   });
 
   const deleteProposal = useMutation<void, Error, string>({
-    mutationFn: (proposalId) => ideationApi.proposals.delete(proposalId),
+    mutationFn: (proposalId) => ideationApi.proposals.archive(proposalId),
     onSuccess: (_data, proposalId) => {
       // Remove from cache and invalidate lists
       queryClient.removeQueries({

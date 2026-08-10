@@ -24,6 +24,16 @@ max-threads = 1
 [test-groups.capability-serial]
 max-threads = 1
 
+# The capability-ledger detectors build a whole-crate call graph and re-run the traversal once
+# per surface row, so they are the slowest tests in the lib shard by an order of magnitude.
+# Under `cargo llvm-cov` instrumentation `detector_b_proof_classes_are_flagged_and_in_the_floor`
+# measured 113.7s against the default 120s terminate budget, then timed out on the next run with
+# the same code. That is runner variance around a genuinely heavy test, not a regression, so the
+# budget is raised rather than the traversal weakened.
+[[profile.default.overrides]]
+filter = 'test(remote_server::capability_ledger_tests)'
+slow-timeout = { period = "180s", terminate-after = 2 }
+
 [[profile.default.overrides]]
 filter = 'binary(plan_selector_performance)'
 test-group = 'perf-serial'
@@ -38,3 +48,29 @@ slow-timeout = { period = "120s", terminate-after = 2 }
 filter = 'binary(suite_sqlite_repos) or binary(suite_sqlite_flows) or binary(suite_metrics)'
 test-group = 'sqlite-integration'
 slow-timeout = { period = "90s", terminate-after = 2 }
+
+# PR 3.3-b load legs. Serial and generously timed on purpose: they measure send-queue
+# depth, emit latency, and commit/publish latency against pinned thresholds, so running
+# them alongside the rest of the lib shard makes those measurements a function of how
+# busy the machine is rather than of the code under test.
+[test-groups.remote-load-serial]
+max-threads = 1
+
+[[profile.default.overrides]]
+filter = 'test(remote_server::remote_load_tests)'
+test-group = 'remote-load-serial'
+slow-timeout = { period = "120s", terminate-after = 2 }
+
+# PR 3.4 two-instance E2E suite. Serial because every leg boots a host that reserves a free
+# loopback port by binding `:0`, reading the assignment, and dropping the socket before the real
+# listener rebinds it (the settings row's `CHECK (port BETWEEN 1 AND 65535)` forbids persisting
+# port 0). Concurrent legs race on that reserve/rebind window, so this is a correctness need
+# rather than a timing preference. Generously timed: each leg boots a Tauri mock app, a real
+# listener, a capture bank and a sequencer, and one leg spawns a fake provider CLI.
+[test-groups.remote-e2e-serial]
+max-threads = 1
+
+[[profile.default.overrides]]
+filter = 'binary(remote_e2e)'
+test-group = 'remote-e2e-serial'
+slow-timeout = { period = "120s", terminate-after = 2 }

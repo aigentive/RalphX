@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { UpdatesSettingsSection } from "./UpdatesSettingsSection";
+import { LOCAL_ENVIRONMENT_ID, useEnvironmentStore } from "@/stores/environmentStore";
 
 if (!HTMLElement.prototype.hasPointerCapture) {
   Object.defineProperty(HTMLElement.prototype, "hasPointerCapture", {
@@ -60,6 +61,10 @@ describe("UpdatesSettingsSection", () => {
     mocks.saveError = null;
     mocks.isSaving = false;
     mocks.setUpdateChannel.mockReset();
+    useEnvironmentStore.setState({
+      activeEnvironmentId: LOCAL_ENVIRONMENT_ID,
+      environments: [{ id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" }],
+    });
   });
 
   it("defaults to the selected Stable radio and saves an accessible Nightly selection", async () => {
@@ -94,6 +99,42 @@ describe("UpdatesSettingsSection", () => {
     rerender(<UpdatesSettingsSection />);
     expect(screen.getByRole("radio", { name: "Stable — Recommended" })).toBeDisabled();
     expect(screen.getByRole("radio", { name: "Nightly — Early access" })).toBeDisabled();
+  });
+
+  it("gates channel controls remotely from manifest presence when ui:agent is absent", async () => {
+    useEnvironmentStore.setState({
+      activeEnvironmentId: "remote-1",
+      environments: [{ id: "remote-1", name: "Studio", kind: "remote" }],
+      effectiveScopes: { "remote-1": ["ui:read", "ui:operate"] },
+      connectionPresentations: {
+        "remote-1": { presentation: "connected", blockedFailure: null, blockedMessage: null },
+      },
+    });
+    render(<UpdatesSettingsSection />);
+    const nightly = screen.getByRole("radio", { name: "Nightly — Early access" });
+    expect(nightly).toBeDisabled();
+    expect(screen.getByTestId("update-channel-gate")).toHaveTextContent(
+      "Agent control is off for this device",
+    );
+    await userEvent.click(nightly);
+    expect(mocks.setUpdateChannel).not.toHaveBeenCalled();
+  });
+
+  it("keeps the manifest-present control usable remotely with ui:agent", async () => {
+    useEnvironmentStore.setState({
+      activeEnvironmentId: "remote-1",
+      environments: [{ id: "remote-1", name: "Studio", kind: "remote" }],
+      effectiveScopes: { "remote-1": ["ui:read", "ui:operate", "ui:agent"] },
+      connectionPresentations: {
+        "remote-1": { presentation: "connected", blockedFailure: null, blockedMessage: null },
+      },
+    });
+    render(<UpdatesSettingsSection />);
+
+    const nightly = screen.getByRole("radio", { name: "Nightly — Early access" });
+    expect(nightly).toBeEnabled();
+    await userEvent.click(nightly);
+    expect(mocks.setUpdateChannel).toHaveBeenCalledWith("nightly");
   });
 
   it("explains the Nightly safety boundary without exposing custom sources", () => {

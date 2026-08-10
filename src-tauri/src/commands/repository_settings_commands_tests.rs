@@ -48,12 +48,13 @@ async fn repository_settings_opt_out_persists_and_updates_the_live_spawn_policy(
     .expect("disable inherited GitHub CLI token removal");
 
     assert!(!settings.remove_inherited_github_cli_tokens);
-    assert!(!app
-        .state::<AppState>()
-        .app_state_repo
-        .get()
-        .await
-        .unwrap()
-        .remove_inherited_github_cli_tokens);
+    assert!(
+        !app.state::<AppState>()
+            .app_state_repo
+            .get()
+            .await
+            .unwrap()
+            .remove_inherited_github_cli_tokens
+    );
     assert!(!subprocess_env_policy::remove_inherited_github_cli_tokens());
 }

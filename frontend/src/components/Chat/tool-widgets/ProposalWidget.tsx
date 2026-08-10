@@ -1,12 +1,12 @@
 /**
  * ProposalWidget — Compact card for proposal CRUD tool calls
  *
- * Handles: create_task_proposal, update_task_proposal, delete_task_proposal
+ * Handles: create_task_proposal, update_task_proposal, archive_task_proposal
  *
  * Design:
  * - create: title + category badge + "Created" indicator
  * - update: title + "Updated" badge with changed fields summary
- * - delete: "Deleted" badge with proposal title
+ * - archive: "Archived" badge with proposal title
  */
 
 import React from "react";
@@ -19,11 +19,11 @@ import type { ToolCallWidgetProps } from "./shared.constants";
 // Helpers
 // ============================================================================
 
-type ProposalAction = "created" | "updated" | "deleted";
+type ProposalAction = "created" | "updated" | "archived";
 
 function getAction(toolName: string): ProposalAction {
   const name = toolName.toLowerCase();
-  if (name.includes("delete")) return "deleted";
+  if (name.includes("archive")) return "archived";
   if (name.includes("update")) return "updated";
   return "created";
 }
@@ -90,9 +90,9 @@ const actionConfig: Record<ProposalAction, {
     badgeVariant: "blue",
     color: colors.blue,
   },
-  deleted: {
+  archived: {
     icon: <Trash2 size={11} />,
-    label: "Deleted",
+    label: "Archived",
     badgeVariant: "error",
     color: colors.error,
   },
@@ -112,12 +112,12 @@ export const ProposalWidget = React.memo(function ProposalWidget({
   const category = extractCategory(toolCall);
   const changedFields = action === "updated" ? extractChangedFields(toolCall) : [];
 
-  // For delete with no title found, show a minimal indicator
-  if (action === "deleted" && title === "Proposal") {
+  // For archive with no title found, show a minimal indicator
+  if (action === "archived" && title === "Proposal") {
     return (
       <InlineIndicator
         icon={<Trash2 size={11} style={{ color: colors.error }} />}
-        text="Proposal deleted"
+        text="Proposal archived"
       />
     );
   }
@@ -145,18 +145,18 @@ export const ProposalWidget = React.memo(function ProposalWidget({
           style={{
             flex: 1,
             fontSize: compact ? 10.5 : 11,
-            color: action === "deleted" ? colors.textMuted : colors.textSecondary,
+            color: action === "archived" ? colors.textMuted : colors.textSecondary,
             overflow: "hidden",
             textOverflow: "ellipsis",
             whiteSpace: "nowrap",
-            textDecoration: action === "deleted" ? "line-through" : undefined,
+            textDecoration: action === "archived" ? "line-through" : undefined,
           }}
         >
           {title}
         </span>
 
         {/* Category chip (only for create/update) */}
-        {category && action !== "deleted" && (
+        {category && action !== "archived" && (
           <Badge variant="accent" compact>{category}</Badge>
         )}
 

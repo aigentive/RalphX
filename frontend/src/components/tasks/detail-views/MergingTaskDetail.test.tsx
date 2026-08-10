@@ -13,6 +13,9 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { MergingTaskDetail } from "./MergingTaskDetail";
+import { MergingTaskDetail as AgentsMergingTaskDetail } from "@/components/agents/task-details/detail-views/MergingTaskDetail";
+import { setDetailViewEnvironment } from "@/components/agents/task-details/detail-views/agent-gate.test-utils";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import type { ArtifactResponse } from "@/api/artifacts";
 import type { Task } from "@/types/task";
 import type { MergeProgressEvent } from "@/types/events";
@@ -244,7 +247,9 @@ function TestWrapper({ children }: { children: React.ReactNode }) {
     },
   });
   return (
-    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    <QueryClientProvider client={queryClient}>
+      <TooltipProvider>{children}</TooltipProvider>
+    </QueryClientProvider>
   );
 }
 
@@ -1025,6 +1030,30 @@ describe("MergingTaskDetail", () => {
       await user.click(screen.getByTestId("stop-merge-action"));
 
       expect(mockApiTasksStop).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("Agents fork Stop Merge gate", () => {
+    it.each([
+      ["remote-default", true],
+      ["remote-agent", false],
+      ["local", false],
+    ] as const)("follows taskStop gating in %s", (environment, disabled) => {
+      setDetailViewEnvironment(environment);
+      const task = createTestTask({ internalStatus: "merging" });
+      renderWithProviders(<AgentsMergingTaskDetail task={task} />);
+
+      const stop = screen.getByTestId("stop-merge-action");
+      if (disabled) {
+        expect(stop).toBeDisabled();
+      } else {
+        expect(stop).toBeEnabled();
+      }
+      if (disabled) {
+        expect(screen.getByTestId("agent-gate-tooltip")).toHaveAttribute("data-agent-gated", "true");
+      } else {
+        expect(screen.queryByTestId("agent-gate-tooltip")).not.toBeInTheDocument();
+      }
     });
   });
 

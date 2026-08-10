@@ -8,6 +8,8 @@
 
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
+
+import { registerEnvIsolatedStore } from "@/lib/remote/env-state-isolation";
 import { enableMapSet } from "immer";
 import { invoke } from "@tauri-apps/api/core";
 import { featureFlagsSchema } from "@/types/feature-flags";
@@ -146,6 +148,10 @@ const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   atlassianOauth: false,
   ticketingDashboard: false,
   agentConversationAutopilot: false,
+  // Client-owned flag (owner decision, 2026-08-03): the remote settings surfaces are
+  // visible by default, so a failed/slow boot fetch cannot latch them dark. The boot
+  // fetch below still overwrites this with the device's real config value.
+  remoteEnvironments: true,
 };
 
 // ============================================================================
@@ -228,6 +234,8 @@ interface UiState {
   recoveryPromptSurface: "chat" | "task_detail" | null;
   /** Current execution status (pause state, running/queued counts) */
   executionStatus: ExecutionStatusResponse;
+  /** Whether executionStatus came from an authoritative read or event. */
+  executionStatusKnown: boolean;
   /** Currently open execution bar popover, if any */
   executionBarOpenPopover: ExecutionBarPopoverKind;
   /** Last selected tab inside the Running execution bar popover */
@@ -325,6 +333,8 @@ interface UiActions {
   setRecoveryPromptSurface: (surface: "chat" | "task_detail" | null) => void;
   /** Update full execution status from backend */
   setExecutionStatus: (status: ExecutionStatusResponse) => void;
+  /** Mark execution status unknown after an authoritative read fails. */
+  setExecutionStatusUnknown: () => void;
   /** Set just the paused state */
   setExecutionPaused: (isPaused: boolean) => void;
   /** Set running count */
@@ -436,13 +446,14 @@ export const useUiStore = create<UiState & UiActions>()(
       globalMaxConcurrent: 20,
       queuedCount: 0,
       queuedMessageCount: 0,
-      canStartTask: true,
+      canStartTask: false,
       ideationActive: 0,
       ideationIdle: 0,
       ideationWaiting: 0,
       ideationMaxProject: 5,
       ideationMaxGlobal: 10,
     },
+    executionStatusKnown: false,
     executionBarOpenPopover: null,
     executionBarRunningTab: "execution",
     showArchived: false,
@@ -590,12 +601,22 @@ export const useUiStore = create<UiState & UiActions>()(
     setExecutionStatus: (status) =>
       set((state) => {
         state.executionStatus = status;
+        state.executionStatusKnown = true;
+      }),
+
+    setExecutionStatusUnknown: () =>
+      set((state) => {
+        state.executionStatusKnown = false;
+        state.executionStatus.canStartTask = false;
       }),
 
     setExecutionPaused: (isPaused) =>
       set((state) => {
         state.executionStatus.isPaused = isPaused;
         state.executionStatus.haltMode = isPaused ? "paused" : "running";
+        // A pause/resume event is authoritative backend state, so the halt banner may
+        // render from it even before the first full status read lands.
+        state.executionStatusKnown = true;
       }),
 
     setExecutionRunningCount: (count) =>
@@ -857,22 +878,67 @@ export const useUiStore = create<UiState & UiActions>()(
   }))
 );
 
+registerEnvIsolatedStore({
+  name: "useUiStore",
+  reset: () => {
+    const initial = useUiStore.getInitialState();
+    useUiStore.setState({
+      activeModal: initial.activeModal,
+      modalContext: initial.modalContext,
+      notifications: initial.notifications,
+      loading: initial.loading,
+      confirmation: initial.confirmation,
+      activeQuestions: initial.activeQuestions,
+      answeredQuestions: initial.answeredQuestions,
+      recoveryPrompt: initial.recoveryPrompt,
+      recoveryPromptSurface: initial.recoveryPromptSurface,
+      executionStatus: initial.executionStatus,
+      executionStatusKnown: initial.executionStatusKnown,
+      boardSearchQuery: initial.boardSearchQuery,
+      isSearching: initial.isSearching,
+      graphSelection: initial.graphSelection,
+      taskHistoryState: initial.taskHistoryState,
+      taskCreationContext: initial.taskCreationContext,
+      preserveCurrentViewOnProjectSwitch:
+        initial.preserveCurrentViewOnProjectSwitch,
+      activityFilter: initial.activityFilter,
+      collapsedColumns: initial.collapsedColumns,
+      viewByProject: initial.viewByProject,
+      pendingConfirmationQueue: initial.pendingConfirmationQueue,
+      autoAcceptPlans: initial.autoAcceptPlans,
+      autoAcceptSessions: initial.autoAcceptSessions,
+    });
+  },
+});
+
 // Expose uiStore to window in web mode for Playwright testing
 if (typeof window !== "undefined" && !window.__TAURI_INTERNALS__) {
   window.__uiStore = useUiStore;
 }
 
-// One-time feature flag initialization on module load.
+// Feature flag initialization on module load.
 // Zustand stores cannot use React hooks, so flags are fetched via invoke directly.
 // Defaults to the app's startup flag baseline until the async fetch resolves.
-// Errors are silently ignored — those defaults remain active.
-void invoke<unknown>("get_ui_feature_flags")
-  .then((raw) => {
-    const result = featureFlagsSchema.safeParse(raw);
-    if (result.success) {
-      useUiStore.getState().setFeatureFlags(applyFeatureFlagOverrides(result.data));
+// A single silent-failure shot used to latch the client-owned flags at their
+// defaults for the whole session (e.g. when the invoke raced app startup), so the
+// fetch retries a few times before giving up and keeping the defaults.
+async function initializeFeatureFlags(): Promise<void> {
+  const FLAG_BOOT_ATTEMPTS = 5;
+  const FLAG_BOOT_RETRY_MS = 1_000;
+  for (let attempt = 1; attempt <= FLAG_BOOT_ATTEMPTS; attempt += 1) {
+    try {
+      const raw = await invoke<unknown>("get_ui_feature_flags");
+      const result = featureFlagsSchema.safeParse(raw);
+      if (result.success) {
+        useUiStore.getState().setFeatureFlags(applyFeatureFlagOverrides(result.data));
+      }
+      return;
+    } catch {
+      if (attempt === FLAG_BOOT_ATTEMPTS) {
+        return; // Keep the defaults — visible-by-default, so nothing latches dark.
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, FLAG_BOOT_RETRY_MS));
     }
-  })
-  .catch(() => {
-    // Keep all-enabled defaults on error
-  });
+  }
+}
+void initializeFeatureFlags();

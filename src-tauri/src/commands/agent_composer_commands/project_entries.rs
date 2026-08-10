@@ -70,7 +70,14 @@ fn search_entries_blocking(
     query: &str,
     limit: usize,
 ) -> Result<SearchAgentComposerEntriesResponse, String> {
-    let mut entries = collect_git_entries(root).unwrap_or_else(|| collect_fs_entries(root));
+    // Tri-state, not `Option`. `Ok(None)` is the ONE legitimate fallback — this project is not
+    // a git checkout, so walking the filesystem is the right answer. A failure to RUN git, or an
+    // invalid root, is not that: it used to fall through to an untracked full-tree walk returned
+    // with `truncated: false`, so a broken git rendered as a complete, authoritative file list.
+    let mut entries = match collect_git_entries(root)? {
+        Some(entries) => entries,
+        None => collect_fs_entries(root)?,
+    };
     let truncated_index = entries.len() > MAX_PROJECT_ENTRY_INDEX;
     if truncated_index {
         entries.truncate(MAX_PROJECT_ENTRY_INDEX);
@@ -99,16 +106,23 @@ fn search_entries_blocking(
     })
 }
 
-fn collect_git_entries(root: &Path) -> Option<Vec<IndexedEntry>> {
-    let safe_root = validate_composer_root(root).ok()?;
+/// `Ok(None)` means "git ran and said this is not a tracked checkout" — the caller may then
+/// walk the filesystem. `Err` means git could not be consulted at all, which is never a reason
+/// to present an untracked walk as the project's file list.
+fn collect_git_entries(root: &Path) -> Result<Option<Vec<IndexedEntry>>, String> {
+    let safe_root = validate_composer_root(root).map_err(|error| error.to_string())?;
     let mut command = Command::new(resolve_git_cli_path());
     command.args(["ls-files", "-co", "--exclude-standard", "-z"]);
     // codeql[rust/path-injection]
     command.current_dir(&safe_root);
     crate::infrastructure::tool_paths::ensure_resolved_node_bin_in_path(&mut command);
-    let output = command.output().ok()?;
+    let output = command
+        .output()
+        .map_err(|error| format!("Failed to run git ls-files for the project index: {error}"))?;
     if !output.status.success() {
-        return None;
+        // git ran and refused: not a repository (or an unreadable one). The filesystem walk is
+        // the honest answer here, and the caller takes it.
+        return Ok(None);
     }
     let mut entries = BTreeMap::<String, EntryKind>::new();
     for raw in output.stdout.split(|byte| *byte == 0) {
@@ -125,13 +139,11 @@ fn collect_git_entries(root: &Path) -> Option<Vec<IndexedEntry>> {
             break;
         }
     }
-    Some(indexed_from_map(entries))
+    Ok(Some(indexed_from_map(entries)))
 }
 
-fn collect_fs_entries(root: &Path) -> Vec<IndexedEntry> {
-    let Ok(safe_root) = validate_composer_root(root) else {
-        return Vec::new();
-    };
+fn collect_fs_entries(root: &Path) -> Result<Vec<IndexedEntry>, String> {
+    let safe_root = validate_composer_root(root).map_err(|error| error.to_string())?;
     let mut entries = BTreeMap::<String, EntryKind>::new();
     let mut stack = vec![safe_root.clone()];
     while let Some(dir) = stack.pop() {
@@ -172,7 +184,7 @@ fn collect_fs_entries(root: &Path) -> Vec<IndexedEntry> {
             }
         }
     }
-    indexed_from_map(entries)
+    Ok(indexed_from_map(entries))
 }
 
 fn add_directory_ancestors(path: &str, entries: &mut BTreeMap<String, EntryKind>) {
@@ -286,6 +298,49 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
 
+    /// An unusable project root must refuse, not return a confident empty index.
+    ///
+    /// The fail-open chain was: `validate_composer_root` fails inside `collect_git_entries` →
+    /// `.ok()?` → `None` → filesystem fallback → its OWN root validation fails → `Vec::new()`
+    /// → `truncated: false`. Two independent swallows produced "this project has no files",
+    /// which is indistinguishable from a genuinely empty project.
+    #[test]
+    fn an_invalid_project_root_refuses_instead_of_indexing_nothing() {
+        let error = search_entries_blocking(Path::new("relative/not/absolute"), "", 10)
+            .expect_err("an unusable root must not report an empty project");
+        assert!(!error.is_empty(), "the refusal must carry a reason");
+
+        // Both halves of the old chain are closed, not just the git one.
+        let git = collect_git_entries(Path::new("relative/not/absolute"));
+        assert!(git.is_err(), "the git probe must not swallow a bad root");
+        let fs_walk = collect_fs_entries(Path::new("relative/not/absolute"));
+        assert!(
+            fs_walk.is_err(),
+            "the filesystem fallback must not swallow a bad root either"
+        );
+    }
+
+    /// A real checkout still indexes through git, and a non-repository still falls back —
+    /// the repair must not have turned the legitimate fallback into an error.
+    #[test]
+    fn a_non_repository_root_still_falls_back_to_the_filesystem_walk() {
+        let temp = tempdir().expect("tempdir");
+        fs::create_dir_all(temp.path().join("src")).expect("dirs");
+        fs::write(temp.path().join("src/main.ts"), "").expect("file");
+
+        // Not a git repository: the probe reports `Ok(None)`, and the search still succeeds.
+        assert!(matches!(
+            collect_git_entries(temp.path()),
+            Ok(None) | Ok(Some(_))
+        ));
+        let result = search_entries_blocking(temp.path(), "main", 10)
+            .expect("a non-repository project still indexes");
+        assert!(result
+            .entries
+            .iter()
+            .any(|entry| entry.path == "src/main.ts"));
+    }
+
     #[test]
     fn search_entries_ranks_basename_prefix_over_path_contains() {
         let temp = tempdir().expect("tempdir");
@@ -330,7 +385,7 @@ mod tests {
         fs::write(temp.path().join("src/components/Button.tsx"), "").expect("src file");
         fs::write(temp.path().join("node_modules/pkg/index.js"), "").expect("ignored file");
 
-        let entries = collect_fs_entries(temp.path());
+        let entries = collect_fs_entries(temp.path()).expect("fs index resolves");
 
         assert!(entries
             .iter()

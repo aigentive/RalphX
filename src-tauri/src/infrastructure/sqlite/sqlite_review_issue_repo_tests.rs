@@ -11,7 +11,8 @@ fn setup_repo() -> (SqliteTestDb, SqliteReviewIssueRepository) {
 }
 
 fn create_test_review_note(db: &SqliteTestDb, task_id: TaskId) -> ReviewNote {
-    let mut review_note = ReviewNote::new(task_id, ReviewerType::Ai, ReviewOutcome::ChangesRequested);
+    let mut review_note =
+        ReviewNote::new(task_id, ReviewerType::Ai, ReviewOutcome::ChangesRequested);
     review_note.summary = Some("Test summary".to_string());
     db.insert_review_note(review_note)
 }
@@ -188,14 +189,11 @@ async fn test_bulk_create_rollback_on_error() {
 
     repo.create(issue.clone()).await.unwrap();
 
-    let issues = vec![
-        issue.clone(),
-        {
-            let mut new_issue = create_test_issue(&review_note, &task.id);
-            new_issue.title = "New issue".to_string();
-            new_issue
-        },
-    ];
+    let issues = vec![issue.clone(), {
+        let mut new_issue = create_test_issue(&review_note, &task.id);
+        new_issue.title = "New issue".to_string();
+        new_issue
+    }];
 
     let result = repo.bulk_create(issues).await;
     assert!(result.is_err());

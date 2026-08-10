@@ -1,0 +1,1530 @@
+//! Two-detector remote authority audit (PR 1.3, P-17d/e/g).
+//!
+//! Build-time tooling — compiled only under `cfg(test)` and never linked into the shipped
+//! binary. It parses `src-tauri/src` plus the linked workspace crates (see
+//! [`LINKED_WORKSPACE_CRATES`]) with `syn` and answers two questions the capability
+//! ledger cannot answer by inspection:
+//!
+//! * **Detector (a)** — which registered Tauri commands can transitively reach an agent
+//!   spawn/steer sink, *target-sensitively* for `TaskTransitionService` (halting targets are
+//!   exempt; arming targets classify).
+//! * **Detector (b)** — which registered commands write persisted state that a **registered
+//!   background loop** consumes to spawn or steer an agent. The loop inventory itself is
+//!   discovered by the same call-graph machinery rooted at loop entry points, so a new loop
+//!   that reaches a sink without an inventory row fails CI instead of silently existing.
+//!
+//! # Soundness limits (stated, because the audit is a floor and not a proof)
+//!
+//! Definitions are keyed by source-qualified identity (`file::Type::method` or
+//! `file::::free_fn`). A method call resolves to every production definition having that
+//! method name, preserving conservative trait/dyn dispatch without unioning their bodies
+//! into one generic-name node. Calls originating in clean-architecture infrastructure
+//! repositories/services are leaves, and registered Tauri commands do not compose other
+//! registered commands. Residual multi-target method dispatch is intentionally retained as
+//! a reviewable over-approximation.
+//!
+//! Sinks are **cut points** — traversal stops when it reaches one. Without that, every command
+//! that touches `TaskTransitionService` would inherit the entry-action spawn graph. Cutting at
+//! the sink lets the transition hit be classified by its target; downstream exit behavior that
+//! target analysis cannot model remains a hand-audited ledger responsibility.
+//!
+//! Known residual, recorded rather than papered over: deferred authority that no static sink
+//! models (`update_custom_analysis` persisting a shell string, permission approval over a
+//! `watch::Sender`) is invisible to both detectors. Those are hand-audited ledger rows and
+//! reason-coded declared memberships — see `capability_ledger` and [`DECLARED_MEMBERSHIPS`].
+
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::path::{Path, PathBuf};
+
+use syn::visit::Visit;
+
+// ---------------------------------------------------------------------------------------
+// Sink definitions
+// ---------------------------------------------------------------------------------------
+
+/// Sink names traversal stops at, and reaching them classifies (subject to target rules).
+pub const TRANSITION_SINKS: &[&str] = &[
+    "transition_task",
+    "transition_task_with_metadata",
+    "transition_task_corrective",
+    "transition_task_corrective_with_exit",
+    "apply_corrective_transition",
+    "transition_to_stopped_with_context",
+];
+
+/// Scheduler activation sinks — reaching any of these arms the Ready→Executing spawn loop.
+pub const SCHEDULER_SINKS: &[&str] = &[
+    "try_schedule_ready_tasks",
+    "spawn_ready_task_scheduler_if_needed",
+    "execute_entry_actions",
+];
+
+/// Agent chat/steer sinks — a live provider process receives caller-influenced input.
+pub const STEER_SINKS: &[&str] = &["send_message", "send_stdin_message", "write_message"];
+
+/// Synthetic sink recorded when an `AgentSpawner`-shaped call is detected structurally
+/// (`.spawn("worker", task_id)` / `.spawn_background("qa-prep", task_id)` — a string-literal
+/// agent type as the first argument). Detected by shape rather than by receiver name so a
+/// renamed field or a trait object still trips it.
+pub const AGENT_SPAWN_SINK: &str = "<agent-spawner::spawn>";
+
+/// Fixed project-analyzer process entry point. This is intentionally an exact free-function
+/// name match: reaching it means the command starts an agent process, while unrelated process
+/// helpers remain outside detector (a).
+pub const AGENT_PROCESS_SPAWN_SINKS: &[&str] = &["spawn_project_analyzer"];
+
+/// `InternalStatus` targets that ARM or re-enter scheduling → classify.
+pub const ARMING_TRANSITION_TARGETS: &[&str] = &[
+    "Ready",
+    "Executing",
+    "Reviewing",
+    "Merging",
+    "QaTesting",
+    "QaPrep",
+    "PendingReview",
+    "Failed",
+];
+
+/// `InternalStatus` targets that only halt/park → authority-reducing, exempt.
+pub const HALTING_TRANSITION_TARGETS: &[&str] =
+    &["Paused", "Blocked", "Stopped", "Cancelled", "Archived"];
+
+/// Detector (c) — process-launch resolution sinks.
+///
+/// Every production subprocess must resolve its binary through
+/// `infrastructure/tool_paths.rs` (`.claude/rules/production-cli-resolution.md`), so reaching
+/// one of these IS spawning a process. `Capability::SpawnsProcess` is permitted only under
+/// `Elevated`, which makes "reaches a launch sink but is ledgered `Read`/`Operate`" a
+/// mechanically detectable under-labelling — the exact shape the `list_projects` mislabel had.
+pub const PROCESS_LAUNCH_SINKS: &[&str] = &[
+    "resolve_gh_cli_path",
+    "resolve_git_cli_path",
+    "resolve_node_cli_path",
+    "resolve_shell_cli_path",
+    "resolve_rm_cli_path",
+    "resolve_ps_cli_path",
+    "resolve_lsof_cli_path",
+    "resolve_pgrep_cli_path",
+    "resolve_pkill_cli_path",
+    "resolve_taskkill_cli_path",
+    "resolve_tasklist_cli_path",
+    "find_claude_cli_path",
+    "claude_native_cli_path",
+    "find_claude_native_cli_path",
+    "find_codex_cli_path",
+    "find_codex_cli_candidates",
+    "find_tailscale_cli_path",
+    "find_launchable_cli_path",
+    "find_launchable_cli_path_without_shell",
+];
+
+// No `WritesArbitraryPath` counterpart exists, and that is a measured result rather than an
+// omission: `fs::write`/`create_dir_all`/`remove_*` are reachable from the transitive closure of
+// nearly every command, including `list_tasks` and task-transition commands. A gate that fires
+// on pure reads is not a floor, so path authority stays a hand-audited
+// ledger judgement (`chat_attachment_commands` is `Denied` on exactly that basis) and is recorded
+// here as a stated soundness limit.
+
+/// True when any closure token names one of `sinks`, exactly or as a path suffix
+/// (`write_thing`, `std::fs::write` and `fs::write` all match the sink `fs::write`; a token
+/// merely *containing* the text does not).
+pub fn tokens_reach_any(tokens: &BTreeSet<String>, sinks: &[&str]) -> bool {
+    tokens.iter().any(|token| {
+        sinks.iter().any(|sink| {
+            token == sink
+                || (token.ends_with(sink) && token[..token.len() - sink.len()].ends_with("::"))
+        })
+    })
+}
+
+fn all_cut_sinks() -> BTreeSet<&'static str> {
+    TRANSITION_SINKS
+        .iter()
+        .chain(SCHEDULER_SINKS.iter())
+        .chain(STEER_SINKS.iter())
+        .chain(AGENT_PROCESS_SPAWN_SINKS.iter())
+        .copied()
+        .collect()
+}
+
+// ---------------------------------------------------------------------------------------
+// Call graph
+// ---------------------------------------------------------------------------------------
+
+/// One sink reached from a function body, with the transition targets named at the call site.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SinkHit {
+    pub sink: String,
+    /// `InternalStatus::X` variants syntactically present in the sink call's arguments.
+    /// Empty means "target not statically visible" → treated as arming (fail closed).
+    pub targets: BTreeSet<String>,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct FnNode {
+    pub callees: BTreeSet<String>,
+    /// Every ident, `A::B` path, and string literal appearing in the body. Detector (b) and
+    /// the content-surface detector match writer markers against this set.
+    pub tokens: BTreeSet<String>,
+    pub sink_hits: BTreeSet<SinkHit>,
+}
+
+/// A background-loop entry point discovered in source: the closure/async block handed to a
+/// spawn/interval/`listen_any` call.
+#[derive(Debug, Clone)]
+pub struct LoopRoot {
+    pub id: String,
+    pub file: String,
+    pub enclosing_fn: String,
+    pub kind: String,
+    pub callees: BTreeSet<String>,
+    pub sink_hits: BTreeSet<SinkHit>,
+}
+
+#[derive(Debug, Default)]
+pub struct CallGraph {
+    pub nodes: BTreeMap<String, FnNode>,
+    pub loop_roots: Vec<LoopRoot>,
+    definitions: BTreeMap<String, BTreeSet<String>>,
+    definition_arities: BTreeMap<String, usize>,
+    definition_owners: BTreeMap<String, String>,
+    definition_methods: BTreeMap<String, bool>,
+    node_files: BTreeMap<String, String>,
+    registered_commands: BTreeSet<String>,
+    /// Conservative call sites that still resolve to multiple same-name, same-arity definitions.
+    pub unresolved_dispatch: BTreeMap<String, BTreeSet<String>>,
+}
+
+/// Result of expanding a set of roots through the graph, stopping at sinks.
+#[derive(Debug, Default)]
+pub struct Closure {
+    pub visited: BTreeSet<String>,
+    pub tokens: BTreeSet<String>,
+    pub sink_hits: BTreeSet<SinkHit>,
+}
+
+/// A writer whose authority is real but which no source token can express mechanically.
+///
+/// The R4-C3 honest form: an explicit, reason-coded declaration rather than a marker invented
+/// to make a known command match. Adding one is a review event; adding a marker is not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeclaredWriter {
+    pub command: &'static str,
+    pub reason: &'static str,
+}
+
+/// Persisted state read by an authority-bearing background loop as a spawn/steer predicate.
+///
+/// # Why markers are persistence-layer tokens and not command names
+///
+/// A marker that IS the writer's own command name matches that command against itself: every
+/// function node carries its own bare name as a token, so `writer_markers: &["inject_task"]`
+/// flags `inject_task` no matter what its body does, and a *new* writer of the same surface is
+/// a silent false negative. Markers are therefore drawn from the write site the command
+/// reaches — repository/service method names, enum variant paths, and distinguishing string
+/// literals — and [`super::capability_ledger_tests`] asserts mechanically that no marker is a
+/// census command name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StateSurfaceEntry {
+    pub id: &'static str,
+    pub surface: &'static str,
+    pub armed_value: &'static str,
+    pub read_by_loops: &'static [&'static str],
+    /// Persistence-layer write sites for this surface. Never a registered command name.
+    pub write_markers: &'static [&'static str],
+    /// Tokens identifying the ARMED value. A command must reach BOTH a write site and the
+    /// armed value; a write site alone is an unrelated write and an armed value alone is a
+    /// read. Empty means the surface has no armed-value discriminator (any write arms it).
+    pub armed_markers: &'static [&'static str],
+    /// Writers not derivable from source tokens, each carrying a reason code.
+    pub declared_writers: &'static [DeclaredWriter],
+}
+
+impl StateSurfaceEntry {
+    /// True when `command` writes this surface's armed value.
+    pub fn flags(&self, command: &str, tokens: &BTreeSet<String>) -> bool {
+        if self
+            .declared_writers
+            .iter()
+            .any(|declared| declared.command == command)
+        {
+            return true;
+        }
+        let reaches_write_site = self
+            .write_markers
+            .iter()
+            .any(|marker| tokens.contains(*marker));
+        let reaches_armed_value = self.armed_markers.is_empty()
+            || self
+                .armed_markers
+                .iter()
+                .any(|marker| tokens.contains(*marker));
+        reaches_write_site && reaches_armed_value
+    }
+
+    /// The markers that actually matched, for tests that must prove a command was not flagged
+    /// by its own name.
+    pub fn matched_markers(&self, tokens: &BTreeSet<String>) -> BTreeSet<&'static str> {
+        self.write_markers
+            .iter()
+            .chain(self.armed_markers.iter())
+            .filter(|marker| tokens.contains(**marker))
+            .copied()
+            .collect()
+    }
+}
+
+/// Detector-(b)'s mechanically matched command writers.
+pub fn spawn_triggering_writers(
+    graph: &CallGraph,
+    commands: impl IntoIterator<Item = String>,
+    surface: &[StateSurfaceEntry],
+) -> BTreeSet<String> {
+    commands
+        .into_iter()
+        .filter(|command| {
+            let tokens = &graph.closure([command.clone()]).tokens;
+            surface.iter().any(|entry| entry.flags(command, tokens))
+        })
+        .collect()
+}
+
+/// Derived from the read sites reached by the settled authority-bearing loop inventory.
+///
+/// Every `write_markers`/`armed_markers` token below is a persistence-layer identifier taken
+/// from the write site itself — repository trait methods, enum variant paths, distinguishing
+/// field idents and string literals — never the name of the command that reaches it.
+pub const SPAWN_TRIGGERING_STATE_SURFACE: &[StateSurfaceEntry] = &[
+    StateSurfaceEntry {
+        id: "ready-task",
+        surface: "tasks.internal_status",
+        armed_value: "Ready",
+        read_by_loops: &["application/ready_task_scheduler.rs::application/ready_task_scheduler.rs:::::spawn_ready_task_scheduler_if_needed@57e1eb6d86c1770f"],
+        write_markers: &["restart_terminal_task_to_ready_with_history_for_action"],
+        armed_markers: &["InternalStatus::Ready"],
+        declared_writers: &[DeclaredWriter {
+            command: "inject_task",
+            reason: "seeds-ready-row-through-generic-repository-create: the row is born in Ready \
+                     via `TaskRepository::create`, whose write-site token is shared with 54 \
+                     unrelated creators, so no marker distinguishes this write mechanically",
+        }],
+    },
+    StateSurfaceEntry {
+        id: "pending-review-freshness",
+        surface: "tasks.internal_status + task_status_history.entered_at + agent_runs.status",
+        armed_value: "PendingReview with no fresh/running reviewer",
+        read_by_loops: &["application/startup_background.rs::application/startup_background.rs:::::spawn_watchdog@8c28974ee8ca859d"],
+        write_markers: &["ensure_re_review_from_escalated_status", "add_note"],
+        armed_markers: &["InternalStatus::PendingReview", "InternalStatus::RevisionNeeded"],
+        declared_writers: &[],
+    },
+    StateSurfaceEntry {
+        id: "automation-active",
+        surface: "automations.status",
+        armed_value: "Active",
+        read_by_loops: &["application/startup_background.rs::application/startup_background.rs:::::spawn_automation_scheduler@c034c5fc2b8fe7b8"],
+        write_markers: &["reopen_run_corrective"],
+        armed_markers: &["AutomationStatus::Active"],
+        declared_writers: &[DeclaredWriter {
+            command: "finalize_automation",
+            reason: "shared-automation-status-chokepoint: the finalize path reaches \
+                     `transition_automation_status` through the automation service, a token 53 \
+                     of 539 census commands reach transitively, so it cannot discriminate",
+        }],
+    },
+    StateSurfaceEntry {
+        id: "workspace-bridge",
+        surface: "agent_conversation_workspaces.linked_ideation_session_id/status/mode",
+        armed_value: "linked active plan/edit workspace",
+        read_by_loops: &["application/startup_background.rs::application/startup_background.rs:::::spawn_agent_workspace_bridge_dispatcher@ce779acefa5432"],
+        write_markers: &["create_or_update", "update_links"],
+        armed_markers: &[
+            "AgentConversationWorkspaceMode::Ideation",
+            "AgentConversationWorkspaceMode::Plan",
+            "AgentConversationWorkspaceMode::Edit",
+            "AgentConversationWorkspaceMode::Tasks",
+        ],
+        declared_writers: &[],
+    },
+    StateSurfaceEntry {
+        id: "external-event-cursor",
+        surface: "external_events rows/cursor",
+        armed_value: "unconsumed row",
+        read_by_loops: &["application/startup_background.rs::application/startup_background.rs:::::spawn_agent_workspace_bridge_dispatcher@ce779acefa5432"],
+        write_markers: &["insert_event"],
+        armed_markers: &[],
+        declared_writers: &[],
+    },
+    StateSurfaceEntry {
+        id: "workspace-auto-publish",
+        surface: "agent_conversation_workspaces.auto_publish_enabled/publication_push_status",
+        armed_value: "enabled and publishable/needs_agent",
+        read_by_loops: &["commands/agent_workspace_auto_publish.rs::commands/agent_workspace_auto_publish.rs:::::start_agent_workspace_auto_publish_freshness_scan@3a8d62e625ea5914"],
+        write_markers: &["update_auto_publish_preferences", "update_auto_publish_initial_pr_preference"],
+        armed_markers: &["auto_publish"],
+        declared_writers: &[],
+    },
+    StateSurfaceEntry {
+        id: "workspace-auto-review",
+        surface: "review_settings.require_workspace_review",
+        armed_value: "true",
+        read_by_loops: &["commands/agent_workspace_auto_review.rs::commands/agent_workspace_auto_review.rs:::::spawn_auto_review_for_workspace@a952be79d060c28f"],
+        write_markers: &["update_settings"],
+        armed_markers: &["require_workspace_review"],
+        declared_writers: &[],
+    },
+    // Spawn-free remote conversation start. `request_remote_agent_conversation_start` seeds a
+    // `Pending` intent through the DISTINCTIVE `create_start_request` write marker; the
+    // host-owned dispatcher loop (authority-bearing: reaches `send_message`/`write_message`) is
+    // the sole reader/spawner. This row is what makes detector (b) flag the registered command
+    // MECHANICALLY (write marker + armed enum variant) rather than via a declared-writer fallback.
+    // Spawn-free remote conversation CONTINUATION (WP1).
+    // `request_remote_agent_conversation_message` seeds a `Pending` intent through the
+    // DISTINCTIVE `create_message_request` write marker; the host-owned dispatcher loop
+    // (authority-bearing: builds a ChatService and reaches `send_message`) is the sole
+    // reader/sender. The marker name is deliberately distinct from `create_start_request` so
+    // detector (b) can tell the two intent surfaces apart mechanically.
+    StateSurfaceEntry {
+        id: "remote-conversation-message",
+        surface: "remote_conversation_message_requests.status",
+        armed_value: "Pending",
+        read_by_loops: &["application/startup_background.rs::application/startup_background.rs:::::spawn_remote_conversation_message_dispatcher@c959b62d91939d1"],
+        write_markers: &["create_message_request"],
+        armed_markers: &["RemoteConversationMessageStatus::Pending"],
+        declared_writers: &[],
+    },
+    // Spawn-free remote conversation MODE SWITCH (WP5a).
+    // `request_remote_agent_conversation_mode_switch` seeds a `Pending` intent through the
+    // DISTINCTIVE `create_mode_switch_request` write marker; the host-owned dispatcher loop is
+    // the sole reader/applier and is authority-bearing for a different reason than its three
+    // siblings: it reaches `switch_agent_conversation_mode_for_state`, which prepares a git
+    // worktree (`GitService::ref_exists`, `ensure_git_worktree`) a later agent process runs in.
+    // The marker name is deliberately distinct from `create_start_request` /
+    // `create_message_request` / `create_stop_request` so detector (b) can tell all four intent
+    // surfaces apart mechanically.
+    StateSurfaceEntry {
+        id: "remote-conversation-mode-switch",
+        surface: "remote_conversation_mode_switch_requests.status",
+        armed_value: "Pending",
+        read_by_loops: &["application/startup_background.rs::application/startup_background.rs:::::spawn_remote_conversation_mode_switch_dispatcher@af26b90d13c69a8c"],
+        write_markers: &["create_mode_switch_request"],
+        armed_markers: &["RemoteConversationModeSwitchStatus::Pending"],
+        declared_writers: &[],
+    },
+    StateSurfaceEntry {
+        id: "remote-conversation-start",
+        surface: "remote_conversation_start_requests.status",
+        armed_value: "Pending",
+        read_by_loops: &["application/startup_background.rs::application/startup_background.rs:::::spawn_remote_conversation_start_dispatcher@2212793b1dbfb5d0"],
+        write_markers: &["create_start_request"],
+        armed_markers: &["RemoteConversationStartStatus::Pending"],
+        declared_writers: &[],
+    },
+    // Wave B5c's spawn-free archive/fork request twins persist one kind-discriminated Pending
+    // lifecycle row. The host-owned resume dispatcher is the sole reader and reaches the real
+    // archive/fork seams; the distinctive repository create marker mechanically identifies
+    // both request commands without naming either command as its own evidence.
+    StateSurfaceEntry {
+        id: "remote-conversation-lifecycle",
+        surface: "remote_conversation_lifecycle_requests.status",
+        armed_value: "Pending",
+        read_by_loops: &["application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@ced3a7ce75eb6466"],
+        write_markers: &["create_remote_conversation_lifecycle_request"],
+        armed_markers: &["RemoteConversationLifecycleStatus::Pending"],
+        declared_writers: &[],
+    },
+    StateSurfaceEntry {
+        id: "remote-execution-resume",
+        surface: "remote_resume_requests.status where family=execution",
+        armed_value: "Pending",
+        read_by_loops: &["application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@ced3a7ce75eb6466"],
+        write_markers: &["create_execution_resume_request"],
+        armed_markers: &["RemoteResumeRequestStatus::Pending"],
+        declared_writers: &[],
+    },
+    StateSurfaceEntry {
+        id: "remote-task-action",
+        surface: "remote_resume_requests.status where family=task",
+        armed_value: "Pending",
+        read_by_loops: &["application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@ced3a7ce75eb6466"],
+        write_markers: &["create_task_action_request"],
+        armed_markers: &["RemoteResumeRequestStatus::Pending"],
+        declared_writers: &[],
+    },
+    StateSurfaceEntry {
+        id: "remote-plan-approval",
+        surface: "remote_plan_approval_requests.status",
+        armed_value: "Pending",
+        read_by_loops: &["application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@ced3a7ce75eb6466"],
+        write_markers: &["create_remote_plan_approval_request"],
+        armed_markers: &["RemotePlanApprovalRequestStatus::Pending"],
+        declared_writers: &[],
+    },
+    StateSurfaceEntry {
+        id: "remote-finalize-decision",
+        surface: "remote_finalize_decision_requests.status",
+        armed_value: "Pending",
+        read_by_loops: &["application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@ced3a7ce75eb6466"],
+        write_markers: &["create_remote_finalize_decision_request"],
+        armed_markers: &["RemoteFinalizeDecisionRequestStatus::Pending"],
+        declared_writers: &[],
+    },
+    StateSurfaceEntry {
+        id: "remote-queued-send",
+        surface: "remote_queued_send_requests.status",
+        armed_value: "Pending",
+        read_by_loops: &["application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@ced3a7ce75eb6466"],
+        write_markers: &["create_remote_queued_send_request"],
+        armed_markers: &["RemoteQueuedSendRequestStatus::Pending"],
+        declared_writers: &[],
+    },
+    StateSurfaceEntry {
+        id: "remote-automation-run",
+        surface: "remote_automation_run_requests.status",
+        armed_value: "Pending",
+        read_by_loops: &["application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@ced3a7ce75eb6466"],
+        write_markers: &["create_remote_automation_run_request"],
+        armed_markers: &["RemoteAutomationRunRequestStatus::Pending"],
+        declared_writers: &[],
+    },
+    StateSurfaceEntry {
+        id: "remote-automation-draft",
+        surface: "remote_automation_draft_requests.status",
+        armed_value: "Pending",
+        read_by_loops: &["application/startup_background.rs::application/startup_background.rs:::::spawn_remote_resume_dispatchers@ced3a7ce75eb6466"],
+        write_markers: &["create_remote_automation_draft_request"],
+        armed_markers: &["RemoteAutomationDraftRequestStatus::Pending"],
+        declared_writers: &[DeclaredWriter {
+            command: "request_remote_automation_draft",
+            reason: "application-intent-module boundary: the command reaches the distinctive \
+                     repository create and Pending value through a re-exported application seam \
+                     that the lexical call graph does not resolve",
+        }],
+    },
+];
+
+impl CallGraph {
+    pub fn build(files: &[(String, String)]) -> Self {
+        let mut graph = CallGraph::default();
+        let registered = files
+            .iter()
+            .find(|(path, _)| path == "commands/registry.rs")
+            .map(|(_, source)| {
+                parse_registered_commands(source)
+                    .into_iter()
+                    .map(|(command, _)| command)
+                    .collect::<BTreeSet<_>>()
+            })
+            .unwrap_or_default();
+        graph.registered_commands = registered.clone();
+        for (path, source) in files {
+            let Ok(parsed) = syn::parse_file(source) else {
+                // A file this crate cannot parse would silently shrink the graph, so it is a
+                // hard failure rather than a skipped file.
+                panic!("authority audit could not parse {path}");
+            };
+            let mut visitor = FileVisitor::new(path, &mut graph);
+            visitor.visit_file(&parsed);
+        }
+        let mut loop_ids = BTreeMap::<String, usize>::new();
+        for root in &mut graph.loop_roots {
+            let duplicate = loop_ids.entry(root.id.clone()).or_default();
+            if *duplicate > 0 {
+                root.id = format!("{}~{}", root.id, duplicate);
+            }
+            *duplicate += 1;
+        }
+        graph.resolve_dispatch(&registered);
+        graph
+    }
+
+    fn node_mut(&mut self, name: &str) -> &mut FnNode {
+        self.nodes.entry(name.to_string()).or_default()
+    }
+
+    fn resolve_dispatch(&mut self, registered: &BTreeSet<String>) {
+        let definitions = self.definitions.clone();
+        let definition_arities = self.definition_arities.clone();
+        let definition_owners = self.definition_owners.clone();
+        let definition_methods = self.definition_methods.clone();
+        let node_files = self.node_files.clone();
+        let mut unresolved_dispatch = BTreeMap::<String, BTreeSet<String>>::new();
+        for (node_name, node) in &mut self.nodes {
+            let source_file = node_files.get(node_name).map(String::as_str).unwrap_or("");
+            if is_architecture_leaf(source_file) {
+                node.callees.clear();
+                continue;
+            }
+            let source_is_command = source_file.starts_with("commands/");
+            let unresolved = std::mem::take(&mut node.callees);
+            for callee in unresolved {
+                let Some((kind, bare, arity, owner)) = parse_pending_call(&callee) else {
+                    continue;
+                };
+                if all_cut_sinks().contains(bare) {
+                    continue;
+                }
+                if let Some(targets) = definitions.get(bare) {
+                    let mut resolved = dispatch_candidates(
+                        targets,
+                        arity,
+                        owner,
+                        kind,
+                        &definition_arities,
+                        &definition_owners,
+                        &definition_methods,
+                    );
+                    // Commands must not fuse into one another: inside a `commands/` file a call
+                    // naming a registered command is the IPC name, not an edge. Drop only the
+                    // candidates that are THEMSELVES command definitions — the rule exists to
+                    // stop command→command fusion, and dropping the whole call site also
+                    // deleted the codebase's most common delegation shape (a thin command
+                    // calling an identically-named application service), which silenced
+                    // detectors (a)/(b)/(c) for every such command. PR 3.1-b batch 7.
+                    if source_is_command && registered.contains(bare) {
+                        resolved.retain(|target| {
+                            !node_files
+                                .get(target)
+                                .is_some_and(|file| file.starts_with("commands/"))
+                        });
+                    }
+                    if resolved.len() > 1 {
+                        unresolved_dispatch
+                            .entry(format!("{node_name} -> {bare}/{arity}"))
+                            .or_default()
+                            .extend(resolved.iter().cloned());
+                    }
+                    node.callees.extend(resolved);
+                }
+            }
+        }
+        for root in &mut self.loop_roots {
+            let unresolved = std::mem::take(&mut root.callees);
+            for callee in unresolved {
+                let Some((kind, bare, arity, owner)) = parse_pending_call(&callee) else {
+                    continue;
+                };
+                if all_cut_sinks().contains(bare) {
+                    continue;
+                }
+                if let Some(targets) = definitions.get(bare) {
+                    let resolved = dispatch_candidates(
+                        targets,
+                        arity,
+                        owner,
+                        kind,
+                        &definition_arities,
+                        &definition_owners,
+                        &definition_methods,
+                    );
+                    if resolved.len() > 1 {
+                        unresolved_dispatch
+                            .entry(format!("{} -> {bare}/{arity}", root.id))
+                            .or_default()
+                            .extend(resolved.iter().cloned());
+                    }
+                    root.callees.extend(resolved);
+                }
+            }
+        }
+        self.unresolved_dispatch = unresolved_dispatch;
+    }
+
+    /// Every bare name the walk defined, mapped to its qualified definition nodes.
+    pub fn definitions_snapshot(&self) -> &BTreeMap<String, BTreeSet<String>> {
+        &self.definitions
+    }
+
+    /// The `generate_handler!` command names parsed out of `commands/registry.rs`.
+    pub fn registered_commands_snapshot(&self) -> &BTreeSet<String> {
+        &self.registered_commands
+    }
+
+    /// Callees recorded on a node, or on every definition of a bare name.
+    ///
+    /// [`CallGraph::closure`] unions tokens across the whole walk, so it can report THAT a
+    /// launcher was reached but never THROUGH WHICH edge. Exposing the edges lets an audit
+    /// reconstruct the path behind a detector-(c) hit and argue a refusal reason against it.
+    pub fn callees_of(&self, name: &str) -> BTreeSet<String> {
+        if let Some(node) = self.nodes.get(name) {
+            return node.callees.clone();
+        }
+        self.roots_named(name)
+            .iter()
+            .filter_map(|node| self.nodes.get(node))
+            .flat_map(|node| node.callees.iter().cloned())
+            .collect()
+    }
+
+    /// Own-body tokens of a QUALIFIED node, or of every definition of a bare name.
+    ///
+    /// [`CallGraph::own_body_tokens`] resolves bare names only, so walking an edge chain — whose
+    /// intermediate hops are qualified node ids — silently yields an empty token set at every
+    /// hop. Path reconstruction needs the node-keyed lookup that [`CallGraph::callees_of`]
+    /// already does, or it can never attribute a hit to the hop that carried it.
+    pub fn own_tokens_of(&self, name: &str) -> BTreeSet<String> {
+        if let Some(node) = self.nodes.get(name) {
+            return node.tokens.clone();
+        }
+        self.own_body_tokens(name)
+    }
+
+    /// The source file a qualified definition node came from.
+    pub fn file_of(&self, node: &str) -> Option<&str> {
+        self.node_files.get(node).map(String::as_str)
+    }
+
+    pub fn roots_named(&self, name: &str) -> BTreeSet<String> {
+        let definitions = self.definitions.get(name).cloned().unwrap_or_default();
+        if !self.registered_commands.contains(name) {
+            return definitions;
+        }
+        definitions
+            .into_iter()
+            .filter(|node| {
+                self.node_files
+                    .get(node)
+                    .is_some_and(|file| file.starts_with("commands/"))
+            })
+            .collect()
+    }
+
+    /// Tokens of the named function's OWN bodies, without expanding callees.
+    ///
+    /// Detector (d) needs the write site itself, not everything the command can transitively
+    /// touch; see [`ContentWriteSurface`] for why.
+    pub fn own_body_tokens(&self, name: &str) -> BTreeSet<String> {
+        self.roots_named(name)
+            .iter()
+            .filter_map(|node| self.nodes.get(node))
+            .flat_map(|node| node.tokens.iter().cloned())
+            .collect()
+    }
+
+    /// Expands `roots` transitively, stopping at (but recording) sinks.
+    pub fn closure(&self, roots: impl IntoIterator<Item = String>) -> Closure {
+        let sinks = all_cut_sinks();
+        let mut result = Closure::default();
+        let mut queue = VecDeque::new();
+        for root in roots {
+            if self.nodes.contains_key(&root) {
+                queue.push_back(root);
+            } else {
+                queue.extend(self.roots_named(&root));
+            }
+        }
+        while let Some(name) = queue.pop_front() {
+            if !result.visited.insert(name.clone()) {
+                continue;
+            }
+            let Some(node) = self.nodes.get(&name) else {
+                continue;
+            };
+            result.tokens.extend(node.tokens.iter().cloned());
+            result.sink_hits.extend(node.sink_hits.iter().cloned());
+            for callee in &node.callees {
+                // Cut at sinks: their own bodies are the machinery whose authority is being
+                // classified, not evidence about the caller.
+                if sinks.contains(callee.as_str()) || result.visited.contains(callee) {
+                    continue;
+                }
+                queue.push_back(callee.clone());
+            }
+        }
+        result
+    }
+
+    /// Expands a discovered loop root the same way commands are expanded.
+    pub fn loop_closure(&self, root: &LoopRoot) -> Closure {
+        let mut closure = self.closure(root.callees.iter().cloned());
+        closure.sink_hits.extend(root.sink_hits.iter().cloned());
+        closure
+    }
+}
+
+/// How a sink hit classifies once target sensitivity is applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HitVerdict {
+    /// Arms or re-enters agent execution.
+    Arming,
+    /// Only halts/parks — authority-reducing, exempt (§3.3 exemption decision).
+    Halting,
+}
+
+pub fn verdict_for(hit: &SinkHit) -> HitVerdict {
+    if !TRANSITION_SINKS.contains(&hit.sink.as_str()) {
+        return HitVerdict::Arming;
+    }
+    if hit.targets.is_empty() {
+        // Target not statically visible → fail closed.
+        return HitVerdict::Arming;
+    }
+    if hit
+        .targets
+        .iter()
+        .any(|target| ARMING_TRANSITION_TARGETS.contains(&target.as_str()))
+    {
+        return HitVerdict::Arming;
+    }
+    if hit
+        .targets
+        .iter()
+        .all(|target| HALTING_TRANSITION_TARGETS.contains(&target.as_str()))
+    {
+        return HitVerdict::Halting;
+    }
+    HitVerdict::Arming
+}
+
+// ---------------------------------------------------------------------------------------
+// Detector (d) — agent-consumed content writes (§3.3 backstop #2)
+// ---------------------------------------------------------------------------------------
+
+/// A persisted surface the enumerated agent-consumed content READ tools return, paired with
+/// the tokens that identify a WRITE to it.
+///
+/// # Why the command's own body and not its transitive closure
+///
+/// Content repositories expose generic CRUD verbs (`create`, `update`, `delete`). The graph
+/// resolves a method call to every same-name, same-arity definition — a deliberate
+/// conservative over-approximation — so `foo.create(x)` anywhere in a closure resolves into
+/// `SqliteTaskStepRepository::create` as well. Measured: a transitive form of this detector
+/// flags 318 of 540 census commands, including pure readers. A gate that fires on reads is
+/// not a floor, so detector (d) matches the command's OWN body, where the repository handle
+/// and the write verb appear together at the real write site.
+///
+/// Stated soundness limit, recorded rather than papered over: a command that writes content
+/// exclusively through a private helper in another module is invisible here, exactly as
+/// detector (b) is blind to writes with no distinguishing token. Those are carried as
+/// reason-coded rows in the hand-audited content-writer surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContentWriteSurface {
+    pub id: &'static str,
+    pub surface: &'static str,
+    /// Repository handles/types naming the content store. Never a command name.
+    pub repo_markers: &'static [&'static str],
+    /// Mutating verbs. A read-only verb must never appear here.
+    pub write_markers: &'static [&'static str],
+}
+
+/// The content stores behind `CONTENT_READ_TOOLS`: task steps, artifacts and their relations,
+/// and review feedback/issues.
+pub const AGENT_CONSUMED_CONTENT_WRITE_SURFACE: &[ContentWriteSurface] = &[
+    ContentWriteSurface {
+        id: "task-steps",
+        surface: "task_steps",
+        repo_markers: &["task_step_repo"],
+        write_markers: &[
+            "create",
+            "bulk_create",
+            "update",
+            "delete",
+            "delete_by_task",
+        ],
+    },
+    ContentWriteSurface {
+        id: "artifacts",
+        surface: "artifacts/artifact_versions/artifact_relations",
+        repo_markers: &["artifact_repo"],
+        write_markers: &["create", "update", "delete", "add_relation"],
+    },
+    ContentWriteSurface {
+        id: "review-feedback",
+        surface: "review_notes/task_issues",
+        repo_markers: &["review_repo", "review_issue_repo"],
+        write_markers: &["create", "update", "delete"],
+    },
+];
+
+/// A detected content writer whose ledger row deliberately carries no
+/// `MutatesAgentConsumedContent`, with the reason that makes the omission sound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContentWriteExemption {
+    pub command: &'static str,
+    pub reason: &'static str,
+}
+
+pub const CONTENT_WRITE_EXEMPTIONS: &[ContentWriteExemption] = &[ContentWriteExemption {
+    command: "create_task",
+    reason: "born-backlog-only: `CreateTaskInput` carries no status field and every \
+             construction path runs `Task::new_with_category`, so the task and the steps \
+             created with it land in `InternalStatus::Backlog`. No loop or worker reads them \
+             until a separate AgentControl-class action arms the task, which is the same \
+             rationale the registry records for registering `create_task` at Operate",
+}];
+
+impl ContentWriteSurface {
+    /// True when `tokens` — the command's own body — names both this store and a write verb.
+    pub fn flags(&self, tokens: &BTreeSet<String>) -> bool {
+        self.repo_markers
+            .iter()
+            .any(|marker| tokens.contains(*marker))
+            && self
+                .write_markers
+                .iter()
+                .any(|marker| tokens.contains(*marker))
+    }
+}
+
+/// Detector-(d)'s mechanically derived content writers, mapped to the surfaces they write.
+pub fn agent_consumed_content_writers(
+    graph: &CallGraph,
+    commands: impl IntoIterator<Item = String>,
+    surface: &[ContentWriteSurface],
+) -> BTreeMap<String, BTreeSet<&'static str>> {
+    commands
+        .into_iter()
+        .filter_map(|command| {
+            let tokens = graph.own_body_tokens(&command);
+            let hits = surface
+                .iter()
+                .filter(|entry| entry.flags(&tokens))
+                .map(|entry| entry.id)
+                .collect::<BTreeSet<_>>();
+            (!hits.is_empty()).then_some((command, hits))
+        })
+        .collect()
+}
+
+pub fn closure_is_arming(closure: &Closure) -> bool {
+    closure
+        .sink_hits
+        .iter()
+        .any(|hit| verdict_for(hit) == HitVerdict::Arming)
+}
+
+// ---------------------------------------------------------------------------------------
+// syn visitor
+// ---------------------------------------------------------------------------------------
+
+struct FileVisitor<'a> {
+    file: String,
+    graph: &'a mut CallGraph,
+    fn_stack: Vec<String>,
+    impl_stack: Vec<String>,
+}
+
+impl<'a> FileVisitor<'a> {
+    fn new(file: &str, graph: &'a mut CallGraph) -> Self {
+        Self {
+            file: file.to_string(),
+            graph,
+            fn_stack: Vec::new(),
+            impl_stack: Vec::new(),
+        }
+    }
+
+    fn current_fn(&self) -> Option<&str> {
+        self.fn_stack.last().map(String::as_str)
+    }
+
+    fn record_callee(&mut self, callee: &str) {
+        let Some(current) = self.current_fn().map(str::to_string) else {
+            return;
+        };
+        self.graph
+            .node_mut(&current)
+            .callees
+            .insert(callee.to_string());
+    }
+
+    fn record_token(&mut self, token: String) {
+        let Some(current) = self.current_fn().map(str::to_string) else {
+            return;
+        };
+        self.graph.node_mut(&current).tokens.insert(token);
+    }
+
+    fn record_sink_hit(&mut self, hit: SinkHit) {
+        let Some(current) = self.current_fn().map(str::to_string) else {
+            return;
+        };
+        self.graph.node_mut(&current).sink_hits.insert(hit);
+    }
+
+    fn enter_fn(&mut self, bare_name: String, arity: usize, is_method: bool) {
+        let owner = self
+            .impl_stack
+            .last()
+            .cloned()
+            .unwrap_or_else(|| ":".to_string());
+        let name = format!("{}::{}::{}", self.file, owner, bare_name);
+        self.graph.node_mut(&name).tokens.insert(bare_name.clone());
+        self.graph
+            .definitions
+            .entry(bare_name)
+            .or_default()
+            .insert(name.clone());
+        self.graph
+            .node_files
+            .insert(name.clone(), self.file.clone());
+        self.graph.definition_arities.insert(name.clone(), arity);
+        self.graph.definition_owners.insert(name.clone(), owner);
+        self.graph
+            .definition_methods
+            .insert(name.clone(), is_method);
+        self.fn_stack.push(name);
+    }
+
+    fn leave_fn(&mut self) {
+        self.fn_stack.pop();
+    }
+
+    /// Registers a discovered background-loop entry point from a spawn/listen call argument.
+    fn record_loop_root(
+        &mut self,
+        kind: &str,
+        args: &syn::punctuated::Punctuated<syn::Expr, syn::token::Comma>,
+    ) {
+        let enclosing = self.current_fn().unwrap_or("<file-scope>").to_string();
+        let mut body = BodyScan::default();
+        for arg in args {
+            body.visit_expr(arg);
+        }
+        let id = stable_loop_id(&self.file, &enclosing, &body);
+        self.graph.loop_roots.push(LoopRoot {
+            id,
+            file: self.file.clone(),
+            enclosing_fn: enclosing,
+            kind: kind.to_string(),
+            callees: body.callees,
+            sink_hits: body.sink_hits,
+        });
+    }
+}
+
+fn stable_loop_id(file: &str, enclosing: &str, body: &BodyScan) -> String {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in body
+        .callees
+        .iter()
+        .chain(body.sink_hits.iter().map(|hit| &hit.sink))
+        .chain(body.identity_tokens.iter())
+        .flat_map(|value| value.bytes().chain(std::iter::once(0)))
+    {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{file}::{enclosing}@{hash:08x}")
+}
+
+fn is_architecture_leaf(file: &str) -> bool {
+    file.starts_with("domain/")
+        || file.starts_with("infrastructure/sqlite/")
+        || file.starts_with("infrastructure/services/")
+        || file.starts_with("infrastructure/memory/")
+        || file == "infrastructure/remote_host_client.rs"
+        // Remote settings is a persistence adapter: its generic `get_or_create`/`execute`
+        // calls cannot enter application workflows. Keeping it opaque prevents same-arity
+        // dispatch from inventing a settings -> agent-workflow edge.
+        || file == "remote_server/settings.rs"
+}
+
+fn pending_call(kind: &str, name: &str, arity: usize, owner: &str) -> String {
+    format!("{kind}|{name}|{arity}|{owner}")
+}
+
+fn parse_pending_call(call: &str) -> Option<(&str, &str, usize, &str)> {
+    let mut parts = call.split('|');
+    let kind = parts.next()?;
+    let name = parts.next()?;
+    let arity = parts.next()?.parse().ok()?;
+    let owner = parts.next()?;
+    (parts.next().is_none()).then_some((kind, name, arity, owner))
+}
+
+fn dispatch_candidates(
+    targets: &BTreeSet<String>,
+    arity: usize,
+    owner: &str,
+    kind: &str,
+    definition_arities: &BTreeMap<String, usize>,
+    definition_owners: &BTreeMap<String, String>,
+    definition_methods: &BTreeMap<String, bool>,
+) -> BTreeSet<String> {
+    let call_wants_method =
+        kind == "method" || owner.chars().next().is_some_and(char::is_uppercase);
+    let kind_matching: BTreeSet<String> = targets
+        .iter()
+        .filter(|target| definition_methods.get(*target) == Some(&call_wants_method))
+        .cloned()
+        .collect();
+    let matching: BTreeSet<String> = kind_matching
+        .iter()
+        .filter(|target| definition_arities.get(*target) == Some(&arity))
+        .cloned()
+        .collect();
+    let arity_filtered = if matching.is_empty() {
+        &kind_matching
+    } else {
+        &matching
+    };
+    if owner.is_empty() {
+        return arity_filtered.clone();
+    }
+    let owner_matching: BTreeSet<String> = arity_filtered
+        .iter()
+        .filter(|target| {
+            definition_owners.get(*target).is_some_and(|candidate| {
+                candidate == owner || candidate.ends_with(&format!("::{owner}"))
+            })
+        })
+        .cloned()
+        .collect();
+    if owner_matching.is_empty() {
+        if call_wants_method {
+            BTreeSet::new()
+        } else {
+            arity_filtered.clone()
+        }
+    } else {
+        owner_matching
+    }
+}
+
+fn path_last_segment(path: &syn::Path) -> Option<String> {
+    path.segments
+        .last()
+        .map(|segment| segment.ident.to_string())
+}
+
+fn path_string(path: &syn::Path) -> String {
+    path.segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect::<Vec<_>>()
+        .join("::")
+}
+
+/// True for `tokio::spawn`, `tokio::task::spawn`, `tauri::async_runtime::spawn`,
+/// `std::thread::spawn`, `tokio::task::spawn_blocking` — the loop entry-point forms.
+fn is_background_spawn_path(path: &syn::Path) -> Option<&'static str> {
+    let segments: Vec<String> = path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect();
+    let last = segments.last()?.as_str();
+    if !matches!(last, "spawn" | "spawn_blocking") {
+        return None;
+    }
+    let joined = segments.join("::");
+    for (needle, kind) in [
+        ("tauri::async_runtime::spawn", "async_runtime::spawn"),
+        ("async_runtime::spawn", "async_runtime::spawn"),
+        ("tokio::task::spawn", "tokio::task::spawn"),
+        ("tokio::spawn", "tokio::spawn"),
+        ("thread::spawn", "thread::spawn"),
+        ("task::spawn_blocking", "spawn_blocking"),
+    ] {
+        if joined.ends_with(needle) {
+            return Some(kind);
+        }
+    }
+    None
+}
+
+/// `.spawn("worker", id)` / `.spawn_background("qa-prep", id)` — an `AgentSpawner` call
+/// recognised by shape (string-literal agent type first) rather than by receiver name.
+pub(super) fn is_agent_spawn_method(
+    method: &str,
+    args: &syn::punctuated::Punctuated<syn::Expr, syn::token::Comma>,
+) -> bool {
+    if !matches!(method, "spawn" | "spawn_background") {
+        return false;
+    }
+    matches!(
+        args.first(),
+        Some(syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Str(_),
+            ..
+        }))
+    )
+}
+
+/// Runtime-handle spawn methods whose first argument is executable code. Requiring a closure
+/// or async block makes this mutually exclusive with the string-literal-first AgentSpawner
+/// shape.
+pub(super) fn is_method_background_spawn(
+    method: &str,
+    args: &syn::punctuated::Punctuated<syn::Expr, syn::token::Comma>,
+) -> bool {
+    matches!(method, "spawn" | "spawn_blocking")
+        && matches!(
+            args.first(),
+            Some(syn::Expr::Closure(_) | syn::Expr::Async(_))
+        )
+}
+
+fn is_method_listener(
+    method: &str,
+    args: &syn::punctuated::Punctuated<syn::Expr, syn::token::Comma>,
+) -> bool {
+    method == "listen" && args.iter().any(|arg| matches!(arg, syn::Expr::Closure(_)))
+}
+
+fn internal_status_targets(
+    args: &syn::punctuated::Punctuated<syn::Expr, syn::token::Comma>,
+) -> BTreeSet<String> {
+    let mut scan = StatusScan::default();
+    for arg in args {
+        scan.visit_expr(arg);
+    }
+    scan.targets
+}
+
+fn transition_targets(
+    name: &str,
+    args: &syn::punctuated::Punctuated<syn::Expr, syn::token::Comma>,
+) -> BTreeSet<String> {
+    let mut targets = internal_status_targets(args);
+    if name == "transition_to_stopped_with_context" {
+        targets.insert("Stopped".to_string());
+    }
+    targets
+}
+
+#[derive(Default)]
+struct StatusScan {
+    targets: BTreeSet<String>,
+}
+
+impl<'ast> Visit<'ast> for StatusScan {
+    fn visit_path(&mut self, path: &'ast syn::Path) {
+        let segments: Vec<String> = path
+            .segments
+            .iter()
+            .map(|segment| segment.ident.to_string())
+            .collect();
+        if let Some(index) = segments.iter().position(|s| s == "InternalStatus") {
+            if let Some(variant) = segments.get(index + 1) {
+                self.targets.insert(variant.clone());
+            }
+        }
+        syn::visit::visit_path(self, path);
+    }
+}
+
+/// Collects callees and sink hits from an arbitrary expression (used for loop-root bodies).
+#[derive(Default)]
+struct BodyScan {
+    callees: BTreeSet<String>,
+    sink_hits: BTreeSet<SinkHit>,
+    identity_tokens: BTreeSet<String>,
+}
+
+impl BodyScan {
+    fn note(
+        &mut self,
+        kind: &str,
+        name: &str,
+        args: &syn::punctuated::Punctuated<syn::Expr, syn::token::Comma>,
+    ) {
+        self.callees
+            .insert(pending_call(kind, name, args.len(), ""));
+        if all_cut_sinks().contains(name) {
+            self.sink_hits.insert(SinkHit {
+                sink: name.to_string(),
+                targets: transition_targets(name, args),
+            });
+        }
+    }
+}
+
+impl<'ast> Visit<'ast> for BodyScan {
+    fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
+        if let syn::Expr::Path(path) = node.func.as_ref() {
+            if let Some(name) = path_last_segment(&path.path) {
+                self.note("call", &name, &node.args);
+            }
+        }
+        syn::visit::visit_expr_call(self, node);
+    }
+
+    fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
+        let name = node.method.to_string();
+        self.note("method", &name, &node.args);
+        if is_agent_spawn_method(&name, &node.args) {
+            self.sink_hits.insert(SinkHit {
+                sink: AGENT_SPAWN_SINK.to_string(),
+                targets: BTreeSet::new(),
+            });
+        }
+        syn::visit::visit_expr_method_call(self, node);
+    }
+
+    fn visit_path(&mut self, node: &'ast syn::Path) {
+        self.identity_tokens.insert(path_string(node));
+        syn::visit::visit_path(self, node);
+    }
+
+    fn visit_lit_str(&mut self, node: &'ast syn::LitStr) {
+        self.identity_tokens.insert(node.value());
+        syn::visit::visit_lit_str(self, node);
+    }
+}
+
+impl<'ast, 'a> Visit<'ast> for FileVisitor<'a> {
+    fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
+        if has_cfg_test(&node.attrs) {
+            return;
+        }
+        syn::visit::visit_item_mod(self, node);
+    }
+
+    fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
+        if has_cfg_test(&node.attrs) {
+            return;
+        }
+        self.enter_fn(node.sig.ident.to_string(), node.sig.inputs.len(), false);
+        syn::visit::visit_block(self, &node.block);
+        self.leave_fn();
+    }
+
+    fn visit_item_impl(&mut self, node: &'ast syn::ItemImpl) {
+        let owner = match node.self_ty.as_ref() {
+            syn::Type::Path(path) => path_string(&path.path),
+            _ => "<impl>".to_string(),
+        };
+        self.impl_stack.push(owner);
+        syn::visit::visit_item_impl(self, node);
+        self.impl_stack.pop();
+    }
+
+    fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
+        if has_cfg_test(&node.attrs) {
+            return;
+        }
+        let arity = node
+            .sig
+            .inputs
+            .iter()
+            .filter(|input| !matches!(input, syn::FnArg::Receiver(_)))
+            .count();
+        self.enter_fn(node.sig.ident.to_string(), arity, true);
+        syn::visit::visit_block(self, &node.block);
+        self.leave_fn();
+    }
+
+    fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
+        if let syn::Expr::Path(path) = node.func.as_ref() {
+            if let Some(kind) = is_background_spawn_path(&path.path) {
+                self.record_loop_root(kind, &node.args);
+            }
+            if let Some(name) = path_last_segment(&path.path) {
+                let owner = path
+                    .path
+                    .segments
+                    .iter()
+                    .rev()
+                    .nth(1)
+                    .map(|segment| segment.ident.to_string())
+                    .unwrap_or_default();
+                self.record_callee(&pending_call("call", &name, node.args.len(), &owner));
+                self.record_token(path_string(&path.path));
+                if all_cut_sinks().contains(name.as_str()) {
+                    let targets = transition_targets(&name, &node.args);
+                    self.record_sink_hit(SinkHit {
+                        sink: name,
+                        targets,
+                    });
+                }
+            }
+        }
+        syn::visit::visit_expr_call(self, node);
+    }
+
+    fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
+        let name = node.method.to_string();
+        self.record_callee(&pending_call("method", &name, node.args.len(), ""));
+        self.record_token(name.clone());
+        if name == "listen_any" || name == "listen_global" {
+            self.record_loop_root("listen_any", &node.args);
+        } else if is_method_background_spawn(&name, &node.args) {
+            self.record_loop_root(&format!("method::{name}"), &node.args);
+        } else if is_method_listener(&name, &node.args) {
+            self.record_loop_root("listen", &node.args);
+        }
+        if all_cut_sinks().contains(name.as_str()) {
+            let targets = transition_targets(&name, &node.args);
+            self.record_sink_hit(SinkHit {
+                sink: name.clone(),
+                targets,
+            });
+        }
+        if is_agent_spawn_method(&name, &node.args) {
+            self.record_sink_hit(SinkHit {
+                sink: AGENT_SPAWN_SINK.to_string(),
+                targets: BTreeSet::new(),
+            });
+        }
+        syn::visit::visit_expr_method_call(self, node);
+    }
+
+    fn visit_path(&mut self, node: &'ast syn::Path) {
+        if node.segments.len() > 1 {
+            self.record_token(path_string(node));
+        } else if let Some(segment) = node.segments.first() {
+            self.record_token(segment.ident.to_string());
+        }
+        syn::visit::visit_path(self, node);
+    }
+
+    fn visit_member(&mut self, node: &'ast syn::Member) {
+        if let syn::Member::Named(ident) = node {
+            self.record_token(ident.to_string());
+        }
+        syn::visit::visit_member(self, node);
+    }
+
+    fn visit_lit_str(&mut self, node: &'ast syn::LitStr) {
+        self.record_token(node.value());
+        syn::visit::visit_lit_str(self, node);
+    }
+}
+
+fn has_cfg_test(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        attr.path().is_ident("cfg")
+            && attr
+                .parse_args::<syn::Meta>()
+                .map(|meta| meta.path().is_ident("test"))
+                .unwrap_or(false)
+    })
+}
+
+// ---------------------------------------------------------------------------------------
+// Source loading
+// ---------------------------------------------------------------------------------------
+
+/// Crate root, baked at compile time by cargo — never read from the process environment, so
+/// no runtime-tainted value reaches a filesystem sink here.
+pub fn crate_src_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("src")
+}
+
+pub fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("src-tauri always has a parent")
+        .to_path_buf()
+}
+
+/// Fail-closed floor on the size of the loaded production graph.
+///
+/// The detectors are only a floor if the graph they run over is the whole program. A load that
+/// silently returns a fraction of the tree would collapse every downstream classification to
+/// "nothing is authority-bearing" and could be baked into the checked-in manifest through
+/// `RALPHX_REGENERATE_REMOTE_MANIFEST`. The app crate has ~1060 production files and the linked
+/// workspace crates add ~250; anything under this floor means the walk lost the tree, not that
+/// the tree shrank.
+pub const MIN_PRODUCTION_SOURCE_FILES: usize = 1150;
+
+/// Fail-closed floor on each linked workspace crate's contribution.
+///
+/// The whole-graph floor is dominated by the app crate, so a workspace crate dropping out
+/// entirely would not move it. That is precisely the failure this walk exists to close, so each
+/// crate is floored on its own.
+pub const MIN_WORKSPACE_CRATE_SOURCE_FILES: usize = 1;
+
+/// The workspace crates whose definitions belong in the authority graph.
+///
+/// Membership is decided per crate by one question: can a Tauri command closure reach this
+/// crate's definitions? If yes, its absence lets a same-name call fall through to the
+/// all-same-name fallback and mis-resolve — the batch-7 fault.
+///
+/// | crate | linked by the app crate | verdict |
+/// |---|---|---|
+/// | `ralphx-domain` | yes (`ralphx-domain = { path = ... }`) | INCLUDED — entities and repository traits are called directly from application services; its invisibility is what mis-resolved `reopen_issue` |
+/// | `ralphx-events` | yes | INCLUDED — the event bus/sink methods (`emit`, `publish`, `subscribe`) are exactly the generic names the fallback mis-binds |
+/// | `ralphx-remote-protocol` | yes | INCLUDED — small, and its message constructors are reachable from remote command paths |
+/// | `ralphx-workflow-runner` | NO — a workspace member, not a dependency | EXCLUDED — a standalone `main.rs` binary; no command closure can reach it, so admitting its definitions would only add spurious dispatch candidates |
+///
+/// Paths are returned relative to `src-tauri/`, so walked files carry a `crates/<name>/src/`
+/// prefix that cannot collide with the app crate's `commands/` or `domain/` prefixes used by
+/// [`is_architecture_leaf`] and the command-fusion rule.
+///
+/// These crates are NOT added to [`is_architecture_leaf`], and that was MEASURED rather than
+/// assumed. Leafing `crates/ralphx-domain/src/` — the symmetric treatment of the app crate's own
+/// `domain/` — was tried and produced a byte-identical `remote-commands.json` and an identical
+/// set of detector verdict shifts. The fix works through newly visible DEFINITIONS correcting
+/// dispatch, not through traversing domain bodies, so the leaf rule would have been dead policy
+/// carrying a real cost: it also suppresses any authority a domain body genuinely acquires
+/// later. Walking them fully is strictly more information at no observed precision cost.
+pub const LINKED_WORKSPACE_CRATES: &[&str] =
+    &["ralphx-domain", "ralphx-events", "ralphx-remote-protocol"];
+
+/// Reads the leaf command names out of `commands/registry.rs`.
+///
+/// The Tauri registry is the census: the ledger is exhaustive over exactly this list.
+pub fn registered_command_names() -> Vec<String> {
+    let source = std::fs::read_to_string(crate_src_root().join("commands/registry.rs"))
+        .expect("commands/registry.rs must be readable");
+    parse_registered_commands(&source)
+        .into_iter()
+        .map(|(command, _)| command)
+        .collect()
+}
+
+pub fn parse_registered_commands(source: &str) -> Vec<(String, String)> {
+    const MARKER: &str = "tauri::generate_handler![";
+    let start = source
+        .find(MARKER)
+        .expect("registry.rs must contain generate_handler!");
+    let body = &source[start + MARKER.len()..];
+    let uncommented = body
+        .lines()
+        .map(|line| line.split_once("//").map_or(line, |(code, _)| code))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut bracket_depth = 1usize;
+    let end = uncommented
+        .char_indices()
+        .find_map(|(index, ch)| match ch {
+            '[' => {
+                bracket_depth += 1;
+                None
+            }
+            ']' => {
+                bracket_depth -= 1;
+                (bracket_depth == 0).then_some(index)
+            }
+            _ => None,
+        })
+        .expect("generate_handler! body must have a closing bracket");
+
+    uncommented[..end]
+        .split(',')
+        .filter_map(|raw_segment| {
+            let mut segment = raw_segment.trim();
+            while segment.starts_with("#[") {
+                let attribute_end = segment.find(']').unwrap_or_else(|| {
+                    panic!("malformed command census segment `{segment}`: unterminated attribute")
+                });
+                segment = segment[attribute_end + 1..].trim();
+            }
+            if segment.is_empty() {
+                return None;
+            }
+            let parts = segment.split("::").collect::<Vec<_>>();
+            let valid_ident = |part: &&str| {
+                let mut chars = part.chars();
+                chars
+                    .next()
+                    .is_some_and(|first| first == '_' || first.is_ascii_alphabetic())
+                    && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+            };
+            if parts.is_empty() || !parts.iter().all(valid_ident) {
+                panic!("malformed command census segment `{segment}`");
+            }
+            let (command, module) = match parts.as_slice() {
+                [command] => ((*command).to_string(), "root".to_string()),
+                ["commands", module, .., command] => {
+                    ((*command).to_string(), (*module).to_string())
+                }
+                _ => panic!("malformed command census segment `{segment}`"),
+            };
+            Some((command, module))
+        })
+        .collect()
+}

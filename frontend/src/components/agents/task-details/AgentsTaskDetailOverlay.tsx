@@ -24,6 +24,7 @@ import { StatusDropdown } from "./StatusDropdown";
 import { TaskHistoryDropdown } from "./TaskHistoryDropdown";
 import { useQuery } from "@tanstack/react-query";
 import { useTaskMutation } from "@/hooks/useTaskMutation";
+import { useAgentGate } from "@/hooks/useAgentGate";
 import { useUiStore } from "@/stores/uiStore";
 import { useTaskStore } from "@/stores/taskStore";
 import { useTasks, taskKeys } from "@/hooks/useTasks";
@@ -65,7 +66,10 @@ const PRIORITY_COLORS: Record<number, { bg: string; text: string }> = {
   4: { bg: "var(--bg-hover)", text: "var(--text-secondary)" },
 };
 
-const DEFAULT_PRIORITY_COLOR = { bg: "var(--bg-hover)", text: "var(--text-secondary)" };
+const DEFAULT_PRIORITY_COLOR = {
+  bg: "var(--bg-hover)",
+  text: "var(--text-secondary)",
+};
 
 // ============================================================================
 // Status Badge Configuration (Tahoe HSL palette)
@@ -269,8 +273,10 @@ function StatusBadge({ status }: { status: InternalStatus }) {
   );
 }
 
-interface HeaderIconButtonProps
-  extends Omit<React.ComponentProps<typeof Button>, "children"> {
+interface HeaderIconButtonProps extends Omit<
+  React.ComponentProps<typeof Button>,
+  "children"
+> {
   tooltip: string;
   children: React.ReactNode;
 }
@@ -318,7 +324,7 @@ export interface AgentsTaskDetailOverlayProps {
   /** Focus the host Agents chat on a task runtime transcript. */
   onFocusTaskRuntime?: (
     taskId: string,
-    contextType: TaskRuntimeHistoryContextType
+    contextType: TaskRuntimeHistoryContextType,
   ) => void;
   readOnly?: boolean;
 }
@@ -340,7 +346,10 @@ export function AgentsTaskDetailOverlay({
   const setHistoryState = useUiStore((s) => s.setTaskHistoryState);
 
   // Debug logging for history state
-  logger.debug('[AgentsTaskDetailOverlay] History state from store:', historyState);
+  logger.debug(
+    "[AgentsTaskDetailOverlay] History state from store:",
+    historyState,
+  );
 
   // Ideation hooks
   const addSession = useIdeationStore((state) => state.addSession);
@@ -349,7 +358,7 @@ export function AgentsTaskDetailOverlay({
 
   // Try to get task from store first, fall back to fetching from API
   const taskFromStore = useTaskStore((state) =>
-    selectedTaskId ? state.tasks[selectedTaskId] : undefined
+    selectedTaskId ? state.tasks[selectedTaskId] : undefined,
   );
 
   // Fetch all tasks to ensure we have the latest data
@@ -365,7 +374,8 @@ export function AgentsTaskDetailOverlay({
     enabled: Boolean(selectedTaskId) && !taskFromStore && !taskFromList,
   });
 
-  const task: Task | undefined = taskFromStore || taskFromList || taskFromDetail;
+  const task: Task | undefined =
+    taskFromStore || taskFromList || taskFromDetail;
 
   const [isEditing, setIsEditing] = useState(false);
   const [showAuditTrail, setShowAuditTrail] = useState(false);
@@ -389,12 +399,14 @@ export function AgentsTaskDetailOverlay({
         onFocusTaskRuntime?.(selectedTaskId, state.contextType);
       }
     },
-    [onFocusTaskRuntime, selectedTaskId, setHistoryState]
+    [onFocusTaskRuntime, selectedTaskId, setHistoryState],
   );
 
   // Derived values for history mode (historyState from store)
   const isHistoryMode = historyState !== null;
-  const viewStatus = (historyState?.status as InternalStatus | undefined) ?? task?.internalStatus;
+  const viewStatus =
+    (historyState?.status as InternalStatus | undefined) ??
+    task?.internalStatus;
   const historyContextLabel =
     historyState?.contextType === "task_execution"
       ? "Execution"
@@ -404,12 +416,12 @@ export function AgentsTaskDetailOverlay({
           ? "Merge"
           : historyState?.contextType === "branch_update"
             ? "Branch Update"
-          : null;
+            : null;
   const historyStageLabel =
     historyContextLabel && historyState?.attemptIndex
       ? `${historyContextLabel} attempt ${historyState.attemptIndex}`
       : historyState
-        ? STATUS_CONFIG[historyState.status]?.label ?? historyState.status
+        ? (STATUS_CONFIG[historyState.status]?.label ?? historyState.status)
         : "";
   const historyHasConversation =
     historyState?.hasConversation ?? Boolean(historyState?.conversationId);
@@ -429,9 +441,12 @@ export function AgentsTaskDetailOverlay({
     isArchiving,
     isRestoring,
   } = useTaskMutation(projectId);
+  const archiveGate = useAgentGate("taskArchive");
+  const restoreGate = useAgentGate("taskRestore");
 
   // Confirmation dialog for archive/restore
-  const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
+  const { confirm, confirmationDialogProps, ConfirmationDialog } =
+    useConfirmation();
 
   // Close overlay on Escape key (exit edit mode first, then close overlay)
   useEffect(() => {
@@ -471,11 +486,13 @@ export function AgentsTaskDetailOverlay({
         handleClose();
       }
     },
-    [handleClose]
+    [handleClose],
   );
 
   // Handle edit save
-  const handleSave = (updateData: Parameters<typeof updateMutation.mutate>[0]['input']) => {
+  const handleSave = (
+    updateData: Parameters<typeof updateMutation.mutate>[0]["input"],
+  ) => {
     if (!task || readOnly) return;
     updateMutation.mutate(
       { taskId: task.id, input: updateData },
@@ -483,7 +500,7 @@ export function AgentsTaskDetailOverlay({
         onSuccess: () => {
           setIsEditing(false);
         },
-      }
+      },
     );
   };
 
@@ -495,7 +512,7 @@ export function AgentsTaskDetailOverlay({
 
   // Handle archive
   const handleArchive = async () => {
-    if (!task) return;
+    if (!task || archiveGate.gated) return;
     const confirmed = await confirm({
       title: "Archive this task?",
       description: "The task will be moved to the archive.",
@@ -511,7 +528,7 @@ export function AgentsTaskDetailOverlay({
 
   // Handle restore
   const handleRestore = async () => {
-    if (!task) return;
+    if (!task || restoreGate.gated) return;
     const confirmed = await confirm({
       title: "Restore this task?",
       description: "The task will be restored to the backlog.",
@@ -550,7 +567,10 @@ export function AgentsTaskDetailOverlay({
   // Don't render if no task is selected
   if (!selectedTaskId || !task) {
     if (selectedTaskId && !task) {
-      console.warn('[AgentsTaskDetailOverlay] Task not found for selectedTaskId:', selectedTaskId);
+      console.warn(
+        "[AgentsTaskDetailOverlay] Task not found for selectedTaskId:",
+        selectedTaskId,
+      );
     }
     return null;
   }
@@ -571,8 +591,11 @@ export function AgentsTaskDetailOverlay({
 
   const isArchived = !!task.archivedAt;
   const isManagedPlanMerge = task.category === "plan_merge";
-  const isSystemControlled = isManagedPlanMerge || systemControlledStatuses.includes(task.internalStatus);
-  const canEdit = !readOnly && !isHistoryMode && !isArchived && !isSystemControlled;
+  const isSystemControlled =
+    isManagedPlanMerge ||
+    systemControlledStatuses.includes(task.internalStatus);
+  const canEdit =
+    !readOnly && !isHistoryMode && !isArchived && !isSystemControlled;
   const categoryLabel = getTaskCategoryLabel(task.category);
   // "Backlog" is the equivalent of "draft" - tasks that haven't started execution yet
   const isBacklog = task.internalStatus === "backlog";
@@ -628,8 +651,16 @@ export function AgentsTaskDetailOverlay({
                   border: "1px solid var(--accent-border)",
                 }}
               >
-                <Archive className="w-3.5 h-3.5" style={{ color: "var(--accent-primary)" }} />
-                <span className="text-[0.75rem] font-medium" style={{ color: "var(--accent-primary)" }}>Archived</span>
+                <Archive
+                  className="w-3.5 h-3.5"
+                  style={{ color: "var(--accent-primary)" }}
+                />
+                <span
+                  className="text-[0.75rem] font-medium"
+                  style={{ color: "var(--accent-primary)" }}
+                >
+                  Archived
+                </span>
               </div>
             )}
             <div className="pr-28">
@@ -703,9 +734,18 @@ export function AgentsTaskDetailOverlay({
                     size="icon-sm"
                     onClick={handleArchive}
                     disabled={isArchiving}
+                    aria-disabled={archiveGate.gated || undefined}
+                    data-disabled-explained={
+                      archiveGate.gated ? "true" : undefined
+                    }
+                    className={archiveGate.gated ? "opacity-50" : undefined}
                     data-testid="task-overlay-archive-button"
                     aria-label="Archive task"
-                    tooltip="Archive task"
+                    tooltip={
+                      archiveGate.gated
+                        ? (archiveGate.reason ?? "Archive task unavailable")
+                        : "Archive task"
+                    }
                   >
                     {isArchiving ? (
                       <Loader2 className="w-4 h-4 animate-spin" />
@@ -721,9 +761,18 @@ export function AgentsTaskDetailOverlay({
                     size="icon-sm"
                     onClick={handleRestore}
                     disabled={isRestoring}
+                    aria-disabled={restoreGate.gated || undefined}
+                    data-disabled-explained={
+                      restoreGate.gated ? "true" : undefined
+                    }
+                    className={restoreGate.gated ? "opacity-50" : undefined}
                     data-testid="task-overlay-restore-button"
                     aria-label="Restore task"
-                    tooltip="Restore task"
+                    tooltip={
+                      restoreGate.gated
+                        ? (restoreGate.reason ?? "Restore task unavailable")
+                        : "Restore task"
+                    }
                   >
                     {isRestoring ? (
                       <Loader2 className="w-4 h-4 animate-spin" />
@@ -764,14 +813,26 @@ export function AgentsTaskDetailOverlay({
               data-testid="history-mode-banner"
               className="px-4 py-1.5 flex items-center gap-2 shrink-0"
             >
-              <History className="w-3 h-3" style={{ color: "var(--text-muted)" }} />
-              <span className="text-[0.6875rem]" style={{ color: "var(--text-muted)" }}>
+              <History
+                className="w-3 h-3"
+                style={{ color: "var(--text-muted)" }}
+              />
+              <span
+                className="text-[0.6875rem]"
+                style={{ color: "var(--text-muted)" }}
+              >
                 Viewing: {historyStageLabel}
               </span>
-              <span className="text-[0.625rem]" style={{ color: "var(--text-muted)" }}>
+              <span
+                className="text-[0.625rem]"
+                style={{ color: "var(--text-muted)" }}
+              >
                 {new Date(historyState.timestamp).toLocaleString()}
               </span>
-              <span className="text-[0.625rem]" style={{ color: "var(--text-muted)" }}>
+              <span
+                className="text-[0.625rem]"
+                style={{ color: "var(--text-muted)" }}
+              >
                 {historyTranscriptMessage}
               </span>
             </div>
@@ -808,7 +869,9 @@ export function AgentsTaskDetailOverlay({
                     showHistory={true}
                     useViewRegistry={true}
                     readOnly={readOnly}
-                    {...(isHistoryMode && viewStatus ? { viewAsStatus: viewStatus } : {})}
+                    {...(isHistoryMode && viewStatus
+                      ? { viewAsStatus: viewStatus }
+                      : {})}
                     {...(isHistoryMode && historyState?.timestamp
                       ? { viewTimestamp: historyState.timestamp }
                       : {})}
@@ -826,9 +889,7 @@ export function AgentsTaskDetailOverlay({
 
           {/* Execution Control Bar - current mode only */}
           {footer && !readOnly && !isHistoryMode && (
-            <div className="flex-shrink-0">
-              {footer}
-            </div>
+            <div className="flex-shrink-0">{footer}</div>
           )}
         </div>
       </div>

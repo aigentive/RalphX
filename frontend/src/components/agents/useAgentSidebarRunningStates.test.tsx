@@ -2,6 +2,10 @@ import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useChatStore } from "@/stores/chatStore";
+import {
+  LOCAL_ENVIRONMENT_ID,
+  useEnvironmentStore,
+} from "@/stores/environmentStore";
 
 import {
   getAgentConversationStoreKey,
@@ -9,12 +13,17 @@ import {
 } from "./agentConversations";
 import { useAgentSidebarRunningStates } from "./useAgentSidebarRunningStates";
 
-const { mockGetAgentConversationRuntimeStatuses } = vi.hoisted(() => ({
+const {
+  mockGetAgentConversationRuntimeIndex,
+  mockGetAgentConversationRuntimeStatuses,
+} = vi.hoisted(() => ({
+  mockGetAgentConversationRuntimeIndex: vi.fn(),
   mockGetAgentConversationRuntimeStatuses: vi.fn(),
 }));
 
 vi.mock("@/api/chat", () => ({
   chatApi: {
+    getAgentConversationRuntimeIndex: mockGetAgentConversationRuntimeIndex,
     getAgentConversationRuntimeStatuses: mockGetAgentConversationRuntimeStatuses,
   },
 }));
@@ -47,11 +56,22 @@ describe("useAgentSidebarRunningStates", () => {
     vi.useFakeTimers();
     mockGetAgentConversationRuntimeStatuses.mockReset();
     mockGetAgentConversationRuntimeStatuses.mockResolvedValue({});
+    mockGetAgentConversationRuntimeIndex.mockReset();
+    mockGetAgentConversationRuntimeIndex.mockImplementation(async (id: string) => ({
+      conversationId: id,
+      rows: [],
+    }));
     useChatStore.setState({
       activeConversationIds: {},
       activeAgentRunIds: {},
       agentStatus: {},
       agentActivityLabels: {},
+    });
+    useEnvironmentStore.setState({
+      activeEnvironmentId: LOCAL_ENVIRONMENT_ID,
+      environments: [
+        { id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" },
+      ],
     });
   });
 
@@ -277,6 +297,64 @@ describe("useAgentSidebarRunningStates", () => {
     });
 
     expect(mockGetAgentConversationRuntimeStatuses).not.toHaveBeenCalled();
+  });
+
+  it("reconciles a remote sidebar mounted after connect exactly once", async () => {
+    useEnvironmentStore.setState({
+      activeEnvironmentId: "env-remote",
+      environments: [{ id: "env-remote", name: "Remote", kind: "remote" }],
+    });
+
+    renderHook(() =>
+      useAgentSidebarRunningStates([conversation("conv-remote")], true),
+    );
+
+    await act(async () => {
+      vi.advanceTimersByTime(20_000);
+    });
+
+    expect(mockGetAgentConversationRuntimeStatuses).not.toHaveBeenCalled();
+    expect(mockGetAgentConversationRuntimeIndex).toHaveBeenCalledTimes(1);
+    expect(mockGetAgentConversationRuntimeIndex).toHaveBeenCalledWith(
+      "conv-remote",
+    );
+  });
+
+  it("deduplicates an unchanged remote set and reconciles a grown set once", async () => {
+    useEnvironmentStore.setState({
+      activeEnvironmentId: "env-remote",
+      environments: [{ id: "env-remote", name: "Remote", kind: "remote" }],
+    });
+    const first = conversation("conv-first");
+    const second = conversation("conv-second");
+    const { rerender } = renderHook(
+      ({ conversations }) =>
+        useAgentSidebarRunningStates(conversations, true),
+      { initialProps: { conversations: [first] } },
+    );
+    await act(async () => {});
+    expect(mockGetAgentConversationRuntimeIndex).toHaveBeenCalledTimes(1);
+
+    rerender({ conversations: [first] });
+    await act(async () => {});
+    expect(mockGetAgentConversationRuntimeIndex).toHaveBeenCalledTimes(1);
+
+    rerender({ conversations: [first, second] });
+    await act(async () => {});
+    expect(mockGetAgentConversationRuntimeIndex).toHaveBeenCalledTimes(3);
+  });
+
+  it("keeps invoking the bulk liveness command under local", async () => {
+    renderHook(() =>
+      useAgentSidebarRunningStates([conversation("conv-local")], true),
+    );
+
+    await act(async () => {
+      vi.advanceTimersByTime(20_000);
+    });
+
+    expect(mockGetAgentConversationRuntimeStatuses).toHaveBeenCalled();
+    expect(mockGetAgentConversationRuntimeIndex).not.toHaveBeenCalled();
   });
 
   it("deduplicates project conversations and ignores non-project conversations", async () => {

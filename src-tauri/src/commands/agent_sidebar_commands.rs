@@ -9,6 +9,7 @@ use crate::application::agent_workspace_publish_recovery::is_blocked_and_not_aut
 use crate::application::AppState;
 use crate::commands::unified_chat_commands::{
     agent_conversation_response_for_state, agent_workspace_response_with_pr_supervision_for_state,
+    agent_workspace_response_without_repair_recovery_for_state,
     AgentConversationResponse, AgentConversationWorkspaceResponse,
 };
 use crate::commands::ExecutionState;
@@ -255,6 +256,86 @@ pub async fn list_agent_sidebar_conversations(
     .await
 }
 
+/// Hydrate every requested project's workspace responses through the FULL hydrator, which — by
+/// design — schedules host-side PR-supervision recovery as a side effect of a workspace load.
+/// This is the LOCAL/host path: a local inbox load is allowed to nudge recovery.
+///
+/// The remote facade must NOT do this; see [`hydrate_sidebar_workspaces_read_only`]. The two
+/// hydrators are named (never passed as a function pointer) so the authority call graph can
+/// PROVE which one each entry point reaches — a pointer would collapse both to the same
+/// token-only, edge-free node and the detector could no longer distinguish them. The local
+/// wrapper reaches `agent_workspace_response_for_state`, which arms and resolves the git CLI
+/// through the recovery scheduler; the remote wrapper reaches only the recovery-free hydrator.
+async fn hydrate_sidebar_workspaces_with_recovery(
+    state: &AppState,
+    execution_state: &Arc<ExecutionState>,
+    project_ids: &[String],
+) -> Result<HashMap<ChatConversationId, AgentConversationWorkspaceResponse>, String> {
+    let mut workspace_responses = HashMap::new();
+    for project_id_string in normalize_project_ids(project_ids.to_vec()) {
+        let project_id = ProjectId::from_string(project_id_string);
+        let workspaces = state
+            .agent_conversation_workspace_repo
+            .get_by_project_id(&project_id)
+            .await
+            .map_err(|e| e.to_string())?;
+        for workspace in workspaces {
+            let conversation_id = workspace.conversation_id;
+            // Sidebar rows need persisted publication metadata, not active-conversation
+            // recovery, repair-spend, or mode-lock hydration. Plan-linked workspaces keep
+            // the richer projection because their publication state is owned by PlanBranch.
+            let response = if workspace.linked_plan_branch_id.is_some() {
+                agent_workspace_response_with_pr_supervision_for_state(
+                    state,
+                    execution_state,
+                    workspace,
+                )
+                .await?
+            } else {
+                AgentConversationWorkspaceResponse::from(workspace)
+            };
+            workspace_responses.insert(conversation_id, response);
+        }
+    }
+    Ok(workspace_responses)
+}
+
+/// Recovery-free twin of [`hydrate_sidebar_workspaces_with_recovery`] for the remote facade.
+///
+/// Delegates to `agent_workspace_response_without_repair_recovery_for_state`, which returns the
+/// SAME persisted workspace projection but does NOT schedule PR-supervision recovery. A paired
+/// device reading its Agents inbox must not trigger host-owned background recovery work, and —
+/// because the recovery scheduler is what reaches the git CLI resolver — routing the remote
+/// read through this hydrator is also what keeps the remote closure clear of detector (c)'s
+/// process-launch floor. Proven by
+/// `remote_server::capability_ledger_tests::remote_agent_sidebar_read_carries_no_spawn_authority`.
+async fn hydrate_sidebar_workspaces_read_only(
+    state: &AppState,
+    project_ids: &[String],
+) -> Result<HashMap<ChatConversationId, AgentConversationWorkspaceResponse>, String> {
+    let mut workspace_responses = HashMap::new();
+    for project_id_string in normalize_project_ids(project_ids.to_vec()) {
+        let project_id = ProjectId::from_string(project_id_string);
+        let workspaces = state
+            .agent_conversation_workspace_repo
+            .get_by_project_id(&project_id)
+            .await
+            .map_err(|e| e.to_string())?;
+        for workspace in workspaces {
+            let conversation_id = workspace.conversation_id;
+            // Same plan-linked rule as the local twin, resolved through the recovery-free
+            // hydrator so the remote closure stays clear of the git CLI resolver.
+            let response = if workspace.linked_plan_branch_id.is_some() {
+                agent_workspace_response_without_repair_recovery_for_state(state, workspace).await?
+            } else {
+                AgentConversationWorkspaceResponse::from(workspace)
+            };
+            workspace_responses.insert(conversation_id, response);
+        }
+    }
+    Ok(workspace_responses)
+}
+
 #[doc(hidden)]
 pub async fn list_agent_sidebar_conversations_for_app_state(
     input: AgentSidebarConversationsInput,
@@ -268,6 +349,36 @@ async fn list_agent_sidebar_conversations_for_app_state_impl(
     input: AgentSidebarConversationsInput,
     state: &AppState,
     execution_state: &Arc<ExecutionState>,
+) -> Result<AgentSidebarConversationGroupsResponse, String> {
+    let workspace_responses =
+        hydrate_sidebar_workspaces_with_recovery(state, execution_state, &input.project_ids)
+            .await?;
+    list_agent_sidebar_conversation_groups_from_hydrated(input, state, workspace_responses).await
+}
+
+/// Spawn-free `_for_app_state` seam for the remote facade: identical grouping, recovery-free
+/// workspace hydration. The facade twin
+/// (`commands::remote_transcript_commands::list_remote_agent_sidebar_conversations`) blanks
+/// `worktree_path` on top of this; the grouping logic itself is shared verbatim with the local
+/// path via [`list_agent_sidebar_conversation_groups_from_hydrated`], so the two transports
+/// cannot drift.
+pub(crate) async fn list_agent_sidebar_conversations_read_only_for_app_state(
+    input: AgentSidebarConversationsInput,
+    state: &AppState,
+) -> Result<AgentSidebarConversationGroupsResponse, String> {
+    let workspace_responses =
+        hydrate_sidebar_workspaces_read_only(state, &input.project_ids).await?;
+    list_agent_sidebar_conversation_groups_from_hydrated(input, state, workspace_responses).await
+}
+
+/// Shared grouping over PRE-HYDRATED workspace responses. Holds no hydrator call of its own, so
+/// its authority profile is inherited entirely from whichever caller built `workspace_responses`
+/// — the seam that lets the local path arm and the remote path stay clean without forking this
+/// grouping assembler.
+async fn list_agent_sidebar_conversation_groups_from_hydrated(
+    input: AgentSidebarConversationsInput,
+    state: &AppState,
+    mut workspace_responses: HashMap<ChatConversationId, AgentConversationWorkspaceResponse>,
 ) -> Result<AgentSidebarConversationGroupsResponse, String> {
     let group_by = SidebarGroupBy::parse(input.group_by.as_deref())?;
     let row_sort = SidebarRowSort::parse(input.sort.as_deref())?;
@@ -328,23 +439,6 @@ async fn list_agent_sidebar_conversations_for_app_state_impl(
             }
         }
 
-        let workspaces = state
-            .agent_conversation_workspace_repo
-            .get_by_project_id(&project_id)
-            .await
-            .map_err(|e| e.to_string())?;
-        let mut workspace_by_conversation_id = HashMap::new();
-        for workspace in workspaces {
-            let conversation_id = workspace.conversation_id;
-            let response = agent_workspace_response_with_pr_supervision_for_state(
-                state,
-                execution_state,
-                workspace,
-            )
-            .await?;
-            workspace_by_conversation_id.insert(conversation_id, response);
-        }
-
         let conversations = state
             .chat_conversation_repo
             .get_by_context_filtered(
@@ -356,7 +450,7 @@ async fn list_agent_sidebar_conversations_for_app_state_impl(
             .map_err(|e| e.to_string())?;
 
         for conversation in conversations {
-            let workspace = workspace_by_conversation_id.remove(&conversation.id);
+            let workspace = workspace_responses.remove(&conversation.id);
             if conversation.automation_run_id.is_some() {
                 continue;
             }

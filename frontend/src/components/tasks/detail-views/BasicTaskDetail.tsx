@@ -17,6 +17,8 @@ import { taskKeys } from "@/hooks/useTasks";
 import { executionKeys } from "@/hooks/useExecutionControl";
 import { api } from "@/lib/tauri";
 import { Loader2, Play, RotateCcw, Clock, AlertTriangle, ShieldAlert, X, GitBranch } from "lucide-react";
+import { useAgentGate } from "@/hooks/useAgentGate";
+import { AgentGateTooltip } from "@/components/remote/AgentGateTooltip";
 import { Button } from "@/components/ui/button";
 import {
   ResumeValidationDialog,
@@ -168,6 +170,7 @@ function StopHistorySection({ stopMetadata }: { stopMetadata: StopMetadata }) {
  * Displays attempt count and provides a "Stop Retrying" button.
  */
 function AutoRetryingSection({ task, attemptCount }: { task: Task; attemptCount: number }) {
+  const stopGate = useAgentGate("taskStop");
   const queryClient = useQueryClient();
 
   const stopRetryMutation = useMutation({
@@ -192,10 +195,10 @@ function AutoRetryingSection({ task, attemptCount }: { task: Task; attemptCount:
               Auto-retrying{attemptCount > 0 ? ` (attempt ${attemptCount})` : ""}
             </span>
           </div>
-          <Button
+          <AgentGateTooltip gated={stopGate.gated} reason={stopGate.reason}><Button
             data-testid="stop-retrying-button"
             onClick={() => stopRetryMutation.mutate()}
-            disabled={stopRetryMutation.isPending}
+            disabled={stopRetryMutation.isPending || stopGate.gated}
             className="h-8 px-3 gap-1.5 rounded-lg font-medium text-[0.75rem] transition-colors"
             style={{
               backgroundColor: "var(--status-error-muted)",
@@ -208,7 +211,7 @@ function AutoRetryingSection({ task, attemptCount }: { task: Task; attemptCount:
               <X className="w-3.5 h-3.5" />
             )}
             Stop Retrying
-          </Button>
+          </Button></AgentGateTooltip>
         </div>
         {stopRetryMutation.error && (
           <p className="mt-2 text-[0.75rem]" style={{ color: "var(--status-error)" }}>
@@ -225,12 +228,15 @@ function AutoRetryingSection({ task, attemptCount }: { task: Task; attemptCount:
  * For stopped tasks with stop metadata, shows enhanced confirmation dialog.
  */
 function ActionButtonsCard({ task }: { task: Task }) {
+  const restartGate = useAgentGate("taskRestart");
+  const executionResumeGate = useAgentGate("executionResume");
   const queryClient = useQueryClient();
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const [showValidationDialog, setShowValidationDialog] = useState(false);
   const [isResuming, setIsResuming] = useState(false);
   const [restartNote, setRestartNote] = useState("");
   const [restartOutcome, setRestartOutcome] = useState<string | null>(null);
+  const [resumeError, setResumeError] = useState<string | null>(null);
   const taskId = task.id;
   const status = task.internalStatus;
 
@@ -292,12 +298,12 @@ function ActionButtonsCard({ task }: { task: Task }) {
         if (result.type === "Blocked") {
           throw new Error(result.warnings.map((warning) => warning.message).join(", "));
         }
-        await resumeExecutionIfStopped(task.projectId);
+        if (!executionResumeGate.gated) await resumeExecutionIfStopped(task.projectId);
         return result;
       } else {
         // Fallback to move-to-ready for other restartable statuses
         const result = await api.tasks.move(taskId, "ready", note);
-        await resumeExecutionIfStopped(task.projectId);
+        if (!executionResumeGate.gated) await resumeExecutionIfStopped(task.projectId);
         return result;
       }
     },
@@ -326,34 +332,42 @@ function ActionButtonsCard({ task }: { task: Task }) {
   const handleForceResume = useCallback(async () => {
     if (!stopMetadata?.stoppedFromStatus) return;
     setIsResuming(true);
+    setResumeError(null);
     try {
       const note = restartNote.trim() || undefined;
       await api.tasks.move(taskId, stopMetadata.stoppedFromStatus, note);
-      await resumeExecutionIfStopped(task.projectId);
+      if (!executionResumeGate.gated) await resumeExecutionIfStopped(task.projectId);
       setRestartNote("");
+      setShowValidationDialog(false);
+    } catch (error: unknown) {
+      setResumeError(error instanceof Error ? error.message : String(error));
       setShowValidationDialog(false);
     } finally {
       queryClient.invalidateQueries({ queryKey: taskKeys.all });
       queryClient.invalidateQueries({ queryKey: executionKeys.all });
       setIsResuming(false);
     }
-  }, [queryClient, restartNote, stopMetadata, task.projectId, taskId]);
+  }, [executionResumeGate.gated, queryClient, restartNote, stopMetadata, task.projectId, taskId]);
 
   // Handle go to ready from validation dialog
   const handleGoToReady = useCallback(async () => {
     setIsResuming(true);
+    setResumeError(null);
     try {
       const note = restartNote.trim() || undefined;
       await api.tasks.move(taskId, "ready", note);
-      await resumeExecutionIfStopped(task.projectId);
+      if (!executionResumeGate.gated) await resumeExecutionIfStopped(task.projectId);
       setRestartNote("");
+      setShowValidationDialog(false);
+    } catch (error: unknown) {
+      setResumeError(error instanceof Error ? error.message : String(error));
       setShowValidationDialog(false);
     } finally {
       queryClient.invalidateQueries({ queryKey: taskKeys.all });
       queryClient.invalidateQueries({ queryKey: executionKeys.all });
       setIsResuming(false);
     }
-  }, [queryClient, restartNote, task.projectId, taskId]);
+  }, [executionResumeGate.gated, queryClient, restartNote, task.projectId, taskId]);
 
   const handleAction = useCallback(async () => {
     // If task was stopped from a validated state, show validation dialog
@@ -423,10 +437,10 @@ function ActionButtonsCard({ task }: { task: Task }) {
         >
           Actions
         </span>
-        <Button
+        <AgentGateTooltip gated={restartGate.gated} reason={restartGate.reason}><Button
           data-testid={isReady ? "start-button" : "restart-button"}
           onClick={handleAction}
-          disabled={restartMutation.isPending || isResuming}
+          disabled={restartMutation.isPending || isResuming || restartGate.gated}
           className="h-9 px-4 gap-2 rounded-lg font-medium text-[0.8125rem] transition-colors"
           style={{
             backgroundColor: isReady ? "var(--accent-primary)" : "var(--status-info)",
@@ -441,7 +455,7 @@ function ActionButtonsCard({ task }: { task: Task }) {
             <RotateCcw className="w-4 h-4" />
           )}
           {isReady ? "Start" : status === "paused" ? "Resume" : "Restart"}
-        </Button>
+        </Button></AgentGateTooltip>
       </div>
 
       {/* Restart Note textarea (for restartable states only, not shown for start) */}
@@ -470,6 +484,11 @@ function ActionButtonsCard({ task }: { task: Task }) {
       {restartMutation.error && (
         <p className="mt-3 text-[0.75rem]" style={{ color: "var(--status-error)" }}>
           {restartMutation.error.message}
+        </p>
+      )}
+      {resumeError && (
+        <p className="mt-3 text-[0.75rem]" style={{ color: "var(--status-error)" }}>
+          {resumeError}
         </p>
       )}
       {restartOutcome && (
@@ -517,6 +536,8 @@ function UnblockWarningCard({
     },
   });
 
+  const agentGate = useAgentGate("taskUnblock");
+
   const handleUnblock = useCallback(async () => {
     const confirmed = await confirm({
       title: "Unblock despite failed dependency?",
@@ -537,10 +558,15 @@ function UnblockWarningCard({
         >
           Actions
         </span>
+        <AgentGateTooltip
+          gated={agentGate.gated}
+          reason={agentGate.reason}
+          testId="unblock-button-gate"
+        >
         <Button
           data-testid="unblock-button"
           onClick={handleUnblock}
-          disabled={unblockMutation.isPending}
+          disabled={unblockMutation.isPending || agentGate.gated}
           className="h-9 px-4 gap-2 rounded-lg font-medium text-[0.8125rem]"
           style={{
             backgroundColor: "var(--status-warning)",
@@ -554,6 +580,7 @@ function UnblockWarningCard({
           )}
           Unblock Anyway
         </Button>
+        </AgentGateTooltip>
       </div>
       {unblockMutation.error && (
         <p className="mt-3 text-[0.75rem]" style={{ color: "var(--status-error)" }}>
@@ -576,12 +603,14 @@ function FreshnessBlockedCard({
   task: Task;
   info: FreshnessBlockedInfo;
 }) {
+  const moveGate = useAgentGate("taskMove");
+  const executionResumeGate = useAgentGate("executionResume");
   const queryClient = useQueryClient();
 
   const resetMutation = useMutation({
     mutationFn: async () => {
       const result = await api.tasks.move(task.id, "ready");
-      await resumeExecutionIfStopped(task.projectId);
+      if (!executionResumeGate.gated) await resumeExecutionIfStopped(task.projectId);
       return result;
     },
     onSettled: () => {
@@ -663,10 +692,10 @@ function FreshnessBlockedCard({
           )}
 
           {/* Primary: Reset & Retry */}
-          <Button
+          <AgentGateTooltip gated={moveGate.gated} reason={moveGate.reason}><Button
             data-testid="freshness-reset-retry-button"
             onClick={() => resetMutation.mutate()}
-            disabled={resetMutation.isPending}
+            disabled={resetMutation.isPending || moveGate.gated}
             className="h-9 px-4 gap-2 rounded-lg font-medium text-[0.8125rem] shrink-0 transition-colors"
             style={{
               backgroundColor: "var(--status-warning)",
@@ -679,7 +708,7 @@ function FreshnessBlockedCard({
               <RotateCcw className="w-4 h-4" />
             )}
             Reset & Retry
-          </Button>
+          </Button></AgentGateTooltip>
         </div>
 
         {resetMutation.error && (

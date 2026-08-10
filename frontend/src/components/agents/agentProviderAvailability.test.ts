@@ -51,6 +51,45 @@ describe("agent provider availability", () => {
     ).toBe("Checking provider readiness.");
   });
 
+  it("never blocks sending on a remote client, where provider availability is unverifiable", () => {
+    // `harness-providers.ts` projects `available: false` remotely on purpose ("do NOT fake
+    // it true"), so every option arrives disabled with a host-only note. That note is
+    // informational: the host re-validates provider/model when it claims the intent. Feeding
+    // it into `sendDisabledReason` left the composer permanently dead on a paired device.
+    const providerOptions = buildAgentProviderAvailabilityOptions({
+      providers: [provider({ enabled: true, available: false })],
+      isReady: true,
+    });
+
+    expect(
+      getProviderAvailabilityMessage({
+        provider: "codex",
+        providerOptions,
+        isReady: true,
+        isRemoteEnvironment: true,
+      })
+    ).toBeNull();
+
+    // Still loading remotely must not block either — readiness is equally unverifiable.
+    expect(
+      getProviderAvailabilityMessage({
+        provider: "codex",
+        providerOptions,
+        isReady: false,
+        isRemoteEnvironment: true,
+      })
+    ).toBeNull();
+
+    // Local behaviour is unchanged: the same disabled option still reports its reason.
+    expect(
+      getProviderAvailabilityMessage({
+        provider: "codex",
+        providerOptions,
+        isReady: true,
+      })
+    ).not.toBeNull();
+  });
+
   it("reports missing CLI feature validation and all-disabled providers", () => {
     const providerOptions = buildAgentProviderAvailabilityOptions({
       providers: [

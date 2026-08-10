@@ -36,6 +36,8 @@ import { useTaskStateHistory } from "@/hooks/useReviews";
 import { useValidationEvents } from "@/hooks/useValidationEvents";
 import type { ReviewNoteResponse } from "@/lib/tauri";
 import { statusTint, withAlpha } from "@/lib/theme-colors";
+import { useAgentGate } from "@/hooks/useAgentGate";
+import { AgentGateTooltip } from "@/components/remote/AgentGateTooltip";
 
 interface ReviewingTaskDetailProps {
   task: Task;
@@ -249,6 +251,8 @@ export function ReviewingTaskDetail({
   const [actionError, setActionError] = useState<string | null>(null);
   const [showFeedback, setShowFeedback] = useState(false);
   const [feedback, setFeedback] = useState("");
+  const stopGate = useAgentGate("taskStop");
+  const requestChangesGate = useAgentGate("taskRequestChangesFromReviewing");
 
   const stopMutation = useMutation({
     mutationFn: async () => {
@@ -330,11 +334,11 @@ export function ReviewingTaskDetail({
                   </div>
                 )}
                 <div className="flex items-center gap-2">
-                  <button
+                  <AgentGateTooltip gated={stopGate.gated} reason={stopGate.reason}><button
                     type="button"
                     data-testid="stop-review-action"
                     onClick={handleStop}
-                    disabled={isActionLoading}
+                    disabled={isActionLoading || stopGate.gated}
                     className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[0.75rem] font-medium transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                     style={{
                       backgroundColor: statusTint("error", 15),
@@ -343,12 +347,12 @@ export function ReviewingTaskDetail({
                   >
                     <Square className="w-3.5 h-3.5" />
                     Stop Review
-                  </button>
-                  <button
+                  </button></AgentGateTooltip>
+                  <AgentGateTooltip gated={requestChangesGate.gated} reason={requestChangesGate.reason}><button
                     type="button"
                     data-testid="request-changes-action"
                     onClick={handleRequestChanges}
-                    disabled={requestChangesMutation.isPending || (showFeedback && feedback.trim().length === 0)}
+                    disabled={requestChangesMutation.isPending || (showFeedback && feedback.trim().length === 0) || requestChangesGate.gated}
                     className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[0.75rem] font-medium transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                     style={{
                       backgroundColor: "var(--status-warning-muted)",
@@ -365,7 +369,7 @@ export function ReviewingTaskDetail({
                       : showFeedback
                       ? "Submit"
                       : "Request Changes"}
-                  </button>
+                  </button></AgentGateTooltip>
                   {showFeedback && !requestChangesMutation.isPending && (
                     <button
                       type="button"

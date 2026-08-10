@@ -4,16 +4,14 @@
 pub mod active_plan_repository;
 pub mod activity_event_repository;
 pub mod agent_conversation_granola_note_repository;
-pub mod agent_conversation_mute_repository;
 pub mod agent_conversation_issue_repository;
 pub mod agent_conversation_jira_issue_repository;
 pub mod agent_conversation_linear_issue_repository;
+pub mod agent_conversation_mute_repository;
 pub mod agent_conversation_workspace_repository;
 #[cfg(test)]
 mod agent_conversation_workspace_repository_tests;
 pub mod agent_lane_settings_repository;
-pub mod manual_role_default_repository;
-pub mod mcp_policy_repository;
 pub mod agent_model_registry_repository;
 pub mod agent_profile_repository;
 pub mod agent_provider_settings_repository;
@@ -29,13 +27,13 @@ pub mod artifact_bucket_repository;
 pub mod artifact_flow_repository;
 pub mod artifact_repository;
 pub mod automation_repository;
-pub mod branch_update_repository;
 pub mod automation_run_repository;
+pub mod branch_update_repository;
 pub mod chat_attachment_repository;
 pub mod chat_conversation_repository;
-pub mod conversation_folder_reference_repository;
 pub mod chat_message_repository;
 pub mod chat_timeline_repository;
+pub mod conversation_folder_reference_repository;
 pub mod delegated_session_repository;
 pub mod execution_plan_repository;
 pub mod execution_settings_repository;
@@ -44,6 +42,8 @@ pub mod ideation_effort_settings_repository;
 pub mod ideation_model_settings_repository;
 pub mod ideation_session_repository;
 pub mod ideation_settings_repository;
+pub mod manual_role_default_repository;
+pub mod mcp_policy_repository;
 pub mod memory_archive_job_repository;
 pub mod memory_archive_repository;
 pub mod memory_entry_repository;
@@ -51,13 +51,27 @@ pub mod memory_event_repository;
 pub mod methodology_repo;
 pub mod notification_repository;
 pub mod notification_settings_repository;
+pub mod persona_repository;
 pub mod plan_artifact_approval_repository;
 pub mod plan_branch_repository;
 pub mod plan_selection_stats_repository;
-pub mod persona_repository;
 pub mod process_repo;
 pub mod project_repository;
 pub mod proposal_dependency_repository;
+pub mod remote_access_repository;
+pub mod remote_agent_stop_request_repository;
+pub mod remote_automation_run_request_repository;
+pub mod remote_automation_draft_request_repository;
+pub mod remote_conversation_lifecycle_request_repository;
+pub mod remote_conversation_message_request_repository;
+pub mod remote_conversation_mode_switch_request_repository;
+pub mod remote_conversation_start_request_repository;
+pub mod remote_request_dedup_repository;
+pub mod remote_plan_approval_request_repository;
+pub mod remote_finalize_decision_request_repository;
+pub mod remote_plan_edit_request_repository;
+pub mod remote_queued_send_request_repository;
+pub mod remote_resume_request_repository;
 pub mod review_repository;
 pub mod review_settings_repository;
 pub mod session_link_repository;
@@ -84,12 +98,12 @@ pub use activity_event_repository::{
     ActivityEventFilter, ActivityEventPage, ActivityEventRepository,
 };
 pub use agent_conversation_granola_note_repository::AgentConversationGranolaNoteRepository;
-pub use agent_conversation_mute_repository::AgentConversationMuteRepository;
 pub use agent_conversation_issue_repository::{
     is_open_issue_status, AgentConversationIssueRepository,
 };
 pub use agent_conversation_jira_issue_repository::AgentConversationJiraIssueRepository;
 pub use agent_conversation_linear_issue_repository::AgentConversationLinearIssueRepository;
+pub use agent_conversation_mute_repository::AgentConversationMuteRepository;
 pub use agent_conversation_workspace_repository::{
     AgentConversationWorkspaceRepository, AgentWorkspaceLocalCleanupClaim,
     AgentWorkspacePublishLeaseClaim,
@@ -100,8 +114,6 @@ pub use agent_conversation_workspace_repository::{
     AgentWorkspaceRepairStateTransition,
 };
 pub use agent_lane_settings_repository::AgentLaneSettingsRepository;
-pub use manual_role_default_repository::ManualRoleDefaultRepository;
-pub use mcp_policy_repository::McpPolicyRepository;
 pub use agent_model_registry_repository::AgentModelRegistryRepository;
 pub use agent_profile_repository::{AgentProfileId, AgentProfileRepository};
 pub use agent_provider_settings_repository::AgentProviderSettingsRepository;
@@ -129,21 +141,21 @@ pub use artifact_repository::{ArtifactRepository, ArtifactVersionSummary};
 pub use automation_repository::{
     AutomationConfigPatch, AutomationRepository, AutomationSettingsPatch,
 };
+pub use automation_run_repository::{AutomationRunPublicationMetadata, AutomationRunRepository};
 pub use branch_update_repository::{
     AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, BeginGitMutation, BindBranchUpdateRun,
     BlockBranchUpdate, BranchUpdateActivation, BranchUpdateActivationOutcome,
-    BranchUpdateCasOutcome, BranchUpdateRepository, ClaimBranchUpdateContinuation,
-    CompleteBranchUpdateContinuation, CompleteGitMutation, GitAuthorityCasOutcome,
-    MarkBranchUpdateResolving, PauseBranchUpdate, ResumeBranchUpdate, RetryBranchUpdate,
-    CheckpointBranchUpdateResult, SettleBranchUpdateProgrammatic, StopBranchUpdate,
+    BranchUpdateCasOutcome, BranchUpdateRepository, CheckpointBranchUpdateResult,
+    ClaimBranchUpdateContinuation, CompleteBranchUpdateContinuation, CompleteGitMutation,
+    GitAuthorityCasOutcome, MarkBranchUpdateResolving, PauseBranchUpdate, ResumeBranchUpdate,
+    RetryBranchUpdate, SettleBranchUpdateProgrammatic, StopBranchUpdate,
     TransferBranchUpdateTargetLease, UnbindBranchUpdateRun,
 };
-pub use automation_run_repository::{AutomationRunPublicationMetadata, AutomationRunRepository};
 pub use chat_attachment_repository::ChatAttachmentRepository;
 pub use chat_conversation_repository::{ChatConversationPage, ChatConversationRepository};
-pub use conversation_folder_reference_repository::ConversationFolderReferenceRepository;
 pub use chat_message_repository::ChatMessageRepository;
 pub use chat_timeline_repository::ChatTimelineRepository;
+pub use conversation_folder_reference_repository::ConversationFolderReferenceRepository;
 pub use delegated_session_repository::DelegatedSessionRepository;
 pub use execution_plan_repository::ExecutionPlanRepository;
 pub use execution_settings_repository::{
@@ -156,6 +168,8 @@ pub use ideation_session_repository::{
     IdeationSessionRepository, IdeationSessionWithProgress, SessionGroupCounts, SessionProgress,
 };
 pub use ideation_settings_repository::IdeationSettingsRepository;
+pub use manual_role_default_repository::ManualRoleDefaultRepository;
+pub use mcp_policy_repository::McpPolicyRepository;
 pub use memory_archive_job_repository::MemoryArchiveJobRepository;
 pub use memory_archive_repository::MemoryArchiveRepository;
 pub use memory_entry_repository::MemoryEntryRepository;
@@ -163,15 +177,37 @@ pub use memory_event_repository::MemoryEventRepository;
 pub use methodology_repo::MethodologyRepository;
 pub use notification_repository::{NotificationPage, NotificationRepository};
 pub use notification_settings_repository::NotificationSettingsRepository;
+pub use persona_repository::PersonaRepository;
 pub use plan_artifact_approval_repository::{
     PlanApprovalActor, PlanArtifactApproval, PlanArtifactApprovalRepository,
 };
 pub use plan_branch_repository::PlanBranchRepository;
 pub use plan_selection_stats_repository::PlanSelectionStatsRepository;
-pub use persona_repository::PersonaRepository;
 pub use process_repo::ProcessRepository;
 pub use project_repository::ProjectRepository;
 pub use proposal_dependency_repository::ProposalDependencyRepository;
+pub use remote_access_repository::{
+    RemoteAuditLogRepository, RemoteDeviceLookup, RemoteDeviceRepository,
+    RemotePairingCodeRepository, RemotePairingOutcome, RemotePairingRedemption,
+    RemoteSessionRepository, RemoteWsTicketOutcome, RemoteWsTicketRepository,
+};
+pub use remote_agent_stop_request_repository::RemoteAgentStopRequestRepository;
+pub use remote_conversation_message_request_repository::RemoteConversationMessageRequestRepository;
+pub use remote_conversation_mode_switch_request_repository::RemoteConversationModeSwitchRequestRepository;
+pub use remote_conversation_start_request_repository::RemoteConversationStartRequestRepository;
+pub use remote_request_dedup_repository::{
+    RemoteAttachmentRepository, RemoteRequestDedupLookup, RemoteRequestDedupRepository,
+};
+pub use remote_plan_approval_request_repository::RemotePlanApprovalRequestRepository;
+pub use remote_finalize_decision_request_repository::RemoteFinalizeDecisionRequestRepository;
+pub use remote_automation_run_request_repository::RemoteAutomationRunRequestRepository;
+pub use remote_automation_draft_request_repository::RemoteAutomationDraftRequestRepository;
+pub use remote_conversation_lifecycle_request_repository::RemoteConversationLifecycleRequestRepository;
+pub use remote_plan_edit_request_repository::RemotePlanEditRequestRepository;
+pub use remote_queued_send_request_repository::RemoteQueuedSendRequestRepository;
+pub use remote_resume_request_repository::{
+    RemoteExecutionResumeRequestRepository, RemoteTaskActionRequestRepository,
+};
 pub use review_repository::ReviewRepository;
 pub use review_settings_repository::ReviewSettingsRepository;
 pub use session_link_repository::SessionLinkRepository;

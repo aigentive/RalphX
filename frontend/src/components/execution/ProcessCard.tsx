@@ -11,6 +11,12 @@ import { getStatusIconConfig } from "@/types/status-icons";
 import { getStepProgressDisplay } from "@/types/task-step";
 import { useElapsedTimer } from "@/hooks/useElapsedTimer";
 import { formatElapsedTime } from "@/lib/formatters";
+import { useAgentGate } from "@/hooks/useAgentGate";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 interface ProcessCardProps {
   /** The running process data */
@@ -151,6 +157,7 @@ export function ProcessCard({
 }: ProcessCardProps) {
   const statusStyle = getStatusBadgeStyle(process.internalStatus);
   const originStyle = getOriginBadgeStyle(process.triggerOrigin);
+  const pauseGate = useAgentGate("taskPause");
 
   // Live elapsed time ticker (updates every second)
   const elapsedTime = useElapsedTimer(process.elapsedSeconds, process.taskId);
@@ -158,9 +165,10 @@ export function ProcessCard({
   const stepDisplay = process.stepProgress
     ? getStepProgressDisplay(process.stepProgress)
     : null;
-  const stepInfo = stepDisplay && stepDisplay.total > 0
-    ? `${stepDisplay.completed}/${stepDisplay.total} steps`
-    : null;
+  const stepInfo =
+    stepDisplay && stepDisplay.total > 0
+      ? `${stepDisplay.completed}/${stepDisplay.total} steps`
+      : null;
 
   return (
     <div
@@ -199,24 +207,40 @@ export function ProcessCard({
           {statusStyle.label}
         </span>
         <div className="flex items-center shrink-0">
-          <button
-            data-testid={`pause-button-${process.taskId}`}
-            onClick={(e) => {
-              e.stopPropagation();
-              onPause(process.taskId);
-            }}
-            onKeyDown={(e) => e.stopPropagation()}
-            disabled={isLoading}
-            className="w-6 h-6 flex items-center justify-center rounded hover:bg-white/[0.08] transition-colors disabled:opacity-40"
-            style={{ color: "var(--text-muted)" }}
-            title="Pause task"
-          >
-            {isLoading ? (
-              <Loader2 className="w-3 h-3 animate-spin" />
-            ) : (
-              <Pause className="w-3 h-3" />
-            )}
-          </button>
+          {/* Soft-disabled when gated, never `disabled`: a disabled button has
+              pointer-events:none and leaves the focus order, so its reason would be
+              unreachable by both mouse and keyboard. Same rule the explained menu
+              items follow. */}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                data-testid={`pause-button-${process.taskId}`}
+                aria-label="Pause task"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (pauseGate.gated) return;
+                  onPause(process.taskId);
+                }}
+                onKeyDown={(e) => e.stopPropagation()}
+                disabled={isLoading}
+                aria-disabled={pauseGate.gated || undefined}
+                data-disabled-explained={pauseGate.gated ? "true" : undefined}
+                className={`w-6 h-6 flex items-center justify-center rounded hover:bg-white/[0.08] transition-colors disabled:opacity-40${
+                  pauseGate.gated ? " opacity-50" : ""
+                }`}
+                style={{ color: "var(--text-muted)" }}
+              >
+                {isLoading ? (
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                ) : (
+                  <Pause className="w-3 h-3" />
+                )}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>
+              {pauseGate.gated ? pauseGate.reason : "Pause task"}
+            </TooltipContent>
+          </Tooltip>
           <button
             data-testid={`stop-button-${process.taskId}`}
             onClick={(e) => {
@@ -254,10 +278,7 @@ export function ProcessCard({
         </span>
         {originStyle && (
           <>
-            <span
-              className="shrink-0"
-              style={{ color: "var(--text-muted)" }}
-            >
+            <span className="shrink-0" style={{ color: "var(--text-muted)" }}>
               ·
             </span>
             <span
@@ -273,10 +294,7 @@ export function ProcessCard({
         )}
         {process.taskBranch && (
           <>
-            <span
-              className="shrink-0"
-              style={{ color: "var(--text-muted)" }}
-            >
+            <span className="shrink-0" style={{ color: "var(--text-muted)" }}>
               ·
             </span>
             <span

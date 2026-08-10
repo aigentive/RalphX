@@ -7,6 +7,8 @@ import {
   isSettingsSectionId,
   navForSection,
   resolveSettingsDestination,
+  visibleSettingsNav,
+  visibleSettingsSections,
   resolveSettingsSectionId,
   sectionMeta,
   type SettingsSectionId,
@@ -176,5 +178,67 @@ describe("resolveSettingsDestination", () => {
     expect(resolveSettingsDestination(undefined)).toBeNull();
     expect(resolveSettingsDestination(42)).toBeNull();
     expect(resolveSettingsSectionId("nope")).toBeNull();
+  });
+});
+
+describe("remoteEnvironments-gated sections", () => {
+  it("hides remote-access and connections while the flag is off", () => {
+    for (const flags of [{}, { remoteEnvironments: false }]) {
+      const ids = visibleSettingsSections(flags).map((section) => section.id);
+      expect(ids).not.toContain("remote-access");
+      expect(ids).not.toContain("connections");
+    }
+  });
+
+  it("shows both remote sections, adjacently, when the flag is on", () => {
+    const sections = visibleSettingsSections({ remoteEnvironments: true });
+    expect(sections).toHaveLength(SETTINGS_SECTIONS.length);
+    expect(sectionMeta("remote-access")?.label).toBe("Remote Access");
+    expect(sectionMeta("connections")?.label).toBe("Connections");
+
+    // Adjacency is the point: both surfaces of the same feature, side by side.
+    const ids = sections.map((section) => section.id);
+    expect(
+      Math.abs(ids.indexOf("connections") - ids.indexOf("remote-access")),
+    ).toBe(1);
+  });
+
+  it("never filters any section other than the flag-gated ones", () => {
+    // Stated as a set difference rather than a hardcoded count, so adding a gated
+    // section updates one list instead of silently failing an arithmetic assertion.
+    const gatedIds = new Set(["remote-access", "connections"]);
+    expect(visibleSettingsSections({}).map((section) => section.id)).toEqual(
+      SETTINGS_SECTIONS.filter((section) => !gatedIds.has(section.id)).map(
+        (section) => section.id,
+      ),
+    );
+  });
+
+  it("files both remote sections under the Integrations nav entry", () => {
+    expect(navForSection("remote-access").id).toBe("integrations");
+    expect(navForSection("connections").id).toBe("integrations");
+  });
+
+  it("strips gated leaves from the nav while the flag is off", () => {
+    const gatedOff = visibleSettingsNav({}).flatMap((nav) => nav.leaves);
+    expect(gatedOff).not.toContain("remote-access");
+    expect(gatedOff).not.toContain("connections");
+
+    const gatedOn = visibleSettingsNav({ remoteEnvironments: true }).flatMap(
+      (nav) => nav.leaves,
+    );
+    expect(gatedOn).toContain("remote-access");
+    expect(gatedOn).toContain("connections");
+  });
+
+  it("keeps every nav entry present with the flag off (no empty rail entries)", () => {
+    expect(visibleSettingsNav({}).map((nav) => nav.id)).toEqual(
+      SETTINGS_NAV.map((nav) => nav.id),
+    );
+  });
+
+  it("recognises both gated ids for deep links regardless of the flag", () => {
+    expect(isSettingsSectionId("remote-access")).toBe(true);
+    expect(isSettingsSectionId("connections")).toBe(true);
   });
 });

@@ -186,9 +186,8 @@ impl ApiKeyRepository for SqliteApiKeyRepository {
         let id = id.as_str().to_string();
         self.db
             .run(move |conn| {
-                let mut stmt = conn.prepare(
-                    "SELECT project_id FROM api_key_projects WHERE api_key_id = ?1",
-                )?;
+                let mut stmt =
+                    conn.prepare("SELECT project_id FROM api_key_projects WHERE api_key_id = ?1")?;
                 let project_ids = stmt
                     .query_map([id.as_str()], |row| row.get(0))?
                     .collect::<Result<Vec<String>, _>>()?;
@@ -276,11 +275,7 @@ impl ApiKeyRepository for SqliteApiKeyRepository {
             .await
     }
 
-    async fn update_api_key_permissions(
-        &self,
-        key_id: &str,
-        permissions: i64,
-    ) -> AppResult<()> {
+    async fn update_api_key_permissions(&self, key_id: &str, permissions: i64) -> AppResult<()> {
         let key_id = key_id.to_string();
         self.db
             .run(move |conn| {
@@ -289,10 +284,7 @@ impl ApiKeyRepository for SqliteApiKeyRepository {
                     rusqlite::params![permissions, key_id],
                 )?;
                 if rows_updated == 0 {
-                    return Err(AppError::NotFound(format!(
-                        "API key not found: {}",
-                        key_id
-                    )));
+                    return Err(AppError::NotFound(format!("API key not found: {}", key_id)));
                 }
                 Ok(())
             })

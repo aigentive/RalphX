@@ -2,6 +2,7 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FileDiffPage } from "@/api/diff";
+import { RemoteTransportError } from "@/lib/remote/transport-errors";
 
 const mockGetDiffPage = vi.fn();
 let latestSetVirtuosoRange:
@@ -173,6 +174,24 @@ describe("PagedDiffView", () => {
     mockGetDiffPage.mockImplementation(({ offset, limit }) =>
       Promise.resolve(makePage(offset as number, limit as number))
     );
+  });
+
+  it("renders uncaptured host snapshot copy without retry or empty-diff copy", async () => {
+    mockGetDiffPage.mockResolvedValueOnce(null);
+
+    render(
+      <PagedDiffView
+        conversationId="conv-remote"
+        filePath="src/Uncaptured.tsx"
+        refKind={{ kind: "head" }}
+      />,
+    );
+
+    expect(
+      await screen.findByTestId("paged-diff-snapshot-unavailable"),
+    ).toHaveTextContent("The host has not captured this file diff yet");
+    expect(screen.queryByText("No changes")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /retry/i })).not.toBeInTheDocument();
   });
 
   afterEach(() => {
@@ -544,6 +563,30 @@ describe("PagedDiffView", () => {
     expect(await screen.findByText("line 1")).toBeInTheDocument();
     expect(countPageFetches(0)).toBe(2);
     expect(countPageFetches(100)).toBe(1);
+  });
+
+  it("shows a host-only explanation without Retry when the command is unavailable", async () => {
+    mockGetDiffPage.mockRejectedValue(
+      new RemoteTransportError({
+        code: "REMOTE_COMMAND_UNAVAILABLE",
+        message: "Command is not registered",
+        environmentId: "remote-1",
+        command: "get_agent_conversation_workspace_file_diff_page",
+      }),
+    );
+
+    render(
+      <PagedDiffView
+        conversationId="conv-1"
+        filePath="src/Huge.tsx"
+        refKind={{ kind: "head" }}
+      />,
+    );
+
+    expect(await screen.findByText(/available only on the host/i)).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /retry loading diff rows/i }),
+    ).not.toBeInTheDocument();
   });
 
   it("loads visible pages and prunes distant loaded pages in contained scroll mode", async () => {

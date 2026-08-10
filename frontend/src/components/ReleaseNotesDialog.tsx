@@ -93,6 +93,8 @@ export function ReleaseNotesDialog({
   const [currentAppVersion, setCurrentAppVersion] = useState<string | null>(
     null,
   );
+  const [bundledVersionsUnavailable, setBundledVersionsUnavailable] = useState(false);
+  const [currentVersionUnavailable, setCurrentVersionUnavailable] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -109,16 +111,24 @@ export function ReleaseNotesDialog({
     setListLoading(true);
 
     void Promise.all([
-      listReleaseNotesVersions().catch(() => []),
+      listReleaseNotesVersions().then(
+        (versions) => ({ value: versions, unavailable: false }),
+        () => ({ value: [] as string[], unavailable: true }),
+      ),
       fetchReleaseMetadata(),
-      getVersion().catch(() => null),
+      getVersion().then(
+        (version) => ({ value: version, unavailable: false }),
+        () => ({ value: null, unavailable: true }),
+      ),
     ])
       .then(([bundled, meta, appVersion]) => {
         if (cancelled) return;
-        setBundledVersionList(bundled);
+        setBundledVersionList(bundled.value);
+        setBundledVersionsUnavailable(bundled.unavailable);
         setMetadata(meta);
         setMetadataAvailability(meta.availability ?? "available");
-        if (appVersion) setCurrentAppVersion(appVersion);
+        setCurrentVersionUnavailable(appVersion.unavailable);
+        if (appVersion.value) setCurrentAppVersion(appVersion.value);
         setListLoading(false);
       })
       .catch(() => {
@@ -138,6 +148,8 @@ export function ReleaseNotesDialog({
       setMetadataAvailability(null);
       setBundledVersionList([]);
       setCurrentAppVersion(null);
+      setBundledVersionsUnavailable(false);
+      setCurrentVersionUnavailable(false);
       setBrowseChannel(null);
       hasUserBrowsed.current = false;
     }
@@ -359,6 +371,14 @@ export function ReleaseNotesDialog({
             className="flex-1 overflow-y-auto"
             data-testid="release-notes-dialog-body"
           >
+            {(bundledVersionsUnavailable || currentVersionUnavailable) && (
+              <p
+                data-testid="release-notes-local-data-unavailable"
+                className="px-5 pt-4 text-sm text-text-primary/55"
+              >
+                Some release details could not be loaded.
+              </p>
+            )}
             {activeVersion && (
               <VersionContent
                 version={activeVersion}

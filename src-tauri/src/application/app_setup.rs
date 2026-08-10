@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use tauri::Manager;
+
 use crate::application::notification_service::WindowFocusState;
 use crate::application::runtime_wiring::{
     build_http_app_state, create_main_window, register_managed_state,
@@ -17,7 +19,6 @@ use crate::application::AppPaths;
 use crate::commands::{ActiveProjectState, ExecutionState};
 use crate::shell::agent_completion_event_runtime::create_agent_completion_event_runtime;
 use crate::AppState;
-use tauri::Manager;
 use tracing::warn;
 
 const BUNDLED_PLUGIN_DIR_REL: &str = "plugins/app";
@@ -177,6 +178,13 @@ pub(crate) fn run_app_setup(
     startup_coordinator: Arc<StartupCoordinator>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let app_handle = app.handle().clone();
+    let _ = app.manage(crate::remote_server::registry::RemoteHostAppHandle(
+        app_handle.clone(),
+    ));
+
+    // Remote event capture + the durable sequencer install in the async setup phase below
+    // (`install_remote_stream_from_handle`), not here: this point runs before SQLite is open, and
+    // "host mode is configured" is a persisted read (§3.4 capture-at-setup, P-23).
 
     configure_bundled_runtime_env(app);
 
@@ -445,6 +453,18 @@ fn launch_startup_attempt(
             }
             return;
         }
+        // A crashed process leaves its `remote_sessions` rows open; nothing else ever closes them,
+        // so they must be reconciled before anything can connect in this one.
+        crate::remote_server::close_orphaned_remote_sessions_from_handle(&app_handle).await;
+        // Capture + sequencer first, and gated only on host mode being CONFIGURED — not on the
+        // listener being enabled. That ordering is the point of P-23: events emitted during a
+        // disabled-listener window are still recorded, so a reconnect after a re-enable replays
+        // them instead of warm-resuming across an unrecorded gap (§5.2, §3.4).
+        crate::remote_server::install_remote_stream_from_handle(&app_handle).await;
+        // Remote host mode starts in the same setup phase as the local runtime, but only when
+        // the persisted `remote_host_settings` row enables it (§5.2). With the flag off or the
+        // row absent, nothing listens on the remote port.
+        crate::remote_server::auto_start_remote_listener_from_handle(&app_handle).await;
         let state = app_handle.state::<AppState>();
         launch_startup_pipeline_from_handle(
             app_handle.clone(),

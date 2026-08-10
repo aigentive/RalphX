@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension};
 
+use crate::domain::entities::ideation::PlanArtifactBundle;
 use crate::domain::entities::{
     Artifact, ArtifactId, IdeationSessionFlow, IdeationSessionId, IdeationSessionStatus,
 };
@@ -17,6 +18,85 @@ pub(crate) struct ApprovedPlanArtifact {
     pub artifact: Artifact,
     pub blueprint_artifact: Option<Artifact>,
     pub approved_at: String,
+}
+
+pub(crate) async fn approve_plan_artifact_for_state(
+    app_state: &crate::application::AppState,
+    session_id: String,
+    artifact_id: Option<String>,
+    blueprint_artifact_id: Option<String>,
+    blueprint_artifact_version: Option<u32>,
+) -> AppResult<ApprovedPlanArtifact> {
+    let approved = app_state
+        .db
+        .run_transaction(move |conn| {
+            approve_current_plan_artifact_for_displayed_bundle_sync(
+                conn,
+                IdeationSessionId::from_string(session_id),
+                artifact_id.as_deref(),
+                blueprint_artifact_id.as_deref(),
+                blueprint_artifact_version,
+                PlanApprovalActor::User,
+            )
+        })
+        .await?;
+
+    let blueprint_id = approved
+        .blueprint_artifact
+        .as_ref()
+        .map(|artifact| artifact.id.to_string());
+    let blueprint_version = approved
+        .blueprint_artifact
+        .as_ref()
+        .map(|artifact| artifact.metadata.version);
+    let plan_bundle = PlanArtifactBundle {
+        overview_id: approved.artifact.id.clone(),
+        blueprint_id: approved
+            .blueprint_artifact
+            .as_ref()
+            .map(|artifact| artifact.id.clone()),
+        contract_version: if approved.blueprint_artifact.is_some() {
+            2
+        } else {
+            1
+        },
+        is_inherited: false,
+    };
+    app_state.events.emit(
+        "plan_artifact:approved",
+        serde_json::json!({
+            "sessionId": approved.session_id.as_str(),
+            "artifactId": approved.artifact.id.as_str(),
+            "version": approved.artifact.metadata.version,
+            "blueprintArtifactId": blueprint_id,
+            "blueprintVersion": blueprint_version,
+            "approvedAt": approved.approved_at,
+        }),
+    );
+    let approval_notification_deps = crate::application::plan_approval_notification_service::PlanApprovalNotificationDeps::from_app_state(app_state);
+    crate::application::plan_approval_notification_service::resolve_plan_approval_notifications_with_deps(
+        &approval_notification_deps,
+        &approved.session_id,
+        &plan_bundle,
+    )
+    .await;
+
+    let tasks_enabled = app_state
+        .ideation_settings_repo
+        .get_settings()
+        .await
+        .map(|settings| settings.tasks_enabled)
+        .unwrap_or(false);
+    if tasks_enabled {
+        crate::application::plan_complexity_assessment::spawn_plan_complexity_assessor_after_approval(
+            std::sync::Arc::new(app_state.clone()),
+            approved.session_id.as_str().to_string(),
+            approved.artifact.id.to_string(),
+            approved.artifact.metadata.version,
+        );
+    }
+
+    Ok(approved)
 }
 
 #[async_trait]

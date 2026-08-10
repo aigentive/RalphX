@@ -11,12 +11,14 @@ import type { PullRequestDetailSelector } from "@/hooks/usePullRequestDetail";
 import { usePullRequestDetail } from "@/hooks/usePullRequestDetail";
 import { PrStatusBadge } from "@/components/tasks/detail-views/shared/PrStatusBadge";
 import { Button } from "@/components/ui/button";
+import { NoticeBanner } from "@/components/ui/notice-banner";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { remoteErrorBannerProps } from "@/lib/remote/agent-gate";
 import { openExternalTicketUrl } from "@/components/ticketing/ticketing-open-external";
 import { useAfterPaint } from "@/components/ticketing/useAfterPaint";
 
@@ -63,6 +65,7 @@ export function PullRequestDetailBody({
     enabled: shouldFetchDetail,
   });
   const detail = detailQuery.data ?? null;
+  const remoteError = remoteErrorBannerProps(detailQuery.error);
   const description = detail?.description ?? null;
   const prNumber = description?.number ?? shell?.prNumber ?? selector?.prNumber ?? null;
   const title = description?.title ?? shell?.title ?? (prNumber ? `PR #${prNumber}` : "Pull request");
@@ -148,7 +151,11 @@ export function PullRequestDetailBody({
         ) : null}
       </header>
 
-      {detailQuery.isError ? (
+      {remoteError ? (
+        <NoticeBanner tone={remoteError.tone} title={remoteError.title}>
+          {remoteError.body}
+        </NoticeBanner>
+      ) : detailQuery.isError ? (
         <div
           className="flex items-start gap-2 rounded-md px-3 py-3 text-sm text-[var(--status-error)]"
           style={{

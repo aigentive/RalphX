@@ -46,6 +46,8 @@ import { MergePhaseTimeline } from "./MergePhaseTimeline";
 import { ValidationProgress } from "./shared/ValidationProgress";
 import { useConfirmation } from "@/hooks/useConfirmation";
 import { api } from "@/lib/tauri";
+import { useAgentGate } from "@/hooks/useAgentGate";
+import { AgentGateTooltip } from "@/components/remote/AgentGateTooltip";
 import { taskKeys } from "@/hooks/useTasks";
 import type { Task } from "@/types/task";
 import { BranchBadge, BranchFlow } from "@/components/shared/BranchBadge";
@@ -393,6 +395,7 @@ function PrModeCard({
 }
 
 export function MergingTaskDetail({ task, isHistorical, viewStatus }: MergingTaskDetailProps) {
+  const stopGate = useAgentGate("taskStop");
   // Action buttons state
   const queryClient = useQueryClient();
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
@@ -902,11 +905,11 @@ export function MergingTaskDetail({ task, isHistorical, viewStatus }: MergingTas
           <SectionTitle>Actions</SectionTitle>
           <DetailCard>
             <div className="flex items-center gap-2">
-              <button
+              <AgentGateTooltip gated={stopGate.gated} reason={stopGate.reason}><button
                 type="button"
                 data-testid="stop-merge-action"
                 onClick={handleStop}
-                disabled={stopMutation.isPending}
+                disabled={stopMutation.isPending || stopGate.gated}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[0.75rem] font-medium transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                 style={{
                   backgroundColor: statusTint("error", 15),
@@ -915,7 +918,7 @@ export function MergingTaskDetail({ task, isHistorical, viewStatus }: MergingTas
               >
                 <Square className="w-3.5 h-3.5" />
                 Stop Merge
-              </button>
+              </button></AgentGateTooltip>
             </div>
             {actionError && (
               <p className="mt-2 text-[0.75rem]" style={{ color: "var(--status-error)" }}>

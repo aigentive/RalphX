@@ -260,24 +260,6 @@ describe("api.tasks", () => {
     });
   });
 
-  describe("delete", () => {
-    it("should call delete_task with id", async () => {
-      mockInvoke.mockResolvedValue(true);
-
-      await api.tasks.delete("task-1");
-
-      expect(mockInvoke).toHaveBeenCalledWith("delete_task", { id: "task-1" });
-    });
-
-    it("should return boolean", async () => {
-      mockInvoke.mockResolvedValue(true);
-
-      const result = await api.tasks.delete("task-1");
-
-      expect(result).toBe(true);
-    });
-  });
-
   describe("move", () => {
     it("should call move_task with taskId and toStatus", async () => {
       mockInvoke.mockResolvedValue(createMockTask({ internal_status: "ready" }));
@@ -343,13 +325,15 @@ describe("api.projects", () => {
   });
 
   describe("get", () => {
-    it("should call get_project with projectId", async () => {
+    it("should call get_project with the command's own `id` param", async () => {
       mockInvoke.mockResolvedValue(createMockProject());
 
       await api.projects.get("project-1");
 
+      // `project_commands::get_project(id: String)` — Tauri binds a flat param by its exact
+      // name or its camelCase form, so `projectId` would deserialize from `null`.
       expect(mockInvoke).toHaveBeenCalledWith("get_project", {
-        projectId: "project-1",
+        id: "project-1",
       });
     });
 

@@ -34,6 +34,8 @@ export interface UseGitDiffResult {
   isLoadingCommitFiles: boolean;
   /** Error if any */
   error: Error | null;
+  /** Error from the commit-history read, distinct from a genuine empty history. */
+  historyError: Error | null;
   /** Fetch diff data for a specific file (optionally for a specific commit) */
   fetchDiff: (filePath: string, commitSha?: string) => Promise<DiffData | null>;
   /** Fetch files changed in a specific commit */
@@ -75,6 +77,7 @@ export function useGitDiff({
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [isLoadingCommitFiles, setIsLoadingCommitFiles] = useState(false);
   const [error, setError] = useState<Error | null>(null);
+  const [historyError, setHistoryError] = useState<Error | null>(null);
   const latestTaskIdRef = useRef(taskId);
 
   useEffect(() => {
@@ -128,15 +131,18 @@ export function useGitDiff({
 
     const fetchCommits = async () => {
       setIsLoadingHistory(true);
+      setHistoryError(null);
 
       try {
         const commitInfos = await diffApi.getTaskCommits(requestTaskId);
         if (isCancelled || !isCurrentTask(requestTaskId)) return;
         // Reverse to show chronological order (oldest first)
         setCommits(commitInfos.map(toCommit).reverse());
-      } catch {
+      } catch (err) {
         if (isCancelled || !isCurrentTask(requestTaskId)) return;
-        // Silently fail for commits - not critical and task may not have a branch yet
+        setHistoryError(
+          err instanceof Error ? err : new Error("Failed to fetch commit history"),
+        );
         setCommits([]);
       } finally {
         if (!isCancelled && isCurrentTask(requestTaskId)) {
@@ -218,6 +224,7 @@ export function useGitDiff({
     const requestTaskId = taskId;
 
     setError(null);
+    setHistoryError(null);
 
     // Refresh commits
     setIsLoadingHistory(true);
@@ -226,8 +233,11 @@ export function useGitDiff({
       if (!isCurrentTask(requestTaskId)) return;
       // Reverse to show chronological order (oldest first)
       setCommits(commitInfos.map(toCommit).reverse());
-    } catch {
+    } catch (err) {
       if (!isCurrentTask(requestTaskId)) return;
+      setHistoryError(
+        err instanceof Error ? err : new Error("Failed to fetch commit history"),
+      );
       setCommits([]);
     } finally {
       if (isCurrentTask(requestTaskId)) {
@@ -261,6 +271,7 @@ export function useGitDiff({
     isLoadingHistory,
     isLoadingCommitFiles,
     error,
+    historyError,
     fetchDiff,
     fetchCommitFiles,
     refresh,

@@ -7,8 +7,11 @@ use std::sync::Arc;
 use super::automation_commands::{
     automation_service, create_automation_draft_for_state, delete_automation_run,
     parse_automation_id, parse_automation_run_id, parse_project_id, resume_automation_run,
-    trigger_automation_run_now_for_state, trim_optional, AutomationRunScopedInput,
-    CreateAutomationDraftInput, UpdateAutomationSettingsInput,
+    trigger_automation_run_now_for_state, trim_optional, update_automation_config_for_state,
+    AutomationRunScopedInput, CreateAutomationDraftInput, UpdateAutomationConfigInput,
+    UpdateAutomationConfigPatchInput, UpdateAutomationSettingsInput,
+    UpdateAutomationSettingsPatchInput, REMOTE_AUTOMATION_CONFIG_NOT_FOUND,
+    REMOTE_AUTOMATION_CONFIG_VERSION_CONFLICT,
 };
 use crate::application::agent_conversation_start_service::AgentWorkspaceSourcePullRequestInput;
 use crate::application::automation::api::{
@@ -1135,6 +1138,155 @@ async fn finalize_command_rejects_unconfigured_draft() {
         .unwrap()
         .expect("automation should be persisted");
     assert_eq!(persisted.status, AutomationStatus::Draft);
+}
+
+#[tokio::test]
+async fn update_automation_config_command_applies_settings_then_config_and_returns_projection() {
+    let state = AppState::new_test();
+    let automation = automation();
+    let expected_updated_at = automation.updated_at;
+    state.automation_repo.create(automation).await.unwrap();
+
+    let response = update_automation_config_for_state(
+        &state,
+        UpdateAutomationConfigInput {
+            automation_id: "automation-1".to_string(),
+            expected_updated_at,
+            settings: Some(UpdateAutomationSettingsPatchInput {
+                name: Some("Updated automation".to_string()),
+                max_runs: Some(12),
+                max_consecutive_failures: Some(2),
+                plan_approval_mode: Some("automatic".to_string()),
+                pr_merge_mode: None,
+                plan_deep_verification: Some(true),
+            }),
+            config: Some(UpdateAutomationConfigPatchInput {
+                goal_prompt: Some("Updated goal".to_string()),
+                first_run_prompt: Some("Updated first run".to_string()),
+                ..Default::default()
+            }),
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(response.id, "automation-1");
+    assert_eq!(response.name, "Updated automation");
+    assert_eq!(response.goal_prompt, "Updated goal");
+    assert_eq!(
+        response.first_run_prompt.as_deref(),
+        Some("Updated first run")
+    );
+    assert_eq!(response.max_runs, 12);
+    assert!(response.plan_deep_verification);
+}
+
+#[tokio::test]
+async fn update_automation_config_command_rejects_stale_version_without_writing() {
+    let state = AppState::new_test();
+    let automation = automation();
+    let stale_updated_at = automation.updated_at - chrono::Duration::seconds(1);
+    state
+        .automation_repo
+        .create(automation.clone())
+        .await
+        .unwrap();
+
+    let error = update_automation_config_for_state(
+        &state,
+        UpdateAutomationConfigInput {
+            automation_id: automation.id.as_str().to_string(),
+            expected_updated_at: stale_updated_at,
+            settings: Some(UpdateAutomationSettingsPatchInput {
+                name: Some("Must not persist".to_string()),
+                ..Default::default()
+            }),
+            config: Some(UpdateAutomationConfigPatchInput {
+                goal_prompt: Some("Must not persist".to_string()),
+                ..Default::default()
+            }),
+        },
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error, REMOTE_AUTOMATION_CONFIG_VERSION_CONFLICT);
+    let persisted = state
+        .automation_repo
+        .get_by_id(&automation.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(persisted.name, automation.name);
+    assert_eq!(persisted.goal_prompt, automation.goal_prompt);
+    assert_eq!(persisted.updated_at, automation.updated_at);
+}
+
+#[tokio::test]
+async fn update_automation_config_command_enforces_editability_both_directions() {
+    let state = AppState::new_test();
+    let draft = automation();
+    state.automation_repo.create(draft.clone()).await.unwrap();
+    let draft_response = update_automation_config_for_state(
+        &state,
+        UpdateAutomationConfigInput {
+            automation_id: draft.id.as_str().to_string(),
+            expected_updated_at: draft.updated_at,
+            settings: None,
+            config: Some(UpdateAutomationConfigPatchInput {
+                goal_prompt: Some("Draft edit".to_string()),
+                ..Default::default()
+            }),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(draft_response.goal_prompt, "Draft edit");
+
+    let mut active = automation();
+    active.id = AutomationId::from_string("automation-active");
+    active.status = AutomationStatus::Active;
+    state.automation_repo.create(active.clone()).await.unwrap();
+    let error = update_automation_config_for_state(
+        &state,
+        UpdateAutomationConfigInput {
+            automation_id: active.id.as_str().to_string(),
+            expected_updated_at: active.updated_at,
+            settings: None,
+            config: Some(UpdateAutomationConfigPatchInput {
+                goal_prompt: Some("Must not persist".to_string()),
+                ..Default::default()
+            }),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(error.contains("automation config can only be updated while draft or paused"));
+    let persisted = state
+        .automation_repo
+        .get_by_id(&active.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(persisted.goal_prompt, active.goal_prompt);
+}
+
+#[tokio::test]
+async fn update_automation_config_command_reports_missing_automation_distinctly() {
+    let state = AppState::new_test();
+    let error = update_automation_config_for_state(
+        &state,
+        UpdateAutomationConfigInput {
+            automation_id: "missing".to_string(),
+            expected_updated_at: Utc::now(),
+            settings: None,
+            config: None,
+        },
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error, REMOTE_AUTOMATION_CONFIG_NOT_FOUND);
 }
 
 #[tokio::test]

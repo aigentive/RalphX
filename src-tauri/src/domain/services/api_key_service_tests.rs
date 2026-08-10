@@ -18,7 +18,10 @@ async fn test_create_key_settings_ui_default_permissions() {
         .await
         .expect("create_key should succeed");
 
-    assert_eq!(result.key.permissions, 7, "SettingsUi default is 7 (read+write+admin)");
+    assert_eq!(
+        result.key.permissions, 7,
+        "SettingsUi default is 7 (read+write+admin)"
+    );
     assert!(!result.raw_key.is_empty());
     assert!(result.raw_key.starts_with("rxk_live_"));
 }
@@ -30,16 +33,18 @@ async fn test_create_key_http_api_default_permissions() {
         .await
         .expect("create_key should succeed");
 
-    assert_eq!(result.key.permissions, 3, "HttpApi default is 3 (read+write)");
+    assert_eq!(
+        result.key.permissions, 3,
+        "HttpApi default is 3 (read+write)"
+    );
 }
 
 #[tokio::test]
 async fn test_create_key_custom_permissions() {
     let repo = make_repo();
-    let result =
-        ApiKeyService::create_key(&repo, "custom-key", Some(5), &[], KeySource::HttpApi)
-            .await
-            .expect("create_key should succeed");
+    let result = ApiKeyService::create_key(&repo, "custom-key", Some(5), &[], KeySource::HttpApi)
+        .await
+        .expect("create_key should succeed");
 
     assert_eq!(result.key.permissions, 5);
 }
@@ -107,10 +112,15 @@ async fn test_create_key_zero_permissions_allowed() {
 async fn test_create_key_project_ids_stored() {
     let repo = make_repo();
     let project_ids = vec!["proj-1".to_string(), "proj-2".to_string()];
-    let result =
-        ApiKeyService::create_key(&repo, "scoped-key", None, &project_ids, KeySource::SettingsUi)
-            .await
-            .expect("create_key should succeed");
+    let result = ApiKeyService::create_key(
+        &repo,
+        "scoped-key",
+        None,
+        &project_ids,
+        KeySource::SettingsUi,
+    )
+    .await
+    .expect("create_key should succeed");
 
     let stored = repo.get_projects(&result.key.id).await.unwrap();
     assert_eq!(stored, project_ids);
@@ -125,18 +135,16 @@ async fn test_rotate_key() {
     let repo = make_repo();
 
     // Create initial key
-    let created =
-        ApiKeyService::create_key(&repo, "rotate-me", None, &[], KeySource::SettingsUi)
-            .await
-            .expect("create should succeed");
+    let created = ApiKeyService::create_key(&repo, "rotate-me", None, &[], KeySource::SettingsUi)
+        .await
+        .expect("create should succeed");
     let old_key_id = created.key.id.as_str().to_string();
     let old_raw = created.raw_key.clone();
 
     // Rotate
-    let rotated =
-        ApiKeyService::rotate_key(&repo, &old_key_id, KeySource::SettingsUi)
-            .await
-            .expect("rotate should succeed");
+    let rotated = ApiKeyService::rotate_key(&repo, &old_key_id, KeySource::SettingsUi)
+        .await
+        .expect("rotate should succeed");
 
     // New raw key must differ
     assert_ne!(rotated.raw_key, old_raw);
@@ -181,10 +189,9 @@ async fn test_revoke_key() {
     let repo = make_repo();
 
     // Create a key then revoke it
-    let created =
-        ApiKeyService::create_key(&repo, "to-revoke", None, &[], KeySource::SettingsUi)
-            .await
-            .expect("create should succeed");
+    let created = ApiKeyService::create_key(&repo, "to-revoke", None, &[], KeySource::SettingsUi)
+        .await
+        .expect("create should succeed");
     let key_id = created.key.id.as_str().to_string();
 
     ApiKeyService::revoke_key(&repo, &key_id, KeySource::SettingsUi)

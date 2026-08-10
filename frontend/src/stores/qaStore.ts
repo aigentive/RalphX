@@ -7,6 +7,8 @@
 
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
+
+import { registerEnvIsolatedStore } from "@/lib/remote/env-state-isolation";
 import { enableMapSet } from "immer";
 import type { QASettings } from "@/types/qa-config";
 import type { TaskQAResponse } from "@/lib/tauri";
@@ -136,6 +138,8 @@ export const useQAStore = create<QAState & QAActions>()(
       }),
   }))
 );
+
+registerEnvIsolatedStore({ name: "useQAStore", reset: () => useQAStore.setState(useQAStore.getInitialState(), true) });
 
 // ============================================================================
 // Selectors

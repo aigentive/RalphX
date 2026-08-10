@@ -276,6 +276,7 @@ export interface ChatMessageData {
   toolCalls?: ToolCall[] | null;
   contentBlocks?: ContentBlockItem[] | null;
   attachments?: MessageAttachment[];
+  attachmentsUnavailable?: boolean;
   sender?: string | null;
   metadata?: string | null;
   providerHarness?: string | null;
@@ -1023,6 +1024,7 @@ interface ChatMessageListProps {
   onLoadOlderMessages?: (() => void | Promise<void>) | undefined;
   initialPaintCoverKey?: string | null | undefined;
   onInitialPaintReady?: ((key: string) => void) | undefined;
+  attachmentMetadataReadAvailable?: boolean;
   registerBottomSpacer?: ((element: HTMLElement | null) => void) | undefined;
 }
 
@@ -1061,6 +1063,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       onLoadOlderMessages,
       initialPaintCoverKey = null,
       onInitialPaintReady,
+      attachmentMetadataReadAvailable = true,
       registerBottomSpacer,
     },
     ref
@@ -1403,9 +1406,12 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     // Forward the ref to parent
     useImperativeHandle(ref, () => virtuosoRef.current!, []);
 
-    const { data: attachmentsMap } = useMessageAttachments(messages, conversationId, {
+    const { data: attachmentResult } = useMessageAttachments(messages, conversationId, {
       enabled: !shouldShowInitialPaintCover,
+      metadataReadAvailable: attachmentMetadataReadAvailable,
     });
+    const attachmentsMap = attachmentResult?.attachments;
+    const unavailableAttachmentMessageIds = attachmentResult?.unavailableMessageIds;
     const normalizedStreamingContentBlocks = useMemo(
       () => streamingContentBlocks ?? [],
       [streamingContentBlocks],
@@ -1577,9 +1583,13 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       ) => {
         // Enrich message with attachments if available
         const attachments = attachmentsMap?.get(msg.id);
-        const enrichedMsg = attachments
-          ? { ...msg, attachments }
-          : msg;
+        const enrichedMsg = {
+          ...msg,
+          ...(attachments ? { attachments } : {}),
+          ...(unavailableAttachmentMessageIds?.has(msg.id) && msg.role === "user"
+            ? { attachmentsUnavailable: true }
+            : {}),
+        };
 
         items.push({
           kind: "message",
@@ -1670,7 +1680,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       }
 
       return items;
-    }, [messages, suppressedProviderMessageId, hookEvents, activeHooks, hasHookEvents, attachmentsMap, delegationProjection.messages, liveTranscriptRows, hasFooterStreamingContent]);
+    }, [messages, suppressedProviderMessageId, hookEvents, activeHooks, hasHookEvents, attachmentsMap, unavailableAttachmentMessageIds, delegationProjection.messages, liveTranscriptRows, hasFooterStreamingContent]);
 
     const timelineSenderGroups = useMemo(() => {
       let previousGroupKey: string | null = null;
@@ -2281,6 +2291,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
               isContentThinkingGroupExpanded={isThinkingGroupExpanded}
               onToggleContentThinkingGroup={toggleThinkingGroup}
               {...(msg.attachments && { attachments: msg.attachments })}
+              {...(msg.attachmentsUnavailable && { attachmentsUnavailable: true })}
               {...(composerReferences ? { composerReferences } : {})}
               providerHarness={msg.providerHarness}
               providerSessionId={msg.providerSessionId}
@@ -2522,6 +2533,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
                     isContentThinkingGroupExpanded={isThinkingGroupExpanded}
                     onToggleContentThinkingGroup={toggleThinkingGroup}
                     {...(msg.attachments && { attachments: msg.attachments })}
+                    {...(msg.attachmentsUnavailable && { attachmentsUnavailable: true })}
                     {...(composerReferences ? { composerReferences } : {})}
                     providerHarness={msg.providerHarness}
                     providerSessionId={msg.providerSessionId}

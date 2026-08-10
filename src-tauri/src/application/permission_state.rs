@@ -165,7 +165,12 @@ impl PermissionState {
     pub async fn resolve(&self, request_id: &str, decision: PermissionDecision) -> bool {
         let pending = self.pending.lock().await;
         if let Some(request) = pending.get(request_id) {
-            let _ = request.sender.send(Some(decision.clone()));
+            // `send_replace`, not `send`: `send` refuses when no receiver is alive and leaves the
+            // watched value at `None`. The strict pending read treats `sender.borrow().is_some()`
+            // as "already decided", so a `send` that no-opped would let a RESOLVED gate be
+            // rehydrated to a reconnecting client. The stored decision must record the resolution
+            // whether or not anyone is still waiting on it.
+            let _ = request.sender.send_replace(Some(decision.clone()));
 
             // Fire-and-forget persist to repo
             if let Some(repo) = &self.repo {

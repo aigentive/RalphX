@@ -12,7 +12,6 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
-import { listen } from "@tauri-apps/api/event";
 import type { FitAddon } from "@xterm/addon-fit";
 import type {
   Terminal as XTermTerminal,
@@ -58,14 +57,12 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { formatBranchDisplay } from "@/lib/branch-utils";
+import type { Unsubscribe } from "@/lib/event-bus";
+import { useEventBus } from "@/providers/EventProvider";
 import {
   RALPHX_TERMINAL_DOCK_DRAG_TYPE,
   setRalphxTerminalDockDragActive,
 } from "@/lib/internalDragTypes";
-import {
-  safelyUnlistenTauri,
-  type TauriUnlistenFn,
-} from "@/lib/tauri-listener-cleanup";
 import { cn } from "@/lib/utils";
 import { compactTerminalPath } from "./agentTerminalPaths";
 import { loadAgentTerminalRuntime } from "./agentTerminalRuntime";
@@ -159,6 +156,7 @@ export function AgentTerminalDrawer({
   onPlacementDragEnd,
   dockElement,
 }: AgentTerminalDrawerProps) {
+  const eventBus = useEventBus();
   const terminalId = DEFAULT_AGENT_TERMINAL_ID;
   const [portalRoot] = useState(() => {
     const element = document.createElement("div");
@@ -418,14 +416,7 @@ export function AgentTerminalDrawer({
     let initFrame: number | null = null;
     let initTimer: number | null = null;
     let resizeObserver: ResizeObserver | null = null;
-    let unlisten: TauriUnlistenFn | null = null;
-    let listenerPromise: Promise<void> | null = null;
-
-    const releaseListener = () => {
-      const dispose = unlisten;
-      unlisten = null;
-      safelyUnlistenTauri(dispose, AGENT_TERMINAL_EVENT);
-    };
+    let unsubscribe: Unsubscribe | null = null;
 
     const scheduleFit = () => {
       if (resizeFrame !== null) {
@@ -462,19 +453,13 @@ export function AgentTerminalDrawer({
       fitAddonRef.current = fitAddon;
       setIsHydrating(false);
 
-      listenerPromise = listen<unknown>(AGENT_TERMINAL_EVENT, (event) => {
-        const parsed = AgentTerminalEventSchema.safeParse(event.payload);
+      unsubscribe = eventBus.subscribe<unknown>(AGENT_TERMINAL_EVENT, (payload) => {
+        const parsed = AgentTerminalEventSchema.safeParse(payload);
         if (parsed.success) {
           applyEvent(parsed.data);
         }
-      }).then((dispose) => {
-        if (disposed) {
-          safelyUnlistenTauri(dispose, AGENT_TERMINAL_EVENT);
-          return;
-        }
-        unlisten = dispose;
       });
-      await listenerPromise;
+      await unsubscribe.ready;
 
       if (disposed) {
         return;
@@ -561,8 +546,8 @@ export function AgentTerminalDrawer({
       }
       resizeObserver?.disconnect();
       dataDisposable?.dispose();
-      releaseListener();
-      void listenerPromise?.then(releaseListener).catch(() => undefined);
+      unsubscribe?.();
+      unsubscribe = null;
       terminal?.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
@@ -571,6 +556,7 @@ export function AgentTerminalDrawer({
     applyEvent,
     applySnapshot,
     conversationId,
+    eventBus,
     fitTerminal,
     fitAndReportSize,
     shouldHydrateTerminal,

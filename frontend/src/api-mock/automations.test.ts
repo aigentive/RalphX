@@ -111,18 +111,23 @@ describe("mockAutomationsApi", () => {
       reason: expect.stringContaining("judge phase"),
     });
 
-    await expect(
-      mockAutomationsApi.setupAgent.getAutomation("conversation-1"),
-    ).resolves.toMatchObject({
+    const detail = await mockAutomationsApi.setupAgent.getAutomation(
+      "conversation-1",
+    );
+    expect(detail).toMatchObject({
       automation: { id: "mock-automation-1" },
       runs: [],
     });
     await expect(
-      mockAutomationsApi.setupAgent.updateAutomation("conversation-1", {
-        name: "Setup updated",
-        maxRuns: 13,
-        maxConsecutiveFailures: 4,
-      }),
+      mockAutomationsApi.setupAgent.updateAutomation(
+        "conversation-1",
+        detail.automation,
+        {
+          name: "Setup updated",
+          maxRuns: 13,
+          maxConsecutiveFailures: 4,
+        },
+      ),
     ).resolves.toMatchObject({
       name: "Setup updated",
       maxRuns: 13,

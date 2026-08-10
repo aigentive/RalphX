@@ -15,9 +15,12 @@ import {
   useCreateIdeationSession,
   useArchiveIdeationSession,
   useReopenSession,
+  useResetAndReaccept,
   ideationKeys,
 } from "./useIdeation";
 import { ideationApi } from "@/api/ideation";
+import { planBranchApi } from "@/api/plan-branch";
+import { useIdeationStore } from "@/stores/ideationStore";
 import { dependencyKeys } from "./useDependencyGraph";
 import { taskKeys } from "./useTasks";
 import type { IdeationSession, TaskProposal, ChatMessage } from "@/types/ideation";
@@ -34,7 +37,20 @@ vi.mock("@/api/ideation", () => ({
       reopen: vi.fn(),
       delete: vi.fn(),
     },
+    apply: {
+      toKanban: vi.fn(),
+    },
   },
+}));
+
+vi.mock("@/api/plan-branch", () => ({
+  planBranchApi: {
+    getByPlan: vi.fn(),
+  },
+}));
+
+vi.mock("@/hooks/useAgentGate", () => ({
+  useAgentGate: () => ({ gated: false, reason: null }),
 }));
 
 // Create mock data
@@ -425,6 +441,89 @@ describe("useReopenSession", () => {
     });
     expect(invalidateSpy).toHaveBeenCalledWith({
       queryKey: ["plan-branch"],
+    });
+  });
+});
+
+describe("useResetAndReaccept", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useIdeationStore.setState({
+      planArtifact: {
+        id: "artifact-1",
+        type: "specification",
+        name: "Plan",
+        content: { type: "inline", text: "# Plan" },
+        metadata: {
+          createdAt: "2026-08-05T10:00:00Z",
+          createdBy: "system",
+          version: 3,
+        },
+        derivedFrom: [],
+      },
+    });
+  });
+
+  it("fails closed before destructive work when the existing base branch read fails", async () => {
+    vi.mocked(planBranchApi.getByPlan).mockRejectedValue({
+      outcome: "commandError",
+      error: "REMOTE_INTERNAL_ERROR: plan branch unavailable",
+    });
+
+    const { result } = renderHook(() => useResetAndReaccept(), {
+      wrapper: createWrapper(),
+    });
+
+    await expect(
+      result.current.mutateAsync({ sessionId: "session-1", proposalIds: ["proposal-1"] }),
+    ).rejects.toEqual({
+      outcome: "commandError",
+      error: "REMOTE_INTERNAL_ERROR: plan branch unavailable",
+    });
+    expect(planBranchApi.getByPlan).toHaveBeenCalledWith("artifact-1");
+    expect(ideationApi.sessions.reopen).not.toHaveBeenCalled();
+    expect(ideationApi.apply.toKanban).not.toHaveBeenCalled();
+  });
+
+  it("preserves the resolved base branch through reopen and re-apply", async () => {
+    vi.mocked(planBranchApi.getByPlan).mockResolvedValue({
+      id: "branch-1",
+      planArtifactId: "artifact-1",
+      sessionId: "session-1",
+      projectId: "project-1",
+      branchName: "ralphx/plan-1",
+      sourceBranch: "main",
+      status: "active",
+      mergeTaskId: null,
+      createdAt: "2026-08-05T10:00:00Z",
+      mergedAt: null,
+      prNumber: null,
+      prUrl: null,
+      prDraft: null,
+      prPushStatus: null,
+      prStatus: null,
+      prPollingActive: false,
+      prEligible: false,
+      mergeCommitSha: null,
+      baseBranchOverride: "release/2026.08",
+    });
+    vi.mocked(ideationApi.sessions.reopen).mockResolvedValue(undefined);
+    vi.mocked(ideationApi.apply.toKanban).mockResolvedValue(undefined);
+
+    const { result } = renderHook(() => useResetAndReaccept(), {
+      wrapper: createWrapper(),
+    });
+    await result.current.mutateAsync({
+      sessionId: "session-1",
+      proposalIds: ["proposal-1"],
+    });
+
+    expect(ideationApi.sessions.reopen).toHaveBeenCalledWith("session-1");
+    expect(ideationApi.apply.toKanban).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      proposalIds: ["proposal-1"],
+      targetColumn: "backlog",
+      baseBranchOverride: "release/2026.08",
     });
   });
 });

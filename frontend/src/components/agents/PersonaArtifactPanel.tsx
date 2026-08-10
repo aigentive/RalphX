@@ -12,6 +12,7 @@ import { preparePersonaArtifactContent } from "@/components/personas/personaArti
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
+import { useAgentGate } from "@/hooks/useAgentGate";
 import { personaArtifactKeys } from "@/hooks/personaArtifactQueries";
 import { usePersonaDraftEvents } from "@/hooks/usePersonaDraftEvents";
 import {
@@ -60,6 +61,9 @@ export function PersonaArtifactPanel({ conversation }: PersonaArtifactPanelProps
   const approve = useApprovePersona();
   const approveAsNew = useApprovePersonaAsNew();
   const reseedDraft = useReseedPersonaDraft();
+  const approveGate = useAgentGate("personaApprove");
+  const approveAsNewGate = useAgentGate("personaApproveAsNew");
+  const reseedGate = useAgentGate("personaReseedDraft");
   const [showChanges, setShowChanges] = useState(false);
   const [approvalConflictRevealed, setApprovalConflictRevealed] = useState(false);
   const sourcePersonaQuery = usePersona(persona?.sourcePersonaId ?? "");
@@ -147,6 +151,8 @@ export function PersonaArtifactPanel({ conversation }: PersonaArtifactPanelProps
   };
 
   const approveDraft = async (asNew: boolean) => {
+    const gate = asNew ? approveAsNewGate : approveGate;
+    if (gate.gated) return;
     try {
       const approved = asNew
         ? await approveAsNew.mutateAsync({ id: persona.id })
@@ -161,6 +167,7 @@ export function PersonaArtifactPanel({ conversation }: PersonaArtifactPanelProps
   };
 
   const rebaseDraft = async () => {
+    if (reseedGate.gated) return;
     try {
       await reseedDraft.mutateAsync(persona.id);
       setApprovalConflictRevealed(false);
@@ -204,15 +211,25 @@ export function PersonaArtifactPanel({ conversation }: PersonaArtifactPanelProps
 
   const artifactActions = isDraft ? (
     seededDraft ? (
-      <Button
-        type="button"
-        size="sm"
-        variant="outline"
-        disabled={isMutating}
-        onClick={() => void approveDraft(true)}
-      >
-        Approve as new
-      </Button>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={isMutating}
+            aria-disabled={approveAsNewGate.gated || undefined}
+            data-disabled-explained={approveAsNewGate.gated ? "true" : undefined}
+            onClick={() => void approveDraft(true)}
+            className={approveAsNewGate.gated ? "opacity-50" : undefined}
+          >
+            Approve as new
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>
+          {approveAsNewGate.gated ? approveAsNewGate.reason : "Approve as new"}
+        </TooltipContent>
+      </Tooltip>
     ) : null
   ) : (
     <>
@@ -273,17 +290,27 @@ export function PersonaArtifactPanel({ conversation }: PersonaArtifactPanelProps
           className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-[var(--status-warning-border)] bg-[var(--status-warning-muted)] px-3 py-2 text-sm text-[var(--text-primary)]"
         >
           <span>Source persona changed since this draft was seeded.</span>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={reseedDraft.isPending}
-            onClick={() => void rebaseDraft()}
-          >
-            {reseedDraft.isPending
-              ? "Rebasing..."
-              : "Rebase draft on current source"}
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={reseedDraft.isPending}
+                aria-disabled={reseedGate.gated || undefined}
+                data-disabled-explained={reseedGate.gated ? "true" : undefined}
+                onClick={() => void rebaseDraft()}
+                className={reseedGate.gated ? "opacity-50" : undefined}
+              >
+                {reseedDraft.isPending
+                  ? "Rebasing..."
+                  : "Rebase draft on current source"}
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>
+              {reseedGate.gated ? reseedGate.reason : "Rebase draft on current source"}
+            </TooltipContent>
+          </Tooltip>
         </div>
       )}
       {showChangesToggle}
@@ -312,11 +339,37 @@ export function PersonaArtifactPanel({ conversation }: PersonaArtifactPanelProps
         <VersionedArtifactDisplay
           artifact={artifact}
           artifactLabel="Persona"
-          showApprove={isDraft}
+          showApprove={false}
           onApprove={() => void approveDraft(false)}
           isApproving={isMutating}
           approveLabel="Approve Persona"
-          artifactActions={artifactActions}
+          artifactActions={
+            isDraft ? (
+              <>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      size="sm"
+                      disabled={isMutating}
+                      aria-disabled={approveGate.gated || undefined}
+                      data-disabled-explained={approveGate.gated ? "true" : undefined}
+                      onClick={() => void approveDraft(false)}
+                      className={approveGate.gated ? "opacity-50" : undefined}
+                    >
+                      Approve Persona
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {approveGate.gated ? approveGate.reason : "Approve Persona"}
+                  </TooltipContent>
+                </Tooltip>
+                {artifactActions}
+              </>
+            ) : (
+              artifactActions
+            )
+          }
           excerptSelectionEnabled={false}
           prepareContent={preparePersonaArtifactContent}
           linkedProposalsCount={0}

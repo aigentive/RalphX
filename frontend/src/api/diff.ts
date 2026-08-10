@@ -10,6 +10,10 @@ import {
   TaskCommitsResponseSchema,
   AgentWorkspaceChangeSummaryResponseSchema,
   AgentWorkspaceReviewResponseSchema,
+  RemoteAgentWorkspaceChangeSummaryResponseSchema,
+  RemoteAgentWorkspaceReviewResponseSchema,
+  RemoteAgentWorkspaceFileDiffPageResponseSchema,
+  RemoteAgentWorkspaceFileDiffResponseSchema,
   PrDiffAnnotationsResponseSchema,
   WorkspaceReviewHunkAnnotationsResponseSchema,
   RangeFetchResponseSchema,
@@ -39,7 +43,11 @@ import type {
   WorkspaceReviewHunkAnnotationsResponse,
   RangeLine,
 } from "./diff.types";
-import { backendApiUrl } from "./backend";
+import { backendFetch } from "./backend";
+import {
+  getTransportEnvironmentId,
+  isRemoteEnvironmentId,
+} from "@/lib/remote/active-environment";
 
 // Re-export types for convenience
 export type {
@@ -83,6 +91,10 @@ export {
   AgentWorkspaceRepairStateSchema,
   AgentWorkspaceChangeSummaryResponseSchema,
   AgentWorkspaceReviewResponseSchema,
+  RemoteAgentWorkspaceChangeSummaryResponseSchema,
+  RemoteAgentWorkspaceReviewResponseSchema,
+  RemoteAgentWorkspaceFileDiffPageResponseSchema,
+  RemoteAgentWorkspaceFileDiffResponseSchema,
   DiffLineKindSchema,
   DiffLineSchema,
   DiffHunkSchema,
@@ -224,23 +236,69 @@ export const diffApi = {
 
   getAgentConversationWorkspaceReview: (
     conversationId: string
-  ): Promise<AgentWorkspaceReview> =>
-    typedInvokeWithTransform(
-      "get_agent_conversation_workspace_review",
+  ): Promise<AgentWorkspaceReview | null> => {
+    if (!isRemoteEnvironmentId(getTransportEnvironmentId())) {
+      return typedInvokeWithTransform(
+        "get_agent_conversation_workspace_review",
+        { conversationId },
+        AgentWorkspaceReviewResponseSchema,
+        transformAgentWorkspaceReview
+      );
+    }
+    return typedInvokeWithTransform(
+      "get_remote_agent_conversation_workspace_review",
       { conversationId },
-      AgentWorkspaceReviewResponseSchema,
-      transformAgentWorkspaceReview
-    ),
+      RemoteAgentWorkspaceReviewResponseSchema,
+      (envelope) =>
+        envelope.snapshot === null
+          ? null
+          : {
+              ...transformAgentWorkspaceReview(envelope.snapshot),
+              ...(envelope.captured_at !== null && {
+                snapshotCapturedAt: envelope.captured_at,
+              }),
+              ...(envelope.cache_version !== null && {
+                snapshotCacheVersion: envelope.cache_version,
+              }),
+              ...(envelope.context_source !== null && {
+                snapshotContextSource: envelope.context_source,
+              }),
+            }
+    );
+  },
 
   getAgentConversationWorkspaceChangeSummary: (
     conversationId: string
-  ): Promise<AgentWorkspaceChangeSummary> =>
-    typedInvokeWithTransform(
-      "get_agent_conversation_workspace_change_summary",
+  ): Promise<AgentWorkspaceChangeSummary | null> => {
+    if (!isRemoteEnvironmentId(getTransportEnvironmentId())) {
+      return typedInvokeWithTransform(
+        "get_agent_conversation_workspace_change_summary",
+        { conversationId },
+        AgentWorkspaceChangeSummaryResponseSchema,
+        transformAgentWorkspaceChangeSummary
+      );
+    }
+    return typedInvokeWithTransform(
+      "get_remote_agent_conversation_workspace_change_summary",
       { conversationId },
-      AgentWorkspaceChangeSummaryResponseSchema,
-      transformAgentWorkspaceChangeSummary
-    ),
+      RemoteAgentWorkspaceChangeSummaryResponseSchema,
+      (envelope) =>
+        envelope.snapshot === null
+          ? null
+          : {
+              ...transformAgentWorkspaceChangeSummary(envelope.snapshot),
+              ...(envelope.captured_at !== null && {
+                snapshotCapturedAt: envelope.captured_at,
+              }),
+              ...(envelope.cache_version !== null && {
+                snapshotCacheVersion: envelope.cache_version,
+              }),
+              ...(envelope.context_source !== null && {
+                snapshotContextSource: envelope.context_source,
+              }),
+            }
+    );
+  },
 
   getAgentConversationWorkspaceRepairChangeSummary: (
     conversationId: string
@@ -275,13 +333,30 @@ export const diffApi = {
   getAgentConversationWorkspaceFileDiff: (
     conversationId: string,
     filePath: string
-  ): Promise<FileDiff> =>
-    typedInvokeWithTransform(
-      "get_agent_conversation_workspace_file_diff",
+  ): Promise<FileDiff | null> => {
+    if (!isRemoteEnvironmentId(getTransportEnvironmentId())) {
+      return typedInvokeWithTransform(
+        "get_agent_conversation_workspace_file_diff",
+        { conversationId, filePath },
+        FileDiffSchema,
+        transformFileDiff
+      );
+    }
+    return typedInvokeWithTransform(
+      "get_remote_agent_conversation_workspace_file_diff",
       { conversationId, filePath },
-      FileDiffSchema,
-      transformFileDiff
-    ),
+      RemoteAgentWorkspaceFileDiffResponseSchema,
+      (envelope) =>
+        envelope.snapshot === null
+          ? null
+          : {
+              ...transformFileDiff(envelope.snapshot),
+              ...(envelope.captured_at !== null && { snapshotCapturedAt: envelope.captured_at }),
+              ...(envelope.cache_version !== null && { snapshotCacheVersion: envelope.cache_version }),
+              ...(envelope.context_source !== null && { snapshotContextSource: envelope.context_source }),
+            }
+    );
+  },
 
   getAgentConversationWorkspaceCommits: (
     conversationId: string
@@ -308,13 +383,30 @@ export const diffApi = {
     conversationId: string,
     commitSha: string,
     filePath: string
-  ): Promise<FileDiff> =>
-    typedInvokeWithTransform(
-      "get_agent_conversation_workspace_commit_file_diff",
+  ): Promise<FileDiff | null> => {
+    if (!isRemoteEnvironmentId(getTransportEnvironmentId())) {
+      return typedInvokeWithTransform(
+        "get_agent_conversation_workspace_commit_file_diff",
+        { conversationId, commitSha, filePath },
+        FileDiffSchema,
+        transformFileDiff
+      );
+    }
+    return typedInvokeWithTransform(
+      "get_remote_agent_conversation_workspace_commit_file_diff",
       { conversationId, commitSha, filePath },
-      FileDiffSchema,
-      transformFileDiff
-    ),
+      RemoteAgentWorkspaceFileDiffResponseSchema,
+      (envelope) =>
+        envelope.snapshot === null
+          ? null
+          : {
+              ...transformFileDiff(envelope.snapshot),
+              ...(envelope.captured_at !== null && { snapshotCapturedAt: envelope.captured_at }),
+              ...(envelope.cache_version !== null && { snapshotCacheVersion: envelope.cache_version }),
+              ...(envelope.context_source !== null && { snapshotContextSource: envelope.context_source }),
+            }
+    );
+  },
 
   getAgentConversationWorkspaceStagedFileChanges: (
     conversationId: string
@@ -424,13 +516,30 @@ export const diffApi = {
   getAgentConversationWorkspaceCumulativeFileDiff: (
     conversationId: string,
     filePath: string
-  ): Promise<FileDiff> =>
-    typedInvokeWithTransform(
-      "get_agent_conversation_workspace_cumulative_file_diff",
+  ): Promise<FileDiff | null> => {
+    if (!isRemoteEnvironmentId(getTransportEnvironmentId())) {
+      return typedInvokeWithTransform(
+        "get_agent_conversation_workspace_cumulative_file_diff",
+        { conversationId, filePath },
+        FileDiffSchema,
+        transformFileDiff
+      );
+    }
+    return typedInvokeWithTransform(
+      "get_remote_agent_conversation_workspace_cumulative_file_diff",
       { conversationId, filePath },
-      FileDiffSchema,
-      transformFileDiff
-    ),
+      RemoteAgentWorkspaceFileDiffResponseSchema,
+      (envelope) =>
+        envelope.snapshot === null
+          ? null
+          : {
+              ...transformFileDiff(envelope.snapshot),
+              ...(envelope.captured_at !== null && { snapshotCapturedAt: envelope.captured_at }),
+              ...(envelope.cache_version !== null && { snapshotCacheVersion: envelope.cache_version }),
+              ...(envelope.context_source !== null && { snapshotContextSource: envelope.context_source }),
+            }
+    );
+  },
 
   /**
    * Fetch a bounded page of flattened diff rows for one agent workspace file.
@@ -443,11 +552,25 @@ export const diffApi = {
     refKind: DiffRefKind;
     offset: number;
     limit: number;
-  }): Promise<FileDiffPage> => {
+  }): Promise<FileDiffPage | null> => {
     const { conversationId, path, refKind, offset, limit } = args;
-    const url = backendApiUrl(
-      `agent-workspaces/${encodeURIComponent(conversationId)}/file-diff-page`
-    );
+    if (isRemoteEnvironmentId(getTransportEnvironmentId())) {
+      return typedInvokeWithTransform(
+        "get_remote_agent_conversation_workspace_file_diff_page",
+        { conversationId, filePath: path, refKind, offset, limit },
+        RemoteAgentWorkspaceFileDiffPageResponseSchema,
+        (envelope) =>
+          envelope.snapshot === null
+            ? null
+            : {
+                ...transformFileDiffPage(envelope.snapshot),
+                ...(envelope.captured_at !== null && { snapshotCapturedAt: envelope.captured_at }),
+                ...(envelope.cache_version !== null && { snapshotCacheVersion: envelope.cache_version }),
+                ...(envelope.context_source !== null && { snapshotContextSource: envelope.context_source }),
+              }
+      );
+    }
+    const endpoint = `agent-workspaces/${encodeURIComponent(conversationId)}/file-diff-page`;
     const params = new URLSearchParams({
       path,
       ref_kind: refKind.kind,
@@ -457,7 +580,7 @@ export const diffApi = {
     if (refKind.kind === "commit") {
       params.set("sha", refKind.sha);
     }
-    const response = await fetch(`${url}?${params.toString()}`);
+    const response = await backendFetch(`${endpoint}?${params.toString()}`);
     if (!response.ok) {
       throw new Error(`File diff page fetch failed: ${response.status} ${response.statusText}`);
     }
@@ -488,9 +611,7 @@ export const diffApi = {
     to: number;
   }): Promise<RangeLine[]> => {
     const { conversationId, side, path, refKind, from, to } = args;
-    const url = backendApiUrl(
-      `agent-workspaces/${encodeURIComponent(conversationId)}/file-content-range`
-    );
+    const endpoint = `agent-workspaces/${encodeURIComponent(conversationId)}/file-content-range`;
     const params = new URLSearchParams({
       side,
       path,
@@ -501,7 +622,7 @@ export const diffApi = {
     if (refKind.kind === "commit") {
       params.set("sha", refKind.sha);
     }
-    const response = await fetch(`${url}?${params.toString()}`);
+    const response = await backendFetch(`${endpoint}?${params.toString()}`);
     if (!response.ok) {
       throw new Error(
         `File content range fetch failed: ${response.status} ${response.statusText}`

@@ -13,10 +13,16 @@ use crate::review::{
     ScopeDriftClassification,
 };
 
-fn sample_task_context() -> TaskContext {
+fn sample_task() -> Task {
     let project_id = ProjectId::from_string("project-1".to_string());
-    let mut task = Task::new(project_id.clone(), "Refactor review flow".to_string());
+    let mut task = Task::new(project_id, "Refactor review flow".to_string());
     task.id = TaskId::from_string("task-1".to_string());
+    task
+}
+
+fn sample_task_context() -> TaskContext {
+    let task = sample_task();
+    let _project_id = task.project_id.clone();
 
     TaskContext {
         task,
@@ -129,8 +135,11 @@ fn should_spawn_unrelated_drift_followup_requires_exhausted_escalation() {
 #[test]
 fn build_unrelated_drift_followup_draft_carries_prompt_and_fingerprint() {
     let task_context = sample_task_context();
+    // The draft builder takes the `Task` alongside the context, so pass the same entity the
+    // context carries.
+    let task = sample_task();
     let draft = build_unrelated_drift_followup_draft(
-        &task_context.task,
+        &task,
         &task_context,
         Some("summary"),
         Some("feedback"),

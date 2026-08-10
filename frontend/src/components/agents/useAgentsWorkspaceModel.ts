@@ -77,11 +77,19 @@ export function useAgentsWorkspaceModel({
       query.state.data?.maintenanceOperation?.status === "active" ? 1_500 : false,
     refetchIntervalInBackground: false,
   });
-  const activeWorkspace =
-    conversationWorkspaceQuery.data ??
-    (selectedConversationId
-      ? optimisticWorkspacesByConversationId[selectedConversationId] ?? null
-      : null);
+  const activeWorkspace = conversationWorkspaceQuery.isError
+    ? null
+    : conversationWorkspaceQuery.data ??
+      (selectedConversationId
+        ? optimisticWorkspacesByConversationId[selectedConversationId] ?? null
+        : null);
+  const workspaceHydrationStatus = conversationWorkspaceQuery.isError
+    ? "error"
+    : conversationWorkspaceQuery.isPending
+      ? "loading"
+      : conversationWorkspaceQuery.data
+        ? "resolved"
+        : "absent";
   const activeConversationMode =
     activeConversation?.contextType === "project"
       ? resolveConversationAgentMode(activeConversation, activeWorkspace)
@@ -160,10 +168,9 @@ export function useAgentsWorkspaceModel({
   const activeConversationModeLocked = activeConversation
     ? isConversationModeLocked(activeConversation, activeWorkspace)
     : false;
-  const terminalUnavailableReason = getAgentTerminalUnavailableReason(
-    activeConversation,
-    activeWorkspace,
-  );
+  const terminalUnavailableReason = conversationWorkspaceQuery.isError
+    ? "Workspace details could not be loaded. Retry the connection before continuing."
+    : getAgentTerminalUnavailableReason(activeConversation, activeWorkspace);
   const terminalArchivedReason = getAgentTerminalArchivedReason(
     activeConversation,
     activeWorkspace,
@@ -181,6 +188,8 @@ export function useAgentsWorkspaceModel({
     retryActiveWorkspace: conversationWorkspaceQuery.refetch,
     terminalArchivedReason,
     terminalUnavailableReason,
+    workspaceHydrationError: conversationWorkspaceQuery.error,
+    workspaceHydrationStatus,
   };
 }
 

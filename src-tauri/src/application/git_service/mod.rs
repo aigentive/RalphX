@@ -8,8 +8,8 @@
 //! - Checkout-free merge operations (git plumbing, no working tree mutation)
 //! - Query operations for commits and diff stats
 
-mod branch;
 mod bootstrap;
+mod branch;
 pub mod checkout_free;
 mod commit;
 pub(crate) mod git_cmd;
@@ -21,8 +21,8 @@ mod repository_capability;
 mod state_query;
 mod worktree;
 
-pub(crate) use rebase::FetchOriginOutcome;
 pub use bootstrap::{GitBootstrapRequest, ProjectGitBootstrap};
+pub(crate) use rebase::FetchOriginOutcome;
 
 #[cfg(test)]
 mod tests;

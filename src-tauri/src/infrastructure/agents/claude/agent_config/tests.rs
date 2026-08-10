@@ -3246,6 +3246,7 @@ fn test_env_override_true_value_enables_flag() {
             agent_personas: false,
             persona_switch_forces_fresh_provider_session: false,
             standalone_conversations: false,
+            remote_environments: false,
         },
     };
     runtime_config::apply_env_overrides_with_lookup(&mut cfg, &|name| match name {
@@ -3253,6 +3254,18 @@ fn test_env_override_true_value_enables_flag() {
         "RALPHX_UI_EXTENSIBILITY_PAGE" => Some("1".to_string()),
         _ => None,
     });
+    assert!(
+        !cfg.ui_feature_flags.remote_environments,
+        "remote_environments untouched without its env var"
+    );
+    runtime_config::apply_env_overrides_with_lookup(&mut cfg, &|name| match name {
+        "RALPHX_UI_REMOTE_ENVIRONMENTS" => Some("true".to_string()),
+        _ => None,
+    });
+    assert!(
+        cfg.ui_feature_flags.remote_environments,
+        "env 'true' should enable remote_environments"
+    );
     assert!(
         cfg.ui_feature_flags.activity_page,
         "env 'true' should enable activity_page"

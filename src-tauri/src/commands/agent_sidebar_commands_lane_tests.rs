@@ -1851,3 +1851,115 @@ fn publication_state_from_domain_active_workspace_failed_run_is_active() {
         SidebarPublicationState::Active
     );
 }
+
+/// Returns the single sidebar row workspace object from a serialized groups payload.
+/// Sentinel host path seeded into a workspace row so the absence assertion cannot pass
+/// vacuously.
+const WORKTREE_SENTINEL: &str = "/SECRET/HOST/WORKTREE";
+fn only_row_workspace(value: &serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+    let mut found = None;
+    for group in value["groups"].as_array().expect("groups is an array") {
+        for row in group["rows"].as_array().expect("rows is an array") {
+            if let Some(workspace) = row.get("workspace").and_then(|w| w.as_object()) {
+                assert!(
+                    found.is_none(),
+                    "expected exactly one workspace-bearing row"
+                );
+                found = Some(workspace.clone());
+            }
+        }
+    }
+    found.expect("a workspace-bearing row must be present")
+}
+async fn seed_sidebar_row_with_worktree_sentinel(
+    state: &AppState,
+) -> (Project, ProjectId, ChatConversation) {
+    let project = create_project(state, "sentinel-project").await;
+    let project_id = project.id.clone();
+    let conversation = create_conversation(state, &project_id, "Ship the inbox", Utc::now()).await;
+    let workspace = AgentConversationWorkspace::new(
+        conversation.id,
+        project_id.clone(),
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "develop".to_string(),
+        Some("Current branch (develop)".to_string()),
+        None,
+        format!("agent/{}", conversation.id),
+        WORKTREE_SENTINEL.to_string(),
+    );
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap();
+    (project, project_id, conversation)
+}
+/// The remote projection blanks ONLY `worktree_path`; every other workspace field survives
+/// byte-for-byte, and the sentinel host path never appears anywhere in the remote payload.
+///
+/// This is the parity + ABSENCE guarantee for `list_remote_agent_sidebar_conversations`:
+/// the local read (through the recovery-scheduling hydrator) carries the real host path, and
+/// the projected read (recovery-free hydrator + facade strip, exactly what the twin does)
+/// carries an empty string in its place with no other field changed.
+#[tokio::test]
+async fn remote_agent_sidebar_projection_blanks_only_the_worktree_path() {
+    let state = AppState::new_test();
+    let (_, project_id, _) = seed_sidebar_row_with_worktree_sentinel(&state).await;
+    // Local path: the full response carries the real host worktree_path.
+    let local = list_agent_sidebar_conversations_for_app_state(sidebar_input(&project_id), &state)
+        .await
+        .unwrap();
+    let local_value = serde_json::to_value(&local).unwrap();
+    let local_serialized = serde_json::to_string(&local_value).unwrap();
+    assert!(
+        local_serialized.contains(WORKTREE_SENTINEL),
+        "the local sidebar read must carry the real worktree_path, or the absence check below \
+         would pass for the wrong reason"
+    );
+    let local_workspace = only_row_workspace(&local_value);
+    assert_eq!(
+        local_workspace["worktree_path"],
+        serde_json::json!(WORKTREE_SENTINEL)
+    );
+    // Remote path: recovery-free hydration + the exact facade projection the twin applies.
+    let mut projected = list_agent_sidebar_conversations_read_only_for_app_state(
+        sidebar_input(&project_id),
+        &state,
+    )
+    .await
+    .unwrap();
+    crate::commands::remote_transcript_commands::strip_worktree_paths_from_sidebar_groups(
+        &mut projected,
+    );
+    let projected_value = serde_json::to_value(&projected).unwrap();
+    let projected_serialized = serde_json::to_string(&projected_value).unwrap();
+    // ABSENCE: the sentinel host path cannot appear anywhere in the remote payload.
+    assert!(
+        !projected_serialized.contains(WORKTREE_SENTINEL),
+        "the host worktree_path leaked into the remote sidebar payload"
+    );
+    let projected_workspace = only_row_workspace(&projected_value);
+    // The field is present but blank — not omitted (the zod schema requires it).
+    assert_eq!(projected_workspace["worktree_path"], serde_json::json!(""));
+    // PARITY: every OTHER workspace field is identical to the local read.
+    assert_eq!(
+        local_workspace
+            .keys()
+            .collect::<std::collections::BTreeSet<_>>(),
+        projected_workspace
+            .keys()
+            .collect::<std::collections::BTreeSet<_>>(),
+        "the projection must not add or drop workspace keys"
+    );
+    for (key, local_field) in &local_workspace {
+        if key == "worktree_path" {
+            continue;
+        }
+        assert_eq!(
+            projected_workspace.get(key),
+            Some(local_field),
+            "allowlisted field `{key}` diverged between local and remote sidebar reads"
+        );
+    }
+}

@@ -1,9 +1,18 @@
+import { resetTransportEnvironmentId } from "@/lib/remote/active-environment";
+import { resetQueryClient } from "@/lib/queryClient";
+import { createElement, type ReactElement } from "react";
 /**
  * GroupContextMenuItems.test.tsx - Tests for group-level bulk action context menu items
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { afterEach, describe, it, expect, vi, beforeEach } from "vitest";
+import {
+  render as rtlRender,
+  screen,
+  fireEvent,
+  waitFor,
+} from "@testing-library/react";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -11,6 +20,26 @@ import {
 } from "@/components/ui/context-menu";
 import { GroupContextMenuItems } from "./GroupContextMenuItems";
 import { useConfirmation } from "@/hooks/useConfirmation";
+
+// Gate tests park the store on a remote environment; without this the next file in
+// the same worker inherits it and resolves a different keyed QueryClient. That is
+// what broke EnvironmentScopedProviders under CI sharding.
+afterEach(() => {
+  resetQueryClient();
+  resetTransportEnvironmentId();
+  useEnvironmentStore.setState({ activeEnvironmentId: LOCAL_ENVIRONMENT_ID });
+});
+
+import {
+  LOCAL_ENVIRONMENT_ID,
+  useEnvironmentStore,
+} from "@/stores/environmentStore";
+
+// Gated icon-only controls carry the app tooltip; `Tooltip` throws without a
+// provider, which production gets from App.tsx.
+function render(ui: ReactElement): ReturnType<typeof rtlRender> {
+  return rtlRender(createElement(TooltipProvider, null, ui));
+}
 
 // ============================================================================
 // Helpers
@@ -23,6 +52,8 @@ function TestWrapper({
   projectId = "project-1",
   groupId = "ready",
   onArchiveAll,
+  onCancelAll,
+  onPauseAll,
 }: {
   groupLabel: string;
   groupKind: "column" | "plan" | "uncategorized";
@@ -30,8 +61,11 @@ function TestWrapper({
   projectId?: string;
   groupId?: string;
   onArchiveAll?: () => void;
+  onCancelAll?: () => void;
+  onPauseAll?: () => void;
 }) {
-  const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
+  const { confirm, confirmationDialogProps, ConfirmationDialog } =
+    useConfirmation();
   return (
     <>
       <ContextMenu>
@@ -46,6 +80,8 @@ function TestWrapper({
             projectId={projectId}
             groupId={groupId}
             onArchiveAll={onArchiveAll}
+            onCancelAll={onCancelAll}
+            onPauseAll={onPauseAll}
 
             confirm={confirm}
           />
@@ -69,6 +105,88 @@ describe("GroupContextMenuItems", () => {
 
   beforeEach(() => {
     onArchiveAll = vi.fn();
+    useEnvironmentStore.setState({
+      activeEnvironmentId: LOCAL_ENVIRONMENT_ID,
+      environments: [
+        { id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" },
+      ],
+      effectiveScopes: {},
+      connectionPresentations: {},
+    });
+  });
+
+  it.each([
+    ["pause-all-action", "pause-all-gate-explanation"],
+    ["cancel-all-action", "cancel-all-gate-explanation"],
+  ])(
+    "gates %s, shows its reason, and does not dispatch",
+    async (actionId, explanationId) => {
+      const onPauseAll = vi.fn();
+      const onCancelAll = vi.fn();
+      useEnvironmentStore.setState({
+        activeEnvironmentId: "remote",
+        environments: [{ id: "remote", name: "Remote", kind: "remote" }],
+        effectiveScopes: { remote: ["ui:read", "ui:operate"] },
+        connectionPresentations: {
+          remote: {
+            presentation: "connected",
+            blockedFailure: null,
+            blockedMessage: null,
+          },
+        },
+      });
+      render(
+        <TestWrapper
+          groupLabel="Ready"
+          groupKind="column"
+          taskCount={2}
+          onPauseAll={onPauseAll}
+          onCancelAll={onCancelAll}
+        />,
+      );
+      openContextMenu();
+      const action = screen.getByTestId(actionId);
+      expect(action).toHaveAttribute("data-agent-gated", "true");
+      // The reason lives in a Radix TooltipContent, which only mounts once the
+      // trigger is focused — the same pattern agent-gate-surfaces.test.tsx uses.
+      action.focus();
+      await waitFor(() => {
+        expect(screen.getByTestId(explanationId)).toHaveTextContent(
+          /agent control/i,
+        );
+      });
+      fireEvent.click(action);
+      expect(onPauseAll).not.toHaveBeenCalled();
+      expect(onCancelAll).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps pause and cancel live and dispatches after confirmation when granted", async () => {
+    const onPauseAll = vi.fn();
+    useEnvironmentStore.setState({
+      activeEnvironmentId: "remote",
+      environments: [{ id: "remote", name: "Remote", kind: "remote" }],
+      effectiveScopes: { remote: ["ui:read", "ui:operate", "ui:agent"] },
+      connectionPresentations: {
+        remote: {
+          presentation: "connected",
+          blockedFailure: null,
+          blockedMessage: null,
+        },
+      },
+    });
+    render(
+      <TestWrapper
+        groupLabel="Ready"
+        groupKind="column"
+        taskCount={2}
+        onPauseAll={onPauseAll}
+      />,
+    );
+    openContextMenu();
+    fireEvent.click(screen.getByTestId("pause-all-action"));
+    fireEvent.click(await screen.findByRole("button", { name: "Pause" }));
+    await waitFor(() => expect(onPauseAll).toHaveBeenCalledTimes(1));
   });
 
   describe("rendering", () => {
@@ -96,7 +214,9 @@ describe("GroupContextMenuItems", () => {
         />,
       );
       openContextMenu();
-      expect(screen.getByText("Archive all in Auth Feature")).toBeInTheDocument();
+      expect(
+        screen.getByText("Archive all in Auth Feature"),
+      ).toBeInTheDocument();
     });
 
     it("renders 'Archive all Uncategorized' for uncategorized kind", () => {
@@ -140,11 +260,7 @@ describe("GroupContextMenuItems", () => {
 
     it("renders nothing when no handlers provided", () => {
       render(
-        <TestWrapper
-          groupLabel="Ready"
-          groupKind="column"
-          taskCount={3}
-        />,
+        <TestWrapper groupLabel="Ready" groupKind="column" taskCount={3} />,
       );
       openContextMenu();
       expect(screen.queryByText(/Archive all/)).not.toBeInTheDocument();
@@ -211,7 +327,9 @@ describe("GroupContextMenuItems", () => {
 
       fireEvent.click(screen.getByText("Cancel"));
       await waitFor(() => {
-        expect(screen.queryByText("Archive all Ready?")).not.toBeInTheDocument();
+        expect(
+          screen.queryByText("Archive all Ready?"),
+        ).not.toBeInTheDocument();
       });
       expect(onArchiveAll).not.toHaveBeenCalled();
     });

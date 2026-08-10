@@ -545,9 +545,9 @@ impl ChatService for MockChatService {
         &self,
         context_type: ChatContextType,
         context_ids: &[String],
-    ) -> HashMap<String, AgentRunningState> {
+    ) -> Result<HashMap<String, AgentRunningState>, ChatServiceError> {
         let running_agents = self.running_agents.lock().await;
-        context_ids
+        Ok(context_ids
             .iter()
             .filter(|context_id| !context_id.is_empty())
             .map(|context_id| {
@@ -559,6 +559,6 @@ impl ChatService for MockChatService {
                 };
                 (context_id.clone(), state)
             })
-            .collect()
+            .collect())
     }
 }

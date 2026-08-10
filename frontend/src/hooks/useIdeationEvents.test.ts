@@ -115,6 +115,9 @@ vi.mock("@/hooks/useProposals", () => ({
 // ============================================================================
 
 import { useIdeationEvents } from "./useIdeationEvents";
+import { ideationApi } from "@/api/ideation";
+import { useUiStore } from "@/stores/uiStore";
+import { LOCAL_ENVIRONMENT_ID, useEnvironmentStore } from "@/stores/environmentStore";
 
 // ============================================================================
 // Tests
@@ -155,6 +158,48 @@ describe("useIdeationEvents — ideation:session_created", () => {
     expect(mockInvalidateQueries).not.toHaveBeenCalledWith({ queryKey: ["sessions"] });
 
     consoleError.mockRestore();
+  });
+});
+
+describe("useIdeationEvents — remote auto-accept boundary", () => {
+  beforeEach(() => {
+    subscriptions.clear();
+    useUiStore.setState({ autoAcceptPlans: true, autoAcceptSessions: new Set() });
+  });
+
+  it("does not consume a paired client's human confirmation gate", () => {
+    useEnvironmentStore.setState({
+      activeEnvironmentId: "remote-1",
+      environments: [
+        { id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" },
+        { id: "remote-1", name: "Host Mac", kind: "remote" },
+      ],
+      effectiveScopes: { "remote-1": ["ui:read", "ui:operate", "ui:agent"] },
+    });
+    // The env switch above resets env-scoped UI state (registerEnvIsolatedStore), so
+    // auto-accept must be re-armed AFTER it — otherwise this test passes for the wrong
+    // reason (auto-accept simply off) instead of proving the R5 remote boundary.
+    useUiStore.setState({ autoAcceptPlans: true, autoAcceptSessions: new Set() });
+    const accept = vi.spyOn(ideationApi.acceptance, "accept").mockResolvedValue({ status: "accepted", sessionId: "session-1" });
+    renderHook(() => useIdeationEvents());
+    act(() => fireEvent("ideation:finalize_pending_confirmation", { sessionId: "session-1", sessionTitle: null }));
+    expect(accept).not.toHaveBeenCalled();
+    accept.mockRestore();
+  });
+
+  it("retains local auto-accept", async () => {
+    useEnvironmentStore.setState({
+      activeEnvironmentId: LOCAL_ENVIRONMENT_ID,
+      environments: [{ id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" }],
+      effectiveScopes: {},
+    });
+    // Re-arm after the env set — the env-scoped isolation reset wipes autoAcceptPlans.
+    useUiStore.setState({ autoAcceptPlans: true, autoAcceptSessions: new Set() });
+    const accept = vi.spyOn(ideationApi.acceptance, "accept").mockResolvedValue({ status: "accepted", sessionId: "session-1" });
+    renderHook(() => useIdeationEvents());
+    act(() => fireEvent("ideation:finalize_pending_confirmation", { sessionId: "session-1", sessionTitle: null }));
+    await vi.waitFor(() => expect(accept).toHaveBeenCalledWith("session-1"));
+    accept.mockRestore();
   });
 });
 

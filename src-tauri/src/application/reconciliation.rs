@@ -20,7 +20,6 @@ pub mod verification_handoff;
 pub mod verification_reconciliation;
 
 use ralphx_events::{EventSink, NullEventSink};
-use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::AppHandle;
 use tokio::sync::Mutex;
@@ -43,6 +42,51 @@ pub use policy::UserRecoveryAction;
 pub use policy::{
     RecoveryActionKind, RecoveryContext, RecoveryDecision, RecoveryEvidence, RecoveryPolicy,
 };
+
+#[derive(Default)]
+pub struct RecoveryPromptTracker {
+    active: Mutex<std::collections::HashMap<String, String>>,
+}
+
+impl RecoveryPromptTracker {
+    fn key(task_id: &str, status: crate::domain::entities::InternalStatus) -> String {
+        format!("{task_id}:{status:?}")
+    }
+
+    pub async fn contains(
+        &self,
+        task_id: &str,
+        status: crate::domain::entities::InternalStatus,
+    ) -> bool {
+        self.active
+            .lock()
+            .await
+            .contains_key(&Self::key(task_id, status))
+    }
+
+    pub(crate) async fn insert_if_absent(
+        &self,
+        task_id: &str,
+        status: crate::domain::entities::InternalStatus,
+        instance_id: String,
+    ) -> bool {
+        let mut active = self.active.lock().await;
+        let key = Self::key(task_id, status);
+        if active.contains_key(&key) {
+            return false;
+        }
+        active.insert(key, instance_id);
+        true
+    }
+
+    pub(crate) async fn remove(
+        &self,
+        task_id: &str,
+        status: crate::domain::entities::InternalStatus,
+    ) {
+        self.active.lock().await.remove(&Self::key(task_id, status));
+    }
+}
 
 pub struct ReconciliationRunner {
     pub(crate) task_repo: Arc<dyn TaskRepository>,
@@ -72,7 +116,7 @@ pub struct ReconciliationRunner {
     /// Optional application notification effect, injected for non-Tauri runners and tests.
     pub(crate) notification_service: Option<Arc<NotificationService>>,
     /// Active recovery prompt key -> concrete prompt instance id.
-    pub(crate) prompt_tracker: Arc<Mutex<HashMap<String, String>>>,
+    pub(crate) prompt_tracker: Arc<RecoveryPromptTracker>,
     /// PR poller registry for GitHub PR polling (own DI, separate from TaskServices — AD18).
     pub(crate) pr_poller_registry: Option<Arc<crate::application::PrPollerRegistry>>,
 }
@@ -123,9 +167,14 @@ impl ReconciliationRunner {
             chat_runtime_deps: None,
             policy: RecoveryPolicy,
             notification_service: None,
-            prompt_tracker: Arc::new(Mutex::new(HashMap::new())),
+            prompt_tracker: Arc::new(RecoveryPromptTracker::default()),
             pr_poller_registry: None,
         }
+    }
+
+    pub fn with_prompt_tracker(mut self, tracker: Arc<RecoveryPromptTracker>) -> Self {
+        self.prompt_tracker = tracker;
+        self
     }
 
     pub fn with_app_handle(mut self, app_handle: AppHandle) -> Self {

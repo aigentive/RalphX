@@ -1,9 +1,10 @@
 use super::question_commands::{
     accepted_plan_mode_proposal, build_plan_mode_proposal_continuation,
-    plan_mode_proposal_continuation_metadata, PLAN_MODE_PROPOSAL_ACCEPT_VALUE,
-    PLAN_MODE_PROPOSAL_CONTINUATION_BASE, PLAN_MODE_PROPOSAL_KIND,
+    list_pending_question_gates, plan_mode_proposal_continuation_metadata,
+    PLAN_MODE_PROPOSAL_ACCEPT_VALUE, PLAN_MODE_PROPOSAL_CONTINUATION_BASE, PLAN_MODE_PROPOSAL_KIND,
 };
-use crate::application::{PendingQuestionInfo, QuestionAnswer, QuestionOption};
+use crate::application::{AppState, PendingQuestionInfo, QuestionAnswer, QuestionOption};
+use tauri::Manager;
 
 fn answer(selected_options: Vec<&str>, skipped: bool) -> QuestionAnswer {
     QuestionAnswer {
@@ -156,5 +157,77 @@ fn continuation_message_and_metadata_are_hidden_resume_payloads() {
             .get("persist_hidden_marker")
             .and_then(|value| value.as_bool()),
         Some(true)
+    );
+}
+
+#[tokio::test]
+async fn list_pending_question_gates_rehydrates_only_still_pending_disconnect_gates() {
+    let app = tauri::test::mock_builder()
+        .manage(AppState::new_test())
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app should build");
+    let question_state = &app.state::<AppState>().question_state;
+    question_state
+        .register(
+            "question-disconnected".to_string(),
+            "session-1".to_string(),
+            "Continue?".to_string(),
+            None,
+            vec![],
+            false,
+        )
+        .await;
+    question_state
+        .register(
+            "question-expired".to_string(),
+            "session-1".to_string(),
+            "Still continue?".to_string(),
+            None,
+            vec![],
+            false,
+        )
+        .await;
+
+    let while_disconnected = list_pending_question_gates(app.state::<AppState>())
+        .await
+        .expect("pending gates load while the client is disconnected");
+    assert_eq!(while_disconnected.len(), 2);
+
+    // A wait-expired gate is NOT terminal: `QuestionRepository::get_pending` is documented to
+    // include questions whose agent-side wait timed out but which can still accept a late
+    // answer, and the local UI keeps showing them. Rehydration must match that surface exactly —
+    // hiding it from a reconnecting client would be the only place the two diverge.
+    assert!(
+        question_state.expire("question-expired").await.is_some(),
+        "the second gate's agent-side wait should expire before the client reconnects"
+    );
+    let mut after_expiry = list_pending_question_gates(app.state::<AppState>())
+        .await
+        .expect("pending gates reload on reconnect")
+        .into_iter()
+        .map(|question| question.request_id)
+        .collect::<Vec<_>>();
+    after_expiry.sort();
+    assert_eq!(
+        after_expiry,
+        vec!["question-disconnected", "question-expired"],
+        "a wait-expired but still answerable gate stays rehydratable"
+    );
+
+    // Resolution IS terminal, and only resolution removes a gate from the rehydration set.
+    question_state
+        .resolve("question-expired", answer(vec![], false))
+        .await;
+
+    let after_reconnect = list_pending_question_gates(app.state::<AppState>())
+        .await
+        .expect("pending gates reload on reconnect");
+    assert_eq!(
+        after_reconnect
+            .iter()
+            .map(|question| question.request_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["question-disconnected"],
+        "the unresolved disconnect-window gate is rehydrated and the resolved gate is absent"
     );
 }

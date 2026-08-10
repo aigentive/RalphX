@@ -6,8 +6,6 @@ pub mod agent_composer_commands;
 pub mod agent_conversation_mute_commands;
 #[cfg(test)]
 mod agent_conversation_mute_commands_tests;
-#[cfg(test)]
-mod agent_workspace_dispatch_contract_tests;
 pub mod agent_issue_report_commands;
 #[cfg(test)]
 mod agent_issue_report_commands_tests;
@@ -27,6 +25,8 @@ mod agent_workspace_auto_publish_tests;
 pub(crate) mod agent_workspace_auto_review;
 #[cfg(test)]
 mod agent_workspace_auto_review_tests;
+#[cfg(test)]
+mod agent_workspace_dispatch_contract_tests;
 pub(crate) mod agent_workspace_repair_reconciliation_scan;
 #[cfg(test)]
 mod agent_workspace_repair_reconciliation_scan_tests;
@@ -92,6 +92,54 @@ pub mod question_commands;
 mod question_commands_tests;
 pub mod registry;
 pub mod release_notes_commands;
+pub mod remote_agent_stop_commands;
+pub mod remote_attachment_commands;
+pub mod remote_automation_commands;
+#[cfg(test)]
+mod remote_automation_commands_tests;
+pub mod remote_chat_commands;
+#[cfg(test)]
+mod remote_chat_commands_tests;
+pub mod remote_conversation_lifecycle_commands;
+#[cfg(test)]
+mod remote_conversation_lifecycle_commands_tests;
+pub mod remote_conversation_message_commands;
+pub mod remote_conversation_mode_switch_commands;
+pub mod remote_conversation_start_commands;
+pub mod remote_device_commands;
+pub mod remote_diff_commands;
+#[cfg(test)]
+mod remote_diff_commands_tests;
+pub mod remote_environment_commands;
+pub mod remote_execution_settings_commands;
+pub mod remote_execution_status_commands;
+#[cfg(test)]
+mod remote_execution_status_commands_tests;
+pub mod remote_host_commands;
+pub mod remote_ideation_commands;
+#[cfg(test)]
+mod remote_ideation_commands_tests;
+pub mod remote_mcp_policy_commands;
+#[cfg(test)]
+mod remote_mcp_policy_commands_tests;
+pub mod remote_plan_commands;
+#[cfg(test)]
+mod remote_plan_commands_tests;
+pub mod remote_question_commands;
+#[cfg(test)]
+mod remote_question_commands_tests;
+pub mod remote_queue_commands;
+#[cfg(test)]
+mod remote_queue_commands_tests;
+pub mod remote_resume_commands;
+#[cfg(test)]
+mod remote_resume_commands_tests;
+pub mod remote_transcript_commands;
+#[cfg(test)]
+mod remote_transcript_commands_tests;
+#[cfg(debug_assertions)]
+pub mod remote_transport_spike_commands;
+pub mod remote_workspace_commands;
 pub mod repository_settings_commands;
 #[cfg(test)]
 mod repository_settings_commands_tests;
@@ -196,8 +244,9 @@ pub use atlassian_commands::{
 pub use automation_commands::{
     create_automation_draft, get_automation, list_automations, pause_automation,
     restart_automation, resume_automation, retry_automation_judge, retry_automation_plan_judge,
-    stop_automation, update_automation_settings, AutomationIdInput, CreateAutomationDraftInput,
-    ListAutomationsInput, PauseAutomationInput, UpdateAutomationSettingsInput,
+    stop_automation, update_automation_config, update_automation_settings, AutomationIdInput,
+    CreateAutomationDraftInput, ListAutomationsInput, PauseAutomationInput,
+    UpdateAutomationConfigInput, UpdateAutomationSettingsInput,
 };
 pub use chat_attachment_commands::{
     delete_chat_attachment, link_attachments_to_message, list_conversation_attachments,
@@ -256,7 +305,7 @@ pub use ideation_commands::{
     analyze_dependencies, apply_proposals_to_kanban, archive_ideation_session,
     assess_all_priorities, assess_proposal_priority, count_session_messages,
     create_ideation_session, create_task_proposal, delete_chat_message, delete_ideation_session,
-    delete_session_messages, delete_task_proposal, get_agent_harness_availability,
+    delete_session_messages, archive_task_proposal, get_agent_harness_availability,
     get_agent_lane_settings, get_blocked_tasks, get_ideation_harness_availability,
     get_ideation_session, get_ideation_session_with_data, get_project_messages,
     get_proposal_dependencies, get_proposal_dependents, get_recent_session_messages,
@@ -296,6 +345,9 @@ pub use methodology_commands::{
     MethodologyActivationResponse, MethodologyPhaseResponse, MethodologyResponse,
     MethodologyTemplateResponse, WorkflowSchemaResponse,
 };
+pub use remote_execution_status_commands::get_remote_execution_status;
+pub use remote_question_commands::resolve_remote_user_question;
+pub use remote_transcript_commands::get_remote_agent_conversation_workspace;
 
 #[cfg(test)]
 mod manual_role_default_commands_tests;
@@ -387,10 +439,9 @@ pub use unified_chat_commands::{
     get_agent_conversation_summary, get_agent_conversation_timeline_page,
     get_agent_conversation_workspace, get_agent_conversation_workspace_freshness,
     get_agent_message_tool_call_detail, get_agent_run_attribution, get_agent_run_attributions,
-    get_agent_run_status_unified,
-    get_agent_running_states, get_agent_timeline_item_tool_call_detail, get_queued_agent_messages,
-    is_agent_running, is_chat_service_available,
-    list_agent_conversation_workspace_publication_events,
+    get_agent_run_status_unified, get_agent_running_states,
+    get_agent_timeline_item_tool_call_detail, get_queued_agent_messages, is_agent_running,
+    is_chat_service_available, list_agent_conversation_workspace_publication_events,
     list_agent_conversation_workspaces_by_project, list_agent_conversations,
     list_agent_conversations_page, precompute_agent_conversation_workspace_pr_description,
     publish_agent_conversation_workspace, queue_agent_message,

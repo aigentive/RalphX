@@ -20,6 +20,11 @@ import {
   AgentComposerSurface,
 } from "./AgentComposerSurface";
 import { stageComposerExcerptReference } from "./artifact-selection/composerExcerptBridge";
+import { chatKeys } from "@/hooks/useChat";
+import { RemoteTransportError } from "@/lib/remote/transport-errors";
+import { UNKNOWN_OUTCOME_MESSAGE } from "@/lib/remote/unknown-outcome";
+import { LOCAL_ENVIRONMENT_ID } from "@/stores/environmentStore";
+import { toast } from "sonner";
 
 vi.mock("@tauri-apps/api/webview", () => ({
   getCurrentWebview: () => ({
@@ -33,6 +38,10 @@ vi.mock("@tauri-apps/plugin-fs", () => ({
 }));
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
+
+vi.mock("sonner", () => ({
+  toast: { info: vi.fn(), error: vi.fn(), success: vi.fn() },
+}));
 
 const featureFlags = vi.hoisted(() => ({ agentPersonas: false }));
 vi.mock("@/hooks/useFeatureFlags", () => ({
@@ -136,10 +145,12 @@ function mockComposerIntegrationAvailability({
   });
 }
 
-function renderComposer(overrides: Partial<ComposerProps> = {}) {
-  const queryClient = new QueryClient({
+function renderComposer(
+  overrides: Partial<ComposerProps> = {},
+  queryClient: QueryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
-  });
+  }),
+) {
   return render(
     <QueryClientProvider client={queryClient}>
       <TooltipProvider delayDuration={0}>
@@ -454,6 +465,33 @@ describe("AgentComposerSurface", () => {
         ),
       ).not.toBeInTheDocument(),
     );
+  });
+
+  it("says the file search failed instead of showing an empty project", async () => {
+    vi.mocked(invoke).mockImplementation((cmd) => {
+      if (cmd === "search_agent_composer_entries") {
+        return Promise.reject(new Error("git ls-files could not be run"));
+      }
+      return Promise.resolve(defaultComposerInvokeResponse(cmd as string));
+    });
+    renderComposer({ conversationId: "conversation-path-error" });
+
+    const textarea = screen.getByLabelText(
+      "Message input",
+    ) as HTMLTextAreaElement;
+    fireEvent.focus(textarea);
+    fireEvent.change(textarea, { target: { value: "@src" } });
+    textarea.setSelectionRange(4, 4);
+    fireEvent.keyUp(textarea);
+
+    // The whole point of the host-side fail-open repair: a failed search must not be
+    // indistinguishable from a project with no matching files.
+    expect(
+      await screen.findByText(/File search failed: git ls-files could not be run/),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("No matching files or folders"),
+    ).not.toBeInTheDocument();
   });
 
   it("shows the full folder path from the keyboard-focusable persisted chip", async () => {
@@ -2033,6 +2071,68 @@ describe("AgentComposerSurface", () => {
     expect(onSend).toHaveBeenCalledWith("1");
   });
 
+  /**
+   * The Stop button used to `void onStop?.()`, discarding the promise: a rejected stop —
+   * including a remote host answering `REMOTE_COMMAND_UNAVAILABLE` — produced no UI at all
+   * while the agent kept running.
+   */
+  it("surfaces a failed stop instead of discarding the promise", async () => {
+    const onStop = vi
+      .fn()
+      .mockRejectedValue(
+        new Error("This action runs only on the host — it is not available remotely."),
+      );
+    renderComposer({ agentStatus: "generating", onStop });
+
+    fireEvent.click(screen.getByTestId("agent-composer-submit"));
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith(
+        "Couldn't stop the agent",
+        expect.objectContaining({
+          description:
+            "This action runs only on the host — it is not available remotely.",
+        }),
+      );
+    });
+    expect(onStop).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * First paint wins: the pending state must flip in the click commit, BEFORE the await
+   * settles, so the button reads as acted-on immediately.
+   */
+  it("flips the stop button to pending synchronously, before the stop settles", async () => {
+    let settle: (() => void) | undefined;
+    const onStop = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          settle = resolve;
+        }),
+    );
+    renderComposer({ agentStatus: "generating", onStop });
+
+    const button = screen.getByTestId("agent-composer-submit");
+    fireEvent.click(button);
+    expect(button).toBeDisabled();
+
+    await act(async () => {
+      settle?.();
+    });
+    await waitFor(() => expect(button).not.toBeDisabled());
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it("does not toast when the stop succeeds", async () => {
+    const onStop = vi.fn().mockResolvedValue(undefined);
+    renderComposer({ agentStatus: "generating", onStop });
+
+    fireEvent.click(screen.getByTestId("agent-composer-submit"));
+
+    await waitFor(() => expect(onStop).toHaveBeenCalledTimes(1));
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
   it("submits the configured empty message when the textarea is blank", () => {
     const onSend = vi.fn();
     renderComposer({
@@ -3407,5 +3507,82 @@ describe("AgentComposerSurface", () => {
 
       expect(screen.getByLabelText("Message input")).toHaveFocus();
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-20: unknown send outcome — refetch the transcript, never re-send
+// ---------------------------------------------------------------------------
+
+describe("unknown send outcome", () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+    mockComposerIntegrationAvailability();
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  for (const code of ["REMOTE_TIMEOUT_UNKNOWN", "REMOTE_REQUEST_IN_PROGRESS"] as const) {
+    it(`reconciles ${code} with one transcript refetch and zero re-sends`, async () => {
+      const onSend = vi.fn().mockRejectedValue(
+        new RemoteTransportError({
+          code,
+          message: "no answer",
+          environmentId: LOCAL_ENVIRONMENT_ID,
+        }),
+      );
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+      const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+
+      renderComposer({ conversationId: "conversation-1", onSend }, queryClient);
+
+      fireEvent.change(screen.getByRole("textbox"), {
+        target: { value: "Maybe delivered" },
+      });
+      fireEvent.click(screen.getByTestId("agent-composer-submit"));
+
+      await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+      await waitFor(() =>
+        expect(invalidate).toHaveBeenCalledWith({
+          queryKey: chatKeys.conversation("conversation-1"),
+        }),
+      );
+      expect(vi.mocked(toast.info)).toHaveBeenCalledWith(UNKNOWN_OUTCOME_MESSAGE);
+      // The message stays sent-once: the host's transcript, not a second send, is
+      // what settles whether it landed.
+      expect(onSend).toHaveBeenCalledTimes(1);
+    });
+  }
+
+  it("leaves other send failures to the existing inline banner", async () => {
+    const onSend = vi.fn().mockRejectedValue(
+      new RemoteTransportError({
+        code: "REMOTE_FORBIDDEN",
+        message: "scope narrowed",
+        environmentId: LOCAL_ENVIRONMENT_ID,
+      }),
+    );
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+
+    renderComposer({ conversationId: "conversation-1", onSend }, queryClient);
+
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "Refused" },
+    });
+    fireEvent.click(screen.getByTestId("agent-composer-submit"));
+
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    expect(
+      await screen.findByTestId("agent-composer-remote-error"),
+    ).toBeInTheDocument();
+    expect(invalidate).not.toHaveBeenCalled();
+    expect(vi.mocked(toast.info)).not.toHaveBeenCalled();
   });
 });

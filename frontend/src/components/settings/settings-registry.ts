@@ -23,6 +23,8 @@ export type SettingsSectionId =
   | "project-analysis"
   | "api-keys"
   | "external-mcp"
+  | "remote-access"
+  | "connections"
   | "integrations-hub"
   | "integrations"
   | "github"
@@ -146,6 +148,18 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
       "Configure external MCP server access (restart required to apply).",
   },
   {
+    id: "remote-access",
+    label: "Remote Access",
+    description:
+      "Expose this RalphX host to your other devices over an authenticated connection.",
+  },
+  {
+    id: "connections",
+    label: "Connections",
+    description:
+      "Remote environments this client is paired with, and their current status.",
+  },
+  {
     id: "notifications",
     label: "Notifications",
     description: "Choose how RalphX gets your attention.",
@@ -247,6 +261,8 @@ export const SETTINGS_NAV: SettingsNavMeta[] = [
       "granola",
       "api-keys",
       "external-mcp",
+      "remote-access",
+      "connections",
     ],
     hubLeaf: "integrations-hub",
   },
@@ -268,6 +284,55 @@ export const SETTINGS_NAV: SettingsNavMeta[] = [
     leaves: ["updates", "database", "accessibility"],
   },
 ];
+
+/** Feature-flag slice the settings nav depends on (subset of FeatureFlags). */
+export interface SettingsSectionFlagGates {
+  remoteEnvironments?: boolean;
+}
+
+/**
+ * Section ids that ship dark behind `remoteEnvironments` (§8 flags note): the host
+ * pane (PR 1.7) and the client pane (PR 2.5). A set rather than a chain of id
+ * comparisons — the next gated section should be one entry here, not a third special
+ * case someone can forget to add to the filter.
+ */
+const REMOTE_ENVIRONMENT_GATED_SECTIONS: ReadonlySet<SettingsSectionId> =
+  new Set(["remote-access", "connections"]);
+
+/** True when `section` is visible for the given feature flags. */
+export function isSettingsSectionVisible(
+  section: SettingsSectionId,
+  flags: SettingsSectionFlagGates,
+): boolean {
+  return (
+    !REMOTE_ENVIRONMENT_GATED_SECTIONS.has(section) ||
+    flags.remoteEnvironments === true
+  );
+}
+
+/** Sections visible for the given feature flags. */
+export function visibleSettingsSections(
+  flags: SettingsSectionFlagGates,
+): SettingsSectionMeta[] {
+  return SETTINGS_SECTIONS.filter((section) =>
+    isSettingsSectionVisible(section.id, flags),
+  );
+}
+
+/**
+ * Nav entries with flag-gated leaves stripped. Nav entries themselves are never
+ * hidden — every gated leaf currently lives under Integrations, which always has
+ * ungated leaves — but an entry left with no leaves is dropped rather than
+ * rendered as a dead rail item.
+ */
+export function visibleSettingsNav(
+  flags: SettingsSectionFlagGates,
+): SettingsNavMeta[] {
+  return SETTINGS_NAV.map((nav) => ({
+    ...nav,
+    leaves: nav.leaves.filter((leaf) => isSettingsSectionVisible(leaf, flags)),
+  })).filter((nav) => nav.leaves.length > 0);
+}
 
 export type SettingsCompositeTab =
   | "general"

@@ -19,10 +19,13 @@ import {
 import { useClickUpIntegration } from "@/hooks/useClickUpIntegration";
 import { useGitHubConnectionStatus } from "@/hooks/useGitHubConnectionStatus";
 import { useGranolaIntegration } from "@/hooks/useGranolaIntegration";
+import { useIsRemoteEnvironment } from "@/hooks/useActiveEnvironment";
 import {
   isLinearConnected,
   useLinearIntegration,
 } from "@/hooks/useLinearIntegration";
+import { useClientOwnedFeatureFlag } from "@/lib/remote/feature-flag-authority";
+import { HOST_ONLY_AFFORDANCE_HINT } from "@/lib/remote/host-affordances";
 
 import { sectionMeta, type SettingsSectionId } from "./settings-registry";
 
@@ -37,6 +40,7 @@ interface HubCard {
   isLoading: boolean;
   /** Short status line in the card footer, e.g. "Authenticated" / "2 keys". */
   status: string;
+  unavailable?: boolean;
 }
 
 function CardGrid({
@@ -78,6 +82,7 @@ function CardGrid({
                 <span
                   className="settings-hub__status"
                   data-connected={entry.connected}
+                  data-unavailable={entry.unavailable}
                 >
                   <span
                     className="settings-hub__dot"
@@ -98,6 +103,7 @@ function CardGrid({
                   aria-label={
                     entry.connected ? `Manage ${label}` : `Set up ${label}`
                   }
+                  disabled={entry.unavailable}
                   onClick={() => onNavigate(entry.section)}
                   onFocus={() => onWarmSection(entry.section)}
                 >
@@ -129,6 +135,9 @@ export function IntegrationsHubSection({
   const clickup = useClickUpIntegration();
   const granola = useGranolaIntegration();
   const apiKeys = useApiKeys();
+  const isRemoteEnvironment = useIsRemoteEnvironment();
+  // Client-owned flag — the env-scoped query strips it, so it must come from uiStore.
+  const remoteEnvironments = useClientOwnedFeatureFlag("remoteEnvironments");
 
   const atlassianConnected = isAtlassianConnected(atlassian.settings);
   const githubConnected = github.data?.state === "authenticated";
@@ -140,31 +149,56 @@ export function IntegrationsHubSection({
       section: "integrations",
       connected: atlassianConnected,
       isLoading: atlassian.isLoading,
-      status: atlassianConnected ? "Connected" : "Not configured",
+      status: isRemoteEnvironment
+        ? HOST_ONLY_AFFORDANCE_HINT
+        : atlassianConnected
+          ? "Connected"
+          : "Not configured",
+      unavailable: isRemoteEnvironment,
     },
     {
       section: "github",
       connected: githubConnected,
       isLoading: github.isLoading,
-      status: githubConnected ? "Authenticated" : "Not authenticated",
+      status: isRemoteEnvironment
+        ? HOST_ONLY_AFFORDANCE_HINT
+        : githubConnected
+          ? "Authenticated"
+          : "Not authenticated",
+      unavailable: isRemoteEnvironment,
     },
     {
       section: "linear",
       connected: linearConnected,
       isLoading: linear.isLoading,
-      status: linearConnected ? "Issue references enabled" : "Not configured",
+      status: isRemoteEnvironment
+        ? HOST_ONLY_AFFORDANCE_HINT
+        : linearConnected
+          ? "Issue references enabled"
+          : "Not configured",
+      unavailable: isRemoteEnvironment,
     },
     {
       section: "clickup",
       connected: clickup.connected,
       isLoading: clickup.isLoading,
-      status: clickup.connected ? "Task references enabled" : "Not configured",
+      status: isRemoteEnvironment
+        ? HOST_ONLY_AFFORDANCE_HINT
+        : clickup.connected
+          ? "Task references enabled"
+          : "Not configured",
+      unavailable: isRemoteEnvironment,
     },
     {
       section: "granola",
       connected: granola.connected,
       isLoading: granola.isLoading,
-      status: granola.connected ? "Note references enabled" : "Not configured",
+      status: isRemoteEnvironment
+        ? HOST_ONLY_AFFORDANCE_HINT
+        : granola.connected
+          ? "Note references enabled"
+          : "Not configured",
+      unavailable: isRemoteEnvironment,
     },
   ];
 
@@ -173,7 +207,12 @@ export function IntegrationsHubSection({
       section: "api-keys",
       connected: keyCount > 0,
       isLoading: apiKeys.isLoading,
-      status: keyCount === 1 ? "1 key" : `${keyCount} keys`,
+      status: isRemoteEnvironment
+        ? HOST_ONLY_AFFORDANCE_HINT
+        : keyCount === 1
+          ? "1 key"
+          : `${keyCount} keys`,
+      unavailable: isRemoteEnvironment,
     },
     {
       section: "external-mcp",
@@ -184,6 +223,27 @@ export function IntegrationsHubSection({
       status: "Configure server access",
     },
   ];
+
+  // Remote host/client panes ship dark behind `remoteEnvironments`; the hub is a
+  // navigation surface, so a hidden leaf must not have a card pointing at it.
+  if (remoteEnvironments) {
+    externalAccess.push(
+      {
+        section: "remote-access",
+        // Listener state lives behind the pane's own deferred invokes; the hub
+        // does not probe it, matching the external-mcp card's display-only rule.
+        connected: false,
+        isLoading: false,
+        status: "Configure host access",
+      },
+      {
+        section: "connections",
+        connected: false,
+        isLoading: false,
+        status: "Manage paired environments",
+      },
+    );
+  }
 
   return (
     <div className="settings-hub" data-testid="integrations-hub">

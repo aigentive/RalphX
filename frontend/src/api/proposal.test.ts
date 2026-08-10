@@ -3,11 +3,10 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   createTaskProposal,
   updateTaskProposal,
-  deleteTaskProposal,
+  archiveTaskProposal,
   reorderProposals,
   assessProposalPriority,
   assessAllPriorities,
-  addProposalDependency,
   removeProposalDependency,
   analyzeDependencies,
   applyProposalsToKanban,
@@ -195,17 +194,17 @@ describe("updateTaskProposal", () => {
   });
 });
 
-describe("deleteTaskProposal", () => {
+describe("archiveTaskProposal", () => {
   beforeEach(() => {
     mockInvoke.mockReset();
   });
 
-  it("should call delete_task_proposal with proposalId", async () => {
+  it("should call archive_task_proposal with proposalId", async () => {
     mockInvoke.mockResolvedValue(undefined);
 
-    await deleteTaskProposal("proposal-1");
+    await archiveTaskProposal("proposal-1");
 
-    expect(mockInvoke).toHaveBeenCalledWith("delete_task_proposal", {
+    expect(mockInvoke).toHaveBeenCalledWith("archive_task_proposal", {
       id: "proposal-1",
     });
   });
@@ -213,7 +212,7 @@ describe("deleteTaskProposal", () => {
   it("should propagate errors", async () => {
     mockInvoke.mockRejectedValue(new Error("Proposal not found"));
 
-    await expect(deleteTaskProposal("nonexistent")).rejects.toThrow(
+    await expect(archiveTaskProposal("nonexistent")).rejects.toThrow(
       "Proposal not found"
     );
   });
@@ -312,31 +311,6 @@ describe("assessAllPriorities", () => {
     const result = await assessAllPriorities("session-1");
 
     expect(result).toEqual([]);
-  });
-});
-
-describe("addProposalDependency", () => {
-  beforeEach(() => {
-    mockInvoke.mockReset();
-  });
-
-  it("should call add_proposal_dependency with both IDs", async () => {
-    mockInvoke.mockResolvedValue(undefined);
-
-    await addProposalDependency("proposal-1", "proposal-2");
-
-    expect(mockInvoke).toHaveBeenCalledWith("add_proposal_dependency", {
-      proposalId: "proposal-1",
-      dependsOnId: "proposal-2",
-    });
-  });
-
-  it("should propagate errors on self-dependency", async () => {
-    mockInvoke.mockRejectedValue(new Error("Self-dependency not allowed"));
-
-    await expect(addProposalDependency("p1", "p1")).rejects.toThrow(
-      "Self-dependency not allowed"
-    );
   });
 });
 
@@ -521,17 +495,16 @@ describe("proposalApi namespace", () => {
   it("should export all functions", () => {
     expect(proposalApi.createTaskProposal).toBe(createTaskProposal);
     expect(proposalApi.updateTaskProposal).toBe(updateTaskProposal);
-    expect(proposalApi.deleteTaskProposal).toBe(deleteTaskProposal);
+    expect(proposalApi.archiveTaskProposal).toBe(archiveTaskProposal);
     expect(proposalApi.reorderProposals).toBe(reorderProposals);
     expect(proposalApi.assessProposalPriority).toBe(assessProposalPriority);
     expect(proposalApi.assessAllPriorities).toBe(assessAllPriorities);
-    expect(proposalApi.addProposalDependency).toBe(addProposalDependency);
     expect(proposalApi.removeProposalDependency).toBe(removeProposalDependency);
     expect(proposalApi.analyzeDependencies).toBe(analyzeDependencies);
     expect(proposalApi.applyProposalsToKanban).toBe(applyProposalsToKanban);
   });
 
-  it("should have 10 functions", () => {
-    expect(Object.keys(proposalApi)).toHaveLength(10);
+  it("should have 9 functions", () => {
+    expect(Object.keys(proposalApi)).toHaveLength(9);
   });
 });

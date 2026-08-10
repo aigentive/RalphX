@@ -6,10 +6,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentConversationRuntimeStatus } from "@/api/chat";
 import { buildStoreKey } from "@/lib/chat-context-registry";
 import { useChatStore } from "@/stores/chatStore";
+import {
+  LOCAL_ENVIRONMENT_ID,
+  useEnvironmentStore,
+} from "@/stores/environmentStore";
 
 import { useAgentConversationRuntimeStatus } from "./useAgentConversationRuntimeStatus";
 
-const { mockGetAgentConversationRuntimeStatuses } = vi.hoisted(() => ({
+const {
+  mockGetAgentConversationRuntimeIndex,
+  mockGetAgentConversationRuntimeStatuses,
+} = vi.hoisted(() => ({
+  mockGetAgentConversationRuntimeIndex: vi.fn(),
   mockGetAgentConversationRuntimeStatuses: vi.fn(),
 }));
 
@@ -17,6 +25,7 @@ const eventHandlers = new Map<string, Set<(payload: unknown) => void>>();
 
 vi.mock("@/api/chat", () => ({
   chatApi: {
+    getAgentConversationRuntimeIndex: mockGetAgentConversationRuntimeIndex,
     getAgentConversationRuntimeStatuses: mockGetAgentConversationRuntimeStatuses,
   },
 }));
@@ -95,6 +104,7 @@ function createWrapper() {
 describe("useAgentConversationRuntimeStatus", () => {
   beforeEach(() => {
     mockGetAgentConversationRuntimeStatuses.mockReset();
+    mockGetAgentConversationRuntimeIndex.mockReset();
     eventHandlers.clear();
     useChatStore.setState({
       activeConversationIds: {},
@@ -103,6 +113,32 @@ describe("useAgentConversationRuntimeStatus", () => {
       agentActivityLabels: {},
       isSending: {},
     });
+    useEnvironmentStore.setState({
+      activeEnvironmentId: LOCAL_ENVIRONMENT_ID,
+      environments: [
+        { id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" },
+      ],
+    });
+  });
+
+  it("uses the registered runtime index remotely and never invokes the refused status command", async () => {
+    useEnvironmentStore.setState({
+      activeEnvironmentId: "env-remote",
+      environments: [{ id: "env-remote", name: "Remote", kind: "remote" }],
+    });
+    mockGetAgentConversationRuntimeIndex.mockResolvedValue({
+      conversationId: "conversation-1",
+      rows: [],
+    });
+
+    renderHook(() => useAgentConversationRuntimeStatus("conversation-1"), {
+      wrapper: createWrapper(),
+    });
+
+    await waitFor(() => {
+      expect(mockGetAgentConversationRuntimeIndex).toHaveBeenCalledTimes(1);
+    });
+    expect(mockGetAgentConversationRuntimeStatuses).not.toHaveBeenCalled();
   });
 
   it("mirrors workspace Review runtime status into the parent sidebar store key", async () => {

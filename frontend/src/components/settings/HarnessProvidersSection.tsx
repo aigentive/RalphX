@@ -33,6 +33,7 @@ import { Switch } from "@/components/ui/switch";
 import { useAgentModels } from "@/hooks/useAgentModels";
 import { useConfirmation } from "@/hooks/useConfirmation";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
+import { useIsRemoteEnvironment } from "@/hooks/useActiveEnvironment";
 import { useProviderCliManagement } from "@/hooks/useProviderCliManagement";
 import {
   AGENT_EFFORT_CATALOG,
@@ -267,6 +268,7 @@ function ProvidersLoadingState() {
 }
 
 export function HarnessProvidersSection() {
+  const isRemoteEnvironment = useIsRemoteEnvironment();
   const {
     settings,
     providers,
@@ -657,6 +659,27 @@ export function HarnessProvidersSection() {
     if (typeof selectedPath !== "string" || selectedPath.trim() === "") return;
     await saveCustomEnvFilePath(provider, selectedPath);
   };
+
+  // Provider settings are `Denied` on the remote facade by design — the command probes
+  // provider CLIs and carries provider identities, models, CLI paths, and the credential
+  // surface. So this is not a transient unavailability to spin on: under a remote environment
+  // the read never answers, and the pane used to sit on its skeleton forever. Say whose
+  // machine owns the setting instead, and render nothing that implies it is loading.
+  if (isRemoteEnvironment) {
+    // The dialog-level strip already says whose settings these are, so this pane only needs
+    // to name what specifically is unavailable — not repeat the banner.
+    return (
+      <SettingsSection>
+        <p
+          className="text-sm text-[var(--text-muted)]"
+          data-testid="providers-host-only-note"
+        >
+          Harness providers, models, and CLI availability are configured on the host and
+          cannot be read from here.
+        </p>
+      </SettingsSection>
+    );
+  }
 
   return (
     <SettingsSection>

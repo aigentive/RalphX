@@ -67,6 +67,13 @@ ui:
     standalone_conversations: false
     # A20 escape hatch: skip --resume on the send after a persona switch.
     persona_switch_forces_fresh_provider_session: false
+    # Remote multi-environment client UI.
+    # Env override: RALPHX_UI_REMOTE_ENVIRONMENTS=true|false
+    # Shows the Remote Access + Connections settings panes, the environment
+    # switcher, and the connection banner. It does NOT expose this host — that
+    # is a separate DB-persisted toggle (RemoteHostSettings.enabled, default
+    # false) inside the Remote Access pane.
+    remote_environments: true
 
 # Compatibility runtime row for the PersonaBuilder-only extractor. Canonical
 # `agents/ralphx-persona-extractor/agent.yaml` remains authoritative.
@@ -249,6 +256,8 @@ git:
   workspace_freshness_cache_ttl_ms: 2000 # Env: RALPHX_GIT_WORKSPACE_FRESHNESS_CACHE_TTL_MS
   # diff_commands.rs — short backend TTL for workspace review context/payload reuse
   workspace_review_cache_ttl_ms: 2000 # Env: RALPHX_GIT_WORKSPACE_REVIEW_CACHE_TTL_MS
+  # diff_commands.rs — long TTL for spawn-free paired-device workspace snapshots
+  remote_workspace_snapshot_ttl_ms: 86400000 # Env: RALPHX_GIT_REMOTE_WORKSPACE_SNAPSHOT_TTL_MS
   # agent_workspace_pr_description.rs — short backend TTL for precomputed publish PR descriptions
   workspace_pr_description_cache_ttl_ms: 300000 # Env: RALPHX_GIT_WORKSPACE_PR_DESCRIPTION_CACHE_TTL_MS
   # diff_commands.rs — short backend TTL for live GitHub PR annotation payload reuse

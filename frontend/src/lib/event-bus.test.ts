@@ -26,13 +26,19 @@ describe("TauriEventBus", () => {
     const handler = vi.fn();
 
     const unsubscribe = new TauriEventBus().subscribe("agent:test", handler);
+    let ready = false;
+    void unsubscribe.ready.then(() => {
+      ready = true;
+    });
 
     nativeHandler?.({ payload: "early" });
     expect(handler).not.toHaveBeenCalled();
+    expect(ready).toBe(false);
 
     resolveListen?.(unlisten);
-    await flushAsyncCleanup();
+    await unsubscribe.ready;
 
+    expect(ready).toBe(true);
     expect(handler).toHaveBeenCalledWith("early");
 
     nativeHandler?.({ payload: "late" });
@@ -93,7 +99,7 @@ describe("TauriEventBus", () => {
     vi.mocked(listen).mockRejectedValueOnce(new Error("listen failed"));
 
     const unsubscribe = new TauriEventBus().subscribe("agent:test", vi.fn());
-    await flushAsyncCleanup();
+    await expect(unsubscribe.ready).resolves.toBeUndefined();
     unsubscribe();
     await flushAsyncCleanup();
 
@@ -155,6 +161,12 @@ describe("TauriEventBus", () => {
 });
 
 describe("MockEventBus", () => {
+  it("reports synchronous registration as immediately ready", async () => {
+    const unsubscribe = new MockEventBus().subscribe("agent:test", vi.fn());
+
+    await expect(unsubscribe.ready).resolves.toBeUndefined();
+  });
+
   it("supports subscribe, emit, listener count, unsubscribe, and clear", () => {
     const bus = new MockEventBus();
     const handler = vi.fn();
@@ -180,6 +192,22 @@ describe("MockEventBus", () => {
 
     bus.clear();
     expect(bus.getListenerCount("agent:test")).toBe(0);
+  });
+
+  it("treats repeated subscriptions of one handler reference as independent", () => {
+    const bus = new MockEventBus();
+    const handler = vi.fn();
+
+    const first = bus.subscribe("agent:test", handler);
+    bus.subscribe("agent:test", handler);
+    expect(bus.getListenerCount("agent:test")).toBe(2);
+
+    // Unsubscribing one must not silently remove the sibling subscription.
+    first();
+    expect(bus.getListenerCount("agent:test")).toBe(1);
+
+    bus.emit("agent:test", "payload");
+    expect(handler).toHaveBeenCalledTimes(1);
   });
 });
 

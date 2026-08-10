@@ -12,6 +12,38 @@ use std::sync::Arc;
 use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
 
+#[tokio::test]
+async fn local_project_response_is_unchanged_and_writes_through_capability() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let status = Command::new(resolve_git_cli_path())
+        .args(["init"])
+        .current_dir(temp.path())
+        .status()
+        .expect("git init");
+    assert!(status.success());
+    let project = Project::new(
+        "Cached capability".to_string(),
+        temp.path().to_string_lossy().to_string(),
+    );
+    let expected =
+        crate::infrastructure::git_auth::inspect_repository_capability(temp.path()).await;
+    let state = AppState::new_test();
+
+    let response = project_response(project.clone(), &state)
+        .await
+        .expect("response");
+
+    assert_eq!(response.repository_capability, expected);
+    let stored = state
+        .project_repository_capability_repo
+        .get(&project.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.kind, "local_only");
+    assert_eq!(stored.working_directory, project.working_directory);
+}
+
 #[test]
 fn browser_login_is_only_allowed_for_real_credential_failures() {
     assert_eq!(

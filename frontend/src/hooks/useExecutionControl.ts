@@ -9,6 +9,7 @@
  * Phase 82: All hooks now accept optional projectId for per-project scoping
  */
 
+import { useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, type ExecutionStatusResponse } from "@/lib/tauri";
 import { useUiStore } from "@/stores/uiStore";
@@ -50,6 +51,9 @@ export function useExecutionStatus(
   options: UseExecutionStatusOptions = {}
 ) {
   const setExecutionStatus = useUiStore((state) => state.setExecutionStatus);
+  const setExecutionStatusUnknown = useUiStore(
+    (state) => state.setExecutionStatusUnknown,
+  );
   const enabled = options.enabled ?? true;
 
   const query = useQuery<ExecutionStatusResponse, Error>({
@@ -68,8 +72,16 @@ export function useExecutionStatus(
     ...(options.staleTime !== undefined ? { staleTime: options.staleTime } : {}),
   });
 
+  useEffect(() => {
+    if (enabled && query.isError) {
+      setExecutionStatusUnknown();
+    }
+  }, [enabled, query.isError, setExecutionStatusUnknown]);
+
   return {
     ...query,
+    status: query.data ? query.status : "unknown" as const,
+    isStatusKnown: query.data !== undefined,
     // Convenience accessors
     isPaused: query.data?.isPaused ?? false,
     haltMode: query.data?.haltMode ?? "running",
@@ -78,7 +90,7 @@ export function useExecutionStatus(
     queuedMessageCount: query.data?.queuedMessageCount ?? 0,
     maxConcurrent: query.data?.maxConcurrent ?? 10,
     globalMaxConcurrent: query.data?.globalMaxConcurrent ?? 20,
-    canStartTask: query.data?.canStartTask ?? true,
+    canStartTask: query.data?.canStartTask ?? false,
   };
 }
 

@@ -7,7 +7,7 @@ import { UpdateChecker } from "./UpdateChecker";
 
 const mocks = vi.hoisted(() => ({
   check: vi.fn(),
-  listen: vi.fn(),
+  subscribe: vi.fn(),
   relaunch: vi.fn(),
   toast: vi.fn(),
   toastDismiss: vi.fn(),
@@ -21,7 +21,10 @@ const mocks = vi.hoisted(() => ({
   getReleaseNotesForVersion: vi.fn(),
   fetchReleaseMetadata: vi.fn(),
   getVersion: vi.fn(),
+  eventBus: { subscribe: vi.fn(), emit: vi.fn() },
 }));
+
+mocks.eventBus.subscribe = mocks.subscribe;
 
 const updateChannelState = vi.hoisted(() => ({
   channel: "stable" as "stable" | "nightly",
@@ -34,8 +37,8 @@ vi.mock("@tauri-apps/plugin-updater", () => ({
   check: (...args: unknown[]) => mocks.check(...args),
 }));
 
-vi.mock("@/hooks/useUpdateChannel", () => ({
-  useUpdateChannel: () => ({
+vi.mock("@/hooks/useClientUpdateChannel", () => ({
+  useClientUpdateChannel: () => ({
     updateChannel: updateChannelState.channel,
     isSettled: updateChannelState.isSettled,
     isError: updateChannelState.isError,
@@ -43,12 +46,24 @@ vi.mock("@/hooks/useUpdateChannel", () => ({
   }),
 }));
 
+vi.mock("@/hooks/useUpdateChannel", () => ({
+  useUpdateChannel: () => ({
+    updateChannel: updateChannelState.channel,
+    isSettled: updateChannelState.isSettled,
+    isError: updateChannelState.isError,
+    loadError: updateChannelState.error,
+    setUpdateChannel: vi.fn(),
+    isSaving: false,
+    saveError: null,
+  }),
+}));
+
 vi.mock("@tauri-apps/plugin-process", () => ({
   relaunch: (...args: unknown[]) => mocks.relaunch(...args),
 }));
 
-vi.mock("@tauri-apps/api/event", () => ({
-  listen: (...args: unknown[]) => mocks.listen(...args),
+vi.mock("@/providers/EventProvider", () => ({
+  useEventBus: () => mocks.eventBus,
 }));
 
 vi.mock("@tauri-apps/api/app", () => ({
@@ -124,7 +139,7 @@ describe("UpdateChecker", () => {
     eventListeners.clear();
 
     mocks.check.mockReset();
-    mocks.listen.mockReset();
+    mocks.subscribe.mockReset();
     mocks.relaunch.mockReset();
     mocks.toast.mockReset();
     mocks.toastDismiss.mockReset();
@@ -148,8 +163,10 @@ describe("UpdateChecker", () => {
 
     mocks.check.mockResolvedValue(update);
     mocks.relaunch.mockResolvedValue(undefined);
-    mocks.listen.mockImplementation(async (event: string, handler: (event: unknown) => unknown) => {
-      eventListeners.set(event, handler);
+    mocks.subscribe.mockImplementation((event: string, handler: (payload: unknown) => unknown) => {
+      eventListeners.set(event, (received: unknown) =>
+        handler((received as { payload: unknown }).payload),
+      );
       return vi.fn();
     });
     mocks.getCurrentReleaseNotes.mockResolvedValue({
@@ -167,6 +184,33 @@ describe("UpdateChecker", () => {
       body: `Release notes for ${version}`,
       source: "development_checkout",
     }));
+  });
+
+  it("subscribes to both native menu events and unsubscribes on unmount", async () => {
+    const unsubscribeCheck = vi.fn();
+    const unsubscribeReleaseNotes = vi.fn();
+    mocks.subscribe
+      .mockReturnValueOnce(unsubscribeCheck)
+      .mockReturnValueOnce(unsubscribeReleaseNotes);
+
+    const { unmount } = render(<UpdateChecker />);
+    await flushAsyncWork();
+
+    expect(mocks.subscribe).toHaveBeenNthCalledWith(
+      1,
+      "ralphx://check-for-updates",
+      expect.any(Function),
+    );
+    expect(mocks.subscribe).toHaveBeenNthCalledWith(
+      2,
+      "ralphx://show-release-notes",
+      expect.any(Function),
+    );
+
+    unmount();
+
+    expect(unsubscribeCheck).toHaveBeenCalledTimes(1);
+    expect(unsubscribeReleaseNotes).toHaveBeenCalledTimes(1);
   });
 
   afterEach(() => {

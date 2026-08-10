@@ -1,9 +1,18 @@
+import { LOCAL_ENVIRONMENT_ID } from "@/stores/environmentStore";
+import { resetTransportEnvironmentId } from "@/lib/remote/active-environment";
+import { resetQueryClient } from "@/lib/queryClient";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { FEATURE_FLAGS_QUERY_KEY } from "@/hooks/useFeatureFlags";
@@ -11,11 +20,21 @@ import { personaKeys } from "@/hooks/usePersonas";
 import { EventProvider } from "@/providers/EventProvider";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { useUiStore } from "@/stores/uiStore";
+import { useEnvironmentStore } from "@/stores/environmentStore";
 import type { ChatConversation } from "@/types/chat-conversation";
 import type { FeatureFlags } from "@/types/feature-flags";
 import { PersonaResponseSchema, transformPersona } from "@/types/persona";
 
 import { PersonaArtifactPanel } from "./PersonaArtifactPanel";
+
+// Gate tests park the store on a remote environment; without this the next file in
+// the same worker inherits it and resolves a different keyed QueryClient. That is
+// what broke EnvironmentScopedProviders under CI sharding.
+afterEach(() => {
+  resetQueryClient();
+  resetTransportEnvironmentId();
+  useEnvironmentStore.setState({ activeEnvironmentId: LOCAL_ENVIRONMENT_ID });
+});
 
 const rawDraft = {
   id: "draft-1",
@@ -135,7 +154,9 @@ function renderPanel(
 
   return {
     queryClient,
-    ...render(<PersonaArtifactPanel conversation={value} />, { wrapper: Wrapper }),
+    ...render(<PersonaArtifactPanel conversation={value} />, {
+      wrapper: Wrapper,
+    }),
   };
 }
 
@@ -175,6 +196,86 @@ describe("PersonaArtifactPanel", () => {
       startConversationDraft: null,
     });
     useUiStore.setState({ activeModal: null, modalContext: undefined });
+    useEnvironmentStore.setState({
+      activeEnvironmentId: "local",
+      environments: [{ id: "local", name: "This Mac", kind: "local" }],
+      effectiveScopes: {},
+      connectionPresentations: {},
+    });
+  });
+
+  it("soft-disables persona approval remotely without agent control and exposes why", async () => {
+    mockPersonaQueries();
+    useEnvironmentStore.setState({
+      activeEnvironmentId: "remote",
+      environments: [
+        { id: "local", name: "This Mac", kind: "local" },
+        { id: "remote", name: "Studio Mac", kind: "remote" },
+      ],
+      effectiveScopes: { remote: ["ui:read", "ui:operate"] },
+      connectionPresentations: {
+        remote: {
+          presentation: "connected",
+          blockedFailure: null,
+          blockedMessage: null,
+        },
+      },
+    });
+    renderPanel(conversation({ builderDraftId: "draft-1" }));
+    const button = await screen.findByRole("button", {
+      name: "Approve Persona",
+    });
+
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    expect(button).not.toBeDisabled();
+    fireEvent.click(button);
+    expect(invoke).not.toHaveBeenCalledWith(
+      "approve_persona",
+      expect.anything(),
+    );
+    button.focus();
+    expect(
+      (
+        await screen.findAllByText(
+          "Agent control is off for this device — enable it on the host.",
+        )
+      ).length,
+    ).toBeGreaterThan(0);
+  });
+
+  it("approves a persona when remote agent control is granted", async () => {
+    mockPersonaQueries();
+    useEnvironmentStore.setState({
+      activeEnvironmentId: "remote",
+      environments: [
+        { id: "local", name: "This Mac", kind: "local" },
+        { id: "remote", name: "Studio Mac", kind: "remote" },
+      ],
+      effectiveScopes: { remote: ["ui:read", "ui:operate", "ui:agent"] },
+      connectionPresentations: {
+        remote: {
+          presentation: "connected",
+          blockedFailure: null,
+          blockedMessage: null,
+        },
+      },
+    });
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === "get_persona") return rawDraft;
+      if (command === "get_artifact") return rawPersonaArtifact;
+      if (command === "approve_persona") return rawApproved;
+      return null;
+    });
+    renderPanel(conversation({ builderDraftId: "draft-1" }));
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Approve Persona" }),
+    );
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("approve_persona", {
+        input: { id: "draft-1" },
+      }),
+    );
   });
 
   it("renders empty state without persona actions when no binding exists", () => {
@@ -182,11 +283,19 @@ describe("PersonaArtifactPanel", () => {
 
     expect(screen.getByText("Persona not created yet")).toBeInTheDocument();
     expect(
-      screen.getByText("The agent will draft the persona here after its first pass"),
+      screen.getByText(
+        "The agent will draft the persona here after its first pass",
+      ),
     ).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Approve Persona/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Open in Settings" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Refine with Agent" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Approve Persona/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Open in Settings" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Refine with Agent" }),
+    ).not.toBeInTheDocument();
   });
 
   it("renders the draft through the canonical versioned artifact surface", async () => {
@@ -195,17 +304,27 @@ describe("PersonaArtifactPanel", () => {
 
     expect(await screen.findByText("Empathetic, direct.")).toBeInTheDocument();
     expect(screen.getByTestId("plan-display-chromeless")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Support Voice" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Support Voice" }),
+    ).toBeInTheDocument();
     expect(screen.queryByText("Global")).not.toBeInTheDocument();
     expect(screen.queryByText("Draft")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("persona-version-history")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("persona-version-history"),
+    ).not.toBeInTheDocument();
     expect(screen.getByTestId("persona-frontmatter")).toHaveTextContent(
       "Calm customer support.",
     );
     expect(screen.queryByText(/name: support-voice/)).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Approve Persona" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Open in Settings" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Refine with Agent" })).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Approve Persona" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Open in Settings" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Refine with Agent" }),
+    ).not.toBeInTheDocument();
   });
 
   it("reveals the conversation-owned draft immediately after the first agent save", async () => {
@@ -224,14 +343,18 @@ describe("PersonaArtifactPanel", () => {
     });
 
     expect(await screen.findByText("Empathetic, direct.")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Approve Persona" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Approve Persona" }),
+    ).toBeInTheDocument();
   });
 
   it("renders a legacy null-artifact persona through the same document surface", async () => {
     mockPersonaQueries({ ...rawDraft, artifact_id: null, version: 1 });
     renderPanel(conversation({ builderDraftId: "draft-1" }));
 
-    expect(await screen.findByTestId("plan-display-chromeless")).toBeInTheDocument();
+    expect(
+      await screen.findByTestId("plan-display-chromeless"),
+    ).toBeInTheDocument();
     expect(screen.getByText("Empathetic, direct.")).toBeInTheDocument();
     expect(invoke).not.toHaveBeenCalledWith("get_artifact", expect.anything());
     expect(screen.queryByTitle("View version history")).not.toBeInTheDocument();
@@ -248,7 +371,9 @@ describe("PersonaArtifactPanel", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Persona artifact unavailable",
     );
-    expect(screen.queryByRole("button", { name: "Approve Persona" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Approve Persona" }),
+    ).not.toBeInTheDocument();
   });
 
   it("renders approved and archived states with the correct action availability", async () => {
@@ -257,24 +382,39 @@ describe("PersonaArtifactPanel", () => {
       conversation({ builderResultPersonaId: "persona-1" }),
     );
 
-    expect(await screen.findByRole("button", { name: "Open in Settings" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Refine with Agent" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Approve Persona/ })).not.toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: "Open in Settings" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Refine with Agent" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Approve Persona/ }),
+    ).not.toBeInTheDocument();
 
     vi.mocked(invoke).mockImplementation(async (command) => {
-      if (command === "get_persona") return { ...rawApproved, status: "archived" };
+      if (command === "get_persona")
+        return { ...rawApproved, status: "archived" };
       if (command === "get_artifact_version_history") return rawHistory;
       return null;
     });
     rerender(
       <PersonaArtifactPanel
-        conversation={conversation({ builderResultPersonaId: "archived-persona" })}
+        conversation={conversation({
+          builderResultPersonaId: "archived-persona",
+        })}
       />,
     );
 
-    expect(await screen.findByRole("button", { name: "Open in Settings" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Refine with Agent" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Approve Persona/ })).not.toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: "Open in Settings" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Refine with Agent" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Approve Persona/ }),
+    ).not.toBeInTheDocument();
   });
 
   it("uses the canonical artifact version picker and makes history read-only", async () => {
@@ -285,7 +425,9 @@ describe("PersonaArtifactPanel", () => {
     await user.click(await screen.findByTitle("View version history"));
     await user.click(await screen.findByText(/^v1\b/));
 
-    expect(await screen.findByText("Original agent draft.")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Original agent draft."),
+    ).toBeInTheDocument();
     expect(invoke).toHaveBeenCalledWith("get_artifact_at_version", {
       id: "artifact-1",
       version: 1,
@@ -294,14 +436,20 @@ describe("PersonaArtifactPanel", () => {
     expect(screen.getByTestId("persona-frontmatter")).toHaveTextContent(
       "Original support voice.",
     );
-    expect(screen.getByRole("button", { name: "Back to latest" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Approve Persona" })).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Back to latest" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Approve Persona" }),
+    ).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Back to latest" }));
     expect(screen.getByTestId("persona-frontmatter")).toHaveTextContent(
       "Calm customer support.",
     );
-    expect(screen.getByRole("button", { name: "Approve Persona" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Approve Persona" }),
+    ).toBeInTheDocument();
   });
 
   it("switches an open Agent pane to the artifact tip returned by a manual Persona save", async () => {
@@ -364,20 +512,30 @@ describe("PersonaArtifactPanel", () => {
       if (command === "approve_persona") return rawApproved;
       return null;
     });
-    const { rerender } = renderPanel(conversation({ builderDraftId: "draft-1" }));
+    const { rerender } = renderPanel(
+      conversation({ builderDraftId: "draft-1" }),
+    );
 
-    await user.click(await screen.findByRole("button", { name: "Approve Persona" }));
+    await user.click(
+      await screen.findByRole("button", { name: "Approve Persona" }),
+    );
 
     await waitFor(() => {
       expect(invoke).toHaveBeenCalledWith("approve_persona", {
         input: { id: "draft-1" },
       });
     });
-    expect(screen.queryByRole("button", { name: "Approve Persona" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Open in Settings" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Approve Persona" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Open in Settings" }),
+    ).toBeInTheDocument();
 
     rerender(<PersonaArtifactPanel conversation={conversation()} />);
-    expect(screen.getByRole("button", { name: "Open in Settings" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Open in Settings" }),
+    ).toBeInTheDocument();
   });
 
   it("offers approve-as-new only for seeded drafts", async () => {
@@ -393,7 +551,9 @@ describe("PersonaArtifactPanel", () => {
     });
     renderPanel(conversation({ builderDraftId: "draft-1" }));
 
-    expect(await screen.findByRole("button", { name: "Approve Persona" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: "Approve Persona" }),
+    ).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Approve as new" }));
     await waitFor(() => {
       expect(invoke).toHaveBeenCalledWith("approve_persona_as_new", {
@@ -406,8 +566,12 @@ describe("PersonaArtifactPanel", () => {
     mockPersonaQueries(rawApproved);
     renderPanel(conversation({ builderResultPersonaId: "persona-1" }));
 
-    expect(await screen.findByRole("button", { name: "Open in Settings" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Refine with Agent" })).not.toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: "Open in Settings" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Refine with Agent" }),
+    ).not.toBeInTheDocument();
   });
 
   it("reuses Settings and refine deep links outside a Persona Builder conversation", async () => {
@@ -420,7 +584,9 @@ describe("PersonaArtifactPanel", () => {
       }),
     );
 
-    await user.click(await screen.findByRole("button", { name: "Open in Settings" }));
+    await user.click(
+      await screen.findByRole("button", { name: "Open in Settings" }),
+    );
     expect(useUiStore.getState()).toMatchObject({
       activeModal: "settings",
       modalContext: {
@@ -455,7 +621,9 @@ describe("PersonaArtifactPanel", () => {
       false,
     );
 
-    const refine = await screen.findByRole("button", { name: "Refine with Agent" });
+    const refine = await screen.findByRole("button", {
+      name: "Refine with Agent",
+    });
     expect(refine).toBeDisabled();
     await user.hover(refine.parentElement!);
     expect(await screen.findByRole("tooltip")).toHaveTextContent(
@@ -475,10 +643,14 @@ describe("PersonaArtifactPanel", () => {
       false,
     );
 
-    const refine = await screen.findByRole("button", { name: "Refine with Agent" });
+    const refine = await screen.findByRole("button", {
+      name: "Refine with Agent",
+    });
     expect(refine).toBeEnabled();
     await user.click(refine);
-    expect(useAgentSessionStore.getState().startConversationDraft).toMatchObject({
+    expect(
+      useAgentSessionStore.getState().startConversationDraft,
+    ).toMatchObject({
       projectId: "project-1",
       sourcePersonaId: "persona-1",
     });
@@ -532,7 +704,8 @@ describe("PersonaArtifactPanel", () => {
   it("hides the show-changes toggle for first versions", async () => {
     vi.mocked(invoke).mockImplementation(async (command) => {
       if (command === "get_persona") return rawDraft;
-      if (command === "get_artifact") return { ...rawPersonaArtifact, version: 1 };
+      if (command === "get_artifact")
+        return { ...rawPersonaArtifact, version: 1 };
       return null;
     });
     renderPanel(conversation({ builderDraftId: "draft-1" }));
@@ -554,7 +727,11 @@ describe("PersonaArtifactPanel", () => {
       const input = (args as { input?: { id?: string } } | undefined)?.input;
       if (command === "get_persona") {
         if (input?.id === "persona-source") {
-          return { ...rawApproved, id: "persona-source", content_hash: "moved-on-hash" };
+          return {
+            ...rawApproved,
+            id: "persona-source",
+            content_hash: "moved-on-hash",
+          };
         }
         return seededDraft;
       }
@@ -589,7 +766,11 @@ describe("PersonaArtifactPanel", () => {
       const input = (args as { input?: { id?: string } } | undefined)?.input;
       if (command === "get_persona") {
         if (input?.id === "persona-source") {
-          return { ...rawApproved, id: "persona-source", content_hash: "seed-hash" };
+          return {
+            ...rawApproved,
+            id: "persona-source",
+            content_hash: "seed-hash",
+          };
         }
         return seededDraft;
       }
@@ -615,7 +796,11 @@ describe("PersonaArtifactPanel", () => {
       const input = (args as { input?: { id?: string } } | undefined)?.input;
       if (command === "get_persona") {
         if (input?.id === "persona-source") {
-          return { ...rawApproved, id: "persona-source", content_hash: "seed-hash" };
+          return {
+            ...rawApproved,
+            id: "persona-source",
+            content_hash: "seed-hash",
+          };
         }
         return seededDraft;
       }
@@ -658,7 +843,9 @@ describe("PersonaArtifactPanel", () => {
 
     renderPanel(conversation({ builderDraftId: "draft-1" }));
 
-    expect(screen.getByRole("status", { name: "Loading persona..." })).toBeInTheDocument();
+    expect(
+      screen.getByRole("status", { name: "Loading persona..." }),
+    ).toBeInTheDocument();
     expect(screen.queryByText("Empathetic, direct.")).not.toBeInTheDocument();
     expect(resolvePersona).toBeTypeOf("function");
   });

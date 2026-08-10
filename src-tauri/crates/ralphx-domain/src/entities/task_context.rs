@@ -1,8 +1,8 @@
 use chrono::{DateTime, Utc};
 
 use super::{
-    Artifact, ArtifactContent, ArtifactId, ArtifactType, InternalStatus, Task, TaskId,
-    TaskProposalId, TaskStep,
+    Artifact, ArtifactContent, ArtifactId, ArtifactType, IdeationSessionId, InternalStatus,
+    ProjectId, Task, TaskId, TaskProposalId, TaskStep,
 };
 use serde::{Deserialize, Serialize};
 
@@ -18,6 +18,40 @@ pub enum ScopeDriftStatus {
     WithinScope,
     /// Actual changed files expanded beyond the declared coarse scope.
     ScopeExpansion,
+}
+
+/// The worker-safe task projection served by the REMOTE facade only.
+///
+/// This is a deliberate 6-field allowlist that bounds what a paired remote device can read
+/// from `get_task_context`. It is applied at the remote facade seam
+/// (`remote_server::task_projection`), NOT on the local path: local harness agents and the
+/// local Tauri/frontend consumers keep receiving the full `Task`.
+///
+/// `remote_server::capability_ledger_tests::worker_task_view_allowlist` derives the published
+/// allowlist from this struct, so adding a field here widens the remote surface and stales the
+/// generated manifest.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkerTaskView {
+    pub id: TaskId,
+    pub project_id: ProjectId,
+    pub title: String,
+    pub description: Option<String>,
+    pub internal_status: InternalStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ideation_session_id: Option<IdeationSessionId>,
+}
+
+impl From<Task> for WorkerTaskView {
+    fn from(task: Task) -> Self {
+        Self {
+            id: task.id,
+            project_id: task.project_id,
+            title: task.title,
+            description: task.description,
+            internal_status: task.internal_status,
+            ideation_session_id: task.ideation_session_id,
+        }
+    }
 }
 
 /// Rich context returned by get_task_context MCP tool

@@ -25,7 +25,10 @@ vi.mock("@/api/ideation", () => ({
       list: vi.fn(),
       create: vi.fn(),
       update: vi.fn(),
-      delete: vi.fn(),
+      // Wave D renamed delete_task_proposal -> archive_task_proposal: the body always
+      // archived, so the api surface is `archive`. The mock key must follow or every
+      // assertion resolves against undefined.
+      archive: vi.fn(),
       reorder: vi.fn(),
     },
   },
@@ -290,7 +293,7 @@ describe("useProposalMutations", () => {
     });
 
     it("should delete a proposal successfully", async () => {
-      vi.mocked(ideationApi.proposals.delete).mockResolvedValueOnce(undefined);
+      vi.mocked(ideationApi.proposals.archive).mockResolvedValueOnce(undefined);
 
       const { result } = renderHook(() => useProposalMutations(), {
         wrapper: createWrapper(),
@@ -300,12 +303,12 @@ describe("useProposalMutations", () => {
         await result.current.deleteProposal.mutateAsync("proposal-1");
       });
 
-      expect(ideationApi.proposals.delete).toHaveBeenCalledWith("proposal-1");
+      expect(ideationApi.proposals.archive).toHaveBeenCalledWith("proposal-1");
     });
 
     it("should handle delete error", async () => {
       const error = new Error("Failed to delete proposal");
-      vi.mocked(ideationApi.proposals.delete).mockRejectedValueOnce(error);
+      vi.mocked(ideationApi.proposals.archive).mockRejectedValueOnce(error);
 
       const { result } = renderHook(() => useProposalMutations(), {
         wrapper: createWrapper(),

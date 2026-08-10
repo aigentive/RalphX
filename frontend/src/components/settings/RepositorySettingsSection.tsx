@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { api, getGitDefaultBranch } from "@/lib/tauri";
 import { GitAuthRepairPanel } from "@/components/git/GitAuthRepairPanel";
 import { useGitHubConnectionStatus } from "@/hooks/useGitHubConnectionStatus";
+import { useAgentGate } from "@/hooks/useAgentGate";
 import { useProjectStore, selectActiveProject } from "@/stores/projectStore";
 import {
   getProjectRepositoryCapability,
@@ -141,6 +142,7 @@ export function RepositorySettingsSection() {
 
   const { data: ghStatus, isLoading: isLoadingAuth } = useGitHubConnectionStatus();
   const updatePrEnabled = useUpdateGithubPrEnabled();
+  const prToggleGate = useAgentGate("repositorySettingsPrToggle");
 
   useEffect(() => {
     setPendingBaseBranch(null);
@@ -244,7 +246,7 @@ export function RepositorySettingsSection() {
   );
 
   const handlePrToggle = async () => {
-    if (!project) return;
+    if (!project || prToggleGate.gated) return;
     try {
       await updatePrEnabled.mutateAsync({
         projectId: project.id,
@@ -267,14 +269,15 @@ export function RepositorySettingsSection() {
   const remoteUrl =
     repositoryCapability.kind === "github" ||
     repositoryCapability.kind === "otherRemote"
-      ? repositoryCapability.pushUrl
+      ? (repositoryCapability.pushUrl ?? repositoryCapability.fetchUrl)
       : null;
   const ghState = ghStatus?.state;
   const ghNeedsCredentialRepair =
     ghState === "unauthenticated" || ghState === "credential_rejected";
   const ghTransientUnavailable =
     ghState === "provider_unavailable" || ghState === "probe_failed";
-  const isToggleDisabled = !isGithubRemote || updatePrEnabled.isPending;
+  const isToggleDisabled =
+    !isGithubRemote || prToggleGate.gated || updatePrEnabled.isPending;
   const isSaving = isUpdating || updatePrEnabled.isPending;
 
   return (
@@ -326,6 +329,10 @@ export function RepositorySettingsSection() {
               ? "This remote is not supported by GitHub PR workflows."
               : repositoryCapability.kind === "inspectionFailed"
                 ? "Repository configuration could not be inspected. Refresh before enabling PR mode."
+                : repositoryCapability.kind === "notInspected"
+                  ? "The host has not inspected this repository yet."
+                  : prToggleGate.gated
+                    ? (prToggleGate.reason ?? "This action is unavailable.")
             : ghNeedsCredentialRepair
             ? "Enable to create draft PRs when plans execute (gh auth required for PR operations)"
             : ghTransientUnavailable
@@ -351,6 +358,8 @@ export function RepositorySettingsSection() {
                 ? "GitHub PR mode unavailable"
                 : repositoryCapability.kind === "inspectionFailed"
                   ? "Could not inspect repository"
+                  : repositoryCapability.kind === "notInspected"
+                    ? "Not inspected yet"
                   : "GitHub PR capable"}
           </span>
         </SettingRow>
@@ -360,7 +369,11 @@ export function RepositorySettingsSection() {
           description="Git remote origin for this project"
         >
           <span className="settings-readonly-value max-w-[240px] truncate">
-            {remoteUrl ?? "Not configured"}
+            {repositoryCapability.kind === "notInspected"
+              ? "—"
+              : repositoryCapability.kind === "localOnly"
+                ? "Not configured"
+                : (remoteUrl ?? "—")}
           </span>
         </SettingRow>
         <SettingRow

@@ -9,6 +9,8 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { markdownComponents } from "@/components/Chat/MessageItem.markdown";
 import { useMutation, useQueryClient, useQuery } from "@tanstack/react-query";
+import { useAgentGate } from "@/hooks/useAgentGate";
+import { AgentGateTooltip } from "@/components/remote/AgentGateTooltip";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -257,6 +259,8 @@ function DecisionButtonsCard({
     }
   };
 
+  const agentGate = useAgentGate("taskApprove");
+
   const handleApprove = useCallback(async () => {
     const confirmed = await confirm({
       title: "Approve despite concerns?",
@@ -274,10 +278,10 @@ function DecisionButtonsCard({
     reReviewMutation.isPending;
 
   const reReviewButton = (
-    <Button
+    <AgentGateTooltip gated={agentGate.gated} reason={agentGate.reason}><Button
       data-testid="re-review-button"
       onClick={() => reReviewMutation.mutate()}
-      disabled={isLoading || showFeedback}
+      disabled={isLoading || showFeedback || agentGate.gated}
       className="h-9 px-4 gap-2 rounded-lg font-medium text-[0.8125rem] transition-colors"
       style={{
         backgroundColor: "var(--accent-primary)",
@@ -290,14 +294,19 @@ function DecisionButtonsCard({
         <RefreshCw className="w-4 h-4" />
       )}
       Re-Review
-    </Button>
+    </Button></AgentGateTooltip>
   );
 
   const approveButton = (
+    <AgentGateTooltip
+      gated={agentGate.gated}
+      reason={agentGate.reason}
+      testId="approve-button-gate"
+    >
     <Button
       data-testid="approve-button"
       onClick={handleApprove}
-      disabled={isLoading || showFeedback}
+      disabled={isLoading || showFeedback || agentGate.gated}
       className="h-9 px-4 gap-2 rounded-lg font-medium text-[0.8125rem] transition-colors"
       style={{
         backgroundColor: "var(--status-success)",
@@ -311,13 +320,14 @@ function DecisionButtonsCard({
       )}
       Approve Anyway
     </Button>
+    </AgentGateTooltip>
   );
 
   const requestChangesButton = (
-    <Button
+    <AgentGateTooltip gated={agentGate.gated} reason={agentGate.reason}><Button
       data-testid="request-changes-button"
       onClick={handleRequestChangesClick}
-      disabled={isLoading || (showFeedback && !feedback.trim())}
+      disabled={isLoading || (showFeedback && !feedback.trim()) || agentGate.gated}
       variant="ghost"
       className="h-9 px-4 gap-2 rounded-lg font-medium text-[0.8125rem]"
       style={{
@@ -331,7 +341,7 @@ function DecisionButtonsCard({
         <RotateCcw className="w-4 h-4" />
       )}
       {showFeedback ? "Submit" : "Request Changes"}
-    </Button>
+    </Button></AgentGateTooltip>
   );
 
   return (

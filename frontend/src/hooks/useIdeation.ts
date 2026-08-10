@@ -5,6 +5,7 @@
  * with automatic caching, refetching, and error handling.
  */
 
+import { useAgentGate } from "@/hooks/useAgentGate";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -254,13 +255,21 @@ export function useSessionGroupCounts(projectId: string, search?: string) {
  */
 export function useResetAndReaccept() {
   const queryClient = useQueryClient();
+  // Reset-and-reaccept deletes tasks and re-applies proposals as fresh work — it
+  // both destroys and ARMS, so it is agent steering (2.6-b). Gated inside the
+  // mutationFn so no caller can dispatch it by holding a stale `mutate` reference.
+  const agentGate = useAgentGate("applyProposals");
 
   return useMutation<void, Error, ResetAndReacceptInput>({
     mutationFn: async ({ sessionId, proposalIds }) => {
+      if (agentGate.gated) {
+        throw new Error(agentGate.reason ?? "Agent control is off for this device.");
+      }
+
       // Fetch existing plan branch BEFORE reopen (reopen deletes the record)
       const planArtifactId = useIdeationStore.getState().planArtifact?.id;
       const existingPlanBranch = planArtifactId
-        ? await planBranchApi.getByPlan(planArtifactId).catch(() => null)
+        ? await planBranchApi.getByPlan(planArtifactId)
         : null;
 
       // Step 1: Reopen (deletes tasks, cleans git, resets to Active)
