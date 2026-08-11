@@ -12359,6 +12359,160 @@ async fn base_parity_transient_shape_joined_repairing_attempt_is_left_untouched(
     );
 }
 
+/// Detecting a transient-parity shape while a generation is `Repairing` records a yield, not a
+/// detection. Once that generation settles to `Ready`, a later poll at the *same* classification
+/// must still apply the hold — the yield-path event must never permanently suppress the first
+/// hold via the detection-step dedupe.
+#[tokio::test]
+async fn base_parity_transient_shape_reenters_hold_once_yielded_generation_settles_to_ready() {
+    let (worktree, workspace_repo, conversation_id, health) =
+        seed_timed_out_check_workspace("base-parity-transient-yield-then-ready", "Rust tests")
+            .await;
+    let classification = super::classify_agent_workspace_pr_autofix_issue(101, &health)
+        .expect("timed-out check should classify")
+        .classification;
+    let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = workspace_repo.clone();
+    let repairing = reserve_repairing_attempt(repair_repo.as_ref(), &conversation_id, "main").await;
+
+    let base_checks = || {
+        Ok(Some(vec![PrHealthCheck {
+            name: "Rust tests".to_string(),
+            status: Some("completed".to_string()),
+            conclusion: Some("timed_out".to_string()),
+            details_url: Some("https://github.com/owner/repo/actions/runs/1".to_string()),
+        }]))
+    };
+
+    let (routed_first, chat_first) = route_with_base_conclusions(
+        &worktree,
+        workspace_repo.clone(),
+        &conversation_id,
+        health.clone(),
+        base_checks(),
+    )
+    .await;
+    assert!(
+        !routed_first,
+        "a generation yielded to must not dispatch a fixer"
+    );
+    assert!(chat_first.get_sent_messages().await.is_empty());
+
+    // A repeat poll while still Repairing must not accumulate duplicate yield events.
+    let (routed_second, chat_second) = route_with_base_conclusions(
+        &worktree,
+        workspace_repo.clone(),
+        &conversation_id,
+        health.clone(),
+        base_checks(),
+    )
+    .await;
+    assert!(!routed_second);
+    assert!(chat_second.get_sent_messages().await.is_empty());
+
+    let events_while_repairing = workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("list publication events");
+    assert_eq!(
+        events_while_repairing
+            .iter()
+            .filter(|event| {
+                event.step == super::BASE_PARITY_TRANSIENT_YIELDED_STEP
+                    && event.classification.as_deref() == Some(classification.as_str())
+            })
+            .count(),
+        1,
+        "repeated yield polls must not duplicate the yield event"
+    );
+    assert_eq!(
+        events_while_repairing
+            .iter()
+            .filter(|event| event.step == super::BASE_PARITY_TRANSIENT_DETECTED_STEP)
+            .count(),
+        0,
+        "the yield-path event must never be recorded as a detection while the generation is live"
+    );
+
+    // Settle the Repairing generation to Ready, as a real fixer completion eventually would; a
+    // settled generation keeps the dispatch evidence it was working from. Reload first: each
+    // yield poll joins (and CAS-bumps) the current attempt, so `repairing`'s captured
+    // `updated_at` is stale by now.
+    let current_repairing = repair_repo
+        .get_repair_attempt(&repairing.id)
+        .await
+        .expect("repairing attempt should load")
+        .expect("repairing attempt stays durable");
+    let mut ready = current_repairing.clone();
+    ready.phase = AgentWorkspaceRepairPhase::Ready;
+    ready.summary = Some("The fixer settled without resolving anything durable.".to_string());
+    ready.pr_autofix_health_fingerprint = Some(classification.clone());
+    ready.updated_at += chrono::Duration::microseconds(1);
+    match repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: ready,
+            expected_phase: AgentWorkspaceRepairPhase::Repairing,
+            expected_updated_at: current_repairing.updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Ready,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("settling to ready should persist")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_) => {}
+        outcome => panic!("expected settlement to ready, got {outcome:?}"),
+    }
+
+    let (routed_third, chat_third) = route_with_base_conclusions(
+        &worktree,
+        workspace_repo.clone(),
+        &conversation_id,
+        health,
+        base_checks(),
+    )
+    .await;
+    assert!(
+        !routed_third,
+        "the now-idle generation must hold, not dispatch a fixer"
+    );
+    assert!(chat_third.get_sent_messages().await.is_empty());
+
+    let attempt = repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("current repair attempt should load")
+        .expect("a repair attempt must exist");
+    assert!(
+        attempt.pending_reasons.iter().any(|reason| {
+            reason
+                == crate::application::agent_workspace_publish_repair_state::BASE_PARITY_TRANSIENT_REPAIR_REASON
+        }),
+        "the settled generation must now carry the hold reason marker"
+    );
+    let snapshot = attempt.operation_snapshot();
+    assert_eq!(
+        snapshot.hold_reason,
+        Some(AgentWorkspaceRepairOperationHoldReason::BaseParityTransient),
+        "the hold must actually apply once the generation is idle again"
+    );
+
+    let events_after_settle = workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("list publication events");
+    assert_eq!(
+        events_after_settle
+            .iter()
+            .filter(|event| {
+                event.step == super::BASE_PARITY_TRANSIENT_DETECTED_STEP
+                    && event.classification.as_deref() == Some(classification.as_str())
+            })
+            .count(),
+        1,
+        "exactly one detection event must exist once the hold actually applies"
+    );
+}
+
 /// Joining an attempt that is already `Blocked` on a needs-human escalation must keep its blocker
 /// and phase exactly as they were.
 #[tokio::test]

@@ -79,6 +79,10 @@ function workspaceWithHoldReason(
     maintenanceOperation: {
       ...baseWorkspace.maintenanceOperation!,
       holdReason,
+      // No durable summary or narrative here: these cases isolate the per-hold-reason
+      // template paragraph itself, which the summary/narrative fallback tiers deliberately
+      // outrank when either is present (see the dedicated narrative-override test below).
+      summary: null,
     },
   };
 }

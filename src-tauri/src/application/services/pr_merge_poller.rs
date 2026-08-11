@@ -4397,6 +4397,11 @@ pub(crate) const PRE_EXISTING_ON_BASE_DETECTED_STEP: &str = "repair_pre_existing
 /// with the identical checks on the base branch.
 pub(crate) const BASE_PARITY_TRANSIENT_DETECTED_STEP: &str =
     "repair_base_parity_transient_detected";
+/// The step recorded when a transient/timeout base-parity shape is observed but the current
+/// generation is not idle (`Repairing`/`Blocked`, or targets a different base ref), so no hold is
+/// written yet. Kept distinct from `BASE_PARITY_TRANSIENT_DETECTED_STEP` so the detection dedupe
+/// only suppresses a repeat hold, never the first hold once the generation settles to `Ready`.
+pub(crate) const BASE_PARITY_TRANSIENT_YIELDED_STEP: &str = "repair_base_parity_transient_yielded";
 
 /// Records a base-caused failure as a hand-off rather than a repair.
 ///
@@ -4509,14 +4514,11 @@ async fn record_base_parity_transient_detection(
          without any PR-side work."
     );
 
-    let already_recorded = workspace_repo
-        .list_publication_events(conversation_id)
-        .await?
-        .into_iter()
-        .any(|event| {
-            event.step == BASE_PARITY_TRANSIENT_DETECTED_STEP
-                && event.classification.as_deref() == Some(classification)
-        });
+    let publication_events = workspace_repo.list_publication_events(conversation_id).await?;
+    let already_recorded = publication_events.iter().any(|event| {
+        event.step == BASE_PARITY_TRANSIENT_DETECTED_STEP
+            && event.classification.as_deref() == Some(classification)
+    });
     if already_recorded {
         return Ok(false);
     }
@@ -4564,15 +4566,24 @@ async fn record_base_parity_transient_detection(
         }
         AgentWorkspaceRepairStartOutcome::Joined(_)
         | AgentWorkspaceRepairStartOutcome::BlockedByCurrent(_) => {
-            workspace_repo
-                .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
-                    conversation_id.clone(),
-                    BASE_PARITY_TRANSIENT_DETECTED_STEP,
-                    "blocked",
-                    &summary,
-                    Some(classification.to_string()),
-                ))
-                .await?;
+            // Record a yield, never the detection step: the owning generation may still settle to
+            // `Ready` and re-enter this function on a later poll at the same classification, and
+            // the detection-step dedupe above must not have already suppressed that first hold.
+            let already_yielded = publication_events.iter().any(|event| {
+                event.step == BASE_PARITY_TRANSIENT_YIELDED_STEP
+                    && event.classification.as_deref() == Some(classification)
+            });
+            if !already_yielded {
+                workspace_repo
+                    .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                        conversation_id.clone(),
+                        BASE_PARITY_TRANSIENT_YIELDED_STEP,
+                        "blocked",
+                        &summary,
+                        Some(classification.to_string()),
+                    ))
+                    .await?;
+            }
             return Ok(false);
         }
         AgentWorkspaceRepairStartOutcome::SuccessorStarted(_) => {

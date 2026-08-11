@@ -414,9 +414,14 @@ export function getAgentWorkspaceHoldPresentation(
     pill: AGENT_WORKSPACE_HOLD_PILL,
     courtChip: copy.courtChip,
     headline: copy.headline,
-    // Fix D: the agent's own account replaces the template paragraph when it exists.
-    // Poller-created holds have no attempt narrative and keep the template.
-    paragraph: composeAgentWorkspaceOperationNarrative(operation) ?? copy.paragraph,
+    // Fix D: the agent's own structured account wins; a fixer completion that only filled the
+    // legacy free-text `summary` still shows its own account (the pre-redesign "repair verdict"
+    // fact) before falling back to the generic per-hold-reason template. Poller-created holds
+    // carry neither field and always take the template.
+    paragraph:
+      composeAgentWorkspaceOperationNarrative(operation) ??
+      nonBlank(operation.summary) ??
+      copy.paragraph,
     primary: {
       kind: copy.primary.kind,
       label: copy.primary.label,
@@ -463,6 +468,11 @@ export function canResumeAgentWorkspacePublish(
       operation.recoveryAction === "resume_publish" &&
       operation.holdReason == null,
   );
+}
+
+/** A blank string carries no information; treat it the same as absent. */
+function nonBlank(value: string | null | undefined): string | null {
+  return value && value.trim().length > 0 ? value : null;
 }
 
 /**

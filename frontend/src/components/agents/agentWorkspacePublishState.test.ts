@@ -342,6 +342,7 @@ describe("maintenance operation presentation", () => {
         stage: "held",
         status: "held",
         holdReason: "pr_autofix_pre_existing_on_base",
+        summary: null,
         automaticContinuation: false,
       },
     });
@@ -447,7 +448,28 @@ describe("maintenance operation presentation", () => {
     );
   });
 
-  it("falls back to the hold-reason template paragraph for a poller-created hold with no narrative", () => {
+  it("renders the agent's structured narrative for a held operation ahead of the operation summary", () => {
+    const held = workspace({
+      maintenanceOperation: {
+        ...maintenanceOperation,
+        source: "pr_autofix",
+        stage: "held",
+        status: "held",
+        holdReason: "pr_autofix_unchanged_health",
+        summary: "RalphX is waiting for a new CI result.",
+        blocker: null,
+        whatHappened: "GitHub reported the identical failure again.",
+        whatIDid: "Held the repair instead of spending another generation.",
+        automaticContinuation: false,
+      },
+    });
+
+    expect(getAgentWorkspaceMaintenancePresentation(held)?.summary).toBe(
+      "GitHub reported the identical failure again. Held the repair instead of spending another generation.",
+    );
+  });
+
+  it("falls back to the operation summary for a held operation when no narrative is present", () => {
     const held = workspace({
       maintenanceOperation: {
         ...maintenanceOperation,
@@ -464,10 +486,29 @@ describe("maintenance operation presentation", () => {
     });
 
     expect(getAgentWorkspaceMaintenancePresentation(held)?.summary).toBe(
-      getAgentWorkspaceHoldPresentation(held)?.paragraph,
-    );
-    expect(getAgentWorkspaceMaintenancePresentation(held)?.summary).not.toBe(
       "RalphX is waiting for a new CI result.",
+    );
+  });
+
+  it("falls back to the hold-reason template for a held operation when narrative and summary are both absent", () => {
+    const held = workspace({
+      maintenanceOperation: {
+        ...maintenanceOperation,
+        source: "pr_autofix",
+        stage: "held",
+        status: "held",
+        holdReason: "pr_autofix_unchanged_health",
+        // A whitespace-only summary carries no information and must not beat the template.
+        summary: "   ",
+        blocker: null,
+        whatHappened: null,
+        whatIDid: null,
+        automaticContinuation: false,
+      },
+    });
+
+    expect(getAgentWorkspaceMaintenancePresentation(held)?.summary).toBe(
+      getAgentWorkspaceHoldPresentation(held)?.paragraph,
     );
   });
 
@@ -589,7 +630,7 @@ describe("getAgentWorkspaceHoldPresentation", () => {
     expect(presentation?.paragraph.toLowerCase()).not.toContain(" ci ");
   });
 
-  it("keeps the hold-reason template paragraph regardless of the durable operation summary", () => {
+  it("falls back to the durable operation.summary when no agent narrative is present", () => {
     const presentation = getAgentWorkspaceHoldPresentation(
       workspace({
         maintenanceOperation: {
@@ -601,11 +642,27 @@ describe("getAgentWorkspaceHoldPresentation", () => {
     );
 
     expect(presentation?.paragraph).toBe(
+      "RalphX pushed commit abc123 but GitHub returned a 502.",
+    );
+  });
+
+  it("treats a whitespace-only summary as absent and falls back to the hold-reason template", () => {
+    const presentation = getAgentWorkspaceHoldPresentation(
+      workspace({
+        maintenanceOperation: {
+          ...maintenanceOperation,
+          holdReason: "publication_effect_attention",
+          summary: "   ",
+        },
+      }),
+    );
+
+    expect(presentation?.paragraph).toBe(
       "RalphX pushed a repair but could not confirm it reached GitHub. Retry publication to make RalphX try again.",
     );
   });
 
-  it("renders the agent's narrative verbatim in place of the template paragraph", () => {
+  it("renders the agent's narrative verbatim in place of the operation summary and the template paragraph", () => {
     const presentation = getAgentWorkspaceHoldPresentation(
       workspace({
         maintenanceOperation: {

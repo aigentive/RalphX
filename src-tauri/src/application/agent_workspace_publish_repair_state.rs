@@ -1428,6 +1428,11 @@ pub(crate) async fn rerun_agent_workspace_ci_for_hold(
         return Ok(AgentWorkspaceCiRerunActionOutcome::BudgetExhausted(current));
     }
 
+    // A base-parity hold can join an attempt a prior fixer completion already left a narrative
+    // on. Carry it through this reservation so a user-initiated rerun does not blank the card's
+    // paragraph back to the generic template.
+    let carried_what_happened = current.what_happened.clone();
+    let carried_what_i_did = current.what_i_did.clone();
     let outcome = crate::application::agent_workspace_ci_rerun::execute_transient_ci_rerun(
         Arc::clone(&repair_repo),
         branch_update_repo,
@@ -1437,8 +1442,8 @@ pub(crate) async fn rerun_agent_workspace_ci_for_hold(
         pr_number,
         summary,
         auto_merge_current,
-        None,
-        None,
+        carried_what_happened.as_deref(),
+        carried_what_i_did.as_deref(),
     )
     .await?;
 

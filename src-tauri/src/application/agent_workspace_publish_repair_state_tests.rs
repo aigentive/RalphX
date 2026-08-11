@@ -4944,6 +4944,86 @@ async fn rerun_agent_workspace_ci_for_hold_reruns_and_clears_the_base_parity_hol
     );
 }
 
+/// A base-parity-transient hold can join an attempt a prior fixer completion already left a
+/// narrative on. A user-initiated rerun must carry that narrative through, not blank the card's
+/// paragraph back to the generic template.
+#[tokio::test]
+async fn rerun_agent_workspace_ci_for_hold_preserves_stored_narrative() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let repair_repo = Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>;
+    let branch_update_repo =
+        Arc::new(MemoryBranchUpdateRepository::new()) as Arc<dyn BranchUpdateRepository>;
+    let conversation_id = ChatConversationId::from_string("ci-rerun-preserves-narrative");
+    let held =
+        held_base_parity_transient_attempt(&repair_repo, &workspace_repo, &conversation_id).await;
+
+    let mut narrated = held.clone();
+    narrated.what_happened = Some("GitHub cancelled the test job before it started.".to_string());
+    narrated.what_i_did =
+        Some("Left the branch untouched so a re-run can pick it up.".to_string());
+    narrated.updated_at += chrono::Duration::microseconds(1);
+    let held = match repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: narrated,
+            expected_phase: held.phase,
+            expected_updated_at: held.updated_at,
+            next_phase: held.phase,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("narrative write should persist")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("expected the narrative write to apply, got {outcome:?}"),
+    };
+
+    let mock_github = Arc::new(MockGithubService::new());
+    mock_github.state().fetch_pr_health_result = Some(Ok(transient_ci_health("rerun-head", 42)));
+    let github: Arc<dyn GithubServiceTrait> = Arc::clone(&mock_github) as Arc<dyn GithubServiceTrait>;
+
+    let outcome = rerun_agent_workspace_ci_for_hold(
+        Arc::clone(&repair_repo),
+        Arc::clone(&branch_update_repo),
+        Arc::clone(&github),
+        &conversation_id,
+        &held.id,
+        held.generation,
+        held.updated_at,
+        &PathBuf::from("/tmp/does-not-need-to-exist"),
+        123,
+        "rerunning by explicit user request",
+        None,
+    )
+    .await
+    .expect("rerun over a narrated base-parity-transient generation should succeed");
+
+    let AgentWorkspaceCiRerunActionOutcome::Applied(applied) = outcome else {
+        panic!("expected the rerun to apply, got {outcome:?}");
+    };
+    assert_eq!(
+        applied.what_happened.as_deref(),
+        Some("GitHub cancelled the test job before it started."),
+        "a user-initiated rerun must not erase the stored narrative"
+    );
+    assert_eq!(
+        applied.what_i_did.as_deref(),
+        Some("Left the branch untouched so a re-run can pick it up."),
+        "a user-initiated rerun must not erase the stored narrative"
+    );
+    let snapshot = applied.operation_snapshot();
+    assert_eq!(
+        snapshot.hold_reason,
+        Some(crate::domain::entities::AgentWorkspaceRepairOperationHoldReason::CiRerunPending),
+        "the hold reason must still re-project off base-parity-transient"
+    );
+    assert_eq!(
+        snapshot.status,
+        crate::domain::entities::AgentWorkspaceRepairOperationStatus::Held,
+        "hold_active must stay true across the transition"
+    );
+}
+
 #[tokio::test]
 async fn rerun_agent_workspace_ci_for_hold_rejects_a_stale_generation() {
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
