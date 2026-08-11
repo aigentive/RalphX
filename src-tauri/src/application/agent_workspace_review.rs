@@ -26,8 +26,8 @@ use crate::domain::entities::{
     AgentConversationWorkspaceMode, AgentRun, AgentRunAction, AgentRunActionKind, AgentRunId,
     AgentRunStatus, AgentWorkspaceReviewArtifactOutcome, AgentWorkspaceReviewFixerSnapshot,
     AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
-    AgentWorkspaceReviewOutcome,
-    AgentWorkspaceReviewRuntimeState, AgentWorkspaceReviewTargetScope, Artifact, ArtifactContent,
+    AgentWorkspaceReviewOutcome, AgentWorkspaceReviewRuntimeState,
+    AgentWorkspaceReviewSettlementSource, AgentWorkspaceReviewTargetScope, Artifact, ArtifactContent,
     ArtifactId, ChatContextType, ChatConversation, ChatConversationId, MessageRole, Project,
     WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED, WORKSPACE_REVIEW_FIXER_STATUS_QUEUED,
     WORKSPACE_REVIEW_FIXER_STATUS_ROUTING, WORKSPACE_REVIEW_FIXER_STATUS_RUNNING,
@@ -2049,6 +2049,19 @@ fn spawn_workspace_review_waiter(
 
         loop {
             if wait_started.elapsed() >= Duration::from_secs(reviewer_timeout_secs) {
+                // The reviewer may have finished everything that matters and only lost the race to
+                // report it. Settle from what it durably recorded before failing the review.
+                if settle_workspace_review_from_durable_evidence(
+                    &state,
+                    &workspace,
+                    &target,
+                    &run_id,
+                )
+                .await
+                    != WorkspaceReviewSettlement::NotSettled
+                {
+                    return;
+                }
                 mark_workspace_review_blocked(
                     &state,
                     &workspace,
@@ -2222,19 +2235,170 @@ fn spawn_workspace_review_waiter(
                         diff_fingerprint = %compact_log_fingerprint(Some(&target.diff_fingerprint)),
                         "Workspace reviewer child chat completed without writing a current Review"
                     );
-                    mark_workspace_review_blocked(
+                    if settle_workspace_review_from_durable_evidence(
                         &state,
                         &workspace,
                         &target,
                         &run_id,
-                        "Workspace reviewer completed without writing a current Review".to_string(),
                     )
-                    .await;
+                    .await
+                        == WorkspaceReviewSettlement::NotSettled
+                    {
+                        mark_workspace_review_blocked(
+                            &state,
+                            &workspace,
+                            &target,
+                            &run_id,
+                            "Workspace reviewer completed without writing a current Review"
+                                .to_string(),
+                        )
+                        .await;
+                    }
                 }
             }
             return;
         }
     });
+}
+
+/// Result of trying to settle a review gate from durable evidence rather than a typed completion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WorkspaceReviewSettlement {
+    /// The reviewer already called `complete_workspace_review_run`; nothing to do.
+    TypedPreserved,
+    /// Settled from the recorded artifact outcome after the wrapper gave up on the run.
+    DegradedSettled(AgentWorkspaceReviewArtifactOutcome),
+    /// No durable evidence this run may settle from; the caller must fail the review.
+    NotSettled,
+}
+
+/// Settles the review gate from the outcome the reviewer recorded on its final artifact write.
+///
+/// This exists because the reviewer's wrapper deadline can fire in the tail of an otherwise
+/// finished review — after the artifact pair landed but before `complete_workspace_review_run` —
+/// and discarding a completed review because the process was slow to exit is the wrong trade.
+///
+/// It is deliberately narrower than typed completion:
+///
+/// - It requires the artifact pair to be current for this exact target AND the recorded outcome to
+///   name `run_id`. Without the run-id check a re-review of an unchanged delta would inherit the
+///   previous run's evidence, since target refresh does not clear artifact identity.
+/// - It re-runs the plan-context guard. A stale plan context must never be laundered into a pass.
+/// - It derives the gate through [`apply_review_gate_to_monitor`] instead of assigning one.
+/// - It does not route the blocking fixer and does not arm the auto-merge guard: a timed-out
+///   reviewer should not trigger automatic publication. It does record a blocking summary and
+///   fingerprint, without which the manual fixer action fails closed.
+pub(crate) async fn settle_workspace_review_from_durable_evidence(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    target: &AgentWorkspaceReviewTarget,
+    run_id: &str,
+) -> WorkspaceReviewSettlement {
+    let _lifecycle_guard = lock_workspace_review_lifecycle(&workspace.conversation_id).await;
+    if load_current_workspace_review_eligible(state, workspace)
+        .await
+        .is_err()
+    {
+        return WorkspaceReviewSettlement::NotSettled;
+    }
+    let Ok(mut monitor) = load_or_create_monitor(state, workspace).await else {
+        return WorkspaceReviewSettlement::NotSettled;
+    };
+    if workspace_review_monitor_has_typed_completion_for_target(&monitor, target, run_id) {
+        return WorkspaceReviewSettlement::TypedPreserved;
+    }
+    if !workspace_review_block_matches_active_monitor(&monitor, target, run_id) {
+        return WorkspaceReviewSettlement::NotSettled;
+    }
+    let Some(recorded_outcome) = monitor
+        .review_artifact_recorded_outcome
+        .filter(|_| monitor.has_recorded_outcome_for_run(run_id))
+    else {
+        return WorkspaceReviewSettlement::NotSettled;
+    };
+
+    // Plan-context guard, mirroring typed completion. A read failure is treated as drift.
+    let Ok(live_plan_context_fingerprint) = load_linked_workspace_plan_snapshot(state, workspace)
+        .await
+        .map(|snapshot| snapshot.map(|snapshot| snapshot.fingerprint()))
+    else {
+        return WorkspaceReviewSettlement::NotSettled;
+    };
+    if monitor.reviewed_plan_context_fingerprint != live_plan_context_fingerprint {
+        return WorkspaceReviewSettlement::NotSettled;
+    }
+    apply_current_plan_context_to_monitor(
+        &mut monitor,
+        live_plan_context_fingerprint.as_deref(),
+    );
+
+    let artifact_current = monitor.is_current_for_target(
+        target.scope,
+        target.head_sha.as_deref(),
+        &target.diff_fingerprint,
+    ) && monitor.has_review_artifact_pair();
+    if !artifact_current {
+        return WorkspaceReviewSettlement::NotSettled;
+    }
+
+    monitor.clear_review_gate_bypass();
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+    monitor.last_error = None;
+    match recorded_outcome {
+        AgentWorkspaceReviewArtifactOutcome::Passed => {
+            monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
+            clear_review_blocking_state(&mut monitor);
+            monitor.review_fixer_cycle_count = 0;
+        }
+        AgentWorkspaceReviewArtifactOutcome::Blocking => {
+            // The artifact write cleared live blocking state, so both fields are empty here and
+            // the fixer-start path would fail closed without them.
+            let blocking_summary = monitor
+                .review_artifact_recorded_blocking_summary
+                .clone()
+                .unwrap_or_else(|| {
+                    "Workspace Review recorded blocking findings; see the Requested Changes artifact."
+                        .to_string()
+                });
+            monitor.review_blocking_fingerprint = Some(workspace_review_blocking_fingerprint(
+                target,
+                &blocking_summary,
+            ));
+            monitor.review_blocking_summary = Some(blocking_summary);
+            monitor.review_outcome = AgentWorkspaceReviewOutcome::Blocking;
+        }
+    }
+    monitor.review_settlement_source = Some(AgentWorkspaceReviewSettlementSource::ArtifactDegraded);
+    apply_review_gate_to_monitor(&mut monitor, Some(target));
+
+    if let Err(error) = state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+    {
+        warn!(
+            target: WORKSPACE_REVIEW_LOG_TARGET,
+            operation = "degraded_settlement_persist_failed",
+            conversation_id = %workspace.conversation_id,
+            run_id = %run_id,
+            error = %error,
+            "Failed to persist degraded workspace Review settlement"
+        );
+        return WorkspaceReviewSettlement::NotSettled;
+    }
+    info!(
+        target: WORKSPACE_REVIEW_LOG_TARGET,
+        operation = "degraded_settlement_applied",
+        conversation_id = %workspace.conversation_id,
+        project_id = %workspace.project_id,
+        branch = %workspace.branch_name,
+        run_id = %run_id,
+        recorded_outcome = %recorded_outcome,
+        target_scope = %target.scope,
+        diff_fingerprint = %compact_log_fingerprint(Some(&target.diff_fingerprint)),
+        "Settled workspace Review gate from recorded artifact outcome"
+    );
+    WorkspaceReviewSettlement::DegradedSettled(recorded_outcome)
 }
 
 async fn mark_workspace_review_blocked(
@@ -2626,6 +2790,7 @@ pub(crate) async fn complete_agent_workspace_review_run_unlocked(
             clear_review_blocking_state(&mut monitor);
         }
     }
+    monitor.review_settlement_source = Some(AgentWorkspaceReviewSettlementSource::Typed);
     apply_review_gate_to_monitor(&mut monitor, target.as_ref());
     let mut monitor = state
         .agent_conversation_workspace_repo

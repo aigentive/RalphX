@@ -8,8 +8,9 @@ use crate::domain::agents::{
 };
 use crate::domain::entities::{
     AgentConversationJiraIssueLink, AgentConversationWorkspaceMode, AgentRun,
-    AgentWorkspaceReviewApprovalSnapshot, AgentWorkspaceReviewGateStatus,
-    AgentWorkspaceReviewOutcome, AgentWorkspaceSourcePullRequest, Artifact, ArtifactId,
+    AgentWorkspaceReviewApprovalSnapshot, AgentWorkspaceReviewArtifactOutcome,
+    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewOutcome,
+    AgentWorkspaceReviewSettlementSource, AgentWorkspaceSourcePullRequest, Artifact, ArtifactId,
     ArtifactType, ChatConversation, ChatConversationId, ChatMessage, IdeationAnalysisBaseRefKind,
     IdeationSession, IdeationSessionFlow, IdeationSessionId, IdeationSessionStatus, ProjectId,
     RuntimeSource, TaskId,
@@ -6618,4 +6619,344 @@ fn selected_source_review_packet_includes_hunk_anchors() {
     assert_eq!(anchor.old_lines, 2);
     assert_eq!(anchor.new_start, 1);
     assert_eq!(anchor.new_lines, 3);
+}
+
+// ── Degraded settlement from recorded artifact evidence ──────────────────
+
+/// Builds a monitor in the exact state a reviewer leaves behind when it wrote its final artifact
+/// pair with a recorded outcome but never reached `complete_workspace_review_run`.
+async fn reviewing_monitor_with_recorded_outcome(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    target: &AgentWorkspaceReviewTarget,
+    run_id: &str,
+    outcome: AgentWorkspaceReviewArtifactOutcome,
+    blocking_summary: Option<&str>,
+) -> AgentWorkspaceReviewMonitor {
+    let mut monitor = load_or_create_monitor(state, workspace)
+        .await
+        .expect("monitor should load");
+    apply_current_target_to_monitor(&mut monitor, Some(target));
+    apply_review_artifact_pair_to_monitor(
+        &mut monitor,
+        target.scope,
+        target.head_sha.clone(),
+        target.diff_fingerprint.clone(),
+        Some(run_id.to_string()),
+        ArtifactId::from_string("overview-artifact"),
+        1,
+        Utc::now(),
+        None,
+        ArtifactId::from_string("requested-changes-artifact"),
+        1,
+        Utc::now(),
+        None,
+    );
+    record_review_artifact_outcome(
+        &mut monitor,
+        outcome,
+        blocking_summary.map(str::to_string),
+        Some(run_id.to_string()),
+    );
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+    monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Reviewing;
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("reviewing monitor should persist")
+}
+
+async fn degraded_settlement_fixture() -> (
+    tempfile::TempDir,
+    Arc<AppState>,
+    AgentConversationWorkspace,
+    AgentWorkspaceReviewTarget,
+) {
+    let (temp, repo, base_sha) = init_repo();
+    committed_workspace_delta(&repo);
+    let state = Arc::new(AppState::new_test());
+    let project = seed_project(&state, &repo).await;
+    let workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+    seed_conversation(&state, &workspace).await;
+    persist_workspace(&state, &workspace).await;
+    let context = load_agent_workspace_review_context(&state, &workspace)
+        .await
+        .expect("context should load");
+    let target = context.target.expect("target should exist");
+    (temp, state, workspace, target)
+}
+
+#[tokio::test]
+async fn degraded_settlement_passes_gate_without_arming_auto_merge() {
+    let (_temp, state, workspace, target) = degraded_settlement_fixture().await;
+    let run_id = "reviewer-run-passed";
+    reviewing_monitor_with_recorded_outcome(
+        &state,
+        &workspace,
+        &target,
+        run_id,
+        AgentWorkspaceReviewArtifactOutcome::Passed,
+        None,
+    )
+    .await;
+
+    let settlement =
+        settle_workspace_review_from_durable_evidence(&state, &workspace, &target, run_id).await;
+
+    assert_eq!(
+        settlement,
+        WorkspaceReviewSettlement::DegradedSettled(AgentWorkspaceReviewArtifactOutcome::Passed)
+    );
+    let monitor = load_or_create_monitor(&state, &workspace)
+        .await
+        .expect("monitor should load");
+    assert_eq!(monitor.status, AgentWorkspaceReviewMonitorStatus::Ready);
+    assert_eq!(monitor.review_outcome, AgentWorkspaceReviewOutcome::Passed);
+    assert_eq!(
+        monitor.review_gate_status,
+        AgentWorkspaceReviewGateStatus::Passed
+    );
+    assert_eq!(
+        monitor.review_settlement_source,
+        Some(AgentWorkspaceReviewSettlementSource::ArtifactDegraded)
+    );
+    assert_eq!(monitor.review_fixer_cycle_count, 0);
+    assert!(monitor.last_error.is_none());
+    // A timed-out reviewer must never trigger automatic publication.
+    assert!(monitor.auto_merge_guard.is_none());
+}
+
+/// The artifact write clears live blocking state, so degraded settlement has to restore a summary
+/// and fingerprint or the Blocking gate renders a "fix" action that fails closed.
+#[tokio::test]
+async fn degraded_blocking_settlement_is_actionable_and_does_not_route_the_fixer() {
+    let (_temp, state, workspace, target) = degraded_settlement_fixture().await;
+    let run_id = "reviewer-run-blocking";
+    reviewing_monitor_with_recorded_outcome(
+        &state,
+        &workspace,
+        &target,
+        run_id,
+        AgentWorkspaceReviewArtifactOutcome::Blocking,
+        Some("Publish path drops the rollback branch"),
+    )
+    .await;
+
+    let settlement =
+        settle_workspace_review_from_durable_evidence(&state, &workspace, &target, run_id).await;
+
+    assert_eq!(
+        settlement,
+        WorkspaceReviewSettlement::DegradedSettled(AgentWorkspaceReviewArtifactOutcome::Blocking)
+    );
+    let monitor = load_or_create_monitor(&state, &workspace)
+        .await
+        .expect("monitor should load");
+    assert_eq!(
+        monitor.review_gate_status,
+        AgentWorkspaceReviewGateStatus::Blocking
+    );
+    assert_eq!(
+        monitor.review_blocking_summary.as_deref(),
+        Some("Publish path drops the rollback branch")
+    );
+    assert!(monitor
+        .review_blocking_fingerprint
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty()));
+    // Degraded settlement settles the gate only; the user can still start the fixer manually.
+    assert!(monitor.review_fixer_status.is_none());
+}
+
+#[tokio::test]
+async fn degraded_settlement_requires_a_recorded_outcome() {
+    let (_temp, state, workspace, target) = degraded_settlement_fixture().await;
+    let run_id = "reviewer-run-no-outcome";
+    let mut monitor = reviewing_monitor_with_recorded_outcome(
+        &state,
+        &workspace,
+        &target,
+        run_id,
+        AgentWorkspaceReviewArtifactOutcome::Passed,
+        None,
+    )
+    .await;
+    monitor.clear_recorded_review_evidence();
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("monitor without recorded evidence should persist");
+
+    let settlement =
+        settle_workspace_review_from_durable_evidence(&state, &workspace, &target, run_id).await;
+
+    assert_eq!(settlement, WorkspaceReviewSettlement::NotSettled);
+}
+
+/// The fail-open case the run-id guard exists for: run A records `passed`, then a fresh run B
+/// reviews the identical delta and times out. Target refresh does not clear artifact identity, so
+/// only the run id stops B from settling on A's evidence.
+#[tokio::test]
+async fn degraded_settlement_rejects_another_runs_recorded_outcome_on_the_same_target() {
+    let (_temp, state, workspace, target) = degraded_settlement_fixture().await;
+    reviewing_monitor_with_recorded_outcome(
+        &state,
+        &workspace,
+        &target,
+        "reviewer-run-a",
+        AgentWorkspaceReviewArtifactOutcome::Passed,
+        None,
+    )
+    .await;
+    let mut monitor = load_or_create_monitor(&state, &workspace)
+        .await
+        .expect("monitor should load");
+    monitor.last_run_id = Some("reviewer-run-b".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("second reviewing run should persist");
+
+    let settlement = settle_workspace_review_from_durable_evidence(
+        &state,
+        &workspace,
+        &target,
+        "reviewer-run-b",
+    )
+    .await;
+
+    assert_eq!(settlement, WorkspaceReviewSettlement::NotSettled);
+    let monitor = load_or_create_monitor(&state, &workspace)
+        .await
+        .expect("monitor should load");
+    assert_ne!(
+        monitor.review_gate_status,
+        AgentWorkspaceReviewGateStatus::Passed
+    );
+}
+
+#[tokio::test]
+async fn degraded_settlement_rejects_a_stale_artifact_fingerprint() {
+    let (_temp, state, workspace, target) = degraded_settlement_fixture().await;
+    let run_id = "reviewer-run-stale";
+    let mut monitor = reviewing_monitor_with_recorded_outcome(
+        &state,
+        &workspace,
+        &target,
+        run_id,
+        AgentWorkspaceReviewArtifactOutcome::Passed,
+        None,
+    )
+    .await;
+    monitor.reviewed_diff_fingerprint = Some("fingerprint-from-an-older-delta".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("stale monitor should persist");
+
+    let settlement =
+        settle_workspace_review_from_durable_evidence(&state, &workspace, &target, run_id).await;
+
+    assert_eq!(settlement, WorkspaceReviewSettlement::NotSettled);
+}
+
+/// A stale plan context must never be laundered into a passing gate.
+#[tokio::test]
+async fn degraded_settlement_refuses_when_the_plan_context_drifted() {
+    let (_temp, state, workspace, target) = degraded_settlement_fixture().await;
+    let run_id = "reviewer-run-plan-drift";
+    let mut monitor = reviewing_monitor_with_recorded_outcome(
+        &state,
+        &workspace,
+        &target,
+        run_id,
+        AgentWorkspaceReviewArtifactOutcome::Passed,
+        None,
+    )
+    .await;
+    monitor.reviewed_plan_context_fingerprint = Some("plan-fingerprint-from-an-older-plan".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("drifted monitor should persist");
+
+    let settlement =
+        settle_workspace_review_from_durable_evidence(&state, &workspace, &target, run_id).await;
+
+    assert_eq!(settlement, WorkspaceReviewSettlement::NotSettled);
+}
+
+/// Typed completion always wins; degraded settlement must not re-derive an already-settled gate.
+#[tokio::test]
+async fn typed_completion_is_preserved_over_degraded_settlement() {
+    let (_temp, state, workspace, target) = degraded_settlement_fixture().await;
+    let run_id = "reviewer-run-typed";
+    let mut monitor = reviewing_monitor_with_recorded_outcome(
+        &state,
+        &workspace,
+        &target,
+        run_id,
+        AgentWorkspaceReviewArtifactOutcome::Blocking,
+        Some("Blocking finding"),
+    )
+    .await;
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
+    monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Passed;
+    monitor.review_settlement_source = Some(AgentWorkspaceReviewSettlementSource::Typed);
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("typed completion should persist");
+
+    let settlement =
+        settle_workspace_review_from_durable_evidence(&state, &workspace, &target, run_id).await;
+
+    assert_eq!(settlement, WorkspaceReviewSettlement::TypedPreserved);
+    let monitor = load_or_create_monitor(&state, &workspace)
+        .await
+        .expect("monitor should load");
+    assert_eq!(monitor.review_outcome, AgentWorkspaceReviewOutcome::Passed);
+    assert_eq!(
+        monitor.review_settlement_source,
+        Some(AgentWorkspaceReviewSettlementSource::Typed)
+    );
+}
+
+/// Target refresh invalidates every authority derived from the old target.
+#[tokio::test]
+async fn target_refresh_clears_recorded_settlement_evidence() {
+    let (_temp, state, workspace, target) = degraded_settlement_fixture().await;
+    let mut monitor = reviewing_monitor_with_recorded_outcome(
+        &state,
+        &workspace,
+        &target,
+        "reviewer-run-refresh",
+        AgentWorkspaceReviewArtifactOutcome::Passed,
+        None,
+    )
+    .await;
+    monitor.annotation_run_id = Some("annotator-run".to_string());
+
+    let mut refreshed_target = target.clone();
+    refreshed_target.diff_fingerprint = "fingerprint-after-new-edits".to_string();
+    apply_current_target_to_monitor(&mut monitor, Some(&refreshed_target));
+
+    assert!(monitor.review_artifact_recorded_outcome.is_none());
+    assert!(monitor.review_artifact_recorded_outcome_run_id.is_none());
+    assert!(monitor.review_artifact_recorded_blocking_summary.is_none());
+    assert!(monitor.annotation_run_id.is_none());
+    assert!(monitor.review_settlement_source.is_none());
 }
