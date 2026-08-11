@@ -870,6 +870,10 @@ fn build_queued_agent_run(
         .and_then(|parent| parent.agent_name.clone())
         .or_else(|| fallback_agent_name.map(str::to_string));
     run.launch_role = parent_run.and_then(|parent| parent.launch_role.clone());
+    // Continuations inherit the parent's authoritative spawn identity so a
+    // queued turn keeps exactly the tier its originating spawn resolved.
+    run.routing_role = parent_run.and_then(|parent| parent.routing_role);
+    run.project_id = parent_run.and_then(|parent| parent.project_id.clone());
     run.runtime_source = parent_run.and_then(|parent| parent.runtime_source.clone());
     run.apply_action_metadata_json(metadata);
     launch_security.apply_to_agent_run(&mut run);
@@ -909,6 +913,10 @@ fn build_queued_preflight_failure_run(
         .and_then(|parent| parent.agent_name.clone())
         .or_else(|| fallback_agent_name.map(str::to_string));
     run.launch_role = parent_run.and_then(|parent| parent.launch_role.clone());
+    // Continuations inherit the parent's authoritative spawn identity so a
+    // queued turn keeps exactly the tier its originating spawn resolved.
+    run.routing_role = parent_run.and_then(|parent| parent.routing_role);
+    run.project_id = parent_run.and_then(|parent| parent.project_id.clone());
     run.runtime_source = parent_run.and_then(|parent| parent.runtime_source.clone());
     run.apply_action_metadata_json(metadata);
     run

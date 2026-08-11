@@ -11,7 +11,7 @@ use tokio::time::Duration;
 use tokio_util::bytes::Bytes;
 
 use crate::application::{
-    AtlassianApiClient, AtlassianAuthContext as ApplicationAtlassianAuthContext,
+    AtlassianApiClient, AtlassianApiError, AtlassianAuthContext as ApplicationAtlassianAuthContext,
     AtlassianConnectivity, AtlassianCredential as ApplicationAtlassianCredential,
     AtlassianJiraAttachment, AtlassianJiraComment, AtlassianJiraTransition, AtlassianOAuthResource,
     AtlassianOAuthTokenResponse, AtlassianResourceContent,
@@ -19,11 +19,14 @@ use crate::application::{
     JiraIssueDetail, JiraProjectSummary, JiraStatusSummary,
 };
 use crate::application::{
-    JiraBoardColumn, JiraBoardConfiguration, JiraBoardSummary, JiraSprintSummary,
+    AtlassianRawMethod, ConfluencePageContent, ConfluencePageCreateRequest,
+    ConfluencePageUpdateRequest, JiraBoardColumn, JiraBoardConfiguration, JiraBoardSummary,
+    JiraIssueCreateRequest, JiraIssueCreated, JiraIssueUpdateRequest, JiraSprintSummary,
 };
 use crate::domain::services::ComposerIntegrationReference;
 
 use super::atlassian_jira_fields::{acceptance_criteria_from_fields, JiraFieldCatalogCache};
+use super::atlassian_mcp_client;
 use super::jira_agile_client::{
     get_jira_board_configuration, list_jira_active_sprints, list_jira_boards,
 };
@@ -88,14 +91,14 @@ impl HyperAtlassianApiClient {
         url: String,
         auth: RequestAuth<'_>,
         body: Option<Value>,
-    ) -> Result<Value, String> {
-        let uri = url
-            .parse::<hyper::Uri>()
-            .map_err(|error| format!("Invalid Atlassian URL: {error}"))?;
+    ) -> Result<Value, AtlassianApiError> {
+        let uri = url.parse::<hyper::Uri>().map_err(|error| {
+            AtlassianApiError::transport(format!("Invalid Atlassian URL: {error}"))
+        })?;
         let body_bytes = body
             .map(|value| serde_json::to_vec(&value))
             .transpose()
-            .map_err(|error| error.to_string())?
+            .map_err(|error| AtlassianApiError::transport(error.to_string()))?
             .unwrap_or_default();
         let mut builder = Request::builder()
             .method(method)
@@ -117,26 +120,36 @@ impl HyperAtlassianApiClient {
         }
         let request = builder
             .body(Full::new(Bytes::from(body_bytes)))
-            .map_err(|error| format!("Failed to build Atlassian request: {error}"))?;
+            .map_err(|error| {
+                AtlassianApiError::transport(format!("Failed to build Atlassian request: {error}"))
+            })?;
         let response = tokio::time::timeout(self.timeout, self.client.request(request))
             .await
-            .map_err(|_| "Atlassian request timed out".to_string())?
-            .map_err(|error| format!("Atlassian request failed: {error}"))?;
+            .map_err(|_| AtlassianApiError::transport("Atlassian request timed out"))?
+            .map_err(|error| {
+                AtlassianApiError::transport(format!("Atlassian request failed: {error}"))
+            })?;
         let status = response.status();
         let bytes = response
             .into_body()
             .collect()
             .await
-            .map_err(|error| format!("Failed to read Atlassian response: {error}"))?
+            .map_err(|error| {
+                AtlassianApiError::transport(format!("Failed to read Atlassian response: {error}"))
+            })?
             .to_bytes();
         if !status.is_success() {
-            return Err(format!("Atlassian returned HTTP {}", status.as_u16()));
+            // Auth lives in request headers, so the response body carries no
+            // RalphX-held credential material.
+            let excerpt = String::from_utf8_lossy(&bytes);
+            return Err(AtlassianApiError::from_status(status.as_u16(), &excerpt));
         }
         if bytes.is_empty() {
             return Ok(Value::Null);
         }
-        serde_json::from_slice(&bytes)
-            .map_err(|error| format!("Failed to parse Atlassian response: {error}"))
+        serde_json::from_slice(&bytes).map_err(|error| {
+            AtlassianApiError::transport(format!("Failed to parse Atlassian response: {error}"))
+        })
     }
 }
 
@@ -155,13 +168,16 @@ pub(crate) enum RequestAuth<'a> {
 
 #[async_trait]
 pub(crate) trait AtlassianJsonRequester: Send + Sync {
+    /// Issue an Atlassian JSON request, preserving the HTTP status when
+    /// Atlassian answered with a failure. Callers classify on
+    /// [`AtlassianApiError::status`], never on message text.
     async fn request_json(
         &self,
         method: Method,
         url: String,
         auth: RequestAuth<'_>,
         body: Option<Value>,
-    ) -> Result<Value, String>;
+    ) -> Result<Value, AtlassianApiError>;
 }
 
 #[async_trait]
@@ -172,7 +188,7 @@ impl AtlassianJsonRequester for HyperAtlassianApiClient {
         url: String,
         auth: RequestAuth<'_>,
         body: Option<Value>,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, AtlassianApiError> {
         self.send_json_request(method, url, auth, body).await
     }
 }
@@ -349,6 +365,59 @@ impl AtlassianApiClient for HyperAtlassianApiClient {
         board_id: &str,
     ) -> Result<Vec<JiraSprintSummary>, String> {
         list_jira_active_sprints(self, auth, board_id).await
+    }
+
+    async fn create_jira_issue(
+        &self,
+        auth: &AtlassianAuthContext,
+        request: &JiraIssueCreateRequest,
+    ) -> Result<JiraIssueCreated, AtlassianApiError> {
+        atlassian_mcp_client::create_jira_issue(self, auth, request).await
+    }
+
+    async fn update_jira_issue(
+        &self,
+        auth: &AtlassianAuthContext,
+        issue_key: &str,
+        request: &JiraIssueUpdateRequest,
+    ) -> Result<(), AtlassianApiError> {
+        atlassian_mcp_client::update_jira_issue(self, auth, issue_key, request).await
+    }
+
+    async fn confluence_get_page(
+        &self,
+        auth: &AtlassianAuthContext,
+        page_id: &str,
+    ) -> Result<ConfluencePageContent, AtlassianApiError> {
+        atlassian_mcp_client::confluence_get_page(self, auth, page_id).await
+    }
+
+    async fn confluence_create_page(
+        &self,
+        auth: &AtlassianAuthContext,
+        request: &ConfluencePageCreateRequest,
+    ) -> Result<ConfluencePageContent, AtlassianApiError> {
+        atlassian_mcp_client::confluence_create_page(self, auth, request).await
+    }
+
+    async fn confluence_update_page(
+        &self,
+        auth: &AtlassianAuthContext,
+        page_id: &str,
+        request: &ConfluencePageUpdateRequest,
+    ) -> Result<ConfluencePageContent, AtlassianApiError> {
+        atlassian_mcp_client::confluence_update_page(self, auth, page_id, request).await
+    }
+
+    async fn raw_api_request(
+        &self,
+        auth: &AtlassianAuthContext,
+        method: AtlassianRawMethod,
+        kind: AtlassianResourceKind,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<Value, AtlassianApiError> {
+        atlassian_mcp_client::raw_api_request(self, auth, method, kind, path, body).await
     }
 
     async fn exchange_oauth_code(
@@ -688,7 +757,7 @@ pub(crate) async fn search_confluence<C: AtlassianJsonRequester + ?Sized>(
     {
         Ok(value) => value,
         Err(_) if !results.is_empty() => return Ok(results),
-        Err(error) => return Err(error),
+        Err(error) => return Err(error.into()),
     };
     let site_url = &auth.site_url;
     for resource in value

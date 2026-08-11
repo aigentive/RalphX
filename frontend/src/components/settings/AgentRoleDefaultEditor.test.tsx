@@ -36,6 +36,7 @@ const value: ManualRoleDefault = {
   personaId: null,
   approvalPolicy: null,
   sandboxMode: null,
+  atlassianAccess: null,
 };
 
 const entry: ManualRoleCatalogEntry = {
@@ -65,11 +66,13 @@ function renderEditor(
   onUpdate = vi.fn(),
   forcePersonaAccessOpen = false,
   onManagePersonas = vi.fn(),
+  atlassianAvailable = true,
 ) {
   render(
     <AgentRoleDefaultEditor
       entry={entry}
       disabled={false}
+      atlassianAvailable={atlassianAvailable}
       providers={["claude", "codex"]}
       modelsForProvider={(provider) => provider === "codex"
         ? [{ id: "gpt-5.6", label: "GPT-5.6", menuLabel: "GPT-5.6", defaultEffort: "xhigh", supportedEfforts: ["xhigh"] }]
@@ -123,6 +126,9 @@ describe("AgentRoleDefaultEditor", () => {
     await user.click(screen.getByRole("button", { name: "Permissions" }));
     expect(screen.getByRole("combobox", { name: "Edit approval policy" })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Edit sandbox mode" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("combobox", { name: "Edit Atlassian access" }),
+    ).toBeInTheDocument();
   });
 
   it("keeps persona management reachable when the backend disables selection", async () => {
@@ -150,5 +156,77 @@ describe("AgentRoleDefaultEditor", () => {
     await user.click(disclosure);
 
     expect(screen.getByRole("combobox", { name: "Edit approval policy" })).toBeInTheDocument();
+  });
+
+  it("commits an Atlassian tier as one complete value", async () => {
+    const user = userEvent.setup();
+    const onUpdate = renderEditor();
+
+    await user.click(screen.getByRole("button", { name: "Permissions" }));
+    await user.click(
+      screen.getByRole("combobox", { name: "Edit Atlassian access" }),
+    );
+    await user.click(screen.getByRole("option", { name: "Read + write" }));
+
+    expect(onUpdate).toHaveBeenCalledWith({
+      ...value,
+      atlassianAccess: "read_write",
+    });
+  });
+
+  it("returns the Atlassian tier to the role default via the sentinel option", async () => {
+    const user = userEvent.setup();
+    const onUpdate = vi.fn();
+    render(
+      <AgentRoleDefaultEditor
+        entry={{
+          ...entry,
+          configured: { ...value, atlassianAccess: "none" },
+        }}
+        disabled={false}
+        providers={["claude"]}
+        modelsForProvider={() => [
+          {
+            id: "sonnet",
+            label: "Sonnet",
+            menuLabel: "Sonnet",
+            defaultEffort: "high",
+            supportedEfforts: ["high"],
+          },
+        ]}
+        personas={[]}
+        forcePersonaAccessOpen={false}
+        onUpdate={onUpdate}
+        onManagePersonas={vi.fn()}
+      />,
+    );
+
+    // A configured Atlassian tier opens the Permissions section on its own.
+    await user.click(
+      screen.getByRole("combobox", { name: "Edit Atlassian access" }),
+    );
+    await user.click(screen.getByRole("option", { name: "Role default" }));
+
+    expect(onUpdate).toHaveBeenCalledWith({
+      ...value,
+      atlassianAccess: null,
+    });
+  });
+
+  it("disables the Atlassian tier with a hint when the integration is unavailable", async () => {
+    const user = userEvent.setup();
+    renderEditor(vi.fn(), false, vi.fn(), false);
+
+    await user.click(screen.getByRole("button", { name: "Permissions" }));
+
+    const control = screen.getByRole("combobox", { name: "Edit Atlassian access" });
+    expect(control).toBeDisabled();
+    expect(
+      screen.getByText(/Connect Atlassian in Settings > Integrations/),
+    ).toBeInTheDocument();
+    // Approval and sandbox stay usable; only the Atlassian tier is gated.
+    expect(
+      screen.getByRole("combobox", { name: "Edit approval policy" }),
+    ).not.toBeDisabled();
   });
 });

@@ -7,7 +7,7 @@ use super::usage::{
     processed_tokens, AgentRunUsage, ProviderUsageSnapshot, UsageCapture, UsageProvenance,
 };
 
-use crate::agents::{AgentHarnessKind, LogicalEffort};
+use crate::agents::{AgentHarnessKind, LogicalEffort, RoutingRole};
 
 use super::{ChatConversation, ChatConversationId};
 
@@ -351,6 +351,16 @@ pub struct AgentRun {
     pub agent_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub launch_role: Option<String>,
+    /// Authoritative routing role resolved at spawn time.
+    ///
+    /// This is the authorization-grade role, unlike [`Self::launch_role`],
+    /// which is display attribution covering only three agents. `None` means
+    /// the run predates role persistence and must be denied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing_role: Option<RoutingRole>,
+    /// Project this run was launched for, when the launch had one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
     #[serde(
         default,
         deserialize_with = "deserialize_optional_runtime_source",
@@ -424,6 +434,8 @@ impl AgentRun {
             sandbox_mode: None,
             agent_name: None,
             launch_role: None,
+            routing_role: None,
+            project_id: None,
             runtime_source: None,
             run_chain_id: Some(chain_id),
             parent_run_id: None,
@@ -472,6 +484,8 @@ impl AgentRun {
             sandbox_mode: None,
             agent_name: None,
             launch_role: None,
+            routing_role: None,
+            project_id: None,
             runtime_source: None,
             run_chain_id: Some(run_chain_id),
             parent_run_id: Some(parent_run_id),

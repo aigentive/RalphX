@@ -111,7 +111,15 @@ pub mod app_setup;
 mod app_setup_tests;
 pub mod app_state;
 pub mod apply_service;
+pub mod atlassian_api_error;
+#[cfg(test)]
+mod atlassian_api_error_tests;
 pub mod atlassian_integration_service;
+pub mod atlassian_mcp_access;
+#[cfg(test)]
+mod atlassian_mcp_access_tests;
+pub mod atlassian_mcp_ops;
+pub mod atlassian_mcp_service;
 pub mod attention_service;
 pub mod automation;
 pub mod branch_update_executor;
@@ -311,6 +319,15 @@ pub use app_paths::AppPaths;
 pub use app_state::AppState;
 pub use apply_service::{
     ApplyProposalsOptions, ApplyProposalsResult, ApplyService, SelectionValidation, TargetColumn,
+};
+pub use atlassian_api_error::AtlassianApiError;
+pub use atlassian_mcp_access::{
+    atlassian_mcp_tools_for_spawn, effective_atlassian_mcp_access,
+};
+pub use atlassian_mcp_ops::{
+    validate_atlassian_raw_path, AtlassianRawMethod, AtlassianRawResponse, ConfluencePageContent, ConfluencePageCreateRequest,
+    ConfluencePageUpdateRequest, JiraIssueCreateRequest, JiraIssueCreated, JiraIssueUpdateRequest,
+    ATLASSIAN_RAW_PATH_PREFIXES, ATLASSIAN_RAW_RESPONSE_MAX_BYTES,
 };
 pub use atlassian_integration_service::{
     AtlassianApiClient, AtlassianAuthContext, AtlassianConnectivity, AtlassianCredential,

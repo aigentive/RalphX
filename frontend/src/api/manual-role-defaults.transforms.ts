@@ -27,6 +27,7 @@ export function transformManualRoleDefault(
     personaId: raw.persona_id ?? null,
     approvalPolicy: raw.approval_policy ?? null,
     sandboxMode: raw.sandbox_mode ?? null,
+    atlassianAccess: raw.atlassian_access ?? null,
   };
 }
 

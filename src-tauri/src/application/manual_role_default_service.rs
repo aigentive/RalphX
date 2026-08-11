@@ -4,8 +4,8 @@ use std::sync::Arc;
 use serde::Serialize;
 
 use crate::domain::agents::{
-    AgentLane, AgentProviderSettings, ManualRoleDefault, ManualServiceTier, RoutingRole,
-    RoutingRoleFamily, DEFAULT_AGENT_HARNESS,
+    default_atlassian_access, AgentLane, AgentProviderSettings, AtlassianMcpAccess,
+    ManualRoleDefault, ManualServiceTier, RoutingRole, RoutingRoleFamily, DEFAULT_AGENT_HARNESS,
 };
 use crate::domain::entities::{CoordinationMode, PersonaStatus};
 use crate::domain::repositories::{
@@ -227,6 +227,32 @@ impl ManualRoleDefaultService {
         self.validate_value(role, value).await
     }
 
+    /// Resolve the Atlassian MCP tier configured for a routing role, before the
+    /// integration-enablement gate.
+    ///
+    /// Resolution is row-wins, matching every other field on
+    /// [`ManualRoleDefault`]: the first matching layer supplies the whole row, so
+    /// a project row that omits `atlassian_access` falls back to the built-in
+    /// [`default_atlassian_access`] tier rather than to the global row's value.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the underlying role default cannot be resolved.
+    pub async fn resolve_atlassian_access(
+        &self,
+        project_id: Option<&str>,
+        project_root: Option<&Path>,
+        role: RoutingRole,
+    ) -> AppResult<AtlassianMcpAccess> {
+        let resolved = self
+            .resolve_unvalidated(project_id, project_root, role)
+            .await?;
+        Ok(resolved
+            .value
+            .atlassian_access
+            .unwrap_or_else(|| default_atlassian_access(role)))
+    }
+
     /// Resolve the enabled provider settings used by an explicit launch selection.
     pub async fn resolve_enabled_provider_settings(
         &self,
@@ -314,6 +340,7 @@ fn provider_default(provider: AgentProviderSettings) -> ManualRoleDefault {
         persona_id: None,
         approval_policy: provider.approval_policy,
         sandbox_mode: provider.sandbox_mode,
+        atlassian_access: None,
     }
 }
 

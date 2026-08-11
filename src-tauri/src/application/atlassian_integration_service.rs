@@ -20,6 +20,11 @@ use crate::application::integration_reference_expansion::{
     IntegrationReferenceExpansion, SkippedIntegrationReference, SkippedIntegrationReferenceReason,
 };
 
+use super::atlassian_api_error::AtlassianApiError;
+use super::atlassian_mcp_ops::{
+    AtlassianRawMethod, ConfluencePageContent, ConfluencePageCreateRequest,
+    ConfluencePageUpdateRequest, JiraIssueCreateRequest, JiraIssueCreated, JiraIssueUpdateRequest,
+};
 use super::jira_agile_types::{JiraBoardConfiguration, JiraBoardSummary, JiraSprintSummary};
 
 const ATLASSIAN_TOKEN_SECRET_REF: &str = "integrations/atlassian/default/api-token";
@@ -350,6 +355,76 @@ pub trait AtlassianApiClient: Send + Sync {
         _board_id: &str,
     ) -> Result<Vec<JiraSprintSummary>, String> {
         Err("Jira sprint enumeration is not available for this client".to_string())
+    }
+
+    // ---- Atlassian MCP tool operations ---------------------------------
+    //
+    // These return `AtlassianApiError` so callers classify failures on the
+    // numeric HTTP status instead of parsing message text.
+
+    async fn create_jira_issue(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _request: &JiraIssueCreateRequest,
+    ) -> Result<JiraIssueCreated, AtlassianApiError> {
+        Err(AtlassianApiError::transport(
+            "Jira issue creation is not available for this client",
+        ))
+    }
+
+    async fn update_jira_issue(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _issue_key: &str,
+        _request: &JiraIssueUpdateRequest,
+    ) -> Result<(), AtlassianApiError> {
+        Err(AtlassianApiError::transport(
+            "Jira issue updates are not available for this client",
+        ))
+    }
+
+    async fn confluence_get_page(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _page_id: &str,
+    ) -> Result<ConfluencePageContent, AtlassianApiError> {
+        Err(AtlassianApiError::transport(
+            "Confluence page reads are not available for this client",
+        ))
+    }
+
+    async fn confluence_create_page(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _request: &ConfluencePageCreateRequest,
+    ) -> Result<ConfluencePageContent, AtlassianApiError> {
+        Err(AtlassianApiError::transport(
+            "Confluence page creation is not available for this client",
+        ))
+    }
+
+    async fn confluence_update_page(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _page_id: &str,
+        _request: &ConfluencePageUpdateRequest,
+    ) -> Result<ConfluencePageContent, AtlassianApiError> {
+        Err(AtlassianApiError::transport(
+            "Confluence page updates are not available for this client",
+        ))
+    }
+
+    async fn raw_api_request(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _method: AtlassianRawMethod,
+        _kind: AtlassianResourceKind,
+        _path: &str,
+        _body: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value, AtlassianApiError> {
+        Err(AtlassianApiError::transport(
+            "Generic Atlassian API requests are not available for this client",
+        ))
     }
 
     async fn exchange_oauth_code(
@@ -1287,6 +1362,23 @@ impl AtlassianIntegrationService {
             ),
             skipped_references,
         }
+    }
+
+    /// Whether the Atlassian integration can currently serve API calls.
+    ///
+    /// Uses the exact predicate [`Self::enabled_auth_context_for_settings`]
+    /// enforces — `enabled` alone is not sufficient. Settings-read failures
+    /// resolve to `false` so callers fail closed.
+    pub async fn is_usable(&self) -> bool {
+        self.get_settings().await.is_ok_and(|settings| {
+            settings.enabled && settings.validation_status == IntegrationValidationStatus::Valid
+        })
+    }
+
+    /// Shared client seam for sibling modules that add operations on this
+    /// service without reaching around its enablement/credential gate.
+    pub(crate) fn client(&self) -> &Arc<dyn AtlassianApiClient> {
+        &self.client
     }
 
     pub(crate) async fn enabled_auth_context(&self) -> Result<AtlassianAuthContext, String> {

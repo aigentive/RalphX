@@ -2490,6 +2490,9 @@ pub(super) fn build_mcp_runtime_context(
         lead_session_id: lead_session_id.map(str::to_string),
         parent_conversation_id,
         task_state: task_runtime_state_for_context(context_type, entity_status).map(str::to_string),
+        // Role-tiered grants are resolved asynchronously by the caller and
+        // assigned after construction; an empty vector injects nothing.
+        extra_allowed_mcp_tools: Vec::new(),
     }
 }
 
@@ -2778,7 +2781,7 @@ async fn build_command_from_resolved_settings(
     };
 
     let prompt = capability_scoped_prompt(prompt, conversation.coordination_mode);
-    let mcp_runtime_context = build_mcp_runtime_context(
+    let mut mcp_runtime_context = build_mcp_runtime_context(
         conversation.context_type,
         &conversation.context_id,
         Some(conversation.coordination_mode),
@@ -2792,6 +2795,9 @@ async fn build_command_from_resolved_settings(
         mcp_lineage_parent_conversation_id(conversation),
         conversation.agent_mode,
     );
+    mcp_runtime_context
+        .extra_allowed_mcp_tools
+        .clone_from(&resolved_spawn_settings.extra_allowed_mcp_tools);
     let mut spawnable = build_claude_spawnable_command(
         cli_path,
         plugin_dir,
@@ -3086,7 +3092,7 @@ pub async fn build_codex_command(
     );
 
     let mcp_config_started = Instant::now();
-    let runtime_context = build_mcp_runtime_context(
+    let mut runtime_context = build_mcp_runtime_context(
         conversation.context_type,
         &conversation.context_id,
         Some(conversation.coordination_mode),
@@ -3100,6 +3106,9 @@ pub async fn build_codex_command(
         mcp_lineage_parent_conversation_id(conversation),
         conversation.agent_mode,
     );
+    runtime_context
+        .extra_allowed_mcp_tools
+        .clone_from(&resolved_spawn_settings.extra_allowed_mcp_tools);
     let config_overrides = build_codex_mcp_overrides_for_profile(
         plugin_dir,
         agent_name,

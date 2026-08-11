@@ -6,6 +6,8 @@ export const ManualServiceTierSchema = z.enum([
   "fast",
 ]);
 
+export const AtlassianMcpAccessSchema = z.enum(["none", "read", "read_write"]);
+
 export const ManualRoleDefaultResponseSchema = z.object({
   provider: z.string().min(1),
   model: z.string().nullable().optional(),
@@ -15,6 +17,7 @@ export const ManualRoleDefaultResponseSchema = z.object({
   persona_id: z.string().nullable().optional(),
   approval_policy: z.string().nullable().optional(),
   sandbox_mode: z.string().nullable().optional(),
+  atlassian_access: AtlassianMcpAccessSchema.nullable().optional(),
 });
 
 export const ManualRoleControlOptionResponseSchema = z.object({

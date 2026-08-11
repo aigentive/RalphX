@@ -7448,6 +7448,28 @@ impl ChatService for AppChatService {
                 )
                 .await
             };
+
+        // Role-tiered Atlassian MCP grants. This is a runtime-injected layer on
+        // top of the canonical per-agent allowlist: it depends on the routing
+        // role, the project, and live integration state, none of which exist at
+        // generated-plugin materialization time. Any launch path without both
+        // services injects nothing.
+        resolved_spawn_settings.extra_allowed_mcp_tools = match (
+            self.atlassian_integration_service.as_ref(),
+            self.manual_role_default_service.as_ref(),
+        ) {
+            (Some(integration), Some(defaults)) => {
+                crate::application::atlassian_mcp_tools_for_spawn(
+                    integration,
+                    defaults,
+                    Some(routing_role),
+                    project_id.as_deref(),
+                    project_root.as_deref(),
+                )
+                .await
+            }
+            _ => Vec::new(),
+        };
         if let Some(runtime) = continuation_runtime.as_ref() {
             runtime.apply_defaults(
                 &mut resolved_spawn_settings,
@@ -7672,6 +7694,11 @@ impl ChatService for AppChatService {
             effective_effort: Some(effective_effort),
         };
         pre_spawn_assistant_attribution = Some(assistant_message_attribution.clone());
+
+        // Authoritative spawn-time identity for per-request authorization
+        // (Atlassian MCP tiers). `launch_role` above stays display attribution.
+        agent_run.routing_role = Some(routing_role);
+        agent_run.project_id = project_id.clone();
 
         let run_agent_name = agent_run.agent_name.clone();
         let run_launch_role = agent_run.launch_role.clone();

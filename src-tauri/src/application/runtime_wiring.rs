@@ -248,6 +248,11 @@ pub fn build_http_app_state(
     share_agent_workspace_pr_fix_review_publish_resumer(app_state, &mut http_app_state_inner);
     share_startup_coordinator(app_state, &mut http_app_state_inner);
     share_plan_verification_runtime(app_state, &mut http_app_state_inner);
+    // INVARIANT: one Atlassian integration authority. The service holds in-memory
+    // pending OAuth callbacks, so two instances would split the OAuth handshake
+    // and could race token refresh between the Tauri and HTTP/MCP graphs.
+    http_app_state_inner.atlassian_integration_service =
+        Arc::clone(&app_state.atlassian_integration_service);
     // INVARIANT: notification_repo and notification_settings_repo must stay on this shared
     // connection; a per-connection refactor would silently split notification storage.
     Ok(Arc::new(http_app_state_inner))

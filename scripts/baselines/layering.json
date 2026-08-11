@@ -1393,7 +1393,37 @@
       {
         "path": "src-tauri/src/infrastructure/atlassian_client_tests.rs",
         "target": "crate::application",
-        "text": "use crate::application::{AtlassianApiClient, AtlassianAuthContext, AtlassianCredential};"
+        "text": "crate::application::AtlassianResourceKind::Jira,"
+      },
+      {
+        "path": "src-tauri/src/infrastructure/atlassian_client_tests.rs",
+        "target": "crate::application",
+        "text": "use crate::application::{"
+      },
+      {
+        "path": "src-tauri/src/infrastructure/atlassian_client_unit_tests.rs",
+        "target": "crate::application",
+        "text": "use crate::application::AtlassianApiError;"
+      },
+      {
+        "path": "src-tauri/src/infrastructure/atlassian_jira_fields_tests.rs",
+        "target": "crate::application",
+        "text": "use crate::application::AtlassianApiError;"
+      },
+      {
+        "path": "src-tauri/src/infrastructure/atlassian_mcp_client.rs",
+        "target": "crate::application",
+        "text": "use crate::application::{"
+      },
+      {
+        "path": "src-tauri/src/infrastructure/atlassian_mcp_client_tests.rs",
+        "target": "crate::application",
+        "text": "use crate::application::validate_atlassian_raw_path as validate_raw_path;"
+      },
+      {
+        "path": "src-tauri/src/infrastructure/atlassian_mcp_client_tests.rs",
+        "target": "crate::application",
+        "text": "use crate::application::{"
       },
       {
         "path": "src-tauri/src/infrastructure/clickup_client.rs",
@@ -1429,6 +1459,11 @@
         "path": "src-tauri/src/infrastructure/granola_client_tests.rs",
         "target": "crate::application",
         "text": "use crate::application::{GranolaApiClient, GranolaApiError, GranolaAuthContext};"
+      },
+      {
+        "path": "src-tauri/src/infrastructure/jira_agile_client_tests.rs",
+        "target": "crate::application",
+        "text": "use crate::application::AtlassianApiError;"
       },
       {
         "path": "src-tauri/src/infrastructure/linear_client.rs",

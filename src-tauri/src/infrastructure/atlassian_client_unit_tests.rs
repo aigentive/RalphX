@@ -3,6 +3,8 @@ use hyper::Method;
 use serde_json::Value;
 use std::sync::Mutex;
 
+use crate::application::AtlassianApiError;
+
 use super::atlassian_client::*;
 
 #[test]
@@ -53,17 +55,18 @@ impl AtlassianJsonRequester for FakeRequester {
         url: String,
         _auth: RequestAuth<'_>,
         body: Option<Value>,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, AtlassianApiError> {
         self.recorded
             .lock()
             .unwrap()
             .push(RecordedRequest { method, url, body });
         let mut responses = self.responses.lock().unwrap();
-        if responses.len() > 1 {
+        let response = if responses.len() > 1 {
             responses.remove(0)
         } else {
             responses.first().cloned().unwrap_or(Ok(Value::Null))
-        }
+        };
+        response.map_err(AtlassianApiError::transport)
     }
 }
 

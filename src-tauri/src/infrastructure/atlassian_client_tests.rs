@@ -5,7 +5,9 @@ use async_trait::async_trait;
 use hyper::Method;
 use serde_json::{json, Value};
 
-use crate::application::{AtlassianApiClient, AtlassianAuthContext, AtlassianCredential};
+use crate::application::{
+    AtlassianApiClient, AtlassianApiError, AtlassianAuthContext, AtlassianCredential,
+};
 use crate::domain::services::ComposerIntegrationReference;
 
 use super::atlassian_client::{
@@ -24,12 +26,12 @@ struct RecordedAtlassianRequest {
 
 #[derive(Default)]
 struct FakeAtlassianRequester {
-    responses: Mutex<VecDeque<Result<Value, String>>>,
+    responses: Mutex<VecDeque<Result<Value, AtlassianApiError>>>,
     requests: Mutex<Vec<RecordedAtlassianRequest>>,
 }
 
 impl FakeAtlassianRequester {
-    fn new(responses: Vec<Result<Value, String>>) -> Self {
+    fn new(responses: Vec<Result<Value, AtlassianApiError>>) -> Self {
         Self {
             responses: Mutex::new(VecDeque::from(responses)),
             requests: Mutex::new(Vec::new()),
@@ -49,7 +51,7 @@ impl AtlassianJsonRequester for FakeAtlassianRequester {
         url: String,
         _auth: RequestAuth<'_>,
         body: Option<Value>,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, AtlassianApiError> {
         self.requests
             .lock()
             .expect("requests")
@@ -58,7 +60,7 @@ impl AtlassianJsonRequester for FakeAtlassianRequester {
             .lock()
             .expect("responses")
             .pop_front()
-            .unwrap_or_else(|| Err("unexpected Atlassian request".to_string()))
+            .unwrap_or_else(|| Err(AtlassianApiError::transport("unexpected Atlassian request")))
     }
 }
 
@@ -205,7 +207,7 @@ async fn jira_search_exact_key_fetches_jql_and_picker_without_duplicates() {
 #[tokio::test]
 async fn jira_search_uses_picker_when_jql_fails_without_exact_key_result() {
     let requester = FakeAtlassianRequester::new(vec![
-        Err("jql unavailable".to_string()),
+        Err(AtlassianApiError::transport("jql unavailable")),
         Ok(json!({
             "sections": [{
                 "issues": [
@@ -445,7 +447,7 @@ async fn confluence_search_returns_page_id_result_when_cql_search_fails() {
             "title": "Runbook",
             "_links": { "webui": "/spaces/OPS/pages/123456/Runbook" }
         })),
-        Err("search unavailable".to_string()),
+        Err(AtlassianApiError::transport("search unavailable")),
     ]);
 
     let results = search_confluence(&requester, &auth_context(), "123456", 3)
@@ -804,4 +806,64 @@ async fn fetch_confluence_strips_storage_html_and_builds_web_url() {
         content.url.as_deref(),
         Some("https://example.atlassian.net/wiki/spaces/OPS/pages/456/Reference-docs")
     );
+}
+
+#[tokio::test]
+async fn the_requester_seam_preserves_the_numeric_status_of_a_failed_call() {
+    let requester = FakeAtlassianRequester::new(vec![
+        Err(AtlassianApiError::from_status(
+            429,
+            "{\"message\":\"Rate limit exceeded\"}",
+        )),
+        Err(AtlassianApiError::from_status(404, "Issue does not exist")),
+    ]);
+    let auth = auth_context();
+
+    let rate_limited = requester
+        .request_json(
+            Method::GET,
+            HyperAtlassianApiClient::resource_url(
+                &auth,
+                crate::application::AtlassianResourceKind::Jira,
+                "/rest/api/3/issue/PROJ-1",
+            ),
+            RequestAuth::None,
+            None,
+        )
+        .await
+        .expect_err("rate limited request should fail");
+    assert_eq!(rate_limited.status, Some(429));
+    assert!(rate_limited.is_rate_limited());
+    assert!(!rate_limited.is_not_found());
+
+    let missing = requester
+        .request_json(
+            Method::GET,
+            HyperAtlassianApiClient::resource_url(
+                &auth,
+                crate::application::AtlassianResourceKind::Jira,
+                "/rest/api/3/issue/PROJ-404",
+            ),
+            RequestAuth::None,
+            None,
+        )
+        .await
+        .expect_err("missing issue should fail");
+    assert_eq!(missing.status, Some(404));
+    assert!(missing.is_not_found());
+    assert!(!missing.is_rate_limited());
+}
+
+#[tokio::test]
+async fn legacy_string_callers_still_receive_the_status_in_the_message() {
+    let requester = FakeAtlassianRequester::new(vec![Err(AtlassianApiError::from_status(429, ""))]);
+    let auth = auth_context();
+
+    // Callers that still return `Result<_, String>` keep compiling through the
+    // `From<AtlassianApiError> for String` conversion, and the rendered message
+    // still names the status.
+    let error: String = search_jira(&requester, &auth, "anything", 5)
+        .await
+        .expect_err("failed search should surface an error");
+    assert_eq!(error, "Atlassian returned HTTP 429");
 }

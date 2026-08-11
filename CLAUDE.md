@@ -107,6 +107,7 @@ style={{ boxShadow: "none", outline: "none" }}
 - **Session Recovery** — Expired Claude session recovery with history preservation. Docs: `docs/features/session-recovery.md`
 - **Plan Verification** — Automated adversarial review loop for ideation plans. Docs: `docs/features/plan-verification.md` | Architecture: `.claude/rules/ideation-verification-architecture.md`
 - **Agent Personas** — Conversation-bound prompt-only behavior profiles for Project Agent conversations. Docs: `docs/features/agent-personas.md`
+- **Atlassian MCP Access** — Role-tiered Jira/Confluence tools reusing the Atlassian integration credentials. Docs: `docs/features/atlassian-mcp-access.md`
 
 ## Git Conventions
 ❌ git init/push/remotes | Prefixes: `docs:` | `feat:` | `fix:` | `chore:`
