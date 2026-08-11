@@ -11,7 +11,7 @@ import { PLAN_TOOLS } from '../plan-tools.js';
 import { callGetParentContextTool } from '../ideation-tools.js';
 import { buildAppendTaskToIdeationPlanPayload } from '../append-task-payload.js';
 import { AGENT_WORKSPACE_TOOLS, callAgentWorkspaceTool, callCheckAgentWorkspacePublishReadinessTool, callCompleteAgentWorkspacePrFixTool, callCompleteWorkspaceReviewRunTool, callCompletePrReviewRunTool, callCompleteAgentWorkspaceRepairTool, callGetAgentWorkspacePrFixContextTool, callGetPrReviewContextTool, callGetWorkspaceReviewContextTool, callGetWorkspaceReviewDiffPageTool, callListWorkspaceReviewFilesTool, callGetAgentWorkspacePublishStatusTool, callPublishAgentWorkspaceTool, callProposePrReviewActionTool, callReadAgentWorkspacePrCommentTool, callSubmitAgentWorkspacePrDescriptionTool, callUpdateAgentWorkspaceFromBaseTool, callWriteWorkspaceReviewArtifactTool, callWriteWorkspaceReviewHunkAnnotationsTool, callWritePrReviewArtifactTool, isAgentWorkspaceToolName, } from '../agent-workspace-tools.js';
-import { ORCHESTRATOR_IDEATION, ORCHESTRATOR_IDEATION_READONLY, IDEATION_SPECIALIST_BACKEND, IDEATION_SPECIALIST_FRONTEND, IDEATION_SPECIALIST_INFRA, IDEATION_CRITIC, IDEATION_ADVOCATE, REVIEWER, GENERAL_EXPLORER, GENERAL_WORKER, PR_REVIEWER, AGENT_WORKSPACE_REPAIR, AGENT_WORKSPACE_PR_FIXER, PLAN_COMPLEXITY_ASSESSOR, WORKSPACE_REVIEWER, AUTOMATION_SETUP, WORKER, MERGER, CHAT_PROJECT, } from '../agentNames.js';
+import { ORCHESTRATOR_IDEATION, ORCHESTRATOR_IDEATION_READONLY, IDEATION_SPECIALIST_BACKEND, IDEATION_SPECIALIST_FRONTEND, IDEATION_SPECIALIST_INFRA, IDEATION_CRITIC, IDEATION_ADVOCATE, REVIEWER, GENERAL_EXPLORER, GENERAL_WORKER, PR_REVIEWER, AGENT_WORKSPACE_REPAIR, AGENT_WORKSPACE_PR_FIXER, PLAN_COMPLEXITY_ASSESSOR, WORKSPACE_ANNOTATOR, WORKSPACE_REVIEWER, AUTOMATION_SETUP, WORKER, MERGER, CHAT_PROJECT, } from '../agentNames.js';
 function toolsByAgent() {
     return getToolsByAgent();
 }
@@ -799,11 +799,24 @@ describe('getAllowedToolNames - CLI arg priority chain', () => {
         expect(tools).toContain('list_workspace_review_files');
         expect(tools).toContain('get_workspace_review_diff_page');
         expect(tools).toContain('write_workspace_review_artifact');
-        expect(tools).toContain('write_workspace_review_hunk_annotations');
         expect(tools).toContain('complete_workspace_review_run');
         expect(tools).not.toContain('get_agent_task');
         expect(tools).not.toContain('list_agent_tasks');
         expect(tools).not.toContain('search_memories');
+        // Hunk annotations belong to the background annotator now, so the reviewer's run tail no
+        // longer holds work that its wrapper deadline can cut off.
+        expect(tools).not.toContain('write_workspace_review_hunk_annotations');
+    });
+    it('workspace annotator allowlist is annotation-only and holds no gate-mutating tool', () => {
+        const tools = toolsByAgent()[WORKSPACE_ANNOTATOR];
+        expect(tools).toEqual(loadCanonicalMcpTools(WORKSPACE_ANNOTATOR));
+        expect(tools).toContain('get_workspace_review_context');
+        expect(tools).toContain('list_workspace_review_files');
+        expect(tools).toContain('get_workspace_review_diff_page');
+        expect(tools).toContain('write_workspace_review_hunk_annotations');
+        expect(tools).not.toContain('write_workspace_review_artifact');
+        expect(tools).not.toContain('complete_workspace_review_run');
+        expect(tools).not.toContain('delegate_start');
     });
     it('automation setup allowlist mirrors canonical session-bound automation tools', () => {
         const tools = toolsByAgent()[AUTOMATION_SETUP];
@@ -1636,6 +1649,8 @@ describe('agent workspace publish tool transport', () => {
                 target_scope: 'workspace_delta',
                 head_sha: 'head-sha',
                 diff_fingerprint: 'fingerprint-1',
+                outcome: 'passed',
+                blocking_summary: undefined,
                 created_by_run_id: 'run-from-runtime',
             },
         ],

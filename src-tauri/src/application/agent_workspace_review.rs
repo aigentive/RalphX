@@ -2386,6 +2386,10 @@ pub(crate) async fn settle_workspace_review_from_durable_evidence(
         );
         return WorkspaceReviewSettlement::NotSettled;
     }
+    crate::application::agent_workspace_review_annotator::dispatch_workspace_review_annotator(
+        state, workspace, target,
+    )
+    .await;
     info!(
         target: WORKSPACE_REVIEW_LOG_TARGET,
         operation = "degraded_settlement_applied",
@@ -2808,6 +2812,16 @@ pub(crate) async fn complete_agent_workspace_review_run_unlocked(
             handle_passing_workspace_review_auto_merge_guard(state, workspace, &monitor)
                 .await?;
     }
+    if let Some(target) = target.as_ref().filter(|_| {
+        matches!(
+            monitor.review_outcome,
+            AgentWorkspaceReviewOutcome::Passed | AgentWorkspaceReviewOutcome::Blocking
+        )
+    }) {
+        crate::application::agent_workspace_review_annotator::
+            dispatch_workspace_review_annotator(state, workspace, target)
+                .await;
+    }
     let scope = target_scope_label(target.as_ref());
     let fingerprint = target_fingerprint_label(target.as_ref());
     info!(
@@ -2967,6 +2981,49 @@ pub(crate) fn ensure_workspace_review_run_is_active(
             "{operation} requires created_by_run_id for the active workspace Review run"
         ))),
     }
+}
+
+/// Authorizes a hunk-annotation write.
+///
+/// Two callers are legitimate. The reviewer may still write annotations while its run is active
+/// (the historical path). The backend-registered annotator writes *after* the review settled, when
+/// the monitor is no longer `Reviewing`, so it cannot use active-run authority at all.
+///
+/// The annotator path is deliberately narrow: it requires the caller run to be the exact run the
+/// backend registered in `annotation_run_id`, and the reviewed target to still match the request
+/// exactly. Both are cleared on target refresh, so a stale annotator loses authority the moment
+/// the workspace moves on. Annotations never touch gate or outcome state.
+pub(crate) fn ensure_workspace_review_annotation_authority(
+    monitor: &AgentWorkspaceReviewMonitor,
+    created_by_run_id: Option<&str>,
+    target: &AgentWorkspaceReviewTarget,
+    operation: &str,
+) -> AppResult<()> {
+    let active_run_error =
+        match ensure_workspace_review_run_is_active(monitor, created_by_run_id, operation) {
+            Ok(()) => return Ok(()),
+            Err(error) => error,
+        };
+
+    let Some(created_by_run_id) = created_by_run_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Err(active_run_error);
+    };
+    if monitor.annotation_run_id.as_deref() != Some(created_by_run_id) {
+        return Err(active_run_error);
+    }
+    if !monitor.is_current_for_target(
+        target.scope,
+        target.head_sha.as_deref(),
+        &target.diff_fingerprint,
+    ) {
+        return Err(AppError::Validation(format!(
+            "{operation} run is registered for a different workspace Review target"
+        )));
+    }
+    Ok(())
 }
 
 fn workspace_review_blocking_fingerprint(

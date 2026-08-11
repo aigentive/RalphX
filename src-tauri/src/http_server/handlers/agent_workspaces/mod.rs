@@ -2194,9 +2194,10 @@ pub async fn write_agent_workspace_review_hunk_annotations(
             None,
         )
     })?;
-    let created_by_run_id = validate_workspace_review_tool_run_id(
+    let created_by_run_id = validate_workspace_review_annotation_run_id(
         &monitor,
         created_by_run_id.as_deref(),
+        target,
         "workspace Review hunk annotations write",
     )?;
     let (target_scope, target_head_sha, target_diff_fingerprint) =
@@ -4495,6 +4496,28 @@ fn validate_workspace_review_tool_run_id(
     crate::application::agent_workspace_review::ensure_workspace_review_run_is_active(
         monitor,
         created_by_run_id.as_deref(),
+        operation,
+    )
+    .map_err(|error| json_error(StatusCode::CONFLICT, error.to_string(), None))?;
+    Ok(created_by_run_id)
+}
+
+/// Annotation writes accept either the active reviewer run or the backend-registered annotator
+/// run for the exact reviewed target. See `ensure_workspace_review_annotation_authority`.
+fn validate_workspace_review_annotation_run_id(
+    monitor: &AgentWorkspaceReviewMonitor,
+    created_by_run_id: Option<&str>,
+    target: &AgentWorkspaceReviewTarget,
+    operation: &str,
+) -> Result<Option<String>, JsonError> {
+    let created_by_run_id = created_by_run_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    crate::application::agent_workspace_review::ensure_workspace_review_annotation_authority(
+        monitor,
+        created_by_run_id.as_deref(),
+        target,
         operation,
     )
     .map_err(|error| json_error(StatusCode::CONFLICT, error.to_string(), None))?;

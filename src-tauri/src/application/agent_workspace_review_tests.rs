@@ -6960,3 +6960,96 @@ async fn target_refresh_clears_recorded_settlement_evidence() {
     assert!(monitor.annotation_run_id.is_none());
     assert!(monitor.review_settlement_source.is_none());
 }
+
+// ── Annotator write authority ────────────────────────────────────────────
+
+fn annotation_authority_result(
+    monitor: &AgentWorkspaceReviewMonitor,
+    run_id: Option<&str>,
+    target: &AgentWorkspaceReviewTarget,
+) -> AppResult<()> {
+    ensure_workspace_review_annotation_authority(monitor, run_id, target, "annotation write")
+}
+
+#[tokio::test]
+async fn annotator_run_may_write_annotations_after_the_review_settled() {
+    let (_temp, state, workspace, target) = degraded_settlement_fixture().await;
+    let mut monitor = reviewing_monitor_with_recorded_outcome(
+        &state,
+        &workspace,
+        &target,
+        "reviewer-run",
+        AgentWorkspaceReviewArtifactOutcome::Passed,
+        None,
+    )
+    .await;
+    // Settlement leaves the monitor Ready, so the annotator cannot use active-run authority.
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
+    monitor.annotation_run_id = Some("annotator-run".to_string());
+
+    assert!(annotation_authority_result(&monitor, Some("annotator-run"), &target).is_ok());
+}
+
+#[tokio::test]
+async fn annotation_authority_rejects_an_unregistered_run() {
+    let (_temp, state, workspace, target) = degraded_settlement_fixture().await;
+    let mut monitor = reviewing_monitor_with_recorded_outcome(
+        &state,
+        &workspace,
+        &target,
+        "reviewer-run",
+        AgentWorkspaceReviewArtifactOutcome::Passed,
+        None,
+    )
+    .await;
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+    monitor.annotation_run_id = Some("annotator-run".to_string());
+
+    assert!(annotation_authority_result(&monitor, Some("some-other-run"), &target).is_err());
+    assert!(annotation_authority_result(&monitor, None, &target).is_err());
+}
+
+/// A target refresh clears `annotation_run_id`, so an in-flight annotator loses authority the
+/// moment the workspace moves on rather than annotating a delta nobody is looking at.
+#[tokio::test]
+async fn annotation_authority_is_lost_when_the_target_refreshes() {
+    let (_temp, state, workspace, target) = degraded_settlement_fixture().await;
+    let mut monitor = reviewing_monitor_with_recorded_outcome(
+        &state,
+        &workspace,
+        &target,
+        "reviewer-run",
+        AgentWorkspaceReviewArtifactOutcome::Passed,
+        None,
+    )
+    .await;
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+    monitor.annotation_run_id = Some("annotator-run".to_string());
+    assert!(annotation_authority_result(&monitor, Some("annotator-run"), &target).is_ok());
+
+    let mut refreshed_target = target.clone();
+    refreshed_target.diff_fingerprint = "fingerprint-after-new-edits".to_string();
+    apply_current_target_to_monitor(&mut monitor, Some(&refreshed_target));
+
+    assert!(monitor.annotation_run_id.is_none());
+    assert!(annotation_authority_result(&monitor, Some("annotator-run"), &refreshed_target).is_err());
+}
+
+/// The reviewer's own active run keeps its historical annotation authority.
+#[tokio::test]
+async fn active_reviewer_run_retains_annotation_authority() {
+    let (_temp, state, workspace, target) = degraded_settlement_fixture().await;
+    let monitor = reviewing_monitor_with_recorded_outcome(
+        &state,
+        &workspace,
+        &target,
+        "reviewer-run",
+        AgentWorkspaceReviewArtifactOutcome::Passed,
+        None,
+    )
+    .await;
+
+    assert_eq!(monitor.status, AgentWorkspaceReviewMonitorStatus::Reviewing);
+    assert!(annotation_authority_result(&monitor, Some("reviewer-run"), &target).is_ok());
+}

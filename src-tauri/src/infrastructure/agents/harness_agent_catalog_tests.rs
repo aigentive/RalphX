@@ -135,6 +135,11 @@ const CROSS_HARNESS_CHAT_AGENTS: &[(&str, &str, &str)] = &[
 
 const CROSS_HARNESS_SUPPORT_AGENTS: &[(&str, &str, &str)] = &[
     (
+        "ralphx-workspace-annotator",
+        "workspace_annotator",
+        "ralphx-workspace-annotator",
+    ),
+    (
         "ralphx-automation-judge",
         "automation-judge",
         "ralphx-automation-judge",
@@ -1546,6 +1551,75 @@ fn workspace_reviewer_codex_surface_uses_shared_prompt_and_review_tools() {
         metadata.runtime_features.get("shell_tool"),
         Some(&false),
         "workspace reviewer should use review_packet and bounded filesystem tools instead of Codex shell"
+    );
+}
+
+/// The annotator writes reading aids for a settled review. It must hold the annotation tool and
+/// nothing that could reach the review gate.
+#[test]
+fn workspace_annotator_surface_is_annotation_only() {
+    let root = project_root();
+    let definition = load_canonical_agent_definition(&root, "ralphx-workspace-annotator")
+        .expect("expected canonical workspace annotator definition");
+    let prompt = load_harness_agent_prompt(
+        &root,
+        "ralphx-workspace-annotator",
+        AgentPromptHarness::Codex,
+    )
+    .expect("expected workspace annotator Codex prompt");
+    let metadata = load_canonical_codex_metadata(&root, "ralphx-workspace-annotator");
+
+    for required_tool in [
+        "get_workspace_review_context",
+        "list_workspace_review_files",
+        "get_workspace_review_diff_page",
+        "write_workspace_review_hunk_annotations",
+    ] {
+        assert!(
+            definition
+                .capabilities
+                .mcp_tools
+                .iter()
+                .any(|tool| tool == required_tool),
+            "workspace annotator canonical surface should include {required_tool}"
+        );
+        assert!(
+            metadata.mcp_tools.iter().any(|tool| tool == required_tool),
+            "workspace annotator Codex surface should include {required_tool}"
+        );
+        assert!(
+            prompt.contains(required_tool),
+            "workspace annotator prompt should mention {required_tool}"
+        );
+    }
+
+    for denied_tool in [
+        "write_workspace_review_artifact",
+        "complete_workspace_review_run",
+        "delegate_start",
+    ] {
+        assert!(
+            !definition
+                .capabilities
+                .mcp_tools
+                .iter()
+                .any(|tool| tool == denied_tool),
+            "workspace annotator must not hold gate-mutating tool {denied_tool}"
+        );
+        assert!(
+            !metadata.mcp_tools.iter().any(|tool| tool == denied_tool),
+            "workspace annotator Codex surface must not hold {denied_tool}"
+        );
+    }
+
+    assert!(
+        !prompt.contains("mcp__ralphx__"),
+        "Codex workspace annotator prompt should not use Claude-style MCP names"
+    );
+    assert_eq!(
+        metadata.runtime_features.get("shell_tool"),
+        Some(&false),
+        "workspace annotator should read diffs through review tools, not a Codex shell"
     );
 }
 
