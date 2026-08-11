@@ -357,6 +357,18 @@ pub struct StreamTimeoutsConfig {
     pub chat_payload_retention_archived_days: u64,
     #[serde(default = "default_chat_payload_retention_batch_rows")]
     pub chat_payload_retention_batch_rows: u64,
+    /// Recommendation surfaced in Settings only. Never seeds the active size budget:
+    /// size pruning deletes payloads still inside the time window and needs user consent.
+    #[serde(default = "default_chat_payload_size_budget_recommended_bytes")]
+    pub chat_payload_size_budget_recommended_bytes: u64,
+    #[serde(default = "default_chat_payload_advisory_threshold_bytes")]
+    pub chat_payload_advisory_threshold_bytes: u64,
+    #[serde(default = "default_chat_payload_retention_interval_hours")]
+    pub chat_payload_retention_interval_hours: u64,
+    #[serde(default = "default_chat_payload_retention_batch_pause_ms")]
+    pub chat_payload_retention_batch_pause_ms: u64,
+    #[serde(default = "default_chat_payload_retention_checkpoint_batches")]
+    pub chat_payload_retention_checkpoint_batches: u64,
     #[serde(default = "default_db_lock_wait_warn_ms")]
     pub db_lock_wait_warn_ms: u64,
     #[serde(default = "default_db_lock_hold_warn_ms")]
@@ -424,7 +436,27 @@ fn default_chat_payload_retention_archived_days() -> u64 {
 }
 
 fn default_chat_payload_retention_batch_rows() -> u64 {
-    2000
+    500
+}
+
+fn default_chat_payload_size_budget_recommended_bytes() -> u64 {
+    5_368_709_120
+}
+
+fn default_chat_payload_advisory_threshold_bytes() -> u64 {
+    10_737_418_240
+}
+
+fn default_chat_payload_retention_interval_hours() -> u64 {
+    6
+}
+
+fn default_chat_payload_retention_batch_pause_ms() -> u64 {
+    50
+}
+
+fn default_chat_payload_retention_checkpoint_batches() -> u64 {
+    50
 }
 
 fn default_db_lock_wait_warn_ms() -> u64 {
@@ -461,6 +493,13 @@ impl Default for StreamTimeoutsConfig {
             chat_payload_retention_days: default_chat_payload_retention_days(),
             chat_payload_retention_archived_days: default_chat_payload_retention_archived_days(),
             chat_payload_retention_batch_rows: default_chat_payload_retention_batch_rows(),
+            chat_payload_size_budget_recommended_bytes:
+                default_chat_payload_size_budget_recommended_bytes(),
+            chat_payload_advisory_threshold_bytes: default_chat_payload_advisory_threshold_bytes(),
+            chat_payload_retention_interval_hours: default_chat_payload_retention_interval_hours(),
+            chat_payload_retention_batch_pause_ms: default_chat_payload_retention_batch_pause_ms(),
+            chat_payload_retention_checkpoint_batches:
+                default_chat_payload_retention_checkpoint_batches(),
             db_lock_wait_warn_ms: default_db_lock_wait_warn_ms(),
             db_lock_hold_warn_ms: default_db_lock_hold_warn_ms(),
         }
@@ -1098,6 +1137,26 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
     env_u64!(
         cfg.stream.chat_payload_retention_batch_rows,
         "RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_BATCH_ROWS"
+    );
+    env_u64!(
+        cfg.stream.chat_payload_size_budget_recommended_bytes,
+        "RALPHX_STREAM_CHAT_PAYLOAD_SIZE_BUDGET_RECOMMENDED_BYTES"
+    );
+    env_u64!(
+        cfg.stream.chat_payload_advisory_threshold_bytes,
+        "RALPHX_STREAM_CHAT_PAYLOAD_ADVISORY_THRESHOLD_BYTES"
+    );
+    env_u64!(
+        cfg.stream.chat_payload_retention_interval_hours,
+        "RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_INTERVAL_HOURS"
+    );
+    env_u64!(
+        cfg.stream.chat_payload_retention_batch_pause_ms,
+        "RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_BATCH_PAUSE_MS"
+    );
+    env_u64!(
+        cfg.stream.chat_payload_retention_checkpoint_batches,
+        "RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_CHECKPOINT_BATCHES"
     );
     env_u64!(
         cfg.stream.db_lock_wait_warn_ms,

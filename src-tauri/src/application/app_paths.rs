@@ -97,6 +97,14 @@ impl AppPaths {
         self.database_maintenance_dir().join("backups")
     }
 
+    /// Sidecar recording the last compaction outcome. Compaction runs before the pool
+    /// opens, so its result cannot live in the database it compacts.
+    pub fn database_compaction_outcome_path(&self) -> PathBuf {
+        self.database_maintenance_dir().join(
+            crate::infrastructure::sqlite::database_maintenance_outcome::COMPACTION_OUTCOME_FILE_NAME,
+        )
+    }
+
     /// Resolves the process-owned path set consumed by startup database
     /// maintenance (`database_maintenance` module). Kept here so the
     /// infrastructure module never depends on application-layer types.
@@ -108,6 +116,7 @@ impl AppPaths {
                 database_path: self.database_path()?,
                 marker_path: self.database_compaction_marker_path(),
                 backup_dir: self.database_backup_dir(),
+                outcome_path: self.database_compaction_outcome_path(),
             },
         )
     }

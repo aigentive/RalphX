@@ -511,6 +511,10 @@ macro_rules! register_tauri_commands {
             commands::repository_settings_commands::update_repository_settings,
             commands::database_maintenance_commands::get_database_maintenance_stats,
             commands::database_maintenance_commands::set_database_compaction_pending,
+            commands::data_retention_commands::get_data_retention_settings,
+            commands::data_retention_commands::update_data_retention_settings,
+            commands::data_retention_commands::run_data_retention_now,
+            commands::data_retention_commands::preview_data_retention_size_budget,
             commands::update_channel_commands::get_update_channel,
             commands::update_channel_commands::set_update_channel,
             // Plan branch commands (Phase 85 - Feature branch for plan groups)

@@ -7,8 +7,13 @@ use rusqlite::Connection;
 use serde::Serialize;
 use thiserror::Error;
 
+use super::database_maintenance_outcome::{read_record, write_record, CompactionRecord};
+
 pub const DEFAULT_AUTO_COMPACT_MAX_DB_BYTES: u64 = 2_147_483_648;
 pub const DEFAULT_AUTO_COMPACT_MIN_FREELIST_PERCENT: u64 = 20;
+
+/// Safety margin over the estimated compacted size, as a divisor (5 → 20%).
+const HEADROOM_SAFETY_DIVISOR: u64 = 5;
 
 #[derive(Debug, Clone, Copy)]
 pub struct CompactionConfig {
@@ -33,6 +38,8 @@ pub struct DatabaseMaintenanceStats {
     pub reclaimable_bytes: u64,
     pub headroom_ok: bool,
     pub pending_compaction: bool,
+    /// Outcome of the most recent compaction attempt, including why it was skipped.
+    pub last_compaction: Option<CompactionRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,6 +68,7 @@ pub struct MaintenancePaths {
     pub database_path: PathBuf,
     pub marker_path: PathBuf,
     pub backup_dir: PathBuf,
+    pub outcome_path: PathBuf,
 }
 
 fn page_stats(conn: &Connection) -> Result<(u64, u64, u64), DatabaseMaintenanceError> {
@@ -94,48 +102,44 @@ fn available_bytes(path: &Path) -> Option<u64> {
     }
 }
 
-fn backup_database(
-    database_path: &Path,
-    backup_dir: &Path,
-) -> Result<u64, DatabaseMaintenanceError> {
-    fs::create_dir_all(backup_dir)?;
-    let backup_db = backup_dir.join("ralphx.db.pre-vacuum");
-    let backup_wal = backup_dir.join("ralphx.db-wal.pre-vacuum");
-    let db_bytes = fs::copy(database_path, &backup_db)?;
-    if db_bytes == 0 || fs::metadata(&backup_db)?.len() != db_bytes {
-        return Err(DatabaseMaintenanceError::Integrity(
-            "backup database verification failed".into(),
-        ));
-    }
-    let wal_path = PathBuf::from(format!("{}-wal", database_path.display()));
-    if wal_path.exists() {
-        let wal_bytes = fs::copy(&wal_path, &backup_wal)?;
-        if fs::metadata(&backup_wal)?.len() != wal_bytes {
-            return Err(DatabaseMaintenanceError::Integrity(
-                "backup WAL verification failed".into(),
-            ));
-        }
-        Ok(db_bytes.saturating_add(wal_bytes))
-    } else {
-        // A WAL backup from an earlier run must not survive next to a newer DB
-        // backup: restoring that mismatched pair would replay unrelated WAL
-        // frames into the restored database.
-        if backup_wal.exists() {
-            fs::remove_file(&backup_wal)?;
-        }
-        Ok(db_bytes)
-    }
+fn sidecar_path(database_path: &Path, suffix: &str) -> PathBuf {
+    // Fixed suffixes on an app-owned database path — no user-influenced components.
+    PathBuf::from(format!("{}{suffix}", database_path.display()))
+}
+
+fn file_len(path: &Path) -> u64 {
+    fs::metadata(path).map(|meta| meta.len()).unwrap_or(0)
+}
+
+/// Free space a `VACUUM INTO` swap needs: the *compacted* size plus a 20% margin plus
+/// the live WAL.
+///
+/// The old copy-backup + in-place `VACUUM` path required 3× the database size — 135 GB
+/// free for a 45 GB database, which is why compaction was unreachable exactly where it
+/// mattered most.
+#[must_use]
+pub fn required_headroom_bytes(database_bytes: u64, reclaimable_bytes: u64, wal_bytes: u64) -> u64 {
+    let estimated_compacted = database_bytes.saturating_sub(reclaimable_bytes);
+    estimated_compacted
+        .saturating_add(estimated_compacted / HEADROOM_SAFETY_DIVISOR)
+        .saturating_add(wal_bytes)
+}
+
+fn database_dir(database_path: &Path) -> &Path {
+    database_path.parent().unwrap_or_else(|| Path::new("."))
 }
 
 pub fn read_stats_at(
     paths: &MaintenancePaths,
 ) -> Result<DatabaseMaintenanceStats, DatabaseMaintenanceError> {
+    let last_compaction = read_record(&paths.outcome_path);
     if !paths.database_path.exists() {
         return Ok(DatabaseMaintenanceStats {
             database_bytes: 0,
             reclaimable_bytes: 0,
             headroom_ok: false,
             pending_compaction: paths.marker_path.exists(),
+            last_compaction,
         });
     }
     let database_bytes = fs::metadata(&paths.database_path)?.len();
@@ -149,19 +153,19 @@ pub fn read_stats_at(
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     let (page_size, _, freelist_count) = page_stats(&conn)?;
     let reclaimable_bytes = page_size.saturating_mul(freelist_count);
-    let required = database_bytes.saturating_mul(3);
-    let headroom_ok = available_bytes(
-        paths
-            .database_path
-            .parent()
-            .unwrap_or_else(|| Path::new(".")),
-    )
-    .is_some_and(|available| available >= required);
+    let required = required_headroom_bytes(
+        database_bytes,
+        reclaimable_bytes,
+        file_len(&sidecar_path(&paths.database_path, "-wal")),
+    );
+    let headroom_ok = available_bytes(database_dir(&paths.database_path))
+        .is_some_and(|available| available >= required);
     Ok(DatabaseMaintenanceStats {
         database_bytes,
         reclaimable_bytes,
         headroom_ok,
         pending_compaction: paths.marker_path.exists(),
+        last_compaction,
     })
 }
 
@@ -180,40 +184,67 @@ pub fn set_pending_compaction_at(
     Ok(())
 }
 
-/// Consumes a pending manual request and, when eligible, vacuums before any pool is opened.
-pub fn compact_before_pool_opens_at(
+/// Whether a compaction will actually execute, so callers can advance a startup stage
+/// only when the user is about to wait for one.
+#[must_use]
+pub fn compaction_will_execute(paths: &MaintenancePaths, config: CompactionConfig) -> bool {
+    matches!(
+        decide(paths, config),
+        Ok(CompactionDecision::Execute { .. })
+    )
+}
+
+enum CompactionDecision {
+    NotRequested,
+    Skipped {
+        reason: &'static str,
+        manual: bool,
+        database_bytes: u64,
+    },
+    Execute {
+        manual: bool,
+        database_bytes: u64,
+    },
+}
+
+fn decide(
     paths: &MaintenancePaths,
     config: CompactionConfig,
-) -> Result<CompactionOutcome, DatabaseMaintenanceError> {
+) -> Result<CompactionDecision, DatabaseMaintenanceError> {
     let manual = paths.marker_path.exists();
     if !manual && !config.auto_enabled {
-        return Ok(CompactionOutcome::NotRequested);
+        return Ok(CompactionDecision::NotRequested);
     }
     if !paths.database_path.exists() {
-        if manual {
-            set_pending_compaction_at(&paths.marker_path, false)?;
-        }
-        return Ok(CompactionOutcome::Skipped("database_missing"));
+        return Ok(CompactionDecision::Skipped {
+            reason: "database_missing",
+            manual,
+            database_bytes: 0,
+        });
     }
     let database_bytes = fs::metadata(&paths.database_path)?.len();
-    let conn = Connection::open(&paths.database_path)?;
-    let (_, page_count, freelist_count) = page_stats(&conn)?;
+    let conn = Connection::open_with_flags(
+        &paths.database_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )?;
+    let (page_size, page_count, freelist_count) = page_stats(&conn)?;
+    drop(conn);
+
     let share_percent = if page_count == 0 {
         0
     } else {
         freelist_count.saturating_mul(100) / page_count
     };
-    let required_headroom = database_bytes.saturating_mul(3);
-    let available = available_bytes(
-        paths
-            .database_path
-            .parent()
-            .unwrap_or_else(|| Path::new(".")),
+    let required_headroom = required_headroom_bytes(
+        database_bytes,
+        page_size.saturating_mul(freelist_count),
+        file_len(&sidecar_path(&paths.database_path, "-wal")),
     );
-    let skip = if available.is_none() {
+    let available = available_bytes(database_dir(&paths.database_path));
+    let reason = if available.is_none() {
         // Free-space probing is unsupported on this platform (non-unix) or
         // failed; fail closed but report it distinctly so a consumed manual
-        // request is explainable from the logs.
+        // request is explainable from the sidecar.
         Some("disk_headroom_unavailable")
     } else if available.is_none_or(|available| available < required_headroom) {
         Some("insufficient_disk_headroom")
@@ -224,44 +255,153 @@ pub fn compact_before_pool_opens_at(
     } else {
         None
     };
-    if let Some(reason) = skip {
-        drop(conn);
-        if manual {
-            set_pending_compaction_at(&paths.marker_path, false)?;
-        }
-        return Ok(CompactionOutcome::Skipped(reason));
-    }
-    let backup_bytes = backup_database(&paths.database_path, &paths.backup_dir)?;
-    // A verified backup exists before any destructive operation. Re-check headroom including it.
-    if !available_bytes(
-        paths
-            .database_path
-            .parent()
-            .unwrap_or_else(|| Path::new(".")),
-    )
-    .is_some_and(|available| {
-        available
-            >= database_bytes
-                .saturating_mul(2)
-                .saturating_add(backup_bytes)
-    }) {
-        drop(conn);
-        if manual {
-            set_pending_compaction_at(&paths.marker_path, false)?;
-        }
-        return Ok(CompactionOutcome::Skipped("insufficient_disk_headroom"));
-    }
-    conn.execute_batch("VACUUM")?;
-    let integrity: String = conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
-    if integrity != "ok" {
-        return Err(DatabaseMaintenanceError::Integrity(integrity));
-    }
-    drop(conn);
-    let after = fs::metadata(&paths.database_path)?.len();
-    if manual {
-        set_pending_compaction_at(&paths.marker_path, false)?;
-    }
-    Ok(CompactionOutcome::Compacted {
-        reclaimed_bytes: database_bytes.saturating_sub(after),
+    Ok(match reason {
+        Some(reason) => CompactionDecision::Skipped {
+            reason,
+            manual,
+            database_bytes,
+        },
+        None => CompactionDecision::Execute {
+            manual,
+            database_bytes,
+        },
     })
+}
+
+/// Consumes a pending manual request and, when eligible, compacts before any pool is opened.
+///
+/// Compacts into a new file, verifies it, then swaps it in — the untouched original *is*
+/// the backup until the swap completes, so no copy is needed.
+pub fn compact_before_pool_opens_at(
+    paths: &MaintenancePaths,
+    config: CompactionConfig,
+) -> Result<CompactionOutcome, DatabaseMaintenanceError> {
+    let decision = match decide(paths, config) {
+        Ok(decision) => decision,
+        Err(error) => {
+            // The marker deliberately survives a hard error so the request retries.
+            write_record(
+                &paths.outcome_path,
+                &CompactionRecord::error(
+                    file_len(&paths.database_path),
+                    &format!("eligibility: {error}"),
+                ),
+            );
+            return Err(error);
+        }
+    };
+    match decision {
+        CompactionDecision::NotRequested => Ok(CompactionOutcome::NotRequested),
+        CompactionDecision::Skipped {
+            reason,
+            manual,
+            database_bytes,
+        } => {
+            // Record before clearing the marker: a consumed manual request that explains
+            // nothing is the bug this replaces.
+            write_record(
+                &paths.outcome_path,
+                &CompactionRecord::skipped(database_bytes, reason),
+            );
+            if manual {
+                set_pending_compaction_at(&paths.marker_path, false)?;
+            }
+            Ok(CompactionOutcome::Skipped(reason))
+        }
+        CompactionDecision::Execute {
+            manual,
+            database_bytes,
+        } => {
+            let outcome = vacuum_into_swap(paths, database_bytes);
+            match &outcome {
+                Ok(CompactionOutcome::Compacted { reclaimed_bytes }) => write_record(
+                    &paths.outcome_path,
+                    &CompactionRecord::compacted(database_bytes, *reclaimed_bytes),
+                ),
+                Ok(CompactionOutcome::Skipped(reason)) => write_record(
+                    &paths.outcome_path,
+                    &CompactionRecord::skipped(database_bytes, reason),
+                ),
+                Ok(CompactionOutcome::NotRequested) => {}
+                Err(error) => write_record(
+                    &paths.outcome_path,
+                    &CompactionRecord::error(database_bytes, &error.to_string()),
+                ),
+            }
+            if manual {
+                set_pending_compaction_at(&paths.marker_path, false)?;
+            }
+            outcome
+        }
+    }
+}
+
+fn vacuum_into_swap(
+    paths: &MaintenancePaths,
+    database_bytes: u64,
+) -> Result<CompactionOutcome, DatabaseMaintenanceError> {
+    let compacting_path = sidecar_path(&paths.database_path, ".compacting");
+    let wal_path = sidecar_path(&paths.database_path, "-wal");
+    let shm_path = sidecar_path(&paths.database_path, "-shm");
+
+    let conn = Connection::open(&paths.database_path)?;
+    // (a) The one precondition that may NOT be best-effort: a surviving WAL would be
+    // discarded by the swap below, losing committed data.
+    let busy: i64 = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?;
+    if busy != 0 || file_len(&wal_path) > 0 {
+        drop(conn);
+        return Ok(CompactionOutcome::Skipped("wal_checkpoint_incomplete"));
+    }
+
+    // (b) Compact into a fresh file. The live database is untouched.
+    if compacting_path.exists() {
+        fs::remove_file(&compacting_path)?;
+    }
+    if let Err(error) = conn.execute("VACUUM INTO ?1", [compacting_path.to_string_lossy()]) {
+        drop(conn);
+        let _ = fs::remove_file(&compacting_path);
+        return Err(error.into());
+    }
+    // (c) Verify the replacement before anything destructive happens.
+    drop(conn);
+    if let Err(error) = verify_replacement(&compacting_path) {
+        let _ = fs::remove_file(&compacting_path);
+        return Err(error);
+    }
+
+    // (d) The original becomes the backup by moving, not copying.
+    fs::create_dir_all(&paths.backup_dir)?;
+    let backup_path = paths.backup_dir.join("ralphx.db.pre-vacuum");
+    // A WAL backup written by an earlier release must not survive beside a newer DB
+    // backup: restoring that mismatched pair would replay unrelated WAL frames.
+    let _ = fs::remove_file(paths.backup_dir.join("ralphx.db-wal.pre-vacuum"));
+    fs::rename(&paths.database_path, &backup_path)?;
+
+    // (e) The emptied WAL/SHM belong to the file that just moved out. Removing them
+    // before the rename-in avoids a crash window where a compacted database sits
+    // beside a foreign WAL.
+    let _ = fs::remove_file(&wal_path);
+    let _ = fs::remove_file(&shm_path);
+
+    // (f) Swap the verified replacement in; on failure put the original straight back.
+    if let Err(error) = fs::rename(&compacting_path, &paths.database_path) {
+        let _ = fs::rename(&backup_path, &paths.database_path);
+        return Err(error.into());
+    }
+
+    Ok(CompactionOutcome::Compacted {
+        reclaimed_bytes: database_bytes.saturating_sub(file_len(&paths.database_path)),
+    })
+}
+
+fn verify_replacement(compacting_path: &Path) -> Result<(), DatabaseMaintenanceError> {
+    let replacement = Connection::open(compacting_path)?;
+    let integrity: String =
+        replacement.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
+    drop(replacement);
+    if integrity == "ok" {
+        Ok(())
+    } else {
+        Err(DatabaseMaintenanceError::Integrity(integrity))
+    }
 }
