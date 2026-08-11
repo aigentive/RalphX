@@ -407,13 +407,15 @@ async fn build_issue_report_collects_a_rotated_active_and_rolled_pair() {
     // Oldest first, so the rotated pair is the newest by modification time —
     // exactly how a launch that rotated appears on disk. Modification times are
     // stamped explicitly because write order alone ties on coarse filesystems.
+    // Seeds are stamped ahead of now so they always rank newest relative to any
+    // ambient dev logs in app_log_dir(), making the four-slot assertion deterministic.
     let seeded = [
         "ralphx_2026-08-11_08-00-00.log",
         "ralphx_2026-08-11_09-00-00.log",
         "ralphx_2026-08-11_10-00-00_rolled.log",
         "ralphx_2026-08-11_10-00-00.log",
     ];
-    let oldest = SystemTime::now() - Duration::from_secs(4 * 3600);
+    let oldest = SystemTime::now() + Duration::from_secs(3600);
     let mut _cleanups = Vec::new();
     for (index, name) in seeded.into_iter().enumerate() {
         let path = log_root.join(name);
