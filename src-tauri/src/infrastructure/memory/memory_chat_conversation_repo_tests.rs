@@ -48,6 +48,71 @@ async fn create_rejects_invalid_standalone_self_key() {
 }
 
 #[tokio::test]
+async fn refresh_provider_session_ref_updates_existing_and_skips_cleared() {
+    let repo = MemoryChatConversationRepository::new();
+    let conversation =
+        ChatConversation::new_project(ProjectId::from_string("project-refresh".to_string()));
+    repo.create(conversation.clone()).await.unwrap();
+
+    repo.update_provider_session_ref(
+        &conversation.id,
+        &ProviderSessionRef {
+            harness: AgentHarnessKind::Claude,
+            provider_session_id: "session-1".to_string(),
+        },
+    )
+    .await
+    .unwrap();
+
+    let refreshed = repo
+        .refresh_provider_session_ref(
+            &conversation.id,
+            &ProviderSessionRef {
+                harness: AgentHarnessKind::Claude,
+                provider_session_id: "session-2".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(refreshed);
+    assert_eq!(
+        repo.get_by_id(&conversation.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .provider_session_ref()
+            .map(|session_ref| session_ref.provider_session_id),
+        Some("session-2".to_string())
+    );
+
+    repo.clear_provider_session_ref(&conversation.id)
+        .await
+        .unwrap();
+
+    let refreshed_after_clear = repo
+        .refresh_provider_session_ref(
+            &conversation.id,
+            &ProviderSessionRef {
+                harness: AgentHarnessKind::Claude,
+                provider_session_id: "session-3".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        !refreshed_after_clear,
+        "cleared ref must not be resurrected by a late teardown write"
+    );
+    assert!(repo
+        .get_by_id(&conversation.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .provider_session_ref()
+        .is_none());
+}
+
+#[tokio::test]
 async fn test_update_builder_draft_binding_sets_and_clears() {
     let repo = MemoryChatConversationRepository::new();
     let conversation =

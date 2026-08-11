@@ -1167,8 +1167,12 @@ pub fn spawn_send_message_background(ctx: BackgroundRunContext) {
                 if let Some(ref sess_id) = provider_session_id {
                     tracing::info!("[CHAT_SERVICE] Updating conversation with session_id={}", sess_id);
                     if persist_conversation_provider_session_ref {
-                        if let Err(e) = conversation_repo
-                            .update_provider_session_ref(
+                        // Refresh-only: this write runs on the stream exit path, potentially
+                        // after a Plan→Edit handoff deliberately cleared the ref. Never
+                        // resurrect a cleared ref — a resurrected plan session would be
+                        // derived as a harness override on the next send and reject it.
+                        match conversation_repo
+                            .refresh_provider_session_ref(
                                 &conversation_id,
                                 &ProviderSessionRef {
                                     harness,
@@ -1177,12 +1181,22 @@ pub fn spawn_send_message_background(ctx: BackgroundRunContext) {
                             )
                             .await
                         {
-                            tracing::error!(
-                                error = %e,
-                                conversation_id = conversation_id.as_str(),
-                                session_id = %sess_id,
-                                "[CHAT_SERVICE] Failed to persist provider_session_id — next resume attempt will use stale session ID"
-                            );
+                            Ok(true) => {}
+                            Ok(false) => {
+                                tracing::info!(
+                                    conversation_id = conversation_id.as_str(),
+                                    session_id = %sess_id,
+                                    "[CHAT_SERVICE] Skipped provider session persist — ref was cleared during teardown"
+                                );
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    error = %e,
+                                    conversation_id = conversation_id.as_str(),
+                                    session_id = %sess_id,
+                                    "[CHAT_SERVICE] Failed to persist provider_session_id — next resume attempt will use stale session ID"
+                                );
+                            }
                         }
                     }
 

@@ -271,3 +271,135 @@ async fn live_model_identity_requires_a_running_run() {
         ModelIdentityComparison::Unknown
     );
 }
+
+fn complete_runtime_override() -> crate::domain::agents::ManualRoleRuntimeOverride {
+    crate::domain::agents::ManualRoleRuntimeOverride {
+        harness: AgentHarnessKind::Claude,
+        model: Some("opus".to_string()),
+        effort: Some(LogicalEffort::High),
+        service_tier: crate::domain::agents::ManualServiceTier::Standard,
+        coordination_mode: None,
+        persona_id: None,
+    }
+}
+
+#[test]
+fn manual_runtime_override_wins_over_conversation_derived_harness() {
+    let options = SendMessageOptions {
+        manual_role_runtime_override: Some(complete_runtime_override()),
+        ..Default::default()
+    };
+
+    // A harness derived from a (possibly stale) conversation provider session must not reach the
+    // legacy-mixing guard — that combination is what rejected the first "Implement Directly" click.
+    assert_eq!(
+        super::manual_mixing_harness_override(&options, Some(AgentHarnessKind::Claude)),
+        None
+    );
+}
+
+#[test]
+fn manual_runtime_override_still_conflicts_with_explicit_client_harness() {
+    let options = SendMessageOptions {
+        manual_role_runtime_override: Some(complete_runtime_override()),
+        harness_override: Some(AgentHarnessKind::Codex),
+        ..Default::default()
+    };
+
+    assert_eq!(
+        super::manual_mixing_harness_override(&options, Some(AgentHarnessKind::Claude)),
+        Some(AgentHarnessKind::Codex)
+    );
+}
+
+#[test]
+fn derived_harness_survives_without_a_manual_runtime_override() {
+    let options = SendMessageOptions::default();
+
+    assert_eq!(
+        super::manual_mixing_harness_override(&options, Some(AgentHarnessKind::Claude)),
+        Some(AgentHarnessKind::Claude)
+    );
+}
+
+#[test]
+fn continuation_presence_marks_manual_runtime_override_fields_as_chosen() {
+    let presence = super::continuation_override_presence(&SendMessageOptions {
+        manual_role_runtime_override: Some(complete_runtime_override()),
+        ..Default::default()
+    });
+
+    assert_eq!(
+        presence,
+        RuntimeOverridePresence {
+            model: true,
+            logical_effort: true,
+            service_tier: true,
+            approval_policy: false,
+            sandbox_mode: false,
+        }
+    );
+}
+
+#[test]
+fn continuation_presence_leaves_unset_manual_fields_to_the_prior_runtime() {
+    let presence = super::continuation_override_presence(&SendMessageOptions {
+        manual_role_runtime_override: Some(crate::domain::agents::ManualRoleRuntimeOverride {
+            model: None,
+            effort: None,
+            ..complete_runtime_override()
+        }),
+        ..Default::default()
+    });
+
+    assert_eq!(
+        presence,
+        RuntimeOverridePresence {
+            model: false,
+            logical_effort: false,
+            // A complete runtime override always carries a service tier.
+            service_tier: true,
+            approval_policy: false,
+            sandbox_mode: false,
+        }
+    );
+}
+
+#[test]
+fn manual_runtime_override_model_survives_continuation_defaults() {
+    let mut resolved = base_codex_settings();
+    resolved.model = "gpt-5.6-sol".to_string();
+    resolved.configured_model = Some("gpt-5.6-sol".to_string());
+    let continuation = ContinuationRuntime {
+        harness: AgentHarnessKind::Codex,
+        provider_session_id: "prior-session".to_string(),
+        logical_model: Some("gpt-5.5".to_string()),
+        effective_model_id: Some("gpt-5.5".to_string()),
+        logical_effort: Some(LogicalEffort::Low),
+        service_tier: Some("flex".to_string()),
+        approval_policy: Some("never".to_string()),
+        sandbox_mode: Some("danger-full-access".to_string()),
+    };
+
+    continuation.apply_defaults(
+        &mut resolved,
+        super::continuation_override_presence(&SendMessageOptions {
+            manual_role_runtime_override: Some(crate::domain::agents::ManualRoleRuntimeOverride {
+                harness: AgentHarnessKind::Codex,
+                model: Some("gpt-5.6-sol".to_string()),
+                effort: Some(LogicalEffort::High),
+                service_tier: crate::domain::agents::ManualServiceTier::Standard,
+                coordination_mode: None,
+                persona_id: None,
+            }),
+            ..Default::default()
+        }),
+    );
+
+    assert_eq!(resolved.model, "gpt-5.6-sol");
+    assert_eq!(resolved.configured_model.as_deref(), Some("gpt-5.6-sol"));
+    assert_eq!(resolved.logical_effort, Some(LogicalEffort::XHigh));
+    assert_eq!(resolved.service_tier, None);
+    // Approval/sandbox stay continuation-owned.
+    assert_eq!(resolved.approval_policy.as_deref(), Some("never"));
+}

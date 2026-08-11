@@ -1,5 +1,6 @@
 use super::plan_edit_handoff::{
-    finish_plan_to_edit_handoff_after_commit, stop_plan_to_edit_handoff_before_commit,
+    clear_plan_provider_session_after_commit, finish_plan_to_edit_handoff_after_commit,
+    stop_plan_to_edit_handoff_before_commit,
 };
 use super::{
     agent_conversation_response_for_state, agent_conversation_responses_for_state,
@@ -10793,6 +10794,69 @@ async fn plan_to_edit_postcommit_preserves_session_when_idle_retirement_is_rejec
             .map(|session| session.provider_session_id),
         Some("planning-session".to_string())
     );
+}
+
+#[tokio::test]
+async fn plan_to_edit_clear_runs_even_when_the_snapshot_already_reads_no_session() {
+    let state = AppState::new_test();
+    let mut conversation = ChatConversation::new_project(ProjectId::new());
+    let conversation_id = conversation.id.clone();
+    state
+        .chat_conversation_repo
+        .create(conversation.clone())
+        .await
+        .unwrap();
+    // The stream teardown resurrected the row *after* this snapshot was loaded, so the
+    // in-memory conversation reads `None` while the durable row still holds the plan session.
+    state
+        .chat_conversation_repo
+        .update_provider_session_ref(
+            &conversation_id,
+            &ProviderSessionRef {
+                harness: AgentHarnessKind::Claude,
+                provider_session_id: "resurrected-planning-session".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(conversation.provider_session_ref().is_none());
+
+    clear_plan_provider_session_after_commit(&state, &mut conversation)
+        .await
+        .expect("clear must run unconditionally");
+
+    let persisted = state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        persisted.provider_session_ref().is_none(),
+        "the durable row must be cleared even when the snapshot read None"
+    );
+
+    // Ordering is now immaterial: a teardown write landing after the clear no-ops too.
+    let refreshed = state
+        .chat_conversation_repo
+        .refresh_provider_session_ref(
+            &conversation_id,
+            &ProviderSessionRef {
+                harness: AgentHarnessKind::Claude,
+                provider_session_id: "resurrected-planning-session".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(!refreshed);
+    assert!(state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .provider_session_ref()
+        .is_none());
 }
 
 #[tokio::test]
