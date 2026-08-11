@@ -39,6 +39,20 @@ describe("StartupScreen", () => {
     expect(screen.getByText("2 of 4 complete")).toBeInTheDocument();
   });
 
+  it("explains a long compaction instead of presenting it as a hang", () => {
+    render(
+      <StartupScreen
+        status={startupStatus({ stage: "compacting_database" })}
+        updateVersion={undefined}
+      />,
+    );
+
+    expect(screen.getByRole("status")).toHaveTextContent("Reclaiming disk space");
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "This can take several minutes on a large database",
+    );
+  });
+
   it("keeps terminal failure in the startup surface and offers retry", async () => {
     const onRetry = vi.fn();
     const user = userEvent.setup();
