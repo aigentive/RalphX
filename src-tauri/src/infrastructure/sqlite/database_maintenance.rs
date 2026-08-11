@@ -59,6 +59,11 @@ pub enum DatabaseMaintenanceError {
     Integrity(String),
 }
 
+struct LabeledError {
+    label: String,
+    source: DatabaseMaintenanceError,
+}
+
 /// App-owned maintenance paths. Production always derives these from
 /// `AppPaths::database_maintenance_paths()` (process-owned data dir); tests
 /// supply temp-dir equivalents so debug-profile database resolution can never
@@ -268,13 +273,11 @@ fn decide(
     })
 }
 
-/// Consumes a pending manual request and, when eligible, compacts before any pool is opened.
-///
-/// Compacts into a new file, verifies it, then swaps it in — the untouched original *is*
-/// the backup until the swap completes, so no copy is needed.
-pub fn compact_before_pool_opens_at(
+fn compact_before_pool_opens_at_impl(
     paths: &MaintenancePaths,
     config: CompactionConfig,
+    verifier: &dyn Fn(&Path) -> Result<(), DatabaseMaintenanceError>,
+    pre_rename_hook: Option<&dyn Fn()>,
 ) -> Result<CompactionOutcome, DatabaseMaintenanceError> {
     let decision = match decide(paths, config) {
         Ok(decision) => decision,
@@ -312,22 +315,30 @@ pub fn compact_before_pool_opens_at(
             manual,
             database_bytes,
         } => {
-            let outcome = vacuum_into_swap(paths, database_bytes);
-            match &outcome {
-                Ok(CompactionOutcome::Compacted { reclaimed_bytes }) => write_record(
-                    &paths.outcome_path,
-                    &CompactionRecord::compacted(database_bytes, *reclaimed_bytes),
-                ),
-                Ok(CompactionOutcome::Skipped(reason)) => write_record(
-                    &paths.outcome_path,
-                    &CompactionRecord::skipped(database_bytes, reason),
-                ),
-                Ok(CompactionOutcome::NotRequested) => {}
-                Err(error) => write_record(
-                    &paths.outcome_path,
-                    &CompactionRecord::error(database_bytes, &error.to_string()),
-                ),
-            }
+            let result = vacuum_into_swap_impl(paths, database_bytes, verifier, pre_rename_hook);
+            let outcome = match result {
+                Ok(o) => {
+                    match &o {
+                        CompactionOutcome::Compacted { reclaimed_bytes } => write_record(
+                            &paths.outcome_path,
+                            &CompactionRecord::compacted(database_bytes, *reclaimed_bytes),
+                        ),
+                        CompactionOutcome::Skipped(reason) => write_record(
+                            &paths.outcome_path,
+                            &CompactionRecord::skipped(database_bytes, reason),
+                        ),
+                        CompactionOutcome::NotRequested => {}
+                    }
+                    Ok(o)
+                }
+                Err(le) => {
+                    write_record(
+                        &paths.outcome_path,
+                        &CompactionRecord::error(database_bytes, &le.label),
+                    );
+                    Err(le.source)
+                }
+            };
             if manual {
                 set_pending_compaction_at(&paths.marker_path, false)?;
             }
@@ -336,18 +347,51 @@ pub fn compact_before_pool_opens_at(
     }
 }
 
-fn vacuum_into_swap(
+/// Consumes a pending manual request and, when eligible, compacts before any pool is opened.
+///
+/// Compacts into a new file, verifies it, then swaps it in — the untouched original *is*
+/// the backup until the swap completes, so no copy is needed.
+pub fn compact_before_pool_opens_at(
+    paths: &MaintenancePaths,
+    config: CompactionConfig,
+) -> Result<CompactionOutcome, DatabaseMaintenanceError> {
+    compact_before_pool_opens_at_impl(paths, config, &verify_replacement, None)
+}
+
+/// Test seam: threads a custom verifier and an optional pre-rename hook through the swap
+/// so obligations 6(b) and 6(c) can be proven without depending on filesystem corruption.
+#[cfg(test)]
+pub(super) fn compact_before_pool_opens_at_with_seams(
+    paths: &MaintenancePaths,
+    config: CompactionConfig,
+    verifier: &dyn Fn(&Path) -> Result<(), DatabaseMaintenanceError>,
+    pre_rename_hook: Option<&dyn Fn()>,
+) -> Result<CompactionOutcome, DatabaseMaintenanceError> {
+    compact_before_pool_opens_at_impl(paths, config, verifier, pre_rename_hook)
+}
+
+fn vacuum_into_swap_impl(
     paths: &MaintenancePaths,
     database_bytes: u64,
-) -> Result<CompactionOutcome, DatabaseMaintenanceError> {
+    verifier: &dyn Fn(&Path) -> Result<(), DatabaseMaintenanceError>,
+    pre_rename_hook: Option<&dyn Fn()>,
+) -> Result<CompactionOutcome, LabeledError> {
     let compacting_path = sidecar_path(&paths.database_path, ".compacting");
     let wal_path = sidecar_path(&paths.database_path, "-wal");
     let shm_path = sidecar_path(&paths.database_path, "-shm");
 
-    let conn = Connection::open(&paths.database_path)?;
+    let conn = Connection::open(&paths.database_path).map_err(|e| {
+        let label = format!("open: {e}");
+        LabeledError { label, source: e.into() }
+    })?;
     // (a) The one precondition that may NOT be best-effort: a surviving WAL would be
     // discarded by the swap below, losing committed data.
-    let busy: i64 = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?;
+    let busy: i64 = conn
+        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))
+        .map_err(|e| {
+            let label = format!("checkpoint_query: {e}");
+            LabeledError { label, source: e.into() }
+        })?;
     if busy != 0 || file_len(&wal_path) > 0 {
         drop(conn);
         return Ok(CompactionOutcome::Skipped("wal_checkpoint_incomplete"));
@@ -355,27 +399,38 @@ fn vacuum_into_swap(
 
     // (b) Compact into a fresh file. The live database is untouched.
     if compacting_path.exists() {
-        fs::remove_file(&compacting_path)?;
+        fs::remove_file(&compacting_path).map_err(|e| {
+            let label = format!("pre_vacuum_cleanup: {e}");
+            LabeledError { label, source: e.into() }
+        })?;
     }
     if let Err(error) = conn.execute("VACUUM INTO ?1", [compacting_path.to_string_lossy()]) {
         drop(conn);
         let _ = fs::remove_file(&compacting_path);
-        return Err(error.into());
+        let label = format!("vacuum: {error}");
+        return Err(LabeledError { label, source: error.into() });
     }
     // (c) Verify the replacement before anything destructive happens.
     drop(conn);
-    if let Err(error) = verify_replacement(&compacting_path) {
+    if let Err(error) = verifier(&compacting_path) {
         let _ = fs::remove_file(&compacting_path);
-        return Err(error);
+        let label = format!("verify: {error}");
+        return Err(LabeledError { label, source: error });
     }
 
     // (d) The original becomes the backup by moving, not copying.
-    fs::create_dir_all(&paths.backup_dir)?;
+    fs::create_dir_all(&paths.backup_dir).map_err(|e| {
+        let label = format!("backup_dir_create: {e}");
+        LabeledError { label, source: e.into() }
+    })?;
     let backup_path = paths.backup_dir.join("ralphx.db.pre-vacuum");
     // A WAL backup written by an earlier release must not survive beside a newer DB
     // backup: restoring that mismatched pair would replay unrelated WAL frames.
     let _ = fs::remove_file(paths.backup_dir.join("ralphx.db-wal.pre-vacuum"));
-    fs::rename(&paths.database_path, &backup_path)?;
+    fs::rename(&paths.database_path, &backup_path).map_err(|e| {
+        let label = format!("backup_rename: {e}");
+        LabeledError { label, source: e.into() }
+    })?;
 
     // (e) The emptied WAL/SHM belong to the file that just moved out. Removing them
     // before the rename-in avoids a crash window where a compacted database sits
@@ -383,10 +438,20 @@ fn vacuum_into_swap(
     let _ = fs::remove_file(&wal_path);
     let _ = fs::remove_file(&shm_path);
 
+    // Optional hook for obligation-6(c) tests: fires between (e) and (f) so a test
+    // can inject a condition that makes the rename-in fail without filesystem corruption.
+    if let Some(hook) = pre_rename_hook {
+        hook();
+    }
+
     // (f) Swap the verified replacement in; on failure put the original straight back.
     if let Err(error) = fs::rename(&compacting_path, &paths.database_path) {
         let _ = fs::rename(&backup_path, &paths.database_path);
-        return Err(error.into());
+        let label = format!(
+            "swap_rename: {error} (original preserved at {})",
+            backup_path.display()
+        );
+        return Err(LabeledError { label, source: error.into() });
     }
 
     Ok(CompactionOutcome::Compacted {

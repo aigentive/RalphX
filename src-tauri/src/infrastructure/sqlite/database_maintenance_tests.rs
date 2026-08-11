@@ -10,9 +10,10 @@ use rusqlite::Connection;
 use tempfile::TempDir;
 
 use super::database_maintenance::{
-    compact_before_pool_opens_at, compaction_will_execute, read_stats_at, required_headroom_bytes,
-    set_pending_compaction_at, CompactionConfig, CompactionOutcome, DatabaseMaintenanceStats,
-    MaintenancePaths, DEFAULT_AUTO_COMPACT_MAX_DB_BYTES, DEFAULT_AUTO_COMPACT_MIN_FREELIST_PERCENT,
+    compact_before_pool_opens_at, compact_before_pool_opens_at_with_seams, compaction_will_execute,
+    read_stats_at, required_headroom_bytes, set_pending_compaction_at, CompactionConfig,
+    CompactionOutcome, DatabaseMaintenanceError, DatabaseMaintenanceStats, MaintenancePaths,
+    DEFAULT_AUTO_COMPACT_MAX_DB_BYTES, DEFAULT_AUTO_COMPACT_MIN_FREELIST_PERCENT,
 };
 use super::database_maintenance_outcome::{
     read_record, CompactionRecord, COMPACTION_OUTCOME_FILE_NAME, OUTCOME_COMPACTED, OUTCOME_ERROR,
@@ -273,16 +274,28 @@ fn compaction_preserves_the_data_it_compacts() {
     .unwrap();
     drop(conn);
 
-    assert!(matches!(
-        compact_before_pool_opens_at(&paths, config(true)).unwrap(),
-        CompactionOutcome::Compacted { .. } | CompactionOutcome::Skipped(_)
-    ));
+    // Manual marker bypasses auto-thresholds (the tiny table has no freelist).
+    set_pending_compaction_at(&paths.marker_path, true).unwrap();
+    let outcome = compact_before_pool_opens_at(&paths, config(false)).unwrap();
+    assert!(
+        matches!(outcome, CompactionOutcome::Compacted { .. }),
+        "manual marker must force compaction, got {outcome:?}"
+    );
 
     let conn = Connection::open(&paths.database_path).unwrap();
-    let rows: i64 = conn
-        .query_row("SELECT COUNT(*) FROM keep", [], |row| row.get(0))
+    let mut stmt = conn
+        .prepare("SELECT body FROM keep ORDER BY id")
         .unwrap();
-    assert_eq!(rows, 3, "the swapped-in database must be data-equivalent");
+    let bodies: Vec<String> = stmt
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert_eq!(
+        bodies,
+        ["first", "second", "third"],
+        "the swapped-in database must be data-equivalent to the original"
+    );
 }
 
 #[test]
@@ -537,5 +550,102 @@ fn freelist_share_is_zero_when_no_free_pages() {
         outcome,
         CompactionOutcome::Skipped("freelist_below_auto_limit"),
         "no deleted rows means freelist share is 0, below any positive threshold"
+    );
+}
+
+// Obligation 6(b): verification failure — original untouched, .compacting removed, no backup.
+#[test]
+fn verification_failure_leaves_original_intact() {
+    let dir = TempDir::new().unwrap();
+    let paths = temp_paths(&dir);
+    seed_wal_mode_db(&paths);
+    let original_bytes = std::fs::read(&paths.database_path).unwrap();
+    set_pending_compaction_at(&paths.marker_path, true).unwrap();
+
+    let result = compact_before_pool_opens_at_with_seams(
+        &paths,
+        config(false),
+        &|_path| Err(DatabaseMaintenanceError::Integrity("injected_corrupt".into())),
+        None,
+    );
+
+    assert!(result.is_err(), "verification failure must propagate as an error");
+    let compacting = PathBuf::from(format!("{}.compacting", paths.database_path.display()));
+    assert!(
+        !compacting.exists(),
+        ".compacting scratch must be cleaned up after a verify failure"
+    );
+    assert!(
+        paths.database_path.exists(),
+        "original must still be at the live path"
+    );
+    let after_bytes = std::fs::read(&paths.database_path).unwrap();
+    assert_eq!(
+        original_bytes, after_bytes,
+        "original must be byte-identical to the pre-call snapshot"
+    );
+    assert!(
+        !paths.backup_dir.join("ralphx.db.pre-vacuum").exists(),
+        "no backup must exist: nothing destructive happened before verification"
+    );
+    let record = read_record(&paths.outcome_path).expect("error must be recorded in sidecar");
+    assert_eq!(record.outcome, OUTCOME_ERROR);
+    let reason = record.reason.as_deref().unwrap_or("");
+    assert!(
+        reason.starts_with("verify:"),
+        "sidecar reason must carry the verify phase prefix, got: {reason}"
+    );
+}
+
+// Obligation 6(c): rename-in failure — original survives at the backup, phase recorded.
+//
+// A non-empty directory is placed at the live path between steps (e) and (f) so that
+// fs::rename(compacting → live) fails with ENOTEMPTY/EISDIR.  The restore rename also
+// fails for the same reason; the test therefore checks the backup path rather than the
+// live path for the original bytes.
+#[test]
+fn rename_in_failure_records_the_phase_and_original_survives_in_backup() {
+    let dir = TempDir::new().unwrap();
+    let paths = temp_paths(&dir);
+    seed_wal_mode_db(&paths);
+    let original_bytes = std::fs::read(&paths.database_path).unwrap();
+    set_pending_compaction_at(&paths.marker_path, true).unwrap();
+
+    let database_path = paths.database_path.clone();
+    let hook = move || {
+        // The live path is free at this point (original has been renamed to backup).
+        // Creating a non-empty directory here makes the rename-in fail.
+        std::fs::create_dir_all(&database_path).ok();
+        std::fs::write(database_path.join("blocker"), b"x").ok();
+    };
+    let result = compact_before_pool_opens_at_with_seams(
+        &paths,
+        config(false),
+        &|_path| Ok(()),
+        Some(&hook),
+    );
+
+    // The restore rename also fails against the non-empty dir; remove it so
+    // TempDir can clean up and so further assertions are unambiguous.
+    if paths.database_path.is_dir() {
+        std::fs::remove_dir_all(&paths.database_path).ok();
+    }
+
+    assert!(result.is_err(), "rename-in failure must propagate as an error");
+
+    let record = read_record(&paths.outcome_path).expect("error must be recorded in sidecar");
+    assert_eq!(record.outcome, OUTCOME_ERROR);
+    let reason = record.reason.as_deref().unwrap_or("");
+    assert!(
+        reason.starts_with("swap_rename:"),
+        "sidecar reason must carry the swap_rename phase prefix, got: {reason}"
+    );
+
+    let backup = paths.backup_dir.join("ralphx.db.pre-vacuum");
+    assert!(backup.exists(), "original must survive at the backup path");
+    let backup_bytes = std::fs::read(&backup).unwrap();
+    assert_eq!(
+        original_bytes, backup_bytes,
+        "backup must be byte-identical to the pre-call snapshot"
     );
 }
