@@ -7,7 +7,7 @@ use crate::application::prune_engine::{
     should_defer_pid_missing_prune, should_defer_terminal_settlement_prune,
 };
 use crate::application::{AppState, PruneEngine};
-use crate::commands::execution_commands::ExecutionState;
+use crate::application::execution_state::ExecutionState;
 use crate::domain::entities::{
     AgentRun, AgentRunId, AgentRunStatus, ChatContextType, ChatConversationId, InternalStatus,
     Project, Task,

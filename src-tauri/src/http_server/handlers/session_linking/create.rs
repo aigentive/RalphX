@@ -1,5 +1,5 @@
 use super::*;
-use crate::application::harness_runtime_registry::default_verification_max_rounds;
+use crate::runtime_config::default_verification_max_rounds;
 use crate::domain::entities::{
     build_child_session, matching_blocker_followup_session, ChildSessionDraftInput, TaskId,
 };

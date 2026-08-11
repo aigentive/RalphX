@@ -3,7 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::sync::RwLock;
 
-use crate::application::{LinearIntegrationSettings, LinearIntegrationSettingsRepository};
+use crate::domain::integrations::{LinearIntegrationSettings, LinearIntegrationSettingsRepository};
 
 pub struct MemoryLinearIntegrationSettingsRepository {
     settings: Arc<RwLock<LinearIntegrationSettings>>,

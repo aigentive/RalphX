@@ -11,7 +11,7 @@ use ralphx_lib::domain::agents::{AgentRole, AgenticClient};
 use ralphx_lib::domain::entities::TaskId;
 use ralphx_lib::domain::state_machine::types::QaFailure;
 use ralphx_lib::domain::state_machine::{AgentSpawner, QaFailedData, State, TaskEvent};
-use ralphx_lib::infrastructure::agents::AgenticClientSpawner;
+use ralphx_lib::application::agents::AgenticClientSpawner;
 use ralphx_lib::infrastructure::sqlite::TaskStateMachineRepository;
 use ralphx_lib::infrastructure::{MockAgenticClient, MockCallType};
 use ralphx_lib::testing::{test_prompts, SqliteTestDb};

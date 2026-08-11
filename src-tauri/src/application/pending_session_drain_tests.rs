@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::application::chat_service::{ChatService, MockChatService};
 use crate::application::pending_session_drain::PendingSessionDrainService;
 use crate::application::AppState;
-use crate::commands::ExecutionState;
+use crate::application::execution_state::ExecutionState;
 use crate::domain::entities::{ChatContextType, IdeationSession, InternalStatus, Project, Task};
 use crate::domain::execution::ExecutionSettings;
 use crate::domain::services::RunningAgentKey;

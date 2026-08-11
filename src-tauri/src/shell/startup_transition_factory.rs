@@ -6,7 +6,7 @@ use crate::application::task_notification_producer::TaskPipelineNotificationProd
 use crate::application::task_transition_service::TaskTransitionService;
 use crate::application::InteractiveProcessRegistry;
 use crate::application::{AgentClientBundle, NotificationService};
-use crate::commands::ExecutionState;
+use crate::application::execution_state::ExecutionState;
 use crate::domain::repositories::{
     AgentLaneSettingsRepository, AgentProviderSettingsRepository, ExecutionSettingsRepository,
     ExternalEventsRepository, PlanBranchRepository, TaskStepRepository,

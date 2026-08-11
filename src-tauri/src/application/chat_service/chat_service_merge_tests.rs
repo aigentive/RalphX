@@ -1,7 +1,7 @@
 use super::chat_service_merge::*;
 use crate::application::runtime_factory::ChatRuntimeFactoryDeps;
 use crate::application::AppState;
-use crate::commands::ExecutionState;
+use crate::application::execution_state::ExecutionState;
 use crate::domain::entities::{
     InternalStatus, MergeStrategy, MergeValidationMode, Project, ReviewScopeMetadata, Task, TaskId,
 };

@@ -17,7 +17,7 @@ use crate::application::harness_runtime_registry::{
 };
 use crate::application::interactive_process_registry::InteractiveProcessKey;
 use crate::application::GitService;
-use crate::commands::execution_commands::context_matches_running_status_for_gc;
+use crate::application::execution_state::context_matches_running_status_for_gc;
 use crate::domain::entities::{
     task_metadata::StopRetryingReason, ActivityEvent, ActivityEventType, AgentRunStatus,
     BranchUpdateContinuation, BranchUpdateDirection, BranchUpdatePhase, ChatContextType,

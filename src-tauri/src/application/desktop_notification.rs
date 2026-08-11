@@ -1,12 +1,12 @@
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use crate::domain::entities::Notification;
 use crate::error::{AppError, AppResult};
 
 const DESKTOP_NOTIFICATION_ACTIVATED_EVENT: &str = "notification:desktop_activated";
 
-pub(super) fn send_actionable(
-    app_handle: &AppHandle,
+pub(super) fn send_actionable<R: Runtime>(
+    app_handle: &AppHandle<R>,
     notification: &Notification,
 ) -> AppResult<()> {
     let app_handle = app_handle.clone();
@@ -57,7 +57,7 @@ pub(super) fn send_actionable(
         .map_err(|error| AppError::Infrastructure(error.to_string()))
 }
 
-fn reveal_main_window(app_handle: &AppHandle) {
+fn reveal_main_window<R: Runtime>(app_handle: &AppHandle<R>) {
     let Some(window) = app_handle.get_webview_window("main") else {
         return;
     };
