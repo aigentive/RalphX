@@ -44,6 +44,9 @@ pub mod clickup_commands;
 mod clickup_commands_tests;
 pub mod conversation_folder_reference_commands;
 pub mod conversation_stats_commands;
+pub mod data_retention_commands;
+#[cfg(test)]
+mod data_retention_commands_tests;
 pub mod database_maintenance_commands;
 pub mod diagnostic_commands;
 #[cfg(test)]
