@@ -69,6 +69,10 @@ pub(crate) const WORKSPACE_REVIEW_ERR_TIMED_OUT_NO_REVIEW: &str =
 /// never confirmed the outcome through `complete_workspace_review_run`.
 pub(crate) const WORKSPACE_REVIEW_ERR_UNCONFIRMED_REVIEW: &str =
     "Workspace reviewer wrote a current Review but did not confirm completion before the deadline";
+/// A deadline expired and the durable monitor could not be read during the grace window, so
+/// whether a current Review exists is unknown. Distinct from a verified absence.
+pub(crate) const WORKSPACE_REVIEW_ERR_UNVERIFIABLE_REVIEW: &str =
+    "Workspace reviewer deadline expired and the durable Review state could not be read";
 #[cfg(test)]
 pub(crate) const WORKSPACE_REVIEW_UNFINISHED_GIT_OPERATION_ERROR: &str =
     "Resolve conflicts and complete or abort the merge or rebase before retrying Workspace Review.";
@@ -2476,6 +2480,7 @@ async fn settle_workspace_review_deadline(
 ) -> WorkspaceReviewDeadlineSettlement {
     let settlement_started = Instant::now();
     let mut saw_review_artifact_pair = false;
+    let mut saw_monitor_read_failure = false;
 
     loop {
         let mut monitor_read_failed = false;
@@ -2525,6 +2530,7 @@ async fn settle_workspace_review_deadline(
                     "Failed to load durable workspace Review monitor during deadline settlement; retrying"
                 );
                 monitor_read_failed = true;
+                saw_monitor_read_failure = true;
             }
         }
 
@@ -2550,6 +2556,8 @@ async fn settle_workspace_review_deadline(
         if settlement_started.elapsed() >= deadlines.completion_grace {
             return WorkspaceReviewDeadlineSettlement::Failed(if saw_review_artifact_pair {
                 WORKSPACE_REVIEW_ERR_UNCONFIRMED_REVIEW
+            } else if saw_monitor_read_failure {
+                WORKSPACE_REVIEW_ERR_UNVERIFIABLE_REVIEW
             } else {
                 WORKSPACE_REVIEW_ERR_TIMED_OUT_NO_REVIEW
             });
