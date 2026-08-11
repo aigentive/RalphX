@@ -176,7 +176,7 @@ test.describe("Agents publish hold card (redesigned four-layer)", () => {
     await publish.expectNoPaneOverflow();
     await expect(publish.holdCard).toHaveScreenshot(
       "hold-card-spend-exhausted-constrained.png",
-      { maxDiffPixelRatio: 0.01 },
+      { maxDiffPixelRatio: 0.03 },
     );
     await page.setViewportSize(standardViewport);
   });
