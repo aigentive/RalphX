@@ -31,8 +31,8 @@ use crate::application::harness_runtime_registry::default_scheduler_runtime_conf
 use crate::application::runtime_factory::{
     build_transition_service_from_deps, ChatRuntimeFactoryDeps, RuntimeFactoryDeps,
 };
-use crate::commands::execution_commands::context_matches_running_status_for_gc;
-use crate::commands::ExecutionState;
+use crate::application::execution_state::context_matches_running_status_for_gc;
+use crate::application::execution_state::ExecutionState;
 use crate::domain::entities::{
     task_metadata::{
         MergeFailureSource, MergeRecoveryEvent, MergeRecoveryEventKind, MergeRecoveryMetadata,
@@ -98,9 +98,9 @@ pub struct TaskSchedulerService {
     /// Optional per-project execution settings repository for project-aware admission checks.
     pub(super) execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
     /// Optional lane settings repository so fallback transition services can resolve Codex lanes.
-    pub(super) agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
+    pub(crate) agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
     /// Optional provider settings repository so fallback transition services honor onboarding.
-    pub(super) agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
+    pub(crate) agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
     /// Optional provider-neutral client bundle for fallback transition construction.
     pub(super) agent_clients: Option<AgentClientBundle>,
     /// Optional PR poller registry so scheduled plan merges can start GitHub polling.

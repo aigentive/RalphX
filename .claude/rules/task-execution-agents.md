@@ -169,7 +169,7 @@ paths:
 | PlanBranch entity | `src-tauri/crates/ralphx-domain/src/entities/plan_branch.rs` |
 | PlanBranch repo trait | `src-tauri/crates/ralphx-domain/src/repositories/plan_branch_repository.rs` |
 | Agent configs (three-layer allowlist) | `src-tauri/src/infrastructure/agents/claude/agent_config/` |
-| Agent spawner (CWD resolution) | `src-tauri/src/infrastructure/agents/spawner.rs` |
+| Agent spawner (CWD resolution) | `src-tauri/src/application/agents/spawner.rs` |
 | ChatService contexts | `src-tauri/src/application/chat_service/chat_service_context.rs` |
 | HTTP merge handlers | `src-tauri/src/http_server/handlers/git.rs` |
 | Canonical agent definitions | `agents/*/agent.yaml` + prompt files |

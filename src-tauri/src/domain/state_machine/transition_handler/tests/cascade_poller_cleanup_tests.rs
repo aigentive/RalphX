@@ -10,7 +10,7 @@
 
 use super::helpers::*;
 use crate::application::PrPollerRegistry;
-use crate::commands::ExecutionState;
+use crate::application::execution_state::ExecutionState;
 use crate::domain::entities::types::IdeationSessionId;
 use crate::domain::entities::{
     ArtifactId, InternalStatus, PlanBranch, PlanBranchStatus, ProjectId, Task,

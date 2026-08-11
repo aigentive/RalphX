@@ -1,54 +1,23 @@
 // Permission state for handling UI-based permission approvals
 // Used by the permission bridge system to coordinate between MCP tools and frontend
 
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::{watch, Mutex};
 use tracing::{error, info};
 
 use crate::domain::repositories::PermissionRepository;
 use crate::error::AppResult;
 
+// The request records themselves are domain data — repositories persist them and
+// the UI resolves them. Re-exported here so existing `application::permission_state`
+// importers keep resolving.
+pub use crate::domain::entities::permission_request::{
+    is_within_permission_request_ttl, PendingPermissionInfo, PermissionDecision,
+    PERMISSION_REQUEST_TTL,
+};
+
 pub const PERMISSION_RESOLVED_EVENT: &str = "permission:resolved";
-pub const PERMISSION_REQUEST_TTL: Duration = Duration::from_secs(300);
-
-/// Permission decision made by the user in the UI
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PermissionDecision {
-    pub decision: String, // "allow" or "deny"
-    pub message: Option<String>,
-}
-
-/// Metadata for a pending permission request
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PendingPermissionInfo {
-    pub request_id: String,
-    pub tool_name: String,
-    pub tool_input: serde_json::Value,
-    pub context: Option<String>,
-    // Agent identity fields (optional for backward compat)
-    pub agent_type: Option<String>,
-    pub task_id: Option<String>,
-    pub context_type: Option<String>,
-    pub context_id: Option<String>,
-    #[serde(default = "default_created_at")]
-    pub created_at: String,
-}
-
-fn default_created_at() -> String {
-    Utc::now().to_rfc3339()
-}
-
-pub(crate) fn is_within_permission_request_ttl(created_at: &str) -> bool {
-    let Ok(created_at) = DateTime::parse_from_rfc3339(created_at) else {
-        return false;
-    };
-    let ttl = chrono::Duration::seconds(PERMISSION_REQUEST_TTL.as_secs() as i64);
-    created_at.with_timezone(&Utc) + ttl > Utc::now()
-}
 
 /// A pending permission request with its signaling channel
 pub struct PendingPermissionRequest {

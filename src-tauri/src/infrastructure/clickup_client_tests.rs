@@ -5,8 +5,7 @@ use async_trait::async_trait;
 use hyper::Method;
 use serde_json::{json, Value};
 
-use crate::application::clickup_integration_service::ClickUpTaskListOptions;
-use crate::application::{ClickUpApiClient, ClickUpAuthContext};
+use crate::domain::integrations::{ClickUpApiClient, ClickUpAuthContext, ClickUpTaskListOptions};
 
 use super::clickup_client::{
     apply_task_tags, assign_task_to_user, clear_task_assignees, clickup_authorization_header,

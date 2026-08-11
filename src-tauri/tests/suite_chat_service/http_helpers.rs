@@ -3,7 +3,8 @@ use ralphx_lib::application::{
 };
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
-    Artifact, ArtifactId, ArtifactType, IdeationSession, IdeationSessionId, IdeationSessionStatus,
+    compute_validation_hint, Artifact, ArtifactId, ArtifactType, IdeationSession, IdeationSessionId,
+    IdeationSessionStatus,
     InternalStatus, Priority, Project, ProjectId, ProposalCategory, Task, TaskId, TaskProposalId,
     ValidationCacheDecision, ValidationCommandCategory, ValidationCommandResult,
     ValidationCommandSource, ValidationCommandStatus, ValidationContextType, ValidationPurpose,

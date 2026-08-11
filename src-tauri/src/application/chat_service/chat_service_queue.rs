@@ -37,7 +37,7 @@ use crate::application::question_state::QuestionState;
 use crate::application::runtime_factory::{build_chat_service_from_deps, ChatRuntimeFactoryDeps};
 #[cfg(any(test, feature = "test-utils"))]
 use crate::application::AppState;
-use crate::commands::ExecutionState;
+use crate::application::execution_state::ExecutionState;
 use crate::domain::agents::{
     default_effort_for_provider, default_model_for_provider, AgentHarnessKind,
     AgentProviderSettings, LogicalEffort as AgentLogicalEffort, ManualRoleRuntimeOverride,

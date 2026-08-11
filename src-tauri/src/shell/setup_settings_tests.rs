@@ -9,9 +9,9 @@ use tauri::Manager;
 
 use crate::application::{
     chat_service::{AppChatService, ChatService, SendMessageOptions},
-    setup_settings::initialize_settings_defaults,
     AppState,
 };
+use crate::shell::setup_settings::initialize_settings_defaults;
 use crate::domain::agents::{AgentHarnessKind, AgentProviderSettings, DEFAULT_AGENT_HARNESS};
 use crate::domain::entities::{
     app_state::ExecutionHaltMode, ChatContextType, ChatConversation, Project,

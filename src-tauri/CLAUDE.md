@@ -19,6 +19,9 @@ src-tauri/src/
 │  ├─ app_state.rs     # DI container
 │  └─ *_service.rs     # Business logic
 ├─ commands/           # Thin Tauri IPC wrappers
+├─ shell/              # Tauri composition root (app_setup, runtime_wiring, server_boot,
+│                      # startup pipeline, shutdown, menu, invoke registry).
+│                      # Imports every layer below; NOTHING may import `crate::shell`.
 ├─ http_server/        # Axum :3847 handlers/routes for MCP adapters
 └─ infrastructure/
    ├─ sqlite/          # Repo implementations
@@ -30,11 +33,11 @@ src-tauri/crates/
 
 ## Architecture: Clean/Hexagonal
 ```
-Commands (Tauri IPC) → Application Services → Domain Layer ← NO INFRA DEPS → Infrastructure
+Shell (composition root) → Commands (Tauri IPC) → Application Services → Domain Layer ← NO INFRA DEPS → Infrastructure
 ```
 
 ### Dual AppState (CRITICAL)
-TWO `AppState` object graphs exist (Tauri commands + HTTP/MCP server), wired in `app_setup.rs` / `server_boot.rs` / `runtime_wiring.rs`; the HTTP state is built from the Tauri state's **shared physical SQLite connection**. Any `Arc<T>` coordinating between them MUST be explicitly cloned in `runtime_wiring.rs`. ❌ Relying on `new_production()` defaults.
+TWO `AppState` object graphs exist (Tauri commands + HTTP/MCP server), wired in `shell/app_setup.rs` / `shell/server_boot.rs` / `shell/runtime_wiring.rs`; the HTTP state is built from the Tauri state's **shared physical SQLite connection**. Any `Arc<T>` coordinating between them MUST be explicitly cloned in `shell/runtime_wiring.rs`. ❌ Relying on `new_production()` defaults.
 
 | Shared State | What Breaks If Not Shared |
 |---|---|
@@ -89,7 +92,7 @@ New pattern → add one-liner here. Pattern name + rule only.
 |---|---|
 | User-message delivery contract | Queue-drain/session gates may refuse to resume a session, never to discard a user message; blocked continuations fall back to fresh-session replay (`chat_service_queue.rs`), and staleness applies only to hidden recovery messages. |
 | Backend-owned Startup Gate | `StartupCoordinator` is the sole readiness writer: window first → AppState registration → listener + safety barrier → interactive shell → owned finite recovery settlement; timers/localStorage/recurring loops never authorize readiness |
-| Reuse before invent (NON-NEGOTIABLE) | New behavior extends the seam that owns the domain — transitions → `TaskTransitionService`, publish/review gates → `agent_workspace_review*`, events → `AppState.events`, spawns → `provider_onboarding_gate` + `harness_runtime_registry`, git primitives → `git_service/`, queueing → `chat_service_queue` + durable repo, recovery → the domain's dedicated recovery module. ❌ New parallel services/engines/managers for owned concerns |
+| Reuse before invent (NON-NEGOTIABLE) | New behavior extends the seam that owns the domain — transitions → `TaskTransitionService`, publish/review gates → `agent_workspace_review*`, events → `AppState.events`, spawns → `provider_onboarding_gate` + `harness_runtime_registry`, git primitives → `git_service/`, queueing → `chat_service_queue` + durable repo, recovery → the domain's dedicated recovery module, payload retention → `data_retention_service`. ❌ New parallel services/engines/managers for owned concerns |
 | Validated task transitions | Normal workflow status changes use validated `TaskTransitionService::transition_task*`; corrective/recovery-only jumps use `transition_task_corrective()` / `apply_corrective_transition()`; raw `internal_status` writes are limited to canonical engine/bootstrap paths |
 | Shared scope drift logic | Review/merge scope matching and out-of-scope blocker fingerprints should live in `ralphx-domain::review::scope_drift`; root crate code should only handle repo/git wiring |
 | Follow-up blocker dedupe | Autonomous blocker follow-ups dedupe by first-class `blocker_fingerprint`; never rely on `spawn_reason` wording alone. See `.claude/rules/followup-blocker-dedupe.md` |
@@ -117,6 +120,7 @@ New pattern → add one-liner here. Pattern name + rule only.
 | Rust test runner split | Local agents use targeted `cargo test` filters and targeted `cargo nextest --test ... -E ...`; broad Rust runs are CI/manual-diagnostic only; fixture rules and commands live in `.claude/rules/rust-test-execution.md` |
 | Tauri test-utils gate | Tauri mock-app helpers require `--features test-utils`; keep root lib/IPC CI lanes feature-on until later phases remove lib-side `tauri::test` users |
 | Worktree-safe Rust helper | `scripts/test-rust-fast.sh` bundles selected CI lanes for explicit manual diagnosis; ordinary agent handoff never runs its broad `pr`/`main` modes |
+| Shell composition root (NON-NEGOTIABLE) | Tauri composition (`app_setup`, `runtime_wiring`, `server_boot`, startup pipeline, shutdown, menu, invoke registry) lives in `src/shell`. Shell imports downward freely; `crate::shell` is a hard zero for domain/application/infrastructure/http_server/commands. If a lower layer needs a symbol from shell, descend the symbol — ❌ re-export shims, which reintroduce the inversion |
 | Layering ratchet | `python3 scripts/check-layering.py` blocks new tracked backend layering violations; intentional baseline changes require reviewing `scripts/baselines/layering.json` |
 | Workspace domain split | Low-dependency backend modules and pure entities move into `src-tauri/crates/ralphx-domain`; review logic, shared memory/team types, and pure repository traits belong there, while Tauri/SQLite-facing or root-coupled code stays in the root crate until a clean boundary exists |
 | Forward-only migration repairs | Never reuse or renumber shipped migration versions; schema repair for already-upgraded DBs must be a new forward-only migration |

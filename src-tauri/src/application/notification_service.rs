@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Runtime};
 use tauri_plugin_notification::{NotificationExt, PermissionState};
 use tokio::sync::Mutex;
 
@@ -39,8 +39,8 @@ impl NotificationEventEmitter for NoopNotificationEventEmitter {
     }
 }
 
-pub struct TauriNotificationEventEmitter {
-    app_handle: AppHandle,
+pub struct TauriNotificationEventEmitter<R: Runtime = tauri::Wry> {
+    app_handle: AppHandle<R>,
 }
 
 /// Process-wide window-focus state. It begins unfocused so notifications raised before the
@@ -66,12 +66,12 @@ pub trait DesktopNotifier: Send + Sync {
     }
 }
 
-pub struct TauriDesktopNotifier {
-    app_handle: AppHandle,
+pub struct TauriDesktopNotifier<R: Runtime = tauri::Wry> {
+    app_handle: AppHandle<R>,
 }
 
-impl TauriDesktopNotifier {
-    pub fn new(app_handle: AppHandle) -> Self {
+impl<R: Runtime> TauriDesktopNotifier<R> {
+    pub fn new(app_handle: AppHandle<R>) -> Self {
         Self { app_handle }
     }
 
@@ -99,7 +99,7 @@ impl TauriDesktopNotifier {
     }
 }
 
-impl DesktopNotifier for TauriDesktopNotifier {
+impl<R: Runtime> DesktopNotifier for TauriDesktopNotifier<R> {
     fn send(&self, title: &str, body: Option<&str>) -> AppResult<()> {
         self.ensure_permission()?;
         let notification = self.app_handle.notification();
@@ -301,12 +301,12 @@ fn desktop_summary_count_label(group: &'static str, count: usize) -> &'static st
 fn desktop_category_is_always(_category: NotificationCategory) -> bool {
     false
 }
-impl TauriNotificationEventEmitter {
-    pub fn new(app_handle: AppHandle) -> Self {
+impl<R: Runtime> TauriNotificationEventEmitter<R> {
+    pub fn new(app_handle: AppHandle<R>) -> Self {
         Self { app_handle }
     }
 }
-impl NotificationEventEmitter for TauriNotificationEventEmitter {
+impl<R: Runtime> NotificationEventEmitter for TauriNotificationEventEmitter<R> {
     fn emit_created(&self, notification: &Notification) -> AppResult<()> {
         self.app_handle
             .emit(NOTIFICATION_CREATED_EVENT, notification)

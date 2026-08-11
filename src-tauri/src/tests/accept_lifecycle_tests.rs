@@ -27,7 +27,7 @@ use crate::domain::entities::{
     IdeationSession, IdeationSessionStatus, ProjectId, SessionPurpose, VerificationStatus,
 };
 use crate::domain::services::running_agent_registry::RunningAgentKey;
-use crate::http_server::handlers::ideation::stop_verification_children;
+use crate::application::verification_child_lifecycle::stop_verification_children;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 

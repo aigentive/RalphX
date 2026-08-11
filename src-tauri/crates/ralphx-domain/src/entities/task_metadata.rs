@@ -888,3 +888,65 @@ impl ValidationCacheMetadata {
 #[cfg(test)]
 #[path = "task_metadata_tests.rs"]
 mod tests;
+
+/// Pure function to compute the validation hint and human-readable message from a cache entry
+/// and the current HEAD SHA.
+///
+/// No git calls, no side effects — fully unit-testable.
+///
+/// Returns `(validation_hint, hint_message)` where `validation_hint` is one of:
+/// - `"skip_tests"` — tests passed on the same SHA
+/// - `"skip_test_validation"` — no tests ran at execution time
+/// - `"run_tests"` — SHA mismatch, tests failed, or cache is otherwise stale
+pub fn compute_validation_hint(
+    cache: &ValidationCacheMetadata,
+    current_sha: &str,
+    episode_entered_at: Option<chrono::DateTime<chrono::Utc>>,
+) -> (String, String) {
+    if current_sha != cache.commit_sha {
+        (
+            "run_tests".to_string(),
+            format!(
+                "Cache stale (SHA changed from {} to {}). Run tests normally.",
+                &cache.commit_sha[..8.min(cache.commit_sha.len())],
+                &current_sha[..8.min(current_sha.len())]
+            ),
+        )
+    } else if episode_entered_at
+        .map(|entered_at| cache.captured_at < entered_at)
+        .unwrap_or(true)
+    {
+        (
+            "run_tests".to_string(),
+            format!(
+                "Cache was not captured during the current execution episode (commit {}). Run tests normally.",
+                &cache.commit_sha[..8.min(cache.commit_sha.len())]
+            ),
+        )
+    } else if !cache.tests_ran {
+        (
+            "skip_test_validation".to_string(),
+            format!(
+                "No tests were run during execution (commit {}). Skip test validation.",
+                &cache.commit_sha[..8.min(cache.commit_sha.len())]
+            ),
+        )
+    } else if cache.tests_passed {
+        (
+            "skip_tests".to_string(),
+            format!(
+                "Tests passed on commit {}. Skip test re-run.",
+                &cache.commit_sha[..8.min(cache.commit_sha.len())]
+            ),
+        )
+    } else {
+        // tests_ran=true but tests_passed=false → must re-run
+        (
+            "run_tests".to_string(),
+            format!(
+                "Tests failed on commit {}. Run tests normally.",
+                &cache.commit_sha[..8.min(cache.commit_sha.len())]
+            ),
+        )
+    }
+}
