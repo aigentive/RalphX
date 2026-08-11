@@ -165,6 +165,19 @@ delegation:
   # delegation_park — backoff between wake-enqueue attempts
   park_wake_retry_backoff_secs: 30 # Env: RALPHX_DELEGATION_PARK_WAKE_RETRY_BACKOFF_SECS
 
+# Workspace Review reviewer deadlines. The waiter is liveness-aware: a reviewer that keeps
+# persisting output is never terminalized by the idle timeout, only by the absolute cap.
+workspace_review:
+  # agent_workspace_review.rs — fail the run only after this much silence from the reviewer child
+  # (no new persisted assistant timeline blocks). Clamped to >= 60.
+  reviewer_idle_timeout_secs: 600 # Env: RALPHX_WORKSPACE_REVIEW_REVIEWER_IDLE_TIMEOUT_SECS
+  # agent_workspace_review.rs — absolute runaway cap regardless of reviewer activity.
+  # Clamped to >= reviewer_idle_timeout_secs.
+  reviewer_max_wall_clock_secs: 3600 # Env: RALPHX_WORKSPACE_REVIEW_REVIEWER_MAX_WALL_CLOCK_SECS
+  # agent_workspace_review.rs — extra window for complete_workspace_review_run when a deadline
+  # trips while a current Review artifact pair already exists. Clamped to [10, idle timeout].
+  reviewer_completion_grace_secs: 120 # Env: RALPHX_WORKSPACE_REVIEW_REVIEWER_COMPLETION_GRACE_SECS
+
 reconciliation:
   # reconciliation.rs — overall deadline for merger agent; triggers MergeIncomplete + auto-retry if exceeded
   merger_timeout_secs: 1200 # Env: RALPHX_RECONCILIATION_MERGER_TIMEOUT_SECS

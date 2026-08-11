@@ -64,6 +64,7 @@ pub struct AllRuntimeConfig {
     pub verification: VerificationConfig,
     pub external_mcp: ExternalMcpConfig,
     pub delegation: DelegationConfig,
+    pub workspace_review: WorkspaceReviewRuntimeConfig,
     /// Seconds of inactivity before an agent is considered "likely_waiting" vs "likely_generating".
     /// Used by get_child_session_status to derive estimated_status. Default: 10.
     pub child_session_activity_threshold_secs: Option<u64>,
@@ -99,6 +100,30 @@ impl Default for DelegationConfig {
             park_max_secs: 3600,
             park_wake_retry_max: 5,
             park_wake_retry_backoff_secs: 30,
+        }
+    }
+}
+
+/// Workspace Review reviewer deadlines. Liveness-aware: an actively producing reviewer is never
+/// terminalized by `reviewer_idle_timeout_secs`, only by `reviewer_max_wall_clock_secs`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct WorkspaceReviewRuntimeConfig {
+    /// Fail the review run only after no new persisted reviewer output for this long.
+    pub reviewer_idle_timeout_secs: u64,
+    /// Absolute runaway cap regardless of reviewer activity.
+    pub reviewer_max_wall_clock_secs: u64,
+    /// Extra window granted for `complete_workspace_review_run` when a current Review
+    /// artifact pair already exists at the moment a deadline trips.
+    pub reviewer_completion_grace_secs: u64,
+}
+
+impl Default for WorkspaceReviewRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            reviewer_idle_timeout_secs: 600,
+            reviewer_max_wall_clock_secs: 3600,
+            reviewer_completion_grace_secs: 120,
         }
     }
 }
@@ -1048,6 +1073,22 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
         cfg.stream.agent_completion_correlation_ttl_secs,
         "RALPHX_STREAM_AGENT_COMPLETION_CORRELATION_TTL_SECS"
     );
+
+    // Workspace Review reviewer deadlines
+    env_u64!(
+        cfg.workspace_review.reviewer_idle_timeout_secs,
+        "RALPHX_WORKSPACE_REVIEW_REVIEWER_IDLE_TIMEOUT_SECS"
+    );
+    env_u64!(
+        cfg.workspace_review.reviewer_max_wall_clock_secs,
+        "RALPHX_WORKSPACE_REVIEW_REVIEWER_MAX_WALL_CLOCK_SECS"
+    );
+    env_u64!(
+        cfg.workspace_review.reviewer_completion_grace_secs,
+        "RALPHX_WORKSPACE_REVIEW_REVIEWER_COMPLETION_GRACE_SECS"
+    );
+
+    validate_workspace_review_config(&mut cfg.workspace_review);
     if let Some(value) = lookup("RALPHX_STREAM_AGENT_COMPLETION_CORRELATION_CAPACITY") {
         if let Ok(capacity) = value.parse::<usize>() {
             cfg.stream.agent_completion_correlation_capacity = capacity;
@@ -1619,6 +1660,49 @@ pub fn validate_reconciliation_config(cfg: &mut ReconciliationConfig) {
     if cfg.git_isolation_retry_base_secs == 0 {
         warn!("git_isolation_retry_base_secs must be > 0, got 0; clamping to 5");
         cfg.git_isolation_retry_base_secs = 5;
+    }
+}
+
+/// Validate WorkspaceReviewRuntimeConfig and clamp to safe values.
+///
+/// Called after env overrides are applied so invalid YAML or env vars are caught. The clamps
+/// exist so a misconfigured deadline can never re-create the bug this config was added to fix:
+/// an idle timeout short enough to kill a reviewer mid-turn.
+pub fn validate_workspace_review_config(cfg: &mut WorkspaceReviewRuntimeConfig) {
+    const MIN_IDLE_TIMEOUT_SECS: u64 = 60;
+    const MIN_COMPLETION_GRACE_SECS: u64 = 10;
+
+    if cfg.reviewer_idle_timeout_secs < MIN_IDLE_TIMEOUT_SECS {
+        warn!(
+            "workspace_review.reviewer_idle_timeout_secs must be >= {}s, got {}; clamping",
+            MIN_IDLE_TIMEOUT_SECS, cfg.reviewer_idle_timeout_secs
+        );
+        cfg.reviewer_idle_timeout_secs = MIN_IDLE_TIMEOUT_SECS;
+    }
+
+    if cfg.reviewer_max_wall_clock_secs < cfg.reviewer_idle_timeout_secs {
+        warn!(
+            "workspace_review.reviewer_max_wall_clock_secs ({}) < reviewer_idle_timeout_secs ({}); \
+             clamping the wall-clock cap up to the idle timeout",
+            cfg.reviewer_max_wall_clock_secs, cfg.reviewer_idle_timeout_secs
+        );
+        cfg.reviewer_max_wall_clock_secs = cfg.reviewer_idle_timeout_secs;
+    }
+
+    if cfg.reviewer_completion_grace_secs < MIN_COMPLETION_GRACE_SECS
+        || cfg.reviewer_completion_grace_secs > cfg.reviewer_idle_timeout_secs
+    {
+        let clamped = cfg
+            .reviewer_completion_grace_secs
+            .clamp(MIN_COMPLETION_GRACE_SECS, cfg.reviewer_idle_timeout_secs);
+        warn!(
+            "workspace_review.reviewer_completion_grace_secs must be [{}, {}], got {}; clamping to {}",
+            MIN_COMPLETION_GRACE_SECS,
+            cfg.reviewer_idle_timeout_secs,
+            cfg.reviewer_completion_grace_secs,
+            clamped
+        );
+        cfg.reviewer_completion_grace_secs = clamped;
     }
 }
 
