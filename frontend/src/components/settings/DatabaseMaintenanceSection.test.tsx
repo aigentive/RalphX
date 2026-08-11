@@ -5,15 +5,28 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DatabaseMaintenanceSection } from "./DatabaseMaintenanceSection";
 
-function mockMaintenanceInvoke(initialPending = false) {
+type MaintenanceOverrides = {
+  reclaimable_bytes?: number;
+  headroom_ok?: boolean;
+  last_compaction?: {
+    outcome: string;
+    reason: string | null;
+    reclaimed_bytes: number | null;
+    database_bytes_before: number;
+    at_rfc3339: string;
+  } | null;
+};
+
+function mockMaintenanceInvoke(initialPending = false, overrides: MaintenanceOverrides = {}) {
   let pending = initialPending;
   vi.mocked(invoke).mockImplementation(async (command, args) => {
     if (command === "get_database_maintenance_stats") {
       return {
         database_bytes: 44_530_065_408,
-        reclaimable_bytes: 6_291_456,
-        headroom_ok: true,
+        reclaimable_bytes: overrides.reclaimable_bytes ?? 6_291_456,
+        headroom_ok: overrides.headroom_ok ?? true,
         pending_compaction: pending,
+        last_compaction: overrides.last_compaction ?? null,
       };
     }
     if (command === "set_database_compaction_pending") {
@@ -84,6 +97,58 @@ describe("DatabaseMaintenanceSection", () => {
     expect(
       await screen.findByRole("button", { name: "Compact on next launch" }),
     ).toBeInTheDocument();
+  });
+
+  it("recommends compaction only when reclaimable space is a significant share", async () => {
+    mockMaintenanceInvoke(false, { reclaimable_bytes: 35_000_000_000 });
+    const { unmount } = render(<DatabaseMaintenanceSection />);
+
+    expect(await screen.findByTestId("compaction-recommended")).toBeInTheDocument();
+    unmount();
+
+    mockMaintenanceInvoke(false, { reclaimable_bytes: 6_291_456 });
+    render(<DatabaseMaintenanceSection />);
+
+    await screen.findByTestId("database-size");
+    expect(screen.queryByTestId("compaction-recommended")).not.toBeInTheDocument();
+  });
+
+  it("warns before scheduling when disk headroom is insufficient", async () => {
+    mockMaintenanceInvoke(false, { headroom_ok: false });
+    render(<DatabaseMaintenanceSection />);
+
+    expect(await screen.findByTestId("database-headroom-warning")).toBeInTheDocument();
+  });
+
+  it("renders the last compaction outcome including a skip reason", async () => {
+    mockMaintenanceInvoke(false, {
+      last_compaction: {
+        outcome: "skipped",
+        reason: "insufficient_disk_headroom",
+        reclaimed_bytes: null,
+        database_bytes_before: 44_530_065_408,
+        at_rfc3339: "2026-08-10T12:00:00+00:00",
+      },
+    });
+    render(<DatabaseMaintenanceSection />);
+
+    expect(await screen.findByTestId("database-last-compaction")).toHaveTextContent(
+      "Not enough free disk space",
+    );
+  });
+
+  it("describes the swap-based compaction rather than a copied backup", async () => {
+    const user = userEvent.setup();
+    mockMaintenanceInvoke();
+    render(<DatabaseMaintenanceSection />);
+
+    await user.click(
+      await screen.findByRole("button", { name: "Compact on next launch" }),
+    );
+
+    const dialogCopy = screen.getByText(/compacts into a new file/i);
+    expect(dialogCopy).toBeInTheDocument();
+    expect(screen.queryByText(/verify a backup/i)).not.toBeInTheDocument();
   });
 
   it("surfaces stats load failures instead of rendering empty data", async () => {

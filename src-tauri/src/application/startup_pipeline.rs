@@ -201,6 +201,40 @@ fn spawn_delegation_park_deadline_sweep(app_state: &AppState) {
     });
 }
 
+/// Runs the chat payload retention cycle on a cadence so a long-lived app keeps pruning.
+///
+/// Startup-only retention never prunes on a machine that stays up for weeks. Sleeps first,
+/// so this does not duplicate the detached startup cycle; overlap with it (or with a manual
+/// "Run cleanup now") is prevented by the process-global cycle guard.
+fn spawn_data_retention_cycle(app_state: &AppState) {
+    let db = app_state.db.clone();
+    // Interval from runtime config — no inline duration constants (src-tauri/CLAUDE.md).
+    let interval = Duration::from_secs(
+        crate::infrastructure::agents::claude::stream_timeouts()
+            .chat_payload_retention_interval_hours
+            .saturating_mul(3_600),
+    );
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(interval).await;
+            let service = crate::application::data_retention_service::DataRetentionService::from_db(
+                db.clone(),
+            );
+            match service.run_cycle(chrono::Utc::now()).await {
+                Ok(report) => tracing::debug!(
+                    pruned_rows = report.pruned_rows,
+                    compaction_recommended = report.compaction_recommended,
+                    "Periodic chat payload retention cycle completed"
+                ),
+                Err(error) => tracing::warn!(
+                    error = %error,
+                    "Periodic chat payload retention cycle failed; retrying on the next interval"
+                ),
+            }
+        }
+    });
+}
+
 async fn run_external_mcp_startup(mode: StartupPipelineMode, app_handle: tauri::AppHandle) {
     if mode != StartupPipelineMode::Full {
         return;
@@ -527,7 +561,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         .with_previous_session_cutoff(previous_session_cutoff)
         .with_git_startup_blocked_projects(Arc::clone(&blocked_git_project_ids))
         .with_notification_repo(Arc::clone(&app_state.notification_repo))
-        .with_chat_payload_retention_db(app_state.db.clone())
+        .with_data_retention_db(app_state.db.clone())
         .with_delegation_park_service(Arc::new(app_state.build_delegation_park_service())),
     );
 
@@ -536,6 +570,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     startup_phase_completed("startup_job_runner", phase_started_at);
 
     spawn_delegation_park_deadline_sweep(&app_state);
+    spawn_data_retention_cycle(&app_state);
 
     publish_runtime_boundary_for(startup_coordinator.as_ref(), startup_attempt_id)?;
     run_external_mcp_startup(mode, app_handle.clone()).await;

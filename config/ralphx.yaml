@@ -144,11 +144,21 @@ timeouts:
     # startup_jobs.rs — durable notification history retention (read rows only)
     notification_retention_read_days: 30 # Env: RALPHX_STREAM_NOTIFICATION_RETENTION_READ_DAYS
     notification_retention_max_rows: 1000 # Env: RALPHX_STREAM_NOTIFICATION_RETENTION_MAX_ROWS
-    # startup_jobs.rs — background full chat tool-payload retention (block previews/metadata stay)
+    # data_retention_service.rs — background full chat tool-payload retention (block previews/metadata stay).
+    # These are the *shipped defaults*; the live policy lives in the `data_retention_settings` table and is
+    # editable in Settings → Database. Config values only seed installs the user has never customized.
     chat_payload_retention_enabled: true # Env: RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_ENABLED
     chat_payload_retention_days: 90 # Env: RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_DAYS
     chat_payload_retention_archived_days: 7 # Env: RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_ARCHIVED_DAYS
-    chat_payload_retention_batch_rows: 2000 # Env: RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_BATCH_ROWS
+    chat_payload_retention_batch_rows: 500 # Env: RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_BATCH_ROWS
+    # Recommendation only — prefills the Settings control. NEVER seeded into the active size budget:
+    # size-based pruning deletes payloads still inside the time window and requires explicit user consent.
+    chat_payload_size_budget_recommended_bytes: 5368709120 # 5 GiB — Env: RALPHX_STREAM_CHAT_PAYLOAD_SIZE_BUDGET_RECOMMENDED_BYTES
+    # Above this database size a cycle spends one payload scan to produce the "you could reclaim X" advisory
+    chat_payload_advisory_threshold_bytes: 10737418240 # 10 GiB — Env: RALPHX_STREAM_CHAT_PAYLOAD_ADVISORY_THRESHOLD_BYTES
+    chat_payload_retention_interval_hours: 6 # Env: RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_INTERVAL_HOURS
+    chat_payload_retention_batch_pause_ms: 50 # Env: RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_BATCH_PAUSE_MS
+    chat_payload_retention_checkpoint_batches: 50 # Env: RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_CHECKPOINT_BATCHES
     # db_connection.rs — production warning thresholds for mutex wait and operation hold time
     db_lock_wait_warn_ms: 100 # Env: RALPHX_STREAM_DB_LOCK_WAIT_WARN_MS
     db_lock_hold_warn_ms: 250 # Env: RALPHX_STREAM_DB_LOCK_HOLD_WARN_MS

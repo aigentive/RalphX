@@ -31,6 +31,27 @@ describe("SettingsSectionContent", () => {
           reclaimable_bytes: 6_291_456,
           headroom_ok: true,
           pending_compaction: false,
+          last_compaction: null,
+        };
+      }
+      if (command === "get_data_retention_settings") {
+        return {
+          settings: {
+            enabled: true,
+            days: 90,
+            archivedDays: 7,
+            batchRows: 500,
+            sizeBudgetBytes: null,
+            sizeBudgetConfirmedAt: null,
+            seededPristine: true,
+            sizeBudgetAdvised: false,
+            lastRunAt: null,
+            lastRunPrunedRows: null,
+            lastRunPayloadBytes: null,
+            lastRunPayloadRows: null,
+            updatedAt: "2026-08-10T12:00:00+00:00",
+          },
+          recommendedSizeBudgetBytes: 5_368_709_120,
         };
       }
       throw new Error(`Unexpected command: ${command}`);
@@ -54,5 +75,11 @@ describe("SettingsSectionContent", () => {
       { timeout: LAZY_MOUNT_TIMEOUT_MS },
     );
     await waitFor(() => expect(size).toHaveTextContent("41 GB"));
+    // Retention and maintenance are one user concern, rendered in one leaf.
+    expect(
+      await screen.findByTestId("retention-last-run", undefined, {
+        timeout: LAZY_MOUNT_TIMEOUT_MS,
+      }),
+    ).toBeInTheDocument();
   }, 15_000);
 });

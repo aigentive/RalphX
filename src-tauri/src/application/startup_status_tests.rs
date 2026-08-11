@@ -509,3 +509,60 @@ fn snapshot_derives_retry_allowed_from_the_current_startup_phase() {
     );
     assert!(!post_registration_failure.snapshot().retry_allowed);
 }
+
+#[test]
+fn compaction_stage_sits_between_opening_the_database_and_migrating() {
+    let coordinator = StartupCoordinator::new();
+    let attempt = coordinator.current_attempt_id();
+
+    coordinator
+        .advance(attempt, StartupStage::OpeningDatabase)
+        .expect("opening the database");
+    coordinator
+        .advance(attempt, StartupStage::CompactingDatabase)
+        .expect("compaction runs before migrations");
+    coordinator
+        .advance(attempt, StartupStage::Migrating)
+        .expect("migrations follow compaction");
+
+    assert_eq!(coordinator.snapshot().stage, StartupStage::Migrating);
+}
+
+#[test]
+fn startups_without_a_compaction_still_go_straight_to_migrating() {
+    let coordinator = StartupCoordinator::new();
+    let attempt = coordinator.current_attempt_id();
+
+    coordinator
+        .advance(attempt, StartupStage::OpeningDatabase)
+        .expect("opening the database");
+    coordinator
+        .advance(attempt, StartupStage::Migrating)
+        .expect("the skip path must remain legal");
+}
+
+#[test]
+fn the_compaction_stage_is_not_reachable_from_anywhere_else() {
+    let coordinator = StartupCoordinator::new();
+    let attempt = coordinator.current_attempt_id();
+
+    assert!(
+        coordinator
+            .advance(attempt, StartupStage::CompactingDatabase)
+            .is_err(),
+        "compaction must not be reachable from CreatingWindow"
+    );
+
+    coordinator
+        .advance(attempt, StartupStage::OpeningDatabase)
+        .expect("opening the database");
+    coordinator
+        .advance(attempt, StartupStage::Migrating)
+        .expect("skip path");
+    assert!(
+        coordinator
+            .advance(attempt, StartupStage::CompactingDatabase)
+            .is_err(),
+        "compaction must not be reachable after migrations start"
+    );
+}

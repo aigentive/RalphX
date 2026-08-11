@@ -1,6 +1,7 @@
 export const STARTUP_STAGES = [
   "creating_window",
   "opening_database",
+  "compacting_database",
   "migrating",
   "loading_settings",
   "startup_cleanup",
