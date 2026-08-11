@@ -254,12 +254,45 @@ fn launch_startup_attempt(
                 auto_max_db_bytes: runtime.db_auto_compact_max_db_bytes,
                 auto_min_freelist_percent: runtime.db_auto_compact_min_freelist_percent,
             };
-        match app_paths.database_maintenance_paths().map(|paths| {
-            crate::infrastructure::sqlite::database_maintenance::compact_before_pool_opens_at(
-                &paths,
+        let maintenance_paths = app_paths.database_maintenance_paths();
+        // Decide before executing so the user only sees (and waits on) a compaction stage
+        // when one will actually run. `VACUUM INTO` on a large database takes minutes.
+        let will_compact = maintenance_paths.as_ref().is_ok_and(|paths| {
+            crate::infrastructure::sqlite::database_maintenance::compaction_will_execute(
+                paths,
                 compaction_config,
             )
-        }) {
+        });
+        if will_compact
+            && startup_coordinator
+                .advance(attempt_id, StartupStage::CompactingDatabase)
+                .is_err()
+        {
+            return;
+        }
+        let compaction_result = match maintenance_paths {
+            Ok(paths) => {
+                // A multi-minute synchronous SQLite/fs call must not occupy a runtime
+                // worker. Pre-pool exclusivity is unaffected: nothing else opens the
+                // database while this awaits.
+                Ok(tokio::task::spawn_blocking(move || {
+                    crate::infrastructure::sqlite::database_maintenance::compact_before_pool_opens_at(
+                        &paths,
+                        compaction_config,
+                    )
+                })
+                .await
+                .unwrap_or_else(|error| {
+                    Err(
+                        crate::infrastructure::sqlite::database_maintenance::DatabaseMaintenanceError::Integrity(
+                            format!("compaction task failed: {error}"),
+                        ),
+                    )
+                }))
+            }
+            Err(error) => Err(error),
+        };
+        match compaction_result {
             Ok(Ok(crate::infrastructure::sqlite::database_maintenance::CompactionOutcome::Compacted { reclaimed_bytes })) => {
                 tracing::info!(reclaimed_bytes, "Startup database compaction completed before pool open");
             }

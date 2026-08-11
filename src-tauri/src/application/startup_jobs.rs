@@ -48,7 +48,7 @@ use crate::error::AppResult;
 
 use super::TaskTransitionService;
 use crate::infrastructure::agents::claude::{stream_timeouts, StreamTimeoutsConfig};
-use crate::infrastructure::sqlite::sqlite_chat_payload_retention_repo::SqliteChatPayloadRetentionRepository;
+use crate::application::data_retention_service::DataRetentionService;
 use crate::infrastructure::sqlite::DbConnection;
 
 /// Environment variable that disables startup recovery mechanisms when present.
@@ -62,48 +62,6 @@ fn notification_retention_prune_args(
         now - chrono::Duration::days(config.notification_retention_read_days as i64),
         u32::try_from(config.notification_retention_max_rows).unwrap_or(u32::MAX),
     )
-}
-
-fn chat_payload_retention_prune_args(
-    config: &StreamTimeoutsConfig,
-    now: chrono::DateTime<chrono::Utc>,
-) -> (
-    chrono::DateTime<chrono::Utc>,
-    chrono::DateTime<chrono::Utc>,
-    u32,
-) {
-    (
-        now - chrono::Duration::days(config.chat_payload_retention_days as i64),
-        now - chrono::Duration::days(config.chat_payload_retention_archived_days as i64),
-        // A zero batch size would make every DELETE a silent no-op while the
-        // job still reports success; clamp to at least one row per batch.
-        u32::try_from(config.chat_payload_retention_batch_rows)
-            .unwrap_or(u32::MAX)
-            .max(1),
-    )
-}
-
-async fn prune_chat_payload_retention(
-    payload_repo: &SqliteChatPayloadRetentionRepository,
-    config: &StreamTimeoutsConfig,
-    now: chrono::DateTime<chrono::Utc>,
-) -> AppResult<usize> {
-    if !config.chat_payload_retention_enabled {
-        return Ok(0);
-    }
-
-    let (before, archived_before, batch_rows) = chat_payload_retention_prune_args(config, now);
-    let mut pruned = 0;
-    loop {
-        let pruned_in_batch = payload_repo
-            .prune_batch(before, archived_before, batch_rows)
-            .await?;
-        pruned += pruned_in_batch;
-        if pruned_in_batch == 0 {
-            return Ok(pruned);
-        }
-        tokio::task::yield_now().await;
-    }
 }
 
 #[doc(hidden)]
@@ -271,7 +229,7 @@ pub struct StartupJobRunner {
     /// these projects is deferred so recovery does not immediately hit known-bad auth.
     git_startup_blocked_project_ids: Arc<HashSet<ProjectId>>,
     notification_repo: Option<Arc<dyn NotificationRepository>>,
-    chat_payload_retention_repo: Option<Arc<SqliteChatPayloadRetentionRepository>>,
+    data_retention_service: Option<Arc<DataRetentionService>>,
     delegation_park_service:
         Option<Arc<crate::application::delegation_park::DelegationParkService>>,
 }
@@ -406,7 +364,7 @@ impl StartupJobRunner {
             ideation_session_repo,
             git_startup_blocked_project_ids: Arc::new(HashSet::new()),
             notification_repo: None,
-            chat_payload_retention_repo: None,
+            data_retention_service: None,
             delegation_park_service: None,
         }
     }
@@ -696,10 +654,9 @@ impl StartupJobRunner {
         self
     }
 
-    /// Sets the raw-SQL retention repository used only by the startup payload-prune job.
-    pub fn with_chat_payload_retention_db(mut self, db: DbConnection) -> Self {
-        self.chat_payload_retention_repo =
-            Some(Arc::new(SqliteChatPayloadRetentionRepository::from_db(db)));
+    /// Sets the retention service used by the startup payload-prune job.
+    pub fn with_data_retention_db(mut self, db: DbConnection) -> Self {
+        self.data_retention_service = Some(Arc::new(DataRetentionService::from_db(db)));
         self
     }
 
@@ -783,21 +740,26 @@ impl StartupJobRunner {
             startup_job_step_completed("delegation_park_reconcile", step_started_at);
         }
 
-        if let Some(payload_repo) = &self.chat_payload_retention_repo {
-            let config = stream_timeouts().clone();
-            if config.chat_payload_retention_enabled {
-                let payload_repo = Arc::clone(payload_repo);
-                tauri::async_runtime::spawn(async move {
-                    let step_started_at = startup_job_step_started("chat_payload_retention_prune");
-                    if let Err(error) =
-                        prune_chat_payload_retention(&payload_repo, &config, chrono::Utc::now())
-                            .await
-                    {
+        if let Some(data_retention_service) = &self.data_retention_service {
+            let data_retention_service = Arc::clone(data_retention_service);
+            // Stays detached: a first-run backlog drain can take many minutes, and inlining
+            // it would stall every later startup job behind retention.
+            tauri::async_runtime::spawn(async move {
+                let step_started_at = startup_job_step_started("chat_payload_retention_prune");
+                match data_retention_service.run_cycle(chrono::Utc::now()).await {
+                    Ok(report) => tracing::info!(
+                        pruned_rows = report.pruned_rows,
+                        size_budget_active = report.size_budget_active,
+                        size_budget_advised = report.size_budget_advised,
+                        compaction_recommended = report.compaction_recommended,
+                        "Completed startup chat payload retention cycle"
+                    ),
+                    Err(error) => {
                         tracing::warn!(error = %error, "Failed to prune chat payloads at startup");
                     }
-                    startup_job_step_completed("chat_payload_retention_prune", step_started_at);
-                });
-            }
+                }
+                startup_job_step_completed("chat_payload_retention_prune", step_started_at);
+            });
         }
 
         if is_startup_recovery_disabled() {

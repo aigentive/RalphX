@@ -114,4 +114,17 @@ fn database_maintenance_paths_resolves_all_members() {
     assert_eq!(maint.marker_path, paths.database_compaction_marker_path());
     assert_eq!(maint.backup_dir, paths.database_backup_dir());
     assert_eq!(maint.database_path, paths.database_path().unwrap());
+    assert_eq!(maint.outcome_path, paths.database_compaction_outcome_path());
+}
+
+#[test]
+fn database_compaction_outcome_sidecar_sits_beside_the_marker() {
+    let paths = AppPaths::new("/tmp/ralphx-app-data", None);
+
+    assert_eq!(
+        paths.database_compaction_outcome_path(),
+        PathBuf::from(
+            "/tmp/ralphx-app-data/database-maintenance/ralphx.db.compaction-outcome.json"
+        )
+    );
 }

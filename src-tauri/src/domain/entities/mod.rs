@@ -1,9 +1,12 @@
+pub mod data_retention;
 pub mod memory_archive_job;
 pub mod delegation_park;
 pub mod ui_feature_flag_overrides;
 pub mod permission_request;
 pub mod question_request;
 
+#[cfg(test)]
+mod data_retention_tests;
 #[cfg(test)]
 #[path = "agent_conversation_workspace_tests.rs"]
 mod agent_conversation_workspace_tests;
@@ -18,6 +21,9 @@ pub use ralphx_domain::entities::{
     memory_rule_binding, merge_progress_event, methodology, notification, plan_branch,
     plan_selection_stats, project, research, review, review_issue, status, task, task_context,
     task_metadata, task_qa, task_step, team, types, workflow,
+};
+pub use data_retention::{
+    DataRetentionDefaults, DataRetentionPolicyUpdate, DataRetentionRunStatus, DataRetentionSettings,
 };
 pub use memory_archive_job::{MemoryArchiveJobStatus, MemoryArchiveJobType};
 pub use delegation_park::{

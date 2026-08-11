@@ -10,6 +10,10 @@ use tokio_util::sync::CancellationToken;
 pub enum StartupStage {
     CreatingWindow,
     OpeningDatabase,
+    /// Only entered when a compaction will actually run: `VACUUM INTO` on a multi-GB
+    /// database takes minutes, and the generic "Opening local workspace data" copy
+    /// would present that as a hang.
+    CompactingDatabase,
     Migrating,
     LoadingSettings,
     StartupCleanup,
@@ -29,16 +33,17 @@ impl StartupStage {
         match self {
             Self::CreatingWindow => 0,
             Self::OpeningDatabase => 1,
-            Self::Migrating => 2,
-            Self::LoadingSettings => 3,
-            Self::StartupCleanup => 4,
-            Self::RegisteringState => 5,
-            Self::AppStateReady => 6,
-            Self::BindingLocalRuntime => 7,
-            Self::SafetyRecovery => 8,
-            Self::RuntimeReady => 9,
-            Self::BackgroundRecovery => 10,
-            Self::Ready | Self::Degraded | Self::Failed => 11,
+            Self::CompactingDatabase => 2,
+            Self::Migrating => 3,
+            Self::LoadingSettings => 4,
+            Self::StartupCleanup => 5,
+            Self::RegisteringState => 6,
+            Self::AppStateReady => 7,
+            Self::BindingLocalRuntime => 8,
+            Self::SafetyRecovery => 9,
+            Self::RuntimeReady => 10,
+            Self::BackgroundRecovery => 11,
+            Self::Ready | Self::Degraded | Self::Failed => 12,
         }
     }
 
@@ -46,6 +51,9 @@ impl StartupStage {
         matches!(
             (self, next),
             (Self::CreatingWindow, Self::OpeningDatabase)
+                | (Self::OpeningDatabase, Self::CompactingDatabase)
+                | (Self::CompactingDatabase, Self::Migrating)
+                // Kept: the skip path, when no compaction runs.
                 | (Self::OpeningDatabase, Self::Migrating)
                 | (Self::Migrating, Self::LoadingSettings)
                 | (Self::LoadingSettings, Self::StartupCleanup)
@@ -260,6 +268,7 @@ fn message_code(stage: StartupStage) -> &'static str {
     match stage {
         StartupStage::CreatingWindow => "startup_creating_window",
         StartupStage::OpeningDatabase | StartupStage::Migrating => "startup_upgrading_workspace",
+        StartupStage::CompactingDatabase => "startup_compacting_database",
         StartupStage::LoadingSettings => "startup_loading_settings",
         StartupStage::StartupCleanup => "startup_cleaning_previous_session",
         StartupStage::RegisteringState | StartupStage::AppStateReady => "startup_preparing_app",

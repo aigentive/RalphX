@@ -130,6 +130,9 @@ pub mod clickup_integration_service;
 pub mod conversation_folder_reference_service;
 #[cfg(test)]
 mod conversation_folder_reference_service_tests;
+pub mod data_retention_service;
+#[cfg(test)]
+mod data_retention_service_tests;
 pub mod dependency_service;
 #[cfg(target_os = "macos")]
 pub(crate) mod desktop_notification;
