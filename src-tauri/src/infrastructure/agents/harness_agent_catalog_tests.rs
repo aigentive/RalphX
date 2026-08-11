@@ -1451,7 +1451,6 @@ fn workspace_reviewer_codex_surface_uses_shared_prompt_and_review_tools() {
         "fs_glob",
         "get_workspace_review_context",
         "write_workspace_review_artifact",
-        "write_workspace_review_hunk_annotations",
         "complete_workspace_review_run",
         "delegate_start",
         "delegate_wait",
@@ -1505,6 +1504,9 @@ fn workspace_reviewer_codex_surface_uses_shared_prompt_and_review_tools() {
         "search_memories",
         "get_memory",
         "get_memories_for_paths",
+        // Hunk annotations moved to the background ralphx-workspace-annotator; the reviewer must
+        // not hold the tool, or its run tail reacquires the work the annotator now owns.
+        "write_workspace_review_hunk_annotations",
     ] {
         assert!(
             !definition
@@ -1518,7 +1520,28 @@ fn workspace_reviewer_codex_surface_uses_shared_prompt_and_review_tools() {
             !metadata.mcp_tools.iter().any(|tool| tool == removed_tool),
             "workspace reviewer Codex surface should not retain unrelated MCP tool {removed_tool}"
         );
+        assert!(
+            !prompt.contains(removed_tool),
+            "workspace reviewer prompt should not instruct use of {removed_tool}"
+        );
     }
+    // The reviewer performs exactly one artifact write, at the end, always carrying a typed
+    // outcome. A provisional early write would make `previous_review` self-referential and would
+    // leave a half-finished pair the degraded-settlement path must never trust.
+    assert_eq!(
+        prompt.matches("Call `write_workspace_review_artifact`").count(),
+        1,
+        "workspace reviewer prompt should contain exactly one artifact-write step"
+    );
+    assert!(
+        !prompt.to_lowercase().contains("provisional"),
+        "workspace reviewer prompt should no longer instruct a provisional artifact write"
+    );
+    assert!(
+        prompt.contains("`outcome` matching your disposition line")
+            && prompt.contains("blocking_summary"),
+        "workspace reviewer prompt should require the typed outcome on its single artifact write"
+    );
     assert_eq!(
         metadata.runtime_features.get("shell_tool"),
         Some(&false),
