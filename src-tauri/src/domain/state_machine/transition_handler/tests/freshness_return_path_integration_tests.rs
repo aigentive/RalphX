@@ -24,7 +24,7 @@
 
 use crate::application::AppState;
 use crate::application::TaskTransitionService;
-use crate::commands::ExecutionState;
+use crate::application::execution_state::ExecutionState;
 use crate::domain::entities::{InternalStatus, Project, Task};
 use crate::domain::services::{MemoryRunningAgentRegistry, MessageQueue};
 use crate::domain::state_machine::transition_handler::freshness::FreshnessMetadata;

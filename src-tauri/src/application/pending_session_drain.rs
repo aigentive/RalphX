@@ -14,7 +14,7 @@ use crate::application::chat_service::{
     decode_pending_initial_prompt, uses_execution_slot, ChatService, SendCallerContext,
     SendMessageOptions,
 };
-use crate::commands::ExecutionState;
+use crate::application::execution_state::ExecutionState;
 use crate::domain::entities::{
     ChatContextType, IdeationSessionId, InternalStatus, ProjectId, TaskId,
 };

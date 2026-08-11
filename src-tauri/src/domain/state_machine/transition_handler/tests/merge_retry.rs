@@ -10,7 +10,7 @@ use crate::domain::state_machine::{State, TaskEvent, TransitionHandler};
 /// Callback drop during merge workflow handled gracefully (no panic without event_sink).
 #[tokio::test]
 async fn test_reload_continuation_callback_drop() {
-    use crate::commands::ExecutionState;
+    use crate::application::execution_state::ExecutionState;
 
     let execution_state = Arc::new(ExecutionState::new());
     execution_state.increment_running();
@@ -156,7 +156,7 @@ async fn test_event_emission_merged_entry_side_effects() {
 /// Exiting PendingMerge does NOT decrement execution running count.
 #[tokio::test]
 async fn test_event_emission_pending_merge_exit_preserves_execution_state() {
-    use crate::commands::ExecutionState;
+    use crate::application::execution_state::ExecutionState;
 
     let execution_state = Arc::new(ExecutionState::new());
     execution_state.increment_running();
@@ -399,7 +399,7 @@ async fn test_deferred_merge_not_triggered_by_non_merge_exits() {
 /// Exiting PendingMerge calls try_retry_main_merges when running_count == 0.
 #[tokio::test]
 async fn test_merge_exit_triggers_main_merge_retry_when_all_idle() {
-    use crate::commands::ExecutionState;
+    use crate::application::execution_state::ExecutionState;
 
     let scheduler = Arc::new(MockTaskScheduler::new());
     let execution_state = Arc::new(ExecutionState::new());
@@ -441,7 +441,7 @@ async fn test_merge_exit_triggers_main_merge_retry_when_all_idle() {
 /// fresh at merge-start time and re-defers correctly if agents are still active.
 #[tokio::test]
 async fn test_merge_exit_always_triggers_main_merge_retry_regardless_of_running_count() {
-    use crate::commands::ExecutionState;
+    use crate::application::execution_state::ExecutionState;
 
     let scheduler = Arc::new(MockTaskScheduler::new());
     let execution_state = Arc::new(ExecutionState::new());
@@ -478,7 +478,7 @@ async fn test_merge_exit_always_triggers_main_merge_retry_regardless_of_running_
 /// Cascading merge unblocking — Merging exit also triggers main merge retry when idle.
 #[tokio::test]
 async fn test_merging_exit_triggers_main_merge_retry_when_all_idle() {
-    use crate::commands::ExecutionState;
+    use crate::application::execution_state::ExecutionState;
 
     let scheduler = Arc::new(MockTaskScheduler::new());
     let execution_state = Arc::new(ExecutionState::new());

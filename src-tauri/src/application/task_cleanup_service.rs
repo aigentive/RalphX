@@ -16,7 +16,7 @@ use crate::application::git_service::GitService;
 use crate::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessRegistry,
 };
-use crate::commands::execution_commands::AGENT_ACTIVE_STATUSES;
+use crate::application::execution_state::AGENT_ACTIVE_STATUSES;
 use crate::domain::entities::{
     IdeationSessionId, InternalStatus, Project, ProjectId, Task, TaskCategory, TaskId,
 };

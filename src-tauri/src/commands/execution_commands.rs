@@ -4,12 +4,9 @@
 
 use ralphx_events::emit_serialized;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
-use tauri::{AppHandle, Runtime, State};
-use tokio::sync::RwLock;
+use tauri::{AppHandle, State};
 
 use crate::application::chat_service::{
     uses_execution_slot, ChatService, SendCallerContext, SendMessageOptions,

@@ -6,7 +6,7 @@
 // not testable via MockAgentSpawner. These tests verify the ExecutionState
 // behavior and document the expected event contract.
 
-use crate::commands::ExecutionState;
+use crate::application::execution_state::ExecutionState;
 
 #[tokio::test]
 async fn test_b2_fix_execution_state_reports_blocking_reason() {

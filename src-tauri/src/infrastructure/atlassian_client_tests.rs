@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use hyper::Method;
 use serde_json::{json, Value};
 
-use crate::application::{AtlassianApiClient, AtlassianAuthContext, AtlassianCredential};
+use crate::domain::integrations::{AtlassianApiClient, AtlassianAuthContext, AtlassianCredential};
 use crate::domain::services::ComposerIntegrationReference;
 
 use super::atlassian_client::{
