@@ -835,7 +835,7 @@ export async function callGetWorkspaceReviewContextTool(
     runtimeContext
   );
   const path =
-    `agent-workspaces/${conversation_id}/workspace-review-context?include_review_packet=true`;
+    `agent-workspaces/${conversation_id}/workspace-review-context?include_review_packet=true&include_events=false`;
   const headers = buildRuntimeIdentityTransportHeaders({
     agentRunId: runtimeContext?.agentRunId,
     conversationId: runtimeContext?.conversationId,

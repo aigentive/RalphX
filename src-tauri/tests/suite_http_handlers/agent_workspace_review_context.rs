@@ -922,3 +922,61 @@ async fn artifact_write_with_mismatched_target_records_nothing() {
         .review_artifact_recorded_outcome
         .is_none());
 }
+
+// ── Context payload compaction ───────────────────────────────────────────
+
+/// The model path drops publication events; the UI path (default) keeps them.
+#[tokio::test]
+async fn context_include_events_false_omits_publication_events_and_default_keeps_them() {
+    let fixture = setup_active_review("include-events").await;
+    fixture
+        .state
+        .app_state
+        .agent_conversation_workspace_repo
+        .append_publication_event(
+            ralphx_lib::domain::entities::AgentConversationWorkspacePublicationEvent::new(
+                fixture.conversation_id,
+                "workspace_review",
+                "reviewing",
+                "Review started".to_string(),
+                None,
+            ),
+        )
+        .await
+        .expect("publication event should persist");
+
+    let axum::Json(default_context) = get_agent_workspace_review_context(
+        State(fixture.state.clone()),
+        Path(fixture.conversation_id.to_string()),
+        HeaderMap::new(),
+        Query(AgentWorkspaceReviewContextQuery::default()),
+    )
+    .await
+    .expect("default context should load");
+    assert!(
+        !default_context.events.is_empty(),
+        "the UI path must keep publication events"
+    );
+
+    let axum::Json(model_context) = get_agent_workspace_review_context(
+        State(fixture.state.clone()),
+        Path(fixture.conversation_id.to_string()),
+        HeaderMap::new(),
+        Query(AgentWorkspaceReviewContextQuery {
+            include_events: Some(false),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("model context should load");
+    assert!(
+        model_context.events.is_empty(),
+        "the model path must not carry publication events"
+    );
+    // Everything else the reviewer acts on is unchanged.
+    assert_eq!(model_context.is_current, default_context.is_current);
+    assert_eq!(
+        model_context.can_mutate_review_state,
+        default_context.can_mutate_review_state
+    );
+}

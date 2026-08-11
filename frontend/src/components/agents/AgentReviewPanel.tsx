@@ -183,6 +183,21 @@ function reviewFixerCycleCapDetail(cycleCount: number): string {
   return `This workspace has recorded ${cycleCount} fixer ${cycleCount === 1 ? "cycle" : "cycles"}. Automatic fixing is paused; Fix Issues manually to continue.`;
 }
 
+/// Explains a gate the backend settled from the reviewer's recorded artifact outcome after its
+/// wrapper timed out. Presentation only: a degraded gate authorizes exactly what a typed one does,
+/// so this never feeds `workspaceReviewAuthorization`.
+function degradedSettlementNote(
+  context: ReviewDisplayContext | null,
+): string | null {
+  return context?.monitor.reviewSettlementSource === "artifact_degraded"
+    ? "The reviewer timed out before reporting; this outcome was settled from the Review it had already written."
+    : null;
+}
+
+function withSettlementNote(detail: string, note: string | null): string {
+  return note ? `${detail} ${note}` : detail;
+}
+
 function canFixBlockingReview(
   context: ReviewDisplayContext | null,
   isRunning: boolean,
@@ -299,6 +314,7 @@ function reviewStatusForState({
   isRunning: boolean;
 }): ReviewStatus {
   const gateStatus = context?.monitor.reviewGateStatus ?? null;
+  const settlementNote = degradedSettlementNote(context);
   if (isRunning) {
     return {
       label: "Reviewing",
@@ -411,9 +427,11 @@ function reviewStatusForState({
   if (gateStatus === "blocking") {
     return {
       label: "Review blocking",
-      detail:
+      detail: withSettlementNote(
         context?.monitor.reviewBlockingSummary ??
-        "The reviewer found blocking issues in the current changes.",
+          "The reviewer found blocking issues in the current changes.",
+        settlementNote,
+      ),
       color: "var(--status-error)",
       icon: AlertCircle,
     };
@@ -430,7 +448,10 @@ function reviewStatusForState({
   if (hasWorkspaceReviewPublishAuthorization(context)) {
     return {
       label: "Review passed",
-      detail: "This Review passed for the current review target.",
+      detail: withSettlementNote(
+        "This Review passed for the current review target.",
+        settlementNote,
+      ),
       color: "var(--status-success)",
       icon: CheckCircle2,
     };

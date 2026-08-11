@@ -46,7 +46,7 @@ use crate::infrastructure::agents::claude::agent_names;
 
 const WORKSPACE_REVIEW_RUN_POLL_INTERVAL_MS: u64 = 250;
 const WORKSPACE_REVIEW_LOG_TARGET: &str = "ralphx_lib::application::agent_workspace_review";
-const WORKSPACE_REVIEW_PATCH_EXCERPT_CHARS: usize = 42_000;
+const WORKSPACE_REVIEW_PATCH_EXCERPT_CHARS: usize = 60_000;
 const WORKSPACE_REVIEW_MAX_CHANGED_FILES: usize = 120;
 const WORKSPACE_REVIEW_MAX_HUNK_ANCHORS: usize = 600;
 const WORKSPACE_REVIEW_MAX_INHERITED_PROJECT_REFERENCES: usize = 8;
@@ -237,6 +237,11 @@ pub struct AgentWorkspaceReviewChangedFile {
     pub path: String,
     pub status: String,
     pub sources: Vec<String>,
+    /// Set when the file carries little per-line review signal (lockfile, generated output,
+    /// snapshot, asset, binary). Its hunks are omitted from the patch excerpt and remain
+    /// retrievable in full through `get_workspace_review_diff_page`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub low_signal: Option<crate::application::agent_workspace_review_low_signal::LowSignalClass>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -4458,12 +4463,22 @@ fn build_review_packet(
         .into_iter()
         .take(WORKSPACE_REVIEW_MAX_CHANGED_FILES)
         .map(|(path, entry)| AgentWorkspaceReviewChangedFile {
+            low_signal: crate::application::agent_workspace_review_low_signal::low_signal_class(
+                &path, false,
+            ),
             path,
             status: entry.status,
             sources: entry.sources.into_iter().collect(),
         })
         .collect::<Vec<_>>();
-    let (patch_excerpt, patch_excerpt_truncated) = build_patch_excerpt(patch_sections, status);
+    let (patch_excerpt, patch_excerpt_truncated, low_signal_omitted) =
+        build_patch_excerpt(patch_sections, status);
+    if low_signal_omitted {
+        notes.push(
+            "Patch excerpt omits low-signal files (lockfiles, generated output, snapshots, assets, binaries); they are flagged with low_signal in the changed-file list and their full diffs are available through get_workspace_review_diff_page."
+                .to_string(),
+        );
+    }
     if patch_excerpt_truncated {
         notes.push(format!(
             "Patch excerpt is limited to {WORKSPACE_REVIEW_PATCH_EXCERPT_CHARS} characters; inspect listed files with read-only filesystem tools only when needed."
@@ -4668,9 +4683,24 @@ fn parse_review_hunk_range(value: &str) -> Option<(u32, u32)> {
     }
 }
 
-fn build_patch_excerpt(patch_sections: &[(&str, &str)], status: Option<&str>) -> (String, bool) {
+/// Builds the inline patch excerpt, returning `(excerpt, truncated, low_signal_omitted)`.
+fn build_patch_excerpt(
+    patch_sections: &[(&str, &str)],
+    status: Option<&str>,
+) -> (String, bool, bool) {
     let mut packet = String::new();
+    let mut low_signal_omitted = false;
     for (label, diff) in patch_sections {
+        if diff.trim().is_empty() {
+            continue;
+        }
+        let (diff, dropped) =
+            crate::application::agent_workspace_review_low_signal::strip_low_signal_diff_sections(
+                diff,
+            );
+        if dropped {
+            low_signal_omitted = true;
+        }
         if diff.trim().is_empty() {
             continue;
         }
@@ -4693,9 +4723,10 @@ fn build_patch_excerpt(patch_sections: &[(&str, &str)], status: Option<&str>) ->
                 .take(WORKSPACE_REVIEW_PATCH_EXCERPT_CHARS)
                 .collect(),
             true,
+            low_signal_omitted,
         )
     } else {
-        (packet, false)
+        (packet, false, low_signal_omitted)
     }
 }
 

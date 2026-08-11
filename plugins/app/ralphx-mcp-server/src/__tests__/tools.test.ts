@@ -1636,7 +1636,7 @@ describe('agent workspace publish tool transport', () => {
     ).resolves.toEqual({ success: true });
 
     expect(callTauriGet).toHaveBeenCalledWith(
-      'agent-workspaces/conversation-from-runtime/workspace-review-context?include_review_packet=true',
+      'agent-workspaces/conversation-from-runtime/workspace-review-context?include_review_packet=true&include_events=false',
       {
         headers: {
           'x-ralphx-agent-run-id': 'run-from-runtime',
@@ -2117,7 +2117,7 @@ describe('agent workspace publish tool transport', () => {
       'agent-workspaces/conversation-from-runtime/pr-review-context'
     );
     expect(callTauriGet).toHaveBeenCalledWith(
-      'agent-workspaces/conversation-from-runtime/workspace-review-context?include_review_packet=true'
+      'agent-workspaces/conversation-from-runtime/workspace-review-context?include_review_packet=true&include_events=false'
     );
     expect(callTauri).toHaveBeenCalledWith(
       'agent-workspaces/conversation-from-runtime/pr-review-actions',
@@ -2315,7 +2315,7 @@ describe('agent workspace publish tool transport', () => {
     [
       'get_workspace_review_context',
       'get',
-      'agent-workspaces/conversation-1/workspace-review-context?include_review_packet=true',
+      'agent-workspaces/conversation-1/workspace-review-context?include_review_packet=true&include_events=false',
       undefined,
     ],
     [

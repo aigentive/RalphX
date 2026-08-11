@@ -666,7 +666,7 @@ export async function callGetPrReviewContextTool(callTauriGet, args, runtimeCont
 }
 export async function callGetWorkspaceReviewContextTool(callTauriGet, args, runtimeContext) {
     const conversation_id = resolveAgentWorkspaceConversationId("get_workspace_review_context", args, runtimeContext);
-    const path = `agent-workspaces/${conversation_id}/workspace-review-context?include_review_packet=true`;
+    const path = `agent-workspaces/${conversation_id}/workspace-review-context?include_review_packet=true&include_events=false`;
     const headers = buildRuntimeIdentityTransportHeaders({
         agentRunId: runtimeContext?.agentRunId,
         conversationId: runtimeContext?.conversationId,

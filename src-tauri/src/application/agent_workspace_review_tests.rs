@@ -7335,3 +7335,86 @@ async fn first_review_cycle_carries_nothing_without_erroring() {
 
     assert_eq!(carried, 0);
 }
+
+// ── Low-signal packet compaction ─────────────────────────────────────────
+
+/// The excerpt budget should go to substantive code. Low-signal files stay in the inventory,
+/// flagged, and their diffs stay retrievable — they just do not consume excerpt characters.
+#[test]
+fn packet_excerpt_omits_low_signal_files_but_keeps_them_in_the_inventory() {
+    let diff = "\
+diff --git a/src/handler.rs b/src/handler.rs
+--- a/src/handler.rs
++++ b/src/handler.rs
+@@
++fn substantive() {}
+diff --git a/Cargo.lock b/Cargo.lock
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@
+-version = \"1.0.0\"
++version = \"1.0.1\"
+diff --git a/frontend/src/__snapshots__/App.test.tsx.snap b/frontend/src/__snapshots__/App.test.tsx.snap
+--- a/frontend/src/__snapshots__/App.test.tsx.snap
++++ b/frontend/src/__snapshots__/App.test.tsx.snap
+@@
++exports[`App renders`] = `<div />`;
+";
+
+    let packet = build_review_packet(&[("committed", diff)], None, &[("committed", diff)]);
+
+    assert!(
+        packet.patch_excerpt.contains("+fn substantive() {}"),
+        "substantive hunks must survive"
+    );
+    assert!(
+        !packet.patch_excerpt.contains("version = \"1.0.1\""),
+        "lockfile hunks must be omitted from the excerpt"
+    );
+    assert!(
+        !packet.patch_excerpt.contains("App renders"),
+        "snapshot hunks must be omitted from the excerpt"
+    );
+
+    let by_path = |path: &str| {
+        packet
+            .changed_files
+            .iter()
+            .find(|file| file.path == path)
+            .unwrap_or_else(|| panic!("{path} should stay in the changed-file inventory"))
+    };
+    assert_eq!(by_path("src/handler.rs").low_signal, None);
+    assert_eq!(
+        by_path("Cargo.lock").low_signal,
+        Some(crate::application::agent_workspace_review_low_signal::LowSignalClass::Lockfile)
+    );
+    assert_eq!(
+        by_path("frontend/src/__snapshots__/App.test.tsx.snap").low_signal,
+        Some(crate::application::agent_workspace_review_low_signal::LowSignalClass::Snapshot)
+    );
+    assert!(
+        packet
+            .notes
+            .iter()
+            .any(|note| note.contains("low_signal")
+                && note.contains("get_workspace_review_diff_page")),
+        "the packet must tell the reviewer what was omitted and how to retrieve it"
+    );
+}
+
+/// A diff with nothing low-signal must not gain a misleading omission note.
+#[test]
+fn packet_without_low_signal_files_reports_no_omission() {
+    let diff = "\
+diff --git a/src/handler.rs b/src/handler.rs
+--- a/src/handler.rs
++++ b/src/handler.rs
+@@
++fn substantive() {}
+";
+
+    let packet = build_review_packet(&[("committed", diff)], None, &[("committed", diff)]);
+
+    assert!(packet.patch_excerpt.contains("+fn substantive() {}"));
+    assert!(!packet.notes.iter().any(|note| note.contains("low_signal")));
+}

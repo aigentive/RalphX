@@ -78,6 +78,7 @@ pub(crate) mod agent_workspace_ci_rerun;
 pub(crate) mod agent_workspace_publish_repair_state;
 pub mod agent_workspace_review;
 pub mod agent_workspace_review_annotator;
+pub mod agent_workspace_review_low_signal;
 pub(crate) mod agent_workspace_review_approval;
 pub mod agent_workspace_review_auto_merge;
 #[cfg(test)]
@@ -95,6 +96,8 @@ mod agent_workspace_review_diff_inventory;
 mod agent_workspace_review_diff_scope_tests;
 #[cfg(test)]
 mod agent_workspace_review_diff_tests;
+#[cfg(test)]
+mod agent_workspace_review_low_signal_tests;
 #[cfg(test)]
 mod agent_workspace_review_mode_guard_tests;
 pub(crate) mod agent_workspace_review_publish_handoff;

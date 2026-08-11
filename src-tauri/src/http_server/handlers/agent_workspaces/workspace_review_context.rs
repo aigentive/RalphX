@@ -38,8 +38,11 @@ pub async fn get_agent_workspace_review_context(
     )
     .await
     .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error, None))?;
-    let events =
-        load_agent_workspace_publication_events(state.app_state.as_ref(), &conversation_id).await?;
+    let events = if query.include_events.unwrap_or(true) {
+        load_agent_workspace_publication_events(state.app_state.as_ref(), &conversation_id).await?
+    } else {
+        Vec::new()
+    };
     let include_review_packet = query.include_review_packet.unwrap_or(false);
     let read_mode = if include_review_packet {
         AgentWorkspaceReviewContextReadMode::FullPacket

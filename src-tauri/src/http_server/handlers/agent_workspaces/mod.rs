@@ -681,6 +681,12 @@ pub struct AgentWorkspaceReviewMonitorResponse {
     pub status: String,
     pub review_outcome: String,
     pub review_gate_status: String,
+    /// How the current gate was settled: `typed` | `artifact_degraded`.
+    ///
+    /// Presentation only. A degraded gate authorizes exactly what a typed one does; the UI uses
+    /// this solely to explain that the reviewer timed out and the gate was settled from its
+    /// recorded artifact outcome.
+    pub review_settlement_source: Option<String>,
     pub current_target_scope: Option<String>,
     pub reviewed_target_scope: Option<String>,
     pub review_conversation_id: Option<String>,
@@ -736,6 +742,9 @@ impl From<AgentWorkspaceReviewMonitor> for AgentWorkspaceReviewMonitorResponse {
             status: value.status.to_string(),
             review_outcome: value.review_outcome.to_string(),
             review_gate_status: value.review_gate_status.to_string(),
+            review_settlement_source: value
+                .review_settlement_source
+                .map(|source| source.to_string()),
             current_target_scope: value.current_target_scope.map(|scope| scope.to_string()),
             reviewed_target_scope: value.reviewed_target_scope.map(|scope| scope.to_string()),
             review_conversation_id: value
@@ -850,6 +859,11 @@ pub struct AgentWorkspaceReviewContextResponse {
 pub struct AgentWorkspaceReviewContextQuery {
     pub include_review_packet: Option<bool>,
     pub refresh_target: Option<bool>,
+    /// Whether to load publication events. Defaults to `true` so the UI is unaffected.
+    ///
+    /// The MCP model path passes `false`: reviewers never act on publication history, and every
+    /// event serializes seven fields into a payload that is already over budget.
+    pub include_events: Option<bool>,
 }
 
 #[derive(Debug, serde::Deserialize)]

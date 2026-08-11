@@ -580,6 +580,7 @@ fn workspace_review_target_response_includes_packet_only_when_requested() {
                 deletions: 0,
             },
             changed_files: vec![AgentWorkspaceReviewChangedFile {
+                low_signal: None,
                 path: "src/lib.rs".to_string(),
                 status: "modified".to_string(),
                 sources: vec!["committed".to_string()],
