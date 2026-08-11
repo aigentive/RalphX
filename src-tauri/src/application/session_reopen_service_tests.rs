@@ -10,7 +10,7 @@ fn build_service(state: &AppState) -> SessionReopenService {
         Arc::clone(&state.task_repo),
         Arc::clone(&state.project_repo),
         Arc::clone(&state.running_agent_registry),
-        None,
+        Arc::clone(&state.events),
     );
     SessionReopenService::new(
         Arc::clone(&state.task_repo),
@@ -969,7 +969,7 @@ async fn test_reopen_field_reset_error_propagates() {
         std::sync::Arc::clone(&state.task_repo),
         std::sync::Arc::clone(&state.project_repo),
         std::sync::Arc::clone(&state.running_agent_registry),
-        None,
+        Arc::clone(&state.events),
     );
     let service = SessionReopenService::new(
         std::sync::Arc::clone(&state.task_repo),

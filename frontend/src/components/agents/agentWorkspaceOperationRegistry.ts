@@ -248,6 +248,19 @@ export function reportAgentWorkspaceOperationResult(
   result: AgentWorkspaceOperationResult,
 ): void {
   resultMailbox.set(conversationId, result);
+  // The mailbox is not part of the snapshot, so the toast driver would only
+  // notice this result on its next workspace query update — and a poll that
+  // returns structurally-equal data within the same millisecond produces no
+  // new query result at all, stranding the result until the next poll tick.
+  // Hand out a fresh snapshot reference so the driver re-evaluates now.
+  const map = hydratedMap();
+  if (!map.has(conversationId)) {
+    return;
+  }
+  snapshotArray = Array.from(map.values());
+  for (const listener of listeners) {
+    listener();
+  }
 }
 
 export function takeAgentWorkspaceOperationResult(

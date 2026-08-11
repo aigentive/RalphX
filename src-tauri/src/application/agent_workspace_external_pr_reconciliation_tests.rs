@@ -6,6 +6,7 @@ use std::sync::{
 };
 
 use async_trait::async_trait;
+use ralphx_events::NullEventSink;
 
 use crate::application::agent_workspace_external_pr_reconciliation::{
     external_pr_reconciliation_skip_reason, reconcile_agent_workspace_external_pr,
@@ -227,7 +228,8 @@ async fn deps_with_workspace(
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
             agent_workspace_repair_repo: Some(workspace_repo.clone()),
             plan_branch_repo: Arc::new(MemoryPlanBranchRepository::new()),
-            app_handle: None,
+            events: Arc::new(NullEventSink),
+            durable_recovery_state: None,
         },
         workspace_repo,
     )
@@ -1246,7 +1248,8 @@ async fn reconciliation_skips_missing_workspace_project_and_disabled_projects() 
         agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
         agent_workspace_repair_repo: None,
         plan_branch_repo: Arc::new(MemoryPlanBranchRepository::new()),
-        app_handle: None,
+        events: Arc::new(NullEventSink),
+        durable_recovery_state: None,
     };
     assert_eq!(
         reconcile_agent_workspace_external_pr(
@@ -1414,7 +1417,8 @@ async fn startup_reconciliation_processes_candidates_and_skips_blocked_projects(
         agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
         agent_workspace_repair_repo: None,
         plan_branch_repo: Arc::new(MemoryPlanBranchRepository::new()),
-        app_handle: None,
+        events: Arc::new(NullEventSink),
+        durable_recovery_state: None,
     };
 
     reconcile_recent_agent_workspace_external_prs_on_startup(
@@ -1479,7 +1483,8 @@ async fn startup_reconciliation_marks_linked_failed_pr_terminal() {
         agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
         agent_workspace_repair_repo: None,
         plan_branch_repo: Arc::new(MemoryPlanBranchRepository::new()),
-        app_handle: None,
+        events: Arc::new(NullEventSink),
+        durable_recovery_state: None,
     };
 
     reconcile_recent_agent_workspace_external_prs_on_startup(deps, Arc::new(HashSet::new())).await;

@@ -130,6 +130,7 @@ mod task_commits {
             app_state,
             execution_state,
             delegation_service: Default::default(),
+            external_mcp_supervisor: None,
         }
     }
 
@@ -293,6 +294,7 @@ mod ipr_removal {
             app_state,
             execution_state,
             delegation_service: Default::default(),
+            external_mcp_supervisor: None,
         }
     }
 
@@ -956,6 +958,7 @@ mod source_update_conflict {
             app_state,
             execution_state,
             delegation_service: Default::default(),
+            external_mcp_supervisor: None,
         }
     }
 
@@ -1248,6 +1251,7 @@ mod freshness_routing_integration {
             app_state,
             execution_state,
             delegation_service: Default::default(),
+            external_mcp_supervisor: None,
         }
     }
 
@@ -1676,6 +1680,7 @@ mod webhook_emission {
             app_state,
             execution_state,
             delegation_service: Default::default(),
+            external_mcp_supervisor: None,
         }
     }
 

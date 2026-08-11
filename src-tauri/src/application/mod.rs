@@ -44,6 +44,10 @@ mod agent_workspace_fixer_conversation_tests;
 pub mod agent_workspace_local_commit;
 #[cfg(test)]
 mod agent_workspace_local_commit_tests;
+pub(crate) mod agent_workspace_pr_reopen;
+pub(crate) mod agent_workspace_pr_reopen_restore;
+#[cfg(test)]
+mod agent_workspace_pr_reopen_tests;
 pub mod agent_workspace_publication_reconciliation;
 pub(crate) mod agent_workspace_pr_autofix_attempt;
 #[cfg(test)]
@@ -255,6 +259,8 @@ pub mod startup_pipeline_launch;
 #[cfg(test)]
 mod startup_pipeline_tests;
 pub mod startup_runtime_builders;
+#[cfg(test)]
+mod startup_runtime_builders_tests;
 pub mod startup_status;
 pub mod startup_transition_factory;
 pub mod supervisor_service;

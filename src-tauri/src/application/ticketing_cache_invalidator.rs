@@ -1,4 +1,5 @@
 use chrono::Utc;
+use ralphx_events::{emit_serialized, EventSink};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter};
@@ -27,6 +28,23 @@ struct LinearWebhookCachePayload {
 pub struct TicketingCacheInvalidator;
 
 impl TicketingCacheInvalidator {
+    pub fn invalidate_linear_webhook_with_sink(
+        events: &dyn EventSink,
+        raw_body: &[u8],
+        reason: &str,
+    ) -> Option<TicketingCacheInvalidatedEvent> {
+        let event = Self::linear_webhook_event(raw_body, reason)?;
+        if let Err(error) = emit_serialized(events, TICKETING_CACHE_INVALIDATED_EVENT, &event) {
+            tracing::warn!(
+                error = %error,
+                ticket_id = ?event.ticket_id,
+                ticket_key = ?event.ticket_key,
+                "failed to emit ticketing cache invalidation event"
+            );
+        }
+        Some(event)
+    }
+
     pub fn invalidate_linear_webhook(
         app_handle: Option<&AppHandle>,
         raw_body: &[u8],

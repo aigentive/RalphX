@@ -388,7 +388,7 @@ async fn execution_blocked_followup_does_not_reuse_a_different_blocker() {
     .await
     .expect_err("a different blocker must continue to new follow-up creation");
 
-    assert_eq!(error.0, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(error.0, StatusCode::INTERNAL_SERVER_ERROR);
 }
 
 #[tokio::test]
@@ -421,7 +421,7 @@ async fn create_followup_validates_origin_before_spawning_new_branch() {
     assert_eq!(wrong_context.0, StatusCode::BAD_REQUEST);
 
     let (_project_id, origin) = seed_project_conversation(&app_state).await;
-    let unavailable = create_followup_agent_conversation(
+    let launch_error = create_followup_agent_conversation(
         State(state),
         Json({
             let mut req = followup_request(Some(origin.id.as_str()));
@@ -430,8 +430,8 @@ async fn create_followup_validates_origin_before_spawning_new_branch() {
         }),
     )
     .await
-    .expect_err("new branch creation needs an initialized app handle");
-    assert_eq!(unavailable.0, StatusCode::SERVICE_UNAVAILABLE);
+    .expect_err("origin validation must complete before the headless launch fixture fails");
+    assert_eq!(launch_error.0, StatusCode::INTERNAL_SERVER_ERROR);
 }
 
 #[tokio::test]
@@ -449,15 +449,15 @@ async fn create_followup_resolves_origin_from_source_task_workspace() {
         .await
         .unwrap();
 
-    let unavailable = create_followup_agent_conversation_for_request(&state, {
+    let launch_error = create_followup_agent_conversation_for_request(&state, {
         let mut req = followup_request(None);
         req.source_task_id = Some(task.id.as_str().to_string());
         req
     })
     .await
-    .expect_err("resolved source-task origin still needs an initialized app handle");
+    .expect_err("resolved source-task origin must reach the headless launch fixture");
 
-    assert_eq!(unavailable.0, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(launch_error.0, StatusCode::INTERNAL_SERVER_ERROR);
 }
 
 #[tokio::test]

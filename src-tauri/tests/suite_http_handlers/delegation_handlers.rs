@@ -739,6 +739,7 @@ fn build_state(app_state: Arc<AppState>) -> HttpServerState {
         app_state,
         execution_state,
         delegation_service: Default::default(),
+        external_mcp_supervisor: None,
     }
 }
 

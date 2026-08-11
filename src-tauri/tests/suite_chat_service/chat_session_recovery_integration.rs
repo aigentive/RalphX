@@ -9,9 +9,10 @@ use chrono::Utc;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
+use tauri::Manager;
 
 use ralphx_lib::application::chat_service::{
-    attempt_session_recovery, AGENT_ERROR_PREFIX, STALE_SESSION_ERROR,
+    attempt_session_recovery_for_test, AGENT_ERROR_PREFIX, STALE_SESSION_ERROR,
 };
 use ralphx_lib::domain::agents::{AgentHarnessKind, ProviderSessionRef};
 use ralphx_lib::domain::entities::{
@@ -259,7 +260,8 @@ async fn recovery_resolves_persona_from_conversation_row_before_build() {
         .manage(state)
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("mock app");
-    let app_handle = app.handle().clone();
+    let runtime_state = app.state::<ralphx_lib::application::AppState>();
+    let recovery_events = Arc::clone(&runtime_state.events);
     let temp = tempfile::tempdir().expect("temporary recovery runtime");
     let persona_marker = temp.path().join("persona-was-injected");
     let cli_path = temp.path().join("fake-claude");
@@ -278,7 +280,7 @@ async fn recovery_resolves_persona_from_conversation_row_before_build() {
     std::fs::set_permissions(&cli_path, permissions).expect("mark fake recovery cli executable");
 
     let recovered = with_claude_spawn_allowed_in_tests(|| async {
-        attempt_session_recovery::<tauri::test::MockRuntime>(
+        attempt_session_recovery_for_test(
             &conversation_id,
             &conversation,
             AgentHarnessKind::Claude,
@@ -301,7 +303,8 @@ async fn recovery_resolves_persona_from_conversation_row_before_build() {
             true,
             false,
             "stale-session",
-            Some(&app_handle),
+            Some(runtime_state.inner()),
+            recovery_events.as_ref(),
         )
         .await
     })
@@ -397,6 +400,8 @@ async fn recovery_spawn_args_enforce_filesystem_for_builder_and_standalone_chat(
             .manage(state)
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("recovery enforcement app");
+        let runtime_state = app.state::<ralphx_lib::application::AppState>();
+        let recovery_events = Arc::clone(&runtime_state.events);
         let capture_path = validate_absolute_non_root_path(
             &temp.path().join(format!("{label}-spawn.txt")),
             "recovery enforcement capture",
@@ -424,7 +429,7 @@ async fn recovery_spawn_args_enforce_filesystem_for_builder_and_standalone_chat(
             .expect("mark recovery capture CLI executable");
 
         with_claude_spawn_allowed_in_tests(|| async {
-            attempt_session_recovery::<tauri::test::MockRuntime>(
+            attempt_session_recovery_for_test(
                 &conversation_id,
                 &conversation,
                 AgentHarnessKind::Claude,
@@ -447,7 +452,8 @@ async fn recovery_spawn_args_enforce_filesystem_for_builder_and_standalone_chat(
                 false,
                 false,
                 "stale-session",
-                Some(app.handle()),
+                Some(runtime_state.inner()),
+                recovery_events.as_ref(),
             )
             .await
         })
@@ -586,6 +592,8 @@ async fn persona_builder_recovery_uses_authoritative_mode_and_draft_for_both_har
                 .manage(state)
                 .build(tauri::test::mock_context(tauri::test::noop_assets()))
                 .expect("persona builder recovery app");
+            let runtime_state = app.state::<ralphx_lib::application::AppState>();
+            let recovery_events = Arc::clone(&runtime_state.events);
 
             let capture_path = validate_absolute_non_root_path(
                 &temp.path().join(format!("{label}-spawn.txt")),
@@ -643,7 +651,7 @@ printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":10,"cached_inp
                     ),
                 ) as Arc<dyn ralphx_lib::domain::repositories::AgentProviderSettingsRepository>
             });
-            let replacement_session_id = attempt_session_recovery::<tauri::test::MockRuntime>(
+            let replacement_session_id = attempt_session_recovery_for_test(
                 &conversation_id,
                 &stale_caller_copy,
                 harness,
@@ -666,7 +674,8 @@ printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":10,"cached_inp
                 true,
                 false,
                 "stale-builder-session",
-                Some(app.handle()),
+                Some(runtime_state.inner()),
+                recovery_events.as_ref(),
             )
             .await
             .unwrap_or_else(|error| panic!("{label} builder recovery should succeed: {error}"));
@@ -754,6 +763,8 @@ async fn standalone_codex_recovery_persists_replacement_session_and_stays_contai
         .manage(state)
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("Codex recovery app");
+    let runtime_state = app.state::<ralphx_lib::application::AppState>();
+    let recovery_events = Arc::clone(&runtime_state.events);
     let capture_path = validate_absolute_non_root_path(
         &temp.path().join("standalone-codex-spawn.txt"),
         "Codex recovery capture",
@@ -797,7 +808,7 @@ printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":10,"cached_inp
         MemoryAgentProviderSettingsRepository::with_all_providers_enabled(AgentHarnessKind::Codex),
     );
 
-    let replacement_session_id = attempt_session_recovery::<tauri::test::MockRuntime>(
+    let replacement_session_id = attempt_session_recovery_for_test(
         &conversation_id,
         &conversation,
         AgentHarnessKind::Codex,
@@ -820,7 +831,8 @@ printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":10,"cached_inp
         false,
         false,
         "stale-codex-session",
-        Some(app.handle()),
+        Some(runtime_state.inner()),
+        recovery_events.as_ref(),
     )
     .await
     .expect("standalone Codex recovery should succeed");
@@ -921,8 +933,7 @@ async fn recovery_rejects_caller_context_downgrade_before_provider_side_effects(
     std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
     std::fs::set_permissions(&cli_path, permissions)
         .expect("mark recovery mismatch CLI executable");
-
-    let result = attempt_session_recovery::<tauri::test::MockRuntime>(
+    let result = attempt_session_recovery_for_test(
         &conversation_id,
         &conversation,
         AgentHarnessKind::Claude,
@@ -945,7 +956,8 @@ async fn recovery_rejects_caller_context_downgrade_before_provider_side_effects(
         false,
         false,
         "stale-session",
-        None,
+        Some(&state),
+        state.events.as_ref(),
     )
     .await;
 
@@ -970,7 +982,7 @@ async fn recovery_rejects_caller_context_downgrade_before_provider_side_effects(
     );
 
     let mismatched_conversation_id = ChatConversationId::new();
-    let id_result = attempt_session_recovery::<tauri::test::MockRuntime>(
+    let id_result = attempt_session_recovery_for_test(
         &mismatched_conversation_id,
         &conversation,
         AgentHarnessKind::Claude,
@@ -993,7 +1005,8 @@ async fn recovery_rejects_caller_context_downgrade_before_provider_side_effects(
         false,
         false,
         "stale-session",
-        None,
+        Some(&state),
+        state.events.as_ref(),
     )
     .await;
 
@@ -1050,7 +1063,8 @@ async fn recovery_with_persona_feature_off_rebuilds_without_reading_bound_person
         .manage(state)
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("mock app");
-    let app_handle = app.handle().clone();
+    let runtime_state = app.state::<ralphx_lib::application::AppState>();
+    let recovery_events = Arc::clone(&runtime_state.events);
     let temp = tempfile::tempdir().expect("temporary recovery runtime");
     let persona_marker = temp.path().join("persona-was-injected");
     let cli_path = temp.path().join("fake-claude");
@@ -1069,7 +1083,7 @@ async fn recovery_with_persona_feature_off_rebuilds_without_reading_bound_person
     std::fs::set_permissions(&cli_path, permissions).expect("mark fake recovery cli executable");
 
     let recovered = with_claude_spawn_allowed_in_tests(|| async {
-        attempt_session_recovery::<tauri::test::MockRuntime>(
+        attempt_session_recovery_for_test(
             &conversation_id,
             &conversation,
             AgentHarnessKind::Claude,
@@ -1092,7 +1106,8 @@ async fn recovery_with_persona_feature_off_rebuilds_without_reading_bound_person
             false,
             false,
             "stale-session",
-            Some(&app_handle),
+            Some(runtime_state.inner()),
+            recovery_events.as_ref(),
         )
         .await
     })
@@ -1139,7 +1154,8 @@ async fn recovery_with_persona_repo_error_fails_closed() {
         .manage(state)
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("mock app");
-    let app_handle = app.handle().clone();
+    let runtime_state = app.state::<ralphx_lib::application::AppState>();
+    let recovery_events = Arc::clone(&runtime_state.events);
     let temp = tempfile::tempdir().expect("temporary recovery runtime");
     let invoked_marker = temp.path().join("recovery-cli-invoked");
     let cli_path = temp.path().join("fake-claude");
@@ -1155,7 +1171,7 @@ async fn recovery_with_persona_repo_error_fails_closed() {
     std::fs::set_permissions(&cli_path, permissions).expect("mark fake recovery cli executable");
 
     let error = with_claude_spawn_allowed_in_tests(|| async {
-        attempt_session_recovery::<tauri::test::MockRuntime>(
+        attempt_session_recovery_for_test(
             &conversation_id,
             &conversation,
             AgentHarnessKind::Claude,
@@ -1178,7 +1194,8 @@ async fn recovery_with_persona_repo_error_fails_closed() {
             true,
             false,
             "stale-session",
-            Some(&app_handle),
+            Some(runtime_state.inner()),
+            recovery_events.as_ref(),
         )
         .await
     })

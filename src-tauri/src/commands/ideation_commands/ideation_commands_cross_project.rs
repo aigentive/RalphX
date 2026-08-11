@@ -7,7 +7,8 @@
 use std::collections::HashMap;
 
 use ralphx_domain::entities::EventType;
-use tauri::{Emitter, State};
+use ralphx_events::EventSink;
+use tauri::State;
 
 use crate::application::plan_reference_import::clone_plan_artifact_for_import;
 use crate::application::AppState;
@@ -29,8 +30,6 @@ use super::ideation_commands_types::{
 // ============================================================================
 
 /// Core implementation for creating a cross-project ideation session.
-/// Generic over Runtime to enable unit testing with MockRuntime.
-///
 /// Logic:
 /// 1. Validate the target project path (security check).
 /// 2. Resolve target project: query by path, auto-create if not found.
@@ -39,9 +38,9 @@ use super::ideation_commands_types::{
 /// 5. Validate no circular import (TOCTOU-safe: done inside the INSERT db.run closure).
 /// 6. Insert the new session with ImportedVerified status and source tracking fields.
 /// 7. Emit events and return response.
-pub(crate) async fn create_cross_project_session_impl<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) async fn create_cross_project_session_impl(
     state: &AppState,
+    events: &dyn EventSink,
     input: CreateCrossProjectSessionInput,
 ) -> Result<IdeationSessionResponse, String> {
     tracing::info!(
@@ -88,9 +87,10 @@ pub(crate) async fn create_cross_project_session_impl<R: tauri::Runtime>(
                 .map_err(|e| e.to_string())?;
 
             // Emit project:created event for real-time UI updates
-            let _ = app.emit(
+            let _ = ralphx_events::emit_serialized(
+                events,
                 "project:created",
-                serde_json::json!({
+                &serde_json::json!({
                     "projectId": project_id_str,
                     "workingDirectory": canonical_str,
                 }),
@@ -236,7 +236,7 @@ pub(crate) async fn create_cross_project_session_impl<R: tauri::Runtime>(
         "sessionId": created.id.to_string(),
         "projectId": created.project_id.to_string(),
     });
-    let _ = app.emit("ideation:session_created", &payload_json);
+    let _ = ralphx_events::emit_serialized(events, "ideation:session_created", &payload_json);
 
     // Layer 2: persist to external_events table (non-fatal)
     if let Err(e) = state
@@ -303,9 +303,8 @@ pub(super) fn require_importable_plan_bundle(
 pub async fn create_cross_project_session(
     input: CreateCrossProjectSessionInput,
     state: State<'_, AppState>,
-    app: tauri::AppHandle,
 ) -> Result<IdeationSessionResponse, String> {
-    create_cross_project_session_impl(&app, &state, input).await
+    create_cross_project_session_impl(&state, state.events.as_ref(), input).await
 }
 
 // ============================================================================

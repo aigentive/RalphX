@@ -976,6 +976,10 @@ pub struct AgentConversationWorkspace {
     /// failed and re-spends agents on identical evidence.
     pub last_blocked_pr_health_fingerprint: Option<String>,
     pub last_blocked_pr_health_at: Option<DateTime<Utc>>,
+    /// When the unattended base-freshness scan last observed this unpublished workspace's base
+    /// as ahead of its effective checkout ref. Cleared when the base becomes current again;
+    /// untouched while base resolution is blocked.
+    pub stale_base_detected_at: Option<DateTime<Utc>>,
     pub status: AgentConversationWorkspaceStatus,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -1033,6 +1037,7 @@ impl AgentConversationWorkspace {
             pr_supervision_updated_at: None,
             last_blocked_pr_health_fingerprint: None,
             last_blocked_pr_health_at: None,
+            stale_base_detected_at: None,
             status: AgentConversationWorkspaceStatus::Active,
             created_at: now,
             updated_at: now,

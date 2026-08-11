@@ -166,6 +166,9 @@ fn row_to_workspace(row: &rusqlite::Row<'_>) -> AppResult<AgentConversationWorks
         last_blocked_pr_health_at: row
             .get::<_, Option<String>>("last_blocked_pr_health_at")?
             .map(|value| parse_datetime(&value)),
+        stale_base_detected_at: row
+            .get::<_, Option<String>>("stale_base_detected_at")?
+            .map(|value| parse_datetime(&value)),
         status: AgentConversationWorkspaceStatus::from_str(&status)
             .unwrap_or(AgentConversationWorkspaceStatus::Active),
         created_at: parse_datetime(&created_at),
@@ -907,6 +910,9 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
         let pr_supervision_updated_at = workspace
             .pr_supervision_updated_at
             .map(|value| value.to_rfc3339());
+        let stale_base_detected_at = workspace
+            .stale_base_detected_at
+            .map(|value| value.to_rfc3339());
         let status = workspace.status.to_string();
         let created_at = workspace.created_at.to_rfc3339();
         let updated_at = Utc::now().to_rfc3339();
@@ -927,9 +933,10 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         auto_publish_paused_pr_auto_merge_desired, pr_autofix_enabled,
                         review_automation_override, pr_auto_merge_desired, pr_auto_merge_method,
                         pr_auto_merge_current, pr_supervision_status,
-                        pr_supervision_summary, pr_supervision_updated_at, status,
+                        pr_supervision_summary, pr_supervision_updated_at,
+                        stale_base_detected_at, status,
                         created_at, updated_at
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38)
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39)
                     ON CONFLICT(conversation_id) DO UPDATE SET
                         project_id=excluded.project_id,
                         mode=excluded.mode,
@@ -965,6 +972,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         pr_supervision_status=excluded.pr_supervision_status,
                         pr_supervision_summary=excluded.pr_supervision_summary,
                         pr_supervision_updated_at=excluded.pr_supervision_updated_at,
+                        stale_base_detected_at=excluded.stale_base_detected_at,
                         status=excluded.status,
                         updated_at=excluded.updated_at",
                     rusqlite::params![
@@ -1003,6 +1011,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         pr_supervision_status,
                         pr_supervision_summary,
                         pr_supervision_updated_at,
+                        stale_base_detected_at,
                         status,
                         created_at,
                         updated_at,
@@ -1458,6 +1467,29 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
             .await
     }
 
+    async fn list_active_unpublished_edit_workspaces(
+        &self,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        self.db
+            .run(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT workspace.*
+                     FROM agent_conversation_workspaces AS workspace
+                     INNER JOIN chat_conversations AS conversation
+                       ON conversation.id = workspace.conversation_id
+                     WHERE workspace.status = 'active'
+                       AND conversation.archived_at IS NULL
+                       AND workspace.mode = 'edit'
+                       AND workspace.linked_plan_branch_id IS NULL
+                       AND workspace.publication_pr_number IS NULL
+                     ORDER BY workspace.updated_at DESC",
+                )?;
+                let rows = stmt.query([])?;
+                collect_workspaces(rows)
+            })
+            .await
+    }
+
     async fn list_active_pr_poller_recovery_workspaces(
         &self,
     ) -> AppResult<Vec<AgentConversationWorkspace>> {
@@ -1741,6 +1773,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                          pr_supervision_status = CASE WHEN ?7 THEN NULL ELSE pr_supervision_status END,
                          pr_supervision_summary = CASE WHEN ?7 THEN NULL ELSE pr_supervision_summary END,
                          pr_supervision_updated_at = CASE WHEN ?7 THEN ?6 ELSE pr_supervision_updated_at END,
+                         stale_base_detected_at = CASE WHEN ?2 IS NOT NULL THEN NULL ELSE stale_base_detected_at END,
                          updated_at = ?6
                      WHERE conversation_id = ?1",
                     rusqlite::params![
@@ -2267,6 +2300,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                          pr_supervision_status = CASE WHEN ?10 THEN NULL ELSE pr_supervision_status END,
                          pr_supervision_summary = CASE WHEN ?10 THEN NULL ELSE pr_supervision_summary END,
                          pr_supervision_updated_at = CASE WHEN ?10 THEN ?11 ELSE pr_supervision_updated_at END,
+                         stale_base_detected_at = CASE WHEN ?4 IS NOT NULL THEN NULL ELSE stale_base_detected_at END,
                          updated_at = ?11
                      WHERE conversation_id = ?1
                        AND publication_metadata_attempt_id = ?2
@@ -2373,6 +2407,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                      pr_supervision_status = CASE WHEN ?6 THEN NULL ELSE pr_supervision_status END,
                      pr_supervision_summary = CASE WHEN ?6 THEN NULL ELSE pr_supervision_summary END,
                      pr_supervision_updated_at = CASE WHEN ?6 THEN ?7 ELSE pr_supervision_updated_at END,
+                     stale_base_detected_at = CASE WHEN ?2 IS NOT NULL THEN NULL ELSE stale_base_detected_at END,
                      updated_at = ?7
                  WHERE conversation_id = ?1
                    AND publication_pr_number IS ?8
@@ -2617,6 +2652,28 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                          updated_at = ?4
                      WHERE conversation_id = ?1",
                     rusqlite::params![conversation_id, fingerprint, observed_at, now],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    async fn set_stale_base_detected_at(
+        &self,
+        conversation_id: &ChatConversationId,
+        detected_at: Option<DateTime<Utc>>,
+    ) -> AppResult<()> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let detected_at = detected_at.map(|value| value.to_rfc3339());
+        let now = Utc::now().to_rfc3339();
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "UPDATE agent_conversation_workspaces
+                     SET stale_base_detected_at = ?2,
+                         updated_at = ?3
+                     WHERE conversation_id = ?1",
+                    rusqlite::params![conversation_id, detected_at, now],
                 )?;
                 Ok(())
             })

@@ -2728,6 +2728,169 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn active_unpublished_edit_workspaces_filters_to_unpublished_open_edit_workspaces() {
+        let repo = MemoryAgentConversationWorkspaceRepository::new();
+        let unpublished = candidate_workspace("unpublished");
+        repo.create_or_update(unpublished.clone()).await.unwrap();
+
+        let mut published = candidate_workspace("published");
+        published.publication_pr_number = Some(72);
+        published.publication_pr_status = Some("open".to_string());
+        repo.create_or_update(published).await.unwrap();
+
+        let mut ideation = candidate_workspace("ideation");
+        ideation.mode = AgentConversationWorkspaceMode::Ideation;
+        repo.create_or_update(ideation).await.unwrap();
+
+        let mut execution_owned = candidate_workspace("execution-owned");
+        execution_owned.linked_plan_branch_id = Some(PlanBranchId::from_string("plan-branch-1"));
+        repo.create_or_update(execution_owned).await.unwrap();
+
+        let mut archived = candidate_workspace("archived");
+        archived.status = AgentConversationWorkspaceStatus::Archived;
+        repo.create_or_update(archived).await.unwrap();
+
+        let workspaces = repo
+            .list_active_unpublished_edit_workspaces()
+            .await
+            .unwrap();
+
+        assert_eq!(workspaces.len(), 1);
+        assert_eq!(workspaces[0].conversation_id, unpublished.conversation_id);
+    }
+
+    #[tokio::test]
+    async fn stale_base_detected_at_round_trips_through_create_or_update() {
+        let repo = MemoryAgentConversationWorkspaceRepository::new();
+        let mut workspace = candidate_workspace("stale-base");
+        let conversation_id = workspace.conversation_id;
+        let detected_at = "2026-08-06T15:00:00+00:00"
+            .parse::<chrono::DateTime<chrono::Utc>>()
+            .unwrap();
+        workspace.stale_base_detected_at = Some(detected_at);
+        repo.create_or_update(workspace).await.unwrap();
+
+        let loaded = repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .unwrap()
+            .expect("workspace should exist");
+        assert_eq!(loaded.stale_base_detected_at, Some(detected_at));
+
+        let mut cleared = loaded;
+        cleared.stale_base_detected_at = None;
+        repo.create_or_update(cleared).await.unwrap();
+
+        let reloaded = repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .unwrap()
+            .expect("workspace should exist");
+        assert_eq!(reloaded.stale_base_detected_at, None);
+    }
+
+    #[tokio::test]
+    async fn set_stale_base_detected_at_round_trips_via_targeted_setter() {
+        let repo = MemoryAgentConversationWorkspaceRepository::new();
+        let workspace = candidate_workspace("stale-base-setter");
+        let conversation_id = workspace.conversation_id;
+        repo.create_or_update(workspace).await.unwrap();
+
+        let detected_at = "2026-08-06T15:00:00+00:00"
+            .parse::<chrono::DateTime<chrono::Utc>>()
+            .unwrap();
+        repo.set_stale_base_detected_at(&conversation_id, Some(detected_at))
+            .await
+            .unwrap();
+        let loaded = repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .unwrap()
+            .expect("workspace should exist");
+        assert_eq!(loaded.stale_base_detected_at, Some(detected_at));
+
+        repo.set_stale_base_detected_at(&conversation_id, None)
+            .await
+            .unwrap();
+        let cleared = repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .unwrap()
+            .expect("workspace should exist");
+        assert_eq!(cleared.stale_base_detected_at, None);
+    }
+
+    #[tokio::test]
+    async fn set_stale_base_detected_at_is_a_no_op_for_a_missing_conversation() {
+        let repo = MemoryAgentConversationWorkspaceRepository::new();
+        let missing_id = ChatConversationId::new();
+
+        repo.set_stale_base_detected_at(&missing_id, Some(chrono::Utc::now()))
+            .await
+            .unwrap();
+
+        assert!(repo
+            .get_by_conversation_id(&missing_id)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn update_publication_clears_stale_base_detected_at_when_pr_number_is_set() {
+        let repo = MemoryAgentConversationWorkspaceRepository::new();
+        let mut workspace = candidate_workspace("stale-base-publish");
+        let conversation_id = workspace.conversation_id;
+        let detected_at = "2026-08-06T15:00:00+00:00"
+            .parse::<chrono::DateTime<chrono::Utc>>()
+            .unwrap();
+        workspace.stale_base_detected_at = Some(detected_at);
+        repo.create_or_update(workspace).await.unwrap();
+
+        repo.update_publication(
+            &conversation_id,
+            Some(91),
+            Some("https://github.com/owner/repo/pull/91"),
+            Some("open"),
+            Some("pushed"),
+        )
+        .await
+        .unwrap();
+
+        let updated = repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .unwrap()
+            .expect("workspace should exist");
+        assert_eq!(updated.publication_pr_number, Some(91));
+        assert_eq!(updated.stale_base_detected_at, None);
+    }
+
+    #[tokio::test]
+    async fn update_publication_leaves_stale_base_detected_at_untouched_when_pr_number_is_none() {
+        let repo = MemoryAgentConversationWorkspaceRepository::new();
+        let mut workspace = candidate_workspace("stale-base-publish-none");
+        let conversation_id = workspace.conversation_id;
+        let detected_at = "2026-08-06T15:00:00+00:00"
+            .parse::<chrono::DateTime<chrono::Utc>>()
+            .unwrap();
+        workspace.stale_base_detected_at = Some(detected_at);
+        repo.create_or_update(workspace).await.unwrap();
+
+        repo.update_publication(&conversation_id, None, None, None, None)
+            .await
+            .unwrap();
+
+        let updated = repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .unwrap()
+            .expect("workspace should exist");
+        assert_eq!(updated.publication_pr_number, None);
+        assert_eq!(updated.stale_base_detected_at, Some(detected_at));
+    }
+
+    #[tokio::test]
     async fn transient_publish_status_workspaces_filter_stale_active_open_rows() {
         let repo = MemoryAgentConversationWorkspaceRepository::new();
         let stale = chrono::Utc::now() - chrono::Duration::minutes(10);

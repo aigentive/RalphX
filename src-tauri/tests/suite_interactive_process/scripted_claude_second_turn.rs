@@ -1,10 +1,11 @@
 use std::fs;
 use std::process::Stdio;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
+use ralphx_events::RecordingEventSink;
 use ralphx_lib::application::chat_service::{
-    build_initial_prompt, process_stream_background, ChatService, SendMessageOptions,
+    build_initial_prompt, process_stream_background_for_test, ChatService, SendMessageOptions,
     StreamingStateCache,
 };
 use ralphx_lib::application::interactive_process_registry::{
@@ -18,8 +19,8 @@ use ralphx_lib::domain::entities::{
 };
 use ralphx_lib::domain::services::QueueKey;
 use ralphx_lib::infrastructure::agents::claude::format_stream_json_input;
-use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
-use tauri::{Listener, Manager};
+use tauri::test::{mock_builder, mock_context, noop_assets};
+use tauri::Manager;
 use tokio::process::Command;
 use tokio::time::{sleep, timeout};
 use tokio_util::sync::CancellationToken;
@@ -51,7 +52,6 @@ async fn scripted_claude_process_round_trips_second_turn_through_gate1_and_strea
         .manage(AppState::new_test())
         .build(mock_context(noop_assets()))
         .expect("build mock app");
-    let handle = app.handle().clone();
     let state = app.state::<AppState>();
     let execution_state = Arc::new(ExecutionState::new());
     let context_id = "scripted-claude-second-turn-project";
@@ -84,24 +84,7 @@ async fn scripted_claude_process_round_trips_second_turn_through_gate1_and_strea
         .expect("persist authoritative run");
     let run_id = run.id.as_str().to_string();
 
-    let streamed_chunks = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
-    let streamed_chunks_for_listener = Arc::clone(&streamed_chunks);
-    handle.listen("agent:chunk", move |event| {
-        let payload = serde_json::from_str(event.payload()).expect("chunk payload JSON");
-        streamed_chunks_for_listener
-            .lock()
-            .expect("chunk event lock")
-            .push(payload);
-    });
-    let finalized_messages = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
-    let finalized_messages_for_listener = Arc::clone(&finalized_messages);
-    handle.listen("agent:message_created", move |event| {
-        let payload = serde_json::from_str(event.payload()).expect("message payload JSON");
-        finalized_messages_for_listener
-            .lock()
-            .expect("message event lock")
-            .push(payload);
-    });
+    let events = RecordingEventSink::new();
 
     let capture_dir = tempfile::tempdir().expect("create stdin capture dir");
     let stdin_capture = capture_dir.path().join("second-turn-stdin.json");
@@ -160,16 +143,15 @@ async fn scripted_claude_process_round_trips_second_turn_through_gate1_and_strea
     let stream_execution_state = Arc::clone(&execution_state);
     let stream_run_id = run_id.clone();
     let stream_key = interactive_key.clone();
-    let stream_handle = handle.clone();
+    let stream_events = events.clone();
     let stream_task = tokio::spawn(async move {
-        process_stream_background::<MockRuntime>(
+        process_stream_background_for_test(
             child,
             AgentHarnessKind::Claude,
             ChatContextType::Project,
             context_id,
             &stream_conversation_id,
-            None,
-            Some(stream_handle),
+            Arc::new(stream_events),
             None,
             None,
             Some(stream_message_repo),
@@ -202,8 +184,7 @@ async fn scripted_claude_process_round_trips_second_turn_through_gate1_and_strea
         "first TurnComplete must retain the live interactive process for the follow-up"
     );
 
-    let service = state
-        .build_chat_service_for_runtime(Some(Arc::clone(&execution_state)), Some(handle.clone()));
+    let service = state.build_chat_service_with_execution_state(Arc::clone(&execution_state));
     let follow_up = "continue exactly this scripted Claude conversation";
     let send = service
         .send_message(
@@ -273,13 +254,22 @@ async fn scripted_claude_process_round_trips_second_turn_through_gate1_and_strea
     );
 
     let expected_conversation_id = conversation.id.as_str();
-    let chunks = streamed_chunks.lock().expect("chunk event lock");
+    let emitted = events.events();
+    let chunks: Vec<_> = emitted
+        .iter()
+        .filter(|event| event.event == "agent:chunk")
+        .map(|event| &event.payload)
+        .collect();
     assert!(chunks.iter().any(|payload| {
         payload["text"].as_str() == Some("second turn response")
             && payload["run_id"].as_str() == Some(run_id.as_str())
             && payload["conversation_id"].as_str() == Some(expected_conversation_id.as_str())
     }));
-    let assistant_events = finalized_messages.lock().expect("message event lock");
+    let assistant_events: Vec<_> = emitted
+        .iter()
+        .filter(|event| event.event == "agent:message_created")
+        .map(|event| &event.payload)
+        .collect();
     assert!(assistant_events.iter().any(|payload| {
         payload["role"].as_str() == Some("orchestrator")
             && payload["content"].as_str() == Some("second turn response")

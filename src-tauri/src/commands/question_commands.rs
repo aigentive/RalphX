@@ -1,6 +1,7 @@
 // Tauri commands for question resolution
 // Allows frontend to resolve pending questions from agents (AskUserQuestion)
 
+use ralphx_events::emit_serialized;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::{Emitter, Runtime, State};
@@ -13,8 +14,8 @@ use crate::application::interactive_notification_producer::question_notification
 use crate::application::{PendingQuestionInfo, QuestionAnswer};
 use crate::commands::unified_chat_commands::{
     create_chat_service, ensure_plan_workspace_planning_session_link_for_send,
-    switch_agent_conversation_mode_for_state_allowing_running, ModeSwitchInitiator,
-    SwitchAgentConversationModeInput,
+    switch_agent_conversation_mode_for_state_allowing_running_with_execution_state,
+    ModeSwitchInitiator, SwitchAgentConversationModeInput,
 };
 use crate::commands::ExecutionState;
 use crate::domain::entities::{ChatContextType, ChatConversationId};
@@ -221,21 +222,23 @@ async fn handle_accepted_plan_mode_proposal<R: Runtime + 'static>(
         false => None,
     };
 
-    if let Err(error) = switch_agent_conversation_mode_for_state_allowing_running(
-        SwitchAgentConversationModeInput {
-            conversation_id: conversation_id.as_str(),
-            mode: "plan".to_string(),
-            base_ref_kind: None,
-            base_branch_mode: None,
-            base_ref: None,
-            base_display_name: None,
-            base_source_pull_request: None,
-            runtime_override: None,
-        },
-        state,
-        ModeSwitchInitiator::User,
-    )
-    .await
+    if let Err(error) =
+        switch_agent_conversation_mode_for_state_allowing_running_with_execution_state(
+            SwitchAgentConversationModeInput {
+                conversation_id: conversation_id.as_str(),
+                mode: "plan".to_string(),
+                base_ref_kind: None,
+                base_branch_mode: None,
+                base_ref: None,
+                base_display_name: None,
+                base_source_pull_request: None,
+                runtime_override: None,
+            },
+            state,
+            execution_state,
+            ModeSwitchInitiator::User,
+        )
+        .await
     {
         let _ =
             release_no_owner_plan_mode_handoff_reservation(&service, no_owner_reservation.as_ref())
@@ -439,15 +442,14 @@ pub async fn resolve_user_question<R: Runtime + 'static>(
         };
 
         if let Some(ref sid) = result.session_id {
-            if let Some(ref app_handle) = state.app_handle {
-                let _ = app_handle.emit(
-                    "agent:question_resolved",
-                    serde_json::json!({
-                        "sessionId": sid,
-                        "requestId": &request_id,
-                    }),
-                );
-            }
+            let _ = emit_serialized(
+                state.events.as_ref(),
+                "agent:question_resolved",
+                &serde_json::json!({
+                    "sessionId": sid,
+                    "requestId": &request_id,
+                }),
+            );
         }
         Ok(ResolveQuestionResponse {
             success: true,

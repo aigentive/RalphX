@@ -41,9 +41,9 @@ export function useChatBottomInset(): ChatBottomInset {
       element: null,
       detail: { previousInsetPx, insetPx },
     });
-    if (spacerElRef.current) {
-      spacerElRef.current.style.height = `${insetPx}px`;
-    }
+    // The transcript spacer sizes itself from the inherited custom property.
+    // Writing its height here as well would leave the inset unreserved for a
+    // frame every time the last item - which now owns the spacer - remounts.
     containerElRef.current?.style.setProperty(
       "--chat-bottom-inset",
       `${insetPx}px`,
@@ -81,9 +81,6 @@ export function useChatBottomInset(): ChatBottomInset {
   const registerTranscriptSpacer = useCallback(
     (element: HTMLElement | null) => {
       spacerElRef.current = element;
-      if (element) {
-        element.style.height = `${lastInsetPxRef.current}px`;
-      }
     },
     [],
   );

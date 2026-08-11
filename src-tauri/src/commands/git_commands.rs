@@ -4,11 +4,11 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::{Manager, State};
+use tauri::State;
 
 use crate::application::git_service::{CommitInfo, DiffStats, GitService};
 use crate::application::runtime_factory::{
-    build_task_scheduler_with_fallback, build_transition_service_with_fallback, RuntimeFactoryDeps,
+    build_task_scheduler_from_deps, build_transition_service_from_deps, RuntimeFactoryDeps,
 };
 use crate::application::task_diff_base::read_task_diff_stats_from_resolved_base;
 use crate::application::{AppState, TaskTransitionService};
@@ -17,7 +17,6 @@ use crate::commands::ExecutionState;
 use crate::domain::entities::{
     GitMode, InternalStatus, PlanBranch, ProjectId, TaskCategory, TaskId,
 };
-use crate::domain::repositories::ExecutionSettingsRepository;
 use crate::domain::state_machine::services::TaskScheduler;
 
 /// Response for get_task_commits command
@@ -440,8 +439,8 @@ async fn retry_merge_inner(
                 task_id = task_id_parsed.as_str(),
                 "Manual retry detected commit-hook MergeIncomplete — rerouting to revision flow"
             );
-            let transition_service = app_state
-                .build_transition_service_with_execution_state(Arc::clone(&execution_state));
+            let transition_service =
+                app_state.build_transition_service_for_runtime(Arc::clone(&execution_state), None);
             transition_service
                 .reroute_commit_hook_merge_failure(&task_id_parsed, None, true, "manual_retry")
                 .await
@@ -543,53 +542,14 @@ async fn retry_merge_inner(
         "Retry merge accepted, spawning background execution"
     );
 
-    // Clone necessary repositories and state for background task
-    let task_repo = Arc::clone(&app_state.task_repo);
-    let task_dependency_repo = Arc::clone(&app_state.task_dependency_repo);
-    let project_repo = Arc::clone(&app_state.project_repo);
-    let artifact_repo = Arc::clone(&app_state.artifact_repo);
-    let chat_message_repo = Arc::clone(&app_state.chat_message_repo);
-    let chat_attachment_repo = Arc::clone(&app_state.chat_attachment_repo);
-    let chat_conversation_repo = Arc::clone(&app_state.chat_conversation_repo);
-    let agent_run_repo = Arc::clone(&app_state.agent_run_repo);
-    let ideation_session_repo = Arc::clone(&app_state.ideation_session_repo);
-    let activity_event_repo = Arc::clone(&app_state.activity_event_repo);
-    let message_queue = Arc::clone(&app_state.message_queue);
-    let running_agent_registry = Arc::clone(&app_state.running_agent_registry);
-    let plan_branch_repo = Arc::clone(&app_state.plan_branch_repo);
-    let memory_event_repo = Arc::clone(&app_state.memory_event_repo);
-    let execution_settings_repo = Arc::clone(&app_state.execution_settings_repo);
-    let agent_lane_settings_repo = Arc::clone(&app_state.agent_lane_settings_repo);
+    let runtime_deps = RuntimeFactoryDeps::from_app_state(app_state);
     let execution_state_clone = Arc::clone(&execution_state);
-    let app_handle_opt = app_state.app_handle.clone();
     let task_id_for_spawn = task_id_parsed.clone();
-    let ipr = Arc::clone(&app_state.interactive_process_registry);
 
     // Spawn background task for merge execution
     tokio::spawn(async move {
-        execute_merge_retry_background(
-            task_id_for_spawn,
-            task_repo,
-            task_dependency_repo,
-            project_repo,
-            artifact_repo,
-            chat_message_repo,
-            chat_attachment_repo,
-            chat_conversation_repo,
-            agent_run_repo,
-            ideation_session_repo,
-            activity_event_repo,
-            message_queue,
-            running_agent_registry,
-            plan_branch_repo,
-            memory_event_repo,
-            execution_settings_repo,
-            agent_lane_settings_repo,
-            execution_state_clone,
-            app_handle_opt,
-            ipr,
-        )
-        .await;
+        execute_merge_retry_background(task_id_for_spawn, runtime_deps, execution_state_clone)
+            .await;
     });
 
     Ok(())
@@ -599,106 +559,36 @@ async fn retry_merge_inner(
 ///
 /// This function runs the actual merge transition in the background.
 /// It ensures the in-flight guard is cleared on completion.
-#[allow(clippy::too_many_arguments)]
 async fn execute_merge_retry_background(
     task_id: TaskId,
-    task_repo: Arc<dyn crate::domain::repositories::TaskRepository>,
-    task_dependency_repo: Arc<dyn crate::domain::repositories::TaskDependencyRepository>,
-    project_repo: Arc<dyn crate::domain::repositories::ProjectRepository>,
-    artifact_repo: Arc<dyn crate::domain::repositories::ArtifactRepository>,
-    chat_message_repo: Arc<dyn crate::domain::repositories::ChatMessageRepository>,
-    chat_attachment_repo: Arc<dyn crate::domain::repositories::ChatAttachmentRepository>,
-    chat_conversation_repo: Arc<dyn crate::domain::repositories::ChatConversationRepository>,
-    agent_run_repo: Arc<dyn crate::domain::repositories::AgentRunRepository>,
-    ideation_session_repo: Arc<dyn crate::domain::repositories::IdeationSessionRepository>,
-    activity_event_repo: Arc<dyn crate::domain::repositories::ActivityEventRepository>,
-    message_queue: Arc<crate::domain::services::MessageQueue>,
-    running_agent_registry: Arc<dyn crate::domain::services::RunningAgentRegistry>,
-    plan_branch_repo: Arc<dyn crate::domain::repositories::PlanBranchRepository>,
-    memory_event_repo: Arc<dyn crate::domain::repositories::MemoryEventRepository>,
-    execution_settings_repo: Arc<dyn ExecutionSettingsRepository>,
-    agent_lane_settings_repo: Arc<dyn crate::domain::repositories::AgentLaneSettingsRepository>,
+    deps: RuntimeFactoryDeps,
     execution_state: Arc<ExecutionState>,
-    app_handle_opt: Option<tauri::AppHandle>,
-    interactive_process_registry: Arc<crate::application::InteractiveProcessRegistry>,
 ) {
     tracing::info!(
         task_id = task_id.as_str(),
         "Background merge retry execution started"
     );
 
-    let deps = RuntimeFactoryDeps {
-        task_repo: Arc::clone(&task_repo),
-        task_step_repo: None,
-        validation_run_repo: None,
-        external_events_repo: None,
-        webhook_publisher: None,
-        task_dependency_repo: Arc::clone(&task_dependency_repo),
-        project_repo: Arc::clone(&project_repo),
-        artifact_repo: Arc::clone(&artifact_repo),
-        chat_message_repo: Arc::clone(&chat_message_repo),
-        chat_attachment_repo: Arc::clone(&chat_attachment_repo),
-        conversation_repo: Arc::clone(&chat_conversation_repo),
-        agent_run_repo: Arc::clone(&agent_run_repo),
-        ideation_session_repo: Arc::clone(&ideation_session_repo),
-        activity_event_repo: Arc::clone(&activity_event_repo),
-        message_queue: Arc::clone(&message_queue),
-        running_agent_registry: Arc::clone(&running_agent_registry),
-        memory_event_repo: Arc::clone(&memory_event_repo),
-        agent_clients: None,
-        execution_plan_repo: None,
-        execution_settings_repo: Some(Arc::clone(&execution_settings_repo)),
-        agent_lane_settings_repo: Some(Arc::clone(&agent_lane_settings_repo)),
-        agent_provider_settings_repo: app_handle_opt
-            .as_ref()
-            .and_then(|handle| handle.try_state::<AppState>())
-            .map(|app_state| Arc::clone(&app_state.agent_provider_settings_repo)),
-        manual_role_default_service: app_handle_opt
-            .as_ref()
-            .and_then(|handle| handle.try_state::<AppState>())
-            .map(|app_state| Arc::new(app_state.manual_role_default_service())),
-        review_repo: app_handle_opt
-            .as_ref()
-            .and_then(|handle| handle.try_state::<AppState>())
-            .map(|app_state| Arc::clone(&app_state.review_repo)),
-        plan_branch_repo: Some(Arc::clone(&plan_branch_repo)),
-        branch_update_repo: app_handle_opt
-            .as_ref()
-            .and_then(|handle| handle.try_state::<AppState>())
-            .map(|app_state| Arc::clone(&app_state.branch_update_repo)),
-        agent_conversation_workspace_repo: app_handle_opt
-            .as_ref()
-            .and_then(|handle| handle.try_state::<AppState>())
-            .map(|app_state| Arc::clone(&app_state.agent_conversation_workspace_repo)),
-        interactive_process_registry: Some(Arc::clone(&interactive_process_registry)),
-        github_service: None,
-        pr_poller_registry: None,
-        plan_pr_description_drafter: None,
-    };
-
     // Create transition service with all necessary dependencies
-    let scheduler_concrete = Arc::new(build_task_scheduler_with_fallback(
-        &app_handle_opt,
+    let scheduler_concrete = Arc::new(build_task_scheduler_from_deps(
+        None,
         Arc::clone(&execution_state),
         &deps,
     ));
     scheduler_concrete.set_self_ref(Arc::clone(&scheduler_concrete) as Arc<dyn TaskScheduler>);
     let task_scheduler: Arc<dyn TaskScheduler> = scheduler_concrete;
 
-    let transition_service = build_transition_service_with_fallback(
-        &app_handle_opt,
-        Arc::clone(&execution_state),
-        &deps,
-    )
-    .with_task_scheduler(task_scheduler)
-    .into_arc();
+    let transition_service =
+        build_transition_service_from_deps(None, Arc::clone(&execution_state), &deps)
+            .with_task_scheduler(task_scheduler)
+            .into_arc();
 
     let result = transition_service
         .transition_task(&task_id, InternalStatus::PendingMerge)
         .await;
 
     // Clear in-flight guard regardless of success/failure
-    if let Err(e) = clear_merge_retry_guard(&task_id, &task_repo).await {
+    if let Err(e) = clear_merge_retry_guard(&task_id, &deps.task_repo).await {
         tracing::warn!(
             task_id = task_id.as_str(),
             error = %e,
@@ -1143,15 +1033,12 @@ fn create_transition_service(
 ) -> TaskTransitionService {
     // Create scheduler for post-merge scheduling (unblocked plan_merge tasks)
     let scheduler_concrete =
-        Arc::new(state.build_task_scheduler_for_runtime(
-            Arc::clone(execution_state),
-            state.app_handle.clone(),
-        ));
+        Arc::new(state.build_task_scheduler_for_runtime(Arc::clone(execution_state), None));
     scheduler_concrete.set_self_ref(Arc::clone(&scheduler_concrete) as Arc<dyn TaskScheduler>);
     let task_scheduler: Arc<dyn TaskScheduler> = scheduler_concrete;
 
     let mut svc = state
-        .build_transition_service_with_execution_state(Arc::clone(execution_state))
+        .build_transition_service_for_runtime(Arc::clone(execution_state), None)
         .with_task_scheduler(task_scheduler)
         .with_pr_poller_registry(Arc::clone(&state.pr_poller_registry));
     if let Some(ref github_svc) = state.github_service {

@@ -541,6 +541,7 @@ pub async fn prepare_agent_conversation_workspace_with_setup_mode_defaults_and_b
         pr_supervision_updated_at: None,
         last_blocked_pr_health_fingerprint: None,
         last_blocked_pr_health_at: None,
+        stale_base_detected_at: None,
         status: crate::domain::entities::AgentConversationWorkspaceStatus::Active,
         created_at: Utc::now(),
         updated_at: Utc::now(),
@@ -772,7 +773,7 @@ fn log_agent_workspace_probe_result(
     );
 }
 
-async fn run_or_defer_agent_conversation_workspace_setup(
+pub(crate) async fn run_or_defer_agent_conversation_workspace_setup(
     project: &Project,
     conversation_id: &ChatConversationId,
     worktree_path: &Path,
@@ -1106,7 +1107,7 @@ async fn ensure_agent_conversation_worktree(
     result
 }
 
-async fn ensure_linked_agent_conversation_branch_worktree(
+pub(crate) async fn ensure_linked_agent_conversation_branch_worktree(
     repo_path: &Path,
     workspace_path: &Path,
     branch_name: &str,

@@ -83,7 +83,7 @@ pub(super) struct FinishFlow {
     pub(super) composer_artifact_references: Vec<ComposerArtifactReference>,
 }
 
-impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
+impl<'a> AgentConversationStartService<'a> {
     pub(super) async fn persist_and_spawn(
         self,
         flow: FinishFlow,
@@ -112,7 +112,7 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
         } = flow;
         let conversation_persist_started = Instant::now();
         emit_start_agent_conversation_progress(
-            &self.deps.app_handle,
+            self.deps.events.as_ref(),
             context_type_label,
             &context_log_id,
             &conversation.id,
@@ -383,7 +383,7 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
         let workspace_persist_started = Instant::now();
         if workspace.is_some() {
             emit_start_agent_conversation_progress(
-                &self.deps.app_handle,
+                self.deps.events.as_ref(),
                 context_type_label,
                 &context_log_id,
                 &conversation.id,
@@ -493,9 +493,10 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                 })
                 .await
                 .map_err(|error| error.to_string())?;
-            let _ = self.deps.app_handle.emit(
+            let _ = ralphx_events::emit_serialized(
+                self.deps.events.as_ref(),
                 "ticketing:cache_invalidated",
-                serde_json::json!({
+                &serde_json::json!({
                     "provider": "clickup",
                     "ticketId": clickup_task.id,
                     "ticketKey": clickup_task.custom_id,
@@ -519,9 +520,10 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
 
         let event_emit_started = Instant::now();
         if should_create_conversation {
-            let _ = self.deps.app_handle.emit(
+            let _ = ralphx_events::emit_serialized(
+                self.deps.events.as_ref(),
                 "agent:conversation_created",
-                AgentConversationCreatedPayload {
+                &AgentConversationCreatedPayload {
                     conversation_id: conversation.id.as_str(),
                     context_type: context_type.to_string(),
                     context_id: send_context_id.clone(),
@@ -536,10 +538,10 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
         );
 
         let service_create_started = Instant::now();
-        let service = self.deps.state.build_chat_service_for_runtime(
-            Some(Arc::clone(self.deps.execution_state)),
-            Some(self.deps.app_handle.clone()),
-        );
+        let service = self
+            .deps
+            .state
+            .build_chat_service_with_execution_state(Arc::clone(self.deps.execution_state));
         log_start_agent_conversation_phase(
             &context_log_id,
             Some(&conversation.id),
@@ -581,7 +583,7 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
 
         let send_message_started = Instant::now();
         emit_start_agent_conversation_progress(
-            &self.deps.app_handle,
+            self.deps.events.as_ref(),
             context_type_label,
             &context_log_id,
             &conversation.id,

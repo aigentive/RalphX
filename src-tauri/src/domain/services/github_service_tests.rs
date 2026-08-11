@@ -114,6 +114,10 @@ impl GithubServiceTrait for DefaultOnlyGithubService {
         unimplemented!("not needed for default annotation coverage")
     }
 
+    async fn reopen_pr(&self, _working_dir: &Path, _pr_number: i64) -> AppResult<()> {
+        unimplemented!("not needed for default annotation coverage")
+    }
+
     async fn delete_remote_branch(&self, _working_dir: &Path, _branch: &str) -> AppResult<()> {
         unimplemented!("not needed for default annotation coverage")
     }

@@ -155,6 +155,18 @@ repair_string_enum!(AgentWorkspaceRepairOperationStatus {
     Held => "held",
 });
 
+repair_string_enum!(AgentWorkspaceRepairOperationRecoveryAction {
+    None => "none",
+    ResumePublish => "resume_publish",
+    RetryRepair => "retry_repair",
+});
+
+impl Default for AgentWorkspaceRepairOperationRecoveryAction {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
 repair_string_enum!(AgentWorkspaceRepairOperationHoldReason {
     UnchangedHealth => "pr_autofix_unchanged_health",
     PreExistingOnBase => "pr_autofix_pre_existing_on_base",
@@ -289,6 +301,15 @@ impl AgentWorkspaceRepairAttempt {
     }
 
     pub fn operation_snapshot(&self) -> AgentWorkspaceRepairOperationSnapshot {
+        self.operation_snapshot_with_recovery_action(
+            AgentWorkspaceRepairOperationRecoveryAction::None,
+        )
+    }
+
+    pub fn operation_snapshot_with_recovery_action(
+        &self,
+        recovery_action: AgentWorkspaceRepairOperationRecoveryAction,
+    ) -> AgentWorkspaceRepairOperationSnapshot {
         let publish_redrive = self.phase == AgentWorkspaceRepairPhase::Ready
             && self
                 .pending_reasons
@@ -378,6 +399,7 @@ impl AgentWorkspaceRepairAttempt {
             source: self.source,
             stage,
             status,
+            recovery_action,
             hold_reason,
             summary: self.summary.clone(),
             blocker: self.blocker.clone(),
@@ -484,6 +506,8 @@ pub struct AgentWorkspaceRepairOperationSnapshot {
     pub source: AgentWorkspaceRepairSource,
     pub stage: AgentWorkspaceRepairOperationStage,
     pub status: AgentWorkspaceRepairOperationStatus,
+    #[serde(default)]
+    pub recovery_action: AgentWorkspaceRepairOperationRecoveryAction,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hold_reason: Option<AgentWorkspaceRepairOperationHoldReason>,
     pub summary: Option<String>,

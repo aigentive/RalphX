@@ -1,6 +1,8 @@
 use super::agent_plan_commands::{
-    activate_agent_plan_direct_implementation_for_state, activate_agent_task_pipeline_for_state,
-    copy_agent_conversation_plan_for_state, import_agent_conversation_plan_for_state,
+    activate_agent_plan_direct_implementation_for_state as activate_agent_plan_direct_implementation_with_execution_state,
+    activate_agent_task_pipeline_for_state as activate_agent_task_pipeline_with_execution_state,
+    copy_agent_conversation_plan_for_state as copy_agent_conversation_plan_with_execution_state,
+    import_agent_conversation_plan_for_state as import_agent_conversation_plan_with_execution_state,
     validate_complete_task_pipeline_proposal_selection, ActivateAgentPlanDirectImplementationInput,
     ActivateAgentTaskPipelineInput, CopyAgentConversationPlanInput,
     ImportAgentConversationPlanInput,
@@ -14,6 +16,7 @@ use crate::application::{
     interactive_process_registry::{InteractiveProcessKey, InteractiveProcessMetadata},
     AppState,
 };
+use crate::commands::ExecutionState;
 use crate::domain::agents::{
     AgentHarnessKind, ManualRoleRuntimeOverride, ManualServiceTier, ProviderSessionRef,
 };
@@ -28,7 +31,41 @@ use crate::domain::repositories::PlanApprovalActor;
 use crate::domain::services::RunningAgentKey;
 use std::path::Path;
 use std::process::Command;
+use std::sync::Arc;
 use tempfile::TempDir;
+
+async fn copy_agent_conversation_plan_for_state(
+    input: CopyAgentConversationPlanInput,
+    state: &AppState,
+) -> Result<super::agent_plan_commands::AgentConversationPlanSeedResponse, String> {
+    let execution_state = Arc::new(ExecutionState::new());
+    copy_agent_conversation_plan_with_execution_state(input, state, &execution_state).await
+}
+
+async fn import_agent_conversation_plan_for_state(
+    input: ImportAgentConversationPlanInput,
+    state: &AppState,
+) -> Result<super::agent_plan_commands::AgentConversationPlanSeedResponse, String> {
+    let execution_state = Arc::new(ExecutionState::new());
+    import_agent_conversation_plan_with_execution_state(input, state, &execution_state).await
+}
+
+async fn activate_agent_task_pipeline_for_state(
+    input: ActivateAgentTaskPipelineInput,
+    state: &AppState,
+) -> Result<crate::commands::unified_chat_commands::AgentConversationWorkspaceResponse, String> {
+    let execution_state = Arc::new(ExecutionState::new());
+    activate_agent_task_pipeline_with_execution_state(input, state, &execution_state).await
+}
+
+async fn activate_agent_plan_direct_implementation_for_state(
+    input: ActivateAgentPlanDirectImplementationInput,
+    state: &AppState,
+) -> Result<super::agent_plan_commands::ActivateAgentPlanDirectImplementationResponse, String> {
+    let execution_state = Arc::new(ExecutionState::new());
+    activate_agent_plan_direct_implementation_with_execution_state(input, state, &execution_state)
+        .await
+}
 
 fn git(root: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
@@ -1626,11 +1663,16 @@ async fn supervised_apply_requires_the_owning_tasks_conversation() {
         target_column: "auto".to_string(),
         base_branch_override: None,
     };
+    let execution_state = Arc::new(ExecutionState::new());
 
-    let error =
-        apply_supervised_proposals_core(&state, input(), "different-conversation".to_string())
-            .await
-            .unwrap_err();
+    let error = apply_supervised_proposals_core(
+        &state,
+        &execution_state,
+        input(),
+        "different-conversation".to_string(),
+    )
+    .await
+    .unwrap_err();
     assert!(error
         .to_string()
         .contains("Tasks conversation no longer owns this pipeline"));
@@ -1641,10 +1683,14 @@ async fn supervised_apply_requires_the_owning_tasks_conversation() {
         .unwrap()
         .is_empty());
 
-    let result =
-        apply_supervised_proposals_core(&state, input(), conversation.id.as_str().to_string())
-            .await
-            .unwrap();
+    let result = apply_supervised_proposals_core(
+        &state,
+        &execution_state,
+        input(),
+        conversation.id.as_str().to_string(),
+    )
+    .await
+    .unwrap();
     assert_eq!(result.tasks_created, 1);
     assert_eq!(
         state

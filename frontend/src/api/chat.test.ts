@@ -1649,6 +1649,7 @@ describe("chat api", () => {
           source: "base_update",
           stage: "repairing",
           status: "active",
+          recovery_action: "none",
           hold_reason: null,
           summary: "Resolving the base conflict",
           blocker: null,
@@ -1690,6 +1691,7 @@ describe("chat api", () => {
         generation: 2,
         stage: "repairing",
         status: "active",
+        recoveryAction: "none",
         holdReason: null,
         automaticContinuation: true,
       },
@@ -1707,6 +1709,26 @@ describe("chat api", () => {
       AgentConversationWorkspaceResponseSchema.parse(planSeedWorkspaceResponse())
         .maintenance_operation,
     ).toBeNull();
+  });
+
+  it("defaults stale_base_detected_at to null for older backends that omit it", () => {
+    expect(
+      AgentConversationWorkspaceResponseSchema.parse(planSeedWorkspaceResponse())
+        .stale_base_detected_at,
+    ).toBeNull();
+  });
+
+  it("transforms stale_base_detected_at to staleBaseDetectedAt", async () => {
+    mockInvoke.mockResolvedValueOnce([
+      {
+        ...planSeedWorkspaceResponse(),
+        stale_base_detected_at: "2026-08-06T15:00:00Z",
+      },
+    ]);
+
+    const result = await listAgentConversationWorkspacesByProject("project-1");
+
+    expect(result[0]?.staleBaseDetectedAt).toBe("2026-08-06T15:00:00Z");
   });
 
   it("transforms a typed held maintenance operation", async () => {
@@ -1820,8 +1842,32 @@ describe("chat api", () => {
           started_at: "2026-01-24T10:00:00Z",
           updated_at: "2026-01-24T10:01:00Z",
         },
-      }).maintenance_operation?.hold_reason,
-    ).toBeNull();
+      }).maintenance_operation,
+    ).toMatchObject({
+      hold_reason: null,
+      recovery_action: "none",
+    });
+  });
+
+  it("rejects an unknown maintenance recovery action", () => {
+    expect(() =>
+      AgentConversationWorkspaceResponseSchema.parse({
+        ...planSeedWorkspaceResponse(),
+        maintenance_operation: {
+          operation_id: "maintenance-blocked",
+          generation: 1,
+          source: "publish",
+          stage: "blocked",
+          status: "blocked",
+          recovery_action: "guess_retry",
+          summary: "Blocked.",
+          blocker: "Blocked.",
+          automatic_continuation: false,
+          started_at: "2026-01-24T10:00:00Z",
+          updated_at: "2026-01-24T10:01:00Z",
+        },
+      }),
+    ).toThrow();
   });
 
   it("sends the current repair version for hold actions", async () => {

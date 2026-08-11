@@ -555,7 +555,7 @@ fn repo_plugin_dir() -> PathBuf {
 #[tokio::test]
 async fn external_mcp_readiness_gate_rejects_missing_runtime_but_skips_internal_transport() {
     let plugin_dir = repo_plugin_dir();
-    let external_error = await_required_external_mcp::<tauri::Wry>(
+    let external_error = await_required_external_mcp(
         None,
         AgentHarnessKind::Codex,
         &plugin_dir,
@@ -566,7 +566,7 @@ async fn external_mcp_readiness_gate_rejects_missing_runtime_but_skips_internal_
     .unwrap_err();
     assert!(external_error.contains("managed application runtime"));
 
-    await_required_external_mcp::<tauri::Wry>(
+    await_required_external_mcp(
         None,
         AgentHarnessKind::Codex,
         &plugin_dir,

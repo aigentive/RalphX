@@ -12,6 +12,7 @@ use crate::application::agent_conversation_workspace::{
     AgentConversationWorkspaceBaseSelection,
 };
 use crate::application::{AppState, GitService};
+use crate::commands::ExecutionState;
 use crate::domain::entities::plan_branch::PrStatus;
 use crate::domain::entities::{
     AgentConversationWorkspaceMode, ArtifactId, BranchUpdateCapacityOwnership,
@@ -705,8 +706,10 @@ async fn restart_core_discards_dirty_current_attempt_merge_worktree() {
         ))
         .await
         .expect("proposal should be created");
+    let execution_state = Arc::new(ExecutionState::new());
     let apply_result = apply_proposals_core(
         &state,
+        &execution_state,
         ApplyProposalsInput {
             session_id: session.id.as_str().to_string(),
             proposal_ids: vec![proposal.id.as_str().to_string()],

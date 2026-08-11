@@ -27,7 +27,8 @@ use crate::application::agent_workspace_publish_recovery::{
     AGENT_WORKSPACE_PUBLISH_REDRIVE_DELIVERING_STATUS,
     AGENT_WORKSPACE_PUBLISH_REDRIVE_PENDING_STATUS, AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX,
     AUTO_RETRY_READY_REPAIR_REASON_PREFIX, BLOCKED_STREAK_REARMED_REASON_PREFIX,
-    EXHAUSTED_PUBLISH_REDRIVE_CHECKED_REASON_PREFIX, STALE_NEEDS_AGENT_CLASSIFICATION,
+    CONTINUATION_OPEN_EFFECT_ATTENTION_REASON, EXHAUSTED_PUBLISH_REDRIVE_CHECKED_REASON_PREFIX,
+    STALE_NEEDS_AGENT_CLASSIFICATION,
     STALE_REPAIR_BLOCKED_SUMMARY, STALE_REPAIR_RECOVERED_STEP, STALE_TRANSIENT_CLASSIFICATION,
     STALE_TRANSIENT_RECOVERED_STEP,
 };
@@ -1627,6 +1628,14 @@ wait "$stdin_drain_pid" 2>/dev/null || true
             .count(),
         1,
         "due recovery must settle exactly one delivery event"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.step == "repair_auto_retry_dispatched")
+            .count(),
+        1,
+        "executing a due auto-retry must append exactly one repair_auto_retry_dispatched event (proof obligation 9)"
     );
 
     assert_eq!(
@@ -4242,9 +4251,13 @@ mod extracted_inline_tests {
             .await
             .expect("terminalize owner run");
         assert_eq!(
-            recover_stale_transient_publish_statuses_for_state(&state, 0)
-                .await
-                .expect("terminal-owner recovery sweep"),
+            recover_stale_transient_publish_statuses_for_state_with_redrive_emitter(
+                &state,
+                0,
+                &|_conversation_id| Err("event bus unavailable".to_string()),
+            )
+            .await
+            .expect("terminal-owner recovery sweep"),
             1
         );
         let recovered = state
@@ -4297,9 +4310,13 @@ mod extracted_inline_tests {
             .expect("seed operation lease from a prior process");
 
         assert_eq!(
-            recover_stale_transient_publish_statuses_for_state(&state, 300)
-                .await
-                .expect("startup recovery sweep"),
+            recover_stale_transient_publish_statuses_for_state_with_redrive_emitter(
+                &state,
+                300,
+                &|_conversation_id| Err("event bus unavailable".to_string()),
+            )
+            .await
+            .expect("startup recovery sweep"),
             1,
             "missing process-local liveness must reclaim without the legacy five-minute wait"
         );
@@ -4315,9 +4332,13 @@ mod extracted_inline_tests {
             Some(AGENT_WORKSPACE_PUBLISH_REDRIVE_PENDING_STATUS)
         );
         assert_eq!(
-            recover_stale_transient_publish_statuses_for_state(&state, 300)
-                .await
-                .expect("pending re-drive remains eligible without duplicating recovery state"),
+            recover_stale_transient_publish_statuses_for_state_with_redrive_emitter(
+                &state,
+                300,
+                &|_conversation_id| Err("event bus unavailable".to_string()),
+            )
+            .await
+            .expect("pending re-drive remains eligible without duplicating recovery state"),
             0
         );
     }
@@ -7271,7 +7292,7 @@ async fn not_applied_push_effect_clears_the_fence_and_reacquires_the_lease() {
         ReconciliationRemoteShape::MatchesPrecondition,
     )
     .await;
-    let (state, conversation_id, identity, old_epoch, effect) = (
+    let (state, conversation_id, identity, _old_epoch, effect) = (
         fixture.state,
         fixture.conversation_id,
         fixture.identity,
@@ -7310,8 +7331,8 @@ async fn not_applied_push_effect_clears_the_fence_and_reacquires_the_lease() {
         .expect("check not-applied push effect fence")
         .is_none());
 
-    // The fence clearing must actually unblock: normal reacquire-lease recovery proceeds and the
-    // continuation is re-driven under a fresh epoch, exactly like the already-observed case.
+    // The fence is cleared (effect is Failed). Reacquisition is deferred to the next sweep via
+    // the Noop return; no open-effect recovery pending reason is added for this pass.
     let current = state
         .agent_workspace_repair_repo
         .get_current_repair_attempt(&conversation_id)
@@ -7319,9 +7340,13 @@ async fn not_applied_push_effect_clears_the_fence_and_reacquires_the_lease() {
         .expect("reload not-applied continuation")
         .expect("not-applied continuation remains current");
     assert_eq!(current.phase, AgentWorkspaceRepairPhase::Continuing);
-    assert!(current
-        .target_lease_epoch
-        .is_some_and(|epoch| epoch > old_epoch));
+    assert!(
+        !current
+            .pending_reasons
+            .iter()
+            .any(|reason| reason.starts_with("continuation_open_effect_recovery:")),
+        "not-applied pass must not add an open-effect recovery reason: {current:#?}"
+    );
     assert!(state
         .branch_update_repo
         .get_target_lease(&identity)
@@ -7346,6 +7371,111 @@ async fn not_applied_push_effect_clears_the_fence_and_reacquires_the_lease() {
         .pending_reasons
         .iter()
         .any(|reason| reason == "continuation_open_effect_attention_required"));
+}
+
+#[tokio::test]
+async fn not_applied_push_effect_does_not_re_raise_attention_when_already_escalated() {
+    // Regression: when an attempt already carries CONTINUATION_OPEN_EFFECT_ATTENTION_REASON,
+    // the not-applied arm must resolve the notification (via record_continuation_effect_not_applied)
+    // and return Noop — it must NOT call record_open_effect_continuation_recovery_failure, which
+    // would re-record the attention notification under the same dedupe key that was just resolved.
+    let fixture = seed_open_push_effect_reconciliation_fixture(
+        98,
+        ReconciliationRemoteShape::MatchesPrecondition,
+    )
+    .await;
+    let (state, conversation_id, attempt) = (
+        fixture.state,
+        fixture.conversation_id,
+        fixture.attempt,
+    );
+
+    // Escalate the attempt by injecting CONTINUATION_OPEN_EFFECT_ATTENTION_REASON into its
+    // pending_reasons, simulating a previously escalated open-effect streak.
+    let mut escalated = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load attempt to escalate")
+        .expect("attempt exists to escalate");
+    let expected_phase = escalated.phase;
+    let expected_updated_at = escalated.updated_at;
+    escalated
+        .pending_reasons
+        .push(CONTINUATION_OPEN_EFFECT_ATTENTION_REASON.to_string());
+    escalated.updated_at += chrono::Duration::microseconds(1);
+    match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: escalated,
+            expected_phase,
+            expected_updated_at,
+            next_phase: expected_phase,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("escalate attempt with attention reason")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_) => {}
+        outcome => panic!("escalation must apply, got {outcome:?}"),
+    }
+
+    let _busy_guard =
+        try_acquire_agent_workspace_repair_publish_continuation_guard(&conversation_id)
+            .expect("hold continuation guard for already-escalated not-applied test");
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("not-applied pass on already-escalated attempt"),
+        0
+    );
+
+    // The fence must be cleared.
+    assert!(state
+        .agent_workspace_repair_repo
+        .get_open_repair_effect(&attempt.id)
+        .await
+        .expect("check fence after escalated not-applied pass")
+        .is_none());
+
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload after escalated not-applied pass")
+        .expect("attempt remains after escalated not-applied pass");
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Continuing);
+
+    // No open-effect recovery credit must have been spent; the streak must not grow.
+    assert!(
+        !current
+            .pending_reasons
+            .iter()
+            .any(|reason| reason.starts_with("continuation_open_effect_recovery:")),
+        "not-applied pass must not increment the open-effect streak: {current:#?}"
+    );
+
+    let events = state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("list events after escalated not-applied pass");
+    assert!(
+        events
+            .iter()
+            .any(|event| event.step == "continuation_effect_not_applied"),
+        "not-applied event must be present"
+    );
+    // surface_open_effect_continuation_attention must NOT have been called by the not-applied
+    // arm; if it were, it would append a continuation_open_effect_attention_required step.
+    assert!(
+        !events
+            .iter()
+            .any(|event| event.step == "continuation_open_effect_attention_required"),
+        "no attention_required event must be appended by the not-applied pass: {events:#?}"
+    );
 }
 
 #[tokio::test]
@@ -7654,6 +7784,8 @@ async fn continuation_recovery_failure_streak_stays_independent_of_the_open_effe
         .pending_reasons
         .iter()
         .any(|reason| reason == "continuation_recovery_failure:1"));
+    // The not-applied fence-clearing pass does not record an open-effect recovery reason;
+    // only the independent generic continuation failures produce their own streak.
     assert!(!blocked
         .pending_reasons
         .iter()

@@ -18,6 +18,10 @@ fn test_all_defaults_are_sensible() {
     };
     assert_eq!(cfg.stream.merge_line_read_secs, 600);
     assert_eq!(cfg.stream.completion_grace_secs, 30);
+    assert_eq!(cfg.stream.agent_completion_correlation_ttl_secs, 60);
+    assert_eq!(cfg.stream.agent_completion_correlation_capacity, 1_024);
+    assert_eq!(cfg.stream.agent_completion_processed_ttl_secs, 900);
+    assert_eq!(cfg.stream.agent_completion_processed_capacity, 4_096);
     assert_eq!(cfg.stream.launch_reservation_lease_secs, 30);
     assert_eq!(cfg.stream.execution_attempt_start_tolerance_secs, 1);
     assert_eq!(cfg.stream.notification_retention_read_days, 30);
@@ -61,6 +65,11 @@ fn test_all_defaults_are_sensible() {
         30
     );
     assert_eq!(cfg.git.agent_workspace_publish_recovery_interval_secs, 120);
+    assert_eq!(
+        cfg.git
+            .agent_workspace_repair_reconciliation_scan_interval_secs,
+        60
+    );
     assert_eq!(default_agent_workspace_publish_lease_stale_secs(), 300);
     assert_eq!(
         default_agent_workspace_publish_lease_heartbeat_interval_secs(),
@@ -69,6 +78,10 @@ fn test_all_defaults_are_sensible() {
     assert_eq!(
         default_agent_workspace_publish_recovery_interval_secs(),
         120
+    );
+    assert_eq!(
+        default_agent_workspace_repair_reconciliation_scan_interval_secs(),
+        60
     );
     assert_eq!(cfg.git.terminal_pr_local_cleanup_interval_secs, 900);
     assert_eq!(cfg.git.terminal_pr_local_cleanup_retry_secs, 3_600);
@@ -172,6 +185,10 @@ fn test_env_overrides_apply() {
     apply_env_overrides_with(&mut cfg, &|name| match name {
         "RALPHX_STREAM_MERGE_LINE_READ_SECS" => Some("999".to_string()),
         "RALPHX_STREAM_COMPLETION_GRACE_SECS" => Some("45".to_string()),
+        "RALPHX_STREAM_AGENT_COMPLETION_CORRELATION_TTL_SECS" => Some("75".to_string()),
+        "RALPHX_STREAM_AGENT_COMPLETION_CORRELATION_CAPACITY" => Some("512".to_string()),
+        "RALPHX_STREAM_AGENT_COMPLETION_PROCESSED_TTL_SECS" => Some("600".to_string()),
+        "RALPHX_STREAM_AGENT_COMPLETION_PROCESSED_CAPACITY" => Some("2048".to_string()),
         "RALPHX_STREAM_LAUNCH_RESERVATION_LEASE_SECS" => Some("60".to_string()),
         "RALPHX_STREAM_NOTIFICATION_RETENTION_READ_DAYS" => Some("14".to_string()),
         "RALPHX_STREAM_NOTIFICATION_RETENTION_MAX_ROWS" => Some("250".to_string()),
@@ -200,6 +217,9 @@ fn test_env_overrides_apply() {
             Some("45".to_string())
         }
         "RALPHX_GIT_AGENT_WORKSPACE_PUBLISH_RECOVERY_INTERVAL_SECS" => Some("180".to_string()),
+        "RALPHX_GIT_AGENT_WORKSPACE_REPAIR_RECONCILIATION_SCAN_INTERVAL_SECS" => {
+            Some("90".to_string())
+        }
         "RALPHX_GIT_TERMINAL_PR_LOCAL_CLEANUP_INTERVAL_SECS" => Some("300".to_string()),
         "RALPHX_GIT_TERMINAL_PR_LOCAL_CLEANUP_RETRY_SECS" => Some("1800".to_string()),
         "RALPHX_GIT_ORPHAN_WORKTREE_CLEANUP_MARKER_RETRY_SECS" => Some("3600".to_string()),
@@ -212,6 +232,10 @@ fn test_env_overrides_apply() {
 
     assert_eq!(cfg.stream.merge_line_read_secs, 999);
     assert_eq!(cfg.stream.completion_grace_secs, 45);
+    assert_eq!(cfg.stream.agent_completion_correlation_ttl_secs, 75);
+    assert_eq!(cfg.stream.agent_completion_correlation_capacity, 512);
+    assert_eq!(cfg.stream.agent_completion_processed_ttl_secs, 600);
+    assert_eq!(cfg.stream.agent_completion_processed_capacity, 2_048);
     assert_eq!(cfg.stream.launch_reservation_lease_secs, 60);
     assert_eq!(cfg.stream.notification_retention_read_days, 14);
     assert_eq!(cfg.stream.notification_retention_max_rows, 250);
@@ -254,6 +278,11 @@ fn test_env_overrides_apply() {
         45
     );
     assert_eq!(cfg.git.agent_workspace_publish_recovery_interval_secs, 180);
+    assert_eq!(
+        cfg.git
+            .agent_workspace_repair_reconciliation_scan_interval_secs,
+        90
+    );
     assert_eq!(cfg.git.terminal_pr_local_cleanup_interval_secs, 300);
     assert_eq!(cfg.git.terminal_pr_local_cleanup_retry_secs, 1800);
     assert_eq!(cfg.git.orphan_worktree_cleanup_marker_retry_secs, 3600);
