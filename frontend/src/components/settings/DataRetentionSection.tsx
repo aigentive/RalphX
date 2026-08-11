@@ -217,7 +217,13 @@ export function DataRetentionSection() {
       >
         <span data-testid="retention-last-run" className="text-sm text-[var(--text-secondary)]">
           {settings?.lastRunAt
-            ? `${formatTimestamp(settings.lastRunAt)} · ${(settings.lastRunPrunedRows ?? 0).toLocaleString()} records removed · ${formatBytes(settings.lastRunPayloadBytes ?? 0)} stored`
+            ? [
+                formatTimestamp(settings.lastRunAt),
+                `${(settings.lastRunPrunedRows ?? 0).toLocaleString()} records removed`,
+                settings.lastRunPayloadBytes !== null
+                  ? `${formatBytes(settings.lastRunPayloadBytes)} stored`
+                  : null,
+              ].filter(Boolean).join(" · ")
             : "Never"}
         </span>
       </SettingRow>

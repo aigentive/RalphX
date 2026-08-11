@@ -267,6 +267,20 @@ describe("DataRetentionSection", () => {
     expect(calls.map((call) => call.command)).toEqual(["get_data_retention_settings"]);
   });
 
+  it("shows removed-record count but omits size when lastRunPayloadBytes is null", async () => {
+    mockRetentionInvoke({
+      lastRunAt: "2026-08-10T12:00:00+00:00",
+      lastRunPrunedRows: 99,
+      lastRunPayloadBytes: null,
+    });
+    render(<DataRetentionSection />);
+
+    const el = await screen.findByTestId("retention-last-run");
+    expect(el).toHaveTextContent("99 records removed");
+    expect(el.textContent).not.toMatch(/0 B/);
+    expect(el.textContent).not.toMatch(/stored/);
+  });
+
   it("surfaces load failures instead of rendering empty policy values", async () => {
     vi.mocked(invoke).mockRejectedValue(new Error("retention backend down"));
     render(<DataRetentionSection />);
