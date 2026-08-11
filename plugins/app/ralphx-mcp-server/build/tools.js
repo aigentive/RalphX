@@ -6,6 +6,7 @@ import { PLAN_TOOLS } from "./plan-tools.js";
 import { WORKER_CONTEXT_TOOLS } from "./worker-context-tools.js";
 import { STEP_TOOLS } from "./step-tools.js";
 import { ISSUE_TOOLS } from "./issue-tools.js";
+import { TICKET_ATTACHMENT_TOOLS } from "./ticket-attachment-tools.js";
 import { FILESYSTEM_TOOLS } from "./filesystem-tools.js";
 import { IDEATION_TOOLS } from "./ideation-tools.js";
 import { WORKFLOW_TOOLS } from "./workflow-tools.js";
@@ -13,6 +14,9 @@ import { AGENT_WORKSPACE_TOOLS } from "./agent-workspace-tools.js";
 import { AGENT_TASK_TOOLS } from "./agent-task-tools.js";
 import { SUPPORT_TOOLS } from "./support-tools.js";
 import { VALIDATION_TOOLS } from "./validation-tools.js";
+import { AUTOMATION_SETUP_TOOLS } from "./automation-tools.js";
+import { PERSONA_BUILDER_TOOLS } from "./persona-tools.js";
+import { TEAM_TOOLS } from "./team-tools.js";
 import { formatToolErrorMessageFromRegistry, getToolRecoveryHintFromRegistry, } from "./tool-recovery.js";
 import { logToolsByAgent } from "./tool-debug.js";
 import { getAllowedToolNames as resolveAllowedToolNames, getToolsByAgent as resolveToolsByAgent, parseAllowedToolsFromArgs as parseAllowedToolsFromKnownRegistry, } from "./tool-authorization.js";
@@ -46,6 +50,16 @@ export const ALL_TOOLS = [
     // ========================================================================
     ...VALIDATION_TOOLS,
     // ========================================================================
+    // AUTOMATION SETUP TOOLS
+    // ========================================================================
+    ...AUTOMATION_SETUP_TOOLS,
+    // ========================================================================
+    // PERSONA BUILDER TOOLS
+    // ========================================================================
+    ...PERSONA_BUILDER_TOOLS,
+    // RX-native standing Team coordinator tools
+    ...TEAM_TOOLS,
+    // ========================================================================
     // STEP TOOLS (worker agent)
     // ========================================================================
     ...STEP_TOOLS,
@@ -53,6 +67,10 @@ export const ALL_TOOLS = [
     // ISSUE TOOLS (worker + reviewer agents)
     // ========================================================================
     ...ISSUE_TOOLS,
+    // ========================================================================
+    // TICKET ATTACHMENT TOOLS (worker/coder execution agents)
+    // ========================================================================
+    ...TICKET_ATTACHMENT_TOOLS,
     ...SUPPORT_TOOLS,
 ];
 const ALL_TOOL_NAMES = ALL_TOOLS.map((tool) => tool.name);

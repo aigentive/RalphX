@@ -28,6 +28,7 @@ pub mod domain;
 pub mod error;
 pub mod http_server;
 pub mod infrastructure;
+pub mod shell;
 pub mod testing;
 pub mod utils;
 
@@ -43,6 +44,7 @@ use std::time::{Duration, Instant};
 
 use application::app_setup::run_app_setup;
 use application::startup_bootstrap::initialize_process_bootstrap;
+use application::startup_status::StartupCoordinator;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
@@ -150,22 +152,25 @@ pub fn run() {
     let execution_state = Arc::new(commands::ExecutionState::new());
     // Create active project state for per-project execution scoping (Phase 82)
     let active_project_state = Arc::new(commands::ActiveProjectState::new());
-    // Create team state tracker for agent teams (must be managed early for HTTP server)
-    let team_tracker = application::TeamStateTracker::new();
-
+    // This process-local authority must exist before Tauri setup so the
+    // lightweight bootstrap surface can always poll a truthful status.
+    let startup_coordinator = Arc::new(StartupCoordinator::new());
+    crate::infrastructure::sqlite::db_connection::register_startup_boot_id(
+        &startup_coordinator.snapshot().boot_id,
+    );
     // Clone for usage inside setup closure before closure borrows them
     let init_execution_state = Arc::clone(&execution_state);
     let startup_execution_state = Arc::clone(&execution_state);
     let startup_active_project_state = Arc::clone(&active_project_state);
     let http_execution_state = Arc::clone(&execution_state);
-    let http_team_tracker = team_tracker.clone();
-    let service_team_tracker = team_tracker.clone();
+    let init_startup_coordinator = Arc::clone(&startup_coordinator);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_process::init())
         .plugin(
             tauri_plugin_window_state::Builder::new()
@@ -175,20 +180,30 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .menu(application::native_menu::build_app_menu)
         .on_menu_event(application::native_menu::handle_menu_event)
+        .manage(startup_coordinator)
+        .manage(execution_state)
+        .manage(active_project_state)
         .setup(move |app| {
             run_app_setup(
                 app,
                 Arc::clone(&init_execution_state),
                 Arc::clone(&startup_execution_state),
                 Arc::clone(&startup_active_project_state),
+                Arc::new(|app_state, execution_state| {
+                    Some(Arc::new(
+                        commands::unified_chat_commands::AgentWorkspacePrFixReviewPublishCommandResumer {
+                            app_state: app_state.clone(),
+                            execution_state,
+                        },
+                    )
+                        as Arc<
+                            dyn application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrFixReviewPublishResumer,
+                        >)
+                }),
                 Arc::clone(&http_execution_state),
-                http_team_tracker.clone(),
-                service_team_tracker.clone(),
+                Arc::clone(&init_startup_coordinator),
             )
         })
-        .manage(execution_state)
-        .manage(active_project_state)
-        .manage(team_tracker)
         .invoke_handler(crate::register_tauri_commands!())
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

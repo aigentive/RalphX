@@ -36,8 +36,10 @@ export type DiffFilterMode = "uncommitted" | "staged" | "unstaged" | "cumulative
 export interface AgentsPublishDiffFilterProps {
   mode: DiffFilterMode;
   workspaceChangeCount: number;
-  /** Label for the base-to-HEAD workspace diff represented by the internal "uncommitted" mode. */
+  /** Label for the base-to-working-tree workspace diff represented by the internal "uncommitted" mode. */
   workspaceChangeLabel?: string;
+  /** Count-free label for cumulative terminal PR history. */
+  cumulativeModeLabel?: string;
   /** Staged file count — provided lazily by parent when staged mode is active. */
   stagedCount?: number;
   /** Unstaged file count — provided lazily by parent when unstaged mode is active. */
@@ -100,6 +102,7 @@ function getTriggerLabel(
   mode: DiffFilterMode,
   workspaceChangeCount: number,
   workspaceChangeLabel: string,
+  cumulativeModeLabel: string | undefined,
   commits: DiffViewerCommit[],
   stagedCount?: number,
   unstagedCount?: number,
@@ -124,6 +127,9 @@ function getTriggerLabel(
       : "Conflicted";
   }
   if (mode === "cumulative") {
+    if (cumulativeModeLabel) {
+      return cumulativeModeLabel;
+    }
     const n = commits.length;
     return `All commits (${n} ${n === 1 ? "commit" : "commits"})`;
   }
@@ -149,6 +155,7 @@ export function AgentsPublishDiffFilter({
   mode,
   workspaceChangeCount,
   workspaceChangeLabel = "Workspace changes",
+  cumulativeModeLabel,
   stagedCount,
   unstagedCount,
   conflictedCount,
@@ -187,6 +194,7 @@ export function AgentsPublishDiffFilter({
     mode,
     workspaceChangeCount,
     workspaceChangeLabel,
+    cumulativeModeLabel,
     commits,
     stagedCount,
     unstagedCount,
@@ -272,7 +280,10 @@ export function AgentsPublishDiffFilter({
               onClick={() => handleSelect("cumulative")}
               testId="diff-filter-option-cumulative"
             >
-              All commits ({commits.length} {commits.length === 1 ? "commit" : "commits"})
+              {cumulativeModeLabel ??
+                `All commits (${commits.length} ${
+                  commits.length === 1 ? "commit" : "commits"
+                })`}
             </FilterRadioRow>
           </div>
 

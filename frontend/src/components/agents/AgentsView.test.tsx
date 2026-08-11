@@ -2,6 +2,7 @@ import {
   fireAgentViewEvent,
   getAgentsViewTestMocks,
   mockAgentViewData,
+  mockAgentSidebarData,
   mockSessionWithData,
   mockSidebarBreakpoint,
   renderAgentsView,
@@ -9,11 +10,13 @@ import {
   selectSidebarConversationRow,
   setupAgentsViewTest,
 } from "./AgentsView.testSetup";
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ideationApi } from "@/api/ideation";
 import { useIdeationEvents } from "@/hooks/useIdeationEvents";
+import { defaultIdeationSettings } from "@/types/ideation-config";
+import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { AgentsView } from "./AgentsView";
 import { useAgentArtifactUiStore } from "./agentArtifactUiStore";
 import {
@@ -30,7 +33,9 @@ const {
   loadBranchBaseOptionsMock,
   loadPullRequestBaseOptionsMock,
   updateWorkspaceFromBaseMock,
+  useProjectAgentConversationsMock,
   useConversationMock,
+  useConversationSummaryMock,
 } = getAgentsViewTestMocks();
 
 function AgentsViewWithIdeationEvents() {
@@ -351,6 +356,44 @@ describe("AgentsView", () => {
     );
   });
 
+  it("requests freshness for a published Plan-mode workspace", async () => {
+    mockAgentViewData(conversation({ agentMode: "plan" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspace({
+        mode: "plan",
+        publicationPrNumber: 42,
+        publicationPrStatus: "open",
+      })
+    );
+
+    renderAgentsView();
+    const row = selectSidebarConversationRow();
+    fireEvent.click(within(row).getAllByRole("button")[0] ?? row);
+
+    await waitFor(() =>
+      expect(getAgentConversationWorkspaceFreshnessMock).toHaveBeenCalledWith(
+        "conversation-1",
+        { scope: "local" }
+      )
+    );
+  });
+
+  it("does not request freshness for a missing Plan-mode workspace", async () => {
+    mockAgentViewData(conversation({ agentMode: "plan" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspace({ mode: "plan", status: "missing" })
+    );
+
+    renderAgentsView();
+    const row = selectSidebarConversationRow();
+    fireEvent.click(within(row).getAllByRole("button")[0] ?? row);
+
+    await waitFor(() =>
+      expect(getAgentConversationWorkspaceMock).toHaveBeenCalled()
+    );
+    expect(getAgentConversationWorkspaceFreshnessMock).not.toHaveBeenCalled();
+  });
+
   it("does not hydrate attached ideation session data for edit conversations", async () => {
     const agentConversation = conversation({ agentMode: "edit" });
     mockAgentViewData(agentConversation);
@@ -447,6 +490,171 @@ describe("AgentsView", () => {
     ).toBeInTheDocument();
   });
 
+  it("uses the direct reviewer summary instead of stale paged metadata and focus hints", async () => {
+    const workspaceConversation = conversation({
+      id: "conversation-1",
+      agentMode: "ideation",
+      logicalEffort: "low",
+    });
+    const stalePagedReviewer = conversation({
+      id: "review-conversation-1",
+      parentConversationId: workspaceConversation.id,
+      providerHarness: "claude",
+      logicalModel: "sonnet",
+      logicalEffort: "low",
+    });
+    const durableReviewerSummary = conversation({
+      id: stalePagedReviewer.id,
+      parentConversationId: workspaceConversation.id,
+      providerHarness: "codex",
+      logicalModel: "gpt-5.5",
+      logicalEffort: "xhigh",
+    });
+    mockAgentViewData(workspaceConversation);
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspace({
+        mode: "ideation",
+        linkedIdeationSessionId: "session-1",
+      }),
+    );
+    getWorkspaceReviewContextMock.mockResolvedValue({
+      success: true,
+      workspace: conversationWorkspace({
+        conversationId: workspaceConversation.id,
+        mode: "ideation",
+      }),
+      events: [],
+      target: null,
+      monitor: {
+        conversationId: workspaceConversation.id,
+        status: "reviewing",
+        reviewOutcome: "none",
+        reviewGateStatus: "reviewing",
+        reviewConversationId: stalePagedReviewer.id,
+        reviewArtifactId: null,
+        reviewArtifactVersion: null,
+        lastError: null,
+      },
+      isCurrent: false,
+      isOutdated: false,
+      shouldShowTab: true,
+    });
+    vi.mocked(ideationApi.settings.get).mockResolvedValue(defaultIdeationSettings);
+    mockSessionWithData({ id: "session-1", planArtifactId: "plan-1" });
+    useProjectAgentConversationsMock.mockReturnValue({
+      data: [workspaceConversation, stalePagedReviewer],
+      conversations: [workspaceConversation, stalePagedReviewer],
+      isLoading: false,
+      isSuccess: true,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    useConversationSummaryMock.mockImplementation((conversationId: string | null) => ({
+      data:
+        conversationId === durableReviewerSummary.id
+          ? durableReviewerSummary
+          : conversationId === workspaceConversation.id
+            ? workspaceConversation
+            : null,
+      isLoading: false,
+    }));
+    useAgentSessionStore.getState().setRuntimeForConversation(
+      workspaceConversation.id,
+      "project-1",
+      { provider: "codex", modelId: "gpt-5.5", effort: "xhigh" },
+    );
+
+    renderAgentsView();
+    selectSidebarConversationRow();
+    await screen.findByTestId("integrated-chat-panel");
+    fireEvent.click(await screen.findByRole("button", { name: "Open artifacts" }));
+    fireEvent.click(
+      await screen.findByTestId(
+        "mock-focus-workspace-review-with-stale-runtime",
+        {},
+        { timeout: 5_000 },
+      ),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("integrated-chat-panel")).toHaveAttribute(
+        "data-conversation-id-override",
+        durableReviewerSummary.id,
+      );
+      expect(
+        getAgentsViewTestMocks().integratedChatPanelRenderMock,
+      ).toHaveBeenCalledWith(
+        expect.objectContaining({
+          conversationIdOverride: durableReviewerSummary.id,
+          sendOptions: expect.objectContaining({
+            providerHarness: "codex",
+            modelId: "gpt-5.5",
+            logicalEffort: "xhigh",
+          }),
+        }),
+      );
+    });
+
+    fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+    fireEvent.pointerMove(screen.getByRole("button", { name: /^Provider,/ }));
+    fireEvent.click(screen.getByTestId("agent-composer-runtime-provider-claude"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("agent-composer-runtime-pill")).toHaveTextContent(
+        "sonnet",
+      );
+    });
+    fireEvent.pointerMove(screen.getByRole("button", { name: /^Model,/ }));
+    expect(
+      screen.getByTestId("agent-composer-runtime-model-sonnet"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agent-composer-runtime-model-gpt-5.5"),
+    ).not.toBeInTheDocument();
+    expect(
+      useAgentSessionStore.getState().runtimeByConversationId[
+        durableReviewerSummary.id
+      ],
+    ).toMatchObject({ provider: "claude", modelId: "sonnet" });
+    expect(
+      useAgentSessionStore.getState().composerRuntimeOverridesByConversationId[
+        durableReviewerSummary.id
+      ],
+    ).toMatchObject({ provider: "claude", modelId: "sonnet" });
+    expect(
+      useAgentSessionStore.getState().runtimeByConversationId[
+        workspaceConversation.id
+      ],
+    ).toEqual({ provider: "codex", modelId: "gpt-5.5", effort: "xhigh" });
+
+    fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+    fireEvent.click(screen.getByTestId("agents-composer-chat-focus-pill"));
+    fireEvent.click(
+      screen.getByTestId("agents-composer-chat-focus-option-workspace"),
+    );
+    fireEvent.click(screen.getByTestId("agents-composer-chat-focus-pill"));
+    fireEvent.click(
+      screen.getByTestId("agents-composer-chat-focus-option-workspace_review"),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("agent-composer-runtime-pill")).toHaveTextContent(
+        "sonnet",
+      );
+      expect(
+        getAgentsViewTestMocks().integratedChatPanelRenderMock,
+      ).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sendOptions: expect.objectContaining({
+            providerHarness: "claude",
+            modelId: "sonnet",
+          }),
+        }),
+      );
+    });
+  });
+
   it("shows the chat focus switcher on workspace chat when the latest archived/completed verification child is hydrated", async () => {
     mockAgentViewData();
     getAgentConversationWorkspaceMock.mockResolvedValue(
@@ -527,11 +735,13 @@ describe("AgentsView", () => {
       screen.queryByTestId("agents-composer-chat-focus-option-verification"),
     ).not.toBeInTheDocument();
 
-    fireAgentViewEvent("ideation:child_session_created", {
-      sessionId: "verification-child-live",
-      parentSessionId: "session-1",
-      title: "Verification Session",
-      purpose: "verification",
+    await act(async () => {
+      fireAgentViewEvent("ideation:child_session_created", {
+        sessionId: "verification-child-live",
+        parentSessionId: "session-1",
+        title: "Verification Session",
+        purpose: "verification",
+      });
     });
 
     await waitFor(() => {
@@ -584,6 +794,82 @@ describe("AgentsView", () => {
       expect(screen.getByTestId("integrated-chat-panel")).toHaveAttribute(
         "data-conversation-id-override",
         "conversation-1",
+      );
+    });
+    expect(screen.getByTestId("integrated-chat-panel")).toHaveAttribute(
+      "data-ideation-session-id",
+      "",
+    );
+  });
+
+  it("ignores a stale proposal focus request after another conversation is selected", async () => {
+    const firstConversation = conversation({
+      id: "conversation-1",
+      agentMode: "plan",
+      title: "Plan conversation",
+    });
+    const secondConversation = conversation({
+      id: "conversation-2",
+      agentMode: "edit",
+      title: "Current conversation",
+    });
+    const conversations = [firstConversation, secondConversation];
+    mockAgentViewData(firstConversation);
+    mockAgentSidebarData(conversations);
+    useProjectAgentConversationsMock.mockReturnValue({
+      data: conversations,
+      conversations,
+      isLoading: false,
+      isSuccess: true,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    useConversationMock.mockImplementation((conversationId: string | null) => {
+      const current = conversations.find((item) => item.id === conversationId);
+      return {
+        data: current ? { conversation: current, messages: [] } : null,
+        isLoading: false,
+      };
+    });
+    getAgentConversationWorkspaceMock.mockImplementation(
+      async (conversationId: string) =>
+        conversationWorkspace({
+          conversationId,
+          mode: conversationId === "conversation-1" ? "plan" : "edit",
+          linkedIdeationSessionId:
+            conversationId === "conversation-1" ? "session-1" : "session-2",
+        }),
+    );
+    useAgentArtifactUiStore.setState({
+      artifactByConversationId: {
+        "conversation-2": {
+          isOpen: true,
+          activeTab: "plan",
+          taskMode: "graph",
+        },
+      },
+    });
+
+    renderAgentsView();
+    const secondConversationRow = await screen.findByTestId(
+      "agents-session-conversation-2",
+    );
+    fireEvent.click(within(secondConversationRow).getAllByRole("button")[0]!);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("integrated-chat-panel")).toHaveAttribute(
+        "data-conversation-id-override",
+        "conversation-2",
+      );
+    });
+
+    fireEvent.click(await screen.findByTestId("mock-focus-stale-proposals-session"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("integrated-chat-panel")).toHaveAttribute(
+        "data-conversation-id-override",
+        "conversation-2",
       );
     });
     expect(screen.getByTestId("integrated-chat-panel")).toHaveAttribute(

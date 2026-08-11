@@ -1,4 +1,7 @@
 import { Component, type ReactNode } from "react";
+import { invoke } from "@tauri-apps/api/core";
+
+import { isModuleLoadError } from "@/lib/module-load-error";
 
 interface Props {
   children: ReactNode;
@@ -13,7 +16,7 @@ interface State {
 
 /**
  * Error Boundary component that catches React errors and displays them visually.
- * In development, shows full error details. In production, shows a generic message.
+ * Shows a useful error message and retains full details for diagnosis.
  */
 export class ErrorBoundary extends Component<Props, State> {
   constructor(props: Props) {
@@ -27,18 +30,28 @@ export class ErrorBoundary extends Component<Props, State> {
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
     this.setState({ errorInfo });
-    // Log to console for visibility
     console.error("ErrorBoundary caught an error:", error, errorInfo);
+
+    try {
+      void invoke("log_frontend_error", {
+        input: {
+          message: error.message,
+          componentStack: errorInfo.componentStack,
+        },
+      }).catch(() => undefined);
+    } catch {
+      // Tauri is optional for web and development builds.
+    }
   }
 
   render() {
     if (this.state.hasError) {
-      // Custom fallback provided
       if (this.props.fallback) {
         return this.props.fallback;
       }
 
       const isDev = import.meta.env.DEV;
+      const isModuleLoad = isModuleLoadError(this.state.error);
 
       return (
         <div
@@ -46,8 +59,14 @@ export class ErrorBoundary extends Component<Props, State> {
             padding: "20px",
             margin: "20px",
             borderRadius: "8px",
-            backgroundColor: "var(--status-error-muted)",
-            border: "1px solid var(--status-error-border)",
+            backgroundColor: isModuleLoad
+              ? "var(--accent-primary-muted)"
+              : "var(--status-error-muted)",
+            borderColor: isModuleLoad
+              ? "var(--accent-primary-border)"
+              : "var(--status-error-border)",
+            borderWidth: "1px",
+            borderStyle: "solid",
             fontFamily: "SF Pro, system-ui, sans-serif",
           }}
         >
@@ -65,14 +84,24 @@ export class ErrorBoundary extends Component<Props, State> {
                 margin: 0,
                 fontSize: "1rem",
                 fontWeight: 600,
-                color: "#ef4444",
+                color: isModuleLoad
+                  ? "var(--accent-primary)"
+                  : "var(--status-error)",
               }}
             >
-              Something went wrong
+              {isModuleLoad
+                ? "Part of the app could not load"
+                : "Something went wrong"}
             </h2>
           </div>
 
-          {isDev && this.state.error && (
+          {isModuleLoad && (
+            <p style={{ margin: "0 0 12px", color: "var(--text-secondary)" }}>
+              Reload the app to continue.
+            </p>
+          )}
+
+          {this.state.error && (
             <>
               <div
                 style={{
@@ -86,68 +115,97 @@ export class ErrorBoundary extends Component<Props, State> {
                 <code
                   style={{
                     fontSize: "0.8125rem",
-                    color: "#fca5a5",
+                    color: "var(--status-error-text)",
                     whiteSpace: "pre-wrap",
                     wordBreak: "break-word",
                   }}
                 >
-                  {this.state.error.toString()}
+                  {isDev
+                    ? this.state.error.toString()
+                    : this.state.error.message}
                 </code>
               </div>
 
-              {this.state.errorInfo && (
-                <details style={{ marginTop: "8px" }}>
-                  <summary
+              <details style={{ marginTop: "8px" }}>
+                <summary
+                  style={{
+                    cursor: "pointer",
+                    fontSize: "0.8125rem",
+                    color: "var(--text-muted)",
+                    marginBottom: "8px",
+                  }}
+                >
+                  Error details
+                </summary>
+                <div
+                  style={{
+                    padding: "12px",
+                    borderRadius: "6px",
+                    backgroundColor: "var(--overlay-scrim)",
+                    overflow: "auto",
+                    maxHeight: "300px",
+                  }}
+                >
+                  <pre
                     style={{
-                      cursor: "pointer",
-                      fontSize: "0.8125rem",
-                      color: "#9ca3af",
-                      marginBottom: "8px",
+                      margin: 0,
+                      fontSize: "0.6875rem",
+                      color: "var(--text-muted)",
+                      whiteSpace: "pre-wrap",
                     }}
                   >
-                    Component Stack
-                  </summary>
-                  <div
-                    style={{
-                      padding: "12px",
-                      borderRadius: "6px",
-                      backgroundColor: "var(--overlay-scrim)",
-                      overflow: "auto",
-                      maxHeight: "300px",
-                    }}
-                  >
-                    <pre
-                      style={{
-                        margin: 0,
-                        fontSize: "0.6875rem",
-                        color: "#9ca3af",
-                        whiteSpace: "pre-wrap",
-                      }}
-                    >
-                      {this.state.errorInfo.componentStack}
-                    </pre>
-                  </div>
-                </details>
-              )}
+                    {this.state.error.toString()}
+                    {this.state.errorInfo?.componentStack}
+                  </pre>
+                </div>
+              </details>
             </>
           )}
 
-          <button
-            onClick={() => this.setState({ hasError: false, error: null, errorInfo: null })}
-            style={{
-              marginTop: "12px",
-              padding: "8px 16px",
-              borderRadius: "6px",
-              border: "none",
-              backgroundColor: "#ef4444",
-              color: "white",
-              fontSize: "0.8125rem",
-              fontWeight: 500,
-              cursor: "pointer",
-            }}
-          >
-            Try Again
-          </button>
+          <div style={{ display: "flex", gap: "8px", marginTop: "12px" }}>
+            {isModuleLoad && (
+              <button
+                onClick={() => window.location.reload()}
+                style={{
+                  padding: "8px 16px",
+                  borderRadius: "6px",
+                  borderWidth: 0,
+                  borderStyle: "solid",
+                  borderColor: "transparent",
+                  backgroundColor: "var(--accent-primary)",
+                  color: "white",
+                  fontSize: "0.8125rem",
+                  fontWeight: 500,
+                  cursor: "pointer",
+                }}
+              >
+                Reload
+              </button>
+            )}
+            <button
+              onClick={() =>
+                this.setState({ hasError: false, error: null, errorInfo: null })
+              }
+              style={{
+                padding: "8px 16px",
+                borderRadius: "6px",
+                borderColor: isModuleLoad
+                  ? "var(--border-default)"
+                  : "transparent",
+                borderWidth: isModuleLoad ? "1px" : 0,
+                borderStyle: "solid",
+                backgroundColor: isModuleLoad
+                  ? "transparent"
+                  : "var(--status-error)",
+                color: isModuleLoad ? "var(--text-primary)" : "white",
+                fontSize: "0.8125rem",
+                fontWeight: 500,
+                cursor: "pointer",
+              }}
+            >
+              Try Again
+            </button>
+          </div>
         </div>
       );
     }

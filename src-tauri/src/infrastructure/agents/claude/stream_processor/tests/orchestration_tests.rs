@@ -81,6 +81,7 @@ fn test_processor_session_id_from_result() {
         errors: Vec::new(),
         subtype: None,
         cost_usd: 0.01,
+        usage: None,
     };
 
     let events = processor.process_message(msg);
@@ -125,6 +126,7 @@ fn test_processor_collects_usage_from_assistant_and_result() {
         errors: Vec::new(),
         subtype: None,
         cost_usd: 0.0125,
+        usage: None,
     });
 
     let result = processor.finish();
@@ -133,6 +135,124 @@ fn test_processor_collects_usage_from_assistant_and_result() {
     assert_eq!(result.usage.cache_creation_tokens, Some(50));
     assert_eq!(result.usage.cache_read_tokens, Some(210));
     assert_eq!(result.usage.estimated_usd, Some(0.0125));
+}
+
+#[test]
+fn terminal_result_usage_replaces_provisional_assistant_maxima() {
+    let mut processor = StreamProcessor::new();
+    processor.process_message(StreamMessage::Assistant {
+        message: AssistantMessage {
+            content: vec![],
+            stop_reason: Some("tool_use".to_string()),
+            usage: Some(serde_json::json!({
+                "input_tokens": 3,
+                "output_tokens": 73,
+                "cache_creation_input_tokens": 105479,
+                "cache_read_input_tokens": 142307
+            })),
+        },
+        session_id: Some("usage-session".to_string()),
+    });
+    let parsed = StreamProcessor::parse_line(
+        r#"{"type":"result","session_id":"usage-session","is_error":false,"result":"Done","usage":{"input_tokens":13,"output_tokens":1434,"cache_creation_tokens":127826,"cache_read_tokens":1099251}}"#,
+    )
+    .expect("result should parse");
+    processor.process_parsed_line(parsed);
+
+    let capture = processor.current_turn_capture().expect("typed capture");
+    assert_eq!(capture.normalized.input_tokens, Some(13));
+    assert_eq!(capture.normalized.output_tokens, Some(1_434));
+    assert_eq!(capture.normalized.cache_creation_tokens, Some(127_826));
+    assert_eq!(capture.normalized.cache_read_tokens, Some(1_099_251));
+    assert_eq!(capture.provenance, UsageProvenance::ProviderTurnDelta);
+}
+
+#[test]
+fn empty_terminal_result_usage_preserves_provisional_assistant_usage() {
+    let mut processor = StreamProcessor::new();
+    let assistant = StreamProcessor::parse_line(
+        r#"{"type":"assistant","message":{"usage":{"input_tokens":41,"output_tokens":7,"cache_read_input_tokens":30},"content":[]}}"#,
+    )
+    .expect("assistant usage should parse");
+    processor.process_parsed_line(assistant);
+    let result = StreamProcessor::parse_line(
+        r#"{"type":"result","session_id":"session-1","is_error":false,"result":"done","usage":{}}"#,
+    )
+    .expect("empty terminal usage should parse");
+    processor.process_parsed_line(result);
+
+    let capture = processor
+        .current_turn_capture()
+        .expect("assistant usage should remain available");
+    assert_eq!(capture.normalized.input_tokens, Some(41));
+    assert_eq!(capture.normalized.output_tokens, Some(7));
+    assert_eq!(capture.normalized.cache_read_tokens, Some(30));
+    assert_eq!(
+        capture.provenance,
+        UsageProvenance::ProviderSnapshotFallback
+    );
+}
+
+#[test]
+fn nested_terminal_result_usage_does_not_replace_lead_usage() {
+    let mut processor = StreamProcessor::new();
+    processor.process_message(StreamMessage::Assistant {
+        message: AssistantMessage {
+            content: vec![],
+            stop_reason: Some("end_turn".to_string()),
+            usage: Some(serde_json::json!({"input_tokens": 10, "output_tokens": 2})),
+        },
+        session_id: Some("lead-session".to_string()),
+    });
+    let mut parsed = StreamProcessor::parse_line(
+        r#"{"type":"result","session_id":"child-session","is_error":false,"result":"Done","usage":{"input_tokens":999,"output_tokens":888}}"#,
+    )
+    .expect("nested result should parse");
+    parsed.parent_tool_use_id = Some("tool-child".to_string());
+    processor.process_parsed_line(parsed);
+
+    let capture = processor.current_turn_capture().expect("fallback capture");
+    assert_eq!(capture.normalized.input_tokens, Some(10));
+    assert_eq!(capture.normalized.output_tokens, Some(2));
+    assert_eq!(
+        capture.provenance,
+        UsageProvenance::ProviderSnapshotFallback
+    );
+}
+
+#[test]
+fn nested_assistant_and_delta_usage_do_not_seed_lead_fallback() {
+    let mut processor = StreamProcessor::new();
+    processor.process_parsed_line(ParsedLine {
+        message: StreamMessage::Assistant {
+            message: AssistantMessage {
+                content: vec![],
+                stop_reason: Some("end_turn".to_string()),
+                usage: Some(serde_json::json!({
+                    "input_tokens": 999,
+                    "output_tokens": 888
+                })),
+            },
+            session_id: Some("child-session".to_string()),
+        },
+        parent_tool_use_id: Some("tool-child".to_string()),
+        is_synthetic: false,
+        tool_use_result: None,
+    });
+    processor.process_parsed_line(ParsedLine {
+        message: StreamMessage::MessageDelta {
+            delta: None,
+            usage: Some(serde_json::json!({
+                "input_tokens": 1_111,
+                "output_tokens": 999
+            })),
+        },
+        parent_tool_use_id: Some("tool-child".to_string()),
+        is_synthetic: false,
+        tool_use_result: None,
+    });
+
+    assert_eq!(processor.current_turn_capture(), None);
 }
 
 #[test]
@@ -153,6 +273,7 @@ fn test_processor_usage_accumulates_across_turns() {
         errors: Vec::new(),
         subtype: None,
         cost_usd: 0.001,
+        usage: None,
     });
     processor.reset_for_next_turn();
 
@@ -177,6 +298,7 @@ fn test_processor_usage_accumulates_across_turns() {
         errors: Vec::new(),
         subtype: None,
         cost_usd: 0.002,
+        usage: None,
     });
 
     let result = processor.finish();
@@ -184,6 +306,22 @@ fn test_processor_usage_accumulates_across_turns() {
     assert_eq!(result.usage.output_tokens, Some(35));
     assert_eq!(result.usage.cache_read_tokens, Some(30));
     assert_eq!(result.usage.estimated_usd, Some(0.003));
+}
+
+#[test]
+fn test_processor_usage_accumulation_does_not_wrap_or_panic() {
+    let mut processor = StreamProcessor::new();
+    processor.process_message(StreamMessage::MessageDelta {
+        delta: None,
+        usage: Some(serde_json::json!({ "input_tokens": u64::MAX })),
+    });
+    processor.reset_for_next_turn();
+    processor.process_message(StreamMessage::MessageDelta {
+        delta: None,
+        usage: Some(serde_json::json!({ "input_tokens": 1 })),
+    });
+
+    assert_eq!(processor.finish().usage.input_tokens, Some(u64::MAX));
 }
 
 #[test]
@@ -229,14 +367,38 @@ fn test_processor_thinking_block_streaming() {
 
     let events2 = processor.process_message(delta1);
     assert_eq!(events2.len(), 1);
-    assert!(matches!(&events2[0], StreamEvent::Thinking(t) if t == "Let me analyze "));
+    assert!(matches!(
+        &events2[0],
+        StreamEvent::Thinking { text, block_index: 0 } if text == "Let me analyze "
+    ));
 
     let events3 = processor.process_message(delta2);
     assert_eq!(events3.len(), 1);
-    assert!(matches!(&events3[0], StreamEvent::Thinking(t) if t == "this problem."));
+    assert!(matches!(
+        &events3[0],
+        StreamEvent::Thinking { text, block_index: 0 } if text == "this problem."
+    ));
 
     let events4 = processor.process_message(stop);
-    assert!(events4.is_empty()); // stop doesn't emit event for thinking
+    let settled_duration_ms = match events4.as_slice() {
+        [StreamEvent::ThinkingSettled {
+            block_index: 0,
+            duration_ms: Some(duration_ms),
+        }] => *duration_ms,
+        other => panic!("expected one settled thinking event, got {other:?}"),
+    };
+    assert!(processor.response_text.is_empty());
+    match processor.content_blocks.as_slice() {
+        [ContentBlockItem::Thinking {
+            text,
+            duration_ms: Some(duration_ms),
+            ..
+        }] => {
+            assert_eq!(text, "Let me analyze this problem.");
+            assert_eq!(*duration_ms, settled_duration_ms);
+        }
+        other => panic!("expected one persisted thinking block, got {other:?}"),
+    }
 }
 
 #[test]
@@ -261,17 +423,161 @@ fn test_processor_thinking_block_verbose() {
 
     let events = processor.process_message(msg);
 
-    // Should emit: Thinking, TextChunk, SessionId
-    assert_eq!(events.len(), 3);
-    assert!(
-        matches!(&events[0], StreamEvent::Thinking(t) if t == "Deep analysis of the problem...")
-    );
-    assert!(matches!(&events[1], StreamEvent::TextChunk(t) if t == "Here's my answer."));
-    assert!(matches!(&events[2], StreamEvent::SessionId(id) if id == "sess-456"));
+    // Should emit: Thinking, ThinkingSettled, TextChunk, SessionId
+    assert_eq!(events.len(), 4);
+    assert!(matches!(
+        &events[0],
+        StreamEvent::Thinking { text, block_index: 0 }
+            if text == "Deep analysis of the problem..."
+    ));
+    assert!(matches!(
+        &events[1],
+        StreamEvent::ThinkingSettled {
+            block_index: 0,
+            duration_ms: None
+        }
+    ));
+    assert!(matches!(&events[2], StreamEvent::TextChunk(t) if t == "Here's my answer."));
+    assert!(matches!(&events[3], StreamEvent::SessionId(id) if id == "sess-456"));
+    assert!(matches!(
+        processor.content_blocks.first(),
+        Some(ContentBlockItem::Thinking {
+            text,
+            duration_ms: None,
+            ..
+        }) if text == "Deep analysis of the problem..."
+    ));
+}
+
+#[test]
+fn assistant_summary_with_empty_thinking_emits_nothing() {
+    let mut processor = StreamProcessor::new();
+
+    let events = processor.process_message(StreamMessage::Assistant {
+        message: AssistantMessage {
+            content: vec![AssistantContent::Thinking {
+                thinking: String::new(),
+            }],
+            stop_reason: Some("end_turn".to_string()),
+            usage: None,
+        },
+        session_id: None,
+    });
+
+    assert!(events.is_empty());
+    assert!(processor.content_blocks.is_empty());
+}
+
+#[test]
+fn streamed_thinking_then_summary_keeps_only_sealed_block() {
+    let mut processor = StreamProcessor::new();
+    processor.process_message(StreamMessage::ContentBlockStart {
+        index: Some(0),
+        content_block: ContentBlock {
+            block_type: "thinking".to_string(),
+            id: None,
+            name: None,
+            text: None,
+            input: None,
+        },
+    });
+    processor.process_message(StreamMessage::ContentBlockDelta {
+        index: Some(0),
+        delta: ContentDelta {
+            delta_type: "thinking_delta".to_string(),
+            text: Some("Reasoning".to_string()),
+            partial_json: None,
+        },
+    });
+    processor.process_message(StreamMessage::ContentBlockStop { index: Some(0) });
+
+    let summary_events = processor.process_message(StreamMessage::Assistant {
+        message: AssistantMessage {
+            content: vec![AssistantContent::Thinking {
+                thinking: "Reasoning".to_string(),
+            }],
+            stop_reason: Some("end_turn".to_string()),
+            usage: None,
+        },
+        session_id: None,
+    });
+
+    assert!(summary_events.is_empty());
+    assert!(matches!(
+        processor.content_blocks.as_slice(),
+        [ContentBlockItem::Thinking {
+            text,
+            duration_ms: Some(_),
+            ..
+        }] if text == "Reasoning"
+    ));
+}
+
+#[test]
+fn summary_only_non_empty_thinking_keeps_one_block() {
+    let mut processor = StreamProcessor::new();
+
+    let events = processor.process_message(StreamMessage::Assistant {
+        message: AssistantMessage {
+            content: vec![AssistantContent::Thinking {
+                thinking: "Reasoning".to_string(),
+            }],
+            stop_reason: Some("end_turn".to_string()),
+            usage: None,
+        },
+        session_id: None,
+    });
+
+    assert!(matches!(
+        events.as_slice(),
+        [
+            StreamEvent::Thinking { text, block_index: 0 },
+            StreamEvent::ThinkingSettled {
+                block_index: 0,
+                duration_ms: None
+            }
+        ] if text == "Reasoning"
+    ));
+    assert!(matches!(
+        processor.content_blocks.as_slice(),
+        [ContentBlockItem::Thinking {
+            text,
+            duration_ms: None,
+            ..
+        }] if text == "Reasoning"
+    ));
 }
 
 /// When Claude CLI emits both streaming delta events AND a verbose `assistant` summary,
 /// the `TextChunk` must not be emitted twice and `response_text` must contain the text once.
+#[test]
+fn wrapped_deltas_then_verbose_summary_emits_text_once() {
+    let mut processor = StreamProcessor::new();
+    let first = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello "}}}"#;
+    let second = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"world"}}}"#;
+    let summary = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Hello world"}]},"session_id":"sess-1"}"#;
+
+    let first_events = processor.process_parsed_line(
+        StreamProcessor::parse_line(first).expect("first wrapped delta should parse"),
+    );
+    let second_events = processor.process_parsed_line(
+        StreamProcessor::parse_line(second).expect("second wrapped delta should parse"),
+    );
+    let summary_events = processor.process_parsed_line(
+        StreamProcessor::parse_line(summary).expect("verbose summary should parse"),
+    );
+
+    assert!(matches!(&first_events[..], [StreamEvent::TextChunk(text)] if text == "Hello "));
+    assert!(matches!(&second_events[..], [StreamEvent::TextChunk(text)] if text == "world"));
+    assert!(
+        !summary_events
+            .iter()
+            .any(|event| matches!(event, StreamEvent::TextChunk(_))),
+        "verbose summary must not duplicate text emitted by wrapped deltas"
+    );
+    assert_eq!(processor.finish().response_text, "Hello world");
+}
+
 #[test]
 fn test_verbose_mode_no_double_emission() {
     let mut processor = StreamProcessor::new();
@@ -529,8 +835,7 @@ fn test_three_api_calls_all_text_accumulated() {
     let result = processor.finish();
 
     assert_eq!(
-        result.response_text,
-        "Step one: planning.Step two: executing.Step three: done.",
+        result.response_text, "Step one: planning.Step two: executing.Step three: done.",
         "All 3 API call texts must appear in response_text"
     );
 
@@ -603,8 +908,7 @@ fn test_text_plus_tool_use_then_synthesis_text_not_dropped() {
     let result = processor.finish();
 
     assert_eq!(
-        result.response_text,
-        "I'll search for that.Found 3 unused functions.",
+        result.response_text, "I'll search for that.Found 3 unused functions.",
         "Both texts must appear in response_text; synthesis must not be dropped"
     );
 
@@ -768,8 +1072,7 @@ fn test_multi_api_call_via_parse_line_accumulates_text() {
     let result = processor.finish();
 
     assert_eq!(
-        result.response_text,
-        "Preparing analysis.Analysis complete.",
+        result.response_text, "Preparing analysis.Analysis complete.",
         "Both assistant lines must be accumulated via parse_line + process_parsed_line"
     );
 
@@ -859,9 +1162,68 @@ fn test_system_without_subtype_still_works() {
         output: None,
         exit_code: None,
         outcome: None,
+        estimated_tokens: None,
+        estimated_tokens_delta: None,
     };
 
     let events = processor.process_message(msg);
     assert_eq!(events.len(), 1);
     assert!(matches!(&events[0], StreamEvent::SessionId(id) if id == "sess-regular"));
+}
+
+/// With `--include-partial-messages`, text arrives only as deltas and the dedup
+/// guard suppresses the verbose Assistant summary — including its
+/// `content_blocks` push. `content_block_stop` must therefore seal the streamed
+/// text into `content_blocks`, or a delta-streamed turn persists no timeline
+/// text at all (the chat UI renders the turn as unanswered).
+#[test]
+fn test_streamed_text_reaches_content_blocks_via_content_block_stop() {
+    let mut processor = StreamProcessor::new();
+
+    for piece in ["Streamed ", "answer ", "text."] {
+        processor.process_message(StreamMessage::ContentBlockDelta {
+            index: Some(0),
+            delta: ContentDelta {
+                delta_type: "text_delta".to_string(),
+                text: Some(piece.to_string()),
+                partial_json: None,
+            },
+        });
+    }
+
+    processor.process_message(StreamMessage::ContentBlockStop { index: Some(0) });
+
+    // The verbose summary for the same message is deduped away.
+    processor.process_message(StreamMessage::Assistant {
+        message: AssistantMessage {
+            content: vec![AssistantContent::Text {
+                text: "Streamed answer text.".to_string(),
+            }],
+            stop_reason: Some("end_turn".to_string()),
+            usage: None,
+        },
+        session_id: None,
+    });
+
+    let result = processor.finish();
+    let text_blocks: Vec<&String> = result
+        .content_blocks
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlockItem::Text { text } => Some(text),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(
+        text_blocks.len(),
+        1,
+        "streamed text must land in content_blocks exactly once, got {:?}",
+        result.content_blocks
+    );
+    assert_eq!(text_blocks[0], "Streamed answer text.");
+    assert_eq!(
+        result.response_text, "Streamed answer text.",
+        "the dedup guard must still keep response_text single-copy"
+    );
 }

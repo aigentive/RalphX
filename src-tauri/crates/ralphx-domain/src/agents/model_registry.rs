@@ -158,46 +158,67 @@ impl AgentModelRegistrySnapshot {
         &self,
         provider: AgentHarnessKind,
     ) -> Option<&AgentModelDefinition> {
-        self.enabled_for_provider(provider).next()
+        let default_model_id = default_model_for_provider(provider);
+        self.find_enabled(provider, default_model_id)
+            .or_else(|| self.enabled_for_provider(provider).next())
     }
 }
 
 pub fn built_in_agent_models() -> Vec<AgentModelDefinition> {
     vec![
+        // Claude display order: family intelligence tier, pinned versions newest-first,
+        // then the family alias.
         AgentModelDefinition::built_in(
             AgentHarnessKind::Claude,
-            "sonnet",
-            "sonnet",
-            "sonnet",
-            Some("Claude Sonnet model alias."),
+            "fable",
+            "fable",
+            "fable",
+            Some("Claude Fable 5 model alias."),
             vec![
                 LogicalEffort::Low,
                 LogicalEffort::Medium,
                 LogicalEffort::High,
-                LogicalEffort::Max,
-            ],
-            LogicalEffort::Medium,
-        ),
-        AgentModelDefinition::built_in(
-            AgentHarnessKind::Claude,
-            "claude-sonnet-4-6",
-            "Claude Sonnet 4.6",
-            "Claude Sonnet 4.6",
-            Some("Exact Claude Sonnet 4.6 model id."),
-            vec![
-                LogicalEffort::Low,
-                LogicalEffort::Medium,
-                LogicalEffort::High,
+                LogicalEffort::XHigh,
                 LogicalEffort::Max,
             ],
             LogicalEffort::High,
         ),
         AgentModelDefinition::built_in(
             AgentHarnessKind::Claude,
-            "claude-sonnet-5",
-            "Claude Sonnet 5",
-            "Claude Sonnet 5",
-            Some("Exact Claude Sonnet 5 model id; requires Claude Code 2.1.197 or newer."),
+            "claude-opus-5",
+            "Claude Opus 5",
+            "Claude Opus 5",
+            Some("Exact Claude Opus 5 model id; requires Claude Code 2.1.219 or newer."),
+            vec![
+                LogicalEffort::Low,
+                LogicalEffort::Medium,
+                LogicalEffort::High,
+                LogicalEffort::XHigh,
+                LogicalEffort::Max,
+            ],
+            LogicalEffort::High,
+        ),
+        AgentModelDefinition::built_in(
+            AgentHarnessKind::Claude,
+            "claude-opus-4-8",
+            "Claude Opus 4.8",
+            "Claude Opus 4.8",
+            Some("Exact Claude Opus 4.8 model id; requires Claude Code 2.1.154 or newer."),
+            vec![
+                LogicalEffort::Low,
+                LogicalEffort::Medium,
+                LogicalEffort::High,
+                LogicalEffort::XHigh,
+                LogicalEffort::Max,
+            ],
+            LogicalEffort::High,
+        ),
+        AgentModelDefinition::built_in(
+            AgentHarnessKind::Claude,
+            "claude-opus-4-7",
+            "Claude Opus 4.7",
+            "Claude Opus 4.7",
+            Some("Exact Claude Opus 4.7 model id; requires Claude Code 2.1.111 or newer."),
             vec![
                 LogicalEffort::Low,
                 LogicalEffort::Medium,
@@ -224,6 +245,49 @@ pub fn built_in_agent_models() -> Vec<AgentModelDefinition> {
         ),
         AgentModelDefinition::built_in(
             AgentHarnessKind::Claude,
+            "claude-sonnet-5",
+            "Claude Sonnet 5",
+            "Claude Sonnet 5",
+            Some("Exact Claude Sonnet 5 model id; requires Claude Code 2.1.197 or newer."),
+            vec![
+                LogicalEffort::Low,
+                LogicalEffort::Medium,
+                LogicalEffort::High,
+                LogicalEffort::XHigh,
+                LogicalEffort::Max,
+            ],
+            LogicalEffort::High,
+        ),
+        AgentModelDefinition::built_in(
+            AgentHarnessKind::Claude,
+            "claude-sonnet-4-6",
+            "Claude Sonnet 4.6",
+            "Claude Sonnet 4.6",
+            Some("Exact Claude Sonnet 4.6 model id."),
+            vec![
+                LogicalEffort::Low,
+                LogicalEffort::Medium,
+                LogicalEffort::High,
+                LogicalEffort::Max,
+            ],
+            LogicalEffort::High,
+        ),
+        AgentModelDefinition::built_in(
+            AgentHarnessKind::Claude,
+            "sonnet",
+            "sonnet",
+            "sonnet",
+            Some("Claude Sonnet model alias."),
+            vec![
+                LogicalEffort::Low,
+                LogicalEffort::Medium,
+                LogicalEffort::High,
+                LogicalEffort::Max,
+            ],
+            LogicalEffort::Medium,
+        ),
+        AgentModelDefinition::built_in(
+            AgentHarnessKind::Claude,
             "haiku",
             "haiku",
             "haiku",
@@ -236,11 +300,43 @@ pub fn built_in_agent_models() -> Vec<AgentModelDefinition> {
             LogicalEffort::Medium,
         ),
         AgentModelDefinition::built_in(
-            AgentHarnessKind::Claude,
-            "fable",
-            "fable",
-            "fable",
-            Some("Claude Fable 5 model alias."),
+            AgentHarnessKind::Codex,
+            "gpt-5.6-sol",
+            "gpt-5.6-sol - Flagship GPT-5.6 model for complex coding, research, and agentic work.",
+            "gpt-5.6-sol",
+            Some("Flagship GPT-5.6 model for complex coding, research, and agentic work."),
+            vec![
+                LogicalEffort::Low,
+                LogicalEffort::Medium,
+                LogicalEffort::High,
+                LogicalEffort::XHigh,
+                LogicalEffort::Max,
+                LogicalEffort::Ultra,
+            ],
+            LogicalEffort::Medium,
+        ),
+        AgentModelDefinition::built_in(
+            AgentHarnessKind::Codex,
+            "gpt-5.6-terra",
+            "gpt-5.6-terra - High-intelligence GPT-5.6 model for substantial coding and research tasks.",
+            "gpt-5.6-terra",
+            Some("High-intelligence GPT-5.6 model for substantial coding and research tasks."),
+            vec![
+                LogicalEffort::Low,
+                LogicalEffort::Medium,
+                LogicalEffort::High,
+                LogicalEffort::XHigh,
+                LogicalEffort::Max,
+                LogicalEffort::Ultra,
+            ],
+            LogicalEffort::Medium,
+        ),
+        AgentModelDefinition::built_in(
+            AgentHarnessKind::Codex,
+            "gpt-5.6-luna",
+            "gpt-5.6-luna - Efficient GPT-5.6 model for capable everyday coding work.",
+            "gpt-5.6-luna",
+            Some("Efficient GPT-5.6 model for capable everyday coding work."),
             vec![
                 LogicalEffort::Low,
                 LogicalEffort::Medium,
@@ -248,7 +344,7 @@ pub fn built_in_agent_models() -> Vec<AgentModelDefinition> {
                 LogicalEffort::XHigh,
                 LogicalEffort::Max,
             ],
-            LogicalEffort::High,
+            LogicalEffort::Medium,
         ),
         AgentModelDefinition::built_in(
             AgentHarnessKind::Codex,
@@ -330,6 +426,13 @@ pub fn lightweight_model_for_provider(provider: AgentHarnessKind) -> &'static st
     }
 }
 
+pub fn plan_judge_model_for_provider(provider: AgentHarnessKind) -> &'static str {
+    match provider {
+        AgentHarnessKind::Claude => "sonnet",
+        AgentHarnessKind::Codex => "gpt-5.4",
+    }
+}
+
 pub fn default_effort_for_provider(provider: AgentHarnessKind) -> LogicalEffort {
     match provider {
         AgentHarnessKind::Claude => LogicalEffort::Medium,
@@ -349,6 +452,8 @@ pub fn default_efforts_for_provider(provider: AgentHarnessKind) -> &'static [Log
             LogicalEffort::Medium,
             LogicalEffort::High,
             LogicalEffort::XHigh,
+            LogicalEffort::Max,
+            LogicalEffort::Ultra,
         ],
     }
 }
@@ -360,6 +465,7 @@ fn effort_order(effort: LogicalEffort) -> u8 {
         LogicalEffort::High => 2,
         LogicalEffort::XHigh => 3,
         LogicalEffort::Max => 4,
+        LogicalEffort::Ultra => 5,
     }
 }
 

@@ -193,8 +193,8 @@ Complete catalog of the 19 live agent definitions in `config/ralphx.yaml`. Canon
 | **CLI tools** | Read, Write, Edit, Bash, Grep, Glob, WebFetch, WebSearch, Skill, Task |
 | **All preapproved** | Read, Grep, Glob, WebFetch, WebSearch, Skill, Write, Edit, Bash, Task, Task(Plan) |
 
-**MCP Tools (20):**
-`start_step`, `complete_step`, `skip_step`, `fail_step`, `add_step`, `get_step_progress`, `get_step_context`, `get_sub_steps`, `get_task_context`, `get_artifact`, `get_artifact_version`, `get_related_artifacts`, `search_project_artifacts`, `get_review_notes`, `get_task_steps`, `get_task_issues`, `mark_issue_in_progress`, `mark_issue_addressed`, `get_project_analysis`, `search_memories`, `get_memory`, `get_memories_for_paths`
+**MCP Tools (37):**
+`start_step`, `complete_step`, `skip_step`, `fail_step`, `add_step`, `get_step_progress`, `get_step_context`, `get_sub_steps`, `get_task_context`, `get_artifact`, `get_artifact_version`, `get_related_artifacts`, `search_project_artifacts`, `get_review_notes`, `get_task_steps`, `get_task_issues`, `list_ticket_attachments`, `fetch_ticket_attachment`, `mark_issue_in_progress`, `mark_issue_addressed`, `get_project_analysis`, `run_task_validation`, `create_followup_agent_conversation`, `register_agent_issue`, `delegate_start`, `delegate_wait`, `delegate_cancel`, `create_agent_task`, `get_agent_task`, `list_agent_tasks`, `update_agent_task`, `claim_agent_task`, `complete_agent_task`, `execution_complete`, `search_memories`, `get_memory`, `get_memories_for_paths`
 
 **Purpose:** The primary task execution agent. Orchestrates implementation by reading the system-card, decomposing work into sub-scopes, and delegating to parallel `ralphx-execution-coder` instances. Handles step/issue tracking, wave-gated validation, and re-execution after review feedback.
 
@@ -219,8 +219,8 @@ Complete catalog of the 19 live agent definitions in `config/ralphx.yaml`. Canon
 | **CLI tools** | Read, Write, Edit, Bash, Grep, Glob, WebFetch, WebSearch, Skill, Task |
 | **All preapproved** | Read, Grep, Glob, WebFetch, WebSearch, Skill, Write, Edit, Bash, Task, Task(Plan) |
 
-**MCP Tools (18):**
-`start_step`, `complete_step`, `skip_step`, `fail_step`, `add_step`, `get_step_progress`, `get_step_context`, `get_task_context`, `get_artifact`, `get_artifact_version`, `get_related_artifacts`, `search_project_artifacts`, `get_review_notes`, `get_task_steps`, `get_task_issues`, `mark_issue_in_progress`, `mark_issue_addressed`, `get_project_analysis`, `search_memories`, `get_memory`, `get_memories_for_paths`
+**MCP Tools (33):**
+`start_step`, `complete_step`, `skip_step`, `fail_step`, `add_step`, `get_step_progress`, `get_step_context`, `get_task_context`, `get_artifact`, `get_artifact_version`, `get_related_artifacts`, `search_project_artifacts`, `get_review_notes`, `get_task_steps`, `get_task_issues`, `list_ticket_attachments`, `fetch_ticket_attachment`, `mark_issue_in_progress`, `mark_issue_addressed`, `get_project_analysis`, `run_task_validation`, `search_memories`, `get_memory`, `get_memories_for_paths`, `delegate_start`, `delegate_wait`, `delegate_cancel`, `create_agent_task`, `get_agent_task`, `list_agent_tasks`, `update_agent_task`, `claim_agent_task`, `complete_agent_task`
 
 **Purpose:** Focused developer agent dispatched by `ralphx-execution-worker`. Executes a single task or scoped sub-task. When dispatched with a sub-step ID, calls `get_step_context` first to get strict scope boundaries.
 
@@ -439,6 +439,7 @@ Most agents extend `base_tools` and add Write, Edit, or Task as needed.
 | `get_step_progress` | worker, coder, reviewer, review-history |
 | `get_step_context` | worker, coder |
 | `get_sub_steps` | worker only |
+| `list_ticket_attachments` / `fetch_ticket_attachment` | worker and coder only |
 | `complete_review` | reviewer only |
 | `approve_task` / `request_task_changes` | review-chat only |
 | `complete_merge` / `report_conflict` / `report_incomplete` | merger only |
@@ -447,6 +448,8 @@ Most agents extend `base_tools` and add Write, Edit, or Task as needed.
 | `create_plan_artifact` / `update_plan_artifact` | ralphx-ideation only |
 | `list_session_proposals` / `get_proposal` | ralphx-ideation, ralphx-ideation-readonly |
 | `get_session_plan` | ralphx-ideation, ralphx-ideation-readonly |
+
+Ticket attachment tools are read-only and pointer-based: `list_ticket_attachments` returns bounded metadata plus opaque content pointers, while `fetch_ticket_attachment` returns an untrusted content reference. These tools must not expose provider transport details, credentials, direct download links, source handles, cache paths, or raw attachment bytes.
 | `create_child_session` | ralphx-ideation, ralphx-ideation-readonly |
 | `analyze_session_dependencies` | ralphx-ideation only |
 | `update_session_title` | ralphx-utility-session-namer only |

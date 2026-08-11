@@ -2,7 +2,7 @@
 //
 // Extracted from chat_service.rs to improve modularity and reduce file size.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::domain::agents::AgentHarnessKind;
@@ -11,6 +11,40 @@ use crate::domain::entities::{ChatConversation, ChatMessage, ChatTimelineItem};
 use crate::infrastructure::agents::claude::ToolCall;
 
 use super::tool_result_preview::{LiveToolResultPreview, ToolArgumentPreviewPayload};
+
+const RALPHX_TOOL_NAME_PREFIXES: [&str; 6] = [
+    "mcp__ralphx__",
+    "mcp__ralphx_internal__",
+    "ralphx::",
+    "ralphx_internal::",
+    "ralphx:",
+    "ralphx_internal:",
+];
+const DIFF_TOOL_NAMES: [&str; 2] = ["edit", "write"];
+const ASK_USER_QUESTION_TOOL_NAME: &str = "ask_user_question";
+const DELEGATION_TOOL_NAMES: [&str; 4] = [
+    "delegate_start",
+    "delegate_wait",
+    "delegate_cancel",
+    "delegate_terminal",
+];
+
+/// Whether a timeline block must retain its original raw JSON for renderer-specific hydration.
+pub(crate) fn retains_full_raw_tool_payload(tool_name: &str) -> bool {
+    let normalized = normalize_ralphx_tool_name(tool_name);
+    let leaf_name = normalized.rsplit("::").next().unwrap_or(&normalized);
+    DIFF_TOOL_NAMES.contains(&leaf_name)
+        || normalized == ASK_USER_QUESTION_TOOL_NAME
+        || DELEGATION_TOOL_NAMES.contains(&normalized.as_str())
+}
+
+fn normalize_ralphx_tool_name(tool_name: &str) -> String {
+    let normalized = tool_name.trim().to_ascii_lowercase();
+    RALPHX_TOOL_NAME_PREFIXES
+        .iter()
+        .find_map(|prefix| normalized.strip_prefix(prefix).map(str::to_string))
+        .unwrap_or(normalized)
+}
 
 // ============================================================================
 // Event Name Constants
@@ -22,6 +56,10 @@ use super::tool_result_preview::{LiveToolResultPreview, ToolArgumentPreviewPaylo
 pub mod events {
     /// Agent text chunk event
     pub const AGENT_CHUNK: &str = "agent:chunk";
+    /// Agent reasoning chunk event
+    pub const AGENT_THINKING: &str = "agent:thinking";
+    /// Agent reasoning token progress event
+    pub const AGENT_THINKING_PROGRESS: &str = "agent:thinking_progress";
     /// Agent tool call event
     pub const AGENT_TOOL_CALL: &str = "agent:tool_call";
     /// Agent run started event
@@ -49,21 +87,6 @@ pub mod events {
     /// Agent hook event (started/completed/block)
     pub const AGENT_HOOK: &str = "agent:hook";
 
-    // Team events (agent teams collaboration)
-    /// Team created event
-    pub const TEAM_CREATED: &str = "team:created";
-    /// Teammate spawned event
-    pub const TEAM_TEAMMATE_SPAWNED: &str = "team:teammate_spawned";
-    /// Teammate idle event
-    pub const TEAM_TEAMMATE_IDLE: &str = "team:teammate_idle";
-    /// Teammate shutdown event
-    pub const TEAM_TEAMMATE_SHUTDOWN: &str = "team:teammate_shutdown";
-    /// Team message event (teammate → teammate or user → team)
-    pub const TEAM_MESSAGE: &str = "team:message";
-    /// Team disbanded event
-    pub const TEAM_DISBANDED: &str = "team:disbanded";
-    /// Team cost update event
-    pub const TEAM_COST_UPDATE: &str = "team:cost_update";
     /// Team artifact created event
     pub const TEAM_ARTIFACT_CREATED: &str = "team:artifact_created";
 }
@@ -92,6 +115,38 @@ pub enum SendCallerContext {
     /// Startup/recovery-initiated send.
     /// Must not roll over, repair, or spawn a terminal Agent workspace automatically.
     StartupResumption,
+}
+
+const PENDING_PROMPT_ENVELOPE_PREFIX: &str = "ralphx-pending-prompt-v1:";
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PendingPromptEnvelope {
+    message: String,
+    metadata: String,
+}
+
+pub(crate) fn encode_pending_initial_prompt(message: &str, metadata: Option<&str>) -> String {
+    let Some(metadata) = metadata else {
+        return message.to_string();
+    };
+    let envelope = PendingPromptEnvelope {
+        message: message.to_string(),
+        metadata: metadata.to_string(),
+    };
+    match serde_json::to_string(&envelope) {
+        Ok(payload) => format!("{PENDING_PROMPT_ENVELOPE_PREFIX}{payload}"),
+        Err(_) => message.to_string(),
+    }
+}
+
+pub(crate) fn decode_pending_initial_prompt(payload: &str) -> (String, Option<String>) {
+    let Some(encoded) = payload.strip_prefix(PENDING_PROMPT_ENVELOPE_PREFIX) else {
+        return (payload.to_string(), None);
+    };
+    match serde_json::from_str::<PendingPromptEnvelope>(encoded) {
+        Ok(envelope) => (envelope.message, Some(envelope.metadata)),
+        Err(_) => (payload.to_string(), None),
+    }
 }
 
 /// Result from sending a message (returns immediately while processing continues in background)
@@ -135,6 +190,12 @@ pub struct AgentRunStartedPayload {
     pub run_chain_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_run_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub launch_role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
     /// The resolved Claude model ID used for this run (e.g. "claude-sonnet-4-6").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effective_model_id: Option<String>,
@@ -170,6 +231,9 @@ impl AgentRunStartedPayload {
             context_id: context_id.into(),
             run_chain_id,
             parent_run_id,
+            agent_name: None,
+            launch_role: None,
+            started_at: None,
             effective_model_id,
             effective_model_label,
             provider_harness: harness.map(|value| value.to_string()),
@@ -183,12 +247,52 @@ impl AgentRunStartedPayload {
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentChunkPayload {
     pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub block_index: Option<u64>,
     pub conversation_id: String,
     pub context_type: String,
     pub context_id: String,
     pub seq: u64,
     #[serde(default)]
     pub append_to_previous: bool,
+}
+
+/// Payload for agent:thinking event.
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentThinkingPayload {
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub block_index: Option<u64>,
+    pub conversation_id: String,
+    pub context_type: String,
+    pub context_id: String,
+    pub seq: u64,
+    #[serde(default)]
+    pub append_to_previous: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    /// Provider-reported total reasoning output tokens when available at settlement.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_tokens: Option<u64>,
+    #[serde(default)]
+    pub is_settled: bool,
+}
+
+/// Payload for agent:thinking_progress event.
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentThinkingProgressPayload {
+    pub estimated_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub estimated_tokens_delta: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    pub conversation_id: String,
+    pub context_type: String,
+    pub context_id: String,
 }
 
 /// Payload for agent:usage_updated event
@@ -263,6 +367,8 @@ pub struct AgentToolCallPayload {
     pub tool_id: Option<String>,
     pub arguments: serde_json::Value,
     pub result: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
     #[serde(flatten)]
     pub preview: AgentToolCallPreviewFields,
     pub conversation_id: String,
@@ -282,6 +388,7 @@ impl AgentToolCallPayload {
         conversation_id: &str,
         context_type: &str,
         context_id: &str,
+        run_id: Option<&str>,
         parent_tool_use_id: Option<String>,
         seq: u64,
     ) -> Self {
@@ -290,6 +397,7 @@ impl AgentToolCallPayload {
             tool_id: Some(tool_use_id.to_string()),
             arguments: serde_json::Value::Null,
             result: Some(result_preview.result.clone()),
+            run_id: run_id.map(str::to_string),
             preview: AgentToolCallPreviewFields::from_tool_result_preview(
                 result_preview.preview.as_ref(),
             ),
@@ -309,6 +417,7 @@ impl AgentToolCallPayload {
         conversation_id: &str,
         context_type: &str,
         context_id: &str,
+        run_id: Option<&str>,
         diff_context: Option<serde_json::Value>,
         parent_tool_use_id: Option<String>,
         seq: u64,
@@ -334,6 +443,7 @@ impl AgentToolCallPayload {
             tool_id: tool_call.id.clone(),
             arguments,
             result,
+            run_id: run_id.map(str::to_string),
             preview,
             conversation_id: conversation_id.to_string(),
             context_type: context_type.to_string(),
@@ -527,6 +637,32 @@ fn render_ready_timeline_content_block(
         });
     }
 
+    if item.kind.to_string() == "thinking" {
+        let metadata = item
+            .metadata
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<Value>(raw).ok());
+        let duration_ms = metadata
+            .as_ref()
+            .and_then(|value| value.get("duration_ms"))
+            .and_then(Value::as_u64);
+        let reasoning_tokens = metadata
+            .as_ref()
+            .and_then(|value| value.get("reasoning_tokens"))
+            .and_then(Value::as_u64);
+        let mut block = serde_json::json!({
+            "type": "thinking",
+            "text": item.text.clone().unwrap_or_default(),
+        });
+        if let Some(duration_ms) = duration_ms {
+            block["duration_ms"] = serde_json::json!(duration_ms);
+        }
+        if let Some(reasoning_tokens) = reasoning_tokens {
+            block["reasoning_tokens"] = serde_json::json!(reasoning_tokens);
+        }
+        return block;
+    }
+
     let arguments = item
         .input_json
         .as_deref()
@@ -644,6 +780,8 @@ pub struct AgentErrorPayload {
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentTaskStartedPayload {
     pub tool_use_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
     /// Tool name that triggered this: "Task" or "Agent"
     pub tool_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -682,6 +820,12 @@ pub struct AgentTaskStartedPayload {
     pub approval_policy: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sandbox_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp_provenance: Option<String>,
     pub conversation_id: String,
     pub context_type: String,
     pub context_id: String,
@@ -692,6 +836,8 @@ pub struct AgentTaskStartedPayload {
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentTaskCompletedPayload {
     pub tool_use_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -732,6 +878,12 @@ pub struct AgentTaskCompletedPayload {
     pub approval_policy: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sandbox_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp_provenance: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -813,81 +965,6 @@ pub struct AgentHookPayload {
 // Team Event Payloads
 // ============================================================================
 
-/// Payload for team:created event
-#[derive(Debug, Clone, Serialize)]
-pub struct TeamCreatedPayload {
-    pub team_name: String,
-    pub context_id: String,
-    pub context_type: String,
-}
-
-/// Payload for team:teammate_spawned event
-#[derive(Debug, Clone, Serialize)]
-pub struct TeamTeammateSpawnedPayload {
-    pub team_name: String,
-    pub teammate_name: String,
-    pub color: String,
-    pub model: String,
-    pub role: String,
-    pub context_type: String,
-    pub context_id: String,
-    /// Conversation ID for this teammate's persisted chat history
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub conversation_id: Option<String>,
-}
-
-/// Payload for team:teammate_idle event
-#[derive(Debug, Clone, Serialize)]
-pub struct TeamTeammateIdlePayload {
-    pub team_name: String,
-    pub teammate_name: String,
-    pub context_type: String,
-    pub context_id: String,
-}
-
-/// Payload for team:teammate_shutdown event
-#[derive(Debug, Clone, Serialize)]
-pub struct TeamTeammateShutdownPayload {
-    pub team_name: String,
-    pub teammate_name: String,
-    pub context_type: String,
-    pub context_id: String,
-}
-
-/// Payload for team:message event
-#[derive(Debug, Clone, Serialize)]
-pub struct TeamMessagePayload {
-    pub team_name: String,
-    pub message_id: String,
-    pub sender: String,
-    pub recipient: Option<String>,
-    pub content: String,
-    pub message_type: String,
-    pub timestamp: String,
-    pub context_type: String,
-    pub context_id: String,
-}
-
-/// Payload for team:disbanded event
-#[derive(Debug, Clone, Serialize)]
-pub struct TeamDisbandedPayload {
-    pub team_name: String,
-    pub context_type: String,
-    pub context_id: String,
-}
-
-/// Payload for team:cost_update event
-#[derive(Debug, Clone, Serialize)]
-pub struct TeamCostUpdatePayload {
-    pub team_name: String,
-    pub teammate_name: String,
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub estimated_usd: f64,
-    pub context_type: String,
-    pub context_id: String,
-}
-
 /// Payload for team:artifact_created event
 #[derive(Debug, Clone, Serialize)]
 pub struct TeamArtifactCreatedPayload {
@@ -901,29 +978,60 @@ pub struct TeamArtifactCreatedPayload {
 // Error type
 // ============================================================================
 
+/// Marker prefix for `ChatServiceError::MessageDeliveredNotPersisted`. The frontend
+/// matches on it to keep the sent turn visible instead of reporting a failed send.
+/// ❌ Don't reword without updating `frontend/src/lib/sendDeliveryErrors.ts`.
+pub const MESSAGE_DELIVERED_NOT_PERSISTED_PREFIX: &str = "[Message delivered but not saved:";
+
 #[derive(Debug, Clone)]
 pub enum ChatServiceError {
+    InvalidInput(String),
     AgentNotAvailable(String),
     SpawnFailed(String),
+    /// The caller required a fresh runtime turn, but current conversation or launch capacity
+    /// makes that impossible right now. This is intentionally distinct from a spawn failure:
+    /// orchestrators can defer it without spending delivery retry budget.
+    ImmediateStartRejected(String),
+    SpawnValidation {
+        harness: crate::domain::agents::AgentHarnessKind,
+        model: String,
+        reason: String,
+    },
     CommunicationFailed(String),
     ParseError(String),
     ContextNotFound(String),
     ConversationNotFound(String),
     RepositoryError(String),
     AgentRunFailed(String),
+    PersonaUnavailable(String),
+    /// The live interactive process accepted this turn, but persisting it failed.
+    /// The agent IS answering: the UI must not report the turn as never sent.
+    MessageDeliveredNotPersisted(String),
 }
 
 impl std::fmt::Display for ChatServiceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::InvalidInput(msg) => write!(f, "Invalid input: {}", msg),
             Self::AgentNotAvailable(msg) => write!(f, "Agent not available: {}", msg),
             Self::SpawnFailed(msg) => write!(f, "Failed to spawn agent: {}", msg),
+            Self::ImmediateStartRejected(msg) => write!(f, "Immediate start rejected: {msg}"),
+            Self::SpawnValidation {
+                harness,
+                model,
+                reason,
+            } => write!(
+                f,
+                "Invalid agent runtime (harness={harness}, model={model}): {reason}"
+            ),
             Self::CommunicationFailed(msg) => write!(f, "Communication failed: {}", msg),
             Self::ParseError(msg) => write!(f, "Parse error: {}", msg),
             Self::ContextNotFound(msg) => write!(f, "Context not found: {}", msg),
             Self::ConversationNotFound(msg) => write!(f, "Conversation not found: {}", msg),
             Self::RepositoryError(msg) => write!(f, "Repository error: {}", msg),
             Self::AgentRunFailed(msg) => write!(f, "Agent run failed: {}", msg),
+            Self::PersonaUnavailable(message) => write!(f, "{message}"),
+            Self::MessageDeliveredNotPersisted(message) => write!(f, "{message}"),
         }
     }
 }

@@ -3,8 +3,8 @@
 // Extracted from side_effects.rs — runs project analysis commands to verify merge correctness.
 // Decomposed into setup phase, validate phase, and orchestrator.
 
-mod logging;
 mod install;
+mod logging;
 mod metadata;
 mod setup;
 mod validate;
@@ -26,7 +26,6 @@ const SLOW_SHELL_COMMAND_MS: u64 = 500;
 
 use std::{path::Path, time::Instant};
 
-use tauri::Emitter;
 use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
 
@@ -38,23 +37,23 @@ use crate::domain::entities::{
 };
 
 use crate::infrastructure::tool_paths::{
-    agent_subprocess_env_path, prepend_resolved_node_bin_to_path, resolve_shell_cli_path,
+    agent_subprocess_env_path, ensure_resolved_node_bin_in_path, resolve_shell_cli_path,
 };
 use crate::utils::truncate_str;
 
-pub(crate) use metadata::format_validation_error_metadata;
-pub(crate) use metadata::{
-    extract_cached_validation, format_validation_warn_metadata, take_skip_validation_flag,
-};
-pub(crate) use logging::{cleanup_validation_logs, emit_merge_progress};
-#[cfg(test)]
-pub(crate) use logging::validation_log_dir;
 #[cfg(test)]
 pub(crate) use install::run_install_phase;
 pub use install::run_pre_execution_setup;
 #[cfg(test)]
-pub(crate) use setup::{parse_symlink_command, try_handle_symlink_idempotent};
+pub(crate) use logging::validation_log_dir;
+pub(crate) use logging::{cleanup_validation_logs, emit_merge_progress};
+pub(crate) use metadata::format_validation_error_metadata;
+pub(crate) use metadata::{
+    extract_cached_validation, format_validation_warn_metadata, take_skip_validation_flag,
+};
 use setup::run_setup_phase;
+#[cfg(test)]
+pub(crate) use setup::{parse_symlink_command, try_handle_symlink_idempotent};
 use validate::run_validate_phase;
 
 /// Outcome of a cancellable shell command execution.
@@ -90,7 +89,7 @@ pub(crate) async fn spawn_cancellable_command(
     let mut command = tokio::process::Command::new(resolve_shell_cli_path());
     crate::infrastructure::login_shell_env::apply_to(&mut command);
     command.env("PATH", agent_subprocess_env_path());
-    prepend_resolved_node_bin_to_path(command.as_std_mut());
+    ensure_resolved_node_bin_in_path(command.as_std_mut());
 
     let mut child = match command
         .arg("-c")
@@ -355,7 +354,7 @@ fn truncate_output(s: &str, max_len: usize) -> String {
 /// Returns `None` if no analysis entries exist (backward compatible — skip validation).
 /// Returns `Some(ValidationResult)` with pass/fail details otherwise.
 ///
-/// When `app_handle` is `Some`, emits `merge:validation_step` events for real-time UI streaming.
+/// When `event_sink` is `Some`, emits `merge:validation_step` events for real-time UI streaming.
 /// All executed commands are recorded in `ValidationResult::log` for metadata storage.
 ///
 /// When `cached_log` is provided, validate-phase commands that previously passed (status
@@ -366,7 +365,7 @@ pub(crate) async fn run_validation_commands(
     task: &Task,
     merge_cwd: &Path,
     task_id_str: &str,
-    app_handle: Option<&tauri::AppHandle>,
+    event_sink: Option<&dyn ralphx_events::EventSink>,
     cached_log: Option<&[ValidationLogEntry]>,
     validation_mode: &crate::domain::entities::MergeValidationMode,
     cancel: &CancellationToken,
@@ -408,14 +407,14 @@ pub(crate) async fn run_validation_commands(
             .collect();
         let phases = derive_phases_from_analysis(&phase_entries);
 
-        // Always store in hydration map (even without app_handle)
+        // Always store in hydration map (even without event_sink)
         crate::domain::entities::merge_progress_event::store_merge_phase_list(
             task_id_str,
             phases.clone(),
         );
 
-        if let Some(handle) = app_handle {
-            let _ = handle.emit(
+        if let Some(sink) = event_sink {
+            sink.emit(
                 "task:merge_phases",
                 serde_json::json!({
                     "task_id": task_id_str,
@@ -462,7 +461,7 @@ pub(crate) async fn run_validation_commands(
         );
         // Emit Passed event so the frontend shows a checkmark for WorktreeSetup
         emit_merge_progress(
-            app_handle,
+            event_sink,
             task_id_str,
             MergePhase::worktree_setup(),
             MergePhaseStatus::Passed,
@@ -474,7 +473,7 @@ pub(crate) async fn run_validation_commands(
             &entries,
             merge_cwd,
             task_id_str,
-            app_handle,
+            event_sink,
             &resolve,
             None,
             cancel,
@@ -487,7 +486,7 @@ pub(crate) async fn run_validation_commands(
         &entries,
         merge_cwd,
         task_id_str,
-        app_handle,
+        event_sink,
         cached_log,
         &resolve,
         validation_mode,

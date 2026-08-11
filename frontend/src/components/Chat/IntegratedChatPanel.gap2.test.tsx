@@ -72,6 +72,8 @@ vi.mock("@/hooks/useChat", () => ({
     fetchOlderMessages: vi.fn(),
   }),
   getCachedConversationMessages: () => useChatMockState.messages,
+  isOptimisticConversationId: (conversationId: string | null | undefined) =>
+    typeof conversationId === "string" && conversationId.startsWith("optimistic-"),
   chatKeys: {
     all: ["chat"],
     conversationList: (type: string, id: string) => ["chat", "conversations", type, id],
@@ -145,6 +147,8 @@ vi.mock("@/hooks/useQuestionInput", () => ({
     handleChipClick: vi.fn(),
     handleMatchedOptions: vi.fn(),
     handleQuestionSend: vi.fn(),
+    handleQuestionSkip: vi.fn(),
+    handleQuestionOptionSubmit: vi.fn(),
   }),
 }));
 
@@ -231,7 +235,7 @@ describe("IntegratedChatPanel — Gap 2 backfill hydration effect", () => {
 
     act(() => {
       useChatStore.setState({ effectiveModel: {} });
-      useUiStore.setState({ selectedTaskId: "task-1", taskHistoryState: null });
+      useUiStore.setState({ taskHistoryState: null });
     });
   });
 

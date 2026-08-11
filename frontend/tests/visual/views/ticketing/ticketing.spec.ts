@@ -10,8 +10,6 @@ const THEMES: ThemeName[] = ["dark", "light", "high-contrast"];
 const TICKETING_FLAGS = {
   activityPage: true,
   extensibilityPage: true,
-  battleMode: true,
-  teamMode: false,
   atlassianOauth: false,
   ticketingDashboard: true,
 };
@@ -52,6 +50,8 @@ async function openTicketing(page: Page) {
   await projectSelect.click();
   await page.getByRole("option", { name: /^RalphX/ }).click();
   await expect(projectSelect).toContainText("RalphX");
+  await expect(dashboard.getByTestId("ticketing-visible-count")).toHaveText("3");
+  await expect(dashboard.getByRole("button", { name: "Statuses" })).toBeVisible();
 }
 
 async function expectNoAxeViolations(page: Page, selector = '[data-testid="ticketing-dashboard"]') {

@@ -1,1 +1,1 @@
-{"version":3,"file":"agent-task-tools.d.ts","sourceRoot":"","sources":["../src/agent-task-tools.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,IAAI,EAAE,MAAM,oCAAoC,CAAC;AAmB1D,eAAO,MAAM,gBAAgB,EAAE,IAAI,EA2HlC,CAAC;AAEF,eAAO,MAAM,qBAAqB,UAA4C,CAAC"}
+{"version":3,"file":"agent-task-tools.d.ts","sourceRoot":"","sources":["../src/agent-task-tools.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,IAAI,EAAE,MAAM,oCAAoC,CAAC;AAmB1D,eAAO,MAAM,gBAAgB,EAAE,IAAI,EAoKlC,CAAC;AAEF,eAAO,MAAM,qBAAqB,UAA4C,CAAC"}

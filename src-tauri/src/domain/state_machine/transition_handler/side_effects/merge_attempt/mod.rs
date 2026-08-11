@@ -1,13 +1,65 @@
 use super::*;
+#[cfg(test)]
+use crate::domain::entities::task_metadata::{
+    MergeRecoveryEvent, MergeRecoveryEventKind, MergeRecoveryMetadata, MergeRecoveryReasonCode,
+    MergeRecoverySource, MergeRecoveryState,
+};
+use crate::domain::repositories::{
+    AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, BeginGitMutation, CompleteGitMutation,
+    GitAuthorityCasOutcome,
+};
 use crate::domain::state_machine::transition_handler::{
-    cleanup_helpers, merge_coordination, merge_helpers, BranchPair, ProjectCtx, TaskCore,
+    cleanup_helpers, freshness, merge_coordination, merge_helpers, BranchPair, ProjectCtx, TaskCore,
 };
 use crate::domain::state_machine::{State, TransitionHandler};
+use crate::error::AppError;
 
 mod branch_discovery;
 mod in_flight_guard;
 mod pr_mode;
 mod scope_backstop;
+
+#[cfg(test)]
+pub(super) fn append_source_update_failure_recovery_event(
+    task: &mut Task,
+    err: &str,
+    source_branch: &str,
+    target_branch: &str,
+) {
+    let mut recovery = MergeRecoveryMetadata::from_task_metadata(task.metadata.as_deref())
+        .unwrap_or(None)
+        .unwrap_or_else(MergeRecoveryMetadata::new);
+    let attempt = recovery
+        .events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.kind,
+                MergeRecoveryEventKind::AutoRetryTriggered | MergeRecoveryEventKind::AttemptFailed
+            )
+        })
+        .count() as u32
+        + 1;
+    let event = MergeRecoveryEvent::new(
+        MergeRecoveryEventKind::AttemptFailed,
+        MergeRecoverySource::System,
+        MergeRecoveryReasonCode::GitError,
+        format!("Source branch update failed: {}", err),
+    )
+    .with_source_branch(source_branch)
+    .with_target_branch(target_branch)
+    .with_attempt(attempt)
+    .with_failure_source(MergeFailureSource::TransientGit);
+    recovery.append_event_with_state(event, MergeRecoveryState::Failed);
+
+    match recovery.update_task_metadata(task.metadata.as_deref()) {
+        Ok(updated_json) => task.metadata = Some(updated_json),
+        Err(e) => tracing::error!(
+            error = %e,
+            "Failed to serialize source update recovery metadata"
+        ),
+    }
+}
 
 impl<'a> TransitionHandler<'a> {
     /// Inner body of `attempt_programmatic_merge`. Extracted so the outer wrapper
@@ -20,12 +72,12 @@ impl<'a> TransitionHandler<'a> {
         task_repo: &Arc<dyn TaskRepository>,
         attempt_start: std::time::Instant,
     ) {
-        let app_handle = self.machine.context.services.app_handle.as_ref();
+        let event_sink = self.machine.context.services.event_sink.as_deref();
 
         // Emit early phase list so the frontend can show pre-merge phases immediately
         // (validation start emits the full list including dynamic validation phases later)
-        if let Some(handle) = app_handle {
-            let _ = handle.emit(
+        if let Some(sink) = event_sink {
+            sink.emit(
                 "task:merge_phases",
                 serde_json::json!({
                     "task_id": task_id_str,
@@ -44,7 +96,7 @@ impl<'a> TransitionHandler<'a> {
 
         // Signal that merge preparation has started
         emit_merge_progress(
-            app_handle,
+            event_sink,
             task_id_str,
             MergePhase::new(MergePhase::MERGE_PREPARATION),
             MergePhaseStatus::Started,
@@ -57,7 +109,7 @@ impl<'a> TransitionHandler<'a> {
 
         // Preparation complete (branch discovery + context loaded)
         emit_merge_progress(
-            app_handle,
+            event_sink,
             task_id_str,
             MergePhase::new(MergePhase::MERGE_PREPARATION),
             MergePhaseStatus::Passed,
@@ -66,7 +118,7 @@ impl<'a> TransitionHandler<'a> {
 
         // Pre-merge validation for plan_merge tasks
         emit_merge_progress(
-            app_handle,
+            event_sink,
             task_id_str,
             MergePhase::new(MergePhase::PRECONDITION_CHECK),
             MergePhaseStatus::Started,
@@ -241,7 +293,7 @@ impl<'a> TransitionHandler<'a> {
             },
             base_branch.as_str(),
             running_count,
-            self.machine.context.services.app_handle.as_ref(),
+            self.machine.context.services.event_sink.as_deref(),
         )
         .await
         {
@@ -250,7 +302,7 @@ impl<'a> TransitionHandler<'a> {
 
         // Preconditions validated, branches resolved
         emit_merge_progress(
-            app_handle,
+            event_sink,
             task_id_str,
             MergePhase::new(MergePhase::PRECONDITION_CHECK),
             MergePhaseStatus::Passed,
@@ -269,7 +321,7 @@ impl<'a> TransitionHandler<'a> {
         // Pre-merge cleanup: runs before freshness checks so all worktrees are
         // cleaned before freshness checks try to create new ones.
         emit_merge_progress(
-            app_handle,
+            event_sink,
             task_id_str,
             MergePhase::new(MergePhase::MERGE_CLEANUP),
             MergePhaseStatus::Started,
@@ -291,7 +343,7 @@ impl<'a> TransitionHandler<'a> {
         {
             Ok(()) => {
                 emit_merge_progress(
-                    app_handle,
+                    event_sink,
                     task_id_str,
                     MergePhase::new(MergePhase::MERGE_CLEANUP),
                     MergePhaseStatus::Passed,
@@ -328,7 +380,7 @@ impl<'a> TransitionHandler<'a> {
                     );
                 }
                 emit_merge_progress(
-                    app_handle,
+                    event_sink,
                     task_id_str,
                     MergePhase::new(MergePhase::MERGE_CLEANUP),
                     MergePhaseStatus::Passed,
@@ -346,7 +398,7 @@ impl<'a> TransitionHandler<'a> {
 
         // Branch freshness: ensure plan branch, update from its source branch, update source from target
         emit_merge_progress(
-            app_handle,
+            event_sink,
             task_id_str,
             MergePhase::new(MergePhase::BRANCH_FRESHNESS),
             MergePhaseStatus::Started,
@@ -362,336 +414,95 @@ impl<'a> TransitionHandler<'a> {
         )
         .await;
 
-        // Update plan branch from its source branch if behind (prevents false validation failures)
-        emit_merge_progress(
-            app_handle,
-            task_id_str,
-            MergePhase::new(MergePhase::BRANCH_FRESHNESS),
-            MergePhaseStatus::Started,
-            format!("Updating plan branch from {}...", base_branch),
-        );
-        let freshness_timeout =
-            std::time::Duration::from_secs(reconciliation_config().branch_freshness_timeout_secs);
-        let plan_update_start = std::time::Instant::now();
-        let plan_update_result = tokio::time::timeout(
-            freshness_timeout,
-            merge_coordination::update_plan_from_main(
+        let mut dedicated_source_updated = false;
+        let mut dedicated_freshness_converged = false;
+        for _ in 0..3 {
+            let Some(refreshed_task) = task_repo.get_by_id(&task_id).await.ok().flatten() else {
+                self.transition_to_merge_incomplete(
+                    TaskCore { task: &mut *task, task_id: &task_id, task_id_str, task_repo },
+                    serde_json::json!({"error": "Task disappeared during dedicated branch freshness checkpoint", "error_code": "branch_update_context_corrupt"}),
+                    true,
+                ).await;
+                return;
+            };
+            *task = refreshed_task;
+            let result = freshness::ensure_branches_fresh(
                 repo_path,
-                &target_branch,
-                base_branch.as_str(),
+                task,
                 project,
                 task_id_str,
-                self.machine.context.services.app_handle.as_ref(),
-            ),
-        )
-        .await;
-
-        let plan_update_elapsed = plan_update_start.elapsed();
-        match plan_update_result {
-            Err(_elapsed) => {
-                tracing::error!(
-                    task_id = task_id_str,
-                    timeout_secs = reconciliation_config().branch_freshness_timeout_secs,
-                    elapsed_ms = plan_update_elapsed.as_millis() as u64,
-                    "update_plan_from_main timed out — aborting merge"
-                );
-                let metadata = serde_json::json!({
-                    "error": format!(
-                        "update_plan_from_main timed out after {}s (limit: {}s)",
-                        plan_update_elapsed.as_secs(),
-                        reconciliation_config().branch_freshness_timeout_secs,
-                    ),
-                    "source_branch": source_branch,
-                    "target_branch": target_branch,
-                    "merge_failure_source": serde_json::to_value(MergeFailureSource::TransientGit).unwrap_or_default(),
-                });
-                self.transition_to_merge_incomplete(
-                    TaskCore {
-                        task: &mut *task,
-                        task_id: &task_id,
-                        task_id_str,
-                        task_repo,
-                    },
-                    metadata,
-                    true,
-                )
-                .await;
-                return;
-            }
-            Ok(merge_coordination::PlanUpdateResult::AlreadyUpToDate)
-            | Ok(merge_coordination::PlanUpdateResult::Updated)
-            | Ok(merge_coordination::PlanUpdateResult::NotPlanBranch) => {
-                tracing::info!(
-                    task_id = task_id_str,
-                    elapsed_ms = plan_update_elapsed.as_millis() as u64,
-                    "update_plan_from_main completed"
-                );
-                // Continue with merge
-            }
-            Ok(merge_coordination::PlanUpdateResult::Conflicts { conflict_files }) => {
-                tracing::warn!(
-                    task_id = task_id_str,
-                    conflict_count = conflict_files.len(),
-                    "Plan branch update from source branch produced conflicts — routing to merger agent"
-                );
-                let metadata = serde_json::json!({
-                    "error": "Conflicts detected while updating plan branch from its source branch. Merger agent needed.",
-                    "conflict_files": conflict_files.iter().map(|f| f.display().to_string()).collect::<Vec<_>>(),
-                    "source_branch": source_branch,
-                    "target_branch": target_branch,
-                    "base_branch": base_branch,
-                    "plan_update_conflict": true,
-                });
-                merge_helpers::merge_metadata_into(task, &metadata);
-                task.internal_status = InternalStatus::Merging;
-                // Create a merge worktree with the plan branch (target) checked out.
-                // The merger agent will run `git merge <base>` to reproduce and resolve conflicts.
-                // First, clean up any stale plan-update worktree that holds the plan branch —
-                // git won't allow the same branch in two worktrees simultaneously.
-                let plan_update_wt =
-                    merge_helpers::compute_plan_update_worktree_path(project, task_id_str);
-                let plan_update_wt_path = std::path::PathBuf::from(&plan_update_wt);
-                merge_helpers::pre_delete_worktree(repo_path, &plan_update_wt_path, task_id_str)
-                    .await;
-                let merge_wt = merge_helpers::compute_merge_worktree_path(project, task_id_str);
-                let merge_wt_path = std::path::PathBuf::from(&merge_wt);
-                if let Err(e) = GitService::checkout_existing_branch_worktree(
-                    repo_path,
-                    &merge_wt_path,
-                    &target_branch,
-                )
-                .await
-                {
-                    tracing::error!(
-                        task_id = task_id_str,
-                        error = %e,
-                        target_branch = %target_branch,
-                        "Failed to create merge worktree for plan_update_conflict — falling back to MergeIncomplete"
-                    );
+                Some(&target_branch),
+                Some(base_branch.as_str()),
+                self.machine.context.services.event_sink.as_deref(),
+                self.machine.context.services.activity_event_repo.as_ref(),
+                "pending_merge",
+                reconciliation_config(),
+            )
+            .await;
+            let missing_branch = match &result {
+                Err(freshness::FreshnessAction::ExecutionBlocked { branch_missing, .. }) => {
+                    branch_missing.clone()
+                }
+                _ => None,
+            };
+            match crate::domain::state_machine::transition_handler::on_enter_states::apply_freshness_result(
+                result, task, task_id_str, task_repo,
+                self.machine.context.services.branch_update_repo.as_ref(),
+                self.machine.context.services.branch_update_workflow.as_ref(), project, repo_path,
+                "pending_merge",
+            ).await {
+                Ok(crate::domain::state_machine::transition_handler::on_enter_states::FreshnessApplyOutcome::Ready) => {
+                    dedicated_freshness_converged = true;
+                    break;
+                }
+                Ok(crate::domain::state_machine::transition_handler::on_enter_states::FreshnessApplyOutcome::Updated(direction)) => {
+                    dedicated_source_updated |= direction == crate::domain::entities::BranchUpdateDirection::TaskBranch;
+                }
+                Err(AppError::BranchFreshnessConflict) => {
+                    let update_state = task_repo.get_by_id(&task_id).await.ok().flatten().and_then(|current| match current.internal_status {
+                        InternalStatus::UpdatingPlanBranch => Some(State::UpdatingPlanBranch),
+                        InternalStatus::UpdatingTaskBranch => Some(State::UpdatingTaskBranch),
+                        _ => None,
+                    });
+                    if let Some(update_state) = update_state {
+                        if let Err(error) = Box::pin(self.on_enter_dispatch(&update_state)).await {
+                            tracing::error!(task_id = task_id_str, error = %error, "Failed to spawn dedicated updater from pending merge");
+                        }
+                    }
+                    return;
+                }
+                Err(error) => {
+                    let mut metadata = serde_json::json!({
+                        "error": error.to_string(),
+                        "error_code": "branch_update_checkpoint_failed",
+                    });
+                    if let Some(branch) = missing_branch {
+                        metadata["branch_missing"] = serde_json::json!(true);
+                        metadata["missing_branch"] = serde_json::json!(branch);
+                    }
                     self.transition_to_merge_incomplete(
                         TaskCore { task: &mut *task, task_id: &task_id, task_id_str, task_repo },
-                        serde_json::json!({
-                            "error": format!("Failed to create merge worktree for plan update conflict: {}", e),
-                            "source_branch": source_branch,
-                            "target_branch": target_branch,
-                        }),
+                        metadata,
                         true,
                     ).await;
                     return;
                 }
-                task.worktree_path = Some(merge_wt);
-                self.persist_merge_transition(
-                    TaskCore {
-                        task: &mut *task,
-                        task_id: &task_id,
-                        task_id_str,
-                        task_repo,
-                    },
-                    InternalStatus::PendingMerge,
-                    InternalStatus::Merging,
-                    "plan_update_conflict",
-                )
-                .await;
-                // Spawn the merger agent — mirrors handle_validation_failure's AutoFix path.
-                // Without this call, the task sits in Merging with no agent and
-                // attempt_merge_auto_complete transitions it straight to MergeIncomplete.
-                if let Err(e) = Box::pin(self.on_enter_dispatch(&State::Merging)).await {
-                    tracing::error!(
-                        task_id = task_id_str,
-                        error = %e,
-                        "on_enter(Merging) failed during plan_update_conflict routing"
-                    );
-                }
-                return;
-            }
-            Ok(merge_coordination::PlanUpdateResult::Error(err)) => {
-                tracing::error!(
-                    task_id = task_id_str,
-                    error = %err,
-                    elapsed_ms = plan_update_elapsed.as_millis() as u64,
-                    "Plan branch update from source branch failed — aborting merge to prevent stale branch"
-                );
-                // Fatal: abort merge. Proceeding with a stale plan branch causes validation
-                // failures that the fixer agent cannot resolve (missing code from the source branch).
-                let metadata = serde_json::json!({
-                    "error": format!("Plan branch update failed: {}", err),
-                    "source_branch": source_branch,
-                    "target_branch": target_branch,
-                    "merge_failure_source": "PlanUpdateFailed",
-                });
-                self.transition_to_merge_incomplete(
-                    TaskCore {
-                        task: &mut *task,
-                        task_id: &task_id,
-                        task_id_str,
-                        task_repo,
-                    },
-                    metadata,
-                    true,
-                )
-                .await;
-                return;
             }
         }
+        if !dedicated_freshness_converged {
+            self.transition_to_merge_incomplete(
+                TaskCore { task: &mut *task, task_id: &task_id, task_id_str, task_repo },
+                serde_json::json!({"error": "Dedicated branch freshness checkpoints did not converge", "error_code": "branch_update_checkpoint_non_convergent"}),
+                true,
+            ).await;
+            return;
+        }
 
-        // Update source branch from target if behind (prevents validation failures from stale code)
-        emit_merge_progress(
-            app_handle,
-            task_id_str,
-            MergePhase::new(MergePhase::BRANCH_FRESHNESS),
-            MergePhaseStatus::Started,
-            "Updating source branch from target...".to_string(),
-        );
-        let source_update_start = std::time::Instant::now();
-        let source_update_result = tokio::time::timeout(
-            freshness_timeout,
-            merge_coordination::update_source_from_target(
-                repo_path,
-                &source_branch,
-                &target_branch,
-                project,
-                task_id_str,
-                self.machine.context.services.app_handle.as_ref(),
-            ),
-        )
-        .await;
-
-        let source_update_elapsed = source_update_start.elapsed();
-        let source_updated_from_target = match source_update_result {
-            Err(_elapsed) => {
-                tracing::error!(
-                    task_id = task_id_str,
-                    timeout_secs = reconciliation_config().branch_freshness_timeout_secs,
-                    elapsed_ms = source_update_elapsed.as_millis() as u64,
-                    "update_source_from_target timed out — aborting merge"
-                );
-                let metadata = serde_json::json!({
-                    "error": format!(
-                        "update_source_from_target timed out after {}s (limit: {}s)",
-                        source_update_elapsed.as_secs(),
-                        reconciliation_config().branch_freshness_timeout_secs,
-                    ),
-                    "source_branch": source_branch,
-                    "target_branch": target_branch,
-                    "merge_failure_source": serde_json::to_value(MergeFailureSource::TransientGit).unwrap_or_default(),
-                });
-                self.transition_to_merge_incomplete(
-                    TaskCore {
-                        task: &mut *task,
-                        task_id: &task_id,
-                        task_id_str,
-                        task_repo,
-                    },
-                    metadata,
-                    true,
-                )
-                .await;
-                return;
-            }
-            Ok(merge_coordination::SourceUpdateResult::AlreadyUpToDate) => {
-                tracing::info!(
-                    task_id = task_id_str,
-                    elapsed_ms = source_update_elapsed.as_millis() as u64,
-                    "update_source_from_target completed"
-                );
-                false
-            }
-            Ok(merge_coordination::SourceUpdateResult::Updated) => {
-                tracing::info!(
-                    task_id = task_id_str,
-                    elapsed_ms = source_update_elapsed.as_millis() as u64,
-                    "update_source_from_target completed"
-                );
-                true
-            }
-            Ok(merge_coordination::SourceUpdateResult::Conflicts { conflict_files }) => {
-                tracing::warn!(
-                    task_id = task_id_str,
-                    conflict_count = conflict_files.len(),
-                    "Source branch update from target produced conflicts — routing to merger agent"
-                );
-                let metadata = serde_json::json!({
-                    "error": "Conflicts detected while updating source branch from target. Merger agent needed.",
-                    "conflict_files": conflict_files.iter().map(|f| f.display().to_string()).collect::<Vec<_>>(),
-                    "source_branch": source_branch,
-                    "target_branch": target_branch,
-                    "source_update_conflict": true,
-                });
-                merge_helpers::merge_metadata_into(task, &metadata);
-                task.internal_status = InternalStatus::Merging;
-                // Create a merge worktree with source branch checked out so the merger
-                // agent can resolve the conflict in an isolated directory. Mirrors the
-                // plan_update_conflict path which sets worktree_path before persist.
-                let merge_wt = merge_helpers::compute_merge_worktree_path(project, task_id_str);
-                let merge_wt_path = std::path::PathBuf::from(&merge_wt);
-                // RC#13: Clean up any stale merge worktree from a prior phase before
-                // creating a fresh one. Without this, checkout_existing_branch_worktree
-                // fails with "fatal: '/path/merge-{id}' already exists".
-                merge_helpers::pre_delete_worktree(repo_path, &merge_wt_path, task_id_str).await;
-                if let Err(e) = GitService::checkout_existing_branch_worktree(
-                    repo_path,
-                    &merge_wt_path,
-                    &source_branch,
-                )
-                .await
-                {
-                    tracing::error!(
-                        task_id = task_id_str,
-                        error = %e,
-                        source_branch = %source_branch,
-                        "Failed to create merge worktree for source_update_conflict — falling back to MergeIncomplete"
-                    );
-                    self.transition_to_merge_incomplete(
-                        TaskCore { task: &mut *task, task_id: &task_id, task_id_str, task_repo },
-                        serde_json::json!({
-                            "error": format!("Failed to create merge worktree for source update conflict: {}", e),
-                            "source_branch": source_branch,
-                            "target_branch": target_branch,
-                        }),
-                        true,
-                    ).await;
-                    return;
-                }
-                task.worktree_path = Some(merge_wt);
-                self.persist_merge_transition(
-                    TaskCore {
-                        task: &mut *task,
-                        task_id: &task_id,
-                        task_id_str,
-                        task_repo,
-                    },
-                    InternalStatus::PendingMerge,
-                    InternalStatus::Merging,
-                    "source_update_conflict",
-                )
-                .await;
-                // Spawn the merger agent — mirrors handle_validation_failure's AutoFix path.
-                // Without this call, the task sits in Merging with no agent and
-                // attempt_merge_auto_complete transitions it straight to MergeIncomplete.
-                if let Err(e) = Box::pin(self.on_enter_dispatch(&State::Merging)).await {
-                    tracing::error!(
-                        task_id = task_id_str,
-                        error = %e,
-                        "on_enter(Merging) failed during source_update_conflict routing"
-                    );
-                }
-                return;
-            }
-            Ok(merge_coordination::SourceUpdateResult::Error(err)) => {
-                tracing::warn!(
-                    task_id = task_id_str,
-                    error = %err,
-                    elapsed_ms = source_update_elapsed.as_millis() as u64,
-                    "Source branch update from target failed (non-fatal) — proceeding with merge"
-                );
-                // Non-fatal: continue with merge anyway. The source branch may still merge cleanly.
-                false
-            }
-        };
+        let source_updated_from_target = dedicated_source_updated;
 
         // Branch freshness checks complete
         emit_merge_progress(
-            app_handle,
+            event_sink,
             task_id_str,
             MergePhase::new(MergePhase::BRANCH_FRESHNESS),
             MergePhaseStatus::Passed,
@@ -749,7 +560,7 @@ impl<'a> TransitionHandler<'a> {
 
         // Emit merge progress event
         emit_merge_progress(
-            app_handle,
+            event_sink,
             task_id_str,
             MergePhase::programmatic_merge(),
             MergePhaseStatus::Started,
@@ -837,6 +648,108 @@ impl<'a> TransitionHandler<'a> {
             "started",
         )
         .await;
+        let Some(authority_repo) = self.machine.context.services.branch_update_repo.as_ref() else {
+            self.transition_to_merge_incomplete(
+                TaskCore {
+                    task: &mut *task,
+                    task_id: &task_id,
+                    task_id_str,
+                    task_repo,
+                },
+                serde_json::json!({
+                    "error": "Canonical Git target authority is unavailable",
+                    "error_code": "git_target_authority_unavailable",
+                }),
+                true,
+            )
+            .await;
+            return;
+        };
+        let target_identity =
+            match GitService::canonical_target_identity(repo_path, &target_branch).await {
+                Ok(identity) => identity,
+                Err(error) => {
+                    self.transition_to_merge_incomplete(
+                        TaskCore {
+                            task: &mut *task,
+                            task_id: &task_id,
+                            task_id_str,
+                            task_repo,
+                        },
+                        serde_json::json!({
+                            "error": error.to_string(),
+                            "error_code": "git_target_identity_failed",
+                        }),
+                        true,
+                    )
+                    .await;
+                    return;
+                }
+            };
+        let merge_owner = crate::domain::entities::GitTargetLeaseOwner::merge_attempt(
+            task_id_str,
+            format!("pending-merge:{task_id_str}:{target_branch}"),
+        );
+        let fencing_epoch = match authority_repo
+            .acquire_target_lease(AcquireGitTargetLease {
+                identity: target_identity.clone(),
+                owner: merge_owner.clone(),
+            })
+            .await
+        {
+            Ok(AcquireGitTargetLeaseOutcome::Acquired { fencing_epoch })
+            | Ok(AcquireGitTargetLeaseOutcome::AlreadyOwned { fencing_epoch }) => fencing_epoch,
+            Ok(AcquireGitTargetLeaseOutcome::TargetBusy {
+                owner,
+                fencing_epoch,
+            }) => {
+                tracing::info!(
+                    task_id = task_id_str,
+                    owner = ?owner,
+                    fencing_epoch,
+                    "Programmatic merge deferred because canonical target authority is busy"
+                );
+                return;
+            }
+            Err(error) => {
+                tracing::error!(
+                    task_id = task_id_str,
+                    error = %error,
+                    "Programmatic merge failed to acquire canonical target authority"
+                );
+                return;
+            }
+        };
+        let mutation_claim_id = uuid::Uuid::new_v4().to_string();
+        match authority_repo
+            .begin_git_mutation(BeginGitMutation {
+                identity: target_identity.clone(),
+                owner: merge_owner.clone(),
+                fencing_epoch,
+                claim_id: mutation_claim_id.clone(),
+                kind: crate::domain::entities::GitMutationKind::Merge,
+            })
+            .await
+        {
+            Ok(GitAuthorityCasOutcome::Applied { .. }) => {}
+            Ok(outcome) => {
+                tracing::warn!(
+                    task_id = task_id_str,
+                    outcome = ?outcome,
+                    "Programmatic merge deferred because its target mutation claim was rejected"
+                );
+                return;
+            }
+            Err(error) => {
+                tracing::error!(
+                    task_id = task_id_str,
+                    error = %error,
+                    "Programmatic merge failed to persist its target mutation claim"
+                );
+                return;
+            }
+        }
+
         self.dispatch_merge_strategy(
             TaskCore {
                 task: &mut *task,
@@ -856,5 +769,35 @@ impl<'a> TransitionHandler<'a> {
             deadline_secs,
         )
         .await;
+
+        let mutation_completion = authority_repo
+            .complete_git_mutation(CompleteGitMutation {
+                identity: target_identity.clone(),
+                owner: merge_owner.clone(),
+                fencing_epoch,
+                claim_id: mutation_claim_id,
+            })
+            .await;
+        if !matches!(
+            mutation_completion,
+            Ok(GitAuthorityCasOutcome::Applied { .. })
+        ) {
+            tracing::error!(
+                task_id = task_id_str,
+                outcome = ?mutation_completion,
+                "Programmatic merge left canonical target authority fenced after completion"
+            );
+            return;
+        }
+        let release = authority_repo
+            .release_target_lease(&target_identity, &merge_owner, fencing_epoch)
+            .await;
+        if !matches!(release, Ok(GitAuthorityCasOutcome::Applied { .. })) {
+            tracing::error!(
+                task_id = task_id_str,
+                outcome = ?release,
+                "Programmatic merge could not release canonical target authority"
+            );
+        }
     }
 }

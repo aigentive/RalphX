@@ -120,14 +120,13 @@ async fn test_full_workflow() {
 
 ## Commands
 
+Follow the target project's local validation instructions. Select only the affected test file, module, crate, or named test; do not turn these examples into a full-suite completion gate.
+
 ```bash
 # TypeScript
-npm run test          # Watch mode
-npm run test:run      # Single run
-npm run test:coverage # With coverage
+npm run test:run -- <affected-test-file>
 
 # Rust
-cargo test           # All tests
-cargo test -- test_name  # Specific test
-cargo test -- --nocapture  # Show output
+cargo test <test_or_module_filter> --lib
+cargo nextest run --test <affected-suite> -E 'test(<test_or_module_filter>)'
 ```

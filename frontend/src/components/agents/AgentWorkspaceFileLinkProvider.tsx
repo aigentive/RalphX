@@ -39,6 +39,7 @@ export function AgentWorkspaceFileLinkProvider({
     path: string;
     targetId: string;
   } | null>(null);
+  const workspaceConversationId = workspace?.conversationId ?? conversationId;
   const workspaceOpenTargetsQuery = useQuery({
     queryKey: ["workspace-open-targets"],
     queryFn: chatApi.listWorkspaceOpenTargets,
@@ -51,7 +52,11 @@ export function AgentWorkspaceFileLinkProvider({
   );
   const openWorkspacePathMutation = useMutation({
     mutationFn: ({ path, targetId }: { path: string; targetId: string }) =>
-      chatApi.openAgentConversationWorkspacePath(conversationId, targetId, path),
+      chatApi.openAgentConversationWorkspacePath(
+        workspaceConversationId,
+        targetId,
+        path,
+      ),
     onMutate: ({ path, targetId }) => {
       setOpening({ path, targetId });
     },

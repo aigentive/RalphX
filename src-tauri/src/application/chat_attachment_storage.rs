@@ -1,21 +1,15 @@
 use sha2::{Digest, Sha256};
 use std::path::{Component, Path, PathBuf};
-use tauri::Manager;
 
 use crate::domain::entities::{ChatAttachmentId, ChatConversationId};
-use crate::error::{AppError, AppResult};
 
 const CHAT_ATTACHMENTS_DIR: &str = "chat_attachments";
 const ATTACHMENT_STORAGE_DIR: &str = "attachments";
 const CONTENT_FILE_STEM: &str = "content";
+const WORKSPACE_ATTACHMENTS_DIR: &str = "attachments";
 
-pub fn chat_attachment_storage_path(app_handle: &tauri::AppHandle) -> AppResult<PathBuf> {
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| AppError::Infrastructure(format!("Failed to resolve app data dir: {e}")))?;
-
-    Ok(app_data_dir.join(ATTACHMENT_STORAGE_DIR))
+pub fn chat_attachment_storage_path(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join(ATTACHMENT_STORAGE_DIR)
 }
 
 pub fn build_chat_attachment_file_path(
@@ -29,6 +23,18 @@ pub fn build_chat_attachment_file_path(
     Ok(base_path
         .join(CHAT_ATTACHMENTS_DIR)
         .join(hashed_component("conversation", &conversation_id.as_str()))
+        .join(hashed_component("attachment", &attachment_id.as_str()))
+        .join(content_file_name))
+}
+
+pub fn build_builder_workspace_attachment_path(
+    workspace_root: &Path,
+    attachment_id: &ChatAttachmentId,
+    file_name: &str,
+) -> Result<PathBuf, String> {
+    let content_file_name = attachment_content_file_name(file_name)?;
+    Ok(workspace_root
+        .join(WORKSPACE_ATTACHMENTS_DIR)
         .join(hashed_component("attachment", &attachment_id.as_str()))
         .join(content_file_name))
 }

@@ -21,16 +21,26 @@ import {
   removeOptimisticMessageFromConversationCache,
 } from "@/hooks/useChat";
 import { ideationApi } from "@/api/ideation";
-import { serializeComposerReferencesMetadata } from "@/components/Chat/MessageReferences.parse";
+import {
+  serializeComposerReferencesMetadata,
+  type MessageFolderReference,
+} from "@/components/Chat/MessageReferences.parse";
 import { extractErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
+import { isPersonaUnavailableError } from "@/lib/personaErrors";
+import { isMessageDeliveredNotPersistedError } from "@/lib/sendDeliveryErrors";
 import type { ContextType } from "@/types/chat-conversation";
 import type {
   ComposerArtifactReference,
+  ComposerExcerptReference,
+  CapabilityIntent,
   ComposerIntegrationReference,
   ComposerProjectReference,
+  ComposerSelectionSnapshot,
   SendAgentMessageOptions,
   SendAgentMessageResult,
+  TeamIntent,
+  TeamMessageTarget,
 } from "@/api/chat";
 
 // ============================================================================
@@ -56,10 +66,14 @@ interface UseChatActionsProps {
     mutateAsync: (params: {
       content: string;
       attachmentIds?: string[];
-      target?: string;
       composerArtifactReferences?: ComposerArtifactReference[];
       composerProjectReferences?: ComposerProjectReference[];
       composerIntegrationReferences?: ComposerIntegrationReference[];
+      composerExcerptReferences?: ComposerExcerptReference[];
+      capabilityIntent?: CapabilityIntent | null;
+      composerSelectionSnapshot?: ComposerSelectionSnapshot;
+      teamIntent?: TeamIntent | null;
+      teamMessageTarget?: TeamMessageTarget | null;
     }) => Promise<SendAgentMessageResult>;
   };
   /** Current visible conversation ID, used by direct review/merge sends for immediate local echo. */
@@ -74,6 +88,8 @@ interface UseChatActionsProps {
     result: SendAgentMessageResult;
     composerIntegrationReferences?: ComposerIntegrationReference[];
   }) => void | Promise<void>) | undefined;
+  /** Receives persona binding failures for inline, recoverable composer UI. */
+  onPersonaUnavailable?: ((message: string) => void) | undefined;
 }
 
 // ============================================================================
@@ -92,6 +108,7 @@ export function useChatActions({
   messageCount = 0,
   sendOptions,
   onUserMessageSent,
+  onPersonaUnavailable,
 }: UseChatActionsProps) {
   const queryClient = useQueryClient();
   const queueMessage = useChatStore((s) => s.queueMessage);
@@ -103,19 +120,63 @@ export function useChatActions({
   const backendQueueContextId = queueContextId ?? contextId;
 
   const reportSendFailure = useCallback((err: unknown) => {
+    const message = extractErrorMessage(err, "The agent runtime could not start.");
+    if (isPersonaUnavailableError(message)) {
+      onPersonaUnavailable?.(message);
+      return;
+    }
+    // The agent already received this turn — saying "failed to send" would be a lie.
+    if (isMessageDeliveredNotPersistedError(message)) {
+      toast.warning("Message sent, but not saved", {
+        description:
+          "The agent received your message and is replying, but it could not be added to the transcript.",
+        duration: 10000,
+      });
+      return;
+    }
     toast.error("Failed to send message", {
-      description: extractErrorMessage(err, "The agent runtime could not start."),
+      description: message,
       duration: 10000,
     });
-  }, []);
+  }, [onPersonaUnavailable]);
 
   const queueAcceptedMessage = useCallback(
-    (content: string, queuedMessageId: string, attachmentIds?: string[]) => {
+    (
+      content: string,
+      queuedMessageId: string,
+      attachmentIds?: string[],
+      selectionSnapshot?: ComposerSelectionSnapshot,
+    ) => {
       if (attachmentIds !== undefined && attachmentIds.length > 0) {
-        queueMessage(storeContextKey, content, queuedMessageId, attachmentIds);
+        if (selectionSnapshot) {
+          queueMessage(
+            storeContextKey,
+            content,
+            queuedMessageId,
+            attachmentIds,
+            selectionSnapshot,
+          );
+        } else {
+          queueMessage(
+            storeContextKey,
+            content,
+            queuedMessageId,
+            attachmentIds,
+          );
+        }
         return;
       }
-      queueMessage(storeContextKey, content, queuedMessageId);
+      if (selectionSnapshot) {
+        queueMessage(
+          storeContextKey,
+          content,
+          queuedMessageId,
+          undefined,
+          selectionSnapshot,
+        );
+      } else {
+        queueMessage(storeContextKey, content, queuedMessageId);
+      }
     },
     [queueMessage, storeContextKey]
   );
@@ -125,11 +186,16 @@ export function useChatActions({
     async (
       content: string,
       attachmentIds?: string[],
-      target?: string,
       composerOptions?: {
+        folderReferences?: MessageFolderReference[];
         projectReferences?: ComposerProjectReference[];
         integrationReferences?: ComposerIntegrationReference[];
         artifactReferences?: ComposerArtifactReference[];
+        excerptReferences?: ComposerExcerptReference[];
+        capabilityIntent?: CapabilityIntent | null;
+        selectionSnapshot?: ComposerSelectionSnapshot;
+        teamIntent?: TeamIntent | null;
+        teamMessageTarget?: TeamMessageTarget | null;
       },
     ) => {
       if (!content.trim() || sendMessage.isPending) return;
@@ -145,15 +211,22 @@ export function useChatActions({
         // Agent side-panels use context-specific conversations. Review and merge must
         // bypass the generic task-detail mutation so steering messages reach the
         // active reviewer/merger process instead of a plain task chat.
-        if (contextType === "review" || contextType === "merge") {
+        if (
+          contextType === "review" ||
+          contextType === "merge" ||
+          contextType === "branch_update"
+        ) {
           const agentContextId = selectedTaskId ?? contextId;
           setSending(storeContextKey, true);
           try {
-            if (activeConversationId && !target) {
+            if (activeConversationId) {
               const referenceMetadata = serializeComposerReferencesMetadata({
+                folderReferences: composerOptions?.folderReferences,
                 projectReferences: composerOptions?.projectReferences,
                 integrationReferences: composerOptions?.integrationReferences,
                 artifactReferences: composerOptions?.artifactReferences,
+                selectionSnapshot: composerOptions?.selectionSnapshot,
+                excerptReferences: composerOptions?.excerptReferences,
               });
               const message = referenceMetadata
                 ? addOptimisticUserMessageToConversationCache(
@@ -172,16 +245,25 @@ export function useChatActions({
                 messageId: message.id,
               };
             }
-            const result = await chatApi.sendAgentMessage(
-              contextType,
-              agentContextId,
-              content,
-              attachmentIds,
-              target,
+            const directSendOptions =
               composerOptions?.projectReferences?.length ||
-                composerOptions?.integrationReferences?.length ||
-                composerOptions?.artifactReferences?.length
+              composerOptions?.integrationReferences?.length ||
+              composerOptions?.artifactReferences?.length ||
+              composerOptions?.excerptReferences?.length ||
+              composerOptions?.capabilityIntent ||
+              composerOptions?.selectionSnapshot ||
+              composerOptions?.teamIntent ||
+              composerOptions?.teamMessageTarget
                 ? {
+                    ...(composerOptions?.capabilityIntent
+                      ? { capabilityIntent: composerOptions.capabilityIntent }
+                      : {}),
+                    ...(composerOptions?.teamIntent
+                      ? { teamIntent: composerOptions.teamIntent }
+                      : {}),
+                    ...(composerOptions?.teamMessageTarget
+                      ? { teamMessageTarget: composerOptions.teamMessageTarget }
+                      : {}),
                     ...(composerOptions?.projectReferences?.length
                       ? {
                           composerProjectReferences:
@@ -200,8 +282,26 @@ export function useChatActions({
                             composerOptions.artifactReferences,
                         }
                       : {}),
+                    ...(composerOptions?.selectionSnapshot
+                      ? {
+                          composerSelectionSnapshot:
+                            composerOptions.selectionSnapshot,
+                        }
+                      : {}),
+                    ...(composerOptions?.excerptReferences?.length
+                      ? {
+                          composerExcerptReferences:
+                            composerOptions.excerptReferences,
+                        }
+                      : {}),
                   }
-                : undefined,
+                : undefined;
+            const result = await chatApi.sendAgentMessage(
+              contextType,
+              agentContextId,
+              content,
+              attachmentIds,
+              directSendOptions,
             );
             sentResult = result;
 
@@ -210,7 +310,12 @@ export function useChatActions({
             });
 
             if (result.wasQueued && result.queuedMessageId != null) {
-              queueAcceptedMessage(content, result.queuedMessageId, attachmentIds);
+              queueAcceptedMessage(
+                content,
+                result.queuedMessageId,
+                attachmentIds,
+                composerOptions?.selectionSnapshot,
+              );
             }
 
             if (result.conversationId) {
@@ -227,17 +332,22 @@ export function useChatActions({
         } else {
           const params: {
             content: string;
+            composerFolderReferences?: MessageFolderReference[];
             attachmentIds?: string[];
-            target?: string;
             composerArtifactReferences?: ComposerArtifactReference[];
             composerProjectReferences?: ComposerProjectReference[];
             composerIntegrationReferences?: ComposerIntegrationReference[];
+            composerExcerptReferences?: ComposerExcerptReference[];
+            capabilityIntent?: CapabilityIntent | null;
+            composerSelectionSnapshot?: ComposerSelectionSnapshot;
+            teamIntent?: TeamIntent | null;
+            teamMessageTarget?: TeamMessageTarget | null;
           } = { content };
+          if (composerOptions?.folderReferences?.length) {
+            params.composerFolderReferences = composerOptions.folderReferences;
+          }
           if (attachmentIds !== undefined) {
             params.attachmentIds = attachmentIds;
-          }
-          if (target !== undefined) {
-            params.target = target;
           }
           if (composerOptions?.projectReferences?.length) {
             params.composerProjectReferences = composerOptions.projectReferences;
@@ -250,15 +360,34 @@ export function useChatActions({
             params.composerArtifactReferences =
               composerOptions.artifactReferences;
           }
+          if (composerOptions?.excerptReferences?.length) {
+            params.composerExcerptReferences = composerOptions.excerptReferences;
+          }
+          if (composerOptions?.capabilityIntent) {
+            params.capabilityIntent = composerOptions.capabilityIntent;
+          }
+          if (composerOptions?.selectionSnapshot) {
+            params.composerSelectionSnapshot = composerOptions.selectionSnapshot;
+          }
+          if (composerOptions?.teamIntent) {
+            params.teamIntent = composerOptions.teamIntent;
+          }
+          if (composerOptions?.teamMessageTarget) {
+            params.teamMessageTarget = composerOptions.teamMessageTarget;
+          }
           const result = await sendMessage.mutateAsync(params);
           sentResult = result;
           if (result.wasQueued && result.queuedMessageId != null) {
-            queueAcceptedMessage(content, result.queuedMessageId, attachmentIds);
+            queueAcceptedMessage(
+              content,
+              result.queuedMessageId,
+              attachmentIds,
+              composerOptions?.selectionSnapshot,
+            );
           }
           if (
             contextType === "ideation" &&
             ideationSessionId &&
-            !target &&
             result.conversationId &&
             (result.isNewConversation || result.queuedAsPending)
           ) {
@@ -267,7 +396,6 @@ export function useChatActions({
           if (
             contextType === "ideation" &&
             ideationSessionId &&
-            !target &&
             result.queuedAsPending
           ) {
             queryClient.setQueryData(
@@ -300,7 +428,12 @@ export function useChatActions({
           });
         }
       } catch (err) {
-        if (optimisticMessage) {
+        // A delivered-but-unsaved turn is live: the process is answering it. Keep the
+        // bubble and the spinner instead of pretending the send never happened.
+        const deliveredWithoutPersistence = isMessageDeliveredNotPersistedError(
+          extractErrorMessage(err, ""),
+        );
+        if (optimisticMessage && !deliveredWithoutPersistence) {
           removeOptimisticMessageFromConversationCache(
             queryClient,
             optimisticMessage.conversationId,
@@ -311,7 +444,12 @@ export function useChatActions({
         // Reset agent running state on error for the correct store context key.
         // Covers review, task_execution, merge, and ideation (idempotent for ideation
         // where storeContextKey and useChat's contextKey happen to match).
-        setAgentRunning(storeContextKey, false);
+        if (!deliveredWithoutPersistence) {
+          setAgentRunning(storeContextKey, false);
+        }
+        if (composerOptions?.selectionSnapshot) {
+          throw err;
+        }
       }
     },
     [sendMessage, contextType, contextId, selectedTaskId, storeContextKey, setAgentRunning, setSending, setActiveConversation, queryClient, ideationSessionId, messageCount, queueAcceptedMessage, onUserMessageSent, reportSendFailure, activeConversationId]
@@ -359,7 +497,12 @@ export function useChatActions({
 
   // ── Send Queued Message Now ─────────────────────────────────────
   const handleSendQueuedMessageNow = useCallback(
-    async (messageId: string, content?: string, attachmentIds?: string[]) => {
+    async (
+      messageId: string,
+      content?: string,
+      attachmentIds?: string[],
+      selectionSnapshot?: ComposerSelectionSnapshot,
+    ) => {
       deleteQueuedMessage(storeContextKey, messageId);
       setSending(storeContextKey, true);
 
@@ -371,13 +514,25 @@ export function useChatActions({
         );
 
         if (result.wasQueued && result.queuedMessageId != null && content) {
-          queueAcceptedMessage(content, result.queuedMessageId, attachmentIds);
+          queueAcceptedMessage(
+            content,
+            result.queuedMessageId,
+            attachmentIds,
+            selectionSnapshot,
+          );
         } else if (!result.wasQueued) {
           setAgentRunning(storeContextKey, true);
         }
       } catch (err) {
-        if (content) {
-          queueAcceptedMessage(content, messageId, attachmentIds);
+        // Re-queueing a turn the agent already received would send it twice.
+        const deliveredWithoutPersistence = isMessageDeliveredNotPersistedError(
+          extractErrorMessage(err, ""),
+        );
+        if (content && !deliveredWithoutPersistence) {
+          queueAcceptedMessage(content, messageId, attachmentIds, selectionSnapshot);
+        }
+        if (deliveredWithoutPersistence) {
+          setAgentRunning(storeContextKey, true);
         }
         reportSendFailure(err);
       } finally {
@@ -398,7 +553,12 @@ export function useChatActions({
 
   // ── Edit Queued Message ──────────────────────────────────────────
   const handleEditQueuedMessage = useCallback(
-    async (messageId: string, newContent: string, attachmentIds?: string[]) => {
+    async (
+      messageId: string,
+      newContent: string,
+      attachmentIds?: string[],
+      selectionSnapshot?: ComposerSelectionSnapshot,
+    ) => {
       // Delete old message from backend
       try {
         await chatApi.deleteQueuedAgentMessage(contextType, backendQueueContextId, messageId);
@@ -417,11 +577,17 @@ export function useChatActions({
           contextId,
           newContent,
           attachmentIds !== undefined && attachmentIds.length > 0 ? attachmentIds : undefined,
-          undefined,
-          sendOptions
+          selectionSnapshot
+            ? { ...sendOptions, composerSelectionSnapshot: selectionSnapshot }
+            : sendOptions,
         );
         if (result.wasQueued && result.queuedMessageId != null) {
-          queueAcceptedMessage(newContent, result.queuedMessageId, attachmentIds);
+          queueAcceptedMessage(
+            newContent,
+            result.queuedMessageId,
+            attachmentIds,
+            selectionSnapshot,
+          );
         }
       } catch (err) {
         reportSendFailure(err);

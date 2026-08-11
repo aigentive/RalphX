@@ -122,10 +122,13 @@ pub enum TaskEvent {
         blocker_id: String,
     },
 
-    /// Branch freshness check detected stale branches requiring merge conflict resolution.
-    /// Transitions Executing/ReExecuting/Reviewing → Merging.
-    /// Return path is metadata-driven: MergeComplete handler reads freshness_origin_state.
+    /// Legacy freshness signal retained for persisted/event compatibility.
+    /// New workflow code must use a direction-specific branch-update event.
     BranchFreshnessConflict,
+    /// A durable plan-branch synchronization checkpoint was activated.
+    PlanBranchUpdateRequired,
+    /// A durable task-branch synchronization checkpoint was activated.
+    TaskBranchUpdateRequired,
 }
 
 impl TaskEvent {
@@ -174,6 +177,8 @@ impl TaskEvent {
                 | TaskEvent::MergeComplete
                 | TaskEvent::MergeConflict
                 | TaskEvent::BranchFreshnessConflict
+                | TaskEvent::PlanBranchUpdateRequired
+                | TaskEvent::TaskBranchUpdateRequired
         )
     }
 
@@ -220,6 +225,8 @@ impl TaskEvent {
             TaskEvent::BlockersResolved => "BlockersResolved",
             TaskEvent::BlockerDetected { .. } => "BlockerDetected",
             TaskEvent::BranchFreshnessConflict => "BranchFreshnessConflict",
+            TaskEvent::PlanBranchUpdateRequired => "PlanBranchUpdateRequired",
+            TaskEvent::TaskBranchUpdateRequired => "TaskBranchUpdateRequired",
         }
     }
 }

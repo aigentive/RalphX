@@ -8,8 +8,12 @@ import type { ContextType } from "@/types/chat-conversation";
 // ============================================================================
 
 const mockToastError = vi.fn();
+const mockToastWarning = vi.fn();
 vi.mock("sonner", () => ({
-  toast: { error: (...args: unknown[]) => mockToastError(...args) },
+  toast: {
+    error: (...args: unknown[]) => mockToastError(...args),
+    warning: (...args: unknown[]) => mockToastWarning(...args),
+  },
 }));
 
 const mockInvalidateQueries = vi.fn();
@@ -51,6 +55,16 @@ const mockRecoverTaskExecution = vi.fn();
 vi.mock("@/api/recovery", () => ({
   recoverTaskExecution: (...args: unknown[]) => mockRecoverTaskExecution(...args),
 }));
+
+const selectionSnapshot = {
+  sourceType: "artifact" as const,
+  sourceKind: "plan" as const,
+  sourceId: "plan-v3",
+  artifactVersion: 3,
+  startLine: 7,
+  endLine: 8,
+  content: "first\nsecond",
+};
 
 const mockSpawnSessionNamer = vi.fn();
 vi.mock("@/api/ideation", () => ({
@@ -102,6 +116,7 @@ interface SetupOptions {
   messageCount?: number;
   activeConversationId?: string | null | undefined;
   onUserMessageSent?: Parameters<typeof useChatActions>[0]["onUserMessageSent"];
+  onPersonaUnavailable?: Parameters<typeof useChatActions>[0]["onPersonaUnavailable"];
 }
 
 function setup(opts: SetupOptions = {}) {
@@ -116,6 +131,7 @@ function setup(opts: SetupOptions = {}) {
     messageCount = 5,
     activeConversationId = undefined,
     onUserMessageSent = undefined,
+    onPersonaUnavailable = undefined,
   } = opts;
 
   const mutateAsync = vi.fn().mockResolvedValue({
@@ -138,6 +154,7 @@ function setup(opts: SetupOptions = {}) {
       activeConversationId,
       messageCount,
       onUserMessageSent,
+      onPersonaUnavailable,
     })
   );
 
@@ -184,6 +201,22 @@ describe("useChatActions", () => {
       expect(mutateAsync).toHaveBeenCalledWith({ content: "hello world", attachmentIds: undefined });
     });
 
+    it("passes Team intent to the send mutation", async () => {
+      const { result, mutateAsync } = setup();
+
+      await act(async () => {
+        await result.current.handleSend("hello Team", undefined, {
+          teamIntent: { coordinationMode: "rx_native_team" },
+        });
+      });
+
+      expect(mutateAsync).toHaveBeenCalledWith({
+        content: "hello Team",
+        attachmentIds: undefined,
+        teamIntent: { coordinationMode: "rx_native_team" },
+      });
+    });
+
     it("preserves attachment IDs when a send is queued", async () => {
       const { result, mutateAsync } = setup();
       mutateAsync.mockResolvedValue({
@@ -223,7 +256,7 @@ describe("useChatActions", () => {
       const { result } = setup({ onUserMessageSent });
 
       await act(async () => {
-        await result.current.handleSend("work on jira", undefined, undefined, {
+        await result.current.handleSend("work on jira", undefined, {
           integrationReferences: [jiraReference],
         });
       });
@@ -263,6 +296,23 @@ describe("useChatActions", () => {
       expect(mutateAsync).not.toHaveBeenCalled();
     });
 
+    it("suppresses the generic toast and reports persona-unavailable sends inline", async () => {
+      const onPersonaUnavailable = vi.fn();
+      const { result, mutateAsync } = setup({ onPersonaUnavailable });
+      mutateAsync.mockRejectedValue(
+        new Error("[Persona unavailable: Reviewer Voice was archived]"),
+      );
+
+      await act(async () => {
+        await result.current.handleSend("continue the review");
+      });
+
+      expect(onPersonaUnavailable).toHaveBeenCalledWith(
+        "[Persona unavailable: Reviewer Voice was archived]",
+      );
+      expect(mockToastError).not.toHaveBeenCalled();
+    });
+
     it("review mode sends via chatApi.sendAgentMessage directly", async () => {
       const { result, mutateAsync } = setup({
         contextType: "review",
@@ -282,11 +332,34 @@ describe("useChatActions", () => {
         "task-42",
         "looks good",
         undefined,
-        undefined,
         undefined
       );
       expect(mockActions.setSending).toHaveBeenCalledWith("review:task-42", true);
       expect(mockInvalidateQueries).toHaveBeenCalled();
+    });
+
+    it("review mode sends Team intent via direct send options", async () => {
+      const { result, mutateAsync } = setup({
+        contextType: "review",
+        contextId: "task-42",
+        storeContextKey: "review:task-42",
+        selectedTaskId: "task-42",
+      });
+
+      await act(async () => {
+        await result.current.handleSend("review with Team", undefined, {
+          teamIntent: { coordinationMode: "rx_native_team" },
+        });
+      });
+
+      expect(mutateAsync).not.toHaveBeenCalled();
+      expect(mockSendAgentMessage).toHaveBeenCalledWith(
+        "review",
+        "task-42",
+        "review with Team",
+        undefined,
+        { teamIntent: { coordinationMode: "rx_native_team" } },
+      );
     });
 
     it("review mode sets activeConversation when isNewConversation is true", async () => {
@@ -341,7 +414,14 @@ describe("useChatActions", () => {
       });
 
       await act(async () => {
-        await result.current.handleSend("review this", undefined, undefined, {
+        await result.current.handleSend("review this", undefined, {
+          folderReferences: [
+            {
+              id: "folder-1",
+              folderPath: "/work/brand-kit",
+              displayName: "brand-kit",
+            },
+          ],
           projectReferences: [{ path: "src/main.ts", kind: "file" }],
           integrationReferences: [
             {
@@ -361,6 +441,13 @@ describe("useChatActions", () => {
         "review this",
         {
           metadata: JSON.stringify({
+            composer_folder_references: [
+              {
+                id: "folder-1",
+                folderPath: "/work/brand-kit",
+                displayName: "brand-kit",
+              },
+            ],
             composer_project_references: [
               { path: "src/main.ts", kind: "file" },
             ],
@@ -495,6 +582,56 @@ describe("useChatActions", () => {
         duration: 10000,
       });
     });
+
+    it("keeps the turn visible when the agent received it but it was not saved", async () => {
+      const { result, mutateAsync } = setup({
+        contextType: "project",
+        contextId: "project-1",
+        storeContextKey: "project:conv-1",
+      });
+      mutateAsync.mockRejectedValue(
+        new Error(
+          "[Message delivered but not saved: Repository error: chat message create failed]",
+        ),
+      );
+
+      await act(async () => {
+        await result.current.handleSend("keep me visible");
+      });
+
+      expect(mockToastError).not.toHaveBeenCalled();
+      expect(mockToastWarning).toHaveBeenCalledWith("Message sent, but not saved", {
+        description: expect.stringContaining("is replying"),
+        duration: 10000,
+      });
+      // The agent is answering this turn — the spinner must not be cleared.
+      expect(mockActions.setAgentRunning).not.toHaveBeenCalledWith(
+        "project:conv-1",
+        false,
+      );
+    });
+
+    it("keeps the optimistic bubble for a delivered-but-unsaved direct send", async () => {
+      mockSendAgentMessage.mockRejectedValue(
+        new Error(
+          "[Message delivered but not saved: Repository error: chat message create failed]",
+        ),
+      );
+      const { result } = setup({
+        contextType: "review",
+        contextId: "task-42",
+        storeContextKey: "review:task-42",
+        selectedTaskId: "task-42",
+        activeConversationId: "conv-review",
+      });
+
+      await act(async () => {
+        await result.current.handleSend("review this");
+      });
+
+      expect(mockRemoveOptimisticMessageFromConversationCache).not.toHaveBeenCalled();
+      expect(mockToastWarning).toHaveBeenCalled();
+    });
   });
 
   // ── handleStopAgent ─────────────────────────────────────────────
@@ -597,6 +734,55 @@ describe("useChatActions", () => {
         ["att-1"]
       );
     });
+
+    it("does not re-queue a send-now turn the agent already received", async () => {
+      mockSendQueuedAgentMessageNow.mockRejectedValue(
+        new Error(
+          "[Message delivered but not saved: Repository error: chat message create failed]",
+        ),
+      );
+      const { result } = setup();
+
+      await act(async () => {
+        await result.current.handleSendQueuedMessageNow(
+          "queued-1",
+          "already delivered",
+        );
+      });
+
+      expect(mockActions.queueMessage).not.toHaveBeenCalled();
+      expect(mockActions.setAgentRunning).toHaveBeenCalledWith("task:task-1", true);
+      expect(mockToastWarning).toHaveBeenCalled();
+    });
+
+    it("keeps the frozen selection on a queued send-now replacement", async () => {
+      mockSendQueuedAgentMessageNow.mockResolvedValue({
+        conversationId: "conv-1",
+        agentRunId: "run-1",
+        isNewConversation: false,
+        wasQueued: true,
+        queuedAsPending: false,
+        queuedMessageId: "queued-replacement",
+      });
+      const { result } = setup();
+
+      await act(async () => {
+        await result.current.handleSendQueuedMessageNow(
+          "queued-1",
+          "send when possible",
+          undefined,
+          selectionSnapshot,
+        );
+      });
+
+      expect(mockActions.queueMessage).toHaveBeenCalledWith(
+        "task:task-1",
+        "send when possible",
+        "queued-replacement",
+        undefined,
+        selectionSnapshot,
+      );
+    });
   });
 
   // ── handleEditQueuedMessage ─────────────────────────────────────
@@ -618,7 +804,6 @@ describe("useChatActions", () => {
         "task",
         "task-1",
         "updated content",
-        undefined,
         undefined,
         undefined
       );
@@ -666,7 +851,6 @@ describe("useChatActions", () => {
         "task-1",
         "updated content",
         ["att-1"],
-        undefined,
         undefined
       );
       expect(mockActions.queueMessage).toHaveBeenCalledWith(
@@ -674,6 +858,41 @@ describe("useChatActions", () => {
         "updated content",
         "q-edited-with-file",
         ["att-1"]
+      );
+    });
+
+    it("keeps the frozen selection when editing a queued message", async () => {
+      mockSendAgentMessage.mockResolvedValue({
+        conversationId: "conv-1",
+        agentRunId: "run-1",
+        isNewConversation: false,
+        wasQueued: true,
+        queuedMessageId: "q-edited-with-selection",
+      });
+      const { result } = setup();
+
+      await act(async () => {
+        await result.current.handleEditQueuedMessage(
+          "old-id",
+          "updated content",
+          undefined,
+          selectionSnapshot,
+        );
+      });
+
+      expect(mockSendAgentMessage).toHaveBeenCalledWith(
+        "task",
+        "task-1",
+        "updated content",
+        undefined,
+        { composerSelectionSnapshot: selectionSnapshot },
+      );
+      expect(mockActions.queueMessage).toHaveBeenCalledWith(
+        "task:task-1",
+        "updated content",
+        "q-edited-with-selection",
+        undefined,
+        selectionSnapshot,
       );
     });
 
@@ -728,7 +947,6 @@ describe("useChatActions", () => {
         "project-1",
         "updated content",
         undefined,
-        undefined,
         {
           conversationId: "conv-agent",
           providerHarness: "codex",
@@ -770,7 +988,6 @@ describe("useChatActions", () => {
         "merge",
         "task-99",
         "merge it",
-        undefined,
         undefined,
         undefined
       );

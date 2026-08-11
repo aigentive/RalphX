@@ -17,8 +17,8 @@ import {
 // ============================================
 
 /**
- * All 19 artifact types organized by category:
- * - Documents: prd, research_document, design_doc, specification
+ * All 20 artifact types organized by category:
+ * - Documents: prd, persona, research_document, design_doc, specification
  * - Code: code_change, diff, test_result
  * - Process: task_spec, review_feedback, approval, findings, recommendations, pr_review
  * - Context: context, previous_work, research_brief
@@ -27,6 +27,7 @@ import {
 export const ArtifactTypeSchema = z.enum([
   // Documents
   "prd",
+  "persona",
   "research_document",
   "design_doc",
   "specification",
@@ -63,6 +64,7 @@ export const ARTIFACT_TYPE_VALUES = ArtifactTypeSchema.options;
  */
 export const DOCUMENT_ARTIFACT_TYPES: readonly ArtifactType[] = [
   "prd",
+  "persona",
   "research_document",
   "design_doc",
   "specification",
@@ -205,6 +207,8 @@ export const PlanApprovalSchema = z.object({
   status: PlanApprovalStatusSchema,
   approvedArtifactId: z.string().optional(),
   approvedVersion: z.number().int().positive().optional(),
+  approvedBlueprintArtifactId: z.string().optional(),
+  approvedBlueprintVersion: z.number().int().positive().optional(),
   approvedAt: z.string().optional(),
 });
 
@@ -232,6 +236,8 @@ export const PlanComplexityAssessmentSchema = z.object({
   sessionId: z.string(),
   artifactId: z.string(),
   artifactVersion: z.number().int().positive(),
+  blueprintArtifactId: z.string().optional(),
+  blueprintArtifactVersion: z.number().int().positive().optional(),
   level: PlanComplexityLevelSchema,
   score: z.number().int().min(0).max(100),
   recommendedAction: PlanComplexityRecommendedActionSchema,
@@ -254,7 +260,18 @@ export type PlanComplexityAssessment = z.infer<
 /**
  * An artifact - a typed document that flows between processes
  */
-export const ArtifactSchema = z.object({
+const PlanBundleArtifactSchema = z.object({
+  id: z.string(),
+  type: ArtifactTypeSchema,
+  name: z.string(),
+  content: ArtifactContentSchema,
+  metadata: ArtifactMetadataSchema,
+  derivedFrom: z.array(z.string()).default([]),
+  bucketId: z.string().optional(),
+  artifactRole: z.enum(["overview", "blueprint"]).optional(),
+});
+
+export const ArtifactSchema = PlanBundleArtifactSchema.extend({
   /** Unique identifier */
   id: z.string(),
   /** The type of artifact */
@@ -271,6 +288,9 @@ export const ArtifactSchema = z.object({
   bucketId: z.string().optional(),
   /** Optional Plan-mode approval state for the artifact in its owning session */
   planApproval: PlanApprovalSchema.optional(),
+  blueprint: PlanBundleArtifactSchema.optional(),
+  planContractVersion: z.union([z.literal(1), z.literal(2)]).optional(),
+  planTargetId: z.string().optional(),
 });
 
 export type Artifact = z.infer<typeof ArtifactSchema>;
@@ -493,6 +513,8 @@ export const ArtifactVersionSummarySchema = z.object({
   version: z.number(),
   name: z.string(),
   created_at: z.string(),
+  created_by: z.string().default("system"),
+  metadata: z.record(z.string(), z.unknown()).nullable().default(null),
 });
 
 export type ArtifactVersionSummary = z.infer<typeof ArtifactVersionSummarySchema>;

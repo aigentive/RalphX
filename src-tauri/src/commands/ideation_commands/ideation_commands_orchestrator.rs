@@ -1,10 +1,14 @@
 // Orchestrator agent integration and ideation settings commands
 
-use tauri::State;
+use std::sync::Arc;
+
+use tauri::{AppHandle, State};
 
 use crate::application::{
-    resolve_primary_ideation_harness_availability, validate_chat_runtime_for_context, AppState,
+    resolve_primary_ideation_harness_availability_for_state,
+    tasks_feature_toggle_service::TasksDisableImpact, validate_chat_runtime_for_context, AppState,
 };
+use crate::commands::ExecutionState;
 use crate::domain::entities::{IdeationSessionId, IdeationSessionStatus};
 use crate::domain::ideation::IdeationSettings;
 
@@ -48,7 +52,7 @@ pub async fn send_orchestrator_message(
     }
 
     // Create unified chat service
-    let chat_service: AppChatService<tauri::Wry> = state.build_chat_service();
+    let chat_service: AppChatService = state.build_chat_service();
 
     validate_chat_runtime_for_context(
         &state,
@@ -85,7 +89,7 @@ pub async fn send_orchestrator_message(
 #[tauri::command]
 pub async fn is_orchestrator_available(state: State<'_, AppState>) -> Result<bool, String> {
     let lane_availability =
-        resolve_primary_ideation_harness_availability(&state.agent_lane_settings_repo, None).await;
+        resolve_primary_ideation_harness_availability_for_state(&state, None).await?;
     Ok(lane_availability.available)
 }
 
@@ -114,4 +118,31 @@ pub async fn update_ideation_settings(
         .update_settings(&settings)
         .await
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_tasks_disable_impact(
+    state: State<'_, AppState>,
+    execution_state: State<'_, Arc<ExecutionState>>,
+    app: AppHandle,
+) -> Result<TasksDisableImpact, String> {
+    state
+        .build_tasks_feature_toggle_service(Arc::clone(execution_state.inner()), Some(app))
+        .get_disable_impact()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn set_tasks_feature_enabled(
+    enabled: bool,
+    state: State<'_, AppState>,
+    execution_state: State<'_, Arc<ExecutionState>>,
+    app: AppHandle,
+) -> Result<IdeationSettings, String> {
+    state
+        .build_tasks_feature_toggle_service(Arc::clone(execution_state.inner()), Some(app))
+        .set_tasks_enabled(enabled)
+        .await
+        .map_err(|error| error.to_string())
 }

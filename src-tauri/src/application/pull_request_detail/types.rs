@@ -20,8 +20,12 @@ pub enum PullRequestDetailState {
     GhUnauthenticated,
     /// The project's repo could not be resolved (missing working dir / service).
     RepoUnresolvable,
+    /// The GitHub CLI could not be launched or resolved.
+    CliUnavailable,
     /// A `gh` fetch exceeded its subprocess timeout.
     FetchTimeout,
+    /// GitHub access could not be verified because the provider/probe is unavailable.
+    FetchUnavailable,
     /// GitHub reported an API rate-limit.
     RateLimited,
 }

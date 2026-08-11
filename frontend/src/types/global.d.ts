@@ -9,6 +9,7 @@ import type { MockStore } from "@/api-mock/store";
 import type { MockChatController } from "@/api-mock/chat";
 import type { GitAuthDiagnostics } from "@/hooks/useGithubSettings";
 import type { FeatureFlags } from "@/types/feature-flags";
+import type { ChatScrollDiagnostics } from "@/components/Chat/scroll/diagnostics";
 
 declare global {
   interface Window {
@@ -21,6 +22,7 @@ declare global {
     __mockUiFeatureFlags?: FeatureFlags;
     __queryClient?: QueryClient;
     __eventBus?: EventBus;
+    __chatScrollDiagnostics?: ChatScrollDiagnostics;
     __uiStore?: unknown;
     __planStore?: {
       getState(): {
@@ -45,7 +47,6 @@ declare global {
         selectSession(session: Record<string, unknown>): void;
       };
     };
-    __openReviewDetailModal?: (taskId: string) => void;
   }
 }
 

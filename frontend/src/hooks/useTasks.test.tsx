@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import { useTasks } from "./useTasks";
+import { useSessionTaskHistoryAvailability, useTasks } from "./useTasks";
 import { api } from "@/lib/tauri";
 import type { Task } from "@/types/task";
 
@@ -11,6 +11,7 @@ vi.mock("@/lib/tauri", () => ({
   api: {
     tasks: {
       list: vi.fn(),
+      getSessionHistoryAvailability: vi.fn(),
     },
   },
 }));
@@ -174,5 +175,31 @@ describe("useTasks", () => {
 
     // Should still only have called the API once
     expect(api.tasks.list).toHaveBeenCalledTimes(1);
+  });
+
+  it("fetches session history only when both project and session are available", async () => {
+    vi.mocked(api.tasks.getSessionHistoryAvailability).mockResolvedValue({
+      hasHistory: true,
+      taskCount: 2,
+    });
+
+    const { result } = renderHook(
+      () => useSessionTaskHistoryAvailability("project-1", "session-1"),
+      { wrapper }
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(api.tasks.getSessionHistoryAvailability).toHaveBeenCalledWith("project-1", "session-1");
+    expect(result.current.data).toEqual({ hasHistory: true, taskCount: 2 });
+  });
+
+  it("does not fetch session history without an ideation session", () => {
+    const { result } = renderHook(
+      () => useSessionTaskHistoryAvailability("project-1", null),
+      { wrapper }
+    );
+
+    expect(result.current.fetchStatus).toBe("idle");
+    expect(api.tasks.getSessionHistoryAvailability).not.toHaveBeenCalled();
   });
 });

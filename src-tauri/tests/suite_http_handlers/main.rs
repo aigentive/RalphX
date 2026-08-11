@@ -10,14 +10,21 @@ fn merged_suite_requires_nextest() {
 #[path = "../support/mod.rs"]
 mod support;
 
+mod agent_workspace_pr_review_context;
+mod agent_workspace_repair_completion;
+mod agent_workspace_review_context;
+mod agent_workspace_review_diff;
 mod api_keys_handlers;
 mod artifacts_handlers;
+mod automations_handlers;
+mod chat_service_streaming;
 mod conversations_handlers;
 mod delegation_handlers;
+mod delegation_park;
+mod ideation_event_emission;
 mod internal_handlers;
+mod managed_team_members_handlers;
+mod personas_handlers;
 mod projects_handlers;
 mod reliability_tests;
 mod session_linking_handlers;
-mod teams_handlers;
-mod chat_service_streaming;
-mod ideation_event_emission;

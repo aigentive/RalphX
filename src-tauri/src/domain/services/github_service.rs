@@ -7,7 +7,21 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-use crate::AppResult;
+use crate::{AppError, AppResult};
+
+pub const EMPTY_PR_METADATA_PATCH_VALIDATION_ERROR: &str =
+    "pull request metadata patch requires a title or body";
+
+/// Reject a metadata patch that omits both mutable fields.
+pub fn validate_pr_metadata_patch(title: Option<&str>, body_file: Option<&Path>) -> AppResult<()> {
+    if title.is_none() && body_file.is_none() {
+        return Err(AppError::Validation(
+            EMPTY_PR_METADATA_PATCH_VALIDATION_ERROR.to_string(),
+        ));
+    }
+
+    Ok(())
+}
 
 /// Status of a GitHub pull request
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -17,6 +31,8 @@ pub enum PrStatus {
     Merged {
         /// SHA of the merge commit, if available
         merge_commit_sha: Option<String>,
+        /// Timestamp when GitHub marked the pull request merged, if available
+        merged_at: Option<String>,
     },
 }
 
@@ -128,6 +144,8 @@ pub struct PrSearchResult {
     pub head_ref_oid: Option<String>,
     pub base_ref_name: String,
     pub is_draft: bool,
+    pub state: Option<String>,
+    pub merged_at: Option<String>,
     pub updated_at: Option<String>,
     pub author_login: Option<String>,
     #[serde(default)]
@@ -138,6 +156,26 @@ pub struct PrSearchResult {
     #[serde(default)]
     pub review_request_logins: Vec<String>,
     pub is_cross_repository: bool,
+}
+
+impl PrSearchResult {
+    pub fn is_open(&self) -> bool {
+        self.state
+            .as_deref()
+            .is_none_or(|state| state.eq_ignore_ascii_case("OPEN"))
+    }
+
+    pub fn is_merged(&self) -> bool {
+        self.state
+            .as_deref()
+            .is_some_and(|state| state.eq_ignore_ascii_case("MERGED"))
+    }
+
+    pub fn is_closed_unmerged(&self) -> bool {
+        self.state
+            .as_deref()
+            .is_some_and(|state| state.eq_ignore_ascii_case("CLOSED"))
+    }
 }
 
 /// Inline review comment attached to a GitHub pull request review.
@@ -290,15 +328,44 @@ impl PrReviewThread {
     }
 }
 
-/// Read-only reflection of the locally-authenticated `gh` CLI (`gh auth status`).
+/// Canonical GitHub connection state observed through the locally-installed `gh` CLI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GithubConnectionState {
+    Authenticated,
+    Unauthenticated,
+    CredentialRejected,
+    ProviderUnavailable,
+    CliUnavailable,
+    ProbeFailed,
+}
+
+/// Redacted reason category for a non-healthy GitHub connection observation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GithubConnectionDiagnostic {
+    MissingCredentials,
+    CredentialsRejected,
+    Http5xx,
+    Network,
+    Timeout,
+    CliLaunch,
+    MalformedResponse,
+    UnexpectedResponse,
+    ServiceFailure,
+}
+
+/// Read-only reflection of local credential presence and live GitHub validation.
 ///
-/// RalphX stores no GitHub token (Decision 1); this is a live status surface only.
-/// `gh` not-installed and `gh` unauthenticated are distinct, non-error states.
+/// RalphX stores no GitHub token. `state` is authoritative; the booleans remain
+/// derived compatibility fields while callers migrate to the tagged contract.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GithubConnectionStatus {
+    pub state: GithubConnectionState,
+    pub diagnostic: Option<GithubConnectionDiagnostic>,
     /// Whether the `gh` binary is installed (resolvable + spawnable).
     pub gh_installed: bool,
-    /// Whether `gh auth status` reports an authenticated account.
+    /// Whether GitHub accepted the locally-present credential during this probe.
     pub authenticated: bool,
     /// The authenticated host (e.g. `github.com`), if any.
     pub host: Option<String>,
@@ -307,15 +374,91 @@ pub struct GithubConnectionStatus {
 }
 
 impl GithubConnectionStatus {
-    /// Typed "not available" status — used for `gh` not-installed/unauthenticated
-    /// and when the GitHub service is absent from `AppState`. Never an error.
-    pub fn unavailable() -> Self {
+    pub fn authenticated(host: impl Into<String>, account: impl Into<String>) -> Self {
         Self {
+            state: GithubConnectionState::Authenticated,
+            diagnostic: None,
+            gh_installed: true,
+            authenticated: true,
+            host: Some(host.into()),
+            account: Some(account.into()),
+        }
+    }
+
+    pub fn unauthenticated() -> Self {
+        Self {
+            state: GithubConnectionState::Unauthenticated,
+            diagnostic: Some(GithubConnectionDiagnostic::MissingCredentials),
+            gh_installed: true,
+            authenticated: false,
+            host: None,
+            account: None,
+        }
+    }
+
+    pub fn credential_rejected() -> Self {
+        Self {
+            state: GithubConnectionState::CredentialRejected,
+            diagnostic: Some(GithubConnectionDiagnostic::CredentialsRejected),
+            gh_installed: true,
+            authenticated: false,
+            host: Some("github.com".to_string()),
+            account: None,
+        }
+    }
+
+    pub fn provider_unavailable(diagnostic: GithubConnectionDiagnostic) -> Self {
+        Self {
+            state: GithubConnectionState::ProviderUnavailable,
+            diagnostic: Some(diagnostic),
+            gh_installed: true,
+            authenticated: false,
+            host: Some("github.com".to_string()),
+            account: None,
+        }
+    }
+
+    pub fn cli_unavailable() -> Self {
+        Self {
+            state: GithubConnectionState::CliUnavailable,
+            diagnostic: Some(GithubConnectionDiagnostic::CliLaunch),
             gh_installed: false,
             authenticated: false,
             host: None,
             account: None,
         }
+    }
+
+    pub fn probe_failed(diagnostic: GithubConnectionDiagnostic) -> Self {
+        Self {
+            state: GithubConnectionState::ProbeFailed,
+            diagnostic: Some(diagnostic),
+            gh_installed: true,
+            authenticated: false,
+            host: Some("github.com".to_string()),
+            account: None,
+        }
+    }
+
+    pub fn requires_credential_repair(&self) -> bool {
+        matches!(
+            self.state,
+            GithubConnectionState::Unauthenticated | GithubConnectionState::CredentialRejected
+        )
+    }
+
+    pub fn has_local_credential(&self) -> bool {
+        matches!(
+            self.state,
+            GithubConnectionState::Authenticated
+                | GithubConnectionState::CredentialRejected
+                | GithubConnectionState::ProviderUnavailable
+        )
+    }
+
+    /// Compatibility constructor for a missing/unlaunchable GitHub CLI.
+    pub fn unavailable() -> Self {
+        Self::cli_unavailable()
     }
 }
 
@@ -352,6 +495,22 @@ pub trait GithubServiceTrait: Send + Sync {
         title: &str,
         body_file: &Path,
     ) -> AppResult<()>;
+
+    /// Patch one or both existing pull-request metadata fields without
+    /// synthesizing or resending the omitted field.
+    async fn patch_pr_metadata(
+        &self,
+        working_dir: &Path,
+        pr_number: i64,
+        title: Option<&str>,
+        body_file: Option<&Path>,
+    ) -> AppResult<()> {
+        validate_pr_metadata_patch(title, body_file)?;
+        let _ = (working_dir, pr_number, title, body_file);
+        Err(AppError::Validation(
+            "GitHub metadata patching is not supported by this service".to_string(),
+        ))
+    }
 
     /// Update an existing pull request's base branch.
     async fn update_pr_base(&self, working_dir: &Path, pr_number: i64, base: &str)
@@ -431,6 +590,40 @@ pub trait GithubServiceTrait: Send + Sync {
         })
     }
 
+    /// Fetch only the current auto-merge request state for a pull request.
+    ///
+    /// The conservative default keeps runtimes without GitHub support from
+    /// treating an unavailable read as evidence that auto-merge is disabled.
+    async fn fetch_pr_auto_merge_state(
+        &self,
+        _working_dir: &Path,
+        _pr_number: i64,
+    ) -> AppResult<Option<PrAutoMergeRequest>> {
+        Ok(None)
+    }
+
+    /// Re-run only failed jobs for an authoritative GitHub Actions workflow run.
+    /// The run id must be derived from fresh PR health by the caller, never model input.
+    /// Completed check conclusions on the tip of `branch_ref`, used to tell "this PR broke it"
+    /// from "this was already broken on the base branch".
+    ///
+    /// `None` means RalphX could not determine the base branch's check state — an unimplemented
+    /// backend, an API error, or no run to read. Callers must treat `None` as unknown and fall
+    /// back to their normal behavior; it must never be read as "the base is healthy".
+    async fn list_branch_check_conclusions(
+        &self,
+        _working_dir: &Path,
+        _branch_ref: &str,
+    ) -> AppResult<Option<Vec<PrHealthCheck>>> {
+        Ok(None)
+    }
+
+    async fn rerun_failed_workflow(&self, _working_dir: &Path, _run_id: i64) -> AppResult<()> {
+        Err(AppError::Infrastructure(
+            "GitHub Actions rerun is unavailable for this runtime".to_string(),
+        ))
+    }
+
     /// Enable GitHub auto-merge for a PR with the selected merge method.
     async fn enable_pr_auto_merge(
         &self,
@@ -448,6 +641,22 @@ pub trait GithubServiceTrait: Send + Sync {
 
     /// Push a branch to origin.
     async fn push_branch(&self, working_dir: &Path, branch: &str) -> AppResult<()>;
+
+    /// Replace one proven local branch ref only when origin still has the exact expected OID.
+    ///
+    /// Callers must establish workspace ownership and Git target-lease authority before using
+    /// this operation. `local_ref` is deliberately fully qualified so the implementation cannot
+    /// synthesize a destination from an untrusted branch-name convention.
+    async fn push_branch_with_expected_remote_oid_lease(
+        &self,
+        _working_dir: &Path,
+        _local_ref: &str,
+        _expected_remote_oid: &str,
+    ) -> AppResult<()> {
+        Err(AppError::Validation(
+            "exact force-with-lease branch publishing is not supported by this service".to_string(),
+        ))
+    }
 
     /// Close (without merging) a pull request.
     async fn close_pr(&self, working_dir: &Path, pr_number: i64) -> AppResult<()>;
@@ -473,7 +682,7 @@ pub trait GithubServiceTrait: Send + Sync {
         head: &str,
     ) -> AppResult<Option<(i64, String)>>;
 
-    /// Search open pull requests for base-picker selection.
+    /// Search pull requests across all states for base-picker selection.
     async fn search_pull_requests(
         &self,
         _working_dir: &Path,
@@ -512,116 +721,5 @@ pub trait GithubServiceTrait: Send + Sync {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    struct DefaultOnlyGithubService;
-
-    #[async_trait]
-    impl GithubServiceTrait for DefaultOnlyGithubService {
-        async fn create_issue(
-            &self,
-            _working_dir: &Path,
-            _repository: &str,
-            _title: &str,
-            _body_file: &Path,
-        ) -> AppResult<String> {
-            unimplemented!("not needed for default annotation coverage")
-        }
-
-        async fn create_draft_pr(
-            &self,
-            _working_dir: &Path,
-            _base: &str,
-            _head: &str,
-            _title: &str,
-            _body_file: &Path,
-        ) -> AppResult<(i64, String)> {
-            unimplemented!("not needed for default annotation coverage")
-        }
-
-        async fn mark_pr_ready(&self, _working_dir: &Path, _pr_number: i64) -> AppResult<()> {
-            unimplemented!("not needed for default annotation coverage")
-        }
-
-        async fn update_pr_details(
-            &self,
-            _working_dir: &Path,
-            _pr_number: i64,
-            _title: &str,
-            _body_file: &Path,
-        ) -> AppResult<()> {
-            unimplemented!("not needed for default annotation coverage")
-        }
-
-        async fn update_pr_base(
-            &self,
-            _working_dir: &Path,
-            _pr_number: i64,
-            _base: &str,
-        ) -> AppResult<()> {
-            unimplemented!("not needed for default annotation coverage")
-        }
-
-        async fn check_pr_status(
-            &self,
-            _working_dir: &Path,
-            _pr_number: i64,
-        ) -> AppResult<PrStatus> {
-            unimplemented!("not needed for default annotation coverage")
-        }
-
-        async fn check_pr_sync_state(
-            &self,
-            _working_dir: &Path,
-            _pr_number: i64,
-        ) -> AppResult<PrSyncState> {
-            unimplemented!("not needed for default annotation coverage")
-        }
-
-        async fn push_branch(&self, _working_dir: &Path, _branch: &str) -> AppResult<()> {
-            unimplemented!("not needed for default annotation coverage")
-        }
-
-        async fn close_pr(&self, _working_dir: &Path, _pr_number: i64) -> AppResult<()> {
-            unimplemented!("not needed for default annotation coverage")
-        }
-
-        async fn delete_remote_branch(&self, _working_dir: &Path, _branch: &str) -> AppResult<()> {
-            unimplemented!("not needed for default annotation coverage")
-        }
-
-        async fn fetch_remote(&self, _working_dir: &Path, _branch: &str) -> AppResult<()> {
-            unimplemented!("not needed for default annotation coverage")
-        }
-
-        async fn find_pr_by_head_branch(
-            &self,
-            _working_dir: &Path,
-            _head: &str,
-        ) -> AppResult<Option<(i64, String)>> {
-            unimplemented!("not needed for default annotation coverage")
-        }
-
-        async fn get_pr_diff_patch(
-            &self,
-            _working_dir: &Path,
-            _pr_number: i64,
-            _pr_url: Option<&str>,
-        ) -> AppResult<String> {
-            unimplemented!("not needed for default annotation coverage")
-        }
-    }
-
-    #[tokio::test]
-    async fn default_pr_diff_annotations_are_empty_for_pr_number() {
-        let service = DefaultOnlyGithubService;
-
-        let annotations = service
-            .fetch_pr_diff_annotations(Path::new("/tmp"), 123)
-            .await
-            .expect("default annotations should be empty");
-
-        assert_eq!(annotations, PrDiffAnnotations::empty(123));
-    }
-}
+#[path = "github_service_tests.rs"]
+mod tests;

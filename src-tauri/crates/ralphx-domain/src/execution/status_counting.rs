@@ -31,10 +31,15 @@ pub fn context_matches_running_status(
         }
         ChatContextType::Review => status == InternalStatus::Reviewing,
         ChatContextType::Merge => status == InternalStatus::Merging,
+        ChatContextType::BranchUpdate => matches!(
+            status,
+            InternalStatus::UpdatingPlanBranch | InternalStatus::UpdatingTaskBranch
+        ),
         ChatContextType::Task
         | ChatContextType::Ideation
         | ChatContextType::Delegation
-        | ChatContextType::Project => false,
+        | ChatContextType::Project
+        | ChatContextType::Standalone => false,
     }
 }
 

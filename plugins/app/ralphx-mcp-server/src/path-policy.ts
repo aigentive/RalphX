@@ -1,5 +1,6 @@
 import os from "node:os";
 import path from "node:path";
+import fs from "node:fs/promises";
 
 export function expandHome(value: string): string {
   if (!value.startsWith("~")) return value;
@@ -72,6 +73,82 @@ export function getAllowedFilesystemRoots(): string[] {
     getPrimaryFilesystemRoot(),
     ...getConfiguredFilesystemReadRoots(),
   ]);
+}
+
+function filesystemPathDenied(inputPath: string): Error {
+  return new Error(
+    `Path "${inputPath}" resolves outside the allowed filesystem roots.`
+  );
+}
+
+function errorCode(error: unknown): string | undefined {
+  return typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    typeof (error as { code?: unknown }).code === "string"
+    ? (error as { code: string }).code
+    : undefined;
+}
+
+async function realConfiguredFilesystemReadRoots(): Promise<string[]> {
+  const roots = await Promise.all(
+    getConfiguredFilesystemReadRoots().map(async (root) => {
+      try {
+        return await fs.realpath(root);
+      } catch {
+        return undefined;
+      }
+    })
+  );
+  return uniqueRoots(roots.filter((root): root is string => root !== undefined));
+}
+
+async function realpathNearestExistingParent(candidate: string): Promise<string | undefined> {
+  let current = path.dirname(candidate);
+
+  while (true) {
+    try {
+      return await fs.realpath(current);
+    } catch (error) {
+      if (errorCode(error) !== "ENOENT") {
+        throw error;
+      }
+    }
+
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return undefined;
+    }
+    current = parent;
+  }
+}
+
+export async function resolveEnforcedFilesystemPath(
+  inputPath: string,
+  displayPath: string
+): Promise<string> {
+  const allowedRoots = await realConfiguredFilesystemReadRoots();
+  if (allowedRoots.length === 0) {
+    throw filesystemPathDenied(inputPath);
+  }
+
+  try {
+    const realTarget = await fs.realpath(displayPath);
+    if (!allowedRoots.some((root) => isWithin(root, realTarget))) {
+      throw filesystemPathDenied(inputPath);
+    }
+    return realTarget;
+  } catch (error) {
+    if (errorCode(error) !== "ENOENT") {
+      throw error;
+    }
+
+    const realParent = await realpathNearestExistingParent(displayPath);
+    if (!realParent || !allowedRoots.some((root) => isWithin(root, realParent))) {
+      throw filesystemPathDenied(inputPath);
+    }
+    throw error;
+  }
 }
 
 export function resolveScopedFilesystemPath(inputPath: string, basePath?: string): string {

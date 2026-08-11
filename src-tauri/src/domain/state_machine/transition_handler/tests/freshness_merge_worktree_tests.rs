@@ -1,9 +1,8 @@
-// Integration tests for the freshness-conflict merge worktree fix.
+// Compatibility tests for tasks persisted by the pre-dedicated branch-update workflow.
 //
-// The BranchFreshnessConflict path routes to Merging WITHOUT creating a merge
-// worktree (unlike the normal merge pipeline). on_enter(Merging) now detects this
-// case (wt_path doesn't exist but repo_path exists + metadata flags set) and creates
-// the merge worktree before spawning the merger agent.
+// New freshness conflicts use UpdatingPlanBranch/UpdatingTaskBranch and never enter
+// Merging. These cases preserve safe recovery for legacy Merging rows whose metadata
+// still identifies the old freshness-conflict route.
 //
 // Test matrix:
 //   Test 1: source_update_conflict flag → task branch checked out in merge-{id}
@@ -18,11 +17,11 @@
 use super::helpers::*;
 use crate::application::git_service::GitService;
 use crate::domain::entities::{GitMode, InternalStatus, MergeStrategy, Project, ProjectId, Task};
+use crate::domain::state_machine::services::TaskScheduler;
 use crate::domain::state_machine::transition_handler::freshness::FreshnessMetadata;
 use crate::domain::state_machine::transition_handler::merge_helpers::{
     compute_merge_worktree_path, compute_task_worktree_path,
 };
-use crate::domain::state_machine::services::TaskScheduler;
 use crate::domain::state_machine::{State, TransitionHandler};
 use std::process::Command;
 
@@ -56,7 +55,10 @@ async fn setup_merging_task_with_meta(
     task_branch: &str,
     metadata: serde_json::Value,
 ) -> crate::domain::entities::TaskId {
-    let mut task = Task::new(project_id.clone(), "Freshness merge worktree test".to_string());
+    let mut task = Task::new(
+        project_id.clone(),
+        "Freshness merge worktree test".to_string(),
+    );
     task.internal_status = InternalStatus::Merging;
     task.task_branch = Some(task_branch.to_string());
     task.metadata = Some(metadata.to_string());
@@ -88,7 +90,10 @@ async fn test_freshness_conflict_source_update_creates_merge_worktree() {
     let project_repo = Arc::new(MemoryProjectRepository::new());
 
     let project_id = ProjectId::from_string("proj-1".to_string());
-    let mut project = Project::new("test-project".to_string(), path.to_string_lossy().to_string());
+    let mut project = Project::new(
+        "test-project".to_string(),
+        path.to_string_lossy().to_string(),
+    );
     project.id = project_id.clone();
     project.base_branch = Some("main".to_string());
     project.merge_strategy = MergeStrategy::Merge;
@@ -106,13 +111,8 @@ async fn test_freshness_conflict_source_update_creates_merge_worktree() {
         "freshness_origin_state": "executing",
     });
 
-    let task_id = setup_merging_task_with_meta(
-        &task_repo,
-        &project_id,
-        &git_repo.task_branch,
-        meta,
-    )
-    .await;
+    let task_id =
+        setup_merging_task_with_meta(&task_repo, &project_id, &git_repo.task_branch, meta).await;
     let task_id_str = task_id.as_str().to_string();
 
     // Create task worktree to simulate what on_enter(Executing) would have done.
@@ -124,11 +124,17 @@ async fn test_freshness_conflict_source_update_creates_merge_worktree() {
     GitService::checkout_existing_branch_worktree(path, &task_wt_path, &git_repo.task_branch)
         .await
         .expect("create task worktree for test setup");
-    assert!(task_wt_path.exists(), "Precondition: task worktree must exist before on_enter");
+    assert!(
+        task_wt_path.exists(),
+        "Precondition: task worktree must exist before on_enter"
+    );
 
     let merge_wt_path_str = compute_merge_worktree_path(&project, &task_id_str);
     let merge_wt_path = std::path::PathBuf::from(&merge_wt_path_str);
-    assert!(!merge_wt_path.exists(), "Precondition: merge worktree must NOT exist yet");
+    assert!(
+        !merge_wt_path.exists(),
+        "Precondition: merge worktree must NOT exist yet"
+    );
 
     let (chat_service, services) =
         make_services_with_chat(Arc::clone(&task_repo), Arc::clone(&project_repo));
@@ -211,7 +217,10 @@ async fn test_freshness_conflict_plan_update_creates_merge_worktree() {
     let project_repo = Arc::new(MemoryProjectRepository::new());
 
     let project_id = ProjectId::from_string("proj-1".to_string());
-    let mut project = Project::new("test-project".to_string(), path.to_string_lossy().to_string());
+    let mut project = Project::new(
+        "test-project".to_string(),
+        path.to_string_lossy().to_string(),
+    );
     project.id = project_id.clone();
     project.base_branch = Some("main".to_string());
     project.merge_strategy = MergeStrategy::Merge;
@@ -229,18 +238,16 @@ async fn test_freshness_conflict_plan_update_creates_merge_worktree() {
         "freshness_origin_state": "executing",
     });
 
-    let task_id = setup_merging_task_with_meta(
-        &task_repo,
-        &project_id,
-        &git_repo.task_branch,
-        meta,
-    )
-    .await;
+    let task_id =
+        setup_merging_task_with_meta(&task_repo, &project_id, &git_repo.task_branch, meta).await;
     let task_id_str = task_id.as_str().to_string();
 
     let merge_wt_path_str = compute_merge_worktree_path(&project, &task_id_str);
     let merge_wt_path = std::path::PathBuf::from(&merge_wt_path_str);
-    assert!(!merge_wt_path.exists(), "Precondition: merge worktree must NOT exist yet");
+    assert!(
+        !merge_wt_path.exists(),
+        "Precondition: merge worktree must NOT exist yet"
+    );
 
     let (chat_service, services) =
         make_services_with_chat(Arc::clone(&task_repo), Arc::clone(&project_repo));
@@ -301,7 +308,10 @@ async fn test_merge_pipeline_path_no_op_when_worktree_exists() {
     let project_repo = Arc::new(MemoryProjectRepository::new());
 
     let project_id = ProjectId::from_string("proj-1".to_string());
-    let mut project = Project::new("test-project".to_string(), path.to_string_lossy().to_string());
+    let mut project = Project::new(
+        "test-project".to_string(),
+        path.to_string_lossy().to_string(),
+    );
     project.id = project_id.clone();
     project.base_branch = Some("main".to_string());
     project.merge_strategy = MergeStrategy::Merge;
@@ -316,13 +326,8 @@ async fn test_merge_pipeline_path_no_op_when_worktree_exists() {
         "source_update_conflict": false,
     });
 
-    let task_id = setup_merging_task_with_meta(
-        &task_repo,
-        &project_id,
-        &git_repo.task_branch,
-        meta,
-    )
-    .await;
+    let task_id =
+        setup_merging_task_with_meta(&task_repo, &project_id, &git_repo.task_branch, meta).await;
     let task_id_str = task_id.as_str().to_string();
 
     // Pre-create the merge worktree (simulating what the normal pipeline does)
@@ -373,7 +378,9 @@ async fn test_merge_pipeline_path_no_op_when_worktree_exists() {
         .current_dir(&merge_wt_path)
         .output()
         .expect("git rev-parse HEAD post on_enter");
-    let post_head_sha = String::from_utf8_lossy(&post_head.stdout).trim().to_string();
+    let post_head_sha = String::from_utf8_lossy(&post_head.stdout)
+        .trim()
+        .to_string();
     assert_eq!(
         pre_head_sha, post_head_sha,
         "Normal pipeline path: merge worktree HEAD must be unchanged (no-op). pre={} post={}",
@@ -406,7 +413,10 @@ async fn test_freshness_no_flags_skips_worktree_creation() {
     let project_repo = Arc::new(MemoryProjectRepository::new());
 
     let project_id = ProjectId::from_string("proj-1".to_string());
-    let mut project = Project::new("test-project".to_string(), path.to_string_lossy().to_string());
+    let mut project = Project::new(
+        "test-project".to_string(),
+        path.to_string_lossy().to_string(),
+    );
     project.id = project_id.clone();
     project.base_branch = Some("main".to_string());
     project.merge_strategy = MergeStrategy::Merge;
@@ -432,7 +442,10 @@ async fn test_freshness_no_flags_skips_worktree_creation() {
 
     let merge_wt_path_str = compute_merge_worktree_path(&project, &task_id_str);
     let merge_wt_path = std::path::PathBuf::from(&merge_wt_path_str);
-    assert!(!merge_wt_path.exists(), "Precondition: merge worktree must NOT exist");
+    assert!(
+        !merge_wt_path.exists(),
+        "Precondition: merge worktree must NOT exist"
+    );
 
     let (_chat_service, services) =
         make_services_with_chat(Arc::clone(&task_repo), Arc::clone(&project_repo));
@@ -472,6 +485,8 @@ fn test_clear_routing_flags_preserves_counts() {
         freshness_backoff_until: Some(chrono::Utc::now()),
         freshness_auto_reset_count: 1,
         last_freshness_check_at: Some("2026-03-10T12:00:00Z".to_string()),
+        last_plan_freshness_check_at: Some("2026-03-10T12:00:00Z".to_string()),
+        last_task_freshness_check_at: Some("2026-03-10T12:00:00Z".to_string()),
         freshness_count_incremented_by: None,
     };
 

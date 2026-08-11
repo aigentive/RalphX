@@ -7,18 +7,6 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { QueuedTaskRow } from "./QueuedTaskRow";
 import type { QueuedTask } from "@/hooks/useQueuedTasks";
 
-// Stable mock references for uiStore
-const { mockNavigateToTask } = vi.hoisted(() => ({
-  mockNavigateToTask: vi.fn(),
-}));
-
-vi.mock("@/stores/uiStore", () => ({
-  useUiStore: vi.fn((selector: (s: { navigateToTask: typeof mockNavigateToTask }) => unknown) => {
-    const state = { navigateToTask: mockNavigateToTask };
-    return selector ? selector(state) : state;
-  }),
-}));
-
 function createMockQueuedTask(overrides?: Partial<QueuedTask>): QueuedTask {
   return {
     id: "task-456",
@@ -59,14 +47,32 @@ describe("QueuedTaskRow", () => {
   });
 
   describe("click-to-navigate", () => {
-    it("calls navigateToTask with task.id when title is clicked", () => {
-      const task = createMockQueuedTask({ id: "task-queue-789", title: "Click me" });
-      render(<QueuedTaskRow position={2} task={task} />);
+    it("emits an Agent task navigation target when title is clicked", () => {
+      const onNavigateToTask = vi.fn();
+      const task = createMockQueuedTask({
+        id: "task-queue-789",
+        title: "Click me",
+        ideationSessionId: "session-1",
+        executionPlanId: "plan-branch-1",
+      });
+      render(
+        <QueuedTaskRow
+          position={2}
+          task={task}
+          onNavigateToTask={onNavigateToTask}
+        />,
+      );
 
       fireEvent.click(screen.getByText("Click me"));
 
-      expect(mockNavigateToTask).toHaveBeenCalledWith("task-queue-789");
-      expect(mockNavigateToTask).toHaveBeenCalledOnce();
+      expect(onNavigateToTask).toHaveBeenCalledWith({
+        taskId: "task-queue-789",
+        source: "queued",
+        projectId: "project-1",
+        ideationSessionId: "session-1",
+        executionPlanId: "plan-branch-1",
+      });
+      expect(onNavigateToTask).toHaveBeenCalledOnce();
     });
 
     it("title is rendered as a button element", () => {

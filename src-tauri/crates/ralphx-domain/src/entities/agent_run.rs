@@ -1,7 +1,11 @@
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::fmt;
 use uuid::Uuid;
+
+use super::usage::{
+    processed_tokens, AgentRunUsage, ProviderUsageSnapshot, UsageCapture, UsageProvenance,
+};
 
 use crate::agents::{AgentHarnessKind, LogicalEffort};
 
@@ -81,6 +85,117 @@ pub enum AgentRunStatus {
     Cancelled,
 }
 
+/// Origin of the runtime configuration used to launch an agent run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeSource {
+    ComposerSelection,
+    ConversationOverride,
+    RoleDefault,
+    ProjectDefault,
+    HarnessFallback,
+}
+
+impl fmt::Display for RuntimeSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ComposerSelection => write!(f, "composer_selection"),
+            Self::ConversationOverride => write!(f, "conversation_override"),
+            Self::RoleDefault => write!(f, "role_default"),
+            Self::ProjectDefault => write!(f, "project_default"),
+            Self::HarnessFallback => write!(f, "harness_fallback"),
+        }
+    }
+}
+
+impl std::str::FromStr for RuntimeSource {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "composer_selection" => Ok(Self::ComposerSelection),
+            "conversation_override" => Ok(Self::ConversationOverride),
+            "role_default" => Ok(Self::RoleDefault),
+            "project_default" => Ok(Self::ProjectDefault),
+            "harness_fallback" => Ok(Self::HarnessFallback),
+            _ => Err(format!("Invalid runtime source: {value}")),
+        }
+    }
+}
+
+fn deserialize_optional_runtime_source<'de, D>(
+    deserializer: D,
+) -> Result<Option<RuntimeSource>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?.and_then(|value| value.parse().ok()))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentRunActionKind {
+    VerifyPlan,
+    WorkspaceReviewFixer,
+    PrAutofix,
+    DelegationParkWake,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentRunAction {
+    pub kind: AgentRunActionKind,
+    pub context_id: String,
+    pub target_id: String,
+}
+
+impl AgentRunAction {
+    /// Parse only a complete backend-owned action tuple.
+    pub fn from_metadata_json(metadata: Option<&str>) -> Option<Self> {
+        let value = serde_json::from_str::<serde_json::Value>(metadata?).ok()?;
+        let object = value.as_object()?;
+        let kind = object
+            .get("ralphx_action_kind")?
+            .as_str()?
+            .parse::<AgentRunActionKind>()
+            .ok()?;
+        let context_id = object.get("ralphx_action_context_id")?.as_str()?.trim();
+        let target_id = object.get("ralphx_action_target_id")?.as_str()?.trim();
+        if context_id.is_empty() || target_id.is_empty() {
+            return None;
+        }
+        Some(Self {
+            kind,
+            context_id: context_id.to_string(),
+            target_id: target_id.to_string(),
+        })
+    }
+}
+
+impl fmt::Display for AgentRunActionKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::VerifyPlan => write!(f, "verify_plan"),
+            Self::WorkspaceReviewFixer => write!(f, "workspace_review_fixer"),
+            Self::PrAutofix => write!(f, "pr_autofix"),
+            Self::DelegationParkWake => write!(f, "delegation_park_wake"),
+        }
+    }
+}
+
+impl std::str::FromStr for AgentRunActionKind {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "verify_plan" => Ok(Self::VerifyPlan),
+            "workspace_review_fixer" => Ok(Self::WorkspaceReviewFixer),
+            "pr_autofix" => Ok(Self::PrAutofix),
+            "delegation_park_wake" => Ok(Self::DelegationParkWake),
+            _ => Err(format!("Invalid agent run action kind: {value}")),
+        }
+    }
+}
+
 impl fmt::Display for AgentRunStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -122,20 +237,6 @@ impl AgentRunStatus {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct AgentRunUsage {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub input_tokens: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub output_tokens: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cache_creation_tokens: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cache_read_tokens: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub estimated_usd: Option<f64>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AgentRunAttribution {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub harness: Option<AgentHarnessKind>,
@@ -157,14 +258,16 @@ pub struct AgentRunAttribution {
     pub service_tier: Option<String>,
 }
 
-impl AgentRunUsage {
-    pub fn is_empty(&self) -> bool {
-        self.input_tokens.is_none()
-            && self.output_tokens.is_none()
-            && self.cache_creation_tokens.is_none()
-            && self.cache_read_tokens.is_none()
-            && self.estimated_usd.is_none()
-    }
+/// Body-free persona identity and delivery outcome attributed to one run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PersonaRunAttribution {
+    pub persona_id: String,
+    pub persona_slug: String,
+    pub persona_version: i64,
+    pub persona_content_hash: String,
+    pub injected: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skipped_reason: Option<String>,
 }
 
 /// An agent run tracks the execution of a Claude agent for a conversation
@@ -229,12 +332,28 @@ pub struct AgentRun {
     /// Estimated USD cost attributed to this run.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub estimated_usd: Option<f64>,
+    /// Semantics of the normalized usage tuple. `None` denotes legacy data.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage_provenance: Option<UsageProvenance>,
+    /// Raw cumulative provider snapshot retained only for future delta derivation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_usage_snapshot: Option<ProviderUsageSnapshot>,
     /// Approval policy used for the run.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub approval_policy: Option<String>,
     /// Sandbox mode used for the run.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sandbox_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub launch_role: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_runtime_source",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub runtime_source: Option<RuntimeSource>,
     /// Correlation ID linking all runs in a single message chain
     /// (initial run + all queue continuations via --resume)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -242,6 +361,33 @@ pub struct AgentRun {
     /// The agent_run ID that triggered this continuation (None for initial runs)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_run_id: Option<String>,
+    /// Optional generic action discriminator for backend-requested conversation turns.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action_kind: Option<AgentRunActionKind>,
+    /// Backend-owned context id for the action (planning session for `verify_plan`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action_context_id: Option<String>,
+    /// Immutable target id captured when the action was requested (plan artifact for `verify_plan`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action_target_id: Option<String>,
+    /// Persona identity resolved for this run, without persona body content.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub persona_id: Option<String>,
+    /// Stable human-readable persona slug resolved for this run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub persona_slug: Option<String>,
+    /// Persona version resolved for this run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub persona_version: Option<i64>,
+    /// Content fingerprint of the resolved persona body.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub persona_content_hash: Option<String>,
+    /// Whether the resolved persona body reached the launched prompt.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub persona_injected: Option<bool>,
+    /// Body-free reason code when a resolved persona was not injected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub persona_skipped_reason: Option<String>,
 }
 
 impl AgentRun {
@@ -269,10 +415,24 @@ impl AgentRun {
             cache_creation_tokens: None,
             cache_read_tokens: None,
             estimated_usd: None,
+            usage_provenance: None,
+            raw_usage_snapshot: None,
             approval_policy: None,
             sandbox_mode: None,
+            agent_name: None,
+            launch_role: None,
+            runtime_source: None,
             run_chain_id: Some(chain_id),
             parent_run_id: None,
+            action_kind: None,
+            action_context_id: None,
+            action_target_id: None,
+            persona_id: None,
+            persona_slug: None,
+            persona_version: None,
+            persona_content_hash: None,
+            persona_injected: None,
+            persona_skipped_reason: None,
         }
     }
 
@@ -303,10 +463,24 @@ impl AgentRun {
             cache_creation_tokens: None,
             cache_read_tokens: None,
             estimated_usd: None,
+            usage_provenance: None,
+            raw_usage_snapshot: None,
             approval_policy: None,
             sandbox_mode: None,
+            agent_name: None,
+            launch_role: None,
+            runtime_source: None,
             run_chain_id: Some(run_chain_id),
             parent_run_id: Some(parent_run_id),
+            action_kind: None,
+            action_context_id: None,
+            action_target_id: None,
+            persona_id: None,
+            persona_slug: None,
+            persona_version: None,
+            persona_content_hash: None,
+            persona_injected: None,
+            persona_skipped_reason: None,
         }
     }
 
@@ -349,6 +523,30 @@ impl AgentRun {
         }
     }
 
+    pub fn replace_usage_capture(&mut self, capture: &UsageCapture) {
+        self.input_tokens = capture.normalized.input_tokens;
+        self.output_tokens = capture.normalized.output_tokens;
+        self.cache_creation_tokens = capture.normalized.cache_creation_tokens;
+        self.cache_read_tokens = capture.normalized.cache_read_tokens;
+        self.estimated_usd = capture.normalized.estimated_usd;
+        self.usage_provenance = Some(capture.provenance);
+        self.raw_usage_snapshot = capture.raw_snapshot.clone();
+    }
+
+    pub fn processed_tokens(&self) -> Option<u64> {
+        processed_tokens(
+            self.harness,
+            &AgentRunUsage {
+                input_tokens: self.input_tokens,
+                output_tokens: self.output_tokens,
+                cache_creation_tokens: self.cache_creation_tokens,
+                cache_read_tokens: self.cache_read_tokens,
+                estimated_usd: self.estimated_usd,
+            },
+            self.usage_provenance,
+        )
+    }
+
     pub fn apply_attribution(&mut self, attribution: &AgentRunAttribution) {
         if let Some(value) = attribution.harness {
             self.harness = Some(value);
@@ -377,6 +575,31 @@ impl AgentRun {
         if let Some(value) = attribution.service_tier.as_ref() {
             self.service_tier = Some(value.clone());
         }
+    }
+
+    pub fn apply_persona_attribution(&mut self, attribution: PersonaRunAttribution) {
+        self.persona_id = Some(attribution.persona_id);
+        self.persona_slug = Some(attribution.persona_slug);
+        self.persona_version = Some(attribution.persona_version);
+        self.persona_content_hash = Some(attribution.persona_content_hash);
+        self.persona_injected = Some(attribution.injected);
+        self.persona_skipped_reason = attribution.skipped_reason;
+    }
+
+    /// Apply backend-owned action metadata only when the complete typed tuple is present.
+    pub fn apply_action_metadata_json(&mut self, metadata: Option<&str>) {
+        let Some(action) = AgentRunAction::from_metadata_json(metadata) else {
+            return;
+        };
+
+        self.action_kind = Some(action.kind);
+        self.launch_role = match action.kind {
+            AgentRunActionKind::WorkspaceReviewFixer => Some("workspace_repair".to_string()),
+            AgentRunActionKind::PrAutofix => Some("pr_fixer".to_string()),
+            _ => self.launch_role.take(),
+        };
+        self.action_context_id = Some(action.context_id);
+        self.action_target_id = Some(action.target_id);
     }
 
     /// Get the duration of the run (if completed)

@@ -44,13 +44,6 @@ vi.mock("@/stores/uiStore", () => ({
   }),
 }));
 
-vi.mock("@/stores/teamStore", () => ({
-  useTeamStore: Object.assign(vi.fn((selector: (s: { clearPendingPlan: () => void }) => unknown) =>
-    selector({ clearPendingPlan: vi.fn() })), {
-    getState: () => ({ clearPendingPlan: vi.fn() }),
-  }),
-}));
-
 vi.mock("sonner", () => ({
   toast: { success: vi.fn(), warning: vi.fn(), error: vi.fn(), info: vi.fn() },
 }));

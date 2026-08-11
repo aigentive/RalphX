@@ -1,5 +1,8 @@
 use super::*;
 use crate::domain::entities::Task;
+use crate::domain::ideation::TasksFeatureState;
+use crate::domain::repositories::IdeationSettingsRepository;
+use crate::infrastructure::sqlite::SqliteIdeationSettingsRepository;
 use crate::testing::SqliteTestDb;
 
 fn setup_test_db() -> SqliteTestDb {
@@ -14,6 +17,160 @@ fn create_test_task(db: &SqliteTestDb, task_id: &TaskId) {
         ..task
     };
     db.insert_task(task);
+}
+
+#[tokio::test]
+async fn task_step_history_mutation_requires_tasks_enabled() {
+    let db = setup_test_db();
+    let task_id = TaskId::new();
+    create_test_task(&db, &task_id);
+    let shared = db.shared_conn();
+    let repo = SqliteTaskStepRepository::from_shared(shared.clone()).with_tasks_feature_policy();
+    let rejected_step = TaskStep::new(
+        task_id.clone(),
+        "Rejected while disabled".to_string(),
+        0,
+        "user".to_string(),
+    );
+
+    let error = repo
+        .create(rejected_step)
+        .await
+        .expect_err("disabled Tasks must reject step writes");
+    assert!(matches!(error, AppError::FeatureDisabled(_)));
+    assert!(repo.get_by_task(&task_id).await.unwrap().is_empty());
+
+    let settings_repo = SqliteIdeationSettingsRepository::from_shared(shared);
+    assert!(settings_repo
+        .compare_and_set_tasks_feature_state(
+            TasksFeatureState::Disabled,
+            TasksFeatureState::Enabled,
+        )
+        .await
+        .unwrap());
+    repo.create(TaskStep::new(
+        task_id.clone(),
+        "Allowed while enabled".to_string(),
+        0,
+        "user".to_string(),
+    ))
+    .await
+    .expect("enabled Tasks should allow step writes");
+    assert_eq!(repo.get_by_task(&task_id).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn guarded_step_lifecycle_checks_authority_for_every_history_mutation() {
+    let db = setup_test_db();
+    let task_id = TaskId::new();
+    create_test_task(&db, &task_id);
+    let shared = db.shared_conn();
+    let settings_repo = SqliteIdeationSettingsRepository::from_shared(shared.clone());
+    assert!(settings_repo
+        .compare_and_set_tasks_feature_state(
+            TasksFeatureState::Disabled,
+            TasksFeatureState::Enabled,
+        )
+        .await
+        .unwrap());
+    let repo = SqliteTaskStepRepository::from_shared(shared).with_tasks_feature_policy();
+
+    let parent = repo
+        .create(TaskStep::new(
+            task_id.clone(),
+            "Parent".to_string(),
+            0,
+            "user".to_string(),
+        ))
+        .await
+        .unwrap();
+    let mut child = repo
+        .create(TaskStep::new(
+            task_id.clone(),
+            "Child".to_string(),
+            1,
+            "user".to_string(),
+        ))
+        .await
+        .unwrap();
+    child.parent_step_id = Some(parent.id.clone());
+    repo.update(&child)
+        .await
+        .expect("guarded update should preserve the parent relationship");
+    assert_eq!(
+        repo.get_by_id(&child.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .parent_step_id,
+        Some(parent.id.clone())
+    );
+
+    let bulk = repo
+        .bulk_create(vec![
+            TaskStep::new(
+                task_id.clone(),
+                "Bulk one".to_string(),
+                2,
+                "user".to_string(),
+            ),
+            TaskStep::new(
+                task_id.clone(),
+                "Bulk two".to_string(),
+                3,
+                "user".to_string(),
+            ),
+        ])
+        .await
+        .expect("guarded bulk creation should succeed while enabled");
+    repo.reorder(
+        &task_id,
+        vec![
+            bulk[1].id.clone(),
+            child.id.clone(),
+            parent.id.clone(),
+            bulk[0].id.clone(),
+        ],
+    )
+    .await
+    .expect("guarded reorder should succeed while enabled");
+
+    child.status = TaskStepStatus::Failed;
+    repo.update(&child).await.unwrap();
+    assert_eq!(repo.reset_all_to_pending(&task_id).await.unwrap(), 1);
+    assert_eq!(
+        repo.get_by_id(&child.id).await.unwrap().unwrap().status,
+        TaskStepStatus::Pending
+    );
+
+    repo.delete(&bulk[0].id)
+        .await
+        .expect("guarded single delete should succeed while enabled");
+    assert!(repo.get_by_id(&bulk[0].id).await.unwrap().is_none());
+    repo.delete_by_task(&task_id)
+        .await
+        .expect("guarded task delete should succeed while enabled");
+    assert!(repo.get_by_task(&task_id).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn guarded_step_create_rejects_a_missing_task_without_writing() {
+    let db = setup_test_db();
+    let task_id = TaskId::new();
+    let repo = SqliteTaskStepRepository::from_shared(db.shared_conn()).with_tasks_feature_policy();
+
+    let error = repo
+        .create(TaskStep::new(
+            task_id.clone(),
+            "Orphan step".to_string(),
+            0,
+            "user".to_string(),
+        ))
+        .await
+        .expect_err("a guarded step must belong to a persisted task");
+
+    assert!(matches!(error, AppError::TaskNotFound(id) if id == task_id.as_str()));
+    assert!(repo.get_by_task(&task_id).await.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -353,10 +510,20 @@ async fn test_reset_all_to_pending_resets_non_pending_steps() {
 
     let steps = repo.get_by_task(&task_id).await.unwrap();
     for step in &steps {
-        assert_eq!(step.status, TaskStepStatus::Pending, "All steps should be Pending");
+        assert_eq!(
+            step.status,
+            TaskStepStatus::Pending,
+            "All steps should be Pending"
+        );
         assert!(step.started_at.is_none(), "started_at should be cleared");
-        assert!(step.completed_at.is_none(), "completed_at should be cleared");
-        assert!(step.completion_note.is_none(), "completion_note should be cleared");
+        assert!(
+            step.completed_at.is_none(),
+            "completed_at should be cleared"
+        );
+        assert!(
+            step.completion_note.is_none(),
+            "completion_note should be cleared"
+        );
     }
 }
 
@@ -374,7 +541,10 @@ async fn test_reset_all_to_pending_noop_when_all_pending() {
     repo.create(step2).await.unwrap();
 
     let count = repo.reset_all_to_pending(&task_id).await.unwrap();
-    assert_eq!(count, 0, "No steps should be reset when all are already Pending");
+    assert_eq!(
+        count, 0,
+        "No steps should be reset when all are already Pending"
+    );
 }
 
 #[tokio::test]
@@ -384,11 +554,26 @@ async fn test_reset_all_to_pending_mixed_statuses() {
     create_test_task(&db, &task_id);
     let repo = SqliteTaskStepRepository::new(db.new_connection());
 
-    let pending_step = TaskStep::new(task_id.clone(), "Pending".to_string(), 0, "user".to_string());
+    let pending_step = TaskStep::new(
+        task_id.clone(),
+        "Pending".to_string(),
+        0,
+        "user".to_string(),
+    );
     let pending_id = pending_step.id.clone();
-    let mut completed = TaskStep::new(task_id.clone(), "Completed".to_string(), 1, "user".to_string());
+    let mut completed = TaskStep::new(
+        task_id.clone(),
+        "Completed".to_string(),
+        1,
+        "user".to_string(),
+    );
     completed.status = TaskStepStatus::Completed;
-    let mut cancelled = TaskStep::new(task_id.clone(), "Cancelled".to_string(), 2, "user".to_string());
+    let mut cancelled = TaskStep::new(
+        task_id.clone(),
+        "Cancelled".to_string(),
+        2,
+        "user".to_string(),
+    );
     cancelled.status = TaskStepStatus::Cancelled;
 
     repo.create(pending_step).await.unwrap();
@@ -416,7 +601,12 @@ async fn test_reset_all_to_pending_preserves_structural_fields() {
     create_test_task(&db, &task_id);
     let repo = SqliteTaskStepRepository::new(db.new_connection());
 
-    let mut step = TaskStep::new(task_id.clone(), "Important Step".to_string(), 5, "user".to_string());
+    let mut step = TaskStep::new(
+        task_id.clone(),
+        "Important Step".to_string(),
+        5,
+        "user".to_string(),
+    );
     step.status = TaskStepStatus::Completed;
     step.description = Some("Step description".to_string());
     step.scope_context = Some(r#"{"files":["src/foo.rs"]}"#.to_string());
@@ -428,7 +618,15 @@ async fn test_reset_all_to_pending_preserves_structural_fields() {
     let after = repo.get_by_id(&step_id).await.unwrap().unwrap();
     assert_eq!(after.title, "Important Step", "title preserved");
     assert_eq!(after.sort_order, 5, "sort_order preserved");
-    assert_eq!(after.description, Some("Step description".to_string()), "description preserved");
-    assert_eq!(after.scope_context, Some(r#"{"files":["src/foo.rs"]}"#.to_string()), "scope_context preserved");
+    assert_eq!(
+        after.description,
+        Some("Step description".to_string()),
+        "description preserved"
+    );
+    assert_eq!(
+        after.scope_context,
+        Some(r#"{"files":["src/foo.rs"]}"#.to_string()),
+        "scope_context preserved"
+    );
     assert_eq!(after.status, TaskStepStatus::Pending);
 }

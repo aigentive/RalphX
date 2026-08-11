@@ -1,6 +1,5 @@
 use std::path::{Path, PathBuf};
 
-use tauri::Emitter;
 use tokio_util::sync::CancellationToken;
 
 use crate::domain::entities::merge_progress_event::{MergePhase, MergePhaseStatus};
@@ -196,7 +195,7 @@ pub(super) async fn run_setup_phase(
     entries: &[MergeAnalysisEntry],
     merge_cwd: &Path,
     task_id_str: &str,
-    app_handle: Option<&tauri::AppHandle>,
+    event_sink: Option<&dyn ralphx_events::EventSink>,
     resolve: &(dyn Fn(&str) -> String + Send + Sync),
     context: Option<&str>,
     cancel: &CancellationToken,
@@ -207,7 +206,7 @@ pub(super) async fn run_setup_phase(
     let has_setup_commands = entries.iter().any(|e| !e.worktree_setup.is_empty());
     if has_setup_commands {
         emit_merge_progress(
-            app_handle,
+            event_sink,
             task_id_str,
             MergePhase::worktree_setup(),
             MergePhaseStatus::Started,
@@ -322,7 +321,7 @@ pub(super) async fn run_setup_phase(
                             ),
                             0,
                         );
-                        if let Some(handle) = app_handle {
+                        if let Some(sink) = event_sink {
                             let mut event_data = serde_json::json!({
                                 "task_id": task_id_str,
                                 "phase": skip_entry.phase,
@@ -337,7 +336,7 @@ pub(super) async fn run_setup_phase(
                             if let Some(ctx) = context {
                                 event_data["context"] = serde_json::json!(ctx);
                             }
-                            let _ = handle.emit("merge:validation_step", event_data);
+                            sink.emit("merge:validation_step", event_data);
                         }
                         log.push(skip_entry);
                         continue;
@@ -367,7 +366,7 @@ pub(super) async fn run_setup_phase(
             if let Some(skip_entry) =
                 try_handle_symlink_idempotent(&resolved_cmd, &cmd_cwd, &entry.label, &resolved_path)
             {
-                if let Some(handle) = app_handle {
+                if let Some(sink) = event_sink {
                     let mut event_data = serde_json::json!({
                         "task_id": task_id_str,
                         "phase": skip_entry.phase,
@@ -382,7 +381,7 @@ pub(super) async fn run_setup_phase(
                     if let Some(ctx) = context {
                         event_data["context"] = serde_json::json!(ctx);
                     }
-                    let _ = handle.emit("merge:validation_step", event_data);
+                    sink.emit("merge:validation_step", event_data);
                 }
                 log.push(skip_entry);
                 continue;
@@ -401,7 +400,7 @@ pub(super) async fn run_setup_phase(
             };
 
             // Emit "running" event before execution
-            if let Some(handle) = app_handle {
+            if let Some(sink) = event_sink {
                 let mut event_data = serde_json::json!({
                     "task_id": task_id_str,
                     "phase": "setup",
@@ -413,7 +412,7 @@ pub(super) async fn run_setup_phase(
                 if let Some(ctx) = context {
                     event_data["context"] = serde_json::json!(ctx);
                 }
-                let _ = handle.emit("merge:validation_step", event_data);
+                sink.emit("merge:validation_step", event_data);
             }
 
             tracing::info!(
@@ -513,7 +512,7 @@ pub(super) async fn run_setup_phase(
                 "Worktree setup command completed"
             );
 
-            if let Some(handle) = app_handle {
+            if let Some(sink) = event_sink {
                 let mut event_data = serde_json::json!({
                     "task_id": task_id_str,
                     "phase": log_entry.phase,
@@ -529,7 +528,7 @@ pub(super) async fn run_setup_phase(
                 if let Some(ctx) = context {
                     event_data["context"] = serde_json::json!(ctx);
                 }
-                let _ = handle.emit("merge:validation_step", event_data);
+                sink.emit("merge:validation_step", event_data);
             }
             log.push(log_entry);
         }
@@ -549,7 +548,7 @@ pub(super) async fn run_setup_phase(
     // a checkmark (Passed) or skip indicator, even when there are no setup commands.
     if setup_had_failures {
         emit_merge_progress(
-            app_handle,
+            event_sink,
             task_id_str,
             MergePhase::worktree_setup(),
             MergePhaseStatus::Failed,
@@ -557,7 +556,7 @@ pub(super) async fn run_setup_phase(
         );
     } else {
         emit_merge_progress(
-            app_handle,
+            event_sink,
             task_id_str,
             MergePhase::worktree_setup(),
             MergePhaseStatus::Passed,

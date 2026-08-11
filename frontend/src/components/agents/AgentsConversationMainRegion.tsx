@@ -20,24 +20,30 @@ interface AgentsConversationMainRegionProps {
   chatFocusOptions: ActiveConversationPanelProps["chatFocusOptions"];
   defaultProjectId: StartConversationPanelProps["defaultProjectId"];
   defaultRuntime: StartConversationPanelProps["defaultRuntime"];
+  hasAttachedPlanArtifact: ActiveConversationPanelProps["hasAttachedPlanArtifact"];
   hasAutoOpenArtifacts: ActiveConversationPanelProps["hasAutoOpenArtifacts"];
+  focusedWorkspaceReviewServiceTier: ActiveConversationPanelProps["focusedWorkspaceReviewServiceTier"];
   isLoadingProjects: StartConversationPanelProps["isLoadingProjects"];
   modelRegistry: StartConversationPanelProps["modelRegistry"];
   normalizedActiveRuntime: ActiveConversationPanelProps["normalizedActiveRuntime"];
-  workspaceReviewRuntimeStatus: ActiveConversationPanelProps["workspaceReviewRuntimeStatus"];
   onActiveConversationModeChange: ActiveConversationPanelProps["onActiveConversationModeChange"];
   onActiveConversationModeMenuOpen: ActiveConversationPanelProps["onActiveConversationModeMenuOpen"];
+  onActiveCapabilityChange: ActiveConversationPanelProps["onActiveCapabilityChange"];
   onActiveEffortChange: ActiveConversationPanelProps["onActiveEffortChange"];
   onActiveModelChange: ActiveConversationPanelProps["onActiveModelChange"];
   onActiveProviderChange: ActiveConversationPanelProps["onActiveProviderChange"];
   onAgentUserMessageSent: ActiveConversationPanelProps["onAgentUserMessageSent"];
   onConversationModeSwitched: ActiveConversationPanelProps["onConversationModeSwitched"];
-  onCreateProject: StartConversationPanelProps["onCreateProject"];
   onFocusIdeationSession: ActiveConversationPanelProps["onFocusIdeationSession"];
+  onFocusIdeationSessionForConversation: ActiveConversationPanelProps[
+    "onFocusIdeationSessionForConversation"
+  ];
   onFocusWorkspaceReview: ActiveConversationPanelProps["onFocusWorkspaceReview"];
   onFocusVerificationSession: ActiveConversationPanelProps["onFocusVerificationSession"];
   onFocusTaskRuntime: ActiveConversationPanelProps["onFocusTaskRuntime"];
+  onFocusAutomationRun: ActiveConversationPanelProps["onFocusAutomationRun"];
   onOpenTaskArtifact: ActiveConversationPanelProps["onOpenTaskArtifact"];
+  onOpenAutomation?: ActiveConversationPanelProps["onOpenAutomation"];
   onForkConversation: ActiveConversationPanelProps["onForkConversation"];
   onOpenPlanArtifact: ActiveConversationPanelProps["onOpenPlanArtifact"];
   onOpenPublishPane: ActiveConversationPanelProps["onOpenPublishPane"];
@@ -48,16 +54,18 @@ interface AgentsConversationMainRegionProps {
   onRuntimePreferenceChange: StartConversationPanelProps["onRuntimePreferenceChange"];
   onSelectArtifact: ActiveConversationPanelProps["onSelectArtifact"];
   onStartAgentConversation: StartConversationPanelProps["onStartAgentConversation"];
+  onStartPersonaBuilder: ActiveConversationPanelProps["onStartPersonaBuilder"];
   onToggleArtifacts: ActiveConversationPanelProps["onToggleArtifacts"];
   onSelectChatFocus: ActiveConversationPanelProps["onSelectChatFocus"];
   projects: StartConversationPanelProps["projects"];
   publishShortcutLabel: ActiveConversationPanelProps["publishShortcutLabel"];
   promotePublishShortcut?: ActiveConversationPanelProps["promotePublishShortcut"];
-  publishingConversationId: ActiveConversationPanelProps["publishingConversationId"];
+  publishAttemptsByConversationId: ActiveConversationPanelProps["publishAttemptsByConversationId"];
   selectedConversationId: string | null;
   selectedTaskArtifactId: ActiveConversationPanelProps["selectedTaskArtifactId"];
   setTerminalChatDockElement: ActiveConversationPanelProps["setTerminalChatDockElement"];
   switchingConversationModeId: ActiveConversationPanelProps["switchingConversationModeId"];
+  updatingCapabilityConversationId: ActiveConversationPanelProps["updatingCapabilityConversationId"];
   terminalArchivedReason: ActiveConversationPanelProps["terminalArchivedReason"];
   terminalUnavailableReason: ActiveConversationPanelProps["terminalUnavailableReason"];
 }
@@ -76,24 +84,28 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
   chatFocusOptions,
   defaultProjectId,
   defaultRuntime,
+  hasAttachedPlanArtifact,
   hasAutoOpenArtifacts,
+  focusedWorkspaceReviewServiceTier,
   isLoadingProjects,
   modelRegistry,
   normalizedActiveRuntime,
-  workspaceReviewRuntimeStatus = null,
   onActiveConversationModeChange,
   onActiveConversationModeMenuOpen,
+  onActiveCapabilityChange,
   onActiveEffortChange,
   onActiveModelChange,
   onActiveProviderChange,
   onAgentUserMessageSent,
   onConversationModeSwitched,
-  onCreateProject,
   onFocusIdeationSession,
+  onFocusIdeationSessionForConversation,
   onFocusWorkspaceReview,
   onFocusVerificationSession,
   onFocusTaskRuntime,
+  onFocusAutomationRun,
   onOpenTaskArtifact,
+  onOpenAutomation,
   onForkConversation,
   onOpenPlanArtifact,
   onOpenPublishPane,
@@ -104,20 +116,22 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
   onRuntimePreferenceChange,
   onSelectArtifact,
   onStartAgentConversation,
+  onStartPersonaBuilder,
   onToggleArtifacts,
   onSelectChatFocus,
   projects,
   publishShortcutLabel,
   promotePublishShortcut = false,
-  publishingConversationId,
+  publishAttemptsByConversationId,
   selectedConversationId,
   selectedTaskArtifactId,
   setTerminalChatDockElement,
   switchingConversationModeId,
+  updatingCapabilityConversationId,
   terminalArchivedReason,
   terminalUnavailableReason,
 }: AgentsConversationMainRegionProps) {
-  if (activeProjectId && selectedConversationId && activeConversation) {
+  if (selectedConversationId && activeConversation) {
     return (
       <AgentsActiveConversationPanel
         activeConversation={activeConversation}
@@ -131,21 +145,28 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
         availableArtifactTabs={availableArtifactTabs}
         chatFocus={chatFocus}
         chatFocusOptions={chatFocusOptions}
+        hasAttachedPlanArtifact={hasAttachedPlanArtifact}
         hasAutoOpenArtifacts={hasAutoOpenArtifacts}
+        focusedWorkspaceReviewServiceTier={focusedWorkspaceReviewServiceTier}
         normalizedActiveRuntime={normalizedActiveRuntime}
-        workspaceReviewRuntimeStatus={workspaceReviewRuntimeStatus}
         onActiveConversationModeChange={onActiveConversationModeChange}
         onActiveConversationModeMenuOpen={onActiveConversationModeMenuOpen}
+        onActiveCapabilityChange={onActiveCapabilityChange}
         onActiveEffortChange={onActiveEffortChange}
         onActiveModelChange={onActiveModelChange}
         onActiveProviderChange={onActiveProviderChange}
         onAgentUserMessageSent={onAgentUserMessageSent}
         onConversationModeSwitched={onConversationModeSwitched}
         onFocusIdeationSession={onFocusIdeationSession}
+        onFocusIdeationSessionForConversation={
+          onFocusIdeationSessionForConversation
+        }
         onFocusWorkspaceReview={onFocusWorkspaceReview}
         onFocusVerificationSession={onFocusVerificationSession}
         onFocusTaskRuntime={onFocusTaskRuntime}
+        onFocusAutomationRun={onFocusAutomationRun}
         onOpenTaskArtifact={onOpenTaskArtifact}
+        {...(onOpenAutomation ? { onOpenAutomation } : {})}
         onForkConversation={onForkConversation}
         onOpenPlanArtifact={onOpenPlanArtifact}
         onOpenPublishPane={onOpenPublishPane}
@@ -156,13 +177,15 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
         onSelectArtifact={onSelectArtifact}
         onToggleArtifacts={onToggleArtifacts}
         onSelectChatFocus={onSelectChatFocus}
+        onStartPersonaBuilder={onStartPersonaBuilder}
         publishShortcutLabel={publishShortcutLabel}
         promotePublishShortcut={promotePublishShortcut}
-        publishingConversationId={publishingConversationId}
+        publishAttemptsByConversationId={publishAttemptsByConversationId}
         selectedConversationId={selectedConversationId}
         selectedTaskArtifactId={selectedTaskArtifactId}
         setTerminalChatDockElement={setTerminalChatDockElement}
         switchingConversationModeId={switchingConversationModeId}
+        updatingCapabilityConversationId={updatingCapabilityConversationId}
         terminalArchivedReason={terminalArchivedReason}
         terminalUnavailableReason={terminalUnavailableReason}
       />
@@ -176,7 +199,6 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
       defaultRuntime={defaultRuntime}
       isLoadingProjects={isLoadingProjects}
       modelRegistry={modelRegistry}
-      onCreateProject={onCreateProject}
       onRuntimePreferenceChange={onRuntimePreferenceChange}
       onStartAgentConversation={onStartAgentConversation}
     />

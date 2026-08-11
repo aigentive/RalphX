@@ -1,113 +1,84 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { IdeationSession } from "@/types/ideation";
-import { navigateToIdeationSession } from "./navigation";
 
-// ============================================================================
-// Hoisted mock factories
-// ============================================================================
+import { useAgentArtifactUiStore } from "@/components/agents/agentArtifactUiStore";
+import {
+  navigateToAgentConversation,
+  navigateToAgentPlan,
+  navigateToAgentTask,
+  navigateToIdeationSession,
+  openIdeationInAgents,
+  openTaskInAgents,
+} from "./navigation";
 
 const {
   mockUiGetState,
   mockUiSetState,
-  mockIdeationGetState,
   mockProjectGetState,
   mockGetQueriesData,
+  resolveIdeationWorkspaceMock,
+  resolveTaskWorkspaceMock,
   selectConversationMock,
   setArtifactTabMock,
   setFocusedProjectMock,
-} =
-  vi.hoisted(() => ({
-    mockUiGetState: vi.fn(),
-    mockUiSetState: vi.fn(),
-    mockIdeationGetState: vi.fn(),
-    mockProjectGetState: vi.fn(),
-    mockGetQueriesData: vi.fn(),
-    selectConversationMock: vi.fn(),
-    setArtifactTabMock: vi.fn(),
-    setFocusedProjectMock: vi.fn(),
-  }));
+  setTaskArtifactModeMock,
+  focusTaskArtifactMock,
+  setActiveConversationMock,
+  toastInfoMock,
+} = vi.hoisted(() => ({
+  mockUiGetState: vi.fn(),
+  mockUiSetState: vi.fn(),
+  mockProjectGetState: vi.fn(),
+  mockGetQueriesData: vi.fn(),
+  resolveIdeationWorkspaceMock: vi.fn(),
+  resolveTaskWorkspaceMock: vi.fn(),
+  selectConversationMock: vi.fn(),
+  setArtifactTabMock: vi.fn(),
+  setFocusedProjectMock: vi.fn(),
+  setTaskArtifactModeMock: vi.fn(),
+  focusTaskArtifactMock: vi.fn(),
+  setActiveConversationMock: vi.fn(),
+  toastInfoMock: vi.fn(),
+}));
+
+vi.mock("sonner", () => ({ toast: { info: toastInfoMock } }));
 
 vi.mock("@/stores/uiStore", () => ({
-  useUiStore: {
-    getState: mockUiGetState,
-    setState: mockUiSetState,
-  },
+  useUiStore: { getState: mockUiGetState, setState: mockUiSetState },
 }));
-
-vi.mock("@/stores/ideationStore", () => ({
-  useIdeationStore: {
-    getState: mockIdeationGetState,
-  },
-}));
-
 vi.mock("@/stores/projectStore", () => ({
-  useProjectStore: {
-    getState: mockProjectGetState,
-  },
+  useProjectStore: { getState: mockProjectGetState },
 }));
-
-vi.mock("@/stores/agentSessionStore", () => ({
+vi.mock("@/stores/agentSessionStore", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/stores/agentSessionStore")>()),
   useAgentSessionStore: {
     getState: () => ({
+      artifactByConversationId: {},
       selectConversation: selectConversationMock,
       setArtifactTab: setArtifactTabMock,
       setFocusedProject: setFocusedProjectMock,
+      setTaskArtifactMode: setTaskArtifactModeMock,
+      focusTaskArtifact: focusTaskArtifactMock,
     }),
   },
 }));
-
-vi.mock("@/lib/queryClient", () => ({
-  getQueryClient: () => ({
-    getQueriesData: mockGetQueriesData,
-  }),
+vi.mock("@/stores/chatStore", () => ({
+  useChatStore: { getState: () => ({ setActiveConversation: setActiveConversationMock }) },
 }));
-
-// ============================================================================
-// Test constants & helpers
-// ============================================================================
-
+vi.mock("@/api/ideation", () => ({
+  ideationApi: { sessions: { resolveAgentWorkspace: resolveIdeationWorkspaceMock } },
+}));
+vi.mock("@/api/tasks", () => ({
+  tasksApi: { resolveAgentWorkspace: resolveTaskWorkspaceMock },
+}));
+vi.mock("@/lib/queryClient", () => ({
+  getQueryClient: () => ({ getQueriesData: mockGetQueriesData }),
+}));
 const PROJECT_A = "project-a";
 const PROJECT_B = "project-b";
-const SESSION_A = "session-a"; // belongs to PROJECT_A
-const SESSION_B = "session-b"; // belongs to PROJECT_B
+const SESSION_A = "session-a";
 const CONVERSATION_A = "conversation-a";
 
-const FEATURE_FLAGS_ENABLED = {
-  activityPage: true,
-  extensibilityPage: true,
-  ideationPage: true,
-  battleMode: true,
-  teamMode: false,
-  atlassianOauth: false,
-};
-
-const FEATURE_FLAGS_IDEATION_DISABLED = {
-  ...FEATURE_FLAGS_ENABLED,
-  ideationPage: false,
-};
-
-function makeSession(id: string, projectId: string): IdeationSession {
-  return {
-    id,
-    projectId,
-    title: null,
-    titleSource: null,
-    status: "active",
-    planArtifactId: null,
-    seedTaskId: null,
-    parentSessionId: null,
-    createdAt: "2026-01-01T00:00:00Z",
-    updatedAt: "2026-01-01T00:00:00Z",
-    archivedAt: null,
-    convertedAt: null,
-    verificationStatus: "unverified",
-    teamMode: null,
-    teamConfig: null,
-  };
-}
-
 const setCurrentViewMock = vi.fn();
-const setActiveSessionMock = vi.fn();
 const selectProjectMock = vi.fn();
 
 function cacheLinkedConversation(
@@ -116,297 +87,342 @@ function cacheLinkedConversation(
   projectId: string,
 ) {
   mockGetQueriesData.mockReturnValue([
-    [
-      ["agents", "sidebar-conversations"],
-      {
-        pages: [
-          {
-            key: "active",
-            label: "Active",
-            total: 1,
-            offset: 0,
-            limit: 8,
-            hasMore: false,
-            rows: [
-              {
-                workspace: {
-                  conversationId,
-                  projectId,
-                  linkedIdeationSessionId: sessionId,
-                },
-              },
-            ],
-          },
-        ],
-        pageParams: [0],
-      },
-    ],
+    [["agents", "sidebar-conversations"], {
+      pages: [{ rows: [{ workspace: {
+        conversationId,
+        projectId,
+        linkedIdeationSessionId: sessionId,
+      } }] }],
+      pageParams: [0],
+    }],
   ]);
 }
 
-// ============================================================================
-// Tests
-// ============================================================================
+beforeEach(() => {
+  vi.clearAllMocks();
+  useAgentArtifactUiStore.setState({ artifactByConversationId: {} });
+  mockProjectGetState.mockReturnValue({
+    activeProjectId: PROJECT_A,
+    selectProject: selectProjectMock,
+  });
+  mockUiGetState.mockReturnValue({ viewByProject: {}, setCurrentView: setCurrentViewMock });
+  mockGetQueriesData.mockReturnValue([]);
+  resolveIdeationWorkspaceMock.mockResolvedValue(null);
+  resolveTaskWorkspaceMock.mockResolvedValue(null);
+});
 
 describe("navigateToIdeationSession", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-
-    // Default: active project is PROJECT_A
-    mockProjectGetState.mockReturnValue({
-      activeProjectId: PROJECT_A,
-      selectProject: selectProjectMock,
+  it("opens the backend-validated Agent conversation's Plan artifact", async () => {
+    resolveIdeationWorkspaceMock.mockResolvedValue({
+      projectId: PROJECT_A,
+      conversationId: CONVERSATION_A,
     });
 
-    // Default: UI store has empty maps
-    mockUiGetState.mockReturnValue({
-      viewByProject: {},
-      sessionByProject: {},
-      featureFlags: FEATURE_FLAGS_ENABLED,
-      setCurrentView: setCurrentViewMock,
-    });
-    mockGetQueriesData.mockReturnValue([]);
+    navigateToIdeationSession(SESSION_A);
+    await vi.waitFor(() => expect(resolveIdeationWorkspaceMock).toHaveBeenCalledWith(SESSION_A));
+    await vi.waitFor(() => expect(selectConversationMock).toHaveBeenCalledWith(PROJECT_A, CONVERSATION_A));
 
-    // Default: sessions contain SESSION_A (PROJECT_A) and SESSION_B (PROJECT_B)
-    mockIdeationGetState.mockReturnValue({
-      sessions: {
-        [SESSION_A]: makeSession(SESSION_A, PROJECT_A),
-        [SESSION_B]: makeSession(SESSION_B, PROJECT_B),
-      },
-      setActiveSession: setActiveSessionMock,
-    });
+    expect(selectConversationMock).toHaveBeenCalledWith(PROJECT_A, CONVERSATION_A);
+    expect(setArtifactTabMock).toHaveBeenCalledWith(CONVERSATION_A, "plan");
+    expect(setCurrentViewMock).toHaveBeenCalledWith("agents");
   });
 
-  // --------------------------------------------------------------------------
-  // Cross-project navigation
-  // --------------------------------------------------------------------------
+  it("fails closed in Agents when its conversation is not backend-linked", async () => {
+    await expect(openIdeationInAgents(SESSION_A)).resolves.toBe(false);
 
-  describe("cross-project navigation", () => {
-    it("pre-writes viewByProject[targetProjectId] = 'ideation' via useUiStore.setState", () => {
-      navigateToIdeationSession(SESSION_B);
-
-      expect(mockUiSetState).toHaveBeenCalledOnce();
-      const args = mockUiSetState.mock.calls[0][0] as Record<string, unknown>;
-      expect((args.viewByProject as Record<string, string>)[PROJECT_B]).toBe("ideation");
-    });
-
-    it("pre-writes sessionByProject[targetProjectId] = sessionId via useUiStore.setState", () => {
-      navigateToIdeationSession(SESSION_B);
-
-      expect(mockUiSetState).toHaveBeenCalledOnce();
-      const args = mockUiSetState.mock.calls[0][0] as Record<string, unknown>;
-      expect((args.sessionByProject as Record<string, string>)[PROJECT_B]).toBe(SESSION_B);
-    });
-
-    it("calls selectProject with targetProjectId", () => {
-      navigateToIdeationSession(SESSION_B);
-
-      expect(selectProjectMock).toHaveBeenCalledOnce();
-      expect(selectProjectMock).toHaveBeenCalledWith(PROJECT_B);
-    });
-
-    it("does NOT call setCurrentView or setActiveSession directly", () => {
-      navigateToIdeationSession(SESSION_B);
-
-      expect(setCurrentViewMock).not.toHaveBeenCalled();
-      expect(setActiveSessionMock).not.toHaveBeenCalled();
-    });
-
-    it("preserves existing viewByProject entries for other projects (spread)", () => {
-      mockUiGetState.mockReturnValue({
-        viewByProject: { [PROJECT_A]: "kanban", "proj-other": "graph" },
-        sessionByProject: { [PROJECT_A]: SESSION_A },
-        featureFlags: FEATURE_FLAGS_ENABLED,
-        setCurrentView: setCurrentViewMock,
-      });
-
-      navigateToIdeationSession(SESSION_B);
-
-      const args = mockUiSetState.mock.calls[0][0] as Record<string, unknown>;
-      const vbp = args.viewByProject as Record<string, string>;
-      expect(vbp[PROJECT_A]).toBe("kanban");
-      expect(vbp["proj-other"]).toBe("graph");
-      expect(vbp[PROJECT_B]).toBe("ideation");
-    });
-
-    it("preserves existing sessionByProject entries for other projects (spread)", () => {
-      mockUiGetState.mockReturnValue({
-        viewByProject: {},
-        sessionByProject: { [PROJECT_A]: SESSION_A, "proj-other": "session-other" },
-        featureFlags: FEATURE_FLAGS_ENABLED,
-        setCurrentView: setCurrentViewMock,
-      });
-
-      navigateToIdeationSession(SESSION_B);
-
-      const args = mockUiSetState.mock.calls[0][0] as Record<string, unknown>;
-      const sbp = args.sessionByProject as Record<string, string>;
-      expect(sbp[PROJECT_A]).toBe(SESSION_A);
-      expect(sbp["proj-other"]).toBe("session-other");
-      expect(sbp[PROJECT_B]).toBe(SESSION_B);
-    });
+    expect(setCurrentViewMock).toHaveBeenCalledWith("agents");
+    expect(toastInfoMock).toHaveBeenCalledWith(
+      "This ideation session is no longer linked to an Agent workspace.",
+    );
+    expect(selectConversationMock).not.toHaveBeenCalled();
+    expect(setActiveConversationMock).not.toHaveBeenCalled();
+    expect(setFocusedProjectMock).not.toHaveBeenCalled();
+    expect(mockUiSetState).not.toHaveBeenCalled();
+    expect(selectProjectMock).not.toHaveBeenCalled();
   });
 
-  // --------------------------------------------------------------------------
-  // Same-project navigation
-  // --------------------------------------------------------------------------
-
-  describe("same-project navigation", () => {
-    it("calls setCurrentView('ideation') for a session in the active project", () => {
-      navigateToIdeationSession(SESSION_A);
-
-      expect(setCurrentViewMock).toHaveBeenCalledOnce();
-      expect(setCurrentViewMock).toHaveBeenCalledWith("ideation");
+  it("uses backend ownership when a cached Agent target is stale", async () => {
+    cacheLinkedConversation(SESSION_A, "conversation-stale", PROJECT_A);
+    resolveIdeationWorkspaceMock.mockResolvedValue({
+      projectId: PROJECT_B,
+      conversationId: "conversation-authoritative",
     });
 
-    it("calls setActiveSession with the sessionId for a session in the active project", () => {
-      navigateToIdeationSession(SESSION_A);
+    await expect(openIdeationInAgents(SESSION_A)).resolves.toBe(true);
 
-      expect(setActiveSessionMock).toHaveBeenCalledOnce();
-      expect(setActiveSessionMock).toHaveBeenCalledWith(SESSION_A);
-    });
-
-    it("does NOT call selectProject for same-project navigation", () => {
-      navigateToIdeationSession(SESSION_A);
-
-      expect(selectProjectMock).not.toHaveBeenCalled();
-    });
-
-    it("does NOT call useUiStore.setState for same-project navigation", () => {
-      navigateToIdeationSession(SESSION_A);
-
-      expect(mockUiSetState).not.toHaveBeenCalled();
-    });
+    expect(resolveIdeationWorkspaceMock).toHaveBeenCalledWith(SESSION_A);
+    expect(selectConversationMock).toHaveBeenCalledWith(
+      PROJECT_B,
+      "conversation-authoritative",
+    );
+    expect(selectConversationMock).not.toHaveBeenCalledWith(
+      PROJECT_A,
+      CONVERSATION_A,
+    );
+    expect(selectConversationMock).not.toHaveBeenCalledWith(
+      PROJECT_A,
+      "conversation-stale",
+    );
   });
 
-  // --------------------------------------------------------------------------
-  // Standalone Ideation disabled
-  // --------------------------------------------------------------------------
+  it("does not use an invalid Agent target after backend resolution fails", async () => {
+    cacheLinkedConversation(SESSION_A, "conversation-invalid", PROJECT_A);
+    await expect(openIdeationInAgents(SESSION_A)).resolves.toBe(false);
 
-  describe("when standalone Ideation is disabled", () => {
-    beforeEach(() => {
-      mockUiGetState.mockReturnValue({
-        viewByProject: {},
-        sessionByProject: {},
-        featureFlags: FEATURE_FLAGS_IDEATION_DISABLED,
-        setCurrentView: setCurrentViewMock,
-      });
-    });
+    expect(resolveIdeationWorkspaceMock).toHaveBeenCalledWith(SESSION_A);
+    expect(setCurrentViewMock).toHaveBeenCalledWith("agents");
+    expect(selectConversationMock).not.toHaveBeenCalled();
+    expect(setActiveConversationMock).not.toHaveBeenCalled();
+  });
+});
 
-    it("routes same-project legacy session links to Agents", () => {
-      navigateToIdeationSession(SESSION_A);
+describe("navigateToAgentConversation", () => {
+  it("selects the exact conversation and shows Agents", () => {
+    navigateToAgentConversation(PROJECT_A, CONVERSATION_A);
 
-      expect(setFocusedProjectMock).toHaveBeenCalledWith(PROJECT_A);
-      expect(setCurrentViewMock).toHaveBeenCalledWith("agents");
-      expect(setActiveSessionMock).not.toHaveBeenCalled();
-    });
-
-    it("selects a cached linked Agent conversation and opens the plan artifact tab", () => {
-      cacheLinkedConversation(SESSION_A, CONVERSATION_A, PROJECT_A);
-
-      navigateToIdeationSession(SESSION_A);
-
-      expect(selectConversationMock).toHaveBeenCalledWith(PROJECT_A, CONVERSATION_A);
-      expect(setArtifactTabMock).toHaveBeenCalledWith(CONVERSATION_A, "plan");
-      expect(setCurrentViewMock).toHaveBeenCalledWith("agents");
-      expect(setFocusedProjectMock).not.toHaveBeenCalled();
-    });
-
-    it("pre-writes Agents as the cross-project restore view", () => {
-      navigateToIdeationSession(SESSION_B);
-
-      expect(setFocusedProjectMock).toHaveBeenCalledWith(PROJECT_B);
-      expect(mockUiSetState).toHaveBeenCalledOnce();
-      const args = mockUiSetState.mock.calls[0][0] as Record<string, unknown>;
-      expect((args.viewByProject as Record<string, string>)[PROJECT_B]).toBe("agents");
-      expect(args.sessionByProject).toBeUndefined();
-      expect(selectProjectMock).toHaveBeenCalledWith(PROJECT_B);
-      expect(setCurrentViewMock).not.toHaveBeenCalled();
-    });
-
-    it("falls back to Agents for unknown sessions", () => {
-      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-
-      navigateToIdeationSession("unknown-session");
-
-      expect(setCurrentViewMock).toHaveBeenCalledWith("agents");
-      expect(setActiveSessionMock).not.toHaveBeenCalled();
-
-      warnSpy.mockRestore();
-    });
+    expect(selectConversationMock).toHaveBeenCalledWith(PROJECT_A, CONVERSATION_A);
+    expect(setActiveConversationMock).toHaveBeenCalledWith(
+      `project:${PROJECT_A}`,
+      CONVERSATION_A,
+    );
+    expect(setCurrentViewMock).toHaveBeenCalledWith("agents");
   });
 
-  // --------------------------------------------------------------------------
-  // Missing session fallback
-  // --------------------------------------------------------------------------
+  it("switches projects before showing a cross-project conversation", () => {
+    navigateToAgentConversation(PROJECT_B, CONVERSATION_A);
 
-  describe("missing session fallback", () => {
-    it("falls through to setCurrentView + setActiveSession when session not in store", () => {
-      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-
-      navigateToIdeationSession("unknown-session");
-
-      expect(setCurrentViewMock).toHaveBeenCalledWith("ideation");
-      expect(setActiveSessionMock).toHaveBeenCalledWith("unknown-session");
-
-      warnSpy.mockRestore();
+    expect(selectConversationMock).toHaveBeenCalledWith(PROJECT_B, CONVERSATION_A);
+    expect(setActiveConversationMock).toHaveBeenCalledWith(
+      `project:${PROJECT_B}`,
+      CONVERSATION_A,
+    );
+    expect(mockUiSetState).toHaveBeenCalledWith({
+      viewByProject: { [PROJECT_B]: "agents" },
     });
-
-    it("emits console.warn when session not found in store", () => {
-      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-
-      navigateToIdeationSession("unknown-session");
-
-      expect(warnSpy).toHaveBeenCalledOnce();
-      expect(warnSpy.mock.calls[0][0]).toContain("unknown-session");
-
-      warnSpy.mockRestore();
-    });
-
-    it("does NOT call selectProject when session not found in store", () => {
-      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-
-      navigateToIdeationSession("unknown-session");
-
-      expect(selectProjectMock).not.toHaveBeenCalled();
-
-      warnSpy.mockRestore();
-    });
-
-    it("does NOT call useUiStore.setState when session not found in store", () => {
-      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-
-      navigateToIdeationSession("unknown-session");
-
-      expect(mockUiSetState).not.toHaveBeenCalled();
-
-      warnSpy.mockRestore();
-    });
+    expect(selectProjectMock).toHaveBeenCalledWith(PROJECT_B);
+    expect(setCurrentViewMock).not.toHaveBeenCalled();
   });
 
-  // --------------------------------------------------------------------------
-  // No active project
-  // --------------------------------------------------------------------------
+  it("opens a standalone conversation without inventing project ownership", () => {
+    navigateToAgentConversation(null, CONVERSATION_A);
 
-  describe("no active project", () => {
-    beforeEach(() => {
-      mockProjectGetState.mockReturnValue({
-        activeProjectId: null,
-        selectProject: selectProjectMock,
-      });
+    expect(selectConversationMock).toHaveBeenCalledWith(null, CONVERSATION_A);
+    expect(setActiveConversationMock).toHaveBeenCalledWith(
+      `standalone:${CONVERSATION_A}`,
+      CONVERSATION_A,
+    );
+    expect(selectProjectMock).not.toHaveBeenCalled();
+    expect(mockUiSetState).not.toHaveBeenCalled();
+    expect(setCurrentViewMock).toHaveBeenCalledWith("agents");
+  });
+});
+
+describe("navigateToAgentPlan", () => {
+  it("opens the exact conversation's Plan artifact", () => {
+    useAgentArtifactUiStore.getState().setArtifactState(CONVERSATION_A, {
+      isOpen: false,
+      activeTab: "tasks",
+      taskMode: "kanban",
+      hiddenTabs: ["plan"],
     });
 
-    it("navigates directly when activeProjectId is null (session in some project)", () => {
-      navigateToIdeationSession(SESSION_B);
+    navigateToAgentPlan(PROJECT_A, CONVERSATION_A);
 
-      expect(setCurrentViewMock).toHaveBeenCalledWith("ideation");
-      expect(setActiveSessionMock).toHaveBeenCalledWith(SESSION_B);
+    expect(
+      useAgentArtifactUiStore.getState().artifactByConversationId[CONVERSATION_A],
+    ).toEqual({
+      isOpen: true,
+      activeTab: "plan",
+      taskMode: "kanban",
+      hiddenTabs: [],
+    });
+    expect(setArtifactTabMock).toHaveBeenCalledWith(CONVERSATION_A, "plan");
+    expect(selectConversationMock).toHaveBeenCalledWith(PROJECT_A, CONVERSATION_A);
+    expect(setActiveConversationMock).toHaveBeenCalledWith(
+      `project:${PROJECT_A}`,
+      CONVERSATION_A,
+    );
+    expect(setCurrentViewMock).toHaveBeenCalledWith("agents");
+  });
+});
+
+describe("navigateToAgentTask", () => {
+  it("opens Tasks in the requested mode and selects the linked task", () => {
+    navigateToAgentTask(PROJECT_A, CONVERSATION_A, "task-42", "graph");
+
+    expect(selectConversationMock).toHaveBeenCalledWith(PROJECT_A, CONVERSATION_A);
+    expect(setTaskArtifactModeMock).toHaveBeenCalledWith(CONVERSATION_A, "graph");
+    expect(focusTaskArtifactMock).toHaveBeenCalledWith(CONVERSATION_A, "task-42");
+    expect(setCurrentViewMock).toHaveBeenCalledWith("agents");
+  });
+});
+
+describe("latest-intent Agents resolution", () => {
+  it("opens a task after backend ownership resolves", async () => {
+    resolveTaskWorkspaceMock.mockResolvedValue({
+      projectId: PROJECT_B,
+      conversationId: "conversation-task",
+      title: "Task workspace",
     });
 
-    it("does NOT call selectProject when activeProjectId is null", () => {
-      navigateToIdeationSession(SESSION_B);
+    await expect(openTaskInAgents("task-42", "kanban")).resolves.toBe(true);
 
-      expect(selectProjectMock).not.toHaveBeenCalled();
+    expect(setTaskArtifactModeMock).toHaveBeenCalledWith(
+      "conversation-task",
+      "kanban",
+    );
+    expect(focusTaskArtifactMock).toHaveBeenCalledWith(
+      "conversation-task",
+      "task-42",
+    );
+  });
+
+  it("uses backend ownership when caller-supplied task hints are mismatched", async () => {
+    resolveTaskWorkspaceMock.mockResolvedValue({
+      projectId: PROJECT_B,
+      conversationId: "conversation-authoritative-task",
+      title: "Authoritative task workspace",
     });
+
+    await expect(
+      openTaskInAgents("task-42", "kanban", {
+        projectId: PROJECT_A,
+        conversationId: CONVERSATION_A,
+      }),
+    ).resolves.toBe(true);
+
+    expect(resolveTaskWorkspaceMock).toHaveBeenCalledWith("task-42");
+    expect(selectConversationMock).toHaveBeenCalledWith(
+      PROJECT_B,
+      "conversation-authoritative-task",
+    );
+    expect(selectConversationMock).not.toHaveBeenCalledWith(
+      PROJECT_A,
+      CONVERSATION_A,
+    );
+  });
+
+  it("shows Agents guidance without replacing selection when task ownership is missing", async () => {
+    await expect(
+      openTaskInAgents("task-missing", "graph", {
+        projectId: PROJECT_A,
+        conversationId: CONVERSATION_A,
+      }),
+    ).resolves.toBe(false);
+
+    expect(setCurrentViewMock).toHaveBeenCalledWith("agents");
+    expect(toastInfoMock).toHaveBeenCalledWith(
+      "Open the linked Agent conversation to view this task.",
+    );
+    expect(selectConversationMock).not.toHaveBeenCalled();
+    expect(setActiveConversationMock).not.toHaveBeenCalled();
+    expect(setTaskArtifactModeMock).not.toHaveBeenCalled();
+    expect(focusTaskArtifactMock).not.toHaveBeenCalled();
+  });
+
+  it("uses the same fail-closed Agents behavior when task ownership lookup fails", async () => {
+    resolveTaskWorkspaceMock.mockRejectedValueOnce(new Error("offline"));
+
+    await expect(openTaskInAgents("task-error", "kanban")).resolves.toBe(false);
+
+    expect(setCurrentViewMock).toHaveBeenCalledWith("agents");
+    expect(toastInfoMock).toHaveBeenCalledWith(
+      "Open the linked Agent conversation to view this task.",
+    );
+    expect(selectConversationMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects an older slow resolution after a newer navigation intent", async () => {
+    let resolveFirst: ((value: unknown) => void) | undefined;
+    let resolveSecond: ((value: unknown) => void) | undefined;
+    resolveTaskWorkspaceMock
+      .mockImplementationOnce(
+        () => new Promise((resolve) => { resolveFirst = resolve; }),
+      )
+      .mockImplementationOnce(
+        () => new Promise((resolve) => { resolveSecond = resolve; }),
+      );
+
+    const first = openTaskInAgents("task-first", "graph");
+    const second = openTaskInAgents("task-second", "graph");
+    resolveSecond?.({
+      projectId: PROJECT_B,
+      conversationId: "conversation-second",
+      title: "Second",
+    });
+    await expect(second).resolves.toBe(true);
+    resolveFirst?.({
+      projectId: PROJECT_A,
+      conversationId: "conversation-first",
+      title: "First",
+    });
+    await expect(first).resolves.toBe(false);
+
+    expect(focusTaskArtifactMock).toHaveBeenCalledWith(
+      "conversation-second",
+      "task-second",
+    );
+    expect(focusTaskArtifactMock).not.toHaveBeenCalledWith(
+      "conversation-first",
+      "task-first",
+    );
+  });
+
+  it("lets a newer ideation navigation supersede a slow task lookup", async () => {
+    let resolveTask: ((value: {
+      projectId: string;
+      conversationId: string;
+      title: string;
+    }) => void) | undefined;
+    resolveTaskWorkspaceMock.mockImplementationOnce(
+      () => new Promise((resolve) => { resolveTask = resolve; }),
+    );
+    const taskNavigation = openTaskInAgents("task-slow", "graph");
+    resolveIdeationWorkspaceMock.mockResolvedValueOnce({
+      projectId: PROJECT_A,
+      conversationId: "conversation-plan",
+    });
+    await expect(openIdeationInAgents(SESSION_A)).resolves.toBe(true);
+    resolveTask?.({
+      projectId: PROJECT_B,
+      conversationId: "conversation-task",
+      title: "Slow task",
+    });
+    await expect(taskNavigation).resolves.toBe(false);
+
+    expect(setArtifactTabMock).toHaveBeenCalledWith("conversation-plan", "plan");
+    expect(focusTaskArtifactMock).not.toHaveBeenCalledWith(
+      "conversation-task",
+      "task-slow",
+    );
+  });
+
+  it("lets direct Agent navigation supersede a slow ideation lookup", async () => {
+    let resolveIdeation: ((value: {
+      projectId: string;
+      conversationId: string;
+    }) => void) | undefined;
+    resolveIdeationWorkspaceMock.mockImplementationOnce(
+      () => new Promise((resolve) => { resolveIdeation = resolve; }),
+    );
+
+    const ideationNavigation = openIdeationInAgents("session-slow");
+    navigateToAgentConversation(PROJECT_A, "conversation-direct");
+    resolveIdeation?.({
+      projectId: PROJECT_B,
+      conversationId: "conversation-stale-plan",
+    });
+    await expect(ideationNavigation).resolves.toBe(false);
+
+    expect(selectConversationMock).toHaveBeenCalledTimes(1);
+    expect(selectConversationMock).toHaveBeenCalledWith(
+      PROJECT_A,
+      "conversation-direct",
+    );
+    expect(setArtifactTabMock).not.toHaveBeenCalledWith(
+      "conversation-stale-plan",
+      "plan",
+    );
+    expect(toastInfoMock).not.toHaveBeenCalled();
   });
 });

@@ -103,6 +103,36 @@ describe("useAgentSidebarRunningStates", () => {
     expect(state.agentStatus[idleStoreKey]).toBeUndefined();
   });
 
+  it("rehydrates standalone rows into the standalone store-key family", async () => {
+    const standaloneConversation = conversation("standalone-1", {
+      contextType: "standalone",
+      contextId: "standalone-1",
+      projectId: null,
+    });
+    mockGetAgentConversationRuntimeStatuses.mockResolvedValueOnce({
+      "standalone-1": {
+        conversationId: "standalone-1",
+        isRunning: true,
+        agentStatus: "generating",
+        primarySource: "workspace",
+        summaryLabel: "Agent running",
+        items: [],
+      },
+    });
+
+    renderHook(() =>
+      useAgentSidebarRunningStates([standaloneConversation], true),
+    );
+    await act(async () => {});
+
+    expect(mockGetAgentConversationRuntimeStatuses).toHaveBeenCalledWith([
+      "standalone-1",
+    ]);
+    expect(
+      useChatStore.getState().activeConversationIds["standalone:standalone-1"],
+    ).toBe("standalone-1");
+  });
+
   it("rehydrates retained idle sidebar rows as waiting for input", async () => {
     const waitingConversation = conversation("conv-waiting");
     mockGetAgentConversationRuntimeStatuses.mockResolvedValueOnce({

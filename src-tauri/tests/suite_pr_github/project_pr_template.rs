@@ -125,7 +125,10 @@ async fn write_pr_template_creates_parent_and_overwrites_exact_content() {
         std::fs::read_to_string(template_path(root.path())).unwrap(),
         first
     );
-    assert_eq!(actual_template_names(root.path()), ["pull_request_template.md"]);
+    assert_eq!(
+        actual_template_names(root.path()),
+        ["pull_request_template.md"]
+    );
 
     let second = "";
     write_pr_template_for_state(&project_id, second, &state)
@@ -152,7 +155,10 @@ async fn write_pr_template_overwrites_existing_uppercase_filename() {
         std::fs::read_to_string(uppercase_template_path(root.path())).unwrap(),
         "New\n"
     );
-    assert_eq!(actual_template_names(root.path()), ["PULL_REQUEST_TEMPLATE.md"]);
+    assert_eq!(
+        actual_template_names(root.path()),
+        ["PULL_REQUEST_TEMPLATE.md"]
+    );
 }
 
 #[test]

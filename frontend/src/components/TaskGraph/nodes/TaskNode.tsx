@@ -16,6 +16,7 @@ import { Handle, Position, type NodeProps, type Node } from "@xyflow/react";
 import { useScaledNodeDimensions } from "./nodeStyles";
 import { TaskNodeContextMenu } from "./TaskNodeContextMenu";
 import { useStepProgress } from "@/hooks/useTaskSteps";
+import { getStepProgressDisplay } from "@/types/task-step";
 import type { InternalStatus } from "@/types/status";
 import { TaskStatusBadge } from "@/components/tasks/TaskBoard/TaskStatusBadge";
 import { getBaseCardStyles } from "@/components/tasks/TaskBoard/TaskCard.utils";
@@ -164,6 +165,17 @@ function TaskNodeComponent({ data, selected }: NodeProps<TaskNodeType>) {
   const cardSurface = getBaseCardStyles(internalStatus as InternalStatus, false, false);
   const { nodeWidth, nodeHeight } = useScaledNodeDimensions();
   const { data: stepProgress } = useStepProgress(taskId);
+  const stepProgressDisplay = stepProgress ? getStepProgressDisplay(stepProgress) : null;
+  const stepProgressCompletedWidth = Math.max(
+    0,
+    Math.min(100, stepProgressDisplay?.completedPercent ?? 0)
+  );
+  const stepProgressActiveWidth = Math.max(
+    stepProgressCompletedWidth,
+    Math.min(100, stepProgressDisplay?.activePercent ?? stepProgressCompletedWidth)
+  );
+  const stepProgressActiveSegmentWidth =
+    stepProgressActiveWidth - stepProgressCompletedWidth;
   const isTerminalComplete = internalStatus === "merged" || internalStatus === "approved";
 
   // Create a minimal task-like object for the context menu
@@ -363,25 +375,37 @@ function TaskNodeComponent({ data, selected }: NodeProps<TaskNodeType>) {
         </div>
 
         {/* Progress bar */}
-        {stepProgress && stepProgress.total > 0 && (
+        {stepProgress && stepProgressDisplay && stepProgressDisplay.total > 0 && (
           <div className="flex items-center gap-2 mt-1">
             <div
-              className="flex-1 h-1 rounded-full overflow-hidden"
+              className="relative flex-1 h-1 rounded-full overflow-hidden"
               style={{ backgroundColor: "var(--border-subtle)" }}
             >
               <div
-                className="h-full rounded-full transition-all duration-300"
+                className="absolute inset-y-0 left-0 rounded-full transition-all duration-300"
                 style={{
-                  width: `${Math.round(((stepProgress.completed + stepProgress.skipped) / stepProgress.total) * 100)}%`,
+                  width: `${stepProgressCompletedWidth}%`,
                   backgroundColor: "var(--text-muted)",
                 }}
               />
+              {stepProgress.inProgress > 0 && stepProgressActiveSegmentWidth > 0 && (
+                <div
+                  className="step-progress-active-segment absolute inset-y-0 rounded-full transition-all duration-300"
+                  data-animated="true"
+                  aria-hidden="true"
+                  style={{
+                    left: `${stepProgressCompletedWidth}%`,
+                    width: `${stepProgressActiveSegmentWidth}%`,
+                    backgroundColor: "var(--text-muted)",
+                  }}
+                />
+              )}
             </div>
             <span
               className="text-[0.625rem] tabular-nums shrink-0"
               style={{ color: "var(--text-muted)" }}
             >
-              {Math.round(((stepProgress.completed + stepProgress.skipped) / stepProgress.total) * 100)}%
+              {Math.round(stepProgressDisplay.completedPercent)}%
             </span>
           </div>
         )}

@@ -5,56 +5,68 @@ import {
   useMemo,
   useRef,
   useState,
-  type Dispatch,
-  type MutableRefObject,
-  type SetStateAction,
 } from "react";
-import { PauseCircle, Sparkles } from "lucide-react";
+import { Lock, PauseCircle, Sparkles } from "lucide-react";
 
 import type {
-  AgentConversationBranchMode,
+
   AgentConversationBaseSelection,
   AgentConversationWorkspaceMode,
   ComposerArtifactReference,
   ComposerIntegrationReference,
   ComposerProjectReference,
+  CapabilityIntent,
+  TeamIntent,
 } from "@/api/chat";
-import { ticketingApi, type TicketRef } from "@/api/ticketing";
+import { mcpPolicyApi } from "@/api/mcp-policy";
+import type { AutomationAuthoringMode } from "@/api/automations";
+import type { ComposerRoleDefault } from "@/api/manual-role-defaults.types";
 import type { Project } from "@/types/project";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
+import { useFeatureFlags } from "@/hooks/useFeatureFlags";
+import { useStartComposerRoleDefault } from "@/hooks/useManualRoleDefaults";
+import { useConfirmation } from "@/hooks/useConfirmation";
+import { usePersonas } from "@/hooks/usePersonas";
+import {
+  PERSONA_UNAVAILABLE_PREFIX,
+  isPersonaUnavailableError,
+} from "@/lib/personaErrors";
 import { withAlpha } from "@/lib/theme-colors";
 import {
   useAgentSessionStore,
   type AgentEffort,
   type AgentProvider,
+  type AgentRuntimeProviderContext,
   type AgentRuntimeSelection,
 } from "@/stores/agentSessionStore";
 import {
   selectComposerDraft,
   useChatStore,
   type ChatComposerAttachment,
+  type ChatComposerFolder,
 } from "@/stores/chatStore";
 import { BranchBasePicker } from "@/components/shared/BranchBasePicker";
+import { useStartFromBaseSelection } from "./useStartFromBaseSelection";
 import {
-  fallbackBranchBaseOptions,
-  loadBranchBaseOptions,
-  loadPullRequestBaseOptions,
-  ticketAssociationBranchBaseOption,
-  ticketCanonicalBranchBaseOption,
-  ticketProviderForComposerReference,
-  type BranchBaseOption,
-} from "@/components/shared/branchBaseOptions";
-import type { AgentModelRegistry } from "@/lib/agent-models";
+  agentModelSupportsCodexUltra,
+  type AgentModelRegistry,
+} from "@/lib/agent-models";
 import {
   CODEX_FAST_MODE_DESCRIPTION,
   codexFastModeAvailabilityForProvider,
 } from "@/lib/codex-fast-mode";
 import {
-  AgentComposerProjectCreateButton,
   AgentComposerProjectLine,
   AgentComposerSurface,
   type AgentComposerSurfaceProps,
 } from "./AgentComposerSurface";
+import { buildCapabilityOptions } from "./composer/runtime/capabilityOptions";
+import {
+  buildAgentStartConversationRetryInput,
+  parseLinkedSetupFailure,
+  parseMcpSetupPreflightFailure,
+  type McpSetupPreflightFailureDetails,
+} from "./agentStartErrors";
 import { AgentProviderSettingsButton } from "./AgentProviderSettingsButton";
 import type { AgentQueueHaltState } from "./agentExecutionPause";
 import {
@@ -64,6 +76,7 @@ import {
   agentModelOptions,
   defaultEffortForModel,
   defaultModelForProvider,
+  normalizeRuntimeForPersistence,
   normalizeRuntimeSelection,
 } from "./agentOptions";
 import {
@@ -73,7 +86,14 @@ import {
   supportedEffortsForProvider,
   supportedModelAliasesForProvider,
 } from "./agentProviderAvailability";
+import {
+  PRIMARY_AGENT_START_MODE_IDS,
+  buildAgentStartModeOptions,
+} from "./agentStartModeOptions";
 import { useUiStore } from "@/stores/uiStore";
+import { PersonaUnavailableNotice } from "@/components/personas/PersonaUnavailableNotice";
+import { PersonaBuildBanner } from "./PersonaBuildBanner";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 interface PendingAttachment {
   id: string;
@@ -81,6 +101,27 @@ interface PendingAttachment {
   fileName: string;
   fileSize: number;
   mimeType?: string;
+}
+
+interface AgentsStartComposerSubmitInput {
+  projectId: string | null;
+  content: string;
+  runtime: AgentRuntimeSelection;
+  runtimeProviderContext?: AgentRuntimeProviderContext;
+  useRoleDefault?: boolean;
+  mode: AgentConversationWorkspaceMode;
+  automationAuthoringMode?: AutomationAuthoringMode;
+  base: AgentConversationBaseSelection | null;
+  files: File[];
+  folders?: ChatComposerFolder[];
+  codexFastMode?: boolean | null;
+  personaId?: string | null;
+  capabilityIntent?: CapabilityIntent | null;
+  teamIntent?: TeamIntent | null;
+  sourcePersonaId?: string;
+  composerArtifactReferences?: ComposerArtifactReference[] | undefined;
+  composerProjectReferences?: ComposerProjectReference[] | undefined;
+  composerIntegrationReferences?: ComposerIntegrationReference[] | undefined;
 }
 
 interface AgentsStartComposerProps {
@@ -91,20 +132,12 @@ interface AgentsStartComposerProps {
   isLoadingProjects: boolean;
   isSubmitting: boolean;
   modelRegistry: AgentModelRegistry;
-  onCreateProject: () => void;
-  onRuntimePreferenceChange?: (projectId: string, runtime: AgentRuntimeSelection) => void;
-  onSubmit: (input: {
-    projectId: string;
-    content: string;
-    runtime: AgentRuntimeSelection;
-    mode: AgentConversationWorkspaceMode;
-    base: AgentConversationBaseSelection | null;
-    files: File[];
-    codexFastMode?: boolean | null;
-    composerArtifactReferences?: ComposerArtifactReference[] | undefined;
-    composerProjectReferences?: ComposerProjectReference[] | undefined;
-    composerIntegrationReferences?: ComposerIntegrationReference[] | undefined;
-  }) => Promise<void>;
+  onRuntimePreferenceChange?: (
+    projectId: string,
+    mode: AgentConversationWorkspaceMode,
+    runtime: AgentRuntimeSelection,
+  ) => void;
+  onSubmit: (input: AgentsStartComposerSubmitInput) => Promise<void>;
 }
 
 const MAX_FILES = 5;
@@ -128,23 +161,73 @@ const AGENTS_START_COMPOSER_DRAFT_KEY = "agents:start";
 
 type StarterTypingPhase = "holding" | "typing" | "deleting";
 
+type StartComposerError =
+  | { kind: "plain"; message: string }
+  | { kind: "linked_setup"; message: string }
+  | { kind: "mcp_setup"; details: McpSetupPreflightFailureDetails }
+  | { kind: "persona_unavailable"; message: string };
+
 function isPendingAttachment(
   attachment: ChatComposerAttachment,
 ): attachment is PendingAttachment {
   return attachment.file !== undefined;
 }
 
-const AGENT_MODE_OPTIONS: Array<{
-  id: AgentConversationWorkspaceMode;
-  label: string;
-  description: string;
-}> = [
-  { id: "edit", label: "Agent", description: "Build, change, and review code in a branch." },
-  { id: "review_pr", label: "Review PR", description: "Review a linked pull request." },
-  { id: "plan", label: "Plan", description: "Draft and refine a plan before execution." },
-  { id: "chat", label: "Chat", description: "Ask read-only questions about the project." },
-  { id: "ideation", label: "Ideation", description: "Plan work before creating tasks." },
-];
+function plainStartComposerError(message: string): StartComposerError {
+  return { kind: "plain", message };
+}
+
+function copyRuntimeProviderValues(
+  values: readonly string[] | null,
+): string[] | null {
+  return values ? [...values] : null;
+}
+
+function startComposerErrorFromUnknown(error: unknown): StartComposerError {
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === "string"
+        ? error
+        : "Failed to start agent conversation";
+  if (isPersonaUnavailableError(message)) {
+    return {
+      kind: "persona_unavailable",
+      message: message
+        .slice(PERSONA_UNAVAILABLE_PREFIX.length)
+        .replace(/\]$/, "")
+        .trim(),
+    };
+  }
+  const linked = parseLinkedSetupFailure(error);
+  if (linked) {
+    return { kind: "linked_setup", message: linked.message };
+  }
+  const mcpSetup = parseMcpSetupPreflightFailure(error);
+  if (mcpSetup) {
+    return { kind: "mcp_setup", details: mcpSetup };
+  }
+  return plainStartComposerError(message);
+}
+
+function composerIntegrationReferencesEqual(
+  left: ComposerIntegrationReference[],
+  right: ComposerIntegrationReference[],
+): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+  return left.every((reference, index) => {
+    const other = right[index];
+    return (
+      other !== undefined &&
+      reference.provider === other.provider &&
+      reference.kind === other.kind &&
+      reference.id === other.id &&
+      reference.key === other.key
+    );
+  });
+}
 
 export function AgentsStartComposer({
   projects,
@@ -154,34 +237,29 @@ export function AgentsStartComposer({
   isLoadingProjects,
   isSubmitting,
   modelRegistry,
-  onCreateProject,
   onRuntimePreferenceChange,
   onSubmit,
 }: AgentsStartComposerProps) {
-  const [projectId, setProjectId] = useState(defaultProjectId ?? "");
-  const [provider, setProvider] = useState<AgentProvider>(
-    normalizeRuntimeSelection(defaultRuntime).provider
+  const defaultStartMode = useAgentSessionStore((s) => s.defaultStartMode);
+  const initialRuntime = normalizeRuntimeForPersistence(
+    defaultRuntime,
+    modelRegistry,
   );
-  const [modelId, setModelId] = useState(normalizeRuntimeSelection(defaultRuntime).modelId);
-  const [effort, setEffort] = useState<AgentEffort>(
-    normalizeRuntimeSelection(defaultRuntime).effort
+  const [projectId, setProjectId] = useState<string | null>(defaultProjectId);
+  const [projectLocked, setProjectLocked] = useState(false);
+  const [sourcePersonaId, setSourcePersonaId] = useState<string | null>(null);
+  const [sourcePersonaName, setSourcePersonaName] = useState<string | null>(null);
+  const [provider, setProvider] = useState<AgentProvider>(initialRuntime.provider);
+  const [modelId, setModelId] = useState(initialRuntime.modelId);
+  const [effort, setEffort] = useState<AgentEffort>(initialRuntime.effort);
+  const [mode, setMode] = useState<AgentConversationWorkspaceMode>(
+    defaultStartMode,
   );
-  const [mode, setMode] = useState<AgentConversationWorkspaceMode>("edit");
-  const [startFromOptions, setStartFromOptions] = useState<BranchBaseOption[]>([]);
-  const [pullRequestStartFromOptions, setPullRequestStartFromOptions] = useState<
-    BranchBaseOption[]
-  >([]);
-  const [ticketStartFromOption, setTicketStartFromOption] =
-    useState<BranchBaseOption | null>(null);
-  const [selectedStartFromKey, setSelectedStartFromKey] = useState("");
-  const [isStartFromIsolatedBranch, setIsStartFromIsolatedBranch] =
-    useState(false);
-  const [isLoadingStartFrom, setIsLoadingStartFrom] = useState(false);
-  const [isLoadingPullRequestStartFrom, setIsLoadingPullRequestStartFrom] = useState(false);
-  const [pullRequestStartFromMessage, setPullRequestStartFromMessage] =
-    useState<string | null>(null);
-  const [hydratedStartFromProjectId, setHydratedStartFromProjectId] =
-    useState<string | null>(null);
+  const [capabilityMode, setCapabilityMode] = useState<
+    CapabilityIntent["coordinationMode"]
+  >("solo");
+  const [automationAuthoringMode, setAutomationAuthoringMode] =
+    useState<AutomationAuthoringMode | null>(null);
   const [isComposerActive, setIsComposerActive] = useState(false);
   const [draftProjectReferences, setDraftProjectReferences] = useState<
     ComposerProjectReference[]
@@ -195,32 +273,81 @@ export function AgentsStartComposer({
   const [draftArtifactReferences, setDraftArtifactReferences] = useState<
     ComposerArtifactReference[]
   >([]);
+  const clickupTicketToken = useMemo(
+    () => clickupTokenFromIntegrationReferences(draftIntegrationReferences),
+    [draftIntegrationReferences],
+  );
   const [codexFastModeOverride, setCodexFastModeOverride] = useState<
     boolean | null
   >(null);
-  const [error, setError] = useState<string | null>(null);
-  const startFromRequestRef = useRef(0);
-  const pullRequestStartFromRequestRef = useRef(0);
-  const ticketStartFromRequestRef = useRef(0);
-  const userSelectedStartFromRef = useRef(false);
+  const [isResettingRoleDefault, setIsResettingRoleDefault] = useState(false);
+  const [personaId, setPersonaId] = useState<string | null>(null);
+  const [roleOverrideKey, setRoleOverrideKey] = useState<string | null>(null);
+  const [error, setError] = useState<StartComposerError | null>(null);
+  const [isRepairingMcp, setIsRepairingMcp] = useState(false);
+  const isStartBusy = isRepairingMcp || isSubmitting;
+  const lastStartAttemptRef = useRef<AgentsStartComposerSubmitInput | null>(null);
   const openModal = useUiStore((s) => s.openModal);
+  const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
+  const { data: featureFlags } = useFeatureFlags();
+  const { data: availablePersonas = [] } = usePersonas(
+    projectId
+      ? { type: "globalAndProject", projectId }
+      : { type: "globalOnly" },
+  );
+  const personaOptions = useMemo(
+    () => [
+      {
+        id: "none",
+        label: "No persona",
+        description: "Use the role's default instructions without a persona.",
+      },
+      ...availablePersonas
+        .filter(
+          (persona) =>
+            persona.status === "active" &&
+            (persona.projectId === null || persona.projectId === projectId),
+        )
+        .map((persona) => ({
+          id: persona.id,
+          label: persona.name,
+          description:
+            persona.projectId === null ? "Global persona" : "Project persona",
+        })),
+    ],
+    [availablePersonas, projectId],
+  );
+  const startModeOptions = useMemo(
+    () =>
+      buildAgentStartModeOptions({
+        autopilotEnabled: featureFlags.agentConversationAutopilot ?? false,
+      }),
+    [featureFlags.agentConversationAutopilot],
+  );
   const {
     settings: providerSettings,
     providers: configuredProviders,
     isLoading: isLoadingProviderSettings,
     isPlaceholderData: isPlaceholderProviderSettings,
   } = useHarnessProviders({ refreshRuntime: true });
-  const lastBranchBaseSelectionByProjectId = useAgentSessionStore(
-    (s) => s.lastBranchBaseSelectionByProjectId
+  const startConversationFailure = useAgentSessionStore(
+    (s) => s.startConversationFailure
   );
-  const setBranchBaseCacheForProject = useAgentSessionStore(
-    (s) => s.setBranchBaseCacheForProject
-  );
-  const setLastBranchBaseSelectionForProject = useAgentSessionStore(
-    (s) => s.setLastBranchBaseSelectionForProject
+  const setStartConversationFailure = useAgentSessionStore(
+    (s) => s.setStartConversationFailure
   );
   const lastModelEffortByProvider = useAgentSessionStore(
     (s) => s.lastModelEffortByProvider
+  );
+  const persistedRuntimeOverride = useAgentSessionStore((s) => {
+    if (!projectId) return undefined;
+    // Legacy project-scoped memory predates per-mode memory and was written by
+    // the edit-mode composer; it must never leak into other modes.
+    return s.lastRuntimeByProjectMode[`${projectId}:${mode}`] ??
+      (mode === "edit" ? s.lastRuntimeByProjectId[projectId] : undefined);
+  });
+  const clearLastRuntimeForProjectMode = useAgentSessionStore(
+    (s) => s.clearLastRuntimeForProjectMode,
   );
   const startConversationDraft = useAgentSessionStore(
     (s) => s.startConversationDraft
@@ -235,15 +362,25 @@ export function AgentsStartComposer({
   const setComposerDraftAttachments = useChatStore(
     (s) => s.setComposerDraftAttachments
   );
+  const setComposerDraftFolders = useChatStore((s) => s.setComposerDraftFolders);
   const clearComposerDraft = useChatStore((s) => s.clearComposerDraft);
   const content = startComposerDraft?.content ?? "";
   const attachments = useMemo(
     () => (startComposerDraft?.attachments ?? []).filter(isPendingAttachment),
     [startComposerDraft?.attachments]
   );
+  const folders = useMemo(
+    () => startComposerDraft?.folders ?? [],
+    [startComposerDraft?.folders]
+  );
 
   const providerSettingsReady =
     !isLoadingProviderSettings && !isPlaceholderProviderSettings;
+  const roleDefaultQuery = useStartComposerRoleDefault(projectId, mode);
+  const currentRoleKey = `${projectId}:${mode}`;
+  const hasLocalRoleOverride = roleOverrideKey === currentRoleKey;
+  const hasRoleOverride =
+    Boolean(persistedRuntimeOverride) || hasLocalRoleOverride;
   const providerOptions = useMemo(
     () =>
       buildAgentProviderAvailabilityOptions({
@@ -253,7 +390,7 @@ export function AgentsStartComposer({
     [configuredProviders, providerSettingsReady]
   );
   const normalizedRuntime = useMemo(() => {
-    const runtime = normalizeRuntimeSelection(
+    const runtime = normalizeRuntimeForPersistence(
       defaultRuntime ?? DEFAULT_AGENT_RUNTIME,
       modelRegistry
     );
@@ -309,14 +446,213 @@ export function AgentsStartComposer({
     provider === "codex" && codexFastModeAvailability.supported
       ? codexFastMode
       : false;
+  const codexUltraAvailable = agentModelSupportsCodexUltra(
+    provider,
+    modelId,
+    modelRegistry,
+    codexProviderSettings?.ultraSupportedModels,
+  );
+  const capabilityOptions = useMemo(() => {
+    return buildCapabilityOptions({
+      teamEnabled: featureFlags.agentConversationTeam,
+      workflowsEnabled: featureFlags.agentConversationWorkflows,
+      codexUltraAvailable,
+    });
+  }, [
+    codexUltraAvailable,
+    featureFlags.agentConversationTeam,
+    featureFlags.agentConversationWorkflows,
+  ]);
+
+  const runtimeForRoleDefault = useCallback(
+    (roleDefault: ComposerRoleDefault) => {
+      const nextProvider = toAgentProvider(roleDefault.value.provider);
+      if (!nextProvider) {
+        throw new Error(
+          `Unsupported provider in ${roleDefault.role} default: ${roleDefault.value.provider}`,
+        );
+      }
+      return normalizeRuntimeSelection(
+        {
+          provider: nextProvider,
+          modelId:
+            roleDefault.value.model ??
+            defaultModelForProvider(
+              nextProvider,
+              modelRegistry,
+              supportedModelAliasesForProvider(providerOptions, nextProvider),
+            ),
+          ...(roleDefault.value.effort
+            ? { effort: roleDefault.value.effort as AgentEffort }
+            : {}),
+        },
+        modelRegistry,
+        supportedEffortsForProvider(providerOptions, nextProvider),
+        supportedModelAliasesForProvider(providerOptions, nextProvider),
+      );
+    },
+    [modelRegistry, providerOptions],
+  );
+
+  const applyRoleDefault = useCallback(
+    (roleDefault: ComposerRoleDefault, preserveRuntime = false) => {
+      const nextRuntime = runtimeForRoleDefault(roleDefault);
+      if (!preserveRuntime) {
+        setProvider(nextRuntime.provider);
+        setModelId(nextRuntime.modelId);
+        setEffort(nextRuntime.effort);
+      }
+      setCodexFastModeOverride(
+        roleDefault.value.serviceTier === "provider_default"
+          ? null
+          : roleDefault.value.serviceTier === "fast",
+      );
+      const nextCapability = roleDefault.value.coordinationMode ?? "solo";
+      setCapabilityMode(
+        capabilityOptions.some((option) => option.id === nextCapability)
+          ? (nextCapability as CapabilityIntent["coordinationMode"])
+          : "solo",
+      );
+      setPersonaId(
+        featureFlags.agentPersonas ? roleDefault.value.personaId : null,
+      );
+    },
+    [
+      capabilityOptions,
+      featureFlags.agentPersonas,
+      runtimeForRoleDefault,
+    ],
+  );
+
+  useEffect(() => {
+    if (!roleDefaultQuery.data || hasLocalRoleOverride) {
+      return;
+    }
+    applyRoleDefault(roleDefaultQuery.data, Boolean(persistedRuntimeOverride));
+  }, [
+    applyRoleDefault,
+    hasLocalRoleOverride,
+    persistedRuntimeOverride,
+    roleDefaultQuery.data,
+  ]);
+
+  useEffect(() => {
+    const available = capabilityOptions.some(
+      (option) => option.id === capabilityMode,
+    );
+    if (!available) {
+      setCapabilityMode("solo");
+      if (capabilityMode !== "solo") {
+        setError(
+          plainStartComposerError(
+            "That capability is no longer available, so this draft was switched to Defaults.",
+          ),
+        );
+      }
+    }
+  }, [capabilityMode, capabilityOptions]);
+
   const hasSelectableProvider = providerOptions.some((option) => !option.disabled);
   const openProviderSettings = useCallback(() => {
     openModal("settings", { section: "providers" });
   }, [openModal]);
+  const clearStartError = useCallback(() => {
+    lastStartAttemptRef.current = null;
+    setStartConversationFailure(null);
+    setError(null);
+  }, [setStartConversationFailure]);
+  const activeProject = useMemo(
+    () => projects.find((project) => project.id === projectId) ?? null,
+    [projectId, projects]
+  );
+  const activeProjectId = activeProject?.id ?? null;
+  const activeProjectBaseBranch = activeProject?.baseBranch ?? null;
+  const activeProjectWorkingDirectory = activeProject?.workingDirectory ?? null;
+  const baseSelection = useStartFromBaseSelection({
+    activeProjectId,
+    activeProjectBaseBranch,
+    activeProjectWorkingDirectory,
+    clickupTicketToken,
+    mode,
+    onClearError: clearStartError,
+  });
+  const {
+    selectedStartFromKey,
+    selectedStartFromSelection,
+    handleStartFromChange,
+    ensureStartFromOptionsLoaded,
+    searchPullRequestStartFromOptions,
+    resolveBaseForSubmit,
+    setIsolatedBranch: setStartFromIsolatedBranch,
+    forceIsolatedBranch: forceStartFromIsolatedBranch,
+    resetExplicitSelection: resetStartFromSelection,
+  } = baseSelection;
+  const markRoleOverride = useCallback(() => {
+    setRoleOverrideKey(currentRoleKey);
+  }, [currentRoleKey]);
+  const handleCapabilityChange = useCallback(
+    async (next: CapabilityIntent["coordinationMode"]) => {
+      if (next === capabilityMode) {
+        return;
+      }
+      if (next === "codex_native_ultra") {
+        const confirmed = await confirm({
+          title: "Enable Codex Ultra?",
+          description:
+            "Ultra activates provider-native subagents plus maximum reasoning and can dramatically increase total usage. Select it only after considering the cost.",
+          confirmText: "Enable Ultra",
+        });
+        if (!confirmed) {
+          return;
+        }
+      }
+      clearStartError();
+      markRoleOverride();
+      setCapabilityMode(next);
+    },
+    [capabilityMode, clearStartError, confirm, markRoleOverride],
+  );
+  const openPersonaSettings = useCallback(() => {
+    openModal("settings", { section: "personas" });
+  }, [openModal]);
 
   useEffect(() => {
-    setProjectId(defaultProjectId ?? projects[0]?.id ?? "");
-  }, [defaultProjectId, projects]);
+    if (projectLocked) {
+      return;
+    }
+    setProjectId((currentProjectId) => {
+      if (currentProjectId === null && featureFlags.standaloneConversations) {
+        return null;
+      }
+      if (currentProjectId && projects.some((project) => project.id === currentProjectId)) {
+        return currentProjectId;
+      }
+      return defaultProjectId ?? projects[0]?.id ?? null;
+    });
+  }, [defaultProjectId, featureFlags.standaloneConversations, projectLocked, projects]);
+
+  useEffect(() => {
+    if (!featureFlags.standaloneConversations || projectId !== null) {
+      return;
+    }
+    setCapabilityMode("solo");
+    setPersonaId(null);
+    if (mode !== "chat" && mode !== "persona_builder") {
+      setMode("chat");
+      setAutomationAuthoringMode(null);
+      setError(
+        plainStartComposerError(
+          "Project-requiring modes are unavailable without a project. Switched to Ask.",
+        ),
+      );
+    }
+  }, [featureFlags.standaloneConversations, mode, projectId]);
+
+  useEffect(() => {
+    if (mode !== "persona_builder") return;
+    setCapabilityMode("solo");
+    setPersonaId(null);
+  }, [mode]);
 
   useEffect(() => {
     if (!startConversationDraft) {
@@ -327,25 +663,65 @@ export function AgentsStartComposer({
       return;
     }
     setProjectId(draft.projectId);
-    setComposerDraftContent(AGENTS_START_COMPOSER_DRAFT_KEY, draft.content);
+    setProjectLocked(draft.projectLocked ?? false);
+    setSourcePersonaId(draft.sourcePersonaId ?? null);
+    setSourcePersonaName(draft.sourcePersonaName ?? null);
+    setComposerDraftContent(AGENTS_START_COMPOSER_DRAFT_KEY, draft.content ?? "");
     setMode(draft.mode);
+    setAutomationAuthoringMode(draft.automationAuthoringMode ?? null);
     setDraftProjectReferences(draft.composerProjectReferences ?? []);
     setDraftIntegrationReferences(draft.composerIntegrationReferences ?? []);
     setComposerIntegrationReferences(draft.composerIntegrationReferences ?? []);
     setDraftArtifactReferences(draft.composerArtifactReferences ?? []);
-    setIsStartFromIsolatedBranch(false);
-    userSelectedStartFromRef.current = false;
+    resetStartFromSelection();
   }, [
     consumeStartConversationDraft,
+    resetStartFromSelection,
     setComposerDraftContent,
     startConversationDraft,
   ]);
 
   useEffect(() => {
+    if (!startConversationFailure) {
+      return;
+    }
+    const { retryInput } = startConversationFailure;
+    setProjectId(retryInput.projectId);
+    setProvider(retryInput.runtime.provider);
+    setModelId(retryInput.runtime.modelId);
+    setEffort(retryInput.runtime.effort);
+    setMode(retryInput.mode);
+    setAutomationAuthoringMode(retryInput.automationAuthoringMode ?? null);
+    if (retryInput.base) {
+      setStartFromIsolatedBranch(retryInput.base.branchMode === "isolated");
+    }
+    setError(
+      startConversationFailure.kind === "linked_setup"
+        ? {
+            kind: "linked_setup",
+            message: startConversationFailure.message,
+          }
+        : {
+            kind: "mcp_setup",
+            details: {
+              provider: startConversationFailure.provider,
+              serverId: startConversationFailure.serverId,
+              scope: startConversationFailure.scope,
+              conflictKind: startConversationFailure.conflictKind,
+              repairStatus: startConversationFailure.repairStatus,
+            },
+          },
+    );
+  }, [setStartFromIsolatedBranch, startConversationFailure]);
+
+  useEffect(() => {
+    if (roleDefaultQuery.data && !hasRoleOverride) {
+      return;
+    }
     setProvider(normalizedRuntime.provider);
     setModelId(normalizedRuntime.modelId);
     setEffort(normalizedRuntime.effort);
-  }, [normalizedRuntime]);
+  }, [hasRoleOverride, normalizedRuntime, roleDefaultQuery.data]);
 
   const modelOptions = useMemo(
     () =>
@@ -366,30 +742,6 @@ export function AgentsStartComposer({
       ),
     [modelId, modelRegistry, provider, selectedProviderSupportedEfforts]
   );
-  const activeProject = useMemo(
-    () => projects.find((project) => project.id === projectId) ?? null,
-    [projectId, projects]
-  );
-  const activeProjectId = activeProject?.id ?? null;
-  const activeProjectBaseBranch = activeProject?.baseBranch ?? null;
-  const activeProjectWorkingDirectory = activeProject?.workingDirectory ?? null;
-  const pullRequestOptionsWithTicketStartFrom = useMemo(() => {
-    if (!ticketStartFromOption) {
-      return pullRequestStartFromOptions;
-    }
-    return [
-      ticketStartFromOption,
-      ...pullRequestStartFromOptions.filter(
-        (option) => option.key !== ticketStartFromOption.key
-      ),
-    ];
-  }, [pullRequestStartFromOptions, ticketStartFromOption]);
-  const allStartFromOptions = useMemo(
-    () => [...startFromOptions, ...pullRequestOptionsWithTicketStartFrom],
-    [pullRequestOptionsWithTicketStartFrom, startFromOptions]
-  );
-  const selectedStartFrom =
-    allStartFromOptions.find((option) => option.key === selectedStartFromKey) ?? null;
   const reviewPrDefaultPrompt =
     mode === "review_pr" ? REVIEW_PR_DEFAULT_PROMPT : undefined;
   const isExecutionHalted = executionHaltState !== null;
@@ -399,25 +751,6 @@ export function AgentsStartComposer({
     executionHaltState === "stopped"
       ? "New prompts will queue until execution starts."
       : "New prompts will queue until execution resumes.";
-  const fallbackStartFrom = useMemo<AgentConversationBaseSelection | null>(() => {
-    if (!activeProject) {
-      return null;
-    }
-    const ref = activeProject.baseBranch ?? "main";
-    return {
-      kind: "project_default",
-      ref,
-      displayName: `Project default (${ref})`,
-    };
-  }, [activeProject]);
-  const selectedStartFromSelection =
-    selectedStartFrom?.selection ?? fallbackStartFrom;
-  const startFromForcesIsolatedBranch =
-    selectedStartFromSelection
-      ? startSelectionForcesIsolatedBranch(selectedStartFromSelection)
-      : false;
-  const effectiveStartFromIsolatedBranch =
-    startFromForcesIsolatedBranch || isStartFromIsolatedBranch;
 
   const persistRuntimePreference = useCallback(
     (nextProjectId: string, runtime: AgentRuntimeSelection) => {
@@ -426,6 +759,7 @@ export function AgentsStartComposer({
       }
       onRuntimePreferenceChange?.(
         nextProjectId,
+        mode,
         normalizeRuntimeSelection(
           runtime,
           modelRegistry,
@@ -434,7 +768,7 @@ export function AgentsStartComposer({
         )
       );
     },
-    [modelRegistry, onRuntimePreferenceChange, providerOptions]
+    [mode, modelRegistry, onRuntimePreferenceChange, providerOptions]
   );
 
   useEffect(() => {
@@ -451,25 +785,33 @@ export function AgentsStartComposer({
     setProvider(selectableRuntime.provider);
     setModelId(selectableRuntime.modelId);
     setEffort(selectableRuntime.effort);
-    persistRuntimePreference(projectId, selectableRuntime);
   }, [
     effort,
     modelId,
-    persistRuntimePreference,
-    projectId,
     provider,
     providerSettingsReady,
     selectableRuntime,
   ]);
 
   const handleProjectChange = useCallback(
-    (nextProjectId: string) => {
-      userSelectedStartFromRef.current = false;
-      setIsStartFromIsolatedBranch(false);
+    (nextProjectId: string | null) => {
+      if (projectLocked) return;
+      clearStartError();
+      resetStartFromSelection();
       setProjectId(nextProjectId);
-      persistRuntimePreference(nextProjectId, { provider, modelId, effort });
+      if (nextProjectId) {
+        persistRuntimePreference(nextProjectId, { provider, modelId, effort });
+      }
     },
-    [effort, modelId, persistRuntimePreference, provider]
+    [
+      clearStartError,
+      effort,
+      modelId,
+      persistRuntimePreference,
+      projectLocked,
+      provider,
+      resetStartFromSelection,
+    ]
   );
 
   const handleProviderChange = useCallback(
@@ -478,27 +820,49 @@ export function AgentsStartComposer({
       if (providerOptions.find((option) => option.id === nextProvider)?.disabled) {
         return;
       }
+      clearStartError();
+      markRoleOverride();
       const remembered = lastModelEffortByProvider[nextProvider];
+      const nextProviderModelAliases = supportedModelAliasesForProvider(
+        providerOptions,
+        nextProvider,
+      );
       const nextRuntime = normalizeRuntimeSelection(
         {
           provider: nextProvider,
-          modelId: remembered?.modelId ?? defaultModelForProvider(nextProvider, modelRegistry),
+          modelId:
+            remembered?.modelId ??
+            defaultModelForProvider(
+              nextProvider,
+              modelRegistry,
+              nextProviderModelAliases,
+            ),
           effort: remembered?.effort,
         },
         modelRegistry,
         supportedEffortsForProvider(providerOptions, nextProvider),
-        supportedModelAliasesForProvider(providerOptions, nextProvider)
+        nextProviderModelAliases
       );
       setProvider(nextRuntime.provider);
       setModelId(nextRuntime.modelId);
       setEffort(nextRuntime.effort);
-      persistRuntimePreference(projectId, nextRuntime);
+      if (projectId) persistRuntimePreference(projectId, nextRuntime);
     },
-    [lastModelEffortByProvider, modelRegistry, persistRuntimePreference, projectId, providerOptions]
+    [
+      clearStartError,
+      lastModelEffortByProvider,
+      modelRegistry,
+      markRoleOverride,
+      persistRuntimePreference,
+      projectId,
+      providerOptions,
+    ]
   );
 
   const handleModelChange = useCallback(
     (nextModelId: string) => {
+      clearStartError();
+      markRoleOverride();
       const nextRuntime = normalizeRuntimeSelection(
         {
           provider,
@@ -512,10 +876,12 @@ export function AgentsStartComposer({
       setProvider(nextRuntime.provider);
       setModelId(nextRuntime.modelId);
       setEffort(nextRuntime.effort);
-      persistRuntimePreference(projectId, nextRuntime);
+      if (projectId) persistRuntimePreference(projectId, nextRuntime);
     },
     [
+      clearStartError,
       modelRegistry,
+      markRoleOverride,
       persistRuntimePreference,
       projectId,
       provider,
@@ -526,6 +892,8 @@ export function AgentsStartComposer({
 
   const handleEffortChange = useCallback(
     (nextEffort: AgentEffort) => {
+      clearStartError();
+      markRoleOverride();
       const nextRuntime = normalizeRuntimeSelection(
         {
           provider,
@@ -539,11 +907,13 @@ export function AgentsStartComposer({
       setProvider(nextRuntime.provider);
       setModelId(nextRuntime.modelId);
       setEffort(nextRuntime.effort);
-      persistRuntimePreference(projectId, nextRuntime);
+      if (projectId) persistRuntimePreference(projectId, nextRuntime);
     },
     [
+      clearStartError,
       modelId,
       modelRegistry,
+      markRoleOverride,
       persistRuntimePreference,
       projectId,
       provider,
@@ -552,38 +922,76 @@ export function AgentsStartComposer({
     ]
   );
 
-  const handleStartFromChange = useCallback(
-    (nextKey: string) => {
-      userSelectedStartFromRef.current = true;
-      setSelectedStartFromKey(nextKey);
-      const nextSelection =
-        allStartFromOptions.find((option) => option.key === nextKey)?.selection ??
-        null;
-      setIsStartFromIsolatedBranch(
-        nextSelection ? startSelectionForcesIsolatedBranch(nextSelection) : false
-      );
-      if (activeProjectId && !isTransientStartFromKey(nextKey)) {
-        setLastBranchBaseSelectionForProject(activeProjectId, nextKey);
+  const handleComposerIntegrationReferencesChange = useCallback(
+    (references: ComposerIntegrationReference[]) => {
+      if (
+        !composerIntegrationReferencesEqual(
+          composerIntegrationReferences,
+          references,
+        )
+      ) {
+        clearStartError();
       }
+      setComposerIntegrationReferences(references);
     },
-    [activeProjectId, allStartFromOptions, setLastBranchBaseSelectionForProject]
+    [clearStartError, composerIntegrationReferences]
   );
+
+  const handleResetRoleDefault = useCallback(async () => {
+    clearStartError();
+    setIsResettingRoleDefault(true);
+    try {
+      const result = await roleDefaultQuery.refetch();
+      if (result.isError || !result.data) {
+        const message =
+          result.error instanceof Error
+            ? result.error.message
+            : "Failed to load the current role default";
+        setError(plainStartComposerError(message));
+        return;
+      }
+      if (projectId) {
+        clearLastRuntimeForProjectMode(projectId, mode);
+      }
+      setRoleOverrideKey(null);
+      applyRoleDefault(result.data);
+    } catch (error) {
+      setError(
+        plainStartComposerError(
+          error instanceof Error
+            ? error.message
+            : "Failed to load the current role default",
+        ),
+      );
+    } finally {
+      setIsResettingRoleDefault(false);
+    }
+  }, [
+    applyRoleDefault,
+    clearLastRuntimeForProjectMode,
+    clearStartError,
+    mode,
+    projectId,
+    roleDefaultQuery,
+  ]);
 
   const handleFilesSelected = (files: File[]) => {
     if (attachments.length + files.length > MAX_FILES) {
-      setError(`Cannot upload more than ${MAX_FILES} files total`);
+      setError(plainStartComposerError(`Cannot upload more than ${MAX_FILES} files total`));
       return;
     }
 
     const oversizedFiles = files.filter((file) => file.size > MAX_FILE_SIZE);
     if (oversizedFiles.length > 0) {
       setError(
-        `Files exceed 10MB limit: ${oversizedFiles.map((file) => file.name).join(", ")}`
+        plainStartComposerError(
+          `Files exceed 10MB limit: ${oversizedFiles.map((file) => file.name).join(", ")}`
+        )
       );
       return;
     }
 
-    setError(null);
+    clearStartError();
     setComposerDraftAttachments(AGENTS_START_COMPOSER_DRAFT_KEY, [
       ...attachments,
       ...files.map((file) => ({
@@ -598,283 +1006,303 @@ export function AgentsStartComposer({
     ]);
   };
 
-  useEffect(() => {
-    startFromRequestRef.current += 1;
-    pullRequestStartFromRequestRef.current += 1;
-    ticketStartFromRequestRef.current += 1;
-    setHydratedStartFromProjectId(null);
-    setPullRequestStartFromOptions([]);
-    setTicketStartFromOption(null);
-    setPullRequestStartFromMessage(null);
-    setIsLoadingPullRequestStartFrom(false);
-    setIsStartFromIsolatedBranch(false);
-    userSelectedStartFromRef.current = false;
-
-    if (!activeProjectId || !activeProjectWorkingDirectory) {
-      setStartFromOptions([]);
-      setSelectedStartFromKey("");
-      setIsLoadingStartFrom(false);
-      return;
-    }
-
-    const {
-      branchBaseCacheByProjectId: cachedBranchBaseByProjectId,
-      lastBranchBaseSelectionByProjectId: rememberedBranchBaseByProjectId,
-    } = useAgentSessionStore.getState();
-    const fallback = fallbackBranchBaseOptions(activeProjectBaseBranch);
-    const cached = cachedBranchBaseByProjectId[activeProjectId];
-    const options = cached?.options.length ? cached.options : fallback.options;
-    const preferredKey =
-      rememberedBranchBaseByProjectId[activeProjectId] ??
-      cached?.selectedKey ??
-      fallback.selectedKey;
-    setStartFromOptions(options);
-    setSelectedStartFromKey(
-      resolveBranchSelectionKey(options, preferredKey) ??
-        resolveBranchSelectionKey(options, fallback.selectedKey) ??
-        fallback.selectedKey
-    );
-    setIsLoadingStartFrom(false);
-  }, [
-    activeProjectBaseBranch,
-    activeProjectId,
-    activeProjectWorkingDirectory,
-  ]);
-
-  useEffect(() => {
-    const requestId = ++ticketStartFromRequestRef.current;
-    const ticketReference = firstTicketComposerReference(composerIntegrationReferences);
-    if (!activeProjectId || !ticketReference) {
-      setTicketStartFromOption(null);
-      setSelectedStartFromKey((currentKey) =>
-        isTicketStartFromKey(currentKey)
-          ? `project_default:${activeProjectBaseBranch ?? "main"}`
-          : currentKey
-      );
-      return;
-    }
-
-    const fallbackOption = ticketCanonicalBranchBaseOption(ticketReference.reference);
-    applyTicketStartFromOption(
-      fallbackOption,
-      activeProjectBaseBranch,
-      userSelectedStartFromRef,
-      setTicketStartFromOption,
-      setSelectedStartFromKey
-    );
-
-    void ticketingApi
-      .getTicketAssociations({
-        provider: ticketReference.provider,
-        ticketRef: ticketReference.ticketRef,
-        projectId: activeProjectId,
-      })
-      .then((associations) => {
-        if (ticketStartFromRequestRef.current !== requestId) {
-          return;
-        }
-        const associationOption = preferredTicketAssociationStartFromOption(
-          associations.pullRequests
-        );
-        applyTicketStartFromOption(
-          associationOption ?? fallbackOption,
-          activeProjectBaseBranch,
-          userSelectedStartFromRef,
-          setTicketStartFromOption,
-          setSelectedStartFromKey
-        );
-      })
-      .catch(() => {
-        if (ticketStartFromRequestRef.current !== requestId) {
-          return;
-        }
-        applyTicketStartFromOption(
-          fallbackOption,
-          activeProjectBaseBranch,
-          userSelectedStartFromRef,
-          setTicketStartFromOption,
-          setSelectedStartFromKey
-        );
-      });
-  }, [
-    activeProjectBaseBranch,
-    activeProjectId,
-    composerIntegrationReferences,
-  ]);
-
-  const searchPullRequestStartFromOptions = useCallback(
-    (query: string) => {
-      if (!activeProjectId) {
-        setPullRequestStartFromOptions([]);
-        setPullRequestStartFromMessage(null);
-        setIsLoadingPullRequestStartFrom(false);
-        return;
-      }
-
-      const requestId = ++pullRequestStartFromRequestRef.current;
-      setIsLoadingPullRequestStartFrom(true);
-      setPullRequestStartFromMessage(null);
-
-      void loadPullRequestBaseOptions({ projectId: activeProjectId, query })
-        .then((options) => {
-          if (pullRequestStartFromRequestRef.current !== requestId) {
-            return;
-          }
-          setPullRequestStartFromOptions((current) => {
-            const selected = current.find(
-              (option) => option.key === selectedStartFromKey
-            );
-            if (
-              selected &&
-              !options.some((option) => option.key === selected.key)
-            ) {
-              return [selected, ...options];
-            }
-            return options;
-          });
-          setIsLoadingPullRequestStartFrom(false);
-        })
-        .catch((err) => {
-          if (pullRequestStartFromRequestRef.current !== requestId) {
-            return;
-          }
-          setPullRequestStartFromOptions((current) =>
-            current.filter((option) => option.key === selectedStartFromKey)
-          );
-          setPullRequestStartFromMessage(
-            err instanceof Error
-              ? err.message
-              : "Unable to search pull requests"
-          );
-          setIsLoadingPullRequestStartFrom(false);
-        });
-    },
-    [activeProjectId, selectedStartFromKey]
-  );
-
-  const ensureStartFromOptionsLoaded = useCallback(() => {
-    if (
-      !activeProjectId ||
-      !activeProjectWorkingDirectory ||
-      isLoadingStartFrom ||
-      hydratedStartFromProjectId === activeProjectId
-    ) {
-      return;
-    }
-
-    const requestId = ++startFromRequestRef.current;
-    setIsLoadingStartFrom(true);
-
-    void loadBranchBaseOptions({
-      projectId: activeProjectId,
-      workingDirectory: activeProjectWorkingDirectory,
-      projectBaseBranch: activeProjectBaseBranch,
-    })
-      .then((result) => {
-        if (startFromRequestRef.current !== requestId) {
-          return;
-        }
-        const preferredKey =
-          (activeProjectId
-            ? lastBranchBaseSelectionByProjectId[activeProjectId]
-            : null) ??
-          selectedStartFromKey ??
-          result.selectedKey;
-        const nextBranchSelectedKey =
-          resolveBranchSelectionKey(result.options, preferredKey) ??
-          resolveBranchSelectionKey(result.options, result.selectedKey) ??
-          result.selectedKey;
-        setStartFromOptions(result.options);
-        setSelectedStartFromKey((currentKey) =>
-          currentKey.startsWith("pull_request:")
-            ? currentKey
-            : nextBranchSelectedKey
-        );
-        setBranchBaseCacheForProject(activeProjectId, result.options, nextBranchSelectedKey);
-        setLastBranchBaseSelectionForProject(activeProjectId, nextBranchSelectedKey);
-        setHydratedStartFromProjectId(activeProjectId);
-        setIsLoadingStartFrom(false);
-      })
-      .catch(() => {
-        if (startFromRequestRef.current !== requestId) {
-          return;
-        }
-        setHydratedStartFromProjectId(activeProjectId);
-        setIsLoadingStartFrom(false);
-      });
-  }, [
-    activeProjectBaseBranch,
-    activeProjectId,
-    activeProjectWorkingDirectory,
-    hydratedStartFromProjectId,
-    isLoadingStartFrom,
-    lastBranchBaseSelectionByProjectId,
-    selectedStartFromKey,
-    setBranchBaseCacheForProject,
-    setLastBranchBaseSelectionForProject,
-  ]);
-
   const handleRemoveAttachment = (attachmentId: string) => {
+    clearStartError();
     setComposerDraftAttachments(
       AGENTS_START_COMPOSER_DRAFT_KEY,
       attachments.filter((attachment) => attachment.id !== attachmentId),
     );
   };
 
+  const handleFoldersSelected = useCallback(
+    (nextFolders: ChatComposerFolder[]) => {
+      clearStartError();
+      setComposerDraftFolders(AGENTS_START_COMPOSER_DRAFT_KEY, nextFolders);
+    },
+    [clearStartError, setComposerDraftFolders],
+  );
+
+  const handleRemoveFolder = useCallback(
+    (folderId: string) => {
+      handleFoldersSelected(folders.filter((folder) => folder.id !== folderId));
+    },
+    [folders, handleFoldersSelected],
+  );
+
+  const submitStartInput = useCallback(
+    async (input: AgentsStartComposerSubmitInput) => {
+      const launchRuntime = normalizeRuntimeForSelectableProvider({
+        runtime: input.runtime,
+        providerOptions,
+        defaultProvider: toAgentProvider(providerSettings.defaultProvider),
+        modelRegistry,
+      });
+      if (!providerSettingsReady || !launchRuntime) {
+        setError(
+          plainStartComposerError(
+            providerStatusMessage ??
+              "Enable a provider with a validated CLI in Settings."
+          )
+        );
+        return;
+      }
+      const runtimeProviderContext: AgentRuntimeProviderContext = {
+        supportedEfforts: copyRuntimeProviderValues(
+          supportedEffortsForProvider(providerOptions, launchRuntime.provider)
+        ),
+        supportedModelAliases: copyRuntimeProviderValues(
+          supportedModelAliasesForProvider(providerOptions, launchRuntime.provider)
+        ),
+      };
+      const launchInput: AgentsStartComposerSubmitInput = {
+        ...input,
+        runtime: launchRuntime,
+        runtimeProviderContext,
+      };
+      lastStartAttemptRef.current = launchInput;
+      setStartConversationFailure(null);
+      setError(null);
+      try {
+        await onSubmit(launchInput);
+        lastStartAttemptRef.current = null;
+        setStartConversationFailure(null);
+        clearComposerDraft(AGENTS_START_COMPOSER_DRAFT_KEY);
+      } catch (err) {
+        const nextError = startComposerErrorFromUnknown(err);
+        setError(nextError);
+        if (nextError.kind === "linked_setup") {
+          setStartConversationFailure({
+            kind: "linked_setup",
+            message: nextError.message,
+            retryInput: buildAgentStartConversationRetryInput(launchInput),
+          });
+        } else if (nextError.kind === "mcp_setup") {
+          setStartConversationFailure({
+            kind: "mcp_setup",
+            ...nextError.details,
+            retryInput: buildAgentStartConversationRetryInput(launchInput),
+          });
+        }
+      }
+    },
+    [
+      clearComposerDraft,
+      modelRegistry,
+      onSubmit,
+      providerOptions,
+      providerSettings.defaultProvider,
+      providerSettingsReady,
+      providerStatusMessage,
+      setStartConversationFailure,
+    ]
+  );
+
+  const openMcpSettings = useCallback(
+    (details: McpSetupPreflightFailureDetails) => {
+      openModal("settings", {
+        section: "mcp",
+        provider: details.provider,
+        serverId: details.serverId,
+        scope: details.scope,
+      });
+    },
+    [openModal],
+  );
+
+  const retryLegacyMcpRepair = useCallback(
+    async (details: McpSetupPreflightFailureDetails) => {
+      if (
+        details.provider !== "claude" ||
+        details.serverId !== "ralphx" ||
+        details.scope !== "user"
+      ) {
+        return;
+      }
+      if (!startConversationFailure || startConversationFailure.kind !== "mcp_setup") {
+        return;
+      }
+      const replayInput: AgentsStartComposerSubmitInput = {
+        ...startConversationFailure.retryInput,
+        files: attachments.map((attachment) => attachment.file),
+        folders: folders.map((folder) => ({ ...folder })),
+      };
+      setIsRepairingMcp(true);
+      try {
+        await mcpPolicyApi.retryLegacyRepair({
+          provider: "claude",
+          serverId: "ralphx",
+          scope: "user",
+        });
+        await submitStartInput(replayInput);
+      } catch (repairError) {
+        const parsed = startComposerErrorFromUnknown(repairError);
+        setError(
+          parsed.kind === "mcp_setup"
+            ? parsed
+            : { kind: "mcp_setup", details },
+        );
+      } finally {
+        setIsRepairingMcp(false);
+      }
+    },
+    [attachments, folders, startConversationFailure, submitStartInput],
+  );
+
+  const handleRetryWithIsolatedBranch = useCallback(async () => {
+    const lastAttempt =
+      lastStartAttemptRef.current ??
+      (startConversationFailure
+        ? {
+            ...startConversationFailure.retryInput,
+            files: attachments.map((attachment) => attachment.file),
+            folders,
+          }
+        : null);
+    if (!lastAttempt) {
+      return;
+    }
+    const isolatedAttempt: AgentsStartComposerSubmitInput = {
+      ...lastAttempt,
+      base: lastAttempt.base
+        ? {
+            ...lastAttempt.base,
+            branchMode: "isolated",
+          }
+        : lastAttempt.base,
+    };
+    forceStartFromIsolatedBranch();
+    await submitStartInput(isolatedAttempt);
+  }, [
+    attachments,
+    folders,
+    forceStartFromIsolatedBranch,
+    startConversationFailure,
+    submitStartInput,
+  ]);
+
+  const handleRemovePersonaAndRetry = useCallback(async () => {
+    const lastAttempt = lastStartAttemptRef.current;
+    if (!lastAttempt) {
+      return;
+    }
+    setPersonaId(null);
+    await submitStartInput({
+      ...lastAttempt,
+      useRoleDefault: false,
+      personaId: null,
+    });
+  }, [submitStartInput]);
+
   const handleSubmit: AgentComposerSurfaceProps["onSend"] = async (
     message,
     options,
   ) => {
-    if (!projectId) {
-      setError("Project is required");
+    if (isStartBusy) {
+      return;
+    }
+    if (projectId === null && !featureFlags.standaloneConversations) {
+      setError(plainStartComposerError("Project is required"));
       return;
     }
     if (!message.trim()) {
-      setError("Prompt is required");
+      setError(plainStartComposerError("Prompt is required"));
       return;
     }
     /* c8 ignore next 3 -- submit is disabled for this state; keep this guard for direct calls. */
     if (!hasSelectableProvider || providerStatusMessage) {
-      setError(providerStatusMessage ?? "Enable a provider with a validated CLI in Settings.");
+      setError(
+        plainStartComposerError(
+          providerStatusMessage ?? "Enable a provider with a validated CLI in Settings."
+        )
+      );
+      return;
+    }
+    if (
+      mode === "review_pr" &&
+      !selectedStartFromSelection?.sourcePullRequest
+    ) {
+      setError(plainStartComposerError("Select a pull request to review."));
       return;
     }
 
-    setError(null);
-    try {
-      const base = selectedStartFromSelection
-        ? {
-            ...selectedStartFromSelection,
-            branchMode: branchModeForStartSelection(
-              selectedStartFromSelection,
-              effectiveStartFromIsolatedBranch
-            ),
-          }
-        : null;
-      await onSubmit({
-        projectId,
-        content: message.trim(),
-        runtime: { provider, modelId, effort },
-        mode,
-        base,
-        files: attachments.map((attachment) => attachment.file),
-        codexFastMode: provider === "codex" ? selectableCodexFastMode : null,
-        ...(options?.projectReferences?.length
-          ? { composerProjectReferences: options.projectReferences }
-          : {}),
-        ...(options?.integrationReferences?.length
-          ? { composerIntegrationReferences: options.integrationReferences }
-          : {}),
-        ...(options?.artifactReferences?.length
-          ? { composerArtifactReferences: options.artifactReferences }
-          : {}),
-      });
-      clearComposerDraft(AGENTS_START_COMPOSER_DRAFT_KEY);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to start agent conversation");
+    // §I4: an explicit base pick is never silently swapped for the project
+    // default. `resolveBaseForSubmit` retries a vanished selection once and
+    // reports `unavailable` rather than substituting.
+    const resolution = await resolveBaseForSubmit();
+    if (resolution.kind === "unavailable") {
+      setError(
+        plainStartComposerError(
+          `Selected base branch '${resolution.unavailableRef}' could not be resolved. Pick a base branch and try again.`,
+        ),
+      );
+      return;
     }
+    const base = resolution.base;
+    let launchRuntime: AgentRuntimeSelection = { provider, modelId, effort };
+    let launchCapabilityMode = capabilityMode;
+    let launchCodexFastMode =
+      provider === "codex" ? selectableCodexFastMode : null;
+    let launchPersonaId =
+      featureFlags.agentPersonas && personaId ? personaId : null;
+    if (!hasLocalRoleOverride && roleDefaultQuery.data) {
+      const resolvedDefault = roleDefaultQuery.data;
+      if (!persistedRuntimeOverride) {
+        launchRuntime = runtimeForRoleDefault(resolvedDefault);
+      }
+      const defaultCapability =
+        resolvedDefault.value.coordinationMode ?? "solo";
+      launchCapabilityMode = capabilityOptions.some(
+        (option) => option.id === defaultCapability,
+      )
+        ? (defaultCapability as CapabilityIntent["coordinationMode"])
+        : "solo";
+      launchCodexFastMode =
+        launchRuntime.provider === "codex"
+          ? resolvedDefault.value.serviceTier === "provider_default"
+            ? codexProviderFastMode
+            : resolvedDefault.value.serviceTier === "fast"
+          : null;
+      launchPersonaId = featureFlags.agentPersonas
+        ? resolvedDefault.value.personaId
+        : null;
+    }
+    const capabilityIntent = {
+      coordinationMode: launchCapabilityMode,
+    } satisfies CapabilityIntent;
+    await submitStartInput({
+      projectId,
+      content: message.trim(),
+      runtime: launchRuntime,
+      useRoleDefault: !hasRoleOverride && Boolean(roleDefaultQuery.data),
+      mode,
+      ...(mode === "automation" && automationAuthoringMode
+        ? { automationAuthoringMode }
+        : {}),
+      base,
+      files: attachments.map((attachment) => attachment.file),
+      folders,
+      codexFastMode: launchCodexFastMode,
+      ...(mode !== "persona_builder" && launchPersonaId
+        ? { personaId: launchPersonaId }
+        : {}),
+      ...(mode === "persona_builder" && sourcePersonaId
+        ? { sourcePersonaId }
+        : {}),
+      ...(mode !== "persona_builder" && projectId ? { capabilityIntent } : {}),
+      ...(options?.projectReferences?.length
+        ? { composerProjectReferences: options.projectReferences }
+        : {}),
+      ...(options?.integrationReferences?.length
+        ? { composerIntegrationReferences: options.integrationReferences }
+        : {}),
+      ...(options?.artifactReferences?.length
+        ? { composerArtifactReferences: options.artifactReferences }
+        : {}),
+    });
   };
 
   return (
+    <>
     <div className="relative flex h-full w-full items-center justify-center overflow-hidden px-6 py-8 sm:px-8">
       <div className="pointer-events-none absolute inset-0 overflow-hidden">
         <div
@@ -963,42 +1391,141 @@ export function AgentsStartComposer({
             </div>
           )}
 
+          {error?.kind === "persona_unavailable" && (
+            <div className="mb-3">
+              <PersonaUnavailableNotice
+                message={error.message}
+                onRemoveAndRetry={() => void handleRemovePersonaAndRetry()}
+                onOpenPersonas={openPersonaSettings}
+                disabled={isStartBusy}
+              />
+            </div>
+          )}
+
+          {mode === "persona_builder" && (
+            <PersonaBuildBanner
+              projectName={
+                projectId
+                  ? projects.find((project) => project.id === projectId)?.name ?? projectId
+                  : null
+              }
+              sourcePersonaName={sourcePersonaName}
+            />
+          )}
+
           <AgentComposerSurface
             dataTestId="agents-start-composer"
             textareaTestId="agents-start-textarea"
             actionTestId="agents-start-submit"
             value={content}
-            onChange={(value) =>
-              setComposerDraftContent(AGENTS_START_COMPOSER_DRAFT_KEY, value)
-            }
+            onChange={(value) => {
+              clearStartError();
+              setComposerDraftContent(AGENTS_START_COMPOSER_DRAFT_KEY, value);
+            }}
             onSend={handleSubmit}
             placeholder={
               mode === "review_pr"
                 ? REVIEW_PR_DEFAULT_PROMPT
-                : "Ask the agent to plan, build, debug, or review something"
+                : mode === "automation"
+                  ? "Describe your goal for the new automation"
+                  : "Ask the agent to plan, build, debug, or review something"
             }
-            isSubmitting={isSubmitting}
+            isSubmitting={isStartBusy}
             autoFocus
             attachments={attachments}
+            folders={folders}
+            onFoldersSelected={handleFoldersSelected}
+            onRemoveFolder={handleRemoveFolder}
             initialProjectReferences={draftProjectReferences}
             initialIntegrationReferences={draftIntegrationReferences}
             initialArtifactReferences={draftArtifactReferences}
-            onIntegrationReferencesChange={setComposerIntegrationReferences}
+            onIntegrationReferencesChange={handleComposerIntegrationReferencesChange}
             enableAttachments
             onFilesSelected={handleFilesSelected}
             onRemoveAttachment={handleRemoveAttachment}
             attachmentsUploading={isSubmitting && attachments.length > 0}
-            submitLabel={isExecutionHalted ? "Queue Prompt" : "Start Agent"}
-            submittingLabel={isExecutionHalted ? "Queuing..." : "Starting..."}
+            submitLabel={
+              isExecutionHalted
+                ? "Queue Prompt"
+                : mode === "automation"
+                  ? "Setup Automation"
+                  : "Start Agent"
+            }
+            submittingLabel={
+              isExecutionHalted
+                ? "Queuing..."
+                : mode === "automation"
+                  ? "Starting automation..."
+                  : "Starting..."
+            }
             {...(reviewPrDefaultPrompt
               ? { emptySubmitMessage: reviewPrDefaultPrompt }
               : {})}
             mode={{
               value: mode,
-              onValueChange: (value) => setMode(value as AgentConversationWorkspaceMode),
-              options: AGENT_MODE_OPTIONS,
+              onValueChange: (value) => {
+                clearStartError();
+                const nextMode = value as AgentConversationWorkspaceMode;
+                if (nextMode !== mode) {
+                  setRoleOverrideKey(null);
+                }
+                setMode(nextMode);
+                if (nextMode !== "automation") {
+                  setAutomationAuthoringMode(null);
+                }
+              },
+              options: startModeOptions.filter(
+                (option) => option.id !== "persona_builder" || featureFlags.agentPersonas,
+              ).map((option) => ({
+                ...option,
+                ...(projectId === null && option.requiresProject
+                  ? {
+                      disabled: true,
+                      disabledReason: "Requires a project",
+                    }
+                  : {}),
+              })),
+              secondaryOptionIds: startModeOptions
+                .filter(
+                  (option) =>
+                    !PRIMARY_AGENT_START_MODE_IDS.includes(option.id),
+                )
+                .map((option) => option.id),
               testId: "agents-start-mode",
             }}
+            {...(mode !== "persona_builder" && projectId && capabilityOptions.length > 1
+              ? {
+                  capability: {
+                    value: capabilityMode,
+                    onValueChange: handleCapabilityChange,
+                    options: capabilityOptions,
+                    testId: "agents-start-capability",
+                  },
+                }
+              : {})}
+            {...(mode !== "persona_builder" && featureFlags.agentPersonas && projectId
+              ? {
+                  persona: {
+                    value: personaId ?? "none",
+                    onValueChange: (nextPersonaId: string) => {
+                      clearStartError();
+                      markRoleOverride();
+                      setPersonaId(nextPersonaId === "none" ? null : nextPersonaId);
+                    },
+                    options: personaOptions,
+                    footerAction: (
+                      <button
+                        type="button"
+                        className="w-full rounded px-2 py-1.5 text-left text-xs font-medium text-[var(--accent-primary)] hover:bg-[var(--bg-hover)]"
+                        onClick={openPersonaSettings}
+                      >
+                        Manage personas
+                      </button>
+                    ),
+                    testId: "agents-start-persona",
+                  },
+                }
+              : {})}
             project={{
               value: projectId,
               onValueChange: handleProjectChange,
@@ -1008,15 +1535,12 @@ export function AgentsStartComposer({
                 description: project.workingDirectory,
               })),
               placeholder: projects.length === 0 ? "No projects yet" : "Select project",
-              disabled: isLoadingProjects || projects.length === 0,
+              disabled:
+                projectLocked ||
+                isLoadingProjects ||
+                (projects.length === 0 && !featureFlags.standaloneConversations),
               testId: "agents-start-project",
               className: "max-w-[300px] flex-none",
-              endAction: (
-                <AgentComposerProjectCreateButton
-                  onClick={onCreateProject}
-                  testId="agents-start-new-project"
-                />
-              ),
             }}
             provider={{
               value: provider,
@@ -1043,18 +1567,6 @@ export function AgentsStartComposer({
               onValueChange: handleModelChange,
               options: modelOptions,
               disabled: Boolean(providerStatusMessage),
-              fastMode: {
-                visible: provider === "codex",
-                value: selectableCodexFastMode,
-                onValueChange: setCodexFastModeOverride,
-                disabled:
-                  !providerSettingsReady ||
-                  !codexFastModeAvailability.supported,
-                description:
-                  codexFastModeAvailability.reason ??
-                  CODEX_FAST_MODE_DESCRIPTION,
-                testId: "agents-start-codex-fast-mode",
-              },
               onOpenModelSettings: () => openModal("settings", { section: "models" }),
               testId: "agents-start-model",
               className: "max-w-[188px] flex-none",
@@ -1067,7 +1579,64 @@ export function AgentsStartComposer({
               testId: "agents-start-effort",
               className: "max-w-[148px] flex-none",
             }}
-            sendDisabledReason={providerStatusMessage}
+            {...(provider === "codex"
+              ? {
+                  speed: {
+                    value:
+                      codexFastModeOverride === null
+                        ? "provider_default"
+                        : codexFastModeOverride
+                          ? "fast"
+                          : "standard",
+                    onValueChange: (value: string) => {
+                      markRoleOverride();
+                      setCodexFastModeOverride(
+                        value === "provider_default" ? null : value === "fast",
+                      );
+                    },
+                    options: [
+                      {
+                        id: "provider_default",
+                        label: "Provider default",
+                        description: "Use the service tier configured for Codex.",
+                      },
+                      {
+                        id: "standard",
+                        label: "Standard",
+                        description: "Use standard processing.",
+                      },
+                      {
+                        id: "fast",
+                        label: "Fast",
+                        description:
+                          codexFastModeAvailability.reason ??
+                          CODEX_FAST_MODE_DESCRIPTION,
+                        ...(!providerSettingsReady ||
+                        !codexFastModeAvailability.supported
+                          ? {
+                              disabled: true,
+                              disabledReason:
+                                codexFastModeAvailability.reason ??
+                                "Fast processing is unavailable.",
+                            }
+                          : {}),
+                      },
+                    ],
+                    testId: "agents-start-speed",
+                  },
+                }
+              : {})}
+            runtimeDefault={{
+              source: roleDefaultQuery.data?.source ?? null,
+              isResetting: roleDefaultQuery.isFetching || isResettingRoleDefault,
+              disabled: !projectId,
+              onReset: handleResetRoleDefault,
+            }}
+            sendDisabledReason={
+              isResettingRoleDefault
+                ? "Resetting the current role default"
+                : providerStatusMessage
+            }
           />
 
           {providerStatusMessage && (
@@ -1106,50 +1675,180 @@ export function AgentsStartComposer({
                 description: project.workingDirectory,
               }))}
               placeholder={projects.length === 0 ? "No projects yet" : "Select project"}
-              disabled={isLoadingProjects || projects.length === 0}
+              disabled={
+                projectLocked ||
+                isLoadingProjects ||
+                (projects.length === 0 && !featureFlags.standaloneConversations)
+              }
               testId="agents-start-project"
+              allowNoProject={featureFlags.standaloneConversations === true}
+              standaloneCaption="Runs in a private workspace"
             />
-            <BranchBasePicker
-              value={selectedStartFromKey}
-              onValueChange={handleStartFromChange}
-              options={startFromOptions}
-              enablePullRequests={Boolean(activeProjectId)}
-              pullRequestOptions={pullRequestOptionsWithTicketStartFrom}
-              isLoadingPullRequests={isLoadingPullRequestStartFrom}
-              pullRequestMessage={pullRequestStartFromMessage}
-              onPullRequestSearch={searchPullRequestStartFromOptions}
-              placeholder={isLoadingStartFrom ? "Loading branch..." : "Base branch"}
-              disabled={!activeProjectId || (isLoadingStartFrom && startFromOptions.length === 0)}
-              testId="agents-start-base"
-              isLoading={isLoadingStartFrom}
-              onIntent={ensureStartFromOptionsLoaded}
-              onOpenChange={(open) => {
-                if (open) {
-                  ensureStartFromOptionsLoaded();
+            {projectLocked && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span
+                    aria-label="Persona build project is locked"
+                    className="inline-flex h-7 w-7 items-center justify-center text-[var(--text-muted)]"
+                  >
+                    <Lock className="h-3.5 w-3.5" aria-hidden="true" />
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>Persona scope is locked for this build</TooltipContent>
+              </Tooltip>
+            )}
+            {projectId && (
+              <BranchBasePicker
+                value={selectedStartFromKey}
+                onValueChange={handleStartFromChange}
+                options={baseSelection.startFromOptions}
+                enablePullRequests={Boolean(activeProjectId)}
+                pullRequestOptions={baseSelection.pullRequestStartFromOptions}
+                isLoadingPullRequests={baseSelection.isLoadingPullRequestStartFrom}
+                pullRequestMessage={baseSelection.pullRequestStartFromMessage}
+                onPullRequestSearch={searchPullRequestStartFromOptions}
+                placeholder={
+                  baseSelection.isLoadingStartFrom ? "Loading branch..." : "Base branch"
                 }
-              }}
-              closeOnSelect={false}
-              isolatedBranch={effectiveStartFromIsolatedBranch}
-              isolatedBranchDisabled={startFromForcesIsolatedBranch}
-              onIsolatedBranchChange={setIsStartFromIsolatedBranch}
-            />
+                disabled={
+                  !activeProjectId ||
+                  (baseSelection.isLoadingStartFrom &&
+                    baseSelection.startFromOptions.length === 0)
+                }
+                testId="agents-start-base"
+                isLoading={baseSelection.isLoadingStartFrom}
+                onIntent={ensureStartFromOptionsLoaded}
+                onOpenChange={(open) => {
+                  if (open) {
+                    ensureStartFromOptionsLoaded();
+                  }
+                }}
+                closeOnSelect={false}
+                isolatedBranch={baseSelection.effectiveIsolatedBranch}
+                isolatedBranchDisabled={baseSelection.forcesIsolatedBranch}
+                onIsolatedBranchChange={(value) => {
+                  clearStartError();
+                  setStartFromIsolatedBranch(value);
+                }}
+              />
+            )}
           </div>
 
-          {error && (
+          {error?.kind === "mcp_setup" ? (
+            <div
+              role="alert"
+              className="mx-auto mt-4 flex max-w-[620px] flex-col items-start gap-3 rounded-md px-4 py-3 text-left text-[0.8125rem]"
+              style={{
+                color: "var(--status-warning)",
+                backgroundColor: "var(--bg-elevated)",
+                borderColor: "var(--status-warning-border)",
+                borderStyle: "solid",
+                borderWidth: 1,
+              }}
+              data-testid="agents-start-mcp-setup-error"
+            >
+              <div>
+                <p className="font-medium leading-snug">
+                  {error.details.provider === "claude" ? "Claude" : "Codex"} MCP setup needs attention
+                </p>
+                <p className="mt-1 leading-relaxed" style={{ color: "var(--text-secondary)" }}>
+                  The provider already defines the reserved MCP server ID
+                  {" "}<code>{error.details.serverId}</code>
+                  {error.details.scope ? ` at ${error.details.scope} scope` : ""}.
+                  {error.details.provider === "claude" &&
+                  error.details.serverId === "ralphx" &&
+                  error.details.scope === "user"
+                    ? " RalphX could not remove its reserved Claude user registration. Retry cleanup in the app."
+                    : " Open MCP settings to resolve this provider-native conflict."}
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  className="rounded-md px-3 py-1.5 text-[0.75rem] font-medium"
+                  style={{
+                    color: "var(--accent-primary)",
+                    backgroundColor: "var(--accent-muted)",
+                  }}
+                  onClick={() => openMcpSettings(error.details)}
+                >
+                  Open MCP settings
+                </button>
+                {error.details.repairStatus !== "manual_only" &&
+                  error.details.provider === "claude" &&
+                  error.details.serverId === "ralphx" &&
+                  error.details.scope === "user" && (
+                    <button
+                      type="button"
+                      className="rounded-md px-3 py-1.5 text-[0.75rem] font-medium"
+                      style={{
+                        color: "var(--text-primary)",
+                        backgroundColor: "var(--bg-surface)",
+                      }}
+                      onClick={() => void retryLegacyMcpRepair(error.details)}
+                      disabled={isStartBusy}
+                    >
+                      {isRepairingMcp ? "Retrying cleanup…" : "Retry cleanup"}
+                    </button>
+                  )}
+              </div>
+            </div>
+          ) : error?.kind === "linked_setup" ? (
+            <div
+              className="mx-auto mt-4 flex max-w-[620px] flex-col items-start gap-2 rounded-md border px-4 py-3 text-left text-[0.8125rem]"
+              style={{
+                color: "var(--status-error)",
+                backgroundColor: "var(--status-error-muted)",
+                borderColor: "var(--status-error-border)",
+                borderStyle: "solid",
+                borderWidth: 1,
+              }}
+              data-testid="agents-start-linked-setup-error"
+            >
+              <div>
+                <p className="font-medium leading-snug">Linked branch setup failed</p>
+                <p
+                  className="mt-1 leading-relaxed"
+                  style={{ color: "var(--text-secondary)" }}
+                >
+                  {error.message} Branch isolation creates a separate RalphX
+                  branch and worktree from the same base, avoiding the checkout
+                  conflict.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="rounded-md px-3 py-1.5 text-[0.75rem] font-medium"
+                style={{
+                  color: "var(--accent-primary)",
+                  backgroundColor: "var(--accent-muted)",
+                }}
+                onClick={handleRetryWithIsolatedBranch}
+                disabled={isStartBusy}
+                data-testid="agents-start-linked-setup-retry"
+              >
+                Retry with isolated branch
+              </button>
+            </div>
+          ) : error ? (
             <div
               className="mx-auto mt-4 inline-flex max-w-full items-center gap-2 rounded-full border px-4 py-2 text-[0.8125rem]"
               style={{
                 color: "var(--status-error)",
-                background: "var(--status-error-muted)",
+                backgroundColor: "var(--status-error-muted)",
                 borderColor: "var(--status-error-border)",
+                borderStyle: "solid",
+                borderWidth: 1,
               }}
             >
-              {error}
+              {error.message}
             </div>
-          )}
+          ) : null}
         </div>
       </div>
     </div>
+    <ConfirmationDialog {...confirmationDialogProps} />
+    </>
   );
 }
 
@@ -1181,129 +1880,23 @@ const AnimatedStarterHeadingWord = memo(function AnimatedStarterHeadingWord({
   );
 });
 
-function resolveBranchSelectionKey(
-  options: BranchBaseOption[],
-  preferredKey: string | null | undefined
-) {
-  if (!preferredKey) {
+function clickupTokenFromIntegrationReferences(
+  references: ComposerIntegrationReference[],
+): string | null {
+  const reference = references.find(
+    (item) =>
+      item.provider.trim().toLowerCase() === "clickup" &&
+      item.kind.trim().toLowerCase() === "clickup",
+  );
+  if (!reference) {
     return null;
   }
-  return options.some((option) => option.key === preferredKey) ? preferredKey : null;
-}
-
-function branchModeForStartSelection(
-  selection: AgentConversationBaseSelection,
-  isIsolated: boolean
-): AgentConversationBranchMode {
-  if (selection.kind === "project_default") {
-    return "isolated";
+  const key = reference.key?.trim();
+  if (key) {
+    return key;
   }
-  if (selection.kind === "current_branch") {
-    return "isolated";
-  }
-  return isIsolated ? "isolated" : "linked";
-}
-
-function startSelectionForcesIsolatedBranch(
-  selection: AgentConversationBaseSelection
-): boolean {
-  return selection.kind === "project_default" || selection.kind === "current_branch";
-}
-
-type TicketProvider = "jira" | "linear" | "clickup";
-
-interface TicketComposerStartReference {
-  reference: ComposerIntegrationReference;
-  provider: TicketProvider;
-  ticketRef: TicketRef;
-}
-
-function firstTicketComposerReference(
-  references: ComposerIntegrationReference[]
-): TicketComposerStartReference | null {
-  for (const reference of references) {
-    const provider = ticketProviderForComposerReference(reference);
-    if (!provider) {
-      continue;
-    }
-    const id = reference.id.trim() || reference.key?.trim() || "";
-    const key = reference.key?.trim() || undefined;
-    if (!id) {
-      continue;
-    }
-    return {
-      reference,
-      provider,
-      ticketRef: {
-        provider,
-        id,
-        ...(key ? { key } : {}),
-      },
-    };
-  }
-  return null;
-}
-
-function preferredTicketAssociationStartFromOption(
-  associations: Array<Parameters<typeof ticketAssociationBranchBaseOption>[0]>
-) {
-  const ranked = [
-    ...associations.filter(
-      (association) => association.active && association.prNumber != null
-    ),
-    ...associations.filter((association) => association.prNumber != null),
-    ...associations.filter((association) => association.active),
-    ...associations,
-  ];
-  const seen = new Set<string>();
-  for (const association of ranked) {
-    const key = `${association.id}:${association.branchName ?? association.subtitle ?? ""}`;
-    if (seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
-    const option = ticketAssociationBranchBaseOption(association);
-    if (option) {
-      return option;
-    }
-  }
-  return null;
-}
-
-function applyTicketStartFromOption(
-  option: BranchBaseOption | null,
-  activeProjectBaseBranch: string | null,
-  userSelectedStartFromRef: MutableRefObject<boolean>,
-  setTicketStartFromOption: Dispatch<SetStateAction<BranchBaseOption | null>>,
-  setSelectedStartFromKey: Dispatch<SetStateAction<string>>
-) {
-  setTicketStartFromOption(option);
-  setSelectedStartFromKey((currentKey) => {
-    if (userSelectedStartFromRef.current) {
-      return currentKey;
-    }
-    if (!option) {
-      return isTicketStartFromKey(currentKey)
-        ? `project_default:${activeProjectBaseBranch ?? "main"}`
-        : currentKey;
-    }
-    if (
-      !currentKey ||
-      currentKey.startsWith("project_default:") ||
-      isTicketStartFromKey(currentKey)
-    ) {
-      return option.key;
-    }
-    return currentKey;
-  });
-}
-
-function isTransientStartFromKey(key: string) {
-  return key.startsWith("pull_request:") || isTicketStartFromKey(key);
-}
-
-function isTicketStartFromKey(key: string) {
-  return key.startsWith("ticket_branch:");
+  const id = reference.id.trim();
+  return id ? (id.toUpperCase().startsWith("CU-") ? id : `CU-${id}`) : null;
 }
 
 function useAnimatedStarterWord(paused = false) {

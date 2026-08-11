@@ -1,7 +1,7 @@
 import * as React from "react";
 import * as ReactDOM from "react-dom/client";
-import App from "./App";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { StartupRoot } from "./StartupRoot";
 import { syncThemeAttributesFromStore } from "./stores/themeStore";
 import "./styles/globals.css";
 
@@ -11,10 +11,27 @@ import "./styles/globals.css";
 // changes that happened between the two loads.
 syncThemeAttributesFromStore();
 
-ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  <React.StrictMode>
-    <ErrorBoundary>
-      <App />
-    </ErrorBoundary>
-  </React.StrictMode>,
-);
+const root = ReactDOM.createRoot(document.getElementById("root") as HTMLElement);
+const visualTest = new URLSearchParams(window.location.search).get("test");
+
+if (visualTest === "startup") {
+  void import("./test-pages/StartupVisualTest").then(({ StartupVisualTestPage }) => {
+    root.render(
+      <React.StrictMode>
+        <ErrorBoundary>
+          <StartupVisualTestPage
+            scenario={new URLSearchParams(window.location.search).get("scenario")}
+          />
+        </ErrorBoundary>
+      </React.StrictMode>,
+    );
+  });
+} else {
+  root.render(
+    <React.StrictMode>
+      <ErrorBoundary>
+        <StartupRoot />
+      </ErrorBoundary>
+    </React.StrictMode>,
+  );
+}

@@ -13,20 +13,23 @@ use ralphx_lib::application::{AppState, ChatService, MockChatService, TaskTransi
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::plan_branch::PrStatus as DbPrStatus;
 use ralphx_lib::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, ArtifactId, ChatConversationId,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentWorkspaceRepairContinuation,
+    AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource, ArtifactId, ChatConversationId,
     ExecutionPlanId, IdeationAnalysisBaseRefKind, IdeationSessionId, InternalStatus, PlanBranch,
     PlanBranchId, Project, ProjectId, ReviewOutcome, ReviewerType, Task, TaskCategory,
 };
 use ralphx_lib::domain::repositories::{
-    AgentConversationWorkspaceRepository, PlanBranchRepository,
+    AgentConversationWorkspaceRepository, AgentRunRepository, AgentWorkspaceRepairRepository,
+    BranchUpdateRepository, PlanBranchRepository,
 };
 use ralphx_lib::domain::services::github_service::{
-    GithubServiceTrait, PrReviewCommentFeedback, PrReviewFeedback, PrStatus,
+    GithubServiceTrait, PrMergeStateStatus, PrMergeableState, PrReviewCommentFeedback,
+    PrReviewFeedback, PrStatus, PrSyncState,
 };
-use ralphx_lib::infrastructure::agents::claude::agent_names::AGENT_GENERAL_WORKER;
+use ralphx_lib::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_PR_FIXER;
 use ralphx_lib::infrastructure::memory::{
     MemoryAgentConversationWorkspaceRepository, MemoryAgentRunRepository,
-    MemoryPlanBranchRepository,
+    MemoryBranchUpdateRepository, MemoryPlanBranchRepository,
 };
 
 use crate::common::MockGithubService;
@@ -42,7 +45,7 @@ fn empty_startup_blocked_projects() -> Arc<HashSet<ProjectId>> {
 fn build_transition_service(
     app_state: &AppState,
     execution_state: &Arc<ExecutionState>,
-) -> Arc<TaskTransitionService<tauri::Wry>> {
+) -> Arc<TaskTransitionService> {
     Arc::new(TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
@@ -65,7 +68,7 @@ fn build_transition_service_with_pr_deps(
     app_state: &AppState,
     execution_state: &Arc<ExecutionState>,
     plan_branch_repo: Arc<dyn PlanBranchRepository>,
-) -> Arc<TaskTransitionService<tauri::Wry>> {
+) -> Arc<TaskTransitionService> {
     Arc::new(
         TaskTransitionService::new(
             Arc::clone(&app_state.task_repo),
@@ -107,6 +110,7 @@ fn make_agent_workspace(
     workspace.publication_pr_url = Some("https://github.com/owner/repo/pull/72".to_string());
     workspace.publication_pr_status = Some("open".to_string());
     workspace.publication_push_status = Some("pushed".to_string());
+    workspace.pr_autofix_enabled = true;
     workspace
 }
 
@@ -123,6 +127,19 @@ fn requested_changes_feedback(review_id: &str) -> PrReviewFeedback {
             line: Some(42),
             body: "This should wake the workspace agent.".to_string(),
         }],
+    }
+}
+
+fn current_head_sync_state() -> PrSyncState {
+    PrSyncState {
+        status: PrStatus::Open,
+        merge_state_status: Some(PrMergeStateStatus::Clean),
+        mergeable: Some(PrMergeableState::Mergeable),
+        is_draft: false,
+        head_ref_name: "feature/agent-screen".to_string(),
+        base_ref_name: "main".to_string(),
+        head_ref_oid: Some("head-sha".to_string()),
+        base_ref_oid: Some("base-sha".to_string()),
     }
 }
 
@@ -195,9 +212,15 @@ async fn seed_valid_agent_workspace_project(
 #[tokio::test]
 async fn agent_workspace_review_feedback_routes_to_same_workspace_agent_once() {
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let agent_run_repo: Arc<dyn AgentRunRepository> = Arc::new(MemoryAgentRunRepository::new());
+    let branch_update_repo = Arc::new(MemoryBranchUpdateRepository::new());
     let conversation_id = ChatConversationId::from_string("22222222-2222-2222-2222-222222222222");
     let project_id = ProjectId::from_string("project-1".to_string());
-    let workspace = make_agent_workspace(conversation_id, project_id.clone());
+    let temp_dir = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+    let working_dir = temp_dir.path().join("agent-workspace");
+    let mut workspace = make_agent_workspace(conversation_id, project_id.clone());
+    initialize_git_workspace(&working_dir, &workspace.branch_name);
+    workspace.worktree_path = working_dir.to_string_lossy().to_string();
     workspace_repo
         .create_or_update(workspace.clone())
         .await
@@ -206,19 +229,27 @@ async fn agent_workspace_review_feedback_routes_to_same_workspace_agent_once() {
     let github = Arc::new(MockGithubService::new());
     let feedback = requested_changes_feedback("review-1");
     github.will_return_review_feedback(feedback.clone());
+    github.will_return_sync_state(current_head_sync_state());
+    github.will_return_sync_state(current_head_sync_state());
 
     let registry = PrPollerRegistry::new(
         Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
         Arc::new(MemoryPlanBranchRepository::new()),
     );
-    let chat_service = Arc::new(MockChatService::new());
+    registry
+        .set_branch_update_repo(Arc::clone(&branch_update_repo) as Arc<dyn BranchUpdateRepository>);
+    let chat_service = Arc::new(MockChatService::with_agent_run_repo(Arc::clone(
+        &agent_run_repo,
+    )));
 
     let routed = registry
-        .process_agent_workspace_review_feedback_once(
+        .process_agent_workspace_review_feedback_once_with_repair_repo(
             &workspace.conversation_id,
             72,
-            std::path::Path::new("/tmp/agent-workspace"),
+            &working_dir,
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+            Arc::clone(&agent_run_repo),
+            Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>,
             Arc::clone(&chat_service) as Arc<dyn ChatService>,
         )
         .await
@@ -241,7 +272,7 @@ async fn agent_workspace_review_feedback_routes_to_same_workspace_agent_once() {
     );
     assert_eq!(
         options[0].agent_name_override.as_deref(),
-        Some(AGENT_GENERAL_WORKER)
+        Some(AGENT_WORKSPACE_PR_FIXER)
     );
 
     let updated = workspace_repo
@@ -249,32 +280,58 @@ async fn agent_workspace_review_feedback_routes_to_same_workspace_agent_once() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(
-        updated.publication_pr_status.as_deref(),
-        Some("changes_requested")
-    );
+    assert_eq!(updated.publication_pr_status.as_deref(), Some("open"));
     assert_eq!(
         updated.publication_push_status.as_deref(),
         Some("needs_agent")
     );
+    assert_eq!(updated.pr_supervision_status.as_deref(), Some("fixing"));
+    assert_eq!(
+        updated.pr_supervision_summary.as_deref(),
+        Some("GitHub requested changes routed to the PR fixer.")
+    );
+
+    let attempt = workspace_repo
+        .get_current_repair_attempt(&workspace.conversation_id)
+        .await
+        .unwrap()
+        .expect("review feedback must create a durable repair attempt");
+    assert_eq!(attempt.generation, 1);
+    assert_eq!(attempt.source, AgentWorkspaceRepairSource::PrAutofix);
+    assert_eq!(
+        attempt.continuation,
+        AgentWorkspaceRepairContinuation::ResumePrSupervision
+    );
+    assert_eq!(attempt.phase, AgentWorkspaceRepairPhase::Repairing);
 
     let events = workspace_repo
         .list_publication_events(&workspace.conversation_id)
         .await
         .unwrap();
-    assert_eq!(events.len(), 1);
     assert_eq!(
-        events[0].classification.as_deref(),
-        Some("github_pr_review:review-1")
+        events
+            .iter()
+            .filter(|event| event.step == "repair_sent" && event.status == "started")
+            .count(),
+        1
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.step == "repair_sent" && event.status == "succeeded")
+            .count(),
+        1
     );
 
     github.will_return_review_feedback(feedback);
     let routed_again = registry
-        .process_agent_workspace_review_feedback_once(
+        .process_agent_workspace_review_feedback_once_with_repair_repo(
             &workspace.conversation_id,
             72,
-            std::path::Path::new("/tmp/agent-workspace"),
+            &working_dir,
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+            Arc::clone(&agent_run_repo),
+            Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>,
             Arc::clone(&chat_service) as Arc<dyn ChatService>,
         )
         .await
@@ -286,9 +343,18 @@ async fn agent_workspace_review_feedback_routes_to_same_workspace_agent_once() {
         workspace_repo
             .list_publication_events(&workspace.conversation_id)
             .await
+            .unwrap(),
+        events,
+        "duplicate review feedback must not append another durable repair event"
+    );
+    assert_eq!(
+        workspace_repo
+            .get_current_repair_attempt(&workspace.conversation_id)
+            .await
             .unwrap()
-            .len(),
-        1
+            .expect("repair attempt must remain active")
+            .id,
+        attempt.id
     );
 }
 
@@ -313,13 +379,16 @@ async fn recover_agent_workspace_pr_pollers_restarts_active_direct_workspaces() 
     ));
     let chat_service = Arc::new(MockChatService::new());
 
-    ralphx_lib::application::pr_startup_recovery::recover_agent_workspace_pr_pollers(
+    ralphx_lib::application::pr_startup_recovery::recover_agent_workspace_pr_pollers_with_notifications(
         Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
         Arc::clone(&app_state.project_repo),
         Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>,
         Arc::clone(&registry),
         Arc::clone(&app_state.agent_run_repo),
         Arc::clone(&chat_service) as Arc<dyn ChatService>,
+        None,
+        Some(Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>),
+        None,
         empty_startup_blocked_projects(),
     )
     .await;
@@ -394,13 +463,14 @@ async fn agent_workspace_poller_stops_when_workspace_is_ideation_owned() {
     );
     let chat_service = Arc::new(MockChatService::new());
 
-    registry.start_agent_workspace_polling(
+    registry.start_agent_workspace_polling_with_repair_repo(
         workspace.conversation_id,
         72,
         project,
         std::path::PathBuf::from("/tmp/agent-workspace"),
         Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
         Arc::new(MemoryAgentRunRepository::new()),
+        Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>,
         Arc::clone(&chat_service) as Arc<dyn ChatService>,
     );
 
@@ -867,6 +937,7 @@ async fn test_poller_merged_stops_poller() {
     // Return Merged — the poller should process the transition and exit
     mock.will_return_status(PrStatus::Merged {
         merge_commit_sha: Some("abc123".to_string()),
+        merged_at: None,
     });
 
     let registry = Arc::new(PrPollerRegistry::new(

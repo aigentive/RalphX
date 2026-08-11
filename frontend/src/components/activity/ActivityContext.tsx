@@ -7,8 +7,7 @@
 
 import { useCallback } from "react";
 import { CheckSquare, MessageSquare } from "lucide-react";
-import { useUiStore } from "@/stores/uiStore";
-import { navigateToIdeationSession } from "@/lib/navigation";
+import { navigateToIdeationSession, openTaskInAgents } from "@/lib/navigation";
 
 export interface ActivityContextProps {
   taskId?: string | undefined;
@@ -24,17 +23,13 @@ export interface ActivityContextProps {
  * - Role badge: Agent / System / User indicator
  */
 export function ActivityContext({ taskId, sessionId, role }: ActivityContextProps) {
-  const setSelectedTaskId = useUiStore((state) => state.setSelectedTaskId);
-  const setCurrentView = useUiStore((state) => state.setCurrentView);
-
   const handleNavigate = useCallback(() => {
     if (taskId) {
-      setSelectedTaskId(taskId);
-      setCurrentView("kanban");
+      void openTaskInAgents(taskId, "graph");
     } else if (sessionId) {
       navigateToIdeationSession(sessionId);
     }
-  }, [taskId, sessionId, setSelectedTaskId, setCurrentView]);
+  }, [taskId, sessionId]);
 
   // Don't render if no context available
   if (!taskId && !sessionId) {

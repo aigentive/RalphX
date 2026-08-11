@@ -9,9 +9,6 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useEventBus } from "@/providers/EventProvider";
 import { TaskEventSchema, TaskStatusChangedEventSchema } from "@/types/events";
 import { useTaskStore } from "@/stores/taskStore";
-import { useTeamStore } from "@/stores/teamStore";
-import { useChatStore } from "@/stores/chatStore";
-import { buildStoreKey } from "@/lib/chat-context-registry";
 import { taskKeys } from "@/hooks/useTasks";
 import { infiniteTaskKeys } from "@/hooks/useInfiniteTasksQuery";
 import { stateTransitionKeys } from "@/hooks/useTaskStateTransitions";
@@ -46,8 +43,6 @@ export function useTaskEvents() {
   const addTask = useTaskStore((s) => s.addTask);
   const updateTask = useTaskStore((s) => s.updateTask);
   const removeTask = useTaskStore((s) => s.removeTask);
-  const clearTeamForContext = useTeamStore((s) => s.clearTeamForContext);
-  const setTeamActive = useChatStore((s) => s.setTeamActive);
   const queryClient = useQueryClient();
 
   useEffect(() => {
@@ -58,14 +53,6 @@ export function useTaskEvents() {
     ) => {
       updateTask(taskId, { internalStatus: to });
 
-      // Clear stale team data when task enters a terminal/paused state.
-      // This ensures team UI elements (cards, footer, messages) don't persist
-      // across mode switches (team → solo re-execution).
-      if (to === "failed" || to === "paused" || to === "stopped" || to === "cancelled") {
-        const contextKey = buildStoreKey("task_execution", taskId);
-        clearTeamForContext(contextKey);
-        setTeamActive(contextKey, false);
-      }
       // Invalidate both regular and infinite task queries so Kanban refetches
       queryClient.invalidateQueries({ queryKey: taskKeys.lists() });
       queryClient.invalidateQueries({ queryKey: infiniteTaskKeys.all });
@@ -164,5 +151,5 @@ export function useTaskEvents() {
       unsubscribeTaskEvent();
       unsubscribeLegacyStatus();
     };
-  }, [bus, addTask, updateTask, removeTask, queryClient, clearTeamForContext, setTeamActive]);
+  }, [bus, addTask, updateTask, removeTask, queryClient]);
 }

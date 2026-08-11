@@ -7,13 +7,30 @@
 // queueing messages for all context types, not just TaskExecution.
 
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort};
-use crate::domain::entities::{ChatAttachmentId, ChatContextType, TaskId};
+use crate::domain::entities::{ChatAttachmentId, ChatContextType, PersonaDirective, TaskId};
+use crate::domain::services::ComposerSelectionSnapshot;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+/// Whether message metadata marks a message as internal recovery/UI-hidden content.
+pub(crate) fn message_metadata_hidden_from_ui(metadata: Option<&str>) -> bool {
+    metadata
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .is_some_and(|value| {
+            value
+                .get("hidden_from_ui")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+                || value
+                    .get("recovery_context")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+        })
 }
 
 /// User-selected project reference metadata that must survive queue replay.
@@ -79,6 +96,32 @@ pub struct ComposerArtifactReference {
     pub status: Option<String>,
 }
 
+/// A bounded plain-text excerpt selected from an artifact pane source.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposerExcerptReference {
+    pub source_kind: String,
+    pub source_id: String,
+    pub source_label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub excerpt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locator: Option<String>,
+}
+
 /// Key for the message queue - combines context type and ID
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct QueueKey {
@@ -122,6 +165,9 @@ pub struct QueuedMessage {
     pub content: String,
     pub created_at: String,
     pub is_editing: bool,
+    /// Existing user-message row to reuse when an unanswered stdin turn is recovered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persisted_message_id: Option<String>,
     /// Optional metadata JSON to apply when persisting this message (survives queue round-trip)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata_override: Option<String>,
@@ -131,6 +177,12 @@ pub struct QueuedMessage {
     /// Optional runtime harness override to preserve relaunch/recovery provider continuity.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub harness_override: Option<AgentHarnessKind>,
+    /// Optional canonical agent override selected when this message was queued.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_name_override: Option<String>,
+    /// Persona intent selected when this message was queued.
+    #[serde(default)]
+    pub persona_directive: PersonaDirective,
     /// Optional model override selected when this message was queued.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_override: Option<String>,
@@ -140,6 +192,9 @@ pub struct QueuedMessage {
     /// Optional provider service-tier override selected when this message was queued.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_tier_override: Option<String>,
+    /// Keep the parent conversation provider-session ref unchanged on replay.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub preserve_conversation_provider_session_ref: bool,
     /// Whether queue replay must start a fresh provider-native session.
     #[serde(default, skip_serializing_if = "is_false")]
     pub force_new_provider_session: bool,
@@ -152,12 +207,23 @@ pub struct QueuedMessage {
     /// Optional artifact references used for runtime-only prompt expansion.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub composer_artifact_references: Vec<ComposerArtifactReference>,
+    /// Optional immutable artifact/ticket excerpt used for this queued turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composer_selection_snapshot: Option<ComposerSelectionSnapshot>,
+    /// Optional selected excerpts used for runtime-only prompt context.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub composer_excerpt_references: Vec<ComposerExcerptReference>,
     /// Optional chat attachments selected by the composer for this queued turn.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachment_ids: Vec<ChatAttachmentId>,
 }
 
 impl QueuedMessage {
+    /// Hidden recovery messages may be discarded after the recovery staleness threshold.
+    pub fn is_hidden_recovery(&self) -> bool {
+        message_metadata_hidden_from_ui(self.metadata_override.as_deref())
+    }
+
     /// Create a new queued message with generated ID and timestamp
     pub fn new(content: String) -> Self {
         Self {
@@ -165,16 +231,22 @@ impl QueuedMessage {
             content,
             created_at: chrono::Utc::now().to_rfc3339(),
             is_editing: false,
+            persisted_message_id: None,
             metadata_override: None,
             created_at_override: None,
             harness_override: None,
+            agent_name_override: None,
+            persona_directive: PersonaDirective::Inherit,
             model_override: None,
             logical_effort_override: None,
             service_tier_override: None,
+            preserve_conversation_provider_session_ref: false,
             force_new_provider_session: false,
             composer_project_references: Vec::new(),
             composer_integration_references: Vec::new(),
             composer_artifact_references: Vec::new(),
+            composer_selection_snapshot: None,
+            composer_excerpt_references: Vec::new(),
             attachment_ids: Vec::new(),
         }
     }
@@ -187,16 +259,22 @@ impl QueuedMessage {
             content,
             created_at: chrono::Utc::now().to_rfc3339(),
             is_editing: false,
+            persisted_message_id: None,
             metadata_override: None,
             created_at_override: None,
             harness_override: None,
+            agent_name_override: None,
+            persona_directive: PersonaDirective::Inherit,
             model_override: None,
             logical_effort_override: None,
             service_tier_override: None,
+            preserve_conversation_provider_session_ref: false,
             force_new_provider_session: false,
             composer_project_references: Vec::new(),
             composer_integration_references: Vec::new(),
             composer_artifact_references: Vec::new(),
+            composer_selection_snapshot: None,
+            composer_excerpt_references: Vec::new(),
             attachment_ids: Vec::new(),
         }
     }
@@ -266,6 +344,25 @@ impl MessageQueue {
         queues.entry(key).or_default().insert(0, message);
     }
 
+    /// Re-insert an existing queued message at the back of the queue.
+    ///
+    /// Message IDs are stable queue identities. Re-enqueuing one replaces its
+    /// earlier occurrence and leaves all unrelated messages in their order.
+    pub fn queue_back_existing(
+        &self,
+        context_type: ChatContextType,
+        context_id: impl Into<String>,
+        message: QueuedMessage,
+    ) {
+        let key = QueueKey::new(context_type, context_id);
+        let mut queues = self.queues.lock().unwrap();
+        queues.retain(|_, queue| {
+            queue.retain(|queued| queued.id != message.id);
+            !queue.is_empty()
+        });
+        queues.entry(key).or_default().push(message);
+    }
+
     /// Queue a message using a QueueKey
     pub fn queue_with_key(&self, key: QueueKey, content: String) -> QueuedMessage {
         let message = QueuedMessage::new(content);
@@ -313,6 +410,8 @@ impl MessageQueue {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            None,
+            Vec::new(),
             Vec::new(),
         )
     }
@@ -329,6 +428,8 @@ impl MessageQueue {
         composer_project_references: Vec<ComposerProjectReference>,
         composer_integration_references: Vec<ComposerIntegrationReference>,
         composer_artifact_references: Vec<ComposerArtifactReference>,
+        composer_selection_snapshot: Option<ComposerSelectionSnapshot>,
+        composer_excerpt_references: Vec<ComposerExcerptReference>,
         attachment_ids: Vec<ChatAttachmentId>,
     ) -> QueuedMessage {
         self.queue_with_runtime_overrides_and_project_references(
@@ -339,12 +440,16 @@ impl MessageQueue {
             created_at_override,
             harness_override,
             None,
+            PersonaDirective::Inherit,
+            None,
             None,
             None,
             false,
             composer_project_references,
             composer_integration_references,
             composer_artifact_references,
+            composer_selection_snapshot,
+            composer_excerpt_references,
             attachment_ids,
         )
     }
@@ -359,6 +464,8 @@ impl MessageQueue {
         metadata_override: Option<String>,
         created_at_override: Option<String>,
         harness_override: Option<AgentHarnessKind>,
+        agent_name_override: Option<String>,
+        persona_directive: PersonaDirective,
         model_override: Option<String>,
         logical_effort_override: Option<LogicalEffort>,
         service_tier_override: Option<String>,
@@ -366,6 +473,8 @@ impl MessageQueue {
         composer_project_references: Vec<ComposerProjectReference>,
         composer_integration_references: Vec<ComposerIntegrationReference>,
         composer_artifact_references: Vec<ComposerArtifactReference>,
+        composer_selection_snapshot: Option<ComposerSelectionSnapshot>,
+        composer_excerpt_references: Vec<ComposerExcerptReference>,
         attachment_ids: Vec<ChatAttachmentId>,
     ) -> QueuedMessage {
         let key = QueueKey::new(context_type, context_id);
@@ -373,6 +482,8 @@ impl MessageQueue {
         message.metadata_override = metadata_override;
         message.created_at_override = created_at_override;
         message.harness_override = harness_override;
+        message.agent_name_override = agent_name_override;
+        message.persona_directive = persona_directive;
         message.model_override = model_override;
         message.logical_effort_override = logical_effort_override;
         message.service_tier_override = service_tier_override;
@@ -380,6 +491,8 @@ impl MessageQueue {
         message.composer_project_references = composer_project_references;
         message.composer_integration_references = composer_integration_references;
         message.composer_artifact_references = composer_artifact_references;
+        message.composer_selection_snapshot = composer_selection_snapshot;
+        message.composer_excerpt_references = composer_excerpt_references;
         message.attachment_ids = attachment_ids;
         let mut queues = self.queues.lock().unwrap();
         queues.entry(key).or_default().push(message.clone());
@@ -504,12 +617,11 @@ impl MessageQueue {
         false
     }
 
-    /// Remove messages older than `threshold_secs` seconds from the queue.
+    /// Remove hidden recovery messages older than `threshold_secs` seconds from the queue.
     ///
     /// Returns the list of dropped messages so callers can emit warnings.
     /// Messages with unparseable timestamps are retained (safe default).
-    /// Rehydration messages injected by `queue_front` are freshly created and
-    /// will always be within the threshold, so no special handling is needed.
+    /// User messages are always retained regardless of age.
     pub fn remove_stale(
         &self,
         context_type: ChatContextType,
@@ -526,16 +638,17 @@ impl MessageQueue {
         let now = chrono::Utc::now();
         let mut dropped = vec![];
         queue.retain(|msg| {
-            let is_stale = chrono::DateTime::parse_from_rfc3339(&msg.created_at)
-                .map(|ts| {
-                    let age = now.signed_duration_since(ts.with_timezone(&chrono::Utc));
-                    age.num_seconds() > threshold_secs as i64
-                })
-                .unwrap_or(false); // unparseable → retain (safe default)
-            if is_stale {
+            let is_stale_hidden_recovery = msg.is_hidden_recovery()
+                && chrono::DateTime::parse_from_rfc3339(&msg.created_at)
+                    .map(|ts| {
+                        let age = now.signed_duration_since(ts.with_timezone(&chrono::Utc));
+                        age.num_seconds() > threshold_secs as i64
+                    })
+                    .unwrap_or(false); // unparseable → retain (safe default)
+            if is_stale_hidden_recovery {
                 dropped.push(msg.clone());
             }
-            !is_stale
+            !is_stale_hidden_recovery
         });
         dropped
     }
@@ -573,15 +686,8 @@ impl MessageQueue {
     ///
     /// Used by the queue depth cap check and status response enrichment.
     pub fn count_for_context(&self, context_type: &str, context_id: &str) -> usize {
-        let ctx_type = match context_type {
-            "ideation" => ChatContextType::Ideation,
-            "delegation" => ChatContextType::Delegation,
-            "task_execution" => ChatContextType::TaskExecution,
-            "task" => ChatContextType::Task,
-            "project" => ChatContextType::Project,
-            "review" => ChatContextType::Review,
-            "merge" => ChatContextType::Merge,
-            _ => return 0,
+        let Ok(ctx_type) = context_type.parse::<ChatContextType>() else {
+            return 0;
         };
         let key = QueueKey::new(ctx_type, context_id);
         let queues = self.queues.lock().unwrap();

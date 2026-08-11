@@ -1,6 +1,6 @@
 use super::*;
 
-impl<R: Runtime> TaskSchedulerService<R> {
+impl TaskSchedulerService {
     /// Re-trigger deferred merges for a project after a competing merge completes.
     ///
     /// Finds tasks in PendingMerge with `merge_deferred` metadata, clears the flag,

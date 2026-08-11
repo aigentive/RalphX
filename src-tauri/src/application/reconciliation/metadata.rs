@@ -1,6 +1,5 @@
 // Retry counters, SHA tracking, backoff delays for reconciliation.
 
-use tauri::Runtime;
 use tracing::warn;
 
 use crate::application::harness_runtime_registry::{
@@ -26,7 +25,7 @@ use crate::domain::entities::{
 use super::policy::ShaComparisonResult;
 use super::ReconciliationRunner;
 
-impl<R: Runtime> ReconciliationRunner<R> {
+impl ReconciliationRunner {
     /// Count `AttemptFailed` events in merge recovery metadata (Merging state retries).
     #[doc(hidden)]
     pub fn merging_auto_retry_count(task: &Task) -> u32 {
@@ -64,8 +63,7 @@ impl<R: Runtime> ReconciliationRunner<R> {
         status: InternalStatus,
         attempt: u32,
     ) -> Result<(), String> {
-        let mut updated = task.clone();
-        let mut json: serde_json::Value = updated
+        let mut json: serde_json::Value = task
             .metadata
             .as_deref()
             .and_then(|m| serde_json::from_str(m).ok())
@@ -76,10 +74,8 @@ impl<R: Runtime> ReconciliationRunner<R> {
             obj.insert(key, serde_json::json!(attempt));
         }
 
-        updated.metadata = Some(json.to_string());
-        updated.touch();
         self.task_repo
-            .update(&updated)
+            .update_metadata(&task.id, Some(json.to_string()))
             .await
             .map_err(|e| e.to_string())
     }
@@ -527,7 +523,7 @@ impl<R: Runtime> ReconciliationRunner<R> {
 
 // ── Execution Recovery Helpers ────────────────────────────────────────────────
 // Called by reconcile_failed_execution_task() (Wave 3 handler in execution.rs).
-impl<R: Runtime> ReconciliationRunner<R> {
+impl ReconciliationRunner {
     /// Count `AutoRetryTriggered` events in execution recovery metadata.
     #[doc(hidden)]
     pub fn execution_failed_auto_retry_count(task: &Task) -> u32 {
@@ -921,6 +917,10 @@ impl<R: Runtime> ReconciliationRunner<R> {
             }
             ExecutionFailureSource::GitIsolation => ExecutionRecoveryReasonCode::GitIsolationFailed,
             ExecutionFailureSource::AgentIncomplete => ExecutionRecoveryReasonCode::IncompleteSteps,
+            ExecutionFailureSource::LocalToolFailed => ExecutionRecoveryReasonCode::LocalToolFailed,
+            ExecutionFailureSource::ValidationFailed => {
+                ExecutionRecoveryReasonCode::ValidationFailed
+            }
             ExecutionFailureSource::Unknown => ExecutionRecoveryReasonCode::Unknown,
         }
     }

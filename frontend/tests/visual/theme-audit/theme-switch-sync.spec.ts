@@ -1,14 +1,31 @@
 import { test, expect } from "@playwright/test";
 
-async function settingsCardIconTileBackground(page: import("@playwright/test").Page) {
+/**
+ * Settings content pane paint. Section cards no longer carry an icon tile, so
+ * the pane surface is the stable proof that the active theme actually painted
+ * inside the dialog (`--dialog-pane-bg` is a literal per theme).
+ */
+async function settingsPaneBackground(page: import("@playwright/test").Page) {
   return page
-    .locator('[data-testid="settings-dialog"] div.p-2.rounded-lg.shrink-0')
+    .locator('[data-testid="settings-dialog"] .settings-pane')
     .first()
     .evaluate((node) => getComputedStyle(node).backgroundColor);
 }
 
+/** High-contrast paints the settings pane pure black (`--dialog-pane-bg: #000000`). */
+const HIGH_CONTRAST_PANE_BG = "rgb(0, 0, 0)";
+/** Dark paints the settings pane `#17171A`. */
+const DARK_PANE_BG = "rgb(23, 23, 26)";
+
 function settingsThemeSelector(page: import("@playwright/test").Page) {
   return page.getByTestId("settings-dialog").getByTestId("theme-selector");
+}
+
+/** Accessibility is a leaf of the consolidated "Application" nav entry. */
+async function openAccessibilitySection(page: import("@playwright/test").Page) {
+  const settingsDialog = page.getByTestId("settings-dialog");
+  await settingsDialog.getByTestId("settings-nav-application").click();
+  await settingsDialog.getByTestId("settings-leaf-accessibility").click();
 }
 
 async function selectSettingsTheme(
@@ -37,13 +54,13 @@ test("stored HC switches to Dark via the theme selector only", async ({ page }) 
     uiStore?.getState().openModal("settings");
   });
   await page.waitForSelector('[data-testid="settings-dialog"]', { timeout: 10000 });
-  await page.locator("text=Accessibility").first().click();
+  await openAccessibilitySection(page);
   await page.waitForTimeout(300);
 
   await expect(page.locator('[data-testid="theme-high-contrast"]')).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.getAttribute("data-theme")))
     .toBe("high-contrast");
-  expect(await settingsCardIconTileBackground(page)).not.toBe("rgb(255, 255, 255)");
+  expect(await settingsPaneBackground(page)).toBe(HIGH_CONTRAST_PANE_BG);
 
   // Pick Dark from dropdown.
   await selectSettingsTheme(page, "Dark (default)");
@@ -69,7 +86,7 @@ test("Dark→HC→Dark roundtrip stays dropdown-only and ends on Dark", async ({
     uiStore?.getState().openModal("settings");
   });
   await page.waitForSelector('[data-testid="settings-dialog"]', { timeout: 10000 });
-  await page.locator("text=Accessibility").first().click();
+  await openAccessibilitySection(page);
   await page.waitForTimeout(300);
 
   await expect(page.locator('[data-testid="theme-high-contrast"]')).toHaveCount(0);
@@ -82,7 +99,7 @@ test("Dark→HC→Dark roundtrip stays dropdown-only and ends on Dark", async ({
   await page.waitForTimeout(300);
   expect(await page.evaluate(() => document.documentElement.getAttribute("data-theme")))
     .toBe("high-contrast");
-  expect(await settingsCardIconTileBackground(page)).not.toBe("rgb(255, 255, 255)");
+  expect(await settingsPaneBackground(page)).toBe(HIGH_CONTRAST_PANE_BG);
 
   // HC → Dark via dropdown
   await selectSettingsTheme(page, "Dark (default)");
@@ -94,5 +111,5 @@ test("Dark→HC→Dark roundtrip stays dropdown-only and ends on Dark", async ({
   }));
   expect(state.attr).toBe("dark");
   expect(state.ls).toBe("dark");
-  expect(await settingsCardIconTileBackground(page)).not.toBe("rgb(255, 255, 255)");
+  expect(await settingsPaneBackground(page)).toBe(DARK_PANE_BG);
 });

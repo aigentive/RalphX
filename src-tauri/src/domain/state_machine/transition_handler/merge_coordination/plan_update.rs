@@ -29,13 +29,14 @@ pub(crate) enum PlanUpdateResult {
 /// `PlanUpdateResult::Conflicts` so the caller can route to the merger agent.
 ///
 /// Only runs when `target_branch != base_branch` (i.e., target is a plan branch).
+#[cfg(test)]
 pub(crate) async fn update_plan_from_main(
     repo_path: &Path,
     target_branch: &str,
     base_branch: &str,
     project: &crate::domain::entities::Project,
     task_id_str: &str,
-    app_handle: Option<&tauri::AppHandle>,
+    event_sink: Option<&dyn ralphx_events::EventSink>,
 ) -> PlanUpdateResult {
     update_plan_from_main_with_options(
         repo_path,
@@ -43,7 +44,7 @@ pub(crate) async fn update_plan_from_main(
         base_branch,
         project,
         task_id_str,
-        app_handle,
+        event_sink,
         true,
     )
     .await
@@ -59,7 +60,7 @@ pub(crate) async fn update_plan_from_main_isolated(
     base_branch: &str,
     project: &crate::domain::entities::Project,
     task_id_str: &str,
-    app_handle: Option<&tauri::AppHandle>,
+    event_sink: Option<&dyn ralphx_events::EventSink>,
 ) -> PlanUpdateResult {
     update_plan_from_main_with_options(
         repo_path,
@@ -67,10 +68,24 @@ pub(crate) async fn update_plan_from_main_isolated(
         base_branch,
         project,
         task_id_str,
-        app_handle,
+        event_sink,
         false,
     )
     .await
+}
+
+fn is_project_primary_checkout(
+    repo_path: &Path,
+    project: &crate::domain::entities::Project,
+) -> bool {
+    let project_path = Path::new(project.working_directory.as_str());
+    let repo_path = repo_path
+        .canonicalize()
+        .unwrap_or_else(|_| repo_path.to_path_buf());
+    let project_path = project_path
+        .canonicalize()
+        .unwrap_or_else(|_| project_path.to_path_buf());
+    repo_path == project_path
 }
 
 async fn update_plan_from_main_with_options(
@@ -79,7 +94,7 @@ async fn update_plan_from_main_with_options(
     base_branch: &str,
     project: &crate::domain::entities::Project,
     task_id_str: &str,
-    app_handle: Option<&tauri::AppHandle>,
+    event_sink: Option<&dyn ralphx_events::EventSink>,
     allow_primary_checkout_merge: bool,
 ) -> PlanUpdateResult {
     // Only update when merging to a plan branch (not the source/base branch itself)
@@ -135,7 +150,7 @@ async fn update_plan_from_main_with_options(
     }
 
     super::emit_merge_progress(
-        app_handle,
+        event_sink,
         task_id_str,
         MergePhase::programmatic_merge(),
         MergePhaseStatus::Started,
@@ -145,12 +160,13 @@ async fn update_plan_from_main_with_options(
         ),
     );
 
-    // Use checkout-free merge if target is already checked out
+    // Use checkout-free merge if target is already checked out in this repo/worktree.
     let current_branch = GitService::get_current_branch(repo_path)
         .await
         .unwrap_or_default();
     if current_branch == target_branch {
-        if !allow_primary_checkout_merge {
+        let is_primary_checkout = is_project_primary_checkout(repo_path, project);
+        if !allow_primary_checkout_merge && is_primary_checkout {
             tracing::warn!(
                 task_id = task_id_str,
                 target_branch = %target_branch,
@@ -161,7 +177,7 @@ async fn update_plan_from_main_with_options(
                 "Refusing to update plan branch '{target_branch}' in the primary checkout"
             ));
         }
-        // Target is checked out in the main repo — merge the source/base branch directly
+        // Target is checked out here — merge the source/base branch directly.
         match GitService::merge_branch(repo_path, base_branch, target_branch).await {
             Ok(result) => {
                 let sha = match &result {

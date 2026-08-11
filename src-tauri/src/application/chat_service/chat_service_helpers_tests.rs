@@ -1,6 +1,5 @@
 use super::*;
 use crate::domain::agents::AgentHarnessKind;
-use crate::infrastructure::agents::claude::agent_names::AGENT_PLAN_VERIFIER;
 
 #[test]
 fn test_resolve_agent_review_approved_returns_review_history() {
@@ -33,80 +32,15 @@ fn test_resolve_agent_ideation_accepted_returns_readonly() {
 }
 
 #[test]
-fn test_resolve_agent_ideation_verification_returns_plan_verifier() {
-    // Verification sessions route to ralphx-plan-verifier (prevents infinite cascade)
+fn test_legacy_verification_purpose_uses_normal_ideation_agent() {
     let agent = resolve_agent(&ChatContextType::Ideation, Some("verification"));
-    assert_eq!(agent, AGENT_PLAN_VERIFIER);
-}
-
-#[test]
-fn test_resolve_agent_ideation_verification_overrides_team_mode() {
-    // Verification purpose takes priority over team_mode
-    let agent =
-        resolve_agent_with_team_mode(&ChatContextType::Ideation, Some("verification"), true);
-    assert_eq!(agent, AGENT_PLAN_VERIFIER);
-}
-
-#[test]
-fn test_resolve_agent_team_mode_ideation_returns_team_lead() {
-    let agent = resolve_agent_with_team_mode(&ChatContextType::Ideation, None, true);
-    assert_eq!(agent, AGENT_IDEATION_TEAM_LEAD);
-}
-
-#[test]
-fn test_resolve_agent_team_mode_execution_returns_worker_team() {
-    let agent = resolve_agent_with_team_mode(&ChatContextType::TaskExecution, None, true);
-    assert_eq!(agent, AGENT_WORKER_TEAM);
-}
-
-#[test]
-fn test_resolve_agent_team_mode_project_falls_back_to_default() {
-    // Contexts without team variants fall back to defaults
-    let agent = resolve_agent_with_team_mode(&ChatContextType::Project, None, true);
-    assert_eq!(agent, AGENT_CHAT_PROJECT);
-}
-
-#[test]
-fn test_resolve_agent_team_mode_false_returns_default() {
-    let agent = resolve_agent_with_team_mode(&ChatContextType::Ideation, None, false);
     assert_eq!(agent, AGENT_ORCHESTRATOR_IDEATION);
 }
 
 #[test]
-fn test_resolve_agent_team_mode_status_overrides_team() {
-    // Status-specific rules take priority over team_mode
-    let agent = resolve_agent_with_team_mode(&ChatContextType::Ideation, Some("accepted"), true);
-    assert_eq!(agent, AGENT_ORCHESTRATOR_IDEATION_READONLY);
-}
-
-#[test]
-fn test_effective_team_mode_for_harness_keeps_claude_team_mode() {
-    assert!(effective_team_mode_for_harness(
-        true,
-        AgentHarnessKind::Claude
-    ));
-}
-
-#[test]
-fn test_effective_team_mode_for_harness_disables_codex_team_mode() {
-    assert!(!effective_team_mode_for_harness(
-        true,
-        AgentHarnessKind::Codex
-    ));
-}
-
-#[test]
-fn test_harness_supports_team_mode_only_for_claude() {
-    assert!(harness_supports_team_mode(AgentHarnessKind::Claude));
-    assert!(!harness_supports_team_mode(AgentHarnessKind::Codex));
-}
-
-#[test]
-fn test_effective_team_mode_for_harness_respects_requested_false() {
-    assert!(!effective_team_mode_for_harness(
-        false,
-        AgentHarnessKind::Claude
-    ));
+fn test_rx_native_team_is_supported_by_standard_harnesses() {
+    assert!(harness_supports_rx_native_team(AgentHarnessKind::Claude));
+    assert!(harness_supports_rx_native_team(AgentHarnessKind::Codex));
 }
 
 #[test]
@@ -160,6 +94,31 @@ fn test_harness_supports_merge_completion_watcher_only_for_claude() {
     ));
     assert!(!harness_supports_merge_completion_watcher(
         AgentHarnessKind::Codex
+    ));
+}
+
+#[test]
+fn fresh_provider_session_policy_rejects_implicit_workflow_continuation() {
+    assert!(should_start_fresh_provider_session(
+        false,
+        false,
+        Some("ralphx-pr-fixer")
+    ));
+    assert!(should_start_fresh_provider_session(false, true, None));
+    assert!(should_start_fresh_provider_session(true, false, None));
+    assert!(!should_start_fresh_provider_session(false, false, None));
+}
+
+#[test]
+fn provider_session_model_compatibility_requires_an_exact_known_match() {
+    assert!(provider_session_model_matches_requested(None, "gpt-5.5"));
+    assert!(provider_session_model_matches_requested(
+        Some("gpt-5.5"),
+        "gpt-5.5"
+    ));
+    assert!(!provider_session_model_matches_requested(
+        Some("gpt-5.6"),
+        "gpt-5.5"
     ));
 }
 

@@ -10,10 +10,13 @@ use crate::application::git_service::{CommitInfo, DiffStats, GitService};
 use crate::application::runtime_factory::{
     build_task_scheduler_with_fallback, build_transition_service_with_fallback, RuntimeFactoryDeps,
 };
+use crate::application::task_diff_base::read_task_diff_stats_from_resolved_base;
 use crate::application::{AppState, TaskTransitionService};
 use crate::commands::execution_commands::AGENT_ACTIVE_STATUSES;
 use crate::commands::ExecutionState;
-use crate::domain::entities::{GitMode, InternalStatus, PlanBranch, ProjectId, TaskId};
+use crate::domain::entities::{
+    GitMode, InternalStatus, PlanBranch, ProjectId, TaskCategory, TaskId,
+};
 use crate::domain::repositories::ExecutionSettingsRepository;
 use crate::domain::state_machine::services::TaskScheduler;
 
@@ -209,8 +212,13 @@ pub async fn get_task_diff_stats(
     task_id: String,
     state: State<'_, AppState>,
 ) -> Result<TaskDiffStatsResponse, String> {
-    let task_id = TaskId::from_string(task_id);
+    get_task_diff_stats_for_state(TaskId::from_string(task_id), state.inner()).await
+}
 
+pub async fn get_task_diff_stats_for_state(
+    task_id: TaskId,
+    state: &AppState,
+) -> Result<TaskDiffStatsResponse, String> {
     // Get task
     let task = state
         .task_repo
@@ -227,19 +235,10 @@ pub async fn get_task_diff_stats(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Project not found: {}", task.project_id.as_str()))?;
 
-    let base_branch = project.base_branch.as_deref().unwrap_or("main");
-
-    // Determine working path — worktree path if available, else project dir
-    let working_path = task
-        .worktree_path
-        .as_ref()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(&project.working_directory));
-
-    // Get diff stats
-    let stats = GitService::get_diff_stats(&working_path, base_branch)
-        .await
-        .map_err(|e| e.to_string())?;
+    let stats =
+        read_task_diff_stats_from_resolved_base(state, &task, &project, "tauri task diff stats")
+            .await
+            .map_err(|e| e.to_string())?;
 
     Ok(TaskDiffStatsResponse::from(stats))
 }
@@ -268,6 +267,30 @@ pub async fn resolve_merge_conflict(
 
     // Validate task is in a resolvable merge state
     ensure_resolve_merge_status(task.internal_status)?;
+    if crate::domain::state_machine::transition_handler::task_has_pr_branch_publication_failure(
+        &task,
+    ) {
+        return Err(
+            "This merge was verified locally, but publishing the PR branch failed. Retry PR publication instead of marking the merge resolved manually."
+                .to_string(),
+        );
+    }
+
+    let linked_plan_branch = if task.category == TaskCategory::PlanMerge {
+        state
+            .plan_branch_repo
+            .get_by_merge_task_id(&task_id_parsed)
+            .await
+            .map_err(|e| {
+                format!(
+                    "Failed to verify linked plan branch before marking merge resolved: {}",
+                    e
+                )
+            })?
+    } else {
+        None
+    };
+    ensure_manual_plan_merge_resolution_allowed(&task, linked_plan_branch.as_ref())?;
 
     // Get project
     let project = state
@@ -438,6 +461,10 @@ async fn retry_merge_inner(
         .as_ref()
         .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
         .unwrap_or_else(|| serde_json::json!({}));
+    let is_pr_branch_publication_failure =
+        crate::domain::state_machine::transition_handler::task_has_pr_branch_publication_failure(
+            &task,
+        );
 
     // Check with 60s staleness: timestamp-based guard auto-expires if background task crashed
     let retry_in_progress = metadata_json
@@ -483,12 +510,15 @@ async fn retry_merge_inner(
     // explicit user actions.
     meta_obj.insert("validation_revert_count".to_string(), serde_json::json!(0));
     meta_obj.remove("merge_failure_source");
-    // Reset merge recovery event log so auto-retry counters (which count
-    // AutoRetryTriggered / AttemptFailed events) restart from zero.
+    // Reset generic merge recovery event logs so auto-retry counters restart from zero.
+    // PR branch publication failures keep their event history for incident visibility because
+    // the retry re-enters the same merge path only to re-run the publication gate.
     // Also clear the circuit breaker on manual retry — user is explicitly requesting a retry.
     if let Some(recovery_val) = meta_obj.get_mut("merge_recovery") {
         if let Some(recovery_obj) = recovery_val.as_object_mut() {
-            recovery_obj.insert("events".to_string(), serde_json::json!([]));
+            if !is_pr_branch_publication_failure {
+                recovery_obj.insert("events".to_string(), serde_json::json!([]));
+            }
             recovery_obj.insert("last_state".to_string(), serde_json::json!("retrying"));
             // Clear circuit breaker on manual retry
             recovery_obj.insert(
@@ -509,6 +539,7 @@ async fn retry_merge_inner(
     tracing::info!(
         task_id = task_id_parsed.as_str(),
         skip_validation = skip_validation.unwrap_or(false),
+        pr_branch_publication_failure = is_pr_branch_publication_failure,
         "Retry merge accepted, spawning background execution"
     );
 
@@ -598,6 +629,10 @@ async fn execute_merge_retry_background(
 
     let deps = RuntimeFactoryDeps {
         task_repo: Arc::clone(&task_repo),
+        task_step_repo: None,
+        validation_run_repo: None,
+        external_events_repo: None,
+        webhook_publisher: None,
         task_dependency_repo: Arc::clone(&task_dependency_repo),
         project_repo: Arc::clone(&project_repo),
         artifact_repo: Arc::clone(&artifact_repo),
@@ -618,11 +653,19 @@ async fn execute_merge_retry_background(
             .as_ref()
             .and_then(|handle| handle.try_state::<AppState>())
             .map(|app_state| Arc::clone(&app_state.agent_provider_settings_repo)),
+        manual_role_default_service: app_handle_opt
+            .as_ref()
+            .and_then(|handle| handle.try_state::<AppState>())
+            .map(|app_state| Arc::new(app_state.manual_role_default_service())),
         review_repo: app_handle_opt
             .as_ref()
             .and_then(|handle| handle.try_state::<AppState>())
             .map(|app_state| Arc::clone(&app_state.review_repo)),
         plan_branch_repo: Some(Arc::clone(&plan_branch_repo)),
+        branch_update_repo: app_handle_opt
+            .as_ref()
+            .and_then(|handle| handle.try_state::<AppState>())
+            .map(|app_state| Arc::clone(&app_state.branch_update_repo)),
         agent_conversation_workspace_repo: app_handle_opt
             .as_ref()
             .and_then(|handle| handle.try_state::<AppState>())
@@ -726,6 +769,43 @@ fn ensure_resolve_merge_status(status: InternalStatus) -> Result<(), String> {
     ))
 }
 
+fn ensure_manual_plan_merge_resolution_allowed(
+    task: &crate::domain::entities::Task,
+    plan_branch: Option<&PlanBranch>,
+) -> Result<(), String> {
+    if task.category != TaskCategory::PlanMerge {
+        return Ok(());
+    }
+
+    let Some(plan_branch) = plan_branch else {
+        return Err(
+            "Cannot mark plan merge as resolved because the linked plan branch could not be verified. Use Retry Merge or wait for plan branch recovery before completing the merge."
+                .to_string(),
+        );
+    };
+
+    if !plan_branch.pr_eligible || plan_branch.pr_number.is_none() {
+        return Ok(());
+    }
+
+    if matches!(
+        plan_branch.pr_status,
+        Some(crate::domain::entities::plan_branch::PrStatus::Merged)
+    ) {
+        return Ok(());
+    }
+
+    let pr_number = plan_branch.pr_number.expect("checked above");
+    let pr_status = plan_branch
+        .pr_status
+        .map(|status| status.to_db_string())
+        .unwrap_or("unknown");
+    Err(format!(
+        "Cannot mark PR-backed plan merge as resolved while PR #{} is {}. Use Retry Merge for local recovery, or merge/reopen the PR and let RalphX finish the PR flow.",
+        pr_number, pr_status
+    ))
+}
+
 fn ensure_retry_merge_status(status: InternalStatus) -> Result<(), String> {
     if matches!(
         status,
@@ -793,7 +873,9 @@ mod transition_guard_tests {
     use super::*;
     use crate::application::AppState;
     use crate::commands::ExecutionState;
-    use crate::domain::entities::{Project, Task};
+    use crate::domain::entities::{
+        plan_branch::PrStatus, ArtifactId, IdeationSessionId, Project, Task, TaskCategory,
+    };
     use std::sync::Arc;
 
     #[test]
@@ -809,6 +891,74 @@ mod transition_guard_tests {
         assert!(error.contains("MergeConflict"));
         assert!(error.contains("MergeIncomplete"));
         assert!(error.contains("Approved"));
+    }
+
+    #[test]
+    fn resolve_merge_rejects_open_pr_backed_plan_merge() {
+        let project = Project::new("Test Project".to_string(), "/test/path".to_string());
+        let task = Task::new_with_category(
+            project.id.clone(),
+            "Merge plan into main".to_string(),
+            TaskCategory::PlanMerge,
+        );
+        let mut plan_branch = PlanBranch::new(
+            ArtifactId::new(),
+            IdeationSessionId::new(),
+            project.id.clone(),
+            "ralphx/test/agent-plan".to_string(),
+            "main".to_string(),
+        );
+        plan_branch.merge_task_id = Some(task.id.clone());
+        plan_branch.pr_eligible = true;
+        plan_branch.pr_number = Some(600);
+        plan_branch.pr_status = Some(PrStatus::Open);
+
+        let error = ensure_manual_plan_merge_resolution_allowed(&task, Some(&plan_branch))
+            .expect_err("open PR-backed plan merge must not be marked resolved manually");
+
+        assert!(error.contains("PR #600"));
+        assert!(error.contains("Open"));
+        assert!(error.contains("Retry Merge"));
+    }
+
+    #[test]
+    fn resolve_merge_rejects_plan_merge_without_linked_branch() {
+        let project = Project::new("Test Project".to_string(), "/test/path".to_string());
+        let task = Task::new_with_category(
+            project.id.clone(),
+            "Merge plan into main".to_string(),
+            TaskCategory::PlanMerge,
+        );
+
+        let error = ensure_manual_plan_merge_resolution_allowed(&task, None)
+            .expect_err("plan merge must not complete without a linked plan branch");
+
+        assert!(error.contains("linked plan branch"));
+        assert!(error.contains("Retry Merge"));
+    }
+
+    #[test]
+    fn resolve_merge_allows_merged_pr_backed_plan_merge() {
+        let project = Project::new("Test Project".to_string(), "/test/path".to_string());
+        let task = Task::new_with_category(
+            project.id.clone(),
+            "Merge plan into main".to_string(),
+            TaskCategory::PlanMerge,
+        );
+        let mut plan_branch = PlanBranch::new(
+            ArtifactId::new(),
+            IdeationSessionId::new(),
+            project.id.clone(),
+            "ralphx/test/agent-plan".to_string(),
+            "main".to_string(),
+        );
+        plan_branch.merge_task_id = Some(task.id.clone());
+        plan_branch.pr_eligible = true;
+        plan_branch.pr_number = Some(600);
+        plan_branch.pr_status = Some(PrStatus::Merged);
+
+        ensure_manual_plan_merge_resolution_allowed(&task, Some(&plan_branch))
+            .expect("merged PR-backed plan merge may complete");
     }
 
     #[test]
@@ -990,7 +1140,7 @@ pub async fn change_project_git_mode(
 fn create_transition_service(
     state: &AppState,
     execution_state: &Arc<ExecutionState>,
-) -> TaskTransitionService<tauri::Wry> {
+) -> TaskTransitionService {
     // Create scheduler for post-merge scheduling (unblocked plan_merge tasks)
     let scheduler_concrete =
         Arc::new(state.build_task_scheduler_for_runtime(

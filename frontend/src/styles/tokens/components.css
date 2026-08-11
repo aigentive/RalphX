@@ -15,7 +15,7 @@
 
 :root {
   /* ============================================================================
-   * Card — SectionCard and most content blocks
+   * Card — settings cards and most content blocks
    * ============================================================================ */
   --card-bg:           var(--bg-elevated);
   --card-border:       var(--border-subtle);
@@ -66,6 +66,17 @@
   --dialog-control-border-hover: var(--border-strong);
   --dialog-nav-active-bg: var(--bg-hover);
   --dialog-nav-active-border: var(--border-default);
+  --dialog-nav-hover-bg: var(--bg-surface);
+  --dialog-hover-bg: var(--bg-hover);
+  --dialog-tab-bg: var(--bg-surface);
+  --dialog-tab-active-bg: var(--bg-hover);
+  --dialog-tab-active-text: var(--text-primary);
+  --dialog-search-results-bg: var(--bg-elevated);
+  /* Dialog-scoped secondary/tertiary ink. Kept separate from the global
+     --text-muted/--text-subtle so raising legibility inside the settings
+     modal does not shift every other surface. */
+  --dialog-text-muted:  var(--text-muted);
+  --dialog-text-subtle: var(--text-subtle);
   --dialog-toggle-off-bg: var(--border-default);
   --dialog-warn:         var(--status-warning);
   --dialog-warn-bg:      var(--status-warning-muted);

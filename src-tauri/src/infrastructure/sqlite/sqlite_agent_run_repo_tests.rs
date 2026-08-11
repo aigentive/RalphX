@@ -1,6 +1,11 @@
 use super::*;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort, ProviderSessionRef};
-use crate::domain::entities::{AgentRunAttribution, AgentRunUsage, IdeationSessionId};
+use crate::domain::entities::agent_run::PersonaRunAttribution;
+use crate::domain::entities::{
+    AgentRunActionKind, AgentRunAttribution, AgentRunUsage, IdeationSessionId,
+    ProviderUsageSnapshot, RuntimeSource, UsageCapture, UsageProvenance,
+};
+use crate::domain::repositories::{ORPHANED_AGENT_RUN_ON_APP_RESTART, PRUNED_STALE_AGENT_RUN};
 use crate::testing::SqliteTestDb;
 use std::collections::HashSet;
 
@@ -64,6 +69,38 @@ async fn test_get_interrupted_conversations_returns_orphaned_conversation() {
     assert_eq!(
         result[0].last_run.error_message,
         Some("Orphaned on app restart".to_string())
+    );
+}
+
+#[tokio::test]
+async fn test_get_interrupted_conversations_preserves_automation_ownership_markers() {
+    let (db, agent_run_repo) = setup_repo();
+    let automation_id = AutomationId::new();
+    let automation_run_id = AutomationRunId::new();
+    let mut conversation = ChatConversation::new_ideation(IdeationSessionId::new());
+    conversation.claude_session_id = Some("automation-session".to_string());
+    conversation.automation_id = Some(automation_id.clone());
+    conversation.automation_run_id = Some(automation_run_id.clone());
+    let conversation = db.insert_conversation(conversation);
+    let mut run = AgentRun::new(conversation.id);
+    run.status = AgentRunStatus::Cancelled;
+    run.completed_at = Some(Utc::now());
+    run.error_message = Some("Orphaned on app restart".to_string());
+    agent_run_repo.create(run).await.unwrap();
+
+    let interrupted = agent_run_repo
+        .get_interrupted_conversations()
+        .await
+        .unwrap();
+
+    assert_eq!(interrupted.len(), 1);
+    assert_eq!(
+        interrupted[0].conversation.automation_id,
+        Some(automation_id)
+    );
+    assert_eq!(
+        interrupted[0].conversation.automation_run_id,
+        Some(automation_run_id)
     );
 }
 
@@ -276,6 +313,250 @@ async fn test_update_attribution_updates_agent_run_metadata_fields() {
 }
 
 #[tokio::test]
+async fn agent_run_identity_fields_round_trip_in_sqlite() {
+    let (db, repo) = setup_repo();
+    let mut run = AgentRun::new(db.seed_ideation_conversation().id);
+    let run_id = run.id;
+    run.agent_name = Some("ralphx-workspace-reviewer".to_string());
+    run.launch_role = Some("workspace_reviewer".to_string());
+    run.runtime_source = Some(RuntimeSource::RoleDefault);
+
+    repo.create(run).await.unwrap();
+
+    let persisted = repo.get_by_id(&run_id).await.unwrap().unwrap();
+    assert_eq!(
+        persisted.agent_name.as_deref(),
+        Some("ralphx-workspace-reviewer")
+    );
+    assert_eq!(persisted.launch_role.as_deref(), Some("workspace_reviewer"));
+    assert_eq!(persisted.runtime_source, Some(RuntimeSource::RoleDefault));
+}
+
+#[tokio::test]
+async fn persona_run_attribution_round_trips_without_body_content() {
+    let (db, repo) = setup_repo();
+    let conversation = db.seed_ideation_conversation();
+    let run = AgentRun::new(conversation.id);
+    let run_id = run.id;
+    repo.create(run).await.unwrap();
+
+    repo.set_persona_attribution(
+        &run_id,
+        PersonaRunAttribution {
+            persona_id: "persona-design-voice".to_string(),
+            persona_slug: "design-voice".to_string(),
+            persona_version: 2,
+            persona_content_hash: "sha256:body-free-hash".to_string(),
+            injected: true,
+            skipped_reason: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    let persisted = repo.get_by_id(&run_id).await.unwrap().unwrap();
+    assert_eq!(
+        persisted.persona_id.as_deref(),
+        Some("persona-design-voice")
+    );
+    assert_eq!(persisted.persona_slug.as_deref(), Some("design-voice"));
+    assert_eq!(persisted.persona_version, Some(2));
+    assert_eq!(
+        persisted.persona_content_hash.as_deref(),
+        Some("sha256:body-free-hash")
+    );
+    assert_eq!(persisted.persona_injected, Some(true));
+    assert_eq!(persisted.persona_skipped_reason, None);
+    let encoded = serde_json::to_string(&persisted).unwrap();
+    assert!(!encoded.contains("secret persona body"));
+}
+
+#[tokio::test]
+async fn persona_run_attribution_defaults_to_null_for_new_run() {
+    let (db, repo) = setup_repo();
+    let conversation = db.seed_ideation_conversation();
+    let run = AgentRun::new(conversation.id);
+    let run_id = run.id;
+    repo.create(run).await.unwrap();
+
+    let persisted = repo.get_by_id(&run_id).await.unwrap().unwrap();
+    assert_eq!(persisted.persona_id, None);
+    assert_eq!(persisted.persona_slug, None);
+    assert_eq!(persisted.persona_version, None);
+    assert_eq!(persisted.persona_content_hash, None);
+    assert_eq!(persisted.persona_injected, None);
+    assert_eq!(persisted.persona_skipped_reason, None);
+}
+
+#[tokio::test]
+async fn persona_run_attribution_stays_null_when_no_persona_is_set() {
+    let (db, repo) = setup_repo();
+    let conversation = db.seed_ideation_conversation();
+    let run = AgentRun::new(conversation.id);
+    let run_id = run.id;
+    repo.create(run).await.unwrap();
+    repo.complete(&run_id).await.unwrap();
+
+    let persisted = repo.get_by_id(&run_id).await.unwrap().unwrap();
+    assert!(persisted.persona_id.is_none());
+    assert!(persisted.persona_injected.is_none());
+}
+
+#[tokio::test]
+async fn complete_if_running_never_resurrects_terminal_or_missing_runs() {
+    let (db, repo) = setup_repo();
+    let conversation = db.seed_ideation_conversation();
+    let running = AgentRun::new(conversation.id);
+    let running_id = running.id;
+    repo.create(running).await.unwrap();
+
+    assert!(repo.complete_if_running(&running_id).await.unwrap());
+    assert!(!repo.complete_if_running(&running_id).await.unwrap());
+
+    let mut cancelled = AgentRun::new(conversation.id);
+    cancelled.status = AgentRunStatus::Cancelled;
+    let cancelled_id = cancelled.id;
+    repo.create(cancelled).await.unwrap();
+    assert!(!repo.complete_if_running(&cancelled_id).await.unwrap());
+    assert_eq!(
+        repo.get_by_id(&cancelled_id).await.unwrap().unwrap().status,
+        AgentRunStatus::Cancelled
+    );
+    assert!(!repo.complete_if_running(&AgentRunId::new()).await.unwrap());
+}
+
+#[tokio::test]
+async fn prune_cancel_repair_is_attributed_idempotent_and_fail_closed() {
+    let (db, repo) = setup_repo();
+    let conversation = db.seed_ideation_conversation();
+
+    let marked = AgentRun::new(conversation.id);
+    let marked_id = marked.id;
+    repo.create(marked).await.unwrap();
+    repo.cancel_with_reason(&marked_id, PRUNED_STALE_AGENT_RUN)
+        .await
+        .unwrap();
+    let marked_cancel = repo.get_by_id(&marked_id).await.unwrap().unwrap();
+    assert_eq!(marked_cancel.status, AgentRunStatus::Cancelled);
+    assert_eq!(
+        marked_cancel.error_message.as_deref(),
+        Some(PRUNED_STALE_AGENT_RUN)
+    );
+    assert!(repo.complete_if_prune_cancelled(&marked_id).await.unwrap());
+    assert!(!repo.complete_if_prune_cancelled(&marked_id).await.unwrap());
+
+    let user_cancelled = AgentRun::new(conversation.id);
+    let user_cancelled_id = user_cancelled.id;
+    repo.create(user_cancelled).await.unwrap();
+    repo.cancel(&user_cancelled_id).await.unwrap();
+
+    let mut failed = AgentRun::new(conversation.id);
+    failed.fail("provider failed");
+    let failed_id = failed.id;
+    repo.create(failed).await.unwrap();
+
+    let mut completed = AgentRun::new(conversation.id);
+    completed.complete();
+    let completed_id = completed.id;
+    repo.create(completed).await.unwrap();
+    repo.cancel_with_reason(&completed_id, PRUNED_STALE_AGENT_RUN)
+        .await
+        .unwrap();
+
+    repo.cancel_with_reason(&failed_id, PRUNED_STALE_AGENT_RUN)
+        .await
+        .unwrap();
+
+    let mut restart_orphan = AgentRun::new(conversation.id);
+    restart_orphan.status = AgentRunStatus::Cancelled;
+    restart_orphan.error_message = Some(ORPHANED_AGENT_RUN_ON_APP_RESTART.to_string());
+    let restart_orphan_id = restart_orphan.id;
+    repo.create(restart_orphan).await.unwrap();
+
+    for id in [
+        &user_cancelled_id,
+        &failed_id,
+        &completed_id,
+        &restart_orphan_id,
+    ] {
+        assert!(!repo.complete_if_prune_cancelled(id).await.unwrap());
+    }
+    assert!(!repo
+        .complete_if_prune_cancelled(&AgentRunId::new())
+        .await
+        .unwrap());
+
+    assert_eq!(
+        repo.get_by_id(&user_cancelled_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        AgentRunStatus::Cancelled
+    );
+    assert_eq!(
+        repo.get_by_id(&failed_id).await.unwrap().unwrap().status,
+        AgentRunStatus::Failed
+    );
+    let completed = repo.get_by_id(&completed_id).await.unwrap().unwrap();
+    assert_eq!(completed.status, AgentRunStatus::Completed);
+    assert_eq!(completed.error_message, None);
+    assert_eq!(
+        repo.get_by_id(&restart_orphan_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .error_message
+            .as_deref(),
+        Some(ORPHANED_AGENT_RUN_ON_APP_RESTART)
+    );
+}
+
+#[tokio::test]
+async fn active_action_query_ignores_detached_conversation() {
+    let (db, repo) = setup_repo();
+    let owner = db.seed_ideation_conversation();
+    let detached = db.seed_ideation_conversation();
+    let mut owner_run = AgentRun::new(owner.id);
+    owner_run.action_kind = Some(AgentRunActionKind::VerifyPlan);
+    owner_run.action_context_id = Some("session-1".to_string());
+    owner_run.action_target_id = Some("artifact-1".to_string());
+    let owner_id = owner_run.id;
+    repo.create(owner_run).await.unwrap();
+
+    let mut detached_run = AgentRun::new(detached.id);
+    detached_run.action_kind = Some(AgentRunActionKind::VerifyPlan);
+    detached_run.action_context_id = Some("session-1".to_string());
+    detached_run.action_target_id = Some("artifact-1".to_string());
+    detached_run.started_at = Utc::now() + chrono::Duration::seconds(1);
+    repo.create(detached_run).await.unwrap();
+
+    let found = repo
+        .get_active_action(
+            &owner.id,
+            AgentRunActionKind::VerifyPlan,
+            "session-1",
+            "artifact-1",
+        )
+        .await
+        .unwrap()
+        .expect("owner action");
+    assert_eq!(found.id, owner_id);
+
+    let latest = repo
+        .get_latest_action(
+            &owner.id,
+            AgentRunActionKind::VerifyPlan,
+            "session-1",
+            "artifact-1",
+        )
+        .await
+        .unwrap()
+        .expect("latest owner action");
+    assert_eq!(latest.id, owner_id);
+}
+
+#[tokio::test]
 async fn test_get_by_id_not_found() {
     let (_db, repo) = setup_repo();
 
@@ -350,6 +631,95 @@ async fn test_update_usage_persists_fields() {
     assert_eq!(retrieved.estimated_usd, Some(0.0042));
 }
 
+#[tokio::test]
+async fn replace_usage_capture_round_trips_raw_snapshot_and_clears_stale_normalized_fields() {
+    let (db, repo) = setup_repo();
+    let conv = db.seed_ideation_conversation();
+    let run = AgentRun::new(conv.id);
+    let run_id = run.id;
+    repo.create(run).await.unwrap();
+
+    repo.replace_usage_capture(
+        &run_id,
+        &UsageCapture::normalized(
+            AgentRunUsage {
+                input_tokens: Some(100),
+                output_tokens: Some(20),
+                cache_creation_tokens: None,
+                cache_read_tokens: Some(80),
+                estimated_usd: Some(0.01),
+            },
+            UsageProvenance::ProviderTurnDelta,
+        ),
+    )
+    .await
+    .unwrap();
+
+    let raw = ProviderUsageSnapshot::from_usage(AgentRunUsage {
+        input_tokens: Some(500),
+        output_tokens: Some(40),
+        cache_creation_tokens: None,
+        cache_read_tokens: Some(450),
+        estimated_usd: Some(0.03),
+    });
+    repo.replace_usage_capture(&run_id, &UsageCapture::cumulative_baseline(raw.clone()))
+        .await
+        .unwrap();
+
+    let retrieved = repo.get_by_id(&run_id).await.unwrap().unwrap();
+    assert_eq!(retrieved.input_tokens, None);
+    assert_eq!(retrieved.output_tokens, None);
+    assert_eq!(retrieved.cache_read_tokens, None);
+    assert_eq!(retrieved.estimated_usd, None);
+    assert_eq!(
+        retrieved.usage_provenance,
+        Some(UsageProvenance::CumulativeBaselineOnly)
+    );
+    assert_eq!(retrieved.raw_usage_snapshot, Some(raw));
+}
+
+#[tokio::test]
+async fn replace_usage_capture_rejects_missing_sqlite_run() {
+    let (_db, repo) = setup_repo();
+    let missing_id = AgentRunId::new();
+
+    let error = repo
+        .replace_usage_capture(
+            &missing_id,
+            &UsageCapture::normalized(
+                AgentRunUsage {
+                    input_tokens: Some(10),
+                    ..AgentRunUsage::default()
+                },
+                UsageProvenance::ProviderTurnDelta,
+            ),
+        )
+        .await
+        .expect_err("a missing canonical run must fail closed");
+
+    assert!(matches!(error, crate::error::AppError::NotFound(_)));
+}
+
+#[tokio::test]
+async fn get_by_id_rejects_unknown_non_null_usage_provenance() {
+    let (db, repo) = setup_repo();
+    let conv = db.seed_ideation_conversation();
+    let run = AgentRun::new(conv.id);
+    let run_id = run.id;
+    repo.create(run).await.unwrap();
+    db.with_connection(|conn| {
+        conn.execute(
+            "UPDATE agent_runs SET usage_provenance = 'future_capture_kind' WHERE id = ?1",
+            [run_id.as_str()],
+        )
+        .unwrap();
+    });
+
+    repo.get_by_id(&run_id)
+        .await
+        .expect_err("unknown provenance must not be reclassified as legacy data");
+}
+
 // ─── get_latest / get_active ─────────────────────────────────────────────────
 
 #[tokio::test]
@@ -380,6 +750,46 @@ async fn test_get_latest_for_conversation_empty() {
         .await
         .unwrap()
         .is_none());
+}
+
+#[tokio::test]
+async fn test_latest_completed_provider_session_ignores_newer_failed_and_foreign_runs() {
+    let (db, repo) = setup_repo();
+    let conv = db.seed_ideation_conversation();
+    let mut owning_run = AgentRun::new(conv.id);
+    owning_run.status = AgentRunStatus::Completed;
+    owning_run.started_at = Utc::now() - chrono::Duration::minutes(4);
+    owning_run.harness = Some(AgentHarnessKind::Codex);
+    owning_run.provider_session_id = Some("codex-session".to_string());
+    owning_run.effective_model_id = Some("gpt-5.6-sol".to_string());
+    let owning_id = owning_run.id;
+    repo.create(owning_run).await.unwrap();
+
+    let mut failed = AgentRun::new(conv.id);
+    failed.status = AgentRunStatus::Failed;
+    failed.started_at = Utc::now();
+    failed.harness = Some(AgentHarnessKind::Codex);
+    repo.create(failed).await.unwrap();
+
+    let mut foreign = AgentRun::new(conv.id);
+    foreign.status = AgentRunStatus::Completed;
+    foreign.started_at = Utc::now() - chrono::Duration::minutes(1);
+    foreign.harness = Some(AgentHarnessKind::Claude);
+    foreign.provider_session_id = Some("codex-session".to_string());
+    repo.create(foreign).await.unwrap();
+
+    let found = repo
+        .get_latest_completed_for_provider_session(
+            &conv.id,
+            AgentHarnessKind::Codex,
+            "codex-session",
+        )
+        .await
+        .unwrap()
+        .expect("owning completed provider run");
+
+    assert_eq!(found.id, owning_id);
+    assert_eq!(found.effective_model_id.as_deref(), Some("gpt-5.6-sol"));
 }
 
 #[tokio::test]
@@ -449,16 +859,82 @@ async fn test_update_status() {
     let (db, repo) = setup_repo();
     let conv = db.seed_ideation_conversation();
 
-    let run = AgentRun::new(conv.id);
+    for status in [
+        AgentRunStatus::Completed,
+        AgentRunStatus::Failed,
+        AgentRunStatus::Cancelled,
+    ] {
+        let run = AgentRun::new(conv.id);
+        let run_id = run.id;
+        repo.create(run).await.unwrap();
+
+        repo.update_status(&run_id, status).await.unwrap();
+
+        let updated = repo.get_by_id(&run_id).await.unwrap().unwrap();
+        assert_eq!(updated.status, status);
+        assert!(updated.completed_at.is_some());
+    }
+}
+
+#[tokio::test]
+async fn unknown_persisted_runtime_source_hydrates_as_none() {
+    let (db, repo) = setup_repo();
+    let conversation = db.seed_ideation_conversation();
+    let run = AgentRun::new(conversation.id);
     let run_id = run.id;
     repo.create(run).await.unwrap();
 
-    repo.update_status(&run_id, AgentRunStatus::Cancelled)
+    db.with_connection(|conn| {
+        conn.execute(
+            "UPDATE agent_runs SET runtime_source = 'future_runtime_source' WHERE id = ?1",
+            [run_id.as_str()],
+        )
+        .expect("seed unknown runtime source");
+    });
+
+    assert_eq!(
+        repo.get_by_id(&run_id)
+            .await
+            .unwrap()
+            .expect("persisted run")
+            .runtime_source,
+        None
+    );
+}
+
+#[tokio::test]
+async fn update_status_keeps_existing_terminal_timestamp_and_clears_it_for_running() {
+    let (db, repo) = setup_repo();
+    let conv = db.seed_ideation_conversation();
+    let fixed_completed_at = chrono::Utc::now() - chrono::Duration::minutes(1);
+
+    let mut run = AgentRun::new(conv.id);
+    let run_id = run.id;
+    run.completed_at = Some(fixed_completed_at);
+    repo.create(run).await.unwrap();
+
+    repo.update_status(&run_id, AgentRunStatus::Failed)
         .await
         .unwrap();
+    assert_eq!(
+        repo.get_by_id(&run_id)
+            .await
+            .unwrap()
+            .expect("persisted run")
+            .completed_at,
+        Some(fixed_completed_at)
+    );
 
-    let updated = repo.get_by_id(&run_id).await.unwrap().unwrap();
-    assert_eq!(updated.status, AgentRunStatus::Cancelled);
+    repo.update_status(&run_id, AgentRunStatus::Running)
+        .await
+        .unwrap();
+    assert!(repo
+        .get_by_id(&run_id)
+        .await
+        .unwrap()
+        .expect("persisted run")
+        .completed_at
+        .is_none());
 }
 
 #[tokio::test]
@@ -683,4 +1159,68 @@ async fn test_cancel_running_started_before_preserves_current_boot_run() {
     let current = repo.get_by_id(&current_run_id).await.unwrap().unwrap();
     assert_eq!(current.status, AgentRunStatus::Running);
     assert_eq!(current.error_message, None);
+}
+
+#[tokio::test]
+async fn fail_persists_a_bounded_cause_and_keeps_the_terminal_tail() {
+    let (db, repo) = setup_repo();
+    let conversation = db.seed_ideation_conversation();
+    let run = AgentRun::new(conversation.id);
+    let run_id = run.id;
+    repo.create(run).await.unwrap();
+
+    // The original incident stored 124KB of successful ripgrep output here.
+    let oversized_cause = format!(
+        "{}TERMINAL-DETAIL",
+        "successful ripgrep output line\n".repeat(8_000)
+    );
+    assert!(oversized_cause.len() > 100_000);
+
+    repo.fail(&run_id, &oversized_cause).await.unwrap();
+
+    let failed = repo.get_by_id(&run_id).await.unwrap().unwrap();
+    assert_eq!(failed.status, AgentRunStatus::Failed);
+    let stored = failed
+        .error_message
+        .expect("failed run must record a cause");
+    assert!(
+        stored.len() <= 8 * 1024 + 64,
+        "persisted cause must stay bounded, got {} bytes",
+        stored.len()
+    );
+    assert!(
+        stored.ends_with("TERMINAL-DETAIL"),
+        "the terminal detail at the tail must survive truncation"
+    );
+    assert!(stored.contains("bytes elided"), "elision must be explicit");
+}
+
+#[tokio::test]
+async fn fail_persists_short_causes_verbatim() {
+    let (db, repo) = setup_repo();
+    let conversation = db.seed_ideation_conversation();
+    let run = AgentRun::new(conversation.id);
+    let run_id = run.id;
+    repo.create(run).await.unwrap();
+
+    repo.fail(&run_id, "Codex stream ended without a completion signal")
+        .await
+        .unwrap();
+
+    let failed = repo.get_by_id(&run_id).await.unwrap().unwrap();
+    assert_eq!(failed.status, AgentRunStatus::Failed);
+    assert_eq!(
+        failed.error_message.as_deref(),
+        Some("Codex stream ended without a completion signal")
+    );
+}
+
+#[test]
+fn truncate_persisted_error_message_is_utf8_safe() {
+    let multibyte = "é".repeat(20_000);
+    let truncated = truncate_persisted_error_message(&multibyte);
+
+    assert!(truncated.len() < multibyte.len());
+    assert!(truncated.ends_with('é'));
+    assert!(truncated.contains("bytes elided"));
 }

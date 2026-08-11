@@ -375,8 +375,8 @@ As of 2026-04-18 the token migration is **complete** for all non-excluded compon
 | Check | Count | Source |
 |---|---|---|
 | Primitive-token leaks in components | **0** | `grep 'var\(--(gray\|orange\|amber\|yellow-\|blue-\|cvd\|hc\|alpha-)' src/components` |
-| Tailwind default-palette refs | **0** | `grep '\b(bg\|text\|border\|ring\|from\|to\|via)-(red\|green\|blue\|amber\|emerald\|rose\|yellow\|indigo\|purple\|pink\|sky\|slate\|zinc\|neutral\|stone)-[0-9]{2,3}\b' src/components` (excluding `.test.` + WelcomeScreen + BattleModeV2) |
-| Inline `rgba(…)` / `rgb(…)` literals | **0** | `grep 'rgba\(\|rgb\(' src/components` (excluding test/WelcomeScreen/BattleModeV2/`color-mix`) |
+| Tailwind default-palette refs | **0** | `grep '\b(bg\|text\|border\|ring\|from\|to\|via)-(red\|green\|blue\|amber\|emerald\|rose\|yellow\|indigo\|purple\|pink\|sky\|slate\|zinc\|neutral\|stone)-[0-9]{2,3}\b' src/components` (excluding `.test.` + WelcomeScreen) |
+| Inline `rgba(…)` / `rgb(…)` literals | **0** | `grep 'rgba\(\|rgb\(' src/components` (excluding test/WelcomeScreen/`color-mix`) |
 | `bg-surface-hover` references | **0** | Deprecated alias — kept in CSS for emergency safety, not used |
 | Brand hex in live non-doc code | **0** | Docstrings/comments still mention `#ff6b35` for humans — acceptable |
 | Full test suite | **7518 / 7518** | `npx vitest run` |
@@ -388,7 +388,6 @@ These paths are out of scope for token migration:
 | Path | Reason |
 |---|---|
 | `src/components/WelcomeScreen/**` | Marketing splash with an intentional fixed brand palette + radial gradients. Not theme-responsive by design. |
-| `src/components/TaskGraph/battle-v2/BattleModeV2Overlay.tsx` | Neon-cyberpunk game-mode canvas; colours are gameplay art, not UI surface. |
 | `*.test.tsx` / `*.test.ts` | Assertions pin expected token/class names. Update tests when source semantics change. |
 | `src/styles/**` | Token/theme sources. Hardcoded values here are intentional — that's where the values live. |
 
@@ -406,7 +405,7 @@ grep -rEn 'var\(--(gray|orange|amber|yellow-[0-9]|blue-[0-9]|cvd|hc|alpha-)' \
 # Fail the build if any Tailwind default palette leaks into components
 grep -rEn '\b(bg|text|border|ring|from|to|via)-(red|green|blue|amber|emerald|rose|yellow|indigo|purple|pink|sky|slate|zinc|neutral|stone)-[0-9]{2,3}\b' \
   frontend/src/components --include='*.tsx' --include='*.ts' \
-  | grep -v '\.test\.' | grep -v 'WelcomeScreen' | grep -v 'BattleModeV2' \
+  | grep -v '\.test\.' | grep -v 'WelcomeScreen' \
   && { echo "Tailwind palette leak detected"; exit 1; }
 ```
 

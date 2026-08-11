@@ -23,18 +23,18 @@ use axum::{
     Json,
 };
 use ralphx_domain::entities::EventType;
-use ralphx_lib::application::{AppState, TeamService, TeamStateTracker};
 use ralphx_lib::application::chat_service::MockChatService;
+use ralphx_lib::application::AppState;
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
-    IdeationSessionBuilder, IdeationSessionId, Priority,
-    Project, ProjectId, ProposalCategory, TaskProposal,
+    IdeationSessionBuilder, IdeationSessionId, Priority, Project, ProjectId, ProposalCategory,
+    TaskProposal,
 };
 use ralphx_lib::domain::repositories::ExternalEventsRepository;
 use ralphx_lib::domain::state_machine::services::WebhookPublisher as WebhookPublisherTrait;
 use ralphx_lib::http_server::handlers::{
-    auto_propose_with_retry, create_plan_artifact, finalize_proposals, start_ideation_http,
-    post_verification_status, StartIdeationRequest,
+    auto_propose_with_retry, create_plan_artifact, finalize_proposals, post_verification_status,
+    start_ideation_http, StartIdeationRequest,
 };
 use ralphx_lib::http_server::project_scope::ProjectScope;
 use ralphx_lib::http_server::types::{
@@ -78,12 +78,7 @@ impl RecordingWebhookPublisher {
 
 #[async_trait]
 impl WebhookPublisherTrait for RecordingWebhookPublisher {
-    async fn publish(
-        &self,
-        event_type: EventType,
-        project_id: &str,
-        _payload: serde_json::Value,
-    ) {
+    async fn publish(&self, event_type: EventType, project_id: &str, _payload: serde_json::Value) {
         self.calls
             .lock()
             .unwrap()
@@ -103,19 +98,13 @@ fn make_http_state(
     mem_events: Arc<MemoryExternalEventsRepository>,
 ) -> HttpServerState {
     let mut app_state = base_state;
-    app_state.webhook_publisher =
-        Some(Arc::clone(&recording) as Arc<dyn WebhookPublisherTrait>);
-    app_state.external_events_repo =
-        Arc::clone(&mem_events) as Arc<dyn ExternalEventsRepository>;
+    app_state.webhook_publisher = Some(Arc::clone(&recording) as Arc<dyn WebhookPublisherTrait>);
+    app_state.external_events_repo = Arc::clone(&mem_events) as Arc<dyn ExternalEventsRepository>;
     let app_state = Arc::new(app_state);
     let execution_state = Arc::new(ExecutionState::new());
-    let tracker = TeamStateTracker::new();
-    let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
     HttpServerState {
         app_state,
         execution_state,
-        team_tracker: tracker,
-        team_service,
         delegation_service: Default::default(),
     }
 }
@@ -147,8 +136,12 @@ fn make_project(id: &str) -> Project {
 }
 
 fn make_proposal(session_id: IdeationSessionId, title: &str) -> TaskProposal {
-    let mut proposal =
-        TaskProposal::new(session_id, title, ProposalCategory::Feature, Priority::Medium);
+    let mut proposal = TaskProposal::new(
+        session_id,
+        title,
+        ProposalCategory::Feature,
+        Priority::Medium,
+    );
     proposal.affected_paths = Some(r#"["src/ideation/test_scope.rs"]"#.to_string());
     proposal
 }
@@ -157,10 +150,7 @@ fn make_proposal(session_id: IdeationSessionId, title: &str) -> TaskProposal {
 // Helper: read all external_events for a project
 // ============================================================================
 
-async fn get_events(
-    repo: &MemoryExternalEventsRepository,
-    project_id: &str,
-) -> Vec<String> {
+async fn get_events(repo: &MemoryExternalEventsRepository, project_id: &str) -> Vec<String> {
     repo.get_events_after_cursor(&[project_id.to_string()], 0, 100)
         .await
         .unwrap()
@@ -205,7 +195,11 @@ async fn test_session_created_emits_event() {
     )
     .await;
 
-    assert!(result.is_ok(), "start_ideation_http failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "start_ideation_http failed: {:?}",
+        result.err()
+    );
 
     // Verify external_events table
     let event_types = get_events(&mem_events, project_id).await;
@@ -265,11 +259,17 @@ async fn test_plan_created_emits_event() {
             session_id: session_id.as_str().to_string(),
             title: "Test Plan".to_string(),
             content: "# Test plan content".to_string(),
+            blueprint_title: None,
+            blueprint_content: Some("# Implementation Blueprint".to_string()),
         }),
     )
     .await;
 
-    assert!(result.is_ok(), "create_plan_artifact failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "create_plan_artifact failed: {:?}",
+        result.err()
+    );
 
     // Verify external_events table
     let event_types = get_events(&mem_events, project_id).await;
@@ -326,18 +326,8 @@ async fn test_proposals_ready_and_session_accepted_emit_events() {
 
     let p1 = make_proposal(session_id.clone(), "Task A");
     let p2 = make_proposal(session_id.clone(), "Task B");
-    state
-        .app_state
-        .task_proposal_repo
-        .create(p1)
-        .await
-        .unwrap();
-    state
-        .app_state
-        .task_proposal_repo
-        .create(p2)
-        .await
-        .unwrap();
+    state.app_state.task_proposal_repo.create(p1).await.unwrap();
+    state.app_state.task_proposal_repo.create(p2).await.unwrap();
 
     let result = finalize_proposals(
         State(state),
@@ -437,7 +427,11 @@ async fn test_session_accepted_emits_event_when_proposals_applied() {
     )
     .await;
 
-    assert!(result.is_ok(), "finalize_proposals failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "finalize_proposals failed: {:?}",
+        result.err()
+    );
     let resp = result.unwrap().0;
 
     // When all proposals are applied the session transitions to Accepted

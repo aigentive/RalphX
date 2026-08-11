@@ -6,6 +6,7 @@ use crate::commands::unified_chat_commands::{
     StartAgentConversationInput,
 };
 use crate::domain::entities::{
+    canonicalize_agent_conversation_issue, AgentConversationIssueCanonicalInput,
     AgentConversationWorkspace, AgentWorkspaceFollowupProvenance, AgentWorkspaceSourcePullRequest,
     ChatContextType, ChatConversation, ChatConversationId, TaskId,
 };
@@ -174,11 +175,25 @@ fn resolved_blocker_fingerprint(
     task_context: Option<&crate::domain::entities::TaskContext>,
 ) -> Option<String> {
     trim_optional(req.blocker_fingerprint.as_deref()).or_else(|| {
-        (req.spawn_reason.as_deref() == Some("out_of_scope_failure"))
-            .then(|| {
+        match req.spawn_reason.as_deref() {
+            Some("out_of_scope_failure") => {
                 task_context.and_then(|context| context.out_of_scope_blocker_fingerprint.clone())
-            })
-            .flatten()
+            }
+            Some("execution_blocked") => Some(
+                canonicalize_agent_conversation_issue(&AgentConversationIssueCanonicalInput {
+                    issue_kind: "execution_blocked",
+                    blocking_scope: "project",
+                    title: req.title.as_str(),
+                    summary: req.description.as_deref().unwrap_or(req.title.as_str()),
+                    evidence: req.initial_prompt.as_deref(),
+                    recommendation: None,
+                    blocker_fingerprint: None,
+                    source_task_id: req.source_task_id.as_deref(),
+                })
+                .fingerprint,
+            ),
+            _ => None,
+        }
     })
 }
 
@@ -335,8 +350,10 @@ pub(crate) async fn create_followup_agent_conversation_for_request(
     let base_selection = followup_base_selection(parent_workspace.as_ref());
     let response = start_agent_conversation_for_state(
         StartAgentConversationInput {
-            project_id: origin.context_id.clone(),
+            project_id: Some(origin.context_id.clone()),
             content,
+            persona_id: None,
+            source_persona_id: None,
             conversation_id: None,
             parent_conversation_id: Some(origin.id.as_str()),
             title: Some(req.title.clone()),
@@ -355,10 +372,11 @@ pub(crate) async fn create_followup_agent_conversation_for_request(
             composer_project_references: Vec::new(),
             composer_integration_references: Vec::new(),
             composer_artifact_references: Vec::new(),
+            composer_selection_snapshot: None,
+            team_intent: None,
         },
         &state.app_state,
         &state.execution_state,
-        state.team_service.clone(),
         app_handle,
     )
     .await

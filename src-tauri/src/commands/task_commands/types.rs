@@ -3,6 +3,12 @@
 use crate::domain::entities::Task;
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Serialize)]
+pub struct TaskHistoryAvailabilityResponse {
+    pub has_history: bool,
+    pub task_count: u32,
+}
+
 /// Input for creating a new task
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -163,6 +169,22 @@ pub struct BulkPauseResponse {
 #[derive(Debug, Serialize)]
 pub struct BulkResumeResponse {
     pub resumed_count: usize,
+}
+
+/// Input for execution-plan-scoped lifecycle controls.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionPlanControlInput {
+    pub project_id: String,
+    pub session_id: String,
+    pub execution_plan_id: Option<String>,
+}
+
+/// Response for execution-plan-scoped lifecycle controls.
+#[derive(Debug, Serialize)]
+pub struct ExecutionPlanControlResponse {
+    pub execution_plan_id: String,
+    pub affected_count: usize,
 }
 
 /// Response for bulk archive operations

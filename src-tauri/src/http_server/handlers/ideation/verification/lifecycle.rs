@@ -127,7 +127,6 @@ pub(crate) async fn stop_and_archive_children(
     filter: ChildFilter,
     archive_after_stop: bool,
 ) -> Result<(), AppError> {
-    use tauri::Emitter;
     let session_id_typed = IdeationSessionId::from_string(session_id.to_string());
     let children = match filter {
         ChildFilter::VerificationOnly => {
@@ -163,32 +162,34 @@ pub(crate) async fn stop_and_archive_children(
                     .await
                     .ok();
 
-                // Emit frontend events
-                if let Some(ref app_handle) = app_state.app_handle {
-                    app_handle
-                        .emit(
-                            "agent:stopped",
-                            serde_json::json!({
-                                "conversation_id": info.conversation_id,
-                                "agent_run_id": info.agent_run_id,
-                                "context_type": "ideation",
-                                "context_id": child.id.as_str(),
-                            }),
-                        )
-                        .ok();
-                    app_handle
-                        .emit(
-                            "agent:run_completed",
-                            AgentRunCompletedPayload::with_provider_session(
-                                info.conversation_id.clone(),
-                                "ideation".to_string(),
-                                child.id.as_str().to_string(),
-                                None,
-                                None,
-                                None,
-                            ),
-                        )
-                        .ok();
+                crate::http_server::emit_app_event(
+                    app_state,
+                    "agent:stopped",
+                    serde_json::json!({
+                        "conversation_id": info.conversation_id.clone(),
+                        "agent_run_id": info.agent_run_id,
+                        "context_type": "ideation",
+                        "context_id": child.id.as_str(),
+                    }),
+                );
+                let completed_payload = AgentRunCompletedPayload::with_provider_session(
+                    info.conversation_id.clone(),
+                    "ideation".to_string(),
+                    child.id.as_str().to_string(),
+                    None,
+                    None,
+                    None,
+                );
+                if let Err(error) = ralphx_events::emit_serialized(
+                    app_state.events.as_ref(),
+                    "agent:run_completed",
+                    &completed_payload,
+                ) {
+                    tracing::warn!(
+                        event = "agent:run_completed",
+                        %error,
+                        "Failed to serialize agent run completion event payload"
+                    );
                 }
             }
         }
@@ -358,17 +359,15 @@ pub async fn stop_verification(
         .ok();
 
     // Emit plan_verification:status_changed event so frontend VerificationBadge updates
-    if let Some(app_handle) = &state.app_state.app_handle {
-        emit_verification_status_changed(
-            app_handle,
-            &session_id,
-            VerificationStatus::Skipped,
-            false,
-            Some(&snapshot),
-            Some("user_stopped"),
-            Some(session.verification_generation),
-        );
-    }
+    emit_verification_status_changed(
+        state.app_state.events.as_ref(),
+        &session_id,
+        VerificationStatus::Skipped,
+        false,
+        Some(&snapshot),
+        Some("user_stopped"),
+        Some(session.verification_generation),
+    );
 
     Ok(Json(SuccessResponse {
         success: true,
@@ -388,7 +387,8 @@ pub async fn mark_verification_infra_failure(
     State(state): State<HttpServerState>,
     Path(session_id): Path<String>,
     Json(req): Json<VerificationInfraFailureRequest>,
-) -> Result<Json<VerificationResponse>, JsonError> {
+) -> Result<Json<crate::application::plan_verification_service::PlanVerificationStatus>, JsonError>
+{
     use crate::domain::entities::ideation::VerificationStatus;
 
     let (session_id, session_id_obj, session) =
@@ -504,17 +504,15 @@ pub async fn mark_verification_infra_failure(
         })?;
     let next_generation = session.verification_generation + 1;
 
-    if let Some(app_handle) = &state.app_state.app_handle {
-        emit_verification_status_changed(
-            app_handle,
-            &session_id,
-            VerificationStatus::Unverified,
-            false,
-            Some(&snapshot),
-            convergence_reason.as_deref(),
-            Some(next_generation),
-        );
-    }
+    emit_verification_status_changed(
+        state.app_state.events.as_ref(),
+        &session_id,
+        VerificationStatus::Unverified,
+        false,
+        Some(&snapshot),
+        convergence_reason.as_deref(),
+        Some(next_generation),
+    );
 
     let app_state = state.app_state.clone();
     let session_id_for_stop = session_id.clone();
@@ -524,16 +522,7 @@ pub async fn mark_verification_infra_failure(
             .ok();
     });
 
-    let mut response = get_plan_verification(
-        State(state),
-        ProjectScope(None),
-        Path(session_id),
-        axum::extract::Query(crate::http_server::types::VerificationQueryParams::default()),
-    )
-    .await?;
-    response.0.verification_generation = next_generation;
-    response.0.convergence_reason = convergence_reason;
-    Ok(response)
+    get_plan_verification(State(state), ProjectScope(None), Path(session_id)).await
 }
 /// POST /api/ideation/sessions/:id/revert-and-skip
 ///
@@ -640,17 +629,15 @@ pub async fn revert_and_skip(
         .ok();
 
     // Emit event with canonical payload (B3: was missing round/gaps/rounds fields)
-    if let Some(app_handle) = &state.app_state.app_handle {
-        emit_verification_status_changed(
-            app_handle,
-            &session_id,
-            VerificationStatus::Skipped,
-            false,
-            None,
-            Some("user_reverted"),
-            Some(session.verification_generation),
-        );
-    }
+    emit_verification_status_changed(
+        state.app_state.events.as_ref(),
+        &session_id,
+        VerificationStatus::Skipped,
+        false,
+        None,
+        Some("user_reverted"),
+        Some(session.verification_generation),
+    );
 
     Ok(Json(SuccessResponse {
         success: true,

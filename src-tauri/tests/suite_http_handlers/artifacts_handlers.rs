@@ -11,13 +11,16 @@
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::Json;
-use ralphx_lib::application::{AppState, TeamService, TeamStateTracker};
+use ralphx_lib::application::plan_verification_service::{
+    get_plan_verification_status, PlanVerificationStatusKind,
+};
+use ralphx_lib::application::AppState;
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
-    Artifact, ArtifactContent, ArtifactId, ArtifactMetadata, ArtifactType, IdeationSession,
-    IdeationSessionBuilder, IdeationSessionFlow, IdeationSessionId, IdeationSessionStatus, Project,
-    ProjectId, SessionOrigin, SessionPurpose, VerificationConfirmationStatus,
-    VerificationRunSnapshot, VerificationStatus,
+    AgentRun, AgentRunActionKind, Artifact, ArtifactContent, ArtifactId, ArtifactMetadata,
+    ArtifactType, AutomationRunId, ChatConversation, IdeationSession, IdeationSessionBuilder,
+    IdeationSessionFlow, IdeationSessionId, IdeationSessionStatus, NotificationCategory, Project,
+    ProjectId, SessionOrigin, SessionPurpose, Task, VerificationRunSnapshot, VerificationStatus,
 };
 use ralphx_lib::domain::repositories::IdeationSessionRepository;
 use ralphx_lib::domain::services::running_agent_registry::RunningAgentKey;
@@ -26,8 +29,13 @@ use ralphx_lib::error::AppError;
 use ralphx_lib::http_server::handlers::*;
 use ralphx_lib::http_server::types::HttpServerState;
 use ralphx_lib::infrastructure::agents::claude::verification_config;
-use ralphx_lib::infrastructure::memory::MemoryIdeationSessionRepository;
-use ralphx_lib::infrastructure::sqlite::SqliteIdeationSessionRepository as SessionRepo;
+use ralphx_lib::infrastructure::memory::{
+    MemoryAgentProviderSettingsRepository, MemoryIdeationSessionRepository,
+};
+use ralphx_lib::infrastructure::sqlite::{
+    SqliteAgentRunRepository, SqliteChatConversationRepository,
+    SqliteIdeationSessionRepository as SessionRepo,
+};
 use std::sync::Arc;
 
 // ============================================================
@@ -37,13 +45,38 @@ use std::sync::Arc;
 async fn setup_test_state() -> HttpServerState {
     let app_state = Arc::new(AppState::new_sqlite_test());
     let execution_state = Arc::new(ExecutionState::new());
-    let tracker = TeamStateTracker::new();
-    let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
     HttpServerState {
         app_state,
         execution_state,
-        team_tracker: tracker,
-        team_service,
+        delegation_service: Default::default(),
+    }
+}
+
+async fn setup_model_native_verification_test_state() -> HttpServerState {
+    let mut app_state = AppState::new_sqlite_test();
+    app_state.agent_run_repo = Arc::new(SqliteAgentRunRepository::from_shared(Arc::clone(
+        app_state.db.inner(),
+    )));
+    app_state.chat_conversation_repo = Arc::new(SqliteChatConversationRepository::from_shared(
+        Arc::clone(app_state.db.inner()),
+    ));
+    let app_state = Arc::new(app_state);
+    let execution_state = Arc::new(ExecutionState::new());
+    HttpServerState {
+        app_state,
+        execution_state,
+        delegation_service: Default::default(),
+    }
+}
+
+async fn setup_disabled_provider_test_state() -> HttpServerState {
+    let mut app_state = AppState::new_sqlite_test();
+    app_state.agent_provider_settings_repo = Arc::new(MemoryAgentProviderSettingsRepository::new());
+    let app_state = Arc::new(app_state);
+    let execution_state = Arc::new(ExecutionState::new());
+    HttpServerState {
+        app_state,
+        execution_state,
         delegation_service: Default::default(),
     }
 }
@@ -93,6 +126,8 @@ async fn create_plan_artifact_quiesced(
             session_id: session_id.as_str().to_string(),
             title: title.to_string(),
             content: content.to_string(),
+            blueprint_title: None,
+            blueprint_content: Some("# Implementation Blueprint".to_string()),
         }),
     )
     .await
@@ -109,15 +144,18 @@ fn make_active_session() -> IdeationSession {
         title: Some("Test Session".to_string()),
         status: IdeationSessionStatus::Active,
         plan_artifact_id: None,
+        plan_blueprint_artifact_id: None,
+        verified_plan_artifact_id: None,
+        verified_plan_blueprint_artifact_id: None,
+        verified_plan_agent_run_id: None,
         inherited_plan_artifact_id: None,
+        inherited_plan_blueprint_artifact_id: None,
         seed_task_id: None,
         parent_session_id: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         archived_at: None,
         converted_at: None,
-        team_mode: None,
-        team_config_json: None,
         title_source: None,
         verification_status: Default::default(),
         verification_in_progress: false,
@@ -138,6 +176,8 @@ fn make_active_session() -> IdeationSession {
         session_flow: Default::default(),
         cross_project_checked: true,
         plan_version_last_read: None,
+        blueprint_version_last_read: None,
+        plan_contract_version: 1,
         origin: Default::default(),
         expected_proposal_count: None,
         auto_accept_status: None,
@@ -153,6 +193,111 @@ fn make_active_session() -> IdeationSession {
         analysis: Default::default(),
         last_effective_model: None,
     }
+}
+
+async fn create_planning_session(state: &HttpServerState) -> IdeationSession {
+    let mut session = make_active_session();
+    session.session_flow = IdeationSessionFlow::Planning;
+    state
+        .app_state
+        .ideation_session_repo
+        .create(session)
+        .await
+        .unwrap()
+}
+
+async fn plan_notifications(
+    state: &HttpServerState,
+) -> Vec<ralphx_lib::domain::entities::Notification> {
+    state
+        .app_state
+        .notification_repo
+        .list(None, None, 50)
+        .await
+        .unwrap()
+        .notifications
+        .into_iter()
+        .filter(|notification| notification.category == NotificationCategory::PlanApproval)
+        .collect()
+}
+
+#[tokio::test]
+async fn create_plan_artifact_records_each_non_automation_planning_artifact() {
+    let state = setup_test_state().await;
+    let session = create_planning_session(&state).await;
+    let conversation = ChatConversation::new_ideation(session.id.clone());
+    state
+        .app_state
+        .chat_conversation_repo
+        .create(conversation.clone())
+        .await
+        .unwrap();
+
+    let first =
+        create_plan_artifact_quiesced(&state, &session.id, "Draft one", "first draft").await;
+    let second =
+        create_plan_artifact_quiesced(&state, &session.id, "Draft two", "second draft").await;
+
+    let rows = plan_notifications(&state).await;
+    assert_eq!(rows.len(), 2);
+    let first_dedupe_key = format!(
+        "plan:{}:{}",
+        session.id,
+        first.plan_target_id.as_deref().expect("v2 plan target")
+    );
+    assert!(rows.iter().any(|row| {
+        row.dedupe_key.as_deref() == Some(first_dedupe_key.as_str()) && row.read_at.is_some()
+    }));
+    let second_dedupe_key = format!(
+        "plan:{}:{}",
+        session.id,
+        second.plan_target_id.as_deref().expect("v2 plan target")
+    );
+    assert!(rows.iter().any(|row| {
+        row.dedupe_key.as_deref() == Some(second_dedupe_key.as_str()) && row.read_at.is_none()
+    }));
+    let conversation_id = conversation.id.as_str();
+    assert!(rows
+        .iter()
+        .all(|row| row.target.conversation_id.as_deref() == Some(conversation_id.as_str())));
+}
+
+#[tokio::test]
+async fn create_plan_artifact_skips_automation_owned_and_implementation_sessions() {
+    let state = setup_test_state().await;
+
+    let automation_session = create_planning_session(&state).await;
+    let mut automation_conversation = ChatConversation::new_ideation(automation_session.id.clone());
+    automation_conversation.automation_run_id = Some(AutomationRunId::new());
+    state
+        .app_state
+        .chat_conversation_repo
+        .create(automation_conversation)
+        .await
+        .unwrap();
+    create_plan_artifact_quiesced(&state, &automation_session.id, "Automation plan", "draft").await;
+
+    let implementation_session = create_planning_session(&state).await;
+    let mut implementation_task = Task::new(
+        implementation_session.project_id.clone(),
+        "Implementation task".to_string(),
+    );
+    implementation_task.ideation_session_id = Some(implementation_session.id.clone());
+    state
+        .app_state
+        .task_repo
+        .create(implementation_task)
+        .await
+        .unwrap();
+    create_plan_artifact_quiesced(
+        &state,
+        &implementation_session.id,
+        "Implementation-linked plan",
+        "draft",
+    )
+    .await;
+
+    assert!(plan_notifications(&state).await.is_empty());
 }
 
 /// Create a parent session and its plan artifact.
@@ -217,6 +362,8 @@ async fn test_child_creates_independent_plan_not_chained_to_parent() {
             session_id: child_id.as_str().to_string(),
             title: "Child Plan".to_string(),
             content: "Child's own plan content".to_string(),
+            blueprint_title: None,
+            blueprint_content: Some("# Implementation Blueprint".to_string()),
         }),
     )
     .await
@@ -331,6 +478,521 @@ async fn test_child_can_update_own_plan() {
     );
 }
 
+#[tokio::test]
+async fn verification_action_can_complete_the_plan_version_it_revises() {
+    let state = setup_model_native_verification_test_state().await;
+    let (session_id, original_artifact_id) = create_parent_with_plan(&state).await;
+    let conversation = ChatConversation::new_ideation(session_id.clone());
+    let conversation_id = conversation.id;
+    state
+        .app_state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .unwrap();
+    let original_target = state
+        .app_state
+        .ideation_session_repo
+        .get_by_id(&session_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .plan_artifact_bundle()
+        .expect("created plan should be a complete bundle")
+        .action_target_id();
+
+    let mut run = AgentRun::new(conversation_id);
+    run.action_kind = Some(AgentRunActionKind::VerifyPlan);
+    run.action_context_id = Some(session_id.as_str().to_string());
+    run.action_target_id = Some(original_target);
+    let run = state.app_state.agent_run_repo.create(run).await.unwrap();
+
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        "x-ralphx-agent-run-id",
+        axum::http::HeaderValue::from_str(&run.id.as_str()).unwrap(),
+    );
+    headers.insert(
+        "x-ralphx-conversation-id",
+        axum::http::HeaderValue::from_str(&conversation_id.as_str()).unwrap(),
+    );
+
+    let revised = update_plan_artifact(
+        State(state.clone()),
+        headers.clone(),
+        Json(UpdatePlanArtifactRequest {
+            artifact_id: original_artifact_id,
+            content: "reviewed and revised plan".to_string(),
+            caller_session_id: None,
+        }),
+    )
+    .await
+    .expect("the verification action should be able to revise its plan")
+    .0;
+
+    let run_after_revision = state
+        .app_state
+        .agent_run_repo
+        .get_by_id(&run.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let revised_target = state
+        .app_state
+        .ideation_session_repo
+        .get_by_id(&session_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .plan_artifact_bundle()
+        .expect("revised plan should remain a complete bundle")
+        .action_target_id();
+    assert_eq!(
+        run_after_revision.action_target_id.as_deref(),
+        Some(revised_target.as_str()),
+        "the live action authority must follow the version it created"
+    );
+
+    let completed = complete_plan_verification_http(State(state.clone()), headers.clone())
+        .await
+        .expect("the live action should complete proof for its revised artifact")
+        .0;
+    assert_eq!(completed.plan_artifact_id, revised.id);
+    let _ = complete_plan_verification_http(State(state.clone()), headers)
+        .await
+        .expect("retrying an already-recorded completion should be idempotent");
+
+    let verified = state
+        .app_state
+        .ideation_session_repo
+        .get_by_id(&session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        verified
+            .verified_plan_artifact_id
+            .as_ref()
+            .map(ArtifactId::as_str),
+        Some(revised.id.as_str())
+    );
+    let events = state
+        .app_state
+        .external_events_repo
+        .get_events_after_cursor(&[verified.project_id.as_str().to_string()], 0, 20)
+        .await
+        .expect("external verification events should load");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == "ideation:verified")
+            .count(),
+        1,
+        "authoritative completion must emit one ideation:verified event"
+    );
+}
+
+#[tokio::test]
+async fn replacing_v2_bundle_advances_versions_relation_and_verifier_state_atomically() {
+    let state = setup_model_native_verification_test_state().await;
+    let session = make_active_session();
+    let session_id = session.id.clone();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(session)
+        .await
+        .unwrap();
+    let first = create_plan_artifact_quiesced(&state, &session_id, "Plan v1", "Overview v1").await;
+    let first_blueprint_id = first
+        .blueprint_artifact
+        .as_ref()
+        .expect("v2 bundle should include Blueprint")
+        .id
+        .clone();
+    let old_target = first
+        .plan_target_id
+        .clone()
+        .expect("v2 bundle should expose target");
+    let conversation = ChatConversation::new_ideation(session_id.clone());
+    let conversation_id = conversation.id;
+    state
+        .app_state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .unwrap();
+    let mut run = AgentRun::new(conversation_id);
+    run.action_kind = Some(AgentRunActionKind::VerifyPlan);
+    run.action_context_id = Some(session_id.to_string());
+    run.action_target_id = Some(old_target.clone());
+    let run = state.app_state.agent_run_repo.create(run).await.unwrap();
+    let marker_session_id = session_id.to_string();
+    let marker_artifact_id = first.id.clone();
+    let marker_target = old_target.clone();
+    state
+        .app_state
+        .db
+        .run(move |conn| {
+            conn.execute_batch(
+                "CREATE TABLE deferred_retarget_audit (
+                    artifact_id TEXT NOT NULL,
+                    plan_target_id TEXT NOT NULL
+                 );
+                 CREATE TRIGGER capture_deferred_retarget
+                 AFTER UPDATE OF artifact_id, plan_target_id
+                 ON deferred_plan_approval_notifications
+                 BEGIN
+                    INSERT INTO deferred_retarget_audit (artifact_id, plan_target_id)
+                    VALUES (NEW.artifact_id, NEW.plan_target_id);
+                 END;",
+            )?;
+            conn.execute(
+                "INSERT INTO deferred_plan_approval_notifications
+                    (session_id, artifact_id, plan_target_id, created_at)
+                 VALUES (?1, ?2, ?3, datetime('now'))",
+                rusqlite::params![marker_session_id, marker_artifact_id, marker_target],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        "x-ralphx-agent-run-id",
+        axum::http::HeaderValue::from_str(&run.id.as_str()).unwrap(),
+    );
+    headers.insert(
+        "x-ralphx-conversation-id",
+        axum::http::HeaderValue::from_str(&conversation_id.as_str()).unwrap(),
+    );
+    let replacement = create_plan_artifact_with_headers(
+        State(state.clone()),
+        headers,
+        Json(CreatePlanArtifactRequest {
+            session_id: session_id.to_string(),
+            title: "Plan v2".to_string(),
+            content: "Overview v2".to_string(),
+            blueprint_title: None,
+            blueprint_content: Some("Blueprint v2".to_string()),
+        }),
+    )
+    .await
+    .expect("bundle replacement should succeed")
+    .0;
+    let replacement_blueprint = replacement
+        .blueprint_artifact
+        .as_ref()
+        .expect("replacement should include Blueprint");
+    let new_target = replacement
+        .plan_target_id
+        .clone()
+        .expect("replacement should expose target");
+
+    assert_eq!(replacement.version, 2);
+    assert_eq!(replacement_blueprint.version, 2);
+    let run_after = state
+        .app_state
+        .agent_run_repo
+        .get_by_id(&run.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        run_after.action_target_id.as_deref(),
+        Some(new_target.as_str())
+    );
+    let old_overview_id = first.id.clone();
+    let old_blueprint_id = first_blueprint_id;
+    let new_overview_id = replacement.id.clone();
+    let new_blueprint_id = replacement_blueprint.id.clone();
+    let (marker, old_relation_count, new_relation_count) = state
+        .app_state
+        .db
+        .run(move |conn| {
+            let marker = conn.query_row(
+                "SELECT artifact_id, plan_target_id
+                 FROM deferred_retarget_audit
+                 ORDER BY rowid DESC
+                 LIMIT 1",
+                [],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )?;
+            let old_relation_count = conn.query_row(
+                "SELECT COUNT(*) FROM artifact_relations
+                 WHERE relation_type = 'related_to'
+                   AND ((from_artifact_id = ?1 AND to_artifact_id = ?2)
+                     OR (from_artifact_id = ?2 AND to_artifact_id = ?1))",
+                rusqlite::params![old_overview_id, old_blueprint_id],
+                |row| row.get::<_, i64>(0),
+            )?;
+            let new_relation_count = conn.query_row(
+                "SELECT COUNT(*) FROM artifact_relations
+                 WHERE relation_type = 'related_to'
+                   AND ((from_artifact_id = ?1 AND to_artifact_id = ?2)
+                     OR (from_artifact_id = ?2 AND to_artifact_id = ?1))",
+                rusqlite::params![new_overview_id, new_blueprint_id],
+                |row| row.get::<_, i64>(0),
+            )?;
+            Ok((marker, old_relation_count, new_relation_count))
+        })
+        .await
+        .unwrap();
+    assert_eq!(marker, (replacement.id, new_target));
+    assert_eq!(old_relation_count, 0);
+    assert_eq!(new_relation_count, 1);
+}
+
+#[tokio::test]
+async fn promoting_v1_bundle_retargets_active_verifier_and_deferred_marker() {
+    let state = setup_model_native_verification_test_state().await;
+    let overview = state
+        .app_state
+        .artifact_repo
+        .create(Artifact::new_inline(
+            "Legacy overview",
+            ArtifactType::Specification,
+            "Legacy content",
+            "test",
+        ))
+        .await
+        .unwrap();
+    let mut session = make_active_session();
+    session.plan_artifact_id = Some(overview.id.clone());
+    session.plan_contract_version = 1;
+    let session_id = session.id.clone();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(session)
+        .await
+        .unwrap();
+    let conversation = ChatConversation::new_ideation(session_id.clone());
+    let conversation_id = conversation.id;
+    state
+        .app_state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .unwrap();
+    let mut run = AgentRun::new(conversation_id);
+    run.action_kind = Some(AgentRunActionKind::VerifyPlan);
+    run.action_context_id = Some(session_id.to_string());
+    run.action_target_id = Some(overview.id.to_string());
+    let run = state.app_state.agent_run_repo.create(run).await.unwrap();
+    let marker_session_id = session_id.to_string();
+    let marker_artifact_id = overview.id.to_string();
+    state
+        .app_state
+        .db
+        .run(move |conn| {
+            conn.execute_batch(
+                "CREATE TABLE deferred_retarget_audit (
+                    artifact_id TEXT NOT NULL,
+                    plan_target_id TEXT NOT NULL
+                 );
+                 CREATE TRIGGER capture_deferred_retarget
+                 AFTER UPDATE OF artifact_id, plan_target_id
+                 ON deferred_plan_approval_notifications
+                 BEGIN
+                    INSERT INTO deferred_retarget_audit (artifact_id, plan_target_id)
+                    VALUES (NEW.artifact_id, NEW.plan_target_id);
+                 END;",
+            )?;
+            conn.execute(
+                "INSERT INTO deferred_plan_approval_notifications
+                    (session_id, artifact_id, plan_target_id, created_at)
+                 VALUES (?1, ?2, ?2, datetime('now'))",
+                rusqlite::params![marker_session_id, marker_artifact_id],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        "x-ralphx-agent-run-id",
+        axum::http::HeaderValue::from_str(&run.id.as_str()).unwrap(),
+    );
+    headers.insert(
+        "x-ralphx-conversation-id",
+        axum::http::HeaderValue::from_str(&conversation_id.as_str()).unwrap(),
+    );
+
+    let promoted = create_plan_artifact_with_headers(
+        State(state.clone()),
+        headers,
+        Json(CreatePlanArtifactRequest {
+            session_id: session_id.to_string(),
+            title: "Promoted overview".to_string(),
+            content: "Promoted content".to_string(),
+            blueprint_title: None,
+            blueprint_content: Some("New Blueprint".to_string()),
+        }),
+    )
+    .await
+    .expect("v1 promotion should succeed")
+    .0;
+    let new_target = promoted
+        .plan_target_id
+        .clone()
+        .expect("promoted bundle should expose target");
+
+    assert_eq!(promoted.version, 2);
+    let run_after = state
+        .app_state
+        .agent_run_repo
+        .get_by_id(&run.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        run_after.action_target_id.as_deref(),
+        Some(new_target.as_str())
+    );
+    let marker = state
+        .app_state
+        .db
+        .run(move |conn| {
+            conn.query_row(
+                "SELECT artifact_id, plan_target_id
+                 FROM deferred_retarget_audit
+                 ORDER BY rowid DESC
+                 LIMIT 1",
+                [],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .map_err(Into::into)
+        })
+        .await
+        .unwrap();
+    assert_eq!(marker, (promoted.id, new_target));
+}
+
+#[tokio::test]
+async fn updating_a_plan_does_not_interrupt_drafting_with_automatic_verification() {
+    let state = setup_test_state().await;
+    state.execution_state.pause();
+    let mut project = Project::new("Auto verification project".to_string(), "/tmp".to_string());
+    project.id = ProjectId::from_string("proj-test".to_string());
+    state.app_state.project_repo.create(project).await.unwrap();
+    let (session_id, original_artifact_id) = create_parent_with_plan(&state).await;
+    let mut settings = state
+        .app_state
+        .ideation_settings_repo
+        .get_settings()
+        .await
+        .unwrap();
+    settings.auto_verify_plans = true;
+    state
+        .app_state
+        .ideation_settings_repo
+        .update_settings(&settings)
+        .await
+        .unwrap();
+
+    let revised = update_plan_artifact(
+        State(state.clone()),
+        axum::http::HeaderMap::new(),
+        Json(UpdatePlanArtifactRequest {
+            artifact_id: original_artifact_id,
+            content: "new version requiring automatic verification".to_string(),
+            caller_session_id: None,
+        }),
+    )
+    .await
+    .expect("plan update should remain a drafting-only operation")
+    .0;
+
+    let status = get_plan_verification_status(&state.app_state, &session_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        status.plan_artifact_id.as_deref(),
+        Some(revised.id.as_str())
+    );
+    assert_eq!(
+        status.status,
+        PlanVerificationStatusKind::Unverified,
+        "automatic verification must wait for an acceptance attempt"
+    );
+    let session = state
+        .app_state
+        .ideation_session_repo
+        .get_by_id(&session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        session.pending_initial_prompt.is_none(),
+        "draft revisions must not enqueue a verification prompt"
+    );
+}
+
+#[tokio::test]
+async fn creating_a_plan_does_not_launch_automatic_verification_during_drafting() {
+    let state = setup_disabled_provider_test_state().await;
+    let session = make_active_session();
+    let session_id = session.id.clone();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(session)
+        .await
+        .unwrap();
+    let mut settings = state
+        .app_state
+        .ideation_settings_repo
+        .get_settings()
+        .await
+        .unwrap();
+    settings.auto_verify_plans = true;
+    state
+        .app_state
+        .ideation_settings_repo
+        .update_settings(&settings)
+        .await
+        .unwrap();
+
+    let created = create_plan_artifact(
+        State(state.clone()),
+        Json(CreatePlanArtifactRequest {
+            session_id: session_id.as_str().to_string(),
+            title: "Committed plan".to_string(),
+            content: "Plan content".to_string(),
+            blueprint_title: None,
+            blueprint_content: Some("# Implementation Blueprint".to_string()),
+        }),
+    )
+    .await
+    .expect("plan creation should not depend on verification launch availability")
+    .0;
+
+    let persisted = state
+        .app_state
+        .ideation_session_repo
+        .get_by_id(&session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        persisted.plan_artifact_id.as_ref().map(ArtifactId::as_str),
+        Some(created.id.as_str())
+    );
+    assert_eq!(
+        get_plan_verification_status(&state.app_state, &session_id)
+            .await
+            .unwrap()
+            .status,
+        PlanVerificationStatusKind::Unverified
+    );
+    assert!(
+        persisted.pending_initial_prompt.is_none(),
+        "plan creation must not enqueue verification before acceptance"
+    );
+}
+
 // ============================================================
 // Test 3 + 8: update_plan_artifact on inherited-only artifact → 422 with clear message
 // ============================================================
@@ -431,6 +1093,8 @@ async fn test_get_session_plan_returns_own_plan_as_not_inherited() {
             session_id: child_id.as_str().to_string(),
             title: "Child Own Plan".to_string(),
             content: "Child's own content".to_string(),
+            blueprint_title: None,
+            blueprint_content: Some("# Implementation Blueprint".to_string()),
         }),
     )
     .await
@@ -639,6 +1303,8 @@ async fn test_get_session_plan_includes_project_working_directory() {
             session_id: session_id.as_str().to_string(),
             title: "Test Plan".to_string(),
             content: "Plan content".to_string(),
+            blueprint_title: None,
+            blueprint_content: Some("# Implementation Blueprint".to_string()),
         }),
     )
     .await
@@ -680,6 +1346,8 @@ async fn test_child_second_plan_updates_child_not_parent() {
             session_id: child_id.as_str().to_string(),
             title: "Child Plan v1".to_string(),
             content: "v1".to_string(),
+            blueprint_title: None,
+            blueprint_content: Some("# Implementation Blueprint".to_string()),
         }),
     )
     .await
@@ -693,6 +1361,8 @@ async fn test_child_second_plan_updates_child_not_parent() {
             session_id: child_id.as_str().to_string(),
             title: "Child Plan v2".to_string(),
             content: "v2".to_string(),
+            blueprint_title: None,
+            blueprint_content: Some("# Implementation Blueprint".to_string()),
         }),
     )
     .await
@@ -829,6 +1499,8 @@ async fn test_update_plan_artifact_skips_reset_when_verification_in_progress() {
             session_id: session_id.as_str().to_string(),
             title: "Plan v1".to_string(),
             content: "Initial content".to_string(),
+            blueprint_title: None,
+            blueprint_content: Some("# Implementation Blueprint".to_string()),
         }),
     )
     .await
@@ -923,7 +1595,20 @@ async fn test_link_proposals_to_plan_batch_25() {
     };
 
     let state = setup_test_state().await;
-    let (_, artifact_id) = create_parent_with_plan(&state).await;
+    let (parent_id, artifact_id) = create_parent_with_plan(&state).await;
+    let parent = state
+        .app_state
+        .ideation_session_repo
+        .get_by_id(&parent_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let blueprint_artifact_id = parent
+        .plan_blueprint_artifact_id
+        .as_ref()
+        .expect("v2 plan should include a Blueprint")
+        .as_str()
+        .to_string();
 
     // Create 25 proposals via the repo (SQLite-backed in new_sqlite_test state)
     let mut proposal_ids = Vec::new();
@@ -948,6 +1633,8 @@ async fn test_link_proposals_to_plan_batch_25() {
             created_task_id: None,
             plan_artifact_id: None,
             plan_version_at_creation: None,
+            blueprint_artifact_id: None,
+            blueprint_version_at_creation: None,
             sort_order: i as i32,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
@@ -1004,6 +1691,17 @@ async fn test_link_proposals_to_plan_batch_25() {
             Some(1),
             "plan_version_at_creation should be set to artifact version 1"
         );
+        assert_eq!(
+            p.blueprint_artifact_id.as_ref().map(|id| id.as_str()),
+            Some(blueprint_artifact_id.as_str()),
+            "Proposal {} should point to the plan's exact Blueprint",
+            p.id
+        );
+        assert_eq!(
+            p.blueprint_version_at_creation,
+            Some(1),
+            "blueprint_version_at_creation should be set to Blueprint version 1"
+        );
     }
 }
 
@@ -1038,6 +1736,8 @@ async fn test_create_plan_artifact_session_not_found() {
             session_id: "nonexistent-session-id".to_string(),
             title: "Plan".to_string(),
             content: "content".to_string(),
+            blueprint_title: None,
+            blueprint_content: Some("# Implementation Blueprint".to_string()),
         }),
     )
     .await;
@@ -1325,6 +2025,8 @@ async fn test_create_plan_artifact_skips_trigger_when_already_in_progress() {
             session_id: session_id.as_str().to_string(),
             title: "Plan".to_string(),
             content: "Plan content".to_string(),
+            blueprint_title: None,
+            blueprint_content: Some("# Implementation Blueprint".to_string()),
         }),
     )
     .await
@@ -1481,6 +2183,8 @@ async fn test_update_plan_artifact_batch_updates_linked_proposals() {
             created_task_id: None,
             plan_artifact_id: None,
             plan_version_at_creation: None,
+            blueprint_artifact_id: None,
+            blueprint_version_at_creation: None,
             sort_order: i as i32,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
@@ -2380,6 +3084,8 @@ async fn test_edit_plan_artifact_batch_updates_linked_proposals() {
             created_task_id: None,
             plan_artifact_id: None,
             plan_version_at_creation: None,
+            blueprint_artifact_id: None,
+            blueprint_version_at_creation: None,
             sort_order: i as i32,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
@@ -2692,13 +3398,9 @@ async fn test_6c_no_verification_children_returns_ok() {
 async fn setup_freeze_state(registry: Arc<MemoryRunningAgentRegistry>) -> HttpServerState {
     let app_state = Arc::new(AppState::new_sqlite_test_with_registry(registry));
     let execution_state = Arc::new(ExecutionState::new());
-    let tracker = TeamStateTracker::new();
-    let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
     HttpServerState {
         app_state,
         execution_state,
-        team_tracker: tracker,
-        team_service,
         delegation_service: Default::default(),
     }
 }
@@ -3132,18 +3834,11 @@ async fn test_6d_triple_prime_edit_plan_artifact_header_bypasses_freeze() {
 }
 
 // ============================================================
-// Origin-based auto-verify override
+// Origin-based verification policy
 // ============================================================
 
-/// Bug 2 defense-in-depth: External-origin sessions trigger auto-verification when
-/// a plan artifact is created, regardless of the global `auto_verify` config setting.
-///
-/// The `auto_verify_enabled` flag is shadowed inside `run_transaction` after the
-/// session is loaded: `let auto_verify_enabled = auto_verify_enabled || session.origin == External`.
-/// This test verifies that the session's `verification_in_progress` is set to true
-/// after `create_plan_artifact` for an External-origin session.
 #[tokio::test]
-async fn test_external_origin_session_auto_verifies_without_config() {
+async fn test_external_origin_plan_creation_waits_for_acceptance_before_auto_verification() {
     let state = setup_test_state().await;
 
     // Create an External-origin session
@@ -3159,13 +3854,15 @@ async fn test_external_origin_session_auto_verifies_without_config() {
         .await
         .unwrap();
 
-    // Create a plan artifact — this should trigger auto-verify for External sessions
+    // External origin must not bypass the acceptance-bound trigger policy.
     let result = create_plan_artifact(
         State(state.clone()),
         Json(CreatePlanArtifactRequest {
             session_id: session_id.as_str().to_string(),
             title: "External Plan".to_string(),
             content: "Plan content from external agent".to_string(),
+            blueprint_title: None,
+            blueprint_content: Some("# Implementation Blueprint".to_string()),
         }),
     )
     .await;
@@ -3176,9 +3873,6 @@ async fn test_external_origin_session_auto_verifies_without_config() {
         result.err()
     );
 
-    // External origin must still bypass config and trigger generation 1. Depending on whether
-    // verifier launch is immediately successful, persisted state may remain Reviewing or may be
-    // rolled back to Pending confirmation after spawn failure cleanup.
     let updated = state
         .app_state
         .ideation_session_repo
@@ -3187,22 +3881,11 @@ async fn test_external_origin_session_auto_verifies_without_config() {
         .unwrap()
         .expect("session must still exist");
 
-    assert_eq!(
-        updated.verification_generation, 1,
-        "External-origin session must have generation=1 after first auto-verify trigger"
-    );
-    assert!(
-        (updated.verification_status == VerificationStatus::Reviewing
-            && updated.verification_in_progress)
-            || (updated.verification_status == VerificationStatus::Unverified
-                && !updated.verification_in_progress
-                && updated.verification_confirmation_status
-                    == Some(VerificationConfirmationStatus::Pending)),
-        "External-origin auto-verify must either still be running or be reset to pending confirmation after spawn cleanup: status={:?}, in_progress={}, confirmation={:?}",
-        updated.verification_status,
-        updated.verification_in_progress,
-        updated.verification_confirmation_status
-    );
+    assert_eq!(updated.verification_generation, 0);
+    assert_eq!(updated.verification_status, VerificationStatus::Unverified);
+    assert!(!updated.verification_in_progress);
+    assert_eq!(updated.verification_confirmation_status, None);
+    assert!(updated.pending_initial_prompt.is_none());
 }
 
 #[tokio::test]
@@ -3227,6 +3910,8 @@ async fn test_planning_flow_session_does_not_auto_verify_or_prompt_on_plan_creat
             session_id: session_id.as_str().to_string(),
             title: "Agent Plan".to_string(),
             content: "Plan-mode content".to_string(),
+            blueprint_title: None,
+            blueprint_content: Some("# Implementation Blueprint".to_string()),
         }),
     )
     .await;
@@ -3283,6 +3968,8 @@ async fn test_planning_flow_plan_starts_draft_then_approves_current_artifact() {
             session_id: session_id.as_str().to_string(),
             title: "Agent Plan".to_string(),
             content: "Plan-mode content".to_string(),
+            blueprint_title: None,
+            blueprint_content: Some("# Implementation Blueprint".to_string()),
         }),
     )
     .await
@@ -3295,6 +3982,14 @@ async fn test_planning_flow_plan_starts_draft_then_approves_current_artifact() {
         Json(ApprovePlanArtifactRequest {
             session_id: session_id.as_str().to_string(),
             artifact_id: Some(created.id.clone()),
+            blueprint_artifact_id: created
+                .blueprint_artifact
+                .as_ref()
+                .map(|artifact| artifact.id.clone()),
+            blueprint_artifact_version: created
+                .blueprint_artifact
+                .as_ref()
+                .map(|artifact| artifact.version),
         }),
     )
     .await
@@ -3304,7 +3999,10 @@ async fn test_planning_flow_plan_starts_draft_then_approves_current_artifact() {
     assert_eq!(approved.id, created.id);
     assert_eq!(approved.version, created.version);
     assert_eq!(approved.plan_approval_status.as_deref(), Some("approved"));
-    assert_eq!(approved.plan_approved_artifact_id.as_deref(), Some(created.id.as_str()));
+    assert_eq!(
+        approved.plan_approved_artifact_id.as_deref(),
+        Some(created.id.as_str())
+    );
     assert_eq!(approved.plan_approved_version, Some(created.version));
     assert!(
         approved.plan_approved_at.is_some(),
@@ -3317,7 +4015,10 @@ async fn test_planning_flow_plan_starts_draft_then_approves_current_artifact() {
         .0
         .expect("planning session should have a plan");
     assert_eq!(current.plan_approval_status.as_deref(), Some("approved"));
-    assert_eq!(current.plan_approved_artifact_id.as_deref(), Some(created.id.as_str()));
+    assert_eq!(
+        current.plan_approved_artifact_id.as_deref(),
+        Some(created.id.as_str())
+    );
     assert_eq!(current.plan_approved_version, Some(created.version));
 }
 
@@ -3343,6 +4044,8 @@ async fn test_submit_plan_complexity_assessment_persists_for_current_approved_pl
             session_id: session_id.as_str().to_string(),
             title: "Agent Plan".to_string(),
             content: "Plan-mode content".to_string(),
+            blueprint_title: None,
+            blueprint_content: Some("# Implementation Blueprint".to_string()),
         }),
     )
     .await
@@ -3354,6 +4057,14 @@ async fn test_submit_plan_complexity_assessment_persists_for_current_approved_pl
         Json(ApprovePlanArtifactRequest {
             session_id: session_id.as_str().to_string(),
             artifact_id: Some(created.id.clone()),
+            blueprint_artifact_id: created
+                .blueprint_artifact
+                .as_ref()
+                .map(|artifact| artifact.id.clone()),
+            blueprint_artifact_version: created
+                .blueprint_artifact
+                .as_ref()
+                .map(|artifact| artifact.version),
         }),
     )
     .await
@@ -3365,12 +4076,19 @@ async fn test_submit_plan_complexity_assessment_persists_for_current_approved_pl
             session_id: session_id.as_str().to_string(),
             artifact_id: created.id.clone(),
             artifact_version: created.version,
+            blueprint_artifact_id: created
+                .blueprint_artifact
+                .as_ref()
+                .map(|artifact| artifact.id.clone()),
+            blueprint_artifact_version: created
+                .blueprint_artifact
+                .as_ref()
+                .map(|artifact| artifact.version),
             level: "complex".to_string(),
             score: 84,
             recommended_action: "create_proposals".to_string(),
             confidence: 0.91,
-            reason_summary: "Multiple dependent work items need tracked checkpoints."
-                .to_string(),
+            reason_summary: "Multiple dependent work items need tracked checkpoints.".to_string(),
             signals: Some(serde_json::json!({
                 "dependent_work_items": 4,
                 "cross_layer_scope": true
@@ -3393,14 +4111,12 @@ async fn test_submit_plan_complexity_assessment_persists_for_current_approved_pl
         "ralphx-utility-plan-complexity"
     );
 
-    let fetched = get_plan_complexity_assessment(
-        State(state.clone()),
-        Path(session_id.as_str().to_string()),
-    )
-    .await
-    .expect("get_plan_complexity_assessment should succeed")
-    .0
-    .expect("assessment should be persisted for the current plan");
+    let fetched =
+        get_plan_complexity_assessment(State(state.clone()), Path(session_id.as_str().to_string()))
+            .await
+            .expect("get_plan_complexity_assessment should succeed")
+            .0
+            .expect("assessment should be persisted for the current plan");
     assert_eq!(fetched.id, submitted.assessment.id);
     assert_eq!(
         fetched.signals["dependent_work_items"],
@@ -3430,6 +4146,8 @@ async fn test_submit_plan_complexity_assessment_rejects_draft_plan() {
             session_id: session_id.as_str().to_string(),
             title: "Agent Plan".to_string(),
             content: "Plan-mode content".to_string(),
+            blueprint_title: None,
+            blueprint_content: Some("# Implementation Blueprint".to_string()),
         }),
     )
     .await
@@ -3440,8 +4158,16 @@ async fn test_submit_plan_complexity_assessment_rejects_draft_plan() {
         State(state.clone()),
         Json(SubmitPlanComplexityAssessmentRequest {
             session_id: session_id.as_str().to_string(),
-            artifact_id: created.id,
+            artifact_id: created.id.clone(),
             artifact_version: created.version,
+            blueprint_artifact_id: created
+                .blueprint_artifact
+                .as_ref()
+                .map(|artifact| artifact.id.clone()),
+            blueprint_artifact_version: created
+                .blueprint_artifact
+                .as_ref()
+                .map(|artifact| artifact.version),
             level: "simple".to_string(),
             score: 20,
             recommended_action: "implement_directly".to_string(),
@@ -3490,6 +4216,8 @@ async fn test_approve_plan_artifact_rejects_non_planning_session() {
         Json(ApprovePlanArtifactRequest {
             session_id: session_id.as_str().to_string(),
             artifact_id: Some(created.id.clone()),
+            blueprint_artifact_id: None,
+            blueprint_artifact_version: None,
         }),
     )
     .await;
@@ -3529,6 +4257,8 @@ async fn test_approve_plan_artifact_rejects_stale_artifact_id() {
             session_id: session_id.as_str().to_string(),
             title: "Agent Plan".to_string(),
             content: "Plan v1".to_string(),
+            blueprint_title: None,
+            blueprint_content: Some("# Implementation Blueprint".to_string()),
         }),
     )
     .await
@@ -3554,14 +4284,13 @@ async fn test_approve_plan_artifact_rejects_stale_artifact_id() {
         Json(ApprovePlanArtifactRequest {
             session_id: session_id.as_str().to_string(),
             artifact_id: Some(v1.id),
+            blueprint_artifact_id: None,
+            blueprint_artifact_version: None,
         }),
     )
     .await;
 
-    assert!(
-        result.is_err(),
-        "approving a stale artifact id should fail"
-    );
+    assert!(result.is_err(), "approving a stale artifact id should fail");
     let err = result.unwrap_err();
     assert_eq!(err.status, StatusCode::CONFLICT);
     let msg = err.message.expect("409 should include message body");
@@ -3593,6 +4322,8 @@ async fn test_plan_update_after_approval_returns_current_plan_to_draft() {
             session_id: session_id.as_str().to_string(),
             title: "Agent Plan".to_string(),
             content: "Plan v1".to_string(),
+            blueprint_title: None,
+            blueprint_content: Some("# Implementation Blueprint".to_string()),
         }),
     )
     .await
@@ -3604,6 +4335,14 @@ async fn test_plan_update_after_approval_returns_current_plan_to_draft() {
         Json(ApprovePlanArtifactRequest {
             session_id: session_id.as_str().to_string(),
             artifact_id: Some(created.id.clone()),
+            blueprint_artifact_id: created
+                .blueprint_artifact
+                .as_ref()
+                .map(|artifact| artifact.id.clone()),
+            blueprint_artifact_version: created
+                .blueprint_artifact
+                .as_ref()
+                .map(|artifact| artifact.version),
         }),
     )
     .await

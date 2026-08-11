@@ -8,21 +8,18 @@ use tauri::{AppHandle, Runtime, State};
 use crate::application::clickup_integration_service::{
     ClickUpFolder, ClickUpList, ClickUpStatus, ClickUpTaskListOptions,
 };
-use crate::application::ticket_canonical_branch::ensure_ticket_canonical_branch;
+use crate::application::external_issue_link_service::TicketConversationLinkInput;
 use crate::application::ticketing_pr_summary::{ticket_pr_branch_summary, TicketPrBranchSummary};
 use crate::application::{
     agent_conversation_jira_issue, agent_conversation_linear_issue,
-    agent_conversation_start_service::{
-        AgentConversationStartDeps, AgentConversationStartService, StartAgentConversationInput,
-    },
+    agent_conversation_start_service::{AgentConversationStartDeps, AgentConversationStartService},
     AppState, AtlassianResourceContent, AtlassianResourceKind, AtlassianResourceSummary,
     ClickUpComment, ClickUpSpace, ClickUpTaskContent, ClickUpTaskSummary, ClickUpUser,
-    JiraIssueDetail, JiraProjectSummary, LinearComment,
-    LinearIntegrationSettings, LinearIssueContent, LinearIssueSummary, LinearLabel,
-    TauriTicketingEventSink, TeamService, TicketAssignRequest, TicketCommentRequest,
-    TicketSetLabelsRequest, TicketTransitionRequest, TicketingCommentResult, TicketingLabelResult,
-    TicketingMutationResult, TicketingPersonResult, TicketingService, TicketingTicketIdentity,
-    TicketingTransitionOption,
+    JiraIssueDetail, JiraProjectSummary, LinearComment, LinearIntegrationSettings,
+    LinearIssueContent, LinearIssueSummary, LinearLabel, TauriTicketingEventSink,
+    TicketAssignRequest, TicketCommentRequest, TicketSetLabelsRequest, TicketTransitionRequest,
+    TicketingCommentResult, TicketingLabelResult, TicketingMutationResult, TicketingPersonResult,
+    TicketingService, TicketingTicketIdentity, TicketingTransitionOption,
 };
 use crate::commands::unified_chat_commands::{
     agent_conversation_response_for_state, agent_workspace_response_for_state,
@@ -30,14 +27,13 @@ use crate::commands::unified_chat_commands::{
 };
 use crate::commands::ExecutionState;
 use crate::domain::entities::{
-    is_open_pr, AgentConversationJiraIssueLink, AgentConversationLinearIssueLink,
-    AgentConversationWorkspaceMode, ChatContextType, ChatConversation, ChatConversationId,
-    IdeationAnalysisBaseRefKind, ProjectId,
+    is_open_pr, AgentConversationJiraIssueLink, AgentConversationLinearIssueLink, ChatContextType,
+    ChatConversation, ChatConversationId, ProjectId,
 };
 use crate::domain::integrations::{
-    AtlassianIntegrationSettings, ClickUpIntegrationSettings, IntegrationValidationStatus,
-    ObservedTicketingStatus, ProviderTicketOperation, TicketingStatusCatalogEntry,
-    TicketingStatusPresentationPatch,
+    AtlassianIntegrationSettings, ClickUpIntegrationSettings, ExternalIssueLink,
+    IntegrationValidationStatus, ObservedTicketingStatus, ProviderTicketOperation,
+    TicketingStatusCatalogEntry, TicketingStatusPresentationPatch,
 };
 use crate::domain::services::{
     jira_reference_from_composer_reference, ComposerIntegrationReference,
@@ -61,6 +57,7 @@ const UNASSIGNED_ASSIGNEE_FILTER: &str = "__unassigned__";
 enum ProjectTicketLink {
     Jira(AgentConversationJiraIssueLink),
     Linear(AgentConversationLinearIssueLink),
+    ClickUp(ExternalIssueLink),
 }
 
 #[derive(Debug, Clone)]
@@ -132,17 +129,14 @@ pub async fn list_ticketing_containers(
             }),
         // ClickUp loads Spaces first, then folders/lists lazily for a selected
         // Space so the dashboard shell does not block on the full workspace tree.
-        PROVIDER_CLICKUP => {
-            match clickup_selected_space_id(parent_container_id.as_deref()) {
-                Some(space_id) => clickup_location_containers_for_space(state.inner(), space_id)
-                    .await,
-                None => state
-                    .clickup_integration_service
-                    .list_spaces()
-                    .await
-                    .map(|spaces| spaces.into_iter().map(clickup_space_to_container).collect()),
-            }
-        }
+        PROVIDER_CLICKUP => match clickup_selected_space_id(parent_container_id.as_deref()) {
+            Some(space_id) => clickup_location_containers_for_space(state.inner(), space_id).await,
+            None => state
+                .clickup_integration_service
+                .list_spaces()
+                .await
+                .map(|spaces| spaces.into_iter().map(clickup_space_to_container).collect()),
+        },
         _ => unreachable!("provider validated above"),
     }
 }
@@ -174,7 +168,12 @@ pub async fn list_ticketing_status_catalog(
         .ticketing_status_catalog_service
         .list_status_catalog(&scope.provider, &scope.scope_kind, &scope.scope_id)
         .await
-        .map(|entries| entries.into_iter().map(status_catalog_entry_response).collect())
+        .map(|entries| {
+            entries
+                .into_iter()
+                .map(status_catalog_entry_response)
+                .collect()
+        })
         .map_err(|error| error.to_string())
 }
 
@@ -188,7 +187,12 @@ pub async fn refresh_ticketing_status_catalog(
     let scope = normalize_status_catalog_scope(provider, scope_kind, scope_id)?;
     sync_status_catalog_for_scope(state.inner(), &scope)
         .await
-        .map(|entries| entries.into_iter().map(status_catalog_entry_response).collect())
+        .map(|entries| {
+            entries
+                .into_iter()
+                .map(status_catalog_entry_response)
+                .collect()
+        })
 }
 
 #[tauri::command]
@@ -206,7 +210,12 @@ pub async fn update_ticketing_status_presentation(
         .ticketing_status_catalog_service
         .update_status_presentation(&scope.provider, &scope.scope_kind, &scope.scope_id, patches)
         .await
-        .map(|entries| entries.into_iter().map(status_catalog_entry_response).collect())
+        .map(|entries| {
+            entries
+                .into_iter()
+                .map(status_catalog_entry_response)
+                .collect()
+        })
         .map_err(|error| error.to_string())
 }
 
@@ -323,7 +332,9 @@ fn ticket_page_from_loaded_summaries(
     let page_items: Vec<TicketSummaryResponse> =
         items.into_iter().skip(offset).take(limit).collect();
     let next_cursor = if total_loaded > offset.saturating_add(page_items.len()) {
-        Some(encode_ticket_offset_cursor(offset.saturating_add(page_items.len())))
+        Some(encode_ticket_offset_cursor(
+            offset.saturating_add(page_items.len()),
+        ))
     } else {
         None
     };
@@ -438,9 +449,9 @@ fn ticket_provider_container_scope<'a>(
             .map(str::trim)
             .is_some_and(|value| !value.is_empty())
     {
-        if container_selected_key(container_id).is_some_and(|container_id| {
-            container_id.strip_prefix("list:").is_some()
-        }) {
+        if container_selected_key(container_id)
+            .is_some_and(|container_id| container_id.strip_prefix("list:").is_some())
+        {
             return container_id;
         }
         return None;
@@ -608,18 +619,24 @@ async fn load_ticket_summaries(
                 ClickUpContainerScope::Space(_) | ClickUpContainerScope::List(_)
             );
             let summaries = match &clickup_scope {
-                ClickUpContainerScope::Space(space_id) => state
-                    .clickup_integration_service
-                    .list_tasks(vec![space_id.clone()], options)
-                    .await?,
-                ClickUpContainerScope::List(list_id) => state
-                    .clickup_integration_service
-                    .list_tasks_for_list(list_id, options)
-                    .await?,
-                _ => state
-                    .clickup_integration_service
-                    .list_tasks(Vec::new(), options)
-                    .await?,
+                ClickUpContainerScope::Space(space_id) => {
+                    state
+                        .clickup_integration_service
+                        .list_tasks(vec![space_id.clone()], options)
+                        .await?
+                }
+                ClickUpContainerScope::List(list_id) => {
+                    state
+                        .clickup_integration_service
+                        .list_tasks_for_list(list_id, options)
+                        .await?
+                }
+                _ => {
+                    state
+                        .clickup_integration_service
+                        .list_tasks(Vec::new(), options)
+                        .await?
+                }
             };
             Ok(summaries
                 .into_iter()
@@ -796,6 +813,7 @@ pub async fn get_conversation_ticket(
     let conversation_id = conversation_id
         .parse::<ChatConversationId>()
         .map_err(|_| "Invalid conversationId".to_string())?;
+    let conversation_id_value = conversation_id.as_str();
 
     if let Some(link) = state
         .agent_conversation_jira_issue_repo
@@ -815,6 +833,39 @@ pub async fn get_conversation_ticket(
             project_id: link.project_id.as_str().to_string(),
             title: link.title,
             url: link.issue_url,
+        }));
+    }
+
+    let clickup_link = state
+        .external_issue_link_service
+        .list_ticket_links_for_conversation(&conversation_id_value)
+        .await
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|link| {
+            link.provider.eq_ignore_ascii_case(PROVIDER_CLICKUP)
+                && link.external_kind.eq_ignore_ascii_case(PROVIDER_CLICKUP)
+        });
+    if let Some(link) = clickup_link {
+        let title = link.metadata_json.as_deref().and_then(|metadata| {
+            serde_json::from_str::<serde_json::Value>(metadata)
+                .ok()
+                .and_then(|metadata| {
+                    metadata
+                        .get("title")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string)
+                })
+        });
+        return Ok(Some(ConversationTicketResponse {
+            ticket_ref: TicketRefInput {
+                provider: PROVIDER_CLICKUP.to_string(),
+                id: link.external_id,
+                key: link.external_key,
+            },
+            project_id: link.local_project_id.unwrap_or_default(),
+            title,
+            url: link.external_url,
         }));
     }
 
@@ -844,35 +895,26 @@ pub async fn start_ralphx_work_from_ticket<R: Runtime + 'static>(
     mut input: StartRalphxWorkFromTicketInput,
     state: State<'_, AppState>,
     execution_state: State<'_, Arc<ExecutionState>>,
-    team_service: State<'_, Arc<TeamService>>,
     app: tauri::AppHandle<R>,
 ) -> Result<StartAgentConversationResponse, String> {
     let provider = input.ticket_ref.provider.clone();
     validate_provider(&provider)?;
-    let project_id = ProjectId::from_string(input.start.project_id.clone());
+    let project_id = ProjectId::from_string(
+        input
+            .start
+            .project_id
+            .clone()
+            .ok_or_else(|| "Starting work from a ticket requires a project".to_string())?,
+    );
     let ticket_reference = ticket_ref_to_composer_reference(&provider, &input.ticket_ref);
     let issue_reference = ensure_ticket_composer_reference(
         &mut input.start.composer_integration_references,
         ticket_reference,
     );
 
-    // For workspace-creating ticket starts with no explicit branch/PR base,
-    // base the new conversation off the ticket's single canonical branch so all
-    // work for the ticket converges on one branch. Explicit user-selected PRs
-    // and branches are preserved.
-    if ticket_start_should_apply_canonical_branch(&input.start) {
-        let issue_key = ticket_ref_issue_key(&input.ticket_ref);
-        let canonical =
-            ensure_ticket_canonical_branch(state.inner(), &project_id, &provider, &issue_key)
-                .await
-                .map_err(|error| error.to_string())?;
-        apply_ticket_canonical_branch_base(&mut input.start, &issue_key, &canonical.branch_name);
-    }
-
     let mut result = AgentConversationStartService::new(AgentConversationStartDeps {
         state: state.inner(),
         execution_state: execution_state.inner(),
-        team_service: Some(team_service.inner().clone()),
         app_handle: app,
     })
     .start(input.start)
@@ -930,75 +972,6 @@ fn ticket_ref_label(ticket_ref: &TicketRefInput) -> String {
         .filter(|value| !value.is_empty())
         .unwrap_or(ticket_ref.id.as_str())
         .to_string()
-}
-
-/// Resolve the issue key used for the ticket canonical branch: prefer the
-/// provider `.key` (matches the link tables), falling back to `.id`.
-fn ticket_ref_issue_key(ticket_ref: &TicketRefInput) -> String {
-    ticket_ref
-        .key
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(ticket_ref.id.as_str())
-        .to_string()
-}
-
-/// Whether a ticket start in this mode will create a base-selecting workspace
-/// that should inherit the ticket's canonical branch as its base.
-///
-/// Only Edit and Plan modes create a local-branch-base workspace from a ticket
-/// start. Chat-only starts create no workspace (effectively read-only), and the
-/// other workspace modes are not reachable from a ticket start, so they skip the
-/// canonical-branch base injection.
-fn ticket_start_inherits_canonical_branch(mode: Option<&str>) -> bool {
-    let parsed = mode
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("edit")
-        .parse::<AgentConversationWorkspaceMode>();
-    matches!(
-        parsed,
-        Ok(AgentConversationWorkspaceMode::Edit | AgentConversationWorkspaceMode::Plan)
-    )
-}
-
-fn ticket_start_should_apply_canonical_branch(start: &StartAgentConversationInput) -> bool {
-    if !ticket_start_inherits_canonical_branch(start.mode.as_deref()) {
-        return false;
-    }
-    if start.base_source_pull_request.is_some() {
-        return false;
-    }
-    let base_ref_kind = match start
-        .base_ref_kind
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::parse::<IdeationAnalysisBaseRefKind>)
-        .transpose()
-    {
-        Ok(kind) => kind,
-        Err(_) => return false,
-    };
-    matches!(
-        base_ref_kind,
-        None | Some(IdeationAnalysisBaseRefKind::ProjectDefault)
-    )
-}
-
-/// Overwrite the conversation start base so it inherits the ticket's canonical
-/// branch as a local-branch base. Uses `local_branch` (NOT `pull_request`, which
-/// hard-errors in the workspace path); the existing LocalBranch path materializes
-/// the branch locally if missing and forges the per-conversation branch off it.
-fn apply_ticket_canonical_branch_base(
-    start: &mut StartAgentConversationInput,
-    issue_key: &str,
-    canonical_branch_name: &str,
-) {
-    start.base_ref_kind = Some("local_branch".to_string());
-    start.base_ref = Some(canonical_branch_name.to_string());
-    start.base_display_name = Some(format!("Ticket {issue_key} ({canonical_branch_name})"));
 }
 
 #[tauri::command]
@@ -1284,7 +1257,9 @@ fn column_status_catalog_scope(
                 scope_id: "all".to_string(),
             }))
         }
-        PROVIDER_CLICKUP => Ok(clickup_status_catalog_scope(clickup_container_scope(container_id))),
+        PROVIDER_CLICKUP => Ok(clickup_status_catalog_scope(clickup_container_scope(
+            container_id,
+        ))),
         _ => Err(format!("Unsupported ticketing provider: {provider}")),
     }
 }
@@ -1342,7 +1317,12 @@ async fn sync_status_catalog_for_scope(
     let observed = observed_statuses_for_scope(state, scope).await?;
     state
         .ticketing_status_catalog_service
-        .sync_observed_statuses(&scope.provider, &scope.scope_kind, &scope.scope_id, observed)
+        .sync_observed_statuses(
+            &scope.provider,
+            &scope.scope_kind,
+            &scope.scope_id,
+            observed,
+        )
         .await
         .map_err(|error| error.to_string())
 }
@@ -1415,7 +1395,10 @@ async fn observed_statuses_for_scope(
                 })
                 .collect())
         }
-        _ => Err(format!("Unsupported ticketing provider: {}", scope.provider)),
+        _ => Err(format!(
+            "Unsupported ticketing provider: {}",
+            scope.provider
+        )),
     }
 }
 
@@ -1425,10 +1408,12 @@ async fn clickup_statuses_for_catalog_scope(
 ) -> Result<Vec<ClickUpStatus>, String> {
     match scope.scope_kind.as_str() {
         "clickup_space" => clickup_aggregate_space_statuses(state, &scope.scope_id).await,
-        "clickup_folder" => state
-            .clickup_integration_service
-            .list_folder_statuses(&scope.scope_id)
-            .await,
+        "clickup_folder" => {
+            state
+                .clickup_integration_service
+                .list_folder_statuses(&scope.scope_id)
+                .await
+        }
         "clickup_list" => {
             state
                 .clickup_integration_service
@@ -1457,7 +1442,10 @@ async fn clickup_aggregate_space_statuses(
             .await?,
     );
 
-    let folders = state.clickup_integration_service.list_folders(space_id).await?;
+    let folders = state
+        .clickup_integration_service
+        .list_folders(space_id)
+        .await?;
     for folder in folders {
         append_clickup_statuses(
             &mut statuses,
@@ -1569,7 +1557,10 @@ fn status_catalog_entry_column(
     entry: TicketingStatusCatalogEntry,
     order: usize,
 ) -> TicketingColumnResponse {
-    let color = entry.color_override.clone().or_else(|| entry.provider_color.clone());
+    let color = entry
+        .color_override
+        .clone()
+        .or_else(|| entry.provider_color.clone());
     TicketingColumnResponse {
         id: entry.provider_status_id,
         name: entry.provider_status_name,
@@ -1593,7 +1584,10 @@ fn status_catalog_entry_column(
 fn status_catalog_entry_response(
     entry: TicketingStatusCatalogEntry,
 ) -> TicketingStatusCatalogEntryResponse {
-    let color = entry.color_override.clone().or_else(|| entry.provider_color.clone());
+    let color = entry
+        .color_override
+        .clone()
+        .or_else(|| entry.provider_color.clone());
     TicketingStatusCatalogEntryResponse {
         id: entry.id,
         provider: entry.provider,
@@ -1963,20 +1957,24 @@ fn ticket_matches_filters(ticket: &TicketSummaryResponse, filters: &TicketFilter
 
     let assignees = ticket_assignee_filters(filters);
     if !assignees.is_empty() {
-        let ticket_assignees: Vec<&TicketingPersonResponse> =
-            ticket.assignees.iter().chain(ticket.assignee.iter()).collect();
+        let ticket_assignees: Vec<&TicketingPersonResponse> = ticket
+            .assignees
+            .iter()
+            .chain(ticket.assignee.iter())
+            .collect();
         let matches_named_assignee = assignees
             .iter()
             .filter(|assignee| assignee.as_str() != UNASSIGNED_ASSIGNEE_FILTER)
             .map(|assignee| assignee.to_ascii_lowercase())
             .any(|assignee| {
-                ticket_assignees
-                    .iter()
-                    .any(|ticket_assignee| ticket_assignee_matches_filter(ticket_assignee, &assignee))
+                ticket_assignees.iter().any(|ticket_assignee| {
+                    ticket_assignee_matches_filter(ticket_assignee, &assignee)
+                })
             });
-        let matches_unassigned =
-            assignees.iter().any(|assignee| assignee == UNASSIGNED_ASSIGNEE_FILTER)
-                && ticket_assignees.is_empty();
+        let matches_unassigned = assignees
+            .iter()
+            .any(|assignee| assignee == UNASSIGNED_ASSIGNEE_FILTER)
+            && ticket_assignees.is_empty();
         if !matches_named_assignee && !matches_unassigned {
             return false;
         }
@@ -2212,7 +2210,10 @@ async fn clickup_location_containers_for_space(
     space_id: &str,
 ) -> Result<Vec<TicketingContainerResponse>, String> {
     let mut containers = Vec::new();
-    let folders = state.clickup_integration_service.list_folders(space_id).await?;
+    let folders = state
+        .clickup_integration_service
+        .list_folders(space_id)
+        .await?;
     for folder in folders {
         let folder_id = folder.id.clone();
         containers.push(clickup_folder_to_container(folder, space_id));
@@ -2385,7 +2386,10 @@ fn clickup_summary_assigned_to_user(summary: &ClickUpTaskSummary, user: &ClickUp
 }
 
 fn clickup_summary_watched_by_user(summary: &ClickUpTaskSummary, user: &ClickUpUser) -> bool {
-    summary.watchers.iter().any(|watcher| clickup_users_match(watcher, user))
+    summary
+        .watchers
+        .iter()
+        .any(|watcher| clickup_users_match(watcher, user))
 }
 
 fn clickup_users_match(left: &ClickUpUser, right: &ClickUpUser) -> bool {
@@ -2798,10 +2802,52 @@ async fn link_started_ticket_to_conversation(
                 .map(|_| ())
                 .map_err(|error| error.to_string())
         }
-        // ClickUp start-work is supported through the provider-neutral composer
-        // reference. A first-class ClickUp conversation link table is deferred,
-        // so there is nothing to persist here yet.
-        PROVIDER_CLICKUP => Ok(()),
+        PROVIDER_CLICKUP => {
+            let conversation_id_value = conversation_id.as_str();
+            let already_linked = state
+                .external_issue_link_service
+                .list_ticket_links_for_conversation(&conversation_id_value)
+                .await
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .any(|link| {
+                    link.provider.eq_ignore_ascii_case(PROVIDER_CLICKUP)
+                        && (link.external_id.eq_ignore_ascii_case(reference.id.trim())
+                            || match (link.external_key.as_deref(), reference.key.as_deref()) {
+                                (Some(left), Some(right)) => {
+                                    left.eq_ignore_ascii_case(right.trim())
+                                }
+                                _ => false,
+                            })
+                });
+            if already_linked {
+                return Ok(());
+            }
+            state
+                .external_issue_link_service
+                .upsert_ticket_conversation_link(TicketConversationLinkInput {
+                    provider: PROVIDER_CLICKUP.to_string(),
+                    external_kind: PROVIDER_CLICKUP.to_string(),
+                    external_id: reference.id.clone(),
+                    external_key: reference.key.clone(),
+                    external_url: reference.url.clone(),
+                    conversation_id: conversation_id.as_str(),
+                    project_id: project_id.to_string(),
+                    local_sha: None,
+                    local_state: Some("active".to_string()),
+                    metadata_json: Some(
+                        serde_json::json!({
+                            "source": "ticket_start",
+                            "title": reference.title,
+                            "validated_at": Utc::now().to_rfc3339(),
+                        })
+                        .to_string(),
+                    ),
+                })
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        }
         _ => Err(format!("Unknown ticketing provider: {provider}")),
     }
 }
@@ -2871,10 +2917,29 @@ async fn project_ticket_conversation_associations(
                 }
             }
         }
-        // ClickUp conversation-linking is deferred (no link table yet), so ClickUp
-        // tickets have no conversation associations; the list still renders with a
-        // zero association count rather than erroring.
-        PROVIDER_CLICKUP => {}
+        PROVIDER_CLICKUP => {
+            for conversation in conversations {
+                let conversation_id = conversation.id.as_str();
+                let links = state
+                    .external_issue_link_service
+                    .list_ticket_links_for_conversation(&conversation_id)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                for link in links.into_iter().filter(|link| {
+                    link.provider.eq_ignore_ascii_case(PROVIDER_CLICKUP)
+                        && link.external_kind.eq_ignore_ascii_case(PROVIDER_CLICKUP)
+                        && link.local_project_id.as_deref() == Some(project_id.as_str())
+                }) {
+                    associations.push(ProjectTicketConversationAssociation {
+                        link: ProjectTicketLink::ClickUp(link),
+                        item: agent_conversation_association_item(
+                            &conversation,
+                            project_id.as_str(),
+                        ),
+                    });
+                }
+            }
+        }
         _ => return Err(format!("Unknown ticketing provider: {provider}")),
     }
 
@@ -2919,9 +2984,16 @@ fn linked_agent_conversation_associations_from_batch(
                 })
                 .collect())
         }
-        // ClickUp conversation-linking is deferred, so there are never any batched
-        // ClickUp associations to match against.
-        PROVIDER_CLICKUP => Ok(Vec::new()),
+        PROVIDER_CLICKUP => Ok(associations
+            .iter()
+            .filter_map(|association| {
+                let ProjectTicketLink::ClickUp(link) = &association.link else {
+                    return None;
+                };
+                clickup_link_matches_ticket(link, project_id, reference)
+                    .then(|| association.item.clone())
+            })
+            .collect()),
         _ => Err(format!("Unknown ticketing provider: {provider}")),
     }
 }
@@ -2951,6 +3023,19 @@ fn linear_link_matches_ticket(
                     .as_deref()
                     .is_some_and(|link_key| link_key.eq_ignore_ascii_case(issue_key))
             }))
+}
+
+fn clickup_link_matches_ticket(
+    link: &ExternalIssueLink,
+    project_id: &ProjectId,
+    reference: &ComposerIntegrationReference,
+) -> bool {
+    link.local_project_id.as_deref() == Some(project_id.as_str())
+        && (link.external_id.eq_ignore_ascii_case(reference.id.trim())
+            || match (link.external_key.as_deref(), reference.key.as_deref()) {
+                (Some(left), Some(right)) => left.eq_ignore_ascii_case(right.trim()),
+                _ => false,
+            })
 }
 
 fn agent_conversation_association_item(

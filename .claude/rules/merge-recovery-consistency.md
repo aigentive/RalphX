@@ -40,4 +40,4 @@ Prevent drift between merge failure classification, manual recovery actions, run
 | Live auto-repair | `src-tauri/src/application/reconciliation/handlers/merge.rs` |
 | Restart-time repair | `src-tauri/src/application/startup_jobs.rs` |
 | Manual user recovery | `src-tauri/src/commands/git_commands.rs`, `frontend/src/components/tasks/detail-views/MergeIncompleteTaskDetail.tsx` |
-| Regression coverage | `src-tauri/src/domain/state_machine/transition_handler/tests/merge_outcome_transient_retry_tests.rs`, `src-tauri/tests/reconciliation_runner.rs`, `src-tauri/tests/startup_jobs_runner.rs`, `src-tauri/src/commands/git_commands.rs` |
+| Regression coverage | `src-tauri/src/domain/state_machine/transition_handler/tests/merge_outcome_transient_retry_tests.rs`, `src-tauri/tests/suite_interactive_process/reconciliation_runner.rs`, `src-tauri/tests/suite_transition_git/startup_jobs_runner.rs`, `src-tauri/src/commands/git_commands.rs` |

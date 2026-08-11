@@ -1,8 +1,8 @@
 use super::*;
 use crate::domain::entities::{
-    create_artifact_content_preview, Artifact, ArtifactId, ArtifactRelation,
-    ArtifactRelationType, ArtifactType, InternalStatus, Priority, ProjectId, ProposalCategory,
-    Task, TaskProposal, TaskProposalId, TaskStep, TaskStepId,
+    create_artifact_content_preview, Artifact, ArtifactId, ArtifactRelation, ArtifactRelationType,
+    ArtifactType, InternalStatus, Priority, ProjectId, ProposalCategory, Task, TaskProposal,
+    TaskProposalId, TaskStep, TaskStepId,
 };
 use crate::domain::repositories::{
     ArtifactRepository, StateHistoryMetadata, TaskDependencyRepository, TaskProposalRepository,
@@ -89,8 +89,8 @@ impl TaskRepository for MockTaskRepository {
         _from: InternalStatus,
         _to: InternalStatus,
         _trigger: &str,
-    ) -> AppResult<()> {
-        Ok(())
+    ) -> AppResult<String> {
+        Ok(uuid::Uuid::new_v4().to_string())
     }
 
     async fn get_status_history(
@@ -237,7 +237,12 @@ impl TaskRepository for MockTaskRepository {
     async fn get_status_history_batch(
         &self,
         _task_ids: &[crate::domain::entities::TaskId],
-    ) -> AppResult<HashMap<crate::domain::entities::TaskId, Vec<crate::domain::repositories::StatusTransition>>> {
+    ) -> AppResult<
+        HashMap<
+            crate::domain::entities::TaskId,
+            Vec<crate::domain::repositories::StatusTransition>,
+        >,
+    > {
         Ok(HashMap::new())
     }
 }
@@ -748,6 +753,108 @@ async fn test_get_task_context_with_plan_artifact() {
     assert_eq!(plan.title, "Implementation Plan");
     assert!(plan.content_preview.len() <= 503); // 500 + "..."
     assert!(context.context_hints.iter().any(|h| h.contains("plan")));
+}
+
+#[tokio::test]
+async fn task_context_exposes_immutable_blueprint_snapshot() {
+    let mut task = Task::new(ProjectId::new(), "Blueprint task".to_string());
+    let blueprint_id = ArtifactId::new();
+    task.plan_blueprint_artifact_id = Some(blueprint_id.clone());
+    let task_id = task.id.clone();
+
+    let mut blueprint = Artifact::new_inline(
+        "Implementation Blueprint",
+        ArtifactType::Specification,
+        "# Step 2\n\nEdit the repository seam and prove the stale guard.",
+        "planner",
+    );
+    blueprint.id = blueprint_id.clone();
+
+    let service = TaskContextService::new(
+        Arc::new(MockTaskRepository::with_task(task)),
+        Arc::new(MockTaskDependencyRepository::empty()),
+        Arc::new(MockTaskProposalRepository::empty()),
+        Arc::new(MockArtifactRepository::with_artifact(blueprint)),
+        Arc::new(MockTaskStepRepository::empty()),
+    );
+
+    let context = service.get_task_context(&task_id).await.unwrap();
+    let blueprint = context
+        .blueprint_artifact
+        .expect("task blueprint snapshot should be exposed");
+    assert_eq!(blueprint.id, blueprint_id);
+    assert_eq!(blueprint.title, "Implementation Blueprint");
+    assert!(blueprint.content_preview.contains("stale guard"));
+}
+
+#[tokio::test]
+async fn task_context_rejects_v2_proposal_when_task_lost_immutable_blueprint_pointer() {
+    let mut proposal = TaskProposal::new(
+        crate::domain::entities::IdeationSessionId::new(),
+        "V2 proposal",
+        ProposalCategory::Feature,
+        Priority::Medium,
+    );
+    proposal.blueprint_artifact_id = Some(ArtifactId::new());
+    proposal.blueprint_version_at_creation = Some(1);
+
+    let mut task = Task::new(ProjectId::new(), "Missing Blueprint".to_string());
+    task.source_proposal_id = Some(proposal.id.clone());
+    let task_id = task.id.clone();
+
+    let service = TaskContextService::new(
+        Arc::new(MockTaskRepository::with_task(task)),
+        Arc::new(MockTaskDependencyRepository::empty()),
+        Arc::new(MockTaskProposalRepository::with_proposal(proposal)),
+        Arc::new(MockArtifactRepository::empty()),
+        Arc::new(MockTaskStepRepository::empty()),
+    );
+
+    let error = service.get_task_context(&task_id).await.unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("v2 task is missing immutable Blueprint lineage"));
+}
+
+#[tokio::test]
+async fn task_context_allows_proposal_blueprint_fallback_only_for_legacy_task() {
+    let blueprint_id = ArtifactId::new();
+    let mut blueprint = Artifact::new_inline(
+        "Promoted Blueprint",
+        ArtifactType::Specification,
+        "# Added after task creation",
+        "planner",
+    );
+    blueprint.id = blueprint_id.clone();
+
+    let mut proposal = TaskProposal::new(
+        crate::domain::entities::IdeationSessionId::new(),
+        "Legacy proposal",
+        ProposalCategory::Feature,
+        Priority::Medium,
+    );
+    proposal.blueprint_artifact_id = Some(blueprint_id.clone());
+    proposal.blueprint_version_at_creation = None;
+
+    let mut task = Task::new(ProjectId::new(), "Legacy task".to_string());
+    task.source_proposal_id = Some(proposal.id.clone());
+    let task_id = task.id.clone();
+
+    let service = TaskContextService::new(
+        Arc::new(MockTaskRepository::with_task(task)),
+        Arc::new(MockTaskDependencyRepository::empty()),
+        Arc::new(MockTaskProposalRepository::with_proposal(proposal)),
+        Arc::new(MockArtifactRepository::with_artifact(blueprint)),
+        Arc::new(MockTaskStepRepository::empty()),
+    );
+
+    let context = service.get_task_context(&task_id).await.unwrap();
+
+    assert_eq!(
+        context.blueprint_artifact.map(|artifact| artifact.id),
+        Some(blueprint_id)
+    );
 }
 
 #[tokio::test]

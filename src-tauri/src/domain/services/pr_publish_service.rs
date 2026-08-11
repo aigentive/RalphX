@@ -5,10 +5,15 @@ use async_trait::async_trait;
 use tempfile::NamedTempFile;
 
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentWorkspacePrDescription, ArtifactContent, ChatConversation,
-    PlanBranch, Project, Task,
+    AgentConversationWorkspace, AgentWorkspacePrDescription, AgentWorkspacePrMetadataDecision,
+    ArtifactContent, ChatConversation, PlanBranch, Project, Task,
 };
 use crate::domain::repositories::{ArtifactRepository, IdeationSessionRepository};
+use crate::domain::services::github_generated_markdown::{
+    decompose_ralphx_managed_pr_body, fit_editable_prefix_for_preserved_suffix,
+    GITHUB_PR_BODY_SOFT_LIMIT_CHARS, PR_BODY_TRUNCATION_NOTICE, RALPHX_GENERATED_FOOTER,
+    RALPHX_MANAGED_PR_BODY_END, RALPHX_MANAGED_PR_BODY_START,
+};
 use crate::domain::services::{
     normalize_title_with_jira_key, primary_jira_key_from_title, GithubServiceTrait,
 };
@@ -24,11 +29,6 @@ pub trait PlanPrDescriptionDrafter: Send + Sync {
         review_state: PrReviewState,
     ) -> AppResult<AgentWorkspacePrDescription>;
 }
-
-const GITHUB_PR_BODY_SOFT_LIMIT_CHARS: usize = 60_000;
-const PR_BODY_TRUNCATION_NOTICE: &str =
-    "\n\n_Excerpt truncated by RalphX because GitHub PR descriptions have a body size limit._";
-const RALPHX_REPOSITORY_URL: &str = "https://github.com/aigentive/ralphx.app";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrReviewState {
@@ -50,9 +50,27 @@ pub struct AgentWorkspacePrPublishOutcome {
     pub pr_status: &'static str,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentWorkspacePrPublishResult {
+    Published(AgentWorkspacePrPublishOutcome),
+    TerminalPublicationIdentity,
+}
+
 pub struct AgentWorkspacePrPublisher<'a> {
     github: &'a Arc<dyn GithubServiceTrait>,
     plan_markdown: Option<String>,
+}
+
+/// Exact existing-PR metadata patch prepared before its single remote mutation.
+///
+/// The body is the full recomposed GitHub value, including any preserved managed suffix.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedExistingPrMetadataPatch {
+    pub target_pr_number: i64,
+    pub target_pr_url: Option<String>,
+    pub normalized_decision: AgentWorkspacePrMetadataDecision,
+    pub requested_title: Option<String>,
+    pub requested_body: Option<String>,
 }
 
 impl<'a> AgentWorkspacePrPublisher<'a> {
@@ -85,7 +103,35 @@ impl<'a> AgentWorkspacePrPublisher<'a> {
         conversation: &ChatConversation,
         workspace: &AgentConversationWorkspace,
         description: &AgentWorkspacePrDescription,
-    ) -> AppResult<AgentWorkspacePrPublishOutcome> {
+    ) -> AppResult<AgentWorkspacePrPublishResult> {
+        self.publish_draft_pr_inner(working_dir, conversation, workspace, description, true)
+            .await
+    }
+
+    /// Creates a draft PR while preserving duplicate recovery for the caller.
+    pub async fn publish_draft_pr_without_duplicate_recovery(
+        &self,
+        working_dir: &Path,
+        conversation: &ChatConversation,
+        workspace: &AgentConversationWorkspace,
+        description: &AgentWorkspacePrDescription,
+    ) -> AppResult<AgentWorkspacePrPublishResult> {
+        self.publish_draft_pr_inner(working_dir, conversation, workspace, description, false)
+            .await
+    }
+
+    async fn publish_draft_pr_inner(
+        &self,
+        working_dir: &Path,
+        conversation: &ChatConversation,
+        workspace: &AgentConversationWorkspace,
+        description: &AgentWorkspacePrDescription,
+        recover_duplicate: bool,
+    ) -> AppResult<AgentWorkspacePrPublishResult> {
+        if workspace.has_terminal_publication_pr_status() {
+            return Ok(AgentWorkspacePrPublishResult::TerminalPublicationIdentity);
+        }
+
         let mut title = description
             .title
             .as_deref()
@@ -110,12 +156,14 @@ impl<'a> AgentWorkspacePrPublisher<'a> {
                 .publication_pr_url
                 .clone()
                 .unwrap_or_else(|| format!("#{pr_number}"));
-            return Ok(AgentWorkspacePrPublishOutcome {
-                pr_number,
-                pr_url,
-                created_pr: false,
-                pr_status: "open",
-            });
+            return Ok(AgentWorkspacePrPublishResult::Published(
+                AgentWorkspacePrPublishOutcome {
+                    pr_number,
+                    pr_url,
+                    created_pr: false,
+                    pr_status: "open",
+                },
+            ));
         }
 
         match self
@@ -129,13 +177,15 @@ impl<'a> AgentWorkspacePrPublisher<'a> {
             )
             .await
         {
-            Ok((pr_number, pr_url)) => Ok(AgentWorkspacePrPublishOutcome {
-                pr_number,
-                pr_url,
-                created_pr: true,
-                pr_status: "draft",
-            }),
-            Err(AppError::DuplicatePr) => {
+            Ok((pr_number, pr_url)) => Ok(AgentWorkspacePrPublishResult::Published(
+                AgentWorkspacePrPublishOutcome {
+                    pr_number,
+                    pr_url,
+                    created_pr: true,
+                    pr_status: "draft",
+                },
+            )),
+            Err(AppError::DuplicatePr) if recover_duplicate => {
                 let Some((pr_number, pr_url)) = self
                     .github
                     .find_pr_by_head_branch(working_dir, &workspace.branch_name)
@@ -146,15 +196,136 @@ impl<'a> AgentWorkspacePrPublisher<'a> {
                 self.github
                     .update_pr_details(working_dir, pr_number, &title, body_file.path())
                     .await?;
-                Ok(AgentWorkspacePrPublishOutcome {
-                    pr_number,
-                    pr_url,
-                    created_pr: false,
-                    pr_status: "open",
-                })
+                Ok(AgentWorkspacePrPublishResult::Published(
+                    AgentWorkspacePrPublishOutcome {
+                        pr_number,
+                        pr_url,
+                        created_pr: false,
+                        pr_status: "open",
+                    },
+                ))
             }
+            Err(AppError::DuplicatePr) => Err(AppError::DuplicatePr),
             Err(error) => Err(error),
         }
+    }
+
+    /// Applies a deliberately partial metadata decision to a linked existing PR.
+    pub async fn publish_existing_pr_metadata_decision(
+        &self,
+        working_dir: &Path,
+        conversation: &ChatConversation,
+        pr_number: i64,
+        pr_url: Option<&str>,
+        existing_body: Option<&str>,
+        metadata_decision: &AgentWorkspacePrMetadataDecision,
+    ) -> AppResult<AgentWorkspacePrPublishOutcome> {
+        let prepared = self.prepare_existing_pr_metadata_patch(
+            conversation,
+            pr_number,
+            pr_url,
+            existing_body,
+            metadata_decision,
+        )?;
+        if prepared.has_requested_fields() {
+            self.mutate_prepared_existing_pr_metadata(working_dir, &prepared)
+                .await?;
+        }
+
+        Ok(AgentWorkspacePrPublishOutcome {
+            pr_number,
+            pr_url: pr_url
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("#{pr_number}")),
+            created_pr: false,
+            pr_status: "open",
+        })
+    }
+
+    /// Normalizes the requested fields and recomposes a complete body without remote I/O.
+    pub fn prepare_existing_pr_metadata_patch(
+        &self,
+        conversation: &ChatConversation,
+        pr_number: i64,
+        pr_url: Option<&str>,
+        existing_body: Option<&str>,
+        metadata_decision: &AgentWorkspacePrMetadataDecision,
+    ) -> AppResult<PreparedExistingPrMetadataPatch> {
+        let (requested_title, requested_body) = match metadata_decision {
+            AgentWorkspacePrMetadataDecision::Preserve => (None, None),
+            AgentWorkspacePrMetadataDecision::Patch {
+                title,
+                body_markdown,
+            } => {
+                let title = title.as_deref().map(|title| {
+                    let mut title = title.trim().to_string();
+                    if let Some(jira_key) = primary_jira_key_from_title(
+                        build_agent_workspace_pr_title(conversation).as_str(),
+                    ) {
+                        title = normalize_title_with_jira_key(&title, &jira_key);
+                    }
+                    title
+                });
+                let body = body_markdown
+                    .as_deref()
+                    .map(|body| {
+                        existing_body
+                            .map(decompose_ralphx_managed_pr_body)
+                            .and_then(|decomposition| decomposition.preserved_suffix)
+                            .map(|preserved_suffix| {
+                                recompose_agent_workspace_pr_body_with_preserved_suffix(
+                                    body,
+                                    preserved_suffix,
+                                )
+                            })
+                            .unwrap_or_else(|| {
+                                Ok(finalize_agent_workspace_pr_body(body, &self.plan_markdown))
+                            })
+                    })
+                    .transpose()?;
+                (title, body)
+            }
+        };
+        let normalized_decision = AgentWorkspacePrMetadataDecision::patch(
+            requested_title.clone(),
+            requested_body.as_deref().map(str::to_string),
+        )
+        .unwrap_or(AgentWorkspacePrMetadataDecision::Preserve);
+
+        Ok(PreparedExistingPrMetadataPatch {
+            target_pr_number: pr_number,
+            target_pr_url: pr_url.map(str::to_string),
+            normalized_decision,
+            requested_title,
+            requested_body,
+        })
+    }
+
+    /// Performs the only GitHub metadata mutation for a prepared patch.
+    pub async fn mutate_prepared_existing_pr_metadata(
+        &self,
+        working_dir: &Path,
+        prepared: &PreparedExistingPrMetadataPatch,
+    ) -> AppResult<()> {
+        let body_file = prepared
+            .requested_body
+            .as_deref()
+            .map(write_agent_workspace_pr_body)
+            .transpose()?;
+        self.github
+            .patch_pr_metadata(
+                working_dir,
+                prepared.target_pr_number,
+                prepared.requested_title.as_deref(),
+                body_file.as_ref().map(NamedTempFile::path),
+            )
+            .await
+    }
+}
+
+impl PreparedExistingPrMetadataPatch {
+    pub fn has_requested_fields(&self) -> bool {
+        self.requested_title.is_some() || self.requested_body.is_some()
     }
 }
 
@@ -271,12 +442,11 @@ impl<'a> PlanPrPublisher<'a> {
             ));
         }
 
-        let footer = format!("---\n\n_Generated by [RalphX]({})_", RALPHX_REPOSITORY_URL);
         let prefix = format!(
             "{}\n\n## Plan\n\n<details>\n<summary>View full plan</summary>\n\n",
             generated_body
         );
-        let suffix = format!("\n\n</details>\n\n{footer}");
+        let suffix = format!("\n\n</details>\n\n{RALPHX_GENERATED_FOOTER}");
 
         Ok(fit_plan_markdown_to_pr_body(
             &prefix,
@@ -360,17 +530,70 @@ fn write_agent_workspace_pr_body(body: &str) -> AppResult<NamedTempFile> {
 }
 
 fn finalize_agent_workspace_pr_body(body: &str, plan_markdown: &Option<String>) -> String {
-    let footer = format!("\n\n---\n\n_Generated by [RalphX]({})_", RALPHX_REPOSITORY_URL);
     match plan_markdown {
         Some(plan) if !plan.trim().is_empty() => {
-            let prefix = format!("{}\n\n", body.trim_end());
-            let suffix = format!("\n\n</details>{footer}");
+            let editable_prefix = body.trim_end();
+            let managed_prefix = format!("\n\n{RALPHX_MANAGED_PR_BODY_START}\n");
+            let suffix = format!(
+                "\n\n</details>\n\n{RALPHX_GENERATED_FOOTER}\n{RALPHX_MANAGED_PR_BODY_END}"
+            );
             let plan_header = "<details>\n<summary>View full plan</summary>\n\n";
-            let full_prefix = format!("{prefix}{plan_header}");
-            fit_plan_markdown_to_pr_body(&full_prefix, plan.trim(), &suffix)
+            let full_body = format!(
+                "{editable_prefix}{managed_prefix}{plan_header}{}{suffix}",
+                plan.trim()
+            );
+            if char_count(&full_body) <= GITHUB_PR_BODY_SOFT_LIMIT_CHARS {
+                return full_body;
+            }
+            let fixed_chars = char_count(&managed_prefix)
+                + char_count(plan_header)
+                + char_count(&suffix)
+                + char_count(PR_BODY_TRUNCATION_NOTICE);
+            let available_content_chars =
+                GITHUB_PR_BODY_SOFT_LIMIT_CHARS.saturating_sub(fixed_chars);
+            let editable = truncate_chars(editable_prefix, available_content_chars);
+            let remaining_plan_chars =
+                available_content_chars.saturating_sub(char_count(editable.trim_end()));
+            let truncated_plan = truncate_chars(plan.trim(), remaining_plan_chars);
+            format!(
+                "{}{managed_prefix}{plan_header}{}{PR_BODY_TRUNCATION_NOTICE}{suffix}",
+                editable.trim_end(),
+                truncated_plan.trim_end()
+            )
         }
-        _ => format!("{}{footer}", body.trim_end()),
+        _ => {
+            let preserved_suffix = format!(
+                "\n\n{RALPHX_MANAGED_PR_BODY_START}\n{RALPHX_GENERATED_FOOTER}\n\
+                 {RALPHX_MANAGED_PR_BODY_END}"
+            );
+            let editable_prefix = body
+                .trim_end()
+                .strip_suffix(RALPHX_GENERATED_FOOTER)
+                .map(str::trim_end)
+                .unwrap_or(body);
+            recompose_agent_workspace_pr_body_with_preserved_suffix(
+                editable_prefix,
+                &preserved_suffix,
+            )
+            .unwrap_or(preserved_suffix)
+        }
     }
+}
+
+fn recompose_agent_workspace_pr_body_with_preserved_suffix(
+    editable_prefix: &str,
+    preserved_suffix: &str,
+) -> AppResult<String> {
+    let editable_prefix = fit_editable_prefix_for_preserved_suffix(
+        editable_prefix,
+        preserved_suffix,
+    )
+    .ok_or_else(|| {
+        AppError::Validation(
+            "the preserved PR body suffix leaves no room for an editable description".to_string(),
+        )
+    })?;
+    Ok(format!("{editable_prefix}{preserved_suffix}"))
 }
 
 fn char_count(text: &str) -> usize {
@@ -403,291 +626,5 @@ fn fit_plan_markdown_to_pr_body(prefix: &str, plan_markdown: &str, suffix: &str)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    use crate::domain::entities::{
-        AgentConversationWorkspaceMode, ArtifactId, IdeationAnalysisBaseRefKind,
-        IdeationSessionId, ProjectId, TaskCategory,
-    };
-    use crate::tests::mock_github_service::MockGithubService;
-
-    fn agent_workspace_fixture() -> (ChatConversation, AgentConversationWorkspace) {
-        let project_id = ProjectId::from_string("project-pr-publish".to_string());
-        let mut conversation = ChatConversation::new_project(project_id.clone());
-        conversation.title = Some("Conversation title".to_string());
-        let workspace = AgentConversationWorkspace::new(
-            conversation.id.clone(),
-            project_id,
-            AgentConversationWorkspaceMode::Edit,
-            IdeationAnalysisBaseRefKind::ProjectDefault,
-            "main".to_string(),
-            Some("main".to_string()),
-            Some("0".repeat(40)),
-            "feature/pr-description".to_string(),
-            "/tmp/pr-description-worktree".to_string(),
-        );
-        (conversation, workspace)
-    }
-
-    #[tokio::test]
-    async fn agent_workspace_publisher_creates_draft_with_generated_body() {
-        let (conversation, workspace) = agent_workspace_fixture();
-        let description = AgentWorkspacePrDescription::new(
-            Some("Generated PR title".to_string()),
-            "## Summary\n\nGenerated body".to_string(),
-        );
-        let github = Arc::new(MockGithubService::new());
-        github.will_create_pr(42, "https://github.com/mock/repo/pull/42");
-        let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
-        let publisher = AgentWorkspacePrPublisher::new(&github_trait);
-        let temp_dir = tempfile::tempdir().unwrap();
-
-        let outcome = publisher
-            .publish_draft_pr(temp_dir.path(), &conversation, &workspace, &description)
-            .await
-            .unwrap();
-
-        assert_eq!(outcome.pr_number, 42);
-        assert!(outcome.created_pr);
-        assert_eq!(outcome.pr_status, "draft");
-        let state = github.state();
-        let (base, head, title, body_path) = state
-            .last_create_draft_pr_args
-            .clone()
-            .expect("draft PR args should be captured");
-        assert_eq!(base, "main");
-        assert_eq!(head, "feature/pr-description");
-        assert_eq!(title, "Generated PR title");
-        assert!(body_path.contains("tmp"));
-        let body = state.last_create_draft_pr_body.as_deref().unwrap();
-        assert!(body.starts_with("## Summary\n\nGenerated body"));
-        assert!(body.contains("_Generated by [RalphX]("));
-    }
-
-    #[tokio::test]
-    async fn agent_workspace_publisher_updates_existing_pr_with_title_fallback() {
-        let (mut conversation, mut workspace) = agent_workspace_fixture();
-        conversation.title = Some("Untitled agent".to_string());
-        workspace.publication_pr_number = Some(77);
-        workspace.publication_pr_url = Some("https://github.com/mock/repo/pull/77".to_string());
-        let description =
-            AgentWorkspacePrDescription::new(None, "## Summary\n\nUpdated body".to_string());
-        let github = Arc::new(MockGithubService::new());
-        let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
-        let publisher = AgentWorkspacePrPublisher::new(&github_trait);
-        let temp_dir = tempfile::tempdir().unwrap();
-
-        let outcome = publisher
-            .publish_draft_pr(temp_dir.path(), &conversation, &workspace, &description)
-            .await
-            .unwrap();
-
-        assert_eq!(outcome.pr_number, 77);
-        assert!(!outcome.created_pr);
-        assert_eq!(outcome.pr_status, "open");
-        assert_eq!(outcome.pr_url, "https://github.com/mock/repo/pull/77");
-        let state = github.state();
-        assert_eq!(state.update_pr_details_calls, 1);
-        let (pr_number, title, body_path) = state
-            .last_update_pr_details_args
-            .clone()
-            .expect("update PR args should be captured");
-        assert_eq!(pr_number, 77);
-        assert_eq!(title, "Agent conversation changes");
-        assert!(body_path.contains("tmp"));
-        let body = state.last_update_pr_details_body.as_deref().unwrap();
-        assert!(body.starts_with("## Summary\n\nUpdated body"));
-        assert!(body.contains("_Generated by [RalphX]("));
-    }
-
-    #[tokio::test]
-    async fn agent_workspace_publisher_prefixes_pr_title_with_jira_key() {
-        let (mut conversation, workspace) = agent_workspace_fixture();
-        conversation.title = Some("rx-42: Fix composer references".to_string());
-        let description = AgentWorkspacePrDescription::new(
-            Some("Fix composer references".to_string()),
-            "## Summary\n\nGenerated body".to_string(),
-        );
-        let github = Arc::new(MockGithubService::new());
-        github.will_create_pr(42, "https://github.com/mock/repo/pull/42");
-        let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
-        let publisher = AgentWorkspacePrPublisher::new(&github_trait);
-        let temp_dir = tempfile::tempdir().unwrap();
-
-        let outcome = publisher
-            .publish_draft_pr(temp_dir.path(), &conversation, &workspace, &description)
-            .await
-            .unwrap();
-
-        assert_eq!(outcome.pr_number, 42);
-        let state = github.state();
-        let (_, _, title, _) = state
-            .last_create_draft_pr_args
-            .clone()
-            .expect("draft PR args should be captured");
-        assert_eq!(title, "RX-42: Fix composer references");
-    }
-
-    #[tokio::test]
-    async fn agent_workspace_publisher_appends_plan_block_and_footer() {
-        let (conversation, workspace) = agent_workspace_fixture();
-        let description = AgentWorkspacePrDescription::new(
-            Some("PR with plan".to_string()),
-            "## Summary\n\nBody content".to_string(),
-        );
-        let github = Arc::new(MockGithubService::new());
-        github.will_create_pr(99, "https://github.com/mock/repo/pull/99");
-        let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
-        let publisher = AgentWorkspacePrPublisher::new(&github_trait)
-            .with_plan_markdown("## Plan\n\nStep 1\nStep 2".to_string());
-        let temp_dir = tempfile::tempdir().unwrap();
-
-        publisher
-            .publish_draft_pr(temp_dir.path(), &conversation, &workspace, &description)
-            .await
-            .unwrap();
-
-        let state = github.state();
-        let body = state.last_create_draft_pr_body.as_deref().unwrap();
-        assert!(body.starts_with("## Summary\n\nBody content"));
-        assert!(body.contains("<details>\n<summary>View full plan</summary>"));
-        assert!(body.contains("## Plan\n\nStep 1\nStep 2"));
-        assert!(body.contains("</details>"));
-        assert!(body.contains("_Generated by [RalphX]("));
-    }
-
-    #[tokio::test]
-    async fn plan_pr_publisher_uses_agent_body_and_ignores_repo_template() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let github_dir = temp_dir.path().join(".github");
-        std::fs::create_dir_all(&github_dir).unwrap();
-        std::fs::write(
-            github_dir.join("PULL_REQUEST_TEMPLATE.md"),
-            "## Checklist\n\n- [ ] Template item\n",
-        )
-        .unwrap();
-
-        let project_id = ProjectId::from_string("project-plan-pr".to_string());
-        let mut project = Project::new(
-            "Plan project".to_string(),
-            temp_dir.path().to_string_lossy().to_string(),
-        );
-        project.id = project_id.clone();
-        project.base_branch = Some("main".to_string());
-        let task = Task::new_with_category(
-            project_id.clone(),
-            "Merge plan".to_string(),
-            TaskCategory::PlanMerge,
-        );
-        let mut plan_branch = PlanBranch::new(
-            ArtifactId::from_string("artifact-plan".to_string()),
-            IdeationSessionId::from_string("session-plan".to_string()),
-            project_id,
-            "feature/plan".to_string(),
-            "develop".to_string(),
-        );
-        plan_branch.pr_number = Some(123);
-
-        let github = Arc::new(MockGithubService::new());
-        let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
-        let publisher = PlanPrPublisher::new(&github_trait, None, None);
-        let description = AgentWorkspacePrDescription::new(
-            None,
-            "## Summary\n\nAgent-written plan PR body".to_string(),
-        );
-
-        publisher
-            .sync_existing_pr(
-                &task,
-                &project,
-                &plan_branch,
-                PrReviewState::Ready,
-                &description,
-            )
-            .await
-            .unwrap();
-
-        let state = github.state();
-        assert_eq!(state.update_pr_details_calls, 1);
-        let (pr_number, title, _) = state
-            .last_update_pr_details_args
-            .clone()
-            .expect("update PR args should be captured");
-        assert_eq!(pr_number, 123);
-        assert_eq!(title, "Merge plan");
-        let body = state.last_update_pr_details_body.as_deref().unwrap();
-        assert!(body.starts_with("## Summary\n\nAgent-written plan PR body"));
-        assert!(!body.contains("## Checklist"));
-        assert!(!body.contains("## RalphX Status"));
-        assert!(!body.contains("## How To Review"));
-        assert!(body.contains("_No plan artifact was available"));
-        assert!(body.contains("<summary>View full plan</summary>"));
-        assert!(body.contains("_Generated by [RalphX]("));
-    }
-
-    #[tokio::test]
-    async fn plan_pr_publisher_rejects_empty_agent_body() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let project_id = ProjectId::from_string("project-plan-pr".to_string());
-        let mut project = Project::new(
-            "Plan project".to_string(),
-            temp_dir.path().to_string_lossy().to_string(),
-        );
-        project.id = project_id.clone();
-        let task = Task::new_with_category(
-            project_id.clone(),
-            "Merge plan".to_string(),
-            TaskCategory::PlanMerge,
-        );
-        let mut plan_branch = PlanBranch::new(
-            ArtifactId::from_string("artifact-plan".to_string()),
-            IdeationSessionId::from_string("session-plan".to_string()),
-            project_id,
-            "feature/plan".to_string(),
-            "main".to_string(),
-        );
-        plan_branch.pr_number = Some(123);
-
-        let github = Arc::new(MockGithubService::new());
-        let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
-        let publisher = PlanPrPublisher::new(&github_trait, None, None);
-        let description = AgentWorkspacePrDescription::new(None, "   \n".to_string());
-
-        let result = publisher
-            .sync_existing_pr(
-                &task,
-                &project,
-                &plan_branch,
-                PrReviewState::Ready,
-                &description,
-            )
-            .await;
-
-        match result {
-            Err(AppError::Infrastructure(message)) => {
-                assert_eq!(message, "plan PR describer returned an empty PR body");
-            }
-            Err(other) => panic!("expected infrastructure error, got {other:?}"),
-            Ok(_) => panic!("empty agent body should fail before writing PR details"),
-        }
-        assert_eq!(github.state().update_pr_details_calls, 0);
-    }
-
-    #[test]
-    fn finalize_body_without_plan_appends_only_footer() {
-        let body = finalize_agent_workspace_pr_body("## Summary\n\nBody", &None);
-        assert!(body.starts_with("## Summary\n\nBody"));
-        assert!(body.contains("_Generated by [RalphX]("));
-        assert!(!body.contains("<details>"));
-    }
-
-    #[test]
-    fn finalize_body_with_empty_plan_appends_only_footer() {
-        let body =
-            finalize_agent_workspace_pr_body("## Summary\n\nBody", &Some("  ".to_string()));
-        assert!(body.starts_with("## Summary\n\nBody"));
-        assert!(body.contains("_Generated by [RalphX]("));
-        assert!(!body.contains("<details>"));
-    }
-}
+#[path = "pr_publish_service_tests.rs"]
+mod tests;

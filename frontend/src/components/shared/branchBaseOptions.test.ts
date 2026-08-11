@@ -4,8 +4,7 @@ import {
   loadBranchBaseOptions,
   loadPullRequestBaseOptions,
   normalizeGitBranchName,
-  ticketAssociationBranchBaseOption,
-  ticketCanonicalBranchBaseOption,
+  synthesizeLocalBranchOption,
 } from "./branchBaseOptions";
 
 const {
@@ -186,6 +185,91 @@ describe("branchBaseOptions", () => {
     ).toBe(false);
   });
 
+  it("reports agent-branch loader failure as degraded", async () => {
+    listAgentConversationWorkspacesByProjectMock.mockRejectedValueOnce(
+      new Error("unavailable"),
+    );
+
+    const result = await loadBranchBaseOptions({
+      projectId: "project-1",
+      workingDirectory: "/tmp/ralphx",
+      projectBaseBranch: "main",
+    });
+
+    expect(result.degraded).toEqual({
+      planBranches: false,
+      agentBranches: true,
+    });
+    expect(result.options.some((option) => option.source === "agent")).toBe(
+      false,
+    );
+  });
+
+  it("reports plan-branch loader failure as degraded", async () => {
+    getPlanBranchesMock.mockRejectedValueOnce(new Error("unavailable"));
+
+    const result = await loadBranchBaseOptions({
+      projectId: "project-1",
+      workingDirectory: "/tmp/ralphx",
+      projectBaseBranch: "main",
+    });
+
+    expect(result.degraded).toEqual({
+      planBranches: true,
+      agentBranches: false,
+    });
+    expect(result.options.some((option) => option.source === "plan")).toBe(
+      false,
+    );
+  });
+
+  it("keeps RalphX internal branches in known refs when the agent loader fails", async () => {
+    listAgentConversationWorkspacesByProjectMock.mockRejectedValueOnce(
+      new Error("unavailable"),
+    );
+
+    const result = await loadBranchBaseOptions({
+      projectId: "project-1",
+      workingDirectory: "/tmp/ralphx",
+      projectBaseBranch: "main",
+    });
+
+    expect(result.knownBranchRefs).toContain("ralphx/ralphx/agent-789");
+    expect(result.options.some((option) => option.source === "agent")).toBe(
+      false,
+    );
+  });
+
+  it("synthesizes a local branch option with a default label", () => {
+    expect(synthesizeLocalBranchOption("feature/recover")).toEqual({
+      key: "local_branch:feature/recover",
+      label: "feature/recover",
+      detail: "Local branch",
+      source: "local",
+      selection: {
+        kind: "local_branch",
+        ref: "feature/recover",
+        displayName: "feature/recover",
+      },
+    });
+    expect(
+      synthesizeLocalBranchOption("feature/recover", "Recovered branch").label,
+    ).toBe("Recovered branch");
+  });
+
+  it("reports no degradation for a clean load", async () => {
+    const result = await loadBranchBaseOptions({
+      projectId: "project-1",
+      workingDirectory: "/tmp/ralphx",
+      projectBaseBranch: "main",
+    });
+
+    expect(result.degraded).toEqual({
+      planBranches: false,
+      agentBranches: false,
+    });
+  });
+
   it("uses the configured project base before Git's detected default", async () => {
     const result = await loadBranchBaseOptions({
       projectId: "project-1",
@@ -260,7 +344,7 @@ describe("branchBaseOptions", () => {
     expect(searchGithubPullRequestsMock).toHaveBeenCalledWith({
       projectId: "project-1",
       query: "picker",
-      limit: 30,
+      limit: 50,
     });
     expect(options).toEqual([
       {
@@ -285,131 +369,187 @@ describe("branchBaseOptions", () => {
     ]);
   });
 
-  it("maps ticket pull request associations to PR base selections", () => {
-    const option = ticketAssociationBranchBaseOption({
-      id: "https://github.com/owner/repo/pull/42",
-      title: "PR #42",
-      subtitle: "feature/ticket-pr",
-      status: "open",
-      active: true,
-      deepLink: { view: "agents", id: "conversation-1", projectId: "project-1" },
-      branchName: "feature/ticket-pr",
-      baseRef: "main",
-      prNumber: 42,
-      prUrl: "https://github.com/owner/repo/pull/42",
-    });
+  it("drops merged pull requests without a resolvable merge target", async () => {
+    searchGithubPullRequestsMock.mockResolvedValue([
+      {
+        number: 53,
+        title: "Merged without base",
+        url: "https://github.com/owner/repo/pull/53",
+        headRefName: "feature/deleted-after-merge",
+        headRefOid: "abc123",
+        baseRefName: "",
+        isDraft: false,
+        isCrossRepository: false,
+        state: "merged",
+        mergedAt: "2026-08-01T10:00:00Z",
+      },
+    ]);
 
-    expect(option).toEqual({
-      key: "pull_request:42:feature/ticket-pr",
-      label: "PR #42",
-      detail: "feature/ticket-pr -> main",
-      source: "pull_request",
-      selection: {
-        kind: "local_branch",
-        ref: "feature/ticket-pr",
-        displayName: "PR #42",
-        sourcePullRequest: {
-          number: 42,
-          url: "https://github.com/owner/repo/pull/42",
-          title: "PR #42",
-          headRefName: "feature/ticket-pr",
-          baseRefName: "main",
-          headRefOid: null,
+    await expect(
+      loadPullRequestBaseOptions({ projectId: "project-1" }),
+    ).resolves.toEqual([]);
+  });
+
+  it("drops closed pull requests that were never merged", async () => {
+    searchGithubPullRequestsMock.mockResolvedValue([
+      {
+        number: 54,
+        title: "Abandoned picker work",
+        url: "https://github.com/owner/repo/pull/54",
+        headRefName: "feature/abandoned-picker",
+        headRefOid: "def456",
+        baseRefName: "main",
+        isDraft: false,
+        isCrossRepository: false,
+        state: "CLOSED",
+        mergedAt: null,
+      },
+    ]);
+
+    await expect(
+      loadPullRequestBaseOptions({ projectId: "project-1" }),
+    ).resolves.toEqual([]);
+  });
+
+  it("keeps pull requests with an unknown state as open options", async () => {
+    searchGithubPullRequestsMock.mockResolvedValue([
+      {
+        number: 55,
+        title: "Legacy CLI result",
+        url: "https://github.com/owner/repo/pull/55",
+        headRefName: "feature/legacy-result",
+        headRefOid: "ghi789",
+        baseRefName: "main",
+        isDraft: false,
+        isCrossRepository: false,
+      },
+    ]);
+
+    await expect(
+      loadPullRequestBaseOptions({ projectId: "project-1" }),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        detail: "feature/legacy-result -> main",
+        selection: {
+          kind: "local_branch",
+          ref: "feature/legacy-result",
+          displayName: "PR #55: Legacy CLI result",
+          sourcePullRequest: {
+            number: 55,
+            url: "https://github.com/owner/repo/pull/55",
+            title: "Legacy CLI result",
+            headRefName: "feature/legacy-result",
+            baseRefName: "main",
+            headRefOid: "ghi789",
+          },
         },
+      }),
+    ]);
+  });
+
+  it("retargets merged pull-request selections to their merge target", async () => {
+    searchGithubPullRequestsMock.mockResolvedValue([
+      {
+        number: 52,
+        title: "Completed picker work",
+        url: "https://github.com/owner/repo/pull/52",
+        headRefName: "feature/deleted-after-merge",
+        headRefOid: "abc123",
+        baseRefName: "release/next",
+        isDraft: false,
+        isCrossRepository: false,
+        state: "merged",
+        mergedAt: "2026-08-01T10:00:00Z",
       },
-    });
+    ]);
+
+    await expect(
+      loadPullRequestBaseOptions({ projectId: "project-1" }),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        label: "#52 Completed picker work",
+        detail: "Merged → release/next",
+        selection: {
+          kind: "local_branch",
+          ref: "release/next",
+          displayName: "release/next (PR #52 merged)",
+          retargetedFromPullRequest: 52,
+        },
+      }),
+    ]);
   });
 
-  it("maps ticket branch associations without PR metadata to local branch selections", () => {
-    const option = ticketAssociationBranchBaseOption({
-      id: "conversation-branch",
-      title: "Ticket branch",
-      subtitle: "+ ralphx/ticket/jira-rx-24",
-      status: "branch",
-      active: false,
-      deepLink: { view: "agents", id: "conversation-branch", projectId: "project-1" },
-      branchName: null,
-      baseRef: "main",
-      prNumber: null,
-      prUrl: null,
-    });
-
-    expect(option).toEqual({
-      key: "ticket_branch:ralphx/ticket/jira-rx-24",
-      label: "Ticket branch",
-      detail: "ralphx/ticket/jira-rx-24",
-      source: "local",
-      selection: {
-        kind: "local_branch",
-        ref: "ralphx/ticket/jira-rx-24",
-        displayName: "Ticket branch",
+  it("lists open pull requests before merged ones", async () => {
+    searchGithubPullRequestsMock.mockResolvedValue([
+      {
+        number: 56,
+        title: "Recently merged",
+        url: "https://github.com/owner/repo/pull/56",
+        headRefName: "feature/recently-merged",
+        baseRefName: "main",
+        isDraft: false,
+        isCrossRepository: false,
+        state: "MERGED",
       },
-    });
-  });
-
-  it("returns null for ticket associations and references without usable branch data", () => {
-    expect(
-      ticketAssociationBranchBaseOption({
-        id: "conversation-empty",
-        title: "Empty branch",
-        subtitle: "   ",
-        status: null,
-        active: false,
-        deepLink: { view: "agents", id: "conversation-empty", projectId: "project-1" },
-        branchName: null,
-        baseRef: null,
-        prNumber: null,
-        prUrl: null,
-      })
-    ).toBeNull();
-
-    expect(
-      ticketCanonicalBranchBaseOption({
-        provider: "atlassian",
-        kind: "confluence",
-        id: "SPACE",
-      })
-    ).toBeNull();
-  });
-
-  it("builds deterministic ticket branch base options from composer references", () => {
-    const option = ticketCanonicalBranchBaseOption({
-      provider: "atlassian",
-      kind: "jira",
-      id: "10001",
-      key: "RX 24/Follow-up",
-      title: "Ticket title",
-    });
-
-    expect(option).toEqual({
-      key: "ticket_branch:ralphx/ticket/jira-rx-24-follow-up",
-      label: "Ticket RX 24/Follow-up",
-      detail: "ralphx/ticket/jira-rx-24-follow-up",
-      source: "local",
-      selection: {
-        kind: "local_branch",
-        ref: "ralphx/ticket/jira-rx-24-follow-up",
-        displayName: "Ticket RX 24/Follow-up (ralphx/ticket/jira-rx-24-follow-up)",
+      {
+        number: 57,
+        title: "Still open",
+        url: "https://github.com/owner/repo/pull/57",
+        headRefName: "feature/still-open",
+        baseRefName: "main",
+        isDraft: false,
+        isCrossRepository: false,
+        state: "OPEN",
       },
-    });
+    ]);
+
+    const options = await loadPullRequestBaseOptions({ projectId: "project-1" });
+
+    expect(options.map((option) => option.key)).toEqual([
+      "pull_request:57:feature/still-open",
+      "pull_request:56:feature/recently-merged",
+    ]);
   });
 
-  it("builds ticket branch options for linear and clickup references", () => {
-    expect(
-      ticketCanonicalBranchBaseOption({
-        provider: "linear",
-        kind: "linear",
-        id: "lin-id",
-        key: "ENG-12",
-      })?.selection.ref
-    ).toBe("ralphx/ticket/linear-eng-12");
+  it("keeps open pull requests ahead of a merge-heavy result window", async () => {
+    const mergedPullRequests = Array.from({ length: 25 }, (_, index) => ({
+      number: 100 + index,
+      title: `Merged ${index}`,
+      url: `https://github.com/owner/repo/pull/${100 + index}`,
+      headRefName: `feature/merged-${index}`,
+      baseRefName: "main",
+      isDraft: false,
+      isCrossRepository: false,
+      state: "MERGED",
+      mergedAt: "2026-08-01T10:00:00Z",
+    }));
+    const openPullRequests = Array.from({ length: 5 }, (_, index) => ({
+      number: 200 + index,
+      title: `Open ${index}`,
+      url: `https://github.com/owner/repo/pull/${200 + index}`,
+      headRefName: `feature/open-${index}`,
+      baseRefName: "main",
+      isDraft: false,
+      isCrossRepository: false,
+      state: "OPEN",
+    }));
+    searchGithubPullRequestsMock.mockResolvedValue([
+      ...mergedPullRequests,
+      ...openPullRequests,
+    ]);
 
-    expect(
-      ticketCanonicalBranchBaseOption({
-        provider: "clickup",
-        kind: "clickup",
-        id: "CU/42 ++",
-      })?.selection.ref
-    ).toBe("ralphx/ticket/clickup-cu-42");
+    const options = await loadPullRequestBaseOptions({ projectId: "project-1" });
+
+    expect(searchGithubPullRequestsMock).toHaveBeenCalledWith({
+      projectId: "project-1",
+      limit: 50,
+    });
+    expect(options.slice(0, 5).map((option) => option.key)).toEqual(
+      openPullRequests.map(
+        (pullRequest) =>
+          `pull_request:${pullRequest.number}:${pullRequest.headRefName}`,
+      ),
+    );
+    expect(options).toHaveLength(30);
   });
 });

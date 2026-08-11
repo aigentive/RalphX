@@ -51,6 +51,8 @@ export const ProjectReviewSettingsSchema = z.object({
   require_human_review: z.boolean().default(false),
   /** Require workspace Review before publishing agent workspace branches */
   require_workspace_review: z.boolean().default(true),
+  /** Spawn workspace repair agent for blocking Workspace Review findings */
+  autofix_workspace_review_blocking_findings: z.boolean().default(true),
   /** Maximum fix attempts before moving to backlog */
   max_fix_attempts: z.number().int().min(1).max(10).default(3),
 });
@@ -63,6 +65,7 @@ export const DEFAULT_PROJECT_REVIEW_SETTINGS: ProjectReviewSettings = {
   require_fix_approval: false,
   require_human_review: false,
   require_workspace_review: true,
+  autofix_workspace_review_blocking_findings: true,
   max_fix_attempts: 3,
 };
 
@@ -106,7 +109,9 @@ export function parseProjectSettings(data: unknown): ProjectSettings {
   return ProjectSettingsSchema.parse(data);
 }
 
-export function safeParseProjectSettings(data: unknown): ProjectSettings | null {
+export function safeParseProjectSettings(
+  data: unknown,
+): ProjectSettings | null {
   const result = ProjectSettingsSchema.safeParse(data);
   return result.success ? result.data : null;
 }
@@ -115,7 +120,9 @@ export function parseSettingsProfile(data: unknown): SettingsProfile {
   return SettingsProfileSchema.parse(data);
 }
 
-export function safeParseSettingsProfile(data: unknown): SettingsProfile | null {
+export function safeParseSettingsProfile(
+  data: unknown,
+): SettingsProfile | null {
   const result = SettingsProfileSchema.safeParse(data);
   return result.success ? result.data : null;
 }

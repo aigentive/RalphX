@@ -112,7 +112,7 @@ Built in `build_cli_args()` (`claude_code_client.rs:348-452`) and `spawn_agent()
 | `--plugin-dir` | `<path>` | `AgentConfig.plugin_dir` → `resolve_plugin_dir()` |
 | `--agent` | `ralphx:<name>` | `AgentConfig.agent` (fully-qualified) |
 | `--mcp-config` | `<temp_path>` | Dynamic per-agent MCP config (see below) |
-| `--strict-mcp-config` | (flag) | Ignores user/global MCP servers |
+| `--disallowedTools` | MCP server/tool patterns | Effective global/project RalphX deny policy |
 | `--tools` | CSV of CLI tools | `get_allowed_tools(agent_name)` from `config/ralphx.yaml` |
 | `--allowedTools` | CSV of pre-approved | `get_preapproved_tools(agent_name)` — MCP + CLI, no prompts |
 | `--model` | `haiku`/`sonnet`/`opus` | Explicit override → per-agent default from `config/ralphx.yaml` |
@@ -238,7 +238,7 @@ Each agent spawn creates a temporary MCP config file that:
 1. Reads the base config from `plugins/app/.mcp.json`
 2. Injects `--agent-type=<short_name>` into the MCP server args
 3. Writes to a temp file with UUID to avoid race conditions between parallel spawns
-4. Passes via `--mcp-config <temp_path> --strict-mcp-config`
+4. Passes via `--mcp-config <temp_path>` without strict isolation, so Claude also loads its native user/project/local MCP layers
 
 **Why `--agent-type` as CLI arg**: Claude CLI does NOT pass its environment variables to MCP servers it spawns. The `--agent-type` CLI arg is the only reliable way to communicate the agent type to the MCP server process.
 
@@ -358,7 +358,9 @@ Default: `http://127.0.0.1:3847` (overridable via `TAURI_API_URL`)
 
 ## Stream Processing
 
-**File:** `src-tauri/src/infrastructure/agents/claude/stream_processor.rs`
+This section covers the Claude-native envelope only. The canonical cross-harness thinking lifecycle, capability-probe rules, shared event schema, persistence, frontend behavior, and tests live in [Agent Thinking Capture](agent-thinking-capture.md).
+
+**Files:** `src-tauri/src/infrastructure/agents/claude/stream_processor/{mod.rs,types.rs,parser.rs}`
 
 ### Stream Message Types
 
@@ -366,9 +368,9 @@ Default: `http://127.0.0.1:3847` (overridable via `TAURI_API_URL`)
 |------|-----------|----------------|
 | `content_block_start` (tool_use) | name, id | `ToolCallStarted` |
 | `content_block_delta` (text_delta) | text | `TextChunk` |
-| `content_block_delta` (thinking_delta) | text | `Thinking` |
+| `content_block_delta` (thinking_delta) | text | `Thinking { text, block_index }` |
 | `content_block_delta` (input_json_delta) | partial_json | (accumulated) |
-| `content_block_stop` | — | `ToolCallCompleted`, `TaskStarted` (if Task tool) |
+| `content_block_stop` | — | `ThinkingSettled` for thinking; `ToolCallCompleted`, `TaskStarted` (if Task tool) |
 | `assistant` | content[], session_id | `TextChunk`, `ToolCallCompleted`, `SessionId` |
 | `result` | session_id, is_error, cost_usd | `SessionId` |
 | `system` | subtype, hook_* | `HookStarted`, `HookCompleted`, `SessionId` |
@@ -409,15 +411,9 @@ For non-stale sessions, `--resume <session_id>` continues an existing conversati
 - `build_cli_args()` includes `--resume` + `--agent` (critical: `--agent` enforces tool restrictions on resume)
 - Session ID captured from stream `Result` event for future resumes
 
-## User State Sanitization
+## Provider-Native MCP Inheritance
 
-**File:** `src-tauri/src/infrastructure/agents/claude/mod.rs:210-312`
-
-`sanitize_claude_user_state()` runs before every spawn:
-1. Reads `~/.claude.json`
-2. Backs up if malformed JSON
-3. Removes project entries for non-existent paths
-4. Strips per-project MCP overrides (`mcpServers`, `enabledMcpjsonServers`, etc.) to prevent stale config inheritance
+RalphX never directly rewrites `~/.claude.json` or registers a user-scoped server at app startup. Each launch adds only the required RalphX config and resolved `--disallowedTools` deny patterns; Claude remains authoritative for third-party definitions, trust, approvals, authentication, and native enabled state. The exact Claude user-scoped server ID `ralphx` is reserved RalphX state regardless of definition shape. Startup and launch preflight remove it through the resolved Claude CLI under a process-local lock, force the child `HOME` to the validated discovery root, and rediscover the same provider state after success, non-zero exit, or an explicitly terminated timeout. Only verified absence continues launch; project/local entries, other providers, near names, and `ralphx_internal` remain fail-closed collisions. See [Provider-Native MCP Policy](provider-native-mcp-policy.md).
 
 ## Spawn Safety
 
@@ -479,144 +475,6 @@ Instead of `--agent <name>`, injects behavior via `--append-system-prompt-file`:
 4. Falls back to native `--agent` if prompt file not found
 
 **Mode selection**: Default is append-system-prompt mode. `RALPHX_USE_NATIVE_AGENT_FLAG=1` forces native `--agent`.
-
-## Agent Teams — CLI Spawning Reference
-
-### Overview
-
-Claude Code supports experimental multi-agent coordination via **Agent Teams**. When enabled, a team lead spawns teammate processes that share a task list and communicate via inter-agent messaging. RalphX needs to replicate this spawning pattern through its Rust backend to enable parallel task execution.
-
-### Enabling Agent Teams
-
-| Requirement | Value |
-|-------------|-------|
-| Feature flag env var | `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` |
-| Claude marker env var | `CLAUDECODE=1` |
-| CLI version | 2.1.42+ (experimental) |
-
-Both environment variables must be set on the spawned process.
-
-### Real Spawn Example
-
-```bash
-cd /Users/example/Code/ralphx && \
-env CLAUDECODE=1 CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 \
-/Users/example/.local/share/claude/versions/2.1.42 \
-  --agent-id wave-1@merge-hardening-tests \
-  --agent-name wave-1 \
-  --team-name merge-hardening-tests \
-  --agent-color blue \
-  --parent-session-id c43c3747-44d8-437b-9a25-911032eec2ea \
-  --agent-type general-purpose \
-  --dangerously-skip-permissions \
-  --model sonnet
-```
-
-### Team-Specific CLI Flags
-
-| Flag | Required | Value | Purpose |
-|------|----------|-------|---------|
-| `--agent-id` | Yes | `<name>@<team-name>` | Unique identifier for this teammate within the team. Format: `name@team-name` |
-| `--agent-name` | Yes | `<name>` | Human-readable name used for messaging (`SendMessage` recipient) and task ownership |
-| `--team-name` | Yes | `<team-name>` | Name of the team this agent belongs to. Maps to `~/.claude/teams/<team-name>/` |
-| `--agent-color` | No | `blue`\|`red`\|`green`\|`yellow`\|`magenta`\|`cyan` | Terminal color for this agent's output (visual distinction) |
-| `--parent-session-id` | Yes | UUID | Session ID of the team lead that spawned this teammate. Links teammate to leader |
-| `--agent-type` | Yes | `general-purpose`\|`Bash`\|`Explore`\|`Plan`\|etc. | Determines the agent's available tool set. See agent types below |
-| `--dangerously-skip-permissions` | No | (flag) | Skip all permission checks. Common for automated teammates |
-| `--model` | No | `haiku`\|`sonnet`\|`opus` | Model selection for this teammate |
-| `--teammate-mode` | No | `in-process`\|`tmux` | How the teammate process is managed (default: in-process) |
-
-### Agent Types for Teams
-
-| Agent Type | Tools Available | Use Case |
-|------------|----------------|----------|
-| `general-purpose` | All tools (Read, Write, Edit, Bash, Glob, Grep, Task, etc.) | Full-capability implementation work |
-| `Bash` | Bash only | Command execution specialist |
-| `Explore` | All except Task, ExitPlanMode, Edit, Write, NotebookEdit | Read-only codebase exploration |
-| `Plan` | All except Task, ExitPlanMode, Edit, Write, NotebookEdit | Architecture and planning |
-
-### Team-Specific Environment Variables
-
-| Variable | Value | Purpose |
-|----------|-------|---------|
-| `CLAUDECODE` | `1` | Identifies the process as Claude Code |
-| `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` | `1` | Enables agent teams feature |
-
-These are set on the spawned process in addition to the standard RalphX env vars (`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, `DEBUG`, etc.).
-
-### Team Coordination Infrastructure
-
-#### File System
-
-| Path | Purpose |
-|------|---------|
-| `~/.claude/teams/<team-name>/config.json` | Team config with `members[]` array (name, agentId, agentType) |
-| `~/.claude/tasks/<team-name>/` | Shared task list directory for the team |
-
-#### Team Lead Tools
-
-| Tool | Purpose |
-|------|---------|
-| `TeamCreate` | Create team + task list (`team_name`, `description`) |
-| `TeamDelete` | Remove team + task directories after shutdown |
-| `TaskCreate` | Create tasks with subject, description, activeForm |
-| `TaskUpdate` | Assign tasks (`owner`), update status, set dependencies (`addBlockedBy`/`addBlocks`) |
-| `TaskList` | List all tasks with status, owner, blocked-by |
-| `TaskGet` | Get full task details by ID |
-| `SendMessage` | DM (`type: "message"`), broadcast (`type: "broadcast"`), shutdown (`type: "shutdown_request"`) |
-
-#### Teammate Tools
-
-Teammates have the same Task tools plus `SendMessage` for communication. They also receive `shutdown_request` messages from the lead and respond via `SendMessage` with `type: "shutdown_response"`.
-
-### Team Lifecycle
-
-```
-1. TeamCreate       → creates team config + task list
-2. TaskCreate (×N)  → populate work items
-3. Task (spawn)     → spawn teammate processes with team CLI flags
-4. TaskUpdate       → assign tasks to teammates (owner field)
-5. Teammates work   → claim tasks, send messages, mark complete
-6. SendMessage      → shutdown_request to each teammate
-7. TeamDelete       → cleanup team + task files
-```
-
-### Combining Team Flags with RalphX Spawning
-
-When RalphX spawns team members, the team-specific flags combine with existing RalphX CLI flags:
-
-```
-claude \
-  # --- Standard RalphX flags ---
-  -p "<prompt>" \
-  --output-format stream-json \
-  --verbose \
-  --plugin-dir <path> \
-  --agent ralphx:<agent-name> \
-  --mcp-config <temp-mcp-config> \
-  --strict-mcp-config \
-  --tools <csv-of-cli-tools> \
-  --allowedTools <csv-of-preapproved> \
-  --model <model> \
-  --permission-prompt-tool mcp__ralphx__permission_request \
-  --permission-mode default \
-  --settings '<json>' \
-  # --- Agent Teams flags ---
-  --agent-id <name>@<team-name> \
-  --agent-name <name> \
-  --team-name <team-name> \
-  --agent-color <color> \
-  --parent-session-id <uuid> \
-  --agent-type general-purpose \
-  --dangerously-skip-permissions
-```
-
-**Key integration notes:**
-- `--agent-type` for teams (`general-purpose`) is distinct from `--agent` for RalphX agent definitions (`ralphx:worker`)
-- `--agent-type` controls which built-in Claude Code tools are available to the teammate
-- `--agent` controls which RalphX agent definition (prompt, MCP tools) is loaded
-- Both can coexist — the teammate gets Claude Code's tool set from `--agent-type` AND RalphX's agent behavior from `--agent`
-- The team's `--parent-session-id` should be the orchestrator's session ID, enabling the lead to coordinate work
 
 ## File Reference
 

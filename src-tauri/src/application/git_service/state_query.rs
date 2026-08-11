@@ -1,6 +1,18 @@
 use super::git_cmd;
 use super::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnfinishedGitOperationState {
+    pub merge_in_progress: bool,
+    pub rebase_in_progress: bool,
+}
+
+impl UnfinishedGitOperationState {
+    pub fn is_unfinished(self) -> bool {
+        self.merge_in_progress || self.rebase_in_progress
+    }
+}
+
 impl GitService {
     /// Get list of files with conflicts
     ///
@@ -27,33 +39,62 @@ impl GitService {
     ///
     /// For regular repos, returns `worktree/.git`. For worktrees where `.git`
     /// is a file containing `gitdir: <path>`, follows the indirection.
-    pub(super) fn resolve_git_dir(worktree: &Path) -> PathBuf {
+    fn resolve_git_dir_checked(worktree: &Path) -> AppResult<PathBuf> {
+        crate::utils::path_safety::validate_absolute_non_root_path(worktree, "git worktree")?;
         let git_path = worktree.join(".git");
 
-        if crate::utils::path_safety::checked_is_file(&git_path, "git metadata").unwrap_or(false) {
-            if let Ok(content) =
-                crate::utils::path_safety::checked_read_to_string(&git_path, "git metadata")
-            {
-                if let Some(path) = content.strip_prefix("gitdir: ") {
-                    let git_dir = PathBuf::from(path.trim());
-                    let git_dir = if git_dir.is_absolute() {
-                        git_dir
-                    } else {
-                        worktree.join(git_dir)
-                    };
-                    if crate::utils::path_safety::validate_absolute_non_root_path(
-                        &git_dir,
-                        "resolved git directory",
-                    )
-                    .is_ok()
-                    {
-                        return git_dir;
-                    }
-                }
+        if crate::utils::path_safety::checked_is_file(&git_path, "git metadata")? {
+            let content =
+                crate::utils::path_safety::checked_read_to_string(&git_path, "git metadata")?;
+            let path = content.strip_prefix("gitdir: ").ok_or_else(|| {
+                AppError::Validation(format!(
+                    "git metadata file has invalid gitdir syntax: {}",
+                    git_path.display()
+                ))
+            })?;
+            let git_dir = PathBuf::from(path.trim());
+            if git_dir.as_os_str().is_empty() {
+                return Err(AppError::Validation(format!(
+                    "git metadata file has an empty gitdir: {}",
+                    git_path.display()
+                )));
             }
+            let git_dir = if git_dir.is_absolute() {
+                git_dir
+            } else {
+                worktree.join(git_dir)
+            };
+            return crate::utils::path_safety::validate_absolute_non_root_path(
+                &git_dir,
+                "resolved git directory",
+            );
         }
 
-        git_path
+        crate::utils::path_safety::validate_absolute_non_root_path(&git_path, "git metadata")
+    }
+
+    pub(super) fn resolve_git_dir(worktree: &Path) -> PathBuf {
+        Self::resolve_git_dir_checked(worktree).unwrap_or_else(|_| worktree.join(".git"))
+    }
+
+    pub fn unfinished_operation_state(worktree: &Path) -> AppResult<UnfinishedGitOperationState> {
+        let git_dir = Self::resolve_git_dir_checked(worktree)?;
+        let merge_in_progress = crate::utils::path_safety::checked_exists(
+            &git_dir.join("MERGE_HEAD"),
+            "git merge state",
+        )?;
+        let rebase_merge = crate::utils::path_safety::checked_exists(
+            &git_dir.join("rebase-merge"),
+            "git rebase state",
+        )?;
+        let rebase_apply = crate::utils::path_safety::checked_exists(
+            &git_dir.join("rebase-apply"),
+            "git rebase state",
+        )?;
+        Ok(UnfinishedGitOperationState {
+            merge_in_progress,
+            rebase_in_progress: rebase_merge || rebase_apply,
+        })
     }
 
     /// Check if a rebase is currently in progress
@@ -64,13 +105,8 @@ impl GitService {
     /// # Arguments
     /// * `worktree` - Path to the git worktree or repository
     pub fn is_rebase_in_progress(worktree: &Path) -> bool {
-        let git_dir = Self::resolve_git_dir(worktree);
-        crate::utils::path_safety::checked_exists(&git_dir.join("rebase-merge"), "git rebase state")
-            .unwrap_or(false)
-            || crate::utils::path_safety::checked_exists(
-                &git_dir.join("rebase-apply"),
-                "git rebase state",
-            )
+        Self::unfinished_operation_state(worktree)
+            .map(|state| state.rebase_in_progress)
             .unwrap_or(false)
     }
 
@@ -82,8 +118,8 @@ impl GitService {
     /// # Arguments
     /// * `worktree` - Path to the git worktree or repository
     pub fn is_merge_in_progress(worktree: &Path) -> bool {
-        let git_dir = Self::resolve_git_dir(worktree);
-        crate::utils::path_safety::checked_exists(&git_dir.join("MERGE_HEAD"), "git merge state")
+        Self::unfinished_operation_state(worktree)
+            .map(|state| state.merge_in_progress)
             .unwrap_or(false)
     }
 

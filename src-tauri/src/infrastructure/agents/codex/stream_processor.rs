@@ -7,6 +7,7 @@ pub struct CodexUsage {
     pub input_tokens: Option<u64>,
     pub cached_input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
+    pub reasoning_output_tokens: Option<u64>,
 }
 
 impl CodexUsage {
@@ -14,6 +15,7 @@ impl CodexUsage {
         self.input_tokens.is_none()
             && self.cached_input_tokens.is_none()
             && self.output_tokens.is_none()
+            && self.reasoning_output_tokens.is_none()
     }
 }
 
@@ -26,6 +28,8 @@ pub struct CodexUsagePayload {
     #[serde(default)]
     pub output_tokens: Option<u64>,
     #[serde(default)]
+    pub reasoning_output_tokens: Option<u64>,
+    #[serde(default)]
     pub total_token_usage: Option<CodexUsage>,
     #[serde(default)]
     pub last_token_usage: Option<CodexUsage>,
@@ -37,6 +41,7 @@ impl CodexUsagePayload {
             input_tokens: self.input_tokens,
             cached_input_tokens: self.cached_input_tokens,
             output_tokens: self.output_tokens,
+            reasoning_output_tokens: self.reasoning_output_tokens,
         }
     }
 }
@@ -76,6 +81,18 @@ pub struct CodexFileChange {
     pub kind: String,
 }
 
+/// Summary part of a rollout `response_item` reasoning payload.
+///
+/// Not part of the `codex exec --json` item schema — see `fixtures/README.md`. Retained because
+/// that shape is what the persisted session rollout carries, so it stays a tolerated fallback.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CodexReasoningSummary {
+    #[serde(rename = "type")]
+    pub summary_type: Option<String>,
+    #[serde(default)]
+    pub text: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CodexItem {
     pub id: Option<String>,
@@ -83,6 +100,8 @@ pub struct CodexItem {
     pub item_type: String,
     #[serde(default)]
     pub text: Option<String>,
+    #[serde(default)]
+    pub summary: Option<Vec<CodexReasoningSummary>>,
     #[serde(default)]
     pub server: Option<String>,
     #[serde(default)]
@@ -160,35 +179,73 @@ pub fn parse_codex_event_line(line: &str) -> Option<CodexStreamEvent> {
         return None;
     }
 
-    let value: serde_json::Value = serde_json::from_str(trimmed).ok()?;
-    if let Some(normalized) = normalize_codex_event_msg_agent_message(&value) {
+    let value: serde_json::Value = match serde_json::from_str(trimmed) {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::debug!(%error, line = %trimmed, "Ignoring malformed Codex event line");
+            return None;
+        }
+    };
+    if let Some(normalized) = normalize_codex_event_msg(&value) {
         return Some(normalized);
     }
 
-    serde_json::from_value(value).ok()
+    let event: CodexStreamEvent = match serde_json::from_value(value) {
+        Ok(event) => event,
+        Err(error) => {
+            tracing::debug!(%error, line = %trimmed, "Ignoring unparseable Codex event line");
+            return None;
+        }
+    };
+    if !matches!(
+        event.event_type.as_str(),
+        "thread.started"
+            | "turn.started"
+            | "turn.completed"
+            | "turn.failed"
+            | "item.started"
+            | "item.updated"
+            | "item.completed"
+    ) {
+        tracing::debug!(event_type = %event.event_type, "Ignoring unrecognized Codex event type");
+    }
+    Some(event)
 }
 
-fn normalize_codex_event_msg_agent_message(value: &serde_json::Value) -> Option<CodexStreamEvent> {
+/// Normalizes the `event_msg` envelope into the `item.*` shape the rest of this module speaks.
+///
+/// `codex exec --json` 0.146.0 does not emit `event_msg` at all (verified capture:
+/// `fixtures/exec_json_reasoning_0_146_0.jsonl`); it is the persisted-rollout serialization, where
+/// the envelope key is `payload`. `msg` is kept for older CLIs that used that key on stdout.
+/// `agent_reasoning_delta` is deliberately absent: that tag does not exist in 0.146.0 — the real
+/// internal delta tags are `reasoning_content_delta` / `reasoning_raw_content_delta`, and neither
+/// reaches this transport.
+fn normalize_codex_event_msg(value: &serde_json::Value) -> Option<CodexStreamEvent> {
     if value.get("type")?.as_str()? != "event_msg" {
         return None;
     }
 
-    let msg = value.get("msg")?;
-    if msg.get("type")?.as_str()? != "agent_message" {
+    let envelope = value.get("msg").or_else(|| value.get("payload"))?;
+    let item_type = envelope.get("type")?.as_str()?;
+    if !matches!(item_type, "agent_message" | "agent_reasoning") {
         return None;
     }
 
-    let text = msg
-        .get("message")
-        .or_else(|| msg.get("text"))
+    let text = envelope
+        .get(if item_type == "agent_message" {
+            "message"
+        } else {
+            "text"
+        })
+        .or_else(|| envelope.get("text"))
         .and_then(|value| value.as_str())?
         .to_string();
-    let id = msg
+    let id = envelope
         .get("id")
         .or_else(|| value.get("id"))
         .and_then(|value| value.as_str())
         .map(str::to_string);
-    let thread_id = msg
+    let thread_id = envelope
         .get("thread_id")
         .or_else(|| value.get("thread_id"))
         .and_then(|value| value.as_str())
@@ -199,8 +256,9 @@ fn normalize_codex_event_msg_agent_message(value: &serde_json::Value) -> Option<
         thread_id,
         item: Some(CodexItem {
             id,
-            item_type: "agent_message".to_string(),
+            item_type: item_type.to_string(),
             text: Some(text),
+            summary: None,
             server: None,
             tool: None,
             arguments: None,
@@ -231,6 +289,38 @@ pub fn extract_codex_agent_message(event: &CodexStreamEvent) -> Option<String> {
     }
 
     item.text.clone()
+}
+
+/// Extracts Codex reasoning text.
+///
+/// The live production shape is `item.completed` + `item.type == "reasoning"` + flat `text`, where
+/// `text` holds the summary parts joined by `\n` (verified capture:
+/// `fixtures/exec_json_reasoning_0_146_0.jsonl`). `item.started` / `item.updated` are accepted for
+/// the same item type because the 0.146.0 exec schema declares them, even though reasoning was only
+/// observed as `item.completed`. `agent_reasoning` covers the rollout envelope, and the `summary`
+/// array is the rollout `response_item` fallback — see `fixtures/README.md`.
+pub fn extract_codex_reasoning(event: &CodexStreamEvent) -> Option<String> {
+    let item = event.item.as_ref()?;
+    let is_reasoning = item.item_type == "agent_reasoning" && event.event_type == "item.completed"
+        || item.item_type == "reasoning" && event.event_type.starts_with("item.");
+    if !is_reasoning {
+        return None;
+    }
+
+    item.text
+        .clone()
+        .filter(|text| !text.is_empty())
+        .or_else(|| {
+            item.summary.as_ref().and_then(|summary| {
+                let text = summary
+                    .iter()
+                    .filter_map(|entry| entry.text.as_deref())
+                    .filter(|text| !text.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                (!text.is_empty()).then_some(text)
+            })
+        })
 }
 
 pub fn extract_codex_thread_id(event: &CodexStreamEvent) -> Option<String> {
@@ -419,15 +509,37 @@ pub fn extract_codex_usage(event: &CodexStreamEvent) -> Option<CodexUsageSnapsho
         })
 }
 
+/// Returns provider-reported reasoning tokens only when the field is scoped to
+/// the completed turn. Session totals remain available through
+/// [`extract_codex_usage`] for accounting, but must not label one thinking block.
+pub fn extract_codex_turn_reasoning_tokens(event: &CodexStreamEvent) -> Option<u64> {
+    if event.event_type != "turn.completed" {
+        return None;
+    }
+
+    let payload = event.usage.as_ref()?;
+    if let Some(last_token_usage) = payload.last_token_usage.as_ref() {
+        return last_token_usage.reasoning_output_tokens;
+    }
+
+    payload.reasoning_output_tokens
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Verbatim `codex exec --json` stdout from codex-cli 0.146.0. Provenance and recapture command:
+    /// `fixtures/README.md`.
+    const LIVE_EXEC_JSON_REASONING_FIXTURE: &str =
+        include_str!("fixtures/exec_json_reasoning_0_146_0.jsonl");
 
     fn codex_item(item_type: &str) -> CodexItem {
         CodexItem {
             id: None,
             item_type: item_type.to_string(),
             text: None,
+            summary: None,
             server: None,
             tool: None,
             arguments: None,
@@ -455,6 +567,7 @@ mod tests {
                 input_tokens: Some(10),
                 cached_input_tokens: Some(3),
                 output_tokens: Some(5),
+                reasoning_output_tokens: None,
                 total_token_usage: None,
                 last_token_usage: None,
             }),
@@ -495,6 +608,138 @@ mod tests {
     }
 
     #[test]
+    fn parse_event_msg_payload_agent_reasoning_normalizes_to_thinking() {
+        let event = parse_codex_event_line(
+            r#"{"timestamp":"2026-07-30T00:00:00Z","type":"event_msg","payload":{"type":"agent_reasoning","text":"**Checking git status**"}}"#,
+        )
+        .expect("event_msg payload reasoning should parse");
+
+        assert_eq!(event.event_type, "item.completed");
+        assert_eq!(
+            extract_codex_reasoning(&event).as_deref(),
+            Some("**Checking git status**")
+        );
+    }
+
+    #[test]
+    fn parse_event_msg_msg_agent_reasoning_normalizes_to_thinking() {
+        let event = parse_codex_event_line(
+            r#"{"type":"event_msg","msg":{"type":"agent_reasoning","text":"**Inspecting files**"}}"#,
+        )
+        .expect("event_msg msg reasoning should parse");
+
+        assert_eq!(event.event_type, "item.completed");
+        assert_eq!(
+            extract_codex_reasoning(&event).as_deref(),
+            Some("**Inspecting files**")
+        );
+    }
+
+    #[test]
+    fn live_exec_json_fixture_yields_reasoning_from_item_completed_only() {
+        let events: Vec<CodexStreamEvent> = LIVE_EXEC_JSON_REASONING_FIXTURE
+            .lines()
+            .filter_map(parse_codex_event_line)
+            .collect();
+
+        assert_eq!(
+            events.len(),
+            12,
+            "every captured line must parse; unparsed lines are silently dropped reasoning"
+        );
+
+        let reasoning: Vec<String> = events.iter().filter_map(extract_codex_reasoning).collect();
+        assert_eq!(
+            reasoning,
+            vec![
+                "**Verifying line counting commands**".to_string(),
+                "**Confirming command verification**".to_string(),
+            ]
+        );
+        for event in &events {
+            if extract_codex_reasoning(event).is_some() {
+                assert_eq!(event.event_type, "item.completed");
+                let item = event
+                    .item
+                    .as_ref()
+                    .expect("reasoning event carries an item");
+                assert_eq!(item.item_type, "reasoning");
+            }
+        }
+    }
+
+    #[test]
+    fn live_exec_json_fixture_reasoning_item_carries_flat_text_without_summary() {
+        let item = LIVE_EXEC_JSON_REASONING_FIXTURE
+            .lines()
+            .filter_map(parse_codex_event_line)
+            .filter_map(|event| event.item)
+            .find(|item| item.item_type == "reasoning")
+            .expect("fixture contains a reasoning item");
+
+        assert_eq!(item.id.as_deref(), Some("item_2"));
+        assert_eq!(
+            item.text.as_deref(),
+            Some("**Verifying line counting commands**")
+        );
+        assert!(
+            item.summary.is_none(),
+            "exec --json reasoning items have no summary array; that shape is rollout-only"
+        );
+    }
+
+    #[test]
+    fn live_exec_json_fixture_contains_no_event_msg_envelope() {
+        assert!(
+            !LIVE_EXEC_JSON_REASONING_FIXTURE.contains("event_msg"),
+            "codex exec --json does not use the event_msg envelope; the msg/payload readers exist \
+             for the rollout format and older CLIs only"
+        );
+    }
+
+    #[test]
+    fn agent_reasoning_delta_is_not_normalized_as_reasoning() {
+        let event = parse_codex_event_line(
+            r#"{"type":"event_msg","payload":{"type":"agent_reasoning_delta","text":"partial"}}"#,
+        )
+        .expect("unrecognized envelopes still parse as an ignored event");
+
+        assert_eq!(event.event_type, "event_msg");
+        assert!(event.item.is_none());
+        assert_eq!(
+            extract_codex_reasoning(&event),
+            None,
+            "agent_reasoning_delta does not exist in codex-cli 0.146.0"
+        );
+    }
+
+    #[test]
+    fn extract_codex_reasoning_supports_flat_item_text() {
+        let event = parse_codex_event_line(
+            r#"{"type":"item.completed","item":{"type":"reasoning","text":"Checking repository status"}}"#,
+        )
+        .expect("flat reasoning item should parse");
+
+        assert_eq!(
+            extract_codex_reasoning(&event).as_deref(),
+            Some("Checking repository status")
+        );
+    }
+
+    #[test]
+    fn extract_codex_reasoning_supports_summary_item_text() {
+        let event = parse_codex_event_line(
+            r#"{"type":"item.completed","item":{"type":"reasoning","summary":[{"type":"summary_text","text":"Checking repository"},{"type":"summary_text","text":"status"}]}}"#,
+        )
+        .expect("summary reasoning item should parse");
+
+        assert_eq!(
+            extract_codex_reasoning(&event).as_deref(),
+            Some("Checking repository\nstatus")
+        );
+    }
+
+    #[test]
     fn extract_codex_usage_returns_turn_usage() {
         let event = CodexStreamEvent {
             event_type: "turn.completed".to_string(),
@@ -504,6 +749,7 @@ mod tests {
                 input_tokens: Some(101),
                 cached_input_tokens: Some(22),
                 output_tokens: Some(33),
+                reasoning_output_tokens: Some(11),
                 total_token_usage: None,
                 last_token_usage: None,
             }),
@@ -516,6 +762,7 @@ mod tests {
                     input_tokens: Some(101),
                     cached_input_tokens: Some(22),
                     output_tokens: Some(33),
+                    reasoning_output_tokens: Some(11),
                 },
                 source: CodexUsageSource::CumulativeTotal,
             })
@@ -536,6 +783,7 @@ mod tests {
                     input_tokens: Some(202091),
                     cached_input_tokens: Some(201600),
                     output_tokens: Some(673),
+                    reasoning_output_tokens: None,
                 },
                 source: CodexUsageSource::TurnDelta,
             })
@@ -556,6 +804,7 @@ mod tests {
                     input_tokens: Some(900),
                     cached_input_tokens: Some(800),
                     output_tokens: Some(70),
+                    reasoning_output_tokens: None,
                 },
                 source: CodexUsageSource::CumulativeTotal,
             })
@@ -576,6 +825,7 @@ mod tests {
                     input_tokens: Some(12),
                     cached_input_tokens: Some(7),
                     output_tokens: Some(3),
+                    reasoning_output_tokens: None,
                 },
                 source: CodexUsageSource::CumulativeTotal,
             })
@@ -692,6 +942,7 @@ mod tests {
                 id: Some("tool-1".to_string()),
                 item_type: "mcp_tool_call".to_string(),
                 text: None,
+                summary: None,
                 server: Some("ralphx".to_string()),
                 tool: Some("list_mcp_resources".to_string()),
                 arguments: None,
@@ -730,6 +981,7 @@ mod tests {
                 id: Some("tool-2".to_string()),
                 item_type: "mcp_tool_call".to_string(),
                 text: None,
+                summary: None,
                 server: Some("ralphx".to_string()),
                 tool: Some("delegate_start".to_string()),
                 arguments: None,

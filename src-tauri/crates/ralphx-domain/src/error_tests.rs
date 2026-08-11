@@ -1,6 +1,24 @@
 use super::*;
 
 #[test]
+fn feature_disabled_error_variant_matches() {
+    let err = AppError::FeatureDisabled("[Personas disabled: agent personas]".to_string());
+
+    assert!(matches!(err, AppError::FeatureDisabled(_)));
+    // Bare passthrough Display so surfaced strings START with the A15 prefix.
+    assert_eq!(err.to_string(), "[Personas disabled: agent personas]");
+}
+
+#[test]
+fn persona_unavailable_display_is_bare_message() {
+    let message = "[Persona unavailable: persona abc is not active]".to_string();
+    let err = AppError::PersonaUnavailable(message.clone());
+
+    assert!(matches!(err, AppError::PersonaUnavailable(_)));
+    assert_eq!(err.to_string(), message);
+}
+
+#[test]
 fn test_database_error_display() {
     let err = AppError::Database("connection failed".to_string());
     assert_eq!(err.to_string(), "Database error: connection failed");
@@ -34,6 +52,16 @@ fn test_invalid_transition_error_display() {
 fn test_validation_error_display() {
     let err = AppError::Validation("title cannot be empty".to_string());
     assert_eq!(err.to_string(), "Validation error: title cannot be empty");
+}
+
+#[test]
+fn workspace_review_unfinished_git_operation_has_actionable_display() {
+    let err = AppError::WorkspaceReviewUnfinishedGitOperation;
+
+    assert_eq!(
+        err.to_string(),
+        "Resolve conflicts and complete or abort the merge or rebase before retrying Workspace Review."
+    );
 }
 
 #[test]
@@ -72,6 +100,23 @@ fn test_validation_error_serialization() {
     let err = AppError::Validation("invalid input".to_string());
     let json = serde_json::to_string(&err).expect("Failed to serialize Validation error");
     assert_eq!(json, "\"Validation error: invalid input\"");
+}
+
+#[test]
+fn persona_draft_conflict_has_stable_serialized_code_and_hashes() {
+    let err = AppError::PersonaDraftConflict {
+        expected: "hash-v1".to_string(),
+        actual: "hash-v2".to_string(),
+    };
+
+    assert_eq!(
+        err.to_string(),
+        "PERSONA_DRAFT_CONFLICT: expected content hash `hash-v1` but current hash is `hash-v2`"
+    );
+    assert_eq!(
+        serde_json::to_string(&err).unwrap(),
+        "\"PERSONA_DRAFT_CONFLICT: expected content hash `hash-v1` but current hash is `hash-v2`\""
+    );
 }
 
 #[test]

@@ -22,6 +22,14 @@ get_task_validation_summary(task_id: RALPHX_TASK_ID)
 → Use structured diff and persisted validation evidence. Do not run setup or validation commands.
 If `status: "analyzing"` — wait `retry_after_secs` and retry.
 
+## Task Runtime Context
+
+`<task_runtime_context>` may be injected by the backend at launch with `task_id`, `project_id`, `context_type`, `task_state`, and `working_directory`.
+Use it as bootstrap context only; it is not final authority for review decisions, blockers, stale status, scope drift, base branch, diff, or validation evidence.
+Call `get_task_context(task_id)` when the bootstrap context is absent, says or implies blocked, appears stale/incomplete, or when full task/proposal/plan/scope/base-branch details are needed. Review decisions still depend on `get_task_diff_stat`, `get_task_diff`, and `get_task_validation_summary`.
+When task context includes `blueprint_artifact`, fetch that exact version and review the implementation against its files, symbols, sequencing, failure behavior, and proof obligations.
+Use backend-injected context and MCP reads as task identity sources.
+
 **NEVER commit `node_modules`, `target`, or other symlinked directories. These are worktree artifacts, not source code.**
 
 ## Validation Evidence Review (MANDATORY)
@@ -30,7 +38,7 @@ If `status: "analyzing"` — wait `retry_after_secs` and retry.
 2. Confirm evidence is current for the task changes and covers the changed surface.
 3. Missing, stale, failed, skipped, or too-broad validation is a review finding or escalation reason.
 4. Do not run validation commands yourself. Reviewers are read-only.
-6. If a blocking pre-existing failure would require unrelated file edits, call `register_agent_issue` with `source_task_id`, a concise title/summary, evidence, recommendation, `issue_kind: "plan_drift"` or `"blocked"`, and `auto_followup_eligible: true` when a separate follow-up Agent conversation is appropriate. Then use `complete_review` to request changes or escalate according to the task state. Do not call `create_followup_agent_conversation` for discovered blockers; backend policy decides whether the registered issue creates or reuses a visible follow-up Agent conversation. Do not approve out-of-scope fixes folded into the task branch.
+6. If a blocking pre-existing failure would require unrelated file edits, call `register_agent_issue` with `source_task_id`, a concise title/summary, evidence, recommendation, `issue_kind: "plan_drift"` or `"blocked"`, and `auto_followup_eligible: true` when a separate follow-up Agent conversation is appropriate. If the tool reports candidate issues, retry with `attach_to_issue_id` when it is the same underlying issue, or with `confirm_new`, `new_issue_reason`, and the returned `issue_check_token` when it is genuinely separate. Then use `complete_review` to request changes or escalate according to the task state. Do not call `create_followup_agent_conversation` for discovered blockers; backend policy decides whether the registered issue creates or reuses a visible follow-up Agent conversation. Do not approve out-of-scope fixes folded into the task branch.
 7. If `get_task_context` reports `scope_drift_status: "scope_expansion"`, you MUST classify that drift in `complete_review`. Use:
    - `adjacent_scope_expansion` for nearby tests/wiring needed to complete the task safely
    - `plan_correction` when the plan under-scoped legitimate implementation work
@@ -40,7 +48,7 @@ If `status: "analyzing"` — wait `retry_after_secs` and retry.
    - if unrelated drift is fixable and revision budget remains, register an Agent Issue when follow-up work is needed and return `needs_changes`
    - only escalate unrelated drift after repeated revise cycles fail or the blocker is inherently not resolvable inside the current task
 
-## Re-Execution (when `RALPHX_TASK_STATE=re_executing`)
+## Re-Execution (when `<task_runtime_context><task_state>` or backend-owned `RALPHX_TASK_STATE` is `re_executing`)
 
 Route to **RE-REVIEW** state — the worker has addressed prior issues and the reviewer re-evaluates.
 
@@ -64,7 +72,7 @@ Skipping it permanently sticks the task in `reviewing` status. This applies even
 </invariants>
 
 <entry-dispatch>
-Start with `get_review_notes(task_id)`:
+Read `<task_runtime_context>` if present, then start with `get_review_notes(task_id)`:
 - No prior reviews → **FIRST-REVIEW**
 - Prior reviews exist → **RE-REVIEW**
 </entry-dispatch>

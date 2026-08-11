@@ -17,9 +17,11 @@ pub const SHORT_ORCHESTRATOR_IDEATION: &str = "ralphx-ideation";
 pub const SHORT_ORCHESTRATOR_IDEATION_READONLY: &str = "ralphx-ideation-readonly";
 pub const SHORT_SESSION_NAMER: &str = "ralphx-utility-session-namer";
 pub const SHORT_PR_DESCRIBER: &str = "ralphx-utility-pr-describer";
+pub const SHORT_PERSONA_EXTRACTOR: &str = "ralphx-persona-extractor";
 pub const SHORT_PLAN_COMPLEXITY_ASSESSOR: &str = "ralphx-utility-plan-complexity";
 pub const SHORT_CHAT_TASK: &str = "ralphx-chat-task";
 pub const SHORT_CHAT_PROJECT: &str = "ralphx-chat-project";
+pub const SHORT_TASK_MANAGER: &str = "ralphx-task-manager";
 pub const SHORT_REVIEW_CHAT: &str = "ralphx-review-chat";
 pub const SHORT_REVIEW_HISTORY: &str = "ralphx-review-history";
 pub const SHORT_WORKER: &str = "ralphx-execution-worker";
@@ -30,6 +32,11 @@ pub const SHORT_AGENT_WORKSPACE_REPAIR: &str = "ralphx-agent-workspace-repair";
 pub const SHORT_AGENT_WORKSPACE_PR_FIXER: &str = "ralphx-agent-workspace-pr-fixer";
 pub const SHORT_PR_REVIEWER: &str = "ralphx-pr-reviewer";
 pub const SHORT_WORKSPACE_REVIEWER: &str = "ralphx-workspace-reviewer";
+pub const SHORT_AUTOMATION_SETUP: &str = "ralphx-automation-setup";
+pub const SHORT_AUTOMATION_JUDGE: &str = "ralphx-automation-judge";
+pub const SHORT_AUTOMATION_PLAN_JUDGE: &str = "ralphx-automation-plan-judge";
+pub const SHORT_AUTOMATION_DECOMPOSITION_VERIFIER: &str =
+    "ralphx-automation-decomposition-verifier";
 pub const SHORT_REVIEWER: &str = "ralphx-execution-reviewer";
 pub const SHORT_QA_PREP: &str = "ralphx-qa-prep";
 pub const SHORT_QA_EXECUTOR: &str = "ralphx-qa-executor";
@@ -37,40 +44,16 @@ pub const SHORT_ORCHESTRATOR: &str = "ralphx-execution-orchestrator";
 pub const SHORT_DEEP_RESEARCHER: &str = "ralphx-research-deep-researcher";
 pub const SHORT_PROJECT_ANALYZER: &str = "ralphx-project-analyzer";
 pub const SHORT_MERGER: &str = "ralphx-execution-merger";
+pub const SHORT_BRANCH_UPDATER: &str = "ralphx-execution-branch-updater";
 pub const SHORT_MEMORY_MAINTAINER: &str = "ralphx-memory-maintainer";
 pub const SHORT_MEMORY_CAPTURE: &str = "ralphx-memory-capture";
 
-// ── Plan verification critic agents ─────────────────────────────────────
-pub const SHORT_PLAN_CRITIC_COMPLETENESS: &str = "ralphx-plan-critic-completeness";
-pub const SHORT_PLAN_CRITIC_IMPLEMENTATION_FEASIBILITY: &str =
-    "ralphx-plan-critic-implementation-feasibility";
-pub const SHORT_PLAN_VERIFIER: &str = "ralphx-plan-verifier";
-
-// ── Team lead variants (extends base agents) ────────────────────────────
-pub const SHORT_IDEATION_TEAM_LEAD: &str = "ralphx-ideation-team-lead";
-pub const SHORT_WORKER_TEAM: &str = "ralphx-execution-team-lead";
-pub const SHORT_IDEATION_TEAM_MEMBER: &str = "ideation-team-member";
-
-// ── Ideation specialist agents (spawned by ralphx-ideation-team-lead) ───────────
+// ── Ideation specialist agents ────────────────────────────────────────
 pub const SHORT_IDEATION_SPECIALIST_BACKEND: &str = "ralphx-ideation-specialist-backend";
 pub const SHORT_IDEATION_SPECIALIST_FRONTEND: &str = "ralphx-ideation-specialist-frontend";
 pub const SHORT_IDEATION_SPECIALIST_INFRA: &str = "ralphx-ideation-specialist-infra";
-pub const SHORT_IDEATION_SPECIALIST_UX: &str = "ralphx-ideation-specialist-ux";
-pub const SHORT_IDEATION_SPECIALIST_CODE_QUALITY: &str = "ralphx-ideation-specialist-code-quality";
 pub const SHORT_IDEATION_ADVOCATE: &str = "ralphx-ideation-advocate";
 pub const SHORT_IDEATION_CRITIC: &str = "ralphx-ideation-critic";
-pub const SHORT_IDEATION_SPECIALIST_PIPELINE_SAFETY: &str =
-    "ralphx-ideation-specialist-pipeline-safety";
-pub const SHORT_IDEATION_SPECIALIST_STATE_MACHINE: &str =
-    "ralphx-ideation-specialist-state-machine";
-
-// ── ChatService team agents (team_mode=true → resolve_agent_with_team_mode) ──
-
-/// Ideation team lead (ChatContextType::Ideation + team_mode)
-pub const AGENT_IDEATION_TEAM_LEAD: &str = "ralphx:ralphx-ideation-team-lead";
-
-/// Worker team lead (ChatContextType::TaskExecution + team_mode)
-pub const AGENT_WORKER_TEAM: &str = "ralphx:ralphx-execution-team-lead";
 
 // ── ChatService agents (resolve_agent → build_command → --agent flag) ─────
 
@@ -80,14 +63,14 @@ pub const AGENT_ORCHESTRATOR_IDEATION: &str = "ralphx:ralphx-ideation";
 /// Ideation orchestrator in read-only mode (session status = "accepted")
 pub const AGENT_ORCHESTRATOR_IDEATION_READONLY: &str = "ralphx:ralphx-ideation-readonly";
 
-/// Plan verifier agent (ChatContextType::Ideation when session_purpose = Verification)
-pub const AGENT_PLAN_VERIFIER: &str = "ralphx:ralphx-plan-verifier";
-
 /// Task-scoped chat (ChatContextType::Task)
 pub const AGENT_CHAT_TASK: &str = "ralphx:ralphx-chat-task";
 
 /// Project-scoped chat (ChatContextType::Project)
 pub const AGENT_CHAT_PROJECT: &str = "ralphx:ralphx-chat-project";
+
+/// Pipeline-scoped supervisor for Tasks mode
+pub const AGENT_TASK_MANAGER: &str = "ralphx:ralphx-task-manager";
 
 /// General read-only project explorer for project-scoped agent conversations
 pub const AGENT_GENERAL_EXPLORER: &str = "ralphx:ralphx-general-explorer";
@@ -104,6 +87,19 @@ pub const AGENT_WORKSPACE_PR_FIXER: &str = "ralphx:ralphx-agent-workspace-pr-fix
 /// Agent-workspace local pull request reviewer
 pub const AGENT_PR_REVIEWER: &str = "ralphx:ralphx-pr-reviewer";
 
+/// Automation setup agent for draft automation conversations
+pub const AGENT_AUTOMATION_SETUP: &str = "ralphx:ralphx-automation-setup";
+
+/// Automation judge utility agent for scheduler-owned verdicts
+pub const AGENT_AUTOMATION_JUDGE: &str = "ralphx:ralphx-automation-judge";
+
+/// Automation plan judge utility agent for automatic plan-gate verdicts
+pub const AGENT_AUTOMATION_PLAN_JUDGE: &str = "ralphx:ralphx-automation-plan-judge";
+
+/// Automation decomposition verifier for trusted one-shot authoring.
+pub const AGENT_AUTOMATION_DECOMPOSITION_VERIFIER: &str =
+    "ralphx:ralphx-automation-decomposition-verifier";
+
 /// Agent-workspace Review artifact writer
 pub const AGENT_WORKSPACE_REVIEWER: &str = "ralphx:ralphx-workspace-reviewer";
 
@@ -118,6 +114,7 @@ pub const AGENT_REVIEWER: &str = "ralphx:ralphx-execution-reviewer";
 
 /// Merger agent (ChatContextType::Merge)
 pub const AGENT_MERGER: &str = "ralphx:ralphx-execution-merger";
+pub const AGENT_BRANCH_UPDATER: &str = "ralphx:ralphx-execution-branch-updater";
 
 /// Review-chat agent (ChatContextType::Review when status = "review_passed")
 pub const AGENT_REVIEW_CHAT: &str = "ralphx:ralphx-review-chat";
@@ -129,6 +126,9 @@ pub const AGENT_REVIEW_HISTORY: &str = "ralphx:ralphx-review-history";
 
 /// Session naming agent (haiku, background)
 pub const AGENT_SESSION_NAMER: &str = "ralphx:ralphx-utility-session-namer";
+
+/// PersonaBuilder-only helper for distilling ingested copies into persona drafts.
+pub const AGENT_PERSONA_EXTRACTOR: &str = "ralphx:ralphx-persona-extractor";
 
 /// Agent workspace PR description writer (background)
 pub const AGENT_PR_DESCRIBER: &str = "ralphx:ralphx-utility-pr-describer";
@@ -151,6 +151,21 @@ pub const AGENT_QA_REFINER: &str = "ralphx:qa-refiner";
 /// QA tester agent (spawned on QaTesting state entry)
 /// Note: No dedicated plugin agent file — uses default Claude behavior
 pub const AGENT_QA_TESTER: &str = "ralphx:qa-tester";
+
+/// Classify feedback-loop launch roles from a canonical agent name.
+///
+/// Accepts both qualified ("ralphx:ralphx-workspace-reviewer") and short forms.
+/// Returns `None` for ordinary conversation agents so their runs carry no
+/// launch role. Values align with the frontend `LaunchRuntimeRoleKey` contract.
+pub fn launch_role_for_agent_name(agent_name: &str) -> Option<&'static str> {
+    let short = agent_name.rsplit(':').next().unwrap_or(agent_name);
+    match short {
+        SHORT_WORKSPACE_REVIEWER => Some("workspace_reviewer"),
+        SHORT_AGENT_WORKSPACE_REPAIR => Some("workspace_repair"),
+        SHORT_AGENT_WORKSPACE_PR_FIXER => Some("pr_fixer"),
+        _ => None,
+    }
+}
 
 /// Map a state-machine spawner agent type string to the correct FQ agent name.
 ///
@@ -178,3 +193,7 @@ pub fn spawner_agent_name(agent_type: &str) -> &'static str {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "agent_names_tests.rs"]
+mod tests;

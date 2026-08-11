@@ -128,7 +128,7 @@ describe("design-tokens", () => {
         /\[data-theme="light"\]\s+\.agents-session-meta\s*\{[^}]*color:\s*#6A6A72\s*!important;/s
       );
       expect(cssContent).toMatch(
-        /\[data-theme="light"\]\s+\[data-testid="reviews-panel-shell"\]\s*\{[^}]*background-color:\s*#F4F4F6\s*!important;[^}]*border-left-color:\s*#E5E5E8\s*!important;/s
+        /\[data-theme="light"\]\s+\[data-testid="notifications-panel-shell"\]\s*\{[^}]*background-color:\s*#F4F4F6\s*!important;[^}]*border-left-color:\s*#E5E5E8\s*!important;/s
       );
       expect(cssContent).toMatch(
         /\[data-theme="light"\]\s+\[data-testid="kanban-split-layout"\][^{]*\{[^}]*background-color:\s*#FFFFFF\s*!important;/s
@@ -158,7 +158,7 @@ describe("design-tokens", () => {
         /\[data-theme="light"\]\s+\[data-testid="settings-dialog"\]\s+\.settings-pane\s*\{[^}]*background-color:\s*#FAFAFB\s*!important;/s
       );
       expect(cssContent).toMatch(
-        /\[data-theme="light"\]\s+\[data-testid="settings-dialog"\]\s+\.settings-modal__crumbs\s+\.cur,[^{]*\.settings-pane-head__title,[^{]*\.settings-row__label,[^{]*\.settings-diag-card__title,[^{]*\.settings-nav__item\[aria-current="true"\]\s*\{[^}]*color:\s*#18181D\s*!important;/s
+        /\[data-theme="light"\]\s+\[data-testid="settings-dialog"\]\s+\.settings-modal__crumbs\s+\.cur,[^{]*\.settings-row__label,[^{]*\.settings-diag-card__title,[^{]*\.settings-nav__item\[aria-current="true"\]\s*\{[^}]*color:\s*#18181D\s*!important;/s
       );
       expect(cssContent).toMatch(
         /\[data-theme="light"\]\s+\[data-testid="settings-dialog"\]\s+\.settings-nav__item,[^{]*\.settings-readonly-value,[^{]*\.settings-diag-card__body,[^{]*\.settings-btn-ghost\s*\{[^}]*color:\s*#404048\s*!important;/s
@@ -182,6 +182,36 @@ describe("design-tokens", () => {
       );
       expect(cssContent).toMatch(
         /\[data-theme="light"\]\s+\[data-sonner-toast\]\[data-styled="true"\]\s+\[data-button\]\s*\{[^}]*background-color:\s*#FF6A35\s*!important;[^}]*border:\s*1px\s+solid\s+#E0521E\s*!important;[^}]*color:\s*#1A0E07\s*!important;/s
+      );
+    });
+
+    it("should keep Sonner toast copy readable in dark mode", () => {
+      expect(cssContent).toMatch(
+        /\[data-theme="dark"\]\s+\[data-sonner-toaster\]\s*\{[^}]*--normal-text:\s*#FFFFFF;/s
+      );
+      expect(cssContent).toMatch(
+        /\[data-theme="dark"\]\s+\[data-sonner-toast\]\[data-styled="true"\]\s*\{[^}]*color:\s*#FFFFFF\s*!important;/s
+      );
+      expect(cssContent).toMatch(
+        /\[data-theme="dark"\]\s+\[data-sonner-toast\]\[data-styled="true"\]\s+\[data-description\]\s*\{[^}]*color:\s*rgba\(255,255,255,\.54\)\s*!important;/s
+      );
+      expect(cssContent).toMatch(
+        /\[data-theme="dark"\]\s+\[data-sonner-toast\]\[data-styled="true"\]\s+\[data-title\],[^{]*\[data-content\]\s*\{[^}]*color:\s*#FFFFFF\s*!important;/s
+      );
+    });
+
+    it("should keep Sonner toast copy readable in high-contrast mode", () => {
+      expect(cssContent).toMatch(
+        /\[data-theme="high-contrast"\]\s+\[data-sonner-toaster\]\s*\{[^}]*--normal-text:\s*#FFFFFF;/s
+      );
+      expect(cssContent).toMatch(
+        /\[data-theme="high-contrast"\]\s+\[data-sonner-toast\]\[data-styled="true"\]\s*\{[^}]*color:\s*#FFFFFF\s*!important;/s
+      );
+      expect(cssContent).toMatch(
+        /\[data-theme="high-contrast"\]\s+\[data-sonner-toast\]\[data-styled="true"\]\s+\[data-description\]\s*\{[^}]*color:\s*#BFBFBF\s*!important;/s
+      );
+      expect(cssContent).toMatch(
+        /\[data-theme="high-contrast"\]\s+\[data-sonner-toast\]\[data-styled="true"\]\s+\[data-title\],[^{]*\[data-content\]\s*\{[^}]*color:\s*#FFFFFF\s*!important;/s
       );
     });
 

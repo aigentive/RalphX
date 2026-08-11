@@ -105,7 +105,7 @@ fn collect_git_entries(root: &Path) -> Option<Vec<IndexedEntry>> {
     command.args(["ls-files", "-co", "--exclude-standard", "-z"]);
     // codeql[rust/path-injection]
     command.current_dir(&safe_root);
-    crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(&mut command);
+    crate::infrastructure::tool_paths::ensure_resolved_node_bin_in_path(&mut command);
     let output = command.output().ok()?;
     if !output.status.success() {
         return None;

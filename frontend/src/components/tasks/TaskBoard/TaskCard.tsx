@@ -30,10 +30,9 @@ import {
 import { TaskCardContextMenu } from "@/components/tasks/TaskCardContextMenu";
 import type { GroupInfo } from "@/lib/task-actions";
 import { useTaskMutation } from "@/hooks/useTaskMutation";
-import { useUiStore } from "@/stores/uiStore";
 import { useIdeationStore } from "@/stores/ideationStore";
 import { useCreateIdeationSession } from "@/hooks/useIdeation";
-import { navigateToIdeationSession } from "@/lib/navigation";
+import { navigateToIdeationSession, openTaskInAgents } from "@/lib/navigation";
 import { toast } from "sonner";
 import { useTaskExecutionState, formatDuration } from "@/hooks/useTaskExecutionState";
 import { usePlanBranchForTask } from "@/hooks/usePlanBranchForTask";
@@ -64,6 +63,7 @@ interface TaskCardProps {
   groupInfo?: GroupInfo;
   /** Optional host-owned task selection handler for embedded task surfaces. */
   onSelect?: (taskId: string) => void;
+  readOnly?: boolean;
 }
 
 function CheckpointIndicator() {
@@ -96,11 +96,12 @@ export function TaskCard({
   revisionCount,
   groupInfo,
   onSelect,
+  readOnly = false,
 }: TaskCardProps) {
-  const { attributes, listeners, setNodeRef, transform } = useDraggable({ id: task.id });
-
-  // UI Store - use selectedTaskId for split layout (TaskDetailOverlay handles rendering)
-  const setSelectedTaskId = useUiStore((state) => state.setSelectedTaskId);
+  const { attributes, listeners, setNodeRef, transform } = useDraggable({
+    id: task.id,
+    disabled: readOnly,
+  });
 
   // Ideation Store and mutation
   const addSession = useIdeationStore((state) => state.addSession);
@@ -177,14 +178,14 @@ export function TaskCard({
     [task.internalStatus, isArchived, isDragging, isDraggable, isSelected]
   );
 
-  // Context menu handlers - use selectedTaskId for split layout overlay
+  // Embedded Agents boards own task selection; legacy hosts resolve through Agents.
   const handleViewDetails = useCallback(() => {
     if (onSelect) {
       onSelect(task.id);
       return;
     }
-    setSelectedTaskId(task.id);
-  }, [onSelect, setSelectedTaskId, task.id]);
+    void openTaskInAgents(task.id, "kanban", { projectId: task.projectId });
+  }, [onSelect, task.id, task.projectId]);
 
   const handleEdit = handleViewDetails;
 
@@ -248,6 +249,7 @@ export function TaskCard({
   return (
     <>
       <TaskCardContextMenu
+        readOnly={readOnly}
         task={task}
         onViewDetails={handleViewDetails}
         onEdit={handleEdit}
@@ -265,7 +267,7 @@ export function TaskCard({
       >
         <div
           ref={setNodeRef}
-          {...(isDraggable ? { ...attributes, ...listeners } : {})}
+          {...(isDraggable && !readOnly ? { ...attributes, ...listeners } : {})}
           data-testid={`task-card-${task.id}`}
           onClick={() => {
             handleViewDetails();
@@ -275,7 +277,7 @@ export function TaskCard({
           tabIndex={0}
         >
       {/* Drag handle - appears on hover over the status badge (hidden if not draggable) */}
-      {isDraggable && !isArchived && (
+      {isDraggable && !isArchived && !readOnly && (
         <div
           data-testid="drag-handle"
           className="absolute right-8 top-2.5 opacity-0 group-hover:opacity-100 transition-opacity cursor-grab"

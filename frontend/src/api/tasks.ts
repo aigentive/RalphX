@@ -26,34 +26,87 @@ import {
   type TaskStep,
   type StepProgressSummary,
 } from "@/types/task-step";
-import { BulkCancelResponseSchemaRaw, BulkPauseResponseSchemaRaw, BulkResumeResponseSchemaRaw, BulkArchiveResponseSchemaRaw, CleanupReportResponseSchemaRaw, InjectTaskResponseSchemaRaw, StateTransitionResponseSchemaRaw, UnblockTaskResponseSchemaRaw } from "./tasks.schemas";
+import {
+  BulkArchiveResponseSchemaRaw,
+  BulkCancelResponseSchemaRaw,
+  BulkPauseResponseSchemaRaw,
+  BulkResumeResponseSchemaRaw,
+  CleanupReportResponseSchemaRaw,
+  ExecutionPlanControlResponseSchemaRaw,
+  InjectTaskResponseSchemaRaw,
+  StateTransitionResponseSchemaRaw,
+  TaskHistoryAvailabilityResponseSchemaRaw,
+  UnblockTaskResponseSchemaRaw,
+} from "./tasks.schemas";
 import {
   transformBulkCancelResponse,
   transformBulkPauseResponse,
   transformBulkResumeResponse,
+  transformExecutionPlanControlResponse,
   transformBulkArchiveResponse,
   transformCleanupReport,
   transformInjectTaskResponse,
   transformStateTransition,
+  transformTaskHistoryAvailability,
   transformUnblockTaskResponse,
   type BulkCancelResponse,
   type BulkPauseResponse,
   type BulkResumeResponse,
+  type ExecutionPlanControlResponse,
   type BulkArchiveResponse,
   type CleanupReport,
   type InjectTaskResponse,
   type StateTransition,
+  type TaskHistoryAvailability,
   type UnblockTaskResponse,
 } from "./tasks.transforms";
+import {
+  ExecutionTaskAgentWorkspaceSchema,
+  transformExecutionTaskAgentWorkspace,
+  type ExecutionTaskAgentWorkspace,
+} from "./execution-task-agent-workspace";
 
 // Re-export types for convenience
-export type { BulkCancelResponse, BulkPauseResponse, BulkResumeResponse, BulkArchiveResponse, CleanupReport, InjectTaskResponse, StateTransition, UnblockTaskResponse } from "./tasks.transforms";
+export type {
+  BulkArchiveResponse,
+  BulkCancelResponse,
+  BulkPauseResponse,
+  BulkResumeResponse,
+  CleanupReport,
+  ExecutionPlanControlResponse,
+  InjectTaskResponse,
+  StateTransition,
+  UnblockTaskResponse,
+  TaskHistoryAvailability,
+} from "./tasks.transforms";
 
 // Re-export schemas for consumers that need validation
-export { BulkCancelResponseSchemaRaw, BulkPauseResponseSchemaRaw, BulkResumeResponseSchemaRaw, BulkArchiveResponseSchemaRaw, CleanupReportResponseSchemaRaw, InjectTaskResponseSchemaRaw, StateTransitionResponseSchemaRaw, UnblockTaskResponseSchemaRaw } from "./tasks.schemas";
+export {
+  BulkArchiveResponseSchemaRaw,
+  BulkCancelResponseSchemaRaw,
+  BulkPauseResponseSchemaRaw,
+  BulkResumeResponseSchemaRaw,
+  CleanupReportResponseSchemaRaw,
+  ExecutionPlanControlResponseSchemaRaw,
+  InjectTaskResponseSchemaRaw,
+  StateTransitionResponseSchemaRaw,
+  TaskHistoryAvailabilityResponseSchemaRaw,
+  UnblockTaskResponseSchemaRaw,
+} from "./tasks.schemas";
 
 // Re-export transforms for consumers that need manual transformation
-export { transformBulkCancelResponse, transformBulkPauseResponse, transformBulkResumeResponse, transformBulkArchiveResponse, transformCleanupReport, transformInjectTaskResponse, transformStateTransition, transformUnblockTaskResponse } from "./tasks.transforms";
+export {
+  transformBulkArchiveResponse,
+  transformBulkCancelResponse,
+  transformBulkPauseResponse,
+  transformBulkResumeResponse,
+  transformCleanupReport,
+  transformExecutionPlanControlResponse,
+  transformInjectTaskResponse,
+  transformStateTransition,
+  transformTaskHistoryAvailability,
+  transformUnblockTaskResponse,
+} from "./tasks.transforms";
 
 // ============================================================================
 // Input Types
@@ -139,6 +192,17 @@ export const tasksApi = {
   }): Promise<TaskListResponse> =>
     typedInvokeWithTransform("list_tasks", params, TaskListResponseSchema, transformTaskListResponse),
 
+  getSessionHistoryAvailability: (
+    projectId: string,
+    ideationSessionId: string
+  ): Promise<TaskHistoryAvailability> =>
+    typedInvokeWithTransform(
+      "get_session_task_history_availability",
+      { projectId, ideationSessionId },
+      TaskHistoryAvailabilityResponseSchemaRaw,
+      transformTaskHistoryAvailability
+    ),
+
   /**
    * Search tasks by query string
    * @param projectId The project ID
@@ -162,6 +226,18 @@ export const tasksApi = {
    */
   get: (taskId: string): Promise<Task> =>
     typedInvokeWithTransform("get_task", { id: taskId }, TaskSchema, transformTask),
+
+  /**
+   * Resolve the Agent conversation workspace that owns a task, when available.
+   */
+  resolveAgentWorkspace: (taskId: string): Promise<ExecutionTaskAgentWorkspace | null> =>
+    typedInvokeWithTransform(
+      "get_task_agent_workspace",
+      { taskId },
+      ExecutionTaskAgentWorkspaceSchema.nullable(),
+      (workspace) =>
+        workspace ? transformExecutionTaskAgentWorkspace(workspace) : null,
+    ),
 
   /**
    * Create a new task
@@ -246,12 +322,20 @@ export const tasksApi = {
    * @param taskId The task ID
    * @param force If true, skip validation (use with caution)
    * @param note Optional note to communicate intent to the re-executing agent
-   * @returns RestartResult with Success or ValidationFailed variants
+   * @returns RestartResult with Success, ValidationFailed, or Blocked variants
    */
-  restart: (taskId: string, force?: boolean, note?: string): Promise<RestartResult> =>
+  restart: (
+    taskId: string,
+    force?: boolean,
+    note?: string
+  ): Promise<RestartResult> =>
     typedInvokeWithTransform(
       "restart_task",
-      { taskId, force: force ?? false, note: note ?? null },
+      {
+        taskId,
+        force: force ?? false,
+        note: note ?? null,
+      },
       RestartResultSchemaRaw,
       transformRestartResult
     ),
@@ -281,14 +365,13 @@ export const tasksApi = {
    * Move a task to a new status
    * @param taskId The task ID
    * @param toStatus The target status
-   * @param agentVariant Optional agent variant (e.g. "team" for parallel agents)
    * @param note Optional note to communicate intent to the re-executing agent
    * @returns The updated task
    */
-  move: (taskId: string, toStatus: string, agentVariant?: string, note?: string): Promise<Task> =>
+  move: (taskId: string, toStatus: string, note?: string): Promise<Task> =>
     typedInvokeWithTransform(
       "move_task",
-      { taskId, toStatus, agentVariant: agentVariant ?? null, note: note ?? null },
+      { taskId, toStatus, note: note ?? null },
       TaskSchema,
       transformTask
     ),
@@ -304,6 +387,14 @@ export const tasksApi = {
       "retry_merge",
       { taskId, skipValidation: skipValidation ?? null },
       TauriVoidSchema
+    ),
+
+  retryBranchUpdate: (taskId: string): Promise<Task> =>
+    typedInvokeWithTransform(
+      "retry_branch_update",
+      { taskId },
+      TaskSchema,
+      transformTask
     ),
 
   /**
@@ -453,6 +544,69 @@ export const tasksApi = {
       { groupKind, groupId, projectId },
       BulkResumeResponseSchemaRaw,
       transformBulkResumeResponse
+    ),
+
+  /**
+   * Pause the current implementation work for one execution plan.
+   */
+  pauseExecutionPlan: (input: {
+    projectId: string;
+    sessionId: string;
+    executionPlanId?: string | null;
+  }): Promise<ExecutionPlanControlResponse> =>
+    typedInvokeWithTransform(
+      "pause_execution_plan",
+      {
+        input: {
+          projectId: input.projectId,
+          sessionId: input.sessionId,
+          executionPlanId: input.executionPlanId ?? null,
+        },
+      },
+      ExecutionPlanControlResponseSchemaRaw,
+      transformExecutionPlanControlResponse
+    ),
+
+  /**
+   * Resume paused work for one execution plan.
+   */
+  resumeExecutionPlan: (input: {
+    projectId: string;
+    sessionId: string;
+    executionPlanId?: string | null;
+  }): Promise<ExecutionPlanControlResponse> =>
+    typedInvokeWithTransform(
+      "resume_execution_plan",
+      {
+        input: {
+          projectId: input.projectId,
+          sessionId: input.sessionId,
+          executionPlanId: input.executionPlanId ?? null,
+        },
+      },
+      ExecutionPlanControlResponseSchemaRaw,
+      transformExecutionPlanControlResponse
+    ),
+
+  /**
+   * Stop running work for one execution plan.
+   */
+  stopExecutionPlan: (input: {
+    projectId: string;
+    sessionId: string;
+    executionPlanId?: string | null;
+  }): Promise<ExecutionPlanControlResponse> =>
+    typedInvokeWithTransform(
+      "stop_execution_plan",
+      {
+        input: {
+          projectId: input.projectId,
+          sessionId: input.sessionId,
+          executionPlanId: input.executionPlanId ?? null,
+        },
+      },
+      ExecutionPlanControlResponseSchemaRaw,
+      transformExecutionPlanControlResponse
     ),
 
   /**

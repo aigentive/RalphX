@@ -3,6 +3,11 @@
 import { z } from "zod";
 import { TaskSchema } from "@/types/task";
 
+export const TaskHistoryAvailabilityResponseSchemaRaw = z.object({
+  has_history: z.boolean(),
+  task_count: z.number().int().nonnegative(),
+});
+
 /**
  * Inject task response schema from Rust (snake_case)
  * Backend outputs snake_case (Rust default). Transform layer converts to camelCase for UI.
@@ -49,6 +54,15 @@ export const BulkResumeResponseSchemaRaw = z.object({
 });
 
 /**
+ * Execution plan control response schema from Rust (snake_case)
+ * Returned by pause_execution_plan/resume_execution_plan/stop_execution_plan.
+ */
+export const ExecutionPlanControlResponseSchemaRaw = z.object({
+  execution_plan_id: z.string(),
+  affected_count: z.number().int(),
+});
+
+/**
  * Bulk archive response schema from Rust (snake_case)
  * Returned by archive_tasks_in_group command.
  */
@@ -83,4 +97,8 @@ export const StateTransitionResponseSchemaRaw = z.object({
   conversation_id: z.string().nullish(),
   /** Agent run ID for the specific execution within the conversation */
   agent_run_id: z.string().nullish(),
+  /** Optional runtime context type for the associated transcript */
+  context_type: z.string().nullish(),
+  /** Optional stable transition identity */
+  transition_id: z.string().nullish(),
 });

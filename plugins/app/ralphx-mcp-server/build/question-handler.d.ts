@@ -20,13 +20,14 @@ interface QuestionPrompt {
     allow_skip?: boolean;
 }
 export interface AskUserQuestionArgs {
-    session_id: string;
+    session_id?: string;
     question?: string;
     header?: string;
     options?: QuestionOption[];
     multi_select?: boolean;
     allow_skip?: boolean;
     questions?: QuestionPrompt[];
+    metadata?: Record<string, unknown>;
 }
 export interface ProposePlanModeArgs {
     conversation_id?: string;

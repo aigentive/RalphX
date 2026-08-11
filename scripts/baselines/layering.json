@@ -96,11 +96,6 @@
   "violations": {
     "root_application_no_commands_or_http_imports": [
       {
-        "path": "src-tauri/src/application/agent_conversation_start_service.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
         "path": "src-tauri/src/application/app_setup.rs",
         "target": "crate::commands",
         "text": "crate::commands::agent_workspace_auto_publish::install_agent_workspace_auto_publish_listeners("
@@ -268,7 +263,7 @@
       {
         "path": "src-tauri/src/application/session_reopen_service.rs",
         "target": "crate::http_server",
-        "text": "use crate::http_server::handlers::ideation::{ChildFilter, stop_and_archive_children};"
+        "text": "use crate::http_server::handlers::ideation::{stop_and_archive_children, ChildFilter};"
       },
       {
         "path": "src-tauri/src/application/setup_settings.rs",
@@ -341,11 +336,6 @@
         "text": "use crate::commands::ExecutionState;"
       },
       {
-        "path": "src-tauri/src/application/team_stream_processor.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
         "path": "src-tauri/src/application/validation_service.rs",
         "target": "crate::http_server",
         "text": "let (validation_hint, hint_message) = crate::http_server::helpers::compute_validation_hint("
@@ -368,168 +358,7 @@
         "text": "use crate::http_server::helpers::{"
       }
     ],
-    "root_domain_no_tauri_usage": [
-      {
-        "path": "src-tauri/src/domain/services/verification_events.rs",
-        "target": "tauri::",
-        "text": "use tauri::{AppHandle, Emitter, Runtime};"
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/context.rs",
-        "target": "tauri::",
-        "text": "use tauri::{AppHandle, Runtime, Wry};"
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/freshness.rs",
-        "target": "tauri::",
-        "text": "app_handle: Option<&tauri::AppHandle>,"
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/merge_completion.rs",
-        "target": "tauri::",
-        "text": "async fn complete_merge_internal_impl<R: tauri::Runtime>("
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/merge_completion.rs",
-        "target": "tauri::",
-        "text": "complete_merge_internal::<tauri::Wry>("
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/merge_completion.rs",
-        "target": "tauri::",
-        "text": "let result = complete_merge_internal::<tauri::Wry>("
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/merge_completion.rs",
-        "target": "tauri::",
-        "text": "pub async fn complete_merge_internal<R: tauri::Runtime>("
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/merge_completion.rs",
-        "target": "tauri::",
-        "text": "pub(crate) async fn complete_merge_internal_with_pr_sync<R: tauri::Runtime>("
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/merge_completion.rs",
-        "target": "tauri::",
-        "text": "use tauri::{AppHandle, Emitter};"
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/merge_coordination/cleanup/agents.rs",
-        "target": "tauri::",
-        "text": "app_handle: Option<&tauri::AppHandle>,"
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/merge_coordination/cleanup/worktrees.rs",
-        "target": "tauri::",
-        "text": "app_handle: Option<&tauri::AppHandle>,"
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/merge_coordination/deferral.rs",
-        "target": "tauri::",
-        "text": "app_handle: Option<&tauri::AppHandle>,"
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/merge_coordination/plan_update.rs",
-        "target": "tauri::",
-        "text": "app_handle: Option<&tauri::AppHandle>,"
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/merge_coordination/source_update.rs",
-        "target": "tauri::",
-        "text": "app_handle: Option<&tauri::AppHandle>,"
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/merge_validation/install.rs",
-        "target": "tauri::",
-        "text": "app_handle: Option<&tauri::AppHandle>,"
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/merge_validation/install.rs",
-        "target": "tauri::",
-        "text": "use tauri::Emitter;"
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/merge_validation/logging.rs",
-        "target": "tauri::",
-        "text": "pub(crate) fn emit_merge_progress<R: tauri::Runtime>("
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/merge_validation/logging.rs",
-        "target": "tauri::",
-        "text": "use tauri::{AppHandle, Emitter};"
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/merge_validation/mod.rs",
-        "target": "tauri::",
-        "text": "app_handle: Option<&tauri::AppHandle>,"
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/merge_validation/mod.rs",
-        "target": "tauri::",
-        "text": "use tauri::Emitter;"
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/merge_validation/setup.rs",
-        "target": "tauri::",
-        "text": "app_handle: Option<&tauri::AppHandle>,"
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/merge_validation/setup.rs",
-        "target": "tauri::",
-        "text": "use tauri::Emitter;"
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/merge_validation/validate.rs",
-        "target": "tauri::",
-        "text": "app_handle: Option<&tauri::AppHandle>,"
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/merge_validation/validate.rs",
-        "target": "tauri::",
-        "text": "use tauri::Emitter;"
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/side_effects/mod.rs",
-        "target": "tauri::",
-        "text": "use tauri::Emitter;"
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/tests/freshness_return_path_integration_tests.rs",
-        "target": "tauri::",
-        "text": "fn build_transition_service(app_state: &AppState) -> TaskTransitionService<tauri::Wry> {"
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/tests/merge_outcome_transient_retry_tests.rs",
-        "target": "tauri::",
-        "text": "fn build_transition_service(app_state: &AppState) -> Arc<TaskTransitionService<tauri::Wry>> {"
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/tests/merge_pipeline_round2_tests.rs",
-        "target": "tauri::",
-        "text": "let result = complete_merge_internal::<tauri::Wry>("
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/tests/phase2_phase3_merge_tests.rs",
-        "target": "tauri::",
-        "text": "let result = complete_merge_internal::<tauri::Wry>("
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/tests/pr_mode_state_machine_tests.rs",
-        "target": "tauri::",
-        "text": "let result = complete_merge_internal_with_pr_sync::<tauri::Wry>("
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/tests/progress_events.rs",
-        "target": "tauri::",
-        "text": "emit_merge_progress::<tauri::Wry>("
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/tests/worktree_restore_tests.rs",
-        "target": "tauri::",
-        "text": ") -> crate::application::TaskTransitionService<tauri::Wry> {"
-      }
-    ],
+    "root_domain_no_tauri_usage": [],
     "root_domain_no_upward_imports": [
       {
         "path": "src-tauri/src/domain/repositories/permission_repository.rs",
@@ -764,7 +593,7 @@
       {
         "path": "src-tauri/src/domain/state_machine/transition_handler/merge_coordination/source_update.rs",
         "target": "crate::application",
-        "text": "| crate::application::MergeResult::FastForward { commit_sha } => commit_sha.clone(),"
+        "text": "| crate::application::MergeResult::FastForward { commit_sha } => {"
       },
       {
         "path": "src-tauri/src/domain/state_machine/transition_handler/merge_helpers.rs",
@@ -1179,7 +1008,12 @@
       {
         "path": "src-tauri/src/domain/state_machine/transition_handler/tests/step_reset_on_enter_tests.rs",
         "target": "crate::application",
-        "text": "Arc::new(crate::application::MockChatService::new()) as Arc<dyn crate::application::ChatService>,"
+        "text": "Arc::new(crate::application::MockChatService::new())"
+      },
+      {
+        "path": "src-tauri/src/domain/state_machine/transition_handler/tests/step_reset_on_enter_tests.rs",
+        "target": "crate::application",
+        "text": "as Arc<dyn crate::application::ChatService>,"
       },
       {
         "path": "src-tauri/src/domain/state_machine/transition_handler/tests/step_reset_on_enter_tests.rs",
@@ -1244,7 +1078,7 @@
       {
         "path": "src-tauri/src/domain/state_machine/transition_handler/tests/worktree_restore_tests.rs",
         "target": "crate::application",
-        "text": ") -> crate::application::TaskTransitionService<tauri::Wry> {"
+        "text": ") -> crate::application::TaskTransitionService {"
       },
       {
         "path": "src-tauri/src/domain/state_machine/transition_handler/tests/worktree_restore_tests.rs",
@@ -1274,64 +1108,54 @@
         "text": "use crate::commands::unified_chat_commands::{"
       },
       {
-        "path": "src-tauri/src/http_server/handlers/agent_followups_tests.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
-        "path": "src-tauri/src/http_server/handlers/agent_issues_tests.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
-        "path": "src-tauri/src/http_server/handlers/agent_workspaces.rs",
+        "path": "src-tauri/src/http_server/handlers/agent_workspaces/mod.rs",
         "target": "crate::commands",
         "text": "crate::commands::diff_commands::get_agent_conversation_workspace_cumulative_file_changes_for_state("
       },
       {
-        "path": "src-tauri/src/http_server/handlers/agent_workspaces.rs",
+        "path": "src-tauri/src/http_server/handlers/agent_workspaces/mod.rs",
         "target": "crate::commands",
         "text": "crate::commands::diff_commands::get_agent_conversation_workspace_cumulative_file_diff_for_state("
       },
       {
-        "path": "src-tauri/src/http_server/handlers/agent_workspaces.rs",
+        "path": "src-tauri/src/http_server/handlers/agent_workspaces/mod.rs",
         "target": "crate::commands",
         "text": "crate::commands::diff_commands::get_agent_conversation_workspace_file_content_range_for_state("
       },
       {
-        "path": "src-tauri/src/http_server/handlers/agent_workspaces.rs",
+        "path": "src-tauri/src/http_server/handlers/agent_workspaces/mod.rs",
         "target": "crate::commands",
         "text": "crate::commands::diff_commands::get_agent_conversation_workspace_file_diff_page_for_state("
       },
       {
-        "path": "src-tauri/src/http_server/handlers/agent_workspaces.rs",
+        "path": "src-tauri/src/http_server/handlers/agent_workspaces/mod.rs",
         "target": "crate::commands",
         "text": "crate::commands::diff_commands::get_agent_conversation_workspace_staged_file_changes_for_state("
       },
       {
-        "path": "src-tauri/src/http_server/handlers/agent_workspaces.rs",
+        "path": "src-tauri/src/http_server/handlers/agent_workspaces/mod.rs",
         "target": "crate::commands",
         "text": "crate::commands::diff_commands::get_agent_conversation_workspace_staged_file_diff_for_state("
       },
       {
-        "path": "src-tauri/src/http_server/handlers/agent_workspaces.rs",
+        "path": "src-tauri/src/http_server/handlers/agent_workspaces/mod.rs",
         "target": "crate::commands",
         "text": "crate::commands::diff_commands::get_agent_conversation_workspace_unstaged_file_changes_for_state("
       },
       {
-        "path": "src-tauri/src/http_server/handlers/agent_workspaces.rs",
+        "path": "src-tauri/src/http_server/handlers/agent_workspaces/mod.rs",
         "target": "crate::commands",
         "text": "crate::commands::diff_commands::get_agent_conversation_workspace_unstaged_file_diff_for_state("
       },
       {
-        "path": "src-tauri/src/http_server/handlers/agent_workspaces.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
-        "path": "src-tauri/src/http_server/handlers/agent_workspaces.rs",
+        "path": "src-tauri/src/http_server/handlers/agent_workspaces/mod.rs",
         "target": "crate::commands",
         "text": "use crate::commands::unified_chat_commands::{"
+      },
+      {
+        "path": "src-tauri/src/http_server/handlers/agent_workspaces/tests.rs",
+        "target": "crate::commands",
+        "text": "use crate::commands::ExecutionState;"
       },
       {
         "path": "src-tauri/src/http_server/handlers/external/ideation_runtime/append.rs",
@@ -1386,27 +1210,7 @@
       {
         "path": "src-tauri/src/http_server/handlers/projects.rs",
         "target": "crate::commands",
-        "text": "crate::commands::project_commands::ensure_git_initialized_async(&canonical_str)"
-      },
-      {
-        "path": "src-tauri/src/http_server/handlers/projects.rs",
-        "target": "crate::commands",
         "text": "crate::commands::project_commands::spawn_project_analyzer("
-      },
-      {
-        "path": "src-tauri/src/http_server/handlers/reviews/complete_tests.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
-        "path": "src-tauri/src/http_server/handlers/session_linking/verification.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
-        "path": "src-tauri/src/http_server/handlers/steps_tests.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
       },
       {
         "path": "src-tauri/src/http_server/helpers.rs",
@@ -1571,11 +1375,6 @@
         "text": "use crate::application::question_state::QuestionOption;"
       },
       {
-        "path": "src-tauri/src/infrastructure/memory/memory_team_session_repo_tests.rs",
-        "target": "crate::application",
-        "text": "cost: crate::application::team_state_tracker::TeammateCost {"
-      },
-      {
         "path": "src-tauri/src/infrastructure/sqlite/sqlite_chat_message_repo.rs",
         "target": "crate::application",
         "text": "crate::application::reconciliation::verification_handoff::VERIFICATION_RESULT_MARKER"
@@ -1629,11 +1428,6 @@
         "path": "src-tauri/src/infrastructure/sqlite/sqlite_question_repo_tests.rs",
         "target": "crate::application",
         "text": "use crate::application::question_state::QuestionState;"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/sqlite/sqlite_team_session_repo_tests.rs",
-        "target": "crate::application",
-        "text": "use crate::application::team_state_tracker::TeammateCost;"
       }
     ],
     "workspace_domain_no_root_layer_refs": [],

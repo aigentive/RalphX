@@ -3,6 +3,7 @@
  * Tests agent team coordination features
  */
 
+import { Ajv as AjvValidator } from 'ajv/dist/ajv.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   getAllowedToolNames,
@@ -18,8 +19,10 @@ import {
 import { canonicalAgentName, loadCanonicalMcpTools } from '../canonical-agent-metadata.js';
 import { setLegacyToolAllowlistEntryForTest } from '../tool-authorization.js';
 import { PLAN_TOOLS } from '../plan-tools.js';
+import { callGetParentContextTool } from '../ideation-tools.js';
 import { buildAppendTaskToIdeationPlanPayload } from '../append-task-payload.js';
 import {
+  AGENT_WORKSPACE_TOOLS,
   callAgentWorkspaceTool,
   callCheckAgentWorkspacePublishReadinessTool,
   callCompleteAgentWorkspacePrFixTool,
@@ -29,6 +32,8 @@ import {
   callGetAgentWorkspacePrFixContextTool,
   callGetPrReviewContextTool,
   callGetWorkspaceReviewContextTool,
+  callGetWorkspaceReviewDiffPageTool,
+  callListWorkspaceReviewFilesTool,
   callGetAgentWorkspacePublishStatusTool,
   callPublishAgentWorkspaceTool,
   callProposePrReviewActionTool,
@@ -41,26 +46,13 @@ import {
   isAgentWorkspaceToolName,
 } from '../agent-workspace-tools.js';
 import {
-  IDEATION_TEAM_LEAD,
-  IDEATION_TEAM_MEMBER,
-  WORKER_TEAM_LEAD,
-  WORKER_TEAM_MEMBER,
   ORCHESTRATOR_IDEATION,
   ORCHESTRATOR_IDEATION_READONLY,
   IDEATION_SPECIALIST_BACKEND,
   IDEATION_SPECIALIST_FRONTEND,
   IDEATION_SPECIALIST_INFRA,
-  IDEATION_SPECIALIST_CODE_QUALITY,
-  IDEATION_SPECIALIST_UX,
-  IDEATION_SPECIALIST_PROMPT_QUALITY,
-  IDEATION_SPECIALIST_INTENT,
-  IDEATION_SPECIALIST_PIPELINE_SAFETY,
-  IDEATION_SPECIALIST_STATE_MACHINE,
   IDEATION_CRITIC,
   IDEATION_ADVOCATE,
-  PLAN_VERIFIER,
-  PLAN_CRITIC_COMPLETENESS,
-  PLAN_CRITIC_IMPLEMENTATION_FEASIBILITY,
   REVIEWER,
   GENERAL_EXPLORER,
   GENERAL_WORKER,
@@ -69,6 +61,7 @@ import {
   AGENT_WORKSPACE_PR_FIXER,
   PLAN_COMPLEXITY_ASSESSOR,
   WORKSPACE_REVIEWER,
+  AUTOMATION_SETUP,
   WORKER,
   MERGER,
   CHAT_PROJECT,
@@ -80,7 +73,10 @@ function toolsByAgent(): Record<string, string[]> {
 
 type SchemaProperty = {
   type?: string;
+  description?: string;
+  enum?: string[];
   items?: { type?: string };
+  default?: unknown;
 };
 
 function inputSchemaProperties(toolName: string): Record<string, SchemaProperty> {
@@ -94,12 +90,14 @@ describe('getAllowedToolNames', () => {
     // Clear env var before each test
     delete process.env.RALPHX_ALLOWED_MCP_TOOLS;
     delete process.env.RALPHX_AGENT_PROFILE;
+    delete process.env.RALPHX_COORDINATION_MODE;
   });
 
   afterEach(() => {
     // Clean up env var after each test
     delete process.env.RALPHX_ALLOWED_MCP_TOOLS;
     delete process.env.RALPHX_AGENT_PROFILE;
+    delete process.env.RALPHX_COORDINATION_MODE;
   });
 
   it('should return parsed list when RALPHX_ALLOWED_MCP_TOOLS env var is set', () => {
@@ -152,19 +150,19 @@ describe('getAllowedToolNames', () => {
   });
 
   it('should prioritize env var over agent type allowlist', () => {
-    setAgentType(IDEATION_TEAM_LEAD);
+    setAgentType(ORCHESTRATOR_IDEATION);
     process.env.RALPHX_ALLOWED_MCP_TOOLS = 'get_session_plan';
     const tools = getAllowedToolNames();
     // Should return env var list, not agent type allowlist
     expect(tools).toEqual(['get_session_plan']);
-    expect(tools).not.toEqual(toolsByAgent()[IDEATION_TEAM_LEAD]);
+    expect(tools).not.toEqual(toolsByAgent()[ORCHESTRATOR_IDEATION]);
   });
 
-  it('should strip delegation tools from env override for non-delegating agents', () => {
-    setAgentType(IDEATION_TEAM_LEAD);
+  it('keeps delegation tools for the native ideation orchestrator', () => {
+    setAgentType(ORCHESTRATOR_IDEATION);
     process.env.RALPHX_ALLOWED_MCP_TOOLS = 'delegate_start,get_session_plan,delegate_wait';
     const tools = getAllowedToolNames();
-    expect(tools).toEqual(['get_session_plan']);
+    expect(tools).toEqual(['delegate_start', 'get_session_plan', 'delegate_wait']);
   });
 
   it('prefers canonical mcp_tools when available', () => {
@@ -173,6 +171,43 @@ describe('getAllowedToolNames', () => {
     expect(tools).toEqual(loadCanonicalMcpTools('qa-prep'));
     expect(tools).toContain('fs_read_file');
     expect(tools).toContain('fs_grep');
+  });
+
+  it('grants the canonical PersonaBuilder surface only to the persona extractor', () => {
+    const extractorTools = [
+      'fs_read_file',
+      'fs_list_dir',
+      'fs_grep',
+      'fs_glob',
+      'ask_user_question',
+      'save_persona_draft',
+      'get_persona_draft',
+    ];
+
+    setAgentType('ralphx-persona-extractor');
+    expect(getAllowedToolNames()).toEqual(extractorTools);
+    expect(isToolAllowed('save_persona_draft')).toBe(true);
+    expect(isToolAllowed('get_persona_draft')).toBe(true);
+
+    setAgentType(GENERAL_EXPLORER);
+    expect(isToolAllowed('save_persona_draft')).toBe(false);
+    expect(isToolAllowed('get_persona_draft')).toBe(false);
+  });
+
+  it('grants workflow tools only inside Workflow conversations', () => {
+    setAgentType(GENERAL_WORKER);
+
+    expect(getAllowedToolNames()).not.toContain('create_agent_workflow_script');
+    expect(getAllowedToolNames()).not.toContain('start_agent_workflow_run');
+
+    process.env.RALPHX_COORDINATION_MODE = 'rx_native_workflow';
+    const workflowTools = getAllowedToolNames();
+    expect(workflowTools).toContain('create_agent_workflow_script');
+    expect(workflowTools).toContain('start_agent_workflow_run');
+    expect(workflowTools).toContain('get_agent_workflow_run');
+
+    process.env.RALPHX_COORDINATION_MODE = 'codex_native_ultra';
+    expect(getAllowedToolNames()).not.toContain('create_agent_workflow_script');
   });
 
   it('uses profile-specific canonical mcp_tools when RALPHX_AGENT_PROFILE is set', () => {
@@ -188,6 +223,49 @@ describe('getAllowedToolNames', () => {
     expect(tools).not.toContain('finalize_proposals');
   });
 
+  it('grants coordinator and member Team tools only to their canonical roles in RX-native Team mode', () => {
+    process.env.RALPHX_COORDINATION_MODE = 'rx_native_team';
+    setAgentType(GENERAL_WORKER);
+    expect(getAllowedToolNames()).not.toContain('team_assign');
+    expect(getAllowedToolNames()).toEqual(
+      expect.arrayContaining(['team_send_message', 'team_roster'])
+    );
+
+    setAgentType(GENERAL_EXPLORER);
+    expect(getAllowedToolNames()).toEqual(
+      expect.arrayContaining(['team_send_message', 'team_roster'])
+    );
+    expect(getAllowedToolNames()).not.toContain('team_add_member');
+
+    setAgentType('ralphx-chat-task');
+    expect(getAllowedToolNames()).not.toContain('team_send_message');
+
+    process.env.RALPHX_AGENT_PROFILE = 'team_coordinator';
+    expect(getAllowedToolNames()).toEqual(
+      expect.arrayContaining([
+        'team_add_member',
+        'team_assign',
+        'team_list',
+        'team_stop_member',
+        'team_send_message',
+      ])
+    );
+
+    setAgentType(GENERAL_WORKER);
+    expect(getAllowedToolNames()).toEqual(
+      expect.arrayContaining([
+        'team_add_member',
+        'team_assign',
+        'team_list',
+        'team_stop_member',
+        'team_send_message',
+      ])
+    );
+
+    process.env.RALPHX_COORDINATION_MODE = 'rx_native_workflow';
+    expect(getAllowedToolNames()).not.toContain('team_assign');
+  });
+
   it('rejects canonical agent path traversal attempts', () => {
     expect(loadCanonicalMcpTools('../secrets')).toBeUndefined();
     expect(loadCanonicalMcpTools(ORCHESTRATOR_IDEATION, '../secrets')).toBeUndefined();
@@ -196,11 +274,17 @@ describe('getAllowedToolNames', () => {
   it('treats delegation-only canonical mcp_tools as canonical instead of missing', () => {
     setAgentType('qa-tester');
     const tools = getAllowedToolNames();
-    expect(tools).toEqual(['delegate_start', 'delegate_wait', 'delegate_cancel']);
+    expect(tools).toEqual([
+      'delegate_start',
+      'delegate_wait',
+      'delegate_cancel',
+      'delegate_park',
+    ]);
     expect(loadCanonicalMcpTools('qa-tester')).toEqual([
       'delegate_start',
       'delegate_wait',
       'delegate_cancel',
+      'delegate_park',
     ]);
   });
 
@@ -220,57 +304,36 @@ describe('getAllowedToolNames', () => {
     expect(getAllowedToolNames()).toEqual(['submit_plan_complexity_assessment']);
   });
 });
-
 describe('getToolRecoveryHint', () => {
   it('does not expose recovery guidance for removed update_plan_verification', () => {
     expect(getToolRecoveryHint('update_plan_verification')).toBeNull();
   });
 
-  it('returns narrower verifier-helper guidance for report_verification_round', () => {
-    const hint = getToolRecoveryHint('report_verification_round');
-    expect(hint).toContain('verifier-friendly helper');
-    expect(hint).toContain('Do not pass session_id');
-    expect(hint).toContain('current-round gaps come from the backend-owned run_verification_round state');
-    expect(hint).toContain('Example payload:');
-  });
 
-  it('returns narrower verifier-helper guidance for complete_plan_verification', () => {
+  it('documents caller-derived exact-proof completion', () => {
     const hint = getToolRecoveryHint('complete_plan_verification');
-    expect(hint).toContain('terminal verification updates');
-    expect(hint).toContain('Do not pass session_id');
-    expect(hint).toContain('in_progress=false is filled in automatically');
-    expect(hint).toContain('do not try to pass delegate, timestamp, rescue, or wait bookkeeping');
-    expect(hint).toContain('External sessions cannot use status=skipped');
+    expect(hint).toContain('Pass an empty object');
+    expect(hint).toContain('exact current artifact');
+    expect(hint).toContain('failed, cancelled, or mismatched run');
   });
 
-  it('keeps verifier recovery guidance surface-local for get_plan_verification', () => {
+  it('documents the simplified verification status read', () => {
     const hint = getToolRecoveryHint('get_plan_verification');
-    expect(hint).toContain('retrying report_verification_round or complete_plan_verification');
-    expect(hint).not.toContain('update_plan_verification');
+    expect(hint).toContain('visible Verify Plan action status');
+    expect(hint).toContain('Pass session_id outside an ideation runtime');
   });
 
-  it('returns enrichment guidance for run_verification_enrichment', () => {
-    const hint = getToolRecoveryHint('run_verification_enrichment');
-    expect(hint).toContain('backend-owned one-time enrichment driver');
-    expect(hint).toContain('You choose the enrichment specialists');
-  });
 
-  it('returns round-driver guidance for run_verification_round', () => {
-    const hint = getToolRecoveryHint('run_verification_round');
-    expect(hint).toContain('primary verifier round driver');
-    expect(hint).toContain('structured required critic findings');
-    expect(hint).toContain('You choose the optional specialists');
-  });
 
-  it('returns verifier-debugging guidance for get_child_session_status', () => {
+  it('returns child-debugging guidance for get_child_session_status', () => {
     const hint = getToolRecoveryHint('get_child_session_status');
     expect(hint).toContain('include_recent_messages=true');
     expect(hint).toContain('Example payload:');
   });
 
-  it('returns invariant-context guidance for send_ideation_session_message', () => {
+  it('returns full-context guidance for send_ideation_session_message', () => {
     const hint = getToolRecoveryHint('send_ideation_session_message');
-    expect(hint).toContain('SESSION_ID, ROUND, critic/schema');
+    expect(hint).toContain('full task context');
     expect(hint).toContain('Example payload:');
   });
 
@@ -349,16 +412,16 @@ describe('buildAppendTaskToIdeationPlanPayload', () => {
 });
 
 describe('formatToolErrorMessage', () => {
-  it('appends details and a usage hint for known high-friction tools', () => {
+  it('appends details and a usage hint for model-native verification completion', () => {
     const text = formatToolErrorMessage(
-      'report_verification_round',
-      'Verification round state is stale.',
-      'Use the parent session id instead.'
+      'complete_plan_verification',
+      'Verification proof was rejected.',
+      'The current action no longer owns the artifact.'
     );
-    expect(text).toContain('ERROR: Verification round state is stale.');
-    expect(text).toContain('Details: Use the parent session id instead.');
-    expect(text).toContain('Usage hint for report_verification_round:');
-    expect(text).toContain('Example payload:');
+    expect(text).toContain('ERROR: Verification proof was rejected.');
+    expect(text).toContain('Details: The current action no longer owns the artifact.');
+    expect(text).toContain('Usage hint for complete_plan_verification:');
+    expect(text).toContain('Pass an empty object');
   });
 
   it('leaves unknown tools without a usage-hint section', () => {
@@ -404,6 +467,21 @@ describe('tool input schemas', () => {
     expect(tool!.inputSchema.required ?? []).not.toContain('add_depends_on');
     expect(tool!.inputSchema.required ?? []).not.toContain('add_blocks');
   });
+
+  it('keeps run_task_validation focused on post-change evidence while baseline stays diagnostic', () => {
+    const tool = getAllTools().find((candidate) => candidate.name === 'run_task_validation');
+    expect(tool, 'run_task_validation tool').toBeDefined();
+
+    expect(tool!.description).toContain('authoritative post-change validation evidence');
+    expect(tool!.description).toContain('purpose=baseline');
+    expect(tool!.description).toContain('explicit diagnostics');
+    expect(tool!.description).not.toContain('baseline/final validation commands');
+
+    const properties = inputSchemaProperties('run_task_validation');
+    expect(properties.purpose.enum).toContain('baseline');
+    expect(properties.purpose.description).toContain('Baseline is for explicit diagnostics');
+    expect(properties.purpose.description).not.toContain('normal first step');
+  });
 });
 
 describe('getFilteredTools', () => {
@@ -415,18 +493,17 @@ describe('getFilteredTools', () => {
     delete process.env.RALPHX_ALLOWED_MCP_TOOLS;
   });
 
-  it('should return correct tool set for ralphx-ideation-team-lead', () => {
-    setAgentType(IDEATION_TEAM_LEAD);
+  it('should return the native ideation tool set without legacy team controls', () => {
+    setAgentType(ORCHESTRATOR_IDEATION);
     const tools = getFilteredTools();
     const toolNames = tools.map((t) => t.name);
 
-    // Should include team coordination tools
-    expect(toolNames).toContain('request_team_plan');
-    expect(toolNames).toContain('request_teammate_spawn');
-    expect(toolNames).toContain('create_team_artifact');
-    expect(toolNames).toContain('get_team_artifacts');
-    expect(toolNames).toContain('get_team_session_state');
-    expect(toolNames).toContain('save_team_session_state');
+    expect(toolNames).not.toContain('create_team_artifact');
+    expect(toolNames).not.toContain('get_team_artifacts');
+    expect(toolNames).not.toContain('request_team_plan');
+    expect(toolNames).not.toContain('request_teammate_spawn');
+    expect(toolNames).not.toContain('get_team_session_state');
+    expect(toolNames).not.toContain('save_team_session_state');
 
     // Should include ideation tools
     expect(toolNames).toContain('create_task_proposal');
@@ -435,11 +512,11 @@ describe('getFilteredTools', () => {
     expect(toolNames).not.toContain('update_plan_verification');
 
     // Should match allowlist count
-    expect(tools.length).toBe(toolsByAgent()[IDEATION_TEAM_LEAD].length);
+    expect(tools.length).toBe(toolsByAgent()[ORCHESTRATOR_IDEATION].length);
   });
 
-  it('should return only allowed tools for ideation-team-member (read-only)', () => {
-    setAgentType(IDEATION_TEAM_MEMBER);
+  it('should return only allowed tools for the backend ideation specialist', () => {
+    setAgentType(IDEATION_SPECIALIST_BACKEND);
     const tools = getFilteredTools();
     const toolNames = tools.map((t) => t.name);
 
@@ -459,17 +536,16 @@ describe('getFilteredTools', () => {
     expect(toolNames).not.toContain('save_team_session_state');
 
     // Should match allowlist count
-    expect(tools.length).toBe(toolsByAgent()[IDEATION_TEAM_MEMBER].length);
+    expect(tools.length).toBe(toolsByAgent()[IDEATION_SPECIALIST_BACKEND].length);
   });
 
-  it('should return correct tool set for worker-team-member', () => {
-    setAgentType(WORKER_TEAM_MEMBER);
+  it('should return the current worker tool set', () => {
+    setAgentType(WORKER);
     const tools = getFilteredTools();
     const toolNames = tools.map((t) => t.name);
 
-    // Should include artifact tools (document decisions)
-    expect(toolNames).toContain('create_team_artifact');
-    expect(toolNames).toContain('get_team_artifacts');
+    expect(toolNames).not.toContain('create_team_artifact');
+    expect(toolNames).not.toContain('get_team_artifacts');
 
     // Should include worker step tools
     expect(toolNames).toContain('start_step');
@@ -482,20 +558,17 @@ describe('getFilteredTools', () => {
     expect(toolNames).not.toContain('save_team_session_state');
 
     // Should match allowlist count
-    expect(tools.length).toBe(toolsByAgent()[WORKER_TEAM_MEMBER].length);
+    expect(tools.length).toBe(toolsByAgent()[WORKER].length);
   });
 
-  it('should keep ralphx-ideation on start/observe/stop verification tools only', () => {
+  it('should expose only model-native verification tools to ralphx-ideation', () => {
     setAgentType(ORCHESTRATOR_IDEATION);
-    const tools = getFilteredTools();
-    const toolNames = tools.map((t) => t.name);
-
-    expect(toolNames).toContain('create_child_session');
+    const toolNames = getFilteredTools().map((tool) => tool.name);
     expect(toolNames).toContain('get_plan_verification');
-    expect(toolNames).toContain('stop_verification');
-    expect(toolNames).not.toContain('update_plan_verification');
+    expect(toolNames).toContain('complete_plan_verification');
+    expect(toolNames).not.toContain('stop_verification');
     expect(toolNames).not.toContain('report_verification_round');
-    expect(toolNames).not.toContain('complete_plan_verification');
+    expect(toolNames).not.toContain('run_verification_round');
   });
 
   it('should keep project chat on scoped parent-chat planning tools only', () => {
@@ -532,6 +605,10 @@ describe('getFilteredTools', () => {
     expect(properties).toHaveProperty('blocking_scope');
     expect(properties).toHaveProperty('auto_followup_eligible');
     expect(properties).toHaveProperty('followup_prompt');
+    expect(properties).toHaveProperty('attach_to_issue_id');
+    expect(properties).toHaveProperty('confirm_new');
+    expect(properties).toHaveProperty('new_issue_reason');
+    expect(properties).toHaveProperty('issue_check_token');
   });
 
   it('create_followup_agent_conversation should expose Agent conversation provenance fields', () => {
@@ -575,32 +652,6 @@ describe('getFilteredTools', () => {
     expect(toolNames).not.toContain('update_plan_artifact');
   });
 
-  it('should scope ralphx-plan-verifier to the narrower verification helpers', () => {
-    setAgentType('ralphx-plan-verifier');
-    const tools = getFilteredTools();
-    const toolNames = tools.map((t) => t.name);
-
-    expect(toolNames).toContain('fs_read_file');
-    expect(toolNames).toContain('fs_list_dir');
-    expect(toolNames).toContain('fs_grep');
-    expect(toolNames).toContain('fs_glob');
-    expect(toolNames).toContain('run_verification_enrichment');
-    expect(toolNames).toContain('run_verification_round');
-    expect(toolNames).toContain('report_verification_round');
-    expect(toolNames).toContain('complete_plan_verification');
-    expect(toolNames).toContain('get_plan_verification');
-    expect(toolNames).not.toContain('send_ideation_session_message');
-    expect(toolNames).not.toContain('delegate_start');
-    expect(toolNames).not.toContain('delegate_wait');
-    expect(toolNames).not.toContain('delegate_cancel');
-    expect(toolNames).not.toContain('get_session_messages');
-    expect(toolNames).not.toContain('update_plan_verification');
-    expect(toolNames).not.toContain('get_team_artifacts');
-    expect(toolNames).not.toContain('get_artifact');
-    expect(toolNames).not.toContain('assess_verification_round');
-    expect(toolNames).not.toContain('run_required_verification_critic_round');
-    expect(toolNames).not.toContain('await_verification_round_settlement');
-  });
 
   it('should expose qa prep filesystem tools plus delegation bridge tools', () => {
     setAgentType('qa-prep');
@@ -615,6 +666,7 @@ describe('getFilteredTools', () => {
       'delegate_start',
       'delegate_wait',
       'delegate_cancel',
+      'delegate_park',
     ]);
   });
 
@@ -625,7 +677,7 @@ describe('getFilteredTools', () => {
   });
 
   it('should return only env var tools when env var is set', () => {
-    setAgentType(IDEATION_TEAM_LEAD);
+    setAgentType(ORCHESTRATOR_IDEATION);
     process.env.RALPHX_ALLOWED_MCP_TOOLS = 'get_session_plan,create_team_artifact';
     const tools = getFilteredTools();
     const toolNames = tools.map((t) => t.name);
@@ -647,99 +699,38 @@ describe('isToolAllowed', () => {
   });
 
   it('should return true for allowed tool', () => {
-    setAgentType(IDEATION_TEAM_LEAD);
-    expect(isToolAllowed('request_team_plan')).toBe(true);
+    setAgentType(ORCHESTRATOR_IDEATION);
     expect(isToolAllowed('create_task_proposal')).toBe(true);
   });
 
   it('should return false for disallowed tool', () => {
-    setAgentType(IDEATION_TEAM_MEMBER);
-    expect(isToolAllowed('request_team_plan')).toBe(false);
+    setAgentType(IDEATION_SPECIALIST_BACKEND);
     expect(isToolAllowed('create_task_proposal')).toBe(false);
   });
 
   it('should return false for unknown tool', () => {
-    setAgentType(IDEATION_TEAM_LEAD);
+    setAgentType(ORCHESTRATOR_IDEATION);
     expect(isToolAllowed('nonexistent_tool')).toBe(false);
   });
 
   it('should respect env var override for allowed tool', () => {
-    setAgentType(IDEATION_TEAM_LEAD);
+    setAgentType(ORCHESTRATOR_IDEATION);
     process.env.RALPHX_ALLOWED_MCP_TOOLS = 'get_session_plan';
 
     expect(isToolAllowed('get_session_plan')).toBe(true);
-    expect(isToolAllowed('request_team_plan')).toBe(false); // Not in env var
+    expect(isToolAllowed('create_team_artifact')).toBe(false); // Not in env var
   });
 
   it('should respect env var override for disallowed tool', () => {
-    setAgentType(IDEATION_TEAM_MEMBER);
-    process.env.RALPHX_ALLOWED_MCP_TOOLS = 'request_team_plan'; // Normally not allowed
+    setAgentType(IDEATION_SPECIALIST_BACKEND);
+    process.env.RALPHX_ALLOWED_MCP_TOOLS = 'delete_task_proposal'; // Normally not allowed
 
-    expect(isToolAllowed('request_team_plan')).toBe(true);
+    expect(isToolAllowed('delete_task_proposal')).toBe(true);
   });
 });
 
 describe('New team tool definitions', () => {
   const allTools = getAllTools();
-
-  describe('request_team_plan', () => {
-    const tool = allTools.find((t) => t.name === 'request_team_plan');
-
-    it('should exist in ALL_TOOLS', () => {
-      expect(tool).toBeDefined();
-    });
-
-    it('should have correct inputSchema with required fields', () => {
-      expect(tool?.inputSchema).toBeDefined();
-      expect(tool?.inputSchema.type).toBe('object');
-      expect(tool?.inputSchema.properties).toHaveProperty('process');
-      expect(tool?.inputSchema.properties).toHaveProperty('teammates');
-      expect(tool?.inputSchema.required).toContain('process');
-      expect(tool?.inputSchema.required).toContain('teammates');
-    });
-
-    it('should have teammates array with correct item schema', () => {
-      const teammates = tool?.inputSchema.properties?.teammates as any;
-      expect(teammates).toBeDefined();
-      expect(teammates.type).toBe('array');
-      expect(teammates.items).toBeDefined();
-      expect(teammates.items.type).toBe('object');
-      expect(teammates.items.properties).toHaveProperty('role');
-      expect(teammates.items.properties).toHaveProperty('tools');
-      expect(teammates.items.properties).toHaveProperty('mcp_tools');
-      expect(teammates.items.properties).toHaveProperty('model');
-      expect(teammates.items.properties).toHaveProperty('prompt_summary');
-    });
-  });
-
-  describe('request_teammate_spawn', () => {
-    const tool = allTools.find((t) => t.name === 'request_teammate_spawn');
-
-    it('should exist in ALL_TOOLS', () => {
-      expect(tool).toBeDefined();
-    });
-
-    it('should have correct inputSchema with required fields', () => {
-      expect(tool?.inputSchema).toBeDefined();
-      expect(tool?.inputSchema.type).toBe('object');
-      expect(tool?.inputSchema.properties).toHaveProperty('role');
-      expect(tool?.inputSchema.properties).toHaveProperty('prompt');
-      expect(tool?.inputSchema.properties).toHaveProperty('model');
-      expect(tool?.inputSchema.properties).toHaveProperty('tools');
-      expect(tool?.inputSchema.properties).toHaveProperty('mcp_tools');
-      expect(tool?.inputSchema.required).toContain('role');
-      expect(tool?.inputSchema.required).toContain('prompt');
-      expect(tool?.inputSchema.required).toContain('model');
-      expect(tool?.inputSchema.required).toContain('tools');
-      expect(tool?.inputSchema.required).toContain('mcp_tools');
-    });
-
-    it('should have model enum constraint', () => {
-      const model = tool?.inputSchema.properties?.model as any;
-      expect(model).toBeDefined();
-      expect(model.enum).toEqual(['haiku', 'sonnet', 'opus']);
-    });
-  });
 
   describe('create_team_artifact', () => {
     const tool = allTools.find((t) => t.name === 'create_team_artifact');
@@ -767,48 +758,16 @@ describe('New team tool definitions', () => {
       expect(artifactType.enum).toEqual(['TeamResearch', 'TeamAnalysis', 'TeamSummary']);
     });
 
-    it('should document parent-session targeting for verification flows', () => {
-      expect(tool?.description).toContain('PARENT ideation session_id');
-      expect(tool?.description).toContain('backend remaps it to the parent ideation session automatically');
-      expect(tool?.description).toContain('general team-artifact path');
+    it('should expose only the general team-artifact contract', () => {
+      expect(tool?.description).toContain('specialist findings');
+      expect(tool?.description).not.toContain('verification child');
+      expect(tool?.description).not.toContain('typed verification-finding');
       expect((tool?.inputSchema.properties?.session_id as any)?.description).toContain(
-        'auto-remapped to that parent'
+        'owns this team artifact'
       );
       expect((tool?.inputSchema as any).examples?.[0]).toMatchObject({
         session_id: 'parent-session-id',
         artifact_type: 'TeamResearch',
-      });
-    });
-  });
-
-  describe('publish_verification_finding', () => {
-    const tool = allTools.find((t) => t.name === 'publish_verification_finding');
-
-    it('should exist in ALL_TOOLS', () => {
-      expect(tool).toBeDefined();
-    });
-
-    it('should expose the typed verification payload', () => {
-      expect(tool?.inputSchema.type).toBe('object');
-      expect(tool?.inputSchema.properties).toHaveProperty('critic');
-      expect(tool?.inputSchema.properties).toHaveProperty('round');
-      expect(tool?.inputSchema.properties).toHaveProperty('status');
-      expect(tool?.inputSchema.properties).toHaveProperty('summary');
-      expect(tool?.inputSchema.properties).toHaveProperty('gaps');
-      expect(tool?.inputSchema.required).toEqual(
-        expect.arrayContaining(['critic', 'round', 'status', 'summary', 'gaps'])
-      );
-      expect(tool?.description).toContain('typed verification finding');
-      expect(tool?.description).toContain('delegated verification specialists/critics');
-      expect((tool?.inputSchema.properties?.session_id as any)?.description).toContain(
-        'Optional parent ideation session ID'
-      );
-      expect((tool?.inputSchema.properties?.session_id as any)?.description).toContain(
-        'including delegated verification specialists and critics'
-      );
-      expect((tool?.inputSchema as any).examples?.[0]).toMatchObject({
-        critic: 'completeness',
-        status: 'partial',
       });
     });
   });
@@ -827,10 +786,9 @@ describe('New team tool definitions', () => {
       expect(tool?.inputSchema.required).toContain('session_id');
     });
 
-    it('should document round-oriented verification lookup guidance', () => {
-      expect(tool?.description).toContain('PARENT ideation session_id');
-      expect(tool?.description).toContain('backend remaps it to the parent ideation session automatically');
+    it('should document the general raw artifact lookup', () => {
       expect(tool?.description).toContain('raw artifact listing surface');
+      expect(tool?.description).not.toContain('verification child');
       expect((tool?.inputSchema as any).examples?.[0]).toMatchObject({
         session_id: 'parent-session-id',
       });
@@ -844,130 +802,33 @@ describe('New team tool definitions', () => {
     });
   });
 
-  describe('report_verification_round', () => {
-    const tool = PLAN_TOOLS.find((t) => t.name === 'report_verification_round');
-
-    it('should expose the verifier-friendly round helper with fixed semantics', () => {
-      expect(tool).toBeDefined();
-      expect(tool?.description).toContain('Verifier-friendly helper');
-      expect(tool?.description).toContain('Do not pass session_id');
-      expect(tool?.description).toContain('response is authoritative for next-step control flow');
-      expect(tool?.description).toContain('actionable plan feedback');
-      expect(tool?.description).not.toContain('update_plan_verification');
-      expect((tool?.inputSchema as any).examples?.[0]).toMatchObject({
-        round: 1,
-        generation: 3,
-      });
-      expect((tool?.inputSchema.properties as any)).not.toHaveProperty('session_id');
-      expect(tool?.inputSchema.required).toEqual(['round', 'generation']);
-    });
-  });
-
   describe('get_plan_verification', () => {
-    const tool = PLAN_TOOLS.find((t) => t.name === 'get_plan_verification');
-
-    it('should derive the parent session automatically for verifier-owned reads', () => {
+    const tool = PLAN_TOOLS.find((candidate) => candidate.name === 'get_plan_verification');
+    it('exposes a simplified optional session status read', () => {
       expect(tool).toBeDefined();
-      expect(tool?.description).toContain('do not pass session_id');
-      expect((tool?.inputSchema.properties as any)).toEqual({});
-      expect((tool?.inputSchema as any).examples?.[0]).toEqual({});
       expect(tool?.inputSchema.required).toEqual([]);
+      expect(tool?.inputSchema.properties).toHaveProperty('session_id');
+      expect(tool?.description).toContain('exact-artifact proof');
     });
   });
-
   describe('complete_plan_verification', () => {
-    const tool = PLAN_TOOLS.find((t) => t.name === 'complete_plan_verification');
-
-    it('should expose the verifier-friendly terminal helper with fixed semantics', () => {
+    const tool = PLAN_TOOLS.find((candidate) => candidate.name === 'complete_plan_verification');
+    it('exposes a zero-argument proof operation', () => {
       expect(tool).toBeDefined();
-      expect(tool?.description).toContain('Verifier-friendly helper');
-      expect(tool?.description).toContain('Do not pass session_id');
-      expect(tool?.description).toContain('uses the backend-owned current round state');
-      expect(tool?.description).toContain('Do not call it immediately after an actionable needs_revision round report');
-      expect(tool?.description).not.toContain('update_plan_verification');
-      expect(tool?.description).toContain("skipped remains available only where skip is actually allowed by the backend");
-      expect((tool?.inputSchema as any).examples?.[0]).toMatchObject({
-        status: 'verified',
-        convergence_reason: 'zero_blocking',
-        round: 1,
-        generation: 3,
-      });
-      expect((tool?.inputSchema as any).examples?.[0]).not.toHaveProperty('gaps');
-      expect((tool?.inputSchema as any).examples?.[0]).not.toHaveProperty('required_delegates');
-      expect((tool?.inputSchema as any).examples?.[0]).not.toHaveProperty('created_after');
-      expect((tool?.inputSchema as any).examples).toHaveLength(1);
-      expect((tool?.inputSchema as any).properties.status.enum).not.toContain('reviewing');
-      expect((tool?.inputSchema.properties as any)).not.toHaveProperty('session_id');
-      expect((tool?.inputSchema.properties as any)).not.toHaveProperty('gaps');
-      expect((tool?.inputSchema.properties as any)).not.toHaveProperty('required_delegates');
-      expect((tool?.inputSchema.properties as any)).not.toHaveProperty('created_after');
-      expect((tool?.inputSchema.properties as any)).not.toHaveProperty('rescue_budget_exhausted');
-      expect((tool?.inputSchema.properties as any)).not.toHaveProperty('max_wait_ms');
-      expect((tool?.inputSchema.properties as any)).not.toHaveProperty('poll_interval_ms');
-      expect(tool?.inputSchema.required).toEqual(['status', 'generation']);
-    });
-  });
-
-  describe('run_verification_enrichment', () => {
-    const tool = PLAN_TOOLS.find((t) => t.name === 'run_verification_enrichment');
-
-    it('should expose the backend-owned enrichment helper', () => {
-      expect(tool).toBeDefined();
-      expect(tool?.description).toContain('one-time verification enrichment helper');
-      expect(tool?.description).toContain('do not pass session_id');
-      expect(tool?.description).toContain('verifier chooses which enrichment specialists to run');
-      expect((tool?.inputSchema as any).examples?.[0]).toMatchObject({
-        selected_specialists: ['intent', 'code-quality'],
-      });
-      expect((tool?.inputSchema.properties as any)).not.toHaveProperty('session_id');
-      expect((tool?.inputSchema.properties as any)).toHaveProperty('selected_specialists');
-      expect((tool?.inputSchema.properties as any)).not.toHaveProperty('disabled_specialists');
-      expect((tool?.inputSchema as any).examples?.[0]).not.toHaveProperty('max_wait_ms');
-      expect((tool?.inputSchema as any).examples?.[0]).not.toHaveProperty('poll_interval_ms');
-      expect((tool?.inputSchema.properties as any)).not.toHaveProperty('max_wait_ms');
-      expect((tool?.inputSchema.properties as any)).not.toHaveProperty('poll_interval_ms');
-      expect((tool?.inputSchema.properties as any)).not.toHaveProperty('include_full_content');
-      expect((tool?.inputSchema.properties as any)).not.toHaveProperty('include_messages');
+      expect(tool?.inputSchema.properties).toEqual({});
       expect(tool?.inputSchema.required).toEqual([]);
+      expect(tool?.description).toContain('backend derives the run, conversation, planning session, and current artifact');
     });
   });
-
-  describe('run_verification_round', () => {
-    const tool = PLAN_TOOLS.find((t) => t.name === 'run_verification_round');
-
-    it('should expose the backend-owned round driver', () => {
-      expect(tool).toBeDefined();
-      expect(tool?.description).toContain('verification round driver');
-      expect(tool?.description).toContain('do not pass session_id');
-      expect(tool?.description).toContain('structured required critic findings');
-      expect(tool?.description).toContain('verifier chooses which optional specialists to run');
-      expect((tool?.inputSchema as any).examples?.[0]).toMatchObject({
-        round: 2,
-        selected_specialists: ['ux', 'pipeline-safety'],
-      });
-      expect((tool?.inputSchema.properties as any)).not.toHaveProperty('session_id');
-      expect((tool?.inputSchema.properties as any)).toHaveProperty('selected_specialists');
-      expect((tool?.inputSchema.properties as any)).not.toHaveProperty('disabled_specialists');
-      expect((tool?.inputSchema as any).examples?.[0]).not.toHaveProperty('max_wait_ms');
-      expect((tool?.inputSchema as any).examples?.[0]).not.toHaveProperty('optional_wait_ms');
-      expect((tool?.inputSchema.properties as any)).not.toHaveProperty('max_wait_ms');
-      expect((tool?.inputSchema.properties as any)).not.toHaveProperty('optional_wait_ms');
-      expect((tool?.inputSchema.properties as any)).not.toHaveProperty('poll_interval_ms');
-      expect((tool?.inputSchema.properties as any)).not.toHaveProperty('include_full_content');
-      expect((tool?.inputSchema.properties as any)).not.toHaveProperty('include_messages');
-      expect(tool?.inputSchema.required).toEqual(['round']);
-    });
-  });
-
   describe('get_child_session_status', () => {
     const tool = allTools.find((t) => t.name === 'get_child_session_status');
 
-    it('should document verifier debugging guidance and example payload', () => {
+    it('should document child debugging guidance and example payload', () => {
       expect(tool).toBeDefined();
       expect(tool?.description).toContain('include_recent_messages=true');
       expect(tool?.description).toContain('last assistant/tool outputs');
       expect((tool?.inputSchema as any).examples?.[0]).toMatchObject({
-        session_id: 'verification-child-session-id',
+        session_id: 'child-session-id',
         include_recent_messages: true,
         message_limit: 10,
       });
@@ -977,83 +838,33 @@ describe('New team tool definitions', () => {
   describe('send_ideation_session_message', () => {
     const tool = allTools.find((t) => t.name === 'send_ideation_session_message');
 
-    it('should document full-context verifier nudges and example payload', () => {
+    it('should document full-context nudges without retired verifier protocol', () => {
       expect(tool).toBeDefined();
-      expect(tool?.description).toContain('repeat the full invariant context');
-      expect(tool?.description).toContain('SESSION_ID, ROUND, expected critic/schema');
+      expect(tool?.description).toContain('full task context');
+      expect(tool?.description).not.toContain('verification child');
       expect((tool?.inputSchema as any).examples?.[0]).toMatchObject({
-        session_id: 'verification-child-session-id',
+        session_id: 'child-session-id',
       });
-      expect(((tool?.inputSchema as any).examples?.[0]?.message as string)).toContain('SESSION_ID');
-      expect(((tool?.inputSchema as any).examples?.[0]?.message as string)).toContain('ROUND: 2');
-      expect(((tool?.inputSchema as any).examples?.[0]?.message as string)).toContain('publish_verification_finding');
+      expect(((tool?.inputSchema as any).examples?.[0]?.message as string)).toContain('team artifact');
+      expect(((tool?.inputSchema as any).examples?.[0]?.message as string)).not.toContain('publish_verification_finding');
     });
   });
 
-  describe('get_team_session_state', () => {
-    const tool = allTools.find((t) => t.name === 'get_team_session_state');
-
-    it('should exist in ALL_TOOLS', () => {
-      expect(tool).toBeDefined();
-    });
-
-    it('should have correct inputSchema with required fields', () => {
-      expect(tool?.inputSchema).toBeDefined();
-      expect(tool?.inputSchema.type).toBe('object');
-      expect(tool?.inputSchema.properties).toHaveProperty('session_id');
-      expect(tool?.inputSchema.required).toContain('session_id');
-    });
-  });
-
-  describe('save_team_session_state', () => {
-    const tool = allTools.find((t) => t.name === 'save_team_session_state');
-
-    it('should exist in ALL_TOOLS', () => {
-      expect(tool).toBeDefined();
-    });
-
-    it('should have correct inputSchema with required fields', () => {
-      expect(tool?.inputSchema).toBeDefined();
-      expect(tool?.inputSchema.type).toBe('object');
-      expect(tool?.inputSchema.properties).toHaveProperty('session_id');
-      expect(tool?.inputSchema.properties).toHaveProperty('team_composition');
-      expect(tool?.inputSchema.properties).toHaveProperty('phase');
-      expect(tool?.inputSchema.required).toContain('session_id');
-      expect(tool?.inputSchema.required).toContain('team_composition');
-      expect(tool?.inputSchema.required).toContain('phase');
-    });
-
-    it('should have team_composition array with correct item schema', () => {
-      const teamComp = tool?.inputSchema.properties?.team_composition as any;
-      expect(teamComp).toBeDefined();
-      expect(teamComp.type).toBe('array');
-      expect(teamComp.items).toBeDefined();
-      expect(teamComp.items.type).toBe('object');
-      expect(teamComp.items.properties).toHaveProperty('name');
-      expect(teamComp.items.properties).toHaveProperty('role');
-      expect(teamComp.items.properties).toHaveProperty('prompt');
-      expect(teamComp.items.properties).toHaveProperty('model');
-      expect(teamComp.items.required).toContain('name');
-      expect(teamComp.items.required).toContain('role');
-      expect(teamComp.items.required).toContain('prompt');
-      expect(teamComp.items.required).toContain('model');
-    });
-  });
 });
 
-describe('Tool allowlist for new agent types', () => {
-  it('ralphx-ideation-team-lead should have all team coordination tools', () => {
-    const allowlist = toolsByAgent()[IDEATION_TEAM_LEAD];
-    expect(allowlist).toContain('request_team_plan');
-    expect(allowlist).toContain('request_teammate_spawn');
-    expect(allowlist).toContain('create_team_artifact');
-    expect(allowlist).toContain('get_team_artifacts');
-    expect(allowlist).toContain('get_team_session_state');
-    expect(allowlist).toContain('save_team_session_state');
+describe('Team artifact tool allowlists', () => {
+  it('ralphx-ideation delegates artifact creation without legacy team coordination tools', () => {
+    const allowlist = toolsByAgent()[ORCHESTRATOR_IDEATION];
+    expect(allowlist).not.toContain('create_team_artifact');
+    expect(allowlist).not.toContain('get_team_artifacts');
+    expect(allowlist).not.toContain('request_team_plan');
+    expect(allowlist).not.toContain('request_teammate_spawn');
+    expect(allowlist).not.toContain('get_team_session_state');
+    expect(allowlist).not.toContain('save_team_session_state');
   });
 
-  it('ideation-team-member should have limited team tools', () => {
-    const allowlist = toolsByAgent()[IDEATION_TEAM_MEMBER];
+  it('ideation specialists should have limited artifact tools', () => {
+    const allowlist = toolsByAgent()[IDEATION_SPECIALIST_BACKEND];
     // Should have artifact tools
     expect(allowlist).toContain('create_team_artifact');
     expect(allowlist).toContain('get_team_artifacts');
@@ -1064,11 +875,10 @@ describe('Tool allowlist for new agent types', () => {
     expect(allowlist).not.toContain('save_team_session_state');
   });
 
-  it('worker-team-member should have artifact tools', () => {
-    const allowlist = toolsByAgent()[WORKER_TEAM_MEMBER];
-    // Should have artifact tools (document decisions)
-    expect(allowlist).toContain('create_team_artifact');
-    expect(allowlist).toContain('get_team_artifacts');
+  it('worker should not inherit specialist artifact tools', () => {
+    const allowlist = toolsByAgent()[WORKER];
+    expect(allowlist).not.toContain('create_team_artifact');
+    expect(allowlist).not.toContain('get_team_artifacts');
 
     // Should NOT have lead-only tools
     expect(allowlist).not.toContain('request_team_plan');
@@ -1180,11 +990,11 @@ describe('getAllowedToolNames - CLI arg priority chain', () => {
   });
 
   it('--allowed-tools takes priority over legacy fallback resolution', () => {
-    setAgentType(IDEATION_TEAM_LEAD);
+    setAgentType(ORCHESTRATOR_IDEATION);
     process.argv = [...process.argv, '--allowed-tools=get_session_plan'];
     const tools = getAllowedToolNames();
     expect(tools).toEqual(['get_session_plan']);
-    expect(tools).not.toEqual(toolsByAgent()[IDEATION_TEAM_LEAD]);
+    expect(tools).not.toEqual(toolsByAgent()[ORCHESTRATOR_IDEATION]);
   });
 
   it('legacy TOOL_ALLOWLIST fallback emits deprecation warning when canonical metadata is absent', () => {
@@ -1214,12 +1024,51 @@ describe('getAllowedToolNames - CLI arg priority chain', () => {
     expect(tools).toContain('fs_glob');
     expect(tools).toContain('get_artifact');
     expect(tools).toContain('get_workspace_review_context');
+    expect(tools).toContain('list_workspace_review_files');
+    expect(tools).toContain('get_workspace_review_diff_page');
     expect(tools).toContain('write_workspace_review_artifact');
     expect(tools).toContain('write_workspace_review_hunk_annotations');
     expect(tools).toContain('complete_workspace_review_run');
     expect(tools).not.toContain('get_agent_task');
     expect(tools).not.toContain('list_agent_tasks');
     expect(tools).not.toContain('search_memories');
+  });
+
+  it('automation setup allowlist mirrors canonical session-bound automation tools', () => {
+    const tools = toolsByAgent()[AUTOMATION_SETUP];
+
+    expect(tools).toEqual(loadCanonicalMcpTools(AUTOMATION_SETUP));
+    expect(tools).toEqual([
+      'fs_read_file',
+      'fs_list_dir',
+      'fs_grep',
+      'fs_glob',
+      'list_projects',
+      'ask_user_question',
+      'get_artifact',
+      'get_automation',
+      'update_automation',
+      'verify_automation_decomposition',
+      'finalize_automation',
+      'run_automation_now',
+      'pause_automation',
+      'resume_automation',
+      'cancel_automation_run',
+      'cancel_automation',
+      'restart_automation',
+      'retry_automation_judge',
+      'retry_automation_plan_judge',
+      'skip_automation_judge',
+      'get_automation_publish_status',
+      'check_automation_publish_readiness',
+      'update_automation_from_base',
+      'publish_automation_workspace',
+    ]);
+
+    setAgentType(AUTOMATION_SETUP);
+    const filteredToolNames = getFilteredTools().map((tool) => tool.name);
+    expect(filteredToolNames).toHaveLength(tools.length);
+    expect(filteredToolNames).toEqual(expect.arrayContaining(tools));
   });
 });
 
@@ -1246,10 +1095,6 @@ describe('delete_task_proposal tool', () => {
     expect(toolsByAgent()[ORCHESTRATOR_IDEATION]).toContain('delete_task_proposal');
   });
 
-  it('should be in TOOL_ALLOWLIST for ralphx-ideation-team-lead', () => {
-    expect(toolsByAgent()[IDEATION_TEAM_LEAD]).toContain('delete_task_proposal');
-  });
-
   it('should NOT be in TOOL_ALLOWLIST for ralphx-ideation-readonly', () => {
     expect(toolsByAgent()[ORCHESTRATOR_IDEATION_READONLY]).not.toContain('delete_task_proposal');
   });
@@ -1260,58 +1105,8 @@ describe('delete_task_proposal tool', () => {
     expect(toolNames).toContain('delete_task_proposal');
   });
 
-  it('should be returned by getFilteredTools for ralphx-ideation-team-lead', () => {
-    setAgentType(IDEATION_TEAM_LEAD);
-    const toolNames = getFilteredTools().map((t) => t.name);
-    expect(toolNames).toContain('delete_task_proposal');
-  });
 });
 
-// ===========================================================================
-// revert_and_skip MCP tool — tool definition, allowlist, and dispatch coverage
-// ===========================================================================
-
-describe('revert_and_skip tool', () => {
-  const allTools = getAllTools();
-  const tool = allTools.find((t) => t.name === 'revert_and_skip');
-
-  it('should exist in ALL_TOOLS', () => {
-    expect(tool).toBeDefined();
-  });
-
-  it('should have correct inputSchema with required fields', () => {
-    expect(tool?.inputSchema).toBeDefined();
-    expect(tool?.inputSchema.type).toBe('object');
-    expect(tool?.inputSchema.properties).toHaveProperty('session_id');
-    expect(tool?.inputSchema.properties).toHaveProperty('plan_version_to_restore');
-    expect(tool?.inputSchema.required).toContain('session_id');
-    expect(tool?.inputSchema.required).toContain('plan_version_to_restore');
-  });
-
-  it('should be in TOOL_ALLOWLIST for ralphx-ideation', () => {
-    expect(toolsByAgent()[ORCHESTRATOR_IDEATION]).toContain('revert_and_skip');
-  });
-
-  it('should be in TOOL_ALLOWLIST for ralphx-ideation-team-lead', () => {
-    expect(toolsByAgent()[IDEATION_TEAM_LEAD]).toContain('revert_and_skip');
-  });
-
-  it('should NOT be in TOOL_ALLOWLIST for ralphx-ideation-readonly', () => {
-    expect(toolsByAgent()[ORCHESTRATOR_IDEATION_READONLY]).not.toContain('revert_and_skip');
-  });
-
-  it('should be returned by getFilteredTools for ralphx-ideation', () => {
-    setAgentType(ORCHESTRATOR_IDEATION);
-    const toolNames = getFilteredTools().map((t) => t.name);
-    expect(toolNames).toContain('revert_and_skip');
-  });
-
-  it('should be returned by getFilteredTools for ralphx-ideation-team-lead', () => {
-    setAgentType(IDEATION_TEAM_LEAD);
-    const toolNames = getFilteredTools().map((t) => t.name);
-    expect(toolNames).toContain('revert_and_skip');
-  });
-});
 
 // ===========================================================================
 // get_acceptance_status + get_pending_confirmations tool definitions + allowlist
@@ -1338,10 +1133,6 @@ describe('acceptance gate tools', () => {
       expect(toolsByAgent()[ORCHESTRATOR_IDEATION]).toContain('get_acceptance_status');
     });
 
-    it('should be in TOOL_ALLOWLIST for ralphx-ideation-team-lead', () => {
-      expect(toolsByAgent()[IDEATION_TEAM_LEAD]).toContain('get_acceptance_status');
-    });
-
     it('should NOT be in TOOL_ALLOWLIST for ralphx-ideation-readonly', () => {
       expect(toolsByAgent()[ORCHESTRATOR_IDEATION_READONLY]).not.toContain('get_acceptance_status');
     });
@@ -1352,11 +1143,6 @@ describe('acceptance gate tools', () => {
       expect(toolNames).toContain('get_acceptance_status');
     });
 
-    it('should be returned by getFilteredTools for ralphx-ideation-team-lead', () => {
-      setAgentType(IDEATION_TEAM_LEAD);
-      const toolNames = getFilteredTools().map((t) => t.name);
-      expect(toolNames).toContain('get_acceptance_status');
-    });
   });
 
   describe('get_pending_confirmations', () => {
@@ -1376,10 +1162,6 @@ describe('acceptance gate tools', () => {
       expect(toolsByAgent()[ORCHESTRATOR_IDEATION]).toContain('get_pending_confirmations');
     });
 
-    it('should be in TOOL_ALLOWLIST for ralphx-ideation-team-lead', () => {
-      expect(toolsByAgent()[IDEATION_TEAM_LEAD]).toContain('get_pending_confirmations');
-    });
-
     it('should NOT be in TOOL_ALLOWLIST for ralphx-ideation-readonly', () => {
       expect(toolsByAgent()[ORCHESTRATOR_IDEATION_READONLY]).not.toContain('get_pending_confirmations');
     });
@@ -1390,11 +1172,6 @@ describe('acceptance gate tools', () => {
       expect(toolNames).toContain('get_pending_confirmations');
     });
 
-    it('should be returned by getFilteredTools for ralphx-ideation-team-lead', () => {
-      setAgentType(IDEATION_TEAM_LEAD);
-      const toolNames = getFilteredTools().map((t) => t.name);
-      expect(toolNames).toContain('get_pending_confirmations');
-    });
   });
 });
 
@@ -1406,22 +1183,54 @@ describe('agent workspace repair tool', () => {
     expect(tool).toBeDefined();
   });
 
-  it('should require repair verification fields', () => {
+  it('should accept a completion summary, optional blocker, and classified resolution', () => {
     expect(tool?.inputSchema.type).toBe('object');
-    expect(tool?.inputSchema.properties).toHaveProperty('conversation_id');
-    expect(tool?.inputSchema.properties).toHaveProperty('repair_commit_sha');
-    expect(tool?.inputSchema.properties).toHaveProperty('resolved_base_ref');
-    expect(tool?.inputSchema.properties).toHaveProperty('resolved_base_commit');
     expect(tool?.inputSchema.properties).toHaveProperty('summary');
-    expect(tool?.inputSchema.required).toEqual(
-      expect.arrayContaining([
-        'conversation_id',
-        'repair_commit_sha',
-        'resolved_base_ref',
-        'resolved_base_commit',
-        'summary',
-      ])
-    );
+    expect(tool?.inputSchema.properties).toHaveProperty('blocker');
+    expect(tool?.inputSchema.properties).toHaveProperty('resolution');
+    expect(tool?.inputSchema.properties).toHaveProperty('fix_commit_sha');
+    expect(tool?.inputSchema.properties).not.toHaveProperty('conversation_id');
+    expect(tool?.inputSchema.properties).not.toHaveProperty('repair_commit_sha');
+    expect(tool?.inputSchema.properties).not.toHaveProperty('resolved_base_ref');
+    expect(tool?.inputSchema.properties).not.toHaveProperty('resolved_base_commit');
+    expect(tool?.inputSchema.required).toEqual(['summary']);
+    expect(tool?.inputSchema.additionalProperties).toBe(false);
+  });
+
+  it('matches the PR fix resolution enum and validates the reported fix commit SHA', () => {
+    const prFixTool = allTools.find((t) => t.name === 'complete_agent_workspace_pr_fix');
+    const repairProperties = tool?.inputSchema.properties as
+      | Record<string, { enum?: string[]; pattern?: string }>
+      | undefined;
+    const prFixProperties = prFixTool?.inputSchema.properties as
+      | Record<string, { enum?: string[]; pattern?: string }>
+      | undefined;
+
+    expect(repairProperties?.resolution?.enum).toEqual(prFixProperties?.resolution?.enum);
+    expect(repairProperties?.fix_commit_sha).toMatchObject({
+      pattern: '^[0-9a-f]{40}$',
+    });
+  });
+
+  it('accepts valid repair completion objects and rejects model-supplied identity or SHA extras', () => {
+    const validate = new AjvValidator().compile(tool!.inputSchema);
+
+    expect(validate({
+      summary: 'Resolved conflicts',
+      blocker: 'Needs input',
+      resolution: 'fixed',
+      fix_commit_sha: 'a'.repeat(40),
+    })).toBe(true);
+    expect(validate({ summary: 'Resolved conflicts', fix_commit_sha: 'not-a-sha' })).toBe(false);
+    for (const [property, value] of Object.entries({
+      conversation_id: 'conversation-from-model',
+      agent_run_id: 'run-from-model',
+      attempt_id: 'attempt-from-model',
+      repair_commit_sha: 'a'.repeat(40),
+      resolved_base_commit: 'b'.repeat(40),
+    })) {
+      expect(validate({ summary: 'Resolved conflicts', [property]: value })).toBe(false);
+    }
   });
 
   it('repair agent allowlist includes review artifact fetch and completion tools', () => {
@@ -1457,11 +1266,22 @@ describe('agent workspace publish tools', () => {
 
   it('exposes publish tools to the general worker only through canonical metadata', () => {
     setAgentType(GENERAL_WORKER);
+    process.env.RALPHX_COORDINATION_MODE = 'rx_native_workflow';
 
-    const toolNames = getFilteredTools().map((tool) => tool.name);
-    expect(new Set(toolNames)).toEqual(new Set(loadCanonicalMcpTools(GENERAL_WORKER)));
-    for (const toolName of publishTools) {
-      expect(toolNames).toContain(toolName);
+    try {
+      const toolNames = getFilteredTools().map((tool) => tool.name);
+      expect(new Set(toolNames)).toEqual(
+        new Set(
+          (loadCanonicalMcpTools(GENERAL_WORKER) ?? []).filter(
+            (tool) => tool !== 'team_send_message' && tool !== 'team_roster'
+          )
+        )
+      );
+      for (const toolName of publishTools) {
+        expect(toolNames).toContain(toolName);
+      }
+    } finally {
+      delete process.env.RALPHX_COORDINATION_MODE;
     }
   });
 
@@ -1494,6 +1314,17 @@ describe('agent workspace PR fix tools', () => {
     expect(tool?.inputSchema.properties).toHaveProperty('conversation_id');
     expect(tool?.inputSchema.properties).toHaveProperty('summary');
     expect(tool?.inputSchema.properties).toHaveProperty('blocker');
+    expect(tool?.inputSchema.properties).toHaveProperty('fix_commit_sha');
+    expect(tool?.inputSchema.properties).not.toHaveProperty('created_by_run_id');
+    expect(tool?.inputSchema.properties).not.toHaveProperty('agent_run_id');
+    expect(tool?.inputSchema.properties).not.toHaveProperty('run_id');
+    expect(tool?.inputSchema.properties).not.toHaveProperty('orchestration_id');
+    expect(tool?.inputSchema.properties).toMatchObject({
+      fix_commit_sha: {
+        description: expect.stringContaining('Required for a fixed completion'),
+        pattern: '^[0-9a-f]{40}$',
+      },
+    });
     expect(tool?.inputSchema.required).toEqual(
       expect.arrayContaining(['conversation_id', 'summary'])
     );
@@ -1518,14 +1349,25 @@ describe('agent workspace PR description tool', () => {
     expect(tool).toBeDefined();
   });
 
-  it('should require conversation and body fields', () => {
+  it('should require conversation and decision fields', () => {
     expect(tool?.inputSchema.type).toBe('object');
     expect(tool?.inputSchema.properties).toHaveProperty('conversation_id');
     expect(tool?.inputSchema.properties).toHaveProperty('title');
     expect(tool?.inputSchema.properties).toHaveProperty('body_markdown');
+    expect(tool?.inputSchema.properties).toHaveProperty('decision');
     expect(tool?.inputSchema.required).toEqual(
-      expect.arrayContaining(['conversation_id', 'body_markdown'])
+      expect.arrayContaining(['conversation_id', 'decision'])
     );
+  });
+
+  it('limits existing PR body patches to the supplied editable region', () => {
+    const bodyDescription = inputSchemaProperties(
+      'submit_agent_workspace_pr_description'
+    ).body_markdown?.description;
+
+    expect(bodyDescription).toContain('patch_allowed=true');
+    expect(bodyDescription).toContain('RalphX-managed Plan/signature');
+    expect(bodyDescription).toContain('trailing integration block');
   });
 
   it('routes PR description submissions to the agent workspace endpoint', async () => {
@@ -1534,6 +1376,7 @@ describe('agent workspace PR description tool', () => {
     await expect(
       callSubmitAgentWorkspacePrDescriptionTool(callTauri, {
         conversation_id: 'conversation-1',
+        decision: 'patch',
         title: 'Generated title',
         body_markdown: '## Summary\n\nGenerated body',
       })
@@ -1542,6 +1385,7 @@ describe('agent workspace PR description tool', () => {
     expect(callTauri).toHaveBeenCalledWith('agent-workspaces/conversation-1/pr-description', {
       title: 'Generated title',
       body_markdown: '## Summary\n\nGenerated body',
+      decision: 'patch',
     });
   });
 });
@@ -1664,6 +1508,7 @@ describe('agent workspace publish tool transport', () => {
       base_ref_kind: 'local_branch',
       base_ref: 'feature/base',
       base_display_name: 'feature/base',
+      created_by_run_id: undefined,
     });
   });
 
@@ -1674,7 +1519,10 @@ describe('agent workspace publish tool transport', () => {
       callUpdateAgentWorkspaceFromBaseTool(
         callTauri,
         { base_ref_kind: 'project_default' },
-        { parentConversationId: 'conversation-from-runtime' }
+        {
+          parentConversationId: 'conversation-from-runtime',
+          agentRunId: 'run-from-runtime',
+        }
       )
     ).resolves.toEqual({ success: true });
 
@@ -1684,6 +1532,7 @@ describe('agent workspace publish tool transport', () => {
         base_ref_kind: 'project_default',
         base_ref: undefined,
         base_display_name: undefined,
+        created_by_run_id: 'run-from-runtime',
       }
     );
   });
@@ -1762,13 +1611,149 @@ describe('agent workspace publish tool transport', () => {
       callGetWorkspaceReviewContextTool(
         callTauriGet,
         {},
-        { parentConversationId: 'conversation-from-runtime' }
+        {
+          parentConversationId: 'conversation-from-runtime',
+          conversationId: 'review-conversation-from-runtime',
+          agentRunId: 'run-from-runtime',
+        }
       )
     ).resolves.toEqual({ success: true });
 
     expect(callTauriGet).toHaveBeenCalledWith(
-      'agent-workspaces/conversation-from-runtime/workspace-review-context?include_review_packet=true'
+      'agent-workspaces/conversation-from-runtime/workspace-review-context?include_review_packet=true',
+      {
+        headers: {
+          'x-ralphx-agent-run-id': 'run-from-runtime',
+          'x-ralphx-conversation-id': 'review-conversation-from-runtime',
+        },
+      }
     );
+  });
+
+  it('routes encoded workspace Review file and diff pages with runtime identity', async () => {
+    const callTauriGet = vi.fn().mockResolvedValue({ success: true });
+    const runtimeContext = {
+      parentConversationId: 'conversation-from-runtime',
+      conversationId: 'review-conversation-from-runtime',
+      agentRunId: 'run-from-runtime',
+    };
+
+    await callListWorkspaceReviewFilesTool(
+      callTauriGet,
+      { cursor: 'cursor/with+symbols=', limit: 75 },
+      runtimeContext
+    );
+    await callGetWorkspaceReviewDiffPageTool(
+      callTauriGet,
+      { path: 'src/file with spaces.rs', source: 'unstaged', limit: 120 },
+      runtimeContext
+    );
+
+    const options = {
+      headers: {
+        'x-ralphx-agent-run-id': 'run-from-runtime',
+        'x-ralphx-conversation-id': 'review-conversation-from-runtime',
+      },
+    };
+    expect(callTauriGet).toHaveBeenNthCalledWith(
+      1,
+      'agent-workspaces/conversation-from-runtime/workspace-review-files?cursor=cursor%2Fwith%2Bsymbols%3D&limit=75',
+      options
+    );
+    expect(callTauriGet).toHaveBeenNthCalledWith(
+      2,
+      'agent-workspaces/conversation-from-runtime/workspace-review-diff-page?path=src%2Ffile+with+spaces.rs&source=unstaged&limit=120',
+      options
+    );
+  });
+
+  it('ignores undeclared caller workspace identity for Review paging tools', async () => {
+    const callTauriGet = vi.fn().mockResolvedValue({ success: true });
+    const runtimeContext = {
+      parentConversationId: 'conversation-from-runtime',
+      conversationId: 'review-conversation-from-runtime',
+      agentRunId: 'run-from-runtime',
+    };
+
+    await callListWorkspaceReviewFilesTool(
+      callTauriGet,
+      { conversation_id: 'caller-controlled-conversation' },
+      runtimeContext
+    );
+    await callGetWorkspaceReviewDiffPageTool(
+      callTauriGet,
+      {
+        conversation_id: 'caller-controlled-conversation',
+        path: 'src/lib.rs',
+        source: 'unstaged',
+      },
+      runtimeContext
+    );
+
+    expect(callTauriGet).toHaveBeenNthCalledWith(
+      1,
+      'agent-workspaces/conversation-from-runtime/workspace-review-files',
+      expect.anything()
+    );
+    expect(callTauriGet).toHaveBeenNthCalledWith(
+      2,
+      'agent-workspaces/conversation-from-runtime/workspace-review-diff-page?path=src%2Flib.rs&source=unstaged',
+      expect.anything()
+    );
+  });
+
+  it('keeps workspace Review paging identity and target fields off model schemas', () => {
+    for (const toolName of [
+      'list_workspace_review_files',
+      'get_workspace_review_diff_page',
+    ]) {
+      const tool = AGENT_WORKSPACE_TOOLS.find((candidate) => candidate.name === toolName);
+      expect(tool, toolName).toBeDefined();
+      const properties = (tool?.inputSchema.properties ?? {}) as Record<string, unknown>;
+      for (const forbidden of [
+        'conversation_id',
+        'run_id',
+        'target_scope',
+        'head_sha',
+        'diff_fingerprint',
+        'base_ref',
+        'head_ref',
+      ]) {
+        expect(properties).not.toHaveProperty(forbidden);
+      }
+    }
+
+    const diffTool = AGENT_WORKSPACE_TOOLS.find(
+      (candidate) => candidate.name === 'get_workspace_review_diff_page'
+    );
+    expect(diffTool?.inputSchema).not.toHaveProperty('oneOf');
+  });
+
+  it('rejects mixed or incomplete workspace Review diff page selections', async () => {
+    const callTauriGet = vi.fn();
+    const runtimeContext = { parentConversationId: 'conversation-from-runtime' };
+    await expect(
+      callGetWorkspaceReviewDiffPageTool(
+        callTauriGet,
+        { cursor: 'cursor', path: 'src/lib.rs', source: 'unstaged' },
+        runtimeContext
+      )
+    ).rejects.toThrow('either path and source');
+    await expect(
+      callGetWorkspaceReviewDiffPageTool(
+        callTauriGet,
+        { path: 'src/lib.rs' },
+        runtimeContext
+      )
+    ).rejects.toThrow('either path and source');
+    await expect(
+      callGetWorkspaceReviewDiffPageTool(
+        callTauriGet,
+        { cursor: 'cursor', path: 'src/lib.rs' },
+        runtimeContext
+      )
+    ).rejects.toThrow('either path and source');
+    expect(callTauriGet).not.toHaveBeenCalled();
   });
 
   it('routes workspace Review artifact writes to the runtime workspace conversation', async () => {
@@ -1779,12 +1764,16 @@ describe('agent workspace publish tool transport', () => {
         callTauri,
         {
           content: '## Summary\n\nLooks good.',
+          requested_changes_content: '## Result\n\nNo changes requested.',
           target_scope: 'workspace_delta',
           head_sha: 'abc123',
           diff_fingerprint: 'fingerprint-1',
-          created_by_run_id: 'run-1',
+          created_by_run_id: 'event-id-from-context',
         },
-        { parentConversationId: 'conversation-from-runtime' }
+        {
+          parentConversationId: 'conversation-from-runtime',
+          agentRunId: 'run-from-runtime',
+        }
       )
     ).resolves.toEqual({ success: true });
 
@@ -1793,10 +1782,12 @@ describe('agent workspace publish tool transport', () => {
       {
         title: undefined,
         content: '## Summary\n\nLooks good.',
+        requested_changes_title: undefined,
+        requested_changes_content: '## Result\n\nNo changes requested.',
         target_scope: 'workspace_delta',
         head_sha: 'abc123',
         diff_fingerprint: 'fingerprint-1',
-        created_by_run_id: 'run-1',
+        created_by_run_id: 'run-from-runtime',
       }
     );
   });
@@ -1825,10 +1816,13 @@ describe('agent workspace publish tool transport', () => {
           target_scope: 'workspace_delta',
           head_sha: 'abc123',
           diff_fingerprint: 'fingerprint-1',
-          created_by_run_id: 'run-1',
+          created_by_run_id: 'event-id-from-context',
           annotations,
         },
-        { parentConversationId: 'conversation-from-runtime' }
+        {
+          parentConversationId: 'conversation-from-runtime',
+          agentRunId: 'run-from-runtime',
+        }
       )
     ).resolves.toEqual({ success: true });
 
@@ -1838,7 +1832,7 @@ describe('agent workspace publish tool transport', () => {
         target_scope: 'workspace_delta',
         head_sha: 'abc123',
         diff_fingerprint: 'fingerprint-1',
-        created_by_run_id: 'run-1',
+        created_by_run_id: 'run-from-runtime',
         annotations,
       }
     );
@@ -1854,9 +1848,12 @@ describe('agent workspace publish tool transport', () => {
           outcome: 'passed',
           summary: 'Review completed',
           blocker: undefined,
-          created_by_run_id: 'run-1',
+          created_by_run_id: 'event-id-from-context',
         },
-        { parentConversationId: 'conversation-from-runtime' }
+        {
+          parentConversationId: 'conversation-from-runtime',
+          agentRunId: 'run-from-runtime',
+        }
       )
     ).resolves.toEqual({ success: true });
 
@@ -1866,8 +1863,40 @@ describe('agent workspace publish tool transport', () => {
         outcome: 'passed',
         summary: 'Review completed',
         blocker: undefined,
-        created_by_run_id: 'run-1',
+        created_by_run_id: 'run-from-runtime',
       }
+    );
+  });
+
+  it('does not expose workspace Review run bookkeeping in model-facing schemas', () => {
+    const workspaceReviewToolNames = [
+      'write_workspace_review_artifact',
+      'write_workspace_review_hunk_annotations',
+      'complete_workspace_review_run',
+    ];
+
+    for (const toolName of workspaceReviewToolNames) {
+      const tool = AGENT_WORKSPACE_TOOLS.find((candidate) => candidate.name === toolName);
+      expect(tool, toolName).toBeDefined();
+      const schema = tool?.inputSchema as {
+        properties?: Record<string, unknown>;
+        required?: string[];
+      };
+      expect(schema.properties ?? {}).not.toHaveProperty('created_by_run_id');
+      expect(schema.required ?? []).not.toContain('created_by_run_id');
+    }
+  });
+
+  it('requires Overview and Requested Changes in one workspace Review write', () => {
+    const tool = AGENT_WORKSPACE_TOOLS.find(
+      (candidate) => candidate.name === 'write_workspace_review_artifact'
+    );
+    const schema = tool?.inputSchema as {
+      required?: string[];
+    };
+
+    expect(schema.required).toEqual(
+      expect.arrayContaining(['content', 'requested_changes_content'])
     );
   });
 
@@ -1977,6 +2006,10 @@ describe('agent workspace publish tool transport', () => {
   it('dispatches Review PR tools through the generic agent workspace router', async () => {
     const callTauri = vi.fn().mockResolvedValue({ success: true });
     const callTauriGet = vi.fn().mockResolvedValue({ success: true });
+    const runtimeContext = {
+      parentConversationId: 'conversation-from-runtime',
+      agentRunId: 'run-from-runtime',
+    };
 
     await expect(
       callAgentWorkspaceTool(
@@ -1984,7 +2017,7 @@ describe('agent workspace publish tool transport', () => {
         callTauri,
         callTauriGet,
         {},
-        { parentConversationId: 'conversation-from-runtime' }
+        runtimeContext
       )
     ).resolves.toEqual({ success: true });
     await expect(
@@ -1993,7 +2026,7 @@ describe('agent workspace publish tool transport', () => {
         callTauri,
         callTauriGet,
         { summary: 'Ready to submit' },
-        { parentConversationId: 'conversation-from-runtime' }
+        runtimeContext
       )
     ).resolves.toEqual({ success: true });
     await expect(
@@ -2002,7 +2035,7 @@ describe('agent workspace publish tool transport', () => {
         callTauri,
         callTauriGet,
         { outcome: 'approved' },
-        { parentConversationId: 'conversation-from-runtime' }
+        runtimeContext
       )
     ).resolves.toEqual({ success: true });
     await expect(
@@ -2011,7 +2044,7 @@ describe('agent workspace publish tool transport', () => {
         callTauri,
         callTauriGet,
         { content: '## Review' },
-        { parentConversationId: 'conversation-from-runtime' }
+        runtimeContext
       )
     ).resolves.toEqual({ success: true });
     await expect(
@@ -2020,7 +2053,7 @@ describe('agent workspace publish tool transport', () => {
         callTauri,
         callTauriGet,
         {},
-        { parentConversationId: 'conversation-from-runtime' }
+        runtimeContext
       )
     ).resolves.toEqual({ success: true });
     await expect(
@@ -2030,12 +2063,13 @@ describe('agent workspace publish tool transport', () => {
         callTauriGet,
         {
           content: '## Summary',
+          requested_changes_content: '## Result\n\nNo changes requested.',
           target_scope: 'selected_source',
           head_sha: 'head-sha',
           diff_fingerprint: 'fingerprint-1',
           created_by_run_id: 'run-1',
         },
-        { parentConversationId: 'conversation-from-runtime' }
+        runtimeContext
       )
     ).resolves.toEqual({ success: true });
     await expect(
@@ -2050,7 +2084,7 @@ describe('agent workspace publish tool transport', () => {
           created_by_run_id: 'run-1',
           annotations: [],
         },
-        { parentConversationId: 'conversation-from-runtime' }
+        runtimeContext
       )
     ).resolves.toEqual({ success: true });
     await expect(
@@ -2059,7 +2093,7 @@ describe('agent workspace publish tool transport', () => {
         callTauri,
         callTauriGet,
         { summary: 'Done', outcome: 'passed', created_by_run_id: 'run-1' },
-        { parentConversationId: 'conversation-from-runtime' }
+        runtimeContext
       )
     ).resolves.toEqual({ success: true });
 
@@ -2104,10 +2138,12 @@ describe('agent workspace publish tool transport', () => {
       {
         title: undefined,
         content: '## Summary',
+        requested_changes_title: undefined,
+        requested_changes_content: '## Result\n\nNo changes requested.',
         target_scope: 'selected_source',
         head_sha: 'head-sha',
         diff_fingerprint: 'fingerprint-1',
-        created_by_run_id: 'run-1',
+        created_by_run_id: 'run-from-runtime',
       }
     );
     expect(callTauri).toHaveBeenCalledWith(
@@ -2116,7 +2152,7 @@ describe('agent workspace publish tool transport', () => {
         target_scope: 'selected_source',
         head_sha: 'head-sha',
         diff_fingerprint: 'fingerprint-1',
-        created_by_run_id: 'run-1',
+        created_by_run_id: 'run-from-runtime',
         annotations: [],
       }
     );
@@ -2126,12 +2162,12 @@ describe('agent workspace publish tool transport', () => {
         outcome: 'passed',
         summary: 'Done',
         blocker: undefined,
-        created_by_run_id: 'run-1',
+        created_by_run_id: 'run-from-runtime',
       }
     );
   });
 
-  it('routes PR fix completion to the agent workspace endpoint', async () => {
+  it('routes a PR fix blocker without fabricating a commit SHA', async () => {
     const callTauri = vi.fn().mockResolvedValue({ success: true });
 
     await expect(
@@ -2145,6 +2181,70 @@ describe('agent workspace publish tool transport', () => {
     expect(callTauri).toHaveBeenCalledWith('agent-workspaces/conversation-1/complete-pr-fix', {
       summary: 'Fixed failing tests',
       blocker: 'Needs maintainer decision',
+      fix_commit_sha: undefined,
+    });
+  });
+
+  it('forwards the exact committed HEAD for successful PR fix completion', async () => {
+    const callTauri = vi.fn().mockResolvedValue({ success: true });
+    const fixCommitSha = 'c'.repeat(40);
+
+    await callCompleteAgentWorkspacePrFixTool(callTauri, {
+      conversation_id: 'conversation-1',
+      summary: 'Fixed failing tests',
+      fix_commit_sha: fixCommitSha,
+    });
+
+    expect(callTauri).toHaveBeenCalledWith('agent-workspaces/conversation-1/complete-pr-fix', {
+      summary: 'Fixed failing tests',
+      blocker: undefined,
+      fix_commit_sha: fixCommitSha,
+    });
+  });
+
+  it('injects the runtime run identity for PR fix completion and preserves supersession responses', async () => {
+    const superseded = {
+      success: false,
+      code: 'superseded',
+      message: 'A newer PR fix completion superseded this request.',
+    };
+    const callTauri = vi.fn().mockResolvedValue(superseded);
+
+    await expect(
+      callCompleteAgentWorkspacePrFixTool(
+        callTauri,
+        {
+          conversation_id: 'conversation-1',
+          summary: 'Fixed failing tests',
+          fix_commit_sha: 'c'.repeat(40),
+          created_by_run_id: 'caller-controlled-run-id',
+        },
+        { agentRunId: 'run-from-runtime' }
+      )
+    ).resolves.toBe(superseded);
+
+    expect(callTauri).toHaveBeenCalledWith('agent-workspaces/conversation-1/complete-pr-fix', {
+      summary: 'Fixed failing tests',
+      blocker: undefined,
+      fix_commit_sha: 'c'.repeat(40),
+      created_by_run_id: 'run-from-runtime',
+    });
+  });
+
+  it('omits the hidden PR fix run identity when runtime context has no agent run', async () => {
+    const callTauri = vi.fn().mockResolvedValue({ success: true });
+
+    await callCompleteAgentWorkspacePrFixTool(callTauri, {
+      conversation_id: 'conversation-1',
+      summary: 'Blocked on maintainer decision',
+      blocker: 'Needs maintainer decision',
+    });
+
+    expect(callTauri).toHaveBeenCalledWith('agent-workspaces/conversation-1/complete-pr-fix', {
+      summary: 'Blocked on maintainer decision',
+      blocker: 'Needs maintainer decision',
+      fix_commit_sha: undefined,
+      created_by_run_id: undefined,
     });
   });
 
@@ -2169,6 +2269,7 @@ describe('agent workspace publish tool transport', () => {
         base_ref_kind: 'local_branch',
         base_ref: 'feature/base',
         base_display_name: 'feature/base',
+        created_by_run_id: 'run-from-runtime',
       },
     ],
     ['publish_agent_workspace', 'post', 'agent-workspaces/conversation-1/publish', {}],
@@ -2208,10 +2309,12 @@ describe('agent workspace publish tool transport', () => {
       {
         title: 'Generated title',
         content: '## Summary\n\nGenerated body',
+        requested_changes_title: undefined,
+        requested_changes_content: '## Requested Changes\n\nGenerated blueprint',
         target_scope: 'workspace_delta',
         head_sha: 'head-sha',
         diff_fingerprint: 'fingerprint-1',
-        created_by_run_id: 'run-1',
+        created_by_run_id: 'run-from-runtime',
       },
     ],
     [
@@ -2222,7 +2325,7 @@ describe('agent workspace publish tool transport', () => {
         target_scope: 'workspace_delta',
         head_sha: 'head-sha',
         diff_fingerprint: 'fingerprint-1',
-        created_by_run_id: 'run-1',
+        created_by_run_id: 'run-from-runtime',
         annotations: undefined,
       },
     ],
@@ -2234,7 +2337,7 @@ describe('agent workspace publish tool transport', () => {
         outcome: 'passed',
         summary: 'Resolved conflicts',
         blocker: 'Needs maintainer decision',
-        created_by_run_id: 'run-1',
+        created_by_run_id: 'run-from-runtime',
       },
     ],
     [
@@ -2244,6 +2347,8 @@ describe('agent workspace publish tool transport', () => {
       {
         summary: 'Resolved conflicts',
         blocker: 'Needs maintainer decision',
+        fix_commit_sha: 'a'.repeat(40),
+        created_by_run_id: 'run-from-runtime',
       },
     ],
     [
@@ -2251,10 +2356,9 @@ describe('agent workspace publish tool transport', () => {
       'post',
       'agent-workspaces/conversation-1/complete-repair',
       {
-        repair_commit_sha: 'a'.repeat(40),
-        resolved_base_ref: 'main',
-        resolved_base_commit: 'b'.repeat(40),
         summary: 'Resolved conflicts',
+        blocker: 'Needs maintainer decision',
+        reported_fix_commit_sha: 'a'.repeat(40),
       },
     ],
     [
@@ -2282,9 +2386,11 @@ describe('agent workspace publish tool transport', () => {
         resolved_base_commit: 'b'.repeat(40),
         summary: 'Resolved conflicts',
         blocker: 'Needs maintainer decision',
+        fix_commit_sha: 'a'.repeat(40),
         title: 'Generated title',
         body_markdown: '## Summary\n\nGenerated body',
         content: '## Summary\n\nGenerated body',
+        requested_changes_content: '## Requested Changes\n\nGenerated blueprint',
         target_scope: 'workspace_delta',
         head_sha: 'head-sha',
         diff_fingerprint: 'fingerprint-1',
@@ -2292,8 +2398,17 @@ describe('agent workspace publish tool transport', () => {
         created_by_run_id: 'run-1',
       };
 
+      const runtimeContext =
+        toolName === 'complete_agent_workspace_repair'
+          ? {
+              agentRunId: 'run-from-runtime',
+              parentConversationId: 'conversation-1',
+              conversationId: 'conversation-1',
+            }
+          : { agentRunId: 'run-from-runtime' };
+
       await expect(
-        callAgentWorkspaceTool(toolName, callTauri, callTauriGet, args)
+        callAgentWorkspaceTool(toolName, callTauri, callTauriGet, args, runtimeContext)
       ).resolves.toEqual({ ok: method });
       expect(isAgentWorkspaceToolName(toolName)).toBe(true);
 
@@ -2301,7 +2416,24 @@ describe('agent workspace publish tool transport', () => {
         expect(callTauriGet).toHaveBeenCalledWith(expectedPath);
         expect(callTauri).not.toHaveBeenCalled();
       } else {
-        expect(callTauri).toHaveBeenCalledWith(expectedPath, expectedBody);
+        const expectedOptions =
+          toolName === 'complete_agent_workspace_repair'
+            ? {
+                headers: {
+                  'x-ralphx-agent-run-id': 'run-from-runtime',
+                  'x-ralphx-conversation-id': 'conversation-1',
+                },
+              }
+            : undefined;
+        if (expectedOptions) {
+          expect(callTauri).toHaveBeenCalledWith(
+            expectedPath,
+            expectedBody,
+            expectedOptions,
+          );
+        } else {
+          expect(callTauri).toHaveBeenCalledWith(expectedPath, expectedBody);
+        }
         expect(callTauriGet).not.toHaveBeenCalled();
       }
     }
@@ -2316,26 +2448,80 @@ describe('agent workspace publish tool transport', () => {
 });
 
 describe('agent workspace repair tool transport', () => {
-  it('routes repair completion to the agent workspace endpoint', async () => {
+  it('binds repair completion to trusted runtime identity', async () => {
     const callTauri = vi.fn().mockResolvedValue({ success: true });
 
     await expect(
       callCompleteAgentWorkspaceRepairTool(callTauri, {
-        conversation_id: 'conversation-1',
-        repair_commit_sha: 'a'.repeat(40),
-        resolved_base_ref: 'main',
-        resolved_base_commit: 'b'.repeat(40),
         summary: 'Resolved conflicts',
+        blocker: 'Needs maintainer decision',
+        resolution: 'pre_existing_on_base',
+        fix_commit_sha: 'a'.repeat(40),
+      }, {
+        agentRunId: 'run-1',
+        parentConversationId: 'conversation-1',
+        conversationId: 'conversation-1',
       })
     ).resolves.toEqual({ success: true });
 
     expect(callTauri).toHaveBeenCalledWith('agent-workspaces/conversation-1/complete-repair', {
-      repair_commit_sha: 'a'.repeat(40),
-      resolved_base_ref: 'main',
-      resolved_base_commit: 'b'.repeat(40),
       summary: 'Resolved conflicts',
+      blocker: 'Needs maintainer decision',
+      resolution: 'pre_existing_on_base',
+      reported_fix_commit_sha: 'a'.repeat(40),
+    }, {
+      headers: {
+        'x-ralphx-agent-run-id': 'run-1',
+        'x-ralphx-conversation-id': 'conversation-1',
+      },
     });
   });
+
+  it('rejects missing trusted runtime identity before making a request', async () => {
+    const callTauri = vi.fn().mockResolvedValue({ success: true });
+
+    await expect(
+      callCompleteAgentWorkspaceRepairTool(callTauri, { summary: 'Resolved conflicts' }, {})
+    ).rejects.toThrow('requires the current agent workspace conversation from runtime context');
+    expect(callTauri).not.toHaveBeenCalled();
+  });
+
+  it('preserves legacy null blocker transport compatibility', async () => {
+    const callTauri = vi.fn().mockResolvedValue({ success: true });
+
+    await expect(
+      callCompleteAgentWorkspaceRepairTool(
+        callTauri,
+        { summary: 'Resolved conflicts', blocker: null },
+        {
+          agentRunId: 'run-1',
+          parentConversationId: 'conversation-1',
+          conversationId: 'conversation-1',
+        },
+      ),
+    ).resolves.toEqual({ success: true });
+    expect(callTauri).toHaveBeenCalledWith(
+      'agent-workspaces/conversation-1/complete-repair',
+      { summary: 'Resolved conflicts', blocker: null },
+      expect.anything(),
+    );
+  });
+
+  it.each(['accepted', 'already_completed', 'superseded', 'blocked'])(
+    'passes through the %s completion status',
+    async (status) => {
+      const response = { success: true, status };
+      const callTauri = vi.fn().mockResolvedValue(response);
+
+      await expect(
+        callCompleteAgentWorkspaceRepairTool(callTauri, { summary: 'Resolved conflicts' }, {
+          agentRunId: 'run-1',
+          parentConversationId: 'conversation-1',
+          conversationId: 'conversation-1',
+        })
+      ).resolves.toEqual(response);
+    }
+  );
 });
 
 // ===========================================================================
@@ -2345,26 +2531,58 @@ describe('agent workspace repair tool transport', () => {
 describe('delegation bridge tools', () => {
   const allTools = getAllTools();
 
-  it.each(['delegate_start', 'delegate_wait', 'delegate_cancel'])(
+  it.each(['delegate_start', 'delegate_wait', 'delegate_cancel', 'delegate_park'])(
     '%s should exist in ALL_TOOLS',
     (toolName) => {
       expect(allTools.find((tool) => tool.name === toolName)).toBeDefined();
     }
   );
 
-  it('delegate_start should expose optional parent_session_id plus required agent_name and prompt', () => {
+  it('delegate_start should hide session selection and require only agent_name and prompt', () => {
     const tool = allTools.find((entry) => entry.name === 'delegate_start');
+    const properties = inputSchemaProperties('delegate_start');
     expect(tool?.inputSchema.type).toBe('object');
     expect(tool?.inputSchema.properties).toHaveProperty('parent_session_id');
     expect(tool?.inputSchema.properties).toHaveProperty('parent_turn_id');
     expect(tool?.inputSchema.properties).toHaveProperty('parent_message_id');
     expect(tool?.inputSchema.properties).toHaveProperty('parent_conversation_id');
+    expect(tool?.inputSchema.properties).not.toHaveProperty('parent_agent_run_id');
+    expect(tool?.inputSchema.properties).not.toHaveProperty('caller_agent_run_id');
     expect(tool?.inputSchema.properties).toHaveProperty('parent_tool_use_id');
-    expect(tool?.inputSchema.properties).toHaveProperty('delegated_session_id');
+    expect(tool?.inputSchema.properties).not.toHaveProperty('delegated_session_id');
+    expect(tool?.inputSchema.properties).not.toHaveProperty('child_session_id');
+    expect(tool?.inputSchema.properties).toHaveProperty('task_ref');
+    expect(tool?.inputSchema.additionalProperties).toBe(false);
     expect(tool?.inputSchema.required).toEqual(
       expect.arrayContaining(['agent_name', 'prompt'])
     );
     expect(tool?.inputSchema.required).not.toContain('parent_session_id');
+    expect(
+      properties.inherit_context.description
+    ).toContain('get_parent_context');
+    expect(
+      properties.inherit_context.description
+    ).toContain('fully isolated');
+  });
+
+  it('get_parent_context dispatches only the bounded request with runtime identity headers', async () => {
+    const callTauri = vi.fn().mockResolvedValue({ success: true });
+
+    await callGetParentContextTool(callTauri, { limit: 7 }, {
+      conversationId: 'delegated-conversation',
+      agentRunId: 'delegated-run',
+    });
+
+    expect(callTauri).toHaveBeenCalledWith(
+      'coordination/delegate/parent-context',
+      { limit: 7 },
+      {
+        headers: {
+          'x-ralphx-agent-run-id': 'delegated-run',
+          'x-ralphx-conversation-id': 'delegated-conversation',
+        },
+      },
+    );
   });
 
   it('delegate_wait should support delegated-status hydration options', () => {
@@ -2373,6 +2591,32 @@ describe('delegation bridge tools', () => {
     expect(tool?.inputSchema.properties).toHaveProperty('include_child_status');
     expect(tool?.inputSchema.properties).toHaveProperty('include_messages');
     expect(tool?.inputSchema.properties).toHaveProperty('message_limit');
+  });
+
+  it('delegate_wait should expose the backend-held bounded wait surface', () => {
+    const tool = allTools.find((entry) => entry.name === 'delegate_wait');
+    expect(tool?.inputSchema.properties).toHaveProperty('job_ids');
+    expect(tool?.inputSchema.properties).toHaveProperty('wait_timeout_ms');
+    // job_id is no longer required on its own: job_ids is the alternative watch set.
+    expect(tool?.inputSchema.required ?? []).not.toContain('job_id');
+  });
+
+  it('delegate_park should require job ids without exposing runtime identity', () => {
+    const tool = allTools.find((entry) => entry.name === 'delegate_park');
+    const properties = tool?.inputSchema.properties ?? {};
+
+    expect(tool?.inputSchema.required).toContain('job_ids');
+    expect(properties).toHaveProperty('job_ids');
+    expect(properties).toHaveProperty('wake_on');
+    expect(properties).toHaveProperty('wake_on_failure');
+    expect(properties).toHaveProperty('max_wait_secs');
+    expect((properties.wake_on as SchemaProperty).enum).toEqual(['all', 'any']);
+    expect((properties.wake_on as SchemaProperty).default).toBe('all');
+    expect((properties.wake_on_failure as SchemaProperty).default).toBe(true);
+    expect(properties).not.toHaveProperty('run_id');
+    expect(properties).not.toHaveProperty('agent_run_id');
+    expect(properties).not.toHaveProperty('conversation_id');
+    expect(properties).not.toHaveProperty('parent_conversation_id');
   });
 
   it.each([
@@ -2387,8 +2631,14 @@ describe('delegation bridge tools', () => {
       expect(toolsByAgent()[agent]).toContain('delegate_start');
       expect(toolsByAgent()[agent]).toContain('delegate_wait');
       expect(toolsByAgent()[agent]).toContain('delegate_cancel');
+      expect(toolsByAgent()[agent]).toContain('delegate_park');
     }
   );
+
+  it('PR_REVIEWER should expose get_artifact for selected plan references', () => {
+    expect(toolsByAgent()[PR_REVIEWER]).toEqual(loadCanonicalMcpTools(PR_REVIEWER));
+    expect(toolsByAgent()[PR_REVIEWER]).toContain('get_artifact');
+  });
 
   it.each([WORKER, REVIEWER, MERGER])(
     '%s should expose delegation bridge tools in the fallback allowlist',
@@ -2396,6 +2646,7 @@ describe('delegation bridge tools', () => {
       expect(toolsByAgent()[agent]).toContain('delegate_start');
       expect(toolsByAgent()[agent]).toContain('delegate_wait');
       expect(toolsByAgent()[agent]).toContain('delegate_cancel');
+      expect(toolsByAgent()[agent]).toContain('delegate_park');
     }
   );
 
@@ -2417,12 +2668,24 @@ describe('delegation bridge tools', () => {
     }
   );
 
-  it('ideation team lead should not receive delegation bridge tools from getFilteredTools', () => {
-    setAgentType(IDEATION_TEAM_LEAD);
+  it('ideation orchestrator receives the native delegation bridge tools', () => {
+    setAgentType(ORCHESTRATOR_IDEATION);
     const toolNames = getFilteredTools().map((tool) => tool.name);
-    expect(toolNames).not.toContain('delegate_start');
-    expect(toolNames).not.toContain('delegate_wait');
-    expect(toolNames).not.toContain('delegate_cancel');
+    expect(toolNames).toContain('delegate_start');
+    expect(toolNames).toContain('delegate_wait');
+    expect(toolNames).toContain('delegate_cancel');
+    expect(toolNames).toContain('delegate_park');
+  });
+
+  it('hides delegate_park from a non-delegating agent even when it is transport-granted', () => {
+    try {
+      setAgentType('ralphx-persona-extractor');
+      process.env.RALPHX_ALLOWED_MCP_TOOLS = 'delegate_park';
+
+      expect(getFilteredTools().map((tool) => tool.name)).not.toContain('delegate_park');
+    } finally {
+      delete process.env.RALPHX_ALLOWED_MCP_TOOLS;
+    }
   });
 });
 
@@ -2440,6 +2703,9 @@ describe('agent task tools', () => {
     'update_agent_task',
     'claim_agent_task',
     'complete_agent_task',
+    'get_delegate_assignment',
+    'complete_delegate_assignment',
+    'release_delegate_assignment',
   ])('%s should exist in ALL_TOOLS', (toolName) => {
     expect(allTools.find((tool) => tool.name === toolName)).toBeDefined();
   });
@@ -2481,36 +2747,38 @@ describe('agent task tools', () => {
     expect(toolNames).toContain('create_agent_task');
     expect(toolNames).toContain('list_agent_tasks');
   });
-});
 
-describe('verification round helper tools', () => {
-  const allTools = getAllTools();
-
-  it('assess_verification_round should not exist in ALL_TOOLS', () => {
-    const tool = allTools.find((entry) => entry.name === 'assess_verification_round');
-    expect(tool).toBeUndefined();
+  it('delegate assignment schemas expose no orchestration identity fields', () => {
+    for (const toolName of [
+      'get_delegate_assignment',
+      'complete_delegate_assignment',
+      'release_delegate_assignment',
+    ]) {
+      const tool = allTools.find((entry) => entry.name === toolName);
+      expect(tool).toBeDefined();
+      for (const forbidden of [
+        'delegated_session_id',
+        'conversation_id',
+        'agent_run_id',
+        'assignment_id',
+        'task_list_id',
+      ]) {
+        expect(tool?.inputSchema.properties).not.toHaveProperty(forbidden);
+      }
+    }
   });
 
-  it('await_verification_round_settlement should not exist in ALL_TOOLS', () => {
-    const tool = allTools.find((entry) => entry.name === 'await_verification_round_settlement');
-    expect(tool).toBeUndefined();
-  });
-
-  it('plan verifier should only expose the high-level verification helpers', () => {
-    expect(toolsByAgent()[PLAN_VERIFIER]).toContain('run_verification_enrichment');
-    expect(toolsByAgent()[PLAN_VERIFIER]).toContain('run_verification_round');
-    expect(toolsByAgent()[PLAN_VERIFIER]).toContain('report_verification_round');
-    setAgentType(PLAN_VERIFIER);
-    const toolNames = getFilteredTools().map((tool) => tool.name);
-    expect(toolNames).toContain('run_verification_enrichment');
-    expect(toolNames).toContain('run_verification_round');
-    expect(toolNames).toContain('report_verification_round');
-    expect(toolNames).toContain('complete_plan_verification');
-    expect(toolNames).not.toContain('assess_verification_round');
-    expect(toolNames).not.toContain('run_required_verification_critic_round');
-    expect(toolNames).not.toContain('await_verification_round_settlement');
-    expect(toolNames).not.toContain('delegate_start');
-  });
+  it.each([GENERAL_EXPLORER, GENERAL_WORKER])(
+    '%s should expose delegate-local and narrow assignment lifecycles',
+    (agent) => {
+      expect(toolsByAgent()[agent]).toEqual(loadCanonicalMcpTools(agent));
+      expect(toolsByAgent()[agent]).toContain('create_agent_task');
+      expect(toolsByAgent()[agent]).toContain('complete_agent_task');
+      expect(toolsByAgent()[agent]).toContain('get_delegate_assignment');
+      expect(toolsByAgent()[agent]).toContain('complete_delegate_assignment');
+      expect(toolsByAgent()[agent]).toContain('release_delegate_assignment');
+    }
+  );
 });
 
 // ===========================================================================
@@ -2529,14 +2797,6 @@ describe('canonical specialist allowlist entries', () => {
     IDEATION_SPECIALIST_FRONTEND,
     IDEATION_SPECIALIST_INFRA,
   ] as const;
-  const verificationFindingSpecialists = [
-    IDEATION_SPECIALIST_CODE_QUALITY,
-    IDEATION_SPECIALIST_UX,
-    IDEATION_SPECIALIST_PROMPT_QUALITY,
-    IDEATION_SPECIALIST_INTENT,
-    IDEATION_SPECIALIST_PIPELINE_SAFETY,
-    IDEATION_SPECIALIST_STATE_MACHINE,
-  ] as const;
   const parentContextSpecialists = [
     IDEATION_SPECIALIST_BACKEND,
     IDEATION_SPECIALIST_FRONTEND,
@@ -2551,30 +2811,48 @@ describe('canonical specialist allowlist entries', () => {
     expect(toolsByAgent()[agent]).toContain('get_team_artifacts');
   });
 
-  it.each(verificationFindingSpecialists)('%s should include publish_verification_finding', (agent) => {
-    expect(toolsByAgent()[agent]).toContain('publish_verification_finding');
-  });
 
-  it.each(verificationFindingSpecialists)('%s should not include create_team_artifact', (agent) => {
-    expect(toolsByAgent()[agent]).not.toContain('create_team_artifact');
-  });
 
-  it.each(verificationFindingSpecialists)('%s should not include get_team_artifacts', (agent) => {
-    expect(toolsByAgent()[agent]).not.toContain('get_team_artifacts');
-  });
 
   it.each(parentContextSpecialists)('%s should include get_parent_session_context', (agent) => {
     expect(toolsByAgent()[agent]).toContain('get_parent_session_context');
   });
 
-  it('IDEATION_TEAM_MEMBER should include get_parent_session_context', () => {
-    expect(toolsByAgent()[IDEATION_TEAM_MEMBER]).toContain('get_parent_session_context');
+  it('IDEATION_SPECIALIST_BACKEND should include get_parent_session_context', () => {
+    expect(toolsByAgent()[IDEATION_SPECIALIST_BACKEND]).toContain('get_parent_session_context');
+  });
+
+  const parentContextAgents = [
+    GENERAL_EXPLORER,
+    IDEATION_SPECIALIST_BACKEND,
+    IDEATION_SPECIALIST_FRONTEND,
+    IDEATION_SPECIALIST_INFRA,
+  ] as const;
+
+  it.each(parentContextAgents)('%s should include get_parent_context', (agent) => {
+    expect(toolsByAgent()[agent]).toContain('get_parent_context');
+  });
+
+  it.each([GENERAL_WORKER, ORCHESTRATOR_IDEATION, CHAT_PROJECT])(
+    '%s should not include get_parent_context',
+    (agent) => {
+      expect(toolsByAgent()[agent]).not.toContain('get_parent_context');
+    }
+  );
+
+  it('get_parent_context accepts only an optional limit', () => {
+    const tool = getAllTools().find((entry) => entry.name === 'get_parent_context');
+    expect(tool).toBeDefined();
+    expect(tool?.inputSchema.required).toBeUndefined();
+    expect(tool?.inputSchema.properties).toEqual({
+      limit: expect.objectContaining({ type: 'number' }),
+    });
   });
 
   it.each([
-    IDEATION_TEAM_MEMBER,
-    WORKER_TEAM_LEAD,
-    WORKER_TEAM_MEMBER,
+    IDEATION_SPECIALIST_BACKEND,
+    WORKER,
+    WORKER,
   ])('%s should stay aligned with canonical mcp_tools', (agent) => {
     expect(loadCanonicalMcpTools(agent)).toEqual(toolsByAgent()[agent]);
   });
@@ -2595,24 +2873,18 @@ describe('canonical specialist allowlist entries', () => {
     expect(toolsByAgent()[IDEATION_ADVOCATE]).toContain('get_team_artifacts');
   });
 
-  it.each([
-    PLAN_CRITIC_COMPLETENESS,
-    PLAN_CRITIC_IMPLEMENTATION_FEASIBILITY,
-  ])('%s should include publish_verification_finding', (agent) => {
-    expect(toolsByAgent()[agent]).toContain('publish_verification_finding');
-  });
 
-  it.each([
-    PLAN_CRITIC_COMPLETENESS,
-    PLAN_CRITIC_IMPLEMENTATION_FEASIBILITY,
-  ])('%s should not include create_team_artifact', (agent) => {
-    expect(toolsByAgent()[agent]).not.toContain('create_team_artifact');
-  });
 
-  it.each([
-    PLAN_CRITIC_COMPLETENESS,
-    PLAN_CRITIC_IMPLEMENTATION_FEASIBILITY,
-  ])('%s should stay bounded to direct read tools', (agent) => {
-    expect(toolsByAgent()[agent]).not.toContain('get_team_artifacts');
+});
+
+describe('persona builder tool registry', () => {
+  it('includes exactly the two persona draft tools in ALL_TOOLS', () => {
+    const allToolNames = getAllTools().map((tool) => tool.name);
+    const personaToolNames = allToolNames.filter(
+      (toolName) => toolName === 'save_persona_draft' || toolName === 'get_persona_draft',
+    );
+
+    expect(personaToolNames).toEqual(['save_persona_draft', 'get_persona_draft']);
+    expect(new Set(allToolNames).size).toBe(allToolNames.length);
   });
 });

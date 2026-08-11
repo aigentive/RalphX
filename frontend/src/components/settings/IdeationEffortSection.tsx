@@ -1,13 +1,12 @@
 /**
  * IdeationEffortSection — Settings section for configuring ideation agent effort levels.
  *
- * Uses SectionCard (frosted glass pattern) from SettingsView.shared.tsx.
+ * Uses the chrome-free SettingsSection container from SettingsView.shared.tsx.
  * Shows global dropdowns and per-project override dropdowns.
  * Effective value hint shown only when value is `inherit`.
  */
 
 import { useState } from "react";
-import { Gauge } from "lucide-react";
 import { Separator } from "@/components/ui/separator";
 import {
   Select,
@@ -16,7 +15,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { SectionCard, ErrorBanner } from "./SettingsView.shared";
+import { SettingsSection, ErrorBanner } from "./SettingsView.shared";
 import { useIdeationEffortSettings } from "@/hooks/useIdeationEffortSettings";
 import { useProjectStore, selectActiveProject } from "@/stores/projectStore";
 
@@ -179,14 +178,6 @@ function GlobalEffortSubsection() {
     );
   };
 
-  const handleVerifierChange = (value: string) => {
-    setShowError(false);
-    updateSettings(
-      { verifierEffort: value },
-      { onError: () => setShowError(true) }
-    );
-  };
-
   return (
     <div>
       {showError && saveError && (
@@ -199,25 +190,13 @@ function GlobalEffortSubsection() {
         <EffortRow
           id="global-primary-effort"
           label="Primary Ideation Effort"
-          description="Effort level for ralphx-ideation and team-lead agents"
+          description="Effort level for the primary ideation agent"
           value={settings.primaryEffort}
           disabled={false}
           onChange={handlePrimaryChange}
           effectiveValue={settings.effectivePrimary}
           effectiveSource={settings.primarySource}
           isPlaceholderData={isPlaceholderData}
-        />
-        <EffortRow
-          id="global-verifier-effort"
-          label="Verification Effort"
-          description="Effort level for ralphx-plan-verifier agent"
-          value={settings.verifierEffort}
-          disabled={false}
-          onChange={handleVerifierChange}
-          effectiveValue={settings.effectiveVerifier}
-          effectiveSource={settings.verifierSource}
-          isPlaceholderData={isPlaceholderData}
-          isLast
         />
       </div>
     </div>
@@ -246,15 +225,6 @@ function ProjectEffortSubsection({
     setShowError(false);
     updateSettings(
       { primaryEffort: value },
-      { onError: () => setShowError(true) }
-    );
-  };
-
-  const handleVerifierChange = (value: string) => {
-    if (isDisabled) return;
-    setShowError(false);
-    updateSettings(
-      { verifierEffort: value },
       { onError: () => setShowError(true) }
     );
   };
@@ -289,18 +259,6 @@ function ProjectEffortSubsection({
           effectiveSource={settings.primarySource}
           isPlaceholderData={isPlaceholderData}
         />
-        <EffortRow
-          id="project-verifier-effort"
-          label="Verification Effort"
-          description="Override for this project's ralphx-plan-verifier agent"
-          value={settings.verifierEffort}
-          disabled={isDisabled}
-          onChange={handleVerifierChange}
-          effectiveValue={settings.effectiveVerifier}
-          effectiveSource={settings.verifierSource}
-          isPlaceholderData={isPlaceholderData}
-          isLast
-        />
       </div>
     </div>
   );
@@ -314,19 +272,13 @@ export function IdeationEffortSection() {
   const activeProject = useProjectStore(selectActiveProject);
 
   return (
-    <SectionCard
-      icon={
-        <Gauge className="w-[18px] h-[18px] text-[var(--card-icon-color)]" />
-      }
-      title="Ideation Effort"
-      description="Configure the --effort level for ideation and verification agents"
-    >
+    <SettingsSection>
       <GlobalEffortSubsection />
       <Separator className="my-4 bg-[var(--border-subtle)]" />
       <ProjectEffortSubsection
         projectId={activeProject?.id ?? null}
         projectName={activeProject?.name ?? null}
       />
-    </SectionCard>
+    </SettingsSection>
   );
 }

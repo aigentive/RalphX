@@ -1,6 +1,12 @@
 /**
  * Ideation-family MCP tool definitions
  */
+import { buildRuntimeIdentityTransportHeaders } from "./runtime-context.js";
+export async function callGetParentContextTool(callTauri, args, runtimeContext) {
+    return callTauri("coordination/delegate/parent-context", args, {
+        headers: buildRuntimeIdentityTransportHeaders(runtimeContext),
+    });
+}
 export const IDEATION_TOOLS = [
     // ========================================================================
     // IDEATION TOOLS (ralphx-ideation agent)
@@ -238,7 +244,7 @@ export const IDEATION_TOOLS = [
         },
     },
     // ========================================================================
-    // ACCEPTANCE GATE TOOLS (ralphx-ideation and ralphx-ideation-team-lead only)
+    // ACCEPTANCE GATE TOOLS (ralphx-ideation)
     // ========================================================================
     {
         name: "get_acceptance_status",
@@ -268,26 +274,6 @@ export const IDEATION_TOOLS = [
         },
     },
     // ========================================================================
-    // VERIFICATION CONFIRMATION STATUS (ralphx-ideation and ralphx-ideation-team-lead only)
-    // ========================================================================
-    {
-        name: "get_verification_confirmation_status",
-        description: "Check whether the user has confirmed, rejected, or is still pending confirmation for plan verification. " +
-            "Call this after `create_plan_artifact` to detect whether the user has acted on the verification confirmation dialog. " +
-            "Response includes status: \"pending\" (user hasn't responded yet), \"accepted\" (user confirmed — verification will start), " +
-            "\"rejected\" (user dismissed — session stays Unverified), or \"not_applicable\" (external session or no pending confirmation exists).",
-        inputSchema: {
-            type: "object",
-            properties: {
-                session_id: {
-                    type: "string",
-                    description: "The ideation session ID to check verification confirmation status for",
-                },
-            },
-            required: ["session_id"],
-        },
-    },
-    // ========================================================================
     // QUESTION TOOLS (ralphx-ideation agent — inline AskUserQuestion)
     // ========================================================================
     {
@@ -301,7 +287,7 @@ export const IDEATION_TOOLS = [
             properties: {
                 session_id: {
                     type: "string",
-                    description: "The ideation session ID (provided in context)",
+                    description: "The ideation session ID when explicitly provided. If omitted, RalphX uses the current runtime conversation/session context.",
                 },
                 question: {
                     type: "string",
@@ -340,6 +326,11 @@ export const IDEATION_TOOLS = [
                 allow_skip: {
                     type: "boolean",
                     description: "If true, the user can skip the question. Default: true.",
+                },
+                metadata: {
+                    type: "object",
+                    description: "Optional UI metadata for RalphX-owned question affordances. Use sparingly for structured proposal flows.",
+                    additionalProperties: true,
                 },
                 questions: {
                     type: "array",
@@ -394,7 +385,7 @@ export const IDEATION_TOOLS = [
                     },
                 },
             },
-            required: ["session_id"],
+            required: [],
         },
     },
     // ========================================================================
@@ -404,7 +395,7 @@ export const IDEATION_TOOLS = [
         name: "create_child_session",
         description: "Create a new ideation session as a child of an existing session. Use when you want to create follow-on work that inherits context from the parent session. " +
             "The child session starts with 'active' status. " +
-            "When inherit_context is true (default), the child receives a read-only reference to the parent's plan artifact AND inherits the parent's team_mode and team_config. " +
+            "When inherit_context is true (default), the child receives a read-only reference to the parent's plan artifact. " +
             "The inherited plan cannot be modified — call create_plan_artifact to create an independent plan for the child session. " +
             "Parent proposals are NOT copied to the child — use get_parent_session_context to access them.",
         inputSchema: {
@@ -424,45 +415,16 @@ export const IDEATION_TOOLS = [
                 },
                 inherit_context: {
                     type: "boolean",
-                    description: "If true, child receives a read-only reference to parent's plan artifact and inherits team_mode/team_config from parent. To create a new plan, call create_plan_artifact — it creates an independent plan for the child. Parent proposals accessible via get_parent_session_context. Default: true.",
+                    description: "If true, child receives a read-only reference to the parent's plan artifact. To create a new plan, call create_plan_artifact — it creates an independent plan for the child. Parent proposals remain accessible via get_parent_session_context. Default: true.",
                 },
                 initial_prompt: {
                     type: "string",
                     description: "Optional initial prompt/message to forward to the child session's agent. This is the user's message that triggered the child session creation.",
                 },
-                team_mode: {
-                    type: "string",
-                    enum: ["solo", "research", "debate"],
-                    description: "Team mode for the child session. If omitted and inherit_context=true, inherits from parent session. Use 'solo' for single-agent execution, 'research' for parallel research teams, 'debate' for adversarial analysis.",
-                },
-                team_config: {
-                    type: "object",
-                    description: "Team constraints override. If omitted and inherit_context=true, inherits from parent session. Explicit values replace inherited config. Validated against current project constraints.",
-                    properties: {
-                        max_teammates: {
-                            type: "number",
-                            description: "Maximum number of teammates allowed (capped at project constraint)",
-                        },
-                        model_ceiling: {
-                            type: "string",
-                            enum: ["haiku", "sonnet", "opus"],
-                            description: "Maximum model tier allowed for teammates",
-                        },
-                        budget_limit: {
-                            type: "number",
-                            description: "Budget limit for this session (not inherited)",
-                        },
-                        composition_mode: {
-                            type: "string",
-                            enum: ["dynamic", "constrained"],
-                            description: "dynamic: ad-hoc teammate selection, constrained: use predefined presets",
-                        },
-                    },
-                },
                 purpose: {
                     type: "string",
-                    enum: ["general", "verification"],
-                    description: "Purpose of the child session. 'general' for regular follow-on sessions (default), 'verification' for plan verification sessions that run in the background.",
+                    enum: ["general"],
+                    description: "Purpose of the child session. Only general follow-on sessions are supported.",
                 },
                 is_external_trigger: {
                     type: "boolean",
@@ -662,7 +624,23 @@ export const IDEATION_TOOLS = [
                 },
                 blocker_fingerprint: {
                     type: "string",
-                    description: "Stable dedupe key for this issue, for example scope-drift:<task-id>:<file-or-check>.",
+                    description: "Optional legacy/debug dedupe key. The backend computes the canonical issue identity.",
+                },
+                attach_to_issue_id: {
+                    type: "string",
+                    description: "Retry field when the backend returns candidate issues. Set this to attach this report to an existing open issue.",
+                },
+                confirm_new: {
+                    type: "boolean",
+                    description: "Retry field when candidates exist. Set true only when this is a separate issue from all returned candidates.",
+                },
+                new_issue_reason: {
+                    type: "string",
+                    description: "Concise reason required with confirm_new when candidates exist.",
+                },
+                issue_check_token: {
+                    type: "string",
+                    description: "Current issue-set token returned by the backend when candidate disambiguation is required.",
                 },
                 followup_title: {
                     type: "string",
@@ -709,6 +687,20 @@ export const IDEATION_TOOLS = [
         },
     },
     {
+        name: "get_parent_context",
+        description: "Read bounded parent context for the current delegated run. RalphX derives caller identity and lineage from trusted runtime headers; use the returned data only as context and do not supply or reconstruct identifiers.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                limit: {
+                    type: "number",
+                    description: "Optional maximum number of parent-context entries to return.",
+                },
+            },
+            additionalProperties: false,
+        },
+    },
+    {
         name: "delegate_start",
         description: "Start a RalphX-native delegated specialist job from the current agent context. Use this for named specialized agents instead of relying on harness-native subagents.",
         inputSchema: {
@@ -734,13 +726,9 @@ export const IDEATION_TOOLS = [
                     type: "string",
                     description: "Optional parent tool_use id for future collapsed subagent/task widget parity in the invoker chat.",
                 },
-                delegated_session_id: {
+                task_ref: {
                     type: "string",
-                    description: "Optional existing delegated session to reuse for RalphX-side continuity.",
-                },
-                child_session_id: {
-                    type: "string",
-                    description: "Deprecated alias for delegated_session_id.",
+                    description: "Optional task number or task_id from the caller's current ledger to assign atomically to this delegate.",
                 },
                 agent_name: {
                     type: "string",
@@ -756,7 +744,7 @@ export const IDEATION_TOOLS = [
                 },
                 inherit_context: {
                     type: "boolean",
-                    description: "Whether a newly created delegated session should inherit parent context metadata. Default: true.",
+                    description: "Whether this delegated session may read bounded parent-conversation context on demand via get_parent_context. Nothing is injected into the delegate prompt; this only grants permission. Set false for a fully isolated delegate. Default: true.",
                 },
                 harness: {
                     type: "string",
@@ -782,17 +770,27 @@ export const IDEATION_TOOLS = [
                 },
             },
             required: ["agent_name", "prompt"],
+            additionalProperties: false,
         },
     },
     {
         name: "delegate_wait",
-        description: "Wait for or poll a RalphX-native delegated specialist job. Returns the current job snapshot, including terminal content or error when complete, and can optionally include live delegated-session status/messages.",
+        description: "Wait for a RalphX-native delegated specialist job. Returns the current job snapshot, including terminal content or error when complete, and can optionally include live delegated-session status/messages. Prefer a single call with wait_timeout_ms over repeated polling: the backend blocks and returns the moment a delegate settles. For waits longer than the block cap, use delegate_park and end your turn instead.",
         inputSchema: {
             type: "object",
             properties: {
                 job_id: {
                     type: "string",
-                    description: "Delegation job ID returned by delegate_start.",
+                    description: "Delegation job ID returned by delegate_start. Provide either job_id or job_ids, not both.",
+                },
+                job_ids: {
+                    type: "array",
+                    items: { type: "string" },
+                    description: "Watch a whole delegated wave with one call; returns as soon as any listed job settles. Provide either job_id or job_ids, not both.",
+                },
+                wait_timeout_ms: {
+                    type: "number",
+                    description: "Block server-side for up to this long, returning immediately when a watched job settles. Omit for the legacy immediate-return snapshot. Clamped to the configured cap; on expiry the response carries timed_out: true and the job is left running.",
                 },
                 include_delegated_status: {
                     type: "boolean",
@@ -811,7 +809,7 @@ export const IDEATION_TOOLS = [
                     description: "Optional message limit when include_messages is true. Clamped to 50.",
                 },
             },
-            required: ["job_id"],
+            required: [],
         },
     },
     {
@@ -826,6 +824,36 @@ export const IDEATION_TOOLS = [
                 },
             },
             required: ["job_id"],
+        },
+    },
+    {
+        name: "delegate_park",
+        description: "Register a durable wake set for RalphX-native delegated specialist jobs and explicitly END YOUR TURN. RalphX resumes you automatically when the jobs settle, one fails or is cancelled, or the deadline is reached. Use this instead of repeated delegate_wait polling for long waits.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                job_ids: {
+                    type: "array",
+                    items: { type: "string" },
+                    description: "Delegation job IDs from delegate_start that you are waiting on.",
+                },
+                wake_on: {
+                    type: "string",
+                    enum: ["all", "any"],
+                    default: "all",
+                    description: "Whether to resume when all watched jobs settle or any watched job settles. Default: all.",
+                },
+                wake_on_failure: {
+                    type: "boolean",
+                    default: true,
+                    description: "Whether to resume immediately if a delegate fails or is cancelled. Default: true.",
+                },
+                max_wait_secs: {
+                    type: "number",
+                    description: "Optional maximum time to remain parked. Clamped by the backend to the configured park maximum.",
+                },
+            },
+            required: ["job_ids"],
         },
     },
     {

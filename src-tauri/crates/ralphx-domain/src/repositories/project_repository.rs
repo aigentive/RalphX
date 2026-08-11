@@ -27,6 +27,11 @@ pub trait ProjectRepository: Send + Sync {
     /// Delete a project
     async fn delete(&self, id: &ProjectId) -> AppResult<()>;
 
+    /// Delete a project with implementation-owned dependent-data cleanup.
+    async fn delete_with_dependent_sweep(&self, id: &ProjectId) -> AppResult<()> {
+        self.delete(id).await
+    }
+
     /// Find project by working directory path
     async fn get_by_working_directory(&self, path: &str) -> AppResult<Option<Project>>;
 

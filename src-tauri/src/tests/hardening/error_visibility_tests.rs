@@ -7,12 +7,18 @@
 // but does NOT propagate them. Only ExecutionBlocked is explicitly surfaced.
 
 use super::helpers::*;
-use crate::domain::entities::{InternalStatus, ProjectId};
+use crate::application::task_notification_producer::TaskPipelineNotificationProducer;
+use crate::application::{AppState, TaskTransitionService};
+use crate::domain::entities::{
+    InternalStatus, NotificationCategory, NotificationSeverity, NotificationTargetKind, Project,
+    ProjectId, Task,
+};
 use crate::domain::repositories::TaskRepository;
 use crate::domain::state_machine::events::TaskEvent;
 use crate::domain::state_machine::machine::State;
 use crate::domain::state_machine::services::EventEmitter;
 use crate::error::AppError;
+use std::sync::Arc;
 
 // ============================================================================
 // H1: ExecutionBlocked visible to user — COVERED
@@ -139,81 +145,114 @@ async fn test_h1_failed_transition_stores_failure_metadata() {
 // ============================================================================
 
 #[tokio::test]
-async fn test_h2_on_enter_errors_swallowed_by_transition_handler() {
-    // GAP: TransitionHandler::handle_transition catches ALL on_enter errors
-    // and still returns TransitionResult::Success. The error is logged via
-    // tracing but not propagated to the caller.
-    //
-    // From transition_handler/mod.rs:
-    //   if let Err(e) = self.on_enter(&new_state).await {
-    //       tracing::error!(...);
-    //       // Still returns Success — error is logged but NOT propagated
-    //   }
+async fn test_h2_on_enter_errors_emit_visibility_event_without_failing_transition() {
     let s = create_hardening_services();
+    s.chat_service.set_available(false).await;
 
-    let services = build_task_services(&s);
+    let mut services = build_task_services(&s);
+    // The missing records used to be treated as an entry error. They are now safely ignored,
+    // so omit the repositories and force the real agent-bootstrap failure below instead.
+    services.task_repo = None;
+    services.project_repo = None;
     let mut machine = create_state_machine("task-h2", "proj-h2", services);
     let mut handler = create_transition_handler(&mut machine);
 
-    // Transition to Executing — on_enter will try to set up git branch/worktree,
-    // but since we have no project in the repo, it will fail silently.
+    // Transition to Executing — unavailable agent bootstrap fails after authority commits,
+    // so the transition remains successful while the error still needs UI visibility.
     let result = handler
         .handle_transition(&State::Ready, &TaskEvent::StartExecution)
         .await;
 
-    // GAP: The transition reports success even though on_enter couldn't
-    // complete its side effects (no project found = no branch setup).
     assert!(
         result.is_success(),
-        "GAP: Transition returns Success even when on_enter side effects fail silently"
+        "the authoritative transition remains successful when its best-effort entry action fails"
     );
 
-    // No error event was emitted
     let events = s.emitter.get_events();
-    let error_events: Vec<_> = events
-        .iter()
-        .filter(|e| {
-            e.args
-                .first()
-                .map(|s| s.contains("error") || s.contains("failed"))
-                .unwrap_or(false)
-        })
-        .collect();
     assert!(
-        error_events.is_empty(),
-        "GAP: No error events emitted to UI when on_enter fails — errors are only logged"
+        events
+            .iter()
+            .any(|event| { event.args.first().map(String::as_str) == Some("task:on_enter_error") }),
+        "on-enter errors must remain visible even though the transition succeeded"
     );
 }
 
 #[tokio::test]
-async fn test_h2_no_notification_on_silent_on_enter_failure() {
-    // GAP: When on_enter fails silently, no notification is sent either.
-    let s = create_hardening_services();
+async fn test_h2_on_enter_error_records_task_stuck_notification() {
+    let app_state = AppState::new_test();
+    let service = TaskTransitionService::new(
+        Arc::clone(&app_state.task_repo),
+        Arc::clone(&app_state.task_dependency_repo),
+        Arc::clone(&app_state.project_repo),
+        Arc::clone(&app_state.chat_message_repo),
+        Arc::clone(&app_state.chat_attachment_repo),
+        Arc::clone(&app_state.chat_conversation_repo),
+        Arc::clone(&app_state.agent_run_repo),
+        Arc::clone(&app_state.ideation_session_repo),
+        Arc::clone(&app_state.activity_event_repo),
+        Arc::clone(&app_state.message_queue),
+        Arc::clone(&app_state.running_agent_registry),
+        Arc::new(crate::commands::ExecutionState::new()),
+        None,
+        Arc::clone(&app_state.memory_event_repo),
+    )
+    .with_notifier(Arc::new(TaskPipelineNotificationProducer::new(
+        app_state.notification_service(),
+    )));
+    let project_dir = tempfile::tempdir().expect("non-git project directory should be created");
+    let project = Project::new(
+        "On-enter failure project".to_string(),
+        project_dir.path().to_string_lossy().to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .expect("project should persist");
+    let mut task = Task::new(project.id.clone(), "On-enter failure task".to_string());
+    task.internal_status = InternalStatus::Ready;
+    let task_id = task.id.clone();
+    app_state
+        .task_repo
+        .create(task)
+        .await
+        .expect("task should persist");
+    service
+        .transition_task(&task_id, InternalStatus::Executing)
+        .await
+        .expect("the authoritative transition should survive its entry failure");
 
-    let services = build_task_services(&s);
-    let mut machine = create_state_machine("task-h2-notif", "proj-h2-notif", services);
-    let mut handler = create_transition_handler(&mut machine);
-
-    // Transition to Executing without a project — on_enter fails silently
-    let result = handler
-        .handle_transition(&State::Ready, &TaskEvent::StartExecution)
-        .await;
-
-    assert!(result.is_success());
-
-    // No notification about the on_enter failure
-    let notifications = s.notifier.get_notifications();
-    let on_enter_failure_notifications: Vec<_> = notifications
+    let notifications = app_state
+        .notification_repo
+        .list(None, None, 50)
+        .await
+        .expect("notification rows should be readable")
+        .notifications;
+    let task_stuck: Vec<_> = notifications
         .iter()
-        .filter(|n| {
-            n.args.iter().any(|a| {
-                a.contains("on_enter") || a.contains("side_effect") || a.contains("branch_setup")
-            })
-        })
+        .filter(|notification| notification.category == NotificationCategory::TaskStuck)
         .collect();
+    assert_eq!(
+        task_stuck.len(),
+        1,
+        "one on-enter failure yields one task-stuck row"
+    );
+    assert_eq!(task_stuck[0].severity, NotificationSeverity::Warning);
+    assert_eq!(task_stuck[0].target.kind, NotificationTargetKind::Task);
+    assert_eq!(
+        task_stuck[0].target.task_id.as_deref(),
+        Some(task_id.as_str())
+    );
+    assert_eq!(
+        task_stuck[0].target.project_id.as_deref(),
+        Some(project.id.as_str())
+    );
     assert!(
-        on_enter_failure_notifications.is_empty(),
-        "GAP: No notification sent when on_enter fails — user is unaware of the silent failure"
+        task_stuck[0]
+            .dedupe_key
+            .as_deref()
+            .is_some_and(|key| key.starts_with(&format!("task:{task_id}:stuck:"))),
+        "the durable row must be deduped by the committed status-history entry"
     );
 }
 

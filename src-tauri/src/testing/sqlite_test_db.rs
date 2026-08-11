@@ -12,8 +12,8 @@ use crate::domain::entities::{
     ChatConversation, IdeationSession, IdeationSessionId, Project, ProjectId, ReviewNote, Task,
     TaskId,
 };
-use crate::infrastructure::sqlite::{open_connection, run_migrations};
 use crate::infrastructure::sqlite::sqlite_project_repo::insert_project_row;
+use crate::infrastructure::sqlite::{open_connection, run_migrations};
 
 pub struct SqliteTestDb {
     _temp_dir: TempDir,
@@ -102,8 +102,8 @@ impl SqliteTestDb {
     pub fn insert_task(&self, task: Task) -> Task {
         self.with_connection(|conn| {
             conn.execute(
-                "INSERT INTO tasks (id, project_id, category, title, description, priority, internal_status, needs_review_point, source_proposal_id, plan_artifact_id, ideation_session_id, execution_plan_id, created_at, updated_at, started_at, completed_at, archived_at, blocked_reason, task_branch, worktree_path, merge_commit_sha, metadata, merge_pipeline_active)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
+                "INSERT INTO tasks (id, project_id, category, title, description, priority, internal_status, needs_review_point, source_proposal_id, plan_artifact_id, ideation_session_id, execution_plan_id, created_at, updated_at, started_at, completed_at, archived_at, blocked_reason, task_branch, task_branch_base_ref, task_branch_base_sha, worktree_path, merge_commit_sha, metadata, merge_pipeline_active)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
                 rusqlite::params![
                     task.id.as_str(),
                     task.project_id.as_str(),
@@ -124,6 +124,8 @@ impl SqliteTestDb {
                     task.archived_at.as_ref().map(|dt| dt.to_rfc3339()),
                     task.blocked_reason.as_deref(),
                     task.task_branch.as_deref(),
+                    task.task_branch_base_ref.as_deref(),
+                    task.task_branch_base_sha.as_deref(),
                     task.worktree_path.as_deref(),
                     task.merge_commit_sha.as_deref(),
                     task.metadata.as_deref(),
@@ -142,8 +144,8 @@ impl SqliteTestDb {
     pub fn insert_ideation_session(&self, session: IdeationSession) -> IdeationSession {
         self.with_connection(|conn| {
             conn.execute(
-                "INSERT INTO ideation_sessions (id, project_id, title, title_source, status, plan_artifact_id, inherited_plan_artifact_id, seed_task_id, parent_session_id, created_at, updated_at, archived_at, converted_at, team_mode, team_config_json, verification_status, source_project_id, source_session_id, session_purpose)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+                "INSERT INTO ideation_sessions (id, project_id, title, title_source, status, plan_artifact_id, inherited_plan_artifact_id, seed_task_id, parent_session_id, created_at, updated_at, archived_at, converted_at, verification_status, source_project_id, source_session_id, session_purpose)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
                 rusqlite::params![
                     session.id.as_str(),
                     session.project_id.as_str(),
@@ -158,8 +160,6 @@ impl SqliteTestDb {
                     session.updated_at.to_rfc3339(),
                     session.archived_at.as_ref().map(|dt| dt.to_rfc3339()),
                     session.converted_at.as_ref().map(|dt| dt.to_rfc3339()),
-                    session.team_mode.as_deref(),
-                    session.team_config_json.as_deref(),
                     session.verification_status.to_string(),
                     session.source_project_id.as_deref(),
                     session.source_session_id.as_deref(),
@@ -180,12 +180,13 @@ impl SqliteTestDb {
             conn.execute(
                 "INSERT INTO chat_conversations (
                     id, context_type, context_id, claude_session_id, provider_session_id,
-                    provider_harness, upstream_provider, provider_profile, agent_mode, title, message_count, last_message_at, created_at,
+                    provider_harness, upstream_provider, provider_profile, agent_mode, coordination_mode,
+                    automation_id, automation_run_id, title, message_count, last_message_at, created_at,
                     updated_at, archived_at, parent_conversation_id, attribution_backfill_status,
                     attribution_backfill_source, attribution_backfill_source_path,
                     attribution_backfill_last_attempted_at, attribution_backfill_completed_at,
                     attribution_backfill_error_summary
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
                 rusqlite::params![
                     conversation.id.as_str(),
                     conversation.context_type.to_string(),
@@ -198,6 +199,15 @@ impl SqliteTestDb {
                     conversation.upstream_provider.as_deref(),
                     conversation.provider_profile.as_deref(),
                     conversation.agent_mode.map(|value| value.to_string()),
+                    conversation.coordination_mode.to_string(),
+                    conversation
+                        .automation_id
+                        .as_ref()
+                        .map(|value| value.as_str()),
+                    conversation
+                        .automation_run_id
+                        .as_ref()
+                        .map(|value| value.as_str()),
                     conversation.title.as_deref(),
                     conversation.message_count,
                     conversation.last_message_at.as_ref().map(|dt| dt.to_rfc3339()),

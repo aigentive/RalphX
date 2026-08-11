@@ -6,6 +6,7 @@ import { chatApi } from "@/api/chat";
 import type {
   AgentConversationWorkspace,
   AgentConversationWorkspaceMode,
+  CapabilityIntent,
 } from "@/api/chat";
 import { invalidateConversationDataQueries } from "@/hooks/useChat";
 import type {
@@ -24,10 +25,7 @@ import {
   defaultModelForProvider,
   normalizeRuntimeSelection,
 } from "./agentOptions";
-import { workspaceReviewUtilityRuntimeForProvider } from "./agentConversationRuntime";
 import { agentWorkspaceKeys } from "./agentWorkspaceQueries";
-
-type RuntimeDefaultPolicy = "provider_default" | "workspace_review_utility";
 
 interface UseAgentsActiveComposerControlsArgs {
   activeConversation: AgentConversation | null;
@@ -41,12 +39,11 @@ interface UseAgentsActiveComposerControlsArgs {
   projects: Project[];
   queryClient: QueryClient;
   runtimeConversationId: string | null;
-  runtimeDefaultPolicy: RuntimeDefaultPolicy;
   runtimeByConversationId: Record<string, AgentRuntimeSelection>;
   selectedConversationId: string | null;
-  setRuntimeForConversation: (
+  setComposerRuntimeForConversation: (
     conversationId: string,
-    projectId: string,
+    projectId: string | null,
     runtime: AgentRuntimeSelection
   ) => void;
 }
@@ -63,12 +60,13 @@ export function useAgentsActiveComposerControls({
   projects,
   queryClient,
   runtimeConversationId,
-  runtimeDefaultPolicy,
   runtimeByConversationId,
   selectedConversationId,
-  setRuntimeForConversation,
+  setComposerRuntimeForConversation,
 }: UseAgentsActiveComposerControlsArgs) {
   const [switchingConversationModeId, setSwitchingConversationModeId] = useState<string | null>(null);
+  const [updatingCapabilityConversationId, setUpdatingCapabilityConversationId] =
+    useState<string | null>(null);
   const defaultRuntime =
     (defaultProjectId ? lastRuntimeByProjectId[defaultProjectId] : null) ??
     (runtimeConversationId ? runtimeByConversationId[runtimeConversationId] : null) ??
@@ -93,39 +91,43 @@ export function useAgentsActiveComposerControls({
     (
       provider: AgentProvider,
       providerSupportedEfforts?: readonly string[] | null,
+      providerSupportedModelAliases?: readonly string[] | null,
     ) => {
-      if (!runtimeConversationId || !activeProjectId) {
-        return;
+      if (!runtimeConversationId) {
+        return null;
       }
-      const defaultModelId = defaultModelForProvider(provider, modelRegistry);
-      const runtime =
-        runtimeDefaultPolicy === "workspace_review_utility"
-          ? workspaceReviewUtilityRuntimeForProvider(provider)
-          : {
-              provider,
-              modelId: defaultModelId,
-              effort: defaultEffortForModel(
-                provider,
-                defaultModelId,
-                modelRegistry,
-              ),
-            };
-      setRuntimeForConversation(
+      const defaultModelId = defaultModelForProvider(
+        provider,
+        modelRegistry,
+        providerSupportedModelAliases,
+      );
+      const runtime = {
+        provider,
+        modelId: defaultModelId,
+        effort: defaultEffortForModel(
+          provider,
+          defaultModelId,
+          modelRegistry,
+        ),
+      };
+      const normalizedRuntime = normalizeRuntimeSelection(
+        runtime,
+        modelRegistry,
+        providerSupportedEfforts,
+        providerSupportedModelAliases,
+      );
+      setComposerRuntimeForConversation(
         runtimeConversationId,
         activeProjectId,
-        normalizeRuntimeSelection(
-          runtime,
-          modelRegistry,
-          providerSupportedEfforts
-        )
+        normalizedRuntime,
       );
+      return normalizedRuntime;
     },
     [
       activeProjectId,
       modelRegistry,
       runtimeConversationId,
-      runtimeDefaultPolicy,
-      setRuntimeForConversation,
+      setComposerRuntimeForConversation,
     ]
   );
 
@@ -135,34 +137,36 @@ export function useAgentsActiveComposerControls({
       providerSupportedEfforts?: readonly string[] | null,
       providerSupportedModelAliases?: readonly string[] | null,
     ) => {
-      if (!runtimeConversationId || !activeProjectId) {
-        return;
+      if (!runtimeConversationId) {
+        return null;
       }
-      setRuntimeForConversation(
+      const normalizedRuntime = normalizeRuntimeSelection(
+        {
+          provider: normalizedActiveRuntime.provider,
+          modelId,
+          effort: defaultEffortForModel(
+            normalizedActiveRuntime.provider,
+            modelId,
+            modelRegistry
+          ),
+        },
+        modelRegistry,
+        providerSupportedEfforts,
+        providerSupportedModelAliases
+      );
+      setComposerRuntimeForConversation(
         runtimeConversationId,
         activeProjectId,
-        normalizeRuntimeSelection(
-          {
-            provider: normalizedActiveRuntime.provider,
-            modelId,
-            effort: defaultEffortForModel(
-              normalizedActiveRuntime.provider,
-              modelId,
-              modelRegistry
-            ),
-          },
-          modelRegistry,
-          providerSupportedEfforts,
-          providerSupportedModelAliases
-        )
+        normalizedRuntime,
       );
+      return normalizedRuntime;
     },
     [
       activeProjectId,
       modelRegistry,
       normalizedActiveRuntime.provider,
       runtimeConversationId,
-      setRuntimeForConversation,
+      setComposerRuntimeForConversation,
     ]
   );
 
@@ -172,23 +176,25 @@ export function useAgentsActiveComposerControls({
       providerSupportedEfforts?: readonly string[] | null,
       providerSupportedModelAliases?: readonly string[] | null,
     ) => {
-      if (!runtimeConversationId || !activeProjectId) {
-        return;
+      if (!runtimeConversationId) {
+        return null;
       }
-      setRuntimeForConversation(
+      const normalizedRuntime = normalizeRuntimeSelection(
+        {
+          provider: normalizedActiveRuntime.provider,
+          modelId: normalizedActiveRuntime.modelId,
+          effort: effort as AgentEffort,
+        },
+        modelRegistry,
+        providerSupportedEfforts,
+        providerSupportedModelAliases
+      );
+      setComposerRuntimeForConversation(
         runtimeConversationId,
         activeProjectId,
-        normalizeRuntimeSelection(
-          {
-            provider: normalizedActiveRuntime.provider,
-            modelId: normalizedActiveRuntime.modelId,
-            effort: effort as AgentEffort,
-          },
-          modelRegistry,
-          providerSupportedEfforts,
-          providerSupportedModelAliases
-        ),
+        normalizedRuntime,
       );
+      return normalizedRuntime;
     },
     [
       activeProjectId,
@@ -196,7 +202,7 @@ export function useAgentsActiveComposerControls({
       normalizedActiveRuntime.modelId,
       normalizedActiveRuntime.provider,
       runtimeConversationId,
-      setRuntimeForConversation,
+      setComposerRuntimeForConversation,
     ]
   );
 
@@ -255,14 +261,60 @@ export function useAgentsActiveComposerControls({
     });
   }, [queryClient, selectedConversationId]);
 
+  const handleActiveCapabilityChange = useCallback(
+    async (coordinationMode: CapabilityIntent["coordinationMode"]) => {
+      if (
+        !selectedConversationId ||
+        !activeProjectId ||
+        !activeConversation ||
+        activeConversation.contextType !== "project"
+      ) {
+        return;
+      }
+
+      if (activeConversation.coordinationMode === coordinationMode) {
+        return;
+      }
+
+      setUpdatingCapabilityConversationId(selectedConversationId);
+      try {
+        await chatApi.updateAgentConversationCoordinationMode({
+          conversationId: selectedConversationId,
+          coordinationMode,
+          ...(coordinationMode === "codex_native_ultra"
+            ? { modelOverride: normalizedActiveRuntime.modelId }
+            : {}),
+        });
+        await Promise.all([
+          invalidateProjectConversations(activeProjectId),
+          invalidateConversationDataQueries(queryClient, selectedConversationId),
+        ]);
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Failed to change capability");
+      } finally {
+        setUpdatingCapabilityConversationId(null);
+      }
+    },
+    [
+      activeConversation,
+      activeProjectId,
+      invalidateProjectConversations,
+      normalizedActiveRuntime.modelId,
+      queryClient,
+      selectedConversationId,
+    ],
+  );
+
   return {
     activeProjectOptions,
     defaultRuntime,
     handleActiveConversationModeChange,
     handleActiveConversationModeMenuOpen,
+    handleActiveCapabilityChange,
     handleActiveEffortChange,
     handleActiveModelChange,
     handleActiveProviderChange,
     switchingConversationModeId,
+    updatingCapabilityConversationId,
   };
 }

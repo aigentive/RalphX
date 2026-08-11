@@ -434,6 +434,10 @@ export const TaskValidationEventSchema = z.object({
   head_sha: z.string().optional(),
   head_short_sha: z.string().optional(),
   base_ref: z.string().optional(),
+  current_for_head: z.boolean().optional(),
+  current_for_execution_episode: z.boolean().optional(),
+  review_evidence_eligible: z.boolean().optional(),
+  ineligible_reason: z.string().nullable().optional(),
   command_id: z.string().optional(),
   command_source: z.string().optional(),
   command_ref: z.string().optional(),
@@ -499,82 +503,6 @@ export const MergePhaseListEventSchema = z.object({
 export type MergePhaseListEvent = z.infer<typeof MergePhaseListEventSchema>;
 
 // ============================================================================
-// Team Event Payload Types
-// ============================================================================
-
-export interface TeamCreatedPayload {
-  team_name: string; context_id: string; context_type: string;
-}
-
-export interface TeamTeammateSpawnedPayload {
-  team_name: string; teammate_name: string; color: string;
-  model: string; role: string; context_type: string; context_id: string;
-  conversation_id?: string | null;
-}
-
-export interface TeamTeammateIdlePayload {
-  team_name: string; teammate_name: string; context_type: string; context_id: string;
-}
-
-export interface TeamTeammateShutdownPayload {
-  team_name: string; teammate_name: string; context_type: string; context_id: string;
-}
-
-export interface TeamMessagePayload {
-  team_name: string; message_id: string; sender: string;
-  recipient?: string; content: string; message_type: string;
-  timestamp: string; context_type: string; context_id: string;
-}
-
-export interface TeamDisbandedPayload {
-  team_name: string; context_type: string; context_id: string;
-}
-
-export interface TeamCostUpdatePayload {
-  team_name: string; teammate_name: string; input_tokens: number;
-  output_tokens: number; estimated_usd: number;
-  context_type: string; context_id: string;
-}
-
-export interface TeamArtifactCreatedPayload {
-  artifact_id: string;
-  session_id: string;
-  artifact_type: string;
-  title: string;
-}
-
-export interface TeamPlanRequestedPayload {
-  plan_id: string;
-  process: string;
-  teammates: Array<{
-    role: string;
-    model: string;
-    tools: string[];
-    mcp_tools: string[];
-    prompt_summary: string;
-    preset?: string | null;
-  }>;
-  validated: boolean;
-  context_type: string;
-  context_id: string;
-}
-
-export interface TeamPlanAutoApprovedPayload {
-  plan_id: string;
-  context_type: string;
-  context_id: string;
-  process: string;
-  team_name: string;
-  teammates_spawned: Array<{
-    name: string;
-    role: string;
-    model: string;
-    color: string;
-  }>;
-  message: string;
-}
-
-// ============================================================================
 // Agent Run Lifecycle Payloads
 // ============================================================================
 
@@ -590,12 +518,17 @@ export interface AgentRunStartedPayload {
   context_type: string;
   context_id: string;
   conversation_id: string;
-  teammate_name?: string | null;
+  started_at?: string | null;
+  agent_name?: string | null;
+  launch_role?: string | null;
   effective_model_id?: string;
   effective_model_label?: string;
   provider_harness?: string | null;
   provider_session_id?: string | null;
   service_tier?: string | null;
+  startedAt?: string | null;
+  agentName?: string | null;
+  launchRole?: string | null;
   effectiveModelId?: string;
   effectiveModelLabel?: string;
   providerHarness?: string | null;
@@ -618,7 +551,21 @@ export interface AgentRunCompletedPayload {
   provider_session_id?: string | null;
   service_tier?: string | null;
   run_chain_id?: string | null;
-  teammate_name?: string | null;
+}
+
+/**
+ * Payload emitted with the delegation_park:needs_attention Tauri event when a parked
+ * coordinator's wake could not be delivered. Conversation identity is best-effort because the
+ * lookup itself may be what failed. Fields remain snake_case to match the backend serializer.
+ */
+export interface DelegationParkAttentionPayload {
+  park_id: string;
+  parent_conversation_id: string;
+  conversation_title?: string | null;
+  context_type?: string | null;
+  context_id?: string | null;
+  delegate_count?: number | null;
+  error: string;
 }
 
 export function extractConversationProviderMetadataFromRunPayload(

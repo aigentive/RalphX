@@ -2,6 +2,15 @@ import type { LucideIcon } from "lucide-react";
 import { AlertCircle, CheckCircle2, CircleDot, Clock, XCircle } from "lucide-react";
 
 import type { PullRequestCheck, PullRequestReviewSummary } from "@/api/github";
+import {
+  StatusPill,
+  type StatusPillTone,
+} from "@/components/ui/status-pill";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 import { summarizeChecks } from "./pullRequestChecksSummary";
 import { reviewDecisionBadge, type ReviewDecisionTone } from "./pullRequestReviewDecision";
@@ -37,6 +46,13 @@ const REVIEW_TONE: Record<ReviewDecisionTone, { tone: ChipTone; icon: LucideIcon
   pending: { tone: "warning", icon: CircleDot },
 };
 
+const COMPACT_TONE: Record<ChipTone, StatusPillTone> = {
+  success: "success",
+  error: "error",
+  warning: "warning",
+  muted: "neutral",
+};
+
 function StatusChip({
   tone,
   icon: Icon,
@@ -64,11 +80,38 @@ function StatusChip({
   );
 }
 
+function CompactStatusChip({
+  tone,
+  icon: Icon,
+  label,
+  visibleLabel,
+}: {
+  tone: ChipTone;
+  icon: LucideIcon;
+  label: string;
+  visibleLabel?: string | undefined;
+}) {
+  return (
+    <StatusPill
+      tone={COMPACT_TONE[tone]}
+      ariaLabel={label}
+      icon={<Icon className="h-3 w-3" aria-hidden="true" />}
+      label={visibleLabel ?? <span aria-hidden="true" />}
+      className={
+        visibleLabel
+          ? "gap-1 px-1.5 font-medium"
+          : "gap-0 px-1.5 font-medium"
+      }
+    />
+  );
+}
+
 function SkeletonChip() {
   return (
     <span
+      data-testid="pr-status-skeleton-chip"
       className="inline-block h-5 w-20 animate-pulse rounded-full"
-      style={{ backgroundColor: "var(--bg-surface)" }}
+      style={{ backgroundColor: "var(--bg-hover)" }}
     />
   );
 }
@@ -83,11 +126,13 @@ export function PullRequestStatusStrip({
   checks,
   checksUnavailable = false,
   loading = false,
+  variant = "default",
 }: {
   reviewSummary: PullRequestReviewSummary | null | undefined;
   checks: PullRequestCheck[];
   checksUnavailable?: boolean | undefined;
   loading?: boolean | undefined;
+  variant?: "default" | "compact" | undefined;
 }) {
   const badge = reviewDecisionBadge(reviewSummary);
   const summary = summarizeChecks(checks);
@@ -113,6 +158,77 @@ export function PullRequestStatusStrip({
   }
 
   const review = badge ? REVIEW_TONE[badge.tone] : null;
+
+  if (variant === "compact") {
+    const labels = [
+      ...(badge && review ? [badge.label] : []),
+      ...(summary.passed > 0 ? [`${summary.passed} passed`] : []),
+      ...(summary.failed > 0 ? [`${summary.failed} failed`] : []),
+      ...(summary.pending > 0 ? [`${summary.pending} pending`] : []),
+      ...(showCiUnavailable ? ["CI unavailable"] : []),
+    ];
+
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <div
+            className="flex flex-wrap items-center gap-1.5"
+            data-testid="pr-status-strip"
+            role="group"
+            aria-label="Pull request status"
+            tabIndex={0}
+          >
+            {badge && review ? (
+              <CompactStatusChip
+                tone={review.tone}
+                icon={review.icon}
+                label={badge.label}
+              />
+            ) : null}
+            {summary.passed > 0 ? (
+              <CompactStatusChip
+                tone="success"
+                icon={CheckCircle2}
+                label={`${summary.passed} passed`}
+                visibleLabel={`${summary.passed}`}
+              />
+            ) : null}
+            {summary.failed > 0 ? (
+              <CompactStatusChip
+                tone="error"
+                icon={XCircle}
+                label={`${summary.failed} failed`}
+                visibleLabel={`${summary.failed}`}
+              />
+            ) : null}
+            {summary.pending > 0 ? (
+              <CompactStatusChip
+                tone="warning"
+                icon={Clock}
+                label={`${summary.pending} pending`}
+                visibleLabel={`${summary.pending}`}
+              />
+            ) : null}
+            {showCiUnavailable ? (
+              <CompactStatusChip
+                tone="muted"
+                icon={AlertCircle}
+                label="CI unavailable"
+              />
+            ) : null}
+          </div>
+        </TooltipTrigger>
+        <TooltipContent
+          side="bottom"
+          className="flex flex-col items-start gap-1 leading-tight"
+        >
+          {labels.map((label) => (
+            <span key={label}>{label}</span>
+          ))}
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
 
   return (
     <div

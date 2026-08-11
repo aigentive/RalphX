@@ -18,6 +18,7 @@ pub struct Blocker {
 }
 
 impl Blocker {
+    const FRESHNESS_BLOCKED_PREFIX: &'static str = "FRESHNESS_BLOCKED|";
     /// Creates a new unresolved blocker with the given ID
     pub fn new(id: impl Into<String>) -> Self {
         Self {
@@ -37,6 +38,16 @@ impl Blocker {
     /// Returns true if this blocker is for human input
     pub fn is_human_input(&self) -> bool {
         self.id.starts_with("human:")
+    }
+
+    /// Returns true when an optional stored blocker reason represents human input.
+    pub fn is_human_input_reason(reason: Option<&str>) -> bool {
+        reason.is_some_and(|reason| Self::new(reason).is_human_input())
+    }
+
+    /// Returns true when a stored blocker reason is the terminal branch-freshness sentinel.
+    pub fn is_freshness_blocked_reason(reason: Option<&str>) -> bool {
+        reason.is_some_and(|reason| reason.starts_with(Self::FRESHNESS_BLOCKED_PREFIX))
     }
 
     /// Resolves this blocker

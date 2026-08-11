@@ -1,21 +1,47 @@
-import { useCallback, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { useQueries } from "@tanstack/react-query";
 import type { QueryClient } from "@tanstack/react-query";
-import { toast } from "sonner";
 
 import { chatApi } from "@/api/chat";
-import type { AgentConversationWorkspace } from "@/api/chat";
+import type {
+  AgentConversationWorkspace,
+  AgentConversationWorkspacePublicationEvent,
+} from "@/api/chat";
 import { invalidateConversationDataQueries } from "@/hooks/useChat";
 
 import type { AgentConversation } from "./agentConversations";
 import {
-  AGENT_WORKSPACE_OPERATION_ERROR_DURATION_MS,
-  AGENT_WORKSPACE_OPERATION_RESULT_DURATION_MS,
-  agentWorkspaceOperationErrorDetail,
-  agentWorkspaceOperationToastDescription,
-  agentWorkspaceOperationToastId,
-  markAgentWorkspaceOperationToastSettled,
-} from "./agentWorkspaceOperationToast";
-import { invalidateWorkspaceQueries } from "./agentWorkspaceQueries";
+  type ActivePublishAttempt,
+  type AgentWorkspacePublishAttempt,
+  type PublishAttemptState,
+  type PublishFinalResult,
+  createAgentWorkspacePublishAttempt,
+  readAgentWorkspaceDurablePublishResult,
+  readAgentWorkspacePublishBaseline,
+} from "./agentWorkspacePublishAttempt";
+import { agentWorkspaceOperationErrorDetail } from "./agentWorkspaceOperationToast";
+import {
+  reportAgentWorkspaceOperationResult,
+  watchAgentWorkspaceOperation,
+} from "./agentWorkspaceOperationRegistry";
+import {
+  getAgentWorkspaceTerminalPublicationStatus,
+  isAgentWorkspacePublishActive,
+} from "./agentWorkspacePublishState";
+import {
+  agentWorkspaceKeys,
+  invalidateWorkspaceQueries,
+} from "./agentWorkspaceQueries";
+
+const PUBLISH_EVENT_POLL_MS = 1_500;
+
+export type { AgentWorkspacePublishAttempt } from "./agentWorkspacePublishAttempt";
 
 interface UseAgentWorkspacePublisherArgs {
   activeWorkspace: AgentConversationWorkspace | null;
@@ -26,6 +52,17 @@ interface UseAgentWorkspacePublisherArgs {
   selectedConversationId: string | null;
 }
 
+function renderableAttemptState(
+  attempt: ActivePublishAttempt,
+): PublishAttemptState {
+  return {
+    baseline: attempt.baseline,
+    conversationId: attempt.conversationId,
+    startedAtMs: attempt.startedAtMs,
+    token: attempt.token,
+  };
+}
+
 export function useAgentWorkspacePublisher({
   activeWorkspace,
   findConversationById,
@@ -34,104 +71,293 @@ export function useAgentWorkspacePublisher({
   queryClient,
   selectedConversationId,
 }: UseAgentWorkspacePublisherArgs) {
-  const [publishingConversationId, setPublishingConversationId] = useState<string | null>(null);
+  const [attemptStates, setAttemptStates] = useState<
+    Record<string, PublishAttemptState>
+  >({});
+  const activeAttemptsRef = useRef(new Map<string, ActivePublishAttempt>());
+  const nextTokenRef = useRef(0);
+  const attemptStateEntries = useMemo(
+    () => Object.values(attemptStates),
+    [attemptStates],
+  );
+  const publicationEventSnapshot = useQueries({
+    queries: attemptStateEntries.map((attempt) => ({
+      queryKey: agentWorkspaceKeys.publicationEvents(attempt.conversationId),
+      queryFn: () =>
+        chatApi.listAgentConversationWorkspacePublicationEvents(
+          attempt.conversationId,
+        ),
+      enabled: attempt.baseline.state === "available",
+      refetchInterval: PUBLISH_EVENT_POLL_MS,
+      staleTime: 0,
+    })),
+    combine: (queries) => ({
+      data: queries.map((query) => query.data),
+      version: queries.map((query) => query.dataUpdatedAt).join(":"),
+    }),
+  });
+
+  const clearAttemptState = useCallback((attempt: ActivePublishAttempt) => {
+    setAttemptStates((current) => {
+      if (current[attempt.conversationId]?.token !== attempt.token) {
+        return current;
+      }
+      const next = { ...current };
+      delete next[attempt.conversationId];
+      return next;
+    });
+  }, []);
+
+  const finalizeAttempt = useCallback(
+    (attempt: ActivePublishAttempt, result: PublishFinalResult): boolean => {
+      const current = activeAttemptsRef.current.get(attempt.conversationId);
+      if (current?.token !== attempt.token || attempt.settled) {
+        return false;
+      }
+      attempt.settled = true;
+      if (result.kind === "success") {
+        queryClient.setQueryData(
+          agentWorkspaceKeys.workspace(attempt.conversationId),
+          result.workspace,
+        );
+      }
+      reportAgentWorkspaceOperationResult(attempt.conversationId, result);
+      if (result.kind === "needs_agent") {
+        invalidateConversationDataQueries(queryClient, attempt.conversationId);
+      }
+      activeAttemptsRef.current.delete(attempt.conversationId);
+      clearAttemptState(attempt);
+      attempt.resolve();
+      void Promise.all([
+        invalidateWorkspaceQueries(queryClient, attempt.conversationId),
+        attempt.projectId
+          ? invalidateProjectConversations(attempt.projectId)
+          : Promise.resolve(),
+      ]).catch(() => undefined);
+      return true;
+    },
+    [clearAttemptState, invalidateProjectConversations, queryClient],
+  );
+
+  const reconcileDurableAttempt = useCallback(
+    async (
+      attemptState: PublishAttemptState,
+      events: AgentConversationWorkspacePublicationEvent[] | undefined,
+    ) => {
+      const attempt = activeAttemptsRef.current.get(attemptState.conversationId);
+      if (
+        !attempt ||
+        attempt.token !== attemptState.token ||
+        !events
+      ) {
+        return;
+      }
+      if (attempt.reconciling) {
+        return;
+      }
+      attempt.reconciling = true;
+      try {
+        const result = await readAgentWorkspaceDurablePublishResult(
+          queryClient,
+          attempt,
+          events,
+        );
+        if (result) {
+          finalizeAttempt(attempt, result);
+        }
+      } catch {
+        // Durable reads fail closed; the direct RPC remains authoritative.
+      } finally {
+        const current = activeAttemptsRef.current.get(attempt.conversationId);
+        if (current?.token === attempt.token) {
+          current.reconciling = false;
+        }
+      }
+    },
+    [finalizeAttempt, queryClient],
+  );
+
+  useEffect(() => {
+    attemptStateEntries.forEach((attempt, index) => {
+      void reconcileDurableAttempt(attempt, publicationEventSnapshot.data[index]);
+    });
+    // dataUpdatedAt advances for structurally equal polling responses.
+  }, [attemptStateEntries, publicationEventSnapshot, reconcileDurableAttempt]);
+
+  useEffect(
+    () => () => {
+      activeAttemptsRef.current.forEach((attempt) => {
+        attempt.resolve();
+      });
+      activeAttemptsRef.current.clear();
+    },
+    [],
+  );
+
   const handlePublishWorkspace = useCallback(
-    async (conversationId: string) => {
+    (conversationId: string): Promise<void> => {
+      const existing = activeAttemptsRef.current.get(conversationId);
+      if (existing) {
+        return existing.completion;
+      }
       const conversation = findConversationById(conversationId);
       const workspace =
         selectedConversationId === conversationId
           ? activeWorkspace
           : optimisticWorkspacesByConversationId[conversationId] ?? null;
+      const startedAtMs = Date.now();
+      const token = ++nextTokenRef.current;
       const conversationTitle = conversation?.title?.trim() || null;
-      setPublishingConversationId(conversationId);
-      const publishToastId = agentWorkspaceOperationToastId(conversationId, "publish");
-      try {
-        const result = await chatApi.publishAgentConversationWorkspace(conversationId);
-        const prLabel = result.prNumber ? `#${result.prNumber}` : result.prUrl;
-        queryClient.setQueryData(
-          ["agents", "conversation-workspace", conversationId],
-          result.workspace
-        );
-        markAgentWorkspaceOperationToastSettled(publishToastId);
-        toast.success(prLabel ? `Published ${prLabel}` : "Published branch", {
-          ...(conversationTitle ? { description: conversationTitle } : {}),
-          duration: AGENT_WORKSPACE_OPERATION_RESULT_DURATION_MS,
-          id: publishToastId,
-        });
-        void Promise.all([
-          invalidateWorkspaceQueries(queryClient, conversationId),
-          conversation?.projectId
-            ? invalidateProjectConversations(conversation.projectId)
-            : Promise.resolve(),
-        ]).catch(() => undefined);
-      } catch (err) {
-        const errorMessage = agentWorkspaceOperationErrorDetail(
-          err,
-          "Failed to publish branch",
-        );
-        let refreshedWorkspace: AgentConversationWorkspace | null = null;
-        try {
-          refreshedWorkspace = await chatApi.getAgentConversationWorkspace(conversationId);
-          void invalidateWorkspaceQueries(queryClient, conversationId);
-          if (refreshedWorkspace) {
-            queryClient.setQueryData(
-              ["agents", "conversation-workspace", conversationId],
-              refreshedWorkspace
-            );
-          }
-        } catch {
-          refreshedWorkspace = null;
-        }
-        const publishFailureNeedsAgent =
-          (refreshedWorkspace ?? workspace)?.publicationPushStatus === "needs_agent";
+      const projectId = conversation?.projectId ?? workspace?.projectId ?? null;
+      const attempt = createAgentWorkspacePublishAttempt({
+        conversationId,
+        projectId,
+        startedAtMs,
+        token,
+      });
+      watchAgentWorkspaceOperation({
+        conversationId,
+        projectId,
+        conversationTitle,
+        kind: "publish",
+        startedAtMs,
+      });
+      activeAttemptsRef.current.set(conversationId, attempt);
+      setAttemptStates((current) => ({
+        ...current,
+        [conversationId]: renderableAttemptState(attempt),
+      }));
 
-        if (publishFailureNeedsAgent) {
-          const description = agentWorkspaceOperationToastDescription(
-            conversationTitle,
-            errorMessage,
-          );
-          markAgentWorkspaceOperationToastSettled(publishToastId);
-          toast.error("Publish failed. Sent the error to the agent to fix.", {
-            closeButton: true,
-            ...(description ? { description } : {}),
-            dismissible: true,
-            duration: AGENT_WORKSPACE_OPERATION_ERROR_DURATION_MS,
-            id: publishToastId,
-          });
-          if (conversation?.projectId) {
-            await invalidateProjectConversations(conversation.projectId);
+      void (async () => {
+        attempt.baseline = await readAgentWorkspacePublishBaseline(
+          queryClient,
+          conversationId,
+        );
+        setAttemptStates((current) =>
+          current[conversationId]?.token === token
+            ? {
+                ...current,
+                [conversationId]: renderableAttemptState(attempt),
+              }
+            : current,
+        );
+        if (activeAttemptsRef.current.get(conversationId)?.token !== token) {
+          return;
+        }
+        try {
+          const result = await chatApi.publishAgentConversationWorkspace(conversationId);
+          if (activeAttemptsRef.current.get(conversationId)?.token !== token) {
+            void invalidateWorkspaceQueries(queryClient, conversationId);
+            return;
           }
-          invalidateConversationDataQueries(queryClient, conversationId);
-        } else {
-          const description = agentWorkspaceOperationToastDescription(
-            conversationTitle,
-            errorMessage,
+          const terminalStatus = getAgentWorkspaceTerminalPublicationStatus(
+            result.workspace,
           );
-          markAgentWorkspaceOperationToastSettled(publishToastId);
-          toast.error("Failed to publish branch", {
-            closeButton: true,
-            ...(description ? { description } : {}),
-            dismissible: true,
-            duration: AGENT_WORKSPACE_OPERATION_ERROR_DURATION_MS,
-            id: publishToastId,
+          if (terminalStatus) {
+            finalizeAttempt(attempt, { kind: "terminal", status: terminalStatus });
+            return;
+          }
+          if (result.workspace.maintenanceOperation?.status === "active") {
+            queryClient.setQueryData(
+              agentWorkspaceKeys.workspace(conversationId),
+              result.workspace,
+            );
+            watchAgentWorkspaceOperation({
+              conversationId: result.workspace.conversationId,
+              projectId: result.workspace.projectId,
+              conversationTitle: null,
+              kind: "observed",
+              startedAtMs: null,
+            });
+            return;
+          }
+          if (isAgentWorkspacePublishActive(result.workspace)) {
+            void invalidateWorkspaceQueries(queryClient, conversationId);
+            return;
+          }
+          finalizeAttempt(attempt, { kind: "success", workspace: result.workspace });
+        } catch (error) {
+          if (activeAttemptsRef.current.get(conversationId)?.token !== token) {
+            void invalidateWorkspaceQueries(queryClient, conversationId);
+            return;
+          }
+          const detail = agentWorkspaceOperationErrorDetail(
+            error,
+            "Failed to publish branch",
+          );
+          let refreshedWorkspace: AgentConversationWorkspace | null = null;
+          try {
+            refreshedWorkspace =
+              await chatApi.getAgentConversationWorkspace(conversationId);
+          } catch {
+            // The direct error remains authoritative without a workspace refresh.
+          }
+          if (activeAttemptsRef.current.get(conversationId)?.token !== token) {
+            void invalidateWorkspaceQueries(queryClient, conversationId);
+            return;
+          }
+          const terminalStatus = getAgentWorkspaceTerminalPublicationStatus(
+            refreshedWorkspace,
+          );
+          if (terminalStatus) {
+            finalizeAttempt(attempt, { kind: "terminal", status: terminalStatus });
+            return;
+          }
+          if (refreshedWorkspace?.maintenanceOperation?.status === "active") {
+            queryClient.setQueryData(
+              agentWorkspaceKeys.workspace(conversationId),
+              refreshedWorkspace,
+            );
+            watchAgentWorkspaceOperation({
+              conversationId: refreshedWorkspace.conversationId,
+              projectId: refreshedWorkspace.projectId,
+              conversationTitle: null,
+              kind: "observed",
+              startedAtMs: null,
+            });
+            return;
+          }
+          const receiptNeedsDurableResolution =
+            refreshedWorkspace?.publicationMetadataAttemptId !== null &&
+            refreshedWorkspace?.publicationMetadataAttemptId !== undefined &&
+            (isAgentWorkspacePublishActive(refreshedWorkspace) ||
+              (refreshedWorkspace.publicationMetadataPhase === "settled" &&
+                (refreshedWorkspace.publicationMetadataState === "applied" ||
+                  refreshedWorkspace.publicationMetadataState === "reconciled")));
+          if (receiptNeedsDurableResolution) {
+            void invalidateWorkspaceQueries(queryClient, conversationId);
+            return;
+          }
+          const needsAgent =
+            (refreshedWorkspace ?? workspace)?.publicationPushStatus === "needs_agent";
+          finalizeAttempt(attempt, {
+            detail,
+            kind: needsAgent ? "needs_agent" : "failure",
           });
         }
-      } finally {
-        setPublishingConversationId(null);
-      }
+      })();
+      return attempt.completion;
     },
     [
       activeWorkspace,
+      finalizeAttempt,
       findConversationById,
-      invalidateProjectConversations,
       optimisticWorkspacesByConversationId,
       queryClient,
       selectedConversationId,
-    ]
+    ],
   );
 
-  return {
-    handlePublishWorkspace,
-    publishingConversationId,
-  };
+  const publishAttemptsByConversationId = useMemo(
+    () =>
+      Object.fromEntries(
+        Object.values(attemptStates).map(({ conversationId, startedAtMs }) => [
+          conversationId,
+          { conversationId, startedAtMs },
+        ]),
+      ) as Record<string, AgentWorkspacePublishAttempt>,
+    [attemptStates],
+  );
+
+  return { handlePublishWorkspace, publishAttemptsByConversationId };
 }

@@ -4,33 +4,31 @@ use axum::{
 };
 use ralphx_lib::application::{
     agent_conversation_workspace::resolve_agent_conversation_workspace_path, AppState,
-    InteractiveProcessKey, TeamService, TeamStateTracker,
+    InteractiveProcessKey,
 };
 use ralphx_lib::commands::ExecutionState;
+use ralphx_lib::domain::agents::{AgentHarnessKind, AgentProviderSettings};
 use ralphx_lib::domain::entities::{
     ideation::{ChatMessage, IdeationSession, IdeationSessionStatus, SessionOrigin},
     project::{GitMode, Project},
     types::ProjectId,
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatContextType,
-    ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatContextType, ChatConversation,
+    ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, Persona, PersonaId,
+    PersonaStatus,
 };
 use ralphx_lib::domain::services::running_agent_registry::RunningAgentKey;
 use ralphx_lib::http_server::handlers::*;
 use ralphx_lib::http_server::project_scope::ProjectScope;
 use ralphx_lib::http_server::types::HttpServerState;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 async fn setup_test_state() -> HttpServerState {
     let app_state = Arc::new(AppState::new_test());
     let execution_state = Arc::new(ExecutionState::new());
-    let tracker = TeamStateTracker::new();
-    let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
     HttpServerState {
         app_state,
         execution_state,
-        team_tracker: tracker,
-        team_service,
         delegation_service: Default::default(),
     }
 }
@@ -113,12 +111,7 @@ async fn setup_external_session(
 }
 
 async fn create_message(state: &HttpServerState, msg: ChatMessage) {
-    state
-        .app_state
-        .chat_message_repo
-        .create(msg)
-        .await
-        .unwrap();
+    state.app_state.chat_message_repo.create(msg).await.unwrap();
 }
 
 async fn create_active_ideation_session(state: &HttpServerState) -> String {
@@ -138,7 +131,14 @@ async fn register_fake_ideation_agent(state: &HttpServerState, session_id: &str)
     state
         .app_state
         .running_agent_registry
-        .register(key, 99999, "test-conv".to_string(), "test-run".to_string(), None, None)
+        .register(
+            key,
+            99999,
+            "test-conv".to_string(),
+            "test-run".to_string(),
+            None,
+            None,
+        )
         .await;
 }
 
@@ -150,6 +150,146 @@ fn fill_queue(state: &HttpServerState, session_id: &str, n: usize) {
             format!("queued message {i}"),
         );
     }
+}
+
+fn external_persona_spawn_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+struct PersonaCaptureCli {
+    _temp_dir: tempfile::TempDir,
+    path: std::path::PathBuf,
+    ran_marker: std::path::PathBuf,
+    persona_marker: std::path::PathBuf,
+}
+
+fn make_persona_capture_cli() -> PersonaCaptureCli {
+    let temp_dir = tempfile::tempdir().expect("persona capture CLI tempdir");
+    let path = temp_dir.path().join("claude");
+    let ran_marker = temp_dir.path().join("ran");
+    let persona_marker = temp_dir.path().join("persona-injected");
+    let stdin_capture_path = temp_dir.path().join("stdin.txt");
+    std::fs::write(
+        &path,
+        format!(
+            "#!/bin/sh\nfor arg in \"$@\"; do\n  case \"$arg\" in *'<ralphx_agent_persona>'*) touch '{}' ;; esac\n  if [ -f \"$arg\" ] && grep -q '<ralphx_agent_persona>' \"$arg\"; then touch '{}'; fi\ndone\ncat > '{}'\ngrep -q '<ralphx_agent_persona>' '{}' && touch '{}'\ntouch '{}'\nprintf '%s\\n' '{{\"type\":\"result\",\"session_id\":\"external-persona-capture\",\"is_error\":false,\"result\":\"ok\",\"cost_usd\":0.0}}'\n",
+            persona_marker.display(),
+            persona_marker.display(),
+            stdin_capture_path.display(),
+            stdin_capture_path.display(),
+            persona_marker.display(),
+            ran_marker.display(),
+        ),
+    )
+    .expect("write persona capture CLI");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut permissions = std::fs::metadata(&path)
+            .expect("persona capture CLI metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&path, permissions).expect("make persona capture CLI executable");
+    }
+
+    PersonaCaptureCli {
+        _temp_dir: temp_dir,
+        path,
+        ran_marker,
+        persona_marker,
+    }
+}
+
+async fn configure_persona_capture_cli(state: &HttpServerState, cli_path: &std::path::Path) {
+    ralphx_lib::testing::seed_available_harness_probes_for_test();
+    let mut settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
+    settings.enabled = true;
+    settings.is_default = true;
+    settings.custom_binary_enabled = true;
+    settings.custom_binary_path = Some(cli_path.to_string_lossy().into_owned());
+    state
+        .app_state
+        .agent_provider_settings_repo
+        .upsert(&settings)
+        .await
+        .expect("seed capture CLI provider settings");
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn external_mcp_send_has_no_persona_block() {
+    let _spawn_lock = external_persona_spawn_lock().lock().expect("lock poisoned");
+    let _persona_flag = crate::support::env::EnvVarGuard::set("RALPHX_UI_AGENT_PERSONAS", "1");
+    let _spawn_permission =
+        crate::support::env::EnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    let state = setup_test_state().await;
+    let capture_cli = make_persona_capture_cli();
+    configure_persona_capture_cli(&state, &capture_cli.path).await;
+    let (project_id, session_id) =
+        setup_external_session(&state, "external-persona-project", "External persona send").await;
+
+    let persona = Persona {
+        id: PersonaId::from("external-handler-persona"),
+        artifact_id: None,
+
+        project_id: None,
+        slug: "external-handler-persona".to_string(),
+        name: "External Handler Persona".to_string(),
+        description: "must not enter external MCP sends".to_string(),
+        content: "<ralphx_agent_persona>external handler persona body</ralphx_agent_persona>"
+            .to_string(),
+        status: PersonaStatus::Active,
+        version: 1,
+        content_hash: "external-handler-persona-hash".to_string(),
+        source_session_id: None,
+        source_persona_id: None,
+        source_content_hash: None,
+        source_json: "{}".to_string(),
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+    };
+    state
+        .app_state
+        .persona_repo
+        .create(persona.clone())
+        .await
+        .expect("seed active persona");
+    let mut bound_conversation = ChatConversation::new_project(ProjectId::from_string(project_id));
+    bound_conversation.persona_id = Some(persona.id.to_string());
+    state
+        .app_state
+        .chat_conversation_repo
+        .create(bound_conversation)
+        .await
+        .expect("seed same-project bound conversation");
+
+    let result = ideation_message_http(
+        State(state),
+        unrestricted_scope(),
+        Json(IdeationMessageRequest {
+            session_id,
+            message: "external handler persona absence".to_string(),
+        }),
+    )
+    .await;
+    assert!(
+        result.is_ok(),
+        "external message should spawn through the handler"
+    );
+
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while !capture_cli.ran_marker.exists() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("capture CLI should run");
+    assert!(
+        !capture_cli.persona_marker.exists(),
+        "the external handler's final spawn command must not contain a persona block"
+    );
 }
 
 #[tokio::test]
@@ -326,7 +466,11 @@ async fn test_ideation_message_queued_when_agent_running() {
     )
     .await;
 
-    assert!(result.is_ok(), "expected Ok response, got: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "expected Ok response, got: {:?}",
+        result.err()
+    );
     let response = result.unwrap().0;
     assert_eq!(response.status, "queued");
 }
@@ -366,16 +510,25 @@ async fn test_ideation_message_sent_when_interactive_process_registered() {
 
     let mut written = String::new();
     let mut reader = BufReader::new(stdout);
-    reader.read_line(&mut written).await.expect("read cat stdout");
+    reader
+        .read_line(&mut written)
+        .await
+        .expect("read cat stdout");
     let _ = child.kill().await;
 
-    assert!(result.is_ok(), "expected Ok response, got: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "expected Ok response, got: {:?}",
+        result.err()
+    );
     let response = result.unwrap().0;
     assert_eq!(response.status, "sent");
     let payload: serde_json::Value = serde_json::from_str(written.trim_end()).expect("valid JSON");
     assert_eq!(payload["type"], "user");
     assert_eq!(payload["message"]["role"], "user");
-    let content = payload["message"]["content"].as_str().expect("content string");
+    let content = payload["message"]["content"]
+        .as_str()
+        .expect("content string");
     assert!(
         content.contains(&format!("<context_id>{session_id_str}</context_id>")),
         "content must include ideation context wrapper: {content}"
@@ -395,13 +548,19 @@ async fn test_ideation_message_unread_returns_409() {
     state
         .app_state
         .chat_message_repo
-        .create(ChatMessage::user_in_session(session_id.clone(), "user message"))
+        .create(ChatMessage::user_in_session(
+            session_id.clone(),
+            "user message",
+        ))
         .await
         .unwrap();
     state
         .app_state
         .chat_message_repo
-        .create(ChatMessage::orchestrator_in_session(session_id.clone(), "agent response"))
+        .create(ChatMessage::orchestrator_in_session(
+            session_id.clone(),
+            "agent response",
+        ))
         .await
         .unwrap();
 
@@ -427,13 +586,21 @@ async fn test_ideation_message_unread_returns_409() {
 #[tokio::test]
 async fn test_ideation_message_external_initial_message_allowed() {
     let state = setup_test_state().await;
-    let (_, session_id_str) = setup_external_session(&state, "proj-rbw-initial", "RBW Initial").await;
+    let (_, session_id_str) =
+        setup_external_session(&state, "proj-rbw-initial", "RBW Initial").await;
 
     let agent_key = RunningAgentKey::new("ideation", &session_id_str);
     state
         .app_state
         .running_agent_registry
-        .register(agent_key, 99999, "conv".to_string(), "run".to_string(), None, None)
+        .register(
+            agent_key,
+            99999,
+            "conv".to_string(),
+            "run".to_string(),
+            None,
+            None,
+        )
         .await;
 
     let result = ideation_message_http(
@@ -446,7 +613,11 @@ async fn test_ideation_message_external_initial_message_allowed() {
     )
     .await;
 
-    assert!(result.is_ok(), "expected Ok for initial message, got: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "expected Ok for initial message, got: {:?}",
+        result.err()
+    );
     let response = result.unwrap().0;
     assert_eq!(response.status, "queued");
 }
@@ -477,7 +648,14 @@ async fn test_ideation_message_post_read_allowed() {
     state
         .app_state
         .running_agent_registry
-        .register(agent_key, 99998, "conv2".to_string(), "run2".to_string(), None, None)
+        .register(
+            agent_key,
+            99998,
+            "conv2".to_string(),
+            "run2".to_string(),
+            None,
+            None,
+        )
         .await;
 
     let result = ideation_message_http(
@@ -490,7 +668,11 @@ async fn test_ideation_message_post_read_allowed() {
     )
     .await;
 
-    assert!(result.is_ok(), "expected Ok after reading, got: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "expected Ok after reading, got: {:?}",
+        result.err()
+    );
     let response = result.unwrap().0;
     assert_eq!(response.status, "queued");
 }
@@ -506,7 +688,10 @@ async fn test_ideation_message_internal_session_is_now_guarded() {
     state
         .app_state
         .chat_message_repo
-        .create(ChatMessage::orchestrator_in_session(session_id.clone(), "agent response"))
+        .create(ChatMessage::orchestrator_in_session(
+            session_id.clone(),
+            "agent response",
+        ))
         .await
         .unwrap();
 
@@ -535,7 +720,10 @@ async fn test_ideation_message_internal_session_is_now_guarded() {
     )
     .await;
 
-    assert!(result.is_err(), "internal session should now be guarded when there are unread messages");
+    assert!(
+        result.is_err(),
+        "internal session should now be guarded when there are unread messages"
+    );
     let (status, _) = result.unwrap_err();
     assert_eq!(status, axum::http::StatusCode::CONFLICT);
 
@@ -544,7 +732,10 @@ async fn test_ideation_message_internal_session_is_now_guarded() {
         State(state.clone()),
         unrestricted_scope(),
         Path(session_id_str.clone()),
-        Query(GetIdeationMessagesQuery { limit: 50, offset: 0 }),
+        Query(GetIdeationMessagesQuery {
+            limit: 50,
+            offset: 0,
+        }),
     )
     .await;
     assert!(read_result.is_ok());
@@ -560,7 +751,11 @@ async fn test_ideation_message_internal_session_is_now_guarded() {
     )
     .await;
 
-    assert!(result2.is_ok(), "message should be allowed after reading, got: {:?}", result2.err());
+    assert!(
+        result2.is_ok(),
+        "message should be allowed after reading, got: {:?}",
+        result2.err()
+    );
     let response = result2.unwrap().0;
     assert_eq!(response.status, "queued");
 }
@@ -573,19 +768,17 @@ async fn test_get_ideation_messages_updates_external_read_cursor() {
     let session_id = IdeationSessionId::from_string(session_id_str.clone());
 
     let msg = ChatMessage::orchestrator_in_session(session_id.clone(), "agent response");
-    let created_msg = state
-        .app_state
-        .chat_message_repo
-        .create(msg)
-        .await
-        .unwrap();
+    let created_msg = state.app_state.chat_message_repo.create(msg).await.unwrap();
     let expected_msg_id = created_msg.id.to_string();
 
     let result = get_ideation_messages_http(
         State(state.clone()),
         unrestricted_scope(),
         Path(session_id_str),
-        Query(GetIdeationMessagesQuery { limit: 50, offset: 0 }),
+        Query(GetIdeationMessagesQuery {
+            limit: 50,
+            offset: 0,
+        }),
     )
     .await;
 
@@ -616,19 +809,17 @@ async fn test_get_ideation_messages_internal_cursor_is_updated() {
     let session_id = IdeationSessionId::from_string(session_id_str.clone());
 
     let msg = ChatMessage::orchestrator_in_session(session_id.clone(), "agent response");
-    let created_msg = state
-        .app_state
-        .chat_message_repo
-        .create(msg)
-        .await
-        .unwrap();
+    let created_msg = state.app_state.chat_message_repo.create(msg).await.unwrap();
     let expected_msg_id = created_msg.id.to_string();
 
     let result = get_ideation_messages_http(
         State(state.clone()),
         unrestricted_scope(),
         Path(session_id_str),
-        Query(GetIdeationMessagesQuery { limit: 50, offset: 0 }),
+        Query(GetIdeationMessagesQuery {
+            limit: 50,
+            offset: 0,
+        }),
     )
     .await;
 
@@ -678,7 +869,10 @@ async fn test_count_unread_assistant_messages_sql_query() {
     assert_eq!(count, 0, "only user message: 0 unread");
 
     let m1 = repo
-        .create(ChatMessage::orchestrator_in_session(session_id.clone(), "agent reply 1"))
+        .create(ChatMessage::orchestrator_in_session(
+            session_id.clone(),
+            "agent reply 1",
+        ))
         .await
         .unwrap();
 
@@ -697,7 +891,10 @@ async fn test_count_unread_assistant_messages_sql_query() {
     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
     let m2 = repo
-        .create(ChatMessage::orchestrator_in_session(session_id.clone(), "agent reply 2"))
+        .create(ChatMessage::orchestrator_in_session(
+            session_id.clone(),
+            "agent reply 2",
+        ))
         .await
         .unwrap();
 
@@ -745,14 +942,11 @@ async fn test_start_ideation_returns_next_action_poll_status() {
 #[tokio::test]
 async fn test_status_idle_agent_next_action_send_message() {
     let state = setup_test_state().await;
-    let (_, session_id_str) = setup_session(&state, "proj-na-idle", "Idle Agent Status Session").await;
+    let (_, session_id_str) =
+        setup_session(&state, "proj-na-idle", "Idle Agent Status Session").await;
 
-    let result = get_ideation_status_http(
-        State(state),
-        unrestricted_scope(),
-        Path(session_id_str),
-    )
-    .await;
+    let result =
+        get_ideation_status_http(State(state), unrestricted_scope(), Path(session_id_str)).await;
 
     assert!(result.is_ok());
     let response = result.unwrap().0;
@@ -765,8 +959,12 @@ async fn test_status_idle_agent_next_action_send_message() {
 #[tokio::test]
 async fn test_status_generating_agent_next_action_wait() {
     let state = setup_test_state().await;
-    let (_, session_id_str) =
-        setup_session(&state, "proj-na-generating", "Generating Agent Status Session").await;
+    let (_, session_id_str) = setup_session(
+        &state,
+        "proj-na-generating",
+        "Generating Agent Status Session",
+    )
+    .await;
 
     let agent_key = RunningAgentKey::new("ideation", &session_id_str);
     state
@@ -782,19 +980,18 @@ async fn test_status_generating_agent_next_action_wait() {
         )
         .await;
 
-    let result = get_ideation_status_http(
-        State(state),
-        unrestricted_scope(),
-        Path(session_id_str),
-    )
-    .await;
+    let result =
+        get_ideation_status_http(State(state), unrestricted_scope(), Path(session_id_str)).await;
 
     assert!(result.is_ok());
     let response = result.unwrap().0;
     assert_eq!(response.agent_status, "generating");
     assert_eq!(response.next_action, "wait");
     let hint = response.hint.as_deref().unwrap_or("");
-    assert!(hint.contains("5-10s"), "generating hint must contain '5-10s', got: {hint}");
+    assert!(
+        hint.contains("5-10s"),
+        "generating hint must contain '5-10s', got: {hint}"
+    );
 }
 
 #[tokio::test]
@@ -840,12 +1037,8 @@ async fn test_status_waiting_with_unread_next_action_fetch_messages() {
     )
     .await;
 
-    let result = get_ideation_status_http(
-        State(state),
-        unrestricted_scope(),
-        Path(session_id_str),
-    )
-    .await;
+    let result =
+        get_ideation_status_http(State(state), unrestricted_scope(), Path(session_id_str)).await;
 
     drop(child);
 
@@ -855,7 +1048,10 @@ async fn test_status_waiting_with_unread_next_action_fetch_messages() {
     assert_eq!(response.unread_message_count, 1);
     assert_eq!(response.next_action, "fetch_messages");
     let hint = response.hint.as_deref().unwrap_or("");
-    assert!(hint.contains("Fetch messages"), "hint must mention fetching messages, got: {hint}");
+    assert!(
+        hint.contains("Fetch messages"),
+        "hint must mention fetching messages, got: {hint}"
+    );
 }
 
 #[tokio::test]
@@ -894,12 +1090,8 @@ async fn test_status_waiting_no_unread_next_action_send_message() {
         .register(ipr_key, stdin)
         .await;
 
-    let result = get_ideation_status_http(
-        State(state),
-        unrestricted_scope(),
-        Path(session_id_str),
-    )
-    .await;
+    let result =
+        get_ideation_status_http(State(state), unrestricted_scope(), Path(session_id_str)).await;
 
     drop(child);
 
@@ -909,7 +1101,10 @@ async fn test_status_waiting_no_unread_next_action_send_message() {
     assert_eq!(response.unread_message_count, 0);
     assert_eq!(response.next_action, "send_message");
     let hint = response.hint.as_deref().unwrap_or("");
-    assert!(hint.contains("ready for input"), "hint must mention ready for input, got: {hint}");
+    assert!(
+        hint.contains("ready for input"),
+        "hint must mention ready for input, got: {hint}"
+    );
 }
 
 #[tokio::test]
@@ -922,7 +1117,10 @@ async fn test_get_ideation_messages_next_action_idle() {
         State(state),
         unrestricted_scope(),
         Path(session_id_str),
-        Query(GetIdeationMessagesQuery { limit: 50, offset: 0 }),
+        Query(GetIdeationMessagesQuery {
+            limit: 50,
+            offset: 0,
+        }),
     )
     .await;
 
@@ -956,7 +1154,10 @@ async fn test_get_ideation_messages_next_action_generating() {
         State(state),
         unrestricted_scope(),
         Path(session_id_str),
-        Query(GetIdeationMessagesQuery { limit: 50, offset: 0 }),
+        Query(GetIdeationMessagesQuery {
+            limit: 50,
+            offset: 0,
+        }),
     )
     .await;
 
@@ -972,12 +1173,8 @@ async fn test_status_external_activity_phase_none_for_internal_session() {
     let (_, session_id_str) =
         setup_session(&state, "proj-na-phase", "Internal Session Phase Test").await;
 
-    let result = get_ideation_status_http(
-        State(state),
-        unrestricted_scope(),
-        Path(session_id_str),
-    )
-    .await;
+    let result =
+        get_ideation_status_http(State(state), unrestricted_scope(), Path(session_id_str)).await;
 
     assert!(result.is_ok());
     let response = result.unwrap().0;
@@ -999,7 +1196,10 @@ async fn test_ideation_message_queue_cap_returns_429_when_full() {
     fill_queue(&state, &session_id, cap);
 
     assert_eq!(
-        state.app_state.message_queue.count_for_context("ideation", &session_id),
+        state
+            .app_state
+            .message_queue
+            .count_for_context("ideation", &session_id),
         cap
     );
 
@@ -1079,7 +1279,10 @@ async fn test_ideation_message_persists_pending_prompt_when_execution_paused() {
     };
     let result = ideation_message_http(State(state.clone()), unrestricted_scope(), Json(req)).await;
 
-    assert!(result.is_ok(), "paused idle ideation message must be accepted durably");
+    assert!(
+        result.is_ok(),
+        "paused idle ideation message must be accepted durably"
+    );
     let response = result.unwrap().0;
     assert_eq!(response.status, "queued");
     assert_eq!(response.session_id, session_id);
@@ -1112,15 +1315,17 @@ async fn test_ideation_message_internal_session_unread_user_message_returns_409(
     // Proof obligation #1: External agent messaging an Internal session with unread user messages
     // → 409 CONFLICT. User messages from the UI must block the external agent.
     let state = setup_test_state().await;
-    let (_, session_id_str) =
-        setup_session(&state, "proj-int-user-msg", "Internal User Msg").await;
+    let (_, session_id_str) = setup_session(&state, "proj-int-user-msg", "Internal User Msg").await;
     let session_id = IdeationSessionId::from_string(session_id_str.clone());
 
     // Simulate a user message from the UI
     state
         .app_state
         .chat_message_repo
-        .create(ChatMessage::user_in_session(session_id.clone(), "hello from UI"))
+        .create(ChatMessage::user_in_session(
+            session_id.clone(),
+            "hello from UI",
+        ))
         .await
         .unwrap();
 
@@ -1146,8 +1351,7 @@ async fn test_ideation_message_internal_session_unread_user_message_returns_409(
 async fn test_ideation_message_internal_empty_session_allows_send() {
     // Proof obligation #6: Empty session (no messages) → allowed regardless of origin.
     let state = setup_test_state().await;
-    let (_, session_id_str) =
-        setup_session(&state, "proj-int-empty", "Internal Empty").await;
+    let (_, session_id_str) = setup_session(&state, "proj-int-empty", "Internal Empty").await;
 
     let result = ideation_message_http(
         State(state),
@@ -1176,15 +1380,17 @@ async fn test_ideation_message_system_role_does_not_trigger_guard() {
     // Proof obligation / deadlock prevention: System-role messages (invisible to external agents
     // via GET /messages) must NOT count as unread. If they did, agents could never unblock.
     let state = setup_test_state().await;
-    let (_, session_id_str) =
-        setup_session(&state, "proj-int-system", "Internal System").await;
+    let (_, session_id_str) = setup_session(&state, "proj-int-system", "Internal System").await;
     let session_id = IdeationSessionId::from_string(session_id_str.clone());
 
     // Create a system message (invisible to external agents)
     state
         .app_state
         .chat_message_repo
-        .create(ChatMessage::system_in_session(session_id.clone(), "system context injection"))
+        .create(ChatMessage::system_in_session(
+            session_id.clone(),
+            "system context injection",
+        ))
         .await
         .unwrap();
 
@@ -1222,21 +1428,30 @@ async fn test_pagination_offset_advances_cursor_to_page_boundary_only() {
     let msg1 = state
         .app_state
         .chat_message_repo
-        .create(ChatMessage::orchestrator_in_session(session_id.clone(), "msg 1 oldest"))
+        .create(ChatMessage::orchestrator_in_session(
+            session_id.clone(),
+            "msg 1 oldest",
+        ))
         .await
         .unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     let _msg2 = state
         .app_state
         .chat_message_repo
-        .create(ChatMessage::orchestrator_in_session(session_id.clone(), "msg 2 middle"))
+        .create(ChatMessage::orchestrator_in_session(
+            session_id.clone(),
+            "msg 2 middle",
+        ))
         .await
         .unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     let msg3 = state
         .app_state
         .chat_message_repo
-        .create(ChatMessage::orchestrator_in_session(session_id.clone(), "msg 3 newest"))
+        .create(ChatMessage::orchestrator_in_session(
+            session_id.clone(),
+            "msg 3 newest",
+        ))
         .await
         .unwrap();
 
@@ -1246,7 +1461,10 @@ async fn test_pagination_offset_advances_cursor_to_page_boundary_only() {
         State(state.clone()),
         unrestricted_scope(),
         Path(session_id_str.clone()),
-        Query(GetIdeationMessagesQuery { limit: 50, offset: 1 }),
+        Query(GetIdeationMessagesQuery {
+            limit: 50,
+            offset: 1,
+        }),
     )
     .await
     .unwrap();
@@ -1289,7 +1507,10 @@ async fn test_pagination_offset_advances_cursor_to_page_boundary_only() {
         State(state.clone()),
         unrestricted_scope(),
         Path(session_id_str.clone()),
-        Query(GetIdeationMessagesQuery { limit: 50, offset: 0 }),
+        Query(GetIdeationMessagesQuery {
+            limit: 50,
+            offset: 0,
+        }),
     )
     .await
     .unwrap();

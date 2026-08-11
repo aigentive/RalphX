@@ -1,6 +1,6 @@
 /**
  * TimeoutWarning component tests
- * Tests: renders at 70% threshold, no render below, dismiss, context-aware thresholds
+ * Tests: renders at 70% threshold, no render below, dismiss, configurable thresholds
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -116,8 +116,8 @@ describe("TimeoutWarning", () => {
     expect(onDismiss).toHaveBeenCalledOnce();
   });
 
-  it("uses 600s threshold for non-team mode (effectiveTimeoutMs=600_000)", () => {
-    const effectiveTimeoutMs = 600_000; // 600s non-team
+  it("uses a configured 600s threshold", () => {
+    const effectiveTimeoutMs = 600_000;
     // At exactly 70% = 420s
     const toolCallStartTime = Date.now() - 420_000;
 
@@ -134,8 +134,8 @@ describe("TimeoutWarning", () => {
     expect(screen.getByTestId("timeout-warning-banner")).toHaveTextContent("600s");
   });
 
-  it("uses 3600s threshold for team mode (effectiveTimeoutMs=3_600_000)", () => {
-    const effectiveTimeoutMs = 3_600_000; // 3600s team mode
+  it("uses a configured 3600s threshold", () => {
+    const effectiveTimeoutMs = 3_600_000;
     // At exactly 70% = 2520s
     const toolCallStartTime = Date.now() - 2_520_000;
 
@@ -152,8 +152,8 @@ describe("TimeoutWarning", () => {
     expect(screen.getByTestId("timeout-warning-banner")).toHaveTextContent("3600s");
   });
 
-  it("does not render for team mode when below 70% of 3600s threshold", () => {
-    const effectiveTimeoutMs = 3_600_000; // 3600s team mode
+  it("does not render below 70% of a configured 3600s threshold", () => {
+    const effectiveTimeoutMs = 3_600_000;
     // At 60% = 2160s — below threshold
     const toolCallStartTime = Date.now() - 2_160_000;
 

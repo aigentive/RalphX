@@ -1,25 +1,47 @@
 use super::*;
 use crate::domain::agents::{AgentHarnessKind, AgentLane, LogicalEffort};
+use crate::infrastructure::agents::claude::agent_config::process_config::canonical_process_mapping;
 use crate::infrastructure::agents::claude::agent_names::{
-    SHORT_AGENT_WORKSPACE_PR_FIXER, SHORT_AGENT_WORKSPACE_REPAIR, SHORT_CHAT_PROJECT,
-    SHORT_CHAT_TASK, SHORT_CODER, SHORT_DEEP_RESEARCHER, SHORT_GENERAL_EXPLORER,
-    SHORT_GENERAL_WORKER, SHORT_IDEATION_ADVOCATE, SHORT_IDEATION_CRITIC,
-    SHORT_IDEATION_SPECIALIST_BACKEND, SHORT_IDEATION_SPECIALIST_CODE_QUALITY,
-    SHORT_IDEATION_SPECIALIST_FRONTEND, SHORT_IDEATION_SPECIALIST_INFRA,
-    SHORT_IDEATION_SPECIALIST_UX, SHORT_IDEATION_TEAM_LEAD, SHORT_IDEATION_TEAM_MEMBER,
-    SHORT_MEMORY_CAPTURE, SHORT_MEMORY_MAINTAINER, SHORT_MERGER, SHORT_ORCHESTRATOR,
-    SHORT_ORCHESTRATOR_IDEATION, SHORT_ORCHESTRATOR_IDEATION_READONLY,
-    SHORT_PLAN_CRITIC_COMPLETENESS, SHORT_PLAN_CRITIC_IMPLEMENTATION_FEASIBILITY,
-    SHORT_PLAN_VERIFIER, SHORT_PROJECT_ANALYZER, SHORT_PR_DESCRIBER, SHORT_PR_REVIEWER,
+    SHORT_AGENT_WORKSPACE_PR_FIXER, SHORT_AGENT_WORKSPACE_REPAIR,
+    SHORT_AUTOMATION_DECOMPOSITION_VERIFIER, SHORT_AUTOMATION_JUDGE, SHORT_AUTOMATION_PLAN_JUDGE,
+    SHORT_AUTOMATION_SETUP, SHORT_BRANCH_UPDATER, SHORT_CHAT_PROJECT, SHORT_CHAT_TASK, SHORT_CODER,
+    SHORT_DEEP_RESEARCHER, SHORT_GENERAL_EXPLORER, SHORT_GENERAL_WORKER, SHORT_IDEATION_ADVOCATE,
+    SHORT_IDEATION_CRITIC, SHORT_IDEATION_SPECIALIST_BACKEND, SHORT_IDEATION_SPECIALIST_FRONTEND,
+    SHORT_IDEATION_SPECIALIST_INFRA, SHORT_MEMORY_CAPTURE, SHORT_MEMORY_MAINTAINER, SHORT_MERGER,
+    SHORT_ORCHESTRATOR, SHORT_ORCHESTRATOR_IDEATION, SHORT_ORCHESTRATOR_IDEATION_READONLY,
+    SHORT_PERSONA_EXTRACTOR, SHORT_PROJECT_ANALYZER, SHORT_PR_DESCRIBER, SHORT_PR_REVIEWER,
     SHORT_QA_EXECUTOR, SHORT_QA_PREP, SHORT_REVIEWER, SHORT_REVIEW_CHAT, SHORT_REVIEW_HISTORY,
-    SHORT_SESSION_NAMER, SHORT_WORKER, SHORT_WORKER_TEAM, SHORT_WORKSPACE_REVIEWER,
+    SHORT_SESSION_NAMER, SHORT_TASK_MANAGER, SHORT_WORKER, SHORT_WORKSPACE_REVIEWER,
 };
 use crate::infrastructure::agents::harness_agent_catalog::{
     has_canonical_agent_definition, list_canonical_prompt_backed_agents, load_harness_agent_prompt,
     AgentPromptHarness,
 };
 use std::collections::HashSet;
+use std::ffi::OsString;
 use std::path::PathBuf;
+
+struct EnvGuard {
+    key: &'static str,
+    original: Option<OsString>,
+}
+
+impl EnvGuard {
+    fn set(key: &'static str, value: &str) -> Self {
+        let original = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self { key, original }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        match &self.original {
+            Some(value) => std::env::set_var(self.key, value),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
 
 #[test]
 fn test_yaml_loaded_has_unique_names() {
@@ -45,10 +67,6 @@ fn test_canonical_agent_project_root_resolves_live_claude_agents() {
     assert!(
         live_agents.contains(&SHORT_ORCHESTRATOR_IDEATION.to_string()),
         "canonical project root should expose live Claude agents for runtime config synthesis"
-    );
-    assert!(
-        live_agents.contains(&SHORT_PLAN_VERIFIER.to_string()),
-        "canonical project root should expose verifier agents for runtime config synthesis"
     );
 }
 
@@ -116,6 +134,35 @@ fn test_get_allowed_tools_mcp_only_agent() {
         get_allowed_tools("ralphx-utility-session-namer"),
         Some(String::new())
     );
+}
+
+#[test]
+fn persona_extractor_resolved_cli_tools_exclude_native_fs_exec_and_are_nonempty() {
+    let config = get_agent_config(SHORT_PERSONA_EXTRACTOR)
+        .expect("persona extractor should resolve through the production config path");
+
+    assert!(
+        !config.resolved_cli_tools.is_empty(),
+        "A7 containment requires a non-empty --tools value so Claude cannot fall back to its native defaults"
+    );
+    for forbidden in [
+        "Read",
+        "Grep",
+        "Glob",
+        "Bash",
+        "Write",
+        "Edit",
+        "NotebookEdit",
+    ] {
+        assert!(
+            !config
+                .resolved_cli_tools
+                .iter()
+                .any(|tool| tool == forbidden),
+            "persona extractor must exclude native {forbidden}; got {:?}",
+            config.resolved_cli_tools
+        );
+    }
 }
 
 #[test]
@@ -274,6 +321,7 @@ fn test_all_agent_names_are_known() {
         SHORT_REVIEW_HISTORY,
         SHORT_GENERAL_EXPLORER,
         SHORT_GENERAL_WORKER,
+        SHORT_TASK_MANAGER,
         SHORT_AGENT_WORKSPACE_REPAIR,
         SHORT_AGENT_WORKSPACE_PR_FIXER,
         SHORT_PR_REVIEWER,
@@ -287,35 +335,23 @@ fn test_all_agent_names_are_known() {
         SHORT_DEEP_RESEARCHER,
         SHORT_PROJECT_ANALYZER,
         SHORT_MERGER,
+        SHORT_BRANCH_UPDATER,
         SHORT_MEMORY_MAINTAINER,
         SHORT_MEMORY_CAPTURE,
-        // Plan verification critic agents
-        SHORT_PLAN_CRITIC_COMPLETENESS,
-        SHORT_PLAN_CRITIC_IMPLEMENTATION_FEASIBILITY,
-        // Plan verifier agent (owns the verification round loop)
-        SHORT_PLAN_VERIFIER,
-        // Team lead variants
-        SHORT_IDEATION_TEAM_LEAD,
-        SHORT_WORKER_TEAM,
-        SHORT_IDEATION_TEAM_MEMBER,
-        // Ideation specialist agents (spawned by ralphx-ideation-team-lead)
+        // Ideation specialist agents
         SHORT_IDEATION_SPECIALIST_BACKEND,
         SHORT_IDEATION_SPECIALIST_FRONTEND,
         SHORT_IDEATION_SPECIALIST_INFRA,
-        SHORT_IDEATION_SPECIALIST_UX,
-        SHORT_IDEATION_SPECIALIST_CODE_QUALITY,
         SHORT_IDEATION_ADVOCATE,
         SHORT_IDEATION_CRITIC,
-        // Prompt quality specialist added in recent commits
-        "ralphx-ideation-specialist-prompt-quality",
-        // Intent alignment specialist added in recent commits
-        "ralphx-ideation-specialist-intent",
-        // Pipeline safety specialist added in synthetic-data hardening session
-        "ralphx-ideation-specialist-pipeline-safety",
-        // State machine safety specialist added in synthetic-data hardening session
-        "ralphx-ideation-specialist-state-machine",
         // Utility agent used for plan complexity checks.
         "ralphx-utility-plan-complexity",
+        SHORT_AUTOMATION_SETUP,
+        SHORT_AUTOMATION_JUDGE,
+        SHORT_AUTOMATION_PLAN_JUDGE,
+        SHORT_AUTOMATION_DECOMPOSITION_VERIFIER,
+        // Persona extractor (agent persona system, PR-14)
+        "ralphx-persona-extractor",
     ]);
 
     for agent in agent_configs() {
@@ -332,9 +368,6 @@ fn test_all_live_runtime_agents_have_canonical_claude_prompts() {
     let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
 
     for agent in agent_configs() {
-        if agent.name == SHORT_IDEATION_TEAM_MEMBER {
-            continue;
-        }
         assert!(
             has_canonical_agent_definition(&project_root, &agent.name),
             "Missing canonical agent definition for {}",
@@ -385,12 +418,202 @@ fn test_runtime_config_dir_path_resolution_uses_bundled_config_dir() {
 }
 
 #[test]
+fn early_file_logging_environment_override_has_highest_precedence() {
+    assert!(resolve_file_logging_from_sources(
+        Some("YES"),
+        None,
+        "file_logging: false"
+    ));
+    assert!(!resolve_file_logging_from_sources(
+        Some("0"),
+        None,
+        "file_logging: true"
+    ));
+}
+
+#[test]
+fn early_file_logging_public_resolver_reads_environment_override() {
+    let _env = EnvGuard::set("RALPHX_FILE_LOGGING", "0");
+
+    assert!(!resolve_file_logging_early());
+}
+
+#[test]
+fn early_file_logging_prefers_configured_runtime_file() {
+    let temp_dir = tempfile::TempDir::new().expect("temp dir");
+    let config_path = temp_dir.path().join("ralphx.yaml");
+    std::fs::write(&config_path, "file_logging: false\n").expect("write runtime config");
+
+    assert!(!resolve_file_logging_from_sources(
+        None,
+        Some(&config_path),
+        "file_logging: true"
+    ));
+}
+
+#[test]
+fn early_file_logging_uses_embedded_config_before_runtime_setup() {
+    assert!(!resolve_file_logging_from_sources(
+        None,
+        None,
+        "file_logging: false"
+    ));
+}
+
+#[test]
+fn early_file_logging_falls_back_from_missing_or_malformed_runtime_config() {
+    let temp_dir = tempfile::TempDir::new().expect("temp dir");
+    let missing_path = temp_dir.path().join("missing.yaml");
+    let malformed_path = temp_dir.path().join("malformed.yaml");
+    std::fs::write(&malformed_path, "file_logging: [\n").expect("write malformed config");
+
+    assert!(!resolve_file_logging_from_sources(
+        None,
+        Some(&missing_path),
+        "file_logging: false"
+    ));
+    assert!(!resolve_file_logging_from_sources(
+        None,
+        Some(&malformed_path),
+        "file_logging: false"
+    ));
+    assert!(resolve_file_logging_from_sources(
+        None,
+        Some(&malformed_path),
+        "file_logging: ["
+    ));
+}
+
+#[test]
+fn early_file_logging_limits_prefer_environment_then_runtime_config() {
+    assert_eq!(
+        resolve_file_logging_limits_from_sources(
+            Some("42"),
+            Some("7"),
+            None,
+            "file_logging_max_bytes: 9\nfile_logging_keep_files: 3"
+        ),
+        (42, 7)
+    );
+
+    let temp_dir = tempfile::TempDir::new().expect("temp dir");
+    let config_path = temp_dir.path().join("ralphx.yaml");
+    std::fs::write(
+        &config_path,
+        "file_logging_max_bytes: 12\nfile_logging_keep_files: 4\n",
+    )
+    .expect("write runtime config");
+
+    assert_eq!(
+        resolve_file_logging_limits_from_sources(
+            None,
+            None,
+            Some(&config_path),
+            "file_logging_max_bytes: 9\nfile_logging_keep_files: 3"
+        ),
+        (12, 4)
+    );
+}
+
+#[test]
+fn early_file_logging_zero_max_bytes_falls_back_to_default_from_any_source() {
+    let temp_dir = tempfile::TempDir::new().expect("temp dir");
+    let config_path = temp_dir.path().join("ralphx.yaml");
+    std::fs::write(
+        &config_path,
+        "file_logging_max_bytes: 0\nfile_logging_keep_files: 4\n",
+    )
+    .expect("write runtime config");
+
+    // YAML zero must not produce a writer that records nothing.
+    let (max_bytes, keep_files) = resolve_file_logging_limits_from_sources(
+        None,
+        None,
+        Some(&config_path),
+        "file_logging_max_bytes: 9\nfile_logging_keep_files: 3",
+    );
+    assert_eq!(max_bytes, 1024 * 1024 * 1024);
+    assert_eq!(keep_files, 4);
+
+    // Environment zero was already rejected; it must fall through to config.
+    assert_eq!(
+        resolve_file_logging_limits_from_sources(
+            Some("0"),
+            None,
+            None,
+            "file_logging_max_bytes: 9\nfile_logging_keep_files: 3"
+        ),
+        (9, 3)
+    );
+}
+
+#[test]
+fn early_file_logging_limits_default_on_malformed_yaml() {
+    let defaults = (
+        default_file_logging_max_bytes(),
+        default_file_logging_keep_files(),
+    );
+    assert_eq!(
+        resolve_file_logging_limits_from_sources(None, None, None, "totally: [broken"),
+        defaults,
+    );
+}
+
+#[test]
+fn early_file_logging_limits_missing_runtime_config_uses_embedded() {
+    let temp_dir = tempfile::TempDir::new().expect("temp dir");
+    let missing = temp_dir.path().join("does-not-exist.yaml");
+    assert_eq!(
+        resolve_file_logging_limits_from_sources(
+            None,
+            None,
+            Some(&missing),
+            "file_logging_max_bytes: 42\nfile_logging_keep_files: 2"
+        ),
+        (42, 2)
+    );
+}
+
+#[test]
+fn early_file_logging_limits_keep_files_env_overrides_config() {
+    assert_eq!(
+        resolve_file_logging_limits_from_sources(
+            None,
+            Some("11"),
+            None,
+            "file_logging_max_bytes: 42\nfile_logging_keep_files: 2"
+        ),
+        (42, 11)
+    );
+}
+
+#[test]
+fn early_file_logging_limits_non_numeric_env_falls_through() {
+    assert_eq!(
+        resolve_file_logging_limits_from_sources(
+            Some("abc"),
+            Some("xyz"),
+            None,
+            "file_logging_max_bytes: 42\nfile_logging_keep_files: 2"
+        ),
+        (42, 2)
+    );
+}
+
+#[test]
+fn database_maintenance_config_yaml_deserializes_with_defaults() {
+    let yaml = "database_maintenance:\n  db_auto_compact_enabled: false\n";
+    let cfg: RalphxConfig = serde_yaml::from_str(yaml).unwrap();
+    assert!(!cfg.database_maintenance.db_auto_compact_enabled);
+    assert_eq!(
+        cfg.database_maintenance.db_auto_compact_max_db_bytes,
+        2_147_483_648
+    );
+}
+
+#[test]
 fn test_live_runtime_agents_no_longer_reference_deprecated_plugin_prompt_paths() {
     for agent in agent_configs() {
-        if agent.name == SHORT_IDEATION_TEAM_MEMBER {
-            continue;
-        }
-
         assert!(
             !agent.system_prompt_file.starts_with("plugins/app/agents/"),
             "live runtime agent {} still points at deleted legacy prompt path {}",
@@ -404,159 +627,6 @@ fn test_live_runtime_agents_no_longer_reference_deprecated_plugin_prompt_paths()
             agent.system_prompt_file
         );
     }
-}
-
-#[test]
-fn test_plan_verifier_prompt_keeps_runtime_failure_and_optional_specialist_rules() {
-    let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
-    let prompt = load_harness_agent_prompt(
-        &project_root,
-        "ralphx-plan-verifier",
-        AgentPromptHarness::Claude,
-    )
-    .expect("failed to load canonical ralphx-plan-verifier prompt");
-
-    assert!(
-        prompt.contains("run_verification_round"),
-        "ralphx-plan-verifier prompt must route round execution through the backend-owned round helper"
-    );
-    assert!(
-        prompt.contains("Optional specialists are advisory"),
-        "ralphx-plan-verifier prompt must keep optional specialists non-authoritative"
-    );
-    assert!(
-        prompt.contains("Infra/runtime failure is not a plan verdict"),
-        "ralphx-plan-verifier prompt must make runtime failure non-authoritative"
-    );
-    assert!(
-        !prompt.contains("Task("),
-        "ralphx-plan-verifier prompt should not mention removed provider-specific subagent syntax"
-    );
-}
-
-#[test]
-fn test_plan_verifier_prompt_uses_backend_owned_verification_helpers() {
-    let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
-    let prompt = load_harness_agent_prompt(
-        &project_root,
-        "ralphx-plan-verifier",
-        AgentPromptHarness::Claude,
-    )
-    .expect("failed to load canonical ralphx-plan-verifier prompt");
-
-    assert!(
-        prompt.contains("mcp__ralphx__run_verification_enrichment"),
-        "ralphx-plan-verifier prompt must use the backend-owned enrichment helper"
-    );
-    assert!(
-        prompt.contains("mcp__ralphx__run_verification_round"),
-        "ralphx-plan-verifier prompt must route full rounds through the backend-owned round helper"
-    );
-    assert!(
-        prompt.contains("round_report"),
-        "ralphx-plan-verifier prompt must treat the backend round report as the authoritative next-step signal"
-    );
-    assert!(
-        prompt.contains("treat it as actionable plan feedback: revise the plan first"),
-        "ralphx-plan-verifier prompt must revise first on actionable needs_revision feedback"
-    );
-    assert!(
-        prompt.contains("do not call terminal cleanup immediately after an actionable `needs_revision` round report"),
-        "ralphx-plan-verifier prompt must not finalize immediately after actionable needs_revision feedback"
-    );
-    assert!(
-        prompt.contains("actionable `needs_revision` is non-terminal until you have a terminal `convergence_reason`"),
-        "ralphx-plan-verifier prompt must treat actionable needs_revision as non-terminal until a terminal convergence reason exists"
-    );
-    assert!(
-        prompt.contains("if terminal cleanup rejects actionable `needs_revision` because `convergence_reason` is missing"),
-        "ralphx-plan-verifier prompt must tell the model to continue the loop when terminal cleanup rejects actionable needs_revision"
-    );
-    assert!(
-        !prompt.contains("if `round_report.status === \"needs_revision\"` and `round_report.in_progress === false`, finish as `needs_revision`"),
-        "ralphx-plan-verifier prompt should not finalize immediately on every terminal needs_revision round report"
-    );
-    assert!(
-        !prompt.contains("created_after"),
-        "ralphx-plan-verifier prompt should not supply round-settlement timestamps from prompt memory"
-    );
-    assert!(
-        prompt.contains("omit `session_id`"),
-        "ralphx-plan-verifier prompt must rely on backend parent-session injection for verifier-owned helpers"
-    );
-    assert!(
-        !prompt.contains("mcp__ralphx__delegate_start"),
-        "ralphx-plan-verifier prompt should not drift back to manual delegate orchestration"
-    );
-    assert!(
-        !prompt.contains("mcp__ralphx__await_verification_round_settlement"),
-        "ralphx-plan-verifier prompt should not drift back to low-level settlement choreography"
-    );
-    assert!(
-        !prompt.contains("required_delegates"),
-        "ralphx-plan-verifier prompt should not pass required delegate state during terminal cleanup"
-    );
-    assert!(
-        prompt.contains("do not hand-assemble final gaps"),
-        "ralphx-plan-verifier prompt must leave terminal gap derivation to the backend helper"
-    );
-    assert!(
-        !prompt.contains("rescue_budget_exhausted"),
-        "ralphx-plan-verifier prompt should not pass settlement bookkeeping flags during terminal cleanup"
-    );
-    assert!(
-        !prompt.contains("\"gaps\": <final_merged_gaps>"),
-        "ralphx-plan-verifier prompt should not require hand-assembled terminal gaps once the backend helper derives canonical round gaps"
-    );
-    assert!(
-        !prompt.contains("get_session_messages(session_id: <the SESSION_ID value above>)"),
-        "ralphx-plan-verifier intent specialist prompt must anchor on the plan goal instead of raw parent chat history"
-    );
-    assert!(
-        !prompt.contains("mcp__ralphx__get_verification_round_artifacts"),
-        "ralphx-plan-verifier prompt should not drift back to manual artifact polling"
-    );
-    assert!(
-        !prompt.contains("round_result.gap_counts.critical === 0"),
-        "ralphx-plan-verifier prompt should not re-implement zero-blocking convergence in prompt logic"
-    );
-    assert!(
-        !prompt.contains("current_round >= max_rounds"),
-        "ralphx-plan-verifier prompt should not re-implement max-round terminal logic in prompt prose"
-    );
-    assert!(
-        !prompt.contains("Task(subagent_type:"),
-        "ralphx-plan-verifier prompt should use RalphX-native delegation rather than Claude Task syntax"
-    );
-    assert!(
-        !prompt.contains("max_wait_ms: 8000"),
-        "ralphx-plan-verifier prompt should not drift back to tiny required-critic wait budgets"
-    );
-    assert!(
-        !prompt.contains("max_wait_ms: 4000"),
-        "ralphx-plan-verifier prompt should not drift back to tiny enrichment wait budgets"
-    );
-}
-
-#[test]
-fn test_ideation_claude_prompt_prioritizes_explicit_reverify_requests() {
-    let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
-    let prompt =
-        load_harness_agent_prompt(&project_root, "ralphx-ideation", AgentPromptHarness::Claude)
-            .expect("failed to load canonical ralphx-ideation prompt");
-
-    assert!(
-        prompt.contains(
-            "If the user explicitly asks to re-run or start a fresh verification round"
-        ),
-        "ralphx-ideation Claude prompt must prioritize explicit rerun requests over stale terminal verification results"
-    );
-    assert!(
-        prompt.contains(
-            "start a fresh verification child immediately instead of summarizing blockers and reopening choices"
-        ),
-        "ralphx-ideation Claude prompt must not reopen planning choices when the user already requested a rerun"
-    );
 }
 
 #[test]
@@ -631,6 +701,98 @@ agents:
         Some(serde_json::json!({
             "sandbox": { "enabled": false }
         }))
+    );
+}
+
+#[test]
+fn test_automations_config_parses_top_level_block() {
+    let yaml = r#"
+automations:
+  scheduler_poll_secs: 45
+  signal_failure_pause_threshold: 7
+  judge_timeout_secs: 240
+  publish_grace_secs: 90
+  max_run_duration_secs: 7200
+  plan_max_revision_rounds: 5
+  plan_judge_model:
+    claude: claude-sonnet-5
+    codex: gpt-5.4
+"#;
+    let parsed = parse_config_no_env_overrides(yaml).expect("config should parse");
+
+    assert_eq!(parsed.automations.scheduler_poll_secs, 45);
+    assert_eq!(parsed.automations.signal_failure_pause_threshold, 7);
+    assert_eq!(parsed.automations.judge_timeout_secs, 240);
+    assert_eq!(parsed.automations.publish_grace_secs, 90);
+    assert_eq!(parsed.automations.max_run_duration_secs, 7200);
+    assert_eq!(parsed.automations.plan_max_revision_rounds, 5);
+    assert_eq!(
+        parsed
+            .automations
+            .plan_judge_model
+            .get(&AgentHarnessKind::Claude)
+            .map(String::as_str),
+        Some("claude-sonnet-5")
+    );
+    assert_eq!(
+        parsed
+            .automations
+            .plan_judge_model
+            .get(&AgentHarnessKind::Codex)
+            .map(String::as_str),
+        Some("gpt-5.4")
+    );
+}
+
+#[test]
+fn test_automations_config_env_overrides() {
+    let parsed = parse_config_with_lookup("", &|name| match name {
+        "RALPHX_AUTOMATIONS_SCHEDULER_POLL_SECS" => Some("45".to_string()),
+        "RALPHX_AUTOMATIONS_SIGNAL_FAILURE_PAUSE_THRESHOLD" => Some("7".to_string()),
+        "RALPHX_AUTOMATIONS_JUDGE_TIMEOUT_SECS" => Some("240".to_string()),
+        "RALPHX_AUTOMATIONS_PUBLISH_GRACE_SECS" => Some("90".to_string()),
+        "RALPHX_AUTOMATIONS_MAX_RUN_DURATION_SECS" => Some("7200".to_string()),
+        "RALPHX_AUTOMATIONS_PLAN_MAX_REVISION_ROUNDS" => Some("6".to_string()),
+        "RALPHX_AUTOMATIONS_PLAN_JUDGE_MODEL_CLAUDE" => Some("claude-sonnet-5".to_string()),
+        "RALPHX_AUTOMATIONS_PLAN_JUDGE_MODEL_CODEX" => Some("gpt-5.4".to_string()),
+        _ => None,
+    })
+    .expect("config should parse");
+
+    assert_eq!(parsed.automations.scheduler_poll_secs, 45);
+    assert_eq!(parsed.automations.signal_failure_pause_threshold, 7);
+    assert_eq!(parsed.automations.judge_timeout_secs, 240);
+    assert_eq!(parsed.automations.publish_grace_secs, 90);
+    assert_eq!(parsed.automations.max_run_duration_secs, 7200);
+    assert_eq!(parsed.automations.plan_max_revision_rounds, 6);
+    assert_eq!(
+        parsed
+            .automations
+            .plan_judge_model
+            .get(&AgentHarnessKind::Claude)
+            .map(String::as_str),
+        Some("claude-sonnet-5")
+    );
+    assert_eq!(
+        parsed
+            .automations
+            .plan_judge_model
+            .get(&AgentHarnessKind::Codex)
+            .map(String::as_str),
+        Some("gpt-5.4")
+    );
+}
+
+#[test]
+fn resolve_file_logging_limits_early_returns_positive_defaults() {
+    let (max_bytes, keep_files) = resolve_file_logging_limits_early();
+    assert!(
+        max_bytes > 0,
+        "default max_bytes must be positive, got {max_bytes}"
+    );
+    assert!(
+        keep_files > 0,
+        "default keep_files must be positive, got {keep_files}"
     );
 }
 
@@ -823,9 +985,6 @@ fn test_embedded_config_omits_runtime_system_prompt_paths_and_uses_canonical_pro
         parse_config_no_env_overrides(EMBEDDED_CONFIG).expect("embedded config should parse");
 
     for agent in &parsed.agents {
-        if agent.name == SHORT_IDEATION_TEAM_MEMBER {
-            continue;
-        }
         assert!(
             agent.system_prompt_file.starts_with("agents/"),
             "live runtime agent {} should resolve a canonical prompt path when config/ralphx.yaml omits system_prompt_file, got {}",
@@ -883,7 +1042,12 @@ fn test_embedded_config_omits_live_agent_runtime_mirrors_and_uses_canonical_meta
         .contains(&"Write".to_string()));
     assert_eq!(
         qa_executor.allowed_mcp_tools,
-        vec!["delegate_start", "delegate_wait", "delegate_cancel"]
+        vec![
+            "delegate_start",
+            "delegate_wait",
+            "delegate_cancel",
+            "delegate_park",
+        ]
     );
 }
 
@@ -995,6 +1159,7 @@ external_mcp:
   enabled: true
   port: 4949
   host: "0.0.0.0"
+  shutdown_grace_ms: 750
 "#,
     )
     .expect("overlay should parse");
@@ -1005,6 +1170,24 @@ external_mcp:
     assert_eq!(parsed.external_mcp.port, 4949);
     assert_eq!(parsed.external_mcp.host, "0.0.0.0");
     assert_eq!(parsed.external_mcp.max_restart_attempts, 3);
+    assert_eq!(parsed.external_mcp.shutdown_grace_ms, 750);
+}
+
+#[test]
+fn shutdown_watchdog_config_loads_yaml_and_env_override() {
+    let loaded = parse_config_with_lookup(
+        r#"
+shutdown:
+  watchdog_deadline_secs: 25
+"#,
+        &|name| match name {
+            "RALPHX_SHUTDOWN_WATCHDOG_DEADLINE_SECS" => Some("35".to_string()),
+            _ => None,
+        },
+    )
+    .expect("shutdown config should load");
+
+    assert_eq!(loaded.shutdown.watchdog_deadline_secs, 35);
 }
 
 #[test]
@@ -1658,7 +1841,9 @@ fn test_agent_workspace_repair_can_fetch_review_artifacts() {
         "repair agent must be able to signal completion"
     );
     assert!(
-        config.allowed_mcp_tools.contains(&"get_artifact".to_string()),
+        config
+            .allowed_mcp_tools
+            .contains(&"get_artifact".to_string()),
         "repair agent must be able to fetch blocking Review artifacts"
     );
 }
@@ -1681,304 +1866,6 @@ fn test_readonly_agent_has_get_plan_verification_not_update() {
             .contains(&"update_plan_verification".to_string()),
         "readonly agent must NOT include update_plan_verification"
     );
-}
-
-#[test]
-fn test_plan_verifier_mcp_tools_match_current_prompt_contract() {
-    let config =
-        get_agent_config("ralphx-plan-verifier").expect("ralphx-plan-verifier should exist");
-    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let codex_prompt = std::fs::read_to_string(
-        manifest_dir.join("../agents/ralphx-plan-verifier/codex/prompt.md"),
-    )
-    .expect("codex verifier prompt should load");
-    let claude_prompt = std::fs::read_to_string(
-        manifest_dir.join("../agents/ralphx-plan-verifier/claude/prompt.md"),
-    )
-    .expect("claude verifier prompt should load");
-
-    for tool in [
-        "get_session_plan",
-        "get_parent_session_context",
-        "run_verification_enrichment",
-        "run_verification_round",
-        "complete_plan_verification",
-        "get_plan_verification",
-        "update_plan_artifact",
-        "edit_plan_artifact",
-    ] {
-        assert!(
-            config.allowed_mcp_tools.contains(&tool.to_string()),
-            "ralphx-plan-verifier missing expected MCP tool {tool}"
-        );
-    }
-
-    assert!(
-        !config
-            .allowed_mcp_tools
-            .contains(&"send_ideation_session_message".to_string()),
-        "ralphx-plan-verifier should not be able to send chat nudges to itself or other sessions"
-    );
-
-    assert!(
-        !config
-            .allowed_mcp_tools
-            .contains(&"get_session_messages".to_string()),
-        "ralphx-plan-verifier should not read raw parent chat history for intent anchoring"
-    );
-
-    assert!(
-        !config
-            .allowed_mcp_tools
-            .contains(&"get_verification_round_artifacts".to_string()),
-        "ralphx-plan-verifier should not include low-level artifact polling helpers"
-    );
-
-    assert!(
-        !config
-            .allowed_mcp_tools
-            .contains(&"run_required_verification_critic_round".to_string()),
-        "ralphx-plan-verifier should not include low-level required-critic orchestration helpers"
-    );
-
-    assert!(
-        !config
-            .allowed_mcp_tools
-            .contains(&"await_verification_round_settlement".to_string()),
-        "ralphx-plan-verifier should not include low-level settlement choreography helpers"
-    );
-
-    assert!(
-        !config
-            .allowed_mcp_tools
-            .contains(&"get_team_artifacts".to_string()),
-        "ralphx-plan-verifier should not include stale generic team artifact listing tool"
-    );
-
-    assert!(
-        !config
-            .allowed_mcp_tools
-            .contains(&"get_artifact".to_string()),
-        "ralphx-plan-verifier should not include stale generic artifact fetch tool"
-    );
-
-    assert!(
-        !config
-            .allowed_mcp_tools
-            .contains(&"update_plan_verification".to_string()),
-        "ralphx-plan-verifier should not include stale generic verification update tool"
-    );
-
-    assert!(
-        !config
-            .allowed_mcp_tools
-            .contains(&"get_child_session_status".to_string()),
-        "ralphx-plan-verifier should not include stale MCP tool get_child_session_status"
-    );
-
-    for prompt in [&codex_prompt, &claude_prompt] {
-        assert!(
-            prompt.contains(
-                "do not wait for child shutdown or terminal cleanup before editing"
-            ),
-            "verifier prompts should describe in-place revision rather than waiting for child shutdown"
-        );
-        assert!(
-            prompt.contains(
-                "do not mention or invent `caller_session_id` or any manual freeze-bypass parameter"
-            ),
-            "verifier prompts should forbid manual caller_session_id freeze-bypass narration"
-        );
-    }
-}
-
-#[test]
-fn test_enrichment_specialist_mcp_tools_match_prompt_contract() {
-    let audited_agents = [
-        (
-            "ralphx-ideation-specialist-code-quality",
-            vec![
-                "publish_verification_finding",
-                "get_session_plan",
-                "get_artifact",
-            ],
-            vec![
-                "list_session_proposals",
-                "get_proposal",
-                "get_parent_session_context",
-                "search_memories",
-                "get_memory",
-                "get_memories_for_paths",
-            ],
-        ),
-        (
-            "ralphx-ideation-specialist-prompt-quality",
-            vec![
-                "publish_verification_finding",
-                "get_session_plan",
-                "get_artifact",
-            ],
-            vec![
-                "list_session_proposals",
-                "get_proposal",
-                "get_parent_session_context",
-                "search_memories",
-                "get_memory",
-                "get_memories_for_paths",
-            ],
-        ),
-        (
-            "ralphx-ideation-specialist-ux",
-            vec![
-                "publish_verification_finding",
-                "get_session_plan",
-                "get_artifact",
-            ],
-            vec![
-                "list_session_proposals",
-                "get_proposal",
-                "get_parent_session_context",
-                "search_memories",
-                "get_memory",
-                "get_memories_for_paths",
-            ],
-        ),
-        (
-            "ralphx-ideation-specialist-pipeline-safety",
-            vec![
-                "publish_verification_finding",
-                "get_session_plan",
-                "get_artifact",
-            ],
-            vec![
-                "list_session_proposals",
-                "get_proposal",
-                "get_parent_session_context",
-                "search_memories",
-                "get_memory",
-                "get_memories_for_paths",
-            ],
-        ),
-        (
-            "ralphx-ideation-specialist-state-machine",
-            vec![
-                "publish_verification_finding",
-                "get_session_plan",
-                "get_artifact",
-            ],
-            vec![
-                "list_session_proposals",
-                "get_proposal",
-                "get_parent_session_context",
-                "search_memories",
-                "get_memory",
-                "get_memories_for_paths",
-            ],
-        ),
-        (
-            "ralphx-ideation-specialist-intent",
-            vec![
-                "publish_verification_finding",
-                "get_session_plan",
-                "get_artifact",
-                "get_session_messages",
-                "search_memories",
-                "get_memory",
-                "get_memories_for_paths",
-            ],
-            vec![
-                "list_session_proposals",
-                "get_proposal",
-                "get_parent_session_context",
-            ],
-        ),
-    ];
-
-    for (agent_name, expected, absent) in audited_agents {
-        let config = get_agent_config(agent_name).unwrap_or_else(|| panic!("{agent_name} missing"));
-        for tool in expected {
-            assert!(
-                config.allowed_mcp_tools.contains(&tool.to_string()),
-                "{agent_name} missing expected MCP tool {tool}"
-            );
-        }
-        for tool in absent {
-            assert!(
-                !config.allowed_mcp_tools.contains(&tool.to_string()),
-                "{agent_name} should not include stale MCP tool {tool}"
-            );
-        }
-        assert!(
-            !config
-                .allowed_mcp_tools
-                .contains(&"create_team_artifact".to_string()),
-            "{agent_name} should use publish_verification_finding instead of create_team_artifact"
-        );
-        assert!(
-            !config
-                .allowed_mcp_tools
-                .contains(&"get_team_artifacts".to_string()),
-            "{agent_name} should stay on typed verification findings instead of get_team_artifacts"
-        );
-    }
-}
-
-#[test]
-fn test_plan_critic_mcp_tools_match_prompt_contract() {
-    for agent_name in [
-        "ralphx-plan-critic-completeness",
-        "ralphx-plan-critic-implementation-feasibility",
-    ] {
-        let config = get_agent_config(agent_name).expect("plan critic should exist");
-
-        for tool in ["get_session_plan", "publish_verification_finding"] {
-            assert!(
-                config.allowed_mcp_tools.contains(&tool.to_string()),
-                "{agent_name} missing expected MCP tool {tool}"
-            );
-        }
-
-        assert!(
-            !config
-                .allowed_mcp_tools
-                .contains(&"get_team_artifacts".to_string()),
-            "{agent_name} should stay bounded and not depend on get_team_artifacts"
-        );
-        assert!(
-            !config
-                .allowed_mcp_tools
-                .contains(&"create_team_artifact".to_string()),
-            "{agent_name} should use publish_verification_finding instead of generic create_team_artifact"
-        );
-    }
-}
-
-#[test]
-fn test_plan_critic_prompts_forbid_restatements_of_planned_future_state() {
-    let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
-
-    for harness in [AgentPromptHarness::Claude, AgentPromptHarness::Codex] {
-        for agent_name in [
-            "ralphx-plan-critic-completeness",
-            "ralphx-plan-critic-implementation-feasibility",
-        ] {
-            let prompt = load_harness_agent_prompt(&project_root, agent_name, harness)
-                .unwrap_or_else(|| panic!("failed to load prompt for {agent_name} ({harness:?})"));
-
-            assert!(
-                prompt.contains("Do not restate the before-state as if that absence alone were a plan gap."),
-                "{agent_name} ({harness:?}) prompt must explicitly forbid before-state restatement gaps"
-            );
-            assert!(
-                prompt.contains("Bad gap: \"current code does not pass executionPlanId\" when the plan explicitly says to add that wiring."),
-                "{agent_name} ({harness:?}) prompt must include a concrete bad-gap example"
-            );
-            assert!(
-                prompt.contains("Good gap: \"the plan never specifies where TaskGraphView gets executionPlanId from\"."),
-                "{agent_name} ({harness:?}) prompt must include a concrete good-gap example"
-            );
-        }
-    }
 }
 
 #[test]
@@ -2011,6 +1898,7 @@ agents:
             "delegate_start",
             "delegate_wait",
             "delegate_cancel",
+            "delegate_park",
         ]
     );
 }
@@ -2611,7 +2499,7 @@ agents:
     assert!(agent.resolved_cli_tools.contains(&"Write".to_string()));
 }
 
-// ── Process mapping + team constraints integration tests ────────
+// ── Process mapping integration tests ────────
 
 #[test]
 fn test_process_mapping_parsed_from_full_config() {
@@ -2624,7 +2512,6 @@ claude:
 process_mapping:
   execution:
     default: ralphx-execution-worker
-    team: ralphx-execution-team-lead
   ideation:
     default: ralphx-ideation
 agents:
@@ -2644,53 +2531,8 @@ agents:
         "ralphx-ideation"
     );
     assert_eq!(
-        parsed.process_mapping.slots["execution"]
-            .variants
-            .get("team")
-            .unwrap(),
-        "ralphx-execution-team-lead"
-    );
-    assert_eq!(
         parsed.process_mapping.slots["review"].default,
         "ralphx-execution-reviewer"
-    );
-}
-
-#[test]
-fn test_team_constraints_parsed_from_full_config() {
-    let yaml = r#"
-claude:
-  mcp_server_name: ralphx
-  permission_mode: default
-  dangerously_skip_permissions: false
-  permission_prompt_tool: permission_request
-team_constraints:
-  _defaults:
-    max_teammates: 5
-    model_cap: sonnet
-  execution:
-    max_teammates: 3
-    mode: dynamic
-    timeout_minutes: 30
-  custom_process:
-    max_teammates: 2
-    model_cap: haiku
-agents:
-  - name: ralphx-execution-worker
-    system_prompt_file: plugins/app/agents/worker.md
-    tools: { extends: base_tools, include: [Write] }
-    mcp_tools: [get_task_context]
-    preapproved_cli_tools: []
-"#;
-    let parsed = parse_config(yaml).expect("config should parse");
-    let defaults = parsed.team_constraints.defaults.as_ref().unwrap();
-    assert_eq!(defaults.max_teammates, 5);
-    let exec = &parsed.team_constraints.processes["execution"];
-    assert_eq!(exec.max_teammates, 5);
-    assert_eq!(exec.timeout_minutes, 30);
-    assert_eq!(
-        parsed.team_constraints.processes["custom_process"].model_cap,
-        "haiku"
     );
 }
 
@@ -2714,11 +2556,6 @@ preapproved_cli_tools: []
         parsed.process_mapping,
         canonical_process_mapping(),
         "missing process_mapping should resolve to the canonical process mapping"
-    );
-    assert_eq!(
-        parsed.team_constraints,
-        canonical_team_constraints_config(),
-        "missing team_constraints should resolve to the canonical team constraints"
     );
 }
 
@@ -2745,39 +2582,9 @@ agents:
         parsed.process_mapping.slots["execution"].default,
         "ralphx-execution-worker"
     );
-    assert_eq!(
-        parsed.process_mapping.slots["execution"]
-            .variants
-            .get("team")
-            .map(String::as_str),
-        Some("ralphx-execution-team-lead")
-    );
-}
-
-#[test]
-fn test_canonical_team_constraints_override_divergent_runtime_yaml_process() {
-    let yaml = r#"
-claude:
-  mcp_server_name: ralphx
-  permission_mode: default
-  dangerously_skip_permissions: false
-  permission_prompt_tool: permission_request
-team_constraints:
-  execution:
-    max_teammates: 1
-    model_cap: haiku
-agents:
-  - name: ralphx-execution-worker
-    system_prompt_file: plugins/app/agents/worker.md
-    tools: { extends: base_tools, include: [Write] }
-    mcp_tools: [get_task_context]
-    preapproved_cli_tools: []
-"#;
-    let parsed = parse_config(yaml).expect("config should parse");
-    let execution = &parsed.team_constraints.processes["execution"];
-    assert_eq!(execution.max_teammates, 5);
-    assert_eq!(execution.model_cap, "sonnet");
-    assert_eq!(execution.timeout_minutes, 30);
+    assert!(parsed.process_mapping.slots["execution"]
+        .variants
+        .is_empty());
 }
 
 #[test]
@@ -2791,10 +2598,6 @@ claude:
 process_mapping:
   custom_process:
     default: yaml-agent
-team_constraints:
-  custom_process:
-    max_teammates: 2
-    model_cap: haiku
 agents:
   - name: ralphx-execution-worker
     system_prompt_file: plugins/app/agents/worker.md
@@ -2808,10 +2611,6 @@ agents:
 process_mapping:
   custom_process:
     default: overlay-agent
-team_constraints:
-  custom_process:
-    max_teammates: 4
-    model_cap: opus
 "#,
     )
     .expect("overlay should parse");
@@ -2821,14 +2620,6 @@ team_constraints:
     assert_eq!(
         parsed.process_mapping.slots["custom_process"].default,
         "overlay-agent"
-    );
-    assert_eq!(
-        parsed.team_constraints.processes["custom_process"].max_teammates,
-        4
-    );
-    assert_eq!(
-        parsed.team_constraints.processes["custom_process"].model_cap,
-        "opus"
     );
 }
 
@@ -2840,10 +2631,6 @@ claude:
   permission_mode: default
   dangerously_skip_permissions: false
   permission_prompt_tool: permission_request
-team_constraints:
-  custom_process:
-    max_teammates: 2
-    model_cap: haiku
 agents:
   - name: ralphx-execution-worker
     system_prompt_file: plugins/app/agents/worker.md
@@ -2866,10 +2653,6 @@ process_mapping:
     assert_eq!(
         parsed.process_mapping.slots["custom_process"].default,
         "overlay-agent"
-    );
-    assert_eq!(
-        parsed.team_constraints.processes["custom_process"].model_cap,
-        "haiku"
     );
 }
 
@@ -3173,17 +2956,6 @@ fn test_permission_mode_merger_is_accept_edits() {
 }
 
 #[test]
-fn test_permission_mode_worker_team_inherits_accept_edits() {
-    let config = get_agent_config("ralphx-execution-team-lead")
-        .expect("ralphx-execution-team-lead should exist");
-    assert_eq!(
-        config.permission_mode.as_deref(),
-        Some("acceptEdits"),
-        "ralphx-execution-team-lead should have acceptEdits (inherited or explicit)"
-    );
-}
-
-#[test]
 fn test_permission_mode_qa_executor_is_accept_edits() {
     let config = get_agent_config("ralphx-qa-executor").expect("ralphx-qa-executor should exist");
     assert_eq!(
@@ -3229,7 +3001,6 @@ fn test_permission_mode_chat_agent_is_none() {
 fn test_get_agent_config_accepts_legacy_agent_aliases() {
     let cases = [
         ("orchestrator-ideation", "ralphx-ideation"),
-        ("plan-verifier", "ralphx-plan-verifier"),
         ("ralphx-worker", "ralphx-execution-worker"),
         ("session-namer", "ralphx-utility-session-namer"),
         ("pr-describer", "ralphx-utility-pr-describer"),
@@ -3266,7 +3037,7 @@ fn test_preapproved_tools_always_contains_permission_request() {
 // ── UI Feature Flags Config tests ─────────────────────────────────────────────
 
 #[test]
-fn test_ui_feature_flags_default_standalone_ideation_hidden() {
+fn test_ui_feature_flags_defaults() {
     let flags = UiFeatureFlagsConfig::default();
     assert!(flags.activity_page, "activity_page should default to true");
     assert!(
@@ -3274,11 +3045,9 @@ fn test_ui_feature_flags_default_standalone_ideation_hidden() {
         "extensibility_page should default to true"
     );
     assert!(
-        !flags.ideation_page,
-        "ideation_page should default to false"
+        flags.automations_page,
+        "automations_page should default to true"
     );
-    assert!(flags.battle_mode, "battle_mode should default to true");
-    assert!(!flags.team_mode, "team_mode should default to false");
     assert!(
         !flags.atlassian_oauth,
         "atlassian_oauth should default to false"
@@ -3306,7 +3075,7 @@ ui:
     activity_page: false
     extensibility_page: true
     ticketing_dashboard: true
-    ideation_page: true
+    automations_page: true
 "#;
     let cfg = parse_config_no_env_overrides(yaml).expect("should parse yaml with ui section");
     assert!(
@@ -3318,18 +3087,58 @@ ui:
         "extensibility_page should be true"
     );
     assert!(
-        cfg.runtime.ui_feature_flags.ideation_page,
-        "ideation_page should be true from yaml"
-    );
-    assert!(
         cfg.runtime.ui_feature_flags.ticketing_dashboard,
         "ticketing_dashboard should be true from yaml"
+    );
+    assert!(
+        cfg.runtime.ui_feature_flags.automations_page,
+        "automations_page should be true from yaml"
+    );
+}
+
+#[test]
+fn test_yaml_parsing_ignores_removed_legacy_ui_feature_flags() {
+    let yaml = r#"
+ui:
+  feature_flags:
+    activity_page: false
+    extensibility_page: false
+    automations_page: true
+    ticketing_dashboard: true
+    ideation_page: false
+    battle_mode: false
+"#;
+    let cfg = parse_config_no_env_overrides(yaml)
+        .expect("removed legacy UI feature flags should not break parsing");
+
+    assert!(!cfg.runtime.ui_feature_flags.activity_page);
+    assert!(!cfg.runtime.ui_feature_flags.extensibility_page);
+    assert!(cfg.runtime.ui_feature_flags.automations_page);
+    assert!(cfg.runtime.ui_feature_flags.ticketing_dashboard);
+}
+
+#[test]
+fn agent_personas_flag_defaults_false_without_config_key() {
+    let yaml = r#"
+ui:
+  feature_flags:
+    ticketing_dashboard: true
+"#;
+    let cfg = parse_config_no_env_overrides(yaml)
+        .expect("should parse yaml without the agent_personas feature flag");
+
+    assert!(cfg.runtime.ui_feature_flags.ticketing_dashboard);
+    assert!(!cfg.runtime.ui_feature_flags.agent_personas);
+    assert!(
+        !cfg.runtime
+            .ui_feature_flags
+            .persona_switch_forces_fresh_provider_session
     );
 }
 
 #[test]
 fn test_yaml_parsing_without_ui_section_backward_compat() {
-    // YAML without ui section: legacy pages default visible, standalone Ideation stays hidden.
+    // YAML without ui section: core pages default visible.
     let yaml = r#"
 claude:
   mcp_server_name: ralphx
@@ -3347,16 +3156,8 @@ agents: []
         "should default to true when ui section absent"
     );
     assert!(
-        cfg.runtime.ui_feature_flags.battle_mode,
-        "should default to true when ui section absent"
-    );
-    assert!(
-        !cfg.runtime.ui_feature_flags.ideation_page,
-        "ideation_page should default to false when ui section absent"
-    );
-    assert!(
-        !cfg.runtime.ui_feature_flags.team_mode,
-        "team_mode should default to false when ui section absent"
+        cfg.runtime.ui_feature_flags.automations_page,
+        "automations_page should default to true when ui section absent"
     );
     assert!(
         !cfg.runtime.ui_feature_flags.atlassian_oauth,
@@ -3378,9 +3179,11 @@ fn test_env_override_activity_page_false() {
         supervisor: runtime_config::SupervisorRuntimeConfig::default(),
         limits: runtime_config::LimitsConfig::default(),
         verification: runtime_config::VerificationConfig::default(),
+        delegation: runtime_config::DelegationConfig::default(),
         external_mcp: runtime_config::ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: runtime_config::DatabaseMaintenanceConfig::default(),
     };
     // Start with activity_page enabled (default), apply "false" override
     runtime_config::apply_env_overrides_with_lookup(&mut cfg, &|name| match name {
@@ -3395,10 +3198,6 @@ fn test_env_override_activity_page_false() {
         cfg.ui_feature_flags.extensibility_page,
         "extensibility_page untouched"
     );
-    assert!(
-        !cfg.ui_feature_flags.ideation_page,
-        "ideation_page untouched"
-    );
 }
 
 #[test]
@@ -3411,16 +3210,19 @@ fn test_env_override_true_value_enables_flag() {
         supervisor: runtime_config::SupervisorRuntimeConfig::default(),
         limits: runtime_config::LimitsConfig::default(),
         verification: runtime_config::VerificationConfig::default(),
+        delegation: runtime_config::DelegationConfig::default(),
         external_mcp: runtime_config::ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
+        database_maintenance: runtime_config::DatabaseMaintenanceConfig::default(),
         ui_feature_flags: UiFeatureFlagsConfig {
             activity_page: false,
             extensibility_page: false,
-            ideation_page: false,
-            battle_mode: false,
-            team_mode: false,
+            automations_page: false,
             atlassian_oauth: false,
             ticketing_dashboard: false,
+            agent_personas: false,
+            persona_switch_forces_fresh_provider_session: false,
+            standalone_conversations: false,
         },
     };
     runtime_config::apply_env_overrides_with_lookup(&mut cfg, &|name| match name {
@@ -3437,19 +3239,18 @@ fn test_env_override_true_value_enables_flag() {
         "env '1' should enable extensibility_page"
     );
     assert!(
-        !cfg.ui_feature_flags.ideation_page,
-        "ideation_page untouched"
+        !cfg.ui_feature_flags.automations_page,
+        "automations_page untouched"
     );
 
     runtime_config::apply_env_overrides_with_lookup(&mut cfg, &|name| match name {
-        "RALPHX_UI_IDEATION_PAGE" => Some("true".to_string()),
+        "RALPHX_UI_AUTOMATIONS_PAGE" => Some("1".to_string()),
         _ => None,
     });
     assert!(
-        cfg.ui_feature_flags.ideation_page,
-        "env 'true' should enable ideation_page"
+        cfg.ui_feature_flags.automations_page,
+        "env '1' should enable automations_page"
     );
-    assert!(!cfg.ui_feature_flags.team_mode, "team_mode untouched");
     assert!(
         !cfg.ui_feature_flags.atlassian_oauth,
         "atlassian_oauth untouched"
@@ -3457,97 +3258,6 @@ fn test_env_override_true_value_enables_flag() {
     assert!(
         !cfg.ui_feature_flags.ticketing_dashboard,
         "ticketing_dashboard untouched"
-    );
-}
-
-#[test]
-fn test_env_override_battle_mode() {
-    let mut cfg = runtime_config::AllRuntimeConfig {
-        stream: runtime_config::StreamTimeoutsConfig::default(),
-        reconciliation: runtime_config::ReconciliationConfig::default(),
-        git: runtime_config::GitRuntimeConfig::default(),
-        scheduler: runtime_config::SchedulerConfig::default(),
-        supervisor: runtime_config::SupervisorRuntimeConfig::default(),
-        limits: runtime_config::LimitsConfig::default(),
-        verification: runtime_config::VerificationConfig::default(),
-        external_mcp: runtime_config::ExternalMcpConfig::default(),
-        child_session_activity_threshold_secs: None,
-        ui_feature_flags: Default::default(), // battle_mode defaults to true
-    };
-    // Override battle_mode to false
-    runtime_config::apply_env_overrides_with_lookup(&mut cfg, &|name| match name {
-        "RALPHX_UI_BATTLE_MODE" => Some("false".to_string()),
-        _ => None,
-    });
-    assert!(
-        !cfg.ui_feature_flags.battle_mode,
-        "env 'false' should disable battle_mode"
-    );
-    assert!(
-        cfg.ui_feature_flags.activity_page,
-        "activity_page untouched"
-    );
-    assert!(
-        cfg.ui_feature_flags.extensibility_page,
-        "extensibility_page untouched"
-    );
-    assert!(
-        !cfg.ui_feature_flags.ideation_page,
-        "ideation_page untouched"
-    );
-    assert!(!cfg.ui_feature_flags.team_mode, "team_mode untouched");
-    assert!(
-        !cfg.ui_feature_flags.atlassian_oauth,
-        "atlassian_oauth untouched"
-    );
-    assert!(
-        !cfg.ui_feature_flags.ticketing_dashboard,
-        "ticketing_dashboard untouched"
-    );
-
-    // Override battle_mode to true via "1"
-    cfg.ui_feature_flags.battle_mode = false;
-    runtime_config::apply_env_overrides_with_lookup(&mut cfg, &|name| match name {
-        "RALPHX_UI_BATTLE_MODE" => Some("1".to_string()),
-        _ => None,
-    });
-    assert!(
-        cfg.ui_feature_flags.battle_mode,
-        "env '1' should enable battle_mode"
-    );
-}
-
-#[test]
-fn test_env_override_team_mode() {
-    let mut cfg = runtime_config::AllRuntimeConfig {
-        stream: runtime_config::StreamTimeoutsConfig::default(),
-        reconciliation: runtime_config::ReconciliationConfig::default(),
-        git: runtime_config::GitRuntimeConfig::default(),
-        scheduler: runtime_config::SchedulerConfig::default(),
-        supervisor: runtime_config::SupervisorRuntimeConfig::default(),
-        limits: runtime_config::LimitsConfig::default(),
-        verification: runtime_config::VerificationConfig::default(),
-        external_mcp: runtime_config::ExternalMcpConfig::default(),
-        child_session_activity_threshold_secs: None,
-        ui_feature_flags: Default::default(),
-    };
-
-    runtime_config::apply_env_overrides_with_lookup(&mut cfg, &|name| match name {
-        "RALPHX_UI_TEAM_MODE" => Some("true".to_string()),
-        _ => None,
-    });
-    assert!(
-        cfg.ui_feature_flags.team_mode,
-        "env 'true' should enable team_mode"
-    );
-
-    runtime_config::apply_env_overrides_with_lookup(&mut cfg, &|name| match name {
-        "RALPHX_UI_TEAM_MODE" => Some("false".to_string()),
-        _ => None,
-    });
-    assert!(
-        !cfg.ui_feature_flags.team_mode,
-        "env 'false' should disable team_mode"
     );
 }
 
@@ -3561,9 +3271,11 @@ fn test_env_override_atlassian_oauth() {
         supervisor: runtime_config::SupervisorRuntimeConfig::default(),
         limits: runtime_config::LimitsConfig::default(),
         verification: runtime_config::VerificationConfig::default(),
+        delegation: runtime_config::DelegationConfig::default(),
         external_mcp: runtime_config::ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: runtime_config::DatabaseMaintenanceConfig::default(),
     };
 
     runtime_config::apply_env_overrides_with_lookup(&mut cfg, &|name| match name {
@@ -3595,9 +3307,11 @@ fn test_env_override_ticketing_dashboard() {
         supervisor: runtime_config::SupervisorRuntimeConfig::default(),
         limits: runtime_config::LimitsConfig::default(),
         verification: runtime_config::VerificationConfig::default(),
+        delegation: runtime_config::DelegationConfig::default(),
         external_mcp: runtime_config::ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: runtime_config::DatabaseMaintenanceConfig::default(),
     };
 
     runtime_config::apply_env_overrides_with_lookup(&mut cfg, &|name| match name {
@@ -3626,9 +3340,7 @@ fn test_ui_feature_flags_config_accessor_returns_defaults() {
     // All fields should be bool (any value — loaded from yaml)
     let _ = flags.activity_page;
     let _ = flags.extensibility_page;
-    let _ = flags.ideation_page;
-    let _ = flags.battle_mode;
-    let _ = flags.team_mode;
+    let _ = flags.automations_page;
     let _ = flags.atlassian_oauth;
     let _ = flags.ticketing_dashboard;
 }

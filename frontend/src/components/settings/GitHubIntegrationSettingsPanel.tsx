@@ -1,11 +1,11 @@
-import { GitBranch, Loader2, RefreshCw } from "lucide-react";
+import { Loader2, RefreshCw } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { useGitHubConnectionStatus } from "@/hooks/useGitHubConnectionStatus";
 
 import {
   IntegrationStatusBanner,
-  SectionCard,
+  SettingsSection,
 } from "./SettingsView.shared";
 
 function describeError(error: unknown): string {
@@ -22,29 +22,45 @@ export function GitHubIntegrationSettingsPanel() {
   const { data, error, isError, isLoading, isFetching, refetch } =
     useGitHubConnectionStatus();
   const ghInstalled = data?.ghInstalled ?? false;
-  const authenticated = data?.authenticated ?? false;
-  const connected = ghInstalled && authenticated;
-  const statusTitle = connected
-    ? "GitHub CLI authenticated"
-    : ghInstalled
-      ? "GitHub CLI not authenticated"
-      : "GitHub CLI unavailable";
+  const state = data?.state;
+  const connected = state === "authenticated";
+  const statusTitle =
+    state === "authenticated"
+      ? "GitHub CLI authenticated"
+      : state === "provider_unavailable"
+        ? "GitHub temporarily unavailable"
+        : state === "probe_failed"
+          ? "GitHub access could not be verified"
+          : state === "cli_unavailable" || !ghInstalled
+            ? "GitHub CLI unavailable"
+            : state === "credential_rejected"
+              ? "GitHub CLI credential rejected"
+              : "GitHub CLI not authenticated";
   const statusChips = [
     ghInstalled ? "gh installed" : "gh missing",
-    authenticated ? "Authenticated" : "Not authenticated",
+    connected ? "Authenticated" : "Not authenticated",
+    state ? `State ${state}` : "State unknown",
     data?.host ? `Host ${data.host}` : "Host unknown",
     data?.account ? `Account ${data.account}` : "Account unknown",
   ];
-  const guidance = ghInstalled
-    ? "Run `gh auth login` in your project shell, then refresh this status."
-    : "Install the GitHub CLI, run `gh auth login`, then refresh this status.";
+  const guidance =
+    state === "provider_unavailable"
+      ? "GitHub returned a temporary failure. Refresh this status before signing in again."
+      : state === "probe_failed"
+        ? "RalphX could not verify the saved CLI credential. Refresh this status before signing in again."
+        : ghInstalled
+          ? "Run `gh auth login` in your project shell, then refresh this status."
+          : "Install the GitHub CLI, run `gh auth login`, then refresh this status.";
+  const showCredentialGuidance =
+    state === "unauthenticated" ||
+    state === "credential_rejected" ||
+    state === "cli_unavailable" ||
+    state === undefined;
+  const showTransientGuidance =
+    state === "provider_unavailable" || state === "probe_failed";
 
   return (
-    <SectionCard
-      icon={<GitBranch className="h-[18px] w-[18px]" aria-hidden="true" />}
-      title="GitHub"
-      description="Local GitHub CLI connection"
-    >
+    <SettingsSection>
       <div className="space-y-4">
         <IntegrationStatusBanner
           connected={connected}
@@ -53,11 +69,13 @@ export function GitHubIntegrationSettingsPanel() {
           lastError={isError ? describeError(error) : null}
         />
 
-        {!connected && !isLoading ? (
+        {!connected && !isLoading && (showCredentialGuidance || showTransientGuidance) ? (
           <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-3 text-sm text-[var(--text-secondary)]">
-            <code className="rounded bg-[var(--bg-elevated)] px-1.5 py-0.5 text-[var(--text-primary)]">
-              gh auth login
-            </code>
+            {showCredentialGuidance ? (
+              <code className="rounded bg-[var(--bg-elevated)] px-1.5 py-0.5 text-[var(--text-primary)]">
+                gh auth login
+              </code>
+            ) : null}
             <span className="ml-2">{guidance}</span>
           </div>
         ) : null}
@@ -65,6 +83,8 @@ export function GitHubIntegrationSettingsPanel() {
         <div className="flex items-center justify-between gap-3">
           <p className="text-xs text-[var(--text-muted)]">
             RalphX reads the local CLI status and does not store a GitHub token.
+            After signing in again, restart terminals that were already open; new
+            terminals use the updated GitHub CLI credentials.
           </p>
           <Button
             type="button"
@@ -83,6 +103,6 @@ export function GitHubIntegrationSettingsPanel() {
           </Button>
         </div>
       </div>
-    </SectionCard>
+    </SettingsSection>
   );
 }

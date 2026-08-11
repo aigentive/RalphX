@@ -23,12 +23,7 @@ use crate::infrastructure::memory::MemoryPlanBranchRepository;
 // ==================
 
 /// Create a task in a specific execution plan with given status.
-fn make_ep_task(
-    title: &str,
-    status: InternalStatus,
-    ep_id: &str,
-    session_id: &str,
-) -> Task {
+fn make_ep_task(title: &str, status: InternalStatus, ep_id: &str, session_id: &str) -> Task {
     let mut t = Task::new(
         ProjectId::from_string("proj-1".to_string()),
         title.to_string(),
@@ -100,8 +95,8 @@ async fn integration_cascade_stops_all_non_terminal_siblings() {
         Some(merge_id.as_str()),
     );
 
-    let services = TaskServices::new_mock()
-        .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>);
+    let services =
+        TaskServices::new_mock().with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>);
     let context = create_context_with_services(merge_id.as_str(), "proj-1", services);
     let mut machine = TaskStateMachine::new(context);
     let handler = TransitionHandler::new(&mut machine);
@@ -177,14 +172,15 @@ async fn integration_on_enter_blocks_all_tasks_on_merged_plan() {
     for (label, tid) in [("Task 1", &t1_id), ("Task 2", &t2_id)] {
         let services = TaskServices::new_mock()
             .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
-            .with_plan_branch_repo(
-                Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>
-            );
+            .with_plan_branch_repo(Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>);
         let context = TaskContext::new(tid.as_str(), "proj-1", services);
         let mut machine = TaskStateMachine::new(context);
         let handler = TransitionHandler::new(&mut machine);
         let result = handler.on_enter(&State::Executing).await;
-        assert!(result.is_err(), "{label} should be blocked on merged branch");
+        assert!(
+            result.is_err(),
+            "{label} should be blocked on merged branch"
+        );
         assert!(
             matches!(result.unwrap_err(), AppError::ExecutionBlocked(_)),
             "{label} should get ExecutionBlocked"
@@ -238,9 +234,7 @@ async fn integration_reaccept_new_plan_not_blocked_by_old() {
     {
         let services = TaskServices::new_mock()
             .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
-            .with_plan_branch_repo(
-                Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>
-            );
+            .with_plan_branch_repo(Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>);
         let context = TaskContext::new(old_id.as_str(), "proj-1", services);
         let mut machine = TaskStateMachine::new(context);
         let handler = TransitionHandler::new(&mut machine);
@@ -263,9 +257,7 @@ async fn integration_reaccept_new_plan_not_blocked_by_old() {
 
         let services = TaskServices::new_mock()
             .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
-            .with_plan_branch_repo(
-                Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>
-            )
+            .with_plan_branch_repo(Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>)
             .with_project_repo(Arc::clone(&project_repo) as Arc<dyn ProjectRepository>);
         let context = TaskContext::new(new_id.as_str(), "proj-1", services);
         let mut machine = TaskStateMachine::new(context);
@@ -311,15 +303,16 @@ async fn integration_on_enter_reexecuting_blocks_on_merged() {
 
     let services = TaskServices::new_mock()
         .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
-        .with_plan_branch_repo(
-            Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>
-        );
+        .with_plan_branch_repo(Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>);
     let context = TaskContext::new(task_id.as_str(), "proj-1", services);
     let mut machine = TaskStateMachine::new(context);
     let handler = TransitionHandler::new(&mut machine);
     let result = handler.on_enter(&State::ReExecuting).await;
 
-    assert!(result.is_err(), "ReExecuting must be blocked on merged branch");
+    assert!(
+        result.is_err(),
+        "ReExecuting must be blocked on merged branch"
+    );
     let err = result.unwrap_err();
     assert!(
         matches!(err, AppError::ExecutionBlocked(_)),

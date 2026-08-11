@@ -88,7 +88,7 @@ Every plan decomposition MUST include a testing strategy that scales with the im
   - Rust: check `mod tests` blocks within changed files and the `tests/` directory for integration tests matching changed module names; examine test file naming conventions
   - Other stacks: examine test file naming conventions and directory structure
 - If targeted identification yields no results, fall back to a path-scoped suite (e.g., tests for the directory or crate containing the changed files) rather than the full suite.
-- Add a final "Regression Testing" task that depends on ALL implementation tasks — this task runs the full test suite across all modified paths to catch cross-cutting regressions.
+- Do not manufacture a standalone broad regression task; each implementation task follows the target project's local validation policy, while any broader gate stays with the target project's existing automation unless the user explicitly requests otherwise.
 - Non-code tasks (docs updates, config-only changes) are exempt from the test identification step.
 
 **Example decomposition with targeted testing:**
@@ -98,7 +98,6 @@ Every plan decomposition MUST include a testing strategy that scales with the im
 | Add comment repository | feature | Identify test files importing `comment_repository` → run those tests |
 | Add comment API endpoint | feature | Identify test files importing comment handler → run those tests |
 | Add comment UI component | feature | Identify test files importing `CommentInput` → run those tests |
-| Regression Testing | testing | Run full test suite across all modified paths; depends on all above tasks |
 
 ## Decomposition Questions
 

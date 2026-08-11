@@ -14,12 +14,16 @@ export function useAgentSidebarRunningStates(
   conversations: AgentConversation[],
   isVisible: boolean
 ) {
-  const projectConversations = useMemo(() => {
+  const agentConversations = useMemo(() => {
     const seen = new Set<string>();
     const targets: AgentConversation[] = [];
 
     for (const conversation of conversations) {
-      if (conversation.contextType !== "project" || seen.has(conversation.id)) {
+      if (
+        (conversation.contextType !== "project" &&
+          conversation.contextType !== "standalone") ||
+        seen.has(conversation.id)
+      ) {
         continue;
       }
       seen.add(conversation.id);
@@ -30,7 +34,7 @@ export function useAgentSidebarRunningStates(
   }, [conversations]);
 
   useEffect(() => {
-    if (!isVisible || projectConversations.length === 0) {
+    if (!isVisible || agentConversations.length === 0) {
       return undefined;
     }
 
@@ -41,13 +45,13 @@ export function useAgentSidebarRunningStates(
       if (inFlight) return;
       inFlight = true;
 
-      const contextIds = projectConversations.map((conversation) => conversation.id);
+      const contextIds = agentConversations.map((conversation) => conversation.id);
       chatApi
         .getAgentConversationRuntimeStatuses(contextIds)
         .then((runtimeStatuses) => {
           if (cancelled) return;
 
-          for (const conversation of projectConversations) {
+          for (const conversation of agentConversations) {
             reconcileAgentConversationRuntimeStatus(
               conversation.id,
               runtimeStatuses[conversation.id],
@@ -73,5 +77,5 @@ export function useAgentSidebarRunningStates(
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [isVisible, projectConversations]);
+  }, [agentConversations, isVisible]);
 }

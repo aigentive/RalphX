@@ -275,7 +275,8 @@ export function registerTools(
       },
       {
         name: "v1_get_plan",
-        description: "Get plan artifact content for an ideation session",
+        description:
+          "Get the current plan bundle for an ideation session, including the overview compatibility anchor, detailed implementation blueprint, and exact pair target",
         inputSchema: {
           type: "object" as const,
           properties: {
@@ -329,7 +330,7 @@ export function registerTools(
       {
         name: "v1_trigger_plan_verification",
         description:
-          "Trigger automatic plan verification for a session. Returns status: 'triggered' | 'already_running' | 'no_plan'",
+          "Queue a visible model-native Verify Plan turn in the session's planning conversation. The active model chooses useful review lenses, may revise the linked plan, and records proof for the exact final artifact. Returns status: 'queued' | 'already_queued' | 'already_running' | 'already_verified' | 'no_plan'",
         inputSchema: {
           type: "object" as const,
           properties: {
@@ -341,7 +342,7 @@ export function registerTools(
       {
         name: "v1_get_plan_verification",
         description:
-          "Get plan verification status for a session. Returns: status, in_progress, round, max_rounds, gap_count, gap_score (weighted: critical×10+high×3+medium×1), gaps (array of {severity, category, description}), convergence_reason. Also returns `verification_child` (object or null): `active_child_session_id` (non-null only when verification is in progress), `latest_child_session_id`, `latest_child_archived`, `agent_state` ('likely_generating'|'likely_waiting'|'idle'), `last_assistant_message` (500-char truncated), `last_assistant_message_at`. Check these fields to recover from `agent_completed_without_update` without a second lookup.",
+          "Get exact-artifact Verify Plan status. Returns status ('unverified'|'queued'|'verifying'|'verified'|'failed'|'cancelled'), in_progress, current_artifact_id, verified_artifact_id, and the authoritative action run id/timestamps/error when available.",
         inputSchema: {
           type: "object" as const,
           properties: {
@@ -387,7 +388,8 @@ export function registerTools(
         name: "v1_append_task_to_plan",
         description:
           "Append a one-off task to an already accepted ideation plan while its plan branch is still active, including when its PR is open and waiting. " +
-          "Use this for small follow-ups after plan acceptance; start a new ideation instead once the PR/plan is closed, merged, terminal, or actively merging.",
+          "Use this for small follow-ups after plan acceptance; the backend infers the default graph placement and blocks the plan merge on the new task. " +
+          "Start a new ideation instead once the PR/plan is closed, merged, terminal, or actively merging.",
         inputSchema: {
           type: "object" as const,
           properties: {
@@ -407,7 +409,7 @@ export function registerTools(
             depends_on_task_ids: {
               type: "array",
               items: { type: "string" },
-              description: "Optional existing task IDs that must complete first",
+              description: "Optional advanced backend-validated task IDs to use instead of inferred placement blockers",
             },
             priority: { type: "number", description: "Optional numeric priority" },
           },

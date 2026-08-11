@@ -9,13 +9,14 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::{mpsc, Mutex};
 
-use crate::application::agent_conversation_workspace::resolve_valid_agent_conversation_workspace_path;
+use crate::application::agent_conversation_workspace::resolve_effective_agent_conversation_workspace_path;
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
-    ChatContextType, ChatConversationId, Project, ProjectId,
+    AgentConversationWorkspace, AgentConversationWorkspaceStatus, ChatContextType,
+    ChatConversationId, Project, ProjectId,
 };
 use crate::domain::repositories::{
-    AgentConversationWorkspaceRepository, ChatConversationRepository, ProjectRepository,
+    AgentConversationWorkspaceRepository, ChatConversationRepository, PlanBranchRepository,
+    ProjectRepository,
 };
 use crate::error::{AppError, AppResult};
 
@@ -29,8 +30,6 @@ const MIN_TERMINAL_ROWS: u16 = 2;
 const MAX_TERMINAL_ROWS: u16 = 200;
 const MAX_WRITE_BYTES: usize = 64 * 1024;
 const MAX_HISTORY_BYTES: usize = 200 * 1024;
-const TERMINAL_EXTERNAL_OWNER_REASON: &str =
-    "Terminal unavailable because ideation or execution owns this workspace";
 pub(crate) const TERMINAL_MERGED_WORKSPACE_REASON: &str =
     "Terminal unavailable because this conversation workspace was archived after its PR was merged";
 pub(crate) const TERMINAL_CLOSED_WORKSPACE_REASON: &str =
@@ -317,7 +316,7 @@ impl AgentTerminalService {
             conversation_id: request.conversation_id.as_str().to_string(),
             terminal_id,
             cwd: launch.cwd.to_string_lossy().to_string(),
-            workspace_branch: launch.workspace.branch_name,
+            workspace_branch: launch.branch_name,
             status: AgentTerminalStatus::Running,
             pid: process.pid(),
             process,
@@ -438,13 +437,14 @@ impl Default for AgentTerminalService {
 pub struct AgentTerminalWorkspaceDeps<'a> {
     pub chat_conversation_repo: &'a Arc<dyn ChatConversationRepository>,
     pub workspace_repo: &'a Arc<dyn AgentConversationWorkspaceRepository>,
+    pub plan_branch_repo: &'a Arc<dyn PlanBranchRepository>,
     pub project_repo: &'a Arc<dyn ProjectRepository>,
 }
 
 #[derive(Debug, Clone)]
 struct TerminalLaunch {
     cwd: PathBuf,
-    workspace: AgentConversationWorkspace,
+    branch_name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -675,9 +675,6 @@ async fn resolve_terminal_launch(
                 "Terminal unavailable for branchless chat conversations".to_string(),
             )
         })?;
-    if let Some(reason) = terminal_external_workspace_owner_reason(&workspace) {
-        return Err(AppError::Validation(reason.to_string()));
-    }
     if let Some(reason) = terminal_publication_workspace_reason(&workspace) {
         return Err(AppError::Validation(reason.to_string()));
     }
@@ -694,21 +691,16 @@ async fn resolve_terminal_launch(
         .await?
         .ok_or_else(|| AppError::ProjectNotFound(conversation.context_id.clone()))?;
     validate_workspace_project(&project, &workspace)?;
-    let cwd = resolve_valid_agent_conversation_workspace_path(&project, &workspace).await?;
-    Ok(TerminalLaunch { cwd, workspace })
-}
-
-fn terminal_external_workspace_owner_reason(
-    workspace: &AgentConversationWorkspace,
-) -> Option<&'static str> {
-    if workspace.linked_plan_branch_id.is_some()
-        || (workspace.linked_ideation_session_id.is_some()
-            && workspace.mode != AgentConversationWorkspaceMode::Edit)
-    {
-        Some(TERMINAL_EXTERNAL_OWNER_REASON)
-    } else {
-        None
-    }
+    let resolved = resolve_effective_agent_conversation_workspace_path(
+        &project,
+        &workspace,
+        deps.plan_branch_repo.as_ref(),
+    )
+    .await?;
+    Ok(TerminalLaunch {
+        cwd: resolved.path,
+        branch_name: resolved.branch_name,
+    })
 }
 
 fn terminal_publication_workspace_reason(
@@ -824,6 +816,8 @@ fn build_terminal_command(cwd: &Path) -> CommandBuilder {
     command.env("SHELL", shell);
     command.env("PWD", cwd.as_os_str());
     command.env("PATH", terminal_env_path());
+    crate::infrastructure::subprocess_env_policy::github_cli_env_policy()
+        .apply_to_terminal_command(&mut command);
     command
 }
 
@@ -855,7 +849,7 @@ pub(crate) fn terminal_env_path_from_parts_for_test(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::entities::{IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId};
+    use crate::domain::entities::{AgentConversationWorkspaceMode, IdeationAnalysisBaseRefKind};
 
     #[test]
     fn terminal_id_rejects_path_like_components() {
@@ -906,44 +900,6 @@ mod tests {
         assert!(!terminal_dimensions_changed(&session, 120, 32));
         assert!(terminal_dimensions_changed(&session, 121, 32));
         assert!(terminal_dimensions_changed(&session, 120, 33));
-    }
-
-    #[test]
-    fn terminal_external_workspace_owner_reason_allows_linked_edit_workspace() {
-        let mut workspace = test_workspace(AgentConversationWorkspaceMode::Edit);
-        workspace.linked_ideation_session_id =
-            Some(IdeationSessionId::from_string("ideation-session-1"));
-
-        assert_eq!(terminal_external_workspace_owner_reason(&workspace), None);
-    }
-
-    #[test]
-    fn terminal_external_workspace_owner_reason_blocks_linked_non_edit_workspaces() {
-        for mode in [
-            AgentConversationWorkspaceMode::Chat,
-            AgentConversationWorkspaceMode::Plan,
-            AgentConversationWorkspaceMode::Ideation,
-        ] {
-            let mut workspace = test_workspace(mode);
-            workspace.linked_ideation_session_id =
-                Some(IdeationSessionId::from_string("ideation-session-1"));
-
-            assert_eq!(
-                terminal_external_workspace_owner_reason(&workspace),
-                Some(TERMINAL_EXTERNAL_OWNER_REASON)
-            );
-        }
-    }
-
-    #[test]
-    fn terminal_external_workspace_owner_reason_blocks_plan_branch_owned_workspaces() {
-        let mut workspace = test_workspace(AgentConversationWorkspaceMode::Edit);
-        workspace.linked_plan_branch_id = Some(PlanBranchId::from_string("plan-branch-1"));
-
-        assert_eq!(
-            terminal_external_workspace_owner_reason(&workspace),
-            Some(TERMINAL_EXTERNAL_OWNER_REASON)
-        );
     }
 
     #[test]

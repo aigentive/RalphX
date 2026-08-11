@@ -322,11 +322,13 @@ export function parseStopMetadata(metadata: string | null | undefined): StopMeta
 export type FailureSource =
   | "transient_timeout"
   | "agent_crash"
+  | "local_tool_failed"
   | "parse_stall"
   | "git_isolation"
   | "wall_clock_timeout"
   | "max_retries_exceeded"
   | "provider_error"
+  | "validation_failed"
   | "unknown";
 
 /** Sources that are transient (auto-retrying, shown as amber badge) */
@@ -392,6 +394,10 @@ export interface ResumeValidationWarning {
   message: string;
 }
 
+export type RestartDisposition =
+  | "recovered_to_review"
+  | "restarted_to_ready";
+
 /**
  * Result of a restart_task command (frontend camelCase type).
  *
@@ -404,11 +410,16 @@ export type RestartResult =
       task: Record<string, unknown>;
       category: ResumeCategory;
       resumedToStatus: string;
+      disposition?: RestartDisposition;
     }
   | {
       type: "ValidationFailed";
       warnings: ResumeValidationWarning[];
       stoppedFromStatus: string;
+    }
+  | {
+      type: "Blocked";
+      warnings: ResumeValidationWarning[];
     };
 
 // Zod schemas for restart result validation (snake_case from backend)
@@ -419,6 +430,10 @@ export const ResumeValidationWarningSchema = z.object({
 });
 
 export const ResumeCategorySchema = z.enum(["direct", "validated", "redirect"]);
+export const RestartDispositionSchema = z.enum([
+  "recovered_to_review",
+  "restarted_to_ready",
+]);
 
 /** Raw schema for backend response (snake_case) */
 export const RestartResultSchemaRaw = z.discriminatedUnion("type", [
@@ -427,11 +442,16 @@ export const RestartResultSchemaRaw = z.discriminatedUnion("type", [
     task: z.record(z.string(), z.unknown()),
     category: ResumeCategorySchema,
     resumed_to_status: z.string(),
+    disposition: RestartDispositionSchema.optional(),
   }),
   z.object({
     type: z.literal("ValidationFailed"),
     warnings: z.array(ResumeValidationWarningSchema),
     stopped_from_status: z.string(),
+  }),
+  z.object({
+    type: z.literal("Blocked"),
+    warnings: z.array(ResumeValidationWarningSchema),
   }),
 ]);
 
@@ -447,7 +467,11 @@ export function transformRestartResult(raw: RestartResultRaw): RestartResult {
       task: raw.task,
       category: raw.category,
       resumedToStatus: raw.resumed_to_status,
+      ...(raw.disposition ? { disposition: raw.disposition } : {}),
     };
+  }
+  if (raw.type === "Blocked") {
+    return { type: "Blocked", warnings: raw.warnings };
   }
   return {
     type: "ValidationFailed",

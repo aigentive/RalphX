@@ -17,12 +17,14 @@ use std::panic::Location;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
-use tauri::{AppHandle, Emitter, Manager, Runtime};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::application::agent_client_bundle::{AgentClientBundle, AgentClientFactoryBundle};
+use crate::application::manual_role_default_service::ManualRoleDefaultService;
 use crate::application::runtime_factory::{
     build_chat_service_with_fallback, ChatRuntimeFactoryDeps,
 };
+use crate::application::task_restart::FailedRecoveryEvidence;
 use crate::application::{
     AppChatService, AppState, ChatService, GitService, InteractiveProcessRegistry,
 };
@@ -32,16 +34,17 @@ use crate::domain::entities::task_metadata::GIT_ISOLATION_ERROR_PREFIX;
 use crate::domain::entities::{
     ExecutionFailureSource, ExecutionRecoveryEvent, ExecutionRecoveryEventKind,
     ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode, ExecutionRecoverySource,
-    InternalStatus, PlanBranchId, ReviewNote, ReviewOutcome, ReviewerType, Task, TaskCategory,
-    TaskId,
+    ExecutionRecoveryState, InternalStatus, PlanBranchId, ReviewNote, ReviewOutcome, ReviewerType,
+    Task, TaskCategory, TaskId,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
     AgentProviderSettingsRepository, AgentRunRepository, ArtifactRepository,
-    ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
-    ExecutionSettingsRepository, ExternalEventsRepository, IdeationSessionRepository,
-    MemoryEventRepository, PlanBranchRepository, ProjectRepository, ReviewRepository,
-    TaskDependencyRepository, TaskRepository, TaskStepRepository,
+    BranchUpdateRepository, ChatAttachmentRepository, ChatConversationRepository,
+    ChatMessageRepository, ExecutionSettingsRepository, ExternalEventsRepository,
+    IdeationSessionRepository, IdeationSettingsRepository, MemoryEventRepository,
+    PlanBranchRepository, ProjectRepository, ReviewRepository, TaskDependencyRepository,
+    TaskRepository, TaskStepRepository, ValidationRunRepository,
 };
 use crate::domain::services::{
     github_service::{
@@ -51,8 +54,8 @@ use crate::domain::services::{
     MessageQueue, PlanPrPublisher, PrReviewState, RunningAgentRegistry,
 };
 use crate::domain::state_machine::services::{
-    AgentSpawner, DependencyManager, EventEmitter, Notifier, ReviewStartResult, ReviewStarter,
-    TaskScheduler, WebhookPublisher,
+    AgentSpawner, DependencyManager, EventEmitter, NotificationContext, Notifier,
+    ReviewStartResult, ReviewStarter, TaskNotification, TaskScheduler, WebhookPublisher,
 };
 use crate::domain::state_machine::transition_handler::metadata_builder::{
     build_stop_metadata, build_trigger_origin_metadata, MetadataUpdate,
@@ -61,9 +64,10 @@ use crate::domain::state_machine::transition_handler::set_trigger_origin;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::spawner::AgenticClientSpawner;
 use ralphx_domain::entities::EventType;
+use ralphx_events::EventSink;
 
 #[allow(clippy::too_many_arguments)]
-fn build_transition_chat_service_fallback<R: Runtime>(
+fn build_transition_chat_service_fallback(
     chat_message_repo: Arc<dyn ChatMessageRepository>,
     chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
     conversation_repo: Arc<dyn ChatConversationRepository>,
@@ -77,14 +81,19 @@ fn build_transition_chat_service_fallback<R: Runtime>(
     running_agent_registry: Arc<dyn RunningAgentRegistry>,
     memory_event_repo: Arc<dyn MemoryEventRepository>,
     execution_state: Arc<ExecutionState>,
-    app_handle: Option<AppHandle<R>>,
-) -> AppChatService<R> {
+    app_handle: Option<AppHandle>,
+) -> AppChatService {
     let deps = ChatRuntimeFactoryDeps::from_core(
         chat_message_repo,
         chat_attachment_repo,
         Arc::new(crate::infrastructure::memory::MemoryArtifactRepository::new()),
         conversation_repo,
         agent_run_repo,
+        Arc::new(
+            crate::infrastructure::memory::MemoryAutomationRunRepository::new(
+                crate::infrastructure::memory::MemoryAutomationRepository::new_shared_state(),
+            ),
+        ),
         project_repo,
         task_repo,
         task_dep_repo,
@@ -96,6 +105,17 @@ fn build_transition_chat_service_fallback<R: Runtime>(
     );
 
     build_chat_service_with_fallback(&app_handle, Some(execution_state), &deps)
+}
+
+struct ExecutionEntryGuard {
+    execution_state: Arc<ExecutionState>,
+    task_id: String,
+}
+
+impl Drop for ExecutionEntryGuard {
+    fn drop(&mut self) {
+        self.execution_state.finish_execution_entry(&self.task_id);
+    }
 }
 
 fn github_pr_review_feedback_title(pr_number: i64) -> String {
@@ -179,12 +199,13 @@ fn is_github_pr_review_correction_task(
 // No-op service implementations (for services not yet fully implemented)
 // ============================================================================
 
-/// EventEmitter - emits events to Tauri app handle when available.
+/// EventEmitter - emits task lifecycle events when an event sink is available.
 ///
-/// Dual-emits: fires the Tauri frontend event AND writes to the `external_events`
+/// Dual-emits: fires the frontend event AND writes to the `external_events`
 /// table so external consumers (poll/SSE) can observe all state transitions.
-pub struct TauriEventEmitter<R: Runtime = tauri::Wry> {
-    app_handle: Option<AppHandle<R>>,
+pub struct EnrichedEventEmitter {
+    event_sink: Option<Arc<dyn EventSink>>,
+    throttled_emitter: Option<Arc<crate::application::ThrottledEmitter>>,
     /// Optional external events repo for dual-emit to DB.
     external_events_repo: Option<Arc<dyn ExternalEventsRepository>>,
     /// Optional task repo for resolving project_id and task details during enrichment.
@@ -197,16 +218,25 @@ pub struct TauriEventEmitter<R: Runtime = tauri::Wry> {
     webhook_publisher: Option<Arc<dyn WebhookPublisher>>,
 }
 
-impl<R: Runtime> TauriEventEmitter<R> {
-    pub fn new(app_handle: Option<AppHandle<R>>) -> Self {
+impl EnrichedEventEmitter {
+    pub fn new(event_sink: Option<Arc<dyn EventSink>>) -> Self {
         Self {
-            app_handle,
+            event_sink,
+            throttled_emitter: None,
             external_events_repo: None,
             task_repo_for_emit: None,
             project_repo_for_emit: None,
             ideation_session_repo_for_emit: None,
             webhook_publisher: None,
         }
+    }
+
+    pub fn with_throttled_emitter(
+        mut self,
+        throttled_emitter: Arc<crate::application::ThrottledEmitter>,
+    ) -> Self {
+        self.throttled_emitter = Some(throttled_emitter);
+        self
     }
 
     /// Attach external events repository and repos for enriched dual-emit.
@@ -354,28 +384,26 @@ impl<R: Runtime> TauriEventEmitter<R> {
 }
 
 #[async_trait]
-impl<R: Runtime> EventEmitter for TauriEventEmitter<R> {
+impl EventEmitter for EnrichedEventEmitter {
     async fn emit(&self, event_type: &str, task_id: &str) {
-        if let Some(ref handle) = self.app_handle {
+        if let Some(ref sink) = self.event_sink {
             let payload = serde_json::json!({
                 "taskId": task_id,
                 "timestamp": chrono::Utc::now().to_rfc3339(),
             });
-            if crate::application::ThrottledEmitter::<R>::is_batchable(event_type) {
-                if let Some(throttled) =
-                    handle.try_state::<std::sync::Arc<crate::application::ThrottledEmitter>>()
-                {
+            if crate::application::ThrottledEmitter::is_batchable(event_type) {
+                if let Some(throttled) = self.throttled_emitter.as_ref() {
                     throttled.emit(event_type, payload);
                     return;
                 }
             }
-            let _ = handle.emit(event_type, payload);
+            sink.emit(event_type, payload);
         }
     }
 
     async fn emit_with_payload(&self, event_type: &str, task_id: &str, payload: &str) {
-        if let Some(ref handle) = self.app_handle {
-            let _ = handle.emit(
+        if let Some(ref sink) = self.event_sink {
+            sink.emit(
                 event_type,
                 serde_json::json!({
                     "taskId": task_id,
@@ -402,14 +430,12 @@ impl<R: Runtime> EventEmitter for TauriEventEmitter<R> {
             }
         };
 
-        // Sink 1: Tauri UI event.
-        if let Some(ref handle) = self.app_handle {
-            if let Some(throttled) =
-                handle.try_state::<std::sync::Arc<crate::application::ThrottledEmitter>>()
-            {
+        // Sink 1: UI event.
+        if let Some(ref sink) = self.event_sink {
+            if let Some(throttled) = self.throttled_emitter.as_ref() {
                 throttled.emit("task:status_changed", payload.clone());
             } else {
-                let _ = handle.emit("task:status_changed", payload.clone());
+                sink.emit("task:status_changed", payload.clone());
             }
         }
 
@@ -426,27 +452,12 @@ impl<R: Runtime> EventEmitter for TauriEventEmitter<R> {
     }
 }
 
-/// LoggingNotifier - logs notifications for debugging
-pub struct LoggingNotifier;
+/// Default for direct/unit construction that does not wire application notification storage.
+pub struct NoopNotifier;
 
 #[async_trait]
-impl Notifier for LoggingNotifier {
-    async fn notify(&self, notification_type: &str, task_id: &str) {
-        tracing::info!(
-            task_id = task_id,
-            notification_type = notification_type,
-            "Notification"
-        );
-    }
-
-    async fn notify_with_message(&self, notification_type: &str, task_id: &str, message: &str) {
-        tracing::info!(
-            task_id = task_id,
-            notification_type = notification_type,
-            message = message,
-            "Notification with message"
-        );
-    }
+impl Notifier for NoopNotifier {
+    async fn notify(&self, _context: NotificationContext, _notification: TaskNotification) {}
 }
 
 /// Repository-backed DependencyManager for automatic task blocking/unblocking
@@ -456,22 +467,22 @@ impl Notifier for LoggingNotifier {
 /// 2. For each blocked task, checks if ALL its blockers are now complete
 /// 3. If all blockers complete, transitions the task from Blocked to Ready
 /// 4. Emits task:unblocked event for UI updates
-pub struct RepoBackedDependencyManager<R: Runtime = tauri::Wry> {
+pub struct RepoBackedDependencyManager {
     task_dep_repo: Arc<dyn TaskDependencyRepository>,
     task_repo: Arc<dyn TaskRepository>,
-    app_handle: Option<AppHandle<R>>,
+    event_sink: Option<Arc<dyn EventSink>>,
 }
 
-impl<R: Runtime> RepoBackedDependencyManager<R> {
+impl RepoBackedDependencyManager {
     pub fn new(
         task_dep_repo: Arc<dyn TaskDependencyRepository>,
         task_repo: Arc<dyn TaskRepository>,
-        app_handle: Option<AppHandle<R>>,
+        event_sink: Option<Arc<dyn EventSink>>,
     ) -> Self {
         Self {
             task_dep_repo,
             task_repo,
-            app_handle,
+            event_sink,
         }
     }
 
@@ -515,7 +526,7 @@ impl<R: Runtime> RepoBackedDependencyManager<R> {
 }
 
 #[async_trait]
-impl<R: Runtime> DependencyManager for RepoBackedDependencyManager<R> {
+impl DependencyManager for RepoBackedDependencyManager {
     async fn unblock_dependents(&self, completed_task_id: &str) {
         let task_id = TaskId::from_string(completed_task_id.to_string());
 
@@ -598,8 +609,8 @@ impl<R: Runtime> DependencyManager for RepoBackedDependencyManager<R> {
                     );
 
                     // Emit task:unblocked event for UI update
-                    if let Some(ref handle) = self.app_handle {
-                        let _ = handle.emit(
+                    if let Some(ref sink) = self.event_sink {
+                        sink.emit(
                             "task:unblocked",
                             serde_json::json!({
                                 "taskId": dependent_id.as_str(),
@@ -726,6 +737,9 @@ fn internal_status_to_state(
         InternalStatus::Cancelled => State::Cancelled,
         InternalStatus::Paused => State::Paused,
         InternalStatus::Stopped => State::Stopped,
+        InternalStatus::UpdatingPlanBranch => State::UpdatingPlanBranch,
+        InternalStatus::UpdatingTaskBranch => State::UpdatingTaskBranch,
+        InternalStatus::BranchUpdateBlocked => State::BranchUpdateBlocked,
     }
 }
 
@@ -757,6 +771,9 @@ fn state_to_internal_status(
         State::MergeIncomplete => InternalStatus::MergeIncomplete,
         State::MergeConflict => InternalStatus::MergeConflict,
         State::Merged => InternalStatus::Merged,
+        State::UpdatingPlanBranch => InternalStatus::UpdatingPlanBranch,
+        State::UpdatingTaskBranch => InternalStatus::UpdatingTaskBranch,
+        State::BranchUpdateBlocked => InternalStatus::BranchUpdateBlocked,
         State::Failed(_) => InternalStatus::Failed,
         State::Cancelled => InternalStatus::Cancelled,
         State::Paused => InternalStatus::Paused,
@@ -821,6 +838,10 @@ fn task_metadata_bool(task: &Task, key: &str) -> bool {
         .unwrap_or(false)
 }
 
+const GITHUB_AUTO_MERGE_DISABLED_FOR_CORRECTION_KEY: &str =
+    "github_auto_merge_disabled_for_correction";
+const GITHUB_AUTO_MERGE_METHOD_KEY: &str = "github_auto_merge_method";
+
 // ============================================================================
 // TaskTransitionService
 // ============================================================================
@@ -829,8 +850,9 @@ fn task_metadata_bool(task: &Task, key: &str) -> bool {
 ///
 /// This service ensures that when a task's status changes (e.g., via Kanban drag-drop),
 /// the appropriate side effects are triggered (e.g., spawning worker agents).
-pub struct TaskTransitionService<R: Runtime = tauri::Wry> {
+pub struct TaskTransitionService {
     task_repo: Arc<dyn TaskRepository>,
+    branch_update_repo: Option<Arc<dyn BranchUpdateRepository>>,
     task_dependency_repo: Arc<dyn TaskDependencyRepository>,
     project_repo: Arc<dyn ProjectRepository>,
     chat_message_repo: Arc<dyn ChatMessageRepository>,
@@ -847,7 +869,8 @@ pub struct TaskTransitionService<R: Runtime = tauri::Wry> {
     message_queue: Arc<MessageQueue>,
     memory_event_repo: Arc<dyn MemoryEventRepository>,
     execution_state: Arc<ExecutionState>,
-    _app_handle: Option<AppHandle<R>>,
+    _app_handle: Option<AppHandle>,
+    event_sink: Option<Arc<dyn EventSink>>,
     /// Task scheduler for auto-scheduling Ready tasks when slots are available.
     /// Passed to TaskServices so TransitionHandler can trigger scheduling on
     /// state exits and Ready state entry.
@@ -858,6 +881,7 @@ pub struct TaskTransitionService<R: Runtime = tauri::Wry> {
 
     /// Agent conversation workspace repository for linked plan-branch PR supervision.
     agent_conversation_workspace_repo: Option<Arc<dyn AgentConversationWorkspaceRepository>>,
+    tasks_feature_settings_repo: Option<Arc<dyn IdeationSettingsRepository>>,
 
     /// Task step repository for updating step statuses.
     /// Passed to TaskServices so TransitionHandler can fail in-progress steps.
@@ -871,17 +895,12 @@ pub struct TaskTransitionService<R: Runtime = tauri::Wry> {
     execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
     agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
     agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
+    manual_role_default_service: Option<Arc<ManualRoleDefaultService>>,
     review_repo: Option<Arc<dyn ReviewRepository>>,
 
     /// Activity event repository for emitting merge pipeline audit events.
     /// Cloned before being passed to the app chat service so the transition handler also has access.
     activity_event_repo: Arc<dyn ActivityEventRepository>,
-
-    /// Per-task team mode override. When `Some(true)`, the chat service uses
-    /// team-mode agent names (e.g., orchestrator-execution instead of worker).
-    /// `Some(false)` means solo was explicitly chosen (skip metadata fallback).
-    /// `None` means unset — fall back to task metadata `agent_variant`.
-    team_mode: Option<bool>,
 
     /// Shared InteractiveProcessRegistry from AppState.
     /// When set via `with_interactive_process_registry`, injected into the chat
@@ -924,9 +943,9 @@ pub struct TaskTransitionService<R: Runtime = tauri::Wry> {
     /// None disables PR-mode merge path.
     github_service: Option<Arc<dyn crate::domain::services::GithubServiceTrait>>,
 
-    /// Webhook publisher for triple-emit (Tauri + DB + webhooks).
+    /// Webhook publisher for triple-emit (UI event + DB + webhooks).
     /// Set via with_webhook_publisher_for_emitter(). Propagated to TaskServices
-    /// via build_task_services_common() and to TauriEventEmitter via with_external_events_repo().
+    /// via build_task_services_common() and to EnrichedEventEmitter via with_external_events_repo().
     webhook_publisher: Option<Arc<dyn WebhookPublisher>>,
 
     plan_pr_description_drafter: Option<Arc<dyn crate::domain::services::PlanPrDescriptionDrafter>>,
@@ -937,14 +956,35 @@ pub struct TaskTransitionService<R: Runtime = tauri::Wry> {
     session_merge_locks: Arc<dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 
     /// Self-referential Arc for passing to TaskServices (PR merge poller pattern).
-    /// Set via `set_self_arc()` after Arc-wrapping. Uses Mutex + Any for runtime-generic storage.
-    /// Used so `on_enter(Merging)` can pass `Arc<TaskTransitionService<Wry>>` to start_polling.
-    self_arc: std::sync::Mutex<Option<Arc<dyn std::any::Any + Send + Sync>>>,
+    /// Set via `set_self_arc()` after Arc-wrapping.
+    /// Used so `on_enter(Merging)` can pass `Arc<TaskTransitionService>` to start_polling.
+    self_arc: std::sync::Mutex<Option<Arc<TaskTransitionService>>>,
 }
 
-impl<R: Runtime> TaskTransitionService<R> {
+impl TaskTransitionService {
+    /// Record a task-state notification after the caller committed its matching history row.
+    ///
+    /// Direct merge/recovery repair paths use this instead of re-querying "latest" history.
+    pub(crate) async fn notify_state_entered(
+        &self,
+        task: &Task,
+        history_entry_id: String,
+        status: InternalStatus,
+    ) {
+        self.notifier
+            .notify(
+                NotificationContext {
+                    task: task.clone(),
+                    history_entry_id,
+                    project_id: task.project_id.clone(),
+                },
+                TaskNotification::StateEntered(status),
+            )
+            .await;
+    }
+
     fn log_build_step(step: &'static str, started_at: Instant) {
-        tracing::info!(
+        tracing::debug!(
             step,
             elapsed_ms = started_at.elapsed().as_millis(),
             "Task transition service build step completed"
@@ -965,6 +1005,7 @@ impl<R: Runtime> TaskTransitionService<R> {
             self.execution_settings_repo.as_ref().map(Arc::clone),
             self.agent_lane_settings_repo.as_ref().map(Arc::clone),
             self.agent_provider_settings_repo.as_ref().map(Arc::clone),
+            self.manual_role_default_service.as_ref().map(Arc::clone),
             Arc::clone(
                 self.ideation_session_repo
                     .as_ref()
@@ -983,6 +1024,7 @@ impl<R: Runtime> TaskTransitionService<R> {
         execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
         agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
         agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
+        manual_role_default_service: Option<Arc<ManualRoleDefaultService>>,
         ideation_session_repo: Arc<dyn IdeationSessionRepository>,
         running_agent_registry: Arc<dyn RunningAgentRegistry>,
     ) -> Arc<dyn AgentSpawner> {
@@ -995,6 +1037,11 @@ impl<R: Runtime> TaskTransitionService<R> {
             .with_execution_state(Arc::clone(&execution_state));
         let spawner = if let Some(provider_repo) = agent_provider_settings_repo {
             spawner.with_agent_provider_settings_repo(provider_repo)
+        } else {
+            spawner
+        };
+        let spawner = if let Some(defaults) = manual_role_default_service {
+            spawner.with_manual_role_default_service(defaults)
         } else {
             spawner
         };
@@ -1083,26 +1130,25 @@ impl<R: Runtime> TaskTransitionService<R> {
         if let Some(repo) = self.agent_provider_settings_repo.as_ref() {
             service = service.with_agent_provider_settings_repo(Arc::clone(repo));
         }
+        if let Some(defaults) = self.manual_role_default_service.as_ref() {
+            service = service.with_manual_role_default_service(Arc::clone(defaults));
+        }
         if let Some(repo) = self.plan_branch_repo.as_ref() {
             service = service.with_plan_branch_repo(Arc::clone(repo));
         }
         if let Some(ipr) = self.interactive_process_registry.as_ref() {
             service = service.with_interactive_process_registry(Arc::clone(ipr));
         }
-        match self.team_mode {
-            Some(explicit) => {
-                service = service.with_team_mode(explicit);
-            }
-            None => {
-                use crate::infrastructure::agents::claude::env_variant_override;
-                if env_variant_override("execution").as_deref() == Some("team") {
-                    service = service.with_team_mode(true);
-                }
-            }
-        }
-
         self.chat_service = Arc::new(service);
         Self::log_build_step("rebuild_chat_service_fallback", started_at);
+    }
+
+    fn emit_task_event(&self, payload: serde_json::Value) {
+        if let Some(ref event_sink) = self.event_sink {
+            event_sink.emit("task:event", payload);
+        } else if let Some(ref handle) = self._app_handle {
+            let _ = handle.emit("task:event", payload);
+        }
     }
 
     /// Create a new TaskTransitionService with all required dependencies.
@@ -1119,7 +1165,7 @@ impl<R: Runtime> TaskTransitionService<R> {
         message_queue: Arc<MessageQueue>,
         running_agent_registry: Arc<dyn RunningAgentRegistry>,
         execution_state: Arc<ExecutionState>,
-        app_handle: Option<AppHandle<R>>,
+        app_handle: Option<AppHandle>,
         memory_event_repo: Arc<dyn MemoryEventRepository>,
     ) -> Self {
         let total_started_at = Instant::now();
@@ -1135,6 +1181,7 @@ impl<R: Runtime> TaskTransitionService<R> {
             None,
             None,
             None,
+            None,
             Arc::clone(&ideation_session_repo),
             Arc::clone(&running_agent_registry),
         );
@@ -1147,7 +1194,7 @@ impl<R: Runtime> TaskTransitionService<R> {
         // Create the unified chat service for worker spawning
         let started_at = Instant::now();
         let chat_service: Arc<dyn ChatService> = {
-            let mut service = if let Some(ref handle) = app_handle {
+            let service = if let Some(ref handle) = app_handle {
                 if let Some(app_state) = handle.try_state::<AppState>() {
                     app_state.build_chat_service_for_runtime(
                         Some(Arc::clone(&execution_state)),
@@ -1189,39 +1236,48 @@ impl<R: Runtime> TaskTransitionService<R> {
                     None,
                 )
             };
-            // Global env var override: RALPHX_PROCESS_VARIANT_EXECUTION=team
-            use crate::infrastructure::agents::claude::env_variant_override;
-            if env_variant_override("execution").as_deref() == Some("team") {
-                service = service.with_team_mode(true);
-            }
             Arc::new(service)
         };
         Self::log_build_step("initial_chat_service", started_at);
 
+        let app_state = app_handle
+            .as_ref()
+            .and_then(|handle| handle.try_state::<AppState>());
+        let event_sink = app_state.as_ref().map(|state| Arc::clone(&state.events));
+        let throttled_emitter = app_handle.as_ref().and_then(|handle| {
+            handle
+                .try_state::<Arc<crate::application::ThrottledEmitter>>()
+                .map(|state| Arc::clone(state.inner()))
+        });
+
         // Create other services
         let started_at = Instant::now();
-        let event_emitter: Arc<dyn EventEmitter> = Arc::new(
-            TauriEventEmitter::new(app_handle.clone()).with_enrichment_repos(
+        let mut emitter = EnrichedEventEmitter::new(event_sink.as_ref().map(Arc::clone))
+            .with_enrichment_repos(
                 Arc::clone(&task_repo),
                 Arc::clone(&project_repo),
                 Arc::clone(&ideation_session_repo),
-            ),
-        );
+            );
+        if let Some(throttled) = throttled_emitter {
+            emitter = emitter.with_throttled_emitter(throttled);
+        }
+        let event_emitter: Arc<dyn EventEmitter> = Arc::new(emitter);
         Self::log_build_step("event_emitter", started_at);
-        let notifier: Arc<dyn Notifier> = Arc::new(LoggingNotifier);
+        let notifier: Arc<dyn Notifier> = Arc::new(NoopNotifier);
         // Use real dependency manager for automatic blocking/unblocking based on dependency graph
         let started_at = Instant::now();
         let dependency_manager: Arc<dyn DependencyManager> =
             Arc::new(RepoBackedDependencyManager::new(
                 Arc::clone(&task_dep_repo),
                 Arc::clone(&task_repo),
-                app_handle.clone(),
+                event_sink.as_ref().map(Arc::clone),
             ));
         Self::log_build_step("dependency_manager", started_at);
         let review_starter: Arc<dyn ReviewStarter> = Arc::new(NoOpReviewStarter);
 
         let service = Self {
             task_repo,
+            branch_update_repo: None,
             task_dependency_repo: task_dep_repo,
             project_repo,
             chat_message_repo,
@@ -1239,6 +1295,7 @@ impl<R: Runtime> TaskTransitionService<R> {
             memory_event_repo,
             execution_state,
             _app_handle: app_handle,
+            event_sink,
             task_scheduler: None,
             plan_branch_repo: None,
             step_repo: None,
@@ -1247,9 +1304,9 @@ impl<R: Runtime> TaskTransitionService<R> {
             execution_settings_repo: None,
             agent_lane_settings_repo: None,
             agent_provider_settings_repo: None,
+            manual_role_default_service: None,
             review_repo: None,
             activity_event_repo: activity_event_repo_for_services,
-            team_mode: None,
             interactive_process_registry: None,
             merge_lock: Arc::new(tokio::sync::Mutex::new(())),
             merges_in_flight: Arc::new(std::sync::Mutex::new(HashSet::new())),
@@ -1259,6 +1316,7 @@ impl<R: Runtime> TaskTransitionService<R> {
             pr_poller_registry: None,
             github_service: None,
             agent_conversation_workspace_repo: None,
+            tasks_feature_settings_repo: None,
             webhook_publisher: None,
             plan_pr_description_drafter: None,
             session_merge_locks: Arc::new(dashmap::DashMap::new()),
@@ -1275,19 +1333,12 @@ impl<R: Runtime> TaskTransitionService<R> {
     /// let svc = Arc::new(TaskTransitionService::new(...));
     /// svc.set_self_arc(Arc::clone(&svc));
     /// ```
-    /// Only has effect when R: 'static (i.e., in production with Wry runtime).
-    pub fn set_self_arc(&self, arc: Arc<TaskTransitionService<R>>)
-    where
-        R: 'static,
-    {
-        *self.self_arc.lock().unwrap() = Some(arc as Arc<dyn std::any::Any + Send + Sync>);
+    pub fn set_self_arc(&self, arc: Arc<TaskTransitionService>) {
+        *self.self_arc.lock().unwrap() = Some(arc);
     }
 
     /// Wrap the service in an Arc and wire self_arc so PR-mode pollers can call back into it.
-    pub fn into_arc(self) -> Arc<TaskTransitionService<R>>
-    where
-        R: 'static,
-    {
+    pub fn into_arc(self) -> Arc<TaskTransitionService> {
         let arc = Arc::new(self);
         arc.set_self_arc(Arc::clone(&arc));
         arc
@@ -1299,6 +1350,23 @@ impl<R: Runtime> TaskTransitionService<R> {
     /// can trigger scheduling when tasks exit agent-active states or enter Ready state.
     pub fn with_task_scheduler(mut self, scheduler: Arc<dyn TaskScheduler>) -> Self {
         self.task_scheduler = Some(scheduler);
+        self
+    }
+
+    pub fn with_branch_update_repo(mut self, repo: Arc<dyn BranchUpdateRepository>) -> Self {
+        self.chat_service.set_branch_update_repo(Arc::clone(&repo));
+        self.branch_update_repo = Some(repo);
+        self
+    }
+
+    /// Wire the application implementation of the domain notification seam.
+    pub fn with_notifier(mut self, notifier: Arc<dyn Notifier>) -> Self {
+        self.notifier = notifier;
+        self
+    }
+
+    pub fn with_review_starter(mut self, review_starter: Arc<dyn ReviewStarter>) -> Self {
+        self.review_starter = review_starter;
         self
     }
 
@@ -1318,9 +1386,23 @@ impl<R: Runtime> TaskTransitionService<R> {
         self
     }
 
+    pub fn with_tasks_feature_settings_repo(
+        mut self,
+        repo: Arc<dyn IdeationSettingsRepository>,
+    ) -> Self {
+        self.tasks_feature_settings_repo = Some(repo);
+        self
+    }
+
     /// Set the task step repository (builder pattern).
     pub fn with_step_repo(mut self, repo: Arc<dyn TaskStepRepository>) -> Self {
+        self.chat_service.set_task_step_repo(Arc::clone(&repo));
         self.step_repo = Some(repo);
+        self
+    }
+
+    pub fn with_validation_run_repo(self, repo: Arc<dyn ValidationRunRepository>) -> Self {
+        self.chat_service.set_validation_run_repo(repo);
         self
     }
 
@@ -1386,12 +1468,23 @@ impl<R: Runtime> TaskTransitionService<R> {
         self
     }
 
+    pub fn with_manual_role_default_service(
+        mut self,
+        service: Arc<ManualRoleDefaultService>,
+    ) -> Self {
+        self.manual_role_default_service = Some(service);
+        self.rebuild_chat_service();
+        self.rebuild_agent_spawner();
+        self
+    }
+
     pub(crate) fn with_runtime_resolution_context(
         mut self,
         agent_clients: Option<AgentClientBundle>,
         execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
         agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
         agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
+        manual_role_default_service: Option<Arc<ManualRoleDefaultService>>,
         plan_branch_repo: Option<Arc<dyn PlanBranchRepository>>,
         interactive_process_registry: Option<Arc<InteractiveProcessRegistry>>,
     ) -> Self {
@@ -1399,7 +1492,8 @@ impl<R: Runtime> TaskTransitionService<R> {
         let agent_clients_changed = agent_clients.is_some();
         let runtime_settings_changed = execution_settings_repo.is_some()
             || agent_lane_settings_repo.is_some()
-            || agent_provider_settings_repo.is_some();
+            || agent_provider_settings_repo.is_some()
+            || manual_role_default_service.is_some();
         let app_agent_lane_settings_repo =
             if execution_settings_repo.is_some() && agent_lane_settings_repo.is_none() {
                 self._app_handle
@@ -1430,6 +1524,9 @@ impl<R: Runtime> TaskTransitionService<R> {
         }
         if let Some(repo) = agent_provider_settings_repo.or(app_agent_provider_settings_repo) {
             self.agent_provider_settings_repo = Some(repo);
+        }
+        if let Some(defaults) = manual_role_default_service {
+            self.manual_role_default_service = Some(defaults);
         }
 
         if let Some(repo) = plan_branch_repo {
@@ -1512,15 +1609,6 @@ impl<R: Runtime> TaskTransitionService<R> {
         self.with_harness_agentic_client_factory(harness, move || Arc::clone(&client))
     }
 
-    /// Enable team mode for agent spawning (builder pattern).
-    ///
-    /// When enabled, the chat service resolves to team-mode agent names
-    /// (e.g., orchestrator-execution instead of worker).
-    pub fn with_team_mode(mut self, team_mode: bool) -> Self {
-        self.team_mode = Some(team_mode);
-        self
-    }
-
     /// Inject the shared AppState InteractiveProcessRegistry (builder pattern).
     ///
     /// When set, state-machine-spawned agents (execution/review/merge) register their
@@ -1544,12 +1632,13 @@ impl<R: Runtime> TaskTransitionService<R> {
             .as_ref()
             .expect("ideation_session_repo set in new()")
             .clone();
-        let emitter = TauriEventEmitter::new(self._app_handle.clone()).with_external_events(
-            Arc::clone(&repo),
-            Arc::clone(&self.task_repo),
-            Arc::clone(&self.project_repo),
-            ideation_session_repo,
-        );
+        let emitter = EnrichedEventEmitter::new(self.event_sink.as_ref().map(Arc::clone))
+            .with_external_events(
+                Arc::clone(&repo),
+                Arc::clone(&self.task_repo),
+                Arc::clone(&self.project_repo),
+                ideation_session_repo,
+            );
         let emitter = if let Some(ref pub_) = self.webhook_publisher {
             emitter.with_webhook_publisher(Arc::clone(pub_))
         } else {
@@ -1557,6 +1646,31 @@ impl<R: Runtime> TaskTransitionService<R> {
         };
         self.event_emitter = Arc::new(emitter);
         self.external_events_repo = Some(repo);
+        self.chat_service.set_completion_event_delivery(
+            self.external_events_repo.as_ref().map(Arc::clone),
+            self.webhook_publisher.as_ref().map(Arc::clone),
+        );
+        self
+    }
+
+    pub fn with_event_sink(mut self, sink: Arc<dyn EventSink>) -> Self {
+        self.event_sink = Some(Arc::clone(&sink));
+        if self.external_events_repo.is_none() {
+            let ideation_session_repo = self
+                .ideation_session_repo
+                .as_ref()
+                .expect("ideation_session_repo set in new()")
+                .clone();
+            let mut emitter = EnrichedEventEmitter::new(Some(sink)).with_enrichment_repos(
+                Arc::clone(&self.task_repo),
+                Arc::clone(&self.project_repo),
+                ideation_session_repo,
+            );
+            if let Some(ref publisher) = self.webhook_publisher {
+                emitter = emitter.with_webhook_publisher(Arc::clone(publisher));
+            }
+            self.event_emitter = Arc::new(emitter);
+        }
         self
     }
 
@@ -1595,6 +1709,10 @@ impl<R: Runtime> TaskTransitionService<R> {
         publisher: Arc<dyn WebhookPublisher>,
     ) -> Self {
         self.webhook_publisher = Some(publisher);
+        self.chat_service.set_completion_event_delivery(
+            self.external_events_repo.as_ref().map(Arc::clone),
+            self.webhook_publisher.as_ref().map(Arc::clone),
+        );
         self
     }
 
@@ -1632,6 +1750,7 @@ impl<R: Runtime> TaskTransitionService<R> {
         async move {
             self.transition_task_with_metadata_from_caller(task_id, new_status, None, caller)
                 .await
+                .map(|(task, _changed)| task)
         }
     }
 
@@ -1665,7 +1784,231 @@ impl<R: Runtime> TaskTransitionService<R> {
                 caller,
             )
             .await
+            .map(|(task, _changed)| task)
         }
+    }
+
+    /// Quiesce an archived task that still carries a legacy active status.
+    ///
+    /// Normal workflow transitions reject archived tasks. Tasks OFF recovery must still
+    /// be able to pause this inconsistent state through the canonical transition path so
+    /// status history, metadata, exit effects, and events remain aligned.
+    #[track_caller]
+    pub(crate) fn transition_archived_task_to_paused_with_metadata<'a>(
+        &'a self,
+        task_id: &'a TaskId,
+        metadata_update: MetadataUpdate,
+    ) -> impl Future<Output = AppResult<Task>> + 'a {
+        let caller = Location::caller();
+        async move {
+            self.transition_task_with_metadata_from_caller_allow_archived(
+                task_id,
+                InternalStatus::Paused,
+                Some(metadata_update),
+                caller,
+                true,
+            )
+            .await
+            .map(|(task, _changed)| task)
+        }
+    }
+
+    /// Finalize one accepted execution attempt and emit completion side effects only for
+    /// the caller that wins the optimistic status transition.
+    pub async fn transition_execution_completed_to_review(
+        &self,
+        task_id: &TaskId,
+        agent_run_id: &str,
+    ) -> AppResult<Task> {
+        let caller = Location::caller();
+        let (task, changed) = self
+            .transition_task_with_metadata_from_caller(
+                task_id,
+                InternalStatus::PendingReview,
+                None,
+                caller,
+            )
+            .await?;
+
+        if changed {
+            let payload = serde_json::json!({
+                "task_id": task_id.as_str(),
+                "project_id": task.project_id.as_str(),
+                "agent_run_id": agent_run_id,
+                "outcome": "completed",
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+            });
+            let ui_payload = serde_json::json!({
+                "task_id": task_id.as_str(),
+                "agent_run_id": agent_run_id,
+            });
+            if let Some(ref event_sink) = self.event_sink {
+                event_sink.emit("execution:completed", ui_payload);
+            } else if let Some(ref handle) = self._app_handle {
+                let _ = handle.emit("execution:completed", ui_payload);
+            }
+            let publish_completion = if let Some(ref repo) = self.external_events_repo {
+                match repo
+                    .insert_event_once_for_attempt(
+                        &EventType::TaskExecutionCompleted.to_string(),
+                        task.project_id.as_str(),
+                        agent_run_id,
+                        &payload.to_string(),
+                    )
+                    .await
+                {
+                    Ok(inserted) => inserted,
+                    Err(error) => {
+                        tracing::warn!(%error, task_id = task_id.as_str(), "Failed to persist accepted task execution completion event");
+                        false
+                    }
+                }
+            } else {
+                true
+            };
+            if publish_completion {
+                if let Some(ref publisher) = self.webhook_publisher {
+                    publisher
+                        .publish(
+                            EventType::TaskExecutionCompleted,
+                            task.project_id.as_str(),
+                            payload,
+                        )
+                        .await;
+                }
+            }
+        }
+
+        Ok(task)
+    }
+
+    /// Correct a false terminal failure when the restart preflight has proved that the
+    /// preserved execution attempt is complete. This deliberately does not widen the
+    /// global state-machine transition table.
+    pub async fn recover_failed_completed_task_to_review(
+        &self,
+        task_id: &TaskId,
+        evidence: &FailedRecoveryEvidence,
+    ) -> AppResult<Task> {
+        let mut task =
+            self.task_repo.get_by_id(task_id).await?.ok_or_else(|| {
+                AppError::NotFound(format!("Task not found: {}", task_id.as_str()))
+            })?;
+        if task.internal_status != InternalStatus::Failed {
+            return Err(AppError::Validation(format!(
+                "Failed-task recovery lost authority because task {} is now '{}'",
+                task_id.as_str(),
+                task.internal_status.as_str()
+            )));
+        }
+        self.authorize_task_action(&task, crate::domain::ideation::TasksFeatureAction::Progress)
+            .await?;
+
+        let old_status = task.internal_status;
+        let original_failure = task
+            .metadata
+            .as_deref()
+            .and_then(|metadata| serde_json::from_str::<serde_json::Value>(metadata).ok())
+            .and_then(|metadata| {
+                metadata
+                    .get("failure_error")
+                    .or_else(|| metadata.get("last_agent_error"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            })
+            .or_else(|| task.blocked_reason.clone());
+        let mut execution_recovery =
+            ExecutionRecoveryMetadata::from_task_metadata(task.metadata.as_deref())
+                .map_err(|error| {
+                    AppError::Validation(format!(
+                        "Invalid execution recovery metadata during failed-task recovery: {error}"
+                    ))
+                })?
+                .unwrap_or_default();
+        execution_recovery.stop_retrying = false;
+        execution_recovery.unrecoverable_reason = None;
+        execution_recovery.append_event_with_state(
+            ExecutionRecoveryEvent::new(
+                ExecutionRecoveryEventKind::CompletedWorkRecovered,
+                ExecutionRecoverySource::User,
+                ExecutionRecoveryReasonCode::ValidatedCompletedWork,
+                format!(
+                    "Recovered validated completed work from failed task; agent_run_id={}, validation_run_id={}, promoted_commit_sha={}, original_failure={}",
+                    evidence.agent_run_id,
+                    evidence.validation_run_id,
+                    evidence.promoted_commit_sha,
+                    original_failure.as_deref().unwrap_or("unknown")
+                ),
+            ),
+            ExecutionRecoveryState::Succeeded,
+        );
+        let metadata_with_recovery = execution_recovery
+            .update_task_metadata(task.metadata.as_deref())
+            .map_err(|error| {
+                AppError::Validation(format!(
+                    "Failed to record failed-task recovery audit metadata: {error}"
+                ))
+            })?;
+        task.internal_status = InternalStatus::PendingReview;
+        task.blocked_reason = None;
+        task.touch();
+        task.metadata = Some(
+            MetadataUpdate::new()
+                .with_null("failure_error")
+                .with_null("last_agent_error")
+                .with_value(
+                    "failed_completion_recovery",
+                    serde_json::json!({
+                        "recovered_at": chrono::Utc::now().to_rfc3339(),
+                        "agent_run_id": evidence.agent_run_id,
+                        "validation_run_id": evidence.validation_run_id,
+                        "promoted_commit_sha": evidence.promoted_commit_sha,
+                        "episode_entered_at": evidence.episode_entered_at.to_rfc3339(),
+                        "original_failure": original_failure,
+                        "reason_code": "validated_completed_work",
+                    }),
+                )
+                .merge_into(Some(&metadata_with_recovery)),
+        );
+
+        let Some(history_entry_id) = self
+            .task_repo
+            .update_with_expected_status_and_history_for_action(
+                &task,
+                InternalStatus::Failed,
+                "user_recovery",
+                crate::domain::ideation::TasksFeatureAction::Progress,
+            )
+            .await?
+        else {
+            return Err(AppError::Validation(format!(
+                "Failed-task recovery lost authority because task {} changed concurrently",
+                task_id.as_str()
+            )));
+        };
+        self.emit_task_event(serde_json::json!({
+            "type": "status_changed",
+            "taskId": task_id.as_str(),
+            "from": old_status.as_str(),
+            "to": InternalStatus::PendingReview.as_str(),
+            "changedBy": "user_recovery",
+        }));
+        self.event_emitter
+            .emit_status_change(
+                task_id.as_str(),
+                old_status.as_str(),
+                InternalStatus::PendingReview.as_str(),
+            )
+            .await;
+        Box::pin(self.execute_entry_actions_with_notification_context(
+            task_id,
+            &task,
+            InternalStatus::PendingReview,
+            Some(history_entry_id),
+        ))
+        .await;
+
+        Ok(task)
     }
 
     async fn transition_task_with_metadata_from_caller(
@@ -1674,7 +2017,25 @@ impl<R: Runtime> TaskTransitionService<R> {
         new_status: InternalStatus,
         metadata_update: Option<MetadataUpdate>,
         caller: &'static Location<'static>,
-    ) -> AppResult<Task> {
+    ) -> AppResult<(Task, bool)> {
+        self.transition_task_with_metadata_from_caller_allow_archived(
+            task_id,
+            new_status,
+            metadata_update,
+            caller,
+            false,
+        )
+        .await
+    }
+
+    async fn transition_task_with_metadata_from_caller_allow_archived(
+        &self,
+        task_id: &TaskId,
+        new_status: InternalStatus,
+        metadata_update: Option<MetadataUpdate>,
+        caller: &'static Location<'static>,
+        allow_archived_pause: bool,
+    ) -> AppResult<(Task, bool)> {
         tracing::debug!(
             task_id = task_id.as_str(),
             new_status = new_status.as_str(),
@@ -1690,7 +2051,9 @@ impl<R: Runtime> TaskTransitionService<R> {
                 AppError::NotFound(format!("Task not found: {}", task_id.as_str()))
             })?;
 
-        if task.archived_at.is_some() {
+        if task.archived_at.is_some()
+            && !(allow_archived_pause && new_status == InternalStatus::Paused)
+        {
             return Err(AppError::Validation(format!(
                 "Cannot transition archived task: {}",
                 task_id.as_str()
@@ -1706,8 +2069,18 @@ impl<R: Runtime> TaskTransitionService<R> {
         // 2. If status is the same, no transition needed
         if old_status == new_status {
             tracing::debug!("Status unchanged, skipping transition");
-            return Ok(task);
+            return Ok((task, false));
         }
+
+        let feature_action = if matches!(
+            new_status,
+            InternalStatus::Paused | InternalStatus::Stopped | InternalStatus::Cancelled
+        ) {
+            crate::domain::ideation::TasksFeatureAction::Quiesce
+        } else {
+            crate::domain::ideation::TasksFeatureAction::Progress
+        };
+        self.authorize_task_action(&task, feature_action).await?;
 
         tracing::debug!(
             from = old_status.as_str(),
@@ -1738,12 +2111,17 @@ impl<R: Runtime> TaskTransitionService<R> {
 
         // 4. Persist the update with optimistic locking (WHERE id = ? AND status = old_status)
         //    If another caller already transitioned this task, rows_affected = 0 → no-op.
-        let updated = self
+        let history_entry_id = self
             .task_repo
-            .update_with_expected_status(&task, old_status)
+            .update_with_expected_status_and_history_for_action(
+                &task,
+                old_status,
+                "system",
+                feature_action,
+            )
             .await?;
 
-        if !updated {
+        let Some(history_entry_id) = history_entry_id else {
             tracing::info!(
                 task_id = task_id.as_str(),
                 from = old_status.as_str(),
@@ -1757,17 +2135,9 @@ impl<R: Runtime> TaskTransitionService<R> {
             let current = self.task_repo.get_by_id(task_id).await?.ok_or_else(|| {
                 AppError::NotFound(format!("Task not found: {}", task_id.as_str()))
             })?;
-            return Ok(current);
-        }
-
-        // 4.1 Record state transition history for time-travel feature
-        if let Err(e) = self
-            .task_repo
-            .persist_status_change(task_id, old_status, new_status, "system")
-            .await
-        {
-            tracing::warn!(error = %e, "Failed to record state history (non-fatal)");
-        }
+            return Ok((current, false));
+        };
+        let history_entry_id = Some(history_entry_id);
         tracing::debug!("Task status persisted to database");
 
         // Log every confirmed state change at INFO level so the full state history is
@@ -1784,19 +2154,14 @@ impl<R: Runtime> TaskTransitionService<R> {
         );
 
         // 5. Emit event for UI update
-        if let Some(ref handle) = self._app_handle {
-            let _ = handle.emit(
-                "task:event",
-                serde_json::json!({
-                    "type": "status_changed",
-                    "taskId": task_id.as_str(),
-                    "from": old_status.as_str(),
-                    "to": new_status.as_str(),
-                    "changedBy": "user",
-                }),
-            );
-            tracing::debug!("Emitted task:event status_changed");
-        }
+        self.emit_task_event(serde_json::json!({
+            "type": "status_changed",
+            "taskId": task_id.as_str(),
+            "from": old_status.as_str(),
+            "to": new_status.as_str(),
+            "changedBy": "user",
+        }));
+        tracing::debug!("Emitted task:event status_changed");
         self.event_emitter
             .emit_status_change(task_id.as_str(), old_status.as_str(), new_status.as_str())
             .await;
@@ -1814,9 +2179,126 @@ impl<R: Runtime> TaskTransitionService<R> {
             new_status = new_status.as_str(),
             "Executing entry actions for new status"
         );
-        self.execute_entry_actions(task_id, &task, new_status).await;
+        Box::pin(self.execute_entry_actions_with_notification_context(
+            task_id,
+            &task,
+            new_status,
+            history_entry_id,
+        ))
+        .await;
 
         tracing::debug!("Task transition complete");
+
+        Ok((task, true))
+    }
+
+    /// Commit terminal restart cleanup, failed-step resets, Ready status, and
+    /// state history through the repository's single transaction before any
+    /// transition effects are dispatched.
+    pub async fn restart_terminal_task_to_ready(
+        &self,
+        mut plan: crate::application::task_restart::TerminalReadyRestartPlan,
+        metadata_update: Option<MetadataUpdate>,
+    ) -> AppResult<Task> {
+        let mut task = plan.task;
+        if task.archived_at.is_some() {
+            return Err(AppError::Validation(format!(
+                "Cannot restart archived task: {}",
+                task.id.as_str()
+            )));
+        }
+        let old_status = task.internal_status;
+        if !old_status.is_terminal() {
+            return Err(AppError::Validation(format!(
+                "Task {} is no longer terminal",
+                task.id.as_str()
+            )));
+        }
+        self.authorize_task_action(&task, crate::domain::ideation::TasksFeatureAction::Progress)
+            .await?;
+        self.validate_status_transition(
+            &task.id,
+            old_status,
+            InternalStatus::Ready,
+            std::panic::Location::caller(),
+        )?;
+
+        task.internal_status = InternalStatus::Ready;
+        task.touch();
+        if let Some(update) = metadata_update {
+            task.metadata = Some(update.merge_into(task.metadata.as_deref()));
+        }
+
+        if !plan.failed_steps.is_empty() && self.step_repo.is_none() {
+            return Err(AppError::Infrastructure(
+                "Terminal restart requires the task-step repository".to_string(),
+            ));
+        }
+        let failed_step_ids = plan
+            .failed_steps
+            .iter()
+            .map(|step| step.id.clone())
+            .collect::<Vec<_>>();
+        let Some((history_entry_id, reset_count)) = self
+            .task_repo
+            .restart_terminal_task_to_ready_with_history_for_action(
+                &task,
+                old_status,
+                &failed_step_ids,
+                "user_restart",
+                crate::domain::ideation::TasksFeatureAction::Progress,
+            )
+            .await?
+        else {
+            return Err(AppError::Validation(format!(
+                "Task {} changed concurrently; terminal restart was not applied",
+                task.id.as_str()
+            )));
+        };
+
+        if reset_count != failed_step_ids.len() as u32 {
+            if reset_count != 0 {
+                return Err(AppError::Infrastructure(format!(
+                    "Terminal restart reset {reset_count} of {} failed steps",
+                    failed_step_ids.len()
+                )));
+            }
+            let step_repo = self
+                .step_repo
+                .as_ref()
+                .expect("failed steps require repository checked before commit");
+            for step in &mut plan.failed_steps {
+                step.status = crate::domain::entities::TaskStepStatus::Pending;
+                step.started_at = None;
+                step.completed_at = None;
+                step.completion_note = None;
+                step_repo.update(step).await?;
+            }
+        }
+
+        self.emit_task_event(serde_json::json!({
+            "type": "status_changed",
+            "taskId": task.id.as_str(),
+            "from": old_status.as_str(),
+            "to": InternalStatus::Ready.as_str(),
+            "changedBy": "user_restart",
+        }));
+        self.event_emitter
+            .emit_status_change(
+                task.id.as_str(),
+                old_status.as_str(),
+                InternalStatus::Ready.as_str(),
+            )
+            .await;
+        self.execute_exit_actions(&task.id, &task, old_status, InternalStatus::Ready)
+            .await;
+        Box::pin(self.execute_entry_actions_with_notification_context(
+            &task.id,
+            &task,
+            InternalStatus::Ready,
+            Some(history_entry_id),
+        ))
+        .await;
 
         Ok(task)
     }
@@ -1862,6 +2344,7 @@ impl<R: Runtime> TaskTransitionService<R> {
                 caller,
             )
             .await
+            .map(|(task, _changed)| task)
         }
     }
 
@@ -1965,6 +2448,26 @@ impl<R: Runtime> TaskTransitionService<R> {
         feedback: PrReviewFeedback,
         history_actor: &'a str,
     ) -> impl Future<Output = AppResult<Task>> + 'a {
+        self.route_github_pr_changes_requested_with_auto_merge_marker(
+            task_id,
+            pr_number,
+            feedback,
+            history_actor,
+            false,
+            None,
+        )
+    }
+
+    #[allow(clippy::manual_async_fn)]
+    pub(crate) fn route_github_pr_changes_requested_with_auto_merge_marker<'a>(
+        &'a self,
+        task_id: &'a TaskId,
+        pr_number: i64,
+        feedback: PrReviewFeedback,
+        history_actor: &'a str,
+        auto_merge_disabled_for_correction: bool,
+        auto_merge_method: Option<String>,
+    ) -> impl Future<Output = AppResult<Task>> + 'a {
         async move {
             let mut merge_task = self
                 .task_repo
@@ -2031,15 +2534,43 @@ impl<R: Runtime> TaskTransitionService<R> {
             self.persist_github_pr_review_note_once(&correction_task, pr_number, &feedback)
                 .await;
 
+            let routed_at = chrono::Utc::now().to_rfc3339();
+            let mut merge_metadata = serde_json::json!({
+                "github_pr_review_id": feedback.review_id,
+                "github_pr_review_author": feedback.author,
+                "github_pr_review_pr_number": pr_number,
+                "github_pr_review_correction_task_id": correction_task.id.as_str(),
+                "github_pr_review_routed_at": routed_at,
+            });
+            if auto_merge_disabled_for_correction {
+                if let Some(object) = merge_metadata.as_object_mut() {
+                    object.insert(
+                        GITHUB_AUTO_MERGE_DISABLED_FOR_CORRECTION_KEY.to_string(),
+                        serde_json::Value::Bool(true),
+                    );
+                    object.insert(
+                        "github_auto_merge_pr_number".to_string(),
+                        serde_json::Value::Number(pr_number.into()),
+                    );
+                    object.insert(
+                        "github_auto_merge_disabled_at".to_string(),
+                        serde_json::Value::String(routed_at),
+                    );
+                    object.insert(
+                        "github_auto_merge_disabled_source".to_string(),
+                        serde_json::Value::String("github_review_feedback".to_string()),
+                    );
+                    if let Some(method) = auto_merge_method {
+                        object.insert(
+                            GITHUB_AUTO_MERGE_METHOD_KEY.to_string(),
+                            serde_json::Value::String(method),
+                        );
+                    }
+                }
+            }
             crate::domain::state_machine::transition_handler::merge_metadata_into(
                 &mut merge_task,
-                &serde_json::json!({
-                    "github_pr_review_id": feedback.review_id,
-                    "github_pr_review_author": feedback.author,
-                    "github_pr_review_pr_number": pr_number,
-                    "github_pr_review_correction_task_id": correction_task.id.as_str(),
-                    "github_pr_review_routed_at": chrono::Utc::now().to_rfc3339(),
-                }),
+                &merge_metadata,
             );
             self.task_repo.update(&merge_task).await?;
 
@@ -2081,11 +2612,32 @@ impl<R: Runtime> TaskTransitionService<R> {
         }
     }
 
+    pub(crate) async fn clear_github_auto_merge_correction_marker_for_terminal_pr(
+        &self,
+        task_id: &TaskId,
+        pr_status: &str,
+    ) -> AppResult<bool> {
+        let mut task = self
+            .task_repo
+            .get_by_id(task_id)
+            .await?
+            .ok_or_else(|| AppError::TaskNotFound(task_id.as_str().to_string()))?;
+
+        let changed = crate::domain::state_machine::transition_handler::clear_github_auto_merge_correction_marker_for_terminal_pr(
+            &mut task,
+            pr_status,
+        );
+        if changed {
+            self.task_repo.update(&task).await?;
+        }
+        Ok(changed)
+    }
+
     /// Keep an open PR-mode plan PR branch current with its GitHub base branch.
     ///
     /// Simple behind-but-mergeable cases are updated programmatically and pushed.
-    /// Conflict cases are routed to the merger agent, but completion returns to
-    /// `WaitingOnPr`; GitHub remains the authority for the final plan merge.
+    /// Conflict cases enter the dedicated plan-branch update checkpoint and
+    /// return to `WaitingOnPr`; GitHub remains the authority for the final merge.
     #[track_caller]
     #[allow(clippy::manual_async_fn)]
     pub(crate) fn reconcile_pr_branch_freshness<'a>(
@@ -2154,7 +2706,6 @@ impl<R: Runtime> TaskTransitionService<R> {
             }
 
             if pr_sync_state_requires_conflict_resolution(&sync_state) {
-                GitService::fetch_origin(repo_path).await?;
                 return self
                     .route_pr_branch_update_conflict(
                         task,
@@ -2170,6 +2721,23 @@ impl<R: Runtime> TaskTransitionService<R> {
 
             if !pr_sync_state_requires_update(&sync_state) {
                 return Ok(PrBranchFreshnessOutcome::UpToDate);
+            }
+
+            // All stale PR branches enter the durable checkpoint. The checkpoint owns
+            // both the programmatic fast path and any agent conflict resolution; this
+            // caller must not mutate Git before operation/target authority exists.
+            if pr_sync_state_requires_update(&sync_state) {
+                return self
+                    .route_pr_branch_update_conflict(
+                        task,
+                        &project,
+                        &plan_branch,
+                        &sync_state,
+                        pr_number,
+                        source,
+                        Vec::new(),
+                    )
+                    .await;
             }
 
             GitService::fetch_origin(repo_path).await?;
@@ -2312,7 +2880,7 @@ impl<R: Runtime> TaskTransitionService<R> {
             github_service,
             plan_branch_repo,
         )
-        .await;
+        .await?;
 
         let refreshed_plan_branch = plan_branch_repo
             .get_by_id(&plan_branch.id)
@@ -2354,28 +2922,11 @@ impl<R: Runtime> TaskTransitionService<R> {
         source: &str,
         conflict_files: Vec<PathBuf>,
     ) -> AppResult<PrBranchFreshnessOutcome> {
-        if task.internal_status == InternalStatus::Merging
+        if task.internal_status == InternalStatus::UpdatingPlanBranch
             && task_metadata_bool(&task, "pr_branch_update_conflict")
         {
             return Ok(PrBranchFreshnessOutcome::ConflictRouted);
         }
-
-        let repo_path = Path::new(&project.working_directory);
-        let merge_worktree =
-            crate::domain::state_machine::transition_handler::compute_merge_worktree_path(
-                project,
-                task.id.as_str(),
-            );
-        let merge_worktree_path = PathBuf::from(&merge_worktree);
-        if merge_worktree_path.exists() {
-            let _ = GitService::delete_worktree(repo_path, &merge_worktree_path).await;
-        }
-        GitService::checkout_existing_branch_worktree(
-            repo_path,
-            &merge_worktree_path,
-            &plan_branch.branch_name,
-        )
-        .await?;
 
         let remote_base = remote_tracking_ref(&sync_state.base_ref_name);
         let conflict_file_strings = conflict_files
@@ -2398,7 +2949,6 @@ impl<R: Runtime> TaskTransitionService<R> {
                 "conflict_files": conflict_file_strings,
             }),
         );
-        task.worktree_path = Some(merge_worktree);
         task.touch();
         self.task_repo.update(&task).await?;
 
@@ -2414,19 +2964,108 @@ impl<R: Runtime> TaskTransitionService<R> {
                 .await;
         }
 
-        let updated = self
-            .transition_task_corrective_with_exit(
-                &task.id,
-                InternalStatus::Merging,
-                Some(format!(
-                    "PR #{pr_number} branch needs conflict resolution before review can continue"
-                )),
-                "pr_branch_freshness",
+        let branch_update_repo = self.branch_update_repo.as_ref().ok_or_else(|| {
+            AppError::ExecutionBlocked(
+                "Branch update authority repository is unavailable".to_string(),
             )
-            .await?;
-        self.execute_entry_actions(&task.id, &updated, InternalStatus::Merging)
-            .await;
-        Ok(PrBranchFreshnessOutcome::ConflictRouted)
+        })?;
+        let target_identity = GitService::canonical_target_identity(
+            Path::new(&project.working_directory),
+            &plan_branch.branch_name,
+        )
+        .await?;
+        let mut operation = crate::domain::entities::BranchUpdateOperation::new(
+            task.id.clone(),
+            crate::domain::entities::BranchUpdateDirection::PlanBranch,
+            crate::domain::entities::BranchUpdateContinuation::ResumeWaitingOnPr,
+            uuid::Uuid::new_v4().to_string(),
+            remote_base,
+            plan_branch.branch_name.clone(),
+            crate::domain::entities::BranchUpdateWorkspaceOwnership::OperationWorktree,
+            crate::domain::entities::BranchUpdateCapacityOwnership::Inherited,
+            target_identity,
+            chrono::Utc::now(),
+        );
+        operation.workspace_path = Some(PathBuf::from(
+            crate::domain::state_machine::transition_handler::compute_plan_update_worktree_path(
+                project,
+                task.id.as_str(),
+            ),
+        ));
+        operation.observed_source_sha = Some(
+            GitService::resolve_ref_sha(
+                Path::new(&project.working_directory),
+                &operation.source_branch,
+            )
+            .await?,
+        );
+        operation.observed_target_sha = Some(
+            GitService::resolve_ref_sha(
+                Path::new(&project.working_directory),
+                &operation.target_branch,
+            )
+            .await?,
+        );
+        let operation_for_execution = operation.clone();
+        let fencing_epoch = match branch_update_repo
+            .activate(crate::domain::repositories::BranchUpdateActivation {
+                operation,
+                expected_status: task.internal_status,
+                update_status: InternalStatus::UpdatingPlanBranch,
+                trigger: "pr_branch_freshness".to_string(),
+            })
+            .await?
+        {
+            crate::domain::repositories::BranchUpdateActivationOutcome::Applied {
+                fencing_epoch,
+                ..
+            } => fencing_epoch,
+            outcome => {
+                return Err(AppError::Conflict(format!(
+                    "PR branch update activation lost authority: {outcome:?}"
+                )))
+            }
+        };
+        match crate::application::branch_update_executor::execute_programmatic_branch_update(
+            Arc::clone(branch_update_repo),
+            Arc::clone(&self.task_repo),
+            Path::new(&project.working_directory),
+            &operation_for_execution,
+            InternalStatus::UpdatingPlanBranch,
+            fencing_epoch,
+        )
+        .await?
+        {
+            crate::application::branch_update_executor::BranchUpdateExecutionOutcome::Completed {
+                ..
+            } => {
+                self.push_and_refresh_pr_branch(&task, project, plan_branch)
+                    .await?;
+                Ok(PrBranchFreshnessOutcome::Updated)
+            }
+            crate::application::branch_update_executor::BranchUpdateExecutionOutcome::NeedsAgent => {
+                let current = self
+                    .task_repo
+                    .get_by_id(&task.id)
+                    .await?
+                    .ok_or_else(|| AppError::TaskNotFound(task.id.as_str().to_string()))?;
+                self.execute_entry_actions(
+                    &task.id,
+                    &current,
+                    InternalStatus::UpdatingPlanBranch,
+                )
+                .await;
+                Ok(PrBranchFreshnessOutcome::ConflictRouted)
+            }
+            crate::application::branch_update_executor::BranchUpdateExecutionOutcome::Blocked => {
+                Ok(PrBranchFreshnessOutcome::ConflictRouted)
+            }
+            crate::application::branch_update_executor::BranchUpdateExecutionOutcome::ContinuationPending => {
+                Err(AppError::Conflict(
+                    "Unexpected publication continuation for WaitingOnPr freshness".to_string(),
+                ))
+            }
+        }
     }
 
     /// Reroute a merge failure caused by repository commit hooks back into revision flow.
@@ -2812,12 +3451,21 @@ impl<R: Runtime> TaskTransitionService<R> {
             Arc::clone(&self.review_starter),
             Arc::clone(&self.chat_service),
         )
+        .with_branch_update_workflow(Arc::new(
+            crate::application::branch_update_workflow::ApplicationBranchUpdateWorkflow::new(
+                Arc::clone(&self.chat_service),
+            ),
+        ))
         .with_execution_state(Arc::clone(&self.execution_state))
         .with_task_repo(Arc::clone(&self.task_repo))
         .with_project_repo(Arc::clone(&self.project_repo));
 
-        if let Some(ref handle) = self._app_handle {
-            services = services.try_with_app_handle(handle.clone());
+        if let Some(ref repo) = self.branch_update_repo {
+            services = services.with_branch_update_repo(Arc::clone(repo));
+        }
+
+        if let Some(ref event_sink) = self.event_sink {
+            services = services.with_event_sink(Arc::clone(event_sink));
         }
         if let Some(ref drafter) = self.plan_pr_description_drafter {
             services = services.with_plan_pr_description_drafter(Arc::clone(drafter));
@@ -2865,7 +3513,7 @@ impl<R: Runtime> TaskTransitionService<R> {
     /// async post-actions (e.g., spawning a merger agent).
     ///
     /// # Returns
-    /// - `Some(CorrectionResult)` on success (lock acquired, DB updated, history persisted).
+    /// - `Some(CorrectionResult)` on success (lock acquired and DB updated; history is best-effort).
     /// - `None` when the optimistic lock fails (another caller already transitioned the
     ///   task) or the task is not found; logs an appropriate message in each case.
     async fn apply_corrective_transition(
@@ -2912,10 +3560,23 @@ impl<R: Runtime> TaskTransitionService<R> {
                 None
             }
             Ok(true) => {
-                let _ = self
+                match self
                     .task_repo
                     .persist_status_change(task_id, from_status, target_status, history_actor)
-                    .await;
+                    .await
+                {
+                    Ok(history_entry_id) => {
+                        self.notify_state_entered(&task, history_entry_id, target_status)
+                            .await;
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            task_id = task_id.as_str(),
+                            error = %error,
+                            "Failed to persist corrective status history; skipping notification effect"
+                        );
+                    }
+                }
                 Some(CorrectionResult { task, from_status })
             }
         }
@@ -2954,18 +3615,13 @@ impl<R: Runtime> TaskTransitionService<R> {
                 .await
             {
                 Some(result) => {
-                    if let Some(ref handle) = self._app_handle {
-                        let _ = handle.emit(
-                            "task:event",
-                            serde_json::json!({
-                                "type": "status_changed",
-                                "taskId": task_id.as_str(),
-                                "from": result.from_status.as_str(),
-                                "to": target_status.as_str(),
-                                "changedBy": history_actor,
-                            }),
-                        );
-                    }
+                    self.emit_task_event(serde_json::json!({
+                        "type": "status_changed",
+                        "taskId": task_id.as_str(),
+                        "from": result.from_status.as_str(),
+                        "to": target_status.as_str(),
+                        "changedBy": history_actor,
+                    }));
                     self.event_emitter
                         .emit_status_change(
                             task_id.as_str(),
@@ -3016,39 +3672,60 @@ impl<R: Runtime> TaskTransitionService<R> {
         task: &Task,
         status: InternalStatus,
     ) {
+        // Box::pin to cap the future size on the caller's stack frame; the
+        // inner function fans out into every on_enter arm which, combined with
+        // TaskServices and TransitionHandler state, can exceed the default 8 MB
+        // thread stack in deeply-nested async call chains (e.g. StartupJobRunner).
+        Box::pin(self.execute_entry_actions_with_notification_context(
+            task_id, task, status, None,
+        ))
+        .await;
+    }
+
+    async fn execute_entry_actions_with_notification_context(
+        &self,
+        task_id: &TaskId,
+        task: &Task,
+        status: InternalStatus,
+        history_entry_id: Option<String>,
+    ) {
         use crate::domain::state_machine::{
             context::TaskContext, machine::TaskStateMachine, transition_handler::TransitionHandler,
         };
 
-        let state = internal_status_to_state(status);
-
-        // Per-task team_mode override: check builder flag OR task metadata.
-        // Some(true/false) = explicitly set by caller → use directly, skip metadata.
-        // None = unset → fall back to task metadata agent_variant.
-        match self.team_mode {
-            Some(explicit) => {
-                self.chat_service.set_team_mode(explicit);
-            }
-            None => {
-                // No explicit choice — fall back to task metadata.
-                // Always set team_mode explicitly to prevent AtomicBool contamination
-                // from previous tasks sharing the same Arc<ChatService>.
-                let is_team = task
-                    .metadata
-                    .as_ref()
-                    .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
-                    .and_then(|meta| {
-                        meta.get("agent_variant")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s == "team")
-                    })
-                    .unwrap_or(false);
-                self.chat_service.set_team_mode(is_team);
+        if !matches!(
+            status,
+            InternalStatus::Paused | InternalStatus::Stopped | InternalStatus::Cancelled
+        ) {
+            if let Err(error) = self
+                .authorize_task_action(task, crate::domain::ideation::TasksFeatureAction::Progress)
+                .await
+            {
+                tracing::warn!(
+                    task_id = task_id.as_str(),
+                    status = status.as_str(),
+                    error = %error,
+                    "Skipped task entry actions because Tasks are disabled"
+                );
+                return;
             }
         }
 
+        let guard_execution_entry = matches!(
+            status,
+            InternalStatus::Executing | InternalStatus::ReExecuting
+        );
+        let state = internal_status_to_state(status);
+
         // Build common TaskServices, then add entry-specific fields.
         let mut services = self.build_task_services_common();
+        if let Some(history_entry_id) = history_entry_id {
+            services = services.with_notification_context(NotificationContext {
+                task: task.clone(),
+                history_entry_id,
+                project_id: task.project_id.clone(),
+            });
+        }
 
         // Pass shared merge lock for TOCTOU-safe concurrent merge guard
         services = services.with_merge_lock(Arc::clone(&self.merge_lock));
@@ -3059,17 +3736,8 @@ impl<R: Runtime> TaskTransitionService<R> {
         // Pass shared validation_tokens DashMap for cancelling in-flight validations
         services = services.with_validation_tokens(Arc::clone(&self.validation_tokens));
 
-        // Pass self-arc as transition_service for PR merge poller (AD17).
-        // Downcast from Arc<dyn Any> → Arc<TaskTransitionService<Wry>> (only succeeds for Wry runtime).
-        {
-            let locked = self.self_arc.lock().unwrap();
-            if let Some(ref any_arc) = *locked {
-                if let Ok(ts_wry) =
-                    Arc::clone(any_arc).downcast::<TaskTransitionService<tauri::Wry>>()
-                {
-                    services = services.with_transition_service(ts_wry);
-                }
-            }
+        if let Some(transition_service) = self.self_arc.lock().unwrap().as_ref() {
+            services = services.with_transition_service(Arc::clone(transition_service));
         }
 
         // Create TaskContext
@@ -3077,11 +3745,41 @@ impl<R: Runtime> TaskTransitionService<R> {
 
         // Create state machine and handler
         let mut machine = TaskStateMachine::new(context);
-        let handler = TransitionHandler::new(&mut machine);
+        let mut handler = TransitionHandler::new(&mut machine);
 
         // Execute entry action via TransitionHandler
         tracing::debug!(?state, "Calling TransitionHandler::on_enter");
-        if let Err(e) = handler.on_enter(&state).await {
+        let _execution_entry_guard = if guard_execution_entry {
+            if !self
+                .execution_state
+                .try_start_execution_entry(task_id.as_str())
+            {
+                tracing::info!(
+                    task_id = task_id.as_str(),
+                    status = status.as_str(),
+                    "Skipping duplicate execution entry action already in flight"
+                );
+                return;
+            }
+            Some(ExecutionEntryGuard {
+                execution_state: Arc::clone(&self.execution_state),
+                task_id: task_id.as_str().to_string(),
+            })
+        } else {
+            None
+        };
+
+        let on_enter_result = handler.on_enter(&state).await;
+
+        if let Err(e) = on_enter_result {
+            handler.emit_on_enter_error(&state, &e).await;
+            debug_assert!(
+                !guard_execution_entry
+                    || self
+                        .execution_state
+                        .is_execution_entry_in_flight(task_id.as_str()),
+                "execution entry guard must stay scoped through on_enter error handling"
+            );
             tracing::error!(error = %e, "on_enter failed");
 
             // If execution was blocked (e.g., git isolation failure), transition task to Failed.
@@ -3101,19 +3799,14 @@ impl<R: Runtime> TaskTransitionService<R> {
                     .await
                 {
                     // Emit event for UI
-                    if let Some(ref handle) = self._app_handle {
-                        let _ = handle.emit(
-                            "task:event",
-                            serde_json::json!({
-                                "type": "status_changed",
-                                "taskId": task_id.as_str(),
-                                "from": result.from_status.as_str(),
-                                "to": "failed",
-                                "changedBy": "system",
-                                "reason": e.to_string(),
-                            }),
-                        );
-                    }
+                    self.emit_task_event(serde_json::json!({
+                        "type": "status_changed",
+                        "taskId": task_id.as_str(),
+                        "from": result.from_status.as_str(),
+                        "to": "failed",
+                        "changedBy": "system",
+                        "reason": e.to_string(),
+                    }));
                     self.event_emitter
                         .emit_status_change(task_id.as_str(), result.from_status.as_str(), "failed")
                         .await;
@@ -3149,30 +3842,29 @@ impl<R: Runtime> TaskTransitionService<R> {
                 );
                 self.handle_branch_freshness_conflict(&handler, task_id, &state)
                     .await;
-            } else if matches!(&e, AppError::ReviewWorktreeMissing) {
+            } else if matches!(
+                &e,
+                AppError::ReviewWorktreeMissing | AppError::ReviewWorktreeConflictMarkers
+            ) {
                 use crate::domain::state_machine::machine::State as MState;
                 tracing::warn!(
                     task_id = task_id.as_str(),
-                    "ReviewWorktreeMissing during initial on_enter — routing to Escalated"
+                    error = %e,
+                    "Review worktree attention during initial on_enter — routing to Escalated"
                 );
                 handler.on_exit(&state, &MState::Escalated).await;
                 if let Some(result) = self
                     .apply_corrective_transition(task_id, InternalStatus::Escalated, None, "system")
                     .await
                 {
-                    if let Some(ref handle) = self._app_handle {
-                        let _ = handle.emit(
-                            "task:event",
-                            serde_json::json!({
-                                "type": "status_changed",
-                                "taskId": task_id.as_str(),
-                                "from": result.from_status.as_str(),
-                                "to": "escalated",
-                                "changedBy": "system",
-                                "reason": "ReviewWorktreeMissing during initial on_enter",
-                            }),
-                        );
-                    }
+                    self.emit_task_event(serde_json::json!({
+                        "type": "status_changed",
+                        "taskId": task_id.as_str(),
+                        "from": result.from_status.as_str(),
+                        "to": "escalated",
+                        "changedBy": "system",
+                        "reason": e.to_string(),
+                    }));
                     self.event_emitter
                         .emit_status_change(
                             task_id.as_str(),
@@ -3259,7 +3951,9 @@ impl<R: Runtime> TaskTransitionService<R> {
             // Execute on_exit for the intermediate state
             handler.on_exit(&current_state, &auto_state).await;
 
-            // Persist the auto-transition to the database
+            // Persist the auto-transition to the database. Entry notifications must be
+            // attributed to this transition's history authority, never the initial transition.
+            let mut auto_notification_context = None;
             if let Ok(Some(mut updated_task)) = self.task_repo.get_by_id(task_id).await {
                 let from_status = updated_task.internal_status;
                 updated_task.internal_status = auto_status;
@@ -3272,33 +3966,41 @@ impl<R: Runtime> TaskTransitionService<R> {
                 }
 
                 updated_task.touch();
-                if let Err(e) = self.task_repo.update(&updated_task).await {
-                    tracing::error!(error = %e, "Failed to persist auto-transition");
-                }
-                // Record auto-transition in history
-                if let Err(e) = self
-                    .task_repo
-                    .persist_status_change(task_id, from_status, auto_status, "auto")
-                    .await
-                {
-                    tracing::warn!(error = %e, "Failed to record auto-transition history (non-fatal)");
+                match self.task_repo.update(&updated_task).await {
+                    Ok(()) => match self
+                        .task_repo
+                        .persist_status_change(task_id, from_status, auto_status, "auto")
+                        .await
+                    {
+                        Ok(history_entry_id) => {
+                            auto_notification_context = Some(NotificationContext {
+                                task: updated_task,
+                                history_entry_id,
+                                project_id: task.project_id.clone(),
+                            });
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "Failed to record auto-transition history (non-fatal)");
+                        }
+                    },
+                    Err(e) => {
+                        tracing::error!(error = %e, "Failed to persist auto-transition");
+                    }
                 }
             }
+            // Failed auto persistence deliberately clears the prior context: an entry action
+            // may still run under legacy loop semantics, but it cannot emit a stale alert.
+            handler.replace_notification_context(auto_notification_context);
 
             // Emit task:event for auto-transition so UI updates in real time
-            if let Some(ref handle) = self._app_handle {
-                let _ = handle.emit(
-                    "task:event",
-                    serde_json::json!({
-                        "type": "status_changed",
-                        "taskId": task_id.as_str(),
-                        "from": current_status.as_str(),
-                        "to": auto_status.as_str(),
-                        "changedBy": "auto",
-                    }),
-                );
-                tracing::debug!("Emitted task:event for auto-transition");
-            }
+            self.emit_task_event(serde_json::json!({
+                "type": "status_changed",
+                "taskId": task_id.as_str(),
+                "from": current_status.as_str(),
+                "to": auto_status.as_str(),
+                "changedBy": "auto",
+            }));
+            tracing::debug!("Emitted task:event for auto-transition");
             self.event_emitter
                 .emit_status_change(
                     task_id.as_str(),
@@ -3318,13 +4020,17 @@ impl<R: Runtime> TaskTransitionService<R> {
                 if matches!(&e, AppError::BranchFreshnessConflict) {
                     self.handle_branch_freshness_conflict(&handler, task_id, &auto_state)
                         .await;
-                } else if matches!(&e, AppError::ReviewWorktreeMissing) {
+                } else if matches!(
+                    &e,
+                    AppError::ReviewWorktreeMissing | AppError::ReviewWorktreeConflictMarkers
+                ) {
                     use crate::domain::state_machine::machine::State;
 
                     tracing::warn!(
                         task_id = task_id.as_str(),
                         from = auto_status.as_str(),
-                        "ReviewWorktreeMissing during auto-transition on_enter — routing to Escalated"
+                        error = %e,
+                        "Review worktree attention during auto-transition on_enter — routing to Escalated"
                     );
 
                     handler.on_exit(&auto_state, &State::Escalated).await;
@@ -3339,19 +4045,14 @@ impl<R: Runtime> TaskTransitionService<R> {
                         .await
                     {
                         // Emit corrective event for UI
-                        if let Some(ref handle) = self._app_handle {
-                            let _ = handle.emit(
-                                "task:event",
-                                serde_json::json!({
-                                    "type": "status_changed",
-                                    "taskId": task_id.as_str(),
-                                    "from": result.from_status.as_str(),
-                                    "to": "escalated",
-                                    "changedBy": "system",
-                                    "reason": "ReviewWorktreeMissing during auto-transition",
-                                }),
-                            );
-                        }
+                        self.emit_task_event(serde_json::json!({
+                            "type": "status_changed",
+                            "taskId": task_id.as_str(),
+                            "from": result.from_status.as_str(),
+                            "to": "escalated",
+                            "changedBy": "system",
+                            "reason": e.to_string(),
+                        }));
                         // Dual-channel emit: persist to external_events table and fire webhook.
                         // The corrective path bypasses on_enter(Escalated), so we emit explicitly here.
                         let escalated_payload = serde_json::json!({
@@ -3386,6 +4087,19 @@ impl<R: Runtime> TaskTransitionService<R> {
         }
     }
 
+    async fn authorize_task_action(
+        &self,
+        task: &Task,
+        action: crate::domain::ideation::TasksFeatureAction,
+    ) -> AppResult<()> {
+        let Some(settings_repo) = self.tasks_feature_settings_repo.as_ref() else {
+            return Ok(());
+        };
+        crate::application::tasks_feature_policy::TasksFeaturePolicy::new(Arc::clone(settings_repo))
+            .authorize_session(task.ideation_session_id.as_ref(), action)
+            .await
+    }
+
     /// Shared handler for `BranchFreshnessConflict` errors.
     ///
     /// Called from both the initial `on_enter` error handler (startup recovery /
@@ -3415,6 +4129,31 @@ impl<R: Runtime> TaskTransitionService<R> {
 
         // Step 1: Read freshness metadata written by on_enter before the error.
         let fresh_task = self.task_repo.get_by_id(task_id).await.ok().flatten();
+        if let Some(task) = fresh_task.as_ref() {
+            let update_state = match task.internal_status {
+                InternalStatus::UpdatingPlanBranch => Some(State::UpdatingPlanBranch),
+                InternalStatus::UpdatingTaskBranch => Some(State::UpdatingTaskBranch),
+                _ => None,
+            };
+            if let Some(update_state) = update_state {
+                self.emit_task_event(serde_json::json!({
+                    "type": "status_changed",
+                    "taskId": task_id.as_str(),
+                    "from": current_state.as_str(),
+                    "to": update_state.as_str(),
+                    "changedBy": "system",
+                    "reason": "Dedicated branch update activated",
+                }));
+                if let Err(error) = handler.on_enter(&update_state).await {
+                    tracing::error!(
+                        task_id = task_id.as_str(),
+                        error = %error,
+                        "Failed to start branch updater after activation"
+                    );
+                }
+                return;
+            }
+        }
         let task_meta_val: serde_json::Value = fresh_task
             .as_ref()
             .and_then(|t| t.metadata.as_deref())
@@ -3425,6 +4164,44 @@ impl<R: Runtime> TaskTransitionService<R> {
             .as_str()
             .map(|s| s.to_owned());
         let reviewing_origin = freshness_origin.as_deref() == Some("reviewing");
+        let marker_only_legacy_row = task_meta_val["conflict_markers_detected"]
+            .as_bool()
+            .unwrap_or(false)
+            && !task_meta_val["source_update_conflict"]
+                .as_bool()
+                .unwrap_or(false)
+            && !task_meta_val["plan_update_conflict"]
+                .as_bool()
+                .unwrap_or(false)
+            && !task_meta_val["pr_branch_update_conflict"]
+                .as_bool()
+                .unwrap_or(false);
+        if marker_only_legacy_row {
+            tracing::warn!(
+                task_id = task_id.as_str(),
+                "Legacy marker-only freshness row has no directional evidence — escalating instead of guessing a branch update"
+            );
+            handler.on_exit(current_state, &State::Escalated).await;
+            if let Some(result) = self
+                .apply_corrective_transition(
+                    task_id,
+                    InternalStatus::Escalated,
+                    Some("Review worktree contains unresolved conflict markers".to_string()),
+                    "legacy_branch_update_remediation",
+                )
+                .await
+            {
+                self.emit_task_event(serde_json::json!({
+                    "type": "status_changed",
+                    "taskId": task_id.as_str(),
+                    "from": result.from_status.as_str(),
+                    "to": "escalated",
+                    "changedBy": "system",
+                    "reason": "Marker-only legacy row had no branch-update direction",
+                }));
+            }
+            return;
+        }
         let has_merge_conflict_evidence = task_meta_val["conflict_markers_detected"]
             .as_bool()
             .unwrap_or(false)
@@ -3481,19 +4258,14 @@ impl<R: Runtime> TaskTransitionService<R> {
                 )
                 .await
             {
-                if let Some(ref handle) = self._app_handle {
-                    let _ = handle.emit(
-                        "task:event",
-                        serde_json::json!({
-                            "type": "status_changed",
-                            "taskId": task_id.as_str(),
-                            "from": result.from_status.as_str(),
-                            "to": "failed",
-                            "changedBy": "system",
-                            "reason": "Exceeded freshness retry limit during review",
-                        }),
-                    );
-                }
+                self.emit_task_event(serde_json::json!({
+                    "type": "status_changed",
+                    "taskId": task_id.as_str(),
+                    "from": result.from_status.as_str(),
+                    "to": "failed",
+                    "changedBy": "system",
+                    "reason": "Exceeded freshness retry limit during review",
+                }));
             }
             return;
         }
@@ -3595,19 +4367,14 @@ impl<R: Runtime> TaskTransitionService<R> {
             };
 
             // Step 7: UI event emission.
-            if let Some(ref handle) = self._app_handle {
-                let _ = handle.emit(
-                    "task:event",
-                    serde_json::json!({
-                        "type": "status_changed",
-                        "taskId": task_id.as_str(),
-                        "from": result.from_status.as_str(),
-                        "to": to_str,
-                        "changedBy": "system",
-                        "reason": reason,
-                    }),
-                );
-            }
+            self.emit_task_event(serde_json::json!({
+                "type": "status_changed",
+                "taskId": task_id.as_str(),
+                "from": result.from_status.as_str(),
+                "to": to_str,
+                "changedBy": "system",
+                "reason": reason,
+            }));
 
             // Step 8: Conditional merger spawn — generic review-origin freshness conflicts
             // park in PendingReview, but actual merge-conflict evidence must route through
@@ -3689,7 +4456,7 @@ fn auto_metadata_for_status(status: InternalStatus) -> Option<MetadataUpdate> {
 
 /// TaskStopper implementation — delegates to transition_task for graceful stop.
 #[async_trait]
-impl<R: Runtime> crate::application::TaskStopper for TaskTransitionService<R> {
+impl crate::application::TaskStopper for TaskTransitionService {
     async fn transition_to_stopped(&self, task_id: &TaskId) -> AppResult<()> {
         self.transition_task(task_id, InternalStatus::Stopped)
             .await

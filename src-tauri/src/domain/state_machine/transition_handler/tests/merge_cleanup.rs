@@ -44,14 +44,16 @@ async fn test_step0_agent_kill_executes_without_error() {
 /// killed after it has already transitioned the task past Reviewing.
 #[tokio::test]
 async fn test_pre_merge_cleanup_skips_review_stop_when_task_past_reviewing() {
-    let setup = setup_pending_merge_repos(
-        "defense-in-depth guard test",
-        Some("feature/test"),
-    )
-    .await;
+    let setup =
+        setup_pending_merge_repos("defense-in-depth guard test", Some("feature/test")).await;
 
     // Confirm task is in PendingMerge (not Reviewing) — guard should fire.
-    let task = setup.task_repo.get_by_id(&setup.task_id).await.unwrap().unwrap();
+    let task = setup
+        .task_repo
+        .get_by_id(&setup.task_id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         task.internal_status,
         InternalStatus::PendingMerge,
@@ -75,9 +77,7 @@ async fn test_pre_merge_cleanup_skips_review_stop_when_task_past_reviewing() {
     let calls = chat_service.get_stop_agent_calls().await;
 
     // Guard fires: Review stop_agent must NOT be called.
-    let review_stopped = calls
-        .iter()
-        .any(|(ctx, _)| *ctx == ChatContextType::Review);
+    let review_stopped = calls.iter().any(|(ctx, _)| *ctx == ChatContextType::Review);
     assert!(
         !review_stopped,
         "stop_agent should NOT be called for Review context when task is PendingMerge (self-sabotage guard); got calls: {:?}",
@@ -85,9 +85,7 @@ async fn test_pre_merge_cleanup_skips_review_stop_when_task_past_reviewing() {
     );
 
     // Merge stop_agent MUST still be called (guard only skips Review).
-    let merge_stopped = calls
-        .iter()
-        .any(|(ctx, _)| *ctx == ChatContextType::Merge);
+    let merge_stopped = calls.iter().any(|(ctx, _)| *ctx == ChatContextType::Merge);
     assert!(
         merge_stopped,
         "stop_agent should still be called for Merge context; got calls: {:?}",
@@ -121,7 +119,7 @@ async fn test_guard_no_repos_skips_step0_settle_sleep() {
 /// pre_merge_cleanup step 0b emits two-phase progress: agent cancellation then lsof scan.
 ///
 /// Validates that the code path after the agent-stop loop (the orphaned-process scan)
-/// runs without error. Progress events are no-ops without a real AppHandle, but the
+/// runs without error. Progress events are no-ops without an EventSink, but the
 /// flow compiles and executes correctly. This is the RC-B regression guard.
 #[tokio::test]
 async fn test_step0b_two_phase_progress_no_regression() {
@@ -285,7 +283,8 @@ async fn test_pdm278_cleanup_runs_on_first_clean_attempt() {
     let project_repo = Arc::new(MemoryProjectRepository::new());
 
     let project_id = crate::domain::entities::ProjectId::from_string("proj-1".to_string());
-    let mut task = crate::domain::entities::Task::new(project_id.clone(), "clean first attempt".to_string());
+    let mut task =
+        crate::domain::entities::Task::new(project_id.clone(), "clean first attempt".to_string());
     task.internal_status = InternalStatus::PendingMerge;
     task.task_branch = Some("feature/test".to_string());
     // No merge_pipeline_active, no debris metadata, no worktree_path on disk
@@ -307,7 +306,9 @@ async fn test_pdm278_cleanup_runs_on_first_clean_attempt() {
         .with_chat_service(Arc::clone(&chat_service) as Arc<dyn crate::application::ChatService>);
 
     let task_id = task_repo
-        .get_by_project(&crate::domain::entities::ProjectId::from_string("proj-1".to_string()))
+        .get_by_project(&crate::domain::entities::ProjectId::from_string(
+            "proj-1".to_string(),
+        ))
         .await
         .unwrap()[0]
         .id
@@ -316,8 +317,13 @@ async fn test_pdm278_cleanup_runs_on_first_clean_attempt() {
     let mut machine = crate::domain::state_machine::TaskStateMachine::new(context);
     let handler = crate::domain::state_machine::TransitionHandler::new(&mut machine);
 
-    let result = handler.on_enter(&crate::domain::state_machine::State::PendingMerge).await;
-    assert!(result.is_ok(), "on_enter(PendingMerge) should succeed on first clean attempt");
+    let result = handler
+        .on_enter(&crate::domain::state_machine::State::PendingMerge)
+        .await;
+    assert!(
+        result.is_ok(),
+        "on_enter(PendingMerge) should succeed on first clean attempt"
+    );
 
     // Cleanup ran — stop_agent for Merge context must have been called.
     // (Review context is skipped by the self-sabotage guard since task is PendingMerge.)
@@ -370,7 +376,9 @@ async fn test_pdm278_cleanup_stale_artifacts_failure_is_best_effort() {
             .into_machine();
     let handler = crate::domain::state_machine::TransitionHandler::new(&mut machine);
 
-    let result = handler.on_enter(&crate::domain::state_machine::State::PendingMerge).await;
+    let result = handler
+        .on_enter(&crate::domain::state_machine::State::PendingMerge)
+        .await;
 
     // Pipeline must succeed (no hard error from cleanup failure)
     assert!(

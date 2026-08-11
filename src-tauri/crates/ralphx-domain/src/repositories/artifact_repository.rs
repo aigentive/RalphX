@@ -96,6 +96,8 @@ pub struct ArtifactVersionSummary {
     pub version: u32,
     pub name: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
+    pub created_by: String,
+    pub metadata: Option<serde_json::Value>,
 }
 
 #[cfg(test)]

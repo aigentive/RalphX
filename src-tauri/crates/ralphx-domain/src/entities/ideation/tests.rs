@@ -397,6 +397,46 @@ fn session_flow_defaults_to_ideation_and_parses_planning() {
     assert_eq!(IdeationSessionFlow::Planning.to_string(), "planning");
 }
 
+#[test]
+fn new_sessions_require_a_complete_v2_plan_pair() {
+    let mut session = IdeationSession::new(ProjectId::new());
+    session.plan_artifact_id = Some(ArtifactId::from_string("overview-1"));
+
+    assert_eq!(session.plan_contract_version, 2);
+    assert!(session.plan_artifact_bundle().is_none());
+
+    session.plan_blueprint_artifact_id = Some(ArtifactId::from_string("blueprint-1"));
+    let bundle = session.plan_artifact_bundle().expect("complete pair");
+    assert_eq!(
+        bundle.action_target_id(),
+        "plan_bundle:v2:overview-1:blueprint-1"
+    );
+}
+
+#[test]
+fn legacy_sessions_keep_overview_only_action_authority() {
+    let mut session = IdeationSession::new(ProjectId::new());
+    session.plan_contract_version = 1;
+    session.plan_artifact_id = Some(ArtifactId::from_string("legacy-overview"));
+
+    let bundle = session.plan_artifact_bundle().expect("legacy overview");
+    assert_eq!(bundle.action_target_id(), "legacy-overview");
+    assert!(bundle.blueprint_id.is_none());
+}
+
+#[test]
+fn pair_verification_requires_both_exact_current_members() {
+    let mut session = IdeationSession::new(ProjectId::new());
+    session.plan_artifact_id = Some(ArtifactId::from_string("overview-1"));
+    session.plan_blueprint_artifact_id = Some(ArtifactId::from_string("blueprint-2"));
+    session.verified_plan_artifact_id = Some(ArtifactId::from_string("overview-1"));
+    session.verified_plan_blueprint_artifact_id = Some(ArtifactId::from_string("blueprint-stale"));
+
+    assert!(!session.has_exact_plan_verification());
+    session.verified_plan_blueprint_artifact_id = Some(ArtifactId::from_string("blueprint-2"));
+    assert!(session.has_exact_plan_verification());
+}
+
 // ===== from_row Integration Tests =====
 
 use chrono::Timelike;

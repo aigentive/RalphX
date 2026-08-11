@@ -1,7 +1,7 @@
 // Stream parsing and detection functions
 // Stateless parsing helpers for extracting data from Claude CLI stream-json output
 
-use super::types::{ParsedLine, StreamEvent, StreamMessage};
+use super::types::{ParsedLine, StreamMessage};
 
 /// Parse a `<usage>...</usage>` block from text to extract task completion stats.
 ///
@@ -126,17 +126,23 @@ pub(crate) fn parse_line(line: &str) -> Option<ParsedLine> {
 
     // Parse either direct event objects ({type: ...}) or wrapped envelopes
     // ({message: {type: ...}}, {data: {type: ...}}, {event: {type: ...}}).
-    let message_value = if raw_value.get("type").is_some() {
-        raw_value
-    } else if let Some(inner) = raw_value.get("message").filter(|v| v.is_object()) {
-        inner.clone()
-    } else if let Some(inner) = raw_value.get("data").filter(|v| v.is_object()) {
-        inner.clone()
-    } else if let Some(inner) = raw_value.get("event").filter(|v| v.is_object()) {
-        inner.clone()
-    } else {
-        return None;
-    };
+    let message_value =
+        if raw_value.get("type").and_then(|value| value.as_str()) == Some("stream_event") {
+            raw_value
+                .get("event")
+                .filter(|value| value.is_object())?
+                .clone()
+        } else if raw_value.get("type").is_some() {
+            raw_value
+        } else if let Some(inner) = raw_value.get("message").filter(|v| v.is_object()) {
+            inner.clone()
+        } else if let Some(inner) = raw_value.get("data").filter(|v| v.is_object()) {
+            inner.clone()
+        } else if let Some(inner) = raw_value.get("event").filter(|v| v.is_object()) {
+            inner.clone()
+        } else {
+            return None;
+        };
 
     let message: StreamMessage = serde_json::from_value(message_value).ok()?;
     Some(ParsedLine {
@@ -145,94 +151,4 @@ pub(crate) fn parse_line(line: &str) -> Option<ParsedLine> {
         is_synthetic,
         tool_use_result,
     })
-}
-
-/// Detect team-related events from tool result JSON.
-///
-/// Checks whether a tool result corresponds to TeamCreate, TeammateSpawned,
-/// SendMessage, or TeamDelete and returns the appropriate StreamEvent.
-pub(crate) fn detect_team_event(
-    _tool_use_id: &str,
-    result: &serde_json::Value,
-) -> Option<StreamEvent> {
-    // TeamCreate result: { "team_name": "...", "team_file_path": "...", "lead_agent_id": "..." }
-    if result.get("team_file_path").is_some() && result.get("lead_agent_id").is_some() {
-        return Some(StreamEvent::TeamCreated {
-            team_name: result["team_name"].as_str().unwrap_or("").to_string(),
-            config_path: result["team_file_path"].as_str().unwrap_or("").to_string(),
-        });
-    }
-
-    // TeammateSpawned: { "status": "teammate_spawned", "name": "...", "agent_id": "...", ... }
-    if result.get("status").and_then(|s| s.as_str()) == Some("teammate_spawned") {
-        return Some(StreamEvent::TeammateSpawned {
-            teammate_name: result["name"].as_str().unwrap_or("").to_string(),
-            team_name: result
-                .get("teammate_id")
-                .and_then(|id| id.as_str().and_then(|s| s.split('@').nth(1)))
-                .unwrap_or("")
-                .to_string(),
-            agent_id: result["agent_id"].as_str().unwrap_or("").to_string(),
-            model: result["model"].as_str().unwrap_or("").to_string(),
-            color: result
-                .get("color")
-                .and_then(|c| c.as_str())
-                .unwrap_or("blue")
-                .to_string(),
-            prompt: result
-                .get("prompt")
-                .and_then(|p| p.as_str())
-                .unwrap_or("")
-                .to_string(),
-            agent_type: result
-                .get("agent_type")
-                .and_then(|a| a.as_str())
-                .unwrap_or("general-purpose")
-                .to_string(),
-        });
-    }
-
-    // SendMessage result: { "success": true, "routing": { "sender": "...", "target": "...", "content": "..." } }
-    if result.get("success").and_then(|s| s.as_bool()) == Some(true)
-        && result.get("routing").is_some()
-    {
-        let routing = &result["routing"];
-        let target = routing.get("target").and_then(|t| t.as_str());
-        return Some(StreamEvent::TeamMessageSent {
-            sender: routing
-                .get("sender")
-                .and_then(|s| s.as_str())
-                .unwrap_or("")
-                .to_string(),
-            recipient: target
-                .filter(|t| *t != "*")
-                .map(|s| s.trim_start_matches('@').to_string()),
-            content: routing
-                .get("content")
-                .and_then(|s| s.as_str())
-                .unwrap_or("")
-                .to_string(),
-            message_type: if target.is_none() || target == Some("*") {
-                "broadcast"
-            } else {
-                "message"
-            }
-            .to_string(),
-        });
-    }
-
-    // TeamDelete: look for deletion confirmation
-    if result.get("team_deleted").is_some()
-        || result.get("deleted").and_then(|d| d.as_bool()) == Some(true)
-    {
-        return Some(StreamEvent::TeamDeleted {
-            team_name: result
-                .get("team_name")
-                .and_then(|s| s.as_str())
-                .unwrap_or("")
-                .to_string(),
-        });
-    }
-
-    None
 }

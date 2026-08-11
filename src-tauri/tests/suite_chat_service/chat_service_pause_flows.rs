@@ -12,15 +12,11 @@ async fn setup_test_state() -> HttpServerState {
     HttpServerState {
         app_state: Arc::new(AppState::new_test()),
         execution_state: Arc::new(ExecutionState::new()),
-        team_tracker: ralphx_lib::application::TeamStateTracker::new(),
-        team_service: Arc::new(ralphx_lib::application::TeamService::new_without_events(
-            Arc::new(ralphx_lib::application::TeamStateTracker::new()),
-        )),
         delegation_service: Default::default(),
     }
 }
 
-fn build_chat_service(state: &HttpServerState) -> AppChatService<tauri::Wry> {
+fn build_chat_service(state: &HttpServerState) -> AppChatService {
     let app = &state.app_state;
     AppChatService::new(
         Arc::clone(&app.chat_message_repo),
@@ -46,7 +42,10 @@ fn build_chat_service(state: &HttpServerState) -> AppChatService<tauri::Wry> {
 }
 
 async fn create_task(state: &HttpServerState, status: InternalStatus) -> String {
-    let project = Project::new("Pause Flow Project".to_string(), "/tmp/pause-flow".to_string());
+    let project = Project::new(
+        "Pause Flow Project".to_string(),
+        "/tmp/pause-flow".to_string(),
+    );
     let project_id = project.id.clone();
     state.app_state.project_repo.create(project).await.unwrap();
 
@@ -67,10 +66,18 @@ async fn create_task_in_project(
     task.id.as_str().to_string()
 }
 
-async fn create_ideation_session_in_project(state: &HttpServerState, project_id: ProjectId) -> String {
+async fn create_ideation_session_in_project(
+    state: &HttpServerState,
+    project_id: ProjectId,
+) -> String {
     let session = IdeationSessionBuilder::new().project_id(project_id).build();
     let session_id = session.id.as_str().to_string();
-    state.app_state.ideation_session_repo.create(session).await.unwrap();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(session)
+        .await
+        .unwrap();
     session_id
 }
 
@@ -111,7 +118,13 @@ async fn test_paused_task_execution_send_is_queued_not_spawned() {
         1
     );
     let key = RunningAgentKey::new("task_execution", &task_id);
-    assert!(!state.app_state.running_agent_registry.is_running(&key).await);
+    assert!(
+        !state
+            .app_state
+            .running_agent_registry
+            .is_running(&key)
+            .await
+    );
 }
 
 #[tokio::test]
@@ -140,7 +153,13 @@ async fn test_paused_review_send_is_queued_not_spawned() {
         1
     );
     let key = RunningAgentKey::new("review", &task_id);
-    assert!(!state.app_state.running_agent_registry.is_running(&key).await);
+    assert!(
+        !state
+            .app_state
+            .running_agent_registry
+            .is_running(&key)
+            .await
+    );
 }
 
 #[tokio::test]
@@ -169,7 +188,13 @@ async fn test_paused_merge_send_is_queued_not_spawned() {
         1
     );
     let key = RunningAgentKey::new("merge", &task_id);
-    assert!(!state.app_state.running_agent_registry.is_running(&key).await);
+    assert!(
+        !state
+            .app_state
+            .running_agent_registry
+            .is_running(&key)
+            .await
+    );
 }
 
 #[tokio::test]
@@ -198,7 +223,13 @@ async fn test_paused_task_chat_send_is_queued_not_spawned() {
         1
     );
     let key = RunningAgentKey::new("task", &task_id);
-    assert!(!state.app_state.running_agent_registry.is_running(&key).await);
+    assert!(
+        !state
+            .app_state
+            .running_agent_registry
+            .is_running(&key)
+            .await
+    );
 }
 
 #[tokio::test]
@@ -227,7 +258,13 @@ async fn test_paused_project_chat_send_is_queued_not_spawned() {
         1
     );
     let key = RunningAgentKey::new("project", project.id.as_str());
-    assert!(!state.app_state.running_agent_registry.is_running(&key).await);
+    assert!(
+        !state
+            .app_state
+            .running_agent_registry
+            .is_running(&key)
+            .await
+    );
 }
 
 #[tokio::test]
@@ -238,7 +275,12 @@ async fn test_task_execution_send_blocks_when_project_total_cap_is_reached() {
         "Project Capacity".to_string(),
         "/tmp/project-capacity".to_string(),
     );
-    state.app_state.project_repo.create(project.clone()).await.unwrap();
+    state
+        .app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
     state
         .app_state
         .execution_settings_repo
@@ -292,7 +334,11 @@ async fn test_task_execution_send_blocks_when_project_total_cap_is_reached() {
 
     let blocked_key = RunningAgentKey::new("task_execution", &blocked_task_id);
     assert!(
-        !state.app_state.running_agent_registry.is_running(&blocked_key).await,
+        !state
+            .app_state
+            .running_agent_registry
+            .is_running(&blocked_key)
+            .await,
         "failed admission must not leave a registered running-agent slot behind"
     );
 }
@@ -305,7 +351,12 @@ async fn test_review_send_blocks_when_same_project_ideation_consumes_only_slot()
         "Review Mixed Load".to_string(),
         "/tmp/review-mixed-load".to_string(),
     );
-    state.app_state.project_repo.create(project.clone()).await.unwrap();
+    state
+        .app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
     state
         .app_state
         .execution_settings_repo
@@ -322,7 +373,8 @@ async fn test_review_send_blocks_when_same_project_ideation_consumes_only_slot()
         .await
         .unwrap();
 
-    let review_task_id = create_task_in_project(&state, project.id.clone(), InternalStatus::Reviewing).await;
+    let review_task_id =
+        create_task_in_project(&state, project.id.clone(), InternalStatus::Reviewing).await;
     let ideation_session_id = create_ideation_session_in_project(&state, project.id.clone()).await;
 
     state.execution_state.set_global_max_concurrent(5);
@@ -364,7 +416,12 @@ async fn test_merge_send_blocks_when_same_project_ideation_consumes_only_slot() 
         "Merge Mixed Load".to_string(),
         "/tmp/merge-mixed-load".to_string(),
     );
-    state.app_state.project_repo.create(project.clone()).await.unwrap();
+    state
+        .app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
     state
         .app_state
         .execution_settings_repo
@@ -381,7 +438,8 @@ async fn test_merge_send_blocks_when_same_project_ideation_consumes_only_slot() 
         .await
         .unwrap();
 
-    let merge_task_id = create_task_in_project(&state, project.id.clone(), InternalStatus::Merging).await;
+    let merge_task_id =
+        create_task_in_project(&state, project.id.clone(), InternalStatus::Merging).await;
     let ideation_session_id = create_ideation_session_in_project(&state, project.id.clone()).await;
 
     state.execution_state.set_global_max_concurrent(5);

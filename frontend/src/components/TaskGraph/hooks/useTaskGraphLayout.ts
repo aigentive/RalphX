@@ -39,7 +39,7 @@ import {
 import { getPlanGroupNodeId, getTierGroupNodeId } from "../groups/groupTypes";
 import { getScaledNodeDimensions } from "../nodes/nodeStyles";
 import { useThemeStore } from "@/stores/themeStore";
-import type { NodeMode } from "../controls/GraphControls";
+import type { NodeMode } from "../controls/graph-controls";
 
 // ============================================================================
 // Types

@@ -47,8 +47,10 @@ vi.mock("@/components/diff/ConflictDiffViewer", () => ({
   ),
 }));
 
-vi.mock("@/components/diff/PagedDiffView", () => ({
-  PagedDiffView: ({
+vi.mock("@/components/diff/PagedDiffView", async () => {
+  const React = await vi.importActual<typeof import("react")>("react");
+  return {
+    PagedDiffView: ({
     conversationId,
     filePath,
     refKind,
@@ -68,23 +70,28 @@ vi.mock("@/components/diff/PagedDiffView", () => ({
     initialTotalRows?: number;
     initialIsBinary?: boolean;
     hunkAnnotations?: unknown[];
-  }) => (
-    <div
-      data-testid="paged-diff-view"
-      data-conversation-id={conversationId}
-      data-file-path={filePath}
-      data-ref-kind={refKind.kind}
-      data-scroll-container={String(scrollContainer ?? false)}
-      data-inline-scroll-parent={String(Boolean(inlineScrollParent))}
-      data-default-wrap-lines={String(defaultWrapLines ?? true)}
-      data-initial-total-rows={initialTotalRows ?? ""}
-      data-initial-is-binary={String(initialIsBinary ?? false)}
-      data-hunk-annotation-count={String(hunkAnnotations?.length ?? 0)}
-    >
-      PagedDiffView
-    </div>
-  ),
-}));
+    }) => {
+      const initialRefKind = React.useRef(refKind.kind);
+      return (
+        <div
+          data-testid="paged-diff-view"
+          data-conversation-id={conversationId}
+          data-file-path={filePath}
+          data-ref-kind={refKind.kind}
+          data-initial-ref-kind={initialRefKind.current}
+          data-scroll-container={String(scrollContainer ?? false)}
+          data-inline-scroll-parent={String(Boolean(inlineScrollParent))}
+          data-default-wrap-lines={String(defaultWrapLines ?? true)}
+          data-initial-total-rows={initialTotalRows ?? ""}
+          data-initial-is-binary={String(initialIsBinary ?? false)}
+          data-hunk-annotation-count={String(hunkAnnotations?.length ?? 0)}
+        >
+          PagedDiffView
+        </div>
+      );
+    },
+  };
+});
 
 import { AgentsPublishFileDiff } from "./AgentsPublishFileDiff";
 import type {
@@ -618,65 +625,6 @@ describe("AgentsPublishFileDiff", () => {
       );
     });
 
-    it("renders review-only hunk annotations without mounting code diff views", async () => {
-      const user = userEvent.setup();
-      const onLoadCode = vi.fn();
-      render(
-        withProviders(
-          <AgentsPublishFileDiff
-            file={makeFileChange()}
-            diff={makeDiff()}
-            isExpanded={true}
-            onToggle={onToggle}
-            onCopyPath={onCopyPath}
-            onOpenFullscreen={onOpenFullscreen}
-            shouldHydrate={true}
-            annotations={[makeAnnotation()]}
-            hunkAnnotations={[makeHunkAnnotation()]}
-            isShowAnywayOverridden={false}
-            onShowAnyway={onShowAnyway}
-            contentMode="review-only"
-            onLoadCode={onLoadCode}
-          />,
-        ),
-      );
-
-      expect(screen.getByTestId("file-diff-review-only")).toBeInTheDocument();
-      expect(screen.getByText("@@ -1,1 +1,1 @@")).toBeInTheDocument();
-      expect(screen.getByText("Review summary")).toBeInTheDocument();
-      expect(screen.getByText("Please tighten this guard.")).toBeInTheDocument();
-      expect(screen.queryByTestId("simple-diff-view")).toBeNull();
-      expect(screen.queryByTestId("paged-diff-view")).toBeNull();
-
-      await user.click(screen.getByTestId("file-diff-load-code"));
-      expect(onLoadCode).toHaveBeenCalledOnce();
-    });
-
-    it("shows an empty review-only body when a file has no annotations", () => {
-      render(
-        withProviders(
-          <AgentsPublishFileDiff
-            file={makeFileChange()}
-            diff={undefined}
-            isExpanded={true}
-            onToggle={onToggle}
-            onCopyPath={onCopyPath}
-            onOpenFullscreen={onOpenFullscreen}
-            shouldHydrate={false}
-            isShowAnywayOverridden={false}
-            onShowAnyway={onShowAnyway}
-            contentMode="review-only"
-            onLoadCode={vi.fn()}
-          />,
-        ),
-      );
-
-      expect(screen.getByTestId("file-diff-review-only-empty")).toHaveTextContent(
-        "No review annotations for this file.",
-      );
-      expect(screen.queryByTestId("file-diff-pre-hydration")).toBeNull();
-    });
-
     it("mounts PagedDiffView for a medium hydrated diff when page refs are available", () => {
       render(
         withProviders(
@@ -718,6 +666,47 @@ describe("AgentsPublishFileDiff", () => {
         "false",
       );
       expect(screen.queryByTestId("simple-diff-view")).toBeNull();
+    });
+
+    it("remounts paged rows when the diff ref identity changes", () => {
+      const props = {
+        file: makeFileChange({ additions: 400 }),
+        diff: undefined,
+        isExpanded: true,
+        onToggle,
+        onCopyPath,
+        onOpenFullscreen,
+        conversationId: "conv-1",
+        shouldHydrate: true,
+        isShowAnywayOverridden: false,
+        onShowAnyway,
+      } as const;
+      const { rerender } = render(
+        withProviders(
+          <AgentsPublishFileDiff
+            {...props}
+            diffPageRefKind={{ kind: "head" }}
+          />,
+        ),
+      );
+      expect(screen.getByTestId("paged-diff-view")).toHaveAttribute(
+        "data-initial-ref-kind",
+        "head",
+      );
+
+      rerender(
+        withProviders(
+          <AgentsPublishFileDiff
+            {...props}
+            diffPageRefKind={{ kind: "cumulative_head" }}
+          />,
+        ),
+      );
+
+      expect(screen.getByTestId("paged-diff-view")).toHaveAttribute(
+        "data-initial-ref-kind",
+        "cumulative_head",
+      );
     });
 
     it("falls back to SimpleDiffView for a medium diff without page refs", () => {
@@ -832,7 +821,7 @@ describe("AgentsPublishFileDiff", () => {
   });
 
   describe("lazy hydration — shouldHydrate prop", () => {
-    it("shows pre-hydration placeholder when shouldHydrate=false and expanded", () => {
+    it("shows an explicit loading state when shouldHydrate=false and expanded", () => {
       render(
         withProviders(
           <AgentsPublishFileDiff
@@ -848,7 +837,17 @@ describe("AgentsPublishFileDiff", () => {
           />,
         ),
       );
-      expect(screen.getByTestId("file-diff-pre-hydration")).toBeInTheDocument();
+      expect(screen.getByTestId("file-diff-pre-hydration")).toHaveAttribute(
+        "aria-label",
+        "Loading file diff",
+      );
+      expect(screen.getByTestId("file-diff-pre-hydration")).toHaveAttribute(
+        "aria-busy",
+        "true",
+      );
+      expect(screen.getByTestId("file-diff-pre-hydration")).toHaveTextContent(
+        "Loading diff",
+      );
       expect(screen.queryByTestId("simple-diff-view")).toBeNull();
     });
 

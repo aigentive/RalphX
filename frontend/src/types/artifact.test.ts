@@ -52,10 +52,11 @@ import {
 // ============================================
 
 describe("ArtifactTypeSchema", () => {
-  it("validates all 19 artifact types", () => {
+  it("validates all 20 artifact types", () => {
     const types = [
       // Documents
       "prd",
+      "persona",
       "research_document",
       "design_doc",
       "specification",
@@ -92,8 +93,9 @@ describe("ArtifactTypeSchema", () => {
   });
 
   it("exports all artifact type values", () => {
-    expect(ARTIFACT_TYPE_VALUES).toHaveLength(19);
+    expect(ARTIFACT_TYPE_VALUES).toHaveLength(20);
     expect(ARTIFACT_TYPE_VALUES).toContain("prd");
+    expect(ARTIFACT_TYPE_VALUES).toContain("persona");
     expect(ARTIFACT_TYPE_VALUES).toContain("pr_review");
     expect(ARTIFACT_TYPE_VALUES).toContain("code_change");
     expect(ARTIFACT_TYPE_VALUES).toContain("activity_log");
@@ -101,9 +103,10 @@ describe("ArtifactTypeSchema", () => {
 });
 
 describe("Artifact type category helpers", () => {
-  it("DOCUMENT_ARTIFACT_TYPES has 4 types", () => {
+  it("DOCUMENT_ARTIFACT_TYPES has 5 types", () => {
     expect(DOCUMENT_ARTIFACT_TYPES).toEqual([
       "prd",
+      "persona",
       "research_document",
       "design_doc",
       "specification",

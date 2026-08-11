@@ -2,10 +2,11 @@ import { useState, type ComponentProps } from "react";
 import { toast } from "sonner";
 
 import { useUiStore } from "@/stores/uiStore";
+import { isPersonaUnavailableError } from "@/lib/personaErrors";
 
 import { getAgentQueueHaltState } from "./agentExecutionPause";
-import { normalizeRuntimeSelection } from "./agentOptions";
 import { AgentsStartComposer } from "./AgentsStartComposer";
+import { parseMcpSetupPreflightFailure } from "./agentStartErrors";
 
 type StartComposerProps = ComponentProps<typeof AgentsStartComposer>;
 type StartConversationInput = Parameters<StartComposerProps["onSubmit"]>[0];
@@ -15,7 +16,6 @@ interface AgentsStartConversationPanelProps {
   defaultRuntime: StartComposerProps["defaultRuntime"];
   isLoadingProjects: StartComposerProps["isLoadingProjects"];
   modelRegistry: StartComposerProps["modelRegistry"];
-  onCreateProject: StartComposerProps["onCreateProject"];
   onRuntimePreferenceChange?: StartComposerProps["onRuntimePreferenceChange"];
   onStartAgentConversation: (input: StartConversationInput) => Promise<void>;
   projects: StartComposerProps["projects"];
@@ -26,7 +26,6 @@ export function AgentsStartConversationPanel({
   defaultRuntime,
   isLoadingProjects,
   modelRegistry,
-  onCreateProject,
   onRuntimePreferenceChange,
   onStartAgentConversation,
   projects,
@@ -41,23 +40,27 @@ export function AgentsStartConversationPanel({
       <AgentsStartComposer
         projects={projects}
         defaultProjectId={defaultProjectId}
-        defaultRuntime={normalizeRuntimeSelection(defaultRuntime, modelRegistry)}
+        defaultRuntime={defaultRuntime}
         executionHaltState={executionHaltState}
         isLoadingProjects={isLoadingProjects}
         isSubmitting={isStartingConversation}
         modelRegistry={modelRegistry}
-        onCreateProject={onCreateProject}
         {...(onRuntimePreferenceChange ? { onRuntimePreferenceChange } : {})}
         onSubmit={async (input) => {
           try {
             setIsStartingConversation(true);
             await onStartAgentConversation(input);
           } catch (err) {
-            toast.error(
+            const message =
               err instanceof Error
                 ? err.message
-                : "Failed to start agent conversation",
-            );
+                : "Failed to start agent conversation";
+            if (
+              !isPersonaUnavailableError(message) &&
+              !parseMcpSetupPreflightFailure(err)
+            ) {
+              toast.error(message);
+            }
             throw err;
           } finally {
             setIsStartingConversation(false);

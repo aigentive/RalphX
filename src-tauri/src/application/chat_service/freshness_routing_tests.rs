@@ -11,7 +11,7 @@
 //  8. Targeted field removal: plan_update_conflict, branch_freshness_conflict, freshness_backoff_until cleared
 //
 // Integration test #7 (full chain):
-//  Reviewing → BranchFreshnessConflict → Merging → complete_merge (freshness_return_route)
+//  legacy Reviewing → Merging row → complete_merge compatibility recovery
 //  → back to Reviewing; verifies task is NOT Merged + merge_commit_sha not set
 
 use std::sync::Arc;
@@ -43,8 +43,8 @@ use crate::AppError;
 // Helpers
 // ============================================================================
 
-/// Build a minimal TaskTransitionService<tauri::Wry> using in-memory repos.
-fn build_transition_service(app_state: &AppState) -> TaskTransitionService<tauri::Wry> {
+/// Build a minimal TaskTransitionService using in-memory repos.
+fn build_transition_service(app_state: &AppState) -> TaskTransitionService {
     let execution_state = Arc::new(ExecutionState::new());
     TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
@@ -90,6 +90,43 @@ async fn insert_test_project(app_state: &AppState) -> Project {
         .await
         .expect("Failed to create project");
     project
+}
+
+fn run_git(repo_path: &std::path::Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(repo_path)
+        .output()
+        .unwrap_or_else(|error| panic!("git {:?} failed to start: {}", args, error));
+    assert!(
+        output.status.success(),
+        "git {:?} failed\nstdout: {}\nstderr: {}",
+        args,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn setup_publication_finalizer_repo(branch_name: &str) -> (tempfile::TempDir, String) {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let path = dir.path();
+
+    run_git(path, &["init", "-b", "main"]);
+    run_git(path, &["config", "user.email", "test@test.com"]);
+    run_git(path, &["config", "user.name", "Test User"]);
+    std::fs::write(path.join("README.md"), "# freshness publication repo\n").expect("write README");
+    run_git(path, &["add", "."]);
+    run_git(path, &["commit", "-m", "initial commit"]);
+    run_git(path, &["checkout", "-b", branch_name]);
+    std::fs::write(path.join("plan.txt"), "resolved publication conflict\n")
+        .expect("write plan file");
+    run_git(path, &["add", "."]);
+    run_git(path, &["commit", "-m", "resolved publication conflict"]);
+    let commit_sha = run_git(path, &["rev-parse", branch_name]);
+    run_git(path, &["checkout", "main"]);
+
+    (dir, commit_sha)
 }
 
 /// Build freshness metadata JSON with given fields.
@@ -173,6 +210,10 @@ fn pr_sync_services(
 ) -> PlanBranchPrSyncServices {
     PlanBranchPrSyncServices {
         task_repo: Some(Arc::clone(&app_state.task_repo)),
+        branch_update_repo: Some(Arc::clone(&app_state.branch_update_repo)),
+        branch_update_workflow: Some(crate::testing::branch_update_workflow(Arc::new(
+            app_state.build_chat_service(),
+        ))),
         plan_branch_repo: Some(Arc::clone(&app_state.plan_branch_repo)),
         pr_creation_guard: Some(Arc::new(dashmap::DashMap::new())),
         github_service: Some(github as Arc<dyn GithubServiceTrait>),
@@ -185,6 +226,10 @@ fn pr_sync_services(
 fn pr_sync_services_without_github(app_state: &AppState) -> PlanBranchPrSyncServices {
     PlanBranchPrSyncServices {
         task_repo: Some(Arc::clone(&app_state.task_repo)),
+        branch_update_repo: Some(Arc::clone(&app_state.branch_update_repo)),
+        branch_update_workflow: Some(crate::testing::branch_update_workflow(Arc::new(
+            app_state.build_chat_service(),
+        ))),
         plan_branch_repo: Some(Arc::clone(&app_state.plan_branch_repo)),
         pr_creation_guard: Some(Arc::new(dashmap::DashMap::new())),
         github_service: None,
@@ -660,6 +705,269 @@ async fn test_pr_branch_update_conflict_publishes_before_waiting_on_pr() {
         .unwrap()
         .unwrap();
     assert_eq!(plan_branch.pr_push_status, PrPushStatus::Pushed);
+}
+
+#[tokio::test]
+async fn test_pr_branch_publication_conflict_finalizes_regular_task_as_merged() {
+    let app_state = AppState::new_test();
+    let ts = build_transition_service(&app_state);
+    let branch_name = "plan/publication-conflict-finalizer";
+    let (repo, commit_sha) = setup_publication_finalizer_repo(branch_name);
+
+    let mut project = Project::new(
+        "test-project".to_owned(),
+        repo.path().to_string_lossy().into_owned(),
+    );
+    project.id = ProjectId::from_string("proj-publication-finalizer".to_owned());
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .expect("create project");
+
+    let session_id = IdeationSessionId::from_string("session-publication-finalizer".to_owned());
+    let mut task = Task::new(project.id.clone(), "publication finalizer task".to_owned());
+    task.internal_status = InternalStatus::Merging;
+    task.category = TaskCategory::Regular;
+    task.ideation_session_id = Some(session_id.clone());
+    task.metadata = Some(
+        serde_json::json!({
+            "plan_update_conflict": true,
+            "branch_freshness_conflict": true,
+            "pr_branch_update_conflict": true,
+            "pr_branch_publication_conflict": true,
+            "freshness_origin_state": "pr_branch_publication",
+            "base_branch": format!("origin/{branch_name}"),
+            "target_branch": branch_name,
+            "error_code": "pr_branch_publication_conflict",
+            "error": "publication conflict",
+            "conflict_files": ["plan.txt"],
+        })
+        .to_string(),
+    );
+    app_state
+        .task_repo
+        .create(task.clone())
+        .await
+        .expect("create task");
+
+    let mut plan_branch = PlanBranch::new(
+        ArtifactId::from_string("artifact-publication-finalizer".to_owned()),
+        session_id,
+        project.id.clone(),
+        branch_name.to_owned(),
+        "main".to_owned(),
+    );
+    plan_branch.pr_eligible = true;
+    plan_branch.status = PlanBranchStatus::Active;
+    plan_branch.pr_number = Some(321);
+    plan_branch.pr_url = Some("https://github.test/owner/repo/pull/321".to_owned());
+    plan_branch.pr_push_status = PrPushStatus::Pending;
+    app_state
+        .plan_branch_repo
+        .create(plan_branch)
+        .await
+        .expect("create plan branch");
+
+    let github = Arc::new(MockGithubService::new());
+    let services = pr_sync_services(&app_state, Arc::clone(&github));
+    let result = freshness_return_route(
+        &task,
+        Arc::clone(&app_state.task_repo),
+        &ts,
+        &project,
+        None,
+        Some(&services),
+        Some(&commit_sha),
+    )
+    .await
+    .expect("publication conflict return should finalize");
+
+    match result {
+        FreshnessRouteResult::FreshnessRouted(state) => assert_eq!(state, "merged"),
+        FreshnessRouteResult::NormalMerge => panic!("Expected FreshnessRouted"),
+    }
+
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(updated.internal_status, InternalStatus::Merged);
+    assert_eq!(
+        updated.merge_commit_sha.as_deref(),
+        Some(commit_sha.as_str())
+    );
+    let meta: serde_json::Value = updated
+        .metadata
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default();
+    assert!(meta.get("plan_update_conflict").is_none());
+    assert!(meta.get("pr_branch_update_conflict").is_none());
+    assert!(meta.get("pr_branch_publication_conflict").is_none());
+    assert!(meta.get("error_code").is_none());
+    assert!(meta.get("conflict_files").is_none());
+    assert_eq!(
+        meta.get("pending_cleanup")
+            .and_then(|value| value.as_bool()),
+        Some(true),
+        "publication finalizer should preserve normal post-merge cleanup recovery"
+    );
+
+    {
+        let state = github.state();
+        assert_eq!(state.push_branch_calls, 1);
+        assert_eq!(state.last_push_branch_name.as_deref(), Some(branch_name));
+        assert_eq!(state.update_pr_details_calls, 1);
+        assert_eq!(state.mark_pr_ready_calls, 1);
+    }
+
+    let plan_branch = app_state
+        .plan_branch_repo
+        .get_by_session_id(updated.ideation_session_id.as_ref().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(plan_branch.pr_push_status, PrPushStatus::Pushed);
+}
+
+#[tokio::test]
+async fn test_pr_branch_publication_finalizer_missing_sync_services_routes_to_merge_incomplete() {
+    let app_state = AppState::new_test();
+    let ts = build_transition_service(&app_state);
+    let project = insert_test_project(&app_state).await;
+
+    let mut task = insert_task_with_metadata(
+        &app_state.task_repo,
+        project.id.clone(),
+        Some(serde_json::json!({
+            "plan_update_conflict": true,
+            "branch_freshness_conflict": true,
+            "pr_branch_update_conflict": true,
+            "pr_branch_publication_conflict": true,
+            "freshness_origin_state": "pr_branch_publication",
+            "error_code": "pr_branch_publication_conflict",
+        })),
+    )
+    .await;
+    task.internal_status = InternalStatus::Merging;
+    app_state.task_repo.update(&task).await.unwrap();
+
+    let result = freshness_return_route(
+        &task,
+        Arc::clone(&app_state.task_repo),
+        &ts,
+        &project,
+        None,
+        None,
+        Some("7777777777777777777777777777777777777777"),
+    )
+    .await;
+
+    let error = match result {
+        Ok(_) => panic!("missing PR sync services should fail closed"),
+        Err(error) => error,
+    };
+    assert!(
+        error.to_string().contains("PR sync services unavailable"),
+        "unexpected error: {error}"
+    );
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(updated.internal_status, InternalStatus::MergeIncomplete);
+    let meta: serde_json::Value = updated
+        .metadata
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default();
+    assert_eq!(
+        meta.get("error_code").and_then(|value| value.as_str()),
+        Some("pr_branch_publication_failed")
+    );
+    assert_eq!(
+        meta.get("commit_sha").and_then(|value| value.as_str()),
+        Some("7777777777777777777777777777777777777777")
+    );
+}
+
+#[tokio::test]
+async fn test_pr_branch_publication_finalizer_uses_metadata_commit_when_sha_arg_missing() {
+    let app_state = AppState::new_test();
+    let ts = build_transition_service(&app_state);
+    let project = insert_test_project(&app_state).await;
+    let metadata_commit = "8888888888888888888888888888888888888888";
+
+    let mut task = insert_task_with_metadata(
+        &app_state.task_repo,
+        project.id.clone(),
+        Some(serde_json::json!({
+            "plan_update_conflict": true,
+            "branch_freshness_conflict": true,
+            "pr_branch_update_conflict": true,
+            "pr_branch_publication_conflict": true,
+            "freshness_origin_state": "pr_branch_publication",
+            "error_code": "pr_branch_publication_conflict",
+            "commit_sha": metadata_commit,
+        })),
+    )
+    .await;
+    task.internal_status = InternalStatus::Merging;
+    app_state.task_repo.update(&task).await.unwrap();
+    let branch_name = insert_pr_backed_plan_branch(&app_state, &mut task).await;
+
+    let github = Arc::new(MockGithubService::new());
+    let services = pr_sync_services(&app_state, Arc::clone(&github));
+    let result = freshness_return_route(
+        &task,
+        Arc::clone(&app_state.task_repo),
+        &ts,
+        &project,
+        None,
+        Some(&services),
+        None,
+    )
+    .await
+    .expect("publication conflict return should use metadata commit fallback");
+
+    match result {
+        FreshnessRouteResult::FreshnessRouted(state) => assert_eq!(state, "merged"),
+        FreshnessRouteResult::NormalMerge => panic!("Expected FreshnessRouted"),
+    }
+
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(updated.internal_status, InternalStatus::Merged);
+    assert_eq!(updated.merge_commit_sha.as_deref(), Some(metadata_commit));
+    let meta: serde_json::Value = updated
+        .metadata
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default();
+    assert!(meta.get("pr_branch_publication_conflict").is_none());
+    assert!(meta.get("error_code").is_none());
+    assert_eq!(
+        meta.get("pending_cleanup")
+            .and_then(|value| value.as_bool()),
+        Some(true)
+    );
+
+    let state = github.state();
+    assert_eq!(state.push_branch_calls, 1);
+    assert_eq!(
+        state.last_push_branch_name.as_deref(),
+        Some(branch_name.as_str())
+    );
+    assert_eq!(state.update_pr_details_calls, 1);
 }
 
 #[tokio::test]
@@ -1166,8 +1474,8 @@ fn test_normal_merge_returns_without_cleanup() {
 }
 
 // ============================================================================
-// Integration Test #7: Full chain — Reviewing → BranchFreshnessConflict → Merging
-//                       → complete_merge (freshness_return_route) → back to Reviewing
+// Integration Test #7: persisted legacy Reviewing → Merging row
+//                       → complete_merge compatibility recovery → back to Reviewing
 //
 // Simulates the complete_merge HTTP handler path:
 //   1. Task starts in Reviewing with no freshness metadata
@@ -1225,8 +1533,9 @@ async fn test_integration_full_chain_reviewing_through_freshness_conflict_return
         app_state.task_repo.update(&stored).await.unwrap();
     }
 
-    // --- Phase 3: Simulate the post-state-machine result of BranchFreshnessConflict → Merging ---
-    // The validated transition_task() surface no longer models this internal state-machine path.
+    // --- Phase 3: Simulate a persisted row from the retired freshness-as-merge path ---
+    // The validated transition_task() surface no longer models this path; the direct write
+    // exists only to prove safe recovery of legacy data.
     {
         let mut stored = app_state
             .task_repo

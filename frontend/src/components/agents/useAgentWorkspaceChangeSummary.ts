@@ -40,7 +40,87 @@ export interface AgentWorkspaceChangeSummaryState {
   unstagedCount: number | undefined;
   totalAdditions: number;
   totalDeletions: number;
-  repairChangeSignature?: string | undefined;
+  worktreeChangeSignature?: string | undefined;
+}
+
+export interface AgentWorkspaceChangeFacts {
+  fileCount: number;
+  additions: number;
+  deletions: number;
+}
+
+/**
+ * Which source wins when BOTH live worktree facts and a loaded review are available.
+ *
+ * The two sources measure different ranges and are not interchangeable:
+ * - live summary  = HEAD → index → working tree (uncommitted work only)
+ * - review.changes = base → working tree (committed + staged + unstaged + untracked)
+ *
+ * - `"live-worktree"` — live buckets win. Used by the publish action bar, which is a live
+ *   indicator: it must track `changeSummary` polls as the agent edits files without
+ *   waiting for the (much more expensive) review query to refetch.
+ * - `"review"` — the loaded review wins. Used by `workspaceChangeCount`, which labels the
+ *   base→working-tree ("uncommitted") diff mode whose rendered file list *is*
+ *   `review.changes`; the label must equal the list length. Live buckets undercount there
+ *   because they omit committed-but-unpublished work.
+ *
+ * Both orders fall back to the other source when the preferred one has no facts.
+ */
+export type AgentWorkspaceChangeFactsSource = "live-worktree" | "review";
+
+function liveWorktreeChangeFacts(
+  liveSummary: AgentWorkspaceChangeSummary | null | undefined,
+): AgentWorkspaceChangeFacts | null {
+  // `supportsWorktreeModes: false` responses carry zeroed placeholder buckets, so the
+  // gate rejects fabricated facts rather than reporting a misleading "0 files · +0 −0".
+  if (!liveSummary?.supportsWorktreeModes) {
+    return null;
+  }
+  return {
+    fileCount:
+      liveSummary.staged.fileCount +
+      liveSummary.unstaged.fileCount +
+      (liveSummary.conflicted?.fileCount ?? 0),
+    additions: liveSummary.staged.additions + liveSummary.unstaged.additions,
+    deletions: liveSummary.staged.deletions + liveSummary.unstaged.deletions,
+  };
+}
+
+function reviewChangeFacts(
+  review: AgentWorkspaceReview | null | undefined,
+): AgentWorkspaceChangeFacts | null {
+  if (!review) {
+    return null;
+  }
+  return {
+    fileCount: review.changes.length,
+    additions: review.changes.reduce(
+      (sum, file) => sum + file.additions,
+      0,
+    ),
+    deletions: review.changes.reduce(
+      (sum, file) => sum + file.deletions,
+      0,
+    ),
+  };
+}
+
+export function getAgentWorkspaceChangeFacts(
+  liveSummary: AgentWorkspaceChangeSummary | null | undefined,
+  review: AgentWorkspaceReview | null | undefined,
+  prefer: AgentWorkspaceChangeFactsSource = "live-worktree",
+): AgentWorkspaceChangeFacts | null {
+  const liveFacts = liveWorktreeChangeFacts(liveSummary);
+  const reviewFacts = reviewChangeFacts(review);
+  return prefer === "review"
+    ? (reviewFacts ?? liveFacts)
+    : (liveFacts ?? reviewFacts);
+}
+
+function liveBucketSignature(
+  bucket: AgentWorkspaceChangeBucketSummary,
+): string {
+  return `live:${bucket.fileCount}:${bucket.additions}:${bucket.deletions}`;
 }
 
 export function mapReviewCommitsToDiffViewerCommits(
@@ -64,6 +144,7 @@ export function useAgentWorkspaceChangeSummary({
   liveSummary = null,
   hydrateWorktreeFileLists = true,
   repairMode = false,
+  enabled = true,
 }: {
   conversationId: string;
   review: AgentWorkspaceReview | null;
@@ -71,6 +152,7 @@ export function useAgentWorkspaceChangeSummary({
   liveSummary?: AgentWorkspaceChangeSummary | null;
   hydrateWorktreeFileLists?: boolean;
   repairMode?: boolean;
+  enabled?: boolean;
 }): AgentWorkspaceChangeSummaryState {
   const [selectedMode, setSelectedMode] = useState<DiffFilterMode>(defaultMode);
   const [hasUserSelectedMode, setHasUserSelectedMode] = useState(false);
@@ -78,6 +160,7 @@ export function useAgentWorkspaceChangeSummary({
   const supportsWorktreeModes =
     liveSummary?.supportsWorktreeModes ?? review?.supportsWorktreeModes ?? true;
   const canQueryWorktreeFiles =
+    enabled &&
     hydrateWorktreeFileLists &&
     supportsWorktreeModes &&
     (review != null || liveSummary != null);
@@ -86,6 +169,10 @@ export function useAgentWorkspaceChangeSummary({
     () => (repairMode ? buildRepairChangeSignature(liveSummary) : undefined),
     [liveSummary, repairMode],
   );
+  const stagedChangeSignature = repairChangeSignature ??
+    (liveSummary ? liveBucketSignature(liveSummary.staged) : undefined);
+  const unstagedChangeSignature = repairChangeSignature ??
+    (liveSummary ? liveBucketSignature(liveSummary.unstaged) : undefined);
   const liveStagedCount = liveSummary?.staged.fileCount;
   const liveUnstagedCount = liveSummary?.unstaged.fileCount;
   const liveConflictedCount = liveSummary?.conflicted?.fileCount;
@@ -119,7 +206,7 @@ export function useAgentWorkspaceChangeSummary({
     queryKey: [
       ...agentWorkspaceKeys.diff(conversationId),
       repairMode ? "repair-staged-files" : "staged-files",
-      ...(repairChangeSignature !== undefined ? [repairChangeSignature] : []),
+      ...(stagedChangeSignature !== undefined ? [stagedChangeSignature] : []),
     ],
     queryFn: () =>
       repairMode
@@ -141,7 +228,7 @@ export function useAgentWorkspaceChangeSummary({
     queryKey: [
       ...agentWorkspaceKeys.diff(conversationId),
       repairMode ? "repair-unstaged-files" : "unstaged-files",
-      ...(repairChangeSignature !== undefined ? [repairChangeSignature] : []),
+      ...(unstagedChangeSignature !== undefined ? [unstagedChangeSignature] : []),
     ],
     queryFn: () =>
       repairMode
@@ -157,10 +244,18 @@ export function useAgentWorkspaceChangeSummary({
           liveUnstagedCount > 0)),
     staleTime: AGENT_WORKSPACE_STALE_MS,
   });
-  const stagedCount = liveSummary?.staged.fileCount ?? stagedFilesQuery.data?.length;
-  const unstagedCount = liveSummary?.unstaged.fileCount ?? unstagedFilesQuery.data?.length;
-  const conflictedCount = liveSummary?.conflicted?.fileCount;
-  const conflictedFilePaths = liveSummary?.conflicted?.files;
+  const stagedCount = enabled
+    ? (liveSummary?.staged.fileCount ?? stagedFilesQuery.data?.length)
+    : undefined;
+  const unstagedCount = enabled
+    ? (liveSummary?.unstaged.fileCount ?? unstagedFilesQuery.data?.length)
+    : undefined;
+  const conflictedCount = enabled
+    ? liveSummary?.conflicted?.fileCount
+    : undefined;
+  const conflictedFilePaths = enabled
+    ? liveSummary?.conflicted?.files
+    : undefined;
   const preferredMode = useMemo<DiffFilterMode>(() => {
     if (!supportsWorktreeModes || hasUserSelectedMode || selectedMode !== "uncommitted") {
       return selectedMode;
@@ -201,6 +296,12 @@ export function useAgentWorkspaceChangeSummary({
   const isUnstagedMode = effectiveMode === "unstaged";
   const isConflictedMode = effectiveMode === "conflicted";
   const isCumulativeMode = effectiveMode === "cumulative";
+  const worktreeChangeSignature = repairChangeSignature ??
+    (isStagedMode
+      ? stagedChangeSignature
+      : isUnstagedMode
+        ? unstagedChangeSignature
+        : undefined);
   const isCommitMode =
     effectiveMode !== "uncommitted" &&
     !isConflictedMode &&
@@ -225,14 +326,23 @@ export function useAgentWorkspaceChangeSummary({
       if (!commitSha) throw new Error("commitSha required");
       return diffApi.getAgentConversationWorkspaceCommitFileChanges(conversationId, commitSha);
     },
-    enabled: isCommitMode && Boolean(commitSha),
+    enabled: enabled && isCommitMode && Boolean(commitSha),
     staleTime: AGENT_WORKSPACE_STALE_MS,
   });
 
   const cumulativeFilesQuery = useQuery({
-    queryKey: [...agentWorkspaceKeys.diff(conversationId), "cumulative-files"],
-    queryFn: () => diffApi.getAgentConversationWorkspaceCumulativeFileChanges(conversationId),
-    enabled: isCumulativeMode,
+    queryKey: [
+      ...agentWorkspaceKeys.diff(conversationId),
+      "cumulative-files",
+      ...(!supportsWorktreeModes
+        ? ["read-only", review?.baseRef ?? "", review?.headRef ?? ""]
+        : []),
+    ],
+    queryFn: () =>
+      diffApi.getAgentConversationWorkspaceCumulativeFileChanges(
+        conversationId,
+      ),
+    enabled: enabled && isCumulativeMode,
     staleTime: AGENT_WORKSPACE_STALE_MS,
   });
 
@@ -250,6 +360,7 @@ export function useAgentWorkspaceChangeSummary({
   }, [conflictedFilePaths, repairMode]);
 
   const currentFiles = useMemo<FileChange[]>(() => {
+    if (!enabled) return [];
     if (isCommitMode) return commitFilesQuery.data ?? [];
     if (isConflictedMode) return conflictedFiles;
     if (isStagedMode && supportsWorktreeModes) return stagedFilesQuery.data ?? [];
@@ -259,6 +370,7 @@ export function useAgentWorkspaceChangeSummary({
   }, [
     commitFilesQuery.data,
     cumulativeFilesQuery.data,
+    enabled,
     conflictedFiles,
     isCommitMode,
     isConflictedMode,
@@ -271,35 +383,46 @@ export function useAgentWorkspaceChangeSummary({
     unstagedFilesQuery.data,
   ]);
 
-  const currentFilesError = isCommitMode
-    ? commitFilesQuery.error
-    : isConflictedMode
-      ? null
-      : isStagedMode
-        ? stagedFilesQuery.error
-        : isUnstagedMode
-          ? unstagedFilesQuery.error
-          : isCumulativeMode
-            ? cumulativeFilesQuery.error
-            : null;
-  const isCurrentFilesLoading = isCommitMode
-    ? commitFilesQuery.isLoading
-    : isConflictedMode
-      ? false
-      : isStagedMode
-        ? stagedFilesQuery.isLoading
-        : isUnstagedMode
-          ? unstagedFilesQuery.isLoading
-          : isCumulativeMode
-            ? (cumulativeFilesQuery.isPending && !cumulativeFilesQuery.isError)
-            : false;
+  const currentFilesError = !enabled
+    ? null
+    : isCommitMode
+      ? commitFilesQuery.error
+      : isConflictedMode
+        ? null
+        : isStagedMode
+          ? stagedFilesQuery.error
+          : isUnstagedMode
+            ? unstagedFilesQuery.error
+            : isCumulativeMode
+              ? cumulativeFilesQuery.error
+              : null;
+  const isCurrentFilesLoading = !enabled
+    ? false
+    : isCommitMode
+      ? commitFilesQuery.isLoading
+      : isConflictedMode
+        ? false
+        : isStagedMode
+          ? stagedFilesQuery.isLoading
+          : isUnstagedMode
+            ? unstagedFilesQuery.isLoading
+            : isCumulativeMode
+              ? cumulativeFilesQuery.isPending && !cumulativeFilesQuery.isError
+              : false;
 
-  const currentLiveBucket = useMemo<AgentWorkspaceChangeBucketSummary | null>(() => {
-    if (!liveSummary || !supportsWorktreeModes) return null;
-    if (isStagedMode) return liveSummary.staged;
-    if (isUnstagedMode) return liveSummary.unstaged;
-    return null;
-  }, [isStagedMode, isUnstagedMode, liveSummary, supportsWorktreeModes]);
+  const currentLiveBucket =
+    useMemo<AgentWorkspaceChangeBucketSummary | null>(() => {
+      if (!enabled || !liveSummary || !supportsWorktreeModes) return null;
+      if (isStagedMode) return liveSummary.staged;
+      if (isUnstagedMode) return liveSummary.unstaged;
+      return null;
+    }, [
+      enabled,
+      isStagedMode,
+      isUnstagedMode,
+      liveSummary,
+      supportsWorktreeModes,
+    ]);
   const currentFileCount = currentLiveBucket?.fileCount ?? currentFiles.length;
   const totalAdditions =
     currentLiveBucket?.additions ??
@@ -323,18 +446,19 @@ export function useAgentWorkspaceChangeSummary({
     isCumulativeMode,
     commitSha,
     supportsWorktreeModes,
-    workspaceChangeCount:
-      liveSummary != null
-        ? liveSummary.staged.fileCount +
-          liveSummary.unstaged.fileCount +
-          (liveSummary.conflicted?.fileCount ?? 0)
-        : review?.changes.length ?? 0,
+    // Review-first: this count labels the base→working-tree ("uncommitted") diff mode,
+    // whose rendered file list is `review.changes`. Live buckets omit committed work and
+    // would desync the label from the list.
+    workspaceChangeCount: !enabled
+      ? 0
+      : (getAgentWorkspaceChangeFacts(liveSummary, review, "review")?.fileCount ??
+        0),
     currentFileCount,
     conflictedCount,
     stagedCount,
     unstagedCount,
     totalAdditions,
     totalDeletions,
-    repairChangeSignature,
+    worktreeChangeSignature,
   };
 }

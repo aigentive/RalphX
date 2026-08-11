@@ -21,6 +21,7 @@ import {
 import { cn } from "@/lib/utils";
 
 import { agentLinearIssueKeys } from "./agentLinearIssueQueries";
+import { ArtifactSelectableRegion } from "./artifact-selection/ArtifactSelectableRegion";
 
 interface AgentsLinearIssuePanelProps {
   conversationId: string | null;
@@ -251,7 +252,16 @@ function IssueDetails({
   onReassign: () => void;
 }) {
   return (
-    <div className="space-y-4">
+    <ArtifactSelectableRegion
+      className="space-y-4"
+      source={{
+        sourceKind: "linear",
+        sourceId: issue.issueId,
+        sourceLabel: `Linear ${issue.issueKey ?? issue.issueId}`,
+        ...(issue.title ? { title: issue.title } : {}),
+        ...(issue.issueUrl ? { url: issue.issueUrl } : {}),
+      }}
+    >
       <div>
         <div className="flex items-center justify-between gap-3">
           <h3 className="min-w-0 truncate text-base font-semibold">
@@ -297,7 +307,7 @@ function IssueDetails({
       <Button type="button" variant="outline" size="sm" onClick={onReassign}>
         Reassign
       </Button>
-    </div>
+    </ArtifactSelectableRegion>
   );
 }
 

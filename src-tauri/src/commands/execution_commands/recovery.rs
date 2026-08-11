@@ -34,8 +34,10 @@ pub(super) fn build_reconciler_for_recovery(
         execution_state,
         Some(app),
     )
+    .with_notification_service(app_state.notification_service())
     .with_execution_settings_repo(Arc::clone(&app_state.execution_settings_repo))
     .with_plan_branch_repo(Arc::clone(&app_state.plan_branch_repo))
+    .with_branch_update_repo(Arc::clone(&app_state.branch_update_repo))
     .with_interactive_process_registry(Arc::clone(&app_state.interactive_process_registry))
 }
 
@@ -47,6 +49,7 @@ pub(super) fn build_reconciler_for_recovery(
 ///
 /// Determines how a task should be resumed after being stopped mid-execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ResumeCategory {
     /// Directly resume to the original state (spawn agent if needed).
     /// Used for: Executing, ReExecuting, Reviewing, QaRefining, QaTesting
@@ -118,6 +121,13 @@ pub fn categorize_resume_state(stopped_from_status: InternalStatus) -> Categoriz
     }
 }
 
+pub fn restart_transition_target(stopped_from_status: InternalStatus) -> InternalStatus {
+    match stopped_from_status {
+        InternalStatus::Executing | InternalStatus::ReExecuting => InternalStatus::Ready,
+        _ => categorize_resume_state(stopped_from_status).target_status,
+    }
+}
+
 /// Validation warning for resume operations.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResumeValidationWarning {
@@ -148,6 +158,8 @@ pub enum RestartResult {
         category: ResumeCategory,
         /// The status the task was resumed to
         resumed_to_status: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        disposition: Option<RestartDisposition>,
     },
     /// Validation failed (only for Validated category)
     ValidationFailed {
@@ -156,6 +168,17 @@ pub enum RestartResult {
         /// The stopped_from_status for reference
         stopped_from_status: String,
     },
+    /// Recovery authority could not be established safely; no task state was mutated.
+    Blocked {
+        warnings: Vec<ResumeValidationWarning>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RestartDisposition {
+    RecoveredToReview,
+    RestartedToReady,
 }
 
 /// Validate resume for Validated category states.

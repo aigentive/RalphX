@@ -519,6 +519,49 @@ describe("InsightsView — full render with stats + trends", () => {
     expect(screen.getByTestId("pr-insights")).toBeInTheDocument();
   });
 
+  it("renders workspace PR insights and delivery throughput with zero task-pipeline rows", () => {
+    const basePrInsights = makePrInsights();
+
+    mockSuccess(
+      makeStats({ taskCount: 0, eme: null }),
+      makeTrends({
+        weeklyThroughput: [],
+        weeklyDeliveryThroughput: [
+          {
+            weekStart: "2026-05-17",
+            unifiedDeliveries: 2,
+            taskDeliveries: 0,
+            workspaceDeliveries: 2,
+            mergedPrs: 1,
+            sampleSize: 3,
+          },
+        ],
+        weeklyCycleTime: [],
+        weeklyPipelineCycleTime: [],
+        weeklySuccessRate: [],
+      }),
+    );
+    mockedPrInsights.mockReturnValue({
+      data: makePrInsights({
+        summary: {
+          ...basePrInsights.summary,
+          totalPrs: 2,
+          directWorkspacePrs: 2,
+          taskPipelinePrs: 0,
+        },
+      }),
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useInsightsPrInsights>);
+
+    render(<InsightsView />);
+
+    expect(screen.getByTestId("agent-workspaces-insights")).toBeInTheDocument();
+    expect(screen.getByTestId("pr-insights")).toBeInTheDocument();
+    expect(screen.getByTestId("delivery-throughput-chart")).toBeInTheDocument();
+    expect(screen.queryByText(/trend charts unlock after 10/i)).not.toBeInTheDocument();
+  });
+
   it("renders Avg Pipeline Time as em dash when avgPipelineMinutes is null", () => {
     mockSuccess(makeStats({ avgPipelineMinutes: null }));
     render(<InsightsView />);

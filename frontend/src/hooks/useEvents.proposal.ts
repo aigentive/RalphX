@@ -25,7 +25,7 @@ import type { Unsubscribe } from "@/lib/event-bus";
  * ```tsx
  * function App() {
  *   useProposalEvents(); // Sets up listener automatically
- *   return <IdeationView />;
+ *   return <AgentsView />;
  * }
  * ```
  */

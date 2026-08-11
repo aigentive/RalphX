@@ -6,6 +6,13 @@ use crate::entities::{
 };
 use crate::repositories::StatusTransition;
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionTaskAgentWorkspace {
+    pub conversation_id: String,
+    pub project_id: String,
+    pub title: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunningProcess {
     pub task_id: String,
@@ -15,6 +22,7 @@ pub struct RunningProcess {
     pub elapsed_seconds: Option<i64>,
     pub trigger_origin: Option<String>,
     pub task_branch: Option<String>,
+    pub agent_workspace: Option<ExecutionTaskAgentWorkspace>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,7 +30,6 @@ pub struct RunningIdeationSession {
     pub session_id: String,
     pub title: String,
     pub elapsed_seconds: Option<i64>,
-    pub team_mode: Option<String>,
     pub is_generating: bool,
 }
 
@@ -30,6 +37,8 @@ pub struct RunningIdeationSession {
 pub struct RunningWorkspaceSession {
     pub conversation_id: String,
     pub project_id: String,
+    pub automation_id: Option<String>,
+    pub automation_run_id: Option<String>,
     pub title: String,
     pub elapsed_seconds: Option<i64>,
     pub model: Option<String>,
@@ -97,7 +106,6 @@ pub fn build_running_ideation_session(
         session_id,
         title: ideation_session_title(session.title.as_deref()),
         elapsed_seconds: Some(elapsed_seconds_since(session.created_at, now)),
-        team_mode: session.team_mode.clone(),
         is_generating,
     }
 }
@@ -111,6 +119,14 @@ pub fn build_running_workspace_session(
     RunningWorkspaceSession {
         conversation_id: conversation.id.as_str().to_string(),
         project_id: conversation.context_id.clone(),
+        automation_id: conversation
+            .automation_id
+            .as_ref()
+            .map(|id| id.as_str().to_string()),
+        automation_run_id: conversation
+            .automation_run_id
+            .as_ref()
+            .map(|id| id.as_str().to_string()),
         title: workspace_session_title(conversation.title.as_deref()),
         elapsed_seconds: Some(elapsed_seconds_since(started_at, now)),
         model,
@@ -123,6 +139,22 @@ pub fn build_running_process(
     elapsed_seconds: Option<i64>,
     trigger_origin: Option<String>,
 ) -> RunningProcess {
+    build_running_process_with_agent_workspace(
+        task,
+        step_progress,
+        elapsed_seconds,
+        trigger_origin,
+        None,
+    )
+}
+
+pub fn build_running_process_with_agent_workspace(
+    task: &Task,
+    step_progress: Option<StepProgressSummary>,
+    elapsed_seconds: Option<i64>,
+    trigger_origin: Option<String>,
+    agent_workspace: Option<ExecutionTaskAgentWorkspace>,
+) -> RunningProcess {
     RunningProcess {
         task_id: task.id.as_str().to_string(),
         title: task.title.clone(),
@@ -131,6 +163,7 @@ pub fn build_running_process(
         elapsed_seconds,
         trigger_origin,
         task_branch: task.task_branch.clone(),
+        agent_workspace,
     }
 }
 

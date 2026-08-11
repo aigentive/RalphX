@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { useTaskStore, selectTasksByStatus, selectSelectedTask } from "./taskStore";
+import { useTaskStore, selectTasksByStatus } from "./taskStore";
 import type { Task } from "@/types/task";
 
 // Helper to create test tasks
@@ -23,7 +23,6 @@ describe("taskStore", () => {
     // Reset store to initial state before each test
     useTaskStore.setState({
       tasks: {},
-      selectedTaskId: null,
     });
   });
 
@@ -130,33 +129,6 @@ describe("taskStore", () => {
     });
   });
 
-  describe("selectTask", () => {
-    it("updates selectedTaskId", () => {
-      useTaskStore.getState().selectTask("task-1");
-
-      const state = useTaskStore.getState();
-      expect(state.selectedTaskId).toBe("task-1");
-    });
-
-    it("sets selectedTaskId to null", () => {
-      useTaskStore.setState({ selectedTaskId: "task-1" });
-
-      useTaskStore.getState().selectTask(null);
-
-      const state = useTaskStore.getState();
-      expect(state.selectedTaskId).toBeNull();
-    });
-
-    it("replaces previous selection", () => {
-      useTaskStore.setState({ selectedTaskId: "task-1" });
-
-      useTaskStore.getState().selectTask("task-2");
-
-      const state = useTaskStore.getState();
-      expect(state.selectedTaskId).toBe("task-2");
-    });
-  });
-
   describe("addTask", () => {
     it("adds a new task to the store", () => {
       const task = createTestTask({ id: "task-1" });
@@ -191,29 +163,6 @@ describe("taskStore", () => {
       expect(state.tasks["task-1"]).toBeUndefined();
     });
 
-    it("clears selection if selected task is removed", () => {
-      const task = createTestTask({ id: "task-1" });
-      useTaskStore.setState({ tasks: { "task-1": task }, selectedTaskId: "task-1" });
-
-      useTaskStore.getState().removeTask("task-1");
-
-      const state = useTaskStore.getState();
-      expect(state.selectedTaskId).toBeNull();
-    });
-
-    it("does not affect selection if different task is removed", () => {
-      const task1 = createTestTask({ id: "task-1" });
-      const task2 = createTestTask({ id: "task-2" });
-      useTaskStore.setState({
-        tasks: { "task-1": task1, "task-2": task2 },
-        selectedTaskId: "task-1",
-      });
-
-      useTaskStore.getState().removeTask("task-2");
-
-      const state = useTaskStore.getState();
-      expect(state.selectedTaskId).toBe("task-1");
-    });
   });
 });
 
@@ -221,7 +170,6 @@ describe("selectors", () => {
   beforeEach(() => {
     useTaskStore.setState({
       tasks: {},
-      selectedTaskId: null,
     });
   });
 
@@ -261,41 +209,4 @@ describe("selectors", () => {
     });
   });
 
-  describe("selectSelectedTask", () => {
-    it("returns selected task when it exists", () => {
-      const task = createTestTask({ id: "task-1", title: "Selected Task" });
-      useTaskStore.setState({
-        tasks: { "task-1": task },
-        selectedTaskId: "task-1",
-      });
-
-      const result = selectSelectedTask(useTaskStore.getState());
-
-      expect(result).not.toBeNull();
-      expect(result?.title).toBe("Selected Task");
-    });
-
-    it("returns null when no task is selected", () => {
-      const task = createTestTask({ id: "task-1" });
-      useTaskStore.setState({
-        tasks: { "task-1": task },
-        selectedTaskId: null,
-      });
-
-      const result = selectSelectedTask(useTaskStore.getState());
-
-      expect(result).toBeNull();
-    });
-
-    it("returns null when selected task does not exist", () => {
-      useTaskStore.setState({
-        tasks: {},
-        selectedTaskId: "nonexistent",
-      });
-
-      const result = selectSelectedTask(useTaskStore.getState());
-
-      expect(result).toBeNull();
-    });
-  });
 });

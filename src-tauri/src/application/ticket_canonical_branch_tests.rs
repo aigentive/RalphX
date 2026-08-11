@@ -47,7 +47,10 @@ fn init_real_repo() -> (tempfile::TempDir, std::path::PathBuf) {
     std::fs::write(repo.join("README.md"), "main\n").expect("write readme");
     git(&repo, &["add", "."]);
     git(&repo, &["commit", "-m", "initial"]);
-    git(&repo, &["remote", "add", "origin", origin.to_str().unwrap()]);
+    git(
+        &repo,
+        &["remote", "add", "origin", origin.to_str().unwrap()],
+    );
 
     (temp, repo)
 }
@@ -64,7 +67,11 @@ async fn state_with_project(repo: &Path) -> (AppState, ProjectId, Arc<MockGithub
     );
     project.base_branch = Some("main".to_string());
     let project_id = project.id.clone();
-    state.project_repo.create(project).await.expect("seed project");
+    state
+        .project_repo
+        .create(project)
+        .await
+        .expect("seed project");
 
     (state, project_id, github)
 }
@@ -114,9 +121,11 @@ fn canonical_branch_name_is_prefixed_and_readable() {
 #[tokio::test]
 async fn check_ref_format_accepts_normal_canonical_name() {
     let (_temp, repo) = init_real_repo();
-    assert!(GitService::check_ref_format(&repo, "ralphx/ticket/linear-wise-24")
-        .await
-        .unwrap());
+    assert!(
+        GitService::check_ref_format(&repo, "ralphx/ticket/linear-wise-24")
+            .await
+            .unwrap()
+    );
 }
 
 #[tokio::test]
@@ -152,13 +161,18 @@ async fn first_call_creates_branch_pushes_once_and_marks_pushed() {
     assert_eq!(canonical.branch_name, "ralphx/ticket/linear-wise-24");
     assert_eq!(canonical.base_branch, "main");
     assert!(canonical.base_commit.is_some());
-    assert!(canonical.origin_pushed, "origin_pushed only true after push");
+    assert!(
+        canonical.origin_pushed,
+        "origin_pushed only true after push"
+    );
     assert!(!canonical.terminal);
 
     // Branch exists locally in the main checkout (and is NOT checked out).
-    assert!(GitService::branch_exists(&repo, "ralphx/ticket/linear-wise-24")
-        .await
-        .unwrap());
+    assert!(
+        GitService::branch_exists(&repo, "ralphx/ticket/linear-wise-24")
+            .await
+            .unwrap()
+    );
     let current = GitService::get_current_branch(&repo).await.unwrap();
     assert_eq!(current, "main", "canonical branch must not be checked out");
 
@@ -237,7 +251,8 @@ async fn unpushed_row_completes_push_on_next_call() {
     let (state, project_id, github) = state_with_project(&repo).await;
 
     // First attempt: push fails, so origin_pushed must stay false.
-    github.state().push_branch_result = Some(Err(AppError::GitOperation("network down".to_string())));
+    github.state().push_branch_result =
+        Some(Err(AppError::GitOperation("network down".to_string())));
     let error = ensure_ticket_canonical_branch(&state, &project_id, "linear", "WISE-24")
         .await
         .expect_err("failed push should surface as error");
@@ -340,7 +355,10 @@ async fn unpushed_existing_row_with_local_branch_completes_push_and_marks_pushed
         .await
         .expect("recovery should push and mark the row");
 
-    assert!(recovered.origin_pushed, "row must be flagged pushed after recovery");
+    assert!(
+        recovered.origin_pushed,
+        "row must be flagged pushed after recovery"
+    );
     assert_eq!(recovered.branch_name, branch_name);
     assert_eq!(github.state().push_branch_calls, 1);
     assert_eq!(
@@ -399,7 +417,10 @@ async fn unpushed_existing_row_keeps_unpushed_when_push_fails() {
         .await
         .unwrap()
         .unwrap();
-    assert!(!stored.origin_pushed, "row must remain unpushed after failed push");
+    assert!(
+        !stored.origin_pushed,
+        "row must remain unpushed after failed push"
+    );
 }
 
 #[tokio::test]

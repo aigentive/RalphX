@@ -113,6 +113,7 @@ impl fmt::Display for ProcessId {
 pub enum ArtifactType {
     // Documents
     Prd,
+    Persona,
     ResearchDocument,
     DesignDoc,
     Specification,
@@ -139,7 +140,6 @@ pub enum ArtifactType {
     TeamResearch,
     TeamAnalysis,
     TeamSummary,
-    VerificationFinding,
 }
 
 impl ArtifactType {
@@ -147,6 +147,7 @@ impl ArtifactType {
     pub fn all() -> &'static [ArtifactType] {
         &[
             ArtifactType::Prd,
+            ArtifactType::Persona,
             ArtifactType::ResearchDocument,
             ArtifactType::DesignDoc,
             ArtifactType::Specification,
@@ -168,7 +169,6 @@ impl ArtifactType {
             ArtifactType::TeamResearch,
             ArtifactType::TeamAnalysis,
             ArtifactType::TeamSummary,
-            ArtifactType::VerificationFinding,
         ]
     }
 
@@ -176,6 +176,7 @@ impl ArtifactType {
     pub fn as_str(&self) -> &'static str {
         match self {
             ArtifactType::Prd => "prd",
+            ArtifactType::Persona => "persona",
             ArtifactType::ResearchDocument => "research_document",
             ArtifactType::DesignDoc => "design_doc",
             ArtifactType::Specification => "specification",
@@ -197,7 +198,6 @@ impl ArtifactType {
             ArtifactType::TeamResearch => "team_research",
             ArtifactType::TeamAnalysis => "team_analysis",
             ArtifactType::TeamSummary => "team_summary",
-            ArtifactType::VerificationFinding => "verification_finding",
         }
     }
 }
@@ -228,6 +228,7 @@ impl FromStr for ArtifactType {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "prd" => Ok(ArtifactType::Prd),
+            "persona" => Ok(ArtifactType::Persona),
             "research_document" => Ok(ArtifactType::ResearchDocument),
             "design_doc" => Ok(ArtifactType::DesignDoc),
             "specification" => Ok(ArtifactType::Specification),
@@ -249,7 +250,6 @@ impl FromStr for ArtifactType {
             "team_research" => Ok(ArtifactType::TeamResearch),
             "team_analysis" => Ok(ArtifactType::TeamAnalysis),
             "team_summary" => Ok(ArtifactType::TeamSummary),
-            "verification_finding" => Ok(ArtifactType::VerificationFinding),
             _ => Err(ParseArtifactTypeError {
                 value: s.to_string(),
             }),
@@ -316,6 +316,9 @@ pub struct ArtifactMetadata {
     /// Optional team-specific metadata (for artifacts from agent teams)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub team_metadata: Option<TeamArtifactMetadata>,
+    /// Optional artifact-kind-specific metadata persisted in `metadata_json`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_metadata: Option<serde_json::Value>,
 }
 
 fn default_version() -> u32 {
@@ -332,6 +335,7 @@ impl ArtifactMetadata {
             process_id: None,
             version: 1,
             team_metadata: None,
+            custom_metadata: None,
         }
     }
 
@@ -356,6 +360,12 @@ impl ArtifactMetadata {
     /// Sets team-specific metadata
     pub fn with_team_metadata(mut self, team_metadata: TeamArtifactMetadata) -> Self {
         self.team_metadata = Some(team_metadata);
+        self
+    }
+
+    /// Sets artifact-kind-specific metadata persisted in `metadata_json`.
+    pub fn with_custom_metadata(mut self, metadata: serde_json::Value) -> Self {
+        self.custom_metadata = Some(metadata);
         self
     }
 }
@@ -582,9 +592,7 @@ impl ArtifactBucket {
                     ArtifactType::TeamResearch,
                     ArtifactType::TeamAnalysis,
                     ArtifactType::TeamSummary,
-                    ArtifactType::VerificationFinding,
                 ])
-                .with_writer("team-lead")
                 .with_writer("system"),
         ]
     }
@@ -603,36 +611,6 @@ pub struct TeamArtifactMetadata {
     /// Phase of the team when artifact was created
     #[serde(skip_serializing_if = "Option::is_none")]
     pub team_phase: Option<String>,
-    /// Structured verification payload for first-class verifier findings
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub verification_finding: Option<VerificationFindingMetadata>,
-}
-
-/// Structured verification metadata stored on first-class verifier finding artifacts
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VerificationFindingMetadata {
-    pub critic: String,
-    pub round: u32,
-    pub status: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub coverage: Option<String>,
-    pub summary: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub gaps: Vec<VerificationFindingGap>,
-}
-
-/// One structured verification gap published by a verifier critic
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VerificationFindingGap {
-    pub severity: String,
-    pub category: String,
-    pub description: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub why_it_matters: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub lens: Option<String>,
 }
 
 /// The type of relation between artifacts

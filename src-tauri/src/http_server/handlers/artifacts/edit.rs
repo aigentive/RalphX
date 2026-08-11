@@ -7,6 +7,7 @@ pub async fn edit_plan_artifact(
 ) -> Result<Json<ArtifactResponse>, HttpError> {
     let input_artifact_id = req.artifact_id.clone();
     let caller_session_id = resolve_caller_session_id(&headers, req.caller_session_id.as_deref());
+    let mutation_authority = resolve_artifact_mutation_authority(&headers);
     let edits = req.edits;
 
     if edits.is_empty() {
@@ -35,10 +36,17 @@ pub async fn edit_plan_artifact(
         .await
         .map_err(map_app_err)?;
 
+    let lookup_id = latest_artifact_id.clone();
     let owning_sessions = state
         .app_state
-        .ideation_session_repo
-        .get_by_plan_artifact_id(&latest_artifact_id)
+        .db
+        .run(move |conn| {
+            let mut sessions = SessionRepo::get_by_plan_artifact_id_sync(conn, &lookup_id)?;
+            sessions.extend(SessionRepo::get_by_plan_blueprint_artifact_id_sync(
+                conn, &lookup_id,
+            )?);
+            Ok(sessions)
+        })
         .await
         .map_err(map_app_err)?;
 
@@ -50,8 +58,15 @@ pub async fn edit_plan_artifact(
     )
     .await
     .map_err(map_app_err)?;
+    let transaction_authority = mutation_authority.clone();
 
-    let (created, old_artifact_id_str, sessions, linked_proposal_ids, verification_reset) = state
+    let (
+        created,
+        old_artifact_id_str,
+        sessions,
+        linked_proposal_ids,
+        verification_reset,
+    ) = state
         .app_state
         .db
         .run_transaction(move |conn| {
@@ -59,7 +74,11 @@ pub async fn edit_plan_artifact(
             let old_artifact = ArtifactRepo::get_by_id_sync(conn, &old_id)?
                 .ok_or_else(|| AppError::NotFound(format!("Artifact {old_id} not found")))?;
 
-            let owning_sessions = SessionRepo::get_by_plan_artifact_id_sync(conn, &old_id)?;
+            let mut owning_sessions = SessionRepo::get_by_plan_artifact_id_sync(conn, &old_id)?;
+            owning_sessions.extend(SessionRepo::get_by_plan_blueprint_artifact_id_sync(
+                conn,
+                &old_id,
+            )?);
             if let Some(session) = owning_sessions.first() {
                 crate::http_server::helpers::assert_session_mutable(session)?;
             }
@@ -67,7 +86,9 @@ pub async fn edit_plan_artifact(
             if owning_sessions.is_empty() {
                 let inherited =
                     SessionRepo::get_by_inherited_plan_artifact_id_sync(conn, &old_id)?;
-                if !inherited.is_empty() {
+                let inherited_blueprints =
+                    SessionRepo::get_by_inherited_plan_blueprint_artifact_id_sync(conn, &old_id)?;
+                if !inherited.is_empty() || !inherited_blueprints.is_empty() {
                     return Err(AppError::Validation(
                         "Cannot edit inherited plan. Use create_plan_artifact to create a session-specific plan.".to_string(),
                     ));
@@ -99,7 +120,12 @@ pub async fn edit_plan_artifact(
                 )));
             }
 
-            finalize_plan_update(conn, &old_artifact, new_content)
+            finalize_plan_update(
+                conn,
+                &old_artifact,
+                new_content,
+                transaction_authority.as_ref(),
+            )
         })
         .await
         .map_err(|e| {
@@ -107,18 +133,28 @@ pub async fn edit_plan_artifact(
             map_app_err(e)
         })?;
 
-    if let Some(app_handle) = &state.app_state.app_handle {
-        emit_plan_update_events(
-            app_handle,
-            &created,
-            &old_artifact_id_str,
-            &sessions,
-            linked_proposal_ids,
-            verification_reset,
-        );
-    }
-
+    emit_plan_update_events(
+        &state,
+        &created,
+        &old_artifact_id_str,
+        &sessions,
+        linked_proposal_ids,
+        verification_reset,
+    );
+    reconcile_plan_notifications(&state, &created, &sessions, mutation_authority.as_ref()).await;
     let mut response = ArtifactResponse::from(created);
+    response.artifact_role = sessions.first().map(|session| {
+        if session
+            .plan_blueprint_artifact_id
+            .as_ref()
+            .map(|id| id.as_str())
+            == Some(old_artifact_id_str.as_str())
+        {
+            "blueprint".to_string()
+        } else {
+            "overview".to_string()
+        }
+    });
     response.previous_artifact_id = Some(old_artifact_id_str);
     response.session_id = sessions.first().map(|s| s.id.to_string());
     if sessions

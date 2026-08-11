@@ -35,6 +35,16 @@ pub trait ExternalEventsRepository: Send + Sync {
         payload: &str,
     ) -> AppResult<i64>;
 
+    /// Atomically insert one event for an execution attempt. Returns `true` only
+    /// for the caller that inserted the first row for this event/project/run.
+    async fn insert_event_once_for_attempt(
+        &self,
+        event_type: &str,
+        project_id: &str,
+        agent_run_id: &str,
+        payload: &str,
+    ) -> AppResult<bool>;
+
     /// Return events for the given project IDs where id > cursor, ordered ASC, up to limit rows.
     async fn get_events_after_cursor(
         &self,

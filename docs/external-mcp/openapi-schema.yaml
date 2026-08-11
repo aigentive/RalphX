@@ -367,19 +367,29 @@ components:
           type: string
         status:
           type: string
-          enum: [pending, running, converged, failed]
-        round:
-          type: integer
-          description: Current adversarial debate round (1-based)
-        gaps_remaining:
-          type: integer
-          description: Number of unresolved CRITICAL/HIGH/MEDIUM gaps
-        summary:
+          enum: [unverified, queued, verifying, verified, failed, cancelled]
+        in_progress:
+          type: boolean
+        plan_artifact_id:
           type: string
-          description: Human-readable convergence summary
-        updated_at:
+          nullable: true
+        verified_plan_artifact_id:
+          type: string
+          nullable: true
+        agent_run_id:
+          type: string
+          nullable: true
+        started_at:
           type: string
           format: date-time
+          nullable: true
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+        error:
+          type: string
+          nullable: true
 
     TaskStep:
       type: object
@@ -954,14 +964,12 @@ paths:
   /mcp#v1_trigger_plan_verification:
     post:
       operationId: v1_trigger_plan_verification
-      summary: Trigger automated adversarial plan verification for a session
+      summary: Queue a model-native Verify Plan turn for a session
       description: |
-        Starts the adversarial debate loop on the session's current plan artifact.
-        The verification runs asynchronously — poll v1_get_plan_verification to
-        check convergence status.
-
-        Verification runs multiple critic rounds until all CRITICAL/HIGH/MEDIUM
-        gaps are resolved (zero_blocking convergence). LOW gaps may remain.
+        Queues a visible review turn in the session's planning conversation. The
+        active model selects useful review lenses, may revise the linked plan, and
+        records proof only for the exact final artifact. Poll
+        v1_get_plan_verification for queued/running/verified status.
       requestBody:
         required: true
         content:
@@ -972,7 +980,7 @@ paths:
                 session_id: "sess-xyz789"
       responses:
         "200":
-          description: Verification triggered
+          description: Verification request outcome
           content:
             application/json:
               schema:
@@ -980,22 +988,26 @@ paths:
                 properties:
                   session_id:
                     type: string
-                  triggered:
-                    type: boolean
+                  status:
+                    type: string
+                    enum: [queued, already_queued, already_running, already_verified, no_plan]
+                required: [session_id, status]
 
   /mcp#v1_get_plan_verification:
     post:
       operationId: v1_get_plan_verification
       summary: Get plan verification status for a session
       description: |
-        Returns the current verification state including round number, remaining gaps,
-        and convergence status. Poll after calling v1_trigger_plan_verification.
+        Returns exact-artifact proof and the authoritative action-run state. Poll
+        after calling v1_trigger_plan_verification.
 
         Status values:
-        - pending: not yet started
-        - running: critic rounds in progress
-        - converged: all CRITICAL/HIGH/MEDIUM gaps resolved
-        - failed: verification process errored
+        - unverified: the current artifact has no matching proof
+        - queued: the Verify Plan turn is waiting to run
+        - verifying: the Verify Plan turn is running
+        - verified: proof matches the current artifact id
+        - failed: the authoritative turn failed
+        - cancelled: the authoritative turn was cancelled
       requestBody:
         required: true
         content:

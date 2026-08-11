@@ -7,30 +7,27 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use crate::application::git_service::GitService;
+use crate::application::task_context_service::resolve_task_blueprint_artifact_id;
 use crate::application::{AppState, CreateProposalOptions, UpdateProposalOptions, UpdateSource};
 use crate::commands::ideation_commands::{
-    apply_proposals_core, is_local_proposal, ApplyProposalsInput, TaskProposalResponse,
+    apply_pending_proposals_core, apply_proposals_core, is_local_proposal, ApplyProposalsInput,
+    TaskProposalResponse,
 };
 use crate::domain::entities::{
-    AcceptanceStatus, Artifact, ArtifactContent, ArtifactSummary, ArtifactType, Complexity,
-    IdeationSession, IdeationSessionId, IdeationSessionStatus, InternalStatus, Priority,
-    ProposalCategory, ScopeDriftStatus, TaskContext, TaskId, TaskProposal, TaskProposalId,
-    ValidationCacheData, ValidationCacheMetadata, ValidationCommandCategory,
-    ValidationCommandStatus, ValidationRunStatus,
+    AcceptanceStatus, Artifact, ArtifactContent, ArtifactSummary, ArtifactType,
+    AutomationRunStatus, AutomationStatus, Complexity, IdeationSession, IdeationSessionId,
+    IdeationSessionStatus, InternalStatus, Priority, ProposalCategory, ScopeDriftStatus,
+    TaskContext, TaskId, TaskProposal, TaskProposalId, ValidationCacheData,
+    ValidationCacheMetadata, ValidationCommandCategory, ValidationRunStatus,
 };
 use crate::domain::review::{compute_out_of_scope_blocker_fingerprint, compute_scope_drift};
-use crate::domain::services::{
-    check_proposal_verification_gate, check_verification_gate, resolve_effective_gate_policy,
-    ProposalOperation,
-};
+use crate::domain::services::resolve_effective_gate_policy;
 use crate::error::{AppError, AppResult};
-use crate::infrastructure::sqlite::sqlite_ideation_settings_repo::get_settings_sync;
 use crate::infrastructure::sqlite::{
     SqliteArtifactRepository as ArtifactRepo, SqliteIdeationSessionRepository as SessionRepo,
     SqliteTaskProposalRepository as ProposalRepo,
 };
 use ralphx_domain::repositories::IdeationSessionRepository;
-use tauri::Emitter;
 
 // ============================================================================
 // Parsing Functions
@@ -192,15 +189,14 @@ pub fn assert_session_mutable(session: &IdeationSession) -> AppResult<()> {
 /// contexts don't fail. Payload matches `DependencyEventSchema` in `useIdeationEvents.ts`:
 /// `{ proposalId: String, dependsOnId: String }`.
 pub fn emit_dependency_added(state: &AppState, proposal_id: &str, depends_on_id: &str) {
-    if let Some(app_handle) = &state.app_handle {
-        let _ = app_handle.emit(
-            "dependency:added",
-            serde_json::json!({
-                "proposalId": proposal_id,
-                "dependsOnId": depends_on_id
-            }),
-        );
-    }
+    crate::http_server::emit_app_event(
+        state,
+        "dependency:added",
+        serde_json::json!({
+            "proposalId": proposal_id,
+            "dependsOnId": depends_on_id
+        }),
+    );
 }
 
 // ============================================================================
@@ -272,34 +268,6 @@ pub async fn create_proposal_impl(
                 ));
             }
 
-            // Verification gate: block creation if plan hasn't been verified (when enabled)
-            {
-                let settings = get_settings_sync(conn)?;
-                let policy = resolve_effective_gate_policy(&settings, session.origin);
-                let parent_status = if session.plan_artifact_id.is_none()
-                    && session.inherited_plan_artifact_id.is_some()
-                {
-                    session
-                        .parent_session_id
-                        .as_ref()
-                        .and_then(|pid| {
-                            SessionRepo::get_by_id_sync(conn, pid.as_str())
-                                .ok()
-                                .flatten()
-                        })
-                        .map(|p| p.verification_status)
-                } else {
-                    None
-                };
-                check_proposal_verification_gate(
-                    &session,
-                    &policy,
-                    parent_status,
-                    ProposalOperation::Create,
-                )
-                .map_err(AppError::from)?;
-            }
-
             // Enforce plan artifact requirement
             let plan_artifact_id = session.plan_artifact_id.ok_or_else(|| {
                 AppError::Validation(
@@ -314,6 +282,23 @@ pub async fn create_proposal_impl(
                 .ok_or_else(|| {
                     AppError::NotFound(format!("Plan artifact {} not found", plan_artifact_id))
                 })?;
+            let blueprint = match session.plan_blueprint_artifact_id.clone() {
+                Some(blueprint_id) => Some(
+                    ArtifactRepo::get_by_id_sync(conn, blueprint_id.as_str())?.ok_or_else(|| {
+                        AppError::NotFound(format!(
+                            "Plan blueprint artifact {} not found",
+                            blueprint_id
+                        ))
+                    })?,
+                ),
+                None if session.plan_contract_version >= 2 => {
+                    return Err(AppError::Validation(
+                        "Proposals require a complete plan overview and implementation blueprint"
+                            .to_string(),
+                    ));
+                }
+                None => None,
+            };
 
             // Stale plan guard — ensure agent has read the current plan version
             if let Some(last_read) = session.plan_version_last_read {
@@ -326,6 +311,21 @@ pub async fn create_proposal_impl(
                 }
             }
             // NULL plan_version_last_read → legacy session, no gate (backward compat)
+            if let Some(blueprint) = blueprint.as_ref() {
+                let last_read = session.blueprint_version_last_read.ok_or_else(|| {
+                    AppError::Validation(
+                        "Call get_session_plan to read the current implementation blueprint before creating proposals"
+                            .to_string(),
+                    )
+                })?;
+                if blueprint.metadata.version as i32 > last_read {
+                    return Err(AppError::Validation(format!(
+                        "Blueprint has been updated since you last read it (current: v{}, last read: v{}). \
+                         Call get_session_plan before creating proposals.",
+                        blueprint.metadata.version, last_read
+                    )));
+                }
+            }
 
             // Count proposals for sort_order (within same lock — no TOCTOU)
             let count = ProposalRepo::count_by_session_sync(conn, session_id.as_str())?;
@@ -344,6 +344,10 @@ pub async fn create_proposal_impl(
             proposal.sort_order = count as i32;
             proposal.plan_version_at_creation = Some(artifact.metadata.version);
             proposal.plan_artifact_id = Some(plan_artifact_id);
+            proposal.blueprint_artifact_id =
+                blueprint.as_ref().map(|artifact| artifact.id.clone());
+            proposal.blueprint_version_at_creation =
+                blueprint.as_ref().map(|artifact| artifact.metadata.version);
             if let Some(complexity_str) = options.estimated_complexity {
                 if let Ok(c) = complexity_str.parse::<Complexity>() {
                     proposal.estimated_complexity = c;
@@ -359,13 +363,12 @@ pub async fn create_proposal_impl(
         .await?;
 
     // Emit event after transaction (acceptable crash-consistency gap)
-    if let Some(app_handle) = &state.app_handle {
-        let response = TaskProposalResponse::from(proposal.clone());
-        let _ = app_handle.emit(
-            "proposal:created",
-            serde_json::json!({ "proposal": response }),
-        );
-    }
+    let response = TaskProposalResponse::from(proposal.clone());
+    crate::http_server::emit_app_event(
+        state,
+        "proposal:created",
+        serde_json::json!({ "proposal": response }),
+    );
 
     // Process depends_on deps in separate db.run() calls (AD5: deadlock avoidance)
     // Each dep: validate session membership + cycle check + insert + emit
@@ -536,34 +539,6 @@ pub async fn update_proposal_impl(
                 )?;
             assert_session_mutable(&session)?;
 
-            // Verification gate: block update if verification in progress or needs revision
-            {
-                let settings = get_settings_sync(conn)?;
-                let policy = resolve_effective_gate_policy(&settings, session.origin);
-                let parent_status = if session.plan_artifact_id.is_none()
-                    && session.inherited_plan_artifact_id.is_some()
-                {
-                    session
-                        .parent_session_id
-                        .as_ref()
-                        .and_then(|pid| {
-                            SessionRepo::get_by_id_sync(conn, pid.as_str())
-                                .ok()
-                                .flatten()
-                        })
-                        .map(|p| p.verification_status)
-                } else {
-                    None
-                };
-                check_proposal_verification_gate(
-                    &session,
-                    &policy,
-                    parent_status,
-                    ProposalOperation::Update,
-                )
-                .map_err(AppError::from)?;
-            }
-
             let is_ipc = matches!(options.source, UpdateSource::TauriIpc);
 
             // Apply updates; track user_modified per field when source is TauriIpc
@@ -631,13 +606,12 @@ pub async fn update_proposal_impl(
         .await?;
 
     // Emit event after transaction (acceptable crash-consistency gap)
-    if let Some(app_handle) = &state.app_handle {
-        let response = TaskProposalResponse::from(updated.clone());
-        let _ = app_handle.emit(
-            "proposal:updated",
-            serde_json::json!({ "proposal": response }),
-        );
-    }
+    let response = TaskProposalResponse::from(updated.clone());
+    crate::http_server::emit_app_event(
+        state,
+        "proposal:updated",
+        serde_json::json!({ "proposal": response }),
+    );
 
     // Process add_depends_on and add_blocks deps in separate db.run() calls (AD5: deadlock avoidance)
     let mut dep_errors: Vec<String> = Vec::new();
@@ -869,34 +843,6 @@ pub async fn archive_proposal_impl(
                 .ok_or_else(|| AppError::NotFound(format!("Session {} not found", session_id)))?;
             assert_session_mutable(&session)?;
 
-            // Verification gate: block delete if verification in progress or needs revision
-            {
-                let settings = get_settings_sync(conn)?;
-                let policy = resolve_effective_gate_policy(&settings, session.origin);
-                let parent_status = if session.plan_artifact_id.is_none()
-                    && session.inherited_plan_artifact_id.is_some()
-                {
-                    session
-                        .parent_session_id
-                        .as_ref()
-                        .and_then(|pid| {
-                            SessionRepo::get_by_id_sync(conn, pid.as_str())
-                                .ok()
-                                .flatten()
-                        })
-                        .map(|p| p.verification_status)
-                } else {
-                    None
-                };
-                check_proposal_verification_gate(
-                    &session,
-                    &policy,
-                    parent_status,
-                    ProposalOperation::Delete,
-                )
-                .map_err(AppError::from)?;
-            }
-
             // Archive proposal scoped to session (prevents cross-session deletions)
             let proposal_id_typed = TaskProposalId::from_string(pid.clone());
             conn.execute(
@@ -911,12 +857,11 @@ pub async fn archive_proposal_impl(
         .await?;
 
     // Emit event after transaction (acceptable crash-consistency gap)
-    if let Some(app_handle) = &state.app_handle {
-        let _ = app_handle.emit(
-            "proposal:archived",
-            serde_json::json!({ "proposalId": proposal_id.as_str() }),
-        );
-    }
+    crate::http_server::emit_app_event(
+        state,
+        "proposal:archived",
+        serde_json::json!({ "proposalId": proposal_id.as_str() }),
+    );
 
     Ok(session_id)
 }
@@ -943,6 +888,17 @@ pub async fn finalize_proposals_impl(
         .get_by_id(&session_id_typed)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Session {} not found", session_id)))?;
+
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_task_pipeline_session_id(&session_id_typed)
+        .await?;
+    if workspace.is_some() {
+        return Err(AppError::Validation(
+            "This supervised task pipeline is waiting for the user to choose Start Tasks"
+                .to_string(),
+        ));
+    }
 
     if session.status != IdeationSessionStatus::Active {
         return Err(AppError::Validation(format!(
@@ -1009,6 +965,9 @@ pub async fn finalize_proposals_impl(
         )));
     }
 
+    let automation_bridge_authorized =
+        automation_bridge_finalize_authorized(state, &session).await?;
+
     // ─── Acceptance Gate ───────────────────────────────────────────────────────
     // Resolve effective policy from (settings, session.origin) — external overrides
     // may change whether require_accept_for_finalize applies for this session.
@@ -1025,26 +984,21 @@ pub async fn finalize_proposals_impl(
                 ))
             })?;
         let effective_policy = resolve_effective_gate_policy(&ideation_settings, session.origin);
-        if let Err(e) = check_verification_gate(&session, &effective_policy) {
-            return Err(AppError::Validation(e.to_string()));
-        }
-        if effective_policy.require_accept_for_finalize {
+        if effective_policy.require_accept_for_finalize && !automation_bridge_authorized {
             // Set acceptance_status to Pending (CAS: only if currently None)
             state
                 .ideation_session_repo
                 .update_acceptance_status(&session_id_typed, None, Some(AcceptanceStatus::Pending))
                 .await?;
 
-            // Emit Tauri event to notify frontend
-            if let Some(ref handle) = state.app_handle {
-                let _ = handle.emit(
-                    "ideation:finalize_pending_confirmation",
-                    serde_json::json!({
-                        "sessionId": session_id,
-                        "sessionTitle": session.title,
-                    }),
-                );
-            }
+            crate::http_server::emit_app_event(
+                state,
+                "ideation:finalize_pending_confirmation",
+                serde_json::json!({
+                    "sessionId": session_id,
+                    "sessionTitle": session.title,
+                }),
+            );
 
             return Ok(crate::http_server::types::FinalizeProposalsResponse {
                 created_task_ids: vec![],
@@ -1065,35 +1019,9 @@ pub async fn finalize_proposals_impl(
     }
     // ─── End Acceptance Gate ────────────────────────────────────────────────────
 
-    // Short-circuit if no local proposals — all have been migrated to foreign projects
-    if count_local == 0 {
-        // All proposals are foreign (migrated) — transition session to Accepted
-        state
-            .ideation_session_repo
-            .update_status(&session_id_typed, IdeationSessionStatus::Accepted)
-            .await?;
-        return Ok(crate::http_server::types::FinalizeProposalsResponse {
-            created_task_ids: vec![],
-            dependencies_created: 0,
-            tasks_created: 0,
-            message: Some(format!(
-                "No local proposals to finalize ({} foreign skipped)",
-                count_foreign
-            )),
-            session_status: "accepted".to_string(),
-            execution_plan_id: None,
-            warnings: vec![],
-            project_id: session.project_id.to_string(),
-            skipped_foreign_count: count_foreign,
-            any_ready_tasks: false,
-            status: "success".to_string(),
-            session_title: session.title.clone(),
-            project_name: Some(project.name.clone()),
-        });
-    }
-
     let proposal_ids: Vec<String> = local_proposals
         .into_iter()
+        .chain(foreign_proposals.into_iter())
         .map(|p| p.id.as_str().to_string())
         .collect();
 
@@ -1129,6 +1057,67 @@ pub async fn finalize_proposals_impl(
     })
 }
 
+pub(crate) async fn automation_bridge_finalize_authorized(
+    state: &AppState,
+    session: &IdeationSession,
+) -> AppResult<bool> {
+    if !session.has_exact_plan_verification() {
+        return Ok(false);
+    }
+    let Some(bundle) = session.plan_artifact_bundle() else {
+        return Ok(false);
+    };
+    let Some(workspace) = state
+        .agent_conversation_workspace_repo
+        .get_by_linked_ideation_session_id(&session.id)
+        .await?
+    else {
+        return Ok(false);
+    };
+    let Some(conversation) = state
+        .chat_conversation_repo
+        .get_by_id(&workspace.conversation_id)
+        .await?
+    else {
+        return Ok(false);
+    };
+    let Some(run_id) = conversation.automation_run_id.as_ref() else {
+        return Ok(false);
+    };
+    let Some(run) = state.automation_run_repo.get_by_id(run_id).await? else {
+        return Ok(false);
+    };
+    if run.status != AutomationRunStatus::Running
+        || run.conversation_id.as_ref() != Some(&conversation.id)
+    {
+        return Ok(false);
+    }
+    let Some(latest) = state
+        .automation_run_repo
+        .latest_for_automation(&run.automation_id)
+        .await?
+    else {
+        return Ok(false);
+    };
+    if latest.id != run.id {
+        return Ok(false);
+    }
+    let Some(automation) = state.automation_repo.get_by_id(&run.automation_id).await? else {
+        return Ok(false);
+    };
+    if automation.status != AutomationStatus::Active
+        || automation.run_mode != crate::application::automation::service::IDEATION_BRIDGE_RUN_MODE
+        || automation.completion_signal
+            != crate::application::automation::service::IDEATION_FINALIZED_COMPLETION_SIGNAL
+    {
+        return Ok(false);
+    }
+    let Some(approval) = state.plan_approval_repo.get_by_session(&session.id).await? else {
+        return Ok(false);
+    };
+    Ok(approval.matches_bundle(&bundle))
+}
+
 /// Apply proposals core for an already-validated session.
 ///
 /// Used by `accept_finalize` to execute the finalization after user confirmation.
@@ -1137,23 +1126,17 @@ pub async fn finalize_proposals_impl(
 /// # Errors
 /// - `AppError::NotFound` if session or project not found
 /// - Errors from `apply_proposals_core`
-pub async fn apply_proposals_core_for_session(
+pub async fn apply_pending_proposals_core_for_session(
     state: &AppState,
     session_id: &str,
 ) -> AppResult<crate::commands::ideation_commands::ApplyProposalsResult> {
     let session_id_typed = IdeationSessionId::from_string(session_id.to_string());
 
-    let session = state
+    let _session = state
         .ideation_session_repo
         .get_by_id(&session_id_typed)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Session {} not found", session_id)))?;
-
-    let project = state
-        .project_repo
-        .get_by_id(&session.project_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("Project {} not found", session.project_id)))?;
 
     let all_proposals = state
         .task_proposal_repo
@@ -1164,12 +1147,8 @@ pub async fn apply_proposals_core_for_session(
         .filter(|p| p.archived_at.is_none())
         .collect();
 
-    let project_dir = std::fs::canonicalize(&project.working_directory)
-        .unwrap_or_else(|_| PathBuf::from(&project.working_directory));
-
     let proposal_ids: Vec<String> = active_proposals
         .into_iter()
-        .filter(|p| is_local_proposal(p, &project_dir))
         .map(|p| p.id.as_str().to_string())
         .collect();
 
@@ -1180,7 +1159,7 @@ pub async fn apply_proposals_core_for_session(
         base_branch_override: None,
     };
 
-    apply_proposals_core(state, input).await
+    apply_pending_proposals_core(state, input).await
 }
 
 // ============================================================================
@@ -1205,35 +1184,36 @@ pub async fn get_task_context_impl(state: &AppState, task_id: &TaskId) -> AppRes
         .ok_or_else(|| AppError::NotFound(format!("Task not found: {}", task_id)))?;
 
     // 2. If source_proposal_id present, fetch proposal and create TaskProposalSummary
-    let source_proposal = if let Some(proposal_id) = &task.source_proposal_id {
-        match state.task_proposal_repo.get_by_id(proposal_id).await? {
-            Some(proposal) => {
-                // Parse acceptance_criteria from JSON string to Vec<String>
-                let acceptance_criteria: Vec<String> = proposal
-                    .acceptance_criteria
-                    .as_ref()
-                    .and_then(|json_str| serde_json::from_str(json_str).ok())
-                    .unwrap_or_default();
-
-                Some(crate::domain::entities::TaskProposalSummary {
-                    id: proposal.id.clone(),
-                    title: proposal.title.clone(),
-                    description: proposal.description.clone().unwrap_or_default(),
-                    acceptance_criteria,
-                    implementation_notes: None,
-                    plan_version_at_creation: proposal.plan_version_at_creation,
-                    priority_score: proposal.priority_score,
-                    affected_paths: proposal
-                        .affected_paths
-                        .as_ref()
-                        .and_then(|json_str| serde_json::from_str(json_str).ok())
-                        .unwrap_or_default(),
-                })
-            }
-            None => None,
-        }
+    let source_proposal_entity = if let Some(proposal_id) = &task.source_proposal_id {
+        state.task_proposal_repo.get_by_id(proposal_id).await?
     } else {
         None
+    };
+    let source_proposal = match source_proposal_entity.as_ref() {
+        Some(proposal) => {
+            // Parse acceptance_criteria from JSON string to Vec<String>
+            let acceptance_criteria: Vec<String> = proposal
+                .acceptance_criteria
+                .as_ref()
+                .and_then(|json_str| serde_json::from_str(json_str).ok())
+                .unwrap_or_default();
+
+            Some(crate::domain::entities::TaskProposalSummary {
+                id: proposal.id.clone(),
+                title: proposal.title.clone(),
+                description: proposal.description.clone().unwrap_or_default(),
+                acceptance_criteria,
+                implementation_notes: None,
+                plan_version_at_creation: proposal.plan_version_at_creation,
+                priority_score: proposal.priority_score,
+                affected_paths: proposal
+                    .affected_paths
+                    .as_ref()
+                    .and_then(|json_str| serde_json::from_str(json_str).ok())
+                    .unwrap_or_default(),
+            })
+        }
+        None => None,
     };
 
     // 3. If plan_artifact_id present, fetch artifact and create ArtifactSummary
@@ -1251,6 +1231,29 @@ pub async fn get_task_context_impl(state: &AppState, task_id: &TaskId) -> AppRes
             }
             None => None,
         }
+    } else {
+        None
+    };
+
+    let blueprint_id = resolve_task_blueprint_artifact_id(&task, source_proposal_entity.as_ref())?;
+    let blueprint_artifact = if let Some(blueprint_id) = blueprint_id {
+        let blueprint = state
+            .artifact_repo
+            .get_by_id(&blueprint_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::NotFound(format!(
+                    "Task immutable Blueprint artifact was not found: {}",
+                    blueprint_id.as_str()
+                ))
+            })?;
+        Some(ArtifactSummary {
+            content_preview: create_artifact_preview(&blueprint),
+            id: blueprint.id,
+            title: blueprint.name,
+            artifact_type: blueprint.artifact_type,
+            current_version: blueprint.metadata.version,
+        })
     } else {
         None
     };
@@ -1384,6 +1387,12 @@ pub async fn get_task_context_impl(state: &AppState, task_id: &TaskId) -> AppRes
             task.title
         ));
     }
+    if blueprint_artifact.is_some() {
+        context_hints.push(
+            "Implementation Blueprint available - use get_artifact to read the immutable task-specific execution authority"
+                .to_string(),
+        );
+    }
     if !related_artifacts.is_empty() {
         context_hints.push(format!(
             "{} related artifact{} found - may contain useful context",
@@ -1442,6 +1451,7 @@ pub async fn get_task_context_impl(state: &AppState, task_id: &TaskId) -> AppRes
         task,
         source_proposal,
         plan_artifact,
+        blueprint_artifact,
         related_artifacts,
         steps,
         step_progress,
@@ -1628,7 +1638,7 @@ async fn compute_first_class_validation_cache(
 ) -> Option<ValidationCacheData> {
     let latest = state
         .validation_run_repo
-        .latest_run_with_results_for_task(&task.id)
+        .latest_non_baseline_run_with_results_for_task(&task.id)
         .await
         .ok()
         .flatten()?;
@@ -1662,7 +1672,7 @@ async fn compute_first_class_validation_cache(
     let tests_ran = !test_commands.is_empty();
     let tests_passed = test_commands
         .iter()
-        .all(|command| command.status == ValidationCommandStatus::Passed);
+        .all(|command| command.status.is_success_like());
     let captured_at = latest.run.completed_at.unwrap_or(latest.run.started_at);
     let passed_count = latest
         .commands

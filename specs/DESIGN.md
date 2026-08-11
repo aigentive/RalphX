@@ -2,6 +2,15 @@
 
 The definitive design guide for RalphX. All UI work must follow these specifications.
 
+## Current information architecture
+
+The live shell has eight root views: **Agents**, **Automations**, **Ticketing**,
+**GitHub**, **Granola**, **Extensibility**, **Activity**, and **Insights**.
+Planning and task surfaces are artifacts inside Agents: Plan, Ideation,
+Tasks, Graph, and Kanban. Legacy standalone roots (`ideation`, `graph`,
+`kanban`, and `task_detail`) are compatibility inputs only and must not be
+added to new UI state or navigation.
+
 ---
 
 ## 1. Design Philosophy
@@ -611,8 +620,8 @@ Each page has its own detailed design specification. See the individual files fo
 
 | Page | File | Status |
 |------|------|--------|
-| Kanban Board | [kanban-board.md](design/pages/kanban-board.md) | Complete |
-| Ideation View | [ideation-view.md](design/pages/ideation-view.md) | Complete |
+| Agents Tasks artifact — Kanban | [kanban-board.md](design/pages/kanban-board.md) | Complete |
+| Agents Plan/Ideation artifacts | [ideation-view.md](design/pages/ideation-view.md) | Complete |
 | Settings View | [settings-view.md](design/pages/settings-view.md) | Complete |
 | Activity Stream | [activity-stream.md](design/pages/activity-stream.md) | Complete |
 | Extensibility View | [extensibility-view.md](design/pages/extensibility-view.md) | Complete |
@@ -755,10 +764,10 @@ This checklist tracks the implementation of designs from Phase 13 using shadcn/u
 - [ ] **Modal Standards** - Implement consistent modal patterns (sizes, animations, accessibility)
 - [ ] **Project Dialogs** - Create/edit project dialogs with form validation
 
-### Ideation View
-- [ ] **IdeationView** - Two-panel layout with resizable divider
-- [ ] **ConversationPanel** - Message bubbles, typing indicator, chat input
-- [ ] **ProposalsPanel** - Proposal cards, selection, drag reorder, apply dropdown
+### Agents Planning Artifacts
+- [ ] **Plan/Ideation artifacts** - Conversation-scoped planning surfaces inside Agents
+- [ ] **Agents conversation** - Message timeline, typing indicator, and composer
+- [ ] **Proposals artifact** - Proposal cards, selection, ordering, and apply actions
 
 ### Reviews & QA
 - [ ] **Reviews Panel** - Review cards, status indicators, diff integration

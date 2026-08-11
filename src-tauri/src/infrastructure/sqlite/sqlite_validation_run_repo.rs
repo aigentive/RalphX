@@ -52,7 +52,7 @@ impl SqliteValidationRunRepository {
     }
 
     fn row_to_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<ValidationRun> {
-        let started_at: String = row.get(12)?;
+        let started_at: String = row.get(15)?;
         Ok(ValidationRun {
             id: row.get(0)?,
             task_id: TaskId::from_string(row.get(1)?),
@@ -64,11 +64,14 @@ impl SqliteValidationRunRepository {
             mode: ValidationRunMode::parse(row.get::<_, String>(7)?.as_str()),
             policy_enabled: row.get::<_, i64>(8)? != 0,
             head_sha: row.get(9)?,
-            base_ref: row.get(10)?,
-            analysis_fingerprint: row.get(11)?,
-            status_episode_entered_at: Self::parse_datetime(row.get(13)?),
+            start_content_fingerprint: row.get(10)?,
+            validated_content_fingerprint: row.get(11)?,
+            promoted_commit_sha: row.get(12)?,
+            base_ref: row.get(13)?,
+            analysis_fingerprint: row.get(14)?,
+            status_episode_entered_at: Self::parse_datetime(row.get(16)?),
             started_at: Self::parse_datetime_required(started_at),
-            completed_at: Self::parse_datetime(row.get(14)?),
+            completed_at: Self::parse_datetime(row.get(17)?),
         })
     }
 
@@ -110,7 +113,8 @@ impl SqliteValidationRunRepository {
 
 const SELECT_RUN: &str = "SELECT
     id, task_id, project_id, purpose, context_type, requested_by_agent, status, mode,
-    policy_enabled, head_sha, base_ref, analysis_fingerprint, started_at,
+    policy_enabled, head_sha, start_content_fingerprint, validated_content_fingerprint,
+    promoted_commit_sha, base_ref, analysis_fingerprint, started_at,
     status_episode_entered_at, completed_at
 FROM validation_runs";
 
@@ -131,9 +135,10 @@ impl ValidationRunRepository for SqliteValidationRunRepository {
                 conn.execute(
                     "INSERT INTO validation_runs (
                         id, task_id, project_id, purpose, context_type, requested_by_agent,
-                        status, mode, policy_enabled, head_sha, base_ref, analysis_fingerprint,
-                        status_episode_entered_at, started_at, completed_at
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                        status, mode, policy_enabled, head_sha, start_content_fingerprint,
+                        validated_content_fingerprint, promoted_commit_sha, base_ref,
+                        analysis_fingerprint, status_episode_entered_at, started_at, completed_at
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
                     rusqlite::params![
                         run.id,
                         run.task_id.as_str(),
@@ -145,6 +150,9 @@ impl ValidationRunRepository for SqliteValidationRunRepository {
                         run.mode.as_str(),
                         run.policy_enabled as i64,
                         run.head_sha,
+                        run.start_content_fingerprint,
+                        run.validated_content_fingerprint,
+                        run.promoted_commit_sha,
                         run.base_ref,
                         run.analysis_fingerprint,
                         run.status_episode_entered_at
@@ -178,6 +186,59 @@ impl ValidationRunRepository for SqliteValidationRunRepository {
                 )
                 .map_err(|e| AppError::Database(e.to_string()))?;
                 Ok(())
+            })
+            .await
+    }
+
+    async fn record_validated_content_fingerprint(
+        &self,
+        run_id: &str,
+        fingerprint: Option<String>,
+    ) -> AppResult<()> {
+        let run_id = run_id.to_string();
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "UPDATE validation_runs SET validated_content_fingerprint = ?1 WHERE id = ?2",
+                    rusqlite::params![fingerprint, run_id],
+                )
+                .map_err(|e| AppError::Database(e.to_string()))?;
+                Ok(())
+            })
+            .await
+    }
+
+    async fn promote_run_to_commit(&self, run_id: &str, commit_sha: &str) -> AppResult<()> {
+        let run_id = run_id.to_string();
+        let commit_sha = commit_sha.to_string();
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "UPDATE validation_runs SET promoted_commit_sha = ?1 WHERE id = ?2",
+                    rusqlite::params![commit_sha, run_id],
+                )
+                .map_err(|e| AppError::Database(e.to_string()))?;
+                Ok(())
+            })
+            .await
+    }
+
+    async fn mark_running_runs_error(&self, completed_at: DateTime<Utc>) -> AppResult<u64> {
+        self.db
+            .run(move |conn| {
+                let rows = conn
+                    .execute(
+                        "UPDATE validation_runs
+                         SET status = ?1, completed_at = ?2
+                         WHERE status = ?3",
+                        rusqlite::params![
+                            ValidationRunStatus::Error.as_str(),
+                            Self::format_datetime(&completed_at),
+                            ValidationRunStatus::Running.as_str(),
+                        ],
+                    )
+                    .map_err(|e| AppError::Database(e.to_string()))?;
+                Ok(rows as u64)
             })
             .await
     }
@@ -262,12 +323,45 @@ impl ValidationRunRepository for SqliteValidationRunRepository {
         &self,
         task_id: &TaskId,
     ) -> AppResult<Option<ValidationRunWithResults>> {
+        self.latest_run_with_results_for_task_filtered(task_id, false)
+            .await
+    }
+
+    async fn latest_non_baseline_run_with_results_for_task(
+        &self,
+        task_id: &TaskId,
+    ) -> AppResult<Option<ValidationRunWithResults>> {
+        self.latest_run_with_results_for_task_filtered(task_id, true)
+            .await
+    }
+}
+
+impl SqliteValidationRunRepository {
+    async fn latest_run_with_results_for_task_filtered(
+        &self,
+        task_id: &TaskId,
+        exclude_baseline: bool,
+    ) -> AppResult<Option<ValidationRunWithResults>> {
         let task_id = task_id.as_str().to_string();
         self.db
             .run(move |conn| {
-                let sql =
-                    format!("{SELECT_RUN} WHERE task_id = ?1 ORDER BY started_at DESC LIMIT 1");
-                let run = match conn.query_row(&sql, [task_id.as_str()], Self::row_to_run) {
+                let sql = if exclude_baseline {
+                    format!(
+                        "{SELECT_RUN} WHERE task_id = ?1 AND purpose <> ?2 ORDER BY started_at DESC LIMIT 1"
+                    )
+                } else {
+                    format!("{SELECT_RUN} WHERE task_id = ?1 ORDER BY started_at DESC LIMIT 1")
+                };
+                let run = if exclude_baseline {
+                    conn.query_row(
+                        &sql,
+                        rusqlite::params![task_id.as_str(), ValidationPurpose::Baseline.as_str()],
+                        Self::row_to_run,
+                    )
+                } else {
+                    conn.query_row(&sql, [task_id.as_str()], Self::row_to_run)
+                };
+                let run = match run {
                     Ok(run) => run,
                     Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
                     Err(e) => return Err(AppError::Database(e.to_string())),

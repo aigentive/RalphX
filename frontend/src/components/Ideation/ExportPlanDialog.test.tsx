@@ -19,7 +19,9 @@ let mockIsExporting = false;
 vi.mock("@/hooks/useSessionExportImport", () => ({
   useSessionExportImport: () => ({
     exportSession: mockExportSession,
-    get isExporting() { return mockIsExporting; },
+    get isExporting() {
+      return mockIsExporting;
+    },
     importSession: vi.fn(),
     isImporting: false,
   }),
@@ -64,6 +66,22 @@ const inlinePlanArtifact: Artifact = {
   derivedFrom: [],
 };
 
+const inlineBlueprintArtifact: Artifact = {
+  id: "artifact-blueprint-1",
+  type: "specification",
+  name: "My Plan — Implementation Blueprint",
+  content: {
+    type: "inline",
+    text: "# Blueprint Content\n\nDetailed implementation steps.",
+  },
+  metadata: {
+    createdAt: "2026-01-01T00:01:00+00:00",
+    createdBy: "orchestrator",
+    version: 3,
+  },
+  derivedFrom: [],
+};
+
 const fileTypeArtifact: Artifact = {
   id: "artifact-2",
   type: "specification",
@@ -83,7 +101,8 @@ const defaultProps = {
   sessionId: "session-abc",
   sessionTitle: "My Verified Plan",
   verificationStatus: "verified",
-  planArtifact: inlinePlanArtifact,
+  overviewArtifact: inlinePlanArtifact,
+  blueprintArtifact: inlineBlueprintArtifact,
   projectId: "proj-1",
 };
 
@@ -112,15 +131,26 @@ describe("ExportPlanDialog", () => {
 
   it("renders 'Verified (imported)' for imported_verified status", () => {
     render(
-      <ExportPlanDialog {...defaultProps} verificationStatus="imported_verified" />
+      <ExportPlanDialog
+        {...defaultProps}
+        verificationStatus="imported_verified"
+      />,
     );
     expect(screen.getByText("Verified (imported)")).toBeInTheDocument();
   });
 
-  it("renders Download JSON and Download Markdown buttons", () => {
+  it("offers JSON plus overview, blueprint, and complete-bundle Markdown exports", () => {
     render(<ExportPlanDialog {...defaultProps} />);
-    const downloadButtons = screen.getAllByRole("button", { name: /Download/i });
-    expect(downloadButtons).toHaveLength(2);
+    expect(screen.getByRole("button", { name: "Download JSON" })).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: "Download overview" }),
+    ).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: "Download blueprint" }),
+    ).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: "Download complete bundle" }),
+    ).toBeEnabled();
   });
 
   it("renders 'Download JSON' card", () => {
@@ -135,13 +165,25 @@ describe("ExportPlanDialog", () => {
 
   // --- No plan state ---
 
-  it("shows 'No plan content available' when planArtifact is null", () => {
-    render(<ExportPlanDialog {...defaultProps} planArtifact={null} />);
+  it("shows 'No plan content available' when both artifacts are null", () => {
+    render(
+      <ExportPlanDialog
+        {...defaultProps}
+        overviewArtifact={null}
+        blueprintArtifact={null}
+      />,
+    );
     expect(screen.getByText(/No plan content available/i)).toBeInTheDocument();
   });
 
-  it("both buttons are disabled when planArtifact is null", () => {
-    render(<ExportPlanDialog {...defaultProps} planArtifact={null} />);
+  it("all download buttons are disabled when both artifacts are null", () => {
+    render(
+      <ExportPlanDialog
+        {...defaultProps}
+        overviewArtifact={null}
+        blueprintArtifact={null}
+      />,
+    );
     const buttons = screen.getAllByRole("button", { name: /Download/i });
     buttons.forEach((btn) => expect(btn).toBeDisabled());
   });
@@ -149,16 +191,35 @@ describe("ExportPlanDialog", () => {
   // --- File-type artifact ---
 
   it("JSON button is enabled but Markdown button is disabled for file-type artifact", () => {
-    render(<ExportPlanDialog {...defaultProps} planArtifact={fileTypeArtifact} />);
-    const [jsonBtn, mdBtn] = screen.getAllByRole("button", { name: /Download/i });
-    expect(jsonBtn).not.toBeDisabled();
-    expect(mdBtn).toBeDisabled();
+    render(
+      <ExportPlanDialog
+        {...defaultProps}
+        overviewArtifact={fileTypeArtifact}
+        blueprintArtifact={null}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Download JSON" })).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: "Download overview" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Download blueprint" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Download complete bundle" }),
+    ).toBeDisabled();
   });
 
   it("does not show 'No plan content available' for file-type artifact", () => {
-    render(<ExportPlanDialog {...defaultProps} planArtifact={fileTypeArtifact} />);
+    render(
+      <ExportPlanDialog
+        {...defaultProps}
+        overviewArtifact={fileTypeArtifact}
+        blueprintArtifact={null}
+      />,
+    );
     expect(
-      screen.queryByText(/No plan content available/i)
+      screen.queryByText(/No plan content available/i),
     ).not.toBeInTheDocument();
   });
 
@@ -168,18 +229,24 @@ describe("ExportPlanDialog", () => {
     const user = userEvent.setup();
     render(<ExportPlanDialog {...defaultProps} />);
 
-    const [jsonBtn] = screen.getAllByRole("button", { name: /Download/i });
+    const jsonBtn = screen.getByRole("button", { name: "Download JSON" });
     await user.click(jsonBtn);
 
     expect(mockExportSession).toHaveBeenCalledTimes(1);
-    expect(mockExportSession).toHaveBeenCalledWith("session-abc", "proj-1", true);
+    expect(mockExportSession).toHaveBeenCalledWith(
+      "session-abc",
+      "proj-1",
+      true,
+    );
   });
 
   it("JSON button is disabled and shows 'Exporting...' while isExporting is true", () => {
     mockIsExporting = true;
     render(<ExportPlanDialog {...defaultProps} />);
-    const exportingBtn = screen.getAllByRole("button", { name: /Exporting\.\.\./i });
-    expect(exportingBtn[0]).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Download JSON" }),
+    ).toBeDisabled();
+    expect(screen.getByText("Exporting...")).toBeInTheDocument();
   });
 
   // --- Markdown download ---
@@ -190,18 +257,18 @@ describe("ExportPlanDialog", () => {
 
     render(<ExportPlanDialog {...defaultProps} />);
 
-    const [, mdBtn] = screen.getAllByRole("button", { name: /Download/i });
+    const mdBtn = screen.getByRole("button", { name: "Download overview" });
     await user.click(mdBtn);
 
     expect(save).toHaveBeenCalledWith(
       expect.objectContaining({
         filters: [{ name: "Markdown", extensions: ["md"] }],
         defaultPath: "My Verified Plan.md",
-      })
+      }),
     );
     expect(writeTextFile).toHaveBeenCalledWith(
       "/some/path/plan.md",
-      "# Plan Content\n\nSome plan text here."
+      "# Plan Content\n\nSome plan text here.",
     );
   });
 
@@ -211,11 +278,11 @@ describe("ExportPlanDialog", () => {
 
     render(<ExportPlanDialog {...defaultProps} sessionTitle={null} />);
 
-    const [, mdBtn] = screen.getAllByRole("button", { name: /Download/i });
+    const mdBtn = screen.getByRole("button", { name: "Download overview" });
     await user.click(mdBtn);
 
     expect(save).toHaveBeenCalledWith(
-      expect.objectContaining({ defaultPath: "plan.md" })
+      expect.objectContaining({ defaultPath: "plan.md" }),
     );
   });
 
@@ -226,7 +293,7 @@ describe("ExportPlanDialog", () => {
 
     render(<ExportPlanDialog {...defaultProps} />);
 
-    const [, mdBtn] = screen.getAllByRole("button", { name: /Download/i });
+    const mdBtn = screen.getByRole("button", { name: "Download overview" });
     await user.click(mdBtn);
 
     await waitFor(() => {
@@ -241,11 +308,13 @@ describe("ExportPlanDialog", () => {
 
     render(<ExportPlanDialog {...defaultProps} />);
 
-    const [, mdBtn] = screen.getAllByRole("button", { name: /Download/i });
+    const mdBtn = screen.getByRole("button", { name: "Download overview" });
     await user.click(mdBtn);
 
     await waitFor(() => {
-      expect(toast.error).toHaveBeenCalledWith("Failed to export plan as Markdown");
+      expect(toast.error).toHaveBeenCalledWith(
+        "Failed to export plan as Markdown",
+      );
     });
   });
 
@@ -257,7 +326,7 @@ describe("ExportPlanDialog", () => {
 
     render(<ExportPlanDialog {...defaultProps} />);
 
-    const [, mdBtn] = screen.getAllByRole("button", { name: /Download/i });
+    const mdBtn = screen.getByRole("button", { name: "Download overview" });
     await user.click(mdBtn);
 
     await waitFor(() => {
@@ -276,11 +345,60 @@ describe("ExportPlanDialog", () => {
 
     render(<ExportPlanDialog {...defaultProps} />);
 
-    const [, mdBtn] = screen.getAllByRole("button", { name: /Download/i });
+    const mdBtn = screen.getByRole("button", { name: "Download overview" });
     await user.click(mdBtn);
 
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: /Exporting\.\.\./i })).toBeDisabled();
+      expect(
+        screen.getByRole("button", { name: /Exporting\.\.\./i }),
+      ).toBeDisabled();
     });
+  });
+
+  it("downloads blueprint-only Markdown", async () => {
+    const user = userEvent.setup();
+    vi.mocked(save).mockResolvedValueOnce("/some/path/plan-blueprint.md");
+
+    render(<ExportPlanDialog {...defaultProps} />);
+
+    await user.click(
+      screen.getByRole("button", { name: "Download blueprint" }),
+    );
+
+    expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        defaultPath: "My Verified Plan-blueprint.md",
+      }),
+    );
+    expect(writeTextFile).toHaveBeenCalledWith(
+      "/some/path/plan-blueprint.md",
+      "# Blueprint Content\n\nDetailed implementation steps.",
+    );
+  });
+
+  it("downloads a labeled complete bundle with both artifact identities and versions", async () => {
+    const user = userEvent.setup();
+    vi.mocked(save).mockResolvedValueOnce("/some/path/plan-bundle.md");
+
+    render(<ExportPlanDialog {...defaultProps} />);
+
+    await user.click(
+      screen.getByRole("button", { name: "Download complete bundle" }),
+    );
+
+    expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        defaultPath: "My Verified Plan-bundle.md",
+      }),
+    );
+    const writtenMarkdown = vi.mocked(writeTextFile).mock.calls[0]?.[1];
+    expect(writtenMarkdown).toContain("## Overview");
+    expect(writtenMarkdown).toContain("Artifact ID: `artifact-1`");
+    expect(writtenMarkdown).toContain("Version: 1");
+    expect(writtenMarkdown).toContain("# Plan Content");
+    expect(writtenMarkdown).toContain("## Blueprint");
+    expect(writtenMarkdown).toContain("Artifact ID: `artifact-blueprint-1`");
+    expect(writtenMarkdown).toContain("Version: 3");
+    expect(writtenMarkdown).toContain("# Blueprint Content");
   });
 });

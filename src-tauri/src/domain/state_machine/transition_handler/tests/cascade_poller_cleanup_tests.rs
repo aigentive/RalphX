@@ -12,10 +12,12 @@ use super::helpers::*;
 use crate::application::PrPollerRegistry;
 use crate::commands::ExecutionState;
 use crate::domain::entities::types::IdeationSessionId;
-use crate::domain::entities::{ArtifactId, InternalStatus, PlanBranch, PlanBranchStatus, ProjectId, Task};
+use crate::domain::entities::{
+    ArtifactId, InternalStatus, PlanBranch, PlanBranchStatus, ProjectId, Task,
+};
 use crate::domain::repositories::{PlanBranchRepository, ProjectRepository, TaskRepository};
-use crate::domain::state_machine::TransitionHandler;
 use crate::domain::state_machine::TaskStateMachine;
+use crate::domain::state_machine::TransitionHandler;
 use crate::infrastructure::memory::{
     MemoryPlanBranchRepository, MemoryProjectRepository, MemoryTaskRepository,
 };
@@ -42,14 +44,20 @@ async fn cascade_stop_calls_stop_polling_for_each_sibling() {
     let task_repo = Arc::new(MemoryTaskRepository::new());
 
     // Create merge task
-    let mut merge_task = Task::new(ProjectId::from_string("proj-1".to_string()), "merge task".into());
+    let mut merge_task = Task::new(
+        ProjectId::from_string("proj-1".to_string()),
+        "merge task".into(),
+    );
     merge_task.internal_status = InternalStatus::PendingMerge;
     let merge_task_id = merge_task.id.clone();
     task_repo.create(merge_task).await.unwrap();
 
     // Create sibling in Executing state (has task in registry — simulated by inserting to stopping
     // would require a running poller; we test that stop_polling is called by checking stopping set)
-    let mut sibling = Task::new(ProjectId::from_string("proj-1".to_string()), "sibling".into());
+    let mut sibling = Task::new(
+        ProjectId::from_string("proj-1".to_string()),
+        "sibling".into(),
+    );
     sibling.internal_status = InternalStatus::Executing;
     sibling.ideation_session_id = Some(IdeationSessionId::from_string("sess-1".to_string()));
     let sibling_id = sibling.id.clone();
@@ -78,7 +86,9 @@ async fn cascade_stop_calls_stop_polling_for_each_sibling() {
         pb
     };
 
-    handler.cascade_stop_sibling_tasks(&merge_task_id, merge_task_id.as_str(), &pb).await;
+    handler
+        .cascade_stop_sibling_tasks(&merge_task_id, merge_task_id.as_str(), &pb)
+        .await;
 
     // stop_polling inserts into stopping set (AD11)
     assert!(
@@ -102,15 +112,22 @@ async fn cascade_stop_decrements_running_count_for_pr_mode_merging_sibling() {
     let task_repo = Arc::new(MemoryTaskRepository::new());
 
     // Create merge task
-    let mut merge_task = Task::new(ProjectId::from_string("proj-1".to_string()), "merge task".into());
+    let mut merge_task = Task::new(
+        ProjectId::from_string("proj-1".to_string()),
+        "merge task".into(),
+    );
     merge_task.internal_status = InternalStatus::PendingMerge;
     let merge_task_id = merge_task.id.clone();
     task_repo.create(merge_task).await.unwrap();
 
     // Create sibling in Merging state (PR-mode)
-    let mut merging_sibling = Task::new(ProjectId::from_string("proj-1".to_string()), "merging sibling".into());
+    let mut merging_sibling = Task::new(
+        ProjectId::from_string("proj-1".to_string()),
+        "merging sibling".into(),
+    );
     merging_sibling.internal_status = InternalStatus::Merging;
-    merging_sibling.ideation_session_id = Some(IdeationSessionId::from_string("sess-1".to_string()));
+    merging_sibling.ideation_session_id =
+        Some(IdeationSessionId::from_string("sess-1".to_string()));
     task_repo.create(merging_sibling).await.unwrap();
 
     let execution_state = Arc::new(ExecutionState::new());
@@ -143,7 +160,9 @@ async fn cascade_stop_decrements_running_count_for_pr_mode_merging_sibling() {
         pb
     };
 
-    handler.cascade_stop_sibling_tasks(&merge_task_id, merge_task_id.as_str(), &pb).await;
+    handler
+        .cascade_stop_sibling_tasks(&merge_task_id, merge_task_id.as_str(), &pb)
+        .await;
 
     let after_count = execution_state.running_count();
     assert_eq!(
@@ -157,14 +176,21 @@ async fn cascade_stop_decrements_running_count_for_pr_mode_merging_sibling() {
 async fn cascade_stop_does_not_decrement_running_for_push_to_main_merging_sibling() {
     let task_repo = Arc::new(MemoryTaskRepository::new());
 
-    let mut merge_task = Task::new(ProjectId::from_string("proj-1".to_string()), "merge task".into());
+    let mut merge_task = Task::new(
+        ProjectId::from_string("proj-1".to_string()),
+        "merge task".into(),
+    );
     merge_task.internal_status = InternalStatus::PendingMerge;
     let merge_task_id = merge_task.id.clone();
     task_repo.create(merge_task).await.unwrap();
 
-    let mut merging_sibling = Task::new(ProjectId::from_string("proj-1".to_string()), "merging sibling".into());
+    let mut merging_sibling = Task::new(
+        ProjectId::from_string("proj-1".to_string()),
+        "merging sibling".into(),
+    );
     merging_sibling.internal_status = InternalStatus::Merging;
-    merging_sibling.ideation_session_id = Some(IdeationSessionId::from_string("sess-1".to_string()));
+    merging_sibling.ideation_session_id =
+        Some(IdeationSessionId::from_string("sess-1".to_string()));
     task_repo.create(merging_sibling).await.unwrap();
 
     let execution_state = Arc::new(ExecutionState::new());
@@ -194,7 +220,9 @@ async fn cascade_stop_does_not_decrement_running_for_push_to_main_merging_siblin
         pb
     };
 
-    handler.cascade_stop_sibling_tasks(&merge_task_id, merge_task_id.as_str(), &pb).await;
+    handler
+        .cascade_stop_sibling_tasks(&merge_task_id, merge_task_id.as_str(), &pb)
+        .await;
 
     // running_count should NOT have been decremented by cascade_stop in push-to-main mode
     assert_eq!(
@@ -225,14 +253,20 @@ async fn post_merge_cleanup_pr_mode_deletes_remote_plan_and_task_branches() {
     project_repo.create(project).await.unwrap();
 
     // Create merge task (PlanMerge category)
-    let mut merge_task = Task::new(ProjectId::from_string("proj-1".to_string()), "merge task".into());
+    let mut merge_task = Task::new(
+        ProjectId::from_string("proj-1".to_string()),
+        "merge task".into(),
+    );
     merge_task.internal_status = InternalStatus::Merging;
     merge_task.category = crate::domain::entities::TaskCategory::PlanMerge;
     let merge_task_id = merge_task.id.clone();
     task_repo.create(merge_task).await.unwrap();
 
     // Create sibling task with a task_branch
-    let mut sibling = Task::new(ProjectId::from_string("proj-1".to_string()), "sibling".into());
+    let mut sibling = Task::new(
+        ProjectId::from_string("proj-1".to_string()),
+        "sibling".into(),
+    );
     sibling.internal_status = InternalStatus::Executing;
     sibling.task_branch = Some("ralphx/ralphx/task-sibling-1".to_string());
     sibling.ideation_session_id = Some(IdeationSessionId::from_string("sess-1".to_string()));
@@ -256,7 +290,8 @@ async fn post_merge_cleanup_pr_mode_deletes_remote_plan_and_task_branches() {
         .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
         .with_plan_branch_repo(Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>)
         .with_project_repo(Arc::clone(&project_repo) as Arc<dyn ProjectRepository>)
-        .with_github_service(Arc::clone(&github) as Arc<dyn crate::domain::services::github_service::GithubServiceTrait>);
+        .with_github_service(Arc::clone(&github)
+            as Arc<dyn crate::domain::services::github_service::GithubServiceTrait>);
 
     let context = create_context_with_services(merge_task_id.as_str(), "proj-1", services);
     let mut machine = TaskStateMachine::new(context);
@@ -265,7 +300,14 @@ async fn post_merge_cleanup_pr_mode_deletes_remote_plan_and_task_branches() {
     let repo_path = std::path::Path::new("/tmp/pr-cleanup-test");
     let pb_repo_opt = Some(Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>);
 
-    handler.post_merge_cleanup(merge_task_id.as_str(), &merge_task_id, repo_path, &pb_repo_opt).await;
+    handler
+        .post_merge_cleanup(
+            merge_task_id.as_str(),
+            &merge_task_id,
+            repo_path,
+            &pb_repo_opt,
+        )
+        .await;
 
     let state = github.state();
     // Should have called delete_remote_branch at least for plan branch + sibling task branch
@@ -275,12 +317,16 @@ async fn post_merge_cleanup_pr_mode_deletes_remote_plan_and_task_branches() {
         state.delete_remote_branch_calls
     );
     assert!(
-        state.all_deleted_remote_branch_names.contains(&"plan/pr-feature-branch".to_string()),
+        state
+            .all_deleted_remote_branch_names
+            .contains(&"plan/pr-feature-branch".to_string()),
         "Plan branch should be deleted via delete_remote_branch, got: {:?}",
         state.all_deleted_remote_branch_names
     );
     assert!(
-        state.all_deleted_remote_branch_names.contains(&"ralphx/ralphx/task-sibling-1".to_string()),
+        state
+            .all_deleted_remote_branch_names
+            .contains(&"ralphx/ralphx/task-sibling-1".to_string()),
         "Sibling task branch should be deleted via delete_remote_branch, got: {:?}",
         state.all_deleted_remote_branch_names
     );
@@ -306,7 +352,10 @@ async fn post_merge_cleanup_push_to_main_does_not_call_delete_remote_branch() {
     project.id = ProjectId::from_string("proj-1".to_string());
     project_repo.create(project).await.unwrap();
 
-    let mut merge_task = Task::new(ProjectId::from_string("proj-1".to_string()), "merge task".into());
+    let mut merge_task = Task::new(
+        ProjectId::from_string("proj-1".to_string()),
+        "merge task".into(),
+    );
     merge_task.internal_status = InternalStatus::Merging;
     merge_task.category = crate::domain::entities::TaskCategory::PlanMerge;
     let merge_task_id = merge_task.id.clone();
@@ -330,7 +379,8 @@ async fn post_merge_cleanup_push_to_main_does_not_call_delete_remote_branch() {
         .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
         .with_plan_branch_repo(Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>)
         .with_project_repo(Arc::clone(&project_repo) as Arc<dyn ProjectRepository>)
-        .with_github_service(Arc::clone(&github) as Arc<dyn crate::domain::services::github_service::GithubServiceTrait>);
+        .with_github_service(Arc::clone(&github)
+            as Arc<dyn crate::domain::services::github_service::GithubServiceTrait>);
 
     let context = create_context_with_services(merge_task_id.as_str(), "proj-1", services);
     let mut machine = TaskStateMachine::new(context);
@@ -339,7 +389,14 @@ async fn post_merge_cleanup_push_to_main_does_not_call_delete_remote_branch() {
     let repo_path = std::path::Path::new("/tmp/push-to-main-test");
     let pb_repo_opt = Some(Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>);
 
-    handler.post_merge_cleanup(merge_task_id.as_str(), &merge_task_id, repo_path, &pb_repo_opt).await;
+    handler
+        .post_merge_cleanup(
+            merge_task_id.as_str(),
+            &merge_task_id,
+            repo_path,
+            &pb_repo_opt,
+        )
+        .await;
 
     let state = github.state();
     assert_eq!(
@@ -357,20 +414,26 @@ async fn post_merge_cleanup_push_to_main_does_not_call_delete_remote_branch() {
 async fn cascade_stop_without_registry_proceeds_normally() {
     let task_repo = Arc::new(MemoryTaskRepository::new());
 
-    let mut merge_task = Task::new(ProjectId::from_string("proj-1".to_string()), "merge task".into());
+    let mut merge_task = Task::new(
+        ProjectId::from_string("proj-1".to_string()),
+        "merge task".into(),
+    );
     merge_task.internal_status = InternalStatus::PendingMerge;
     let merge_task_id = merge_task.id.clone();
     task_repo.create(merge_task).await.unwrap();
 
-    let mut sibling = Task::new(ProjectId::from_string("proj-1".to_string()), "sibling".into());
+    let mut sibling = Task::new(
+        ProjectId::from_string("proj-1".to_string()),
+        "sibling".into(),
+    );
     sibling.internal_status = InternalStatus::Ready;
     sibling.ideation_session_id = Some(IdeationSessionId::from_string("sess-1".to_string()));
     let sibling_id = sibling.id.clone();
     task_repo.create(sibling).await.unwrap();
 
     // No pr_poller_registry wired (default None in new_mock)
-    let services = TaskServices::new_mock()
-        .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>);
+    let services =
+        TaskServices::new_mock().with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>);
 
     let context = create_context_with_services(merge_task_id.as_str(), "proj-1", services);
     let mut machine = TaskStateMachine::new(context);
@@ -390,7 +453,9 @@ async fn cascade_stop_without_registry_proceeds_normally() {
     };
 
     // Should not panic even without registry
-    handler.cascade_stop_sibling_tasks(&merge_task_id, merge_task_id.as_str(), &pb).await;
+    handler
+        .cascade_stop_sibling_tasks(&merge_task_id, merge_task_id.as_str(), &pb)
+        .await;
 
     // Sibling should still be cascade-stopped
     let updated = task_repo.get_by_id(&sibling_id).await.unwrap().unwrap();

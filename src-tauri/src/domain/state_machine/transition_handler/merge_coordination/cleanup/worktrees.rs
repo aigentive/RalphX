@@ -3,12 +3,12 @@ use std::sync::Arc;
 
 use crate::application::GitService;
 use crate::domain::entities::{
-    InternalStatus,
     merge_progress_event::{MergePhase, MergePhaseStatus},
+    InternalStatus,
 };
 use crate::domain::repositories::TaskRepository;
 use crate::domain::state_machine::transition_handler::cleanup_helpers::{
-    CleanupStepResult, run_cleanup_step,
+    run_cleanup_step, CleanupStepResult,
 };
 use crate::infrastructure::agents::claude::git_runtime_config;
 
@@ -21,7 +21,7 @@ pub(super) async fn cleanup_stale_worktrees(
     project: &crate::domain::entities::Project,
     repo_path: &Path,
     task_repo: &Arc<dyn TaskRepository>,
-    app_handle: Option<&tauri::AppHandle>,
+    event_sink: Option<&dyn ralphx_events::EventSink>,
     outer_deadline: std::time::Instant,
 ) {
     // --- Step 1: Remove stale index.lock ---
@@ -46,7 +46,7 @@ pub(super) async fn cleanup_stale_worktrees(
     // --- Step 2: Delete task worktree ---
     {
         emit_merge_progress(
-            app_handle,
+            event_sink,
             task_id_str,
             MergePhase::new(MergePhase::MERGE_CLEANUP),
             MergePhaseStatus::Started,
@@ -113,65 +113,63 @@ pub(super) async fn cleanup_stale_worktrees(
                                 git_runtime_config().cleanup_worktree_timeout_secs;
                             let original_timeout =
                                 std::time::Duration::from_secs(original_timeout_secs);
-                            let remaining = outer_deadline
-                                .saturating_duration_since(std::time::Instant::now());
-                            let retry_succeeded =
-                                if remaining > original_timeout + std::time::Duration::from_secs(2)
+                            let remaining =
+                                outer_deadline.saturating_duration_since(std::time::Instant::now());
+                            let retry_succeeded = if remaining
+                                > original_timeout + std::time::Duration::from_secs(2)
+                            {
+                                let bounded = remaining - std::time::Duration::from_secs(2);
+                                let retry_timeout = original_timeout.min(bounded);
+                                tracing::info!(
+                                    task_id = task_id_str,
+                                    retry_timeout_secs = retry_timeout.as_secs(),
+                                    "Task worktree deletion retry with bounded timeout"
+                                );
+                                match run_cleanup_step(
+                                    "step 2 task worktree deletion retry",
+                                    retry_timeout.as_secs(),
+                                    task_id_str,
+                                    cleanup_helpers::remove_worktree_fast(
+                                        &worktree_path_buf,
+                                        repo_path,
+                                    ),
+                                )
+                                .await
                                 {
-                                    let bounded =
-                                        remaining - std::time::Duration::from_secs(2);
-                                    let retry_timeout = original_timeout.min(bounded);
-                                    tracing::info!(
-                                        task_id = task_id_str,
-                                        retry_timeout_secs = retry_timeout.as_secs(),
-                                        "Task worktree deletion retry with bounded timeout"
-                                    );
-                                    match run_cleanup_step(
-                                        "step 2 task worktree deletion retry",
-                                        retry_timeout.as_secs(),
-                                        task_id_str,
-                                        cleanup_helpers::remove_worktree_fast(
-                                            &worktree_path_buf,
-                                            repo_path,
-                                        ),
-                                    )
-                                    .await
-                                    {
-                                        CleanupStepResult::Ok => {
-                                            tracing::info!(
-                                                task_id = task_id_str,
-                                                "Task worktree deletion retry succeeded"
-                                            );
-                                            true
-                                        }
-                                        CleanupStepResult::TimedOut {
-                                            elapsed: retry_elapsed,
-                                        } => {
-                                            tracing::warn!(
-                                                task_id = task_id_str,
-                                                elapsed_ms =
-                                                    retry_elapsed.as_millis() as u64,
-                                                "Task worktree deletion retry also timed out"
-                                            );
-                                            false
-                                        }
-                                        CleanupStepResult::Error { ref message } => {
-                                            tracing::warn!(
-                                                task_id = task_id_str,
-                                                error = %message,
-                                                "Task worktree deletion retry also failed"
-                                            );
-                                            false
-                                        }
+                                    CleanupStepResult::Ok => {
+                                        tracing::info!(
+                                            task_id = task_id_str,
+                                            "Task worktree deletion retry succeeded"
+                                        );
+                                        true
                                     }
-                                } else {
-                                    tracing::warn!(
+                                    CleanupStepResult::TimedOut {
+                                        elapsed: retry_elapsed,
+                                    } => {
+                                        tracing::warn!(
+                                            task_id = task_id_str,
+                                            elapsed_ms = retry_elapsed.as_millis() as u64,
+                                            "Task worktree deletion retry also timed out"
+                                        );
+                                        false
+                                    }
+                                    CleanupStepResult::Error { ref message } => {
+                                        tracing::warn!(
+                                            task_id = task_id_str,
+                                            error = %message,
+                                            "Task worktree deletion retry also failed"
+                                        );
+                                        false
+                                    }
+                                }
+                            } else {
+                                tracing::warn!(
                                         task_id = task_id_str,
                                         remaining_ms = remaining.as_millis() as u64,
                                         "Task worktree deletion timed out — skipping retry (insufficient time remaining)"
                                     );
-                                    false
-                                };
+                                false
+                            };
                             if !retry_succeeded {
                                 // Stale path cleanup: clear worktree_path from DB since deletion
                                 // failed. Race guard inside prevents clearing when task is actively

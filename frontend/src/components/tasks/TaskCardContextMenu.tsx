@@ -27,15 +27,19 @@ interface TaskCardContextMenuProps extends TaskContextMenuHandlers {
   task: Task;
   children: React.ReactNode;
   groupInfo?: GroupInfo;
+  readOnly?: boolean;
 }
 
 export function TaskCardContextMenu({
   task,
   children,
   groupInfo,
+  readOnly = false,
   ...handlers
 }: TaskCardContextMenuProps) {
   const menuState = useTaskContextMenu();
+
+  if (readOnly) return children;
 
   return (
     <TaskContextMenuProvider state={menuState}>

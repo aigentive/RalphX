@@ -16,6 +16,7 @@ pub enum EffortLevel {
     Medium,
     High,
     Max,
+    Ultra,
     /// Use the next level in the resolution chain (YAML config or global default)
     Inherit,
 }
@@ -33,6 +34,7 @@ impl fmt::Display for EffortLevel {
             Self::Medium => write!(f, "medium"),
             Self::High => write!(f, "high"),
             Self::Max => write!(f, "max"),
+            Self::Ultra => write!(f, "ultra"),
             Self::Inherit => write!(f, "inherit"),
         }
     }
@@ -47,9 +49,10 @@ impl FromStr for EffortLevel {
             "medium" => Ok(Self::Medium),
             "high" => Ok(Self::High),
             "max" => Ok(Self::Max),
+            "ultra" => Ok(Self::Ultra),
             "inherit" => Ok(Self::Inherit),
             other => Err(format!(
-                "Invalid effort level '{}'. Valid values: low, medium, high, max, inherit",
+                "Invalid effort level '{}'. Valid values: low, medium, high, max, ultra, inherit",
                 other
             )),
         }
@@ -60,8 +63,7 @@ impl FromStr for EffortLevel {
 /// Used to select the correct effort setting column.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EffortBucket {
-    /// Primary ideation agents: ralphx-ideation, ralphx-ideation-team-lead,
-    /// ideation-team-member, ralphx-ideation-readonly
+    /// Primary ideation agents: ralphx-ideation and ralphx-ideation-readonly.
     Primary,
     /// Verification agents: ralphx-plan-verifier
     Verifier,

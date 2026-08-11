@@ -740,6 +740,19 @@ describe("MergingTaskDetail", () => {
       expect(screen.getByText("Resolving Merge Conflicts")).toBeInTheDocument();
     });
 
+    it("does not present legacy freshness metadata as the active merge workflow", () => {
+      const task = createTestTask({
+        internalStatus: "merging",
+        metadata: JSON.stringify({ freshness_origin_state: "executing" }),
+      });
+      renderWithProviders(<MergingTaskDetail task={task} />);
+
+      expect(screen.getByText("Resolving Merge Conflicts")).toBeInTheDocument();
+      expect(
+        screen.queryByText(/Stale branches detected when starting execution/),
+      ).not.toBeInTheDocument();
+    });
+
     it("shows PR waiting copy instead of conflict-agent UI for PR-backed plan merge", async () => {
       mockPlanBranchState.current = createTestPlanBranch();
       const task = createTestTask({

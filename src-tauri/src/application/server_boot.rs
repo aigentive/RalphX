@@ -1,68 +1,102 @@
 use std::sync::Arc;
 
-use crate::domain::agents::STANDARD_AGENT_HARNESSES;
-use tracing::{info, warn};
-
 use tauri::Manager;
+use tokio::sync::oneshot;
 
-use crate::application::harness_runtime_registry::{
-    resolve_startup_harness_integration, run_startup_harness_integration,
-};
-use crate::application::runtime_wiring::build_http_app_state;
-use crate::application::{HttpShutdownHandle, TeamStateTracker};
+use crate::application::startup_status::{StartupCoordinator, StartupFailureCode};
+use crate::application::HttpShutdownHandle;
 use crate::commands::ExecutionState;
 use crate::http_server;
-use crate::AppState;
+use crate::{AppError, AppResult, AppState};
 
-pub(crate) fn start_server_boot(
-    app_state: &AppState,
+pub(crate) async fn recover_agent_workflow_runs_for_startup(
+    app_state: Arc<AppState>,
+    execution_state: Arc<ExecutionState>,
+) -> AppResult<usize> {
+    http_server::recover_agent_workflow_runs_for_startup(app_state, execution_state).await
+}
+
+pub(crate) async fn start_server_boot(
+    http_app_state: Arc<AppState>,
     app_handle: tauri::AppHandle,
     http_execution_state: Arc<ExecutionState>,
-    http_team_tracker: TeamStateTracker,
-) {
-    // Start HTTP server for MCP proxy on the configured local backend port.
-    // Create a second AppState sharing the Tauri AppState's DB connection,
-    // plus shared in-memory state (question_state, permission_state, message_queue)
-    // so MCP handlers and Tauri commands operate on the same data.
-    let http_app_state = build_http_app_state(app_state, app_handle.clone())
-        .expect("Failed to initialize AppState for HTTP server");
+    coordinator: Arc<StartupCoordinator>,
+    attempt_id: u64,
+) -> AppResult<()> {
+    coordinator
+        .advance(
+            attempt_id,
+            crate::application::startup_status::StartupStage::BindingLocalRuntime,
+        )
+        .map_err(|error| AppError::Infrastructure(error.to_string()))?;
+    coordinator
+        .ensure_current(attempt_id)
+        .map_err(|error| AppError::Infrastructure(error.to_string()))?;
 
     // Build a shutdown trigger and register it as managed state so the
     // Tauri `RunEvent::ExitRequested` handler can fire it at app exit. The
     // server task itself owns a clone wired into axum's graceful shutdown.
-    let shutdown = HttpShutdownHandle::new();
-    app_handle.manage(shutdown.clone());
+    let shutdown = if let Some(existing) = app_handle.try_state::<HttpShutdownHandle>() {
+        existing.inner().clone()
+    } else {
+        let created = HttpShutdownHandle::new();
+        if !app_handle.manage(created.clone()) {
+            return Err(AppError::Infrastructure(
+                "HttpShutdownHandle was already registered during startup".to_string(),
+            ));
+        }
+        created
+    };
+    coordinator
+        .ensure_current(attempt_id)
+        .map_err(|error| AppError::Infrastructure(error.to_string()))?;
 
-    // Spawn HTTP server with pre-cloned state
+    let (listener_ready_tx, listener_ready_rx) = oneshot::channel();
+    let server_shutdown = shutdown.clone();
+
+    // Spawn only one server and wait for its concrete listener-bind result.
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = http_server::start_http_server(
+        if let Err(error) = http_server::start_http_server_with_listener_ready(
             http_app_state,
             http_execution_state,
-            http_team_tracker,
-            shutdown,
+            server_shutdown,
+            Some(listener_ready_tx),
         )
         .await
         {
-            tracing::error!("HTTP server failed: {}", e);
+            tracing::error!(%error, "HTTP server failed");
         }
     });
 
-    // Run any harness-specific startup integrations, such as Claude MCP registration.
-    for harness in STANDARD_AGENT_HARNESSES {
-        match resolve_startup_harness_integration(harness) {
-            Ok(Some(integration)) => {
-                let harness_name = integration.harness();
-                let description = integration.description();
-                info!("Starting {} {}", harness_name, description);
-                tauri::async_runtime::spawn(async move {
-                    match run_startup_harness_integration(integration).await {
-                        Ok(()) => info!("{} {} succeeded", harness_name, description),
-                        Err(e) => warn!("{} {} failed: {}", harness_name, description, e),
-                    }
-                });
-            }
-            Ok(None) => {}
-            Err(error) => warn!("Skipping {} startup integration: {}", harness, error),
+    settle_listener_bind_handshake(listener_ready_rx, coordinator.as_ref(), attempt_id).await
+}
+
+pub(crate) async fn settle_listener_bind_handshake(
+    listener_ready_rx: oneshot::Receiver<AppResult<()>>,
+    coordinator: &StartupCoordinator,
+    attempt_id: u64,
+) -> AppResult<()> {
+    match listener_ready_rx.await {
+        Ok(Ok(())) => coordinator
+            .listener_bound(attempt_id)
+            .map_err(|error| AppError::Infrastructure(error.to_string())),
+        Ok(Err(error)) => {
+            coordinator.fail(
+                attempt_id,
+                StartupFailureCode::LocalRuntimeBind,
+                "RalphX could not restore its local services.",
+            );
+            Err(error)
+        }
+        Err(_) => {
+            coordinator.fail(
+                attempt_id,
+                StartupFailureCode::LocalRuntimeBind,
+                "RalphX could not restore its local services.",
+            );
+            Err(AppError::Infrastructure(
+                "HTTP server ended before reporting listener readiness".to_string(),
+            ))
         }
     }
 }

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef } from "react";
 
 import {
+  getArtifactTabFallback,
+  getSeededArtifactTab,
   useAgentSessionStore,
   type AgentArtifactState,
   type AgentArtifactTab,
@@ -10,7 +12,11 @@ import {
 import { getAgentArtifactStateSnapshot } from "./agentArtifactState";
 import { useAgentArtifactUiStore, persistTaskMode } from "./agentArtifactUiStore";
 import { preloadAgentsArtifactPane } from "./agentArtifactPanePreload";
-import type { DeferredFrameJob } from "./agentDeferredFrame";
+import {
+  cancelDeferredFrameJob,
+  scheduleDeferredFrameJob,
+  type DeferredFrameJob,
+} from "./agentDeferredFrame";
 import { useAgentTerminalStore } from "./agentTerminalStore";
 
 interface UseAgentArtifactControllerArgs {
@@ -62,16 +68,7 @@ export function useAgentArtifactController({
   }, [setArtifactState]);
 
   const cancelArtifactPanePreloadJob = useCallback(() => {
-    const job = artifactPanePreloadJobRef.current;
-    if (!job) {
-      return;
-    }
-    if (job.frame !== null) {
-      window.cancelAnimationFrame(job.frame);
-    }
-    if (job.timer !== null) {
-      window.clearTimeout(job.timer);
-    }
+    cancelDeferredFrameJob(artifactPanePreloadJobRef.current);
     artifactPanePreloadJobRef.current = null;
   }, []);
 
@@ -79,19 +76,10 @@ export function useAgentArtifactController({
     if (artifactPanePreloadJobRef.current) {
       return;
     }
-    const job: DeferredFrameJob = {
-      frame: null,
-      timer: null,
-    };
-    job.frame = window.requestAnimationFrame(() => {
-      job.frame = null;
-      job.timer = window.setTimeout(() => {
-        job.timer = null;
-        artifactPanePreloadJobRef.current = null;
-        void preloadAgentsArtifactPane().catch(() => undefined);
-      }, 0);
+    artifactPanePreloadJobRef.current = scheduleDeferredFrameJob(() => {
+      artifactPanePreloadJobRef.current = null;
+      void preloadAgentsArtifactPane().catch(() => undefined);
     });
-    artifactPanePreloadJobRef.current = job;
   }, []);
 
   const scheduleArtifactStatePersistence = useCallback(
@@ -168,7 +156,64 @@ export function useAgentArtifactController({
         ...current,
         activeTab: tab,
         isOpen: true,
+        hiddenTabs: current.hiddenTabs.filter((hiddenTab) => hiddenTab !== tab),
       }));
+    },
+    [updateArtifactState],
+  );
+
+  const hideArtifactTab = useCallback(
+    (
+      conversationId: string,
+      tab: AgentArtifactTab,
+      availableTabs: readonly AgentArtifactTab[],
+    ) => {
+      updateArtifactState(conversationId, (current) => {
+        const hiddenTabs = current.hiddenTabs.includes(tab)
+          ? current.hiddenTabs
+          : [...current.hiddenTabs, tab];
+        if (current.activeTab !== tab) {
+          return { ...current, hiddenTabs };
+        }
+        const nextActiveTab = getArtifactTabFallback(
+          availableTabs,
+          hiddenTabs,
+          tab,
+        );
+        return {
+          ...current,
+          ...(nextActiveTab ? { activeTab: nextActiveTab } : {}),
+          hiddenTabs,
+        };
+      });
+    },
+    [updateArtifactState],
+  );
+
+  const showArtifactTab = useCallback(
+    (conversationId: string, tab: AgentArtifactTab) => {
+      updateArtifactState(conversationId, (current) => ({
+        ...current,
+        hiddenTabs: current.hiddenTabs.filter((hiddenTab) => hiddenTab !== tab),
+      }));
+    },
+    [updateArtifactState],
+  );
+
+  const seedArtifactTab = useCallback(
+    (conversationId: string, tab: AgentArtifactTab) => {
+      updateArtifactState(conversationId, (current) => {
+        const activeTab = getSeededArtifactTab(
+          current.activeTab,
+          tab,
+          current.hiddenTabs,
+        );
+        return {
+          ...current,
+          activeTab,
+          isOpen: true,
+        };
+      });
     },
     [updateArtifactState],
   );
@@ -205,7 +250,6 @@ export function useAgentArtifactController({
       const tabByKey: Record<string, AgentArtifactTab> = {
         "1": "plan",
         "2": "verification",
-        "3": "proposal",
         "4": "tasks",
         "5": "issues",
       };
@@ -225,10 +269,13 @@ export function useAgentArtifactController({
   ]);
 
   return {
+    hideArtifactTab,
     openArtifactTab,
     scheduleArtifactPanePreload,
+    seedArtifactTab,
     setArtifactPaneVisibility,
     setArtifactTaskMode,
+    showArtifactTab,
     toggleArtifactPaneVisibility,
   };
 }

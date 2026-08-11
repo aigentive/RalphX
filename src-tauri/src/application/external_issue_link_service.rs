@@ -17,6 +17,20 @@ pub struct ExternalIssueLinkService {
     repo: Arc<dyn ExternalIssueLinkRepository>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TicketConversationLinkInput {
+    pub provider: String,
+    pub external_kind: String,
+    pub external_id: String,
+    pub external_key: Option<String>,
+    pub external_url: Option<String>,
+    pub conversation_id: String,
+    pub project_id: String,
+    pub local_sha: Option<String>,
+    pub local_state: Option<String>,
+    pub metadata_json: Option<String>,
+}
+
 impl ExternalIssueLinkService {
     pub fn new(repo: Arc<dyn ExternalIssueLinkRepository>) -> Self {
         Self { repo }
@@ -57,6 +71,42 @@ impl ExternalIssueLinkService {
     ) -> AppResult<Option<ExternalIssueLink>> {
         self.repo
             .find_link_by_external_identity(provider, external_kind, external_id)
+            .await
+    }
+
+    pub async fn upsert_ticket_conversation_link(
+        &self,
+        input: TicketConversationLinkInput,
+    ) -> AppResult<ExternalIssueLink> {
+        let provider = input.provider.trim().to_ascii_lowercase();
+        let external_kind = input.external_kind.trim().to_ascii_lowercase();
+        let external_id = input.external_id.trim().to_string();
+        let conversation_id = input.conversation_id.trim().to_string();
+        self.repo
+            .upsert_link(ExternalIssueLinkUpsert {
+                provider: provider.clone(),
+                external_kind: external_kind.clone(),
+                external_id: external_id.clone(),
+                external_key: input.external_key,
+                external_url: input.external_url,
+                local_object: ExternalIssueLocalObject::session(conversation_id.clone()),
+                local_project_id: Some(input.project_id),
+                local_sha: input.local_sha,
+                local_state: input.local_state,
+                idempotency_key: format!(
+                    "{provider}:{external_kind}:{external_id}:session:{conversation_id}"
+                ),
+                metadata_json: input.metadata_json,
+            })
+            .await
+    }
+
+    pub async fn list_ticket_links_for_conversation(
+        &self,
+        conversation_id: &str,
+    ) -> AppResult<Vec<ExternalIssueLink>> {
+        self.repo
+            .list_links_for_local(&ExternalIssueLocalObject::session(conversation_id))
             .await
     }
 

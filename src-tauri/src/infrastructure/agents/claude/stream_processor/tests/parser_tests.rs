@@ -1,6 +1,79 @@
 use super::*;
 
 #[test]
+fn parse_line_unwraps_stream_event_text_delta() {
+    let line = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}},"session_id":"sess-1","uuid":"u-1"}"#;
+
+    let parsed = StreamProcessor::parse_line(line).expect("wrapped text delta should parse");
+    let StreamMessage::ContentBlockDelta { delta, .. } = parsed.message else {
+        panic!("expected ContentBlockDelta");
+    };
+    assert_eq!(delta.text.as_deref(), Some("Hi"));
+}
+
+#[test]
+fn parse_line_unwraps_stream_event_thinking_delta() {
+    let line = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Consider this"}},"session_id":"sess-1","uuid":"u-1"}"#;
+
+    let parsed = StreamProcessor::parse_line(line).expect("wrapped thinking delta should parse");
+    let StreamMessage::ContentBlockDelta { delta, .. } = parsed.message else {
+        panic!("expected ContentBlockDelta");
+    };
+    assert_eq!(delta.delta_type, "thinking_delta");
+    assert_eq!(delta.text.as_deref(), Some("Consider this"));
+}
+
+#[test]
+fn parse_and_process_thinking_tokens_progress() {
+    let line = r#"{"type":"system","subtype":"thinking_tokens","estimated_tokens":95,"estimated_tokens_delta":45}"#;
+    let parsed = StreamProcessor::parse_line(line).expect("thinking token progress should parse");
+    let StreamMessage::System {
+        estimated_tokens,
+        estimated_tokens_delta,
+        ..
+    } = &parsed.message
+    else {
+        panic!("expected system message");
+    };
+    assert_eq!(*estimated_tokens, Some(95));
+    assert_eq!(*estimated_tokens_delta, Some(45));
+
+    let events = StreamProcessor::new().process_parsed_line(parsed);
+    assert!(matches!(
+        events.as_slice(),
+        [StreamEvent::ThinkingProgress {
+            estimated_tokens: 95,
+            estimated_tokens_delta: Some(45),
+        }]
+    ));
+}
+
+#[test]
+fn parse_line_unwraps_stream_event_content_block_start_stop() {
+    let start = r#"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu-1","name":"Read"}}}"#;
+    let stop = r#"{"type":"stream_event","event":{"type":"content_block_stop","index":0}}"#;
+
+    let start = StreamProcessor::parse_line(start).expect("wrapped block start should parse");
+    let stop = StreamProcessor::parse_line(stop).expect("wrapped block stop should parse");
+    assert!(matches!(
+        start.message,
+        StreamMessage::ContentBlockStart { .. }
+    ));
+    assert!(matches!(
+        stop.message,
+        StreamMessage::ContentBlockStop { .. }
+    ));
+}
+
+#[test]
+fn parse_line_preserves_parent_tool_use_id_from_stream_event_envelope() {
+    let line = r#"{"type":"stream_event","parent_tool_use_id":"toolu-parent","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}}"#;
+
+    let parsed = StreamProcessor::parse_line(line).expect("wrapped delta should parse");
+    assert_eq!(parsed.parent_tool_use_id.as_deref(), Some("toolu-parent"));
+}
+
+#[test]
 fn test_parse_text_delta() {
     let line = r#"{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello"}}"#;
     let parsed = StreamProcessor::parse_line(line);
@@ -65,6 +138,21 @@ fn test_parse_result() {
         session_id,
         Some("550e8400-e29b-41d4-a716-446655440000".to_string())
     );
+}
+
+#[test]
+fn claude_result_usage_deserializes_terminal_cache_aliases() {
+    let line = r#"{"type":"result","session_id":"usage-result","result":"Done","is_error":false,"usage":{"input_tokens":13,"output_tokens":1434,"cache_creation_input_tokens":127826,"cache_read_input_tokens":1099251}}"#;
+    let parsed = StreamProcessor::parse_line(line).expect("result should parse");
+
+    let StreamMessage::Result { usage, .. } = parsed.message else {
+        panic!("expected result message");
+    };
+    let usage = usage.expect("terminal result usage");
+    assert_eq!(usage.input_tokens, Some(13));
+    assert_eq!(usage.output_tokens, Some(1_434));
+    assert_eq!(usage.cache_creation_tokens, Some(127_826));
+    assert_eq!(usage.cache_read_tokens, Some(1_099_251));
 }
 
 #[test]
@@ -214,24 +302,4 @@ fn test_parse_system_hook_response_json() {
     assert_eq!(output, Some("All clean".to_string()));
     assert_eq!(exit_code, Some(0));
     assert_eq!(outcome, Some("success".to_string()));
-}
-
-#[test]
-fn test_parse_line_extracts_tool_use_result() {
-    let line = r#"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_xxx","type":"tool_result","content":[{"type":"text","text":"Spawned."}]}]},"parent_tool_use_id":null,"session_id":"sess1","tool_use_result":{"status":"teammate_spawned","name":"worker","agent_id":"worker@team","model":"sonnet","color":"green","prompt":"Do work","agent_type":"general-purpose","teammate_id":"worker@team","team_name":"my-team"}}"#;
-    let parsed = StreamProcessor::parse_line(line).expect("Expected Some(ParsedLine)");
-    assert!(
-        parsed.tool_use_result.is_some(),
-        "tool_use_result should be extracted"
-    );
-    let tur = parsed.tool_use_result.unwrap();
-    assert_eq!(
-        tur.get("status").and_then(|s| s.as_str()),
-        Some("teammate_spawned")
-    );
-    assert_eq!(tur.get("name").and_then(|s| s.as_str()), Some("worker"));
-    assert_eq!(
-        tur.get("team_name").and_then(|s| s.as_str()),
-        Some("my-team")
-    );
 }

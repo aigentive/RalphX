@@ -1,12 +1,13 @@
 name: ralphx-pr-reviewer
 role: pr_reviewer
-description: "Performs local pull request reviews for agent conversation workspaces and proposes user-approved GitHub review actions"
+description: "Reviews a remote GitHub pull request through its agent-workspace checkout and proposes user-approved GitHub review actions"
 capabilities:
   mcp_tools:
     - fs_read_file
     - fs_list_dir
     - fs_grep
     - fs_glob
+    - get_artifact
     - get_pr_review_context
     - write_pr_review_artifact
     - propose_pr_review_action
@@ -14,6 +15,7 @@ capabilities:
     - delegate_start
     - delegate_wait
     - delegate_cancel
+    - delegate_park
     - get_agent_task
     - list_agent_tasks
     - search_memories

@@ -122,7 +122,11 @@ export function normalizeRuntimeForSelectableProvider({
   return normalizeRuntimeSelection(
     {
       provider: fallbackProvider,
-      modelId: defaultModelForProvider(fallbackProvider, modelRegistry),
+      modelId: defaultModelForProvider(
+        fallbackProvider,
+        modelRegistry,
+        supportedModelAliasesForProvider(providerOptions, fallbackProvider),
+      ),
     },
     modelRegistry,
     supportedEffortsForProvider(providerOptions, fallbackProvider),

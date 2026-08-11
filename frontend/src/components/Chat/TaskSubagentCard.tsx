@@ -4,10 +4,10 @@
  *
  * Features:
  * - Header: subagent type badge, description, model badge, running timer / completed duration
- * - Body (running): numbered list of child tool calls (StreamingToolIndicator-style)
+ * - Body (running): numbered list of child tool calls
  *   with Edit/Write calls rendered as inline DiffToolCallViews
  * - Body (completed): collapsed summary with duration, token count, tool use count
- * - Styling matches StreamingToolIndicator aesthetic (bg-elevated, border-subtle, orange accent)
+ * - Styling uses the shared task-card surface (bg-elevated, border-subtle, orange accent)
  */
 
 import React, { useState, useRef, useEffect, useCallback } from "react";
@@ -18,6 +18,8 @@ import {
   TaskCardKindBadge,
   TaskCardModelBadge,
   TaskCardProviderHarnessBadge,
+  TaskCardProviderModelBadge,
+  TaskCardRuntimeDetails,
   TaskCardStatusBadge,
   TaskCardSubagentTypeBadge,
   TaskCardSummary,
@@ -28,6 +30,7 @@ import {
 import { buildTaskCardTranscriptEntryFromStreamingTask } from "./TaskCardTranscript.utils";
 import { TaskToolCallDelegatedTranscript } from "./TaskToolCallDelegatedTranscript";
 import { canonicalizeToolName } from "./tool-widgets/tool-name";
+import { useDelegateCardExpansion } from "./useDelegateCardExpansion";
 
 // ============================================================================
 // Constants
@@ -95,7 +98,11 @@ export const TaskSubagentCard = React.memo(function TaskSubagentCard({
   const isCompleted = task.status === "completed";
   const isFailed = task.status === "failed";
   const isCancelled = task.status === "cancelled";
-  const [isExpanded, setIsExpanded] = useState(false);
+  const isDelegateCall = canonicalizeToolName(task.toolName) === "delegate_start";
+  const { isExpanded, setIsExpanded } = useDelegateCardExpansion(
+    task.delegatedJobId || task.toolUseId || "delegate",
+    isDelegateCall,
+  );
   const contentRef = useRef<HTMLDivElement>(null);
   const isNearBottomRef = useRef(true);
 
@@ -109,13 +116,6 @@ export const TaskSubagentCard = React.memo(function TaskSubagentCard({
     isNearBottomRef.current = distanceFromBottom <= NEAR_BOTTOM_THRESHOLD;
   }, []);
 
-  // Auto-collapse when completed
-  useEffect(() => {
-    if (isCompleted) {
-      setIsExpanded(false);
-    }
-  }, [isCompleted]);
-
   const transcriptEntry = buildTaskCardTranscriptEntryFromStreamingTask(task);
   const hasTranscriptBody = transcriptEntry.blocks.length > 0;
   const hasChildCalls = transcriptEntry.blocks.some((block) => block.type === "tool_call");
@@ -127,9 +127,8 @@ export const TaskSubagentCard = React.memo(function TaskSubagentCard({
     }
   }, [task.childToolCalls.length, isRunning]);
 
-  const isDelegateCall = canonicalizeToolName(task.toolName) === "delegate_start";
   const delegatedConversationId = isDelegateCall ? task.delegatedConversationId ?? null : null;
-  const hasBody = hasTranscriptBody || delegatedConversationId != null;
+  const hasBody = hasTranscriptBody || delegatedConversationId != null || isDelegateCall;
   const providerMetadata = {
     providerHarness: task.providerHarness,
     providerSessionId: task.providerSessionId,
@@ -139,6 +138,8 @@ export const TaskSubagentCard = React.memo(function TaskSubagentCard({
     effectiveModelId: task.effectiveModelId,
     logicalEffort: task.logicalEffort,
     effectiveEffort: task.effectiveEffort,
+    approvalPolicy: task.approvalPolicy,
+    sandboxMode: task.sandboxMode,
     inputTokens: task.inputTokens,
     outputTokens: task.outputTokens,
     cacheCreationTokens: task.cacheCreationTokens,
@@ -152,7 +153,9 @@ export const TaskSubagentCard = React.memo(function TaskSubagentCard({
       className="rounded-lg overflow-hidden mb-2"
       style={{
         backgroundColor: "var(--bg-elevated)",
-        border: "1px solid var(--border-subtle)",
+        borderColor: "var(--border-subtle)",
+        borderStyle: "solid",
+        borderWidth: "1px",
       }}
     >
       {/* Header */}
@@ -205,11 +208,15 @@ export const TaskSubagentCard = React.memo(function TaskSubagentCard({
         />
 
         {/* Model badge */}
-        <TaskCardModelBadge
-          label={task.effectiveModelId ?? task.logicalModel ?? task.model}
-          colorKey={task.effectiveModelId ?? task.logicalModel ?? task.model}
-          providerMetadata={providerMetadata}
-        />
+        {isDelegateCall ? (
+          <TaskCardProviderModelBadge providerMetadata={providerMetadata} />
+        ) : (
+          <TaskCardModelBadge
+            label={task.effectiveModelId ?? task.logicalModel ?? task.model}
+            colorKey={task.effectiveModelId ?? task.logicalModel ?? task.model}
+            providerMetadata={providerMetadata}
+          />
+        )}
 
         <TaskCardStatusBadge
           label={(isFailed || isCancelled) ? task.status : null}
@@ -235,13 +242,27 @@ export const TaskSubagentCard = React.memo(function TaskSubagentCard({
               className="overflow-y-auto"
               style={{ maxHeight: `${MAX_CONTENT_HEIGHT}px`, overscrollBehavior: "contain" }}
             >
+              {isDelegateCall && (
+                <TaskCardRuntimeDetails providerMetadata={providerMetadata} />
+              )}
               {delegatedConversationId ? (
                 <TaskToolCallDelegatedTranscript
                   conversationId={delegatedConversationId}
+                  delegatedAgentRunId={task.delegatedAgentRunId}
                   fallbackText={task.textOutput}
                 />
-              ) : (
+              ) : hasTranscriptBody ? (
                 <TaskCardTranscriptView entries={[transcriptEntry]} />
+              ) : (
+                <div
+                  className="text-[0.6875rem] px-2 py-1.5 rounded"
+                  style={{
+                    backgroundColor: "var(--bg-surface)",
+                    color: "var(--text-muted)",
+                  }}
+                >
+                  {isRunning ? "Waiting for delegated output..." : "No delegated output available."}
+                </div>
               )}
             </div>
           )}

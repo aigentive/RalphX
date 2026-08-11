@@ -1,5 +1,11 @@
-use axum::{body::Body, extract::{Path, State}, http::Request, routing::get, Json};
-use ralphx_lib::application::{AppState, TeamService, TeamStateTracker};
+use axum::{
+    body::Body,
+    extract::{Path, State},
+    http::Request,
+    routing::get,
+    Json,
+};
+use ralphx_lib::application::AppState;
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
     ApiKey, ApiKeyId, PERMISSION_ADMIN, PERMISSION_READ, PERMISSION_WRITE,
@@ -25,13 +31,9 @@ fn validate_api_key_app(state: HttpServerState) -> axum::Router {
 async fn setup_test_state() -> HttpServerState {
     let app_state = Arc::new(AppState::new_test());
     let execution_state = Arc::new(ExecutionState::new());
-    let tracker = TeamStateTracker::new();
-    let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
     HttpServerState {
         app_state,
         execution_state,
-        team_tracker: tracker,
-        team_service,
         delegation_service: Default::default(),
     }
 }
@@ -52,13 +54,9 @@ fn setup_sqlite_api_key_state() -> (SqliteTestDb, HttpServerState) {
     app_state.api_key_repo = sqlite_repo;
 
     let execution_state = Arc::new(ExecutionState::new());
-    let tracker = TeamStateTracker::new();
-    let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
     let state = HttpServerState {
         app_state: Arc::new(app_state),
         execution_state,
-        team_tracker: tracker,
-        team_service,
         delegation_service: Default::default(),
     };
     (db, state)
@@ -270,15 +268,14 @@ async fn test_get_audit_log_handler() {
     let state = setup_test_state().await;
     let (_, key_id) = create_test_key(&state, PERMISSION_ADMIN).await;
 
-    let result = get_audit_log(
-        State(state.clone()),
-        Path(key_id.as_str().to_string()),
-    )
-    .await;
+    let result = get_audit_log(State(state.clone()), Path(key_id.as_str().to_string())).await;
 
     let response = result.expect("get_audit_log should succeed");
     // Memory repo returns an empty list — verify the entries field exists (is a Vec)
-    assert!(response.0.entries.is_empty(), "memory repo returns no entries");
+    assert!(
+        response.0.entries.is_empty(),
+        "memory repo returns no entries"
+    );
 }
 
 // ============================================================================
@@ -293,7 +290,9 @@ async fn test_update_key_permissions_handler_success() {
     let result = update_key_permissions(
         State(state.clone()),
         Path(key_id.as_str().to_string()),
-        Json(UpdatePermissionsRequest { permissions: (PERMISSION_READ | PERMISSION_WRITE) as i64 }),
+        Json(UpdatePermissionsRequest {
+            permissions: (PERMISSION_READ | PERMISSION_WRITE) as i64,
+        }),
     )
     .await;
 
@@ -308,7 +307,9 @@ async fn test_update_key_permissions_handler_not_found() {
     let result = update_key_permissions(
         State(state.clone()),
         Path("nonexistent-key-id".to_string()),
-        Json(UpdatePermissionsRequest { permissions: PERMISSION_READ as i64 }),
+        Json(UpdatePermissionsRequest {
+            permissions: PERMISSION_READ as i64,
+        }),
     )
     .await;
 

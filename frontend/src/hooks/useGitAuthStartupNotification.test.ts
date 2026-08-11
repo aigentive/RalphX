@@ -1,10 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  GIT_AUTH_STARTUP_TOAST_DURATION,
-  createStartupGitAuthToastOptions,
-  hasStartupGitAuthIssue,
-} from "./useGitAuthStartupNotification";
+import { hasStartupGitAuthIssue } from "./useGitAuthStartupNotification";
+import type { GitHubConnectionStatus } from "@/api/github";
 import type { GitAuthDiagnostics } from "./useGithubSettings";
 import type { Project } from "@/types/project";
 
@@ -42,6 +39,24 @@ function diagnostics(overrides: Partial<GitAuthDiagnostics> = {}): GitAuthDiagno
   };
 }
 
+function ghStatus(
+  state: GitHubConnectionStatus["state"],
+): GitHubConnectionStatus {
+  return {
+    state,
+    diagnostic:
+      state === "authenticated"
+        ? null
+        : state === "provider_unavailable"
+          ? "http5xx"
+          : "missing_credentials",
+    ghInstalled: state !== "cli_unavailable",
+    authenticated: state === "authenticated",
+    host: state === "cli_unavailable" ? null : "github.com",
+    account: state === "authenticated" ? "octocat" : null,
+  };
+}
+
 describe("hasStartupGitAuthIssue", () => {
   it("flags mixed fetch and push auth modes", () => {
     expect(
@@ -54,13 +69,25 @@ describe("hasStartupGitAuthIssue", () => {
           canSwitchToSsh: true,
           suggestedSshUrl: "git@github.com:owner/repo.git",
         }),
-        true,
+        ghStatus("authenticated"),
       ),
     ).toBe(true);
   });
 
   it("flags GitHub PR mode when gh is not authenticated", () => {
-    expect(hasStartupGitAuthIssue(project(), diagnostics(), false)).toBe(true);
+    expect(
+      hasStartupGitAuthIssue(project(), diagnostics(), ghStatus("unauthenticated")),
+    ).toBe(true);
+  });
+
+  it("flags transient provider failures without treating them as credential repair", () => {
+    expect(
+      hasStartupGitAuthIssue(
+        project(),
+        diagnostics(),
+        ghStatus("provider_unavailable"),
+      ),
+    ).toBe(true);
   });
 
   it("does not flag an SSH project without PR mode when gh is missing", () => {
@@ -68,7 +95,7 @@ describe("hasStartupGitAuthIssue", () => {
       hasStartupGitAuthIssue(
         project({ githubPrEnabled: false }),
         diagnostics(),
-        false,
+        ghStatus("unauthenticated"),
       ),
     ).toBe(false);
   });
@@ -84,7 +111,7 @@ describe("hasStartupGitAuthIssue", () => {
           pushKind: "HTTPS",
           githubHttpsCredentialHelperConfigured: false,
         }),
-        true,
+        ghStatus("authenticated"),
       ),
     ).toBe(true);
   });
@@ -102,19 +129,8 @@ describe("hasStartupGitAuthIssue", () => {
           canSwitchToSsh: true,
           suggestedSshUrl: "git@github.com:owner/repo.git",
         }),
-        true,
+        ghStatus("authenticated"),
       ),
     ).toBe(false);
-  });
-});
-
-describe("createStartupGitAuthToastOptions", () => {
-  it("keeps git auth startup warnings visible until the user acts", () => {
-    const options = createStartupGitAuthToastOptions("project-1");
-
-    expect(options.duration).toBe(GIT_AUTH_STARTUP_TOAST_DURATION);
-    expect(options.duration).toBe(Infinity);
-    expect(options.id).toBe("git-auth-startup:project-1");
-    expect(options.className).toBe("git-auth-startup-toast");
   });
 });

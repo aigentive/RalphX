@@ -4,6 +4,7 @@
 use super::helpers::*;
 use crate::domain::entities::InternalStatus;
 use crate::domain::state_machine::{State, TaskEvent, TaskStateMachine, TransitionHandler};
+use crate::utils::path_safety::validate_absolute_non_root_path;
 use std::sync::Arc;
 
 /// Helper: initialize a git repo in the given directory with an initial commit.
@@ -39,6 +40,23 @@ fn git_add_and_commit(repo_path: &std::path::Path, message: &str) {
         .current_dir(repo_path)
         .output()
         .unwrap();
+}
+
+fn git_rev_parse(repo_path: &std::path::Path, ref_name: &str) -> String {
+    use std::process::Command;
+    let repo_path = validate_absolute_non_root_path(repo_path, "branch discovery test repository")
+        .expect("safe test repo");
+    let output = Command::new("git")
+        .args(["rev-parse", ref_name])
+        .current_dir(&repo_path)
+        .output()
+        .expect("git rev-parse failed");
+    assert!(
+        output.status.success(),
+        "git rev-parse {ref_name} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
 // ==================
@@ -84,9 +102,10 @@ async fn test_branch_discovery_integrates_with_pending_merge() {
     task_repo.create(task.clone()).await.unwrap();
     project_repo.create(project.clone()).await.unwrap();
 
-    let mut services = TaskServices::new_mock();
-    services.task_repo = Some(task_repo.clone());
-    services.project_repo = Some(project_repo.clone());
+    let services =
+        with_default_test_branch_update_authority(TaskServices::new_mock(), Arc::clone(&task_repo))
+            .with_task_repo(Arc::clone(&task_repo))
+            .with_project_repo(Arc::clone(&project_repo));
 
     let context = create_context_with_services(task.id.as_str(), project.id.as_str(), services);
     let mut machine = TaskStateMachine::new(context);
@@ -153,9 +172,10 @@ async fn test_merge_retry_recovery_discovers_branch_and_merges() {
     task_repo.create(task.clone()).await.unwrap();
     project_repo.create(project.clone()).await.unwrap();
 
-    let mut services = TaskServices::new_mock();
-    services.task_repo = Some(task_repo.clone());
-    services.project_repo = Some(project_repo.clone());
+    let services =
+        with_default_test_branch_update_authority(TaskServices::new_mock(), Arc::clone(&task_repo))
+            .with_task_repo(Arc::clone(&task_repo))
+            .with_project_repo(Arc::clone(&project_repo));
 
     let context = create_context_with_services(task.id.as_str(), project.id.as_str(), services);
     let mut machine = TaskStateMachine::new(context);
@@ -165,24 +185,29 @@ async fn test_merge_retry_recovery_discovers_branch_and_merges() {
 
     let repo = Arc::clone(&task_repo);
     let tid = task.id.clone();
+    let merged = wait_for_condition(
+        || {
+            let r = Arc::clone(&repo);
+            let t = tid.clone();
+            async move {
+                r.get_by_id(&t).await.unwrap().unwrap().internal_status == InternalStatus::Merged
+            }
+        },
+        5000,
+    )
+    .await;
+    let updated = task_repo.get_by_id(&task.id).await.unwrap().unwrap();
     assert!(
-        wait_for_condition(
-            || {
-                let r = Arc::clone(&repo);
-                let t = tid.clone();
-                async move {
-                    r.get_by_id(&t).await.unwrap().unwrap().internal_status == InternalStatus::Merged
-                }
-            },
-            5000
-        ).await,
-        "Task should transition to Merged after successful programmatic merge (branch={expected_branch})"
+        merged,
+        "Task should transition to Merged after successful programmatic merge (branch={expected_branch}); got {:?} with metadata {:?}",
+        updated.internal_status,
+        updated.metadata,
     );
 }
 
-/// Conflicting changes on target → retry → branch discovered → Merging (agent path).
+/// Conflicting changes on target → retry → branch discovered → dedicated task update.
 #[tokio::test]
-async fn test_merge_retry_recovery_detects_conflicts_and_enters_merging() {
+async fn test_merge_retry_recovery_detects_conflicts_and_enters_task_branch_update() {
     use crate::domain::entities::{Project, Task};
     use crate::infrastructure::memory::{MemoryProjectRepository, MemoryTaskRepository};
     use std::process::Command;
@@ -229,9 +254,19 @@ async fn test_merge_retry_recovery_detects_conflicts_and_enters_merging() {
     task_repo.create(task.clone()).await.unwrap();
     project_repo.create(project.clone()).await.unwrap();
 
-    let mut services = TaskServices::new_mock();
-    services.task_repo = Some(task_repo.clone());
-    services.project_repo = Some(project_repo.clone());
+    let branch_update_repo = crate::testing::memory_branch_update_repository_with_task_repository(
+        Arc::clone(&task_repo),
+    );
+    let chat_service = Arc::new(MockChatService::new());
+    let services = TaskServices::new_mock()
+        .with_chat_service(Arc::clone(&chat_service) as Arc<dyn ChatService>)
+        .with_branch_update_repo(Arc::clone(&branch_update_repo))
+        .with_branch_update_workflow(crate::testing::branch_update_workflow(Arc::clone(
+            &chat_service,
+        )
+            as Arc<dyn ChatService>))
+        .with_task_repo(Arc::clone(&task_repo))
+        .with_project_repo(Arc::clone(&project_repo));
 
     let context = create_context_with_services(task.id.as_str(), project.id.as_str(), services);
     let mut machine = TaskStateMachine::new(context);
@@ -248,13 +283,13 @@ async fn test_merge_retry_recovery_detects_conflicts_and_enters_merging() {
                 let t = tid.clone();
                 async move {
                     let status = r.get_by_id(&t).await.unwrap().unwrap().internal_status;
-                    status == InternalStatus::Merging
+                    status == InternalStatus::UpdatingTaskBranch
                 }
             },
             5000
         )
         .await,
-        "Task should transition to Merging when conflicts are detected"
+        "Task should transition to UpdatingTaskBranch when freshness conflicts are detected"
     );
 
     let updated_task = task_repo.get_by_id(&task.id).await.unwrap().unwrap();
@@ -262,6 +297,26 @@ async fn test_merge_retry_recovery_detects_conflicts_and_enters_merging() {
         updated_task.task_branch,
         Some(expected_branch.clone()),
         "Branch should be discovered and re-attached during retry"
+    );
+    let operation = branch_update_repo
+        .get_active_operation(&task.id)
+        .await
+        .unwrap()
+        .expect("dedicated update state must have an active operation");
+    assert_eq!(
+        operation.direction,
+        crate::domain::entities::BranchUpdateDirection::TaskBranch
+    );
+    assert!(
+        operation
+            .workspace_path
+            .as_ref()
+            .is_some_and(|path| path.exists()),
+        "Conflicted branch update must retain its operation-owned workspace"
+    );
+    assert!(
+        chat_service.call_count() >= 1,
+        "Conflicted branch update must spawn the dedicated resolver"
     );
 }
 
@@ -279,6 +334,7 @@ async fn test_executing_entry_recovers_existing_branch_into_worktree() {
 
     std::fs::write(repo_path.join("README.md"), "initial content").unwrap();
     git_add_and_commit(&repo_path, "Initial commit");
+    let base_sha = git_rev_parse(&repo_path, "main");
 
     let worktree_parent = temp_dir.path().join("worktrees");
     std::fs::create_dir_all(&worktree_parent).unwrap();
@@ -292,6 +348,8 @@ async fn test_executing_entry_recovers_existing_branch_into_worktree() {
     let mut task = Task::new(project.id.clone(), "Test worktree recovery".to_string());
     task.internal_status = InternalStatus::Failed;
     task.task_branch = None;
+    task.task_branch_base_ref = Some("main".to_string());
+    task.task_branch_base_sha = Some(base_sha);
 
     let expected_branch = format!("ralphx/test-project/task-{}", task.id.as_str());
     Command::new("git")
@@ -308,9 +366,10 @@ async fn test_executing_entry_recovers_existing_branch_into_worktree() {
     task_repo.create(task.clone()).await.unwrap();
     project_repo.create(project.clone()).await.unwrap();
 
-    let mut services = TaskServices::new_mock();
-    services.task_repo = Some(task_repo.clone());
-    services.project_repo = Some(project_repo.clone());
+    let services =
+        with_default_test_branch_update_authority(TaskServices::new_mock(), Arc::clone(&task_repo))
+            .with_task_repo(Arc::clone(&task_repo))
+            .with_project_repo(Arc::clone(&project_repo));
 
     let context = create_context_with_services(task.id.as_str(), project.id.as_str(), services);
     let mut machine = TaskStateMachine::new(context);

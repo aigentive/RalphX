@@ -1,3 +1,8 @@
+---
+paths:
+  - "src-tauri/src/**/*.rs"
+---
+
 > **Maintainer note:** Keep this compact. Add binaries here only when production app runtime launches them.
 
 # Production CLI Resolution
@@ -14,7 +19,7 @@
 
 | Binary | Runtime Use |
 |---|---|
-| `claude` | Claude harness chat/execution and MCP registration |
+| `claude` | Claude harness chat/execution and reserved user-scope `ralphx` MCP registration cleanup |
 | `codex` | Codex harness chat/execution and capability probes |
 | `gh` | GitHub auth, PR polling, PR/release operations |
 | `git` | repository state, diffs, worktrees, merge/cleanup |

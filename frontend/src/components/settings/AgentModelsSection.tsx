@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Cpu, Plus, Save, Trash2 } from "lucide-react";
+import { Plus, Save, Trash2 } from "lucide-react";
 
 import type { AgentModelResponse } from "@/api/agent-models";
 import { Button } from "@/components/ui/button";
@@ -21,7 +21,7 @@ import {
   type AgentProvider,
 } from "@/lib/agent-models";
 
-import { ErrorBanner, SectionCard } from "./SettingsView.shared";
+import { ErrorBanner, SettingsSection } from "./SettingsView.shared";
 
 const PROVIDERS: Array<{ value: AgentProvider; label: string }> = [
   { value: "claude", label: "Claude" },
@@ -179,11 +179,7 @@ export function AgentModelsSection() {
     (deleteError instanceof Error ? deleteError.message : null);
 
   return (
-    <SectionCard
-      icon={<Cpu className="h-5 w-5" />}
-      title="Models"
-      description="Manage provider models and effort compatibility used by Agents and lane settings."
-    >
+    <SettingsSection>
       {displayedError && (
         <ErrorBanner error={displayedError} onDismiss={() => setLocalError(null)} />
       )}
@@ -417,6 +413,6 @@ export function AgentModelsSection() {
           </div>
         </div>
       </div>
-    </SectionCard>
+    </SettingsSection>
   );
 }

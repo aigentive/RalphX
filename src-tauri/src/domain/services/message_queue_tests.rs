@@ -1,4 +1,95 @@
 use super::*;
+use crate::domain::entities::{PersonaDirective, PersonaId};
+
+#[test]
+fn queued_message_pre_upgrade_payload_without_persona_keys_deserializes_to_inherit() {
+    let payload = r#"{
+        "id":"queued-legacy-1",
+        "content":"Continue the task after the current run.",
+        "created_at":"2026-07-11T10:00:00+00:00",
+        "is_editing":false,
+        "metadata_override":"{\"source\":\"queue\"}",
+        "force_new_provider_session":false,
+        "composer_project_references":[],
+        "composer_integration_references":[],
+        "composer_artifact_references":[],
+        "attachment_ids":[]
+    }"#;
+
+    let queued: QueuedMessage =
+        serde_json::from_str(payload).expect("pre-upgrade queued payload should deserialize");
+
+    assert_eq!(queued.persona_directive, PersonaDirective::Inherit);
+    assert_eq!(queued.agent_name_override, None);
+    assert_eq!(queued.composer_selection_snapshot, None);
+    assert!(queued.composer_excerpt_references.is_empty());
+    assert_eq!(queued.persisted_message_id, None);
+}
+
+#[test]
+fn queued_message_round_trips_persisted_message_id() {
+    let mut queued = QueuedMessage::new("Retry stdin turn".to_string());
+    queued.persisted_message_id = Some("existing-user-message".to_string());
+
+    let serialized = serde_json::to_string(&queued).expect("serialize queued message");
+    let restored: QueuedMessage = serde_json::from_str(&serialized).expect("deserialize queue");
+
+    assert_eq!(restored.persisted_message_id, queued.persisted_message_id);
+}
+
+#[test]
+fn queued_message_round_trips_selection_snapshot() {
+    let mut queued = QueuedMessage::new("Review the selected lines".to_string());
+    queued.composer_selection_snapshot = Some(ComposerSelectionSnapshot {
+        source_type: "ticket".to_string(),
+        source_kind: "linear".to_string(),
+        source_id: "issue-42".to_string(),
+        source_title: Some("Queue recovery".to_string()),
+        source_key: Some("RX-42".to_string()),
+        provider: Some("linear".to_string()),
+        artifact_version: None,
+        source_revision: Some("2026-07-16T09:00:00Z".to_string()),
+        start_line: 7,
+        end_line: 8,
+        content: "first\nsecond".to_string(),
+    });
+
+    let serialized = serde_json::to_string(&queued).expect("serialize queued selection");
+    let restored: QueuedMessage =
+        serde_json::from_str(&serialized).expect("deserialize queued selection");
+
+    assert_eq!(
+        restored.composer_selection_snapshot,
+        queued.composer_selection_snapshot
+    );
+    let value: serde_json::Value = serde_json::from_str(&serialized).expect("queued json");
+    assert_eq!(value["composer_selection_snapshot"]["startLine"], 7);
+    assert!(value["composer_selection_snapshot"]
+        .get("start_line")
+        .is_none());
+}
+
+#[test]
+fn queued_message_round_trips_persona_directive_and_agent_override() {
+    let directives = [
+        PersonaDirective::Inherit,
+        PersonaDirective::Suppress,
+        PersonaDirective::Explicit(PersonaId::from_string("persona-queued-1")),
+    ];
+
+    for directive in directives {
+        let mut queued = QueuedMessage::new("Continue the task".to_string());
+        queued.agent_name_override = Some("ralphx-persona-agent".to_string());
+        queued.persona_directive = directive;
+
+        let serialized = serde_json::to_string(&queued).expect("queued message should serialize");
+        let restored: QueuedMessage =
+            serde_json::from_str(&serialized).expect("queued message should deserialize");
+
+        assert_eq!(restored.persona_directive, queued.persona_directive);
+        assert_eq!(restored.agent_name_override, queued.agent_name_override);
+    }
+}
 
 #[test]
 fn test_queue_and_pop() {
@@ -28,6 +119,24 @@ fn test_queue_and_pop() {
     // Queue should be empty now
     let popped3 = queue.pop(ChatContextType::Ideation, "session-1");
     assert!(popped3.is_none());
+}
+
+#[test]
+fn standalone_and_branch_update_queue_counts_use_shared_context_parsing() {
+    let queue = MessageQueue::new();
+    queue.queue(
+        ChatContextType::Standalone,
+        "conversation-1",
+        "standalone".to_string(),
+    );
+    queue.queue(
+        ChatContextType::BranchUpdate,
+        "task-1",
+        "branch update".to_string(),
+    );
+
+    assert_eq!(queue.count_for_context("standalone", "conversation-1"), 1);
+    assert_eq!(queue.count_for_context("branch_update", "task-1"), 1);
 }
 
 #[test]
@@ -377,6 +486,47 @@ fn test_queue_front_on_empty_queue() {
 }
 
 #[test]
+fn queue_back_existing_replaces_the_stable_id_at_the_back() {
+    let queue = MessageQueue::new();
+    let first = queue.queue_with_client_id(
+        ChatContextType::Ideation,
+        "session-1",
+        "First".to_string(),
+        "first".to_string(),
+    );
+    queue.queue_with_client_id(
+        ChatContextType::Ideation,
+        "session-1",
+        "Outdated".to_string(),
+        "replace-me".to_string(),
+    );
+    let third = queue.queue_with_client_id(
+        ChatContextType::Ideation,
+        "session-1",
+        "Third".to_string(),
+        "third".to_string(),
+    );
+    let replacement = QueuedMessage::with_id("replace-me".to_string(), "Updated".to_string());
+
+    queue.queue_back_existing(ChatContextType::Ideation, "session-1", replacement.clone());
+
+    let queued = queue.get_queued(ChatContextType::Ideation, "session-1");
+    assert_eq!(
+        queued
+            .iter()
+            .map(|message| message.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            first.id.as_str(),
+            third.id.as_str(),
+            replacement.id.as_str()
+        ],
+        "replacing a stable ID must retain the order of unrelated messages"
+    );
+    assert_eq!(queued[2], replacement);
+}
+
+#[test]
 fn test_with_key_methods() {
     let queue = MessageQueue::new();
     let key = QueueKey::ideation("session-1");
@@ -399,10 +549,25 @@ fn test_with_key_methods() {
 }
 
 #[test]
-fn test_remove_stale_drops_old_messages() {
+fn message_metadata_hidden_from_ui_accepts_hidden_or_recovery_flags() {
+    assert!(message_metadata_hidden_from_ui(Some(
+        r#"{"hidden_from_ui":true}"#,
+    )));
+    assert!(message_metadata_hidden_from_ui(Some(
+        r#"{"recovery_context":true}"#,
+    )));
+    assert!(!message_metadata_hidden_from_ui(Some(
+        r#"{"hidden_from_ui":false}"#,
+    )));
+    assert!(!message_metadata_hidden_from_ui(Some("not-json")));
+    assert!(!message_metadata_hidden_from_ui(None));
+}
+
+#[test]
+fn test_remove_stale_retains_old_user_messages_and_drops_hidden_recovery_messages() {
     let queue = MessageQueue::new();
 
-    // Manually construct a stale message (created 10 minutes ago)
+    // Manually construct messages created 10 minutes ago.
     let stale_ts = (chrono::Utc::now() - chrono::Duration::seconds(600)).to_rfc3339();
     let fresh_ts = chrono::Utc::now().to_rfc3339();
 
@@ -413,18 +578,47 @@ fn test_remove_stale_drops_old_messages() {
         q.push(QueuedMessage {
             id: "stale-1".to_string(),
             content: "Old message".to_string(),
-            created_at: stale_ts,
+            created_at: stale_ts.clone(),
             is_editing: false,
+            persisted_message_id: None,
             metadata_override: None,
             created_at_override: None,
             harness_override: None,
+            agent_name_override: None,
+            persona_directive: PersonaDirective::Inherit,
             model_override: None,
             logical_effort_override: None,
             service_tier_override: None,
+            preserve_conversation_provider_session_ref: false,
             force_new_provider_session: false,
             composer_project_references: Vec::new(),
             composer_integration_references: Vec::new(),
             composer_artifact_references: Vec::new(),
+            composer_selection_snapshot: None,
+            composer_excerpt_references: Vec::new(),
+            attachment_ids: Vec::new(),
+        });
+        q.push(QueuedMessage {
+            id: "hidden-recovery-1".to_string(),
+            content: "Internal recovery".to_string(),
+            created_at: stale_ts.clone(),
+            is_editing: false,
+            persisted_message_id: None,
+            metadata_override: Some(r#"{"recovery_context":true,"recovery_reason":"silent_completion_after_tool_activity"}"#.to_string()),
+            created_at_override: None,
+            harness_override: None,
+            agent_name_override: None,
+            persona_directive: PersonaDirective::Inherit,
+            model_override: None,
+            logical_effort_override: None,
+            service_tier_override: None,
+            preserve_conversation_provider_session_ref: false,
+            force_new_provider_session: false,
+            composer_project_references: Vec::new(),
+            composer_integration_references: Vec::new(),
+            composer_artifact_references: Vec::new(),
+            composer_selection_snapshot: None,
+            composer_excerpt_references: Vec::new(),
             attachment_ids: Vec::new(),
         });
         q.push(QueuedMessage {
@@ -432,28 +626,35 @@ fn test_remove_stale_drops_old_messages() {
             content: "Fresh message".to_string(),
             created_at: fresh_ts,
             is_editing: false,
+            persisted_message_id: None,
             metadata_override: None,
             created_at_override: None,
             harness_override: None,
+            agent_name_override: None,
+            persona_directive: PersonaDirective::Inherit,
             model_override: None,
             logical_effort_override: None,
             service_tier_override: None,
+            preserve_conversation_provider_session_ref: false,
             force_new_provider_session: false,
             composer_project_references: Vec::new(),
             composer_integration_references: Vec::new(),
             composer_artifact_references: Vec::new(),
+            composer_selection_snapshot: None,
+            composer_excerpt_references: Vec::new(),
             attachment_ids: Vec::new(),
         });
     }
 
-    // Threshold: 300s — stale-1 (600s old) should be dropped, fresh-1 kept
+    // Threshold: 300s — only the hidden recovery message should be dropped.
     let dropped = queue.remove_stale(ChatContextType::Ideation, "sess-stale", 300);
     assert_eq!(dropped.len(), 1);
-    assert_eq!(dropped[0].id, "stale-1");
+    assert_eq!(dropped[0].id, "hidden-recovery-1");
 
     let remaining = queue.get_queued(ChatContextType::Ideation, "sess-stale");
-    assert_eq!(remaining.len(), 1);
-    assert_eq!(remaining[0].id, "fresh-1");
+    assert_eq!(remaining.len(), 2);
+    assert_eq!(remaining[0].id, "stale-1");
+    assert_eq!(remaining[1].id, "fresh-1");
 }
 
 #[test]
@@ -551,6 +752,8 @@ fn test_queue_with_overrides_preserves_composer_project_references() {
         references.clone(),
         Vec::new(),
         Vec::new(),
+        None,
+        Vec::new(),
         Vec::new(),
     );
 
@@ -585,6 +788,8 @@ fn test_queue_with_overrides_preserves_composer_integration_references() {
         None,
         Vec::new(),
         references.clone(),
+        Vec::new(),
+        None,
         Vec::new(),
         Vec::new(),
     );
@@ -656,12 +861,52 @@ fn test_queue_with_overrides_preserves_composer_artifact_references() {
         Vec::new(),
         Vec::new(),
         references.clone(),
+        None,
+        Vec::new(),
         Vec::new(),
     );
 
     assert_eq!(queued.composer_artifact_references, references);
     let popped = queue.pop(ChatContextType::Project, "project-1").unwrap();
     assert_eq!(popped.composer_artifact_references, references);
+}
+
+#[test]
+fn test_queue_with_overrides_preserves_composer_excerpt_references() {
+    let queue = MessageQueue::new();
+    let references = vec![ComposerExcerptReference {
+        source_kind: "task".to_string(),
+        source_id: "task-1".to_string(),
+        source_label: "Task".to_string(),
+        title: Some("Implement selection".to_string()),
+        excerpt: "Preserve this exact context".to_string(),
+        artifact_id: None,
+        session_id: None,
+        version: None,
+        url: None,
+        file_path: None,
+        revision: None,
+        locator: Some("Description".to_string()),
+    }];
+
+    let queued = queue.queue_with_overrides_and_project_references(
+        ChatContextType::Project,
+        "project-1",
+        "Use selected task context".to_string(),
+        None,
+        None,
+        None,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        None,
+        references.clone(),
+        Vec::new(),
+    );
+
+    assert_eq!(queued.composer_excerpt_references, references);
+    let popped = queue.pop(ChatContextType::Project, "project-1").unwrap();
+    assert_eq!(popped.composer_excerpt_references, references);
 }
 
 #[test]
@@ -680,6 +925,8 @@ fn test_queue_with_overrides_preserves_attachment_ids() {
         None,
         Vec::new(),
         Vec::new(),
+        Vec::new(),
+        None,
         Vec::new(),
         attachment_ids.clone(),
     );
@@ -700,11 +947,15 @@ fn test_queue_standard_has_no_overrides() {
     assert_eq!(queued.metadata_override, None);
     assert_eq!(queued.created_at_override, None);
     assert_eq!(queued.harness_override, None);
+    assert_eq!(queued.agent_name_override, None);
+    assert_eq!(queued.persona_directive, PersonaDirective::Inherit);
     assert_eq!(queued.model_override, None);
     assert_eq!(queued.logical_effort_override, None);
     assert!(!queued.force_new_provider_session);
     assert!(queued.composer_project_references.is_empty());
     assert!(queued.composer_integration_references.is_empty());
+    assert_eq!(queued.composer_selection_snapshot, None);
+    assert!(queued.composer_excerpt_references.is_empty());
     assert!(queued.attachment_ids.is_empty());
 }
 
@@ -744,12 +995,16 @@ fn test_queue_with_runtime_overrides_preserves_selection() {
         Some(r#"{"source":"runtime-picker"}"#.to_string()),
         Some("2026-06-12T12:00:00Z".to_string()),
         Some(AgentHarnessKind::Codex),
+        None,
+        PersonaDirective::Inherit,
         Some("gpt-5.5".to_string()),
         Some(LogicalEffort::XHigh),
         Some("fast".to_string()),
         true,
         Vec::new(),
         Vec::new(),
+        Vec::new(),
+        None,
         Vec::new(),
         Vec::new(),
     );
@@ -778,16 +1033,22 @@ fn test_remove_stale_unparseable_timestamp_retained() {
             content: "Unparseable timestamp".to_string(),
             created_at: "not-a-timestamp".to_string(),
             is_editing: false,
+            persisted_message_id: None,
             metadata_override: None,
             created_at_override: None,
             harness_override: None,
+            agent_name_override: None,
+            persona_directive: PersonaDirective::Inherit,
             model_override: None,
             logical_effort_override: None,
             service_tier_override: None,
+            preserve_conversation_provider_session_ref: false,
             force_new_provider_session: false,
             composer_project_references: Vec::new(),
             composer_integration_references: Vec::new(),
             composer_artifact_references: Vec::new(),
+            composer_selection_snapshot: None,
+            composer_excerpt_references: Vec::new(),
             attachment_ids: Vec::new(),
         });
     }

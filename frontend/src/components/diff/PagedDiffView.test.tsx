@@ -179,6 +179,30 @@ describe("PagedDiffView", () => {
     vi.unstubAllGlobals();
   });
 
+  it("announces the initial paged loading state", () => {
+    mockGetDiffPage.mockImplementation(() => new Promise(() => {}));
+
+    render(
+      <PagedDiffView
+        conversationId="conv-loading"
+        filePath="src/Loading.tsx"
+        refKind={{ kind: "head" }}
+      />
+    );
+
+    expect(screen.getByTestId("paged-diff-loading")).toHaveAttribute(
+      "role",
+      "status"
+    );
+    expect(screen.getByTestId("paged-diff-loading")).toHaveAttribute(
+      "aria-busy",
+      "true"
+    );
+    expect(screen.getByTestId("paged-diff-loading")).toHaveTextContent(
+      "Loading diff rows"
+    );
+  });
+
   it("renders inline rows through Virtuoso attached to the outer scroll parent", async () => {
     render(
       <div data-testid="outer-scroll" style={{ overflowY: "auto" }}>
@@ -272,48 +296,6 @@ describe("PagedDiffView", () => {
     expect(screen.getByText("Workspace review")).toBeInTheDocument();
     expect(screen.getByText("Review summary")).toBeInTheDocument();
     expect(screen.getByText("This hunk wires the paged renderer.")).toBeInTheDocument();
-  });
-
-  it("renders review-only hunk annotations without loading row pages", () => {
-    render(
-      <PagedDiffView
-        conversationId="conv-1"
-        filePath="src/Huge.tsx"
-        refKind={{ kind: "head" }}
-        pageSize={100}
-        contentMode="review-only"
-        hunkAnnotations={[
-          {
-            id: "workspace-review-hunk-1",
-            conversationId: "conv-1",
-            projectId: "project-1",
-            artifactId: "artifact-1",
-            artifactVersion: 1,
-            targetScope: "selected_source",
-            headSha: "head-sha",
-            diffFingerprint: "fingerprint-1",
-            path: "src/Huge.tsx",
-            diffSource: "selected_source",
-            hunkHeader: "@@ -1,260 +1,260 @@",
-            oldStart: 1,
-            oldLines: 260,
-            newStart: 1,
-            newLines: 260,
-            title: "Review summary",
-            message: "This hunk wires the paged renderer.",
-            level: "notice",
-            createdByRunId: "run-1",
-            createdAt: "2026-07-01T00:00:00Z",
-          },
-        ]}
-      />
-    );
-
-    expect(screen.getByTestId("paged-diff-review-only")).toBeInTheDocument();
-    expect(screen.getByText("@@ -1,260 +1,260 @@")).toBeInTheDocument();
-    expect(screen.getByText("Review summary")).toBeInTheDocument();
-    expect(screen.queryByTestId("paged-diff-virtual-list")).toBeNull();
-    expect(mockGetDiffPage).not.toHaveBeenCalled();
   });
 
   it("waits for an explicit inline scroll parent instead of falling back to window scroll", async () => {

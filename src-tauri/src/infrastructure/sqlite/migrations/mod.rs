@@ -251,6 +251,9 @@ mod v20260509090000_release_notes_seen_version_tests;
 mod v20260510185257_chat_message_blocks_timeline;
 #[cfg(test)]
 mod v20260510185257_chat_message_blocks_timeline_tests;
+mod v20260730025727_chat_message_blocks_thinking_kind;
+#[cfg(test)]
+mod v20260730025727_chat_message_blocks_thinking_kind_tests;
 mod v20260512093000_startup_local_cleanup_markers;
 #[cfg(test)]
 mod v20260512093000_startup_local_cleanup_markers_tests;
@@ -400,6 +403,227 @@ mod v20260701174810_workspace_review_hunk_annotations;
 #[cfg(test)]
 mod v20260701174810_workspace_review_hunk_annotations_tests;
 mod v20260703143000_task_validation_runs;
+mod v20260704193000_automations_p1;
+#[cfg(test)]
+mod v20260704193000_automations_p1_tests;
+mod v20260706113000_agent_conversation_issue_identity;
+#[cfg(test)]
+mod v20260706113000_agent_conversation_issue_identity_tests;
+mod v20260707113000_automation_agent_completed_signal;
+#[cfg(test)]
+mod v20260707113000_automation_agent_completed_signal_tests;
+mod v20260707120000_automations_spec_artifact_id;
+#[cfg(test)]
+mod v20260707120000_automations_spec_artifact_id_tests;
+mod v20260708120000_automation_run_plan_gate;
+#[cfg(test)]
+mod v20260708120000_automation_run_plan_gate_tests;
+mod v20260708130511_workspace_review_autofix_setting;
+#[cfg(test)]
+mod v20260708130511_workspace_review_autofix_setting_tests;
+mod v20260708131548_chat_conversation_coordination_mode;
+#[cfg(test)]
+mod v20260708131548_chat_conversation_coordination_mode_tests;
+mod v20260710000000_task_branch_base;
+#[cfg(test)]
+mod v20260710000000_task_branch_base_tests;
+mod v20260710003315_execution_plan_halt_mode;
+#[cfg(test)]
+mod v20260710003315_execution_plan_halt_mode_tests;
+mod v20260710134609_notifications_table;
+#[cfg(test)]
+mod v20260710134609_notifications_table_tests;
+mod v20260710201548_notification_settings;
+#[cfg(test)]
+mod v20260710201548_notification_settings_tests;
+mod v20260711151804_personas;
+#[cfg(test)]
+mod v20260711151804_personas_tests;
+mod v20260712090000_validation_run_content_fingerprints;
+mod v20260712153932_agent_workspace_pr_review_auto_approve;
+#[cfg(test)]
+mod v20260712153932_agent_workspace_pr_review_auto_approve_tests;
+mod v20260712155425_ui_feature_flag_overrides;
+#[cfg(test)]
+mod v20260712155425_ui_feature_flag_overrides_tests;
+mod v20260712162657_persona_builder_agent_mode;
+#[cfg(test)]
+mod v20260712162657_persona_builder_agent_mode_tests;
+mod v20260712190416_branch_update_authority;
+#[cfg(test)]
+mod v20260712190416_branch_update_authority_tests;
+mod v20260713063349_persona_run_attribution;
+#[cfg(test)]
+mod v20260713063349_persona_run_attribution_tests;
+mod v20260713131052_disable_auto_followup_by_default;
+#[cfg(test)]
+mod v20260713131052_disable_auto_followup_by_default_tests;
+mod v20260714184430_workspace_review_auto_merge_guard;
+#[cfg(test)]
+mod v20260714184430_workspace_review_auto_merge_guard_tests;
+mod v20260715013854_model_native_plan_verification;
+#[cfg(test)]
+mod v20260715013854_model_native_plan_verification_tests;
+mod v20260715170000_automation_authoring_state;
+#[cfg(test)]
+mod v20260715170000_automation_authoring_state_tests;
+mod v20260715172058_persona_update_draft_provenance;
+#[cfg(test)]
+mod v20260715172058_persona_update_draft_provenance_tests;
+mod v20260715181627_agent_conversation_capabilities;
+#[cfg(test)]
+mod v20260715181627_agent_conversation_capabilities_tests;
+mod v20260715183000_automation_ideation_signal;
+#[cfg(test)]
+mod v20260715183000_automation_ideation_signal_tests;
+mod v20260715194617_scripted_agent_workflows;
+#[cfg(test)]
+mod v20260715194617_scripted_agent_workflows_tests;
+mod v20260716154318_manual_role_defaults;
+#[cfg(test)]
+mod v20260716154318_manual_role_defaults_tests;
+mod v20260716170840_persona_project_scope;
+#[cfg(test)]
+mod v20260716170840_persona_project_scope_tests;
+mod v20260716202015_workspace_review_bypass_and_bound_agent;
+#[cfg(test)]
+mod v20260716202015_workspace_review_bypass_and_bound_agent_tests;
+mod v20260716204027_conversation_folder_references;
+#[cfg(test)]
+mod v20260716204027_conversation_folder_references_tests;
+mod v20260716210000_supervised_native_task_pipeline;
+#[cfg(test)]
+mod v20260716210000_supervised_native_task_pipeline_tests;
+mod v20260717152713_persona_builder_result_binding;
+#[cfg(test)]
+mod v20260717152713_persona_builder_result_binding_tests;
+mod v20260717152714_persona_artifact_history;
+#[cfg(test)]
+mod v20260717152714_persona_artifact_history_tests;
+mod v20260717235338_github_cli_token_environment_setting;
+#[cfg(test)]
+mod v20260717235338_github_cli_token_environment_setting_tests;
+mod v20260718014631_mcp_policy_overrides;
+#[cfg(test)]
+mod v20260718014631_mcp_policy_overrides_tests;
+mod v20260718162852_clear_detected_validation_commands;
+#[cfg(test)]
+mod v20260718162852_clear_detected_validation_commands_tests;
+mod v20260718182035_add_tasks_enabled_setting;
+#[cfg(test)]
+mod v20260718182035_add_tasks_enabled_setting_tests;
+mod v20260720102513_add_tasks_feature_state;
+#[cfg(test)]
+mod v20260720102513_add_tasks_feature_state_tests;
+mod v20260720131416_review_pr_disable_pr_automation;
+#[cfg(test)]
+mod v20260720131416_review_pr_disable_pr_automation_tests;
+mod v20260720140000_remove_legacy_claude_team;
+#[cfg(test)]
+mod v20260720140000_remove_legacy_claude_team_tests;
+mod v20260720200633_auto_verify_draft_plans;
+#[cfg(test)]
+mod v20260720200633_auto_verify_draft_plans_tests;
+mod v20260721190000_workspace_review_fixer_attempt;
+#[cfg(test)]
+mod v20260721190000_workspace_review_fixer_attempt_tests;
+mod v20260722022339_usage_capture_provenance_and_raw_snapshots;
+#[cfg(test)]
+mod v20260722022339_usage_capture_provenance_and_raw_snapshots_tests;
+mod v20260722132100_automation_run_goal_item;
+#[cfg(test)]
+mod v20260722132100_automation_run_goal_item_tests;
+mod v20260723012559_agent_workspace_pr_metadata_decision;
+#[cfg(test)]
+mod v20260723012559_agent_workspace_pr_metadata_decision_tests;
+mod v20260723065349_pr_autofix_completed_supervision_history;
+#[cfg(test)]
+mod v20260723065349_pr_autofix_completed_supervision_history_tests;
+mod v20260723100604_app_state_update_channel;
+#[cfg(test)]
+mod v20260723100604_app_state_update_channel_tests;
+mod v20260724113627_agent_task_delegate_assignments;
+#[cfg(test)]
+mod v20260724113627_agent_task_delegate_assignments_tests;
+mod v20260724130000_plan_blueprints;
+#[cfg(test)]
+mod v20260724130000_plan_blueprints_tests;
+mod v20260724141500_workspace_review_requested_changes;
+#[cfg(test)]
+mod v20260724141500_workspace_review_requested_changes_tests;
+mod v20260724222347_agent_task_assignment_planned_run_identity;
+#[cfg(test)]
+mod v20260724222347_agent_task_assignment_planned_run_identity_tests;
+mod v20260725164704_agent_workspace_repair_attempts;
+#[cfg(test)]
+mod v20260725164704_agent_workspace_repair_attempts_tests;
+mod v20260727115037_agent_workspace_publication_metadata_receipts;
+#[cfg(test)]
+mod v20260727115037_agent_workspace_publication_metadata_receipts_tests;
+mod v20260728155615_agent_conversation_mutes;
+#[cfg(test)]
+mod v20260728155615_agent_conversation_mutes_tests;
+mod v20260728162405_rx_native_team_runtime;
+#[cfg(test)]
+mod v20260728162405_rx_native_team_runtime_tests;
+mod v20260728183000_workspace_review_plan_context;
+#[cfg(test)]
+mod v20260728183000_workspace_review_plan_context_tests;
+mod v20260730000304_chat_message_blocks_created_at_index;
+#[cfg(test)]
+mod v20260730000304_chat_message_blocks_created_at_index_tests;
+mod v20260730151837_agent_workspace_repair_ci_rerun_reservations;
+#[cfg(test)]
+mod v20260730151837_agent_workspace_repair_ci_rerun_reservations_tests;
+mod v20260730161032_agent_workspace_pr_autofix_completion_evidence;
+mod v20260731023949_agent_run_identity;
+mod v20260731111346_purge_empty_thinking_blocks;
+mod v20260731125157_add_workspace_repair_fingerprint_state;
+mod v20260801021420_delegation_parks;
+mod v20260801211636_delegation_park_wake_claimed_at;
+mod v20260802031156_delegate_context_inheritance;
+mod v20260802174000_workspace_review_fixer_cycle_cap;
+mod v20260802194326_agent_workspace_repair_explicit_publish_consent;
+mod v20260802215754_add_workspace_review_automation_override;
+mod v20260803113302_agent_workspace_publish_lease;
+mod v20260804073002_jira_link_acceptance_criteria_backfill;
+mod v20260804125852_delegated_session_job_identity;
+mod v20260806071104_agent_workspace_repair_effect_failed_completed_at;
+#[cfg(test)]
+mod v20260730161032_agent_workspace_pr_autofix_completion_evidence_tests;
+#[cfg(test)]
+mod v20260731023949_agent_run_identity_tests;
+#[cfg(test)]
+mod v20260731111346_purge_empty_thinking_blocks_tests;
+#[cfg(test)]
+mod v20260731125157_add_workspace_repair_fingerprint_state_tests;
+#[cfg(test)]
+mod v20260801021420_delegation_parks_tests;
+#[cfg(test)]
+mod v20260801211636_delegation_park_wake_claimed_at_tests;
+#[cfg(test)]
+mod v20260802031156_delegate_context_inheritance_tests;
+#[cfg(test)]
+mod v20260802174000_workspace_review_fixer_cycle_cap_tests;
+#[cfg(test)]
+mod v20260802194326_agent_workspace_repair_explicit_publish_consent_tests;
+#[cfg(test)]
+mod v20260802215754_add_workspace_review_automation_override_tests;
+#[cfg(test)]
+mod v20260803113302_agent_workspace_publish_lease_tests;
+#[cfg(test)]
+mod v20260804073002_jira_link_acceptance_criteria_backfill_tests;
+mod v20260804120000_agent_workspace_base_stale_target;
+#[cfg(test)]
+mod v20260804120000_agent_workspace_base_stale_target_tests;
+#[cfg(test)]
+mod v20260804125852_delegated_session_job_identity_tests;
+#[cfg(test)]
+mod v20260806071104_agent_workspace_repair_effect_failed_completed_at_tests;
+#[cfg(test)]
+pub(super) fn migrate_scripted_agent_workflows_for_test(conn: &Connection) -> AppResult<()> {
+    v20260715194617_scripted_agent_workflows::migrate(conn)
+}
 #[cfg(test)]
 mod v20_merge_validation_mode_tests;
 #[cfg(test)]
@@ -490,12 +714,13 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260703143000;
+pub const SCHEMA_VERSION: i64 = 20260806071104;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
 
 /// Migration definition
+#[derive(Clone, Copy)]
 struct Migration {
     version: i64,
     name: &'static str,
@@ -1365,34 +1590,463 @@ const MIGRATIONS: &[Migration] = &[
         name: "task_validation_runs",
         migrate: v20260703143000_task_validation_runs::migrate,
     },
+    Migration {
+        version: 20260704193000,
+        name: "automations_p1",
+        migrate: v20260704193000_automations_p1::migrate,
+    },
+    Migration {
+        version: 20260706113000,
+        name: "agent_conversation_issue_identity",
+        migrate: v20260706113000_agent_conversation_issue_identity::migrate,
+    },
+    Migration {
+        version: 20260707113000,
+        name: "automation_agent_completed_signal",
+        migrate: v20260707113000_automation_agent_completed_signal::migrate,
+    },
+    Migration {
+        version: 20260707120000,
+        name: "automations_spec_artifact_id",
+        migrate: v20260707120000_automations_spec_artifact_id::migrate,
+    },
+    Migration {
+        version: 20260708120000,
+        name: "automation_run_plan_gate",
+        migrate: v20260708120000_automation_run_plan_gate::migrate,
+    },
+    Migration {
+        version: 20260708130511,
+        name: "workspace_review_autofix_setting",
+        migrate: v20260708130511_workspace_review_autofix_setting::migrate,
+    },
+    Migration {
+        version: 20260708131548,
+        name: "chat_conversation_coordination_mode",
+        migrate: v20260708131548_chat_conversation_coordination_mode::migrate,
+    },
+    Migration {
+        version: 20260710000000,
+        name: "task_branch_base",
+        migrate: v20260710000000_task_branch_base::migrate,
+    },
+    Migration {
+        version: 20260710003315,
+        name: "execution_plan_halt_mode",
+        migrate: v20260710003315_execution_plan_halt_mode::migrate,
+    },
+    Migration {
+        version: 20260710134609,
+        name: "notifications_table",
+        migrate: v20260710134609_notifications_table::migrate,
+    },
+    Migration {
+        version: 20260710201548,
+        name: "notification_settings",
+        migrate: v20260710201548_notification_settings::migrate,
+    },
+    Migration {
+        version: 20260711151804,
+        name: "personas",
+        migrate: v20260711151804_personas::migrate,
+    },
+    Migration {
+        version: 20260712090000,
+        name: "validation_run_content_fingerprints",
+        migrate: v20260712090000_validation_run_content_fingerprints::migrate,
+    },
+    Migration {
+        version: 20260712153932,
+        name: "agent_workspace_pr_review_auto_approve",
+        migrate: v20260712153932_agent_workspace_pr_review_auto_approve::migrate,
+    },
+    Migration {
+        version: 20260712155425,
+        name: "ui_feature_flag_overrides",
+        migrate: v20260712155425_ui_feature_flag_overrides::migrate,
+    },
+    Migration {
+        version: 20260712162657,
+        name: "persona_builder_agent_mode",
+        migrate: v20260712162657_persona_builder_agent_mode::migrate,
+    },
+    Migration {
+        version: 20260712190416,
+        name: "branch_update_authority",
+        migrate: v20260712190416_branch_update_authority::migrate,
+    },
+    Migration {
+        version: 20260713063349,
+        name: "persona_run_attribution",
+        migrate: v20260713063349_persona_run_attribution::migrate,
+    },
+    Migration {
+        version: 20260713131052,
+        name: "disable_auto_followup_by_default",
+        migrate: v20260713131052_disable_auto_followup_by_default::migrate,
+    },
+    Migration {
+        version: 20260714184430,
+        name: "workspace_review_auto_merge_guard",
+        migrate: v20260714184430_workspace_review_auto_merge_guard::migrate,
+    },
+    Migration {
+        version: 20260715013854,
+        name: "model_native_plan_verification",
+        migrate: v20260715013854_model_native_plan_verification::migrate,
+    },
+    Migration {
+        version: 20260715170000,
+        name: "automation_authoring_state",
+        migrate: v20260715170000_automation_authoring_state::migrate,
+    },
+    Migration {
+        version: 20260715172058,
+        name: "persona_update_draft_provenance",
+        migrate: v20260715172058_persona_update_draft_provenance::migrate,
+    },
+    Migration {
+        version: 20260715181627,
+        name: "agent_conversation_capabilities",
+        migrate: v20260715181627_agent_conversation_capabilities::migrate,
+    },
+    Migration {
+        version: 20260715183000,
+        name: "automation_ideation_signal",
+        migrate: v20260715183000_automation_ideation_signal::migrate,
+    },
+    Migration {
+        version: 20260715194617,
+        name: "scripted_agent_workflows",
+        migrate: v20260715194617_scripted_agent_workflows::migrate,
+    },
+    Migration {
+        version: 20260716154318,
+        name: "manual_role_defaults",
+        migrate: v20260716154318_manual_role_defaults::migrate,
+    },
+    Migration {
+        version: 20260716170840,
+        name: "persona_project_scope",
+        migrate: v20260716170840_persona_project_scope::migrate,
+    },
+    Migration {
+        version: 20260716202015,
+        name: "workspace_review_bypass_and_bound_agent",
+        migrate: v20260716202015_workspace_review_bypass_and_bound_agent::migrate,
+    },
+    Migration {
+        version: 20260716204027,
+        name: "conversation_folder_references",
+        migrate: v20260716204027_conversation_folder_references::migrate,
+    },
+    Migration {
+        version: 20260716210000,
+        name: "supervised_native_task_pipeline",
+        migrate: v20260716210000_supervised_native_task_pipeline::migrate,
+    },
+    Migration {
+        version: 20260717152713,
+        name: "persona_builder_result_binding",
+        migrate: v20260717152713_persona_builder_result_binding::migrate,
+    },
+    Migration {
+        version: 20260717152714,
+        name: "persona_artifact_history",
+        migrate: v20260717152714_persona_artifact_history::migrate,
+    },
+    Migration {
+        version: 20260717235338,
+        name: "github_cli_token_environment_setting",
+        migrate: v20260717235338_github_cli_token_environment_setting::migrate,
+    },
+    Migration {
+        version: 20260718014631,
+        name: "mcp_policy_overrides",
+        migrate: v20260718014631_mcp_policy_overrides::migrate,
+    },
+    Migration {
+        version: 20260718162852,
+        name: "clear_detected_validation_commands",
+        migrate: v20260718162852_clear_detected_validation_commands::migrate,
+    },
+    Migration {
+        version: 20260718182035,
+        name: "add_tasks_enabled_setting",
+        migrate: v20260718182035_add_tasks_enabled_setting::migrate,
+    },
+    Migration {
+        version: 20260720102513,
+        name: "add_tasks_feature_state",
+        migrate: v20260720102513_add_tasks_feature_state::migrate,
+    },
+    Migration {
+        version: 20260720131416,
+        name: "review_pr_disable_pr_automation",
+        migrate: v20260720131416_review_pr_disable_pr_automation::migrate,
+    },
+    Migration {
+        version: 20260720140000,
+        name: "remove_legacy_claude_team",
+        migrate: v20260720140000_remove_legacy_claude_team::migrate,
+    },
+    Migration {
+        version: 20260720200633,
+        name: "auto_verify_draft_plans",
+        migrate: v20260720200633_auto_verify_draft_plans::migrate,
+    },
+    Migration {
+        version: 20260721190000,
+        name: "workspace_review_fixer_attempt",
+        migrate: v20260721190000_workspace_review_fixer_attempt::migrate,
+    },
+    Migration {
+        version: 20260722022339,
+        name: "usage_capture_provenance_and_raw_snapshots",
+        migrate: v20260722022339_usage_capture_provenance_and_raw_snapshots::migrate,
+    },
+    Migration {
+        version: 20260722132100,
+        name: "automation_run_goal_item",
+        migrate: v20260722132100_automation_run_goal_item::migrate,
+    },
+    Migration {
+        version: 20260723012559,
+        name: "agent_workspace_pr_metadata_decision",
+        migrate: v20260723012559_agent_workspace_pr_metadata_decision::migrate,
+    },
+    Migration {
+        version: 20260723065349,
+        name: "pr_autofix_completed_supervision_history",
+        migrate: v20260723065349_pr_autofix_completed_supervision_history::migrate,
+    },
+    Migration {
+        version: 20260723100604,
+        name: "app_state_update_channel",
+        migrate: v20260723100604_app_state_update_channel::migrate,
+    },
+    Migration {
+        version: 20260724113627,
+        name: "agent_task_delegate_assignments",
+        migrate: v20260724113627_agent_task_delegate_assignments::migrate,
+    },
+    Migration {
+        version: 20260724130000,
+        name: "plan_blueprints",
+        migrate: v20260724130000_plan_blueprints::migrate,
+    },
+    Migration {
+        version: 20260724141500,
+        name: "workspace_review_requested_changes",
+        migrate: v20260724141500_workspace_review_requested_changes::migrate,
+    },
+    Migration {
+        version: 20260724222347,
+        name: "agent_task_assignment_planned_run_identity",
+        migrate: v20260724222347_agent_task_assignment_planned_run_identity::migrate,
+    },
+    Migration {
+        version: 20260725164704,
+        name: "agent_workspace_repair_attempts",
+        migrate: v20260725164704_agent_workspace_repair_attempts::migrate,
+    },
+    Migration {
+        version: 20260727115037,
+        name: "agent_workspace_publication_metadata_receipts",
+        migrate: v20260727115037_agent_workspace_publication_metadata_receipts::migrate,
+    },
+    Migration {
+        version: 20260728155615,
+        name: "agent_conversation_mutes",
+        migrate: v20260728155615_agent_conversation_mutes::migrate,
+    },
+    Migration {
+        version: 20260728162405,
+        name: "rx_native_team_runtime",
+        migrate: v20260728162405_rx_native_team_runtime::migrate,
+    },
+    Migration {
+        version: 20260728183000,
+        name: "workspace_review_plan_context",
+        migrate: v20260728183000_workspace_review_plan_context::migrate,
+    },
+    Migration {
+        version: 20260730000304,
+        name: "chat_message_blocks_created_at_index",
+        migrate: v20260730000304_chat_message_blocks_created_at_index::migrate,
+    },
+    Migration {
+        version: 20260730025727,
+        name: "chat_message_blocks_thinking_kind",
+        migrate: v20260730025727_chat_message_blocks_thinking_kind::migrate,
+    },
+    Migration {
+        version: 20260730151837,
+        name: "agent_workspace_repair_ci_rerun_reservations",
+        migrate: v20260730151837_agent_workspace_repair_ci_rerun_reservations::migrate,
+    },
+    Migration {
+        version: 20260730161032,
+        name: "agent_workspace_pr_autofix_completion_evidence",
+        migrate: v20260730161032_agent_workspace_pr_autofix_completion_evidence::migrate,
+    },
+    Migration {
+        version: 20260731023949,
+        name: "agent_run_identity",
+        migrate: v20260731023949_agent_run_identity::migrate,
+    },
+    Migration {
+        version: 20260731111346,
+        name: "purge_empty_thinking_blocks",
+        migrate: v20260731111346_purge_empty_thinking_blocks::migrate,
+    },
+    Migration {
+        version: 20260731125157,
+        name: "add_workspace_repair_fingerprint_state",
+        migrate: v20260731125157_add_workspace_repair_fingerprint_state::migrate,
+    },
+    Migration {
+        version: 20260801021420,
+        name: "delegation_parks",
+        migrate: v20260801021420_delegation_parks::migrate,
+    },
+    Migration {
+        version: 20260801211636,
+        name: "delegation_park_wake_claimed_at",
+        migrate: v20260801211636_delegation_park_wake_claimed_at::migrate,
+    },
+    Migration {
+        version: 20260802031156,
+        name: "delegate_context_inheritance",
+        migrate: v20260802031156_delegate_context_inheritance::migrate,
+    },
+    Migration {
+        version: 20260802174000,
+        name: "workspace_review_fixer_cycle_cap",
+        migrate: v20260802174000_workspace_review_fixer_cycle_cap::migrate,
+    },
+    Migration {
+        version: 20260802194326,
+        name: "agent_workspace_repair_explicit_publish_consent",
+        migrate: v20260802194326_agent_workspace_repair_explicit_publish_consent::migrate,
+    },
+    Migration {
+        version: 20260802215754,
+        name: "add_workspace_review_automation_override",
+        migrate: v20260802215754_add_workspace_review_automation_override::migrate,
+    },
+    Migration {
+        version: 20260803113302,
+        name: "agent_workspace_publish_lease",
+        migrate: v20260803113302_agent_workspace_publish_lease::migrate,
+    },
+    Migration {
+        version: 20260804073002,
+        name: "jira_link_acceptance_criteria_backfill",
+        migrate: v20260804073002_jira_link_acceptance_criteria_backfill::migrate,
+    },
+    Migration {
+        version: 20260804120000,
+        name: "agent_workspace_base_stale_target",
+        migrate: v20260804120000_agent_workspace_base_stale_target::migrate,
+    },
+    Migration {
+        version: 20260804125852,
+        name: "delegated_session_job_identity",
+        migrate: v20260804125852_delegated_session_job_identity::migrate,
+    },
+    Migration {
+        version: 20260806071104,
+        name: "agent_workspace_repair_effect_failed_completed_at",
+        migrate: v20260806071104_agent_workspace_repair_effect_failed_completed_at::migrate,
+    },
 ];
 
-/// Run all pending migrations on the database
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MigrationProgress {
+    pub completed_units: u32,
+    pub total_units: u32,
+    pub elapsed_ms: u128,
+}
+
+/// Run all pending migrations on the database.
 pub fn run_migrations(conn: &Connection) -> AppResult<()> {
+    run_migrations_with_observer(conn, |_| {})
+}
+
+/// Runs pending migrations and reports real completed/pending units.
+///
+/// # Errors
+///
+/// Returns the first migration or schema-version persistence error. The
+/// observer is never advanced for the failed migration.
+pub fn run_migrations_with_observer(
+    conn: &Connection,
+    observer: impl FnMut(MigrationProgress),
+) -> AppResult<()> {
+    run_pending_migrations(conn, MIGRATIONS, observer)
+}
+
+fn run_pending_migrations(
+    conn: &Connection,
+    migrations: &[Migration],
+    mut observer: impl FnMut(MigrationProgress),
+) -> AppResult<()> {
+    let started_at = std::time::Instant::now();
     // Create migrations table if it doesn't exist
     create_migrations_table(conn)?;
 
     let mut applied_versions = get_applied_migration_versions(conn)?;
+    let pending = migrations
+        .iter()
+        .filter(|migration| !applied_versions.contains(&migration.version))
+        .collect::<Vec<_>>();
+    let total_units = u32::try_from(pending.len()).unwrap_or(u32::MAX);
+    let mut completed_units = 0u32;
+    observer(MigrationProgress {
+        completed_units,
+        total_units,
+        elapsed_ms: started_at.elapsed().as_millis(),
+    });
 
     // Run registered migrations sequentially. Membership checks repair dev and
     // branch databases that have a later version recorded while missing an
     // earlier migration added on this branch.
-    for migration in MIGRATIONS {
-        if !applied_versions.contains(&migration.version) {
-            tracing::info!(
-                "Running migration v{}: {}",
-                migration.version,
-                migration.name
+    for migration in pending {
+        tracing::info!(
+            "Running migration v{}: {}",
+            migration.version,
+            migration.name
+        );
+
+        if let Err(error) = (migration.migrate)(conn) {
+            tracing::error!(
+                migration_version = migration.version,
+                completed_units,
+                total_units,
+                elapsed_ms = started_at.elapsed().as_millis(),
+                "Database migration failed"
             );
-
-            (migration.migrate)(conn)?;
-            set_schema_version(conn, migration.version)?;
-            applied_versions.insert(migration.version);
-
-            tracing::info!("Migration v{} complete", migration.version);
+            return Err(error);
         }
+        set_schema_version(conn, migration.version)?;
+        applied_versions.insert(migration.version);
+        completed_units = completed_units.saturating_add(1);
+        observer(MigrationProgress {
+            completed_units,
+            total_units,
+            elapsed_ms: started_at.elapsed().as_millis(),
+        });
+
+        tracing::info!("Migration v{} complete", migration.version);
     }
 
+    tracing::info!(
+        completed_units,
+        total_units,
+        elapsed_ms = started_at.elapsed().as_millis(),
+        "Database migration pass completed"
+    );
     Ok(())
 }
 
@@ -1420,6 +2074,9 @@ pub(super) fn latest_registered_migration_version() -> i64 {
         .map(|migration| migration.version)
         .expect("migration registry should not be empty")
 }
+
+#[cfg(test)]
+mod migration_progress_tests;
 
 /// Create the migrations tracking table
 fn create_migrations_table(conn: &Connection) -> AppResult<()> {

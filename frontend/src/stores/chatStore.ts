@@ -11,6 +11,7 @@ import { immer } from "zustand/middleware/immer";
 import type { ChatMessage } from "@/types/ideation";
 import type { ChatContext } from "@/types/chat";
 import type { ModelDisplay } from "@/types/chat-conversation";
+import type { ComposerSelectionSnapshot } from "@/api/chat";
 import { buildStoreKey } from "@/lib/chat-context-registry";
 
 // ============================================================================
@@ -45,8 +46,12 @@ export interface QueuedMessage {
   createdAt: string;
   /** Whether this message is currently being edited */
   isEditing: boolean;
+  /** Whether this entry is locally optimistic or backend-confirmed. */
+  source: "optimistic" | "backend";
   /** Chat attachment IDs selected when the message was queued */
   attachmentIds: string[];
+  /** Frozen artifact/ticket excerpt carried by the queued turn. */
+  composerSelectionSnapshot?: ComposerSelectionSnapshot;
 }
 
 export interface ChatComposerAttachment {
@@ -62,10 +67,27 @@ export interface ChatComposerAttachment {
   previewUrl?: string;
 }
 
+export interface ChatComposerFolder {
+  id: string;
+  folderPath: string;
+  displayName: string;
+}
+
 export interface ChatComposerDraft {
   content: string;
   attachments: ChatComposerAttachment[];
+  folders: ChatComposerFolder[];
   updatedAt: string;
+}
+
+/** Identity/timing metadata for the active agent run, captured with the run ID. */
+export interface ActiveAgentRunMeta {
+  /** Epoch ms anchor for elapsed-time display. Backend run start when known, else event receipt. */
+  startedAt: number;
+  /** Canonical agent name that owns the run (e.g. "ralphx-workspace-reviewer"), when known. */
+  agentName: string | null;
+  /** Launch role for feedback-loop runs (e.g. "workspace_reviewer", "workspace_repair"), when known. */
+  launchRole: string | null;
 }
 
 // ============================================================================
@@ -83,6 +105,10 @@ interface ChatState {
   activeConversationIds: Record<string, string | null>;
   /** Active agent run IDs scoped per context key. Used to ignore stale terminal events. */
   activeAgentRunIds: Record<string, string>;
+  /** Harness captured atomically with the matching active agent run ID. */
+  activeAgentRunHarnesses: Record<string, string | null>;
+  /** Identity/timing metadata captured atomically with the matching active agent run ID. */
+  activeAgentRunMeta: Record<string, ActiveAgentRunMeta>;
   /** Messages queued to send when agent finishes, keyed by context key (e.g., "task:id", "task_execution:id", "review:id") */
   queuedMessages: Record<string, QueuedMessage[]>;
   /** Agent status keyed by context key. Absent = "idle". Values: "generating" | "waiting_for_input" */
@@ -91,8 +117,6 @@ interface ChatState {
   agentActivityLabels: Record<string, string>;
   /** Whether a message is currently being sent, keyed by context key */
   isSending: Record<string, boolean>;
-  /** Whether a team is active for a context key (enables team UI) */
-  isTeamActive: Record<string, boolean>;
   /** Last agent event timestamp per context key — used by watchdog for stuck-generating recovery */
   lastAgentEventTimestamp: Record<string, number>;
   /** Tool call start timestamps: storeKey → { toolCallId → epoch ms } — for elapsed timer display */
@@ -105,6 +129,8 @@ interface ChatState {
   effectiveModel: Record<string, ModelDisplay>;
   /** Unsent composer drafts keyed by conversation/start-composer target. Transient only. */
   composerDraftsByKey: Record<string, ChatComposerDraft>;
+  /** User-owned delegate expansion keyed by conversation then stable tool/job id. */
+  delegateExpansionByConversation: Record<string, Record<string, true>>;
 }
 
 // ============================================================================
@@ -124,9 +150,14 @@ interface ChatActions {
   setLoading: (isLoading: boolean) => void;
   /** Set the active conversation ID for a specific context key */
   setActiveConversation: (storeKey: string, conversationId: string | null) => void;
-  /** Set the active agent run ID for a specific context key */
-  setActiveAgentRun: (storeKey: string, runId: string) => void;
-  /** Clear the active agent run ID, optionally only if it matches the expected run ID */
+  /** Set the active agent run ID and its harness for a specific context key. */
+  setActiveAgentRun: (
+    storeKey: string,
+    runId: string,
+    harness?: string | null,
+    meta?: Partial<ActiveAgentRunMeta> | null,
+  ) => void;
+  /** Clear the active agent run ID and harness, optionally only for the expected run ID. */
   clearActiveAgentRun: (storeKey: string, expectedRunId?: string | null) => void;
   /** Set agent status for a context (tri-state: "idle" | "generating" | "waiting_for_input") */
   setAgentStatus: (contextKey: string, status: AgentStatus) => void;
@@ -143,10 +174,15 @@ interface ChatActions {
     contextKey: string,
     content: string,
     clientId?: string,
-    attachmentIds?: string[]
+    attachmentIds?: string[],
+    composerSelectionSnapshot?: ComposerSelectionSnapshot,
+    source?: QueuedMessage["source"],
   ) => void;
   /** Replace a context queue with backend-owned queued messages */
-  setQueuedMessages: (contextKey: string, messages: QueuedMessage[]) => void;
+  setQueuedMessages: (
+    contextKey: string,
+    messages: Array<Omit<QueuedMessage, "source">>,
+  ) => void;
   /** Edit a queued message */
   editQueuedMessage: (contextKey: string, id: string, content: string) => void;
   /** Delete a queued message */
@@ -157,8 +193,6 @@ interface ChatActions {
   startEditingQueuedMessage: (contextKey: string, id: string) => void;
   /** Stop editing a queued message */
   stopEditingQueuedMessage: (contextKey: string, id: string) => void;
-  /** Set team active state for a context */
-  setTeamActive: (contextKey: string, isActive: boolean) => void;
   /** Update last agent event timestamp for watchdog tracking */
   updateLastAgentEvent: (key: string) => void;
   /** Record start timestamp for a tool call (for elapsed timer display) */
@@ -182,8 +216,16 @@ interface ChatActions {
     draftKey: string,
     attachments: ChatComposerAttachment[],
   ) => void;
+  /** Remember unsent composer folder references for a target. */
+  setComposerDraftFolders: (draftKey: string, folders: ChatComposerFolder[]) => void;
   /** Clear the full unsent composer draft for a target. */
   clearComposerDraft: (draftKey: string) => void;
+  /** Preserve delegate expansion across live/persisted projection replacement. */
+  setDelegateExpanded: (
+    conversationId: string,
+    delegateKey: string,
+    expanded: boolean,
+  ) => void;
 }
 
 function queuedMessageListsEqual(
@@ -199,6 +241,9 @@ function queuedMessageListsEqual(
       message.content === other.content &&
       message.createdAt === other.createdAt &&
       message.isEditing === other.isEditing &&
+      message.source === other.source &&
+      JSON.stringify(message.composerSelectionSnapshot) ===
+        JSON.stringify(other.composerSelectionSnapshot) &&
       message.attachmentIds.length === other.attachmentIds.length &&
       message.attachmentIds.every(
         (attachmentId, attachmentIndex) =>
@@ -211,9 +256,9 @@ function queuedMessageListsEqual(
 function writeComposerDraft(
   state: ChatState,
   draftKey: string,
-  draft: Pick<ChatComposerDraft, "content" | "attachments">,
+  draft: Pick<ChatComposerDraft, "content" | "attachments" | "folders">,
 ) {
-  if (draft.content.length === 0 && draft.attachments.length === 0) {
+  if (draft.content.length === 0 && draft.attachments.length === 0 && draft.folders.length === 0) {
     delete state.composerDraftsByKey[draftKey];
     return;
   }
@@ -221,6 +266,7 @@ function writeComposerDraft(
   state.composerDraftsByKey[draftKey] = {
     content: draft.content,
     attachments: draft.attachments.map((attachment) => ({ ...attachment })),
+    folders: draft.folders.map((folder) => ({ ...folder })),
     updatedAt: new Date().toISOString(),
   };
 }
@@ -237,17 +283,19 @@ export const useChatStore = create<ChatState & ChatActions>()(
     isLoading: false,
     activeConversationIds: {},
     activeAgentRunIds: {},
+    activeAgentRunHarnesses: {},
+    activeAgentRunMeta: {},
     queuedMessages: {},
     agentStatus: {},
     agentActivityLabels: {},
     isSending: {},
-    isTeamActive: {},
     lastAgentEventTimestamp: {},
     toolCallStartTimes: {},
     lastToolCallCompletionTimestamp: {},
     toolCallCompletionTimestamps: {},
     effectiveModel: {},
     composerDraftsByKey: {},
+    delegateExpansionByConversation: {},
 
     // Actions
     setContext: (context) =>
@@ -281,13 +329,39 @@ export const useChatStore = create<ChatState & ChatActions>()(
     setActiveConversation: (storeKey, conversationId) =>
       set((state) => {
         if (state.activeConversationIds[storeKey] === conversationId) return;
+        const previousConversationId = state.activeConversationIds[storeKey];
+        if (previousConversationId) {
+          delete state.delegateExpansionByConversation[previousConversationId];
+        }
         state.activeConversationIds[storeKey] = conversationId;
       }),
 
-    setActiveAgentRun: (storeKey, runId) =>
+    setActiveAgentRun: (storeKey, runId, harness = null, meta = null) =>
       set((state) => {
-        if (state.activeAgentRunIds[storeKey] === runId) return;
-        state.activeAgentRunIds[storeKey] = runId;
+        const isSameRun =
+          state.activeAgentRunIds[storeKey] === runId &&
+          state.activeAgentRunHarnesses[storeKey] === harness;
+        if (!isSameRun) {
+          state.activeAgentRunIds[storeKey] = runId;
+          state.activeAgentRunHarnesses[storeKey] = harness;
+          // New run: reset meta so a stale anchor never survives a run swap.
+          state.activeAgentRunMeta[storeKey] = {
+            startedAt: meta?.startedAt ?? Date.now(),
+            agentName: meta?.agentName ?? null,
+            launchRole: meta?.launchRole ?? null,
+          };
+          return;
+        }
+        // Same run: merge later-arriving identity without moving the time anchor
+        // (queue continuations re-emit run_started for the same run).
+        if (meta) {
+          const existing = state.activeAgentRunMeta[storeKey];
+          state.activeAgentRunMeta[storeKey] = {
+            startedAt: existing?.startedAt ?? meta.startedAt ?? Date.now(),
+            agentName: meta.agentName ?? existing?.agentName ?? null,
+            launchRole: meta.launchRole ?? existing?.launchRole ?? null,
+          };
+        }
       }),
 
     clearActiveAgentRun: (storeKey, expectedRunId) =>
@@ -296,6 +370,8 @@ export const useChatStore = create<ChatState & ChatActions>()(
         if (activeRunId == null) return;
         if (expectedRunId != null && activeRunId !== expectedRunId) return;
         delete state.activeAgentRunIds[storeKey];
+        delete state.activeAgentRunHarnesses[storeKey];
+        delete state.activeAgentRunMeta[storeKey];
       }),
 
     setAgentStatus: (contextKey, status) =>
@@ -304,12 +380,15 @@ export const useChatStore = create<ChatState & ChatActions>()(
           if (
             !(contextKey in state.agentStatus)
             && !(contextKey in state.activeAgentRunIds)
+            && !(contextKey in state.activeAgentRunHarnesses)
             && !(contextKey in state.agentActivityLabels)
           ) {
             return; // already absent — no-op
           }
           delete state.agentStatus[contextKey];
           delete state.activeAgentRunIds[contextKey];
+          delete state.activeAgentRunHarnesses[contextKey];
+          delete state.activeAgentRunMeta[contextKey];
           delete state.agentActivityLabels[contextKey];
         } else {
           if (state.agentStatus[contextKey] === status) {
@@ -346,12 +425,15 @@ export const useChatStore = create<ChatState & ChatActions>()(
           if (
             !(contextKey in state.agentStatus)
             && !(contextKey in state.activeAgentRunIds)
+            && !(contextKey in state.activeAgentRunHarnesses)
             && !(contextKey in state.agentActivityLabels)
           ) {
             return; // already absent — no-op
           }
           delete state.agentStatus[contextKey];
           delete state.activeAgentRunIds[contextKey];
+          delete state.activeAgentRunHarnesses[contextKey];
+          delete state.activeAgentRunMeta[contextKey];
           delete state.agentActivityLabels[contextKey];
         }
       }),
@@ -379,6 +461,18 @@ export const useChatStore = create<ChatState & ChatActions>()(
         Object.keys(state.activeAgentRunIds).forEach((key) => {
           if (key.endsWith(`:${taskId}`)) {
             delete state.activeAgentRunIds[key];
+            delete state.activeAgentRunHarnesses[key];
+            delete state.activeAgentRunMeta[key];
+          }
+        });
+        Object.keys(state.activeAgentRunHarnesses).forEach((key) => {
+          if (key.endsWith(`:${taskId}`)) {
+            delete state.activeAgentRunHarnesses[key];
+          }
+        });
+        Object.keys(state.activeAgentRunMeta).forEach((key) => {
+          if (key.endsWith(`:${taskId}`)) {
+            delete state.activeAgentRunMeta[key];
           }
         });
         Object.keys(state.agentActivityLabels).forEach((key) => {
@@ -388,7 +482,14 @@ export const useChatStore = create<ChatState & ChatActions>()(
         });
       }),
 
-    queueMessage: (contextKey, content, clientId, attachmentIds) =>
+    queueMessage: (
+      contextKey,
+      content,
+      clientId,
+      attachmentIds,
+      composerSelectionSnapshot,
+      source = "optimistic",
+    ) =>
       set((state) => {
         const id = clientId ?? `queued-${Date.now()}-${Math.random()}`;
         if (!state.queuedMessages[contextKey]) {
@@ -400,12 +501,21 @@ export const useChatStore = create<ChatState & ChatActions>()(
           ? state.queuedMessages[contextKey].find((m) => m.id === clientId)
           : undefined;
         if (existingMessage) {
+          if (source === "backend") {
+            existingMessage.source = "backend";
+          }
           if (
             (existingMessage.attachmentIds ?? []).length === 0
             && attachmentIds !== undefined
             && attachmentIds.length > 0
           ) {
             existingMessage.attachmentIds = [...attachmentIds];
+          }
+          if (
+            !existingMessage.composerSelectionSnapshot &&
+            composerSelectionSnapshot
+          ) {
+            existingMessage.composerSelectionSnapshot = composerSelectionSnapshot;
           }
           return;
         }
@@ -414,7 +524,9 @@ export const useChatStore = create<ChatState & ChatActions>()(
           content,
           createdAt: new Date().toISOString(),
           isEditing: false,
+          source,
           attachmentIds: [...(attachmentIds ?? [])],
+          ...(composerSelectionSnapshot ? { composerSelectionSnapshot } : {}),
         };
         state.queuedMessages[contextKey].push(queuedMessage);
       }),
@@ -429,6 +541,7 @@ export const useChatStore = create<ChatState & ChatActions>()(
           const current = currentById.get(message.id);
           return {
             ...message,
+            source: "backend" as const,
             isEditing: current?.isEditing ?? message.isEditing,
             attachmentIds: [...(message.attachmentIds ?? [])],
           };
@@ -494,17 +607,6 @@ export const useChatStore = create<ChatState & ChatActions>()(
         }
       }),
 
-    setTeamActive: (contextKey, isActive) =>
-      set((state) => {
-        if (isActive) {
-          if (state.isTeamActive[contextKey]) return; // already true — no-op
-          state.isTeamActive[contextKey] = true;
-        } else {
-          if (!(contextKey in state.isTeamActive)) return; // already absent — no-op
-          delete state.isTeamActive[contextKey];
-        }
-      }),
-
     updateLastAgentEvent: (key) =>
       set((state) => {
         state.lastAgentEventTimestamp[key] = Date.now();
@@ -562,6 +664,7 @@ export const useChatStore = create<ChatState & ChatActions>()(
         writeComposerDraft(state, draftKey, {
           content,
           attachments: current?.attachments ?? [],
+          folders: current?.folders ?? [],
         });
       }),
 
@@ -571,12 +674,38 @@ export const useChatStore = create<ChatState & ChatActions>()(
         writeComposerDraft(state, draftKey, {
           content: current?.content ?? "",
           attachments,
+          folders: current?.folders ?? [],
+        });
+      }),
+
+    setComposerDraftFolders: (draftKey, folders) =>
+      set((state) => {
+        const current = state.composerDraftsByKey[draftKey];
+        writeComposerDraft(state, draftKey, {
+          content: current?.content ?? "",
+          attachments: current?.attachments ?? [],
+          folders,
         });
       }),
 
     clearComposerDraft: (draftKey) =>
       set((state) => {
         delete state.composerDraftsByKey[draftKey];
+      }),
+
+    setDelegateExpanded: (conversationId, delegateKey, expanded) =>
+      set((state) => {
+        if (expanded) {
+          state.delegateExpansionByConversation[conversationId] ??= {};
+          state.delegateExpansionByConversation[conversationId][delegateKey] = true;
+          return;
+        }
+        const conversationExpansion = state.delegateExpansionByConversation[conversationId];
+        if (!conversationExpansion) return;
+        delete conversationExpansion[delegateKey];
+        if (Object.keys(conversationExpansion).length === 0) {
+          delete state.delegateExpansionByConversation[conversationId];
+        }
       }),
 
     processQueue: async (contextKey) => {
@@ -610,6 +739,9 @@ export const useChatStore = create<ChatState & ChatActions>()(
  * Delegates to the chat-context-registry's buildStoreKey for consistent key formatting.
  */
 export function getContextKey(context: ChatContext): string {
+  if (context.contextTypeOverride && context.contextIdOverride) {
+    return buildStoreKey(context.contextTypeOverride, context.contextIdOverride);
+  }
   if (context.view === "ideation" && context.ideationSessionId) {
     return buildStoreKey("ideation", context.ideationSessionId);
   }
@@ -716,20 +848,26 @@ export const selectActiveAgentRunId =
   (state: ChatState): string | undefined =>
     state.activeAgentRunIds[storeKey];
 
+/**
+ * Select the harness paired with the active agent run ID for a specific context key.
+ */
+export const selectActiveAgentRunHarness =
+  (storeKey: string) =>
+  (state: ChatState): string | null | undefined =>
+    state.activeAgentRunHarnesses[storeKey];
+
+/**
+ * Select the identity/timing metadata paired with the active agent run ID.
+ */
+export const selectActiveAgentRunMeta =
+  (storeKey: string) =>
+  (state: ChatState): ActiveAgentRunMeta | undefined =>
+    state.activeAgentRunMeta[storeKey];
+
 export const selectComposerDraft =
   (draftKey: string | null) =>
   (state: ChatState): ChatComposerDraft | null =>
     draftKey ? state.composerDraftsByKey[draftKey] ?? null : null;
-
-/**
- * Select whether a team is active for a context
- * @param contextKey - The context key to check
- * @returns Selector function returning team active state
- */
-export const selectIsTeamActive =
-  (contextKey: string) =>
-  (state: ChatState): boolean =>
-    state.isTeamActive[contextKey] ?? false;
 
 /**
  * Select last agent event timestamp for a context (for watchdog use)

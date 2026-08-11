@@ -7,7 +7,7 @@
  *
  * Layout: Uses GraphSplitLayout for split-screen view with:
  * - Left: Graph canvas with FloatingGraphFilters overlay
- * - Right: FloatingTimeline (no task selected) or IntegratedChatPanel (task selected)
+ * - Right: FloatingTimeline
  * - Footer: Optional ExecutionControlBar
  */
 
@@ -53,7 +53,7 @@ import {
   type GraphFilters,
   type LayoutDirection,
   type GroupingState,
-} from "./controls/GraphControls";
+} from "./controls/graph-controls";
 import { GraphSplitLayout } from "@/components/layout/GraphSplitLayout";
 import type { TaskGraphNode, TaskGraphEdge, PlanGroupInfo } from "@/api/task-graph.types";
 import type { InternalStatus } from "@/types/status";
@@ -64,13 +64,13 @@ import { useNavCompactBreakpoint } from "@/hooks";
 import { usePersistedNodeMode } from "@/hooks/usePersistedNodeMode";
 import { taskGraphKeys } from "./hooks/useTaskGraph";
 import { api } from "@/lib/tauri";
+import { openTaskInAgents } from "@/lib/navigation";
 import { toast } from "sonner";
 import { AlertCircle, Filter, Loader2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { buildTierGroups, UNGROUPED_PLAN_ID } from "./groups/tierGroupUtils";
 import type { GroupInfo } from "@/lib/task-actions";
-import { BattleModeV2Overlay } from "./battle-v2/BattleModeV2Overlay";
 
 // ============================================================================
 // Types
@@ -80,14 +80,15 @@ export interface TaskGraphViewProps {
   projectId: string;
   /** Optional ideation session ID to filter tasks by plan */
   ideationSessionId?: string | null;
-  /** Hide graph canvas toolbar controls for embedded read-only surfaces. */
-  hideCanvasControls?: boolean;
+  /** Hide the global active-plan selector for a session-scoped host. */
+  hidePlanSelector?: boolean;
   /** Optional footer to render at the bottom of the left section (e.g., ExecutionControlBar) */
   footer?: React.ReactNode;
   /** Optional host-owned task selection handler for embedded task surfaces. */
   onTaskSelect?: (taskId: string) => void;
   /** Opens the global plan quick switcher with source attribution */
   onOpenPlanQuickSwitcher?: (source: SelectionSource) => void;
+  readOnly?: boolean;
 }
 
 // ============================================================================
@@ -272,25 +273,27 @@ interface TaskGraphViewInnerProps {
   projectId: string;
   /** Optional ideation session ID to filter tasks by plan */
   ideationSessionId?: string | null;
-  /** Hide graph canvas toolbar controls for embedded read-only surfaces. */
-  hideCanvasControls?: boolean;
+  /** Hide the global active-plan selector for a session-scoped host. */
+  hidePlanSelector?: boolean;
   /** Optional footer to render at the bottom of the left section (e.g., ExecutionControlBar) */
   footer?: React.ReactNode;
   /** Optional host-owned task selection handler for embedded task surfaces. */
   onTaskSelect?: (taskId: string) => void;
   /** Opens the global plan quick switcher with source attribution */
   onOpenPlanQuickSwitcher?: (source: SelectionSource) => void;
+  readOnly?: boolean;
 }
 
 function TaskGraphViewInner({
   projectId,
   ideationSessionId,
-  hideCanvasControls = false,
+  hidePlanSelector = false,
   footer,
   onTaskSelect,
   onOpenPlanQuickSwitcher,
+  readOnly = false,
 }: TaskGraphViewInnerProps) {
-  // GraphControls state (declared early so showArchived is available for useTaskGraph)
+  // Graph filter state (declared early so showArchived is available for useTaskGraph)
   const [filters, setFilters] = useState<GraphFilters>(DEFAULT_GRAPH_FILTERS);
 
   // Get active plan ID from plan store (used for empty state check and plan selector)
@@ -318,12 +321,8 @@ function TaskGraphViewInner({
     fitViewDefault,
     zoomBy,
   } = useTaskGraphViewport();
-  const setSelectedTaskId = useUiStore((s) => s.setSelectedTaskId);
   const graphRightPanelUserOpen = useUiStore((s) => s.graphRightPanelUserOpen);
   const graphRightPanelCompactOpen = useUiStore((s) => s.graphRightPanelCompactOpen);
-  const battleModeActive = useUiStore((s) => s.battleModeActive);
-  const exitBattleMode = useUiStore((s) => s.exitBattleMode);
-  const executionStatus = useUiStore((s) => s.executionStatus);
   const { isNavCompact } = useNavCompactBreakpoint();
   const queryClient = useQueryClient();
   const clearGraphSelection = useUiStore((s) => s.clearGraphSelection);
@@ -944,14 +943,14 @@ function TaskGraphViewInner({
   // Context Menu Handlers
   // ============================================================================
 
-  // Handler for viewing task details (opens TaskDetailOverlay)
+  // Handler for viewing task details (opens the host-owned Agents detail)
   const handleViewDetails = useCallback((taskId: string) => {
     if (onTaskSelect) {
       onTaskSelect(taskId);
       return;
     }
-    setSelectedTaskId(taskId);
-  }, [onTaskSelect, setSelectedTaskId]);
+    void openTaskInAgents(taskId, "graph", { projectId });
+  }, [onTaskSelect, projectId]);
 
   // Handler for starting task execution (move to executing via state machine)
   const handleStartExecution = useCallback(async (taskId: string) => {
@@ -1194,7 +1193,7 @@ function TaskGraphViewInner({
     handleToggleAllTiers,
     projectId,
     handleViewDetails,
-    handleCancelAllInGroup,
+    readOnly ? undefined : handleCancelAllInGroup,
     planBranchContextMap
   );
 
@@ -1247,7 +1246,11 @@ function TaskGraphViewInner({
     graphReady,
     graphError: error ?? null,
     isLoading,
-    keyboardNavigationEnabled: !battleModeActive,
+    selectionScope: {
+      projectId,
+      ideationSessionId: ideationSessionId ?? null,
+    },
+    keyboardNavigationEnabled: true,
   });
 
   const activePlanArtifactId = useMemo(
@@ -1289,7 +1292,7 @@ function TaskGraphViewInner({
   // eslint-disable-next-line react-hooks/preserve-manual-memoization -- depends on plan-group shape plus injected action handlers for stable task menu wiring
   const taskGroupInfoMap = useMemo(() => {
     const map = new Map<string, GroupInfo>();
-    if (!filteredGraphData?.planGroups) return map;
+    if (readOnly || !filteredGraphData?.planGroups) return map;
 
     for (const pg of filteredGraphData.planGroups) {
       const isUncategorized = pg.planArtifactId === UNGROUPED_PLAN_ID;
@@ -1313,7 +1316,7 @@ function TaskGraphViewInner({
       }
     }
     return map;
-  }, [filteredGraphData?.planGroups, projectId, handleCancelAllInGroup, handlePauseAllInGroup, handleResumeAllInGroup, handleArchiveAllInGroup]);
+  }, [filteredGraphData?.planGroups, projectId, handleCancelAllInGroup, handlePauseAllInGroup, handleResumeAllInGroup, handleArchiveAllInGroup, readOnly]);
 
   const prevNodesRef = useRef<Node[]>([]);
   const prevEdgesRef = useRef<Edge[]>([]);
@@ -1354,8 +1357,8 @@ function TaskGraphViewInner({
           nodeMode: nodeModeLookup.get(node.id) ?? "standard",
           isHighlighted: node.id === highlightedTaskId,
           isFocused: node.id === focusedNodeId,
-          handlers: nodeHandlers,
-          ...(gi !== undefined && { groupInfo: gi }),
+          ...(readOnly ? {} : { handlers: nodeHandlers }),
+          ...(!readOnly && gi !== undefined && { groupInfo: gi }),
         },
         selected: graphSelection?.kind === "task" && graphSelection.id === node.id,
       };
@@ -1399,7 +1402,7 @@ function TaskGraphViewInner({
     }
     prevNodesRef.current = next;
     return next;
-  }, [layoutNodes, groupNodes, graphSelection, highlightedTaskId, focusedNodeId, nodeHandlers, taskGroupInfoMap, nodeModeLookup]);
+  }, [layoutNodes, groupNodes, graphSelection, highlightedTaskId, focusedNodeId, nodeHandlers, readOnly, taskGroupInfoMap, nodeModeLookup]);
 
   const edges = useMemo<Edge[]>(() => {
     const prev = prevEdgesRef.current;
@@ -1478,9 +1481,7 @@ function TaskGraphViewInner({
   const graphRightPanelVisible = isNavCompact
     ? graphRightPanelCompactOpen
     : graphRightPanelUserOpen;
-  const rightPanelMode = battleModeActive
-    ? "hidden"
-    : !graphRightPanelVisible
+  const rightPanelMode = !graphRightPanelVisible
     ? "hidden"
     : isNavCompact
       ? "overlay"
@@ -1649,23 +1650,21 @@ function TaskGraphViewInner({
         style={initialViewReady ? undefined : { visibility: "hidden" }}
       >
         {/* Floating filter controls - positioned over canvas */}
-        {!hideCanvasControls && (
-          <FloatingGraphFilters
-            filters={filters}
-            onFiltersChange={setFilters}
-            layoutDirection={layoutDirection}
-            onLayoutDirectionChange={setLayoutDirection}
-            nodeMode={effectiveNodeMode}
-            onNodeModeChange={handleNodeModeChange}
-            isAutoCompact={isAutoCompactActive}
-            grouping={grouping}
-            onGroupingChange={setGrouping}
-            isCompact={isNavCompact}
-          />
-        )}
+        <FloatingGraphFilters
+          filters={filters}
+          onFiltersChange={setFilters}
+          layoutDirection={layoutDirection}
+          onLayoutDirectionChange={setLayoutDirection}
+          nodeMode={effectiveNodeMode}
+          onNodeModeChange={handleNodeModeChange}
+          isAutoCompact={isAutoCompactActive}
+          grouping={grouping}
+          onGroupingChange={setGrouping}
+          isCompact={isNavCompact}
+        />
 
         {/* Plan selector control (only when a plan is active) */}
-        {!hideCanvasControls && activePlanId && requiresActivePlan && (
+        {!hidePlanSelector && activePlanId && requiresActivePlan && (
           <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10">
             <PlanSelectorInline
               projectId={projectId}
@@ -1729,13 +1728,6 @@ function TaskGraphViewInner({
           </ReactFlow>
         )}
 
-        <BattleModeV2Overlay
-          active={battleModeActive}
-          tasks={graphData.nodes}
-          runningCount={executionStatus.runningCount}
-          queuedCount={executionStatus.queuedCount}
-          onExit={exitBattleMode}
-        />
       </div>
     </GraphSplitLayout>
     </>
@@ -1749,18 +1741,20 @@ function TaskGraphViewInner({
 export function TaskGraphView({
   projectId,
   ideationSessionId,
-  hideCanvasControls = false,
+  hidePlanSelector = false,
   footer,
   onTaskSelect,
   onOpenPlanQuickSwitcher,
+  readOnly = false,
 }: TaskGraphViewProps) {
   return (
     <ReactFlowProvider>
       <TaskGraphViewInner
         projectId={projectId}
         ideationSessionId={ideationSessionId ?? null}
-        hideCanvasControls={hideCanvasControls}
+        hidePlanSelector={hidePlanSelector}
         footer={footer}
+        readOnly={readOnly}
         {...(onTaskSelect ? { onTaskSelect } : {})}
         {...(onOpenPlanQuickSwitcher
           ? { onOpenPlanQuickSwitcher }

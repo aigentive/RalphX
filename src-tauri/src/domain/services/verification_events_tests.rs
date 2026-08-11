@@ -396,9 +396,8 @@ fn test_payload_shape_matches_fixture_schema() {
 // ===== ImportedVerified Tests =====
 
 /// ImportedVerified: build_verification_payload produces a valid payload (no panic).
-/// The emit_verification_status_changed function skips emission entirely for ImportedVerified
-/// (returns early before reaching build_verification_payload), but the payload builder itself
-/// must handle it correctly if called directly.
+/// The application-layer emit wrapper skips emission entirely for ImportedVerified, but
+/// the domain payload builder itself must handle it correctly if called directly.
 #[test]
 fn test_imported_verified_payload_does_not_panic() {
     let payload = build_verification_payload(

@@ -4,7 +4,7 @@
 # - Per-agent metadata -> `agents/<agent>/agent.yaml`
 # - Claude harness globals/tool sets -> `config/harnesses/claude.yaml`
 # - Codex harness defaults -> `config/harnesses/codex.yaml`
-# - Process mapping/team constraints -> `config/processes.yaml`
+# - Process mapping -> `config/processes.yaml`
 # - External MCP defaults -> `config/external-mcp.yaml`
 # Notes:
 # - Unknown attributes are ignored by the current parser.
@@ -23,6 +23,26 @@ defer_merge_enabled: false
 # Env override: RALPHX_FILE_LOGGING=true|false
 file_logging: true
 
+# Maximum bytes retained in each per-launch log (including the cap marker).
+# Env override: RALPHX_FILE_LOGGING_MAX_BYTES (default: 1073741824 / 1 GiB)
+file_logging_max_bytes: 1073741824
+
+# Number of prior per-launch ralphx_*.log files to retain on startup.
+# Env override: RALPHX_FILE_LOGGING_KEEP_FILES (default: 5)
+file_logging_keep_files: 5
+
+# Whole-process deadline for RunEvent::Exit cleanup. A detached watchdog forces
+# process exit if terminals, agents, external MCP, or WAL cleanup hangs.
+shutdown:
+  watchdog_deadline_secs: 20 # Env: RALPHX_SHUTDOWN_WATCHDOG_DEADLINE_SECS
+
+# Startup-only SQLite compaction. Manual requests bypass the auto thresholds but not backup/headroom guards.
+# Env: RALPHX_DB_AUTO_COMPACT_ENABLED, RALPHX_DB_AUTO_COMPACT_MAX_DB_BYTES, RALPHX_DB_AUTO_COMPACT_MIN_FREELIST_PERCENT
+database_maintenance:
+  db_auto_compact_enabled: true
+  db_auto_compact_max_db_bytes: 2147483648
+  db_auto_compact_min_freelist_percent: 20
+
 # Optional GitHub repository for user-submitted support issue reports.
 # When omitted, RalphX uses the public product repository and shows the
 # resolved destination before the user confirms submission.
@@ -31,16 +51,37 @@ file_logging: true
 
 # ── UI feature flags ───────────────────────────────────────────────────────
 # Controls which UI pages are visible in the app.
-# Env overrides: RALPHX_UI_ACTIVITY_PAGE=true|false, RALPHX_UI_EXTENSIBILITY_PAGE=true|false, RALPHX_UI_IDEATION_PAGE=true|false, RALPHX_UI_BATTLE_MODE=true|false, RALPHX_UI_ATLASSIAN_OAUTH=true|false, RALPHX_UI_TICKETING_DASHBOARD=true|false
+# Env overrides: RALPHX_UI_ACTIVITY_PAGE=true|false, RALPHX_UI_EXTENSIBILITY_PAGE=true|false, RALPHX_UI_AUTOMATIONS_PAGE=true|false, RALPHX_UI_ATLASSIAN_OAUTH=true|false, RALPHX_UI_TICKETING_DASHBOARD=true|false, RALPHX_UI_AGENT_PERSONAS=true|false, RALPHX_UI_PERSONA_SWITCH_FORCES_FRESH_PROVIDER_SESSION=true|false
+# Personas v2: RALPHX_UI_AGENT_PERSONAS,
+# and RALPHX_UI_STANDALONE_CONVERSATIONS.
 ui:
   feature_flags:
     activity_page: false
     extensibility_page: false
-    ideation_page: false
-    battle_mode: false
-    team_mode: false
+    automations_page: true
     atlassian_oauth: false
     ticketing_dashboard: false
+    # Enables experimental agent persona controls.
+    agent_personas: false
+    # Enables projectless Agent conversations and Global persona builds.
+    standalone_conversations: false
+    # A20 escape hatch: skip --resume on the send after a persona switch.
+    persona_switch_forces_fresh_provider_session: false
+
+# Compatibility runtime row for the PersonaBuilder-only extractor. Canonical
+# `agents/ralphx-persona-extractor/agent.yaml` remains authoritative.
+agents:
+  - name: ralphx-persona-extractor
+    system_prompt_file: agents/ralphx-persona-extractor/claude/prompt.md
+    model: sonnet
+    mcp_tools:
+      - fs_read_file
+      - fs_list_dir
+      - fs_grep
+      - fs_glob
+      - ask_user_question
+      - save_persona_draft
+      - get_persona_draft
 
 # ── Execution defaults ────────────────────────────────────────────────────
 # Seed values for the persisted execution settings tables.
@@ -78,14 +119,45 @@ timeouts:
     default_line_read_secs: 600 # Env: RALPHX_STREAM_DEFAULT_LINE_READ_SECS
     # chat_service_streaming.rs — max stall for worker/ideation/other agents
     default_parse_stall_secs: 180 # Env: RALPHX_STREAM_DEFAULT_PARSE_STALL_SECS
-    # chat_service_streaming.rs — team lead wait time for teammate responses (generous: 1 hour)
-    team_line_read_secs: 3600 # Env: RALPHX_STREAM_TEAM_LINE_READ_SECS
-    # chat_service_streaming.rs — team lead stream stall limit (generous: 1 hour)
-    team_parse_stall_secs: 3600 # Env: RALPHX_STREAM_TEAM_PARSE_STALL_SECS
+    # chat_service_streaming.rs — minimum interval between durable snapshots while text tokens stream
+    streaming_persistence_debounce_ms: 1000 # Env: RALPHX_STREAM_STREAMING_PERSISTENCE_DEBOUNCE_MS
     # chat_service_streaming.rs — max idle time (no meaningful activity) before killing agent stream
     max_wall_clock_secs: 1800 # Env: RALPHX_STREAM_MAX_WALL_CLOCK_SECS
     # chat_service_handlers.rs — slack for agent run start recorded before execution status history
     execution_attempt_start_tolerance_secs: 1 # Env: RALPHX_STREAM_EXECUTION_ATTEMPT_START_TOLERANCE_SECS
+    # process exit → stream drain/finalizer grace before a dead-PID registry entry is pruned
+    completion_grace_secs: 60 # Env: RALPHX_STREAM_COMPLETION_GRACE_SECS
+    # running-agent launch reservation — renewed during pre-spawn preparation; expired reservations are pruned centrally
+    launch_reservation_lease_secs: 30 # Env: RALPHX_STREAM_LAUNCH_RESERVATION_LEASE_SECS
+    # notification_service.rs — batch eligible desktop notifications before delivery
+    desktop_notification_coalesce_window_secs: 5 # Env: RALPHX_STREAM_DESKTOP_NOTIFICATION_COALESCE_WINDOW_SECS
+    # startup_jobs.rs — durable notification history retention (read rows only)
+    notification_retention_read_days: 30 # Env: RALPHX_STREAM_NOTIFICATION_RETENTION_READ_DAYS
+    notification_retention_max_rows: 1000 # Env: RALPHX_STREAM_NOTIFICATION_RETENTION_MAX_ROWS
+    # startup_jobs.rs — background full chat tool-payload retention (block previews/metadata stay)
+    chat_payload_retention_enabled: true # Env: RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_ENABLED
+    chat_payload_retention_days: 90 # Env: RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_DAYS
+    chat_payload_retention_archived_days: 7 # Env: RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_ARCHIVED_DAYS
+    chat_payload_retention_batch_rows: 2000 # Env: RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_BATCH_ROWS
+    # db_connection.rs — production warning thresholds for mutex wait and operation hold time
+    db_lock_wait_warn_ms: 100 # Env: RALPHX_STREAM_DB_LOCK_WAIT_WARN_MS
+    db_lock_hold_warn_ms: 250 # Env: RALPHX_STREAM_DB_LOCK_HOLD_WARN_MS
+
+# Backend-held delegation waiting. Coordinators stop burning tokens on model-side polling:
+# short waits block inside `delegate_wait`, long waits park and are woken by delegate signals.
+delegation:
+  # native_delegation.rs — default bounded block when a caller waits without naming a duration
+  wait_block_secs: 120 # Env: RALPHX_DELEGATION_WAIT_BLOCK_SECS
+  # native_delegation.rs — hard cap on any caller-supplied wait_timeout_ms.
+  # MUST stay strictly below timeouts.stream.default_parse_stall_secs (180) so a blocking
+  # wait is never mistaken for a stalled stream and kills the waiting coordinator.
+  wait_block_max_secs: 150 # Env: RALPHX_DELEGATION_WAIT_BLOCK_MAX_SECS
+  # delegation_park — upper bound on how long a coordinator may stay parked before force-wake
+  park_max_secs: 3600 # Env: RALPHX_DELEGATION_PARK_MAX_SECS
+  # delegation_park — wake-enqueue attempts before the park is marked failed
+  park_wake_retry_max: 5 # Env: RALPHX_DELEGATION_PARK_WAKE_RETRY_MAX
+  # delegation_park — backoff between wake-enqueue attempts
+  park_wake_retry_backoff_secs: 30 # Env: RALPHX_DELEGATION_PARK_WAKE_RETRY_BACKOFF_SECS
 
 reconciliation:
   # reconciliation.rs — overall deadline for merger agent; triggers MergeIncomplete + auto-retry if exceeded
@@ -157,12 +229,16 @@ reconciliation:
 git:
   # git_service/git_cmd.rs — per-command timeout to prevent hung git processes
   cmd_timeout_secs: 60 # Env: RALPHX_GIT_CMD_TIMEOUT_SECS
+  # startup_git_auth_preflight.rs — total budget for each startup Git/GitHub auth probe
+  startup_auth_preflight_timeout_secs: 10 # Env: RALPHX_GIT_STARTUP_AUTH_PREFLIGHT_TIMEOUT_SECS
   # git_service/git_cmd.rs — max retry attempts for transient git failures
   max_retries: 3 # Env: RALPHX_GIT_MAX_RETRIES
   # git_service/git_cmd.rs — delay between retries (list, not env-overridable)
   retry_backoff_secs: [1, 2, 4]
   # side_effects.rs — age threshold for removing a stale .git/index.lock file
   index_lock_stale_secs: 5 # Env: RALPHX_GIT_INDEX_LOCK_STALE_SECS
+  # harness_runtime_registry.rs — TTL for unchanged provider CLI availability probes
+  provider_probe_cache_ttl_secs: 300 # Env: RALPHX_GIT_PROVIDER_PROBE_CACHE_TTL_SECS
   # unified_chat_commands.rs — short backend TTL for repeated workspace freshness checks
   workspace_freshness_cache_ttl_ms: 2000 # Env: RALPHX_GIT_WORKSPACE_FRESHNESS_CACHE_TTL_MS
   # diff_commands.rs — short backend TTL for workspace review context/payload reuse
@@ -173,10 +249,26 @@ git:
   workspace_pr_annotations_cache_ttl_ms: 30000 # Env: RALPHX_GIT_WORKSPACE_PR_ANNOTATIONS_CACHE_TTL_MS
   # gh_cli_github_service.rs — max annotated check runs queried for per-run annotations per PR payload
   workspace_pr_annotations_check_run_fetch_limit: 10 # Env: RALPHX_GIT_WORKSPACE_PR_ANNOTATIONS_CHECK_RUN_FETCH_LIMIT
+  # agent_runtime_context — hard latency budget for composing volatile per-turn state
+  agent_runtime_context_budget_ms: 75 # Env: RALPHX_GIT_AGENT_RUNTIME_CONTEXT_BUDGET_MS
+  agent_runtime_branch_status_refresh_secs: 30 # Env: RALPHX_GIT_AGENT_RUNTIME_BRANCH_STATUS_REFRESH_SECS
+  agent_runtime_branch_status_stale_secs: 300 # Env: RALPHX_GIT_AGENT_RUNTIME_BRANCH_STATUS_STALE_SECS
   # agent_workspace_external_pr_reconciliation.rs — TTL for external PR lookup attempts on unlinked agent workspaces
   agent_workspace_pr_reconciliation_cache_ttl_ms: 30000 # Env: RALPHX_GIT_AGENT_WORKSPACE_PR_RECONCILIATION_CACHE_TTL_MS
+  # agent_workspace_publish_recovery.rs — fallback age for legacy transient publish rows without a lease owner
+  agent_workspace_publish_lease_stale_secs: 300 # Legacy ownerless-row fallback. Env: RALPHX_GIT_AGENT_WORKSPACE_PUBLISH_LEASE_STALE_SECS
+  # unified_chat_commands — heartbeat cadence while a live publisher owns the durable lease
+  agent_workspace_publish_lease_heartbeat_interval_secs: 30 # Env: RALPHX_GIT_AGENT_WORKSPACE_PUBLISH_LEASE_HEARTBEAT_INTERVAL_SECS
+  # agent_workspace_publish_recovery.rs — liveness-aware publish recovery cadence
+  agent_workspace_publish_recovery_interval_secs: 120 # Env: RALPHX_GIT_AGENT_WORKSPACE_PUBLISH_RECOVERY_INTERVAL_SECS
+  # pr_startup_recovery.rs — periodic retry cadence for terminal PR local branch/worktree cleanup
+  terminal_pr_local_cleanup_interval_secs: 900 # Env: RALPHX_GIT_TERMINAL_PR_LOCAL_CLEANUP_INTERVAL_SECS
+  # pr_startup_recovery.rs — retry window for retryable terminal PR cleanup markers
+  terminal_pr_local_cleanup_retry_secs: 3600 # Env: RALPHX_GIT_TERMINAL_PR_LOCAL_CLEANUP_RETRY_SECS
   # orphan_worktree_cleanup.rs — retry window for unchanged dirty/unsafe orphan agent-worktree cleanup markers
   orphan_worktree_cleanup_marker_retry_secs: 86400 # Env: RALPHX_GIT_ORPHAN_WORKTREE_CLEANUP_MARKER_RETRY_SECS
+  # orphan_worktree_cleanup.rs — same-process orphan cleanup cadence (0 disables periodic cleanup)
+  orphan_worktree_cleanup_interval_secs: 900 # Env: RALPHX_GIT_ORPHAN_WORKTREE_CLEANUP_INTERVAL_SECS
   # merge_coordination.rs — settle time after SIGTERM before worktree deletion
   agent_kill_settle_secs: 0 # Env: RALPHX_GIT_AGENT_KILL_SETTLE_SECS
   # merge_coordination.rs — timeout for each stop_agent() call in pre-merge cleanup step 0
@@ -204,6 +296,24 @@ scheduler:
   # on_enter_states.rs — settle delay before scheduling unblocked tasks after a merge completes (milliseconds)
   merge_settle_ms: 100 # Env: RALPHX_SCHEDULER_MERGE_SETTLE_MS
 
+automations:
+  # automation scheduler — authoritative poll cadence for automation runs and PR completion signals
+  scheduler_poll_secs: 30 # Env: RALPHX_AUTOMATIONS_SCHEDULER_POLL_SECS
+  # automation scheduler — consecutive GitHub signal-check failures before pausing an automation
+  signal_failure_pause_threshold: 5 # Env: RALPHX_AUTOMATIONS_SIGNAL_FAILURE_PAUSE_THRESHOLD
+  # automation judge — maximum wall-clock seconds for a judge pass
+  judge_timeout_secs: 180 # Env: RALPHX_AUTOMATIONS_JUDGE_TIMEOUT_SECS
+  # automation scheduler — grace period after agent completion before scheduler-driven publish
+  publish_grace_secs: 120 # Env: RALPHX_AUTOMATIONS_PUBLISH_GRACE_SECS
+  # automation scheduler — maximum wall-clock seconds for a running automation run
+  max_run_duration_secs: 14400 # Env: RALPHX_AUTOMATIONS_MAX_RUN_DURATION_SECS
+  # automation plan judge — provider-keyed model floor for automatic plan approval
+  plan_judge_model:
+    claude: sonnet # Env: RALPHX_AUTOMATIONS_PLAN_JUDGE_MODEL_CLAUDE
+    codex: gpt-5.4 # Env: RALPHX_AUTOMATIONS_PLAN_JUDGE_MODEL_CODEX
+  # automation plan judge — max plan revision rounds before pausing for human review
+  plan_max_revision_rounds: 3 # Env: RALPHX_AUTOMATIONS_PLAN_MAX_REVISION_ROUNDS
+
 supervisor:
   # supervisor_service.rs — wall-clock seconds before supervisor warns agent about time usage
   time_threshold_secs: 600 # Env: RALPHX_SUPERVISOR_TIME_THRESHOLD_SECS
@@ -222,42 +332,16 @@ limits:
   # chat_service_errors.rs — max times an agent conversation is auto-resumed after a provider error
   max_resume_attempts: 5 # Env: RALPHX_LIMITS_MAX_RESUME_ATTEMPTS
 
+  # agent_workspace repair — total agent minutes spent on one PR failure identity before RalphX
+  # stops retrying and hands the failure to a human. 0 disables the budget.
+  # Env: RALPHX_LIMITS_REPAIR_FINGERPRINT_BUDGET_MINUTES
+  repair_fingerprint_budget_minutes: 45
+
 ideation:
   # Seconds of inactivity before an agent is considered "likely_waiting" vs "likely_generating".
   # Used by get_child_session_status MCP tool to derive estimated_status. Env: RALPHX_IDEATION_ACTIVITY_THRESHOLD_SECS
   child_session_activity_threshold_secs: 10
   verification:
-    # verification_reconciliation.rs — max adversarial review rounds [1,10]; hard cap, always terminates
-    max_rounds: 5
-    # If true, verification starts automatically when a plan is created
-    auto_verify: true
-    # If true, apply_proposals is blocked unless the plan is verified or skipped
-    require_verification_for_accept: true
-    # Min proposals before auto-verification triggers (when auto_verify=true)
-    complexity_threshold: 3
-    # verification_reconciliation.rs — sessions stuck in_progress longer than this are reset (seconds)
-    # 90 minutes: 5 rounds × 10-15 min/round + buffer (D14). Env: RALPHX_VERIFICATION_RECONCILIATION_STALE_AFTER_SECS
-    reconciliation_stale_after_secs: 5400
-    # How often the reconciliation service scans for stuck sessions (seconds). Env: RALPHX_VERIFICATION_RECONCILIATION_INTERVAL_SECS
-    reconciliation_interval_secs: 300
     # accept-plan retry self-heal — supersede orphaned execution plans with no tasks/links after this many seconds
     # Env: RALPHX_VERIFICATION_ACCEPT_STALE_EXECUTION_PLAN_SECS
     accept_stale_execution_plan_secs: 30
-    # Specialist agents available in the verification pipeline.
-    # Shown as checkboxes in the VerificationConfirmDialog.
-    specialists:
-      - name: "ralphx-ideation-specialist-code-quality"
-        display_name: "Code Quality"
-        description: "Analyzes code paths for complexity, DRY violations, and extract opportunities"
-        dispatch_mode: "pre_round"
-        enabled_by_default: true
-      - name: "ralphx-ideation-specialist-ux"
-        display_name: "UX/UI Analysis"
-        description: "Verifies UI flows, screen inventory, and wireframe patterns"
-        dispatch_mode: "per_round"
-        enabled_by_default: true
-      - name: "ralphx-ideation-specialist-prompt-quality"
-        display_name: "Prompt Quality"
-        description: "Reviews agent prompts for token efficiency, scoping, and anti-bloat"
-        dispatch_mode: "per_round"
-        enabled_by_default: true

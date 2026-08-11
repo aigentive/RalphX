@@ -48,6 +48,7 @@ fn test_logical_effort_parse_and_display() {
     assert_eq!(LogicalEffort::High.to_string(), "high");
     assert_eq!(LogicalEffort::XHigh.to_string(), "xhigh");
     assert_eq!(LogicalEffort::Max.to_string(), "max");
+    assert_eq!(LogicalEffort::Ultra.to_string(), "ultra");
 
     assert_eq!("low".parse::<LogicalEffort>().unwrap(), LogicalEffort::Low);
     assert_eq!(
@@ -55,6 +56,10 @@ fn test_logical_effort_parse_and_display() {
         LogicalEffort::XHigh
     );
     assert_eq!("max".parse::<LogicalEffort>().unwrap(), LogicalEffort::Max);
+    assert_eq!(
+        "ultra".parse::<LogicalEffort>().unwrap(),
+        LogicalEffort::Ultra
+    );
 }
 
 #[test]
@@ -64,12 +69,17 @@ fn test_logical_effort_to_legacy_claude_effort() {
     assert_eq!(LogicalEffort::High.to_legacy_claude_effort(), "high");
     assert_eq!(LogicalEffort::XHigh.to_legacy_claude_effort(), "xhigh");
     assert_eq!(LogicalEffort::Max.to_legacy_claude_effort(), "max");
+    assert_eq!(LogicalEffort::Ultra.to_legacy_claude_effort(), "ultra");
 }
 
 #[test]
 fn test_agent_lane_display_and_parse() {
     assert_eq!(AgentLane::IdeationPrimary.to_string(), "ideation_primary");
     assert_eq!(AgentLane::ExecutionMerger.to_string(), "execution_merger");
+    assert_eq!(
+        AgentLane::ExecutionBranchUpdater.to_string(),
+        "execution_branch_updater"
+    );
     assert_eq!(
         "ideation_verifier_subagent".parse::<AgentLane>().unwrap(),
         AgentLane::IdeationVerifierSubagent
@@ -150,6 +160,23 @@ fn test_generic_harness_lane_defaults_for_codex_primary() {
 }
 
 #[test]
+fn workspace_plan_defaults_are_provider_shaped() {
+    let codex = super::generic_harness_role_defaults(
+        AgentHarnessKind::Codex,
+        super::super::routing_role::RoutingRole::WorkspacePlan,
+    );
+    let claude = super::generic_harness_role_defaults(
+        AgentHarnessKind::Claude,
+        super::super::routing_role::RoutingRole::WorkspacePlan,
+    );
+
+    assert_eq!(codex.model.as_deref(), Some("gpt-5.5"));
+    assert_eq!(codex.effort, Some(LogicalEffort::XHigh));
+    assert_eq!(claude.model.as_deref(), Some("sonnet"));
+    assert_eq!(claude.effort, Some(LogicalEffort::Medium));
+}
+
+#[test]
 fn test_standard_agent_lane_defaults_use_expected_harnesses() {
     let defaults = standard_agent_lane_defaults();
 
@@ -190,7 +217,10 @@ fn test_standard_harness_registry_builds_all_first_class_harnesses() {
 fn test_standard_harness_behavior_for_claude() {
     let behavior = standard_harness_behavior(AgentHarnessKind::Claude);
 
-    assert!(behavior.honors_team_mode);
+    assert!(behavior.team.rx_native_team);
+    assert!(behavior.team.interactive_delivery);
+    assert!(behavior.team.resume_delivery);
+    assert!(behavior.team.stream_projection);
     assert!(behavior.supports_merge_completion_watcher);
     assert_eq!(
         behavior.model_label_strategy,
@@ -207,7 +237,10 @@ fn test_standard_harness_behavior_for_claude() {
 fn test_standard_harness_behavior_for_codex() {
     let behavior = standard_harness_behavior(AgentHarnessKind::Codex);
 
-    assert!(!behavior.honors_team_mode);
+    assert!(behavior.team.rx_native_team);
+    assert!(!behavior.team.interactive_delivery);
+    assert!(behavior.team.resume_delivery);
+    assert!(behavior.team.stream_projection);
     assert!(!behavior.supports_merge_completion_watcher);
     assert_eq!(
         behavior.model_label_strategy,

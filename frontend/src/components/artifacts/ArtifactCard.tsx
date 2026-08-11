@@ -55,6 +55,7 @@ const TYPE_LABELS: Record<ArtifactType, string> = {
   activity_log: "Activity Log",
   alert: "Alert",
   intervention: "Intervention",
+  persona: "Persona",
 };
 
 function getCategory(type: ArtifactType): ArtifactCategory {

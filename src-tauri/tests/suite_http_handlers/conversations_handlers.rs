@@ -2,7 +2,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use chrono::Utc;
 use ralphx_lib::application::chat_service::{CachedStreamingTask, CachedToolCall};
-use ralphx_lib::application::{AppState, TeamService, TeamStateTracker};
+use ralphx_lib::application::AppState;
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::agents::AgentHarnessKind;
 use ralphx_lib::domain::entities::{
@@ -22,7 +22,6 @@ fn cached_streaming_task(tool_use_id: &str) -> CachedStreamingTask {
         model: None,
         status: "running".to_string(),
         agent_id: None,
-        teammate_name: None,
         delegated_job_id: None,
         delegated_session_id: None,
         delegated_conversation_id: None,
@@ -46,20 +45,20 @@ fn cached_streaming_task(tool_use_id: &str) -> CachedStreamingTask {
         cache_read_tokens: None,
         estimated_usd: None,
         text_output: None,
+        started_at: None,
+        completed_at: None,
+        timestamp_provenance: None,
+        seq: None,
     }
 }
 
 async fn setup_test_state() -> HttpServerState {
     let app_state = Arc::new(AppState::new_test());
     let execution_state = Arc::new(ExecutionState::new());
-    let tracker = TeamStateTracker::new();
-    let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
 
     HttpServerState {
         app_state,
         execution_state,
-        team_tracker: tracker,
-        team_service,
         delegation_service: Default::default(),
     }
 }
@@ -101,6 +100,7 @@ async fn test_get_active_state_returns_empty_for_inactive_conversation() {
     assert!(response.0.tool_calls.is_empty());
     assert!(response.0.streaming_tasks.is_empty());
     assert!(response.0.partial_text.is_empty());
+    assert!(response.0.partial_text_segments.is_empty());
 }
 
 #[tokio::test]
@@ -122,6 +122,7 @@ async fn test_get_active_state_returns_cached_tool_calls() {
     let tool_call = CachedToolCall {
         id: "toolu_001".to_string(),
         name: "bash".to_string(),
+        block_index: Some(4),
         arguments: serde_json::json!({"command": "ls -la"}),
         result: Some(serde_json::json!({"output": "file1.txt"})),
         diff_context: None,
@@ -141,6 +142,7 @@ async fn test_get_active_state_returns_cached_tool_calls() {
     assert_eq!(response.0.tool_calls.len(), 1);
     assert_eq!(response.0.tool_calls[0].id, "toolu_001");
     assert_eq!(response.0.tool_calls[0].name, "bash");
+    assert_eq!(response.0.tool_calls[0].block_index, Some(4));
     assert!(response.0.tool_calls[0].result.is_some());
 }
 
@@ -200,12 +202,12 @@ async fn test_get_active_state_returns_partial_text() {
     state
         .app_state
         .streaming_state_cache
-        .append_text(&conversation_id, "Hello ")
+        .append_text(&conversation_id, 0, "Hello ")
         .await;
     state
         .app_state
         .streaming_state_cache
-        .append_text(&conversation_id, "world!")
+        .append_text(&conversation_id, 1, "world!")
         .await;
 
     let response = get_conversation_active_state(State(state), Path(conversation_id))
@@ -213,6 +215,45 @@ async fn test_get_active_state_returns_partial_text() {
         .unwrap();
 
     assert_eq!(response.0.partial_text, "Hello world!");
+    assert_eq!(response.0.partial_text_segments, vec!["Hello ", "world!"]);
+}
+
+#[tokio::test]
+async fn test_get_active_state_returns_partial_thinking_segments() {
+    let state = setup_test_state().await;
+
+    let session_id = IdeationSessionId::new();
+    let conversation = ChatConversation::new_ideation(session_id.clone());
+    let conversation_id = conversation.id.as_str().to_string();
+    state
+        .app_state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .unwrap();
+
+    state
+        .app_state
+        .streaming_state_cache
+        .append_thinking(&conversation_id, 0, "First thought")
+        .await;
+    state
+        .app_state
+        .streaming_state_cache
+        .append_thinking(&conversation_id, 1, "Second thought")
+        .await;
+
+    let response = get_conversation_active_state(State(state), Path(conversation_id))
+        .await
+        .unwrap();
+
+    // Thinking segments travel separately from partial_text so the transcript
+    // has one owner per kind of live text.
+    assert_eq!(
+        response.0.partial_thinking_segments,
+        vec!["First thought", "Second thought"]
+    );
+    assert!(response.0.partial_text.is_empty());
 }
 
 #[tokio::test]
@@ -288,6 +329,7 @@ async fn test_get_active_state_combines_all_data() {
     let tool_call = CachedToolCall {
         id: "toolu_combined".to_string(),
         name: "read".to_string(),
+        block_index: Some(0),
         arguments: serde_json::json!({"file_path": "/tmp/test.txt"}),
         result: None,
         diff_context: None,
@@ -315,7 +357,7 @@ async fn test_get_active_state_combines_all_data() {
     state
         .app_state
         .streaming_state_cache
-        .append_text(&conversation_id, "Analyzing...")
+        .append_text(&conversation_id, 0, "Analyzing...")
         .await;
 
     let response = get_conversation_active_state(State(state), Path(conversation_id))
@@ -422,8 +464,14 @@ async fn test_get_active_state_returns_delegated_metadata() {
 
     let task = &response.0.streaming_tasks[0];
     assert_eq!(task.delegated_job_id.as_deref(), Some("job-123"));
-    assert_eq!(task.delegated_session_id.as_deref(), Some("delegated-session-123"));
-    assert_eq!(task.delegated_conversation_id.as_deref(), Some("conv-child-123"));
+    assert_eq!(
+        task.delegated_session_id.as_deref(),
+        Some("delegated-session-123")
+    );
+    assert_eq!(
+        task.delegated_conversation_id.as_deref(),
+        Some("conv-child-123")
+    );
     assert_eq!(task.provider_harness.as_deref(), Some("codex"));
     assert_eq!(task.upstream_provider.as_deref(), Some("openai"));
     assert_eq!(task.logical_model.as_deref(), Some("gpt-5.4"));
@@ -481,10 +529,10 @@ async fn test_get_active_state_reconciles_stale_delegated_running_task() {
     delegated_run.effective_model_id = Some("gpt-5.4-2026-04-01".to_string());
     delegated_run.approval_policy = Some("never".to_string());
     delegated_run.sandbox_mode = Some("danger-full-access".to_string());
-    delegated_run.input_tokens = Some(11);
-    delegated_run.output_tokens = Some(29);
-    delegated_run.cache_creation_tokens = Some(7);
-    delegated_run.cache_read_tokens = Some(13);
+    delegated_run.input_tokens = Some(9_116_803);
+    delegated_run.output_tokens = Some(25_881);
+    delegated_run.cache_creation_tokens = Some(0);
+    delegated_run.cache_read_tokens = Some(8_837_504);
     delegated_run.estimated_usd = Some(0.42);
     delegated_run.completed_at = Some(Utc::now());
     let delegated_run_id = delegated_run.id.as_str();
@@ -520,7 +568,10 @@ async fn test_get_active_state_reconciles_stale_delegated_running_task() {
     let task = &response.0.streaming_tasks[0];
     assert_eq!(task.status, "completed");
     assert_eq!(task.provider_harness.as_deref(), Some("codex"));
-    assert_eq!(task.provider_session_id.as_deref(), Some("run-provider-session"));
+    assert_eq!(
+        task.provider_session_id.as_deref(),
+        Some("run-provider-session")
+    );
     assert_eq!(task.upstream_provider.as_deref(), Some("openai"));
     assert_eq!(task.provider_profile.as_deref(), Some("prod"));
     assert_eq!(task.logical_model.as_deref(), Some("gpt-5.4"));
@@ -530,10 +581,172 @@ async fn test_get_active_state_reconciles_stale_delegated_running_task() {
     );
     assert_eq!(task.approval_policy.as_deref(), Some("never"));
     assert_eq!(task.sandbox_mode.as_deref(), Some("danger-full-access"));
-    assert_eq!(task.input_tokens, Some(11));
-    assert_eq!(task.output_tokens, Some(29));
-    assert_eq!(task.cache_creation_tokens, Some(7));
-    assert_eq!(task.cache_read_tokens, Some(13));
-    assert_eq!(task.total_tokens, Some(60));
+    assert_eq!(task.input_tokens, Some(9_116_803));
+    assert_eq!(task.output_tokens, Some(25_881));
+    assert_eq!(task.cache_creation_tokens, Some(0));
+    assert_eq!(task.cache_read_tokens, Some(8_837_504));
+    assert_eq!(task.total_tokens, Some(9_142_684));
     assert_eq!(task.estimated_usd, Some(0.42));
+}
+
+#[tokio::test]
+async fn test_get_active_state_does_not_hydrate_a_run_from_another_conversation() {
+    let state = setup_test_state().await;
+    let parent_conversation = ChatConversation::new_task_execution(TaskId::new());
+    let parent_conversation_id = parent_conversation.id.as_str().to_string();
+    state
+        .app_state
+        .chat_conversation_repo
+        .create(parent_conversation)
+        .await
+        .unwrap();
+
+    let delegated_session = DelegatedSession::new(
+        ProjectId::new(),
+        ChatContextType::TaskExecution.to_string(),
+        "parent-context-id",
+        "verification-critic",
+        AgentHarnessKind::Codex,
+    );
+    state
+        .app_state
+        .delegated_session_repo
+        .create(delegated_session.clone())
+        .await
+        .unwrap();
+    let delegated_conversation = ChatConversation::new_delegation(delegated_session.id.clone());
+    let delegated_conversation_id = delegated_conversation.id.as_str();
+    state
+        .app_state
+        .chat_conversation_repo
+        .create(delegated_conversation)
+        .await
+        .unwrap();
+
+    let foreign_conversation = state
+        .app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(ProjectId::new()))
+        .await
+        .unwrap();
+    let mut foreign_run = AgentRun::new(foreign_conversation.id);
+    foreign_run.harness = Some(AgentHarnessKind::Codex);
+    foreign_run.input_tokens = Some(9_116_803);
+    foreign_run.output_tokens = Some(25_881);
+    let foreign_run = state
+        .app_state
+        .agent_run_repo
+        .create(foreign_run)
+        .await
+        .unwrap();
+
+    state
+        .app_state
+        .streaming_state_cache
+        .add_task(
+            &parent_conversation_id,
+            CachedStreamingTask {
+                delegated_session_id: Some(delegated_session.id.as_str().to_string()),
+                delegated_conversation_id: Some(delegated_conversation_id),
+                delegated_agent_run_id: Some(foreign_run.id.as_str()),
+                ..cached_streaming_task("toolu_foreign_delegate_run")
+            },
+        )
+        .await;
+
+    let response = get_conversation_active_state(State(state), Path(parent_conversation_id))
+        .await
+        .unwrap();
+    let task = &response.0.streaming_tasks[0];
+
+    assert_eq!(task.status, "running");
+    assert_eq!(task.total_tokens, None);
+    assert_eq!(task.provider_harness, None);
+}
+
+#[tokio::test]
+async fn test_get_active_state_does_not_borrow_latest_run_without_exact_cached_run_identity() {
+    let state = setup_test_state().await;
+    let parent_conversation = ChatConversation::new_task_execution(TaskId::new());
+    let parent_conversation_id = parent_conversation.id.as_str().to_string();
+    state
+        .app_state
+        .chat_conversation_repo
+        .create(parent_conversation)
+        .await
+        .unwrap();
+
+    let delegated_session = DelegatedSession::new(
+        ProjectId::new(),
+        ChatContextType::TaskExecution.to_string(),
+        "parent-context-id",
+        "verification-critic",
+        AgentHarnessKind::Codex,
+    );
+    state
+        .app_state
+        .delegated_session_repo
+        .create(delegated_session.clone())
+        .await
+        .unwrap();
+    let delegated_conversation = ChatConversation::new_delegation(delegated_session.id.clone());
+    let delegated_conversation_id = delegated_conversation.id.as_str();
+    state
+        .app_state
+        .chat_conversation_repo
+        .create(delegated_conversation.clone())
+        .await
+        .unwrap();
+
+    let mut newer_run = AgentRun::new(delegated_conversation.id);
+    newer_run.complete();
+    newer_run.harness = Some(AgentHarnessKind::Codex);
+    newer_run.input_tokens = Some(100);
+    newer_run.output_tokens = Some(20);
+    newer_run.completed_at = Some(Utc::now());
+    state
+        .app_state
+        .agent_run_repo
+        .create(newer_run)
+        .await
+        .unwrap();
+
+    for (tool_use_id, delegated_agent_run_id, status) in [
+        ("toolu_missing_run", None, "failed"),
+        ("toolu_wrong_run", Some("wrong-run-id"), "cancelled"),
+    ] {
+        state
+            .app_state
+            .streaming_state_cache
+            .add_task(
+                &parent_conversation_id,
+                CachedStreamingTask {
+                    status: status.to_string(),
+                    delegated_job_id: Some(format!("job-{tool_use_id}")),
+                    delegated_session_id: Some(delegated_session.id.as_str().to_string()),
+                    delegated_conversation_id: Some(delegated_conversation_id.clone()),
+                    delegated_agent_run_id: delegated_agent_run_id.map(str::to_string),
+                    started_at: Some("2026-07-23T00:00:00Z".to_string()),
+                    completed_at: Some("2026-07-23T00:01:00Z".to_string()),
+                    timestamp_provenance: Some("delegation_job".to_string()),
+                    seq: Some(17),
+                    ..cached_streaming_task(tool_use_id)
+                },
+            )
+            .await;
+    }
+
+    let response = get_conversation_active_state(State(state), Path(parent_conversation_id))
+        .await
+        .unwrap();
+
+    for task in response.0.streaming_tasks {
+        assert!(matches!(task.status.as_str(), "failed" | "cancelled"));
+        assert_eq!(task.total_tokens, None);
+        assert_eq!(task.provider_harness, None);
+        assert_eq!(task.started_at.as_deref(), Some("2026-07-23T00:00:00Z"));
+        assert_eq!(task.completed_at.as_deref(), Some("2026-07-23T00:01:00Z"));
+        assert_eq!(task.timestamp_provenance.as_deref(), Some("delegation_job"));
+        assert_eq!(task.seq, Some(17));
+    }
 }

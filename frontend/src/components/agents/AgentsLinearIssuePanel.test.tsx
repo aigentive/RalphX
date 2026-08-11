@@ -97,6 +97,20 @@ describe("AgentsLinearIssuePanel", () => {
     searchIssuesMock.mockResolvedValue([]);
   });
 
+  it("removes line selection while keeping Linear details selectable", async () => {
+    getIssueMock.mockResolvedValue(issue());
+
+    renderPanel();
+
+    const body = await screen.findByText("Body text");
+    expect(
+      screen.queryByRole("button", { name: "Select ticket lines" }),
+    ).not.toBeInTheDocument();
+    expect(
+      body.closest("[data-artifact-selectable-region='true']"),
+    ).not.toBeNull();
+  });
+
   it("refreshes newly assigned not-loaded Linear issues without a manual click", async () => {
     getIssueMock.mockResolvedValue(
       issue({

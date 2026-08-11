@@ -15,4 +15,6 @@ external_mcp:
   host: "127.0.0.1"      # default: 127.0.0.1
   max_restart_attempts: 3 # default: 3
   restart_delay_ms: 2000  # default: 2000
+  shutdown_grace_ms: 2000 # Env: RALPHX_EXTERNAL_MCP_SHUTDOWN_GRACE_MS
+  startup_timeout_secs: 30 # Env: RALPHX_EXTERNAL_MCP_STARTUP_TIMEOUT_SECS
   human_wait_timeout_secs: 285 # Env: RALPHX_EXTERNAL_MCP_HUMAN_WAIT_TIMEOUT_SECS

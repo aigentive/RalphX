@@ -119,7 +119,9 @@ pub async fn get_pipeline_overview_http(
             | InternalStatus::QaTesting
             | InternalStatus::QaPassed
             | InternalStatus::QaFailed
-            | InternalStatus::ReExecuting => stages.executing += 1,
+            | InternalStatus::ReExecuting
+            | InternalStatus::UpdatingPlanBranch
+            | InternalStatus::UpdatingTaskBranch => stages.executing += 1,
             InternalStatus::PendingReview
             | InternalStatus::Reviewing
             | InternalStatus::ReviewPassed
@@ -131,7 +133,7 @@ pub async fn get_pipeline_overview_http(
             | InternalStatus::MergeIncomplete
             | InternalStatus::MergeConflict => stages.merging += 1,
             InternalStatus::Merged => stages.merged += 1,
-            InternalStatus::Blocked => stages.blocked += 1,
+            InternalStatus::Blocked | InternalStatus::BranchUpdateBlocked => stages.blocked += 1,
             InternalStatus::Cancelled | InternalStatus::Failed => stages.cancelled += 1,
             InternalStatus::Paused | InternalStatus::Stopped => stages.stopped += 1,
         }

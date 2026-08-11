@@ -2,12 +2,7 @@
 
 import type {
   IdeationSessionStatus,
-  TeamMode,
-  TeamConfig,
   VerificationStatus,
-  VerificationGap,
-  RoundSummary,
-  VerificationRoundDetail,
 } from "../types/ideation";
 
 export interface IdeationSessionResponse {
@@ -19,8 +14,6 @@ export interface IdeationSessionResponse {
   planArtifactId: string | null;
   seedTaskId: string | null;
   parentSessionId: string | null;
-  teamMode: TeamMode | null;
-  teamConfig: TeamConfig | null;
   createdAt: string;
   updatedAt: string;
   archivedAt: string | null;
@@ -69,39 +62,14 @@ export interface IdeationAnalysisBaseSelection {
 
 export interface VerificationStatusResponse {
   sessionId: string;
-  status: VerificationStatus;
+  status: "unverified" | "queued" | "verifying" | "verified" | "failed" | "cancelled";
   inProgress: boolean;
-  generation?: number;
-  selectedGeneration?: number;
-  currentRound?: number;
-  maxRounds?: number;
-  gapScore?: number;
-  convergenceReason?: string;
-  bestRoundIndex?: number;
-  gaps: VerificationGap[];
-  rounds: RoundSummary[];
-  roundDetails: VerificationRoundDetail[];
-  runHistory: Array<{
-    generation: number;
-    status: VerificationStatus;
-    inProgress: boolean;
-    currentRound?: number;
-    maxRounds?: number;
-    roundCount: number;
-    gapCount: number;
-    gapScore?: number;
-    convergenceReason?: string;
-  }>;
-  planVersion?: number;
-  verificationChild?: {
-    activeChildSessionId?: string | undefined;
-    latestChildSessionId?: string | undefined;
-    latestChildArchived?: boolean | undefined;
-    latestChildUpdatedAt?: string | undefined;
-    agentState?: string | undefined;
-    lastAssistantMessage?: string | null | undefined;
-    lastAssistantMessageAt?: string | null | undefined;
-  };
+  planArtifactId: string | null;
+  verifiedPlanArtifactId: string | null;
+  agentRunId: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  error: string | null;
 }
 
 export interface TaskProposalResponse {
@@ -122,6 +90,8 @@ export interface TaskProposalResponse {
   createdTaskId: string | null;
   planArtifactId: string | null;
   planVersionAtCreation: number | null;
+  blueprintArtifactId: string | null;
+  blueprintVersionAtCreation: number | null;
   sortOrder: number;
   createdAt: string;
   updatedAt: string;
@@ -191,6 +161,14 @@ export interface ApplyProposalsResultResponse {
   sessionConverted: boolean;
   executionPlanId: string | null;
   message?: string | null;
+}
+
+export interface RestartImplementationResultResponse {
+  sessionId: string;
+  oldExecutionPlanId: string;
+  executionPlanId: string;
+  archivedTaskCount: number;
+  createdTaskIds: string[];
 }
 
 // Input types for API calls

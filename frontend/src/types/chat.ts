@@ -3,6 +3,9 @@
 
 import { z } from "zod";
 
+import { ContextTypeSchema } from "@/types/chat-conversation";
+import { APP_VIEW_VALUES, type AppView } from "@/types/app-view";
+
 // ============================================================================
 // View Types
 // ============================================================================
@@ -10,24 +13,16 @@ import { z } from "zod";
 /**
  * View type values for chat context
  */
-export const VIEW_TYPE_VALUES = [
+export const CHAT_CONTEXT_VIEW_VALUES = [
+  ...APP_VIEW_VALUES,
   "kanban",
   "graph",
   "ideation",
-  "agents",
-  "ticketing",
-  "github",
-  "granola",
-  "extensibility",
-  "activity",
-  "insights",
   "task_detail",
-  "team",
 ] as const;
 
-export const ViewTypeSchema = z.enum(VIEW_TYPE_VALUES);
-export type ViewType = z.infer<typeof ViewTypeSchema>;
-export const DEFAULT_PROJECT_VIEW: ViewType = "agents";
+export const ChatContextViewSchema = z.enum(CHAT_CONTEXT_VIEW_VALUES);
+export type ChatContextView = z.infer<typeof ChatContextViewSchema>;
 
 // ============================================================================
 // Chat Context
@@ -39,9 +34,12 @@ export const DEFAULT_PROJECT_VIEW: ViewType = "agents";
  */
 export const ChatContextSchema = z.object({
   /** Current view being displayed */
-  view: ViewTypeSchema,
+  view: ChatContextViewSchema,
   /** Current project ID */
   projectId: z.string().min(1),
+  /** Explicit backend conversation context for non-project Agents hosts. */
+  contextTypeOverride: ContextTypeSchema.optional(),
+  contextIdOverride: z.string().min(1).optional(),
   /** Selected task ID (for kanban with selection or task_detail view) */
   selectedTaskId: z.string().optional(),
   /** Current ideation session ID (for ideation view) */
@@ -168,7 +166,7 @@ export function createTaskDetailContext(
  */
 export function createProjectContext(
   projectId: string,
-  view: "activity" | "insights" | "agents" | "ticketing" | "github" | "granola"
+  view: AppView
 ): ChatContext {
   return {
     view,

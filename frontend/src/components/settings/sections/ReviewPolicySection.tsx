@@ -1,12 +1,11 @@
-import { ShieldCheck } from "lucide-react";
 import { useReviewSettings, useUpdateReviewSettings } from "@/hooks/useReviewSettings";
 import {
   NumberSettingRow,
-  SectionCard,
+  SettingsSection,
   ToggleSettingRow,
 } from "../SettingsView.shared";
 
-export default function ReviewPolicySection() {
+export default function ReviewPolicySection({ embedded = false }: { embedded?: boolean }) {
   const { data: settings, isLoading } = useReviewSettings();
   const { mutate: updateSettings, isPending } = useUpdateReviewSettings();
 
@@ -16,14 +15,8 @@ export default function ReviewPolicySection() {
     return null;
   }
 
-  return (
-    <SectionCard
-      icon={
-        <ShieldCheck className="w-[18px] h-[18px] text-[var(--card-icon-color)]" />
-      }
-      title="Review Policy"
-      description="Configure global review policy for all projects"
-    >
+  const rows = (
+    <>
       <ToggleSettingRow
         id="require-human-review"
         label="Require Human Review"
@@ -68,6 +61,11 @@ export default function ReviewPolicySection() {
         disabled={disabled}
         onChange={(value) => updateSettings({ maxRevisionCycles: value })}
       />
-    </SectionCard>
+    </>
+  );
+  return embedded ? rows : (
+    <SettingsSection>
+      {rows}
+    </SettingsSection>
   );
 }

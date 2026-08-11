@@ -20,6 +20,8 @@ export const taskKeys = {
   list: (projectId: string) => [...taskKeys.lists(), projectId] as const,
   details: () => [...taskKeys.all, "detail"] as const,
   detail: (taskId: string) => [...taskKeys.details(), taskId] as const,
+  sessionHistory: (projectId: string, ideationSessionId: string) =>
+    [...taskKeys.all, "session-history", projectId, ideationSessionId] as const,
 };
 
 /**
@@ -48,5 +50,16 @@ export function useTasks(
       return response.tasks;
     },
     enabled: Boolean(projectId) && (options.enabled ?? true),
+  });
+}
+
+export function useSessionTaskHistoryAvailability(
+  projectId: string,
+  ideationSessionId: string | null | undefined
+) {
+  return useQuery({
+    queryKey: taskKeys.sessionHistory(projectId, ideationSessionId ?? ""),
+    queryFn: () => api.tasks.getSessionHistoryAvailability(projectId, ideationSessionId ?? ""),
+    enabled: Boolean(projectId && ideationSessionId),
   });
 }

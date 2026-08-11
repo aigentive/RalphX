@@ -152,6 +152,8 @@ pub struct ArtifactVersionSummaryResponse {
     pub version: u32,
     pub name: String,
     pub created_at: String,
+    pub created_by: String,
+    pub metadata: Option<serde_json::Value>,
 }
 
 impl From<crate::domain::repositories::ArtifactVersionSummary> for ArtifactVersionSummaryResponse {
@@ -161,6 +163,8 @@ impl From<crate::domain::repositories::ArtifactVersionSummary> for ArtifactVersi
             version: summary.version,
             name: summary.name,
             created_at: summary.created_at.to_rfc3339(),
+            created_by: summary.created_by,
+            metadata: summary.metadata,
         }
     }
 }

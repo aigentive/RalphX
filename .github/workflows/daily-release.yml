@@ -10,16 +10,6 @@ on:
         required: true
         type: boolean
         default: false
-      draft:
-        description: "Create the public release as a draft"
-        required: true
-        type: boolean
-        default: false
-      prerelease:
-        description: "Mark the public release as a prerelease"
-        required: true
-        type: boolean
-        default: false
       release_bump:
         description: "Optional manual bump override. Use major only for an explicitly approved v1 milestone."
         required: true
@@ -32,6 +22,11 @@ on:
           - major
       release_version:
         description: "Optional exact version override, e.g. 0.42.0 or v1.0.0. Do not combine with release_bump."
+        required: false
+        type: string
+        default: ""
+      release_notes_from:
+        description: "Optional last published vX.Y.Z tag for cumulative notes after a failed release left a newer tag"
         required: false
         type: string
         default: ""
@@ -76,7 +71,7 @@ on:
       codex_model:
         description: "Codex model for version proposal and release notes"
         required: true
-        default: gpt-5.5
+        default: gpt-5.6-terra
       codex_reasoning_effort:
         description: "Codex reasoning effort for version proposal and release notes"
         required: true
@@ -105,15 +100,14 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.RELEASE_AUTOMATION_TOKEN || github.token }}
       CODEX_API_KEY: ${{ secrets.CODEX_API_KEY || secrets.OPENAI_API_KEY }}
-      RELEASE_PROPOSAL_MODEL: ${{ github.event_name == 'workflow_dispatch' && inputs.codex_model || 'gpt-5.5' }}
-      RELEASE_NOTES_MODEL: ${{ github.event_name == 'workflow_dispatch' && inputs.codex_model || 'gpt-5.5' }}
+      RELEASE_PROPOSAL_MODEL: ${{ github.event_name == 'workflow_dispatch' && inputs.codex_model || 'gpt-5.6-terra' }}
+      RELEASE_NOTES_MODEL: ${{ github.event_name == 'workflow_dispatch' && inputs.codex_model || 'gpt-5.6-terra' }}
       RELEASE_PROPOSAL_REASONING_EFFORT: ${{ github.event_name == 'workflow_dispatch' && inputs.codex_reasoning_effort || 'xhigh' }}
       RELEASE_NOTES_REASONING_EFFORT: ${{ github.event_name == 'workflow_dispatch' && inputs.codex_reasoning_effort || 'xhigh' }}
       MANUAL_RELEASE_BUMP: ${{ github.event_name == 'workflow_dispatch' && inputs.release_bump || 'auto' }}
       MANUAL_RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_version || '' }}
+      MANUAL_RELEASE_NOTES_FROM: ${{ github.event_name == 'workflow_dispatch' && inputs.release_notes_from || '' }}
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
-      DRAFT_RELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.draft || false }}
-      PRERELEASE_RELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || false }}
       LINUX_RUNNER: ${{ github.event_name == 'workflow_dispatch' && inputs.linux_runner || 'blacksmith' }}
       ARM_RUNNER: ${{ github.event_name == 'workflow_dispatch' && inputs.arm_runner || 'blacksmith' }}
       INTEL_RUNNER: ${{ github.event_name == 'workflow_dispatch' && inputs.intel_runner || 'blacksmith' }}
@@ -148,9 +142,13 @@ jobs:
             exit 1
           fi
 
+          source ./scripts/release-analysis-common.sh
+          analysis_from="$(release_analysis_resolve_notes_from_tag "${latest_tag}" "${MANUAL_RELEASE_NOTES_FROM:-}")"
+
           commit_count="$(git rev-list --count "${latest_tag}..HEAD")"
           {
             echo "latest_tag=${latest_tag}"
+            echo "analysis_from=${analysis_from}"
             echo "commit_count=${commit_count}"
           } >> "${GITHUB_OUTPUT}"
 
@@ -175,7 +173,11 @@ jobs:
           fi
 
           echo "should_release=true" >> "${GITHUB_OUTPUT}"
-          echo "Preparing release from ${latest_tag}..HEAD (${release_worthy_count} release-worthy commits, ${commit_count} total)." >> "${GITHUB_STEP_SUMMARY}"
+          if [[ "${analysis_from}" == "${latest_tag}" ]]; then
+            echo "Preparing release from ${latest_tag}..HEAD (${release_worthy_count} release-worthy commits, ${commit_count} total)." >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "Preparing release version after ${latest_tag}; release notes will cover ${analysis_from}..HEAD (${release_worthy_count} release-worthy commits after ${latest_tag}, ${commit_count} total)." >> "${GITHUB_STEP_SUMMARY}"
+          fi
 
       - name: Generate Codex release prep
         id: release_prep
@@ -190,6 +192,7 @@ jobs:
           fi
 
           latest_tag="${{ steps.range.outputs.latest_tag }}"
+          analysis_from="${{ steps.range.outputs.analysis_from }}"
           current_version="${latest_tag#v}"
           proposal_path=".artifacts/release-notes/proposal-from-${latest_tag}.md"
           manual_bump="${MANUAL_RELEASE_BUMP:-auto}"
@@ -231,8 +234,9 @@ jobs:
             echo "Using manually selected ${manual_bump} release bump -> ${version}." >> "${GITHUB_STEP_SUMMARY}"
           else
             ./scripts/propose-release.sh \
-              --from "${latest_tag}" \
+              --from "${analysis_from}" \
               --to HEAD \
+              --current-version "${current_version}" \
               --accept \
               --output "${proposal_path}"
 
@@ -252,10 +256,10 @@ jobs:
           fi
 
           ./scripts/bump-version.sh "${version}"
-          ./scripts/generate-release-notes.sh "${version}" --from "${latest_tag}" --to HEAD
+          ./scripts/generate-release-notes.sh "${version}" --from "${analysis_from}" --to HEAD
           ./scripts/append-github-release-metadata.sh \
             --tag "${tag}" \
-            --previous-tag "${latest_tag}" \
+            --previous-tag "${analysis_from}" \
             --target HEAD \
             --notes-file "release-notes/${tag}.md"
 
@@ -264,7 +268,7 @@ jobs:
             echo "tag=${tag}"
           } >> "${GITHUB_OUTPUT}"
 
-          echo "Prepared ${tag} from ${latest_tag}." >> "${GITHUB_STEP_SUMMARY}"
+          echo "Prepared ${tag} with version base ${latest_tag} and notes base ${analysis_from}." >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Commit and tag release prep
         if: ${{ steps.range.outputs.should_release == 'true' && env.DRY_RUN != 'true' }}
@@ -315,8 +319,6 @@ jobs:
             --ref main \
             -f "ref=${tag}" \
             -f "version=${version}" \
-            -f "draft=${DRAFT_RELEASE}" \
-            -f "prerelease=${PRERELEASE_RELEASE}" \
             -f "linux_runner=${LINUX_RUNNER}" \
             -f "arm_runner=${ARM_RUNNER}" \
             -f "intel_runner=${INTEL_RUNNER}" \

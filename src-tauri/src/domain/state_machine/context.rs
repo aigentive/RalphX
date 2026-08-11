@@ -6,27 +6,26 @@ use super::mocks::{
     MockTaskScheduler,
 };
 use super::services::{
-    AgentSpawner, DependencyManager, EventEmitter, Notifier, ReviewStarter, TaskScheduler,
-    WebhookPublisher,
+    AgentSpawner, BranchUpdateWorkflow, DependencyManager, EventEmitter, NotificationContext,
+    Notifier, ReviewStarter, TaskScheduler, WebhookPublisher,
 };
 use super::types::Blocker;
 use crate::application::ChatService;
 use crate::application::PrPollerRegistry;
 use crate::application::TaskTransitionService;
-use crate::domain::services::github_service::GithubServiceTrait;
-use crate::domain::services::PlanPrDescriptionDrafter;
 use crate::commands::ExecutionState;
 use crate::domain::entities::PlanBranchId;
 use crate::domain::repositories::{
-    ActivityEventRepository, ArtifactRepository, IdeationSessionRepository, PlanBranchRepository,
-    ProjectRepository, TaskRepository, TaskStepRepository,
+    ActivityEventRepository, ArtifactRepository, BranchUpdateRepository, IdeationSessionRepository,
+    PlanBranchRepository, ProjectRepository, TaskRepository, TaskStepRepository,
 };
-use ralphx_domain::repositories::ExternalEventsRepository;
+use crate::domain::services::github_service::GithubServiceTrait;
+use crate::domain::services::PlanPrDescriptionDrafter;
 use dashmap::DashMap;
-use std::any::Any;
+use ralphx_domain::repositories::ExternalEventsRepository;
+use ralphx_events::EventSink;
 use std::collections::HashSet;
 use std::sync::Arc;
-use tauri::{AppHandle, Runtime, Wry};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
@@ -44,6 +43,9 @@ pub struct TaskServices {
     /// Service for sending notifications to users
     pub notifier: Arc<dyn Notifier>,
 
+    /// Context for the history row that authorized this entry action.
+    pub notification_context: Option<NotificationContext>,
+
     /// Service for managing task dependencies
     pub dependency_manager: Arc<dyn DependencyManager>,
 
@@ -58,9 +60,9 @@ pub struct TaskServices {
     /// Used by TransitionHandler to decrement running count when exiting agent-active states.
     pub execution_state: Option<Arc<ExecutionState>>,
 
-    /// Tauri app handle for emitting events to frontend (optional).
-    /// Used by TransitionHandler to emit execution:status_changed events.
-    pub app_handle: Option<AppHandle<Wry>>,
+    /// Event sink for frontend/runtime events (optional).
+    /// Used by TransitionHandler to emit execution and merge progress events.
+    pub event_sink: Option<Arc<dyn EventSink>>,
 
     /// Task scheduler for auto-scheduling Ready tasks when slots are available.
     /// Used by TransitionHandler to trigger scheduling on slot free and on enter Ready.
@@ -69,6 +71,12 @@ pub struct TaskServices {
     /// Task repository for fetching and updating tasks during state transitions.
     /// Used by TransitionHandler to set task_branch and worktree_path on Executing entry.
     pub task_repo: Option<Arc<dyn TaskRepository>>,
+
+    /// Durable branch-update and canonical Git target authority.
+    pub branch_update_repo: Option<Arc<dyn BranchUpdateRepository>>,
+
+    /// Application-owned branch-update effect adapter.
+    pub branch_update_workflow: Option<Arc<dyn BranchUpdateWorkflow>>,
 
     /// Project repository for fetching project settings during state transitions.
     /// Used by TransitionHandler to get git_mode and worktree_parent_directory.
@@ -131,7 +139,7 @@ pub struct TaskServices {
     /// Task transition service for triggering state transitions from within state machine actions.
     /// Used by PR merge poller (started in on_enter(Merging)) to fire Merging → Merged when
     /// GitHub reports the PR as merged. Optional — None when not wired (tests, non-PR paths).
-    pub transition_service: Option<Arc<TaskTransitionService<Wry>>>,
+    pub transition_service: Option<Arc<TaskTransitionService>>,
 
     /// Webhook publisher for broadcasting events to registered external endpoints.
     /// Optional — None when webhook delivery is not configured.
@@ -162,13 +170,16 @@ impl TaskServices {
             agent_spawner,
             event_emitter,
             notifier,
+            notification_context: None,
             dependency_manager,
             review_starter,
             chat_service,
             execution_state: None,
-            app_handle: None,
+            event_sink: None,
             task_scheduler: None,
             task_repo: None,
+            branch_update_repo: None,
+            branch_update_workflow: None,
             project_repo: None,
             plan_branch_repo: None,
             step_repo: None,
@@ -195,21 +206,14 @@ impl TaskServices {
         self
     }
 
-    /// Set the Tauri app handle for event emission (builder pattern)
-    pub fn with_app_handle(mut self, handle: AppHandle<Wry>) -> Self {
-        self.app_handle = Some(handle);
+    pub fn with_notification_context(mut self, context: NotificationContext) -> Self {
+        self.notification_context = Some(context);
         self
     }
 
-    /// Try to set the app handle from a generic Runtime type.
-    /// Only sets the handle if R is Wry (the default Tauri runtime).
-    /// Returns self for builder chaining.
-    pub fn try_with_app_handle<R: Runtime + 'static>(mut self, handle: AppHandle<R>) -> Self {
-        // Use type checking to only accept Wry handles
-        let handle_any: Box<dyn Any> = Box::new(handle);
-        if let Ok(wry_handle) = handle_any.downcast::<AppHandle<Wry>>() {
-            self.app_handle = Some(*wry_handle);
-        }
+    /// Set the event sink for frontend/runtime event emission (builder pattern)
+    pub fn with_event_sink(mut self, sink: Arc<dyn EventSink>) -> Self {
+        self.event_sink = Some(sink);
         self
     }
 
@@ -229,6 +233,16 @@ impl TaskServices {
     /// Set the task repository (builder pattern)
     pub fn with_task_repo(mut self, repo: Arc<dyn TaskRepository>) -> Self {
         self.task_repo = Some(repo);
+        self
+    }
+
+    pub fn with_branch_update_repo(mut self, repo: Arc<dyn BranchUpdateRepository>) -> Self {
+        self.branch_update_repo = Some(repo);
+        self
+    }
+
+    pub fn with_branch_update_workflow(mut self, workflow: Arc<dyn BranchUpdateWorkflow>) -> Self {
+        self.branch_update_workflow = Some(workflow);
         self
     }
 
@@ -309,10 +323,7 @@ impl TaskServices {
 
     /// Set the PR creation guard DashMap (builder pattern).
     /// Should be the same Arc as PrPollerRegistry::pr_creation_guard.
-    pub fn with_pr_creation_guard(
-        mut self,
-        guard: Arc<DashMap<PlanBranchId, ()>>,
-    ) -> Self {
+    pub fn with_pr_creation_guard(mut self, guard: Arc<DashMap<PlanBranchId, ()>>) -> Self {
         self.pr_creation_guard = Some(guard);
         self
     }
@@ -325,7 +336,7 @@ impl TaskServices {
 
     /// Set the task transition service for PR merge poller (builder pattern).
     /// The poller uses this to fire Merging → Merged when GitHub reports the PR as merged.
-    pub fn with_transition_service(mut self, svc: Arc<TaskTransitionService<Wry>>) -> Self {
+    pub fn with_transition_service(mut self, svc: Arc<TaskTransitionService>) -> Self {
         self.transition_service = Some(svc);
         self
     }
@@ -357,13 +368,16 @@ impl TaskServices {
             agent_spawner: Arc::new(MockAgentSpawner::new()),
             event_emitter: Arc::new(MockEventEmitter::new()),
             notifier: Arc::new(MockNotifier::new()),
+            notification_context: None,
             dependency_manager: Arc::new(MockDependencyManager::new()),
             review_starter: Arc::new(MockReviewStarter::new()),
             chat_service: Arc::new(MockChatService::new()),
             execution_state: None,
-            app_handle: None,
+            event_sink: None,
             task_scheduler: Some(Arc::new(MockTaskScheduler::new())),
             task_repo: None,
+            branch_update_repo: None,
+            branch_update_workflow: None,
             project_repo: None,
             plan_branch_repo: None,
             step_repo: None,
@@ -399,8 +413,8 @@ impl std::fmt::Debug for TaskServices {
                 &self.execution_state.as_ref().map(|_| "<ExecutionState>"),
             )
             .field(
-                "app_handle",
-                &self.app_handle.as_ref().map(|_| "<AppHandle>"),
+                "event_sink",
+                &self.event_sink.as_ref().map(|_| "<EventSink>"),
             )
             .field(
                 "task_scheduler",
@@ -465,11 +479,17 @@ impl std::fmt::Debug for TaskServices {
             )
             .field(
                 "transition_service",
-                &self.transition_service.as_ref().map(|_| "<TaskTransitionService>"),
+                &self
+                    .transition_service
+                    .as_ref()
+                    .map(|_| "<TaskTransitionService>"),
             )
             .field(
                 "webhook_publisher",
-                &self.webhook_publisher.as_ref().map(|_| "<WebhookPublisher>"),
+                &self
+                    .webhook_publisher
+                    .as_ref()
+                    .map(|_| "<WebhookPublisher>"),
             )
             .field(
                 "external_events_repo",

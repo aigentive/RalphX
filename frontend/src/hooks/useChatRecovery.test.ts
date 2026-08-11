@@ -24,11 +24,13 @@ vi.mock("@/hooks/useChat", () => ({
   chatKeys: {
     conversation: (id: string) => ["chat", "conversations", id],
     conversationHistory: (id: string) => ["chat", "conversations", id, "history"],
+    conversationTimeline: (id: string) => ["chat", "conversations", id, "timeline"],
     conversationList: (type: string, id: string) => ["chat", "conversation-list", type, id],
   },
   invalidateConversationDataQueries: (_queryClient: unknown, conversationId: string) => {
     mockInvalidateQueries({ queryKey: ["chat", "conversations", conversationId] });
     mockInvalidateQueries({ queryKey: ["chat", "conversations", conversationId, "history"] });
+    mockInvalidateQueries({ queryKey: ["chat", "conversations", conversationId, "timeline"] });
   },
 }));
 
@@ -44,7 +46,15 @@ vi.mock("@/types/status", () => ({
 }));
 
 vi.mock("@/api/chat", () => ({
-  parseToolCalls: (raw: unknown) => Array.isArray(raw) ? raw : [],
+  parseToolCalls: (raw: unknown) => Array.isArray(raw)
+    ? raw.map((toolCall) => {
+        if (toolCall == null || typeof toolCall !== "object") return toolCall;
+        const record = toolCall as Record<string, unknown>;
+        return typeof record.block_index === "number"
+          ? { ...record, blockIndex: record.block_index }
+          : record;
+      })
+    : [],
   chatApi: {
     isAgentRunning: vi.fn(),
     getConversationActiveState: vi.fn(),
@@ -60,6 +70,8 @@ import type { ContextType } from "@/types/chat-conversation";
 import type { ToolCall } from "@/components/Chat/ToolCallIndicator";
 import type { StreamingContentBlock } from "@/types/streaming-task";
 import { chatApi } from "@/api/chat";
+import { projectPersistedStreamingContentBlocks } from "./chat-transcript/projection";
+import { buildLiveTranscriptRows } from "@/components/Chat/ChatMessageList.liveRows";
 
 const mockIsAgentRunning = vi.mocked(chatApi.isAgentRunning);
 const mockGetConversationActiveState = vi.mocked(chatApi.getConversationActiveState);
@@ -79,7 +91,9 @@ interface DefaultProps {
   isGenerating: boolean;
   isConversationInCurrentContext: boolean;
   agentRunStatus: string | undefined;
+  activeAgentRunId?: string;
   isVisible: boolean;
+  persistedStreamingContentBlocks?: readonly StreamingContentBlock[];
   setAgentRunning: ReturnType<typeof vi.fn>;
   setStreamingToolCalls?: ReturnType<typeof vi.fn>;
   setStreamingContentBlocks?: ReturnType<typeof vi.fn>;
@@ -157,6 +171,22 @@ describe("useChatRecovery", () => {
   });
 
   describe("active-state hydration", () => {
+    it("refreshes the canonical timeline when switching back to a visible generating conversation", () => {
+      const props = makeProps({
+        activeConversationId: "conv-active",
+        isAgentRunning: true,
+        isGenerating: true,
+        agentRunStatus: "running",
+        setStreamingContentBlocks: vi.fn(),
+      });
+
+      renderHook(() => useChatRecovery(props));
+
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["chat", "conversations", "conv-active", "timeline"],
+      });
+    });
+
     it("hydrates project conversation active state after switching back to an in-flight Agents conversation", async () => {
       const setStreamingToolCalls = vi.fn();
       const setStreamingContentBlocks = vi.fn();
@@ -248,6 +278,77 @@ describe("useChatRecovery", () => {
       ]);
     });
 
+    it("hydrates sparse absolute thinking segments without duplicating the persisted anchor", async () => {
+      const setStreamingContentBlocks = vi.fn();
+      const persistedStreamingContentBlocks = projectPersistedStreamingContentBlocks([{
+        id: "message-thinking",
+        sessionId: null,
+        projectId: null,
+        taskId: null,
+        role: "assistant",
+        content: "",
+        metadata: null,
+        parentMessageId: null,
+        conversationId: "conv-abc",
+        toolCalls: null,
+        contentBlocks: [{ type: "thinking", text: "Reconsidering" }],
+        sender: null,
+        createdAt: "2026-07-30T00:00:00Z",
+        runId: "run-active",
+        timelineStatus: "streaming",
+        timelineBlockIndex: 2,
+      }], "run-active");
+      mockGetConversationActiveState.mockResolvedValueOnce({
+        is_active: true,
+        tool_calls: [],
+        streaming_tasks: [],
+        partial_text: "",
+        partial_thinking_segments: ["", "", "Reconsidering the recovery path"],
+      });
+
+      renderHook(() => useChatRecovery(makeProps({
+        setStreamingContentBlocks,
+        persistedStreamingContentBlocks,
+      })));
+      await act(async () => {});
+
+      const updater = setStreamingContentBlocks.mock.calls[0][0] as (
+        prev: StreamingContentBlock[]
+      ) => StreamingContentBlock[];
+      const reconciled = updater([
+        { type: "thinking", text: "Reconsidering", blockIndex: 2 },
+      ]);
+      expect(reconciled.filter((block) => block.type === "thinking")).toHaveLength(1);
+      expect(reconciled).toEqual([
+        { type: "thinking", text: "Reconsidering the recovery path", blockIndex: 2 },
+      ]);
+    });
+
+    it("keeps cache-only thinking groups separated by an indexed recovered tool call", async () => {
+      const setStreamingContentBlocks = vi.fn();
+      mockGetConversationActiveState.mockResolvedValueOnce({
+        is_active: true,
+        tool_calls: [{ id: "tool-between", name: "Read", arguments: {}, block_index: 1 }],
+        streaming_tasks: [],
+        partial_text: "",
+        partial_thinking_segments: ["Before", "", "After"],
+      });
+
+      renderHook(() => useChatRecovery(makeProps({ setStreamingContentBlocks })));
+      await act(async () => {});
+
+      const updater = setStreamingContentBlocks.mock.calls[0][0] as (
+        prev: StreamingContentBlock[],
+      ) => StreamingContentBlock[];
+      const reconciled = updater([]);
+      expect(reconciled.map((block) => block.type)).toEqual([
+        "thinking", "tool_use", "thinking",
+      ]);
+      expect(buildLiveTranscriptRows(reconciled, new Map()).map((row) => row.kind)).toEqual([
+        "thinking_group", "tool_group", "thinking_group",
+      ]);
+    });
+
     it("hydrates delegated streaming task metadata from active-state", async () => {
       const setStreamingTasks = vi.fn();
       const setStreamingContentBlocks = vi.fn();
@@ -319,6 +420,85 @@ describe("useChatRecovery", () => {
       ]);
     });
 
+    it("rejects a late active-state snapshot for a different parent run", async () => {
+      const setStreamingTasks = vi.fn();
+      mockGetConversationActiveState.mockResolvedValueOnce({
+        is_active: true,
+        runId: "run-old",
+        tool_calls: [],
+        streaming_tasks: [{
+          tool_use_id: "delegate-job:old",
+          status: "running",
+          delegated_job_id: "job-old",
+        }],
+        partial_text: "stale",
+      });
+
+      renderHook(() => useChatRecovery(makeProps({
+        activeAgentRunId: "run-current",
+        setStreamingTasks,
+        setStreamingContentBlocks: vi.fn(),
+      })));
+      await act(async () => {});
+
+      expect(setStreamingTasks).not.toHaveBeenCalled();
+    });
+
+    it("hydrates provider and lifecycle aliases as one promoted delegation", async () => {
+      const setStreamingTasks = vi.fn();
+      const setStreamingToolCalls = vi.fn();
+      const setStreamingContentBlocks = vi.fn();
+      mockGetConversationActiveState.mockResolvedValueOnce({
+        is_active: true,
+        tool_calls: [{
+          id: "provider-tool",
+          name: "delegate_start",
+          arguments: { title: "Trace stale Claude MCP collision handling" },
+          result: { job_id: "job-1", status: "running" },
+        }],
+        streaming_tasks: [{
+          tool_use_id: "delegate-job:job-1",
+          description: "ralphx-general-explorer",
+          subagent_type: "delegated",
+          status: "running",
+          delegated_job_id: "job-1",
+          provider_harness: "codex",
+          delegated_agent_run_id: "child-run-1",
+        }],
+        partial_text: "",
+      });
+
+      renderHook(() => useChatRecovery(makeProps({
+        setStreamingTasks,
+        setStreamingToolCalls,
+        setStreamingContentBlocks,
+      })));
+      await act(async () => {});
+
+      const taskUpdater = setStreamingTasks.mock.calls[0][0] as (
+        prev: Map<string, import("@/types/streaming-task").StreamingTask>
+      ) => Map<string, import("@/types/streaming-task").StreamingTask>;
+      const toolUpdater = setStreamingToolCalls.mock.calls[0][0] as (
+        prev: ToolCall[]
+      ) => ToolCall[];
+      const blockUpdater = setStreamingContentBlocks.mock.calls[0][0] as (
+        prev: StreamingContentBlock[]
+      ) => StreamingContentBlock[];
+
+      const tasks = taskUpdater(new Map());
+      expect([...tasks.keys()]).toEqual(["provider-tool"]);
+      expect(tasks.get("provider-tool")).toMatchObject({
+        description: "Trace stale Claude MCP collision handling",
+        delegatedJobId: "job-1",
+        providerHarness: "codex",
+        delegatedAgentRunId: "child-run-1",
+      });
+      expect(toolUpdater([])).toEqual([]);
+      expect(blockUpdater([])).toEqual([
+        { type: "task", toolUseId: "provider-tool" },
+      ]);
+    });
+
     it("skips active-state hydration in history mode", () => {
       const props = makeProps({
         isHistoryMode: true,
@@ -328,6 +508,36 @@ describe("useChatRecovery", () => {
       renderHook(() => useChatRecovery(props));
 
       expect(mockGetConversationActiveState).not.toHaveBeenCalled();
+    });
+
+    it("does not apply an active-state response after the panel becomes hidden", async () => {
+      let resolveActiveState: ((value: {
+        is_active: boolean;
+        tool_calls: unknown[];
+        streaming_tasks: never[];
+        partial_text: string;
+      }) => void) | undefined;
+      mockGetConversationActiveState.mockImplementationOnce(() => new Promise((resolve) => {
+        resolveActiveState = resolve;
+      }));
+      const setStreamingContentBlocks = vi.fn();
+      const props = makeProps({ setStreamingContentBlocks });
+      const { rerender } = renderHook(
+        (nextProps) => useChatRecovery(nextProps),
+        { initialProps: props },
+      );
+
+      rerender({ ...props, isVisible: false });
+      await act(async () => {
+        resolveActiveState?.({
+          is_active: true,
+          tool_calls: [],
+          streaming_tasks: [],
+          partial_text: "stale hidden response",
+        });
+      });
+
+      expect(setStreamingContentBlocks).not.toHaveBeenCalled();
     });
   });
 

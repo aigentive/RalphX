@@ -238,7 +238,7 @@ export const SUPPORT_TOOLS = [
                             validate: {
                                 type: "array",
                                 items: { type: "string" },
-                                description: "Validation commands (e.g., ['npm run typecheck', 'npm run lint'])",
+                                description: "Auto-detected analysis must leave this empty. Task agents select focused commands after they know the changed surface; user-managed custom analysis remains separate.",
                             },
                             worktree_setup: {
                                 type: "array",
@@ -255,7 +255,7 @@ export const SUPPORT_TOOLS = [
         },
     },
     // ========================================================================
-    // CROSS-PROJECT TOOLS (ralphx-ideation + ralphx-ideation-team-lead)
+    // CROSS-PROJECT TOOLS (ralphx-ideation)
     // ========================================================================
     {
         name: "list_projects",
@@ -349,19 +349,18 @@ export const SUPPORT_TOOLS = [
         },
     },
     // ========================================================================
-    // CHILD SESSION TOOLS (ralphx-ideation, ralphx-ideation-team-lead, ralphx-plan-verifier)
+    // CHILD SESSION TOOLS (ralphx-ideation)
     // ========================================================================
     {
         name: "get_child_session_status",
         description: "Returns live status of a child session: session metadata, agent process state (idle/likely_generating/likely_waiting), " +
-            "recent messages, and verification metadata if applicable. Use to check if a verification agent is stalled, " +
-            "monitor child session progress, or verify agent completion. " +
-            "When diagnosing a verification child, set include_recent_messages=true so you can inspect the last assistant/tool outputs instead of guessing what happened.",
+            "and recent messages. Use to monitor child session progress or verify agent completion. " +
+            "Set include_recent_messages=true so you can inspect the last assistant/tool outputs instead of guessing what happened.",
         inputSchema: {
             type: "object",
             examples: [
                 {
-                    session_id: "verification-child-session-id",
+                    session_id: "child-session-id",
                     include_recent_messages: true,
                     message_limit: 10,
                 },
@@ -390,14 +389,14 @@ export const SUPPORT_TOOLS = [
             "If agent is generating, message is queued. If agent is idle, a new agent run is spawned. " +
             "Returns delivery_status: 'sent' (written to active stdin), " +
             "'queued' (agent busy, will receive on next turn), or 'spawned' (new agent run started). " +
-            "Use to nudge verification agents, inject context, send escalation payloads, or send stop signals. " +
-            "When nudging critics/verifiers, repeat the full invariant context they need (for example SESSION_ID, ROUND, expected critic/schema) instead of sending a vague follow-up.",
+            "Use to inject context, send escalation payloads, or send stop signals. " +
+            "Repeat the full task context and expected outcome instead of sending a vague follow-up.",
         inputSchema: {
             type: "object",
             examples: [
                 {
-                    session_id: "verification-child-session-id",
-                    message: "SESSION_ID: <parent-session-id>\nROUND: 2\nIf you are still running, publish your verification finding now with publish_verification_finding using the required critic, summary, and gaps schema.",
+                    session_id: "child-session-id",
+                    message: "Please finish the recovery-path review and publish a concise team artifact with evidence for any remaining blocker.",
                 },
             ],
             properties: {

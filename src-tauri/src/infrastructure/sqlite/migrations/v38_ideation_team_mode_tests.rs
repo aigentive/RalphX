@@ -3,14 +3,14 @@
 #[cfg(test)]
 mod tests {
     use crate::infrastructure::sqlite::migrations::helpers::column_exists;
+    use crate::infrastructure::sqlite::migrations::run_migrations_through;
     use crate::infrastructure::sqlite::migrations::v38_ideation_team_mode;
     use crate::infrastructure::sqlite::open_connection;
-    use crate::infrastructure::sqlite::run_migrations;
     use std::path::PathBuf;
 
     fn setup_db() -> rusqlite::Connection {
         let conn = open_connection(&PathBuf::from(":memory:")).unwrap();
-        run_migrations(&conn).unwrap();
+        run_migrations_through(&conn, 38).unwrap();
         // Insert a project to satisfy FK constraints on ideation_sessions
         conn.execute(
             "INSERT INTO projects (id, name, working_directory) VALUES ('p-1', 'Test', '/tmp/test')",

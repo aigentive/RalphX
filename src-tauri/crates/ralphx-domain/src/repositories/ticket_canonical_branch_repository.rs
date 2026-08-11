@@ -14,10 +14,7 @@ pub trait TicketCanonicalBranchRepository: Send + Sync {
         issue_key: &str,
     ) -> AppResult<Option<TicketCanonicalBranch>>;
 
-    async fn upsert(
-        &self,
-        branch: TicketCanonicalBranch,
-    ) -> AppResult<TicketCanonicalBranch>;
+    async fn upsert(&self, branch: TicketCanonicalBranch) -> AppResult<TicketCanonicalBranch>;
 
     async fn mark_origin_pushed(
         &self,

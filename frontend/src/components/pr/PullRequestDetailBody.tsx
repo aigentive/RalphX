@@ -47,6 +47,7 @@ interface PullRequestDetailBodyProps {
    * inside that same conversation, making the embed redundant.
    */
   showRxConversation?: boolean | undefined;
+  presentation?: "default" | "agentsWorkspace" | undefined;
 }
 
 export function PullRequestDetailBody({
@@ -54,9 +55,13 @@ export function PullRequestDetailBody({
   shell,
   className,
   showRxConversation = true,
+  presentation = "default",
 }: PullRequestDetailBodyProps) {
+  const compactAgentsHeader = presentation === "agentsWorkspace";
   const shouldFetchDetail = useAfterPaint(Boolean(selector));
-  const detailQuery = usePullRequestDetail(selector, { enabled: shouldFetchDetail });
+  const detailQuery = usePullRequestDetail(selector, {
+    enabled: shouldFetchDetail,
+  });
   const detail = detailQuery.data ?? null;
   const description = detail?.description ?? null;
   const prNumber = description?.number ?? shell?.prNumber ?? selector?.prNumber ?? null;
@@ -95,22 +100,29 @@ export function PullRequestDetailBody({
 
   return (
     <div className={cn("space-y-6 p-5", className)} data-testid="pull-request-detail-body">
-      <header className="space-y-3">
+      <header className={compactAgentsHeader ? undefined : "space-y-3"}>
         <div className="flex min-w-0 items-start justify-between gap-3">
           <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              {status ? <PrStatusBadge status={status} /> : null}
-              {meta.map((item) => (
-                <span key={item} className="text-xs text-[var(--text-muted)]">
-                  {item}
-                </span>
-              ))}
-            </div>
-            <h2 className="mt-2 line-clamp-2 text-base font-semibold text-[var(--text-primary)]">
+            {!compactAgentsHeader ? (
+              <div className="flex flex-wrap items-center gap-2">
+                {status ? <PrStatusBadge status={status} /> : null}
+                {meta.map((item) => (
+                  <span key={item} className="text-xs text-[var(--text-muted)]">
+                    {item}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            <h2
+              className={cn(
+                "line-clamp-2 text-base font-semibold text-[var(--text-primary)]",
+                !compactAgentsHeader && "mt-2",
+              )}
+            >
               {title}
             </h2>
           </div>
-          {url ? (
+          {url && !compactAgentsHeader ? (
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
@@ -128,7 +140,7 @@ export function PullRequestDetailBody({
             </Tooltip>
           ) : null}
         </div>
-        {headRef ? (
+        {headRef && !compactAgentsHeader ? (
           <div className="flex items-center gap-1.5 text-xs text-[var(--text-muted)]">
             <GitBranch className="h-3.5 w-3.5" aria-hidden="true" />
             <span className="break-all">{headRef}</span>
@@ -153,12 +165,14 @@ export function PullRequestDetailBody({
 
       <PrStateNotice state={state} />
 
-      <PullRequestStatusStrip
-        reviewSummary={reviewSummary}
-        checks={checks}
-        checksUnavailable={checksUnavailable}
-        loading={loading}
-      />
+      {!compactAgentsHeader ? (
+        <PullRequestStatusStrip
+          reviewSummary={reviewSummary}
+          checks={checks}
+          checksUnavailable={checksUnavailable}
+          loading={loading}
+        />
+      ) : null}
 
       <PrSection title="Description">
         {description?.body ? (

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use super::ExternalIssueLinkService;
+use super::{ExternalIssueLinkService, TicketConversationLinkInput};
 use crate::domain::integrations::{
     ExternalIssueLinkRepository, ExternalIssueLinkUpsert, ExternalIssueLocalObject,
     ExternalIssueSyncRecordUpsert, ExternalIssueSyncStatus, ProviderTicketOperationKind,
@@ -39,6 +39,57 @@ fn sample_linear_link() -> ExternalIssueLinkUpsert {
         idempotency_key: "linear:issue:lin_123:task:task-1".to_string(),
         metadata_json: Some(r#"{"source":"test"}"#.to_string()),
     }
+}
+
+#[tokio::test]
+async fn ticket_conversation_links_are_idempotent_and_read_from_session_storage() {
+    let repo: Arc<dyn ExternalIssueLinkRepository> =
+        Arc::new(MemoryExternalIssueLinkRepository::new());
+    let service = ExternalIssueLinkService::new(Arc::clone(&repo));
+    let input = TicketConversationLinkInput {
+        provider: "clickup".to_string(),
+        external_kind: "clickup".to_string(),
+        external_id: "8689abc".to_string(),
+        external_key: Some("DEV-42".to_string()),
+        external_url: Some("https://app.clickup.com/t/8689abc".to_string()),
+        conversation_id: "conversation-1".to_string(),
+        project_id: "project-1".to_string(),
+        local_sha: Some("abc123".to_string()),
+        local_state: Some("open".to_string()),
+        metadata_json: Some(r#"{"source":"pr_title","matched_token":"DEV-42"}"#.to_string()),
+    };
+
+    let first = service
+        .upsert_ticket_conversation_link(input.clone())
+        .await
+        .expect("first session link should persist");
+    let second = service
+        .upsert_ticket_conversation_link(input)
+        .await
+        .expect("repeated session link should update in place");
+
+    assert_eq!(first.id, second.id);
+    assert_eq!(
+        second.local_object,
+        ExternalIssueLocalObject::session("conversation-1")
+    );
+    assert_eq!(second.local_project_id.as_deref(), Some("project-1"));
+    assert_eq!(second.local_sha.as_deref(), Some("abc123"));
+    assert_eq!(
+        service
+            .list_ticket_links_for_conversation("conversation-1")
+            .await
+            .expect("session links should read")
+            .len(),
+        1
+    );
+    assert_eq!(
+        repo.list_links_for_local(&ExternalIssueLocalObject::session("conversation-1"))
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[tokio::test]
@@ -126,7 +177,10 @@ async fn service_covers_provider_neutral_link_and_sync_apis() {
         .unwrap()
         .expect("sync should update");
     assert_eq!(skipped.status, ExternalIssueSyncStatus::Skipped);
-    assert_eq!(skipped.external_version.as_deref(), Some("external-version"));
+    assert_eq!(
+        skipped.external_version.as_deref(),
+        Some("external-version")
+    );
 }
 
 #[tokio::test]
@@ -291,7 +345,10 @@ async fn service_delegates_provider_ticket_operation_apis_to_repo() {
         .expect("operation should update");
     assert_eq!(updated.id, created.id);
     assert_eq!(updated.status, ProviderTicketOperationStatus::Succeeded);
-    assert_eq!(updated.provider_operation_id.as_deref(), Some("provider-op-1"));
+    assert_eq!(
+        updated.provider_operation_id.as_deref(),
+        Some("provider-op-1")
+    );
     assert!(updated.completed_at.is_some());
     // Missing id forwards through and returns None.
     assert!(service

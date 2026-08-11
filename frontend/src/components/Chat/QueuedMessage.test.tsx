@@ -9,6 +9,16 @@ import { QueuedMessage } from "./QueuedMessage";
 import type { QueuedMessage as QueuedMessageType } from "@/stores/chatStore";
 
 describe("QueuedMessage", () => {
+  const selectionSnapshot = {
+    sourceType: "ticket" as const,
+    sourceKind: "linear" as const,
+    sourceId: "issue-1",
+    sourceKey: "LIN-1",
+    provider: "linear" as const,
+    startLine: 2,
+    endLine: 2,
+    content: "Frozen line",
+  };
   const createMockMessage = (overrides?: Partial<QueuedMessageType>): QueuedMessageType => ({
     id: "test-message-1",
     content: "This is a test message",
@@ -86,6 +96,32 @@ describe("QueuedMessage", () => {
       "test-message-1",
       "This is a test message",
       ["att-1"]
+    );
+  });
+
+  it("preserves the frozen selection when sending a queued message now", async () => {
+    const user = userEvent.setup();
+    const message = createMockMessage({
+      composerSelectionSnapshot: selectionSnapshot,
+    });
+    const onSendNow = vi.fn();
+
+    render(
+      <QueuedMessage
+        message={message}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onSendNow={onSendNow}
+      />
+    );
+
+    await user.click(screen.getByTestId("queued-message-send-now"));
+
+    expect(onSendNow).toHaveBeenCalledWith(
+      "test-message-1",
+      "This is a test message",
+      [],
+      selectionSnapshot,
     );
   });
 
@@ -168,6 +204,33 @@ describe("QueuedMessage", () => {
       "test-message-1",
       "Updated with attachment",
       ["att-1"]
+    );
+  });
+
+  it("preserves the frozen selection when saving an edit", async () => {
+    const user = userEvent.setup();
+    const onEdit = vi.fn();
+    render(
+      <QueuedMessage
+        message={createMockMessage({
+          composerSelectionSnapshot: selectionSnapshot,
+        })}
+        onEdit={onEdit}
+        onDelete={vi.fn()}
+      />
+    );
+
+    await user.click(screen.getByTestId("queued-message-edit"));
+    const input = screen.getByTestId("queued-message-edit-input");
+    await user.clear(input);
+    await user.type(input, "Updated frozen message");
+    await user.click(screen.getByTestId("queued-message-save"));
+
+    expect(onEdit).toHaveBeenCalledWith(
+      "test-message-1",
+      "Updated frozen message",
+      [],
+      selectionSnapshot,
     );
   });
 

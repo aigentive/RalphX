@@ -5,131 +5,6 @@ use crate::domain::entities::{
 };
 use crate::http_server::helpers::get_task_context_impl;
 
-async fn initialize_verification_state(
-    state: &HttpServerState,
-    parent_id: &IdeationSessionId,
-    parent: &IdeationSession,
-) -> Result<Option<i32>, JsonError> {
-    if parent.plan_artifact_id.is_none() {
-        return Err(json_error(
-            StatusCode::BAD_REQUEST,
-            "Cannot start verification: parent session has no plan artifact",
-        ));
-    }
-
-    if parent.verification_in_progress {
-        crate::http_server::handlers::ideation::repair_blank_orphaned_verification_generation(
-            &state.app_state,
-            parent,
-        )
-        .await
-        .map_err(|e| {
-            error!(
-                "Failed to repair stale verification state for {}: {}",
-                parent_id.as_str(),
-                e
-            );
-            json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to repair verification state: {}", e),
-            )
-        })?;
-    }
-
-    let (_, effective_in_progress) = crate::domain::services::load_effective_verification_status(
-        state.app_state.ideation_session_repo.as_ref(),
-        parent,
-    )
-    .await
-    .map_err(|e| {
-        error!(
-            "Failed to load effective verification status for {}: {}",
-            parent_id.as_str(),
-            e
-        );
-        json_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to check verification state: {}", e),
-        )
-    })?;
-    if effective_in_progress {
-        return Err(json_error(
-            StatusCode::CONFLICT,
-            "Verification already in progress",
-        ));
-    }
-
-    let verification_max_rounds = default_verification_max_rounds();
-    let parent_id_str = parent_id.as_str().to_string();
-    let verify_result = state
-        .app_state
-        .db
-        .run(move |conn| SessionRepo::trigger_auto_verify_sync(conn, &parent_id_str))
-        .await
-        .map_err(|e| {
-            error!("Failed to trigger verification sync: {}", e);
-            json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to initialize verification state: {}", e),
-            )
-        })?;
-
-    match verify_result {
-        Some(new_generation) => {
-            if let Some(app_handle) = &state.app_state.app_handle {
-                emit_verification_started(
-                    app_handle,
-                    parent_id.as_str(),
-                    new_generation,
-                    verification_max_rounds,
-                );
-            }
-            Ok(Some(new_generation))
-        }
-        None => {
-            let parent_id_str = parent_id.as_str().to_string();
-            let fresh_parent = state
-                .app_state
-                .db
-                .run(move |conn| SessionRepo::get_by_id_sync(conn, &parent_id_str))
-                .await
-                .map_err(|e| {
-                    error!("Failed to re-query parent session: {}", e);
-                    json_error(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("Failed to check verification state: {}", e),
-                    )
-                })?;
-            let fresh_parent = fresh_parent
-                .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Parent session not found"))?;
-            let (_, fresh_in_progress) =
-                crate::domain::services::load_effective_verification_status(
-                    state.app_state.ideation_session_repo.as_ref(),
-                    &fresh_parent,
-                )
-                .await
-                .map_err(|e| {
-                    error!("Failed to re-check effective verification status: {}", e);
-                    json_error(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("Failed to check verification state: {}", e),
-                    )
-                })?;
-            if fresh_in_progress {
-                Err(json_error(
-                    StatusCode::CONFLICT,
-                    "Verification already in progress",
-                ))
-            } else {
-                Err(json_error(
-                    StatusCode::BAD_REQUEST,
-                    "Cannot verify imported-verified sessions",
-                ))
-            }
-        }
-    }
-}
-
 fn build_effective_prompts(
     req: &CreateChildSessionRequest,
     verification_generation: Option<i32>,
@@ -179,11 +54,6 @@ fn build_child_session_response(
     generation: Option<i32>,
     pending_initial_prompt: Option<String>,
 ) -> CreateChildSessionResponse {
-    let team_config = session
-        .team_config_json
-        .as_ref()
-        .and_then(|json_str| serde_json::from_str(json_str).ok());
-
     CreateChildSessionResponse {
         session_id: session.id.as_str().to_string(),
         parent_session_id: parent_id.as_str().to_string(),
@@ -200,8 +70,6 @@ fn build_child_session_response(
         initial_prompt: req.initial_prompt.clone(),
         parent_context,
         orchestration_triggered,
-        team_mode: session.team_mode.clone(),
-        team_config,
         generation,
         pending_initial_prompt,
     }
@@ -417,49 +285,12 @@ pub(crate) async fn create_child_session_impl(
     }
 
     if req.purpose.as_deref() == Some("verification") {
-        verification_generation = initialize_verification_state(state, &parent_id, &parent).await?;
+        return Err(json_error(
+            StatusCode::BAD_REQUEST,
+            "Verification runs in the active Plan conversation and cannot be created as a child session",
+        ));
     }
 
-    let (resolved_team_mode, resolved_team_config_json) = if let Some(mode) = &req.team_mode {
-        let config_json = req
-            .team_config
-            .as_ref()
-            .and_then(|config| serde_json::to_value(config).ok());
-        (
-            Some(mode.clone()),
-            config_json.map(|value| value.to_string()),
-        )
-    } else if req.inherit_context {
-        (parent.team_mode.clone(), parent.team_config_json.clone())
-    } else {
-        (None, None)
-    };
-    let team_mode_requested = resolved_team_mode
-        .as_deref()
-        .is_some_and(|mode| mode != "solo");
-    let team_mode_supported =
-        crate::application::ideation_harness_availability::ideation_team_mode_supported_for_project(
-            &state.app_state.agent_lane_settings_repo,
-            Some(parent.project_id.as_str()),
-        )
-        .await;
-    let (resolved_team_mode, resolved_team_config_json) = if team_mode_requested
-        && !team_mode_supported
-    {
-        tracing::info!(
-            parent_session_id = %parent_id.as_str(),
-            project_id = %parent.project_id,
-            "Downgrading child ideation session team mode to solo because the primary harness does not support team mode"
-        );
-        (Some("solo".to_string()), None)
-    } else {
-        (resolved_team_mode, resolved_team_config_json)
-    };
-
-    let (team_mode, team_config_json) = validate_resolved_team_config(
-        resolved_team_mode.as_ref(),
-        resolved_team_config_json.as_ref(),
-    );
     let purpose = req
         .purpose
         .as_deref()
@@ -471,8 +302,6 @@ pub(crate) async fn create_child_session_impl(
         ChildSessionDraftInput {
             title: req.title.clone(),
             inherit_context: req.inherit_context,
-            team_mode,
-            team_config_json,
             source_task_id: req.source_task_id.clone(),
             source_context_type: req.source_context_type.clone(),
             source_context_id: req.source_context_id.clone(),
@@ -609,22 +438,20 @@ pub(crate) async fn create_child_session_impl(
             None
         };
 
-    if let Some(app_handle) = &state.app_state.app_handle {
-        let mut event_payload = serde_json::json!({
-            "sessionId": child_session_str,
-            "parentSessionId": parent_session_str,
-            "title": title,
-            "purpose": created_session.session_purpose.to_string(),
-            "orchestrationTriggered": orchestration_triggered
-        });
-        if let Some(ref prompt) = req.initial_prompt {
-            event_payload["initialPrompt"] = serde_json::json!(prompt);
-        }
-        if let Some(ref pending_prompt) = persisted_pending_prompt {
-            event_payload["pendingInitialPrompt"] = serde_json::json!(pending_prompt);
-        }
-        let _ = app_handle.emit("ideation:child_session_created", event_payload);
+    let mut event_payload = serde_json::json!({
+        "sessionId": child_session_str,
+        "parentSessionId": parent_session_str,
+        "title": title,
+        "purpose": created_session.session_purpose.to_string(),
+        "orchestrationTriggered": orchestration_triggered
+    });
+    if let Some(ref prompt) = req.initial_prompt {
+        event_payload["initialPrompt"] = serde_json::json!(prompt);
     }
+    if let Some(ref pending_prompt) = persisted_pending_prompt {
+        event_payload["pendingInitialPrompt"] = serde_json::json!(pending_prompt);
+    }
+    crate::http_server::emit_http_event(state, "ideation:child_session_created", event_payload);
 
     Ok(build_child_session_response(
         &created_session,

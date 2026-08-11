@@ -8,6 +8,34 @@ use std::time::Instant;
 #[cfg(test)]
 pub(crate) static TEST_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+const SYSTEM_FALLBACK_PATHS: &[&str] = &[
+    "/opt/homebrew/bin",
+    "/opt/homebrew/sbin",
+    "/usr/local/bin",
+    "/usr/local/sbin",
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin",
+];
+
+const USER_TOOLCHAIN_RELATIVE_PATHS: &[&str] = &[
+    ".cargo/bin",
+    ".local/bin",
+    "bin",
+    ".asdf/shims",
+    ".asdf/bin",
+    ".mise/shims",
+    ".mise/bin",
+    ".rbenv/shims",
+    ".rbenv/bin",
+    ".pyenv/shims",
+    ".pyenv/bin",
+    ".nodenv/shims",
+    ".nodenv/bin",
+    ".volta/bin",
+];
+
 pub(crate) fn resolve_gh_cli_path() -> PathBuf {
     resolve_cli_path("gh", &["/opt/homebrew/bin/gh", "/usr/local/bin/gh"])
 }
@@ -52,64 +80,91 @@ pub(crate) fn resolve_pkill_cli_path() -> PathBuf {
 }
 
 pub(crate) fn agent_subprocess_env_path() -> OsString {
-    agent_subprocess_env_path_from_parts(
-        std::env::var_os("PATH").as_deref(),
-        dirs::home_dir().as_deref(),
+    let captured_shell_path = crate::infrastructure::login_shell_env::captured_path();
+    let existing_path = std::env::var_os("PATH");
+    let home_dir = dirs::home_dir();
+    let nvm_bin = find_env_dir("NVM_BIN");
+    let volta_bin = find_env_dir("VOLTA_HOME").map(|path| path.join("bin"));
+
+    agent_subprocess_env_path_from_parts_with_shell(
+        captured_shell_path.as_deref(),
+        existing_path.as_deref(),
+        home_dir.as_deref(),
+        nvm_bin.as_deref(),
+        volta_bin.as_deref(),
     )
 }
 
+#[cfg(test)]
 pub(crate) fn agent_subprocess_env_path_from_parts(
     existing_path: Option<&OsStr>,
     home_dir: Option<&Path>,
 ) -> OsString {
-    let mut entries = Vec::new();
-    if let Some(existing_path) = existing_path {
-        entries.extend(std::env::split_paths(existing_path));
-    }
+    agent_subprocess_env_path_from_parts_with_shell(None, existing_path, home_dir, None, None)
+}
 
-    entries.extend(
-        [
-            "/opt/homebrew/bin",
-            "/opt/homebrew/sbin",
-            "/usr/local/bin",
-            "/usr/local/sbin",
-            "/usr/bin",
-            "/bin",
-            "/usr/sbin",
-            "/sbin",
-        ]
-        .into_iter()
-        .map(PathBuf::from),
-    );
+fn agent_subprocess_env_path_from_parts_with_shell(
+    captured_shell_path: Option<&OsStr>,
+    existing_path: Option<&OsStr>,
+    home_dir: Option<&Path>,
+    nvm_bin: Option<&Path>,
+    volta_bin: Option<&Path>,
+) -> OsString {
+    let mut entries = Vec::new();
+    let mut delayed_system_entries = Vec::new();
+    let mut join_fallback = None;
+
+    if let Some(captured_shell_path) = non_empty_path(captured_shell_path) {
+        join_fallback = Some(captured_shell_path);
+        entries.extend(non_empty_split_paths(captured_shell_path));
+    } else if let Some(existing_path) = non_empty_path(existing_path) {
+        join_fallback = Some(existing_path);
+        for entry in non_empty_split_paths(existing_path) {
+            if is_system_fallback_path(&entry) {
+                delayed_system_entries.push(entry);
+            } else {
+                entries.push(entry);
+            }
+        }
+    }
 
     if let Some(home_dir) = home_dir {
         entries.extend(
-            [
-                ".local/bin",
-                "bin",
-                ".cargo/bin",
-                ".rbenv/bin",
-                ".rbenv/shims",
-                ".asdf/bin",
-                ".asdf/shims",
-                ".pyenv/bin",
-                ".pyenv/shims",
-                ".nodenv/bin",
-                ".nodenv/shims",
-                ".volta/bin",
-            ]
-            .into_iter()
-            .map(|relative| home_dir.join(relative)),
+            USER_TOOLCHAIN_RELATIVE_PATHS
+                .iter()
+                .map(|relative| home_dir.join(relative)),
         );
     }
 
-    let mut seen = std::collections::HashSet::new();
-    entries.retain(|entry| seen.insert(entry.as_os_str().to_os_string()));
+    if let Some(nvm_bin) = nvm_bin {
+        entries.push(nvm_bin.to_path_buf());
+    }
+    if let Some(volta_bin) = volta_bin {
+        entries.push(volta_bin.to_path_buf());
+    }
+
+    entries.extend(delayed_system_entries);
+    entries.extend(SYSTEM_FALLBACK_PATHS.iter().map(PathBuf::from));
+    dedupe_path_entries(&mut entries);
+
     std::env::join_paths(entries).unwrap_or_else(|_| {
-        existing_path
+        join_fallback
             .map(OsStr::to_os_string)
             .unwrap_or_else(|| OsString::from("/usr/bin:/bin:/usr/sbin:/sbin"))
     })
+}
+
+fn non_empty_path(value: Option<&OsStr>) -> Option<&OsStr> {
+    value.filter(|value| non_empty_split_paths(value).next().is_some())
+}
+
+fn non_empty_split_paths(value: &OsStr) -> impl Iterator<Item = PathBuf> + '_ {
+    env::split_paths(value).filter(|entry| !entry.as_os_str().is_empty())
+}
+
+fn dedupe_path_entries(entries: &mut Vec<PathBuf>) {
+    let mut seen = HashSet::new();
+    entries.retain(|entry| seen.insert(entry.as_os_str().to_os_string()));
 }
 
 #[cfg(windows)]
@@ -251,29 +306,41 @@ pub(crate) fn find_launchable_cli_paths_with_login_shell(
     paths
 }
 
-pub(crate) fn prepend_resolved_node_bin_to_path(cmd: &mut std::process::Command) {
+pub(crate) fn ensure_resolved_node_bin_in_path(cmd: &mut std::process::Command) {
     let Some(node_bin_dir) = resolved_node_bin_dir() else {
         return;
     };
 
-    let current_path = command_env_var(cmd, "PATH").or_else(|| env::var_os("PATH"));
-    let already_first = current_path
-        .as_ref()
-        .and_then(|value| env::split_paths(value).next())
-        .map(|value| value == node_bin_dir)
-        .unwrap_or(false);
-    if already_first {
+    let command_path = command_env_var(cmd, "PATH");
+    let current_path = command_path
+        .clone()
+        .unwrap_or_else(agent_subprocess_env_path);
+    let current_entries = non_empty_split_paths(&current_path).collect::<Vec<_>>();
+
+    if current_entries.iter().any(|entry| entry == &node_bin_dir) {
+        if command_path.is_none() {
+            cmd.env("PATH", current_path);
+        }
         return;
     }
 
-    let mut paths = vec![node_bin_dir];
-    if let Some(existing) = current_path.as_ref() {
-        paths.extend(env::split_paths(existing));
-    }
+    let mut paths = current_entries;
+    let insertion_index = paths
+        .iter()
+        .position(|entry| is_system_fallback_path(entry))
+        .unwrap_or(paths.len());
+    paths.insert(insertion_index, node_bin_dir);
+    dedupe_path_entries(&mut paths);
 
     if let Ok(joined) = env::join_paths(paths) {
         cmd.env("PATH", joined);
     }
+}
+
+fn is_system_fallback_path(path: &Path) -> bool {
+    SYSTEM_FALLBACK_PATHS
+        .iter()
+        .any(|fallback| path == Path::new(fallback))
 }
 
 fn resolve_cli_path(tool_name: &'static str, fixed_candidates: &[&'static str]) -> PathBuf {
@@ -673,14 +740,14 @@ fn has_safe_absolute_shape(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_subprocess_env_path_from_parts, claude_native_cli_path, find_claude_cli_path,
+        agent_subprocess_env_path_from_parts, agent_subprocess_env_path_from_parts_with_shell,
+        claude_native_cli_path, ensure_resolved_node_bin_in_path, find_claude_cli_path,
         find_claude_native_cli_path, find_cli_path_with_candidate_groups_for_test,
         find_codex_cli_candidates, find_codex_cli_path, find_launchable_cli_path,
         find_launchable_cli_path_without_shell, find_launchable_cli_paths_with_login_shell,
         is_safe_tool_name, launchable_cli_paths_from_shell_output,
-        nvm_versioned_tool_candidates_from_home, parse_nvm_node_version_dir,
-        prepend_resolved_node_bin_to_path, resolve_node_cli_path, safe_cli_path_from_shell_output,
-        TEST_ENV_MUTEX,
+        nvm_versioned_tool_candidates_from_home, parse_nvm_node_version_dir, resolve_node_cli_path,
+        safe_cli_path_from_shell_output, TEST_ENV_MUTEX,
     };
     use std::cell::Cell;
     use std::ffi::OsStr;
@@ -697,6 +764,17 @@ mod tests {
             permissions.set_mode(0o755);
             std::fs::set_permissions(path, permissions).expect("mark fake tool executable");
         }
+    }
+
+    fn path_entries(path: &std::ffi::OsStr) -> Vec<PathBuf> {
+        std::env::split_paths(path).collect::<Vec<_>>()
+    }
+
+    fn path_index(entries: &[PathBuf], path: impl AsRef<Path>) -> usize {
+        entries
+            .iter()
+            .position(|entry| entry == path.as_ref())
+            .unwrap_or_else(|| panic!("PATH entry missing: {}", path.as_ref().display()))
     }
 
     struct EnvGuard {
@@ -891,13 +969,148 @@ mod tests {
             Some(OsStr::new("/existing/bin:/usr/bin")),
             Some(Path::new("/Users/example")),
         );
-        let path = path.to_string_lossy();
+        let entries = path_entries(path.as_os_str());
 
-        assert!(path.contains("/existing/bin"));
-        assert!(path.contains("/opt/homebrew/bin"));
-        assert!(path.contains("/usr/local/bin"));
-        assert!(path.contains("/Users/example/.cargo/bin"));
-        assert!(path.contains("/Users/example/.asdf/shims"));
+        assert!(entries.contains(&PathBuf::from("/existing/bin")));
+        assert!(entries.contains(&PathBuf::from("/opt/homebrew/bin")));
+        assert!(entries.contains(&PathBuf::from("/usr/local/bin")));
+        assert!(entries.contains(&PathBuf::from("/Users/example/.cargo/bin")));
+        assert!(entries.contains(&PathBuf::from("/Users/example/.asdf/shims")));
+        assert!(
+            path_index(&entries, "/Users/example/.cargo/bin")
+                < path_index(&entries, "/opt/homebrew/bin")
+        );
+        assert!(
+            path_index(&entries, "/Users/example/.cargo/bin") < path_index(&entries, "/usr/bin")
+        );
+    }
+
+    #[test]
+    fn agent_subprocess_path_prefers_captured_shell_order_over_app_path() {
+        let path = agent_subprocess_env_path_from_parts_with_shell(
+            Some(OsStr::new(
+                "/Users/example/.cargo/bin:/opt/homebrew/bin:/usr/bin",
+            )),
+            Some(OsStr::new(
+                "/opt/homebrew/bin:/Users/example/.cargo/bin:/bin",
+            )),
+            Some(Path::new("/Users/example")),
+            None,
+            None,
+        );
+        let entries = path_entries(path.as_os_str());
+
+        assert_eq!(
+            entries.first(),
+            Some(&PathBuf::from("/Users/example/.cargo/bin"))
+        );
+        assert!(
+            path_index(&entries, "/Users/example/.cargo/bin")
+                < path_index(&entries, "/opt/homebrew/bin")
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| *entry == &PathBuf::from("/Users/example/.cargo/bin"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn agent_subprocess_path_adds_user_shims_before_fallbacks_when_path_is_stripped() {
+        let path = agent_subprocess_env_path_from_parts_with_shell(
+            None,
+            Some(OsStr::new("/usr/bin:/bin")),
+            Some(Path::new("/Users/example")),
+            None,
+            None,
+        );
+        let entries = path_entries(path.as_os_str());
+
+        assert!(entries.contains(&PathBuf::from("/Users/example/.mise/shims")));
+        assert!(entries.contains(&PathBuf::from("/Users/example/.mise/bin")));
+        assert!(
+            path_index(&entries, "/Users/example/.cargo/bin")
+                < path_index(&entries, "/opt/homebrew/bin")
+        );
+        assert!(
+            path_index(&entries, "/Users/example/.cargo/bin") < path_index(&entries, "/usr/bin")
+        );
+        assert!(
+            path_index(&entries, "/Users/example/.mise/shims")
+                < path_index(&entries, "/usr/local/bin")
+        );
+    }
+
+    #[test]
+    fn agent_subprocess_path_delays_app_process_system_dirs_behind_user_shims() {
+        let path = agent_subprocess_env_path_from_parts_with_shell(
+            None,
+            Some(OsStr::new("/opt/homebrew/bin:/custom/bin:/usr/bin")),
+            Some(Path::new("/Users/example")),
+            None,
+            None,
+        );
+        let entries = path_entries(path.as_os_str());
+
+        assert_eq!(entries.first(), Some(&PathBuf::from("/custom/bin")));
+        assert!(
+            path_index(&entries, "/Users/example/.cargo/bin")
+                < path_index(&entries, "/opt/homebrew/bin")
+        );
+        assert!(
+            path_index(&entries, "/Users/example/.cargo/bin") < path_index(&entries, "/usr/bin")
+        );
+    }
+
+    #[test]
+    fn agent_subprocess_path_places_node_env_dirs_before_system_fallbacks() {
+        let path = agent_subprocess_env_path_from_parts_with_shell(
+            None,
+            Some(OsStr::new("/usr/bin:/bin")),
+            Some(Path::new("/Users/example")),
+            Some(Path::new("/Users/example/.nvm/current/bin")),
+            Some(Path::new("/Users/example/.volta/bin")),
+        );
+        let entries = path_entries(path.as_os_str());
+
+        assert!(
+            path_index(&entries, "/Users/example/.nvm/current/bin")
+                < path_index(&entries, "/opt/homebrew/bin")
+        );
+        assert!(
+            path_index(&entries, "/Users/example/.volta/bin")
+                < path_index(&entries, "/opt/homebrew/bin")
+        );
+    }
+
+    #[test]
+    fn agent_subprocess_path_resolves_fake_rustc_from_user_shim_before_homebrew() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let home = temp_dir.path().join("home");
+        let cargo_bin = home.join(".cargo").join("bin");
+        let homebrew_bin = temp_dir.path().join("homebrew").join("bin");
+        std::fs::create_dir_all(&cargo_bin).expect("create cargo bin");
+        std::fs::create_dir_all(&homebrew_bin).expect("create homebrew bin");
+        write_fake_tool(&cargo_bin.join("rustc"));
+        write_fake_tool(&homebrew_bin.join("rustc"));
+
+        let existing_path = std::env::join_paths([homebrew_bin.as_path()]).expect("join path");
+        let path = agent_subprocess_env_path_from_parts_with_shell(
+            Some(cargo_bin.as_os_str()),
+            Some(existing_path.as_os_str()),
+            Some(&home),
+            None,
+            None,
+        );
+        let resolved = path_entries(path.as_os_str())
+            .into_iter()
+            .map(|entry| entry.join("rustc"))
+            .find(|candidate| candidate.exists())
+            .expect("fake rustc should resolve");
+
+        assert_eq!(resolved, cargo_bin.join("rustc"));
     }
 
     #[test]
@@ -1084,13 +1297,43 @@ mod tests {
     }
 
     #[test]
-    fn prepend_resolved_node_bin_to_path_preserves_existing_path() {
+    fn ensure_resolved_node_bin_in_path_preserves_user_shim_precedence() {
+        let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
+        let _node_override = EnvGuard::set_os("RALPHX_NODE_PATH", "/opt/homebrew/bin/node");
+        let mut cmd = std::process::Command::new("/usr/bin/env");
+        cmd.env("PATH", "/Users/example/.cargo/bin:/usr/bin:/bin");
+
+        ensure_resolved_node_bin_in_path(&mut cmd);
+
+        let path_value = cmd
+            .get_envs()
+            .find_map(|(key, value)| {
+                (key == OsStr::new("PATH")).then(|| value.map(|v| v.to_os_string()))?
+            })
+            .expect("PATH env");
+        let entries = path_entries(&path_value);
+
+        assert_eq!(
+            entries.first(),
+            Some(&PathBuf::from("/Users/example/.cargo/bin"))
+        );
+        assert!(
+            path_index(&entries, "/Users/example/.cargo/bin")
+                < path_index(&entries, "/opt/homebrew/bin")
+        );
+    }
+
+    #[test]
+    fn ensure_resolved_node_bin_in_path_is_noop_when_node_bin_already_exists() {
         let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
         let _node_override = EnvGuard::set_os("RALPHX_NODE_PATH", "/tmp/fake-node-bin/node");
         let mut cmd = std::process::Command::new("/usr/bin/env");
-        cmd.env("PATH", "/usr/bin:/bin");
+        cmd.env(
+            "PATH",
+            "/Users/example/.cargo/bin:/tmp/fake-node-bin:/usr/bin:/bin",
+        );
 
-        prepend_resolved_node_bin_to_path(&mut cmd);
+        ensure_resolved_node_bin_in_path(&mut cmd);
 
         let path_value = cmd
             .get_envs()
@@ -1099,38 +1342,9 @@ mod tests {
             })
             .expect("PATH env");
         assert_eq!(
-            PathBuf::from("/tmp/fake-node-bin"),
-            std::env::split_paths(&path_value)
-                .next()
-                .expect("first PATH entry")
-        );
-        assert_eq!(
-            std::env::split_paths(&path_value).collect::<Vec<_>>(),
+            path_entries(&path_value),
             vec![
-                PathBuf::from("/tmp/fake-node-bin"),
-                PathBuf::from("/usr/bin"),
-                PathBuf::from("/bin"),
-            ]
-        );
-    }
-    #[test]
-    fn prepend_resolved_node_bin_to_path_is_noop_when_node_bin_is_already_first() {
-        let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
-        let _node_override = EnvGuard::set_os("RALPHX_NODE_PATH", "/tmp/fake-node-bin/node");
-        let mut cmd = std::process::Command::new("/usr/bin/env");
-        cmd.env("PATH", "/tmp/fake-node-bin:/usr/bin:/bin");
-
-        prepend_resolved_node_bin_to_path(&mut cmd);
-
-        let path_value = cmd
-            .get_envs()
-            .find_map(|(key, value)| {
-                (key == OsStr::new("PATH")).then(|| value.map(|v| v.to_os_string()))?
-            })
-            .expect("PATH env");
-        assert_eq!(
-            std::env::split_paths(&path_value).collect::<Vec<_>>(),
-            vec![
+                PathBuf::from("/Users/example/.cargo/bin"),
                 PathBuf::from("/tmp/fake-node-bin"),
                 PathBuf::from("/usr/bin"),
                 PathBuf::from("/bin"),
@@ -1139,13 +1353,13 @@ mod tests {
     }
 
     #[test]
-    fn prepend_resolved_node_bin_to_path_uses_inherited_path_when_command_path_is_unset() {
+    fn ensure_resolved_node_bin_in_path_uses_shared_policy_when_command_path_is_unset() {
         let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
         let _node_override = EnvGuard::set_os("RALPHX_NODE_PATH", "/tmp/fake-node-bin/node");
         let _path = EnvGuard::set_os("PATH", "/usr/bin:/bin");
         let mut cmd = std::process::Command::new("/usr/bin/env");
 
-        prepend_resolved_node_bin_to_path(&mut cmd);
+        ensure_resolved_node_bin_in_path(&mut cmd);
 
         let path_value = cmd
             .get_envs()
@@ -1153,13 +1367,13 @@ mod tests {
                 (key == OsStr::new("PATH")).then(|| value.map(|v| v.to_os_string()))?
             })
             .expect("PATH env");
-        assert_eq!(
-            std::env::split_paths(&path_value).collect::<Vec<_>>(),
-            vec![
-                PathBuf::from("/tmp/fake-node-bin"),
-                PathBuf::from("/usr/bin"),
-                PathBuf::from("/bin"),
-            ]
+        let entries = path_entries(&path_value);
+
+        assert!(entries.contains(&PathBuf::from("/tmp/fake-node-bin")));
+        assert!(path_index(&entries, "/tmp/fake-node-bin") < path_index(&entries, "/usr/bin"));
+        assert!(
+            entries.iter().any(|entry| entry.ends_with(".cargo/bin")),
+            "shared policy should add user toolchain shims"
         );
     }
 }

@@ -15,11 +15,7 @@ use super::{canonical_short_agent_name, resolve_effort};
 pub fn effort_bucket_for_agent(agent_name: &str) -> Option<EffortBucket> {
     let normalized = canonical_short_agent_name(agent_name);
     match normalized {
-        "ralphx-ideation"
-        | "ralphx-ideation-team-lead"
-        | "ideation-team-member"
-        | "ralphx-ideation-readonly" => Some(EffortBucket::Primary),
-        "ralphx-plan-verifier" => Some(EffortBucket::Verifier),
+        "ralphx-ideation" | "ralphx-ideation-readonly" => Some(EffortBucket::Primary),
         _ => None,
     }
 }

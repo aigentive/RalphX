@@ -3,11 +3,67 @@
 
 use std::sync::Arc;
 
+use chrono::Utc;
+use ralphx_lib::application::AppState;
 use ralphx_lib::domain::agents::{AgentConfig, AgentRole, AgenticClient, ClientType};
+use ralphx_lib::domain::entities::{ChatConversation, Persona, PersonaId, PersonaStatus, Project};
 use ralphx_lib::domain::state_machine::AgentSpawner;
 use ralphx_lib::infrastructure::agents::AgenticClientSpawner;
 use ralphx_lib::infrastructure::{ClaudeCodeClient, MockAgenticClient, MockCallType};
 use ralphx_lib::testing::test_prompts;
+
+async fn seed_bound_active_persona() -> (AppState, tempfile::TempDir, String) {
+    let state = AppState::new_test();
+    // Never point test projects at the real checkout: git-touching flows
+    // (e.g. the freshness auto-commit) would mutate the developer's repo.
+    let project_dir = tempfile::tempdir().expect("temp project dir");
+    let project = Project::new(
+        "Excluded agent persona project".to_string(),
+        project_dir.path().to_string_lossy().to_string(),
+    );
+    state
+        .project_repo
+        .create(project.clone())
+        .await
+        .expect("seed project");
+
+    let now = Utc::now();
+    let persona = Persona {
+        id: PersonaId::from("excluded-agent-persona"),
+        artifact_id: None,
+
+        project_id: None,
+        slug: "excluded-agent-persona".to_string(),
+        name: "Excluded Agent Persona".to_string(),
+        description: "must not reach excluded spawns".to_string(),
+        content: "<ralphx_agent_persona>\nExcluded persona body\n</ralphx_agent_persona>"
+            .to_string(),
+        status: PersonaStatus::Active,
+        version: 1,
+        content_hash: "excluded-agent-persona-hash".to_string(),
+        source_session_id: None,
+        source_persona_id: None,
+        source_content_hash: None,
+        source_json: "{}".to_string(),
+        created_at: now,
+        updated_at: now,
+    };
+    state
+        .persona_repo
+        .create(persona.clone())
+        .await
+        .expect("seed active persona");
+
+    let mut conversation = ChatConversation::new_project(project.id);
+    conversation.persona_id = Some(persona.id.to_string());
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("bind active persona to conversation");
+
+    (state, project_dir, persona.content)
+}
 
 // ============================================================================
 // MockAgenticClient Integration Tests
@@ -241,4 +297,58 @@ async fn test_spawner_maps_roles_correctly() {
     assert_eq!(roles[3], AgentRole::QaRefiner);
     assert_eq!(roles[4], AgentRole::QaTester);
     assert_eq!(roles[5], AgentRole::Custom("custom-agent".to_string()));
+}
+
+#[tokio::test]
+async fn background_utility_spawns_have_no_persona() {
+    let (_state, _project_dir, bound_persona_block) = seed_bound_active_persona().await;
+    let mock = Arc::new(MockAgenticClient::new());
+    let spawner = AgenticClientSpawner::new(mock.clone());
+
+    for agent_type in [
+        "ralphx-utility-session-namer",
+        "ralphx-memory-maintainer",
+        "ralphx-memory-capture",
+        "qa-prep",
+        "ralphx-project-analyzer",
+    ] {
+        spawner.spawn(agent_type, "task-with-bound-persona").await;
+    }
+
+    let calls = mock.get_spawn_calls().await;
+    assert_eq!(calls.len(), 5, "every background utility should spawn");
+    for call in calls {
+        let MockCallType::Spawn { prompt, .. } = call.call_type else {
+            panic!("expected background utility spawn");
+        };
+        assert!(
+            !prompt.contains("<ralphx_agent_persona>")
+                && !prompt.contains(bound_persona_block.as_str()),
+            "background utility final AgentConfig prompt must not inherit a conversation persona"
+        );
+    }
+}
+
+#[tokio::test]
+async fn pipeline_agent_spawn_has_no_persona() {
+    let (_state, _project_dir, bound_persona_block) = seed_bound_active_persona().await;
+    let mock = Arc::new(MockAgenticClient::new());
+    let spawner = AgenticClientSpawner::new(mock.clone());
+
+    for agent_type in ["worker", "reviewer", "merger"] {
+        spawner.spawn(agent_type, "task-with-bound-persona").await;
+    }
+
+    let calls = mock.get_spawn_calls().await;
+    assert_eq!(calls.len(), 3, "worker, reviewer, and merger should spawn");
+    for call in calls {
+        let MockCallType::Spawn { prompt, .. } = call.call_type else {
+            panic!("expected pipeline agent spawn");
+        };
+        assert!(
+            !prompt.contains("<ralphx_agent_persona>")
+                && !prompt.contains(bound_persona_block.as_str()),
+            "pipeline final AgentConfig prompt must not inherit a conversation persona"
+        );
+    }
 }

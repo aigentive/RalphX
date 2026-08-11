@@ -1,11 +1,60 @@
+use std::collections::HashMap;
+
+use crate::domain::agents::{
+    plan_judge_model_for_provider, standard_harness_map, AgentHarnessKind,
+};
 use serde::Deserialize;
 use tracing::warn;
 
 // ── Top-level wrapper ────────────────────────────────────────────────────
 
+pub const DEFAULT_SHUTDOWN_WATCHDOG_DEADLINE_SECS: u64 = 20;
+pub const MAX_SHUTDOWN_WATCHDOG_DEADLINE_SECS: u64 = 300;
+pub const MAX_EXTERNAL_MCP_SHUTDOWN_GRACE_MS: u64 = 30_000;
+
+pub fn bounded_shutdown_watchdog_deadline_secs(configured: u64) -> u64 {
+    if configured == 0 {
+        DEFAULT_SHUTDOWN_WATCHDOG_DEADLINE_SECS
+    } else {
+        configured.min(MAX_SHUTDOWN_WATCHDOG_DEADLINE_SECS)
+    }
+}
+
+pub fn bounded_external_mcp_shutdown_grace_ms(configured: u64) -> u64 {
+    configured.min(MAX_EXTERNAL_MCP_SHUTDOWN_GRACE_MS)
+}
+
+/// Whole-process exit cleanup deadline. The watchdog is intentionally independent
+/// of async runtimes because it protects teardown after Tauri begins exiting.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ShutdownConfig {
+    pub watchdog_deadline_secs: u64,
+}
+
+impl Default for ShutdownConfig {
+    fn default() -> Self {
+        Self {
+            watchdog_deadline_secs: DEFAULT_SHUTDOWN_WATCHDOG_DEADLINE_SECS,
+        }
+    }
+}
+
+pub(crate) fn apply_shutdown_env_overrides_with_lookup(
+    config: &mut ShutdownConfig,
+    lookup: &dyn Fn(&str) -> Option<String>,
+) {
+    if let Some(value) = lookup("RALPHX_SHUTDOWN_WATCHDOG_DEADLINE_SECS") {
+        if let Ok(deadline) = value.parse::<u64>() {
+            config.watchdog_deadline_secs = deadline;
+        }
+    }
+}
+
 /// All runtime configuration collected from config/ralphx.yaml + env overrides.
 #[derive(Debug, Clone)]
 pub struct AllRuntimeConfig {
+    pub database_maintenance: DatabaseMaintenanceConfig,
     pub stream: StreamTimeoutsConfig,
     pub reconciliation: ReconciliationConfig,
     pub git: GitRuntimeConfig,
@@ -14,6 +63,7 @@ pub struct AllRuntimeConfig {
     pub limits: LimitsConfig,
     pub verification: VerificationConfig,
     pub external_mcp: ExternalMcpConfig,
+    pub delegation: DelegationConfig,
     /// Seconds of inactivity before an agent is considered "likely_waiting" vs "likely_generating".
     /// Used by get_child_session_status to derive estimated_status. Default: 10.
     pub child_session_activity_threshold_secs: Option<u64>,
@@ -21,10 +71,65 @@ pub struct AllRuntimeConfig {
     pub ui_feature_flags: super::ui_config::UiFeatureFlagsConfig,
 }
 
+/// Backend-held delegation waiting: bounded `delegate_wait` blocks and durable park/wake.
+///
+/// `wait_block_max_secs` MUST stay strictly below `timeouts.stream.default_parse_stall_secs`
+/// so a blocking wait can never be mistaken for a stalled stream and kill the coordinator.
+/// All fields required in config/ralphx.yaml; the `Default` impl exists only for the
+/// embedded-fallback and test paths.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DelegationConfig {
+    /// Default bounded block applied when a caller asks to wait without naming a duration.
+    pub wait_block_secs: u64,
+    /// Hard cap applied to any caller-supplied `wait_timeout_ms`.
+    pub wait_block_max_secs: u64,
+    /// Upper bound on how long a coordinator may stay parked before a force-wake.
+    pub park_max_secs: u64,
+    /// Wake-enqueue attempts before a park is marked failed.
+    pub park_wake_retry_max: u32,
+    /// Backoff between wake-enqueue attempts.
+    pub park_wake_retry_backoff_secs: u64,
+}
+
+impl Default for DelegationConfig {
+    fn default() -> Self {
+        Self {
+            wait_block_secs: 120,
+            wait_block_max_secs: 150,
+            park_max_secs: 3600,
+            park_wake_retry_max: 5,
+            park_wake_retry_backoff_secs: 30,
+        }
+    }
+}
+
+/// Startup-only database compaction settings. The percent avoids floating-point config drift.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct DatabaseMaintenanceConfig {
+    pub db_auto_compact_enabled: bool,
+    pub db_auto_compact_max_db_bytes: u64,
+    pub db_auto_compact_min_freelist_percent: u64,
+}
+
+impl Default for DatabaseMaintenanceConfig {
+    fn default() -> Self {
+        Self {
+            db_auto_compact_enabled: true,
+            db_auto_compact_max_db_bytes: 2_147_483_648,
+            db_auto_compact_min_freelist_percent: 20,
+        }
+    }
+}
+
+pub const DEFAULT_DESKTOP_NOTIFICATION_COALESCE_WINDOW_SECS: u64 = 5;
+pub const DEFAULT_NOTIFICATION_RETENTION_READ_DAYS: u64 = 30;
+pub const DEFAULT_NOTIFICATION_RETENTION_MAX_ROWS: u64 = 1000;
+
 /// A specialist agent entry in the verification pipeline.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct SpecialistEntry {
-    /// Unique agent name (matches config/ralphx.yaml agent name, e.g. "ralphx-ideation-specialist-code-quality").
+    /// Unique agent name matching a canonical `agents/*/agent.yaml` id.
     pub name: String,
     /// Human-readable display name shown in the UI.
     pub display_name: String,
@@ -38,9 +143,11 @@ pub struct SpecialistEntry {
 
 /// Configuration for the plan verification feature.
 ///
-/// All fields required in config/ralphx.yaml under `ideation.verification:`.
-/// `Default` impl retained only for fallback/test use.
+/// Legacy verification-orchestration fields may be omitted from
+/// `config/ralphx.yaml`; model-native verification only overrides the values it
+/// still consumes.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
 pub struct VerificationConfig {
     /// Maximum number of adversarial review rounds [1, 10]. Hard cap — always terminates.
     pub max_rounds: u32,
@@ -125,6 +232,11 @@ pub struct ExternalMcpConfig {
     pub max_restart_attempts: u32,
     /// Delay between restart attempts in milliseconds. Default: 2000.
     pub restart_delay_ms: u64,
+    /// Grace period for synchronous TERM-to-KILL escalation during app exit.
+    /// Default: 2000 milliseconds.
+    pub shutdown_grace_ms: u64,
+    /// Deadline for required MCP server startup and external bridge readiness.
+    pub startup_timeout_secs: u64,
     /// Backend deadline for human-in-the-loop MCP waits (question/team-plan).
     /// Must stay below the effective MCP tool ceiling so backend 408 responses win.
     pub human_wait_timeout_secs: u64,
@@ -169,6 +281,8 @@ impl Default for ExternalMcpConfig {
             host: "127.0.0.1".to_string(),
             max_restart_attempts: 3,
             restart_delay_ms: 2000,
+            shutdown_grace_ms: 2000,
+            startup_timeout_secs: 30,
             human_wait_timeout_secs: 285,
             auth_token: None,
             node_path: None,
@@ -201,7 +315,7 @@ pub(crate) struct TimeoutsWrapper {
 // ── Individual config structs ────────────────────────────────────────────
 
 /// All fields required in config/ralphx.yaml except backward-compatible timeout fields
-/// with serde defaults (`max_wall_clock_secs`, `completion_grace_secs`).
+/// with serde defaults (`max_wall_clock_secs`, `completion_grace_secs`, and desktop coalescing).
 /// `Default` impl retained only for fallback/test use.
 #[derive(Debug, Clone, Deserialize)]
 pub struct StreamTimeoutsConfig {
@@ -211,26 +325,90 @@ pub struct StreamTimeoutsConfig {
     pub review_parse_stall_secs: u64,
     pub default_line_read_secs: u64,
     pub default_parse_stall_secs: u64,
-    pub team_line_read_secs: u64,
-    pub team_parse_stall_secs: u64,
+    #[serde(default = "default_streaming_persistence_debounce_ms")]
+    pub streaming_persistence_debounce_ms: u64,
     #[serde(default = "default_max_wall_clock_secs")]
     pub max_wall_clock_secs: u64,
     #[serde(default = "default_completion_grace_secs")]
     pub completion_grace_secs: u64,
+    #[serde(default = "default_launch_reservation_lease_secs")]
+    pub launch_reservation_lease_secs: u64,
     #[serde(default = "default_execution_attempt_start_tolerance_secs")]
     pub execution_attempt_start_tolerance_secs: u64,
+    #[serde(default = "default_desktop_notification_coalesce_window_secs")]
+    pub desktop_notification_coalesce_window_secs: u64,
+    #[serde(default = "default_notification_retention_read_days")]
+    pub notification_retention_read_days: u64,
+    #[serde(default = "default_notification_retention_max_rows")]
+    pub notification_retention_max_rows: u64,
+    #[serde(default = "default_chat_payload_retention_enabled")]
+    pub chat_payload_retention_enabled: bool,
+    #[serde(default = "default_chat_payload_retention_days")]
+    pub chat_payload_retention_days: u64,
+    #[serde(default = "default_chat_payload_retention_archived_days")]
+    pub chat_payload_retention_archived_days: u64,
+    #[serde(default = "default_chat_payload_retention_batch_rows")]
+    pub chat_payload_retention_batch_rows: u64,
+    #[serde(default = "default_db_lock_wait_warn_ms")]
+    pub db_lock_wait_warn_ms: u64,
+    #[serde(default = "default_db_lock_hold_warn_ms")]
+    pub db_lock_hold_warn_ms: u64,
 }
 
 fn default_max_wall_clock_secs() -> u64 {
     1800
 }
 
+fn default_streaming_persistence_debounce_ms() -> u64 {
+    1_000
+}
+
 fn default_completion_grace_secs() -> u64 {
+    30
+}
+
+fn default_launch_reservation_lease_secs() -> u64 {
     30
 }
 
 fn default_execution_attempt_start_tolerance_secs() -> u64 {
     1
+}
+
+fn default_desktop_notification_coalesce_window_secs() -> u64 {
+    DEFAULT_DESKTOP_NOTIFICATION_COALESCE_WINDOW_SECS
+}
+
+fn default_notification_retention_read_days() -> u64 {
+    DEFAULT_NOTIFICATION_RETENTION_READ_DAYS
+}
+
+fn default_notification_retention_max_rows() -> u64 {
+    DEFAULT_NOTIFICATION_RETENTION_MAX_ROWS
+}
+
+fn default_chat_payload_retention_enabled() -> bool {
+    true
+}
+
+fn default_chat_payload_retention_days() -> u64 {
+    90
+}
+
+fn default_chat_payload_retention_archived_days() -> u64 {
+    7
+}
+
+fn default_chat_payload_retention_batch_rows() -> u64 {
+    2000
+}
+
+fn default_db_lock_wait_warn_ms() -> u64 {
+    100
+}
+
+fn default_db_lock_hold_warn_ms() -> u64 {
+    250
 }
 
 impl Default for StreamTimeoutsConfig {
@@ -242,11 +420,21 @@ impl Default for StreamTimeoutsConfig {
             review_parse_stall_secs: 120,
             default_line_read_secs: 600,
             default_parse_stall_secs: 180,
-            team_line_read_secs: 3600,
-            team_parse_stall_secs: 3600,
+            streaming_persistence_debounce_ms: default_streaming_persistence_debounce_ms(),
             max_wall_clock_secs: 1800,
             completion_grace_secs: 30,
+            launch_reservation_lease_secs: 30,
             execution_attempt_start_tolerance_secs: 1,
+            desktop_notification_coalesce_window_secs:
+                DEFAULT_DESKTOP_NOTIFICATION_COALESCE_WINDOW_SECS,
+            notification_retention_read_days: DEFAULT_NOTIFICATION_RETENTION_READ_DAYS,
+            notification_retention_max_rows: DEFAULT_NOTIFICATION_RETENTION_MAX_ROWS,
+            chat_payload_retention_enabled: default_chat_payload_retention_enabled(),
+            chat_payload_retention_days: default_chat_payload_retention_days(),
+            chat_payload_retention_archived_days: default_chat_payload_retention_archived_days(),
+            chat_payload_retention_batch_rows: default_chat_payload_retention_batch_rows(),
+            db_lock_wait_warn_ms: default_db_lock_wait_warn_ms(),
+            db_lock_hold_warn_ms: default_db_lock_hold_warn_ms(),
         }
     }
 }
@@ -436,9 +624,12 @@ impl Default for ReconciliationConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct GitRuntimeConfig {
     pub cmd_timeout_secs: u64,
+    pub startup_auth_preflight_timeout_secs: u64,
     pub max_retries: u64,
     pub retry_backoff_secs: Vec<u64>,
     pub index_lock_stale_secs: u64,
+    /// TTL for reusable provider CLI runtime probes, in seconds.
+    pub provider_probe_cache_ttl_secs: u64,
     /// Short TTL for agent workspace freshness responses, in milliseconds.
     pub workspace_freshness_cache_ttl_ms: u64,
     /// Short TTL for agent workspace review context and payload cache, in milliseconds.
@@ -449,11 +640,38 @@ pub struct GitRuntimeConfig {
     pub workspace_pr_annotations_cache_ttl_ms: u64,
     /// Maximum annotated check runs to query for per-run annotations on one PR payload.
     pub workspace_pr_annotations_check_run_fetch_limit: u64,
+    /// Hard latency budget for composing volatile per-turn agent runtime state.
+    #[serde(default = "default_agent_runtime_context_budget_ms")]
+    pub agent_runtime_context_budget_ms: u64,
+    /// Minimum age before a send schedules a background branch-status refresh.
+    #[serde(default = "default_agent_runtime_branch_status_refresh_secs")]
+    pub agent_runtime_branch_status_refresh_secs: u64,
+    /// Age after which cached branch observations are explicitly marked stale.
+    #[serde(default = "default_agent_runtime_branch_status_stale_secs")]
+    pub agent_runtime_branch_status_stale_secs: u64,
     /// TTL for external PR reconciliation attempts on an unlinked agent workspace.
     #[serde(default = "default_agent_workspace_pr_reconciliation_cache_ttl_ms")]
     pub agent_workspace_pr_reconciliation_cache_ttl_ms: u64,
+    /// Legacy fallback age for transient publish rows that have no owner identity.
+    #[serde(default = "default_agent_workspace_publish_lease_stale_secs")]
+    pub agent_workspace_publish_lease_stale_secs: u64,
+    /// Heartbeat cadence while a live publication operation owns its durable lease.
+    #[serde(default = "default_agent_workspace_publish_lease_heartbeat_interval_secs")]
+    pub agent_workspace_publish_lease_heartbeat_interval_secs: u64,
+    /// Cadence for liveness-aware workspace publish recovery.
+    #[serde(default = "default_agent_workspace_publish_recovery_interval_secs")]
+    pub agent_workspace_publish_recovery_interval_secs: u64,
+    /// Seconds between background terminal PR local artifact cleanup passes.
+    #[serde(default = "default_terminal_pr_local_cleanup_interval_secs")]
+    pub terminal_pr_local_cleanup_interval_secs: u64,
+    /// Seconds before retryable terminal PR cleanup markers are retried.
+    #[serde(default = "default_terminal_pr_local_cleanup_retry_secs")]
+    pub terminal_pr_local_cleanup_retry_secs: u64,
     /// Seconds before unchanged orphan agent-worktree cleanup markers are retried.
     pub orphan_worktree_cleanup_marker_retry_secs: u64,
+    /// Seconds between same-process orphan agent-worktree cleanup passes.
+    #[serde(default = "default_orphan_worktree_cleanup_interval_secs")]
+    pub orphan_worktree_cleanup_interval_secs: u64,
     /// Seconds to wait after SIGTERM for process tree cleanup before worktree deletion.
     pub agent_kill_settle_secs: u64,
     /// Timeout in seconds for each stop_agent() call in pre-merge cleanup step 0.
@@ -475,16 +693,27 @@ impl Default for GitRuntimeConfig {
     fn default() -> Self {
         Self {
             cmd_timeout_secs: 60,
+            startup_auth_preflight_timeout_secs: 10,
             max_retries: 3,
             retry_backoff_secs: vec![1, 2, 4],
             index_lock_stale_secs: 5,
+            provider_probe_cache_ttl_secs: 300,
             workspace_freshness_cache_ttl_ms: 2_000,
             workspace_review_cache_ttl_ms: 2_000,
             workspace_pr_description_cache_ttl_ms: 300_000,
             workspace_pr_annotations_cache_ttl_ms: 30_000,
             workspace_pr_annotations_check_run_fetch_limit: 10,
+            agent_runtime_context_budget_ms: 75,
+            agent_runtime_branch_status_refresh_secs: 30,
+            agent_runtime_branch_status_stale_secs: 300,
             agent_workspace_pr_reconciliation_cache_ttl_ms: 30_000,
+            agent_workspace_publish_lease_stale_secs: 300,
+            agent_workspace_publish_lease_heartbeat_interval_secs: 30,
+            agent_workspace_publish_recovery_interval_secs: 120,
+            terminal_pr_local_cleanup_interval_secs: 900,
+            terminal_pr_local_cleanup_retry_secs: 3_600,
             orphan_worktree_cleanup_marker_retry_secs: 86_400,
+            orphan_worktree_cleanup_interval_secs: 900,
             agent_kill_settle_secs: 0,
             agent_stop_timeout_secs: 3,
             cleanup_worktree_timeout_secs: 15,
@@ -497,6 +726,42 @@ impl Default for GitRuntimeConfig {
 
 fn default_agent_workspace_pr_reconciliation_cache_ttl_ms() -> u64 {
     30_000
+}
+
+fn default_agent_runtime_context_budget_ms() -> u64 {
+    75
+}
+
+fn default_agent_runtime_branch_status_refresh_secs() -> u64 {
+    30
+}
+
+fn default_agent_runtime_branch_status_stale_secs() -> u64 {
+    300
+}
+
+fn default_agent_workspace_publish_lease_stale_secs() -> u64 {
+    300
+}
+
+fn default_agent_workspace_publish_lease_heartbeat_interval_secs() -> u64 {
+    30
+}
+
+fn default_agent_workspace_publish_recovery_interval_secs() -> u64 {
+    120
+}
+
+fn default_terminal_pr_local_cleanup_interval_secs() -> u64 {
+    900
+}
+
+fn default_orphan_worktree_cleanup_interval_secs() -> u64 {
+    900
+}
+
+fn default_terminal_pr_local_cleanup_retry_secs() -> u64 {
+    3_600
 }
 
 /// All fields required in config/ralphx.yaml — no serde defaults.
@@ -522,6 +787,40 @@ impl Default for SchedulerConfig {
             merge_settle_ms: 100,
         }
     }
+}
+
+/// Runtime knobs for automation scheduling and completion-signal checks.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct AutomationsRuntimeConfig {
+    pub scheduler_poll_secs: u64,
+    pub signal_failure_pause_threshold: u64,
+    pub judge_timeout_secs: u64,
+    pub publish_grace_secs: u64,
+    pub max_run_duration_secs: u64,
+    pub plan_judge_model: HashMap<AgentHarnessKind, String>,
+    pub plan_max_revision_rounds: u64,
+}
+
+impl Default for AutomationsRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            scheduler_poll_secs: 30,
+            signal_failure_pause_threshold: 5,
+            judge_timeout_secs: 180,
+            publish_grace_secs: 120,
+            max_run_duration_secs: 14_400,
+            plan_judge_model: default_plan_judge_models(),
+            plan_max_revision_rounds: 3,
+        }
+    }
+}
+
+fn default_plan_judge_models() -> HashMap<AgentHarnessKind, String> {
+    standard_harness_map(
+        plan_judge_model_for_provider(AgentHarnessKind::Claude).to_string(),
+        plan_judge_model_for_provider(AgentHarnessKind::Codex).to_string(),
+    )
 }
 
 /// All fields required in config/ralphx.yaml — no serde defaults.
@@ -554,12 +853,29 @@ impl Default for SupervisorRuntimeConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct LimitsConfig {
     pub max_resume_attempts: u64,
+    #[serde(default = "default_max_live_folder_references")]
+    pub max_live_folder_references: usize,
+    /// Total agent minutes RalphX will spend repairing one PR failure identity before handing it
+    /// to a human. Unattended repair can otherwise burn an unbounded budget on a failure no agent
+    /// can fix. `0` disables the budget.
+    #[serde(default = "default_repair_fingerprint_budget_minutes")]
+    pub repair_fingerprint_budget_minutes: u64,
+}
+
+fn default_max_live_folder_references() -> usize {
+    5
+}
+
+fn default_repair_fingerprint_budget_minutes() -> u64 {
+    45
 }
 
 impl Default for LimitsConfig {
     fn default() -> Self {
         Self {
             max_resume_attempts: 5,
+            max_live_folder_references: default_max_live_folder_references(),
+            repair_fingerprint_budget_minutes: default_repair_fingerprint_budget_minutes(),
         }
     }
 }
@@ -568,6 +884,58 @@ impl Default for LimitsConfig {
 
 pub fn apply_env_overrides(cfg: &mut AllRuntimeConfig) {
     apply_env_overrides_with(cfg, &|name| std::env::var(name).ok());
+}
+
+pub(crate) fn apply_automations_env_overrides_with_lookup(
+    cfg: &mut AutomationsRuntimeConfig,
+    lookup: &dyn Fn(&str) -> Option<String>,
+) {
+    macro_rules! env_u64 {
+        ($field:expr, $key:expr) => {
+            if let Some(v) = lookup($key) {
+                if let Ok(n) = v.parse::<u64>() {
+                    $field = n;
+                }
+            }
+        };
+    }
+
+    env_u64!(
+        cfg.scheduler_poll_secs,
+        "RALPHX_AUTOMATIONS_SCHEDULER_POLL_SECS"
+    );
+    env_u64!(
+        cfg.signal_failure_pause_threshold,
+        "RALPHX_AUTOMATIONS_SIGNAL_FAILURE_PAUSE_THRESHOLD"
+    );
+    env_u64!(
+        cfg.judge_timeout_secs,
+        "RALPHX_AUTOMATIONS_JUDGE_TIMEOUT_SECS"
+    );
+    env_u64!(
+        cfg.publish_grace_secs,
+        "RALPHX_AUTOMATIONS_PUBLISH_GRACE_SECS"
+    );
+    env_u64!(
+        cfg.max_run_duration_secs,
+        "RALPHX_AUTOMATIONS_MAX_RUN_DURATION_SECS"
+    );
+    env_u64!(
+        cfg.plan_max_revision_rounds,
+        "RALPHX_AUTOMATIONS_PLAN_MAX_REVISION_ROUNDS"
+    );
+    if let Some(model) = lookup("RALPHX_AUTOMATIONS_PLAN_JUDGE_MODEL_CLAUDE")
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        cfg.plan_judge_model.insert(AgentHarnessKind::Claude, model);
+    }
+    if let Some(model) = lookup("RALPHX_AUTOMATIONS_PLAN_JUDGE_MODEL_CODEX")
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        cfg.plan_judge_model.insert(AgentHarnessKind::Codex, model);
+    }
 }
 
 pub(crate) fn apply_env_overrides_with_lookup(
@@ -587,6 +955,20 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
             }
         };
     }
+    if let Some(value) = lookup("RALPHX_DB_AUTO_COMPACT_ENABLED") {
+        if let Ok(enabled) = value.parse::<bool>() {
+            cfg.database_maintenance.db_auto_compact_enabled = enabled;
+        }
+    }
+    env_u64!(
+        cfg.database_maintenance.db_auto_compact_max_db_bytes,
+        "RALPHX_DB_AUTO_COMPACT_MAX_DB_BYTES"
+    );
+    env_u64!(
+        cfg.database_maintenance
+            .db_auto_compact_min_freelist_percent,
+        "RALPHX_DB_AUTO_COMPACT_MIN_FREELIST_PERCENT"
+    );
 
     // Stream timeouts
     env_u64!(
@@ -614,12 +996,8 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
         "RALPHX_STREAM_DEFAULT_PARSE_STALL_SECS"
     );
     env_u64!(
-        cfg.stream.team_line_read_secs,
-        "RALPHX_STREAM_TEAM_LINE_READ_SECS"
-    );
-    env_u64!(
-        cfg.stream.team_parse_stall_secs,
-        "RALPHX_STREAM_TEAM_PARSE_STALL_SECS"
+        cfg.stream.streaming_persistence_debounce_ms,
+        "RALPHX_STREAM_STREAMING_PERSISTENCE_DEBOUNCE_MS"
     );
     env_u64!(
         cfg.stream.max_wall_clock_secs,
@@ -630,8 +1008,49 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
         "RALPHX_STREAM_COMPLETION_GRACE_SECS"
     );
     env_u64!(
+        cfg.stream.launch_reservation_lease_secs,
+        "RALPHX_STREAM_LAUNCH_RESERVATION_LEASE_SECS"
+    );
+    env_u64!(
         cfg.stream.execution_attempt_start_tolerance_secs,
         "RALPHX_STREAM_EXECUTION_ATTEMPT_START_TOLERANCE_SECS"
+    );
+    env_u64!(
+        cfg.stream.desktop_notification_coalesce_window_secs,
+        "RALPHX_STREAM_DESKTOP_NOTIFICATION_COALESCE_WINDOW_SECS"
+    );
+    env_u64!(
+        cfg.stream.notification_retention_read_days,
+        "RALPHX_STREAM_NOTIFICATION_RETENTION_READ_DAYS"
+    );
+    env_u64!(
+        cfg.stream.notification_retention_max_rows,
+        "RALPHX_STREAM_NOTIFICATION_RETENTION_MAX_ROWS"
+    );
+    if let Some(value) = lookup("RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_ENABLED") {
+        if let Ok(enabled) = value.parse::<bool>() {
+            cfg.stream.chat_payload_retention_enabled = enabled;
+        }
+    }
+    env_u64!(
+        cfg.stream.chat_payload_retention_days,
+        "RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_DAYS"
+    );
+    env_u64!(
+        cfg.stream.chat_payload_retention_archived_days,
+        "RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_ARCHIVED_DAYS"
+    );
+    env_u64!(
+        cfg.stream.chat_payload_retention_batch_rows,
+        "RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_BATCH_ROWS"
+    );
+    env_u64!(
+        cfg.stream.db_lock_wait_warn_ms,
+        "RALPHX_STREAM_DB_LOCK_WAIT_WARN_MS"
+    );
+    env_u64!(
+        cfg.stream.db_lock_hold_warn_ms,
+        "RALPHX_STREAM_DB_LOCK_HOLD_WARN_MS"
     );
 
     // Reconciliation
@@ -804,10 +1223,18 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
 
     // Git
     env_u64!(cfg.git.cmd_timeout_secs, "RALPHX_GIT_CMD_TIMEOUT_SECS");
+    env_u64!(
+        cfg.git.startup_auth_preflight_timeout_secs,
+        "RALPHX_GIT_STARTUP_AUTH_PREFLIGHT_TIMEOUT_SECS"
+    );
     env_u64!(cfg.git.max_retries, "RALPHX_GIT_MAX_RETRIES");
     env_u64!(
         cfg.git.index_lock_stale_secs,
         "RALPHX_GIT_INDEX_LOCK_STALE_SECS"
+    );
+    env_u64!(
+        cfg.git.provider_probe_cache_ttl_secs,
+        "RALPHX_GIT_PROVIDER_PROBE_CACHE_TTL_SECS"
     );
     env_u64!(
         cfg.git.workspace_freshness_cache_ttl_ms,
@@ -830,12 +1257,49 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
         "RALPHX_GIT_WORKSPACE_PR_ANNOTATIONS_CHECK_RUN_FETCH_LIMIT"
     );
     env_u64!(
+        cfg.git.agent_runtime_context_budget_ms,
+        "RALPHX_GIT_AGENT_RUNTIME_CONTEXT_BUDGET_MS"
+    );
+    env_u64!(
+        cfg.git.agent_runtime_branch_status_refresh_secs,
+        "RALPHX_GIT_AGENT_RUNTIME_BRANCH_STATUS_REFRESH_SECS"
+    );
+    env_u64!(
+        cfg.git.agent_runtime_branch_status_stale_secs,
+        "RALPHX_GIT_AGENT_RUNTIME_BRANCH_STATUS_STALE_SECS"
+    );
+    env_u64!(
         cfg.git.agent_workspace_pr_reconciliation_cache_ttl_ms,
         "RALPHX_GIT_AGENT_WORKSPACE_PR_RECONCILIATION_CACHE_TTL_MS"
     );
     env_u64!(
+        cfg.git.agent_workspace_publish_lease_stale_secs,
+        "RALPHX_GIT_AGENT_WORKSPACE_PUBLISH_LEASE_STALE_SECS"
+    );
+    env_u64!(
+        cfg.git
+            .agent_workspace_publish_lease_heartbeat_interval_secs,
+        "RALPHX_GIT_AGENT_WORKSPACE_PUBLISH_LEASE_HEARTBEAT_INTERVAL_SECS"
+    );
+    env_u64!(
+        cfg.git.agent_workspace_publish_recovery_interval_secs,
+        "RALPHX_GIT_AGENT_WORKSPACE_PUBLISH_RECOVERY_INTERVAL_SECS"
+    );
+    env_u64!(
+        cfg.git.terminal_pr_local_cleanup_interval_secs,
+        "RALPHX_GIT_TERMINAL_PR_LOCAL_CLEANUP_INTERVAL_SECS"
+    );
+    env_u64!(
+        cfg.git.terminal_pr_local_cleanup_retry_secs,
+        "RALPHX_GIT_TERMINAL_PR_LOCAL_CLEANUP_RETRY_SECS"
+    );
+    env_u64!(
         cfg.git.orphan_worktree_cleanup_marker_retry_secs,
         "RALPHX_GIT_ORPHAN_WORKTREE_CLEANUP_MARKER_RETRY_SECS"
+    );
+    env_u64!(
+        cfg.git.orphan_worktree_cleanup_interval_secs,
+        "RALPHX_GIT_ORPHAN_WORKTREE_CLEANUP_INTERVAL_SECS"
     );
     env_u64!(
         cfg.git.agent_kill_settle_secs,
@@ -926,6 +1390,10 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
         cfg.limits.max_resume_attempts,
         "RALPHX_LIMITS_MAX_RESUME_ATTEMPTS"
     );
+    env_u64!(
+        cfg.limits.repair_fingerprint_budget_minutes,
+        "RALPHX_LIMITS_REPAIR_FINGERPRINT_BUDGET_MINUTES"
+    );
 
     // Verification
     env_u64!(
@@ -970,8 +1438,16 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
         cfg.external_mcp.host = v;
     }
     env_u64!(
+        cfg.external_mcp.startup_timeout_secs,
+        "RALPHX_EXTERNAL_MCP_STARTUP_TIMEOUT_SECS"
+    );
+    env_u64!(
         cfg.external_mcp.human_wait_timeout_secs,
         "RALPHX_EXTERNAL_MCP_HUMAN_WAIT_TIMEOUT_SECS"
+    );
+    env_u64!(
+        cfg.external_mcp.shutdown_grace_ms,
+        "RALPHX_EXTERNAL_MCP_SHUTDOWN_GRACE_MS"
     );
     if let Some(v) = lookup("RALPHX_NODE_PATH") {
         cfg.external_mcp.node_path = Some(v);
@@ -982,6 +1458,29 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
              The session gate was removed; sessions are always created. Remove this env var."
         );
     }
+
+    // Delegation waiting (bounded delegate_wait + park/wake)
+    env_u64!(
+        cfg.delegation.wait_block_secs,
+        "RALPHX_DELEGATION_WAIT_BLOCK_SECS"
+    );
+    env_u64!(
+        cfg.delegation.wait_block_max_secs,
+        "RALPHX_DELEGATION_WAIT_BLOCK_MAX_SECS"
+    );
+    env_u64!(
+        cfg.delegation.park_max_secs,
+        "RALPHX_DELEGATION_PARK_MAX_SECS"
+    );
+    if let Some(v) = lookup("RALPHX_DELEGATION_PARK_WAKE_RETRY_MAX") {
+        if let Ok(n) = v.parse::<u32>() {
+            cfg.delegation.park_wake_retry_max = n;
+        }
+    }
+    env_u64!(
+        cfg.delegation.park_wake_retry_backoff_secs,
+        "RALPHX_DELEGATION_PARK_WAKE_RETRY_BACKOFF_SECS"
+    );
 
     // Ideation
     if let Some(v) = lookup("RALPHX_IDEATION_ACTIVITY_THRESHOLD_SECS") {
@@ -997,20 +1496,26 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
     if let Some(v) = lookup("RALPHX_UI_EXTENSIBILITY_PAGE") {
         cfg.ui_feature_flags.extensibility_page = matches!(v.to_lowercase().as_str(), "true" | "1");
     }
-    if let Some(v) = lookup("RALPHX_UI_IDEATION_PAGE") {
-        cfg.ui_feature_flags.ideation_page = matches!(v.to_lowercase().as_str(), "true" | "1");
-    }
-    if let Some(v) = lookup("RALPHX_UI_BATTLE_MODE") {
-        cfg.ui_feature_flags.battle_mode = matches!(v.to_lowercase().as_str(), "true" | "1");
-    }
-    if let Some(v) = lookup("RALPHX_UI_TEAM_MODE") {
-        cfg.ui_feature_flags.team_mode = matches!(v.to_lowercase().as_str(), "true" | "1");
+    if let Some(v) = lookup("RALPHX_UI_AUTOMATIONS_PAGE") {
+        cfg.ui_feature_flags.automations_page = matches!(v.to_lowercase().as_str(), "true" | "1");
     }
     if let Some(v) = lookup("RALPHX_UI_ATLASSIAN_OAUTH") {
         cfg.ui_feature_flags.atlassian_oauth = matches!(v.to_lowercase().as_str(), "true" | "1");
     }
     if let Some(v) = lookup("RALPHX_UI_TICKETING_DASHBOARD") {
         cfg.ui_feature_flags.ticketing_dashboard =
+            matches!(v.to_lowercase().as_str(), "true" | "1");
+    }
+    if let Some(v) = lookup("RALPHX_UI_AGENT_PERSONAS") {
+        cfg.ui_feature_flags.agent_personas = matches!(v.to_lowercase().as_str(), "true" | "1");
+    }
+    if let Some(v) = lookup("RALPHX_UI_PERSONA_SWITCH_FORCES_FRESH_PROVIDER_SESSION") {
+        cfg.ui_feature_flags
+            .persona_switch_forces_fresh_provider_session =
+            matches!(v.to_lowercase().as_str(), "true" | "1");
+    }
+    if let Some(v) = lookup("RALPHX_UI_STANDALONE_CONVERSATIONS") {
+        cfg.ui_feature_flags.standalone_conversations =
             matches!(v.to_lowercase().as_str(), "true" | "1");
     }
 }
@@ -1119,6 +1624,9 @@ pub fn validate_external_mcp_config(cfg: &ExternalMcpConfig) -> Result<(), Strin
     }
     if cfg.human_wait_timeout_secs == 0 {
         return Err("external_mcp.human_wait_timeout_secs must be greater than 0".to_string());
+    }
+    if cfg.startup_timeout_secs == 0 {
+        return Err("external_mcp.startup_timeout_secs must be greater than 0".to_string());
     }
     if cfg.enabled {
         let is_local = cfg.host == "localhost" || cfg.host == "127.0.0.1";

@@ -2,23 +2,30 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
+use chrono::Utc;
 use futures::{stream, StreamExt};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Runtime};
 
+use crate::application::NotificationService;
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceStatus, PlanBranch, PlanBranchStatus,
+    AgentConversationWorkspace, AgentConversationWorkspaceStatus, NewNotification,
+    NotificationCategory, NotificationSeverity, NotificationTarget, PlanBranch, PlanBranchStatus,
     Project, ProjectId,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AppStateRepository, PlanBranchRepository,
     ProjectRepository,
 };
+use crate::domain::services::github_service::{
+    GithubConnectionDiagnostic, GithubConnectionState, GithubConnectionStatus,
+};
+use crate::infrastructure::agents::claude::git_runtime_config;
 use crate::infrastructure::git_auth::{
-    check_gh_auth_token_available, git_remote_url_kind_label, inspect_origin_auth_config,
-    suggested_github_ssh_origin, GitRemoteAuthConfig,
+    git_remote_url_kind_label, inspect_origin_auth_config_with_timeout,
+    probe_github_connection_status_with_timeout, suggested_github_ssh_origin, GitRemoteAuthConfig,
 };
 
 pub(crate) const STARTUP_GIT_AUTH_PREFLIGHT_EVENT: &str = "git-auth:startup_preflight";
@@ -66,6 +73,7 @@ pub(crate) struct StartupGitAuthIssue {
     pub push_kind: Option<String>,
     pub mixed_auth_modes: bool,
     pub gh_authenticated: bool,
+    pub gh_state: GithubConnectionState,
     pub issue_kind: String,
     pub can_switch_to_ssh: bool,
     pub suggested_ssh_url: Option<String>,
@@ -76,9 +84,17 @@ pub(crate) struct StartupGitAuthIssue {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StartupGitAuthPreflightSummary {
     pub issues: Vec<StartupGitAuthIssue>,
+    pub failure_code: Option<String>,
 }
 
 impl StartupGitAuthPreflightSummary {
+    fn failed(failure_code: &'static str) -> Self {
+        Self {
+            issues: Vec::new(),
+            failure_code: Some(failure_code.to_string()),
+        }
+    }
+
     pub(crate) fn blocked_project_ids(&self) -> HashSet<ProjectId> {
         self.issues
             .iter()
@@ -87,36 +103,46 @@ impl StartupGitAuthPreflightSummary {
     }
 
     pub(crate) fn active_project_blocked(&self) -> bool {
-        self.issues.iter().any(|issue| issue.active_project)
+        self.failure_code.is_some() || self.issues.iter().any(|issue| issue.active_project)
     }
 
     pub(crate) fn has_blocked_projects(&self) -> bool {
-        !self.issues.is_empty()
+        self.failure_code.is_some() || !self.issues.is_empty()
     }
 }
 
-pub(crate) async fn run_startup_git_auth_preflight<R: Runtime>(
+pub(crate) async fn run_startup_git_auth_preflight_with_notifications<R: Runtime>(
     project_repo: Arc<dyn ProjectRepository>,
     app_state_repo: Arc<dyn AppStateRepository>,
     plan_branch_repo: Option<Arc<dyn PlanBranchRepository>>,
     workspace_repo: Option<Arc<dyn AgentConversationWorkspaceRepository>>,
     app_handle: &AppHandle<R>,
+    notification_service: Option<Arc<NotificationService>>,
 ) -> StartupGitAuthPreflightSummary {
     let started_at = Instant::now();
-    let active_project_id = app_state_repo
-        .get()
-        .await
-        .ok()
-        .and_then(|settings| settings.active_project_id);
+    let probe_timeout =
+        Duration::from_secs(git_runtime_config().startup_auth_preflight_timeout_secs);
+    let active_project_id = match app_state_repo.get().await {
+        Ok(settings) => settings.active_project_id,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                failure_code = "startup_app_state_read_failed",
+                "Startup Git auth preflight failed closed while loading active project"
+            );
+            return StartupGitAuthPreflightSummary::failed("startup_app_state_read_failed");
+        }
+    };
 
     let projects = match project_repo.get_all().await {
         Ok(projects) => projects,
         Err(error) => {
             tracing::warn!(
                 error = %error,
+                failure_code = "startup_project_list_read_failed",
                 "Startup Git auth preflight: failed to load projects"
             );
-            return StartupGitAuthPreflightSummary::default();
+            return StartupGitAuthPreflightSummary::failed("startup_project_list_read_failed");
         }
     };
 
@@ -163,9 +189,16 @@ pub(crate) async fn run_startup_git_auth_preflight<R: Runtime>(
     let inspected = stream::iter(candidates)
         .map(|(project, active_project)| async move {
             let project_started_at = Instant::now();
-            let config_result = inspect_origin_auth_config(Path::new(&project.working_directory))
-                .await
-                .map_err(|error| error.to_string());
+            let config_result = tokio::time::timeout(
+                probe_timeout,
+                inspect_origin_auth_config_with_timeout(
+                    Path::new(&project.working_directory),
+                    probe_timeout,
+                ),
+            )
+            .await
+            .map_err(|_| "startup Git origin inspection timed out".to_string())
+            .and_then(|result| result.map_err(|error| error.to_string()));
             let project_elapsed_ms = project_started_at.elapsed().as_millis();
             (project, active_project, config_result, project_elapsed_ms)
         })
@@ -177,15 +210,22 @@ pub(crate) async fn run_startup_git_auth_preflight<R: Runtime>(
         .iter()
         .any(|(project, _, config_result, _)| project_needs_gh_auth_check(project, config_result));
     let gh_started_at = Instant::now();
-    let gh_authenticated = if gh_auth_required {
-        check_gh_auth_token_available().await
+    let gh_status = if gh_auth_required {
+        tokio::time::timeout(
+            probe_timeout,
+            probe_github_connection_status_with_timeout(probe_timeout),
+        )
+        .await
+        .unwrap_or_else(|_| {
+            GithubConnectionStatus::provider_unavailable(GithubConnectionDiagnostic::Timeout)
+        })
     } else {
-        false
+        GithubConnectionStatus::unauthenticated()
     };
     tracing::info!(
-        gh_authenticated,
+        gh_state = ?gh_status.state,
         auth_required = gh_auth_required,
-        method = if gh_auth_required { "token" } else { "skipped" },
+        method = if gh_auth_required { "typed_probe" } else { "skipped" },
         elapsed_ms = gh_started_at.elapsed().as_millis(),
         "Startup Git auth preflight: GitHub CLI auth check completed"
     );
@@ -196,7 +236,7 @@ pub(crate) async fn run_startup_git_auth_preflight<R: Runtime>(
         let issue = evaluate_project_git_auth_issue(
             &project,
             active_project,
-            gh_authenticated,
+            gh_status.state,
             config_result,
         );
         if let Some(issue) = issue {
@@ -223,7 +263,10 @@ pub(crate) async fn run_startup_git_auth_preflight<R: Runtime>(
         }
     }
 
-    let summary = StartupGitAuthPreflightSummary { issues };
+    let summary = StartupGitAuthPreflightSummary {
+        issues,
+        failure_code: None,
+    };
     tracing::info!(
         projects_seen,
         projects_considered,
@@ -233,8 +276,34 @@ pub(crate) async fn run_startup_git_auth_preflight<R: Runtime>(
         elapsed_ms = started_at.elapsed().as_millis(),
         "Startup Git auth preflight completed"
     );
-    if !summary.issues.is_empty() {
+    if summary.has_blocked_projects() {
         let _ = app_handle.emit(STARTUP_GIT_AUTH_PREFLIGHT_EVENT, &summary);
+        if let Some(notification_service) = notification_service {
+            let body = if summary.failure_code.is_some() {
+                "Git recovery was deferred because startup state could not be verified".to_string()
+            } else {
+                format!(
+                    "{} project{} blocked by Git or GitHub authentication",
+                    summary.issues.len(),
+                    if summary.issues.len() == 1 {
+                        " is"
+                    } else {
+                        "s are"
+                    }
+                )
+            };
+            notification_service
+                .record(NewNotification {
+                    project_id: None,
+                    category: NotificationCategory::GitAuthPreflight,
+                    severity: NotificationSeverity::Warning,
+                    title: "Git authentication needs attention".to_string(),
+                    body: Some(body),
+                    target: NotificationTarget::none(),
+                    dedupe_key: Some(format!("git-auth-preflight:{}", Utc::now().to_rfc3339())),
+                })
+                .await;
+        }
     }
 
     summary
@@ -320,9 +389,10 @@ fn project_needs_gh_auth_check(
 pub(crate) fn evaluate_project_git_auth_issue(
     project: &Project,
     active_project: bool,
-    gh_authenticated: bool,
+    gh_state: GithubConnectionState,
     config_result: Result<GitRemoteAuthConfig, String>,
 ) -> Option<StartupGitAuthIssue> {
+    let gh_authenticated = gh_state == GithubConnectionState::Authenticated;
     let mut reasons = Vec::new();
     let mut fetch_kind = None;
     let mut push_kind = None;
@@ -349,10 +419,8 @@ pub(crate) fn evaluate_project_git_auth_issue(
                 reasons.push("origin fetch and push use different auth modes".to_string());
             } else {
                 if project.github_pr_enabled && !gh_authenticated {
-                    issue_kind = "auth_blocked".to_string();
-                    reasons.push(
-                        "GitHub PR mode is enabled but GitHub CLI is not authenticated".to_string(),
-                    );
+                    issue_kind = github_connection_issue_kind(gh_state).to_string();
+                    reasons.push(github_connection_reason(gh_state, "GitHub PR mode"));
                 }
 
                 let has_github_https_remote = config.has_github_https_remote();
@@ -364,12 +432,15 @@ pub(crate) fn evaluate_project_git_auth_issue(
                     );
                 }
 
-                if has_github_https_remote && !gh_authenticated {
-                    issue_kind = "auth_blocked".to_string();
-                    reasons.push(
-                        "GitHub HTTPS origin needs GitHub CLI authentication for background git access"
-                            .to_string(),
-                    );
+                if has_github_https_remote
+                    && config.github_https_credential_helper_configured
+                    && !gh_authenticated
+                {
+                    issue_kind = github_connection_issue_kind(gh_state).to_string();
+                    reasons.push(github_connection_reason(
+                        gh_state,
+                        "GitHub HTTPS background access",
+                    ));
                 }
             }
         }
@@ -392,6 +463,7 @@ pub(crate) fn evaluate_project_git_auth_issue(
         push_kind,
         mixed_auth_modes,
         gh_authenticated,
+        gh_state,
         issue_kind,
         can_switch_to_ssh: suggested_ssh_url.is_some(),
         suggested_ssh_url,
@@ -399,387 +471,46 @@ pub(crate) fn evaluate_project_git_auth_issue(
     })
 }
 
+fn github_connection_issue_kind(state: GithubConnectionState) -> &'static str {
+    match state {
+        GithubConnectionState::Authenticated => "auth_blocked",
+        GithubConnectionState::Unauthenticated | GithubConnectionState::CredentialRejected => {
+            "auth_blocked"
+        }
+        GithubConnectionState::ProviderUnavailable | GithubConnectionState::ProbeFailed => {
+            "github_unavailable"
+        }
+        GithubConnectionState::CliUnavailable => "gh_cli_unavailable",
+    }
+}
+
+fn github_connection_reason(state: GithubConnectionState, context: &str) -> String {
+    match state {
+        GithubConnectionState::Authenticated => {
+            format!("{context} has an unexpected authentication block")
+        }
+        GithubConnectionState::Unauthenticated => {
+            format!("{context} needs GitHub CLI authentication")
+        }
+        GithubConnectionState::CredentialRejected => {
+            format!("{context} needs the rejected GitHub CLI credential replaced")
+        }
+        GithubConnectionState::ProviderUnavailable => {
+            format!("{context} is deferred while GitHub is temporarily unavailable")
+        }
+        GithubConnectionState::CliUnavailable => {
+            format!("{context} needs an available GitHub CLI")
+        }
+        GithubConnectionState::ProbeFailed => {
+            format!("{context} is deferred because GitHub access could not be verified")
+        }
+    }
+}
+
 fn has_github_https_remote(config: &GitRemoteAuthConfig) -> bool {
     config.has_github_https_remote()
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn project(github_pr_enabled: bool) -> Project {
-        let mut project = Project::new("RalphX".to_string(), "/repo".to_string());
-        project.id = ProjectId::from_string("project-1".to_string());
-        project.github_pr_enabled = github_pr_enabled;
-        project
-    }
-
-    #[test]
-    fn mixed_https_fetch_ssh_push_blocks_startup_git_work() {
-        let issue = evaluate_project_git_auth_issue(
-            &project(true),
-            true,
-            true,
-            Ok(GitRemoteAuthConfig {
-                fetch_url: Some("https://github.com/owner/repo.git".to_string()),
-                push_url: Some("git@github.com:owner/repo.git".to_string()),
-                github_https_credential_helper_configured: false,
-            }),
-        )
-        .expect("mixed auth modes should block");
-
-        assert!(issue.active_project);
-        assert!(issue.mixed_auth_modes);
-        assert_eq!(issue.fetch_kind.as_deref(), Some("HTTPS"));
-        assert_eq!(issue.push_kind.as_deref(), Some("SSH"));
-        assert!(issue.can_switch_to_ssh);
-        assert!(issue
-            .reasons
-            .iter()
-            .any(|reason| reason.contains("different auth modes")));
-    }
-
-    #[test]
-    fn github_pr_mode_blocks_when_gh_is_not_authenticated() {
-        let issue = evaluate_project_git_auth_issue(
-            &project(true),
-            false,
-            false,
-            Ok(GitRemoteAuthConfig {
-                fetch_url: Some("git@github.com:owner/repo.git".to_string()),
-                push_url: Some("git@github.com:owner/repo.git".to_string()),
-                github_https_credential_helper_configured: false,
-            }),
-        )
-        .expect("gh auth should be required for PR mode");
-
-        assert!(issue.github_pr_enabled);
-        assert!(issue
-            .reasons
-            .iter()
-            .any(|reason| reason.contains("GitHub CLI is not authenticated")));
-        assert_eq!(issue.issue_kind, "auth_blocked");
-    }
-
-    #[test]
-    fn github_https_origin_blocks_background_git_when_gh_is_missing() {
-        let issue = evaluate_project_git_auth_issue(
-            &project(false),
-            true,
-            false,
-            Ok(GitRemoteAuthConfig {
-                fetch_url: Some("https://github.com/owner/repo.git".to_string()),
-                push_url: Some("https://github.com/owner/repo.git".to_string()),
-                github_https_credential_helper_configured: false,
-            }),
-        )
-        .expect("GitHub HTTPS origin should require non-interactive credentials");
-
-        assert_eq!(issue.issue_kind, "auth_blocked");
-        assert_eq!(issue.fetch_kind.as_deref(), Some("HTTPS"));
-        assert_eq!(issue.push_kind.as_deref(), Some("HTTPS"));
-        assert!(issue.can_switch_to_ssh);
-        assert_eq!(
-            issue.suggested_ssh_url.as_deref(),
-            Some("git@github.com:owner/repo.git")
-        );
-        assert!(issue
-            .reasons
-            .iter()
-            .any(|reason| reason.contains("non-interactive credential")));
-    }
-
-    #[test]
-    fn github_https_origin_blocks_when_helper_missing_even_if_gh_is_authenticated() {
-        let issue = evaluate_project_git_auth_issue(
-            &project(false),
-            true,
-            true,
-            Ok(GitRemoteAuthConfig {
-                fetch_url: Some("https://github.com/owner/repo.git".to_string()),
-                push_url: Some("https://github.com/owner/repo.git".to_string()),
-                github_https_credential_helper_configured: false,
-            }),
-        )
-        .expect("GitHub HTTPS origin should require a configured credential helper");
-
-        assert_eq!(issue.issue_kind, "auth_blocked");
-        assert!(issue
-            .reasons
-            .iter()
-            .any(|reason| reason.contains("credential helper")));
-    }
-
-    #[test]
-    fn github_https_origin_with_helper_and_gh_auth_does_not_block() {
-        let issue = evaluate_project_git_auth_issue(
-            &project(false),
-            true,
-            true,
-            Ok(GitRemoteAuthConfig {
-                fetch_url: Some("https://github.com/owner/repo.git".to_string()),
-                push_url: Some("https://github.com/owner/repo.git".to_string()),
-                github_https_credential_helper_configured: true,
-            }),
-        );
-
-        assert!(issue.is_none());
-    }
-
-    #[test]
-    fn git_config_inspection_error_reports_repo_unavailable() {
-        let issue = evaluate_project_git_auth_issue(
-            &project(false),
-            false,
-            true,
-            Err("permission denied".to_string()),
-        )
-        .expect("repo inspection failures should be visible");
-
-        assert_eq!(issue.issue_kind, "repo_unavailable");
-        assert_eq!(issue.fetch_kind, None);
-        assert_eq!(issue.push_kind, None);
-        assert!(issue
-            .reasons
-            .iter()
-            .any(|reason| reason.contains("could not inspect origin remote")));
-    }
-
-    #[test]
-    fn ssh_project_without_pr_mode_does_not_block_when_gh_is_missing() {
-        let issue = evaluate_project_git_auth_issue(
-            &project(false),
-            true,
-            false,
-            Ok(GitRemoteAuthConfig {
-                fetch_url: Some("git@github.com:owner/repo.git".to_string()),
-                push_url: Some("git@github.com:owner/repo.git".to_string()),
-                github_https_credential_helper_configured: false,
-            }),
-        );
-
-        assert!(issue.is_none());
-    }
-
-    #[test]
-    fn missing_origin_is_repo_config_issue_not_auth_issue() {
-        let issue = evaluate_project_git_auth_issue(
-            &project(true),
-            false,
-            false,
-            Ok(GitRemoteAuthConfig {
-                fetch_url: None,
-                push_url: None,
-                github_https_credential_helper_configured: false,
-            }),
-        )
-        .expect("missing origin should be reported");
-
-        assert_eq!(issue.issue_kind, "repo_remote_missing");
-        assert_eq!(issue.reasons, vec!["origin remote is not configured"]);
-    }
-
-    #[test]
-    fn terminal_only_records_do_not_force_preflight_scope() {
-        let active_project = project(true);
-        let mut plan_branch = PlanBranch::new(
-            crate::domain::entities::ArtifactId::from_string("artifact-1".to_string()),
-            crate::domain::entities::IdeationSessionId::from_string("session-1".to_string()),
-            active_project.id.clone(),
-            "ralphx/demo/plan-old".to_string(),
-            "main".to_string(),
-        );
-        plan_branch.status = PlanBranchStatus::Merged;
-
-        let mut workspace = AgentConversationWorkspace::new(
-            crate::domain::entities::ChatConversationId::from_string("conversation-1".to_string()),
-            active_project.id.clone(),
-            crate::domain::entities::AgentConversationWorkspaceMode::Edit,
-            crate::domain::entities::IdeationAnalysisBaseRefKind::ProjectDefault,
-            "main".to_string(),
-            None,
-            None,
-            "ralphx/demo/agent-old".to_string(),
-            "/tmp/ralphx-demo-agent-old".to_string(),
-        );
-        workspace.publication_pr_number = Some(101);
-        workspace.publication_pr_status = Some("merged".to_string());
-
-        assert!(!plan_branch_has_startup_git_work(&plan_branch));
-        assert!(!workspace_has_startup_git_work(&workspace));
-        assert!(!should_preflight_project(&active_project, false, false));
-    }
-
-    #[tokio::test]
-    async fn startup_git_work_scope_detects_active_pr_and_workspace_records() {
-        let app_state = crate::application::AppState::new_test();
-        let active_project = project(true);
-
-        let mut plan_branch = PlanBranch::new(
-            crate::domain::entities::ArtifactId::from_string("artifact-active".to_string()),
-            crate::domain::entities::IdeationSessionId::from_string("session-active".to_string()),
-            active_project.id.clone(),
-            "ralphx/demo/plan-active".to_string(),
-            "main".to_string(),
-        );
-        plan_branch.status = PlanBranchStatus::Active;
-        plan_branch.pr_eligible = true;
-        plan_branch.merge_task_id = Some(crate::domain::entities::TaskId::from_string(
-            "merge-task-active".to_string(),
-        ));
-        app_state
-            .plan_branch_repo
-            .create(plan_branch)
-            .await
-            .expect("plan branch should persist");
-
-        assert!(
-            project_has_startup_git_work(
-                &active_project,
-                Some(&app_state.plan_branch_repo),
-                Some(&app_state.agent_conversation_workspace_repo),
-            )
-            .await
-        );
-
-        let mut workspace_project = project(false);
-        workspace_project.id = ProjectId::from_string("project-2".to_string());
-        let mut workspace = AgentConversationWorkspace::new(
-            crate::domain::entities::ChatConversationId::from_string(
-                "conversation-active-workspace".to_string(),
-            ),
-            workspace_project.id.clone(),
-            crate::domain::entities::AgentConversationWorkspaceMode::Edit,
-            crate::domain::entities::IdeationAnalysisBaseRefKind::ProjectDefault,
-            "main".to_string(),
-            None,
-            None,
-            "ralphx/demo/agent-active".to_string(),
-            "/tmp/ralphx-demo-agent-active".to_string(),
-        );
-        workspace.publication_pr_number = Some(88);
-        workspace.publication_pr_status = Some("open".to_string());
-        app_state
-            .agent_conversation_workspace_repo
-            .create_or_update(workspace)
-            .await
-            .expect("workspace should persist");
-
-        assert!(
-            project_has_startup_git_work(
-                &workspace_project,
-                Some(&app_state.plan_branch_repo),
-                Some(&app_state.agent_conversation_workspace_repo),
-            )
-            .await
-        );
-    }
-
-    #[test]
-    fn gh_auth_check_is_needed_only_for_pr_mode_or_github_https() {
-        assert!(project_needs_gh_auth_check(
-            &project(true),
-            &Ok(GitRemoteAuthConfig {
-                fetch_url: Some("git@github.com:owner/repo.git".to_string()),
-                push_url: Some("git@github.com:owner/repo.git".to_string()),
-                github_https_credential_helper_configured: false,
-            }),
-        ));
-        assert!(project_needs_gh_auth_check(
-            &project(false),
-            &Ok(GitRemoteAuthConfig {
-                fetch_url: Some("https://github.com/owner/repo.git".to_string()),
-                push_url: Some("https://github.com/owner/repo.git".to_string()),
-                github_https_credential_helper_configured: false,
-            }),
-        ));
-        assert!(!project_needs_gh_auth_check(
-            &project(false),
-            &Ok(GitRemoteAuthConfig {
-                fetch_url: Some("git@github.com:owner/repo.git".to_string()),
-                push_url: Some("git@github.com:owner/repo.git".to_string()),
-                github_https_credential_helper_configured: false,
-            }),
-        ));
-        assert!(!project_needs_gh_auth_check(
-            &project(true),
-            &Ok(GitRemoteAuthConfig {
-                fetch_url: None,
-                push_url: None,
-                github_https_credential_helper_configured: false,
-            }),
-        ));
-        assert!(!project_needs_gh_auth_check(
-            &project(true),
-            &Err("repo unavailable".to_string()),
-        ));
-    }
-
-    #[tokio::test]
-    async fn startup_git_auth_preflight_skips_projects_without_startup_git_work() {
-        let app_state = crate::application::AppState::new_test();
-        let app = crate::testing::create_mock_app();
-        let inactive_project = app_state
-            .project_repo
-            .create(project(false))
-            .await
-            .expect("project should persist");
-        assert!(!inactive_project.github_pr_enabled);
-
-        let summary = run_startup_git_auth_preflight(
-            Arc::clone(&app_state.project_repo),
-            Arc::clone(&app_state.app_state_repo),
-            Some(Arc::clone(&app_state.plan_branch_repo)),
-            Some(Arc::clone(&app_state.agent_conversation_workspace_repo)),
-            app.handle(),
-        )
-        .await;
-
-        assert!(summary.issues.is_empty());
-        assert!(summary.blocked_project_ids().is_empty());
-        assert!(!summary.active_project_blocked());
-        assert!(!summary.has_blocked_projects());
-    }
-
-    #[tokio::test]
-    async fn startup_git_auth_preflight_reports_active_project_missing_origin() {
-        let app_state = crate::application::AppState::new_test();
-        let app = crate::testing::create_mock_app();
-        let repo = tempfile::tempdir().expect("repo tempdir");
-        std::fs::create_dir(repo.path().join(".git")).expect("git dir should exist");
-        std::fs::write(
-            repo.path().join(".git").join("config"),
-            "[core]\n\trepositoryformatversion = 0\n",
-        )
-        .expect("git config should be written");
-        let mut active_project = project(false);
-        active_project.working_directory = repo.path().to_string_lossy().to_string();
-        let active_project = app_state
-            .project_repo
-            .create(active_project)
-            .await
-            .expect("project should persist");
-        app_state
-            .app_state_repo
-            .set_active_project(Some(&active_project.id))
-            .await
-            .expect("active project should persist");
-
-        let summary = run_startup_git_auth_preflight(
-            Arc::clone(&app_state.project_repo),
-            Arc::clone(&app_state.app_state_repo),
-            Some(Arc::clone(&app_state.plan_branch_repo)),
-            Some(Arc::clone(&app_state.agent_conversation_workspace_repo)),
-            app.handle(),
-        )
-        .await;
-
-        assert!(summary.active_project_blocked());
-        assert_eq!(summary.issues.len(), 1);
-        assert_eq!(summary.issues[0].issue_kind, "repo_remote_missing");
-        assert_eq!(
-            summary.issues[0].reasons,
-            vec!["origin remote is not configured"]
-        );
-    }
-}
+#[path = "startup_git_auth_preflight_tests.rs"]
+mod tests;

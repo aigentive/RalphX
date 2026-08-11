@@ -67,7 +67,7 @@ function boundNote(): AgentConversationGranolaNote {
     noteUrl: "https://granola.ai/notes/not_1234567890ABCD",
     title: "Planning sync",
     summaryMarkdown: "Discussed the plan",
-    transcript: [],
+    transcript: [{ speaker: "Alex", text: "Ship it", startMs: 10, endMs: 20 }],
     includeTranscript: true,
     lastRefreshedAt: "2026-06-20T13:00:00Z",
     refreshStatus: "loaded",
@@ -144,5 +144,19 @@ describe("AgentsGranolaNotePanel", () => {
     expect(
       within(markdown).getByRole("heading", { name: "Progress" }),
     ).toBeInTheDocument();
+  });
+
+  it("removes line selection while keeping bound Granola content selectable", async () => {
+    getNoteMock.mockResolvedValue(boundNote());
+
+    renderPanel();
+
+    const summary = await screen.findByText("Discussed the plan");
+    expect(
+      screen.queryByRole("button", { name: "Select Granola note lines" }),
+    ).not.toBeInTheDocument();
+    expect(
+      summary.closest("[data-artifact-selectable-region='true']"),
+    ).not.toBeNull();
   });
 });

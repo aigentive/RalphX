@@ -567,6 +567,15 @@ async fn provider_observations_report_missing_and_probe_errors() {
                 supports_mcp_subcommand: true,
                 supports_fast_mode_feature: false,
                 fast_mode_supported_models: Vec::new(),
+                supported_model_aliases: vec!["gpt-5.5".to_string()],
+                supported_efforts: vec![
+                    "low".to_string(),
+                    "medium".to_string(),
+                    "high".to_string(),
+                    "xhigh".to_string(),
+                ],
+                model_supported_efforts: std::collections::BTreeMap::new(),
+                ultra_supported_models: Vec::new(),
             },
         },
         false,
@@ -668,8 +677,13 @@ async fn active_runtime_detection_matches_interactive_process_metadata() {
             key.clone(),
             stdin,
             InteractiveProcessMetadata {
+                agent_run_id: None,
                 harness: Some(AgentHarnessKind::Codex),
                 provider_session_id: Some("thread-123".to_string()),
+                persona_id: None,
+                persona_content_hash: None,
+                agent_name: None,
+                agent_profile: None,
             },
         )
         .await;
@@ -798,6 +812,8 @@ async fn managed_codex_installer_runs_fake_installer_with_rx_owned_env() {
     let _path = EnvGuard::set_os("PATH", &fake_bin_dir);
     let _nvm_bin = EnvGuard::unset("NVM_BIN");
     let _volta_home = EnvGuard::unset("VOLTA_HOME");
+    let _login_shell_env =
+        EnvGuard::set_os(crate::infrastructure::login_shell_env::DISABLE_ENV_VAR, "1");
 
     let output = run_managed_codex_installer()
         .await
@@ -831,6 +847,8 @@ async fn managed_claude_installer_runs_fake_native_installer() {
     let _path = EnvGuard::set_os("PATH", &fake_bin_dir);
     let _nvm_bin = EnvGuard::unset("NVM_BIN");
     let _volta_home = EnvGuard::unset("VOLTA_HOME");
+    let _login_shell_env =
+        EnvGuard::set_os(crate::infrastructure::login_shell_env::DISABLE_ENV_VAR, "1");
 
     let output = run_managed_claude_installer()
         .await

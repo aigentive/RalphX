@@ -69,11 +69,8 @@ async fn test_os_thread_timeout_fires_on_slow_future() {
 async fn test_os_thread_timeout_fires_on_pending_future() {
     // std::future::pending() never completes — simulates a genuinely hung operation.
     // The OS thread fires after 100ms real time, regardless of the future's state.
-    let result = os_thread_timeout(
-        Duration::from_millis(100),
-        std::future::pending::<&str>(),
-    )
-    .await;
+    let result =
+        os_thread_timeout(Duration::from_millis(100), std::future::pending::<&str>()).await;
 
     assert!(
         result.is_err(),
@@ -269,7 +266,9 @@ async fn test_delete_feature_branch_force_deletes_squash_merged_branch() {
 
     // Verify branch is actually gone
     assert!(
-        !GitService::branch_exists(repo, "feature/test").await.unwrap_or(true),
+        !GitService::branch_exists(repo, "feature/test")
+            .await
+            .unwrap_or(true),
         "Branch should be deleted after delete_feature_branch"
     );
 }

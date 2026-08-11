@@ -10,6 +10,7 @@ import type { Task, InternalStatus } from "@/types/task";
 import type { Project } from "@/types/project";
 import type { TaskStep } from "@/types/task-step";
 import type { ChatConversation } from "@/types/chat-conversation";
+import type { NotificationCategory, NotificationTarget } from "@/types/notifications";
 import { AGENT_WORKER } from "@/constants/agents";
 import {
   createMockTask,
@@ -26,9 +27,24 @@ export interface MockStore {
   tasks: Map<string, Task>;
   taskSteps: Map<string, TaskStep[]>;
   conversations: Map<string, ChatConversation>;
+  notifications: Map<string, MockNotification>;
   activePlans?: Map<string, string | null>; // projectId -> sessionId | null
   sessions?: Map<string, unknown>; // sessionId -> session data
   initialized: boolean;
+}
+
+/** Raw Tauri notification payload: camelCase fields with explicit serde nulls. */
+export interface MockNotification {
+  id: string;
+  createdAt: string;
+  projectId: string | null;
+  category: NotificationCategory;
+  severity: "action_required" | "warning" | "info";
+  title: string;
+  body: string | null;
+  target: NotificationTarget;
+  dedupeKey: string | null;
+  readAt: string | null;
 }
 
 const store: MockStore = {
@@ -36,6 +52,7 @@ const store: MockStore = {
   tasks: new Map(),
   taskSteps: new Map(),
   conversations: new Map(),
+  notifications: new Map(),
   initialized: false,
 };
 
@@ -51,6 +68,14 @@ function seedMockData(): void {
     id: "project-mock-1",
     name: "Demo Project",
     workingDirectory: "/demo/project",
+    baseBranch: "main",
+    worktreeParentDirectory: "/demo/worktrees",
+    githubPrEnabled: true,
+    repositoryCapability: {
+      kind: "github",
+      fetchUrl: "https://github.com/mock/demo-project.git",
+      pushUrl: "https://github.com/mock/demo-project.git",
+    },
   });
   store.projects.set(project.id, project);
 
@@ -62,7 +87,7 @@ function seedMockData(): void {
     { status: "blocked", title: "Blocked Task" },
     { status: "executing", title: "Executing Task" },
     { status: "pending_review", title: "Pending Review Task" },
-    { status: "review_passed", title: "Review Passed Task" },
+    { status: "approved", title: "Review Passed Task" },
     { status: "approved", title: "Approved Task" },
   ];
 
@@ -162,7 +187,7 @@ function seedMockData(): void {
     title: "Merge Incomplete Task",
     description: "A task whose merge failed with a git error",
     category: "plan_merge",
-    internalStatus: "merge_incomplete",
+    internalStatus: "merged",
     priority: 20,
     planArtifactId: "plan-mock-2",
     taskBranch: "ralphx/demo/task-abc123",
@@ -199,6 +224,18 @@ export function resetStore(): void {
   store.tasks.clear();
   store.taskSteps.clear();
   store.conversations.clear();
+  store.notifications.clear();
   store.initialized = false;
   seedMockData();
+}
+
+/** Replaces durable notification history for a visual or integration test. */
+export function seedMockNotifications(notifications: readonly MockNotification[]): void {
+  const store = getStore();
+  store.notifications.clear();
+  notifications.forEach((notification) => store.notifications.set(notification.id, notification));
+}
+
+export function clearMockNotifications(): void {
+  getStore().notifications.clear();
 }

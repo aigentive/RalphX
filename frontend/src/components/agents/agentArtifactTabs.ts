@@ -2,36 +2,32 @@ import type { AgentArtifactTab } from "@/stores/agentSessionStore";
 
 export type IdeationArtifactTab = Exclude<
   AgentArtifactTab,
-  "publish" | "jira" | "linear" | "granola"
+  "publish" | "jira" | "linear" | "clickup" | "granola" | "team"
 >;
 
 export interface IdeationArtifactAvailability {
   hasAttachedIdeationSession: boolean;
   hasPlanArtifact: boolean;
-  hasProposals: boolean;
+  canStartPlan: boolean;
   hasVerificationEvidence: boolean;
   hasExecutionTasks: boolean;
-  artifactMode: string | null | undefined;
 }
 
 export function getVisibleIdeationArtifactTabs({
   hasAttachedIdeationSession,
   hasPlanArtifact,
-  hasProposals,
-  hasVerificationEvidence,
+  canStartPlan,
+  hasVerificationEvidence: _hasVerificationEvidence,
   hasExecutionTasks,
-  artifactMode,
 }: IdeationArtifactAvailability): IdeationArtifactTab[] {
-  if (!hasAttachedIdeationSession || !hasPlanArtifact) {
-    return [];
+  if (!hasPlanArtifact) {
+    return canStartPlan ? ["plan"] : [];
   }
 
-  const canShowProposalTab = artifactMode === "plan" || artifactMode === "ideation";
+  const canShowDataDrivenTabs = hasAttachedIdeationSession;
 
   return [
     "plan",
-    ...(hasVerificationEvidence ? ["verification" as const] : []),
-    ...(hasProposals && canShowProposalTab ? ["proposal" as const] : []),
-    ...(hasExecutionTasks ? ["tasks" as const] : []),
+    ...(canShowDataDrivenTabs && hasExecutionTasks ? ["tasks" as const] : []),
   ];
 }

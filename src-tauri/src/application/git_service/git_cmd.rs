@@ -5,17 +5,23 @@
 //! - `kill_on_drop(true)` — process is SIGKILL'd when the future is dropped (e.g. on timeout).
 //! - A configurable timeout (from `git_runtime_config()`) to prevent hung processes.
 //! - Configurable retry attempts with backoff for known transient errors.
+use crate::domain::entities::MergeFailureSource;
+use crate::domain::entities::{GitMutationKind, GitTargetIdentity, GitTargetLeaseOwner};
+use crate::domain::repositories::{
+    BeginGitMutation, BranchUpdateRepository, CompleteGitMutation, GitAuthorityCasOutcome,
+};
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::git_runtime_config;
-use crate::infrastructure::git_auth::apply_git_subprocess_env;
+use crate::infrastructure::git_auth::{apply_git_subprocess_env, is_git_auth_failure_text};
 use crate::infrastructure::tool_paths::resolve_git_cli_path;
 use std::panic::Location;
 use std::path::Path;
 use std::process::{Output, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::process::Command;
-use tokio::sync::{Semaphore, SemaphorePermit};
+use tokio::sync::{Semaphore, SemaphorePermit, TryAcquireError};
 use tokio::time::timeout;
 
 const SLOW_GIT_COMMAND_MS: u64 = 500;
@@ -26,6 +32,8 @@ const GIT_ADMISSION_WAIT_LOG_MS: u128 = 50;
 static GIT_PROCESS_PERMITS: Semaphore = Semaphore::const_new(GIT_PROCESS_CONCURRENCY);
 static GIT_BACKGROUND_PERMITS: Semaphore = Semaphore::const_new(GIT_BACKGROUND_CONCURRENCY);
 static GIT_FOREGROUND_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+static GIT_COMMANDS_QUEUED: AtomicUsize = AtomicUsize::new(0);
+static GIT_COMMANDS_EXECUTING: AtomicUsize = AtomicUsize::new(0);
 
 tokio::task_local! {
     static GIT_COMMAND_LANE_OVERRIDE: GitCommandLane;
@@ -35,6 +43,51 @@ tokio::task_local! {
 pub(crate) enum GitCommandLane {
     Foreground,
     Background,
+}
+
+#[derive(Clone)]
+pub(crate) struct AuthorizedGitMutation {
+    repository: Arc<dyn BranchUpdateRepository>,
+    identity: GitTargetIdentity,
+    owner: GitTargetLeaseOwner,
+    fencing_epoch: u64,
+    claim_id: String,
+    kind: GitMutationKind,
+}
+
+impl AuthorizedGitMutation {
+    /// Materialize a non-serializable mutation guard from the current durable
+    /// lease. The subsequent begin-mutation CAS revalidates this snapshot at
+    /// the exact effect boundary.
+    pub(crate) async fn from_current_lease(
+        repository: Arc<dyn BranchUpdateRepository>,
+        identity: GitTargetIdentity,
+        owner: GitTargetLeaseOwner,
+        fencing_epoch: u64,
+        claim_id: String,
+        kind: GitMutationKind,
+    ) -> AppResult<Self> {
+        let lease = repository
+            .get_target_lease(&identity)
+            .await?
+            .ok_or_else(|| {
+                AppError::Validation("Git mutation target has no durable lease".to_string())
+            })?;
+        if lease.is_released() || lease.owner() != &owner || lease.fencing_epoch() != fencing_epoch
+        {
+            return Err(AppError::Validation(
+                "Git mutation target lease is stale or owned by another workflow".to_string(),
+            ));
+        }
+        Ok(Self {
+            repository,
+            identity,
+            owner,
+            fencing_epoch,
+            claim_id,
+            kind,
+        })
+    }
 }
 
 impl GitCommandLane {
@@ -54,7 +107,49 @@ struct GitAdmissionGuard {
 
 impl Drop for GitAdmissionGuard {
     fn drop(&mut self) {
+        GIT_COMMANDS_EXECUTING.fetch_sub(1, Ordering::SeqCst);
         if self.lane == GitCommandLane::Foreground {
+            GIT_FOREGROUND_IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+}
+
+struct GitAdmissionQueueGuard {
+    queued: bool,
+    foreground_registered: bool,
+}
+
+impl GitAdmissionQueueGuard {
+    fn new() -> Self {
+        GIT_COMMANDS_QUEUED.fetch_add(1, Ordering::SeqCst);
+        Self {
+            queued: true,
+            foreground_registered: false,
+        }
+    }
+
+    fn register_foreground(&mut self) {
+        GIT_FOREGROUND_IN_FLIGHT.fetch_add(1, Ordering::SeqCst);
+        self.foreground_registered = true;
+    }
+
+    fn admitted(&mut self) {
+        if self.queued {
+            GIT_COMMANDS_QUEUED.fetch_sub(1, Ordering::SeqCst);
+            GIT_COMMANDS_EXECUTING.fetch_add(1, Ordering::SeqCst);
+            self.queued = false;
+        }
+        // The admitted command guard now owns the foreground registration.
+        self.foreground_registered = false;
+    }
+}
+
+impl Drop for GitAdmissionQueueGuard {
+    fn drop(&mut self) {
+        if self.queued {
+            GIT_COMMANDS_QUEUED.fetch_sub(1, Ordering::SeqCst);
+        }
+        if self.foreground_registered {
             GIT_FOREGROUND_IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
         }
     }
@@ -73,13 +168,19 @@ pub(crate) const ENOENT_MARKER: &str = "working directory not found (enoent)";
 const ERR_INDEX_LOCK: &str = "index.lock";
 
 /// git cannot create a .lock file (e.g. for a ref or the index).
-const ERR_UNABLE_CREATE_LOCK: &str = "Unable to create";
+const ERR_UNABLE_CREATE_LOCK: &str = "unable to create";
 
 /// git cannot acquire a ref lock, usually due to concurrent ref updates.
 const ERR_CANNOT_LOCK_REF: &str = "cannot lock ref";
 
 /// git cannot update FETCH_HEAD due to concurrent fetch operations.
-const ERR_FETCH_HEAD: &str = "FETCH_HEAD";
+const ERR_FETCH_HEAD: &str = "fetch_head";
+
+/// git could not write repository state because disk space or quota was exhausted.
+const ERR_NO_SPACE_LEFT: &str = "no space left on device";
+const ERR_COULD_NOT_WRITE_INDEX: &str = "could not write new index file";
+const ERR_ENOSPC: &str = "enospc";
+const ERR_DISK_QUOTA: &str = "disk quota exceeded";
 
 /// git's shallow file was modified concurrently during a fetch/clone.
 const ERR_SHALLOW_FILE_CHANGED: &str = "shallow file has changed";
@@ -94,11 +195,77 @@ const TRANSIENT_PATTERNS: &[&str] = &[
     ERR_SHALLOW_FILE_CHANGED,
 ];
 
+const DISK_FULL_PATTERNS: &[&str] = &[
+    ERR_NO_SPACE_LEFT,
+    ERR_COULD_NOT_WRITE_INDEX,
+    ERR_ENOSPC,
+    ERR_DISK_QUOTA,
+];
+
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 /// Returns true if the given stderr output matches any known transient error pattern.
 fn is_transient_error(stderr: &str) -> bool {
-    TRANSIENT_PATTERNS.iter().any(|pat| stderr.contains(pat))
+    is_transient_git_stderr(stderr)
+}
+
+pub(crate) fn is_disk_full_git_stderr(stderr: &str) -> bool {
+    let normalized = stderr.to_lowercase();
+    DISK_FULL_PATTERNS
+        .iter()
+        .any(|pattern| normalized.contains(pattern))
+}
+
+/// Returns true when stderr is a retryable git failure. Deterministic classes
+/// are checked first so broad git substrings cannot mask auth or ENOSPC errors.
+pub(crate) fn is_transient_git_stderr(stderr: &str) -> bool {
+    let normalized = stderr.to_lowercase();
+    if is_disk_full_git_stderr(&normalized) || is_git_auth_failure_text(&normalized) {
+        return false;
+    }
+
+    TRANSIENT_PATTERNS
+        .iter()
+        .any(|pattern| normalized.contains(pattern))
+}
+
+pub(crate) fn classify_git_failure_text(text: &str) -> MergeFailureSource {
+    let normalized = text.to_lowercase();
+
+    if is_git_auth_failure_text(&normalized) {
+        return MergeFailureSource::AuthFailure;
+    }
+    if is_disk_full_git_stderr(&normalized) {
+        return MergeFailureSource::DiskFull;
+    }
+    if normalized.contains(ENOENT_MARKER) {
+        return MergeFailureSource::WorktreeMissing;
+    }
+    if normalized.contains(ERR_INDEX_LOCK)
+        || normalized.contains(".lock")
+        || normalized.contains(ERR_CANNOT_LOCK_REF)
+    {
+        return MergeFailureSource::LockContention;
+    }
+    if is_transient_git_stderr(&normalized) {
+        return MergeFailureSource::TransientGit;
+    }
+    if normalized.contains("database error:") || normalized.contains("infrastructure error:") {
+        return MergeFailureSource::DeterministicInfra;
+    }
+
+    MergeFailureSource::Unknown
+}
+
+pub(crate) fn classify_git_failure_source(error: &AppError) -> MergeFailureSource {
+    match error {
+        AppError::Database(_) | AppError::Infrastructure(_) => {
+            MergeFailureSource::DeterministicInfra
+        }
+        AppError::GitAuth(_) => MergeFailureSource::AuthFailure,
+        AppError::GitOperation(message) => classify_git_failure_text(message),
+        _ => classify_git_failure_text(&error.to_string()),
+    }
 }
 
 fn build_git_command(args: &[String], cwd: &Path, env: &[(String, String)]) -> Command {
@@ -108,7 +275,7 @@ fn build_git_command(args: &[String], cwd: &Path, env: &[(String, String)]) -> C
     for (key, val) in env {
         cmd.env(key, val);
     }
-    crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(cmd.as_std_mut());
+    crate::infrastructure::tool_paths::ensure_resolved_node_bin_in_path(cmd.as_std_mut());
     cmd
 }
 
@@ -220,6 +387,177 @@ pub(crate) fn run<'a>(
     cwd: &'a Path,
 ) -> impl std::future::Future<Output = AppResult<Output>> + 'a {
     run_in_lane(args, cwd, GitCommandLane::Foreground)
+}
+
+/// Run a mutating Git command under durable target authority.
+///
+/// The mutation claim is persisted before spawn, the child process group is
+/// bound immediately after spawn, and the claim is cleared only after the
+/// process group has exited (or has been terminated on timeout).
+pub(crate) async fn run_authorized_mutation(
+    args: &[&str],
+    cwd: &Path,
+    authority: AuthorizedGitMutation,
+) -> AppResult<Output> {
+    match authority
+        .repository
+        .begin_git_mutation(BeginGitMutation {
+            identity: authority.identity.clone(),
+            owner: authority.owner.clone(),
+            fencing_epoch: authority.fencing_epoch,
+            claim_id: authority.claim_id.clone(),
+            kind: authority.kind,
+        })
+        .await?
+    {
+        GitAuthorityCasOutcome::Applied { .. } => {}
+        outcome => {
+            return Err(AppError::Validation(format!(
+                "Git mutation authority rejected before spawn: {outcome:?}"
+            )))
+        }
+    }
+
+    let args: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
+    let lane = current_git_command_lane(GitCommandLane::Foreground);
+    let _admission = match acquire_git_admission(lane, "run_authorized_mutation", &args, cwd).await
+    {
+        Ok(admission) => admission,
+        Err(error) => {
+            let _ = authority
+                .repository
+                .complete_git_mutation(CompleteGitMutation {
+                    identity: authority.identity,
+                    owner: authority.owner,
+                    fencing_epoch: authority.fencing_epoch,
+                    claim_id: authority.claim_id,
+                })
+                .await;
+            return Err(error);
+        }
+    };
+    let mut command = build_git_command(&args, cwd, &[]);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.as_std_mut().process_group(0);
+    }
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            let _ = authority
+                .repository
+                .complete_git_mutation(CompleteGitMutation {
+                    identity: authority.identity,
+                    owner: authority.owner,
+                    fencing_epoch: authority.fencing_epoch,
+                    claim_id: authority.claim_id,
+                })
+                .await;
+            return Err(AppError::GitOperation(format!(
+                "git {} failed to spawn: {error}",
+                args.join(" ")
+            )));
+        }
+    };
+    let Some(process_group_id) = child.id().map(i64::from) else {
+        let _ = child.kill().await;
+        let _ = authority
+            .repository
+            .complete_git_mutation(CompleteGitMutation {
+                identity: authority.identity,
+                owner: authority.owner,
+                fencing_epoch: authority.fencing_epoch,
+                claim_id: authority.claim_id,
+            })
+            .await;
+        return Err(AppError::GitOperation(
+            "spawned Git process has no process id".to_string(),
+        ));
+    };
+    let bound = authority
+        .repository
+        .bind_git_process_group(
+            &authority.identity,
+            &authority.owner,
+            authority.fencing_epoch,
+            &authority.claim_id,
+            process_group_id,
+        )
+        .await;
+    let bound = match bound {
+        Ok(bound) => bound,
+        Err(error) => {
+            #[cfg(unix)]
+            let _ = nix::sys::signal::killpg(
+                nix::unistd::Pid::from_raw(process_group_id as i32),
+                nix::sys::signal::Signal::SIGKILL,
+            );
+            let _ = child.kill().await;
+            return Err(error);
+        }
+    };
+    if !matches!(bound, GitAuthorityCasOutcome::Applied { .. }) {
+        #[cfg(unix)]
+        let _ = nix::sys::signal::killpg(
+            nix::unistd::Pid::from_raw(process_group_id as i32),
+            nix::sys::signal::Signal::SIGKILL,
+        );
+        let _ = child.kill().await;
+        return Err(AppError::Validation(format!(
+            "Git mutation authority changed after spawn: {bound:?}"
+        )));
+    }
+
+    let timeout_secs = git_runtime_config().cmd_timeout_secs;
+    let result = timeout(Duration::from_secs(timeout_secs), child.wait_with_output()).await;
+    #[cfg(unix)]
+    if result.is_err() && !terminate_and_confirm_process_group_exit(process_group_id).await {
+        return Err(AppError::GitOperation(format!(
+            "git command timed out after {timeout_secs}s and its process group is still alive; durable mutation authority remains fenced"
+        )));
+    }
+    let output = match result {
+        Ok(Ok(output)) => Ok(output),
+        Ok(Err(error)) => Err(AppError::GitOperation(format!(
+            "git {} failed: {error}",
+            args.join(" ")
+        ))),
+        Err(_) => Err(AppError::GitOperation(format!(
+            "git command timed out after {timeout_secs}s"
+        ))),
+    };
+    let completion = authority
+        .repository
+        .complete_git_mutation(CompleteGitMutation {
+            identity: authority.identity,
+            owner: authority.owner,
+            fencing_epoch: authority.fencing_epoch,
+            claim_id: authority.claim_id,
+        })
+        .await?;
+    if !matches!(completion, GitAuthorityCasOutcome::Applied { .. }) {
+        return Err(AppError::Validation(format!(
+            "Git mutation completion lost authority: {completion:?}"
+        )));
+    }
+    output
+}
+
+#[cfg(unix)]
+async fn terminate_and_confirm_process_group_exit(process_group_id: i64) -> bool {
+    use nix::sys::signal::{killpg, Signal};
+    use nix::unistd::Pid;
+
+    let group = Pid::from_raw(process_group_id as i32);
+    let _ = killpg(group, Signal::SIGKILL);
+    for _ in 0..50 {
+        if killpg(group, None).is_err() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    false
 }
 
 /// Run a git command in the background lane.
@@ -417,18 +755,19 @@ async fn acquire_git_admission(
     cwd: &Path,
 ) -> AppResult<GitAdmissionGuard> {
     let started = Instant::now();
+    let mut queue_guard = GitAdmissionQueueGuard::new();
     match lane {
         GitCommandLane::Foreground => {
-            GIT_FOREGROUND_IN_FLIGHT.fetch_add(1, Ordering::SeqCst);
+            queue_guard.register_foreground();
             let global = match GIT_PROCESS_PERMITS.acquire().await {
                 Ok(permit) => permit,
                 Err(_) => {
-                    GIT_FOREGROUND_IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
                     return Err(AppError::GitOperation(
                         "git foreground admission closed".to_string(),
                     ));
                 }
             };
+            queue_guard.admitted();
             log_git_admission_wait(operation, lane, args, cwd, started);
             Ok(GitAdmissionGuard {
                 lane,
@@ -440,13 +779,10 @@ async fn acquire_git_admission(
             let background = GIT_BACKGROUND_PERMITS.acquire().await.map_err(|_| {
                 AppError::GitOperation("git background admission closed".to_string())
             })?;
-            while GIT_FOREGROUND_IN_FLIGHT.load(Ordering::SeqCst) > 0 {
-                tokio::time::sleep(Duration::from_millis(25)).await;
-            }
-            let global = GIT_PROCESS_PERMITS
-                .acquire()
-                .await
-                .map_err(|_| AppError::GitOperation("git global admission closed".to_string()))?;
+            let global =
+                acquire_background_global_permit(&GIT_PROCESS_PERMITS, &GIT_FOREGROUND_IN_FLIGHT)
+                    .await?;
+            queue_guard.admitted();
             log_git_admission_wait(operation, lane, args, cwd, started);
             Ok(GitAdmissionGuard {
                 lane,
@@ -454,6 +790,48 @@ async fn acquire_git_admission(
                 _background: Some(background),
             })
         }
+    }
+}
+
+async fn acquire_background_global_permit<'a>(
+    process_permits: &'a Semaphore,
+    foreground_in_flight: &AtomicUsize,
+) -> AppResult<SemaphorePermit<'a>> {
+    acquire_background_global_permit_with_wait_hook(process_permits, foreground_in_flight, || {})
+        .await
+}
+
+async fn acquire_background_global_permit_with_wait_hook<'a, F>(
+    process_permits: &'a Semaphore,
+    foreground_in_flight: &AtomicUsize,
+    on_wait: F,
+) -> AppResult<SemaphorePermit<'a>>
+where
+    F: Fn(),
+{
+    loop {
+        while foreground_in_flight.load(Ordering::SeqCst) > 0 {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+
+        match process_permits.try_acquire() {
+            Ok(permit) => {
+                if foreground_in_flight.load(Ordering::SeqCst) == 0 {
+                    return Ok(permit);
+                }
+                drop(permit);
+            }
+            Err(TryAcquireError::NoPermits) => on_wait(),
+            Err(TryAcquireError::Closed) => {
+                return Err(AppError::GitOperation(
+                    "git global admission closed".to_string(),
+                ));
+            }
+        }
+
+        // Do not wait in the fair global semaphore queue: a foreground command
+        // registered after this check must be able to queue and acquire first.
+        tokio::time::sleep(Duration::from_millis(25)).await;
     }
 }
 
@@ -472,6 +850,8 @@ fn log_git_admission_wait(
             command = %args.join(" "),
             cwd = %cwd.display(),
             admission_wait_ms = elapsed_ms as u64,
+            queued = GIT_COMMANDS_QUEUED.load(Ordering::SeqCst),
+            in_flight = GIT_COMMANDS_EXECUTING.load(Ordering::SeqCst),
             "Git command admission waited"
         );
     }

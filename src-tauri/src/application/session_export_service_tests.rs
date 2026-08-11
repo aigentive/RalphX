@@ -3,8 +3,8 @@
 // AppState::new_sqlite_test() provides a shared in-memory connection with FK off.
 
 use crate::application::session_export_service::{
-    DependencyData, PlanVersionData, ProposalData, PriorityFactorsData,
-    SessionExport, SessionExportService, SessionData, SourceInstance, VerificationExportData,
+    DependencyData, PlanVersionData, PriorityFactorsData, ProposalData, SessionData, SessionExport,
+    SessionExportService, SourceInstance, VerificationExportData,
 };
 use crate::application::AppState;
 use crate::error::AppError;
@@ -52,9 +52,9 @@ async fn seed_session(
                 "INSERT INTO ideation_sessions \
                  (id, project_id, title, title_source, status, plan_artifact_id, \
                   inherited_plan_artifact_id, seed_task_id, parent_session_id, \
-                  created_at, updated_at, archived_at, converted_at, team_mode, team_config_json) \
+                  created_at, updated_at, archived_at, converted_at) \
                  VALUES (?1, ?2, 'Test Session', 'user', 'active', ?3, NULL, NULL, NULL, \
-                         datetime('now'), datetime('now'), NULL, NULL, 'solo', NULL)",
+                         datetime('now'), datetime('now'), NULL, NULL)",
                 rusqlite::params![sid, pid, aid],
             )?;
             Ok(())
@@ -80,9 +80,9 @@ async fn seed_followup_session(
                 "INSERT INTO ideation_sessions \
                  (id, project_id, title, title_source, status, plan_artifact_id, \
                   inherited_plan_artifact_id, seed_task_id, parent_session_id, \
-                  created_at, updated_at, archived_at, converted_at, team_mode, team_config_json) \
+                  created_at, updated_at, archived_at, converted_at) \
                  VALUES (?1, ?2, 'Followup Session', 'user', 'active', NULL, ?3, NULL, NULL, \
-                         datetime('now'), datetime('now'), NULL, NULL, 'solo', NULL)",
+                         datetime('now'), datetime('now'), NULL, NULL)",
                 rusqlite::params![sid, pid, iaid],
             )?;
             Ok(())
@@ -187,7 +187,7 @@ async fn seed_dependency(
 
 fn build_minimal_export() -> SessionExport {
     SessionExport {
-        schema_version: 1,
+        schema_version: 2,
         exported_at: "2026-03-13T00:00:00Z".into(),
         source_instance: SourceInstance {
             project_name: "Test Project".into(),
@@ -195,7 +195,6 @@ fn build_minimal_export() -> SessionExport {
         session: SessionData {
             title: Some("Imported Session".into()),
             status: "active".into(),
-            team_mode: "solo".into(),
             verification: Some(VerificationExportData {
                 status: "verified".into(),
                 in_progress: false,
@@ -211,6 +210,14 @@ fn build_minimal_export() -> SessionExport {
             version: 1,
             name: "Plan v1".into(),
             content: Some("# Plan".into()),
+            content_type: "text/markdown".into(),
+            created_at: "2026-03-13T00:00:00Z".into(),
+            created_by: "test".into(),
+        }],
+        blueprint_versions: vec![PlanVersionData {
+            version: 1,
+            name: "Blueprint v1".into(),
+            content: Some("# Blueprint".into()),
             content_type: "text/markdown".into(),
             created_at: "2026-03-13T00:00:00Z".into(),
             created_by: "test".into(),
@@ -271,7 +278,8 @@ async fn export_session_no_plan_returns_empty_versions() {
     let export = service.export("session-1", "project-1").await.unwrap();
 
     assert_eq!(export.plan_versions.len(), 0);
-    assert_eq!(export.schema_version, 1);
+    assert_eq!(export.blueprint_versions.len(), 0);
+    assert_eq!(export.schema_version, 2);
 }
 
 #[tokio::test]
@@ -348,7 +356,10 @@ async fn export_single_version_chain() {
 
     assert_eq!(export.plan_versions.len(), 1);
     assert_eq!(export.plan_versions[0].version, 1);
-    assert_eq!(export.plan_versions[0].content.as_deref(), Some("# Content v1"));
+    assert_eq!(
+        export.plan_versions[0].content.as_deref(),
+        Some("# Content v1")
+    );
 }
 
 #[tokio::test]
@@ -357,8 +368,24 @@ async fn export_multi_version_chain_chronological_order() {
     seed_project(&app_state, "project-1", "Project 1").await;
     // Chain: artifact-1 → artifact-2 → artifact-3
     seed_artifact(&app_state, "artifact-1", 1, "Plan v1", "Content v1", None).await;
-    seed_artifact(&app_state, "artifact-2", 2, "Plan v2", "Content v2", Some("artifact-1")).await;
-    seed_artifact(&app_state, "artifact-3", 3, "Plan v3", "Content v3", Some("artifact-2")).await;
+    seed_artifact(
+        &app_state,
+        "artifact-2",
+        2,
+        "Plan v2",
+        "Content v2",
+        Some("artifact-1"),
+    )
+    .await;
+    seed_artifact(
+        &app_state,
+        "artifact-3",
+        3,
+        "Plan v3",
+        "Content v3",
+        Some("artifact-2"),
+    )
+    .await;
     // Session points to root (artifact-1)
     seed_session(&app_state, "session-1", "project-1", Some("artifact-1")).await;
 
@@ -430,18 +457,43 @@ async fn export_followup_session_uses_inherited_plan_artifact_id() {
     let app_state = AppState::new_sqlite_test();
     seed_project(&app_state, "project-1", "Project 1").await;
     // Seed artifact chain belonging to a parent session
-    seed_artifact(&app_state, "artifact-1", 1, "Plan v1", "# Inherited Content", None).await;
-    seed_artifact(&app_state, "artifact-2", 2, "Plan v2", "# Inherited Content v2", Some("artifact-1")).await;
+    seed_artifact(
+        &app_state,
+        "artifact-1",
+        1,
+        "Plan v1",
+        "# Inherited Content",
+        None,
+    )
+    .await;
+    seed_artifact(
+        &app_state,
+        "artifact-2",
+        2,
+        "Plan v2",
+        "# Inherited Content v2",
+        Some("artifact-1"),
+    )
+    .await;
     // Followup session has no own plan_artifact_id, only inherited_plan_artifact_id
     seed_followup_session(&app_state, "followup-session", "project-1", "artifact-1").await;
 
     let service = make_service(&app_state);
-    let export = service.export("followup-session", "project-1").await.unwrap();
+    let export = service
+        .export("followup-session", "project-1")
+        .await
+        .unwrap();
 
     // Export should include plan versions from the inherited artifact chain
     assert_eq!(export.plan_versions.len(), 2);
-    assert_eq!(export.plan_versions[0].content.as_deref(), Some("# Inherited Content"));
-    assert_eq!(export.plan_versions[1].content.as_deref(), Some("# Inherited Content v2"));
+    assert_eq!(
+        export.plan_versions[0].content.as_deref(),
+        Some("# Inherited Content")
+    );
+    assert_eq!(
+        export.plan_versions[1].content.as_deref(),
+        Some("# Inherited Content v2")
+    );
 }
 
 #[tokio::test]
@@ -449,9 +501,25 @@ async fn export_own_plan_takes_precedence_over_inherited() {
     let app_state = AppState::new_sqlite_test();
     seed_project(&app_state, "project-1", "Project 1").await;
     // Own artifact
-    seed_artifact(&app_state, "own-artifact", 1, "Own Plan", "# Own Content", None).await;
+    seed_artifact(
+        &app_state,
+        "own-artifact",
+        1,
+        "Own Plan",
+        "# Own Content",
+        None,
+    )
+    .await;
     // Inherited artifact (different chain)
-    seed_artifact(&app_state, "inherited-artifact", 1, "Inherited Plan", "# Inherited Content", None).await;
+    seed_artifact(
+        &app_state,
+        "inherited-artifact",
+        1,
+        "Inherited Plan",
+        "# Inherited Content",
+        None,
+    )
+    .await;
 
     // Session with both plan_artifact_id and inherited_plan_artifact_id set
     app_state
@@ -461,10 +529,10 @@ async fn export_own_plan_takes_precedence_over_inherited() {
                 "INSERT INTO ideation_sessions \
                  (id, project_id, title, title_source, status, plan_artifact_id, \
                   inherited_plan_artifact_id, seed_task_id, parent_session_id, \
-                  created_at, updated_at, archived_at, converted_at, team_mode, team_config_json) \
+                  created_at, updated_at, archived_at, converted_at) \
                  VALUES ('session-both', 'project-1', 'Session', 'user', 'active', \
                          'own-artifact', 'inherited-artifact', NULL, NULL, \
-                         datetime('now'), datetime('now'), NULL, NULL, 'solo', NULL)",
+                         datetime('now'), datetime('now'), NULL, NULL)",
                 [],
             )?;
             Ok(())
@@ -477,7 +545,10 @@ async fn export_own_plan_takes_precedence_over_inherited() {
 
     // Own plan takes precedence — should only see own artifact content
     assert_eq!(export.plan_versions.len(), 1);
-    assert_eq!(export.plan_versions[0].content.as_deref(), Some("# Own Content"));
+    assert_eq!(
+        export.plan_versions[0].content.as_deref(),
+        Some("# Own Content")
+    );
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -522,6 +593,23 @@ async fn import_unsupported_schema_version_returns_error() {
 }
 
 #[tokio::test]
+async fn import_legacy_schema_version_returns_error() {
+    let app_state = AppState::new_sqlite_test();
+    seed_project(&app_state, "project-1", "Project 1").await;
+    let service = make_service(&app_state);
+
+    let mut export = build_minimal_export();
+    export.schema_version = 1;
+    let json = serde_json::to_string(&export).unwrap();
+
+    let result = service.import(&json, "project-1").await;
+    assert!(matches!(
+        result,
+        Err(AppError::ImportVersionUnsupported { version: 1 })
+    ));
+}
+
+#[tokio::test]
 async fn import_out_of_bounds_dependency_index_returns_error() {
     let app_state = AppState::new_sqlite_test();
     seed_project(&app_state, "project-1", "Project 1").await;
@@ -537,7 +625,10 @@ async fn import_out_of_bounds_dependency_index_returns_error() {
     let json = serde_json::to_string(&export).unwrap();
 
     let result = service.import(&json, "project-1").await;
-    assert!(matches!(result, Err(AppError::ImportInvalidDependency { .. })));
+    assert!(matches!(
+        result,
+        Err(AppError::ImportInvalidDependency { .. })
+    ));
 }
 
 #[tokio::test]
@@ -556,7 +647,10 @@ async fn import_cycle_detection_self_reference() {
     let json = serde_json::to_string(&export).unwrap();
 
     let result = service.import(&json, "project-1").await;
-    assert!(matches!(result, Err(AppError::ImportInvalidDependency { .. })));
+    assert!(matches!(
+        result,
+        Err(AppError::ImportInvalidDependency { .. })
+    ));
 }
 
 #[tokio::test]
@@ -585,13 +679,24 @@ async fn import_cycle_detection_a_depends_b_depends_a() {
     });
     // A→B and B→A forms a cycle
     export.dependencies = vec![
-        DependencyData { from_index: 0, to_index: 1, source: "auto".into() },
-        DependencyData { from_index: 1, to_index: 0, source: "auto".into() },
+        DependencyData {
+            from_index: 0,
+            to_index: 1,
+            source: "auto".into(),
+        },
+        DependencyData {
+            from_index: 1,
+            to_index: 0,
+            source: "auto".into(),
+        },
     ];
     let json = serde_json::to_string(&export).unwrap();
 
     let result = service.import(&json, "project-1").await;
-    assert!(matches!(result, Err(AppError::ImportInvalidDependency { .. })));
+    assert!(matches!(
+        result,
+        Err(AppError::ImportInvalidDependency { .. })
+    ));
 }
 
 #[tokio::test]
@@ -870,10 +975,57 @@ async fn round_trip_export_import_re_export() {
 
     // Seed source session
     seed_artifact(&app_state, "art-1", 1, "Plan v1", "# Plan", None).await;
-    seed_artifact(&app_state, "art-2", 2, "Plan v2", "# Plan v2", Some("art-1")).await;
+    seed_artifact(
+        &app_state,
+        "art-2",
+        2,
+        "Plan v2",
+        "# Plan v2",
+        Some("art-1"),
+    )
+    .await;
+    seed_artifact(
+        &app_state,
+        "blueprint-1",
+        1,
+        "Blueprint v1",
+        "# Blueprint",
+        None,
+    )
+    .await;
     seed_session(&app_state, "sess-1", "project-1", Some("art-1")).await;
-    seed_proposal(&app_state, "prop-0", "sess-1", "Feature A", 0, Some("art-2")).await;
-    seed_proposal(&app_state, "prop-1", "sess-1", "Feature B", 1, Some("art-2")).await;
+    app_state
+        .db
+        .run(|conn| {
+            conn.execute(
+                "UPDATE ideation_sessions
+                 SET plan_blueprint_artifact_id = 'blueprint-1',
+                     plan_contract_version = 2
+                 WHERE id = 'sess-1'",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    seed_proposal(
+        &app_state,
+        "prop-0",
+        "sess-1",
+        "Feature A",
+        0,
+        Some("art-2"),
+    )
+    .await;
+    seed_proposal(
+        &app_state,
+        "prop-1",
+        "sess-1",
+        "Feature B",
+        1,
+        Some("art-2"),
+    )
+    .await;
     seed_dependency(&app_state, "dep-1", "prop-1", "prop-0", "auto").await;
 
     let service = make_service(&app_state);
@@ -881,6 +1033,7 @@ async fn round_trip_export_import_re_export() {
     // Export
     let export = service.export("sess-1", "project-1").await.unwrap();
     assert_eq!(export.plan_versions.len(), 2);
+    assert_eq!(export.blueprint_versions.len(), 1);
     assert_eq!(export.proposals.len(), 2);
     assert_eq!(export.dependencies.len(), 1);
 
@@ -898,6 +1051,10 @@ async fn round_trip_export_import_re_export() {
 
     // Verify structural equivalence
     assert_eq!(re_export.plan_versions.len(), export.plan_versions.len());
+    assert_eq!(
+        re_export.blueprint_versions.len(),
+        export.blueprint_versions.len()
+    );
     assert_eq!(re_export.proposals.len(), export.proposals.len());
     assert_eq!(re_export.dependencies.len(), export.dependencies.len());
     assert_eq!(
@@ -907,6 +1064,10 @@ async fn round_trip_export_import_re_export() {
     assert_eq!(
         re_export.plan_versions[1].content,
         export.plan_versions[1].content
+    );
+    assert_eq!(
+        re_export.blueprint_versions[0].content,
+        export.blueprint_versions[0].content
     );
     // Dependency structure preserved
     assert_eq!(
@@ -921,35 +1082,6 @@ async fn round_trip_export_import_re_export() {
         re_export.dependencies[0].source,
         export.dependencies[0].source
     );
-}
-
-#[tokio::test]
-async fn import_unknown_team_mode_defaults_to_solo() {
-    let app_state = AppState::new_sqlite_test();
-    seed_project(&app_state, "project-1", "Project 1").await;
-    let service = make_service(&app_state);
-
-    let mut export = build_minimal_export();
-    export.session.team_mode = "unknown_future_mode".into();
-    let json = serde_json::to_string(&export).unwrap();
-
-    let result = service.import(&json, "project-1").await.unwrap();
-    let session_id = result.session_id.clone();
-
-    let team_mode: String = app_state
-        .db
-        .run(move |conn| {
-            let s: String = conn.query_row(
-                "SELECT team_mode FROM ideation_sessions WHERE id = ?1",
-                [&session_id],
-                |row| row.get(0),
-            )?;
-            Ok(s)
-        })
-        .await
-        .unwrap();
-
-    assert_eq!(team_mode, "solo");
 }
 
 #[tokio::test]
@@ -1008,37 +1140,4 @@ async fn import_steps_serialized_as_json_strings() {
     // Should parse as a JSON array of strings
     let parsed: Vec<String> = serde_json::from_str(&steps_raw).unwrap();
     assert_eq!(parsed, vec!["step1"]);
-}
-
-#[tokio::test]
-async fn export_session_with_null_team_mode_defaults_to_solo() {
-    let app_state = AppState::new_sqlite_test();
-    seed_project(&app_state, "project-1", "Project 1").await;
-
-    // Insert session row with explicit NULL team_mode via raw SQL
-    // (bypasses seed_session helper which always provides 'solo')
-    // Mirrors seed_session column list for compatibility with all migrations
-    app_state
-        .db
-        .run(|conn| {
-            conn.execute(
-                "INSERT INTO ideation_sessions \
-                 (id, project_id, title, title_source, status, plan_artifact_id, \
-                  inherited_plan_artifact_id, seed_task_id, parent_session_id, \
-                  created_at, updated_at, archived_at, converted_at, \
-                  team_mode, team_config_json) \
-                 VALUES ('sess-null', 'project-1', 'Test Session', 'user', \
-                         'active', NULL, NULL, NULL, NULL, \
-                         datetime('now'), datetime('now'), NULL, NULL, \
-                         NULL, NULL)",
-                [],
-            )?;
-            Ok(())
-        })
-        .await
-        .unwrap();
-
-    let service = make_service(&app_state);
-    let export = service.export("sess-null", "project-1").await.unwrap();
-    assert_eq!(export.session.team_mode, "solo");
 }

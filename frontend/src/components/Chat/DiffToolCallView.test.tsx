@@ -302,17 +302,35 @@ describe("DiffToolCallView hunk rendering", () => {
   });
 
   it("cancels oversized full diff hydration when the card unmounts", async () => {
+    const frameCallbacks: FrameRequestCallback[] = [];
+    const requestAnimationFrameSpy = vi
+      .spyOn(window, "requestAnimationFrame")
+      .mockImplementation((callback) => {
+        frameCallbacks.push(callback);
+        return frameCallbacks.length;
+      });
+    const cancelAnimationFrameSpy = vi
+      .spyOn(window, "cancelAnimationFrame")
+      .mockImplementation(() => {});
     const user = userEvent.setup();
-    const { unmount } = render(
-      <TooltipProvider delayDuration={0}>
-        <DiffToolCallView toolCall={makeLargeEditCall()} />
-      </TooltipProvider>
-    );
 
-    await user.click(screen.getByRole("button", { name: /edit .* click to expand/i }));
-    expect(await screen.findByText("Loading full diff...")).toBeInTheDocument();
+    try {
+      const { unmount } = render(
+        <TooltipProvider delayDuration={0}>
+          <DiffToolCallView toolCall={makeLargeEditCall()} />
+        </TooltipProvider>
+      );
 
-    unmount();
+      await user.click(screen.getByRole("button", { name: /edit .* click to expand/i }));
+      expect(await screen.findByText("Loading full diff...")).toBeInTheDocument();
+      expect(frameCallbacks).toHaveLength(1);
+
+      unmount();
+      expect(cancelAnimationFrameSpy).toHaveBeenCalledWith(1);
+    } finally {
+      requestAnimationFrameSpy.mockRestore();
+      cancelAnimationFrameSpy.mockRestore();
+    }
   });
 
   it("shows an empty preview state when a diff has no changed hunks", () => {

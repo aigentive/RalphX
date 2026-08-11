@@ -16,6 +16,12 @@ use crate::domain::integrations::{
 };
 use crate::domain::services::{ComposerIntegrationReference, SecretStore};
 
+use crate::application::integration_reference_expansion::{
+    IntegrationReferenceExpansion, SkippedIntegrationReference, SkippedIntegrationReferenceReason,
+};
+
+use super::jira_agile_types::{JiraBoardConfiguration, JiraBoardSummary, JiraSprintSummary};
+
 const ATLASSIAN_TOKEN_SECRET_REF: &str = "integrations/atlassian/default/api-token";
 const ATLASSIAN_OAUTH_CLIENT_SECRET_REF: &str =
     "integrations/atlassian/default/oauth-client-secret";
@@ -68,6 +74,13 @@ pub struct AtlassianResourceSummary {
     pub title: String,
     pub url: Option<String>,
     pub excerpt: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AtlassianResourceUrlResolution {
+    pub input_url: String,
+    pub resource: Option<AtlassianResourceSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -313,6 +326,30 @@ pub trait AtlassianApiClient: Send + Sync {
         _limit: usize,
     ) -> Result<Vec<JiraIssueDetail>, String> {
         Err("Jira project issues are not available for this client".to_string())
+    }
+
+    async fn list_jira_boards(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _project_key: &str,
+    ) -> Result<Vec<JiraBoardSummary>, String> {
+        Err("Jira board enumeration is not available for this client".to_string())
+    }
+
+    async fn get_jira_board_configuration(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _board_id: &str,
+    ) -> Result<JiraBoardConfiguration, String> {
+        Err("Jira board configuration is not available for this client".to_string())
+    }
+
+    async fn list_jira_active_sprints(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _board_id: &str,
+    ) -> Result<Vec<JiraSprintSummary>, String> {
+        Err("Jira sprint enumeration is not available for this client".to_string())
     }
 
     async fn exchange_oauth_code(
@@ -928,10 +965,38 @@ impl AtlassianIntegrationService {
         self.client.fetch(&auth, reference).await
     }
 
-    pub async fn assign_jira_issue_to_current_user(
+    pub async fn resolve_resource_urls(
         &self,
-        issue_key: &str,
-    ) -> Result<(), String> {
+        urls: &[String],
+    ) -> Result<Vec<AtlassianResourceUrlResolution>, String> {
+        let auth = self.enabled_auth_context().await?;
+        let site_origin = normalized_site_origin(&auth.site_url)?;
+        let mut results = Vec::with_capacity(urls.len().min(25));
+
+        for url in urls.iter().take(25) {
+            let input_url = url.trim().to_string();
+            if input_url.is_empty() {
+                continue;
+            }
+            let resource = match reference_from_atlassian_url(&input_url, &site_origin) {
+                Some(reference) => self
+                    .client
+                    .fetch(&auth, &reference)
+                    .await
+                    .ok()
+                    .map(resource_summary_from_content),
+                None => None,
+            };
+            results.push(AtlassianResourceUrlResolution {
+                input_url,
+                resource,
+            });
+        }
+
+        Ok(results)
+    }
+
+    pub async fn assign_jira_issue_to_current_user(&self, issue_key: &str) -> Result<(), String> {
         let auth = self.enabled_auth_context().await?;
         self.client
             .assign_jira_issue_to_current_user(&auth, issue_key)
@@ -940,7 +1005,9 @@ impl AtlassianIntegrationService {
 
     pub async fn clear_jira_issue_assignee(&self, issue_key: &str) -> Result<(), String> {
         let auth = self.enabled_auth_context().await?;
-        self.client.clear_jira_issue_assignee(&auth, issue_key).await
+        self.client
+            .clear_jira_issue_assignee(&auth, issue_key)
+            .await
     }
 
     pub async fn list_jira_issue_transitions(
@@ -948,7 +1015,9 @@ impl AtlassianIntegrationService {
         issue_key: &str,
     ) -> Result<Vec<AtlassianJiraTransition>, String> {
         let auth = self.enabled_auth_context().await?;
-        self.client.list_jira_issue_transitions(&auth, issue_key).await
+        self.client
+            .list_jira_issue_transitions(&auth, issue_key)
+            .await
     }
 
     pub async fn transition_jira_issue(
@@ -1013,6 +1082,50 @@ impl AtlassianIntegrationService {
             .await
     }
 
+    /// Lists Jira Software boards associated with a project.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Jira is disabled, authentication cannot be loaded,
+    /// or Jira rejects or returns an invalid paginated response.
+    pub async fn list_jira_boards(
+        &self,
+        project_key: &str,
+    ) -> Result<Vec<JiraBoardSummary>, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client.list_jira_boards(&auth, project_key).await
+    }
+
+    /// Reads the ordered status-to-column mapping for a Jira Software board.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Jira is disabled, authentication cannot be loaded,
+    /// or the board configuration is unavailable or malformed.
+    pub async fn get_jira_board_configuration(
+        &self,
+        board_id: &str,
+    ) -> Result<JiraBoardConfiguration, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client
+            .get_jira_board_configuration(&auth, board_id)
+            .await
+    }
+
+    /// Lists active sprints for a Jira Software board.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Jira is disabled, authentication cannot be loaded,
+    /// or Jira rejects or returns an invalid paginated response.
+    pub async fn list_jira_active_sprints(
+        &self,
+        board_id: &str,
+    ) -> Result<Vec<JiraSprintSummary>, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client.list_jira_active_sprints(&auth, board_id).await
+    }
+
     pub async fn expand_references_for_prompt(
         &self,
         message: &str,
@@ -1060,19 +1173,63 @@ impl AtlassianIntegrationService {
         message: &str,
         references: &[ComposerIntegrationReference],
         total_budget: usize,
-    ) -> String {
-        if references.is_empty() || total_budget == 0 {
-            return message.to_string();
+    ) -> IntegrationReferenceExpansion {
+        let mut skipped_references = Vec::new();
+        let provider_references = references
+            .iter()
+            .filter(|reference| reference.provider == "atlassian")
+            .collect::<Vec<_>>();
+        let (references_to_expand, truncated_references) =
+            provider_references.split_at(provider_references.len().min(MAX_INTEGRATION_REFERENCES));
+        skipped_references.extend(truncated_references.iter().map(|reference| {
+            SkippedIntegrationReference::new(
+                reference,
+                SkippedIntegrationReferenceReason::BudgetExceeded,
+                "Atlassian reference limit was reached",
+            )
+        }));
+        if references_to_expand.is_empty() {
+            return IntegrationReferenceExpansion {
+                rewritten_prompt: message.to_string(),
+                skipped_references,
+            };
         }
-        let Ok(auth) = self.enabled_auth_context().await else {
-            return message.to_string();
+        let settings = match self.get_settings().await {
+            Ok(settings) => settings,
+            Err(_) => {
+                return expansion_with_skips(
+                    message,
+                    skipped_references,
+                    references_to_expand,
+                    SkippedIntegrationReferenceReason::ApiError,
+                    "Atlassian settings could not be loaded",
+                )
+            }
+        };
+        if !settings.enabled || settings.validation_status != IntegrationValidationStatus::Valid {
+            return expansion_with_skips(
+                message,
+                skipped_references,
+                references_to_expand,
+                SkippedIntegrationReferenceReason::IntegrationDisabled,
+                "Atlassian integration is not enabled",
+            );
+        }
+        let auth = match self.enabled_auth_context_for_settings(settings).await {
+            Ok(auth) => auth,
+            Err(_) => {
+                return expansion_with_skips(
+                    message,
+                    skipped_references,
+                    references_to_expand,
+                    SkippedIntegrationReferenceReason::MissingCredentials,
+                    "Atlassian credentials are unavailable",
+                )
+            }
         };
         let mut remaining_budget = total_budget;
         let mut rendered = Vec::new();
-        for reference in references.iter().take(MAX_INTEGRATION_REFERENCES) {
-            if reference.provider != "atlassian" {
-                continue;
-            }
+        for reference in references_to_expand {
             let wrapper_budget = if rendered.is_empty() {
                 ATLASSIAN_BLOCK_PREFIX.len() + ATLASSIAN_BLOCK_SUFFIX.len()
             } else {
@@ -1080,15 +1237,34 @@ impl AtlassianIntegrationService {
             };
             let reference_budget = remaining_budget.saturating_sub(wrapper_budget);
             if reference_budget == 0 {
+                skipped_references.push(SkippedIntegrationReference::new(
+                    reference,
+                    SkippedIntegrationReferenceReason::BudgetExceeded,
+                    "Integration reference budget was exhausted",
+                ));
                 continue;
             }
             let rendered_reference = match self.client.fetch(&auth, reference).await {
                 Ok(content) => render_resource_content_with_budget(content, reference_budget),
-                Err(error) => {
-                    render_skipped_reference_with_budget(reference, &error, reference_budget)
+                Err(_) => {
+                    skipped_references.push(SkippedIntegrationReference::new(
+                        reference,
+                        SkippedIntegrationReferenceReason::ApiError,
+                        "Atlassian resource request failed",
+                    ));
+                    None
                 }
             };
             let Some(rendered_reference) = rendered_reference else {
+                if !skipped_references.iter().any(|skipped| {
+                    skipped.id == reference.id && skipped.provider == reference.provider
+                }) {
+                    skipped_references.push(SkippedIntegrationReference::new(
+                        reference,
+                        SkippedIntegrationReferenceReason::BudgetExceeded,
+                        "Integration reference budget was exhausted",
+                    ));
+                }
                 continue;
             };
             remaining_budget =
@@ -1096,19 +1272,32 @@ impl AtlassianIntegrationService {
             rendered.push(rendered_reference);
         }
         if rendered.is_empty() {
-            return message.to_string();
+            return IntegrationReferenceExpansion {
+                rewritten_prompt: message.to_string(),
+                skipped_references,
+            };
         }
-        format!(
-            "{}{}{}{}",
-            message.trim_end(),
-            ATLASSIAN_BLOCK_PREFIX,
-            rendered.join("\n"),
-            ATLASSIAN_BLOCK_SUFFIX
-        )
+        IntegrationReferenceExpansion {
+            rewritten_prompt: format!(
+                "{}{}{}{}",
+                message.trim_end(),
+                ATLASSIAN_BLOCK_PREFIX,
+                rendered.join("\n"),
+                ATLASSIAN_BLOCK_SUFFIX
+            ),
+            skipped_references,
+        }
     }
 
-    async fn enabled_auth_context(&self) -> Result<AtlassianAuthContext, String> {
-        let mut settings = self.get_settings().await?;
+    pub(crate) async fn enabled_auth_context(&self) -> Result<AtlassianAuthContext, String> {
+        let settings = self.get_settings().await?;
+        self.enabled_auth_context_for_settings(settings).await
+    }
+
+    async fn enabled_auth_context_for_settings(
+        &self,
+        mut settings: AtlassianIntegrationSettings,
+    ) -> Result<AtlassianAuthContext, String> {
         if !settings.enabled || settings.validation_status != IntegrationValidationStatus::Valid {
             return Err("Atlassian integration is not enabled".to_string());
         }
@@ -1266,6 +1455,24 @@ impl AtlassianIntegrationService {
     }
 }
 
+fn expansion_with_skips(
+    message: &str,
+    mut skipped_references: Vec<SkippedIntegrationReference>,
+    references: &[&ComposerIntegrationReference],
+    reason: SkippedIntegrationReferenceReason,
+    skip_message: &'static str,
+) -> IntegrationReferenceExpansion {
+    skipped_references.extend(
+        references
+            .iter()
+            .map(|reference| SkippedIntegrationReference::new(reference, reason, skip_message)),
+    );
+    IntegrationReferenceExpansion {
+        rewritten_prompt: message.to_string(),
+        skipped_references,
+    }
+}
+
 fn normalize_site_url(raw: &str) -> Result<String, String> {
     let trimmed = raw.trim().trim_end_matches('/');
     if trimmed.is_empty() {
@@ -1286,6 +1493,152 @@ fn normalize_site_url(raw: &str) -> Result<String, String> {
         return Err("Atlassian site URL must include a host".to_string());
     }
     Ok(candidate)
+}
+
+fn normalized_site_origin(site_url: &str) -> Result<String, String> {
+    let normalized = normalize_site_url(site_url)?;
+    let uri = normalized
+        .parse::<hyper::Uri>()
+        .map_err(|error| format!("Invalid Atlassian site URL: {error}"))?;
+    let scheme = uri
+        .scheme_str()
+        .ok_or_else(|| "Atlassian site URL must use https".to_string())?;
+    let authority = uri
+        .authority()
+        .ok_or_else(|| "Atlassian site URL must include a host".to_string())?;
+    Ok(format!(
+        "{}://{}",
+        scheme.to_ascii_lowercase(),
+        authority.as_str().to_ascii_lowercase()
+    ))
+}
+
+fn reference_from_atlassian_url(
+    raw_url: &str,
+    site_origin: &str,
+) -> Option<ComposerIntegrationReference> {
+    let uri = raw_url.parse::<hyper::Uri>().ok()?;
+    if uri.scheme_str() != Some("https") {
+        return None;
+    }
+    let origin = uri_origin(&uri)?;
+    if origin != site_origin {
+        return None;
+    }
+    let segments = uri_path_segments(&uri);
+    if let Some(key) = jira_key_from_path(&segments) {
+        return Some(ComposerIntegrationReference {
+            provider: "atlassian".to_string(),
+            kind: AtlassianResourceKind::Jira.as_str().to_string(),
+            id: key.clone(),
+            key: Some(key.clone()),
+            title: None,
+            url: Some(format!("{site_origin}/browse/{key}")),
+            summary_excerpt: None,
+            include_transcript: None,
+            selected_excerpt: None,
+            selected_source_path: None,
+            selected_range_label: None,
+        });
+    }
+    let page_id = confluence_page_id_from_uri(&uri, &segments)?;
+    Some(ComposerIntegrationReference {
+        provider: "atlassian".to_string(),
+        kind: AtlassianResourceKind::Confluence.as_str().to_string(),
+        id: page_id,
+        key: None,
+        title: None,
+        url: Some(raw_url.to_string()),
+        summary_excerpt: None,
+        include_transcript: None,
+        selected_excerpt: None,
+        selected_source_path: None,
+        selected_range_label: None,
+    })
+}
+
+fn uri_origin(uri: &hyper::Uri) -> Option<String> {
+    let scheme = uri.scheme_str()?;
+    let authority = uri.authority()?;
+    Some(format!(
+        "{}://{}",
+        scheme.to_ascii_lowercase(),
+        authority.as_str().to_ascii_lowercase()
+    ))
+}
+
+fn uri_path_segments(uri: &hyper::Uri) -> Vec<&str> {
+    uri.path()
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect()
+}
+
+fn jira_key_from_path(segments: &[&str]) -> Option<String> {
+    let key = segments
+        .windows(2)
+        .find(|window| matches!(window[0], "browse" | "issues"))
+        .map(|window| window[1])?;
+    normalize_jira_issue_key(key)
+}
+
+fn normalize_jira_issue_key(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    let (project, number) = trimmed.split_once('-')?;
+    let mut project_chars = project.chars();
+    let first_project_char = project_chars.next()?;
+    if project.is_empty()
+        || number.is_empty()
+        || !first_project_char.is_ascii_alphabetic()
+        || !project_chars.all(|ch| ch.is_ascii_alphanumeric())
+        || !number.chars().all(|ch| ch.is_ascii_digit())
+    {
+        return None;
+    }
+    Some(format!("{}-{number}", project.to_ascii_uppercase()))
+}
+
+fn confluence_page_id_from_uri(uri: &hyper::Uri, segments: &[&str]) -> Option<String> {
+    if segments.first().copied() != Some("wiki") {
+        return None;
+    }
+    if let Some(page_id) = segments
+        .windows(2)
+        .find(|window| window[0] == "pages")
+        .map(|window| window[1])
+        .and_then(normalize_confluence_page_id)
+    {
+        return Some(page_id);
+    }
+    uri.query()
+        .and_then(confluence_page_id_from_query)
+        .and_then(normalize_confluence_page_id)
+}
+
+fn normalize_confluence_page_id(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || !trimmed.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+fn confluence_page_id_from_query(query: &str) -> Option<&str> {
+    query.split('&').find_map(|pair| {
+        let (key, value) = pair.split_once('=')?;
+        (key == "pageId").then_some(value)
+    })
+}
+
+fn resource_summary_from_content(content: AtlassianResourceContent) -> AtlassianResourceSummary {
+    AtlassianResourceSummary {
+        kind: content.kind,
+        id: content.id,
+        key: content.key,
+        title: content.title,
+        url: content.url,
+        excerpt: None,
+    }
 }
 
 fn build_oauth_authorization(
@@ -1577,15 +1930,6 @@ fn render_skipped_reference(reference: &ComposerIntegrationReference, reason: &s
         escape_attr(&reference.id),
         escape_attr(reason)
     )
-}
-
-fn render_skipped_reference_with_budget(
-    reference: &ComposerIntegrationReference,
-    reason: &str,
-    reference_budget: usize,
-) -> Option<String> {
-    let rendered = render_skipped_reference(reference, reason);
-    (rendered.len() <= reference_budget).then_some(rendered)
 }
 
 fn escape_attr(value: &str) -> String {

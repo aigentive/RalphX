@@ -10,13 +10,14 @@ use crate::utils::path_safety::{
 
 const PROTECTED_ENV_KEYS: &[&str] = &[
     "PATH",
+    "RUSTC",
+    "RUSTUP_TOOLCHAIN",
     "TAURI_API_URL",
     "DEBUG",
     "CLAUDECODE",
     "CLAUDE_PLUGIN_ROOT",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
     "CLAUDE_CODE_ENABLE_TASKS",
-    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS",
     "CLAUDE_CODE_SUBAGENT_MODEL",
     "ANTHROPIC_MODEL",
     "CLAUDE_MODEL",
@@ -94,7 +95,10 @@ pub(crate) fn parse_provider_env_file_contents(
             continue;
         }
 
-        values.insert(key.to_string(), strip_surrounding_double_quotes(value.trim()));
+        values.insert(
+            key.to_string(),
+            strip_surrounding_double_quotes(value.trim()),
+        );
     }
 
     Ok(values)

@@ -39,6 +39,9 @@ fn validation_run(task: &Task) -> ValidationRun {
         mode: ValidationRunMode::ReuseOrRun,
         policy_enabled: true,
         head_sha: Some("abcdef1234567890".to_string()),
+        start_content_fingerprint: Some("tree-start".to_string()),
+        validated_content_fingerprint: Some("tree-validated".to_string()),
+        promoted_commit_sha: None,
         base_ref: Some("main".to_string()),
         analysis_fingerprint: Some("analysis-a".to_string()),
         status_episode_entered_at: Some(Utc.with_ymd_and_hms(2026, 7, 3, 12, 0, 0).unwrap()),
@@ -138,6 +141,14 @@ async fn validation_run_repo_roundtrips_runs_and_orders_command_results() {
         latest.run.analysis_fingerprint.as_deref(),
         Some("analysis-a")
     );
+    assert_eq!(
+        latest.run.start_content_fingerprint.as_deref(),
+        Some("tree-start")
+    );
+    assert_eq!(
+        latest.run.validated_content_fingerprint.as_deref(),
+        Some("tree-validated")
+    );
     assert_eq!(latest.commands.len(), 2);
     assert_eq!(latest.commands[0].id, "command-earlier");
     assert_eq!(latest.commands[0].status, ValidationCommandStatus::Cached);
@@ -151,6 +162,68 @@ async fn validation_run_repo_roundtrips_runs_and_orders_command_results() {
 }
 
 #[tokio::test]
+async fn validation_run_repo_promotes_a_matching_validated_run_to_commit() {
+    let (_db, repo, task) = setup_repo().await;
+    let run = validation_run(&task);
+    repo.create_run(&run).await.expect("run should persist");
+
+    repo.record_validated_content_fingerprint(&run.id, Some("tree-final".to_string()))
+        .await
+        .expect("validated fingerprint should persist");
+    repo.promote_run_to_commit(&run.id, "commit-validated-tree")
+        .await
+        .expect("promotion should persist");
+
+    let latest = repo
+        .latest_run_with_results_for_task(&task.id)
+        .await
+        .expect("latest run lookup should succeed")
+        .expect("run should exist");
+    assert_eq!(
+        latest.run.promoted_commit_sha.as_deref(),
+        Some("commit-validated-tree")
+    );
+    assert_eq!(
+        latest.run.validated_content_fingerprint.as_deref(),
+        Some("tree-final")
+    );
+}
+
+#[tokio::test]
+async fn validation_run_repo_latest_non_baseline_skips_newer_baseline_run() {
+    let (_db, repo, task) = setup_repo().await;
+    let mut final_run = validation_run(&task);
+    final_run.id = "final-run".to_string();
+    final_run.purpose = ValidationPurpose::Final;
+    final_run.started_at = Utc.with_ymd_and_hms(2026, 7, 3, 12, 1, 0).unwrap();
+    repo.create_run(&final_run)
+        .await
+        .expect("final run should persist");
+
+    let mut baseline_run = validation_run(&task);
+    baseline_run.id = "baseline-run".to_string();
+    baseline_run.purpose = ValidationPurpose::Baseline;
+    baseline_run.started_at = Utc.with_ymd_and_hms(2026, 7, 3, 12, 2, 0).unwrap();
+    repo.create_run(&baseline_run)
+        .await
+        .expect("baseline run should persist");
+
+    let latest = repo
+        .latest_run_with_results_for_task(&task.id)
+        .await
+        .expect("latest lookup should succeed")
+        .expect("latest run should exist");
+    assert_eq!(latest.run.id, "baseline-run");
+
+    let latest_non_baseline = repo
+        .latest_non_baseline_run_with_results_for_task(&task.id)
+        .await
+        .expect("latest non-baseline lookup should succeed")
+        .expect("latest non-baseline run should exist");
+    assert_eq!(latest_non_baseline.run.id, "final-run");
+}
+
+#[tokio::test]
 async fn validation_run_repo_returns_none_without_runs() {
     let (_db, repo, task) = setup_repo().await;
 
@@ -160,4 +233,41 @@ async fn validation_run_repo_returns_none_without_runs() {
         .expect("lookup should succeed");
 
     assert!(latest.is_none());
+}
+
+#[tokio::test]
+async fn validation_run_repo_marks_only_running_runs_error() {
+    let (_db, repo, task) = setup_repo().await;
+    let completed_at = Utc.with_ymd_and_hms(2026, 7, 3, 12, 2, 0).unwrap();
+
+    let mut running = validation_run(&task);
+    running.id = "running-run".to_string();
+    running.started_at = Utc.with_ymd_and_hms(2026, 7, 3, 12, 1, 0).unwrap();
+    repo.create_run(&running)
+        .await
+        .expect("running run should persist");
+
+    let mut passed = validation_run(&task);
+    passed.id = "passed-run".to_string();
+    passed.status = ValidationRunStatus::Passed;
+    passed.started_at = Utc.with_ymd_and_hms(2026, 7, 3, 12, 0, 0).unwrap();
+    passed.completed_at = Some(completed_at);
+    repo.create_run(&passed)
+        .await
+        .expect("passed run should persist");
+
+    let marked = repo
+        .mark_running_runs_error(completed_at)
+        .await
+        .expect("running runs should be marked error");
+    assert_eq!(marked, 1);
+
+    let latest = repo
+        .latest_run_with_results_for_task(&task.id)
+        .await
+        .expect("latest lookup should succeed")
+        .expect("latest run should exist");
+    assert_eq!(latest.run.id, "running-run");
+    assert_eq!(latest.run.status, ValidationRunStatus::Error);
+    assert_eq!(latest.run.completed_at, Some(completed_at));
 }

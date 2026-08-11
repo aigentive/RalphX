@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { harnessProvidersApi } from "@/api/harness-providers";
+import { manualRoleDefaultKeys } from "@/hooks/useManualRoleDefaults";
 
 import { harnessProviderKeys, useHarnessProviders } from "./useHarnessProviders";
 
@@ -72,24 +73,29 @@ describe("useHarnessProviders", () => {
     expect(result.current.providers).toHaveLength(1);
   });
 
-  it("invalidates provider and lane settings after provider updates", async () => {
+  it("updates provider caches and invalidates runtime metadata after provider updates", async () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
     });
     const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
+    const updatedSettings = {
+      providers: [],
+      defaultProvider: "codex" as const,
+      requiresOnboarding: false,
+    };
     vi.mocked(harnessProvidersApi.list).mockResolvedValue({
       providers: [],
       defaultProvider: null,
       requiresOnboarding: true,
     });
-    vi.mocked(harnessProvidersApi.update).mockResolvedValue({
-      providers: [],
-      defaultProvider: "codex",
-      requiresOnboarding: false,
-    });
+    vi.mocked(harnessProvidersApi.update).mockResolvedValue(updatedSettings);
 
     const { result } = renderHook(() => useHarnessProviders(), {
       wrapper: createWrapper(queryClient),
+    });
+
+    await waitFor(() => {
+      expect(result.current.settings.requiresOnboarding).toBe(true);
     });
 
     await act(async () => {
@@ -103,7 +109,10 @@ describe("useHarnessProviders", () => {
       provider: "codex",
       enabled: true,
     });
-    expect(invalidateQueries).toHaveBeenCalledWith({
+    expect(queryClient.getQueryData(harnessProviderKeys.list(false))).toEqual(
+      updatedSettings,
+    );
+    expect(invalidateQueries).not.toHaveBeenCalledWith({
       queryKey: harnessProviderKeys.all,
     });
     expect(invalidateQueries).toHaveBeenCalledWith({
@@ -111,6 +120,9 @@ describe("useHarnessProviders", () => {
     });
     expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: ["agent", "harness"],
+    });
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: manualRoleDefaultKeys.all,
     });
   });
 });

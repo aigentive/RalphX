@@ -1,7 +1,7 @@
 /**
  * TaskCreationOverlay - Inline task creation panel for split-screen layout
  *
- * Similar to TaskDetailOverlay but for creating new tasks.
+ * Similar to the Agents task detail surface but for creating new tasks.
  * Reuses TaskCreationForm for the actual form.
  *
  * Design spec: specs/design/refined-studio-patterns.md

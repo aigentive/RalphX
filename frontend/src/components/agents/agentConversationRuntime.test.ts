@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { AgentConversationWorkspace } from "@/api/chat";
+import { AGENT_MODEL_CATALOG } from "@/lib/agent-models";
 
 import type { AgentConversation } from "./agentConversations";
 import { DEFAULT_AGENT_RUNTIME } from "./agentOptions";
@@ -8,8 +9,8 @@ import {
   getAgentTerminalArchivedReason,
   getAgentTerminalUnavailableReason,
   runtimeFromConversation,
+  runtimeFromManualRoleDefault,
   runtimeForWorkspaceReviewFocus,
-  workspaceReviewUtilityRuntimeForProvider,
 } from "./agentConversationRuntime";
 
 function projectConversation(
@@ -84,7 +85,7 @@ describe("getAgentTerminalUnavailableReason", () => {
     ).toBeNull();
   });
 
-  it("keeps terminal access disabled for linked plan-owned workspaces", () => {
+  it("allows terminal access for linked plan-owned workspaces", () => {
     expect(
       getAgentTerminalUnavailableReason(
         projectConversation(),
@@ -93,9 +94,7 @@ describe("getAgentTerminalUnavailableReason", () => {
           linkedIdeationSessionId: "ideation-session-1",
         }),
       ),
-    ).toBe(
-      "Terminal disabled while ideation or execution owns this workspace",
-    );
+    ).toBeNull();
     expect(
       getAgentTerminalUnavailableReason(
         projectConversation(),
@@ -104,9 +103,7 @@ describe("getAgentTerminalUnavailableReason", () => {
           linkedPlanBranchId: "plan-branch-1",
         }),
       ),
-    ).toBe(
-      "Terminal disabled while ideation or execution owns this workspace",
-    );
+    ).toBeNull();
   });
 });
 
@@ -147,17 +144,17 @@ describe("getAgentTerminalArchivedReason", () => {
     );
   });
 
-  it("does not archive plan-owned workspaces because they stay disabled", () => {
+  it("archives terminal-published plan-owned workspaces", () => {
     const workspace = agentWorkspace({
       mode: "plan",
       linkedIdeationSessionId: "ideation-session-1",
       publicationPrStatus: "merged",
     });
 
-    expect(getAgentTerminalArchivedReason(projectConversation(), workspace)).toBeNull();
-    expect(getAgentTerminalUnavailableReason(projectConversation(), workspace)).toBe(
-      "Terminal disabled while ideation or execution owns this workspace",
+    expect(getAgentTerminalArchivedReason(projectConversation(), workspace)).toBe(
+      "Workspace archived after PR merge. Send a follow-up to continue in a fresh workspace.",
     );
+    expect(getAgentTerminalUnavailableReason(projectConversation(), workspace)).toBeNull();
   });
 });
 
@@ -225,8 +222,30 @@ describe("runtimeFromConversation", () => {
   });
 });
 
-describe("workspace review utility runtime", () => {
-  it("inherits only the provider from the workspace runtime", () => {
+describe("workspace review runtime", () => {
+  it("projects the backend Reviewer role default into a composer runtime", () => {
+    expect(
+      runtimeFromManualRoleDefault(
+        {
+          provider: "codex",
+          model: "gpt-5.6-terra",
+          effort: "ultra",
+          serviceTier: "fast",
+          coordinationMode: null,
+          personaId: null,
+          approvalPolicy: "never",
+          sandboxMode: "danger-full-access",
+        },
+        AGENT_MODEL_CATALOG,
+      ),
+    ).toEqual({
+      provider: "codex",
+      modelId: "gpt-5.6-terra",
+      effort: "ultra",
+    });
+  });
+
+  it("uses the backend-resolved Reviewer role default before a child runtime exists", () => {
     expect(
       runtimeForWorkspaceReviewFocus(
         {
@@ -235,30 +254,20 @@ describe("workspace review utility runtime", () => {
           effort: "xhigh",
         },
         null,
+        {
+          provider: "codex",
+          modelId: "gpt-5.6-terra",
+          effort: "ultra",
+        },
       ),
     ).toEqual({
       provider: "codex",
-      modelId: "gpt-5.4-mini",
-      effort: "medium",
-    });
-
-    expect(
-      runtimeForWorkspaceReviewFocus(
-        {
-          provider: "claude",
-          modelId: "opus",
-          effort: "max",
-        },
-        null,
-      ),
-    ).toEqual({
-      provider: "claude",
-      modelId: "haiku",
-      effort: "medium",
+      modelId: "gpt-5.6-terra",
+      effort: "ultra",
     });
   });
 
-  it("preserves explicit review composer overrides", () => {
+  it("preserves the actual child runtime over the next-launch role default", () => {
     expect(
       runtimeForWorkspaceReviewFocus(
         {
@@ -271,6 +280,11 @@ describe("workspace review utility runtime", () => {
           modelId: "sonnet",
           effort: "high",
         },
+        {
+          provider: "codex",
+          modelId: "gpt-5.6-terra",
+          effort: "ultra",
+        },
       ),
     ).toEqual({
       provider: "claude",
@@ -279,16 +293,85 @@ describe("workspace review utility runtime", () => {
     });
   });
 
-  it("uses utility-tier defaults when switching review provider", () => {
-    expect(workspaceReviewUtilityRuntimeForProvider("codex")).toEqual({
+  it("uses a committed reviewer focus hint before durable child metadata arrives", () => {
+    expect(
+      runtimeForWorkspaceReviewFocus(
+        {
+          provider: "codex",
+          modelId: "gpt-5.5",
+          effort: "xhigh",
+        },
+        null,
+        {
+          provider: "claude",
+          modelId: "sonnet",
+          effort: "high",
+        },
+        {
+          provider: "codex",
+          modelId: "gpt-5.6-terra",
+          effort: "high",
+        },
+      ),
+    ).toEqual({
       provider: "codex",
-      modelId: "gpt-5.4-mini",
-      effort: "medium",
+      modelId: "gpt-5.6-terra",
+      effort: "high",
     });
-    expect(workspaceReviewUtilityRuntimeForProvider("claude")).toEqual({
+  });
+
+  it("keeps durable child metadata ahead of a stale reviewer focus hint", () => {
+    expect(
+      runtimeForWorkspaceReviewFocus(
+        null,
+        {
+          provider: "claude",
+          modelId: "sonnet",
+          effort: "high",
+        },
+        {
+          provider: "codex",
+          modelId: "gpt-5.6-terra",
+          effort: "medium",
+        },
+        {
+          provider: "codex",
+          modelId: "gpt-5.6-terra",
+          effort: "medium",
+        },
+      ),
+    ).toEqual({
       provider: "claude",
-      modelId: "haiku",
-      effort: "medium",
+      modelId: "sonnet",
+      effort: "high",
     });
+  });
+
+  it("uses a current-session composer override ahead of hydrated child metadata", () => {
+    expect(
+      runtimeForWorkspaceReviewFocus(
+        null,
+        { provider: "codex", modelId: "gpt-5.5", effort: "high" },
+        null,
+        null,
+        { provider: "claude", modelId: "sonnet", effort: "high" },
+      ),
+    ).toEqual({
+      provider: "claude",
+      modelId: "sonnet",
+      effort: "high",
+    });
+  });
+
+  it("falls back to the workspace runtime while the role default is unavailable", () => {
+    const workspaceRuntime = {
+      provider: "codex" as const,
+      modelId: "gpt-5.5",
+      effort: "xhigh" as const,
+    };
+
+    expect(
+      runtimeForWorkspaceReviewFocus(workspaceRuntime, null, null),
+    ).toEqual(workspaceRuntime);
   });
 });

@@ -9,16 +9,23 @@ import { agentSidebarConversationKeys } from "./useAgentSidebarPublicationGroup"
 
 const PUBLICATION_POLL_MS = 5_000;
 
+export function workspacePublicationFingerprint(
+  state: string,
+  label: string | null | undefined,
+): string {
+  return `${state}\u0000${label?.trim().toLowerCase() ?? ""}`;
+}
+
 export function useAgentSidebarPublicationPolling(
   conversations: AgentConversation[],
   isVisible: boolean,
-  currentStates: Map<string, string>
+  currentFingerprints: Map<string, string>,
 ) {
   const queryClient = useQueryClient();
-  const currentStatesRef = useRef(currentStates);
+  const currentStatesRef = useRef(currentFingerprints);
   useEffect(() => {
-    currentStatesRef.current = currentStates;
-  }, [currentStates]);
+    currentStatesRef.current = currentFingerprints;
+  }, [currentFingerprints]);
 
   const conversationIds = useMemo(() => {
     const seen = new Set<string>();
@@ -50,7 +57,11 @@ export function useAgentSidebarPublicationPolling(
           const cached = currentStatesRef.current;
           for (const [id, entry] of Object.entries(states)) {
             const cachedState = cached.get(id);
-            if (cachedState !== undefined && cachedState !== entry.publication_state) {
+            const nextFingerprint = workspacePublicationFingerprint(
+              entry.publication_state,
+              entry.publication_label,
+            );
+            if (cachedState !== undefined && cachedState !== nextFingerprint) {
               changedConversationIds.push(id);
             }
           }

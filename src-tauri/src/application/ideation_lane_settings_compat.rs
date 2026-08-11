@@ -4,7 +4,9 @@ use crate::application::harness_runtime_registry::default_agent_harness_settings
 use crate::domain::agents::{
     AgentHarnessKind, AgentLane, AgentLaneSettings, LogicalEffort, StoredAgentLaneSettings,
 };
-use crate::domain::ideation::{EffortLevel, IdeationEffortSettings, IdeationModelSettings, ModelLevel};
+use crate::domain::ideation::{
+    EffortLevel, IdeationEffortSettings, IdeationModelSettings, ModelLevel,
+};
 use crate::domain::repositories::{
     AgentLaneSettingsRepository, IdeationEffortSettingsRepository, IdeationModelSettingsRepository,
 };
@@ -52,7 +54,9 @@ pub(crate) async fn resolve_configured_lane_settings(
         legacy_global_settings.as_ref(),
     ) {
         return ResolvedConfiguredLaneSettings {
-            configured_harness: legacy_global_settings.as_ref().map(|settings| settings.harness),
+            configured_harness: legacy_global_settings
+                .as_ref()
+                .map(|settings| settings.harness),
             settings: legacy_global_settings,
         };
     }
@@ -65,7 +69,9 @@ pub(crate) async fn resolve_configured_lane_settings(
     }
 
     ResolvedConfiguredLaneSettings {
-        configured_harness: legacy_global_settings.as_ref().map(|settings| settings.harness),
+        configured_harness: legacy_global_settings
+            .as_ref()
+            .map(|settings| settings.harness),
         settings: legacy_global_settings,
     }
 }
@@ -131,11 +137,14 @@ async fn load_legacy_ideation_lane_settings(
         return (None, None);
     }
 
-    let project_model_settings = load_legacy_project_model_settings(project_id, ideation_model_settings_repo).await;
-    let global_model_settings = load_legacy_global_model_settings(ideation_model_settings_repo).await;
+    let project_model_settings =
+        load_legacy_project_model_settings(project_id, ideation_model_settings_repo).await;
+    let global_model_settings =
+        load_legacy_global_model_settings(ideation_model_settings_repo).await;
     let project_effort_settings =
         load_legacy_effort_settings(project_id, ideation_effort_settings_repo).await;
-    let global_effort_settings = load_legacy_effort_settings(None, ideation_effort_settings_repo).await;
+    let global_effort_settings =
+        load_legacy_effort_settings(None, ideation_effort_settings_repo).await;
 
     (
         legacy_lane_settings_from_rows(
@@ -222,32 +231,38 @@ fn legacy_lane_settings_from_rows(
     effort_settings: Option<&IdeationEffortSettings>,
 ) -> Option<AgentLaneSettings> {
     let model = match lane {
-        AgentLane::IdeationPrimary => legacy_model_value(model_settings.map(|settings| &settings.primary_model)),
-        AgentLane::IdeationVerifier => legacy_model_value(model_settings.map(|settings| &settings.verifier_model)),
-        AgentLane::IdeationSubagent => legacy_model_value(
-            model_settings.map(|settings| &settings.ideation_subagent_model),
-        ),
-        AgentLane::IdeationVerifierSubagent => legacy_model_value(
-            model_settings.map(|settings| &settings.verifier_subagent_model),
-        ),
+        AgentLane::IdeationPrimary => {
+            legacy_model_value(model_settings.map(|settings| &settings.primary_model))
+        }
+        AgentLane::IdeationVerifier => {
+            legacy_model_value(model_settings.map(|settings| &settings.verifier_model))
+        }
+        AgentLane::IdeationSubagent => {
+            legacy_model_value(model_settings.map(|settings| &settings.ideation_subagent_model))
+        }
+        AgentLane::IdeationVerifierSubagent => {
+            legacy_model_value(model_settings.map(|settings| &settings.verifier_subagent_model))
+        }
         AgentLane::ExecutionWorker
         | AgentLane::ExecutionReviewer
         | AgentLane::ExecutionReexecutor
-        | AgentLane::ExecutionMerger => None,
+        | AgentLane::ExecutionMerger
+        | AgentLane::ExecutionBranchUpdater => None,
     };
     let effort = match lane {
-        AgentLane::IdeationPrimary => legacy_effort_value(
-            effort_settings.map(|settings| &settings.primary_effort),
-        ),
-        AgentLane::IdeationVerifier => legacy_effort_value(
-            effort_settings.map(|settings| &settings.verifier_effort),
-        ),
+        AgentLane::IdeationPrimary => {
+            legacy_effort_value(effort_settings.map(|settings| &settings.primary_effort))
+        }
+        AgentLane::IdeationVerifier => {
+            legacy_effort_value(effort_settings.map(|settings| &settings.verifier_effort))
+        }
         AgentLane::IdeationSubagent
         | AgentLane::IdeationVerifierSubagent
         | AgentLane::ExecutionWorker
         | AgentLane::ExecutionReviewer
         | AgentLane::ExecutionReexecutor
-        | AgentLane::ExecutionMerger => None,
+        | AgentLane::ExecutionMerger
+        | AgentLane::ExecutionBranchUpdater => None,
     };
 
     if model.is_none() && effort.is_none() {

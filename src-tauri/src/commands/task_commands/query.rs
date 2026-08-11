@@ -3,11 +3,13 @@
 use super::helpers::status_to_label;
 use super::types::{
     PlanGroupInfo, StateTransitionResponse, StatusSummary, StatusTransition,
-    TaskDependencyGraphResponse, TaskGraphEdge, TaskGraphNode, TaskListResponse, TaskResponse,
-    TimelineEvent, TimelineEventType, TimelineEventsResponse,
+    TaskDependencyGraphResponse, TaskGraphEdge, TaskGraphNode, TaskHistoryAvailabilityResponse,
+    TaskListResponse, TaskResponse, TimelineEvent, TimelineEventType, TimelineEventsResponse,
 };
 use crate::application::AppState;
+use crate::commands::execution_task_navigation::resolve_agent_workspace_target_for_task;
 use crate::domain::entities::{InternalStatus, ProjectId, TaskId};
+use crate::domain::execution::ExecutionTaskAgentWorkspace;
 use tauri::State;
 
 /// List tasks for a project with pagination support
@@ -101,6 +103,39 @@ pub async fn list_tasks(
     })
 }
 
+/// Durable session-scoped task history availability, including archived rows.
+#[tauri::command]
+pub async fn get_session_task_history_availability(
+    project_id: String,
+    ideation_session_id: String,
+    state: State<'_, AppState>,
+) -> Result<TaskHistoryAvailabilityResponse, String> {
+    get_session_task_history_availability_for_app_state(
+        project_id,
+        ideation_session_id,
+        state.inner(),
+    )
+    .await
+}
+
+#[doc(hidden)]
+pub(crate) async fn get_session_task_history_availability_for_app_state(
+    project_id: String,
+    ideation_session_id: String,
+    state: &AppState,
+) -> Result<TaskHistoryAvailabilityResponse, String> {
+    let project_id = ProjectId::from_string(project_id);
+    let task_count = state
+        .task_repo
+        .count_tasks(&project_id, true, Some(&ideation_session_id), None)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(TaskHistoryAvailabilityResponse {
+        has_history: task_count > 0,
+        task_count,
+    })
+}
+
 /// Get a single task by ID
 #[tauri::command]
 pub async fn get_task(
@@ -114,6 +149,47 @@ pub async fn get_task(
         .await
         .map(|opt| opt.map(TaskResponse::from))
         .map_err(|e| e.to_string())
+}
+
+/// Resolve the Agent conversation workspace that owns a task, if one exists.
+///
+/// This keeps compatibility navigation for historical task links on the same
+/// workspace-selection path used by execution and merge surfaces.
+#[tauri::command]
+pub async fn get_task_agent_workspace(
+    task_id: String,
+    state: State<'_, AppState>,
+) -> Result<Option<ExecutionTaskAgentWorkspace>, String> {
+    get_task_agent_workspace_for_app_state(task_id, state.inner()).await
+}
+
+#[doc(hidden)]
+pub(crate) async fn get_task_agent_workspace_for_app_state(
+    task_id: String,
+    state: &AppState,
+) -> Result<Option<ExecutionTaskAgentWorkspace>, String> {
+    let task_id = TaskId::from_string(task_id);
+    let Some(task) = state
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
+
+    let plan_branches = state
+        .plan_branch_repo
+        .get_by_project_id(&task.project_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let workspaces = state
+        .agent_conversation_workspace_repo
+        .get_by_project_id(&task.project_id)
+        .await
+        .map_err(|error| error.to_string())?;
+
+    resolve_agent_workspace_target_for_task(state, &task, &plan_branches, &workspaces).await
 }
 
 /// Get the count of archived tasks for a project
@@ -383,6 +459,24 @@ pub async fn get_task_dependency_graph(
     session_id: Option<String>,
     execution_plan_id: Option<String>,
     state: State<'_, AppState>,
+) -> Result<TaskDependencyGraphResponse, String> {
+    get_task_dependency_graph_for_app_state(
+        project_id,
+        include_archived,
+        session_id,
+        execution_plan_id,
+        state.inner(),
+    )
+    .await
+}
+
+#[doc(hidden)]
+pub(crate) async fn get_task_dependency_graph_for_app_state(
+    project_id: String,
+    include_archived: Option<bool>,
+    session_id: Option<String>,
+    execution_plan_id: Option<String>,
+    state: &AppState,
 ) -> Result<TaskDependencyGraphResponse, String> {
     use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -779,7 +873,10 @@ fn categorize_status(status: &InternalStatus, summary: &mut StatusSummary) {
         InternalStatus::Backlog => summary.backlog += 1,
         InternalStatus::Ready => summary.ready += 1,
         InternalStatus::Blocked => summary.blocked += 1,
-        InternalStatus::Executing | InternalStatus::ReExecuting => summary.executing += 1,
+        InternalStatus::Executing
+        | InternalStatus::ReExecuting
+        | InternalStatus::UpdatingPlanBranch
+        | InternalStatus::UpdatingTaskBranch => summary.executing += 1,
         InternalStatus::QaRefining
         | InternalStatus::QaTesting
         | InternalStatus::QaPassed
@@ -799,7 +896,7 @@ fn categorize_status(status: &InternalStatus, summary: &mut StatusSummary) {
             summary.terminal += 1
         }
         // Paused tasks are in a suspended state (not terminal, can resume)
-        InternalStatus::Paused => summary.blocked += 1,
+        InternalStatus::Paused | InternalStatus::BranchUpdateBlocked => summary.blocked += 1,
     }
 }
 

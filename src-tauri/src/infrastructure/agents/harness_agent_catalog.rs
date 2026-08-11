@@ -453,14 +453,46 @@ fn trusted_canonical_agent_name(agent_name: &str) -> Option<&str> {
     }
 }
 
+/// Accepts the same profile-name set as the MCP server's `SAFE_CANONICAL_PROFILE_NAME`
+/// (`plugins/app/ralphx-mcp-server/src/canonical-agent-metadata.ts`), i.e.
+/// `^[a-z0-9]+(?:[_-][a-z0-9]+)*$`. Both validators must stay in lockstep: a profile key
+/// accepted by one layer and rejected by the other makes the profile unloadable at spawn.
+fn is_safe_canonical_profile_component(profile_name: &str) -> bool {
+    let bytes = profile_name.as_bytes();
+    let is_alphanumeric = |byte: u8| byte.is_ascii_lowercase() || byte.is_ascii_digit();
+    let is_separator = |byte: u8| byte == b'-' || byte == b'_';
+
+    if bytes.is_empty() {
+        return false;
+    }
+    // No leading or trailing separator.
+    if !is_alphanumeric(bytes[0]) || !is_alphanumeric(bytes[bytes.len() - 1]) {
+        return false;
+    }
+
+    let mut previous_was_separator = false;
+    for &byte in bytes {
+        if is_alphanumeric(byte) {
+            previous_was_separator = false;
+        } else if is_separator(byte) {
+            // No two adjacent separators; this is what makes `..` unreachable.
+            if previous_was_separator {
+                return false;
+            }
+            previous_was_separator = true;
+        } else {
+            return false;
+        }
+    }
+
+    true
+}
+
 fn trusted_canonical_profile_name(profile_name: &str) -> Option<&str> {
-    let valid_component = !profile_name.is_empty()
-        && !profile_name.contains("..")
+    let valid_component = !profile_name.contains("..")
         && !profile_name.contains('/')
         && !profile_name.contains('\\')
-        && profile_name
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-');
+        && is_safe_canonical_profile_component(profile_name);
 
     if valid_component {
         Some(profile_name)
@@ -469,7 +501,7 @@ fn trusted_canonical_profile_name(profile_name: &str) -> Option<&str> {
     }
 }
 
-fn escape_prompt_context_text(value: &str) -> String {
+pub(crate) fn escape_prompt_context_text(value: &str) -> String {
     value
         .replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -831,6 +863,44 @@ pub fn load_canonical_claude_metadata_for_profile(
         .unwrap_or_default()
 }
 
+/// Resolves the canonical definition a harness-metadata loader should merge from.
+///
+/// Fails closed: an invalid or unknown profile is an error, never a silent fall back to the
+/// base agent definition. A coordinator profile exists precisely to drop `Write`/`Edit`/`Bash`,
+/// so returning the base config on a profile miss would be a privilege escalation.
+///
+/// # Errors
+///
+/// Returns `Err` when `profile_name` is malformed, or when it is well-formed but the agent
+/// declares no such profile. The two cases carry distinguishable messages.
+fn resolve_canonical_definition_for_profile(
+    project_root: &Path,
+    agent_name: &str,
+    profile_name: Option<&str>,
+) -> Result<Option<CanonicalAgentDefinition>, String> {
+    let Some(profile_name) = profile_name else {
+        return Ok(load_canonical_agent_definition(project_root, agent_name));
+    };
+
+    if trusted_canonical_profile_name(profile_name).is_none() {
+        return Err(format!(
+            "Invalid canonical profile name {:?} for agent {}",
+            profile_name,
+            canonical_agent_name(agent_name)
+        ));
+    }
+
+    load_canonical_agent_definition_for_profile(project_root, agent_name, Some(profile_name))
+        .map(Some)
+        .ok_or_else(|| {
+            format!(
+                "Missing canonical profile {:?} for agent {}",
+                Some(profile_name),
+                canonical_agent_name(agent_name)
+            )
+        })
+}
+
 pub fn try_load_canonical_claude_metadata_for_profile(
     project_root: &Path,
     agent_name: &str,
@@ -849,20 +919,8 @@ pub fn try_load_canonical_claude_metadata_for_profile(
             None => CanonicalClaudeAgentMetadata::default(),
         };
 
-    let definition = if profile_name.is_some() {
-        Some(
-            load_canonical_agent_definition_for_profile(project_root, agent_name, profile_name)
-                .ok_or_else(|| {
-                    format!(
-                        "Missing canonical profile {:?} for agent {}",
-                        profile_name,
-                        canonical_agent_name(agent_name)
-                    )
-                })?,
-        )
-    } else {
-        load_canonical_agent_definition(project_root, agent_name)
-    };
+    let definition =
+        resolve_canonical_definition_for_profile(project_root, agent_name, profile_name)?;
 
     let Some(definition) = definition else {
         return Ok(legacy);
@@ -877,10 +935,11 @@ pub fn try_load_canonical_claude_metadata_for_profile(
         .clone()
         .overlay_onto(legacy.clone());
     if merged != legacy {
+        // Log only the validated agent name; metadata structs can carry
+        // credential-adjacent config (e.g. bearer-token env var names) and
+        // must not be dumped into persistent logs.
         tracing::debug!(
-            agent = %canonical_agent_name(agent_name),
-            canonical_claude_metadata = ?definition.harnesses.claude,
-            legacy_claude_metadata = ?legacy,
+            agent = %trusted_canonical_agent_name(agent_name).unwrap_or("<invalid-agent-name>"),
             "Canonical agent metadata overrides or augments Claude harness metadata"
         );
     }
@@ -916,20 +975,8 @@ pub fn try_load_canonical_codex_metadata_for_profile(
     agent_name: &str,
     profile_name: Option<&str>,
 ) -> Result<CanonicalCodexAgentMetadata, String> {
-    let definition = if profile_name.is_some() {
-        Some(
-            load_canonical_agent_definition_for_profile(project_root, agent_name, profile_name)
-                .ok_or_else(|| {
-                    format!(
-                        "Missing canonical profile {:?} for agent {}",
-                        profile_name,
-                        canonical_agent_name(agent_name)
-                    )
-                })?,
-        )
-    } else {
-        load_canonical_agent_definition(project_root, agent_name)
-    };
+    let definition =
+        resolve_canonical_definition_for_profile(project_root, agent_name, profile_name)?;
 
     if let Some(definition) = definition {
         if !definition.harnesses.codex.is_empty() {
@@ -944,10 +991,12 @@ pub fn try_load_canonical_codex_metadata_for_profile(
                         )
                     })?;
                 if fallback != definition.harnesses.codex {
+                    // Log only the validated agent name; metadata structs can
+                    // carry credential-adjacent config (e.g. bearer-token env
+                    // var names) and must not be dumped into persistent logs.
                     tracing::debug!(
-                        agent = %canonical_agent_name(agent_name),
-                        canonical_codex_metadata = ?definition.harnesses.codex,
-                        harness_codex_metadata = ?fallback,
+                        agent = %trusted_canonical_agent_name(agent_name)
+                            .unwrap_or("<invalid-agent-name>"),
                         "Canonical agent metadata overrides divergent Codex harness metadata"
                     );
                 }
@@ -1068,9 +1117,21 @@ fn build_generated_delegation_appendix(definition: &CanonicalAgentDefinition) ->
         ),
         "- Prefer the narrowest delegate that matches the required capability. Keep read-only analysis on read-only delegates.".to_string(),
         "- Use `delegate_start` to launch an allowed canonical agent with a bounded prompt and exact output contract.".to_string(),
+        "- When delegating an existing item from your current task ledger, pass its `task_ref`; RalphX assigns it atomically, so the delegate must not claim or mirror it.".to_string(),
         "- Use `delegate_wait` before depending on delegated output.".to_string(),
+        "- For short waits, call `delegate_wait` once with `wait_timeout_ms`; the backend blocks until a delegate settles. Do not spin on repeated immediate `delegate_wait` calls.".to_string(),
+        "- For long waits, call `delegate_park` with the outstanding job ids and then END YOUR TURN. RalphX resumes you automatically when the wake condition is met, on failure, or at the deadline.".to_string(),
+        "- Parking is not abandonment: state what you are waiting for before ending the turn.".to_string(),
         "- Use `delegate_cancel` only when delegated work is stale, superseded, or invalidated.".to_string(),
         "- The MCP transport injects caller identity automatically; do not spoof another agent.".to_string(),
+        "### Delegated Implementation Coordination".to_string(),
+        "Only when implementation coordination is within your live role and permitted by repository and profile restrictions (otherwise do not direct mutation or validation):".to_string(),
+        "- Retain the full objective, integration decisions, integrated review, and final verification; decompose work into bounded, dependency-aware slices.".to_string(),
+        "- Give each delegate an outcome, exclusive writable files or modules, established seam, required behavior, prohibited scope, acceptance criteria, permitted validation, and dependencies.".to_string(),
+        "- Exploration may cover owned files and immediate dependencies needed for safe implementation.".to_string(),
+        "- Parallel mutation requires disjoint mutation sets, including generated artifacts, and disjoint command resource sets; prefer one serialized heavyweight-validation lane while implementation delegates add behavioral tests and only permitted cheap or local checks.".to_string(),
+        "- Directly verify suspected defects before a narrow, evidence-backed revision; review the integrated workspace and run final focused validation once after revisions settle.".to_string(),
+        "- Do not publish unless the user requested it. Repository and profile rules remain authoritative for exact commands, cleanup, resource conflicts, and stricter permissions.".to_string(),
     ];
 
     let general_target_guidance = policy
@@ -1124,6 +1185,9 @@ fn build_generated_agent_task_appendix(
     let update_tool = tool_name("update_agent_task");
     let claim_tool = tool_name("claim_agent_task");
     let complete_tool = tool_name("complete_agent_task");
+    let get_assignment_tool = tool_name("get_delegate_assignment");
+    let complete_assignment_tool = tool_name("complete_delegate_assignment");
+    let release_assignment_tool = tool_name("release_delegate_assignment");
     if [
         create_tool,
         get_tool,
@@ -1225,6 +1289,23 @@ fn build_generated_agent_task_appendix(
         lines.push(format!("<rule>Use `{tool}` when you need full details, including resolved blockers that list views may omit.</rule>"));
     }
     lines.push("</tool_guidance>".to_string());
+
+    if let Some(get_assignment_tool) = get_assignment_tool {
+        lines.extend(
+            [
+                "<delegate_assignment_contract>".to_string(),
+                "<rule>In a delegated context, the ordinary agent-task tools operate only on your private delegate-local ledger. They never expose or mirror the caller ledger.</rule>".to_string(),
+                format!("<rule>Use `{get_assignment_tool}` to inspect the exact caller task bound to this delegated run. Do not recreate that assigned task in your local ledger.</rule>"),
+            ],
+        );
+        if let Some(complete_assignment_tool) = complete_assignment_tool {
+            lines.push(format!("<rule>After every meaningful local task is done or dropped, use `{complete_assignment_tool}` to request settlement. The caller task becomes done only if this exact run then terminates successfully.</rule>"));
+        }
+        if let Some(release_assignment_tool) = release_assignment_tool {
+            lines.push(format!("<rule>If the assigned work cannot be completed, use `{release_assignment_tool}` with a concise reason. Then stop work and return the final handoff so backend settlement can reopen the caller task.</rule>"));
+        }
+        lines.push("</delegate_assignment_contract>".to_string());
+    }
 
     if supports_full_task_flow {
         lines.extend(

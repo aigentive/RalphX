@@ -9,6 +9,22 @@ use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use rusqlite::{params_from_iter, Connection};
 
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort};
+
+pub(crate) use crate::infrastructure::agent_run_error_message::truncate_persisted_error_message;
+
+fn parse_usage_provenance(value: Option<String>) -> rusqlite::Result<Option<UsageProvenance>> {
+    value
+        .map(|value| {
+            value.parse::<UsageProvenance>().map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, error)),
+                )
+            })
+        })
+        .transpose()
+}
 /// Parse datetime string handling both RFC3339 and SQLite's CURRENT_TIMESTAMP formats
 fn parse_datetime(s: &str) -> DateTime<Utc> {
     // Try RFC3339 first (e.g., "2026-01-26T06:42:37.662598+00:00")
@@ -25,9 +41,11 @@ fn parse_datetime(s: &str) -> DateTime<Utc> {
     Utc::now()
 }
 
+use crate::domain::entities::agent_run::PersonaRunAttribution;
 use crate::domain::entities::{
-    AgentRun, AgentRunAttribution, AgentRunId, AgentRunStatus, AgentRunUsage, ChatContextType,
-    ChatConversation, ChatConversationId, InterruptedConversation,
+    AgentRun, AgentRunAttribution, AgentRunId, AgentRunStatus, AgentRunUsage, AutomationId,
+    AutomationRunId, ChatContextType, ChatConversation, ChatConversationId, CoordinationMode,
+    InterruptedConversation, ProviderUsageSnapshot, RuntimeSource, UsageCapture, UsageProvenance,
 };
 
 /// Map a SQLite row to an AgentRun (expects columns: id, conversation_id, status,
@@ -65,13 +83,44 @@ fn row_to_agent_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentRun> {
         cache_creation_tokens: row.get("cache_creation_tokens")?,
         cache_read_tokens: row.get("cache_read_tokens")?,
         estimated_usd: row.get("estimated_usd")?,
+        usage_provenance: parse_usage_provenance(row.get("usage_provenance")?)?,
+        raw_usage_snapshot: {
+            let snapshot = ProviderUsageSnapshot {
+                input_tokens: row.get("raw_usage_input_tokens")?,
+                output_tokens: row.get("raw_usage_output_tokens")?,
+                cache_creation_tokens: row.get("raw_usage_cache_creation_tokens")?,
+                cache_read_tokens: row.get("raw_usage_cache_read_tokens")?,
+                estimated_usd: row.get("raw_usage_estimated_usd")?,
+            };
+            (!snapshot.as_usage().is_empty()).then_some(snapshot)
+        },
         approval_policy: row.get("approval_policy")?,
         sandbox_mode: row.get("sandbox_mode")?,
+        agent_name: row.get("agent_name")?,
+        launch_role: row.get("launch_role")?,
+        runtime_source: row
+            .get::<_, Option<String>>("runtime_source")?
+            .and_then(|value| value.parse::<RuntimeSource>().ok()),
         run_chain_id: row.get("run_chain_id")?,
         parent_run_id: row.get("parent_run_id")?,
+        action_kind: row
+            .get::<_, Option<String>>("action_kind")?
+            .and_then(|value| value.parse().ok()),
+        action_context_id: row.get("action_context_id")?,
+        action_target_id: row.get("action_target_id")?,
+        persona_id: row.get("persona_id")?,
+        persona_slug: row.get("persona_slug")?,
+        persona_version: row.get("persona_version")?,
+        persona_content_hash: row.get("persona_content_hash")?,
+        persona_injected: row
+            .get::<_, Option<i64>>("persona_injected")?
+            .map(|value| value != 0),
+        persona_skipped_reason: row.get("persona_skipped_reason")?,
     })
 }
-use crate::domain::repositories::{AgentRunRepository, ORPHANED_AGENT_RUN_ON_APP_RESTART};
+use crate::domain::repositories::{
+    AgentRunRepository, ORPHANED_AGENT_RUN_ON_APP_RESTART, PRUNED_STALE_AGENT_RUN,
+};
 use crate::error::AppResult;
 
 use super::DbConnection;
@@ -108,8 +157,14 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                         harness, provider_session_id, upstream_provider, provider_profile, logical_model, effective_model_id,
                         logical_effort, effective_effort, service_tier, input_tokens, output_tokens,
                         cache_creation_tokens, cache_read_tokens, estimated_usd,
-                        approval_policy, sandbox_mode, run_chain_id, parent_run_id
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
+                        usage_provenance, raw_usage_input_tokens, raw_usage_output_tokens,
+                        raw_usage_cache_creation_tokens, raw_usage_cache_read_tokens,
+                        raw_usage_estimated_usd,
+                        approval_policy, sandbox_mode, agent_name, launch_role, runtime_source, run_chain_id, parent_run_id,
+                        action_kind, action_context_id, action_target_id,
+                        persona_id, persona_slug, persona_version, persona_content_hash,
+                        persona_injected, persona_skipped_reason
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42)",
                     rusqlite::params![
                         run.id.as_str(),
                         run.conversation_id.as_str(),
@@ -131,10 +186,28 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                         run.cache_creation_tokens,
                         run.cache_read_tokens,
                         run.estimated_usd,
+                        run.usage_provenance.map(|value| value.to_string()),
+                        run.raw_usage_snapshot.as_ref().and_then(|value| value.input_tokens),
+                        run.raw_usage_snapshot.as_ref().and_then(|value| value.output_tokens),
+                        run.raw_usage_snapshot.as_ref().and_then(|value| value.cache_creation_tokens),
+                        run.raw_usage_snapshot.as_ref().and_then(|value| value.cache_read_tokens),
+                        run.raw_usage_snapshot.as_ref().and_then(|value| value.estimated_usd),
                         run.approval_policy,
                         run.sandbox_mode,
+                        run.agent_name,
+                        run.launch_role,
+                        run.runtime_source.map(|value| value.to_string()),
                         run.run_chain_id,
                         run.parent_run_id,
+                        run.action_kind.map(|value| value.to_string()),
+                        run.action_context_id,
+                        run.action_target_id,
+                        run.persona_id,
+                        run.persona_slug,
+                        run.persona_version,
+                        run.persona_content_hash,
+                        run.persona_injected,
+                        run.persona_skipped_reason,
                     ],
                 )?;
                 Ok(run)
@@ -151,7 +224,12 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                             harness, provider_session_id, upstream_provider, provider_profile, logical_model, effective_model_id,
                             logical_effort, effective_effort, service_tier, input_tokens, output_tokens,
                             cache_creation_tokens, cache_read_tokens, estimated_usd,
-                            approval_policy, sandbox_mode, run_chain_id, parent_run_id
+                            usage_provenance, raw_usage_input_tokens, raw_usage_output_tokens,
+                            raw_usage_cache_creation_tokens, raw_usage_cache_read_tokens, raw_usage_estimated_usd,
+                            approval_policy, sandbox_mode, agent_name, launch_role, runtime_source, run_chain_id, parent_run_id,
+                            action_kind, action_context_id, action_target_id,
+                            persona_id, persona_slug, persona_version, persona_content_hash,
+                            persona_injected, persona_skipped_reason
                      FROM agent_runs WHERE id = ?1",
                     [&id],
                     |row| row_to_agent_run(row),
@@ -176,7 +254,12 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                             harness, provider_session_id, upstream_provider, provider_profile, logical_model, effective_model_id,
                             logical_effort, effective_effort, service_tier, input_tokens, output_tokens,
                             cache_creation_tokens, cache_read_tokens, estimated_usd,
-                            approval_policy, sandbox_mode, run_chain_id, parent_run_id
+                            usage_provenance, raw_usage_input_tokens, raw_usage_output_tokens,
+                            raw_usage_cache_creation_tokens, raw_usage_cache_read_tokens, raw_usage_estimated_usd,
+                            approval_policy, sandbox_mode, agent_name, launch_role, runtime_source, run_chain_id, parent_run_id,
+                            action_kind, action_context_id, action_target_id,
+                            persona_id, persona_slug, persona_version, persona_content_hash,
+                            persona_injected, persona_skipped_reason
                      FROM agent_runs WHERE id IN ({placeholders})"
                 );
                 let mut stmt = conn.prepare(&sql)?;
@@ -200,10 +283,50 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                             harness, provider_session_id, upstream_provider, provider_profile, logical_model, effective_model_id,
                             logical_effort, effective_effort, service_tier, input_tokens, output_tokens,
                             cache_creation_tokens, cache_read_tokens, estimated_usd,
-                            approval_policy, sandbox_mode, run_chain_id, parent_run_id
+                            usage_provenance, raw_usage_input_tokens, raw_usage_output_tokens,
+                            raw_usage_cache_creation_tokens, raw_usage_cache_read_tokens, raw_usage_estimated_usd,
+                            approval_policy, sandbox_mode, agent_name, launch_role, runtime_source, run_chain_id, parent_run_id,
+                            action_kind, action_context_id, action_target_id,
+                            persona_id, persona_slug, persona_version, persona_content_hash,
+                            persona_injected, persona_skipped_reason
                      FROM agent_runs WHERE conversation_id = ?1 ORDER BY started_at DESC LIMIT 1",
                     [&conversation_id],
                     |row| row_to_agent_run(row),
+                )
+            })
+            .await
+    }
+
+    async fn get_latest_completed_for_provider_session(
+        &self,
+        conversation_id: &ChatConversationId,
+        harness: AgentHarnessKind,
+        provider_session_id: &str,
+    ) -> AppResult<Option<AgentRun>> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let harness = harness.to_string();
+        let provider_session_id = provider_session_id.to_string();
+        self.db
+            .query_optional(move |conn| {
+                conn.query_row(
+                    "SELECT id, conversation_id, status, started_at, completed_at, error_message,
+                            harness, provider_session_id, upstream_provider, provider_profile, logical_model, effective_model_id,
+                            logical_effort, effective_effort, service_tier, input_tokens, output_tokens,
+                            cache_creation_tokens, cache_read_tokens, estimated_usd,
+                            usage_provenance, raw_usage_input_tokens, raw_usage_output_tokens,
+                            raw_usage_cache_creation_tokens, raw_usage_cache_read_tokens, raw_usage_estimated_usd,
+                            approval_policy, sandbox_mode, agent_name, launch_role, runtime_source, run_chain_id, parent_run_id,
+                            action_kind, action_context_id, action_target_id,
+                            persona_id, persona_slug, persona_version, persona_content_hash,
+                            persona_injected, persona_skipped_reason
+                     FROM agent_runs
+                     WHERE conversation_id = ?1
+                       AND harness = ?2
+                       AND provider_session_id = ?3
+                       AND status = 'completed'
+                     ORDER BY started_at DESC LIMIT 1",
+                    rusqlite::params![conversation_id, harness, provider_session_id],
+                    row_to_agent_run,
                 )
             })
             .await
@@ -221,10 +344,95 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                             harness, provider_session_id, upstream_provider, provider_profile, logical_model, effective_model_id,
                             logical_effort, effective_effort, service_tier, input_tokens, output_tokens,
                             cache_creation_tokens, cache_read_tokens, estimated_usd,
-                            approval_policy, sandbox_mode, run_chain_id, parent_run_id
+                            usage_provenance, raw_usage_input_tokens, raw_usage_output_tokens,
+                            raw_usage_cache_creation_tokens, raw_usage_cache_read_tokens, raw_usage_estimated_usd,
+                            approval_policy, sandbox_mode, agent_name, launch_role, runtime_source, run_chain_id, parent_run_id,
+                            action_kind, action_context_id, action_target_id,
+                            persona_id, persona_slug, persona_version, persona_content_hash,
+                            persona_injected, persona_skipped_reason
                      FROM agent_runs WHERE conversation_id = ?1 AND status = 'running' ORDER BY started_at DESC LIMIT 1",
                     [&conversation_id],
                     |row| row_to_agent_run(row),
+                )
+            })
+            .await
+    }
+
+    async fn get_latest_action(
+        &self,
+        conversation_id: &crate::domain::entities::ChatConversationId,
+        action_kind: crate::domain::entities::AgentRunActionKind,
+        action_context_id: &str,
+        action_target_id: &str,
+    ) -> AppResult<Option<AgentRun>> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let action_kind = action_kind.to_string();
+        let action_context_id = action_context_id.to_string();
+        let action_target_id = action_target_id.to_string();
+        self.db
+            .query_optional(move |conn| {
+                conn.query_row(
+                    "SELECT id, conversation_id, status, started_at, completed_at, error_message,
+                            harness, provider_session_id, upstream_provider, provider_profile, logical_model, effective_model_id,
+                            logical_effort, effective_effort, service_tier, input_tokens, output_tokens,
+                            cache_creation_tokens, cache_read_tokens, estimated_usd,
+                            usage_provenance, raw_usage_input_tokens, raw_usage_output_tokens,
+                            raw_usage_cache_creation_tokens, raw_usage_cache_read_tokens, raw_usage_estimated_usd,
+                            approval_policy, sandbox_mode, agent_name, launch_role, runtime_source, run_chain_id, parent_run_id,
+                            action_kind, action_context_id, action_target_id,
+                            persona_id, persona_slug, persona_version, persona_content_hash,
+                            persona_injected, persona_skipped_reason
+                     FROM agent_runs
+                     WHERE conversation_id = ?1 AND action_kind = ?2
+                       AND action_context_id = ?3 AND action_target_id = ?4
+                     ORDER BY started_at DESC LIMIT 1",
+                    rusqlite::params![
+                        conversation_id,
+                        action_kind,
+                        action_context_id,
+                        action_target_id
+                    ],
+                    row_to_agent_run,
+                )
+            })
+            .await
+    }
+
+    async fn get_active_action(
+        &self,
+        conversation_id: &crate::domain::entities::ChatConversationId,
+        action_kind: crate::domain::entities::AgentRunActionKind,
+        action_context_id: &str,
+        action_target_id: &str,
+    ) -> AppResult<Option<AgentRun>> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let action_kind = action_kind.to_string();
+        let action_context_id = action_context_id.to_string();
+        let action_target_id = action_target_id.to_string();
+        self.db
+            .query_optional(move |conn| {
+                conn.query_row(
+                    "SELECT id, conversation_id, status, started_at, completed_at, error_message,
+                            harness, provider_session_id, upstream_provider, provider_profile, logical_model, effective_model_id,
+                            logical_effort, effective_effort, service_tier, input_tokens, output_tokens,
+                            cache_creation_tokens, cache_read_tokens, estimated_usd,
+                            usage_provenance, raw_usage_input_tokens, raw_usage_output_tokens,
+                            raw_usage_cache_creation_tokens, raw_usage_cache_read_tokens, raw_usage_estimated_usd,
+                            approval_policy, sandbox_mode, agent_name, launch_role, runtime_source, run_chain_id, parent_run_id,
+                            action_kind, action_context_id, action_target_id,
+                            persona_id, persona_slug, persona_version, persona_content_hash,
+                            persona_injected, persona_skipped_reason
+                     FROM agent_runs
+                     WHERE conversation_id = ?1 AND status = 'running'
+                       AND action_kind = ?2 AND action_context_id = ?3 AND action_target_id = ?4
+                     ORDER BY started_at DESC LIMIT 1",
+                    rusqlite::params![
+                        conversation_id,
+                        action_kind,
+                        action_context_id,
+                        action_target_id
+                    ],
+                    row_to_agent_run,
                 )
             })
             .await
@@ -242,7 +450,12 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                             harness, provider_session_id, upstream_provider, provider_profile, logical_model, effective_model_id,
                             logical_effort, effective_effort, service_tier, input_tokens, output_tokens,
                             cache_creation_tokens, cache_read_tokens, estimated_usd,
-                            approval_policy, sandbox_mode, run_chain_id, parent_run_id
+                            usage_provenance, raw_usage_input_tokens, raw_usage_output_tokens,
+                            raw_usage_cache_creation_tokens, raw_usage_cache_read_tokens, raw_usage_estimated_usd,
+                            approval_policy, sandbox_mode, agent_name, launch_role, runtime_source, run_chain_id, parent_run_id,
+                            action_kind, action_context_id, action_target_id,
+                            persona_id, persona_slug, persona_version, persona_content_hash,
+                            persona_injected, persona_skipped_reason
                      FROM agent_runs WHERE conversation_id = ?1 ORDER BY started_at DESC",
                 )?;
                 let runs = stmt
@@ -261,7 +474,11 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                 conn.execute(
                     "UPDATE agent_runs
                      SET status = ?1,
-                         completed_at = CASE WHEN ?1 = 'running' THEN NULL ELSE completed_at END,
+                         completed_at = CASE
+                             WHEN ?1 = 'running' THEN NULL
+                             WHEN completed_at IS NULL THEN strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now')
+                             ELSE completed_at
+                         END,
                          error_message = CASE WHEN ?1 = 'running' THEN NULL ELSE error_message END
                      WHERE id = ?2",
                     rusqlite::params![status_str, id],
@@ -293,6 +510,55 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                         id,
                     ],
                 )?;
+                Ok(())
+            })
+            .await
+    }
+
+    async fn replace_usage_capture(
+        &self,
+        id: &AgentRunId,
+        capture: &UsageCapture,
+    ) -> AppResult<()> {
+        let id = id.as_str().to_string();
+        let capture = capture.clone();
+        self.db
+            .run(move |conn| {
+                let raw = capture.raw_snapshot.unwrap_or_default();
+                let affected = conn.execute(
+                    "UPDATE agent_runs
+                     SET input_tokens = ?1,
+                         output_tokens = ?2,
+                         cache_creation_tokens = ?3,
+                         cache_read_tokens = ?4,
+                         estimated_usd = ?5,
+                         usage_provenance = ?6,
+                         raw_usage_input_tokens = ?7,
+                         raw_usage_output_tokens = ?8,
+                         raw_usage_cache_creation_tokens = ?9,
+                         raw_usage_cache_read_tokens = ?10,
+                         raw_usage_estimated_usd = ?11
+                     WHERE id = ?12",
+                    rusqlite::params![
+                        capture.normalized.input_tokens,
+                        capture.normalized.output_tokens,
+                        capture.normalized.cache_creation_tokens,
+                        capture.normalized.cache_read_tokens,
+                        capture.normalized.estimated_usd,
+                        capture.provenance.to_string(),
+                        raw.input_tokens,
+                        raw.output_tokens,
+                        raw.cache_creation_tokens,
+                        raw.cache_read_tokens,
+                        raw.estimated_usd,
+                        id,
+                    ],
+                )?;
+                if affected == 0 {
+                    return Err(crate::error::AppError::NotFound(format!(
+                        "Agent run not found: {id}"
+                    )));
+                }
                 Ok(())
             })
             .await
@@ -337,6 +603,38 @@ impl AgentRunRepository for SqliteAgentRunRepository {
             .await
     }
 
+    async fn set_persona_attribution(
+        &self,
+        id: &AgentRunId,
+        attribution: PersonaRunAttribution,
+    ) -> AppResult<()> {
+        let id = id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "UPDATE agent_runs
+                     SET persona_id = ?1,
+                         persona_slug = ?2,
+                         persona_version = ?3,
+                         persona_content_hash = ?4,
+                         persona_injected = ?5,
+                         persona_skipped_reason = ?6
+                     WHERE id = ?7",
+                    rusqlite::params![
+                        attribution.persona_id,
+                        attribution.persona_slug,
+                        attribution.persona_version,
+                        attribution.persona_content_hash,
+                        attribution.injected,
+                        attribution.skipped_reason,
+                        id,
+                    ],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
     async fn complete(&self, id: &AgentRunId) -> AppResult<()> {
         let id = id.as_str().to_string();
         self.db
@@ -350,18 +648,68 @@ impl AgentRunRepository for SqliteAgentRunRepository {
             .await
     }
 
+    async fn complete_if_running(&self, id: &AgentRunId) -> AppResult<bool> {
+        let id = id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let changed = conn.execute(
+                    "UPDATE agent_runs
+                     SET status = 'completed', completed_at = ?1, error_message = NULL
+                     WHERE id = ?2 AND status = 'running'",
+                    rusqlite::params![Utc::now().to_rfc3339(), id],
+                )?;
+                Ok(changed == 1)
+            })
+            .await
+    }
+
+    async fn complete_if_prune_cancelled(&self, id: &AgentRunId) -> AppResult<bool> {
+        let id = id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let changed = conn.execute(
+                    "UPDATE agent_runs
+                     SET status = 'completed', completed_at = ?1, error_message = NULL
+                     WHERE id = ?2 AND status = 'cancelled' AND error_message = ?3",
+                    rusqlite::params![Utc::now().to_rfc3339(), id, PRUNED_STALE_AGENT_RUN],
+                )?;
+                Ok(changed == 1)
+            })
+            .await
+    }
+
     async fn fail(&self, id: &AgentRunId, error_message: &str) -> AppResult<()> {
         let id = id.as_str().to_string();
-        let error_message = error_message.to_string();
-        self.db
+        let error_message = truncate_persisted_error_message(error_message);
+        let logged_id = id.clone();
+        let logged_error = error_message.clone();
+        let conversation_id = self
+            .db
             .run(move |conn| {
                 conn.execute(
                     "UPDATE agent_runs SET status = 'failed', completed_at = ?1, error_message = ?2 WHERE id = ?3",
                     rusqlite::params![Utc::now().to_rfc3339(), error_message, id],
                 )?;
-                Ok(())
+                let conversation_id = conn
+                    .query_row(
+                        "SELECT conversation_id FROM agent_runs WHERE id = ?1",
+                        rusqlite::params![id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .ok();
+                Ok(conversation_id)
             })
-            .await
+            .await?;
+
+        // A run reaching `failed` must never be visible only as a DB row; the
+        // original incident left no ERROR/WARN trace at all for a 20-minute run.
+        tracing::error!(
+            agent_run_id = %logged_id,
+            conversation_id = conversation_id.as_deref().unwrap_or("unknown"),
+            cause = %logged_error,
+            "Agent run transitioned to failed"
+        );
+        Ok(())
     }
 
     async fn cancel(&self, id: &AgentRunId) -> AppResult<()> {
@@ -371,6 +719,20 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                 conn.execute(
                     "UPDATE agent_runs SET status = 'cancelled', completed_at = ?1, error_message = NULL WHERE id = ?2",
                     rusqlite::params![Utc::now().to_rfc3339(), id],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    async fn cancel_with_reason(&self, id: &AgentRunId, reason: &str) -> AppResult<()> {
+        let id = id.as_str().to_string();
+        let reason = reason.to_string();
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "UPDATE agent_runs SET status = 'cancelled', completed_at = ?1, error_message = ?2 WHERE id = ?3 AND status = 'running'",
+                    rusqlite::params![Utc::now().to_rfc3339(), reason, id],
                 )?;
                 Ok(())
             })
@@ -466,6 +828,13 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                         c.provider_harness as conv_provider_harness,
                         c.upstream_provider as conv_upstream_provider,
                         c.provider_profile as conv_provider_profile,
+                        c.bound_agent_name as conv_bound_agent_name,
+                        c.persona_id as conv_persona_id,
+                        c.builder_draft_id as conv_builder_draft_id,
+                        c.builder_result_persona_id as conv_builder_result_persona_id,
+                        c.coordination_mode as conv_coordination_mode,
+                        c.automation_id,
+                        c.automation_run_id,
                         c.title,
                         c.message_count,
                         c.last_message_at,
@@ -491,10 +860,28 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                         ar.cache_creation_tokens,
                         ar.cache_read_tokens,
                         ar.estimated_usd,
+                        ar.usage_provenance,
+                        ar.raw_usage_input_tokens,
+                        ar.raw_usage_output_tokens,
+                        ar.raw_usage_cache_creation_tokens,
+                        ar.raw_usage_cache_read_tokens,
+                        ar.raw_usage_estimated_usd,
                         ar.approval_policy,
                         ar.sandbox_mode,
+                        ar.agent_name,
+                        ar.launch_role,
+                        ar.runtime_source,
                         ar.run_chain_id,
-                        ar.parent_run_id
+                        ar.parent_run_id,
+                        ar.action_kind,
+                        ar.action_context_id,
+                        ar.action_target_id,
+                        ar.persona_id,
+                        ar.persona_slug,
+                        ar.persona_version,
+                        ar.persona_content_hash,
+                        ar.persona_injected,
+                        ar.persona_skipped_reason
                     FROM chat_conversations c
                     INNER JOIN agent_runs ar ON c.id = ar.conversation_id
                     WHERE (
@@ -523,6 +910,17 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                         let upstream_provider: Option<String> =
                             row.get("conv_upstream_provider")?;
                         let provider_profile: Option<String> = row.get("conv_provider_profile")?;
+                        let bound_agent_name: Option<String> = row.get("conv_bound_agent_name")?;
+                        let persona_id: Option<String> = row.get("conv_persona_id")?;
+                        let builder_draft_id: Option<String> = row.get("conv_builder_draft_id")?;
+                        let builder_result_persona_id: Option<String> =
+                            row.get("conv_builder_result_persona_id")?;
+                        let coordination_mode = row
+                            .get::<_, Option<String>>("conv_coordination_mode")
+                            .ok()
+                            .flatten()
+                            .and_then(|value| value.parse::<CoordinationMode>().ok())
+                            .unwrap_or_default();
                         let conv_created_at_str: String = row.get("conv_created_at")?;
                         let conv_updated_at_str: String = row.get("conv_updated_at")?;
                         let last_message_at_str: Option<String> = row.get("last_message_at")?;
@@ -538,6 +936,17 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                             upstream_provider,
                             provider_profile,
                             agent_mode: None,
+                            bound_agent_name,
+                            persona_id,
+                            builder_draft_id,
+                            builder_result_persona_id,
+                            coordination_mode,
+                            automation_id: row
+                                .get::<_, Option<String>>("automation_id")?
+                                .map(AutomationId::from_string),
+                            automation_run_id: row
+                                .get::<_, Option<String>>("automation_run_id")?
+                                .map(AutomationRunId::from_string),
                             title: row.get("title")?,
                             message_count: row.get("message_count")?,
                             last_message_at: last_message_at_str.map(|s| parse_datetime(&s)),
@@ -585,10 +994,40 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                             cache_creation_tokens: row.get("cache_creation_tokens")?,
                             cache_read_tokens: row.get("cache_read_tokens")?,
                             estimated_usd: row.get("estimated_usd")?,
+                            usage_provenance: parse_usage_provenance(row.get("usage_provenance")?)?,
+                            raw_usage_snapshot: {
+                                let snapshot = ProviderUsageSnapshot {
+                                    input_tokens: row.get("raw_usage_input_tokens")?,
+                                    output_tokens: row.get("raw_usage_output_tokens")?,
+                                    cache_creation_tokens: row
+                                        .get("raw_usage_cache_creation_tokens")?,
+                                    cache_read_tokens: row.get("raw_usage_cache_read_tokens")?,
+                                    estimated_usd: row.get("raw_usage_estimated_usd")?,
+                                };
+                                (!snapshot.as_usage().is_empty()).then_some(snapshot)
+                            },
                             approval_policy: row.get("approval_policy")?,
                             sandbox_mode: row.get("sandbox_mode")?,
+                            agent_name: row.get("agent_name")?,
+                            launch_role: row.get("launch_role")?,
+                            runtime_source: row
+                                .get::<_, Option<String>>("runtime_source")?
+                                .and_then(|value| value.parse::<RuntimeSource>().ok()),
                             run_chain_id: row.get("run_chain_id")?,
                             parent_run_id: row.get("parent_run_id")?,
+                            action_kind: row
+                                .get::<_, Option<String>>("action_kind")?
+                                .and_then(|value| value.parse().ok()),
+                            action_context_id: row.get("action_context_id")?,
+                            action_target_id: row.get("action_target_id")?,
+                            persona_id: row.get("persona_id")?,
+                            persona_slug: row.get("persona_slug")?,
+                            persona_version: row.get("persona_version")?,
+                            persona_content_hash: row.get("persona_content_hash")?,
+                            persona_injected: row
+                                .get::<_, Option<i64>>("persona_injected")?
+                                .map(|value| value != 0),
+                            persona_skipped_reason: row.get("persona_skipped_reason")?,
                         };
 
                         Ok(InterruptedConversation {

@@ -9,19 +9,10 @@ vi.mock("@/stores/projectStore", () => ({
   ),
 }));
 
-vi.mock("@/hooks/useProjectStats", () => ({
-  useProjectStats: vi.fn(() => ({
-    data: { taskCount: 0 },
-    isLoading: false,
-    isError: false,
-  })),
-}));
-
 let mockFeatureFlags: FeatureFlags = {
   activityPage: true,
   extensibilityPage: true,
-  battleMode: true,
-  teamMode: false,
+  automationsPage: true,
   atlassianOauth: false,
   ticketingDashboard: true,
 };
@@ -56,8 +47,7 @@ describe("LeftNavRail", () => {
     mockFeatureFlags = {
       activityPage: true,
       extensibilityPage: true,
-      battleMode: true,
-      teamMode: false,
+      automationsPage: true,
       atlassianOauth: false,
       ticketingDashboard: true,
     };
@@ -75,13 +65,18 @@ describe("LeftNavRail", () => {
     render(<LeftNavRail currentView="agents" onViewChange={onViewChange} />);
 
     const separator = screen.getByTestId("nav-dashboard-separator");
+    const automationsButton = screen.getByTestId("nav-automations");
     const ticketingButton = screen.getByTestId("nav-ticketing");
     const githubButton = screen.getByTestId("nav-github");
     const granolaButton = screen.getByTestId("nav-granola");
+    expect(automationsButton).toBeInTheDocument();
     expect(separator).toBeInTheDocument();
     expect(ticketingButton).toBeInTheDocument();
     expect(githubButton).toBeInTheDocument();
     expect(granolaButton).toBeInTheDocument();
+    expect(automationsButton.compareDocumentPosition(separator)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
     expect(separator.compareDocumentPosition(ticketingButton)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
@@ -100,6 +95,12 @@ describe("LeftNavRail", () => {
 
     fireEvent.click(granolaButton);
     expect(onViewChange).toHaveBeenCalledWith("granola");
+  });
+
+  it("keeps Insights visible when task-pipeline stats are sparse", () => {
+    render(<LeftNavRail currentView="agents" onViewChange={vi.fn()} />);
+
+    expect(screen.getByTestId("nav-insights")).toBeInTheDocument();
   });
 
   it("hides the Ticketing entry but keeps GitHub and Granola when no ticketing provider is enabled", () => {
@@ -161,6 +162,14 @@ describe("LeftNavRail", () => {
     expect(screen.queryByTestId("nav-granola")).not.toBeInTheDocument();
   });
 
+  it("hides the Automations entry when the feature flag is off", () => {
+    mockFeatureFlags = { ...mockFeatureFlags, automationsPage: false };
+
+    render(<LeftNavRail currentView="agents" onViewChange={vi.fn()} />);
+
+    expect(screen.queryByTestId("nav-automations")).not.toBeInTheDocument();
+  });
+
   it("filters dashboard items out of the primary nav section", () => {
     render(
       <LeftNavRail
@@ -174,9 +183,29 @@ describe("LeftNavRail", () => {
     expect(dashboardGroup).toContainElement(screen.getByTestId("nav-ticketing"));
     expect(dashboardGroup).toContainElement(screen.getByTestId("nav-github"));
     expect(dashboardGroup).toContainElement(screen.getByTestId("nav-granola"));
-    // Primary views like Agents/Kanban are NOT inside the Dashboard group.
+    // Primary views like Agents/Automations are NOT inside the Dashboard group.
     expect(dashboardGroup).not.toContainElement(screen.getByTestId("nav-agents"));
-    expect(dashboardGroup).not.toContainElement(screen.getByTestId("nav-kanban"));
+    expect(dashboardGroup).not.toContainElement(screen.getByTestId("nav-automations"));
+  });
+
+  it("keeps only Agents task workflows in the primary rail with contiguous shortcuts", () => {
+    render(<LeftNavRail currentView="agents" onViewChange={vi.fn()} />);
+
+    const agents = screen.getByTestId("nav-agents");
+    const automations = screen.getByTestId("nav-automations");
+    const insights = screen.getByTestId("nav-insights");
+
+    expect(agents).toHaveTextContent("Agents");
+    expect(screen.getByText("⌘1")).toBeInTheDocument();
+    expect(automations).toHaveTextContent("Automations");
+    expect(screen.getByText("⌘2")).toBeInTheDocument();
+    expect(insights).toHaveTextContent("Insights");
+    expect(screen.getByText("⌘3")).toBeInTheDocument();
+    expect(agents.compareDocumentPosition(automations)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(automations.compareDocumentPosition(insights)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(screen.queryByTestId("nav-ideation")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("nav-graph")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("nav-kanban")).not.toBeInTheDocument();
   });
 
   it("renders the dashboard items in a group labeled Dashboard", () => {
@@ -199,13 +228,18 @@ describe("LeftNavRail", () => {
       />,
     );
 
-    const kanbanButton = screen.getByTestId("nav-kanban");
-    fireEvent.pointerEnter(kanbanButton);
-    expect(onViewWarmUp).toHaveBeenCalledWith("kanban");
+    const insightsButton = screen.getByTestId("nav-insights");
+    fireEvent.pointerEnter(insightsButton);
+    expect(onViewWarmUp).toHaveBeenCalledWith("insights");
 
     onViewWarmUp.mockClear();
-    fireEvent.focus(kanbanButton);
-    expect(onViewWarmUp).toHaveBeenCalledWith("kanban");
+    fireEvent.focus(insightsButton);
+    expect(onViewWarmUp).toHaveBeenCalledWith("insights");
+
+    onViewWarmUp.mockClear();
+    const automationsButton = screen.getByTestId("nav-automations");
+    fireEvent.pointerEnter(automationsButton);
+    expect(onViewWarmUp).toHaveBeenCalledWith("automations");
   });
 
   it("warms up the ticketing dashboard item on pointer enter and focus", () => {

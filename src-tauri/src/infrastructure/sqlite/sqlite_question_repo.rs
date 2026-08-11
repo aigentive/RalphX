@@ -48,6 +48,7 @@ impl QuestionRepository for SqliteQuestionRepository {
         let batch_index = info.batch_index.map(i64::from);
         let batch_total = info.batch_total.map(i64::from);
         let metadata_json = info.metadata.as_ref().map(ToString::to_string);
+        let created_at = info.created_at.clone();
 
         self.db
             .run(move |conn| {
@@ -63,9 +64,10 @@ impl QuestionRepository for SqliteQuestionRepository {
                         batch_index,
                         batch_total,
                         metadata,
-                        status
+                        status,
+                        created_at
                      )
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'pending')",
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'pending', ?11)",
                     rusqlite::params![
                         request_id,
                         session_id,
@@ -77,6 +79,7 @@ impl QuestionRepository for SqliteQuestionRepository {
                         batch_index,
                         batch_total,
                         metadata_json,
+                        created_at,
                     ],
                 )?;
                 Ok(())
@@ -121,7 +124,8 @@ impl QuestionRepository for SqliteQuestionRepository {
                             allow_skip,
                             batch_index,
                             batch_total,
-                            metadata
+                            metadata,
+                            created_at
                      FROM pending_questions
                      WHERE status IN ('pending', 'wait_expired')",
                 )?;
@@ -141,6 +145,7 @@ impl QuestionRepository for SqliteQuestionRepository {
                         row.get::<_, Option<i64>>(7)?,
                         row.get::<_, Option<i64>>(8)?,
                         row.get::<_, Option<String>>(9)?,
+                        row.get::<_, String>(10)?,
                     ))
                 })?;
 
@@ -157,6 +162,7 @@ impl QuestionRepository for SqliteQuestionRepository {
                         batch_index,
                         batch_total,
                         metadata_json,
+                        created_at,
                     ) = row_result?;
                     let options: Vec<QuestionOption> = serde_json::from_str(&options_json)
                         .map_err(|e| AppError::Database(e.to_string()))?;
@@ -172,6 +178,7 @@ impl QuestionRepository for SqliteQuestionRepository {
                         batch_index: batch_index.and_then(|value| u32::try_from(value).ok()),
                         batch_total: batch_total.and_then(|value| u32::try_from(value).ok()),
                         metadata,
+                        created_at,
                     });
                 }
 
@@ -194,7 +201,8 @@ impl QuestionRepository for SqliteQuestionRepository {
                             allow_skip,
                             batch_index,
                             batch_total,
-                            metadata
+                            metadata,
+                            created_at
                      FROM pending_questions WHERE request_id = ?1",
                     rusqlite::params![request_id],
                     |row| {
@@ -212,6 +220,7 @@ impl QuestionRepository for SqliteQuestionRepository {
                             row.get::<_, Option<i64>>(7)?,
                             row.get::<_, Option<i64>>(8)?,
                             row.get::<_, Option<String>>(9)?,
+                            row.get::<_, String>(10)?,
                         ))
                     },
                 );
@@ -228,6 +237,7 @@ impl QuestionRepository for SqliteQuestionRepository {
                         batch_index,
                         batch_total,
                         metadata_json,
+                        created_at,
                     )) => {
                         let options: Vec<QuestionOption> = serde_json::from_str(&options_json)
                             .map_err(|e| AppError::Database(e.to_string()))?;
@@ -243,6 +253,7 @@ impl QuestionRepository for SqliteQuestionRepository {
                             batch_index: batch_index.and_then(|value| u32::try_from(value).ok()),
                             batch_total: batch_total.and_then(|value| u32::try_from(value).ok()),
                             metadata,
+                            created_at,
                         }))
                     }
                     Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),

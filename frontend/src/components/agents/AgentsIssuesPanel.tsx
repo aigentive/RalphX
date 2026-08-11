@@ -12,11 +12,13 @@ import { toast } from "sonner";
 import {
   chatApi,
   type AgentConversationIssue,
+  type AgentConversationIssueOccurrence,
 } from "@/api/chat";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 import { EmptyArtifactState } from "./AgentsArtifactEmptyState";
+import { ArtifactSelectableRegion } from "./artifact-selection/ArtifactSelectableRegion";
 import {
   agentConversationIssueKeys,
   useAgentConversationIssues,
@@ -176,6 +178,7 @@ function IssueCard({
   onDismiss: () => void;
 }) {
   const severityColor = severityTone[issue.severity.toLowerCase()] ?? "var(--text-muted)";
+  const occurrenceCount = issue.occurrenceCount ?? issue.occurrences.length;
   return (
     <article
       className="rounded-md border p-4"
@@ -186,6 +189,15 @@ function IssueCard({
         borderWidth: 1,
       }}
     >
+      <ArtifactSelectableRegion
+        source={{
+          sourceKind: "issue",
+          sourceId: issue.id,
+          sourceLabel: "Issue",
+          title: issue.title,
+        }}
+        className="contents"
+      >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 space-y-2">
           <div className="flex flex-wrap items-center gap-2">
@@ -216,6 +228,17 @@ function IssueCard({
             >
               {formatLabel(issue.blockingScope)}
             </span>
+            {occurrenceCount > 0 ? (
+              <span
+                className="rounded px-1.5 py-0.5 text-[0.6875rem] font-medium"
+                style={{
+                  backgroundColor: "var(--overlay-faint)",
+                  color: "var(--text-muted)",
+                }}
+              >
+                {formatReportCount(occurrenceCount)}
+              </span>
+            ) : null}
           </div>
           <div>
             <h3 className="text-sm font-semibold leading-snug">{issue.title}</h3>
@@ -236,8 +259,15 @@ function IssueCard({
         {issue.sourceTaskId ? (
           <IssueMeta label="Task" value={issue.sourceTaskId} monospace />
         ) : null}
-        {issue.blockerFingerprint ? (
+        {issue.canonicalFingerprint ? (
+          <IssueMeta label="Identity" value={issue.canonicalFingerprint} monospace />
+        ) : issue.blockerFingerprint ? (
           <IssueMeta label="Fingerprint" value={issue.blockerFingerprint} monospace />
+        ) : null}
+        {issue.blockerFingerprint &&
+        issue.canonicalFingerprint &&
+        issue.blockerFingerprint !== issue.canonicalFingerprint ? (
+          <IssueMeta label="Raw Fingerprint" value={issue.blockerFingerprint} monospace />
         ) : null}
         <IssueMeta label="Updated" value={formatDate(issue.updatedAt)} />
       </dl>
@@ -247,6 +277,9 @@ function IssueCard({
       ) : null}
       {issue.recommendation ? (
         <IssueSection label="Recommendation" value={issue.recommendation} />
+      ) : null}
+      {issue.occurrences.length > 1 ? (
+        <IssueOccurrences occurrences={issue.occurrences} />
       ) : null}
 
       <div className="mt-4 flex flex-wrap items-center gap-2">
@@ -297,7 +330,49 @@ function IssueCard({
           Dismiss
         </Button>
       </div>
+      </ArtifactSelectableRegion>
     </article>
+  );
+}
+
+function IssueOccurrences({
+  occurrences,
+}: {
+  occurrences: AgentConversationIssueOccurrence[];
+}) {
+  return (
+    <section className="mt-3">
+      <h4 className="text-xs font-semibold" style={{ color: "var(--text-muted)" }}>
+        Reports
+      </h4>
+      <ol
+        className="mt-2 space-y-2 border-l pl-3"
+        style={{ borderColor: "var(--border-subtle)" }}
+      >
+        {occurrences.map((occurrence) => (
+          <li key={occurrence.id} className="min-w-0">
+            <div
+              className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[0.6875rem]"
+              style={{ color: "var(--text-muted)" }}
+            >
+              <span>{formatDate(occurrence.createdAt)}</span>
+              {occurrence.sourceAgentName ? (
+                <span>{occurrence.sourceAgentName}</span>
+              ) : null}
+              {occurrence.sourceTaskId ? (
+                <span className="font-mono">{occurrence.sourceTaskId}</span>
+              ) : null}
+            </div>
+            <p
+              className="mt-0.5 whitespace-pre-wrap text-xs leading-relaxed"
+              style={{ color: "var(--text-secondary)" }}
+            >
+              {occurrence.summary}
+            </p>
+          </li>
+        ))}
+      </ol>
+    </section>
   );
 }
 
@@ -347,6 +422,10 @@ function formatLabel(value: string): string {
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
+}
+
+function formatReportCount(count: number): string {
+  return count === 1 ? "1 report" : `${count} reports`;
 }
 
 function formatDate(value: string): string {

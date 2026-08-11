@@ -1,6 +1,6 @@
 use super::*;
-use crate::domain::state_machine::{QaFailedData, TransitionHandler};
 use crate::domain::state_machine::transition_handler::metadata_builder;
+use crate::domain::state_machine::{QaFailedData, TransitionHandler};
 
 impl<'a> TransitionHandler<'a> {
     async fn ensure_qa_trigger_origin(&self) {
@@ -8,8 +8,7 @@ impl<'a> TransitionHandler<'a> {
             let task_id = TaskId::from_string(self.machine.context.task_id.clone());
             if let Ok(Some(task)) = task_repo.get_by_id(&task_id).await {
                 if !MetadataUpdate::key_exists_in("trigger_origin", task.metadata.as_deref()) {
-                    let metadata_update =
-                        metadata_builder::build_trigger_origin_metadata("qa");
+                    let metadata_update = metadata_builder::build_trigger_origin_metadata("qa");
                     let merged_metadata = metadata_update.merge_into(task.metadata.as_deref());
 
                     if let Err(e) = task_repo
@@ -70,10 +69,7 @@ impl<'a> TransitionHandler<'a> {
             .await;
     }
 
-    pub(super) async fn enter_qa_failed_state(
-        &self,
-        data: &QaFailedData,
-    ) {
+    pub(super) async fn enter_qa_failed_state(&self, data: &QaFailedData) {
         self.machine
             .context
             .services
@@ -81,14 +77,6 @@ impl<'a> TransitionHandler<'a> {
             .emit("qa_failed", &self.machine.context.task_id)
             .await;
 
-        if !data.notified {
-            let message = format!("QA tests failed: {} failure(s)", data.failure_count());
-            self.machine
-                .context
-                .services
-                .notifier
-                .notify_with_message("qa_failed", &self.machine.context.task_id, &message)
-                .await;
-        }
+        let _ = data;
     }
 }

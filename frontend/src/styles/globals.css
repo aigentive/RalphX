@@ -269,16 +269,6 @@ a:not([class*="no-underline"]):hover {
   font-weight: 500;
 }
 
-/* Ideation PlanItem — hover/menu-open use CSS so they clear automatically
-   when selection moves to another item. Inline-style hover painting got
-   stuck because clicking didn't trigger a mouseleave. */
-.plan-item-row:hover:not([aria-current="true"]):not([data-menu-open="true"]) {
-  background-color: var(--overlay-faint);
-}
-.plan-item-row[data-menu-open="true"]:not([aria-current="true"]) {
-  background-color: var(--overlay-faint);
-}
-
 .agents-session-meta {
   color: var(--text-muted);
 }
@@ -595,12 +585,33 @@ input[data-agent-sidebar-search="true"]:focus-visible {
   68%      { opacity: 0.06; }
 }
 
+@keyframes step-progress-active-drift {
+  from { background-position: 0 0; }
+  to   { background-position: 18px 0; }
+}
+
 /* Utility class hooks tied to the keyframes above */
 .animate-badge-pop { animation: badge-pop 200ms cubic-bezier(0.34, 1.56, 0.64, 1); }
 .animate-pulse-critical { animation: pulse-critical 2s ease-in-out infinite; }
 .animate-starter-caret { animation: starter-caret-blink 720ms cubic-bezier(0.4, 0, 0.2, 1) infinite; }
 .status-indicator-running { animation: status-pulse 2s ease-in-out infinite; }
 .task-name-enter { animation: slide-in-right 200ms ease-out; }
+
+.step-progress-active-segment {
+  background-image: repeating-linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.18) 0,
+    rgba(255, 255, 255, 0.18) 5px,
+    rgba(255, 255, 255, 0.05) 5px,
+    rgba(255, 255, 255, 0.05) 10px
+  );
+  background-size: 18px 18px;
+  opacity: 0.46;
+}
+
+.step-progress-active-segment[data-animated="true"] {
+  animation: step-progress-active-drift 1.2s linear infinite;
+}
 
 .agent-composer-surface {
   container-type: inline-size;
@@ -632,6 +643,10 @@ input[data-agent-sidebar-search="true"]:focus-visible {
   .agent-composer-surface[data-collapsible="true"],
   .agent-composer-surface[data-collapsible="true"] * {
     transition-duration: 0.01ms !important;
+  }
+
+  .step-progress-active-segment[data-animated="true"] {
+    animation: none;
   }
 }
 
@@ -670,7 +685,8 @@ input[data-agent-sidebar-search="true"]:focus-visible {
 
 .settings-modal {
   display: grid !important;
-  grid-template-rows: 56px minmax(0, 1fr);
+  /* 14px padding above/below the 34px search field, per the redesign mock. */
+  grid-template-rows: 62px minmax(0, 1fr);
   border-radius: 14px !important;
   background-color: var(--dialog-bg) !important;
   border-color: var(--dialog-border-color) !important;
@@ -680,24 +696,28 @@ input[data-agent-sidebar-search="true"]:focus-visible {
 .settings-modal__head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 0 18px 0 22px;
+  gap: 16px;
+  padding: 0 20px;
   background-color: var(--dialog-bg);
   border-bottom: 1px solid var(--dialog-divider-color);
 }
 
+/* Reserving a matching min-width on the crumbs and the close cluster keeps
+   the centered search box optically centered in the header. */
 .settings-modal__crumbs {
   display: inline-flex;
-  align-items: center;
+  align-items: baseline;
   gap: 8px;
-  font-size: 0.8125rem;
+  min-width: 220px;
+  font-size: 0.875rem;
+  flex-shrink: 0;
 }
 
-.settings-modal__crumbs .lbl { color: var(--text-muted); }
+.settings-modal__crumbs .lbl { color: var(--dialog-text-muted); }
 .settings-modal__crumbs .sep { color: var(--text-subtle); }
 .settings-modal__crumbs .cur {
   color: var(--text-primary);
-  font-weight: 500;
+  font-weight: 600;
 }
 
 .settings-modal__close {
@@ -711,7 +731,7 @@ input[data-agent-sidebar-search="true"]:focus-visible {
 }
 
 .settings-modal__close:hover {
-  background-color: var(--bg-elevated);
+  background-color: var(--dialog-hover-bg);
   color: var(--text-primary);
 }
 
@@ -722,50 +742,38 @@ input[data-agent-sidebar-search="true"]:focus-visible {
 
 .settings-modal__body {
   display: grid;
-  grid-template-columns: 240px minmax(0, 1fr);
+  grid-template-columns: 288px minmax(0, 1fr);
   min-height: 0;
 }
 
 .settings-nav {
-  width: 240px;
+  width: 288px;
   border-right: 1px solid var(--dialog-divider-color);
   background-color: var(--dialog-rail-bg);
-  padding: 14px 12px 18px;
+  padding: 12px 10px;
   overflow-y: auto;
-  gap: 14px;
-}
-
-.settings-nav__group {
-  display: flex;
-  flex-direction: column;
   gap: 2px;
-}
-
-.settings-nav__label {
-  font-size: 0.625rem;
-  font-weight: 600;
-  letter-spacing: .14em;
-  text-transform: uppercase;
-  color: var(--text-subtle);
-  padding: 6px 10px 4px;
 }
 
 .settings-nav__item {
   display: flex;
   align-items: center;
-  height: 30px;
-  padding: 0 10px;
-  border-radius: 6px;
+  gap: 11px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  /* Transparent in Light/Dark; High Contrast overrides the token so the
+     active entry still carries a visible stroke. */
   border: 1px solid transparent;
   color: var(--text-secondary);
-  font-size: 0.8125rem;
+  font-size: 0.8438rem;
+  font-weight: 500;
   text-align: left;
   cursor: pointer;
   transition: background-color 120ms cubic-bezier(.2,.8,.2,1), color 120ms cubic-bezier(.2,.8,.2,1), border-color 120ms cubic-bezier(.2,.8,.2,1);
 }
 
 .settings-nav__item:hover {
-  background-color: var(--bg-elevated);
+  background-color: var(--dialog-nav-hover-bg);
   color: var(--text-primary);
 }
 
@@ -774,7 +782,44 @@ input[data-agent-sidebar-search="true"]:focus-visible {
   background-color: var(--dialog-nav-active-bg);
   border-color: var(--dialog-nav-active-border);
   color: var(--text-primary);
-  font-weight: 500;
+}
+
+.settings-nav__icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+  transition: color 120ms cubic-bezier(.2,.8,.2,1);
+}
+
+.settings-nav__item[aria-current="page"] .settings-nav__icon,
+.settings-nav__item[aria-current="true"] .settings-nav__icon {
+  color: var(--accent-primary);
+}
+
+.settings-nav__text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.settings-nav__name {
+  font-size: 0.8438rem;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-nav__sub {
+  margin-top: 2px;
+  font-size: 0.6875rem;
+  font-weight: 400;
+  line-height: 1.35;
+  color: var(--dialog-text-subtle);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .settings-pane {
@@ -783,82 +828,448 @@ input[data-agent-sidebar-search="true"]:focus-visible {
 }
 
 .settings-pane__inner {
-  padding: 16px 22px 20px;
+  padding: 20px 24px 40px;
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
+/* Page chrome: nav-level heading, leaf tab bar, drill-in back affordance.
+   The mock caps each page's measure rather than letting rows stretch the
+   full width of a 95vw dialog. */
+.settings-page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 940px;
+}
+
+.settings-page__head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings-page__title {
+  font-size: 1.125rem;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -.01em;
+  color: var(--text-primary);
+}
+
+.settings-page__sub {
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: var(--dialog-text-muted);
+  max-width: 68ch;
+}
+
+.settings-page__back {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-start;
+  height: 28px;
+  padding: 0 10px 0 6px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background-color: transparent;
+  color: var(--dialog-text-muted);
+  font-size: 0.8125rem;
+  cursor: pointer;
+  transition: background-color 120ms cubic-bezier(.2,.8,.2,1), color 120ms cubic-bezier(.2,.8,.2,1);
+}
+
+.settings-page__back:hover {
+  background-color: var(--dialog-hover-bg);
+  color: var(--text-primary);
+}
+
+.settings-page__back svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* Drill-in pages stack the back affordance directly above their leaf title. */
+.settings-page__back + .settings-page__head {
+  margin-top: -8px;
+}
+
+.settings-page__body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Segmented leaf tabs. */
+.settings-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  align-self: flex-start;
+  max-width: 100%;
+  overflow-x: auto;
+  margin: 0 0 4px;
+  padding: 3px;
+  border-radius: 9px;
+  background-color: var(--dialog-tab-bg);
+  border: 1px solid var(--dialog-border-color);
+}
+
+.settings-tabs__trigger {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 16px;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  background-color: transparent;
+  color: var(--dialog-text-muted);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 120ms cubic-bezier(.2,.8,.2,1), color 120ms cubic-bezier(.2,.8,.2,1), border-color 120ms cubic-bezier(.2,.8,.2,1);
+}
+
+.settings-tabs__trigger:hover {
+  color: var(--text-primary);
+}
+
+.settings-tabs__trigger[data-state="active"] {
+  background-color: var(--dialog-tab-active-bg);
+  color: var(--dialog-tab-active-text);
+}
+
+.settings-tabs__trigger:focus-visible {
+  outline: none;
+  border-color: var(--accent-border);
+  box-shadow: 0 0 0 3px var(--accent-muted);
+}
+
+/* Integrations hub. */
+.settings-hub {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.settings-hub__group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settings-hub__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.settings-hub__grid[data-narrow="true"] {
+  max-width: 600px;
+}
+
+.settings-hub__card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 118px;
+  padding: 16px;
+  border-radius: 10px;
+  background-color: var(--dialog-pane-head-bg);
+  border-color: var(--dialog-border-color);
+  border-width: 1px;
+  border-style: solid;
+  transition: border-color 120ms cubic-bezier(.2,.8,.2,1);
+}
+
+/* A connected integration tints its own frame, so the grid reads at a glance
+   without a legend. */
+.settings-hub__card[data-connected="true"] {
+  border-color: var(--status-success-border);
+}
+
+.settings-hub__card:hover {
+  border-color: var(--dialog-control-border-hover);
+}
+
+.settings-hub__card-title {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  min-width: 0;
+}
+
+.settings-hub__card-desc {
+  flex: 1;
+  font-size: 0.7812rem;
+  line-height: 1.55;
+  color: var(--dialog-text-muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.settings-hub__card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 30px;
+  padding-top: 10px;
+  border-top: 1px solid var(--dialog-divider-color);
+}
+
+.settings-hub__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 0.75rem;
+  color: var(--dialog-text-muted);
+}
+
+.settings-hub__status[data-connected="true"] {
+  color: var(--status-success);
+}
+
+.settings-hub__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  background-color: var(--dialog-text-subtle);
+}
+
+.settings-hub__dot[data-connected="true"] {
+  background-color: var(--status-success);
+}
+
+/* Connected → bordered ghost; not connected → accent text affordance. */
+.settings-hub__action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  padding: 6px 13px;
+  border-radius: 7px;
+  border: 1px solid var(--dialog-control-border);
+  background-color: transparent;
+  color: var(--text-primary);
+  font-size: 0.7812rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 120ms cubic-bezier(.2,.8,.2,1), color 120ms cubic-bezier(.2,.8,.2,1);
+}
+
+.settings-hub__action:hover {
+  background-color: var(--dialog-hover-bg);
+}
+
+.settings-hub__action--setup {
+  padding: 2px 0;
+  border-color: transparent;
+  color: var(--accent-primary);
+}
+
+.settings-hub__action--setup:hover {
+  background-color: transparent;
+  color: var(--accent-secondary);
+  text-decoration: underline;
+}
+
+.settings-hub__action svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* Dialog-scoped settings search. Centered in the header per the redesign
+   mock; the ⌘K affordance lives in the placeholder rather than a chip. */
+.settings-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1;
+  max-width: 460px;
+  margin-inline: auto;
+  height: 34px;
+  padding: 0 10px 0 12px;
+  border-radius: 8px;
+  background-color: var(--dialog-control-bg);
+  border-color: var(--dialog-control-border);
+  border-width: 1px;
+  border-style: solid;
+}
+
+.settings-search:focus-within {
+  border-color: var(--accent-border);
+  box-shadow: 0 0 0 3px var(--accent-muted);
+}
+
+.settings-search__input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  background-color: transparent;
+  border: 0;
+  outline: none;
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+}
+
+.settings-search__input::placeholder {
+  color: var(--dialog-text-subtle);
+}
+
+.settings-search__clear {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  margin-left: 6px;
+  border-radius: 4px;
+  color: var(--dialog-text-muted);
+}
+
+.settings-search__clear:hover {
+  background-color: var(--dialog-hover-bg);
+  color: var(--text-primary);
+}
+
+.settings-search__clear svg {
+  width: 12px;
+  height: 12px;
+}
+
+.settings-search__results,
+.settings-search__empty {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 60;
+  border-radius: 10px;
+  background-color: var(--dialog-search-results-bg);
+  border-color: var(--dialog-control-border);
+  border-width: 1px;
+  border-style: solid;
+  box-shadow: var(--dialog-shadow);
+}
+
+.settings-search__results {
+  max-height: 320px;
+  overflow: hidden auto;
+}
+
+.settings-search__empty {
+  padding: 12px 14px;
+  font-size: 0.8125rem;
+  color: var(--dialog-text-muted);
+}
+
+/* Full-bleed rows with hairline separators, per the redesign mock. */
+.settings-search__result {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--dialog-divider-color);
+  text-align: left;
+  cursor: pointer;
+}
+
+.settings-search__results li:last-child .settings-search__result {
+  border-bottom: 0;
+}
+
+.settings-search__result:hover,
+.settings-search__result:focus-visible {
+  outline: none;
+  background-color: var(--dialog-hover-bg);
+}
+
+.settings-search__result-label {
+  font-size: 0.8125rem;
+  color: var(--text-primary);
+}
+
+.settings-search__result-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  font-size: 0.6875rem;
+  color: var(--dialog-text-muted);
+}
+
+.settings-search__result-hint svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* Chrome-free container for one section's rows. The page header and leaf tab
+   bar already identify the section, so it carries no surface of its own. */
 .settings-section {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 0;
 }
 
 .settings-section + .settings-section {
-  margin-top: 8px;
+  margin-top: 12px;
 }
 
-.settings-pane-head {
+/* Card surface used by standalone blocks. Explicit paint/border longhands
+   per .claude/rules/wkwebview-css-vars.md rule 6. */
+.settings-card {
   display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 12px 16px;
-  background-color: var(--dialog-pane-head-bg);
-  border: 1px solid var(--dialog-border-color);
+  flex-direction: column;
+  gap: 0;
+  padding: 16px;
   border-radius: 10px;
+  background-color: var(--dialog-pane-head-bg);
+  border-color: var(--dialog-border-color);
+  border-width: 1px;
+  border-style: solid;
 }
 
-.settings-pane-head__icon {
-  width: 38px;
-  height: 38px;
-  display: grid;
-  place-items: center;
-  background-color: var(--dialog-pane-head-icon-bg);
-  border: 1px solid var(--dialog-border-color);
-  border-radius: 8px;
-  color: var(--text-secondary);
-  flex-shrink: 0;
-}
-
-.settings-pane-head__icon svg {
-  width: 18px;
-  height: 18px;
-  color: var(--text-secondary) !important;
-}
-
-.settings-pane-head__title {
-  font-size: 0.9375rem;
-  font-weight: 600;
-  color: var(--text-primary);
-  letter-spacing: -.005em;
-}
-
-.settings-pane-head__sub {
-  font-size: 0.7812rem;
-  color: var(--text-muted);
-  margin-top: 2px;
+/* Row-shaped card: title/description left, control right (mock pattern for
+   standalone toggle cards). Unlayered flex-direction above would beat a
+   Tailwind flex-row utility, so it needs a real modifier. */
+.settings-card--row {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding-top: 14px;
+  padding-bottom: 14px;
 }
 
 .settings-section__content {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 0;
 }
 
 .settings-section__head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 4px 6px;
+  padding: 14px 0 6px;
 }
 
 .settings-section__label {
-  font-size: 0.6562rem;
+  font-size: 0.75rem;
   font-weight: 600;
-  letter-spacing: .14em;
+  letter-spacing: .08em;
   text-transform: uppercase;
-  color: var(--text-muted);
+  color: var(--dialog-text-muted);
 }
 
 .settings-section__chip {
@@ -878,25 +1289,28 @@ input[data-agent-sidebar-search="true"]:focus-visible {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 24px;
-  padding: 10px 4px;
+  padding: 12px 0;
   border-top: 1px solid var(--dialog-divider-color);
   transition: background-color 120ms cubic-bezier(.2,.8,.2,1);
 }
 
-.settings-section__head + .settings-row {
+.settings-section__head + .settings-row,
+.settings-section__content > .settings-row:first-child,
+.settings-card > .settings-row:first-child {
   border-top: 0;
 }
 
 .settings-row__label {
-  font-size: 0.8125rem;
+  font-size: 0.8438rem;
   font-weight: 500;
   color: var(--text-primary);
 }
 
 .settings-row__help {
   font-size: 0.75rem;
-  color: var(--text-muted);
-  margin-top: 2px;
+  line-height: 1.45;
+  color: var(--dialog-text-muted);
+  margin-top: 1px;
 }
 
 .settings-row__control {
@@ -927,6 +1341,12 @@ input[data-agent-sidebar-search="true"]:focus-visible {
   font-family: inherit;
 }
 
+/* Search fields with a leading icon: the unlayered padding above outranks
+   Tailwind's layered pl-8 utility, so restate the icon inset here. */
+.settings-input.pl-8 {
+  padding-left: 2rem;
+}
+
 .settings-input:hover,
 .settings-select:hover {
   border-color: var(--dialog-control-border-hover) !important;
@@ -942,11 +1362,29 @@ input[data-agent-sidebar-search="true"]:focus-visible {
 }
 
 .settings-toggle {
-  width: 36px !important;
-  height: 20px !important;
+  width: 40px !important;
+  height: 22px !important;
   border-width: 0 !important;
   background-color: var(--dialog-toggle-off-bg) !important;
   box-shadow: none !important;
+}
+
+/* The shadcn default knob paints `bg-background`, which is near-invisible on
+   the dark unchecked track; use an explicit knob token instead. Tailwind v4
+   translate utilities set the CSS `translate` property (not `transform`), so
+   both must be pinned here or the knob gets the utility offset on top of ours
+   and overhangs the track. */
+.settings-toggle > span {
+  width: 18px !important;
+  height: 18px !important;
+  margin-left: 2px;
+  background-color: var(--dialog-toggle-knob-bg) !important;
+  transform: none !important;
+  translate: 0 0 !important;
+}
+
+.settings-toggle[data-state="checked"] > span {
+  translate: 18px 0 !important;
 }
 
 .settings-toggle[data-state="checked"] {
@@ -1022,6 +1460,209 @@ input[data-agent-sidebar-search="true"]:focus-visible {
   background-color: var(--status-success-muted);
   border-color: var(--status-success-border);
   color: var(--status-success);
+}
+
+.agents-settings-content {
+  width: 100%;
+  max-width: 1120px;
+  margin-inline: auto;
+}
+
+.agents-settings-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 10px;
+  background-color: var(--bg-sunken);
+  border-color: var(--border-subtle);
+  border-style: solid;
+  border-width: 1px;
+  border-radius: var(--radius-lg);
+}
+
+.agents-filter-button {
+  min-height: 32px;
+  padding: 0 10px;
+  background-color: var(--bg-elevated);
+  border-color: var(--border-default);
+  border-style: solid;
+  border-width: 1px;
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.agents-filter-button:hover,
+.agents-filter-button[aria-pressed="true"] {
+  background-color: var(--accent-muted);
+  border-color: var(--accent-border);
+  color: var(--text-primary);
+}
+
+/* Mock pattern: uppercase family heading sits outside the rows card; the
+   card below holds only role rows. Header stays a button so families remain
+   collapsible. */
+.agents-family {
+  background-color: transparent;
+  border-width: 0;
+}
+
+.agents-family__summary {
+  display: flex;
+  width: 100%;
+  min-height: 36px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 4px 2px 8px;
+  background-color: transparent;
+  border: 0;
+  color: var(--text-secondary);
+  text-align: left;
+  border-radius: var(--radius-md);
+}
+
+.agents-family__summary:hover {
+  color: var(--text-primary);
+}
+
+.agents-family__label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dialog-text-muted);
+}
+
+.agents-family__summary:hover .agents-family__label {
+  color: var(--text-primary);
+}
+
+.agents-family__roles {
+  background-color: var(--dialog-pane-head-bg);
+  border-color: var(--border-subtle);
+  border-style: solid;
+  border-width: 1px;
+  border-radius: var(--radius-lg);
+  padding-inline: 14px;
+}
+
+/* Radio card for the default new-run mode picker (mock pattern). */
+.agents-mode-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+  background-color: var(--dialog-control-bg);
+  border-color: var(--dialog-control-border);
+  border-style: solid;
+  border-width: 1px;
+  border-radius: 9px;
+  padding: 12px 14px;
+  cursor: pointer;
+  transition: background-color 120ms cubic-bezier(.2,.8,.2,1), border-color 120ms cubic-bezier(.2,.8,.2,1);
+}
+
+.agents-mode-card:hover {
+  background-color: var(--bg-hover);
+}
+
+.agents-mode-card[aria-checked="true"] {
+  border-color: var(--accent-border);
+}
+
+.agents-mode-card__dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid var(--border-default);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  box-sizing: border-box;
+}
+
+.agents-mode-card[aria-checked="true"] .agents-mode-card__dot {
+  border-color: var(--accent-primary);
+}
+
+.agents-mode-card__dot-fill {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: transparent;
+  display: inline-block;
+}
+
+.agents-mode-card[aria-checked="true"] .agents-mode-card__dot-fill {
+  background-color: var(--accent-primary);
+}
+
+.agents-role-row {
+  padding-block: 14px;
+  border-top-color: var(--border-subtle);
+  border-top-style: solid;
+  border-top-width: 1px;
+}
+
+.agents-role-row:first-child {
+  border-top-width: 0;
+}
+
+.agents-source-badge,
+.agents-count-badge,
+.agents-attention-badge {
+  display: inline-flex;
+  min-height: 22px;
+  align-items: center;
+  border-radius: var(--radius-full);
+  padding-inline: 8px;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.agents-source-badge,
+.agents-count-badge {
+  background-color: var(--bg-elevated);
+  border-color: var(--border-subtle);
+  border-style: solid;
+  border-width: 1px;
+  color: var(--text-muted);
+}
+
+.agents-source-badge--configured {
+  background-color: var(--accent-muted);
+  border-color: var(--accent-border);
+  color: var(--accent-primary);
+}
+
+.agents-attention-badge {
+  background-color: var(--status-warning-muted);
+  border-color: var(--status-warning-border);
+  border-style: solid;
+  border-width: 1px;
+  color: var(--status-warning);
+}
+
+.agents-diagnostic {
+  padding: 10px 12px;
+  background-color: var(--status-error-muted);
+  border-color: var(--status-error-border);
+  border-style: solid;
+  border-width: 1px;
+  border-radius: var(--radius-md);
+  color: var(--status-error);
+  font-size: 0.75rem;
+}
+
+.agents-role-editor-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
 }
 
 .settings-status-badge svg {
@@ -1129,8 +1770,35 @@ input[data-agent-sidebar-search="true"]:focus-visible {
 }
 
 [data-theme="high-contrast"] .settings-diag-card,
-[data-theme="high-contrast"] .settings-status-badge {
+[data-theme="high-contrast"] .settings-status-badge,
+[data-theme="high-contrast"] .settings-card,
+[data-theme="high-contrast"] .settings-hub__card,
+[data-theme="high-contrast"] .settings-tabs,
+[data-theme="high-contrast"] .settings-search,
+[data-theme="high-contrast"] .settings-search__results,
+[data-theme="high-contrast"] .settings-search__empty {
   border-width: 2px;
+}
+
+[data-theme="high-contrast"] .settings-nav__sub {
+  color: var(--text-secondary);
+}
+
+/* HC leads with stroke, so the text-only "Set up" affordance regains a
+   border and the ghost action thickens like every other framed control. */
+[data-theme="high-contrast"] .settings-hub__action {
+  border-width: 2px;
+}
+
+[data-theme="high-contrast"] .settings-hub__action--setup {
+  padding: 6px 13px;
+  border-color: var(--accent-primary);
+}
+
+[data-theme="high-contrast"] .settings-tabs__trigger[data-state="active"] {
+  border-width: 2px;
+  border-color: var(--dialog-nav-active-border);
+  color: var(--text-primary);
 }
 
 @media (max-width: 1023px) {
@@ -1139,7 +1807,21 @@ input[data-agent-sidebar-search="true"]:focus-visible {
   }
 
   .settings-pane__inner {
-    padding: 14px 16px 18px;
+    padding: 16px 16px 32px;
+  }
+
+  /* The rail is hidden here, so the crumbs stop reserving rail-width and the
+     search shrinks instead of pushing the close button off the header. */
+  .settings-modal__crumbs {
+    min-width: 0;
+  }
+
+  .settings-search {
+    max-width: 220px;
+  }
+
+  .settings-hub__grid {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -1147,6 +1829,22 @@ input[data-agent-sidebar-search="true"]:focus-visible {
   .settings-row {
     grid-template-columns: minmax(0, 1fr);
     gap: 8px;
+  }
+
+  .agents-settings-toolbar,
+  .agents-family__summary {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .agents-role-editor-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (min-width: 1500px) {
+  .agents-role-editor-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 

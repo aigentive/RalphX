@@ -7,7 +7,10 @@ import type { WorkspaceReviewRuntimeSettingsResponse } from "@/api/workspace-rev
 import { AGENT_MODEL_CATALOG } from "@/lib/agent-models";
 import { useAgentModels } from "@/hooks/useAgentModels";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
-import { useReviewSettings, useUpdateReviewSettings } from "@/hooks/useReviewSettings";
+import {
+  useReviewSettings,
+  useUpdateReviewSettings,
+} from "@/hooks/useReviewSettings";
 import { useWorkspaceReviewRuntimeSettings } from "@/hooks/useWorkspaceReviewSettings";
 import { useProjectStore } from "@/stores/projectStore";
 import { useUiStore } from "@/stores/uiStore";
@@ -33,7 +36,8 @@ vi.mock("@/hooks/useWorkspaceReviewSettings", () => ({
 
 vi.mock("@/stores/projectStore", () => ({
   useProjectStore: vi.fn(),
-  selectActiveProject: (state: { activeProject: unknown }) => state.activeProject,
+  selectActiveProject: (state: { activeProject: unknown }) =>
+    state.activeProject,
 }));
 
 vi.mock("@/stores/uiStore", () => ({
@@ -180,6 +184,9 @@ describe("WorkspaceReviewSection", () => {
         ai_review_auto_fix: true,
         require_fix_approval: false,
         auto_create_followup_agent_conversation: true,
+        autofix_workspace_review_blocking_findings: true,
+        workspace_review_fixer_cycle_cap: 3,
+        run_task_validations: true,
       },
       isLoading: false,
     } as ReturnType<typeof useReviewSettings>);
@@ -187,16 +194,18 @@ describe("WorkspaceReviewSection", () => {
       mutate: updateReviewSettings,
       isPending: false,
     } as ReturnType<typeof useUpdateReviewSettings>);
-    vi.mocked(useWorkspaceReviewRuntimeSettings).mockImplementation((projectId) => ({
-      rows: projectId === null ? [] : [],
-      isLoading: false,
-      isPlaceholderData: false,
-      isError: false,
-      error: null,
-      updateSettings: updateRuntimeSettings,
-      isUpdating: false,
-      saveError: null,
-    }));
+    vi.mocked(useWorkspaceReviewRuntimeSettings).mockImplementation(
+      (projectId) => ({
+        rows: projectId === null ? [] : [],
+        isLoading: false,
+        isPlaceholderData: false,
+        isError: false,
+        error: null,
+        updateSettings: updateRuntimeSettings,
+        isUpdating: false,
+        saveError: null,
+      }),
+    );
     vi.mocked(useProjectStore).mockReturnValue({
       id: "project-1",
       name: "Project One",
@@ -210,14 +219,43 @@ describe("WorkspaceReviewSection", () => {
     const user = userEvent.setup();
     render(<WorkspaceReviewSection />);
 
-    expect(screen.getByText("Workspace Review")).toBeInTheDocument();
     expect(screen.getByText("Effective: haiku · Medium")).toBeInTheDocument();
-    expect(screen.getByText("Effective: gpt-5.4-mini · Medium")).toBeInTheDocument();
+    expect(
+      screen.getByText("Effective: gpt-5.4-mini · Medium"),
+    ).toBeInTheDocument();
 
-    await user.click(screen.getByTestId("workspace-review-require-before-publish"));
+    await user.click(
+      screen.getByTestId("workspace-review-require-before-publish"),
+    );
 
     expect(updateReviewSettings).toHaveBeenCalledWith({
       requireWorkspaceReview: false,
+    });
+
+    await user.click(
+      screen.getByTestId("workspace-review-autofix-blocking-findings"),
+    );
+
+    expect(updateReviewSettings).toHaveBeenCalledWith({
+      autofixWorkspaceReviewBlockingFindings: false,
+    });
+
+    const fixerCycleCap = screen.getByLabelText(
+      "Maximum automatic fixer cycles",
+    );
+    expect(fixerCycleCap).toHaveAttribute(
+      "aria-describedby",
+      "workspace-review-fixer-cycle-cap-desc",
+    );
+    expect(fixerCycleCap).toHaveAttribute("min", "0");
+    expect(
+      screen.getByText(/Set 0 to turn off automatic fixing/),
+    ).toBeInTheDocument();
+
+    fireEvent.change(fixerCycleCap, { target: { value: "0" } });
+
+    expect(updateReviewSettings).toHaveBeenLastCalledWith({
+      workspaceReviewFixerCycleCap: 0,
     });
   });
 
@@ -238,16 +276,18 @@ describe("WorkspaceReviewSection", () => {
 
   it("renders project overrides against global rows and saves to the project scope", async () => {
     const user = userEvent.setup();
-    vi.mocked(useWorkspaceReviewRuntimeSettings).mockImplementation((projectId) => ({
-      rows: projectId === null ? globalRows : [],
-      isLoading: false,
-      isPlaceholderData: false,
-      isError: false,
-      error: null,
-      updateSettings: updateRuntimeSettings,
-      isUpdating: false,
-      saveError: null,
-    }));
+    vi.mocked(useWorkspaceReviewRuntimeSettings).mockImplementation(
+      (projectId) => ({
+        rows: projectId === null ? globalRows : [],
+        isLoading: false,
+        isPlaceholderData: false,
+        isError: false,
+        error: null,
+        updateSettings: updateRuntimeSettings,
+        isUpdating: false,
+        saveError: null,
+      }),
+    );
 
     render(<WorkspaceReviewSection />);
     await user.click(screen.getByRole("tab", { name: "Project Overrides" }));
@@ -268,31 +308,35 @@ describe("WorkspaceReviewSection", () => {
   });
 
   it("renders custom saved models in the model selector", async () => {
-    vi.mocked(useWorkspaceReviewRuntimeSettings).mockImplementation((projectId) => ({
-      rows:
-        projectId === null
-          ? [
-              {
-                projectId: null,
-                provider: "codex",
-                model: "gpt-local-review",
-                effort: null,
-                updatedAt: providerUpdatedAt,
-              },
-            ]
-          : [],
-      isLoading: false,
-      isPlaceholderData: false,
-      isError: false,
-      error: null,
-      updateSettings: updateRuntimeSettings,
-      isUpdating: false,
-      saveError: null,
-    }));
+    vi.mocked(useWorkspaceReviewRuntimeSettings).mockImplementation(
+      (projectId) => ({
+        rows:
+          projectId === null
+            ? [
+                {
+                  projectId: null,
+                  provider: "codex",
+                  model: "gpt-local-review",
+                  effort: null,
+                  updatedAt: providerUpdatedAt,
+                },
+              ]
+            : [],
+        isLoading: false,
+        isPlaceholderData: false,
+        isError: false,
+        error: null,
+        updateSettings: updateRuntimeSettings,
+        isUpdating: false,
+        saveError: null,
+      }),
+    );
 
     render(<WorkspaceReviewSection />);
 
-    expect(screen.getByText("Effective: gpt-local-review · Medium")).toBeInTheDocument();
+    expect(
+      screen.getByText("Effective: gpt-local-review · Medium"),
+    ).toBeInTheDocument();
     openSelect("workspace-review-model-codex");
 
     expect(await screen.findByText("Custom model")).toBeInTheDocument();
@@ -349,7 +393,9 @@ describe("WorkspaceReviewSection", () => {
     expect(screen.getByText("Provider Setup Required")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /open providers/i }));
 
-    expect(openModal).toHaveBeenCalledWith("settings", { section: "providers" });
+    expect(openModal).toHaveBeenCalledWith("settings", {
+      section: "providers",
+    });
   });
 
   it("shows disabled project override copy when no project is active", async () => {
@@ -361,7 +407,7 @@ describe("WorkspaceReviewSection", () => {
 
     expect(
       screen.getByText(
-        "Select a project to override Workspace Review defaults for a specific project.",
+        "Select a project to override its legacy Workspace Review fallback.",
       ),
     ).toBeInTheDocument();
   });

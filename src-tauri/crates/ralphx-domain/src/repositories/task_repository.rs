@@ -10,7 +10,9 @@ use chrono::{DateTime, Utc};
 
 use crate::domain::entities::{
     ExecutionPlanId, IdeationSessionId, InternalStatus, ProjectId, Task, TaskCategory, TaskId,
+    TaskStepId,
 };
+use crate::domain::ideation::TasksFeatureAction;
 use crate::domain::repositories::StatusTransition;
 use crate::error::AppResult;
 
@@ -65,6 +67,64 @@ pub trait TaskRepository: Send + Sync {
         task: &Task,
         expected_status: InternalStatus,
     ) -> AppResult<bool>;
+
+    async fn update_with_expected_status_for_action(
+        &self,
+        task: &Task,
+        expected_status: InternalStatus,
+        _action: TasksFeatureAction,
+    ) -> AppResult<bool> {
+        self.update_with_expected_status(task, expected_status)
+            .await
+    }
+
+    /// Atomically applies a validated task update and its status-history row.
+    /// Production repositories override this so a caller can never observe the
+    /// status/metadata write without the matching audit record.
+    async fn update_with_expected_status_and_history_for_action(
+        &self,
+        task: &Task,
+        expected_status: InternalStatus,
+        trigger: &str,
+        action: TasksFeatureAction,
+    ) -> AppResult<Option<String>> {
+        if !self
+            .update_with_expected_status_for_action(task, expected_status, action)
+            .await?
+        {
+            return Ok(None);
+        }
+        self.persist_status_change_for_action(
+            &task.id,
+            expected_status,
+            task.internal_status,
+            trigger,
+            action,
+        )
+        .await
+        .map(Some)
+    }
+
+    /// Atomically commits terminal restart cleanup, failed-step resets, Ready status,
+    /// and the matching history row. The returned count is the number of failed
+    /// step rows reset by the repository transaction.
+    async fn restart_terminal_task_to_ready_with_history_for_action(
+        &self,
+        task: &Task,
+        expected_status: InternalStatus,
+        _failed_step_ids: &[TaskStepId],
+        trigger: &str,
+        action: TasksFeatureAction,
+    ) -> AppResult<Option<(String, u32)>> {
+        self.update_with_expected_status_and_history_for_action(
+            task,
+            expected_status,
+            trigger,
+            action,
+        )
+        .await
+        .map(|result| result.map(|history_id| (history_id, 0)))
+    }
 
     /// Update only the metadata field of a task
     ///
@@ -146,7 +206,18 @@ pub trait TaskRepository: Send + Sync {
         from: InternalStatus,
         to: InternalStatus,
         trigger: &str,
-    ) -> AppResult<()>;
+    ) -> AppResult<String>;
+
+    async fn persist_status_change_for_action(
+        &self,
+        id: &TaskId,
+        from: InternalStatus,
+        to: InternalStatus,
+        trigger: &str,
+        _action: TasksFeatureAction,
+    ) -> AppResult<String> {
+        self.persist_status_change(id, from, to, trigger).await
+    }
 
     /// Get status history for audit
     async fn get_status_history(&self, id: &TaskId) -> AppResult<Vec<StatusTransition>>;

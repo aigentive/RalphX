@@ -41,7 +41,3 @@ pub(crate) async fn ensure_provider_spawn_enabled(
         )),
     }
 }
-
-#[cfg(test)]
-#[path = "provider_onboarding_gate_tests.rs"]
-mod tests;

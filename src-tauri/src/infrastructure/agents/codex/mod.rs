@@ -1,6 +1,16 @@
+pub(crate) mod app_server_mcp_catalog;
 mod codex_cli_client;
+pub(crate) mod mcp_catalog;
+mod security_policy;
 pub mod stream_processor;
 
+#[cfg(test)]
+mod app_server_mcp_catalog_tests;
+
+#[cfg(test)]
+mod mcp_catalog_tests;
+
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
@@ -9,9 +19,11 @@ use tracing::warn;
 use crate::domain::agents::{
     LogicalEffort, CODEX_DEFAULT_APPROVAL_POLICY, CODEX_DEFAULT_SANDBOX_MODE,
 };
-use crate::infrastructure::agents::claude::SpawnableCommand;
 use crate::infrastructure::agents::claude::{
-    claude_runtime_config, external_mcp_config, filter_interactive_tools,
+    SpawnableCommand, SpawnableStdinTransport,
+};
+use crate::infrastructure::agents::claude::{
+    agent_names, claude_runtime_config, external_mcp_config, filter_interactive_tools,
     format_allowed_tools_arg_value, get_agent_config_for_profile, mcp_agent_type, node_utils,
     validate_mcp_tool_name,
 };
@@ -28,6 +40,14 @@ use crate::infrastructure::external_mcp_supervisor::{
     ensure_tauri_mcp_bypass_token, TAURI_MCP_BYPASS_TOKEN_ENV,
 };
 pub use codex_cli_client::{kill_all_tracked_processes, CodexCliClient};
+pub(crate) use security_policy::CodexLaunchSecurityPolicy;
+
+const CODEX_PLAN_AGENT_PROFILE: &str = "plan";
+const CODEX_APPLY_PATCH_DISABLED_CONFIG_OVERRIDES: &[&str] = &[
+    "features.apply_patch_freeform=false",
+    "features.apply_patch_streaming_events=false",
+    "include_apply_patch_tool=false",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodexCliCapabilities {
@@ -43,6 +63,10 @@ pub struct CodexCliCapabilities {
     pub supports_mcp_subcommand: bool,
     pub supports_fast_mode_feature: bool,
     pub fast_mode_supported_models: Vec<String>,
+    pub supported_model_aliases: Vec<String>,
+    pub supported_efforts: Vec<String>,
+    pub model_supported_efforts: BTreeMap<String, Vec<String>>,
+    pub ultra_supported_models: Vec<String>,
 }
 
 impl CodexCliCapabilities {
@@ -84,6 +108,33 @@ impl CodexCliCapabilities {
             Vec::new()
         }
     }
+
+    pub fn supported_effort_labels(&self) -> Vec<String> {
+        self.supported_efforts.clone()
+    }
+
+    pub fn supports_ultra_for_model(&self, model: &str) -> bool {
+        self.ultra_supported_models
+            .iter()
+            .any(|supported| supported == model)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CodexModelCatalogCapabilities {
+    pub supported_model_aliases: Vec<String>,
+    pub supported_efforts: Vec<String>,
+    pub model_supported_efforts: BTreeMap<String, Vec<String>>,
+    pub ultra_supported_models: Vec<String>,
+}
+
+impl CodexModelCatalogCapabilities {
+    fn is_empty(&self) -> bool {
+        self.supported_model_aliases.is_empty()
+            && self.supported_efforts.is_empty()
+            && self.model_supported_efforts.is_empty()
+            && self.ultra_supported_models.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,6 +147,7 @@ pub struct ResolvedCodexCli {
 pub struct CodexExecCliConfig {
     pub model: Option<String>,
     pub reasoning_effort: Option<LogicalEffort>,
+    pub ultra_mode: bool,
     pub approval_policy: Option<String>,
     pub sandbox_mode: Option<String>,
     pub service_tier: Option<String>,
@@ -112,6 +164,7 @@ impl Default for CodexExecCliConfig {
         Self {
             model: None,
             reasoning_effort: None,
+            ultra_mode: false,
             approval_policy: Some(CODEX_DEFAULT_APPROVAL_POLICY.to_string()),
             sandbox_mode: Some(CODEX_DEFAULT_SANDBOX_MODE.to_string()),
             service_tier: None,
@@ -127,12 +180,12 @@ impl Default for CodexExecCliConfig {
 
 pub type CodexMcpRuntimeContext = McpRuntimeContext;
 
-fn effective_codex_approval_policy(_config: &CodexExecCliConfig) -> &str {
-    CODEX_DEFAULT_APPROVAL_POLICY
+fn effective_codex_approval_policy(policy: CodexLaunchSecurityPolicy) -> &'static str {
+    policy.approval_policy()
 }
 
-fn effective_codex_sandbox_mode(_config: &CodexExecCliConfig) -> &str {
-    CODEX_DEFAULT_SANDBOX_MODE
+fn effective_codex_sandbox_mode(policy: CodexLaunchSecurityPolicy) -> &'static str {
+    policy.sandbox_mode()
 }
 
 fn codex_service_tier_overrides(config: &CodexExecCliConfig) -> Result<Vec<String>, String> {
@@ -193,6 +246,7 @@ pub fn build_codex_mcp_overrides_for_profile(
     let project_root = resolve_project_root_from_plugin_dir(plugin_dir);
     let codex_metadata =
         try_load_canonical_codex_metadata_for_profile(&project_root, short_name, agent_profile)?;
+    let shell_tool_disabled = codex_metadata.runtime_features.get("shell_tool") == Some(&false);
     if codex_metadata.mcp_transport.as_deref() == Some("external") {
         let mut overrides = build_codex_external_mcp_overrides(
             &mcp_server_name,
@@ -210,6 +264,12 @@ pub fn build_codex_mcp_overrides_for_profile(
                 Some(&codex_metadata.internal_mcp_tools),
             )?);
         }
+        append_codex_apply_patch_disable_overrides(
+            &mut overrides,
+            short_name,
+            agent_profile,
+            shell_tool_disabled,
+        );
         return Ok(overrides);
     }
 
@@ -226,8 +286,36 @@ pub fn build_codex_mcp_overrides_for_profile(
     for (feature_name, enabled) in codex_metadata.runtime_features {
         overrides.push(format!("features.{feature_name}={enabled}"));
     }
+    append_codex_apply_patch_disable_overrides(
+        &mut overrides,
+        short_name,
+        agent_profile,
+        shell_tool_disabled,
+    );
 
     Ok(overrides)
+}
+
+fn append_codex_apply_patch_disable_overrides(
+    overrides: &mut Vec<String>,
+    agent_name: &str,
+    agent_profile: Option<&str>,
+    shell_tool_disabled: bool,
+) {
+    if !shell_tool_disabled
+        && agent_profile != Some(CODEX_PLAN_AGENT_PROFILE)
+        && agent_name != mcp_agent_type(agent_names::AGENT_PERSONA_EXTRACTOR)
+    {
+        return;
+    }
+    // A canonical agent without shell access is read-only across native Codex tools too.
+    // Verified on Codex CLI 0.142.5: features list exposes both apply_patch feature
+    // gates, while -c accepts the top-level include_apply_patch_tool override.
+    overrides.extend(
+        CODEX_APPLY_PATCH_DISABLED_CONFIG_OVERRIDES
+            .iter()
+            .map(|entry| (*entry).to_string()),
+    );
 }
 
 fn build_codex_internal_mcp_overrides(
@@ -239,6 +327,7 @@ fn build_codex_internal_mcp_overrides(
     runtime_context: Option<&CodexMcpRuntimeContext>,
     explicit_allowed_tools: Option<&[String]>,
 ) -> Result<Vec<String>, String> {
+    let startup_timeout_secs = external_mcp_config().startup_timeout_secs;
     let mcp_server_path = plugin_dir.join("ralphx-mcp-server/build/index.js");
 
     let node_command = node_utils::find_node_binary()
@@ -291,6 +380,8 @@ fn build_codex_internal_mcp_overrides(
             encode_codex_string_array(&mcp_args)?
         ),
         format!("mcp_servers.{mcp_server_name}.enabled=true"),
+        format!("mcp_servers.{mcp_server_name}.required=true"),
+        format!("mcp_servers.{mcp_server_name}.startup_timeout_sec={startup_timeout_secs}"),
     ];
 
     if let Some(tools) = enabled_tools {
@@ -335,6 +426,11 @@ fn build_codex_external_mcp_overrides(
             encode_codex_string_literal(TAURI_MCP_BYPASS_TOKEN_ENV)?
         ),
         format!("mcp_servers.{mcp_server_name}.enabled=true"),
+        format!("mcp_servers.{mcp_server_name}.required=true"),
+        format!(
+            "mcp_servers.{mcp_server_name}.startup_timeout_sec={}",
+            cfg.startup_timeout_secs
+        ),
     ];
 
     if !codex_metadata.mcp_tools.is_empty() {
@@ -356,7 +452,7 @@ pub fn compose_codex_prompt(
     plugin_dir: Option<&Path>,
     agent_name: Option<&str>,
 ) -> String {
-    compose_codex_prompt_for_profile(prompt, plugin_dir, agent_name, None)
+    compose_codex_prompt_for_profile(prompt, plugin_dir, agent_name, None, None)
 }
 
 pub fn compose_codex_prompt_for_profile(
@@ -364,12 +460,50 @@ pub fn compose_codex_prompt_for_profile(
     plugin_dir: Option<&Path>,
     agent_name: Option<&str>,
     agent_profile: Option<&str>,
+    persona_block: Option<&str>,
 ) -> String {
+    compose_codex_prompt_for_profile_with_outcome(
+        prompt,
+        plugin_dir,
+        agent_name,
+        agent_profile,
+        persona_block,
+    )
+    .prompt
+}
+
+/// Body-free attribution outcome paired with the composed Codex prompt.
+pub struct CodexPromptComposition {
+    /// Prompt delivered to the Codex CLI.
+    pub prompt: String,
+    /// Whether the resolved persona overlay is present in `prompt`.
+    pub persona_injected: bool,
+    /// Body-free reason when a requested persona overlay could not be composed.
+    pub persona_injection_skipped_reason: Option<&'static str>,
+}
+
+/// Compose a Codex prompt and report the actual persona overlay outcome.
+pub fn compose_codex_prompt_for_profile_with_outcome(
+    prompt: &str,
+    plugin_dir: Option<&Path>,
+    agent_name: Option<&str>,
+    agent_profile: Option<&str>,
+    persona_block: Option<&str>,
+) -> CodexPromptComposition {
     let Some(plugin_dir) = plugin_dir else {
-        return prompt.to_string();
+        return CodexPromptComposition {
+            prompt: prompt.to_string(),
+            persona_injected: false,
+            persona_injection_skipped_reason: persona_block
+                .map(|_| "codex_plugin_dir_unavailable"),
+        };
     };
     let Some(agent_name) = agent_name else {
-        return prompt.to_string();
+        return CodexPromptComposition {
+            prompt: prompt.to_string(),
+            persona_injected: false,
+            persona_injection_skipped_reason: persona_block.map(|_| "codex_agent_unavailable"),
+        };
     };
 
     let project_root = resolve_project_root_from_plugin_dir(plugin_dir);
@@ -380,8 +514,15 @@ pub fn compose_codex_prompt_for_profile(
         agent_profile,
     );
     let Some(system_prompt) = system_prompt else {
-        return prompt.to_string();
+        return CodexPromptComposition {
+            prompt: prompt.to_string(),
+            persona_injected: false,
+            persona_injection_skipped_reason: persona_block
+                .map(|_| "codex_agent_prompt_unavailable"),
+        };
     };
+    let persona_injected = persona_block.is_some();
+    let system_prompt = super::persona_overlay::apply_persona_overlay(system_prompt, persona_block);
     let runtime_profile_context =
         render_agent_runtime_profile_context(&project_root, agent_name, agent_profile);
     let system_prompt = match inject_internal_skills_into_system_prompt_for_profile(
@@ -406,9 +547,13 @@ pub fn compose_codex_prompt_for_profile(
         None => system_prompt,
     };
 
-    format!(
-        "<ralphx_agent_instructions>\n{system_prompt}\n</ralphx_agent_instructions>\n\n{prompt}"
-    )
+    CodexPromptComposition {
+        prompt: format!(
+            "<ralphx_agent_instructions>\n{system_prompt}\n</ralphx_agent_instructions>\n\n{prompt}"
+        ),
+        persona_injected,
+        persona_injection_skipped_reason: None,
+    }
 }
 
 pub fn normalize_codex_exec_output(raw_stdout: &str) -> String {
@@ -496,18 +641,24 @@ pub fn parse_codex_cli_capabilities(
     exec_help: &str,
     version_output: Option<&str>,
     features_output: Option<&str>,
-    model_catalog_output: Option<&str>,
+    refreshed_model_catalog_output: Option<&str>,
+    bundled_model_catalog_output: Option<&str>,
 ) -> CodexCliCapabilities {
     let supports_fast_mode_feature = features_output
         .map(parse_codex_fast_mode_feature)
         .unwrap_or(false);
     let fast_mode_supported_models = if supports_fast_mode_feature {
-        model_catalog_output
-            .map(parse_codex_fast_mode_supported_models)
-            .unwrap_or_default()
+        parse_codex_fast_mode_supported_models_from_catalogs(
+            refreshed_model_catalog_output,
+            bundled_model_catalog_output,
+        )
     } else {
         Vec::new()
     };
+    let model_catalog_capabilities = parse_best_codex_model_catalog(
+        refreshed_model_catalog_output,
+        bundled_model_catalog_output,
+    );
 
     CodexCliCapabilities {
         version: version_output.and_then(parse_codex_version),
@@ -522,6 +673,149 @@ pub fn parse_codex_cli_capabilities(
         supports_mcp_subcommand: root_help.contains("mcp"),
         supports_fast_mode_feature,
         fast_mode_supported_models,
+        supported_model_aliases: model_catalog_capabilities.supported_model_aliases,
+        supported_efforts: model_catalog_capabilities.supported_efforts,
+        model_supported_efforts: model_catalog_capabilities.model_supported_efforts,
+        ultra_supported_models: model_catalog_capabilities.ultra_supported_models,
+    }
+}
+
+fn parse_best_codex_model_catalog(
+    refreshed_model_catalog_output: Option<&str>,
+    bundled_model_catalog_output: Option<&str>,
+) -> CodexModelCatalogCapabilities {
+    let refreshed = refreshed_model_catalog_output
+        .map(parse_codex_model_catalog_capabilities)
+        .unwrap_or_default();
+    if !refreshed.is_empty() {
+        return refreshed;
+    }
+
+    bundled_model_catalog_output
+        .map(parse_codex_model_catalog_capabilities)
+        .unwrap_or_default()
+}
+
+fn parse_codex_fast_mode_supported_models_from_catalogs(
+    refreshed_model_catalog_output: Option<&str>,
+    bundled_model_catalog_output: Option<&str>,
+) -> Vec<String> {
+    let mut supported_models = Vec::new();
+    for output in [refreshed_model_catalog_output, bundled_model_catalog_output]
+        .into_iter()
+        .flatten()
+    {
+        supported_models.extend(parse_codex_fast_mode_supported_models(output));
+    }
+    supported_models.sort();
+    supported_models.dedup();
+    supported_models
+}
+
+pub fn parse_codex_model_catalog_capabilities(output: &str) -> CodexModelCatalogCapabilities {
+    let Ok(root) = serde_json::from_str::<serde_json::Value>(output) else {
+        return CodexModelCatalogCapabilities::default();
+    };
+    let Some(models) = root.get("models").and_then(serde_json::Value::as_array) else {
+        return CodexModelCatalogCapabilities::default();
+    };
+
+    let mut supported_model_aliases = Vec::new();
+    let mut supported_efforts = Vec::new();
+    let mut model_supported_efforts = BTreeMap::new();
+    let mut ultra_supported_models = Vec::new();
+
+    for model in models {
+        if !codex_model_is_visible_list_entry(model) {
+            continue;
+        }
+        let Some(slug) = model
+            .get("slug")
+            .or_else(|| model.get("id"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|slug| !slug.is_empty())
+        else {
+            continue;
+        };
+
+        supported_model_aliases.push(slug.to_string());
+        if let Some(aliases) = model.get("aliases").and_then(serde_json::Value::as_array) {
+            supported_model_aliases.extend(aliases.iter().filter_map(|alias| {
+                alias
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|alias| !alias.is_empty())
+                    .map(str::to_string)
+            }));
+        }
+
+        let mut model_efforts = model
+            .get("supported_reasoning_levels")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|level| {
+                let effort = level.get("effort").and_then(serde_json::Value::as_str)?;
+                normalize_codex_reasoning_effort(effort)
+            })
+            .collect::<Vec<_>>();
+        if model_efforts.iter().any(|effort| effort == "ultra") {
+            ultra_supported_models.push(slug.to_string());
+            model_efforts.retain(|effort| effort != "ultra");
+        }
+        sort_codex_reasoning_efforts(&mut model_efforts);
+        supported_efforts.extend(model_efforts.iter().cloned());
+        model_supported_efforts.insert(slug.to_string(), model_efforts);
+    }
+
+    supported_model_aliases.sort();
+    supported_model_aliases.dedup();
+    sort_codex_reasoning_efforts(&mut supported_efforts);
+    ultra_supported_models.sort();
+    ultra_supported_models.dedup();
+
+    CodexModelCatalogCapabilities {
+        supported_model_aliases,
+        supported_efforts,
+        model_supported_efforts,
+        ultra_supported_models,
+    }
+}
+
+fn codex_model_is_visible_list_entry(model: &serde_json::Value) -> bool {
+    model
+        .get("visibility")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|visibility| visibility.eq_ignore_ascii_case("list"))
+}
+
+fn normalize_codex_reasoning_effort(value: &str) -> Option<String> {
+    let normalized = value.trim().to_ascii_lowercase();
+    if codex_reasoning_effort_order(&normalized).is_some() {
+        return Some(normalized);
+    }
+    warn!(
+        effort = value,
+        "Ignoring unknown Codex reasoning effort in model catalog"
+    );
+    None
+}
+
+fn sort_codex_reasoning_efforts(efforts: &mut Vec<String>) {
+    efforts.sort_by_key(|effort| codex_reasoning_effort_order(effort).unwrap_or(u8::MAX));
+    efforts.dedup();
+}
+
+fn codex_reasoning_effort_order(effort: &str) -> Option<u8> {
+    match effort {
+        "low" => Some(0),
+        "medium" => Some(1),
+        "high" => Some(2),
+        "xhigh" => Some(3),
+        "max" => Some(4),
+        "ultra" => Some(5),
+        _ => None,
     }
 }
 
@@ -598,14 +892,17 @@ pub fn probe_codex_cli(cli_path: &Path) -> Result<CodexCliCapabilities, String> 
     let root_help = run_codex_command(cli_path, &["--help"])?;
     let exec_help = run_codex_optional_command(cli_path, &["exec", "--help"]);
     let features_output = run_codex_optional_command(cli_path, &["features", "list"]);
-    let model_catalog_output =
+    let refreshed_model_catalog_output =
+        run_codex_optional_command(cli_path, &["debug", "models"]);
+    let bundled_model_catalog_output =
         run_codex_optional_command(cli_path, &["debug", "models", "--bundled"]);
     Ok(parse_codex_cli_capabilities(
         &root_help,
         &exec_help,
         Some(&version_output),
         Some(&features_output),
-        Some(&model_catalog_output),
+        Some(&refreshed_model_catalog_output),
+        Some(&bundled_model_catalog_output),
     ))
 }
 
@@ -656,6 +953,18 @@ pub fn build_codex_exec_args(
     capabilities: &CodexCliCapabilities,
     config: &CodexExecCliConfig,
 ) -> Result<Vec<String>, String> {
+    build_codex_exec_args_with_security_policy(
+        capabilities,
+        config,
+        CodexLaunchSecurityPolicy::McpCompatibility,
+    )
+}
+
+fn build_codex_exec_args_with_security_policy(
+    capabilities: &CodexCliCapabilities,
+    config: &CodexExecCliConfig,
+    security_policy: CodexLaunchSecurityPolicy,
+) -> Result<Vec<String>, String> {
     if !capabilities.supports_exec_subcommand {
         return Err("Codex CLI does not advertise the exec subcommand".to_string());
     }
@@ -675,7 +984,9 @@ pub fn build_codex_exec_args(
 
     require_capability(capabilities.supports_sandbox_flag, "sandbox_flag")?;
     args.push("-s".to_string());
-    args.push(normalize_cli_token(effective_codex_sandbox_mode(config)));
+    args.push(normalize_cli_token(effective_codex_sandbox_mode(
+        security_policy,
+    )));
 
     if let Some(cwd) = config.cwd.as_ref() {
         args.push("-C".to_string());
@@ -709,7 +1020,7 @@ pub fn build_codex_exec_args(
         args.push(override_value);
     }
 
-    if let Some(reasoning_effort) = config.reasoning_effort {
+    if let Some(reasoning_effort) = effective_codex_reasoning_effort(config) {
         require_capability(capabilities.supports_config_override, "config_override")?;
         args.push("-c".to_string());
         args.push(format!("model_reasoning_effort=\"{}\"", reasoning_effort));
@@ -717,9 +1028,13 @@ pub fn build_codex_exec_args(
 
     require_capability(capabilities.supports_config_override, "config_override")?;
     args.push("-c".to_string());
+    args.push("model_reasoning_summary=\"concise\"".to_string());
+
+    require_capability(capabilities.supports_config_override, "config_override")?;
+    args.push("-c".to_string());
     args.push(format!(
         "approval_policy=\"{}\"",
-        normalize_cli_token(effective_codex_approval_policy(config))
+        normalize_cli_token(effective_codex_approval_policy(security_policy))
     ));
 
     Ok(args)
@@ -730,8 +1045,25 @@ pub fn build_codex_exec_resume_args(
     session_id: &str,
     config: &CodexExecCliConfig,
 ) -> Result<Vec<String>, String> {
+    build_codex_exec_resume_args_with_security_policy(
+        capabilities,
+        session_id,
+        config,
+        CodexLaunchSecurityPolicy::McpCompatibility,
+    )
+}
+
+fn build_codex_exec_resume_args_with_security_policy(
+    capabilities: &CodexCliCapabilities,
+    session_id: &str,
+    config: &CodexExecCliConfig,
+    security_policy: CodexLaunchSecurityPolicy,
+) -> Result<Vec<String>, String> {
     if !capabilities.supports_exec_subcommand {
         return Err("Codex CLI does not advertise the exec subcommand".to_string());
+    }
+    if !capabilities.supports_resume_subcommand {
+        return Err("Codex CLI does not advertise the resume subcommand".to_string());
     }
 
     let mut args = vec![
@@ -767,7 +1099,7 @@ pub fn build_codex_exec_resume_args(
         args.push(override_value);
     }
 
-    if let Some(reasoning_effort) = config.reasoning_effort {
+    if let Some(reasoning_effort) = effective_codex_reasoning_effort(config) {
         require_capability(capabilities.supports_config_override, "config_override")?;
         args.push("-c".to_string());
         args.push(format!("model_reasoning_effort=\"{}\"", reasoning_effort));
@@ -775,19 +1107,35 @@ pub fn build_codex_exec_resume_args(
 
     require_capability(capabilities.supports_config_override, "config_override")?;
     args.push("-c".to_string());
+    args.push("model_reasoning_summary=\"concise\"".to_string());
+
+    require_capability(capabilities.supports_config_override, "config_override")?;
+    args.push("-c".to_string());
     args.push(format!(
         "approval_policy=\"{}\"",
-        normalize_cli_token(effective_codex_approval_policy(config))
+        normalize_cli_token(effective_codex_approval_policy(security_policy))
     ));
 
     require_capability(capabilities.supports_config_override, "config_override")?;
     args.push("-c".to_string());
     args.push(format!(
         "sandbox_mode=\"{}\"",
-        normalize_cli_token(effective_codex_sandbox_mode(config))
+        normalize_cli_token(effective_codex_sandbox_mode(security_policy))
     ));
 
     Ok(args)
+}
+
+fn effective_codex_reasoning_effort(config: &CodexExecCliConfig) -> Option<LogicalEffort> {
+    if config.ultra_mode {
+        return Some(LogicalEffort::Ultra);
+    }
+    config
+        .reasoning_effort
+        .map(|effort| match effort {
+            LogicalEffort::Ultra => LogicalEffort::Max,
+            ordinary => ordinary,
+        })
 }
 
 pub fn build_spawnable_codex_exec_command(
@@ -796,15 +1144,35 @@ pub fn build_spawnable_codex_exec_command(
     capabilities: &CodexCliCapabilities,
     config: &CodexExecCliConfig,
 ) -> Result<SpawnableCommand, String> {
-    let args = build_codex_exec_args(capabilities, config)?;
+    build_spawnable_codex_exec_command_with_security_policy(
+        cli_path,
+        prompt,
+        capabilities,
+        config,
+        CodexLaunchSecurityPolicy::McpCompatibility,
+    )
+}
+
+pub(crate) fn build_spawnable_codex_exec_command_with_security_policy(
+    cli_path: &Path,
+    prompt: &str,
+    capabilities: &CodexCliCapabilities,
+    config: &CodexExecCliConfig,
+    security_policy: CodexLaunchSecurityPolicy,
+) -> Result<SpawnableCommand, String> {
+    let args = build_codex_exec_args_with_security_policy(capabilities, config, security_policy)?;
     let mut cmd = tokio::process::Command::new(cli_path);
     cmd.args(args);
     cmd.arg("--");
     cmd.arg(prompt);
     let prompt_arg_index = cmd.as_std().get_args().count().saturating_sub(1);
-    configure_spawn(&mut cmd, config.cwd.as_deref());
+    let stdin_transport = configure_spawn(
+        &mut cmd,
+        config.cwd.as_deref(),
+        CodexPromptTransport::PositionalArg,
+    );
     Ok(attach_codex_prompt_debug_artifact(
-        SpawnableCommand::new(cmd, None),
+        SpawnableCommand::new_with_stdin_transport(cmd, None, stdin_transport),
         prompt,
         prompt_arg_index,
         config.cwd.as_deref(),
@@ -819,15 +1187,42 @@ pub fn build_spawnable_codex_resume_command(
     capabilities: &CodexCliCapabilities,
     config: &CodexExecCliConfig,
 ) -> Result<SpawnableCommand, String> {
-    let args = build_codex_exec_resume_args(capabilities, session_id, config)?;
+    build_spawnable_codex_resume_command_with_security_policy(
+        cli_path,
+        session_id,
+        prompt,
+        capabilities,
+        config,
+        CodexLaunchSecurityPolicy::McpCompatibility,
+    )
+}
+
+pub(crate) fn build_spawnable_codex_resume_command_with_security_policy(
+    cli_path: &Path,
+    session_id: &str,
+    prompt: &str,
+    capabilities: &CodexCliCapabilities,
+    config: &CodexExecCliConfig,
+    security_policy: CodexLaunchSecurityPolicy,
+) -> Result<SpawnableCommand, String> {
+    let args = build_codex_exec_resume_args_with_security_policy(
+        capabilities,
+        session_id,
+        config,
+        security_policy,
+    )?;
     let mut cmd = tokio::process::Command::new(cli_path);
     cmd.args(args);
     cmd.arg("--");
     cmd.arg(prompt);
     let prompt_arg_index = cmd.as_std().get_args().count().saturating_sub(1);
-    configure_spawn(&mut cmd, config.cwd.as_deref());
+    let stdin_transport = configure_spawn(
+        &mut cmd,
+        config.cwd.as_deref(),
+        CodexPromptTransport::PositionalArg,
+    );
     Ok(attach_codex_prompt_debug_artifact(
-        SpawnableCommand::new(cmd, None),
+        SpawnableCommand::new_with_stdin_transport(cmd, None, stdin_transport),
         prompt,
         prompt_arg_index,
         config.cwd.as_deref(),
@@ -865,13 +1260,34 @@ fn write_codex_prompt_debug_artifact(
     })?;
 
     let path = crate::utils::runtime_log_paths::codex_prompt_debug_file(mode);
-    fs::write(&path, prompt).map_err(|error| {
+    fs::write(&path, redact_persona_from_codex_prompt(prompt)).map_err(|error| {
         format!(
             "Failed to write Codex prompt log artifact {}: {error}",
             path.display()
         )
     })?;
     Ok(path)
+}
+
+fn redact_persona_from_codex_prompt(prompt: &str) -> String {
+    const OPEN: &str = "<ralphx_agent_persona>";
+    const CLOSE: &str = "</ralphx_agent_persona>";
+    const REDACTED: &str = "<ralphx_agent_persona>[redacted]</ralphx_agent_persona>";
+
+    let mut remaining = prompt;
+    let mut redacted = String::with_capacity(prompt.len());
+    while let Some(start) = remaining.find(OPEN) {
+        redacted.push_str(&remaining[..start]);
+        let persona_and_rest = &remaining[start + OPEN.len()..];
+        let Some(end) = persona_and_rest.find(CLOSE) else {
+            redacted.push_str(REDACTED);
+            return redacted;
+        };
+        redacted.push_str(REDACTED);
+        remaining = &persona_and_rest[end + CLOSE.len()..];
+    }
+    redacted.push_str(remaining);
+    redacted
 }
 
 fn run_codex_command(cli_path: &Path, args: &[&str]) -> Result<String, String> {
@@ -881,7 +1297,9 @@ fn run_codex_command(cli_path: &Path, args: &[&str]) -> Result<String, String> {
         "PATH",
         crate::infrastructure::tool_paths::agent_subprocess_env_path(),
     );
-    crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(&mut command);
+    crate::infrastructure::tool_paths::ensure_resolved_node_bin_in_path(&mut command);
+    crate::infrastructure::subprocess_env_policy::github_cli_env_policy()
+        .apply_to_std_command(&mut command);
     let output = command
         .output()
         .map_err(|error| format!("Failed to run {} {:?}: {}", cli_path.display(), args, error))?;
@@ -903,7 +1321,18 @@ fn run_codex_optional_command(cli_path: &Path, args: &[&str]) -> String {
     run_codex_command(cli_path, args).unwrap_or_default()
 }
 
-fn configure_spawn(cmd: &mut tokio::process::Command, cwd: Option<&Path>) {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CodexPromptTransport {
+    PositionalArg,
+    #[cfg(test)]
+    Stdin,
+}
+
+fn configure_spawn(
+    cmd: &mut tokio::process::Command,
+    cwd: Option<&Path>,
+    prompt_transport: CodexPromptTransport,
+) -> SpawnableStdinTransport {
     if let Some(cwd) = cwd {
         cmd.current_dir(cwd);
     }
@@ -922,13 +1351,24 @@ fn configure_spawn(cmd: &mut tokio::process::Command, cwd: Option<&Path>) {
     );
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
-    cmd.stdin(std::process::Stdio::piped());
-    crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(cmd.as_std_mut());
+    let stdin_transport = match prompt_transport {
+        CodexPromptTransport::PositionalArg => {
+            cmd.stdin(std::process::Stdio::null());
+            SpawnableStdinTransport::Null
+        }
+        #[cfg(test)]
+        CodexPromptTransport::Stdin => {
+            cmd.stdin(std::process::Stdio::piped());
+            SpawnableStdinTransport::Piped
+        }
+    };
+    crate::infrastructure::tool_paths::ensure_resolved_node_bin_in_path(cmd.as_std_mut());
     // Put Codex (and its descendants — MCP server, any subprocesses it
     // spawns) into their own process group so the Tauri exit handler can
     // SIGTERM the whole tree without risking the app itself. See
     // `crate::infrastructure::agents::spawn_isolation`.
     crate::infrastructure::agents::spawn_isolation::install_setsid_pre_exec_tokio(cmd);
+    stdin_transport
 }
 
 fn require_capability(supported: bool, capability: &str) -> Result<(), String> {

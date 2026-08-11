@@ -56,6 +56,41 @@ impl ExternalEventsRepository for SqliteExternalEventsRepository {
             .await
     }
 
+    async fn insert_event_once_for_attempt(
+        &self,
+        event_type: &str,
+        project_id: &str,
+        agent_run_id: &str,
+        payload: &str,
+    ) -> AppResult<bool> {
+        let event_type = event_type.to_string();
+        let project_id = project_id.to_string();
+        let agent_run_marker = format!(
+            "\"agent_run_id\":{}",
+            serde_json::to_string(agent_run_id)
+                .map_err(|error| AppError::Validation(error.to_string()))?
+        );
+        let payload = payload.to_string();
+
+        self.db
+            .run(move |conn| {
+                let inserted = conn
+                    .execute(
+                        "INSERT INTO external_events (event_type, project_id, payload) \
+                         SELECT ?1, ?2, ?4 \
+                         WHERE NOT EXISTS ( \
+                             SELECT 1 FROM external_events \
+                             WHERE event_type = ?1 AND project_id = ?2 \
+                             AND instr(payload, ?3) > 0 \
+                         )",
+                        rusqlite::params![event_type, project_id, agent_run_marker, payload],
+                    )
+                    .map_err(|error| AppError::Database(error.to_string()))?;
+                Ok(inserted == 1)
+            })
+            .await
+    }
+
     async fn get_events_after_cursor(
         &self,
         project_ids: &[String],
@@ -85,8 +120,9 @@ impl ExternalEventsRepository for SqliteExternalEventsRepository {
                     in_clause
                 );
 
-                let mut stmt =
-                    conn.prepare(&sql).map_err(|e| AppError::Database(e.to_string()))?;
+                let mut stmt = conn
+                    .prepare(&sql)
+                    .map_err(|e| AppError::Database(e.to_string()))?;
 
                 // Build params: cursor, limit, then each project_id
                 let mut rows_result: Vec<ExternalEventRecord> = Vec::new();

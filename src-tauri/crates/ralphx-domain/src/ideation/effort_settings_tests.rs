@@ -4,7 +4,7 @@ use crate::ideation::effort_settings::EffortLevel;
 
 #[test]
 fn test_effort_level_round_trip() {
-    let values = ["low", "medium", "high", "max", "inherit"];
+    let values = ["low", "medium", "high", "max", "ultra", "inherit"];
     for v in values {
         let parsed = EffortLevel::from_str(v).expect("parse");
         assert_eq!(parsed.to_string(), v, "round-trip for '{}'", v);
@@ -13,7 +13,6 @@ fn test_effort_level_round_trip() {
 
 #[test]
 fn test_effort_level_invalid() {
-    assert!(EffortLevel::from_str("ultra").is_err());
     assert!(EffortLevel::from_str("").is_err());
     assert!(EffortLevel::from_str("INHERIT").is_err());
 }
@@ -27,6 +26,6 @@ fn test_effort_level_default_is_inherit() {
 fn test_effort_level_serde() {
     let json = serde_json::to_string(&EffortLevel::High).unwrap();
     assert_eq!(json, "\"high\"");
-    let de: EffortLevel = serde_json::from_str("\"max\"").unwrap();
-    assert_eq!(de, EffortLevel::Max);
+    let de: EffortLevel = serde_json::from_str("\"ultra\"").unwrap();
+    assert_eq!(de, EffortLevel::Ultra);
 }

@@ -57,6 +57,9 @@ function bucketStatus(status: InternalStatus): keyof ReturnType<typeof createEmp
     case "waiting_on_pr":
     case "merge_incomplete":
     case "merge_conflict":
+    case "updating_plan_branch":
+    case "updating_task_branch":
+    case "branch_update_blocked":
       return "merge";
     case "approved":
     case "merged":

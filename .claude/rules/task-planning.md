@@ -1,7 +1,7 @@
 ---
 paths:
-  - "specs/phases/**"
-  - "specs/plan.md"
+  - "docs/handoffs/**"
+  - ".artifacts/specs/**"
 ---
 
 > **Maintainer note:** This file optimizes for LLM context efficiency. Rules: (1) Tables > prose (2) One example max per concept (3) No redundant explanations (4) Use symbols: → = leads to, | = or, ❌/✅ = wrong/right (5) Before adding content, ask: "Can this be a single line?" If yes, make it one line.
@@ -10,7 +10,7 @@ paths:
 
 **Required Context:** code-quality-standards.md | git-workflow.md
 
-> Rules for designing tasks that can be executed atomically. Used by enhance-plan and plan-to-prd commands.
+> Rules for designing tasks that can be executed atomically. Rules for designing tasks that can be executed atomically. Applies to ideation task-proposal design and PRD/plan decomposition.
 
 ## Compilation Unit Rule (CRITICAL)
 
@@ -157,8 +157,8 @@ With strict TypeScript (`exactOptionalPropertyTypes`, etc.), adding a required f
 | Files Modified | Scope |
 |----------------|-------|
 | `src-tauri/**` | backend service/module name |
-| `src/**` | frontend component/feature name |
-| `ralphx-mcp-server/**` | mcp |
+| `frontend/src/**` | frontend component/feature name |
+| `plugins/app/ralphx-mcp-server/**` | mcp |
 | `plugins/app/**` | plugin |
 | `specs/**`, `docs/**` | docs |
 

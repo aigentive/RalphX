@@ -11,6 +11,7 @@ import {
   StatusBanner,
   StatusPill,
   TwoColumnLayout,
+  TaskValidationSection,
 } from "./shared";
 import { ReviewTimeline } from "./shared/ReviewTimeline";
 import { useTaskStateHistory } from "@/hooks/useReviews";
@@ -141,7 +142,7 @@ export function CompletedTaskDetail({ task, isHistorical = false }: CompletedTas
           case "keep_changes":
           case "revert_commit":
           case "create_new":
-            await api.tasks.move(task.id, "ready", undefined, result.note);
+            await api.tasks.move(task.id, "ready", result.note);
             await resumeExecutionIfStopped(task.projectId);
             break;
         }
@@ -175,6 +176,30 @@ export function CompletedTaskDetail({ task, isHistorical = false }: CompletedTas
       <TwoColumnLayout
         description={task.description}
         testId="completed-task-detail"
+        evidence={
+          <>
+            <TaskValidationSection
+              taskId={task.id}
+              isHistorical={isHistorical === true}
+            />
+
+            <section data-testid="review-history-section">
+              <SectionTitle>Review History</SectionTitle>
+              <ReviewTimeline history={history} stateTransitions={stateTransitions} />
+            </section>
+          </>
+        }
+        actions={
+          !isHistorical ? (
+            <section data-testid="action-buttons">
+              <ActionButtonsCard
+                onViewDiff={handleViewDiff}
+                onReopenTask={handleReopenTask}
+                onReviewCode={() => setShowReviewModal(true)}
+              />
+            </section>
+          ) : null
+        }
       >
         {/* Status Banner */}
         <StatusBanner
@@ -201,23 +226,6 @@ export function CompletedTaskDetail({ task, isHistorical = false }: CompletedTas
               completedAt={task.completedAt}
             />
           </div>
-        )}
-
-        {/* Review History */}
-        <section data-testid="review-history-section">
-          <SectionTitle>Review History</SectionTitle>
-          <ReviewTimeline history={history} stateTransitions={stateTransitions} />
-        </section>
-
-        {/* Actions (hidden in historical mode) */}
-        {!isHistorical && (
-          <section data-testid="action-buttons">
-            <ActionButtonsCard
-              onViewDiff={handleViewDiff}
-              onReopenTask={handleReopenTask}
-              onReviewCode={() => setShowReviewModal(true)}
-            />
-          </section>
         )}
       </TwoColumnLayout>
 

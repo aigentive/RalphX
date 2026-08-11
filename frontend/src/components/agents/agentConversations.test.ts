@@ -46,8 +46,6 @@ const session = (
   planArtifactId: null,
   seedTaskId: null,
   parentSessionId: null,
-  teamMode: "solo",
-  teamConfig: null,
   createdAt: "2026-04-22T10:00:00Z",
   updatedAt: "2026-04-22T10:05:00Z",
   archivedAt: null,

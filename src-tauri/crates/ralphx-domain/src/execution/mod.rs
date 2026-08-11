@@ -9,8 +9,9 @@ pub use status_response::{
 };
 
 pub use running_views::{
-    build_running_ideation_session, build_running_process, build_running_workspace_session,
-    elapsed_seconds_for_status, ExecutionCapacitySummary, ExecutionLaneUsage,
+    build_running_ideation_session, build_running_process, build_running_process_with_agent_workspace,
+    build_running_workspace_session, elapsed_seconds_for_status, workspace_session_title,
+    ExecutionCapacitySummary, ExecutionLaneUsage, ExecutionTaskAgentWorkspace,
     RunningIdeationSession, RunningProcess, RunningProcessesResponse, RunningWorkspaceSession,
 };
 pub use settings::{

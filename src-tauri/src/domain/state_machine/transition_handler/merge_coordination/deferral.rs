@@ -15,7 +15,7 @@ pub(crate) async fn check_main_merge_deferral(
     bp: super::BranchPair<'_>,
     base_branch: &str,
     running_agent_count: Option<u32>,
-    app_handle: Option<&tauri::AppHandle>,
+    event_sink: Option<&dyn ralphx_events::EventSink>,
 ) -> bool {
     let task = tc.task;
     let task_id_str = tc.task_id_str;
@@ -49,7 +49,7 @@ pub(crate) async fn check_main_merge_deferral(
             }
 
             super::emit_merge_progress(
-                app_handle,
+                event_sink,
                 task_id_str,
                 MergePhase::programmatic_merge(),
                 MergePhaseStatus::Started,
@@ -84,7 +84,7 @@ pub(crate) async fn check_main_merge_deferral(
             }
 
             super::emit_merge_progress(
-                app_handle,
+                event_sink,
                 task_id_str,
                 MergePhase::programmatic_merge(),
                 MergePhaseStatus::Started,

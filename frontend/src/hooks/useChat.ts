@@ -19,14 +19,19 @@ import {
   parseContentBlocks,
   parseToolCalls,
   type ChatMessageResponse,
+  type CapabilityIntent,
   type ComposerArtifactReference,
   type ComposerIntegrationReference,
   type ComposerProjectReference,
+  type ComposerSelectionSnapshot,
   type ConversationMessagesPageResponse,
   type ConversationTimelinePageResponse,
   type SendAgentMessageOptions,
   type SendAgentMessageResult,
+  type TeamIntent,
+  type TeamMessageTarget,
 } from "@/api/chat";
+import { isVisibleChatMessage } from "@/api/chat-message-visibility";
 import {
   appendMessageToConversationHistory,
   appendMessageIfMissing,
@@ -34,7 +39,10 @@ import {
   removeMessageFromConversationHistory,
   type ConversationHistoryCacheData,
 } from "./chat-cache";
-import { serializeComposerReferencesMetadata } from "@/components/Chat/MessageReferences.parse";
+import {
+  serializeComposerReferencesMetadata,
+  type MessageFolderReference,
+} from "@/components/Chat/MessageReferences.parse";
 import type { ChatContext } from "@/types/chat";
 import type { ChatConversation, AgentRun, ContextType } from "@/types/chat-conversation";
 import { useChatStore } from "@/stores/chatStore";
@@ -77,11 +85,15 @@ export type ConversationQueryData = {
 
 type SendMessageVariables = {
   content: string;
+  composerFolderReferences?: MessageFolderReference[];
   attachmentIds?: string[];
-  target?: string;
   composerArtifactReferences?: ComposerArtifactReference[];
   composerProjectReferences?: ComposerProjectReference[];
   composerIntegrationReferences?: ComposerIntegrationReference[];
+  capabilityIntent?: CapabilityIntent | null;
+  composerSelectionSnapshot?: ComposerSelectionSnapshot;
+  teamIntent?: TeamIntent | null;
+  teamMessageTarget?: TeamMessageTarget | null;
 };
 
 type SendMessageMutationContext = {
@@ -126,16 +138,21 @@ function getConversationMessagesFromHistoryData(
   if (!newestPage) {
     return undefined;
   }
-  const messages = data.pages
+  const rawMessages = data.pages
     .slice()
     .reverse()
     .flatMap((page) => page.messages);
+  const messages = rawMessages.filter(isVisibleChatMessage);
+  const totalMessageCount = Math.max(
+    0,
+    newestPage.totalMessageCount - (rawMessages.length - messages.length)
+  );
 
   return {
     conversation: newestPage.conversation,
     messages,
-    totalMessageCount: newestPage.totalMessageCount,
-    loadedStartIndex: Math.max(0, newestPage.totalMessageCount - messages.length),
+    totalMessageCount,
+    loadedStartIndex: Math.max(0, totalMessageCount - messages.length),
   };
 }
 
@@ -150,17 +167,54 @@ function getConversationMessagesFromTimelineData(
   if (!newestPage) {
     return undefined;
   }
-  const messages = data.pages
+  const loadedMessages = data.pages
     .slice()
     .reverse()
     .flatMap((page) => page.messages);
+  // Timeline queries are exclusive in normal operation, but refetches can still
+  // briefly overlap an older cached page. Prefer the newer query-page copy while
+  // retaining a single chronological item for the virtualizer.
+  const rawMessages = dedupeTimelineMessages(loadedMessages);
+  const messages = rawMessages.filter(isVisibleChatMessage);
+  const totalMessageCount = Math.max(
+    0,
+    newestPage.totalItemCount - (rawMessages.length - messages.length)
+  );
 
   return {
     conversation: newestPage.conversation,
     messages,
-    totalMessageCount: newestPage.totalItemCount,
-    loadedStartIndex: Math.max(0, newestPage.totalItemCount - messages.length),
+    totalMessageCount,
+    loadedStartIndex: Math.max(0, totalMessageCount - messages.length),
   };
+}
+
+function dedupeTimelineMessages(
+  messages: ChatMessageResponse[],
+): ChatMessageResponse[] {
+  const slots: Array<ChatMessageResponse | undefined> = [];
+  const indexById = new Map<string, number>();
+  const indexBySequence = new Map<number, number>();
+  for (const message of messages) {
+    const existingIndex = indexById.get(message.id)
+      ?? (message.timelineSequence != null ? indexBySequence.get(message.timelineSequence) : undefined);
+    if (existingIndex != null) {
+      const previous = slots[existingIndex];
+      if (previous) {
+        indexById.delete(previous.id);
+        if (previous.timelineSequence != null) indexBySequence.delete(previous.timelineSequence);
+      }
+      slots[existingIndex] = message;
+      indexById.set(message.id, existingIndex);
+      if (message.timelineSequence != null) indexBySequence.set(message.timelineSequence, existingIndex);
+      continue;
+    }
+    const index = slots.length;
+    slots.push(message);
+    indexById.set(message.id, index);
+    if (message.timelineSequence != null) indexBySequence.set(message.timelineSequence, index);
+  }
+  return slots.filter((message): message is ChatMessageResponse => message != null);
 }
 
 function createOptimisticTimelineItem(
@@ -343,6 +397,10 @@ export function upsertFinalizedMessageIntoConversationCache(
   conversationId: string,
   message: ChatMessageResponse
 ): boolean {
+  if (!isVisibleChatMessage(message)) {
+    return false;
+  }
+
   const contentBlocks =
     message.contentBlocks && message.contentBlocks.length > 0
       ? message.contentBlocks
@@ -554,7 +612,9 @@ function timelineItemFromRenderReadyPayload(
     timelineStatus: raw.status,
     timelineKind: raw.kind,
     timelineSequence: raw.sequence,
+    runId: raw.run_id ?? null,
     createdAt: raw.created_at,
+    finalizedAt: raw.finalized_at ?? null,
   };
 
   return {
@@ -601,9 +661,15 @@ export function upsertRenderReadyMessageIntoConversationCache(
   }
 
   const message = messageFromRenderReadyPayload(payload.message, conversationId);
+  if (!isVisibleChatMessage(message)) {
+    return false;
+  }
   const insertedItems = payload.timeline_items.map((item) =>
     timelineItemFromRenderReadyPayload(item, conversationId)
-  );
+  ).filter((item) => isVisibleChatMessage(item.asMessage));
+  if (insertedItems.length === 0) {
+    return false;
+  }
   let updatedTimeline = false;
 
   queryClient.setQueryData<InfiniteData<ConversationTimelinePageResponse>>(
@@ -716,6 +782,7 @@ export function getCachedConversationMessages(
 
   const mergedMessages = new Map<string, ChatMessageResponse>();
   for (const message of fullConversation?.messages ?? []) {
+    if (!isVisibleChatMessage(message)) continue;
     mergedMessages.set(message.id, message);
   }
   for (const message of historyConversation?.messages ?? []) {
@@ -818,6 +885,12 @@ function getContextTypeAndId(context: ChatContext): {
   contextType: ContextType;
   contextId: string;
 } {
+  if (context.contextTypeOverride && context.contextIdOverride) {
+    return {
+      contextType: context.contextTypeOverride,
+      contextId: context.contextIdOverride,
+    };
+  }
   switch (context.view) {
     case "ideation":
       if (!context.ideationSessionId) {
@@ -1164,17 +1237,27 @@ export function useChat(
     mutationFn: async ({
       content,
       attachmentIds,
-      target,
       composerArtifactReferences,
       composerProjectReferences,
       composerIntegrationReferences,
+      capabilityIntent,
+      composerSelectionSnapshot,
+      teamIntent,
+      teamMessageTarget,
     }) => {
       const sendOptions =
         composerProjectReferences?.length ||
         composerIntegrationReferences?.length ||
-        composerArtifactReferences?.length
+        composerArtifactReferences?.length ||
+        composerSelectionSnapshot ||
+        capabilityIntent ||
+        teamIntent ||
+        teamMessageTarget
           ? {
               ...options?.sendOptions,
+              ...(capabilityIntent ? { capabilityIntent } : {}),
+              ...(teamIntent ? { teamIntent } : {}),
+              ...(teamMessageTarget ? { teamMessageTarget } : {}),
               ...(composerProjectReferences?.length
                 ? { composerProjectReferences }
                 : {}),
@@ -1184,6 +1267,9 @@ export function useChat(
               ...(composerArtifactReferences?.length
                 ? { composerArtifactReferences }
                 : {}),
+              ...(composerSelectionSnapshot
+                ? { composerSelectionSnapshot }
+                : {}),
             }
           : options?.sendOptions;
       if (options?.sendOptions) {
@@ -1192,7 +1278,6 @@ export function useChat(
           contextId,
           content,
           attachmentIds,
-          target,
           sendOptions
         );
       }
@@ -1202,13 +1287,12 @@ export function useChat(
         contextId,
         content,
         attachmentIds,
-        target,
         sendOptions
       );
     },
     onMutate: (variables) => {
       setSending(effectiveStoreKey, true);
-      if (!activeConversationId || variables.target) {
+      if (!activeConversationId) {
         return {};
       }
       const optimisticMessage = addOptimisticUserMessageToConversationCache(
@@ -1217,9 +1301,11 @@ export function useChat(
         variables.content,
         {
           metadata: serializeComposerReferencesMetadata({
+            folderReferences: variables.composerFolderReferences,
             projectReferences: variables.composerProjectReferences,
             integrationReferences: variables.composerIntegrationReferences,
             artifactReferences: variables.composerArtifactReferences,
+            selectionSnapshot: variables.composerSelectionSnapshot,
           }),
         }
       );

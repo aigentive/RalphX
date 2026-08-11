@@ -159,6 +159,7 @@ describe("ProjectCreationWizard", () => {
         workingDirectory: "/Users/dev/my-app",
         gitMode: "worktree",
         baseBranch: "main",
+        worktreeParentDirectory: "~/ralphx-worktrees",
       });
     });
 
@@ -186,6 +187,7 @@ describe("ProjectCreationWizard", () => {
         workingDirectory: "/Users/dev/my-app",
         gitMode: "worktree",
         baseBranch: "main",
+        worktreeParentDirectory: "~/ralphx-worktrees",
       });
     });
 
@@ -213,6 +215,7 @@ describe("ProjectCreationWizard", () => {
         workingDirectory: "/Users/dev/my-app",
         gitMode: "worktree",
         baseBranch: "main",
+        worktreeParentDirectory: "~/ralphx-worktrees",
       });
     });
 

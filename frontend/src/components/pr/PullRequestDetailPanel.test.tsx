@@ -8,7 +8,10 @@ import { PullRequestDetailPanel } from "./PullRequestDetailPanel";
 const bodyProps = vi.fn();
 
 vi.mock("./PullRequestDetailBody", () => ({
-  PullRequestDetailBody: (props: { showRxConversation?: boolean }) => {
+  PullRequestDetailBody: (props: {
+    presentation?: "default" | "agentsWorkspace";
+    showRxConversation?: boolean;
+  }) => {
     bodyProps(props);
     return <div data-testid="pr-body">body</div>;
   },
@@ -39,7 +42,10 @@ describe("PullRequestDetailPanel", () => {
 
     expect(screen.getByTestId("pr-body")).toBeInTheDocument();
     expect(bodyProps).toHaveBeenCalledWith(
-      expect.objectContaining({ showRxConversation: false }),
+      expect.objectContaining({
+        presentation: "agentsWorkspace",
+        showRxConversation: false,
+      }),
     );
   });
 

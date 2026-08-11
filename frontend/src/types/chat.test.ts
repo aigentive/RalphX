@@ -1,7 +1,7 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
-  ViewTypeSchema,
-  VIEW_TYPE_VALUES,
+  CHAT_CONTEXT_VIEW_VALUES,
+  ChatContextViewSchema,
   ChatContextSchema,
   isKanbanContext,
   isIdeationContext,
@@ -14,33 +14,34 @@ import {
   createProjectContext,
 } from "./chat";
 
-describe("ViewTypeSchema", () => {
+describe("ChatContextViewSchema", () => {
   it("should have 12 view type values", () => {
-    expect(VIEW_TYPE_VALUES.length).toBe(12);
+    expect(CHAT_CONTEXT_VIEW_VALUES.length).toBe(12);
   });
 
   it("should parse all valid view types", () => {
-    for (const viewType of VIEW_TYPE_VALUES) {
-      expect(ViewTypeSchema.parse(viewType)).toBe(viewType);
+    for (const viewType of CHAT_CONTEXT_VIEW_VALUES) {
+      expect(ChatContextViewSchema.parse(viewType)).toBe(viewType);
     }
   });
 
   it("should include expected view types", () => {
-    expect(VIEW_TYPE_VALUES).toContain("kanban");
-    expect(VIEW_TYPE_VALUES).toContain("graph");
-    expect(VIEW_TYPE_VALUES).toContain("ideation");
-    expect(VIEW_TYPE_VALUES).toContain("agents");
-    expect(VIEW_TYPE_VALUES).toContain("extensibility");
-    expect(VIEW_TYPE_VALUES).toContain("activity");
-    expect(VIEW_TYPE_VALUES).toContain("ticketing");
-    expect(VIEW_TYPE_VALUES).toContain("github");
-    expect(VIEW_TYPE_VALUES).toContain("granola");
-    expect(VIEW_TYPE_VALUES).toContain("task_detail");
+    expect(CHAT_CONTEXT_VIEW_VALUES).toContain("kanban");
+    expect(CHAT_CONTEXT_VIEW_VALUES).toContain("graph");
+    expect(CHAT_CONTEXT_VIEW_VALUES).toContain("ideation");
+    expect(CHAT_CONTEXT_VIEW_VALUES).toContain("agents");
+    expect(CHAT_CONTEXT_VIEW_VALUES).toContain("automations");
+    expect(CHAT_CONTEXT_VIEW_VALUES).toContain("extensibility");
+    expect(CHAT_CONTEXT_VIEW_VALUES).toContain("activity");
+    expect(CHAT_CONTEXT_VIEW_VALUES).toContain("ticketing");
+    expect(CHAT_CONTEXT_VIEW_VALUES).toContain("github");
+    expect(CHAT_CONTEXT_VIEW_VALUES).toContain("granola");
+    expect(CHAT_CONTEXT_VIEW_VALUES).toContain("task_detail");
   });
 
   it("should reject invalid view type", () => {
-    expect(() => ViewTypeSchema.parse("invalid")).toThrow();
-    expect(() => ViewTypeSchema.parse("Kanban")).toThrow();
+    expect(() => ChatContextViewSchema.parse("invalid")).toThrow();
+    expect(() => ChatContextViewSchema.parse("Kanban")).toThrow();
   });
 });
 

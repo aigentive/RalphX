@@ -16,6 +16,8 @@ vi.mock("@/api/github", () => ({
 }));
 
 const CONNECTED: GitHubConnectionStatus = {
+  state: "authenticated",
+  diagnostic: null,
   ghInstalled: true,
   authenticated: true,
   host: "github.com",

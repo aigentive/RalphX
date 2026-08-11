@@ -1,21 +1,20 @@
-# Canonical process registry for team-oriented Claude orchestration.
-# `process_mapping` selects the default agent(s) for each process family.
-# `team_constraints` defines per-process teammate limits, allowed tools, and presets.
+# Provider-neutral canonical process registry.
+# `process_mapping` selects the default agent and supported process variants.
 
 process_mapping:
   ideation:
     default: ralphx-ideation
     readonly: ralphx-ideation-readonly
-    team: ralphx-ideation-team-lead
   execution:
     default: ralphx-execution-worker
-    team: ralphx-execution-team-lead
   review:
     default: ralphx-execution-reviewer
     chat: ralphx-review-chat
     history: ralphx-review-history
   merge:
     default: ralphx-execution-merger
+  branch_update:
+    default: ralphx-execution-branch-updater
   qa_prep:
     default: ralphx-qa-prep
   qa_refine:
@@ -26,91 +25,3 @@ process_mapping:
     default: ralphx-chat-task
   chat_project:
     default: ralphx-chat-project
-
-team_constraints:
-  # Defaults applied to processes that do not override a given field explicitly.
-  _defaults:
-    max_teammates: 5
-    model_cap: sonnet
-    mode: dynamic
-    timeout_minutes: 20
-    budget_limit: null
-    auto_approve: true
-
-  ideation:
-    max_teammates: 5
-    allowed_tools:
-      - Read
-      - Grep
-      - Glob
-      - Bash
-      - WebFetch
-      - WebSearch
-    model_cap: opus
-    mode: dynamic
-    presets:
-      - researcher
-      - critic
-
-  execution:
-    max_teammates: 5
-    allowed_tools:
-      - Read
-      - Write
-      - Edit
-      - Bash
-      - Grep
-      - Glob
-      - WebFetch
-      - WebSearch
-    allowed_mcp_tools:
-      - get_task_context
-      - get_artifact
-      - get_project_analysis
-      - run_task_validation
-      - create_team_artifact
-      - get_team_artifacts
-      - start_step
-      - complete_step
-      - skip_step
-      - fail_step
-      - add_step
-      - get_step_context
-      - get_step_progress
-      - get_sub_steps
-      - create_agent_task
-      - get_agent_task
-      - list_agent_tasks
-      - update_agent_task
-      - claim_agent_task
-      - complete_agent_task
-    model_cap: sonnet
-    mode: dynamic
-    presets:
-      - ralphx-execution-coder
-    timeout_minutes: 30
-    budget_limit: null
-
-  review:
-    max_teammates: 2
-    allowed_tools:
-      - Read
-      - Grep
-      - Glob
-    allowed_mcp_tools:
-      - complete_review
-      - get_task_context
-      - get_task_validation_summary
-      - get_task_diff_stat
-      - get_task_diff
-      - get_artifact
-      - get_project_analysis
-      - get_review_notes
-      - get_task_steps
-      - get_task_issues
-      - get_step_progress
-      - get_issue_progress
-    model_cap: sonnet
-    mode: constrained
-    presets:
-      - ralphx-execution-reviewer

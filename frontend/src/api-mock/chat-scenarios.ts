@@ -26,7 +26,11 @@ export type MockChatScenario = {
 };
 
 function createConversation(
-  conversation: Omit<ChatConversation, "claudeSessionId" | "providerSessionId" | "providerHarness"> &
+  conversation: Omit<
+    ChatConversation,
+    "claudeSessionId" | "providerSessionId" | "providerHarness" | "coordinationMode"
+  > &
+    Partial<Pick<ChatConversation, "coordinationMode">> &
     Parameters<typeof normalizeConversationProviderMetadata>[0]
 ): ChatConversation {
   return {
@@ -38,6 +42,7 @@ function createConversation(
       providerSessionId: conversation.providerSessionId,
       providerHarness: conversation.providerHarness,
     }),
+    coordinationMode: conversation.coordinationMode ?? "solo",
     title: conversation.title,
     messageCount: conversation.messageCount,
     lastMessageAt: conversation.lastMessageAt,
@@ -176,7 +181,7 @@ const chatScenarioFixtures: Record<MockChatScenarioName, MockChatScenario> = {
           taskId: null,
           role: "assistant",
           content:
-            "Let me start by checking the session state and pulling in specialists. The real DB sample behind this replay had a compact user prompt and a large orchestrator response dominated by Agent, TaskCreate, TeamCreate, and session-context MCP calls.",
+            "Let me start by checking the session state and pulling in specialists. The real DB sample behind this replay had a compact user prompt and a large orchestrator response dominated by native delegation, TaskCreate, and session-context MCP calls.",
           metadata: null,
           parentMessageId: "msg-ideation-user-1",
           conversationId: ideationReplayConversationId,
@@ -184,17 +189,7 @@ const chatScenarioFixtures: Record<MockChatScenarioName, MockChatScenario> = {
           contentBlocks: [
             {
               type: "text",
-              text: "Fresh session. I’m gathering context and setting up the team plan.",
-            },
-            {
-              type: "tool_use",
-              id: "tool-team-create-1",
-              name: "TeamCreate",
-              arguments: {
-                team_name: "pipeline-research",
-                description: "Parallel GitHub integration specialists",
-              },
-              result: { success: true, team_id: "team-1" },
+              text: "Fresh session. I’m gathering context and selecting native delegation lenses.",
             },
             {
               type: "tool_use",
@@ -207,30 +202,6 @@ const chatScenarioFixtures: Record<MockChatScenarioName, MockChatScenario> = {
                   text: "{\"ok\":true,\"title\":\"Demo Ideation Session\"}",
                 },
               ],
-            },
-            {
-              type: "tool_use",
-              id: "tool-request-plan-1",
-              name: "mcp__ralphx__request_team_plan",
-              arguments: {
-                process: "research",
-                teammates: [
-                  {
-                    role: "pipeline-researcher",
-                    model: "sonnet",
-                    prompt_summary: "Audit merge pipeline",
-                  },
-                  {
-                    role: "settings-researcher",
-                    model: "sonnet",
-                    prompt_summary: "Audit settings surface",
-                  },
-                ],
-              },
-              result: {
-                plan_id: "plan-1",
-                teammates_spawned: [{ id: "pipeline-1" }, { id: "settings-1" }],
-              },
             },
             {
               type: "tool_use",
@@ -358,7 +329,7 @@ const chatScenarioFixtures: Record<MockChatScenarioName, MockChatScenario> = {
           taskId: null,
           role: "assistant",
           content:
-            "Critics are reporting back. I’m nudging the remaining teammates while cross-checking repository usage with direct file reads and searches.",
+            "Critics are reporting back. I’m cross-checking repository usage with direct file reads and searches.",
           metadata: null,
           parentMessageId: "msg-ideation-orchestrator-2",
           conversationId: ideationReplayConversationId,
@@ -521,13 +492,13 @@ const chatScenarioFixtures: Record<MockChatScenarioName, MockChatScenario> = {
             },
             {
               type: "tool_use",
-              id: "verification-update-1",
-              name: "mcp__ralphx__report_verification_round",
-              arguments: { round: 2, generation: 4 },
+              id: "verification-complete-1",
+              name: "mcp__ralphx__complete_plan_verification",
+              arguments: {},
               result: [
                 {
                   type: "text",
-                  text: "{\"status\":\"reviewing\",\"current_round\":2,\"max_rounds\":4,\"current_gaps\":[{\"severity\":\"major\",\"summary\":\"Missing merge widget baseline\"}],\"convergence_reason\":\"jaccard_converged\"}",
+                  text: "{\"status\":\"verified\",\"verified_plan_artifact_id\":\"artifact-1\"}",
                 },
               ],
             },
@@ -539,19 +510,7 @@ const chatScenarioFixtures: Record<MockChatScenarioName, MockChatScenario> = {
               result: [
                 {
                   type: "text",
-                  text: "{\"status\":\"verified\",\"current_round\":3,\"max_rounds\":3,\"convergence_reason\":\"zero_blocking\",\"verification_child\":{\"latestChildSessionId\":\"child-session-12345678\",\"agentState\":\"likely_waiting\",\"lastAssistantMessage\":\"Waiting on parent confirmation before closing the verification thread.\"}}",
-                },
-              ],
-            },
-            {
-              type: "tool_use",
-              id: "verification-pending-1",
-              name: "mcp__ralphx__get_pending_confirmations",
-              arguments: {},
-              result: [
-                {
-                  type: "text",
-                  text: "{\"sessions\":[{\"session_id\":\"pending-1\"},{\"session_id\":\"pending-2\"}]}",
+                  text: "{\"status\":\"verified\",\"plan_artifact_id\":\"artifact-1\",\"verified_plan_artifact_id\":\"artifact-1\",\"in_progress\":false}",
                 },
               ],
             },
@@ -907,8 +866,11 @@ const chatScenarioFixtures: Record<MockChatScenarioName, MockChatScenario> = {
           projectId: "project-mock-1",
           taskId: "task-mock-4",
           role: "user",
-          content: "Execute task: task-mock-4",
-          metadata: null,
+          content: "Task runtime bootstrap",
+          metadata: JSON.stringify({
+            hidden_from_ui: true,
+            source: "task_runtime_bootstrap",
+          }),
           parentMessageId: null,
           conversationId: executionReplayConversationId,
           toolCalls: null,
@@ -1005,8 +967,11 @@ const chatScenarioFixtures: Record<MockChatScenarioName, MockChatScenario> = {
           projectId: "project-mock-1",
           taskId: "task-mock-5",
           role: "user",
-          content: "Review task: task-mock-5",
-          metadata: null,
+          content: "Review runtime bootstrap",
+          metadata: JSON.stringify({
+            hidden_from_ui: true,
+            source: "task_runtime_bootstrap",
+          }),
           parentMessageId: null,
           conversationId: reviewReplayConversationId,
           toolCalls: null,

@@ -6,7 +6,8 @@ use uuid::Uuid;
 use crate::agents::{AgentHarnessKind, ProviderSessionRef};
 
 use super::{
-    AgentConversationWorkspaceMode, DelegatedSessionId, IdeationSessionId, ProjectId, TaskId,
+    AgentConversationWorkspaceMode, AutomationId, AutomationRunId, CoordinationMode,
+    DelegatedSessionId, IdeationSessionId, ProjectId, TaskId,
 };
 
 /// Unique identifier for a chat conversation
@@ -81,6 +82,8 @@ pub enum ChatContextType {
     Task,
     /// Project-level context
     Project,
+    /// Projectless conversation; its context_id is the conversation id.
+    Standalone,
     /// Task execution context (worker output)
     #[serde(rename = "task_execution")]
     TaskExecution,
@@ -88,6 +91,9 @@ pub enum ChatContextType {
     Review,
     /// Merge conflict resolution context (merger agent)
     Merge,
+    /// Branch synchronization and conflict-resolution context (branch updater)
+    #[serde(rename = "branch_update")]
+    BranchUpdate,
 }
 
 impl fmt::Display for ChatContextType {
@@ -97,9 +103,11 @@ impl fmt::Display for ChatContextType {
             ChatContextType::Delegation => write!(f, "delegation"),
             ChatContextType::Task => write!(f, "task"),
             ChatContextType::Project => write!(f, "project"),
+            ChatContextType::Standalone => write!(f, "standalone"),
             ChatContextType::TaskExecution => write!(f, "task_execution"),
             ChatContextType::Review => write!(f, "review"),
             ChatContextType::Merge => write!(f, "merge"),
+            ChatContextType::BranchUpdate => write!(f, "branch_update"),
         }
     }
 }
@@ -113,9 +121,11 @@ impl std::str::FromStr for ChatContextType {
             "delegation" => Ok(ChatContextType::Delegation),
             "task" => Ok(ChatContextType::Task),
             "project" => Ok(ChatContextType::Project),
+            "standalone" => Ok(ChatContextType::Standalone),
             "task_execution" => Ok(ChatContextType::TaskExecution),
             "review" => Ok(ChatContextType::Review),
             "merge" => Ok(ChatContextType::Merge),
+            "branch_update" => Ok(ChatContextType::BranchUpdate),
             _ => Err(format!("Invalid context type: {}", s)),
         }
     }
@@ -227,6 +237,21 @@ pub struct ChatConversation {
     pub provider_profile: Option<String>,
     /// Current project-agent mode for Agents conversations.
     pub agent_mode: Option<AgentConversationWorkspaceMode>,
+    /// Canonical specialist agent retained by a parented child conversation.
+    #[serde(default)]
+    pub bound_agent_name: Option<String>,
+    /// Optional active persona bound to this conversation.
+    pub persona_id: Option<String>,
+    /// Optional persona draft owned by this builder conversation.
+    pub builder_draft_id: Option<String>,
+    /// Approved persona produced by this builder conversation.
+    pub builder_result_persona_id: Option<String>,
+    /// Conversation-level team coordination state.
+    pub coordination_mode: CoordinationMode,
+    /// Automation that owns this setup or run conversation.
+    pub automation_id: Option<AutomationId>,
+    /// Automation run that owns this run conversation.
+    pub automation_run_id: Option<AutomationRunId>,
     /// Auto-generated or user-set title for this conversation
     pub title: Option<String>,
     /// Number of messages in this conversation
@@ -265,6 +290,13 @@ impl ChatConversation {
             upstream_provider: None,
             provider_profile: None,
             agent_mode: None,
+            bound_agent_name: None,
+            persona_id: None,
+            builder_draft_id: None,
+            builder_result_persona_id: None,
+            coordination_mode: CoordinationMode::Solo,
+            automation_id: None,
+            automation_run_id: None,
             title: None,
             message_count: 0,
             last_message_at: None,
@@ -294,6 +326,13 @@ impl ChatConversation {
             upstream_provider: None,
             provider_profile: None,
             agent_mode: None,
+            bound_agent_name: None,
+            persona_id: None,
+            builder_draft_id: None,
+            builder_result_persona_id: None,
+            coordination_mode: CoordinationMode::Solo,
+            automation_id: None,
+            automation_run_id: None,
             title: None,
             message_count: 0,
             last_message_at: None,
@@ -323,6 +362,13 @@ impl ChatConversation {
             upstream_provider: None,
             provider_profile: None,
             agent_mode: None,
+            bound_agent_name: None,
+            persona_id: None,
+            builder_draft_id: None,
+            builder_result_persona_id: None,
+            coordination_mode: CoordinationMode::Solo,
+            automation_id: None,
+            automation_run_id: None,
             title: None,
             message_count: 0,
             last_message_at: None,
@@ -352,6 +398,13 @@ impl ChatConversation {
             upstream_provider: None,
             provider_profile: None,
             agent_mode: None,
+            bound_agent_name: None,
+            persona_id: None,
+            builder_draft_id: None,
+            builder_result_persona_id: None,
+            coordination_mode: CoordinationMode::Solo,
+            automation_id: None,
+            automation_run_id: None,
             title: None,
             message_count: 0,
             last_message_at: None,
@@ -368,6 +421,73 @@ impl ChatConversation {
         }
     }
 
+    /// Create a new self-keyed projectless conversation.
+    ///
+    /// Standalone conversations key their `context_id` to their own generated
+    /// `id` (enforced invariant: `context_id == id`) since there is no
+    /// external project/session/task row to key against.
+    pub fn new_standalone() -> Self {
+        let now = Utc::now();
+        let id = ChatConversationId::new();
+        Self {
+            id,
+            context_type: ChatContextType::Standalone,
+            context_id: id.as_str(),
+            claude_session_id: None,
+            provider_session_id: None,
+            provider_harness: None,
+            upstream_provider: None,
+            provider_profile: None,
+            agent_mode: None,
+            bound_agent_name: None,
+            persona_id: None,
+            builder_draft_id: None,
+            builder_result_persona_id: None,
+            coordination_mode: CoordinationMode::Solo,
+            automation_id: None,
+            automation_run_id: None,
+            title: None,
+            message_count: 0,
+            last_message_at: None,
+            created_at: now,
+            updated_at: now,
+            archived_at: None,
+            parent_conversation_id: None,
+            attribution_backfill_status: None,
+            attribution_backfill_source: None,
+            attribution_backfill_source_path: None,
+            attribution_backfill_last_attempted_at: None,
+            attribution_backfill_completed_at: None,
+            attribution_backfill_error_summary: None,
+        }
+    }
+
+    /// Returns true iff this conversation satisfies the Standalone self-key
+    /// invariant: `context_type == Standalone && context_id == id`.
+    pub fn is_valid_standalone_self_key(&self) -> bool {
+        self.context_type == ChatContextType::Standalone && self.context_id == self.id.as_str()
+    }
+
+    /// Returns true only for the two context types that own PersonaBuilder
+    /// conversations and the PersonaBuilder workspace mode.
+    pub const fn is_persona_builder_identity(
+        context_type: ChatContextType,
+        agent_mode: Option<AgentConversationWorkspaceMode>,
+    ) -> bool {
+        matches!(
+            context_type,
+            ChatContextType::Project | ChatContextType::Standalone
+        ) && matches!(
+            agent_mode,
+            Some(AgentConversationWorkspaceMode::PersonaBuilder)
+        )
+    }
+
+    /// Returns true when this row is a valid Project or Standalone PersonaBuilder.
+    pub const fn is_persona_builder(&self) -> bool {
+        Self::is_persona_builder_identity(self.context_type, self.agent_mode)
+    }
+
     /// Create a new conversation for task execution (worker output).
     /// Pass `parent_id` when re-executing a task to link to the prior run's conversation.
     pub fn new_task_execution(task_id: TaskId) -> Self {
@@ -382,6 +502,13 @@ impl ChatConversation {
             upstream_provider: None,
             provider_profile: None,
             agent_mode: None,
+            bound_agent_name: None,
+            persona_id: None,
+            builder_draft_id: None,
+            builder_result_persona_id: None,
+            coordination_mode: CoordinationMode::Solo,
+            automation_id: None,
+            automation_run_id: None,
             title: None,
             message_count: 0,
             last_message_at: None,
@@ -411,6 +538,13 @@ impl ChatConversation {
             upstream_provider: None,
             provider_profile: None,
             agent_mode: None,
+            bound_agent_name: None,
+            persona_id: None,
+            builder_draft_id: None,
+            builder_result_persona_id: None,
+            coordination_mode: CoordinationMode::Solo,
+            automation_id: None,
+            automation_run_id: None,
             title: None,
             message_count: 0,
             last_message_at: None,
@@ -440,6 +574,13 @@ impl ChatConversation {
             upstream_provider: None,
             provider_profile: None,
             agent_mode: None,
+            bound_agent_name: None,
+            persona_id: None,
+            builder_draft_id: None,
+            builder_result_persona_id: None,
+            coordination_mode: CoordinationMode::Solo,
+            automation_id: None,
+            automation_run_id: None,
             title: None,
             message_count: 0,
             last_message_at: None,
@@ -454,6 +595,13 @@ impl ChatConversation {
             attribution_backfill_completed_at: None,
             attribution_backfill_error_summary: None,
         }
+    }
+
+    /// Create a new conversation for dedicated branch-update conflict resolution.
+    pub fn new_branch_update(task_id: TaskId) -> Self {
+        let mut conversation = Self::new_review(task_id);
+        conversation.context_type = ChatContextType::BranchUpdate;
+        conversation
     }
 
     pub fn update_attribution_backfill_state(
@@ -514,6 +662,11 @@ impl ChatConversation {
 
     pub fn set_agent_mode(&mut self, mode: Option<AgentConversationWorkspaceMode>) {
         self.agent_mode = mode;
+        self.updated_at = Utc::now();
+    }
+
+    pub fn set_coordination_mode(&mut self, mode: CoordinationMode) {
+        self.coordination_mode = mode;
         self.updated_at = Utc::now();
     }
 

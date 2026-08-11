@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/dialog";
 
 import { PublishPipelineSteps } from "./AgentsPublishPipelineSteps";
+import type { AgentWorkspacePrAutofixFingerprintSpendPresentation } from "./agentWorkspacePublishState";
 
 export type PublishWorkspaceDialogPhase = "confirm" | "publishing";
 
@@ -20,6 +21,7 @@ export function PublishWorkspaceDialog({
   base,
   branch,
   confirmDisabled,
+  fingerprintSpend = null,
   isPublishing,
   onConfirm,
   onOpenChange,
@@ -34,6 +36,7 @@ export function PublishWorkspaceDialog({
   base: string;
   branch: string;
   confirmDisabled: boolean;
+  fingerprintSpend?: AgentWorkspacePrAutofixFingerprintSpendPresentation | null;
   isPublishing: boolean;
   onConfirm: () => void;
   onOpenChange: (open: boolean) => void;
@@ -81,6 +84,29 @@ export function PublishWorkspaceDialog({
           )}
         </DialogHeader>
 
+        {fingerprintSpend && (
+          <div
+            className="mx-5 rounded-md px-3 py-2 text-xs"
+            data-testid="agents-publish-fingerprint-spend"
+            style={{
+              backgroundColor: "var(--bg-subtle)",
+              borderColor: fingerprintSpend.exhausted
+                ? "var(--status-error-border)"
+                : "var(--border-subtle)",
+              borderStyle: "solid",
+              borderWidth: "1px",
+              color: "var(--text-secondary)",
+            }}
+          >
+            <div>{fingerprintSpend.summary}</div>
+            {fingerprintSpend.exhausted && (
+              <div className="mt-0.5 font-medium text-[var(--status-error)]">
+                Repair budget exhausted
+              </div>
+            )}
+          </div>
+        )}
+
         {isProgress && (
           <div className="px-5 pb-4">
             <PublishPipelineSteps
@@ -88,6 +114,7 @@ export function PublishWorkspaceDialog({
               autoMergeDesired={autoMergeDesired}
               className="mt-3"
               prSupervisionStatus={prSupervisionStatus}
+              targetPullRequestLabel={targetPullRequestLabel}
               status={status}
               isPublishing={isPublishing}
               testIdPrefix="agents-publish-dialog"

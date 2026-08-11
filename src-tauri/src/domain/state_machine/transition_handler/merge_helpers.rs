@@ -22,12 +22,14 @@ use crate::domain::entities::{
     TaskCategory, TaskId,
 };
 use crate::domain::repositories::{
-    ArtifactRepository, IdeationSessionRepository, PlanBranchRepository, TaskRepository,
+    ArtifactRepository, BranchUpdateRepository, IdeationSessionRepository, PlanBranchRepository,
+    TaskRepository,
 };
 use crate::domain::services::{
     GithubServiceTrait, PlanPrDescriptionDrafter, PlanPrPublisher, PrReviewState,
 };
 use crate::domain::state_machine::context::TaskServices;
+use crate::domain::state_machine::services::BranchUpdateWorkflow;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::git_runtime_config;
 
@@ -69,6 +71,25 @@ const COMMIT_HOOK_POLICY_PATTERNS: &[&str] = &[
     "tests failed",
     "error:",
 ];
+
+const GITHUB_AUTO_MERGE_DISABLED_FOR_CORRECTION_KEY: &str =
+    "github_auto_merge_disabled_for_correction";
+const GITHUB_AUTO_MERGE_PR_NUMBER_KEY: &str = "github_auto_merge_pr_number";
+const GITHUB_AUTO_MERGE_METHOD_KEY: &str = "github_auto_merge_method";
+const GITHUB_AUTO_MERGE_DISABLED_AT_KEY: &str = "github_auto_merge_disabled_at";
+const GITHUB_AUTO_MERGE_DISABLED_SOURCE_KEY: &str = "github_auto_merge_disabled_source";
+const GITHUB_AUTO_MERGE_REENABLED_AT_KEY: &str = "github_auto_merge_reenabled_at";
+const GITHUB_AUTO_MERGE_REENABLED_SOURCE_KEY: &str = "github_auto_merge_reenabled_source";
+const GITHUB_AUTO_MERGE_REENABLED_METHOD_KEY: &str = "github_auto_merge_reenabled_method";
+const GITHUB_AUTO_MERGE_REENABLE_FAILED_AT_KEY: &str = "github_auto_merge_reenable_failed_at";
+const GITHUB_AUTO_MERGE_REENABLE_ERROR_KEY: &str = "github_auto_merge_reenable_error";
+const GITHUB_AUTO_MERGE_REENABLE_SOURCE: &str = "pr_mode_pending_merge";
+const GITHUB_AUTO_MERGE_TERMINAL_CLEARED_AT_KEY: &str = "github_auto_merge_terminal_cleared_at";
+const GITHUB_AUTO_MERGE_TERMINAL_CLEARED_SOURCE_KEY: &str =
+    "github_auto_merge_terminal_cleared_source";
+const GITHUB_AUTO_MERGE_TERMINAL_CLEARED_STATUS_KEY: &str =
+    "github_auto_merge_terminal_cleared_status";
+const GITHUB_AUTO_MERGE_TERMINAL_CLEAR_SOURCE: &str = "pr_terminal_state";
 
 lazy_static! {
     static ref ANSI_ESCAPE_RE: Regex =
@@ -239,6 +260,178 @@ pub(crate) fn merge_metadata_into(task: &mut Task, new_fields: &serde_json::Valu
         }
     }
     task.metadata = Some(existing.to_string());
+}
+
+struct TaskPrAutoMergeRestore {
+    pr_number: i64,
+    method: String,
+}
+
+fn normalize_github_auto_merge_method(method: Option<&str>) -> String {
+    match method.map(str::to_ascii_lowercase).as_deref() {
+        Some("merge") => "merge".to_string(),
+        Some("rebase") => "rebase".to_string(),
+        _ => "squash".to_string(),
+    }
+}
+
+fn task_pr_auto_merge_restore_marker(
+    task: &Task,
+    fallback_pr_number: i64,
+) -> Option<TaskPrAutoMergeRestore> {
+    let metadata = task
+        .metadata
+        .as_deref()
+        .and_then(|metadata| serde_json::from_str::<serde_json::Value>(metadata).ok())?;
+    let disabled = metadata
+        .get(GITHUB_AUTO_MERGE_DISABLED_FOR_CORRECTION_KEY)
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    if !disabled {
+        return None;
+    }
+
+    let pr_number = metadata
+        .get(GITHUB_AUTO_MERGE_PR_NUMBER_KEY)
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(fallback_pr_number);
+    let method = normalize_github_auto_merge_method(
+        metadata
+            .get(GITHUB_AUTO_MERGE_METHOD_KEY)
+            .and_then(serde_json::Value::as_str),
+    );
+
+    Some(TaskPrAutoMergeRestore { pr_number, method })
+}
+
+pub(crate) fn clear_github_auto_merge_correction_marker_for_terminal_pr(
+    task: &mut Task,
+    pr_status: &str,
+) -> bool {
+    let mut metadata = parse_metadata(task).unwrap_or_else(|| serde_json::json!({}));
+    let Some(object) = metadata.as_object_mut() else {
+        return false;
+    };
+    let disabled = object
+        .get(GITHUB_AUTO_MERGE_DISABLED_FOR_CORRECTION_KEY)
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    if !disabled {
+        return false;
+    }
+
+    object.remove(GITHUB_AUTO_MERGE_DISABLED_FOR_CORRECTION_KEY);
+    object.remove(GITHUB_AUTO_MERGE_PR_NUMBER_KEY);
+    object.remove(GITHUB_AUTO_MERGE_METHOD_KEY);
+    object.remove(GITHUB_AUTO_MERGE_DISABLED_AT_KEY);
+    object.remove(GITHUB_AUTO_MERGE_DISABLED_SOURCE_KEY);
+    object.remove(GITHUB_AUTO_MERGE_REENABLE_FAILED_AT_KEY);
+    object.remove(GITHUB_AUTO_MERGE_REENABLE_ERROR_KEY);
+    object.insert(
+        GITHUB_AUTO_MERGE_TERMINAL_CLEARED_AT_KEY.to_string(),
+        serde_json::Value::String(chrono::Utc::now().to_rfc3339()),
+    );
+    object.insert(
+        GITHUB_AUTO_MERGE_TERMINAL_CLEARED_SOURCE_KEY.to_string(),
+        serde_json::Value::String(GITHUB_AUTO_MERGE_TERMINAL_CLEAR_SOURCE.to_string()),
+    );
+    object.insert(
+        GITHUB_AUTO_MERGE_TERMINAL_CLEARED_STATUS_KEY.to_string(),
+        serde_json::Value::String(pr_status.to_string()),
+    );
+    task.metadata = Some(metadata.to_string());
+    task.touch();
+    true
+}
+
+pub(crate) async fn restore_github_auto_merge_after_pr_correction(
+    task: &mut Task,
+    task_id_str: &str,
+    working_dir: &Path,
+    fallback_pr_number: i64,
+    task_repo: &Arc<dyn TaskRepository>,
+    github_service: &Arc<dyn GithubServiceTrait>,
+) -> AppResult<()> {
+    let Some(restore) = task_pr_auto_merge_restore_marker(task, fallback_pr_number) else {
+        return Ok(());
+    };
+
+    match github_service
+        .enable_pr_auto_merge(working_dir, restore.pr_number, &restore.method)
+        .await
+    {
+        Ok(()) => {
+            let now = chrono::Utc::now().to_rfc3339();
+            let mut metadata = task
+                .metadata
+                .as_deref()
+                .and_then(|metadata| serde_json::from_str::<serde_json::Value>(metadata).ok())
+                .unwrap_or_else(|| serde_json::json!({}));
+            if let Some(object) = metadata.as_object_mut() {
+                object.remove(GITHUB_AUTO_MERGE_DISABLED_FOR_CORRECTION_KEY);
+                object.remove(GITHUB_AUTO_MERGE_METHOD_KEY);
+                object.remove(GITHUB_AUTO_MERGE_REENABLE_FAILED_AT_KEY);
+                object.remove(GITHUB_AUTO_MERGE_REENABLE_ERROR_KEY);
+                object.insert(
+                    GITHUB_AUTO_MERGE_REENABLED_AT_KEY.to_string(),
+                    serde_json::Value::String(now),
+                );
+                object.insert(
+                    GITHUB_AUTO_MERGE_REENABLED_SOURCE_KEY.to_string(),
+                    serde_json::Value::String(GITHUB_AUTO_MERGE_REENABLE_SOURCE.to_string()),
+                );
+                object.insert(
+                    GITHUB_AUTO_MERGE_REENABLED_METHOD_KEY.to_string(),
+                    serde_json::Value::String(restore.method),
+                );
+            }
+            task.metadata = Some(metadata.to_string());
+            task.touch();
+            task_repo.update(task).await?;
+            tracing::info!(
+                task_id = task_id_str,
+                pr_number = restore.pr_number,
+                "PR mode: re-enabled GitHub auto-merge after correction"
+            );
+            Ok(())
+        }
+        Err(error) => {
+            let error_text = error.to_string();
+            let now = chrono::Utc::now().to_rfc3339();
+            let mut metadata = task
+                .metadata
+                .as_deref()
+                .and_then(|metadata| serde_json::from_str::<serde_json::Value>(metadata).ok())
+                .unwrap_or_else(|| serde_json::json!({}));
+            if let Some(object) = metadata.as_object_mut() {
+                object.insert(
+                    GITHUB_AUTO_MERGE_REENABLE_FAILED_AT_KEY.to_string(),
+                    serde_json::Value::String(now),
+                );
+                object.insert(
+                    GITHUB_AUTO_MERGE_REENABLE_ERROR_KEY.to_string(),
+                    serde_json::Value::String(error_text.clone()),
+                );
+            }
+            task.metadata = Some(metadata.to_string());
+            task.touch();
+            if let Err(update_error) = task_repo.update(task).await {
+                tracing::warn!(
+                    task_id = task_id_str,
+                    pr_number = restore.pr_number,
+                    error = %update_error,
+                    "PR mode: failed to persist auto-merge re-enable failure metadata"
+                );
+            }
+            tracing::warn!(
+                task_id = task_id_str,
+                pr_number = restore.pr_number,
+                error = %error_text,
+                "PR mode: failed to re-enable GitHub auto-merge after correction"
+            );
+            Err(error)
+        }
+    }
 }
 
 pub(crate) fn is_commit_hook_merge_error_text(message: &str) -> bool {
@@ -567,7 +760,7 @@ pub(crate) fn compute_rebase_worktree_path(project: &Project, task_id: &str) -> 
 /// Convention: `{worktree_parent}/{slug}/source-update-{task_id}`
 /// This is a short-lived worktree used only to bring the feature/task branch up-to-date
 /// with its target branch before the actual merge runs.
-pub(super) fn compute_source_update_worktree_path(project: &Project, task_id: &str) -> String {
+pub(crate) fn compute_source_update_worktree_path(project: &Project, task_id: &str) -> String {
     let worktree_parent = project
         .worktree_parent_directory
         .as_deref()
@@ -1210,7 +1403,7 @@ async fn push_pr_branch_to_remote(
     pb: &PlanBranch,
     github: &Arc<dyn GithubServiceTrait>,
     plan_branch_repo: &Arc<dyn PlanBranchRepository>,
-) -> AppResult<()> {
+) -> AppResult<PrBranchPublicationOutcome> {
     let repo_path = Path::new(&project.working_directory);
     tracing::info!(
         branch = %pb.branch_name,
@@ -1218,28 +1411,239 @@ async fn push_pr_branch_to_remote(
         "sync_plan_branch_pr_if_needed: pushing updated plan branch to GitHub"
     );
 
-    match push_publish_branch(github, repo_path, &pb.branch_name).await {
-        Ok(()) => {
-            if let Err(e) = plan_branch_repo
-                .update_pr_push_status(&pb.id, PrPushStatus::Pushed)
-                .await
-            {
-                tracing::warn!(error = %e, "Failed to update pr_push_status=pushed");
+    let push_result = push_publish_branch(github, repo_path, &pb.branch_name).await;
+    if push_result.is_ok() {
+        mark_pr_branch_push_status(plan_branch_repo, pb, PrPushStatus::Pushed).await;
+        return Ok(PrBranchPublicationOutcome::Published);
+    }
+
+    let first_error = push_result.expect_err("checked is_err");
+    if is_non_fast_forward_pr_branch_publication_failure(&first_error.to_string()) {
+        match repair_non_fast_forward_pr_branch_publication(project, pb, github).await {
+            Ok(PrBranchPublicationOutcome::Published) => {
+                mark_pr_branch_push_status(plan_branch_repo, pb, PrPushStatus::Pushed).await;
+                return Ok(PrBranchPublicationOutcome::Published);
             }
-            Ok(())
-        }
-        Err(e) => {
-            tracing::warn!(
-                error = %e,
-                branch = %pb.branch_name,
-                "sync_plan_branch_pr_if_needed: push failed — leaving PR branch out of date until retry"
-            );
-            let _ = plan_branch_repo
-                .update_pr_push_status(&pb.id, PrPushStatus::Failed)
-                .await;
-            Err(e)
+            Ok(PrBranchPublicationOutcome::Conflict(conflict)) => {
+                tracing::warn!(
+                    initial_error = %first_error,
+                    branch = %pb.branch_name,
+                    remote_ref = %conflict.remote_ref,
+                    "sync_plan_branch_pr_if_needed: non-fast-forward push repair needs conflict resolution"
+                );
+                mark_pr_branch_push_status(plan_branch_repo, pb, PrPushStatus::Pending).await;
+                return Ok(PrBranchPublicationOutcome::Conflict(conflict));
+            }
+            Err(repair_error) => {
+                tracing::warn!(
+                    initial_error = %first_error,
+                    repair_error = %repair_error,
+                    branch = %pb.branch_name,
+                    "sync_plan_branch_pr_if_needed: non-fast-forward push repair failed"
+                );
+                mark_pr_branch_push_status(plan_branch_repo, pb, PrPushStatus::Failed).await;
+                return Err(repair_error);
+            }
         }
     }
+
+    tracing::warn!(
+        error = %first_error,
+        branch = %pb.branch_name,
+        "sync_plan_branch_pr_if_needed: push failed — leaving PR branch out of date until retry"
+    );
+    mark_pr_branch_push_status(plan_branch_repo, pb, PrPushStatus::Failed).await;
+    Err(first_error)
+}
+
+async fn mark_pr_branch_push_status(
+    plan_branch_repo: &Arc<dyn PlanBranchRepository>,
+    pb: &PlanBranch,
+    status: PrPushStatus,
+) {
+    if let Err(e) = plan_branch_repo.update_pr_push_status(&pb.id, status).await {
+        tracing::warn!(
+            error = %e,
+            status = %status,
+            branch = %pb.branch_name,
+            "Failed to update plan branch PR push status"
+        );
+    }
+}
+
+pub(crate) fn is_non_fast_forward_pr_branch_publication_failure(error: &str) -> bool {
+    let normalized = error.to_ascii_lowercase();
+    const PATTERNS: &[&str] = &[
+        "non-fast-forward",
+        "failed to push some refs",
+        "updates were rejected",
+        "fetch first",
+        "tip is behind",
+    ];
+    PATTERNS.iter().any(|pattern| normalized.contains(pattern))
+}
+
+pub(crate) fn task_has_pr_branch_publication_failure(task: &Task) -> bool {
+    task.metadata
+        .as_deref()
+        .and_then(|metadata| serde_json::from_str::<serde_json::Value>(metadata).ok())
+        .and_then(|value| {
+            value
+                .get("error_code")
+                .and_then(|code| code.as_str())
+                .map(|code| code == "pr_branch_publication_failed")
+        })
+        .unwrap_or(false)
+}
+
+pub(crate) fn task_has_pr_branch_publication_conflict(task: &Task) -> bool {
+    task.metadata
+        .as_deref()
+        .and_then(|metadata| serde_json::from_str::<serde_json::Value>(metadata).ok())
+        .map(|value| {
+            value
+                .get("pr_branch_publication_conflict")
+                .and_then(|flag| flag.as_bool())
+                .unwrap_or(false)
+                || value
+                    .get("error_code")
+                    .and_then(|code| code.as_str())
+                    .map(|code| code == "pr_branch_publication_conflict")
+                    .unwrap_or(false)
+        })
+        .unwrap_or(false)
+}
+
+const PR_BRANCH_PUBLICATION_CONFLICT_ROUTED_MARKER: &str = "pr_branch_publication_conflict_routed";
+
+#[derive(Debug, Clone)]
+pub(crate) struct PrBranchPublicationConflict {
+    pub branch_name: String,
+    pub remote_ref: String,
+    pub conflict_files: Vec<PathBuf>,
+    pub pr_number: Option<i64>,
+}
+
+impl PrBranchPublicationConflict {
+    pub(crate) fn conflict_files_as_strings(&self) -> Vec<String> {
+        self.conflict_files
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect()
+    }
+
+    pub(crate) fn description(&self) -> String {
+        let files = self.conflict_files_as_strings();
+        let label = if files.is_empty() {
+            "unknown files".to_string()
+        } else {
+            files.join(", ")
+        };
+        format!(
+            "PR branch publication requires conflict resolution after incorporating {} into {}: {}",
+            self.remote_ref, self.branch_name, label
+        )
+    }
+
+    pub(crate) fn conflict_error(&self) -> AppError {
+        AppError::Conflict(format!(
+            "pr_branch_publication_conflict: {}",
+            self.description()
+        ))
+    }
+
+    pub(crate) fn routed_error(&self) -> AppError {
+        AppError::Conflict(format!(
+            "{}: {}",
+            PR_BRANCH_PUBLICATION_CONFLICT_ROUTED_MARKER,
+            self.description()
+        ))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum PrBranchPublicationOutcome {
+    Published,
+    Conflict(PrBranchPublicationConflict),
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum PlanBranchPrSyncOutcome {
+    Complete,
+    Conflict(PrBranchPublicationConflict),
+}
+
+pub(crate) fn is_pr_branch_publication_conflict_routed_error(error: &AppError) -> bool {
+    match error {
+        AppError::Conflict(message) | AppError::GitOperation(message) => {
+            message.contains(PR_BRANCH_PUBLICATION_CONFLICT_ROUTED_MARKER)
+        }
+        _ => false,
+    }
+}
+
+fn remote_tracking_ref_for_plan_branch(branch: &str) -> String {
+    if branch.starts_with("origin/") {
+        branch.to_string()
+    } else {
+        format!("origin/{branch}")
+    }
+}
+
+async fn repair_non_fast_forward_pr_branch_publication(
+    project: &Project,
+    pb: &PlanBranch,
+    _github: &Arc<dyn GithubServiceTrait>,
+) -> AppResult<PrBranchPublicationOutcome> {
+    let repo_path = Path::new(&project.working_directory);
+    let remote_ref = remote_tracking_ref_for_plan_branch(&pb.branch_name);
+
+    GitService::fetch_origin(repo_path).await.map_err(|error| {
+        AppError::GitOperation(format!(
+            "Failed to fetch origin before repairing PR branch publication for {}: {}",
+            pb.branch_name, error
+        ))
+    })?;
+
+    let local_sha = GitService::get_branch_sha(repo_path, &pb.branch_name)
+        .await
+        .map_err(|error| {
+            AppError::GitOperation(format!(
+                "Failed to resolve local PR branch {} before publication repair: {}",
+                pb.branch_name, error
+            ))
+        })?;
+    let remote_sha = GitService::get_branch_sha(repo_path, &remote_ref)
+        .await
+        .map_err(|error| {
+            AppError::GitOperation(format!(
+                "Failed to resolve remote PR branch {} before publication repair: {}",
+                remote_ref, error
+            ))
+        })?;
+
+    if local_sha == remote_sha {
+        return Ok(PrBranchPublicationOutcome::Published);
+    }
+
+    // Observation only. The old helper merged and pushed here before durable
+    // branch-update authority existed. Return the exact source/target pair so
+    // the dedicated workflow owns every local mutation and the later push.
+    tracing::info!(
+        branch = %pb.branch_name,
+        remote_ref = %remote_ref,
+        local_sha = %local_sha,
+        remote_sha = %remote_sha,
+        "PR branch publication repair requires dedicated branch-update authority"
+    );
+    Ok(PrBranchPublicationOutcome::Conflict(
+        PrBranchPublicationConflict {
+            branch_name: pb.branch_name.clone(),
+            remote_ref,
+            conflict_files: Vec::new(),
+            pr_number: pb.pr_number,
+        },
+    ))
 }
 
 /// Publish and refresh an existing PR branch after a PR freshness update.
@@ -1279,13 +1683,17 @@ pub(crate) async fn publish_plan_branch_pr_after_freshness_update(
 
     let mut refreshed_plan_branch = plan_branch.clone();
     refreshed_plan_branch.pr_push_status = PrPushStatus::Pending;
-    push_pr_branch_to_remote(
+    match push_pr_branch_to_remote(
         project,
         &refreshed_plan_branch,
         github_service,
         plan_branch_repo,
     )
-    .await?;
+    .await?
+    {
+        PrBranchPublicationOutcome::Published => {}
+        PrBranchPublicationOutcome::Conflict(conflict) => return Err(conflict.conflict_error()),
+    }
 
     sync_existing_plan_branch_pr_details(
         task,
@@ -1305,16 +1713,19 @@ pub(crate) async fn sync_plan_branch_pr_if_needed(
     pb: &PlanBranch,
     github: &Arc<dyn GithubServiceTrait>,
     plan_branch_repo: &Arc<dyn PlanBranchRepository>,
-) {
+) -> AppResult<()> {
     if !pb.pr_eligible
         || pb.status != PlanBranchStatus::Active
         || pb.pr_number.is_none()
         || matches!(pb.pr_push_status, PrPushStatus::Pushed)
     {
-        return;
+        return Ok(());
     }
 
-    let _ = push_pr_branch_to_remote(project, pb, github, plan_branch_repo).await;
+    match push_pr_branch_to_remote(project, pb, github, plan_branch_repo).await? {
+        PrBranchPublicationOutcome::Published => Ok(()),
+        PrBranchPublicationOutcome::Conflict(conflict) => Err(conflict.conflict_error()),
+    }
 }
 
 pub(crate) async fn sync_existing_plan_branch_pr_details(
@@ -1355,6 +1766,8 @@ pub(crate) async fn draft_plan_pr_description_for_write(
 #[derive(Clone, Default)]
 pub(crate) struct PlanBranchPrSyncServices {
     pub task_repo: Option<Arc<dyn TaskRepository>>,
+    pub branch_update_repo: Option<Arc<dyn BranchUpdateRepository>>,
+    pub branch_update_workflow: Option<Arc<dyn BranchUpdateWorkflow>>,
     pub plan_branch_repo: Option<Arc<dyn PlanBranchRepository>>,
     pub pr_creation_guard: Option<Arc<dashmap::DashMap<PlanBranchId, ()>>>,
     pub github_service: Option<Arc<dyn GithubServiceTrait>>,
@@ -1367,6 +1780,8 @@ impl PlanBranchPrSyncServices {
     pub(crate) fn from_task_services(services: &TaskServices) -> Self {
         Self {
             task_repo: services.task_repo.clone(),
+            branch_update_repo: services.branch_update_repo.clone(),
+            branch_update_workflow: services.branch_update_workflow.clone(),
             plan_branch_repo: services.plan_branch_repo.clone(),
             pr_creation_guard: services.pr_creation_guard.clone(),
             github_service: services.github_service.clone(),
@@ -1377,24 +1792,78 @@ impl PlanBranchPrSyncServices {
     }
 }
 
+async fn restore_plan_merge_task_auto_merge_after_pr_ready(
+    project: &Project,
+    plan_branch: &PlanBranch,
+    pr_number: i64,
+    services: &PlanBranchPrSyncServices,
+) {
+    let Some(task_repo) = services.task_repo.as_ref() else {
+        return;
+    };
+    let Some(github_service) = services.github_service.as_ref() else {
+        return;
+    };
+    let Some(merge_task_id) = plan_branch.merge_task_id.as_ref() else {
+        return;
+    };
+
+    match task_repo.get_by_id(merge_task_id).await {
+        Ok(Some(mut merge_task)) => {
+            if let Err(error) = restore_github_auto_merge_after_pr_correction(
+                &mut merge_task,
+                merge_task_id.as_str(),
+                Path::new(&project.working_directory),
+                pr_number,
+                task_repo,
+                github_service,
+            )
+            .await
+            {
+                tracing::warn!(
+                    task_id = merge_task_id.as_str(),
+                    pr_number,
+                    error = %error,
+                    "PR mode: auto-merge restore after correction will retry when plan merge resumes"
+                );
+            }
+        }
+        Ok(None) => {
+            tracing::warn!(
+                task_id = merge_task_id.as_str(),
+                pr_number,
+                "PR mode: cannot restore auto-merge because plan merge task is missing"
+            );
+        }
+        Err(error) => {
+            tracing::warn!(
+                task_id = merge_task_id.as_str(),
+                pr_number,
+                error = %error,
+                "PR mode: failed to load plan merge task for auto-merge restore"
+            );
+        }
+    }
+}
+
 pub(crate) async fn sync_plan_branch_pr_after_regular_task_merge(
     task: &Task,
     project: &Project,
     services: &PlanBranchPrSyncServices,
-) -> AppResult<()> {
+) -> AppResult<PlanBranchPrSyncOutcome> {
     if task.category == TaskCategory::PlanMerge {
-        return Ok(());
+        return Ok(PlanBranchPrSyncOutcome::Complete);
     }
 
     let Some(plan_branch_repo) = services.plan_branch_repo.as_ref() else {
-        return Ok(());
+        return Ok(PlanBranchPrSyncOutcome::Complete);
     };
     let Some(plan_branch) = resolve_task_plan_branch_record(task, plan_branch_repo).await else {
-        return Ok(());
+        return Ok(PlanBranchPrSyncOutcome::Complete);
     };
 
     if !plan_branch.pr_eligible || plan_branch.status != PlanBranchStatus::Active {
-        return Ok(());
+        return Ok(PlanBranchPrSyncOutcome::Complete);
     }
 
     if plan_branch.pr_number.is_some() {
@@ -1410,7 +1879,7 @@ pub(crate) async fn sync_plan_branch_pr_after_regular_task_merge(
                 plan_branch.branch_name
             )));
         }
-        return Ok(());
+        return Ok(PlanBranchPrSyncOutcome::Complete);
     };
 
     let ready_for_review =
@@ -1419,13 +1888,19 @@ pub(crate) async fn sync_plan_branch_pr_after_regular_task_merge(
     if plan_branch.pr_number.is_some() {
         let mut refreshed_plan_branch = plan_branch.clone();
         refreshed_plan_branch.pr_push_status = PrPushStatus::Pending;
-        push_pr_branch_to_remote(
+        match push_pr_branch_to_remote(
             project,
             &refreshed_plan_branch,
             github_service,
             plan_branch_repo,
         )
-        .await?;
+        .await?
+        {
+            PrBranchPublicationOutcome::Published => {}
+            PrBranchPublicationOutcome::Conflict(conflict) => {
+                return Ok(PlanBranchPrSyncOutcome::Conflict(conflict));
+            }
+        }
         let review_state = if ready_for_review {
             PrReviewState::Ready
         } else {
@@ -1449,21 +1924,32 @@ pub(crate) async fn sync_plan_branch_pr_after_regular_task_merge(
                 "PR mode: failed to refresh PR details after plan branch push"
             );
             if ready_for_review {
-                return Ok(());
+                return Ok(PlanBranchPrSyncOutcome::Complete);
             }
         }
         if ready_for_review {
             if let Some(pr_number) = refreshed_plan_branch.pr_number {
-                if let Err(e) = github_service
+                match github_service
                     .mark_pr_ready(Path::new(&project.working_directory), pr_number)
                     .await
                 {
-                    tracing::warn!(
-                        task_id = task.id.as_str(),
-                        pr_number,
-                        error = %e,
-                        "PR mode: failed to mark PR ready after final plan task merge"
-                    );
+                    Ok(()) => {
+                        restore_plan_merge_task_auto_merge_after_pr_ready(
+                            project,
+                            &refreshed_plan_branch,
+                            pr_number,
+                            services,
+                        )
+                        .await;
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            task_id = task.id.as_str(),
+                            pr_number,
+                            error = %e,
+                            "PR mode: failed to mark PR ready after final plan task merge"
+                        );
+                    }
                 }
             }
         }
@@ -1500,19 +1986,30 @@ pub(crate) async fn sync_plan_branch_pr_after_regular_task_merge(
                             error = %e,
                             "PR mode: failed to refresh newly-created PR details before ready"
                         );
-                        return Ok(());
+                        return Ok(PlanBranchPrSyncOutcome::Complete);
                     }
                     if let Some(pr_number) = refreshed_plan_branch.pr_number {
-                        if let Err(e) = github_service
+                        match github_service
                             .mark_pr_ready(Path::new(&project.working_directory), pr_number)
                             .await
                         {
-                            tracing::warn!(
-                                task_id = task.id.as_str(),
-                                pr_number,
-                                error = %e,
-                                "PR mode: failed to mark newly-created PR ready after final plan task merge"
-                            );
+                            Ok(()) => {
+                                restore_plan_merge_task_auto_merge_after_pr_ready(
+                                    project,
+                                    &refreshed_plan_branch,
+                                    pr_number,
+                                    services,
+                                )
+                                .await;
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    task_id = task.id.as_str(),
+                                    pr_number,
+                                    error = %e,
+                                    "PR mode: failed to mark newly-created PR ready after final plan task merge"
+                                );
+                            }
                         }
                     }
                 }
@@ -1527,7 +2024,7 @@ pub(crate) async fn sync_plan_branch_pr_after_regular_task_merge(
             }
         }
     }
-    Ok(())
+    Ok(PlanBranchPrSyncOutcome::Complete)
 }
 
 pub(crate) fn resolve_plan_branch_pr_base(project: &Project, pb: &PlanBranch) -> String {

@@ -56,13 +56,7 @@ export const ideationKeys = {
  * if (error) return <Error message={error.message} />;
  * if (!data) return <NotFound />;
  *
- * return (
- *   <IdeationView
- *     session={data.session}
- *     proposals={data.proposals}
- *     messages={data.messages}
- *   />
- * );
+ * return <SessionSummary session={data.session} />;
  * ```
  */
 interface IdeationQueryOptions {
@@ -122,8 +116,6 @@ interface CreateSessionInput {
   projectId: string;
   title?: string;
   seedTaskId?: string;
-  teamMode?: string;
-  teamConfig?: { maxTeammates: number; modelCeiling: string; budgetLimit?: number | undefined; compositionMode: string };
   analysisBase?: IdeationAnalysisBaseSelection;
 }
 
@@ -149,8 +141,8 @@ export function useCreateIdeationSession() {
   const queryClient = useQueryClient();
 
   return useMutation<IdeationSessionResponse, Error, CreateSessionInput>({
-    mutationFn: ({ projectId, title, seedTaskId, teamMode, teamConfig, analysisBase }) =>
-      ideationApi.sessions.create(projectId, title, seedTaskId, teamMode, teamConfig, analysisBase),
+    mutationFn: ({ projectId, title, seedTaskId, analysisBase }) =>
+      ideationApi.sessions.create(projectId, title, seedTaskId, analysisBase),
     onSuccess: () => {
       // Broad invalidation: covers sessionList, sessionGroupCounts, and sessionsByGroup
       queryClient.invalidateQueries({

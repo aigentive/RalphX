@@ -44,7 +44,7 @@ export interface Options {
 const listeners = new Map<string, Set<EventCallback<unknown>>>();
 
 /**
- * Mock listen - registers a callback but never fires it
+ * Mock listen - registers a callback for web-mode emit()
  */
 export async function listen<T>(
   event: string,
@@ -79,10 +79,18 @@ export async function once<T>(
 }
 
 /**
- * Mock emit - logs but doesn't actually emit
+ * Mock emit - delivers to registered web-mode listeners.
  */
 export async function emit(event: string, payload?: unknown): Promise<void> {
   console.debug(`[mock] emit("${event}", ${JSON.stringify(payload)})`);
+  const mockEvent: Event<unknown> = {
+    event,
+    id: 0,
+    payload,
+  };
+  for (const listener of listeners.get(event) ?? []) {
+    listener(mockEvent);
+  }
 }
 
 /**
@@ -115,3 +123,11 @@ export const TauriEvent = {
   DROP_CANCELLED: "tauri://drop-cancelled",
   DROP_OVER: "tauri://drop-over",
 } as const;
+
+if (typeof window !== "undefined") {
+  (
+    window as Window & {
+      __mockTauriEmit?: (event: string, payload?: unknown) => Promise<void>;
+    }
+  ).__mockTauriEmit = emit;
+}

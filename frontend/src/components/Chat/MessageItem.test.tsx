@@ -18,6 +18,10 @@ import {
   makeToolCall,
 } from "./__tests__/chatRenderFixtures";
 
+vi.mock("./tool-widgets/ThinkingWidget", () => ({
+  ThinkingWidget: ({ text }: { text: string }) => <div data-testid="thinking-content">{text}</div>,
+}));
+
 function renderMessageItem(ui: ReactElement) {
   return render(<TooltipProvider delayDuration={0}>{ui}</TooltipProvider>);
 }
@@ -61,6 +65,13 @@ describe("MessageItem - Attachment Integration", () => {
         {...baseProps}
         role="user"
         composerReferences={{
+          folderReferences: [
+            {
+              id: "folder-1",
+              folderPath: "/work/brand-kit",
+              displayName: "brand-kit",
+            },
+          ],
           projectReferences: [{ path: "src/main.ts", kind: "file" }],
           artifactReferences: [],
           integrationReferences: [
@@ -85,6 +96,9 @@ describe("MessageItem - Attachment Integration", () => {
 
     expect(screen.getByTestId("message-reference-project:src/main.ts")).toHaveTextContent(
       "File",
+    );
+    expect(screen.getByTestId("message-reference-folder:folder-1")).toHaveTextContent(
+      "brand-kit",
     );
     expect(screen.getByTestId("message-reference-integration:jira:RX-42")).toHaveTextContent(
       "Jira",
@@ -210,7 +224,102 @@ describe("MessageItem - Attachment Integration", () => {
     expect(screen.getByText("Second block")).toBeInTheDocument();
   });
 
-  it("passes argument preview metadata from content block tool uses into diff widgets", () => {
+  it("renders no thinking pill for a persisted thinking block with empty text", () => {
+    renderMessageItem(
+      <MessageItem
+        {...baseProps}
+        role="assistant"
+        contentBlocks={[
+          { type: "thinking", text: "  " },
+          makeContentText("The answer remains visible."),
+        ]}
+      />,
+    );
+
+    expect(screen.queryByTestId("thinking-group-toggle")).not.toBeInTheDocument();
+    expect(screen.getByText("The answer remains visible.")).toBeInTheDocument();
+  });
+
+  it("renders adjacent finalized thinking blocks expanded and keeps a deliberate collapse", async () => {
+    const user = userEvent.setup();
+    renderMessageItem(
+      <MessageItem
+        {...baseProps}
+        role="assistant"
+        contentBlocks={[
+          { type: "thinking", text: "First thought", durationMs: 1_000 },
+          { type: "thinking", text: "   " },
+          { type: "thinking", text: "Second thought", durationMs: 2_000 },
+        ]}
+      />,
+    );
+
+    expect(screen.getAllByTestId("thinking-group-toggle")).toHaveLength(1);
+    expect(screen.getByRole("button", { name: /Agent thought for 3s · 2 steps/ })).toBeInTheDocument();
+    expect(screen.getByText(/First thought/)).toBeInTheDocument();
+    expect(screen.getByText(/Second thought/)).toBeInTheDocument();
+    await user.click(screen.getByTestId("thinking-group-toggle"));
+    expect(screen.queryByText(/First thought/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Second thought/)).not.toBeInTheDocument();
+  });
+
+  it("forwards the clicked thinking toggle as the scroll anchor", async () => {
+    const user = userEvent.setup();
+    const onToggleContentThinkingGroup = vi.fn();
+    renderMessageItem(
+      <MessageItem
+        {...makeMessageItemProps({ role: "assistant", content: "" })}
+        contentBlocks={[{ type: "thinking", text: "Anchored thought" }]}
+        contentThinkingGroupKeyPrefix="message-1"
+        onToggleContentThinkingGroup={onToggleContentThinkingGroup}
+      />,
+    );
+
+    const toggle = screen.getByTestId("thinking-group-toggle");
+    await user.click(toggle);
+
+    expect(onToggleContentThinkingGroup).toHaveBeenCalledWith(
+      "message-1:content-thinking-group:0",
+      toggle,
+    );
+  });
+
+  it("keeps thinking adjacent across hidden child tool calls but splits it at visible tools", () => {
+    const childToolUseId = "child-thinking-tool";
+    const hiddenChildContentBlocks = [
+      makeContentToolUse("Task", {
+        id: "task-before-thinking",
+        result: [{ type: "tool_use", id: childToolUseId }],
+      }),
+      { type: "thinking" as const, text: "First" },
+      makeContentToolUse("Glob", { id: childToolUseId }),
+      { type: "thinking" as const, text: "Second" },
+    ];
+    const { rerender } = renderMessageItem(
+      <MessageItem {...baseProps} role="assistant" contentBlocks={hiddenChildContentBlocks} />,
+    );
+
+    expect(screen.getAllByTestId("thinking-group-toggle")).toHaveLength(1);
+
+    rerender(
+      <TooltipProvider delayDuration={0}>
+        <MessageItem
+          {...baseProps}
+          role="assistant"
+          contentBlocks={[
+            { type: "thinking", text: "First" },
+            makeContentToolUse("Read", { id: "visible-tool" }),
+            { type: "thinking", text: "Second" },
+          ]}
+        />
+      </TooltipProvider>,
+    );
+
+    expect(screen.getAllByTestId("thinking-group-toggle")).toHaveLength(2);
+  });
+
+  it("passes argument preview metadata from content block tool uses into diff widgets", async () => {
+    const user = userEvent.setup();
     const contentBlocks = [
       {
         type: "tool_use" as const,
@@ -261,7 +370,10 @@ describe("MessageItem - Attachment Integration", () => {
       />
     );
 
-    expect(screen.getByTestId("diff-tool-call-preview-diff")).toHaveTextContent(
+    await user.click(screen.getByRole("button", {
+      name: "Agent called 1 tool and edited 1 file. Expand tool details.",
+    }));
+    expect(await screen.findByTestId("diff-tool-call-preview-diff")).toHaveTextContent(
       "export const value = 1;"
     );
   });
@@ -508,19 +620,18 @@ describe("MessageItem - Child tool call suppression for Task/Agent spawns", () =
     expect(taskCards).toHaveLength(1); // Only the Agent card at top level
   });
 
-  it("does NOT suppress tool_use blocks that are not nested in Task/Agent results", async () => {
+  it("collapses ordinary consecutive tool_use blocks, including Bash widgets, instead of rendering them raw", async () => {
     const user = userEvent.setup();
-    // Two independent tool calls: one Read, one Bash — neither is a Task/Agent spawn
     const contentBlocks = [
-      makeContentToolUse("read", {
-        id: "read-001",
-        arguments: { file_path: "/src/main.ts" },
-        result: "file content",
+      makeContentToolUse("bash", {
+        id: "bash-001",
+        arguments: { command: "npm test" },
+        result: "file1\nfile2",
       }),
       makeContentToolUse("custom_tool", {
-        id: "bash-001",
+        id: "custom-001",
         arguments: { command: "ls" },
-        result: "file1\nfile2",
+        result: "ok",
       }),
     ];
 
@@ -528,11 +639,54 @@ describe("MessageItem - Child tool call suppression for Task/Agent spawns", () =
       <MessageItem role="assistant" content="" createdAt={createdAt} contentBlocks={contentBlocks} />
     );
 
-    // The generic tool call is collapsed, not suppressed.
-    expect(screen.getByRole("button", { name: "Agent called 1 tool" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Agent called 1 tool" }));
+    expect(screen.getByRole("button", { name: "Agent called 2 tools. Expand tool details." })).toBeInTheDocument();
+    expect(screen.queryByText("npm test")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Agent called 2 tools. Expand tool details." }));
+    expect(await screen.findAllByText("npm test")).not.toHaveLength(0);
     const indicators = container.querySelectorAll('[data-testid="tool-call-indicator"]');
     expect(indicators.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it.each([
+    ["Claude", "Write", "Edit", "mcp__ralphx__delegate_start"],
+    ["Codex", "write", "edit", "ralphx::delegate_start"],
+  ])("renders the same mixed activity summary and promoted delegate for %s", async (_provider, write, edit, delegate) => {
+    const user = userEvent.setup();
+    const contentBlocks = [
+      makeContentToolUse(write, {
+        id: "create-file",
+        arguments: { file_path: "src/new.ts" },
+        diffContext: { filePath: "src/new.ts", oldFileExists: false },
+      }),
+      makeContentToolUse(edit, {
+        id: "edit-file",
+        arguments: { file_path: "src/existing.ts", old_string: "a", new_string: "b" },
+        diffContext: { filePath: "src/existing.ts", oldFileExists: true },
+      }),
+      makeContentToolUse(delegate, {
+        id: "delegate-agent",
+        arguments: { agent_name: "ralphx-general-explorer", prompt: "Inspect chat" },
+        result: { job_id: "job-1", status: "running" },
+      }),
+    ];
+
+    const { container } = renderMessageItem(
+      <MessageItem role="assistant" content="" createdAt={createdAt} contentBlocks={contentBlocks} />,
+    );
+
+    const toggle = screen.getByRole("button", {
+      name: "Agent called 3 tools, created 1 file, edited 1 file, and delegated 1 agent. Expand tool details.",
+    });
+    expect(toggle).toBeInTheDocument();
+    expect(container.querySelectorAll('[data-testid="task-tool-call-card"]')).toHaveLength(1);
+    expect(container.querySelectorAll('[data-testid="diff-tool-call-view"]')).toHaveLength(0);
+
+    await user.click(toggle);
+    expect(screen.getByRole("button", {
+      name: "Agent called 3 tools, created 1 file, edited 1 file, and delegated 1 agent. Collapse tool details.",
+    })).toBeInTheDocument();
+    expect(container.querySelectorAll('[data-testid="task-tool-call-card"]')).toHaveLength(1);
   });
 
   it("passes structured preview path metadata from content blocks into tool calls", () => {
@@ -615,8 +769,8 @@ describe("MessageItem - Child tool call suppression for Task/Agent spawns", () =
     // Agent card renders
     expect(container.querySelector('[data-testid="task-tool-call-card"]')).toBeInTheDocument();
     // Independent generic tool is collapsed, not suppressed.
-    expect(screen.getByRole("button", { name: "Agent called 1 tool" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Agent called 1 tool" }));
+    expect(screen.getByRole("button", { name: "Agent called 2 tools. Expand tool details." })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Agent called 2 tools. Expand tool details." }));
     expect(container.querySelector('[data-testid="tool-call-indicator"]')).toBeInTheDocument();
   });
 });

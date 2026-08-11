@@ -1,6 +1,8 @@
 use super::*;
 use std::collections::HashSet;
 
+use crate::application::ChatServiceError;
+
 use crate::domain::services::{QueueKey, QueuedMessage};
 
 pub(super) async fn persist_execution_halt_mode(
@@ -52,6 +54,7 @@ pub(super) fn queued_message_to_send_options(
         composer_project_references: message.composer_project_references.clone(),
         composer_integration_references: message.composer_integration_references.clone(),
         composer_artifact_references: message.composer_artifact_references.clone(),
+        composer_excerpt_references: message.composer_excerpt_references.clone(),
         attachment_ids: message.attachment_ids.clone(),
         ..Default::default()
     }
@@ -121,6 +124,12 @@ async fn pop_queued_key(
         .map_err(|error| error.to_string())
 }
 
+/// True when the send failed only AFTER the live process already accepted the turn.
+/// Restoring such a message to the queue would deliver it to the agent twice.
+fn queued_send_reached_the_agent(error: &ChatServiceError) -> bool {
+    matches!(error, ChatServiceError::MessageDeliveredNotPersisted(_))
+}
+
 async fn restore_queued_front(
     app_state: &AppState,
     key: &QueueKey,
@@ -138,10 +147,6 @@ async fn restore_queued_front(
         .map_err(|error| error.to_string())
 }
 
-pub(super) fn session_is_team_mode(team_mode: Option<&str>) -> bool {
-    team_mode.is_some_and(|mode| mode != "solo")
-}
-
 pub(super) fn is_pause_managed_chat_context(context_type: ChatContextType) -> bool {
     matches!(
         context_type,
@@ -151,6 +156,7 @@ pub(super) fn is_pause_managed_chat_context(context_type: ChatContextType) -> bo
             | ChatContextType::Ideation
             | ChatContextType::Task
             | ChatContextType::Project
+            | ChatContextType::Standalone
     )
 }
 
@@ -209,7 +215,10 @@ pub(super) async fn queue_key_matches_project(
             };
             Ok(session.project_id == *project_id)
         }
-        ChatContextType::TaskExecution | ChatContextType::Review | ChatContextType::Merge => {
+        ChatContextType::TaskExecution
+        | ChatContextType::Review
+        | ChatContextType::Merge
+        | ChatContextType::BranchUpdate => {
             let task_id = TaskId::from_string(key.context_id.clone());
             let Some(task) = app_state
                 .task_repo
@@ -236,6 +245,9 @@ pub(super) async fn queue_key_matches_project(
         ChatContextType::Project => Ok(resolve_project_queue_context(key, app_state)
             .await?
             .is_some_and(|(context_id, _)| context_id == project_id.as_str())),
+        // Standalone conversations are projectless (self-keyed by conversation id),
+        // so they never match a project filter.
+        ChatContextType::Standalone => Ok(false),
     }
 }
 
@@ -542,7 +554,7 @@ pub(super) async fn resume_paused_ideation_queues_with_chat_service<F>(
     build_chat_service: F,
 ) -> Result<u32, String>
 where
-    F: Fn(bool) -> Arc<dyn ChatService>,
+    F: Fn() -> Arc<dyn ChatService>,
 {
     let mut resumed = 0u32;
     let mut ideation_keys = Vec::new();
@@ -632,7 +644,7 @@ where
             continue;
         };
 
-        let send_result = build_chat_service(session_is_team_mode(session.team_mode.as_deref()))
+        let send_result = build_chat_service()
             .send_message(
                 ChatContextType::Ideation,
                 session.id.as_str(),
@@ -646,7 +658,9 @@ where
                 resumed += 1;
             }
             Err(error) => {
-                restore_queued_front(app_state, &key, queued).await?;
+                if !queued_send_reached_the_agent(&error) {
+                    restore_queued_front(app_state, &key, queued).await?;
+                }
                 tracing::warn!(
                     session_id = session.id.as_str(),
                     error = %error,
@@ -726,7 +740,9 @@ where
                     error = %error,
                     "Failed to relaunch paused workspace queued message"
                 );
-                restore_queued_front(app_state, &key, queued).await?;
+                if !queued_send_reached_the_agent(&error) {
+                    restore_queued_front(app_state, &key, queued).await?;
+                }
                 break;
             }
         }
@@ -747,20 +763,32 @@ where
     let mut chat_keys = Vec::new();
 
     for key in queued_keys(app_state).await? {
-        if key.context_type != ChatContextType::Task {
+        // Task: task-linked chat queue, sorted by owning project. Standalone:
+        // self-keyed projectless chat queue (no project to sort by) — see
+        // `is_pause_managed_chat_context` / `should_requeue_after_provider_pause`,
+        // which both already admit Standalone at the pause layer; this is its
+        // matching resume-drain arm (pause-drain parity, Phase 4a.3).
+        if !matches!(
+            key.context_type,
+            ChatContextType::Task | ChatContextType::Standalone
+        ) {
             continue;
         }
         if !queue_key_matches_project(&key, project_filter, app_state).await? {
             continue;
         }
-        let task_id = TaskId::from_string(key.context_id.clone());
-        let project_sort_key = app_state
-            .task_repo
-            .get_by_id(&task_id)
-            .await
-            .map_err(|e| e.to_string())?
-            .map(|task| task.project_id.as_str().to_string())
-            .unwrap_or_default();
+        let project_sort_key = if key.context_type == ChatContextType::Task {
+            let task_id = TaskId::from_string(key.context_id.clone());
+            app_state
+                .task_repo
+                .get_by_id(&task_id)
+                .await
+                .map_err(|e| e.to_string())?
+                .map(|task| task.project_id.as_str().to_string())
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
         chat_keys.push((
             project_sort_key,
             key.context_type.to_string(),
@@ -791,7 +819,9 @@ where
                     error = %error,
                     "Failed to relaunch paused non-slot queued message"
                 );
-                restore_queued_front(app_state, &key, queued).await?;
+                if !queued_send_reached_the_agent(&error) {
+                    restore_queued_front(app_state, &key, queued).await?;
+                }
             }
         }
     }
@@ -891,7 +921,9 @@ where
                     error = %error,
                     "Failed to relaunch paused slot-consuming queued message"
                 );
-                restore_queued_front(app_state, &key, queued).await?;
+                if !queued_send_reached_the_agent(&error) {
+                    restore_queued_front(app_state, &key, queued).await?;
+                }
             }
         }
     }

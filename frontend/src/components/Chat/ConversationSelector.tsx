@@ -146,7 +146,11 @@ export function ConversationSelector({
   isLoading = false,
 }: ConversationSelectorProps) {
   // Execution, review, and merge contexts share similar behavior (agent runs, status polling)
-  const isAgentContext = contextType === "task_execution" || contextType === "review" || contextType === "merge";
+  const isAgentContext =
+    contextType === "task_execution" ||
+    contextType === "review" ||
+    contextType === "merge" ||
+    contextType === "branch_update";
   const isExecutionContext = contextType === "task_execution";
 
   // Sort conversations by creation date for agent contexts, last message date otherwise
@@ -208,7 +212,15 @@ export function ConversationSelector({
           className="text-[0.6875rem] font-medium tracking-wide uppercase px-3 py-2"
           style={{ color: "var(--text-muted)" }}
         >
-          {isExecutionContext ? "Execution History" : contextType === "review" ? "Review History" : contextType === "merge" ? "Merge History" : "Conversation History"}
+          {isExecutionContext
+            ? "Execution History"
+            : contextType === "review"
+              ? "Review History"
+              : contextType === "merge"
+                ? "Merge History"
+                : contextType === "branch_update"
+                  ? "Branch Update History"
+                  : "Conversation History"}
         </DropdownMenuLabel>
 
         {/* New Conversation Option - Only for non-agent contexts (not execution or review) */}

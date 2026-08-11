@@ -1,12 +1,13 @@
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::application::{
     harness_runtime_registry::{
-        clear_harness_runtime_caches_for_harness, refresh_harness_runtime_probe,
-        refresh_supported_harnesses, HarnessRuntimeProbe,
+        clear_harness_runtime_caches_for_harness, refresh_harness_runtime_probe_with_force,
+        refresh_supported_harnesses_with_force, HarnessRuntimeProbe,
     },
     AppState, AGENT_LANES,
 };
@@ -49,6 +50,7 @@ pub struct AgentProviderSettingsResponse {
     pub cli_version: Option<String>,
     pub supported_model_aliases: Option<Vec<String>>,
     pub supported_efforts: Option<Vec<String>>,
+    pub ultra_supported_models: Vec<String>,
     pub supports_fast_mode: bool,
     pub fast_mode_supported_models: Vec<String>,
     pub updated_at: String,
@@ -67,6 +69,8 @@ pub struct AgentProvidersSettingsResponse {
 pub struct GetAgentProviderSettingsInput {
     #[serde(default)]
     pub refresh_runtime: bool,
+    #[serde(default)]
+    pub force_runtime: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -158,12 +162,12 @@ fn enforce_provider_constraints(settings: &mut AgentProviderSettings) {
     }
 }
 
-fn normalize_custom_binary_path(path: Option<String>) -> Option<String> {
-    normalize_optional_path(path)
+fn normalize_custom_binary_path(path: Option<String>) -> Result<Option<String>, String> {
+    normalize_optional_provider_path(path)
 }
 
-fn normalize_custom_env_file_path(path: Option<String>) -> Option<String> {
-    normalize_optional_path(path)
+fn normalize_custom_env_file_path(path: Option<String>) -> Result<Option<String>, String> {
+    normalize_optional_provider_path(path)
 }
 
 fn normalize_service_tier(value: Option<String>) -> Option<String> {
@@ -211,15 +215,49 @@ fn validate_codex_fast_mode_selection(
     Ok(())
 }
 
-fn normalize_optional_path(path: Option<String>) -> Option<String> {
-    path.and_then(|value| {
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
+fn normalize_optional_provider_path(path: Option<String>) -> Result<Option<String>, String> {
+    let Some(value) = path else {
+        return Ok(None);
+    };
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    expand_provider_user_path(trimmed).map(Some)
+}
+
+fn provider_path_home_dir() -> Option<PathBuf> {
+    dirs::home_dir()
+}
+
+fn expand_provider_user_path(path: &str) -> Result<String, String> {
+    if path == "~" {
+        return provider_path_home_dir()
+            .map(|home| home.to_string_lossy().into_owned())
+            .ok_or_else(home_expansion_error);
+    }
+    let Some(rest) = path.strip_prefix("~/") else {
+        if path.starts_with('~') {
+            return Err(
+                "Custom provider paths support only ~/ for the user home directory; ~user paths are not supported"
+                    .to_string(),
+            );
         }
-    })
+        return Ok(path.to_string());
+    };
+    let home = provider_path_home_dir().ok_or_else(home_expansion_error)?;
+    Ok(join_home_relative_path(&home, rest))
+}
+
+fn join_home_relative_path(home: &Path, rest: &str) -> String {
+    let mut expanded = home.to_path_buf();
+    expanded.push(rest);
+    expanded.to_string_lossy().into_owned()
+}
+
+fn home_expansion_error() -> String {
+    "Cannot expand custom provider path because the user home directory could not be determined"
+        .to_string()
 }
 
 fn merge_input(
@@ -284,13 +322,13 @@ fn merge_input(
         settings.auto_update_enabled = auto_update_enabled;
     }
     if let Some(custom_binary_path) = input.custom_binary_path {
-        settings.custom_binary_path = normalize_custom_binary_path(custom_binary_path);
+        settings.custom_binary_path = normalize_custom_binary_path(custom_binary_path)?;
     }
     if let Some(custom_binary_enabled) = input.custom_binary_enabled {
         settings.custom_binary_enabled = custom_binary_enabled;
     }
     if let Some(custom_env_file_path) = input.custom_env_file_path {
-        settings.custom_env_file_path = normalize_custom_env_file_path(custom_env_file_path);
+        settings.custom_env_file_path = normalize_custom_env_file_path(custom_env_file_path)?;
     }
     if let Some(custom_env_file_enabled) = input.custom_env_file_enabled {
         settings.custom_env_file_enabled = custom_env_file_enabled;
@@ -428,6 +466,7 @@ fn to_response(
         cli_version: probe.cli_version,
         supported_model_aliases: probe.supported_model_aliases,
         supported_efforts: probe.supported_efforts,
+        ultra_supported_models: probe.ultra_supported_models,
         supports_fast_mode: probe.supports_fast_mode,
         fast_mode_supported_models: probe.fast_mode_supported_models,
         updated_at: settings.updated_at.to_rfc3339(),
@@ -447,6 +486,7 @@ pub(crate) fn provider_settings_snapshot_probe(
             cli_version: None,
             supported_model_aliases: None,
             supported_efforts: None,
+            ultra_supported_models: Vec::new(),
             supports_fast_mode: false,
             fast_mode_supported_models: Vec::new(),
             error: None,
@@ -462,6 +502,7 @@ pub(crate) fn provider_settings_snapshot_probe(
         cli_version: None,
         supported_model_aliases: None,
         supported_efforts: None,
+        ultra_supported_models: Vec::new(),
         supports_fast_mode: false,
         fast_mode_supported_models: Vec::new(),
         error: Some(format!(
@@ -494,28 +535,77 @@ pub(crate) fn snapshot_probes_from_provider_settings(
 async fn read_provider_settings(
     state: &AppState,
     refresh_runtime: bool,
+    force_runtime: bool,
 ) -> Result<AgentProvidersSettingsResponse, String> {
     let started_at = std::time::Instant::now();
+    let phase_started_at = std::time::Instant::now();
     let stored = state
         .agent_provider_settings_repo
         .list()
         .await
         .map_err(|err| err.to_string())?;
+    tracing::info!(
+        operation = "agent_provider_settings_phase",
+        phase = "load_settings",
+        refresh_runtime,
+        force_runtime,
+        provider_rows = stored.len(),
+        elapsed_ms = phase_started_at.elapsed().as_millis() as u64,
+        total_elapsed_ms = started_at.elapsed().as_millis() as u64,
+        "Agent provider settings phase completed"
+    );
+    let phase_started_at = std::time::Instant::now();
     let mut probes = if refresh_runtime {
-        refresh_supported_harnesses()
+        refresh_supported_harnesses_with_force(force_runtime)
     } else {
         snapshot_probes_from_provider_settings(&stored)
     };
+    tracing::info!(
+        operation = "agent_provider_settings_phase",
+        phase = "resolve_runtime_probes",
+        refresh_runtime,
+        force_runtime,
+        probe_count = probes.len(),
+        elapsed_ms = phase_started_at.elapsed().as_millis() as u64,
+        total_elapsed_ms = started_at.elapsed().as_millis() as u64,
+        "Agent provider settings phase completed"
+    );
+    let phase_started_at = std::time::Instant::now();
     if refresh_runtime {
         overlay_managed_provider_runtime_probes(&stored, &mut probes);
     }
     tracing::info!(
+        operation = "agent_provider_settings_phase",
+        phase = "overlay_managed_runtime_probes",
         refresh_runtime,
-        provider_rows = stored.len(),
-        elapsed_ms = started_at.elapsed().as_millis() as u64,
-        "Agent provider settings loaded"
+        force_runtime,
+        elapsed_ms = phase_started_at.elapsed().as_millis() as u64,
+        total_elapsed_ms = started_at.elapsed().as_millis() as u64,
+        "Agent provider settings phase completed"
     );
-    read_provider_settings_with_stored_and_probes(stored, &probes).await
+    let phase_started_at = std::time::Instant::now();
+    let response = read_provider_settings_with_stored_and_probes(stored, &probes).await?;
+    tracing::info!(
+        operation = "agent_provider_settings_phase",
+        phase = "build_response",
+        refresh_runtime,
+        force_runtime,
+        provider_rows = response.providers.len(),
+        elapsed_ms = phase_started_at.elapsed().as_millis() as u64,
+        total_elapsed_ms = started_at.elapsed().as_millis() as u64,
+        "Agent provider settings phase completed"
+    );
+    tracing::info!(
+        operation = "agent_provider_settings_phase",
+        phase = "total",
+        refresh_runtime,
+        force_runtime,
+        provider_rows = response.providers.len(),
+        elapsed_ms = started_at.elapsed().as_millis() as u64,
+        total_elapsed_ms = started_at.elapsed().as_millis() as u64,
+        "Agent provider settings phase completed"
+    );
+    Ok(response)
 }
 
 fn overlay_managed_provider_runtime_probes(
@@ -571,6 +661,7 @@ async fn read_provider_settings_with_stored_and_probes(
                     cli_version: None,
                     supported_model_aliases: None,
                     supported_efforts: None,
+                    ultra_supported_models: Vec::new(),
                     supports_fast_mode: false,
                     fast_mode_supported_models: Vec::new(),
                     error: Some(format!("{provider} probe unavailable")),
@@ -606,7 +697,8 @@ pub async fn get_agent_provider_settings(
     input: Option<GetAgentProviderSettingsInput>,
     state: State<'_, AppState>,
 ) -> Result<AgentProvidersSettingsResponse, String> {
-    read_provider_settings(&state, input.unwrap_or_default().refresh_runtime).await
+    let input = input.unwrap_or_default();
+    read_provider_settings(&state, input.refresh_runtime, input.force_runtime).await
 }
 
 #[tauri::command]
@@ -635,7 +727,7 @@ pub async fn update_agent_provider_settings(
         {
             probe
         } else {
-            refresh_harness_runtime_probe(provider)
+            refresh_harness_runtime_probe_with_force(provider, true)
         };
         probes.insert(provider, probe);
     }

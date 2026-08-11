@@ -21,6 +21,17 @@ pub enum AppError {
     #[error("Validation error: {0}")]
     Validation(String),
 
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
+
+    // Bare passthrough: constructors embed the [Personas disabled: prefix so
+    // IPC/HTTP strings start with the A15 family constant (matches PersonaUnavailable).
+    #[error("{0}")]
+    FeatureDisabled(String),
+
+    #[error("{0}")]
+    PersonaUnavailable(String),
+
     #[error("Agent error: {0}")]
     Agent(String),
 
@@ -51,6 +62,14 @@ pub enum AppError {
     #[error("Review worktree missing: worktree directory does not exist")]
     ReviewWorktreeMissing,
 
+    #[error("Review worktree contains unresolved conflict markers")]
+    ReviewWorktreeConflictMarkers,
+
+    #[error(
+        "Resolve conflicts and complete or abort the merge or rebase before retrying Workspace Review."
+    )]
+    WorkspaceReviewUnfinishedGitOperation,
+
     #[error("Duplicate pull request: branch already has an open PR")]
     DuplicatePr,
 
@@ -65,6 +84,60 @@ pub enum AppError {
 
     #[error("Conflict: {0}")]
     Conflict(String),
+
+    #[error(
+        "PERSONA_DRAFT_CONFLICT: expected content hash `{expected}` but current hash is `{actual}`"
+    )]
+    PersonaDraftConflict { expected: String, actual: String },
+
+    #[error("PERSONA_ALREADY_APPROVED: persona already approved — start a refine build")]
+    PersonaAlreadyApproved,
+
+    #[error(
+        "CONVERSATION_FOLDER_REFERENCE_LIMIT: conversation `{conversation_id}` already has the maximum of {limit} live folder references; remove one before adding another"
+    )]
+    ConversationFolderReferenceLimit {
+        conversation_id: String,
+        limit: usize,
+    },
+
+    #[error(
+        "CONVERSATION_FOLDER_REFERENCE_DUPLICATE: conversation `{conversation_id}` already references `{folder_path}`"
+    )]
+    ConversationFolderReferenceDuplicate {
+        conversation_id: String,
+        folder_path: String,
+    },
+
+    #[error("CONVERSATION_FOLDER_REFERENCE_UNSUPPORTED_CONTEXT: folder references require a Project conversation")]
+    ConversationFolderReferenceUnsupportedContext,
+
+    #[error("CONVERSATION_FOLDER_REFERENCE_APP_DATA_UNAVAILABLE: RalphX application data could not be canonicalized: {detail}")]
+    ConversationFolderReferenceAppDataUnavailable { detail: String },
+
+    #[error("SESSION_NAMER_STANDALONE_WORKSPACE_UNAVAILABLE: standalone conversation `{conversation_id}` could not obtain an app-owned naming workspace: {detail}")]
+    SessionNamerStandaloneWorkspaceUnavailable {
+        conversation_id: String,
+        detail: String,
+    },
+
+    #[error("SEEDED_AGENT_CONVERSATION_ALREADY_STARTED: conversation `{conversation_id}` has already started and cannot be aborted as a seed")]
+    SeededAgentConversationAlreadyStarted { conversation_id: String },
+
+    #[error("STANDALONE_WORKSPACE_MISSING: workspace for conversation `{conversation_id}` does not exist")]
+    StandaloneWorkspaceMissing { conversation_id: String },
+
+    #[error("The persona builder can only read text context — PDFs/images aren't supported")]
+    PersonaBuilderTextAttachmentOnly,
+
+    /// Carries the measured numbers rather than a prebuilt sentence so callers
+    /// that surface this to a user can phrase and format it themselves.
+    #[error("INSUFFICIENT_DISK_SPACE: {operation} needs {required_bytes} free bytes but only {available_bytes} are available")]
+    InsufficientDiskSpace {
+        operation: String,
+        required_bytes: u64,
+        available_bytes: u64,
+    },
 }
 
 impl From<AgentError> for AppError {

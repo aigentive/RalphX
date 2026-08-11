@@ -1,6 +1,5 @@
 use std::path::Path;
 
-use tauri::Emitter;
 use tokio_util::sync::CancellationToken;
 
 use crate::domain::entities::{Project, Task};
@@ -56,7 +55,7 @@ pub(crate) async fn run_install_phase(
     entries: &[PreExecAnalysisEntry],
     exec_cwd: &Path,
     task_id_str: &str,
-    app_handle: Option<&tauri::AppHandle>,
+    event_sink: Option<&dyn ralphx_events::EventSink>,
     resolve: &(dyn Fn(&str) -> String + Send + Sync),
     context: &str,
     cancel: &CancellationToken,
@@ -102,8 +101,8 @@ pub(crate) async fn run_install_phase(
         }
 
         // Emit "running" event before execution
-        if let Some(handle) = app_handle {
-            let _ = handle.emit(
+        if let Some(sink) = event_sink {
+            sink.emit(
                 "merge:validation_step",
                 serde_json::json!({
                     "task_id": task_id_str,
@@ -213,8 +212,8 @@ pub(crate) async fn run_install_phase(
             tokio::time::sleep(std::time::Duration::from_millis(INSTALL_RETRY_DELAY_MS)).await;
 
             // Emit "running" event for retry attempt
-            if let Some(handle) = app_handle {
-                let _ = handle.emit(
+            if let Some(sink) = event_sink {
+                sink.emit(
                     "merge:validation_step",
                     serde_json::json!({
                         "task_id": task_id_str,
@@ -280,8 +279,8 @@ pub(crate) async fn run_install_phase(
             install_had_failures = true;
         }
 
-        if let Some(handle) = app_handle {
-            let _ = handle.emit(
+        if let Some(sink) = event_sink {
+            sink.emit(
                 "merge:validation_step",
                 serde_json::json!({
                     "task_id": task_id_str,
@@ -309,7 +308,7 @@ pub(crate) async fn run_install_phase(
 /// Returns `None` if no analysis entries exist (backward compatible — skip setup).
 /// Returns `Some(PreExecSetupResult)` with success/failure details otherwise.
 ///
-/// When `app_handle` is `Some`, emits `merge:validation_step` events with the provided context
+/// When `event_sink` is `Some`, emits `merge:validation_step` events with the provided context
 /// for real-time UI streaming. All executed commands are recorded in `PreExecSetupResult::log`
 /// for metadata storage.
 ///
@@ -319,7 +318,7 @@ pub async fn run_pre_execution_setup(
     task: &Task,
     exec_cwd: &Path,
     task_id_str: &str,
-    app_handle: Option<&tauri::AppHandle>,
+    event_sink: Option<&dyn ralphx_events::EventSink>,
     context: &str,
     cancel: &CancellationToken,
 ) -> Option<PreExecSetupResult> {
@@ -396,7 +395,7 @@ pub async fn run_pre_execution_setup(
             &merge_entries,
             exec_cwd,
             task_id_str,
-            app_handle,
+            event_sink,
             &resolve,
             Some(context),
             cancel,
@@ -409,7 +408,7 @@ pub async fn run_pre_execution_setup(
         &entries,
         exec_cwd,
         task_id_str,
-        app_handle,
+        event_sink,
         &resolve,
         context,
         cancel,

@@ -1,29 +1,27 @@
 /**
- * Shared nav item config used by the top-bar Navigation and the left-rail nav.
- * Order matches main navigation shortcut map: ⌘1 through ⌘5.
+ * Shared nav item config used by the main app navigation surfaces.
+ * Numbered shortcuts are derived from this order by the app keyboard handler.
  */
 
 import {
   Activity,
   Briefcase,
-  GitBranch,
-  LayoutGrid,
-  Lightbulb,
   Puzzle,
   Ticket,
   TrendingUp,
+  Workflow,
 } from "lucide-react";
 import { GitHubMarkIcon } from "@/components/github/GitHubMarkIcon";
 import { GranolaIcon } from "@/components/granola/GranolaIcon";
 import type { FeatureFlags } from "@/types/feature-flags";
-import type { ViewType } from "@/types/chat";
+import type { AppView } from "@/types/app-view";
 
 export interface NavItemConfig {
-  view: ViewType;
+  view: AppView;
   label: string;
   icon: React.ElementType;
   shortcut?: string;
-  visible: (flags: FeatureFlags, taskCount: number) => boolean;
+  visible: (flags: FeatureFlags) => boolean;
 }
 
 export const ALL_NAV_ITEMS: NavItemConfig[] = [
@@ -35,25 +33,11 @@ export const ALL_NAV_ITEMS: NavItemConfig[] = [
     visible: () => true,
   },
   {
-    view: "ideation",
-    label: "Ideation",
-    icon: Lightbulb,
+    view: "automations",
+    label: "Automations",
+    icon: Workflow,
     shortcut: "⌘2",
-    visible: (flags) => flags.ideationPage,
-  },
-  {
-    view: "graph",
-    label: "Graph",
-    icon: GitBranch,
-    shortcut: "⌘3",
-    visible: () => true,
-  },
-  {
-    view: "kanban",
-    label: "Kanban",
-    icon: LayoutGrid,
-    shortcut: "⌘4",
-    visible: () => true,
+    visible: (flags) => flags.automationsPage,
   },
   {
     view: "ticketing",
@@ -77,8 +61,8 @@ export const ALL_NAV_ITEMS: NavItemConfig[] = [
     view: "insights",
     label: "Insights",
     icon: TrendingUp,
-    shortcut: "⌘5",
-    visible: (_flags, taskCount) => taskCount >= 10,
+    shortcut: "⌘3",
+    visible: () => true,
   },
   {
     view: "extensibility",

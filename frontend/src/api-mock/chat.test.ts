@@ -1,15 +1,22 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { invoke as tauriInvoke } from "@tauri-apps/api/core";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { AgentConversationWorkspace } from "@/api/chat";
+import {
+  chatApi,
+  type AgentConversationWorkspace,
+} from "@/api/chat";
+import { invoke as webModeInvoke } from "@/mocks/tauri-api-core";
 import type { ChatConversation } from "@/types/chat-conversation";
 import {
   mockChatApi,
+  mockArchiveConversation,
   mockGetAgentConversationRuntimeStatuses,
   mockGetAgentRunningStates,
   mockGetConversationSummary,
   mockGetConversationTimelinePage,
   mockListAgentSidebarConversations,
   mockPrecomputeAgentConversationWorkspacePrDescription,
+  mockSetAgentConversationWorkspaceReviewAutomation,
   resetMockChatState,
   seedMockAgentConversationWorkspace,
   seedMockConversation,
@@ -216,6 +223,67 @@ describe("mockListAgentSidebarConversations", () => {
       "archive",
     ]);
   });
+
+  it("preserves inbox fields and mute writes through the web-mode invoke adapter", async () => {
+    seedMockConversation(
+      conversation("needs-attention", "Needs attention", {
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }),
+      []
+    );
+    const invokeMock = vi.mocked(tauriInvoke);
+    invokeMock.mockImplementation(webModeInvoke);
+
+    try {
+      const before = await chatApi.listAgentSidebarConversations({
+        projectIds: ["project-1"],
+        groupBy: "inbox",
+      });
+      expect(before.groups.find((group) => group.key === "needs")?.rows).toEqual([
+        expect.objectContaining({
+          conversation: expect.objectContaining({ id: "needs-attention" }),
+          attentionLane: "needs",
+          actionVerb: "Continue",
+          isMuted: false,
+        }),
+      ]);
+
+      await chatApi.setAgentConversationMuted("needs-attention", true);
+
+      const after = await chatApi.listAgentSidebarConversations({
+        projectIds: ["project-1"],
+        groupBy: "inbox",
+      });
+      expect(after.groups.find((group) => group.key === "needs")?.rows).toEqual([]);
+      expect(after.groups.find((group) => group.key === "stale")?.rows).toEqual([
+        expect.objectContaining({
+          conversation: expect.objectContaining({ id: "needs-attention" }),
+          attentionLane: "stale",
+          isMuted: true,
+        }),
+      ]);
+    } finally {
+      invokeMock.mockReset();
+    }
+  });
+});
+
+describe("mockArchiveConversation", () => {
+  beforeEach(() => {
+    resetMockChatState();
+  });
+
+  it("archives the conversation when the caller explicitly declines PR closure", async () => {
+    seedMockConversation(conversation("archive-target", "Archive target"), []);
+
+    const archived = await mockArchiveConversation("archive-target", {
+      closePullRequest: false,
+    });
+
+    expect(archived.conversation.archivedAt).not.toBeNull();
+    expect(archived.cleanup.localCleanup).toBe("cleaned");
+  });
 });
 
 describe("mockGetAgentRunningStates", () => {
@@ -254,6 +322,36 @@ describe("mockGetAgentConversationRuntimeStatuses", () => {
   });
 });
 
+describe("mockSetAgentConversationWorkspaceReviewAutomation", () => {
+  beforeEach(() => {
+    resetMockChatState();
+  });
+
+  it("persists an explicit review automation preference", async () => {
+    const seeded = workspace("review-automation", {
+      reviewAutomationOverride: null,
+    });
+    seedMockAgentConversationWorkspace(seeded);
+
+    await expect(
+      mockSetAgentConversationWorkspaceReviewAutomation(seeded.conversationId, {
+        enabled: true,
+      }),
+    ).resolves.toMatchObject({ reviewAutomationOverride: true });
+    await expect(
+      mockChatApi.getAgentConversationWorkspace(seeded.conversationId),
+    ).resolves.toMatchObject({ reviewAutomationOverride: true });
+  });
+
+  it("rejects a preference update for an unknown workspace", async () => {
+    await expect(
+      mockSetAgentConversationWorkspaceReviewAutomation("missing", {
+        enabled: false,
+      }),
+    ).rejects.toThrow("No mock workspace seeded for missing");
+  });
+});
+
 describe("mockGetConversationSummary", () => {
   beforeEach(() => {
     resetMockChatState();
@@ -266,6 +364,158 @@ describe("mockGetConversationSummary", () => {
     await expect(mockGetConversationSummary("summary-1")).resolves.toEqual(seeded);
     await expect(mockChatApi.getConversationSummary("summary-1")).resolves.toEqual(seeded);
   });
+});
+
+describe("mock Team coordination mode", () => {
+  beforeEach(() => {
+    resetMockChatState();
+  });
+
+  it("persists Team intent when starting an Agent conversation", async () => {
+    const result = await mockChatApi.startAgentConversation({
+      projectId: "project-1",
+      content: "Start Team work",
+      mode: "edit",
+      teamIntent: { coordinationMode: "rx_native_team" },
+    });
+
+    expect(result.conversation.coordinationMode).toBe("rx_native_team");
+    await expect(
+      mockChatApi.getConversationSummary(result.conversation.id)
+    ).resolves.toMatchObject({
+      id: result.conversation.id,
+      coordinationMode: "rx_native_team",
+    });
+  });
+
+  it("persists Team intent when sending into an existing conversation", async () => {
+    seedMockConversation(conversation("team-send", "Team send"), []);
+
+    const result = await mockChatApi.sendAgentMessage(
+      "project",
+      "project-1",
+      "Enable Team",
+      undefined,
+      undefined,
+      {
+        conversationId: "team-send",
+        teamIntent: { coordinationMode: "rx_native_team" },
+      }
+    );
+
+    expect(result).toMatchObject({
+      conversationId: "team-send",
+      isNewConversation: false,
+    });
+    await expect(mockGetConversationSummary("team-send")).resolves.toMatchObject({
+      coordinationMode: "rx_native_team",
+    });
+  });
+
+  it.each([
+    {
+      providerHarness: "claude",
+      modelId: "sonnet",
+      logicalEffort: "medium",
+    },
+    {
+      providerHarness: "codex",
+      modelId: "gpt-5.5",
+      logicalEffort: "xhigh",
+    },
+  ] as const)(
+    "persists the selected $providerHarness runtime on continuation",
+    async ({ providerHarness, modelId, logicalEffort }) => {
+      const conversationId = `runtime-send-${providerHarness}`;
+      seedMockConversation(conversation(conversationId, "Runtime send"), []);
+
+      await mockChatApi.sendAgentMessage(
+        "project",
+        "project-1",
+        "Continue",
+        undefined,
+        undefined,
+        {
+          conversationId,
+          providerHarness,
+          modelId,
+          logicalEffort,
+        },
+      );
+
+      await expect(mockGetConversationSummary(conversationId)).resolves.toMatchObject({
+        providerHarness,
+        logicalModel: modelId,
+        effectiveModelId: modelId,
+        logicalEffort,
+        effectiveEffort: logicalEffort,
+      });
+    },
+  );
+
+  it("updates and reports missing Team coordination conversations", async () => {
+    seedMockConversation(conversation("team-toggle", "Team toggle"), []);
+
+    await expect(
+      mockChatApi.updateAgentConversationCoordinationMode({
+        conversationId: "team-toggle",
+        coordinationMode: "rx_native_team",
+      })
+    ).resolves.toMatchObject({ coordinationMode: "rx_native_team" });
+
+    await expect(
+      mockChatApi.updateAgentConversationCoordinationMode({
+        conversationId: "missing-team-toggle",
+        coordinationMode: "solo",
+      })
+    ).rejects.toThrow("No mock conversation seeded for missing-team-toggle");
+  });
+});
+
+describe("mockStartAgentConversation", () => {
+  beforeEach(() => {
+    resetMockChatState();
+  });
+
+  it.each([
+    {
+      providerHarness: "claude",
+      modelId: "sonnet",
+      logicalEffort: "medium",
+    },
+    {
+      providerHarness: "codex",
+      modelId: "gpt-5.5",
+      logicalEffort: "xhigh",
+    },
+  ] as const)(
+    "persists the selected $providerHarness runtime on a standalone conversation",
+    async ({ providerHarness, modelId, logicalEffort }) => {
+      const result = await mockChatApi.startAgentConversation({
+        content: "Explore privately",
+        mode: "chat",
+        providerHarness,
+        modelId,
+        logicalEffort,
+      });
+
+      expect(result.conversation).toMatchObject({
+        contextType: "standalone",
+        providerHarness,
+        logicalModel: modelId,
+        effectiveModelId: modelId,
+        logicalEffort,
+        effectiveEffort: logicalEffort,
+      });
+      await expect(
+        mockGetConversationSummary(result.conversation.id),
+      ).resolves.toMatchObject({
+        providerHarness,
+        logicalModel: modelId,
+        logicalEffort,
+      });
+    },
+  );
 });
 
 describe("mockGetConversationTimelinePage", () => {

@@ -17,8 +17,6 @@ import type { Task, InternalStatus } from "@/types/task";
 interface TaskState {
   /** Tasks indexed by ID for O(1) lookup */
   tasks: Record<string, Task>;
-  /** Currently selected task ID, or null if none */
-  selectedTaskId: string | null;
 }
 
 // ============================================================================
@@ -30,8 +28,6 @@ interface TaskActions {
   setTasks: (tasks: Task[]) => void;
   /** Update a specific task with partial changes */
   updateTask: (taskId: string, changes: Partial<Task>) => void;
-  /** Select a task by ID, or null to deselect */
-  selectTask: (taskId: string | null) => void;
   /** Add a single task to the store */
   addTask: (task: Task) => void;
   /** Remove a task from the store */
@@ -46,7 +42,6 @@ export const useTaskStore = create<TaskState & TaskActions>()(
   immer((set) => ({
     // Initial state
     tasks: {},
-    selectedTaskId: null,
 
     // Actions
     setTasks: (tasks) =>
@@ -62,11 +57,6 @@ export const useTaskStore = create<TaskState & TaskActions>()(
         }
       }),
 
-    selectTask: (taskId) =>
-      set((state) => {
-        state.selectedTaskId = taskId;
-      }),
-
     addTask: (task) =>
       set((state) => {
         state.tasks[task.id] = task;
@@ -75,10 +65,6 @@ export const useTaskStore = create<TaskState & TaskActions>()(
     removeTask: (taskId) =>
       set((state) => {
         delete state.tasks[taskId];
-        // Clear selection if removing selected task
-        if (state.selectedTaskId === taskId) {
-          state.selectedTaskId = null;
-        }
       }),
   }))
 );
@@ -96,10 +82,3 @@ export const selectTasksByStatus =
   (status: InternalStatus) =>
   (state: TaskState): Task[] =>
     Object.values(state.tasks).filter((t) => t.internalStatus === status);
-
-/**
- * Select the currently selected task
- * @returns The selected task, or null if none selected
- */
-export const selectSelectedTask = (state: TaskState & TaskActions): Task | null =>
-  state.selectedTaskId ? state.tasks[state.selectedTaskId] ?? null : null;

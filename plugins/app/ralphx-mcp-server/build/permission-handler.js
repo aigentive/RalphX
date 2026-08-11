@@ -10,11 +10,13 @@
  * The Tauri backend emits a Tauri event that triggers the PermissionDialog
  * in the frontend, allowing the user to approve or deny the tool call.
  */
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { safeError } from "./redact.js";
 import { buildTauriApiUrl } from "./tauri-client.js";
-import { isWithin, normalizePathLike, } from "./path-policy.js";
+import { buildRuntimeTransportHeaders, } from "./runtime-context.js";
+import { getConfiguredFilesystemReadRoots, isWithin, normalizePathLike, } from "./path-policy.js";
 const SAFE_READONLY_BASH_COMMANDS = new Set([
     "ls",
     "cat",
@@ -90,6 +92,24 @@ function isTrustedReadPath(targetPath) {
             return true;
     }
     return false;
+}
+function isTrustedReadRootPath(targetPath) {
+    try {
+        const realTarget = fs.realpathSync(normalizePathLike(targetPath));
+        if (isSensitivePath(realTarget))
+            return false;
+        return getConfiguredFilesystemReadRoots().some((root) => {
+            try {
+                return isWithin(fs.realpathSync(root), realTarget);
+            }
+            catch {
+                return false;
+            }
+        });
+    }
+    catch {
+        return false;
+    }
 }
 function isTrustedClaudeProjectMemoryPath(targetPath) {
     const normalized = normalizePathLike(targetPath);
@@ -172,17 +192,19 @@ export function shouldAutoApprovePermission(toolName, toolInput) {
         }
         case "Read": {
             const targetPath = getStringField(toolInput, ["file_path", "filePath", "path"]);
-            return Boolean(targetPath && isTrustedReadPath(targetPath));
+            return Boolean(targetPath &&
+                (isTrustedReadPath(targetPath) || isTrustedReadRootPath(targetPath)));
         }
         case "LS":
         case "Grep": {
             const targetPath = getStringField(toolInput, ["file_path", "filePath", "path"]);
-            return Boolean(targetPath && isTrustedReadPath(targetPath));
+            return Boolean(targetPath &&
+                (isTrustedReadPath(targetPath) || isTrustedReadRootPath(targetPath)));
         }
         case "Glob": {
             const pattern = getStringField(toolInput, ["pattern"]);
             const root = pattern ? extractGlobRoot(pattern) : null;
-            return Boolean(root && isTrustedReadPath(root));
+            return Boolean(root && (isTrustedReadPath(root) || isTrustedReadRootPath(root)));
         }
         case "Bash": {
             const command = getStringField(toolInput, ["command"]);
@@ -248,7 +270,7 @@ function normalizePermissionArgs(args) {
  * @param args - Tool call details from Claude CLI (shape may vary)
  * @returns MCP tool result with decision (behavior + updatedInput / message)
  */
-export async function handlePermissionRequest(args) {
+export async function handlePermissionRequest(args, runtimeContext = {}) {
     const { tool_name, tool_input, context } = normalizePermissionArgs(args);
     const normalizedToolInput = normalizePermissionToolInput(tool_name, tool_input);
     if (!tool_name) {
@@ -303,7 +325,10 @@ export async function handlePermissionRequest(args) {
             body.context_id = contextId;
         const registerResponse = await fetch(buildTauriApiUrl("permission/request"), {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: {
+                "Content-Type": "application/json",
+                ...(buildRuntimeTransportHeaders(runtimeContext) ?? {}),
+            },
             body: JSON.stringify(body),
         });
         if (!registerResponse.ok) {

@@ -2,6 +2,7 @@
 
 import { z } from "zod";
 import { TaskStepResponseSchema } from "@/types/task-step";
+import { ExecutionTaskAgentWorkspaceSchema } from "./execution-task-agent-workspace";
 
 /**
  * Step progress summary schema from Rust (snake_case)
@@ -20,20 +21,6 @@ export const StepProgressSummarySchema = z.object({
 });
 
 /**
- * Teammate summary schema from Rust (snake_case)
- */
-export const TeammateSummarySchema = z.object({
-  name: z.string(),
-  status: z.string(),
-  step: z.string().optional(),
-  model: z.string().optional(),
-  color: z.string().optional(),
-  steps_completed: z.number().int().nonnegative().optional(),
-  steps_total: z.number().int().nonnegative().optional(),
-  wave: z.number().int().nonnegative().optional(),
-});
-
-/**
  * Running process schema from Rust (snake_case)
  */
 export const RunningProcessSchema = z.object({
@@ -44,10 +31,7 @@ export const RunningProcessSchema = z.object({
   elapsed_seconds: z.number().int().nullable(),
   trigger_origin: z.string().nullable(),
   task_branch: z.string().nullable(),
-  team_name: z.string().optional(),
-  teammates: z.array(TeammateSummarySchema).optional(),
-  current_wave: z.number().int().nonnegative().optional(),
-  total_waves: z.number().int().nonnegative().optional(),
+  agent_workspace: ExecutionTaskAgentWorkspaceSchema.nullable().optional(),
 });
 
 /**
@@ -57,7 +41,6 @@ export const RunningIdeationSessionSchema = z.object({
   session_id: z.string(),
   title: z.string(),
   elapsed_seconds: z.number().int().nullable(),
-  team_mode: z.string().nullable(),
   is_generating: z.boolean(),
 });
 
@@ -67,6 +50,8 @@ export const RunningIdeationSessionSchema = z.object({
 export const RunningWorkspaceSessionSchema = z.object({
   conversation_id: z.string(),
   project_id: z.string(),
+  automation_id: z.string().nullable(),
+  automation_run_id: z.string().nullable(),
   title: z.string(),
   elapsed_seconds: z.number().int().nullable(),
   model: z.string().nullable(),

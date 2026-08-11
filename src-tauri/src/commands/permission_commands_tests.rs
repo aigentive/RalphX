@@ -1,5 +1,11 @@
 use super::*;
 use crate::application::AppState;
+use crate::application::PERMISSION_RESOLVED_EVENT;
+use crate::domain::entities::{
+    NewNotification, NotificationCategory, NotificationSeverity, NotificationTarget,
+};
+use ralphx_events::RecordingEventSink;
+use std::sync::Arc;
 use tauri::Manager;
 
 fn permission_command_app() -> tauri::App<tauri::test::MockRuntime> {
@@ -7,6 +13,19 @@ fn permission_command_app() -> tauri::App<tauri::test::MockRuntime> {
         .manage(AppState::new_test())
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("mock app should build")
+}
+
+fn permission_command_app_with_event_sink(
+) -> (tauri::App<tauri::test::MockRuntime>, RecordingEventSink) {
+    let event_sink = RecordingEventSink::new();
+    let mut state = AppState::new_test();
+    state.events = Arc::new(event_sink.clone());
+    let app = tauri::test::mock_builder()
+        .manage(state)
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app should build");
+
+    (app, event_sink)
 }
 
 fn pending_permission(request_id: &str) -> PendingPermissionInfo {
@@ -19,6 +38,7 @@ fn pending_permission(request_id: &str) -> PendingPermissionInfo {
         task_id: Some("task-1".to_string()),
         context_type: Some("task".to_string()),
         context_id: Some("task-1".to_string()),
+        created_at: "2026-07-10T00:00:00+00:00".to_string(),
     }
 }
 
@@ -72,8 +92,22 @@ async fn get_pending_permissions_command_returns_registered_requests() {
 }
 
 #[tokio::test]
-async fn resolve_permission_request_command_accepts_allow_and_deny() {
-    let app = permission_command_app();
+async fn resolve_permission_request_command_emits_resolved_events_for_allow_and_deny() {
+    let (app, event_sink) = permission_command_app_with_event_sink();
+    for request_id in ["permission-allow", "permission-deny"] {
+        app.state::<AppState>()
+            .notification_service()
+            .record(NewNotification {
+                project_id: None,
+                category: NotificationCategory::PermissionRequest,
+                severity: NotificationSeverity::ActionRequired,
+                title: "Permission required".to_string(),
+                body: None,
+                target: NotificationTarget::none(),
+                dedupe_key: Some(permission_notification_key(request_id)),
+            })
+            .await;
+    }
     app.state::<AppState>()
         .permission_state
         .register(pending_permission("permission-allow"))
@@ -110,6 +144,31 @@ async fn resolve_permission_request_command_accepts_allow_and_deny() {
     .await
     .expect("deny resolution succeeds");
     assert!(deny.success);
+
+    assert_eq!(
+        event_sink.events(),
+        vec![
+            ralphx_events::RecordedEvent {
+                event: PERMISSION_RESOLVED_EVENT.to_string(),
+                payload: serde_json::json!({ "request_id": "permission-allow" }),
+            },
+            ralphx_events::RecordedEvent {
+                event: PERMISSION_RESOLVED_EVENT.to_string(),
+                payload: serde_json::json!({ "request_id": "permission-deny" }),
+            },
+        ]
+    );
+    let notifications = app
+        .state::<AppState>()
+        .notification_repo
+        .list(None, None, 10)
+        .await
+        .expect("notifications should load")
+        .notifications;
+    assert_eq!(notifications.len(), 2);
+    assert!(notifications
+        .iter()
+        .all(|notification| notification.read_at.is_some()));
 }
 
 #[tokio::test]

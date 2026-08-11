@@ -1,19 +1,45 @@
 use super::helpers::{create_context_with_services, create_test_services};
 use crate::application::{ChatService, MockChatService};
-use crate::domain::entities::{MergeValidationMode, Project, Task, TaskId};
+use crate::domain::entities::{MergeValidationMode, Project, ProjectId, Task, TaskId};
 use crate::domain::repositories::{ProjectRepository, TaskRepository};
 use crate::domain::state_machine::context::TaskServices;
 use crate::domain::state_machine::mocks::{
     MockAgentSpawner, MockDependencyManager, MockEventEmitter, MockNotifier, MockReviewStarter,
 };
 use crate::domain::state_machine::services::{
-    AgentSpawner, DependencyManager, EventEmitter, Notifier, ReviewStarter,
+    AgentSpawner, DependencyManager, EventEmitter, NotificationContext, Notifier, ReviewStarter,
+    TaskNotification,
 };
 use crate::domain::state_machine::{
     State, TaskEvent, TaskStateMachine, TransitionHandler, TransitionResult,
 };
 use crate::infrastructure::memory::{MemoryProjectRepository, MemoryTaskRepository};
 use std::sync::Arc;
+
+fn assert_task_runtime_bootstrap_metadata(metadata: Option<&str>) {
+    let metadata = metadata.expect("bootstrap send options should include metadata");
+    let value: serde_json::Value =
+        serde_json::from_str(metadata).expect("bootstrap metadata should be valid JSON");
+
+    assert_eq!(value["hidden_from_ui"], true);
+    assert_eq!(value["source"], "task_runtime_bootstrap");
+    assert_eq!(
+        value.get("recovery_context"),
+        None,
+        "task bootstrap metadata must not reuse recovery semantics"
+    );
+}
+
+fn notification_context(task_id: &str, history_entry_id: &str) -> NotificationContext {
+    let project_id = ProjectId::from_string("proj-1".to_string());
+    let mut task = Task::new(project_id.clone(), "Notification test task".to_string());
+    task.id = TaskId::from_string(task_id.to_string());
+    NotificationContext {
+        task,
+        history_entry_id: history_entry_id.to_string(),
+        project_id,
+    }
+}
 
 async fn build_pre_execution_setup_handler(
     merge_validation_mode: MergeValidationMode,
@@ -311,7 +337,14 @@ async fn test_entering_pending_review_with_error_notifies_user() {
         Arc::clone(&chat_service) as Arc<dyn ChatService>,
     );
 
-    let context = create_context_with_services("task-1", "proj-1", services);
+    let context = create_context_with_services(
+        "task-1",
+        "proj-1",
+        services.with_notification_context(notification_context(
+            "task-1",
+            "committed-history-review-error",
+        )),
+    );
     let mut machine = TaskStateMachine::new(context);
 
     let handler = TransitionHandler::new(&mut machine);
@@ -323,8 +356,17 @@ async fn test_entering_pending_review_with_error_notifies_user() {
         .iter()
         .any(|c| c.method == "spawn" && c.args[0] == "reviewer"));
 
-    // Should notify user about the error
-    assert!(notifier.has_notification("review_error"));
+    // The notification must retain the review-start error and committed history id.
+    let notifications = notifier.notification_records();
+    assert_eq!(notifications.len(), 1);
+    assert!(matches!(
+        &notifications[0].notification,
+        TaskNotification::ReviewError { message } if message == "Database connection failed"
+    ));
+    assert_eq!(
+        notifications[0].context.history_entry_id,
+        "committed-history-review-error"
+    );
 }
 
 #[tokio::test]
@@ -444,6 +486,12 @@ async fn test_entering_executing_uses_chat_service() {
         chat_service.call_count() > 0,
         "ChatService should have been called"
     );
+    let options = chat_service.get_sent_options().await;
+    assert_task_runtime_bootstrap_metadata(
+        options
+            .first()
+            .and_then(|options| options.metadata.as_deref()),
+    );
 
     // Agent spawner should NOT have been called (we used ChatService instead)
     let spawner_calls = spawner.get_calls();
@@ -517,6 +565,12 @@ async fn test_entering_reviewing_uses_chat_service() {
         chat_service.call_count() > 0,
         "ChatService should have been called"
     );
+    let options = chat_service.get_sent_options().await;
+    assert_task_runtime_bootstrap_metadata(
+        options
+            .first()
+            .and_then(|options| options.metadata.as_deref()),
+    );
 
     // Agent spawner should NOT have been called (we used ChatService instead)
     let spawner_calls = spawner.get_calls();
@@ -532,7 +586,14 @@ async fn test_entering_reviewing_uses_chat_service() {
 async fn test_entering_review_passed_emits_event_and_notifies() {
     let (_spawner, emitter, notifier, _dep_manager, _review_starter, services) =
         create_test_services();
-    let context = create_context_with_services("task-1", "proj-1", services);
+    let context = create_context_with_services(
+        "task-1",
+        "proj-1",
+        services.with_notification_context(notification_context(
+            "task-1",
+            "committed-history-review-passed",
+        )),
+    );
     let mut machine = TaskStateMachine::new(context);
 
     let handler = TransitionHandler::new(&mut machine);
@@ -541,8 +602,17 @@ async fn test_entering_review_passed_emits_event_and_notifies() {
     // Should emit review:ai_approved event
     assert!(emitter.has_event("review:ai_approved"));
 
-    // Should notify user
-    assert!(notifier.has_notification("review:ai_approved"));
+    // The notification must retain the state and committed history id.
+    let notifications = notifier.notification_records();
+    assert_eq!(notifications.len(), 1);
+    assert!(matches!(
+        notifications[0].notification,
+        TaskNotification::StateEntered(crate::domain::entities::InternalStatus::ReviewPassed)
+    ));
+    assert_eq!(
+        notifications[0].context.history_entry_id,
+        "committed-history-review-passed"
+    );
 }
 
 #[tokio::test]
@@ -573,6 +643,12 @@ async fn test_entering_re_executing_uses_chat_service() {
     assert!(
         chat_service.call_count() > 0,
         "ChatService should have been called"
+    );
+    let options = chat_service.get_sent_options().await;
+    assert_task_runtime_bootstrap_metadata(
+        options
+            .first()
+            .and_then(|options| options.metadata.as_deref()),
     );
 
     // Agent spawner should NOT have been called (we used ChatService instead)

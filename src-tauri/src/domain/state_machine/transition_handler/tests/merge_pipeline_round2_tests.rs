@@ -169,7 +169,7 @@ async fn test_merge_completion_aborts_on_stale_task_state() {
     task_for_merge.internal_status = InternalStatus::PendingMerge;
 
     let task_repo_dyn: Arc<dyn TaskRepository> = Arc::clone(&task_repo) as Arc<dyn TaskRepository>;
-    let result = complete_merge_internal::<tauri::Wry>(
+    let result = complete_merge_internal(
         &mut task_for_merge,
         &project,
         &commit_sha,
@@ -244,7 +244,7 @@ async fn test_merge_completion_proceeds_on_pending_merge() {
 
     let mut task_for_merge = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
     let task_repo_dyn: Arc<dyn TaskRepository> = Arc::clone(&task_repo) as Arc<dyn TaskRepository>;
-    let result = complete_merge_internal::<tauri::Wry>(
+    let result = complete_merge_internal(
         &mut task_for_merge,
         &project,
         &commit_sha,
@@ -319,7 +319,7 @@ async fn test_merge_completion_proceeds_on_merging() {
 
     let mut task_for_merge = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
     let task_repo_dyn: Arc<dyn TaskRepository> = Arc::clone(&task_repo) as Arc<dyn TaskRepository>;
-    let result = complete_merge_internal::<tauri::Wry>(
+    let result = complete_merge_internal(
         &mut task_for_merge,
         &project,
         &commit_sha,

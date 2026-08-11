@@ -30,6 +30,32 @@ use crate::domain::state_machine::AgentSpawner;
 use crate::domain::supervisor::{ErrorInfo, SupervisorEvent, ToolCallInfo};
 use crate::infrastructure::supervisor::EventBus;
 
+/// Application-owned role resolution port used by the state-machine spawner.
+///
+/// The infrastructure adapter consumes this lower-layer contract without
+/// importing application services or role-mapping functions.
+#[async_trait]
+pub trait StateMachineRoleResolver: Send + Sync {
+    async fn resolve_state_machine_role(
+        &self,
+        agent_name: &str,
+        agent_type: &str,
+        entity_status: Option<&str>,
+        project_id: Option<&str>,
+        project_root: Option<&std::path::Path>,
+    ) -> Result<Option<StateMachineRoleSettings>, String>;
+}
+
+#[derive(Debug, Clone)]
+pub struct StateMachineRoleSettings {
+    pub harness: AgentHarnessKind,
+    pub model: String,
+    pub logical_effort: Option<LogicalEffort>,
+    pub approval_policy: Option<String>,
+    pub sandbox_mode: Option<String>,
+    pub service_tier: Option<String>,
+}
+
 /// Bridge between the state machine's AgentSpawner and the AgenticClient
 ///
 /// This allows the state machine to spawn agents without knowing
@@ -53,6 +79,8 @@ pub struct AgenticClientSpawner {
     agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
     /// Provider enablement/default settings for onboarding gating
     agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
+    /// Exact semantic role defaults for production state-machine launches.
+    manual_role_resolver: Option<Arc<dyn StateMachineRoleResolver>>,
     /// Ideation session repo for ideation-aware project slot counting
     ideation_session_repo: Option<Arc<dyn IdeationSessionRepository>>,
     /// Running registry for project-aware slot counting
@@ -111,6 +139,7 @@ impl AgenticClientSpawner {
             execution_settings_repo: None,
             agent_lane_settings_repo: None,
             agent_provider_settings_repo: None,
+            manual_role_resolver: None,
             ideation_session_repo: None,
             running_agent_registry: None,
             event_bus: None,
@@ -201,6 +230,14 @@ impl AgenticClientSpawner {
         self
     }
 
+    pub fn with_manual_role_default_service(
+        mut self,
+        resolver: Arc<dyn StateMachineRoleResolver>,
+    ) -> Self {
+        self.manual_role_resolver = Some(resolver);
+        self
+    }
+
     /// Map agent type string to AgentRole
     fn role_from_string(agent_type: &str) -> AgentRole {
         match agent_type {
@@ -211,6 +248,7 @@ impl AgenticClientSpawner {
             "qa-tester" => AgentRole::QaTester,
             "reviewer" | "ralphx-reviewer" | "ralphx-execution-reviewer" => AgentRole::Reviewer,
             "merger" | "ralphx-merger" | "ralphx-execution-merger" => AgentRole::Reviewer,
+            "branch-updater" | "ralphx-execution-branch-updater" => AgentRole::Reviewer,
             other => AgentRole::Custom(other.to_string()),
         }
     }
@@ -254,6 +292,26 @@ impl AgenticClientSpawner {
             }
         }
         None
+    }
+
+    async fn resolve_project_root(
+        &self,
+        project_id: Option<&str>,
+    ) -> Result<Option<PathBuf>, String> {
+        let Some(project_id) = project_id else {
+            return Ok(None);
+        };
+        let project_repo = self.project_repo.as_ref().ok_or_else(|| {
+            "Project repository is unavailable for manual role-default resolution".to_string()
+        })?;
+        let project = project_repo
+            .get_by_id(&crate::domain::entities::ProjectId::from_string(
+                project_id.to_string(),
+            ))
+            .await
+            .map_err(|error| format!("Failed to load project for role defaults: {error}"))?
+            .ok_or_else(|| format!("Project not found for role defaults: {project_id}"))?;
+        Ok(Some(PathBuf::from(project.working_directory)))
     }
 
     async fn resolve_task_status(&self, task_id: &str) -> Option<String> {
@@ -383,6 +441,7 @@ impl AgenticClientSpawner {
             }
             "reviewer" | "ralphx-execution-reviewer" => Some("review"),
             "merger" | "ralphx-execution-merger" => Some("merge"),
+            "branch-updater" | "ralphx-execution-branch-updater" => Some("branch_update"),
             "qa-prep" => Some("qa_prep"),
             "qa-refiner" => Some("qa_refine"),
             "qa-tester" => Some("qa_test"),
@@ -400,6 +459,9 @@ impl AgenticClientSpawner {
             "qa-refiner" | "qa-tester" => Some(ChatContextType::TaskExecution),
             "reviewer" | "ralphx-execution-reviewer" => Some(ChatContextType::Review),
             "merger" | "ralphx-execution-merger" => Some(ChatContextType::Merge),
+            "branch-updater" | "ralphx-execution-branch-updater" => {
+                Some(ChatContextType::BranchUpdate)
+            }
             _ => None,
         }
     }
@@ -536,18 +598,50 @@ impl AgenticClientSpawner {
         };
         let entity_status = self.resolve_task_status(task_id).await;
 
-        let resolved = resolve_agent_spawn_settings(
-            &agent_name,
-            project_id,
-            context_type,
-            entity_status.as_deref(),
-            None,
-            None,
-            self.agent_lane_settings_repo.as_ref(),
-        )
-        .await;
-
-        let harness = resolved.effective_harness;
+        let manual_resolved = if let Some(resolver) = self.manual_role_resolver.as_ref() {
+            let project_root = self.resolve_project_root(project_id).await?;
+            resolver
+                .resolve_state_machine_role(
+                    &agent_name,
+                    agent_type,
+                    entity_status.as_deref(),
+                    project_id,
+                    project_root.as_deref(),
+                )
+                .await?
+        } else {
+            None
+        };
+        let (harness, model, logical_effort, approval_policy, sandbox_mode, service_tier) =
+            if let Some(resolved) = manual_resolved {
+                (
+                    resolved.harness,
+                    resolved.model,
+                    resolved.logical_effort,
+                    resolved.approval_policy,
+                    resolved.sandbox_mode,
+                    resolved.service_tier,
+                )
+            } else {
+                let resolved = resolve_agent_spawn_settings(
+                    &agent_name,
+                    project_id,
+                    context_type,
+                    entity_status.as_deref(),
+                    None,
+                    None,
+                    self.agent_lane_settings_repo.as_ref(),
+                )
+                .await;
+                (
+                    resolved.effective_harness,
+                    resolved.model,
+                    resolved.logical_effort,
+                    resolved.approval_policy,
+                    resolved.sandbox_mode,
+                    resolved.service_tier,
+                )
+            };
         if let Some(provider_repo) = self.agent_provider_settings_repo.as_ref() {
             crate::application::ensure_provider_spawn_enabled(
                 provider_repo,
@@ -563,11 +657,11 @@ impl AgenticClientSpawner {
         Ok(ResolvedSpawnerHarness {
             client,
             harness,
-            model: Some(resolved.model),
-            logical_effort: resolved.logical_effort,
-            approval_policy: resolved.approval_policy,
-            sandbox_mode: resolved.sandbox_mode,
-            service_tier: resolved.service_tier.or(provider_service_tier),
+            model: Some(model),
+            logical_effort,
+            approval_policy,
+            sandbox_mode,
+            service_tier: service_tier.or(provider_service_tier),
             cli_path_override,
             env,
         })
@@ -612,6 +706,7 @@ impl AgenticClientSpawner {
             max_tokens: None,
             timeout_secs: None,
             env,
+            mcp_launch_policy: Default::default(),
         };
 
         if matches!(client_type, ClientType::ClaudeCode | ClientType::Codex) {

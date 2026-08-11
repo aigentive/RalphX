@@ -1,12 +1,5 @@
-use super::publish_resilience::review_base_for_publish;
-use super::publish_resilience::{
-    classify_publish_failure, count_publishable_commits_with_base_fallback,
-    count_unpublished_publish_commits, publish_branch_freshness_outcome_from_source_update,
-    publish_branch_freshness_status_from_commits,
-    publish_branch_freshness_status_from_commits_and_branch, publish_push_status_for_failure,
-    remote_tracking_ref_for_publish, verify_agent_workspace_repair_completion,
-    AgentWorkspaceRepairCompletionCheck, PublishBranchFreshnessOutcome, PublishFailureClass,
-};
+use super::publish_resilience::*;
+use crate::domain::entities::Project;
 use crate::domain::state_machine::transition_handler::SourceUpdateResult;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -25,6 +18,17 @@ fn git(repo: &Path, args: &[&str]) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn setup_publish_freshness_repo(repo: &Path) -> String {
+    std::fs::create_dir_all(repo).expect("repo root should be created");
+    git(repo, &["init", "-b", "main"]);
+    git(repo, &["config", "user.email", "test@example.com"]);
+    git(repo, &["config", "user.name", "RalphX Test"]);
+    std::fs::write(repo.join("README.md"), "base\n").expect("base fixture should be written");
+    git(repo, &["add", "README.md"]);
+    git(repo, &["commit", "-m", "base"]);
+    git(repo, &["rev-parse", "HEAD"])
 }
 
 #[test]
@@ -176,6 +180,24 @@ fn maps_source_update_conflicts_to_agent_fixable_publish_outcome() {
 }
 
 #[test]
+fn maps_source_update_branch_missing_to_operational_publish_outcome() {
+    let outcome = publish_branch_freshness_outcome_from_source_update(
+        SourceUpdateResult::BranchMissing {
+            branch: "feature/missing".to_string(),
+        },
+        "origin/main",
+        "target-sha",
+    );
+
+    assert_eq!(
+        outcome,
+        PublishBranchFreshnessOutcome::OperationalError {
+            message: "branch missing before freshness update: feature/missing".to_string(),
+        }
+    );
+}
+
+#[test]
 fn maps_successful_source_update_to_updated_publish_base() {
     let outcome = publish_branch_freshness_outcome_from_source_update(
         SourceUpdateResult::Updated,
@@ -199,6 +221,64 @@ fn derives_remote_tracking_ref_for_publish_base() {
         remote_tracking_ref_for_publish("origin/main"),
         "origin/main"
     );
+}
+
+#[tokio::test]
+async fn ensure_plan_publish_branch_fresh_updates_isolated_linked_worktree() {
+    let temp = tempfile::TempDir::new().expect("tempdir should be created");
+    let repo = temp.path().join("repo");
+    let worktrees = temp.path().join("worktrees");
+    setup_publish_freshness_repo(&repo);
+    let plan_branch = "feature/plan-linked-worktree";
+    git(&repo, &["branch", plan_branch]);
+    std::fs::create_dir_all(&worktrees).expect("worktree parent should be created");
+    let plan_worktree = worktrees.join("linked-plan");
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            plan_worktree.to_str().expect("worktree path"),
+            plan_branch,
+        ],
+    );
+
+    std::fs::write(repo.join("base-fix.txt"), "base fix\n").expect("base fix should be written");
+    git(&repo, &["add", "base-fix.txt"]);
+    git(&repo, &["commit", "-m", "base fix"]);
+    let main_sha = git(&repo, &["rev-parse", "HEAD"]);
+
+    let mut project = Project::new(
+        "Plan linked worktree freshness".to_string(),
+        repo.to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    project.worktree_parent_directory = Some(worktrees.to_string_lossy().to_string());
+
+    let outcome = ensure_plan_publish_branch_fresh(
+        &plan_worktree,
+        &project,
+        plan_branch,
+        "main",
+        "conversation-plan-linked-worktree",
+        None,
+    )
+    .await;
+
+    assert_eq!(
+        outcome,
+        PublishBranchFreshnessOutcome::Updated {
+            base_commit: main_sha.clone(),
+            target_ref: "main".to_string(),
+        }
+    );
+    assert_eq!(git(&repo, &["branch", "--show-current"]), "main");
+    assert_eq!(git(&repo, &["status", "--short"]), "");
+    assert_eq!(
+        git(&plan_worktree, &["branch", "--show-current"]),
+        plan_branch
+    );
+    assert_eq!(git(&plan_worktree, &["rev-parse", "HEAD"]), main_sha);
 }
 
 #[tokio::test]
@@ -343,6 +423,7 @@ fn repaired_workspace_check() -> AgentWorkspaceRepairCompletionCheck<'static> {
         has_uncommitted_changes: false,
         is_merge_in_progress: false,
         is_rebase_in_progress: false,
+        has_conflict_files: false,
         has_conflict_markers: false,
     }
 }
@@ -381,7 +462,7 @@ fn rejects_agent_workspace_repair_when_head_does_not_match_reported_repair_commi
 
     let error = verify_agent_workspace_repair_completion(check)
         .expect_err("reported repair commit must be current HEAD");
-    assert!(error.contains("repair_commit_sha"));
+    assert!(error.contains("reported fix commit"));
 }
 
 #[test]
@@ -422,4 +503,20 @@ fn rejects_agent_workspace_repair_when_conflict_markers_remain() {
     let error = verify_agent_workspace_repair_completion(check)
         .expect_err("conflict markers must reject repair completion");
     assert!(error.contains("conflict markers"));
+}
+
+#[test]
+fn settled_head_verifier_rejects_unresolved_conflict_files() {
+    let error = verify_agent_workspace_settled_current_head(AgentWorkspaceSettledHeadCheck {
+        reported_head_sha: "head",
+        workspace_head_sha: "head",
+        has_uncommitted_changes: false,
+        is_merge_in_progress: false,
+        is_rebase_in_progress: false,
+        has_conflict_files: true,
+        has_conflict_markers: false,
+    })
+    .expect_err("unresolved index conflicts must reject completion");
+
+    assert!(error.contains("unresolved conflict files"));
 }

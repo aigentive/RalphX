@@ -199,6 +199,18 @@ impl WorkflowSchema {
                         .with_icon("Pause")
                         .with_accent_color("hsl(var(--warning))")
                         .locked(),
+                    StateGroup::new("qa_failed", "QA Failed", vec![InternalStatus::QaFailed])
+                        .with_icon("AlertTriangle")
+                        .with_accent_color("hsl(var(--destructive))")
+                        .locked(),
+                    StateGroup::new(
+                        "branch_update_blocked",
+                        "Branch Update Blocked",
+                        vec![InternalStatus::BranchUpdateBlocked],
+                    )
+                    .with_icon("AlertTriangle")
+                    .with_accent_color("hsl(var(--warning))")
+                    .locked(),
                 ]),
                 WorkflowColumn::new("in_progress", "In Progress", InternalStatus::Executing)
                     .with_groups(vec![
@@ -212,6 +224,30 @@ impl WorkflowSchema {
                             .with_icon("RefreshCw")
                             .with_accent_color("hsl(var(--warning))")
                             .locked(), // System-managed (agent revising)
+                        StateGroup::new(
+                            "qa_refining",
+                            "QA Refining",
+                            vec![InternalStatus::QaRefining],
+                        )
+                        .locked(),
+                        StateGroup::new(
+                            "qa_testing",
+                            "QA Testing",
+                            vec![InternalStatus::QaTesting],
+                        )
+                        .locked(),
+                        StateGroup::new("qa_passed", "QA Passed", vec![InternalStatus::QaPassed])
+                            .locked(),
+                        StateGroup::new(
+                            "updating_branch",
+                            "Updating Branch",
+                            vec![
+                                InternalStatus::UpdatingPlanBranch,
+                                InternalStatus::UpdatingTaskBranch,
+                            ],
+                        )
+                        .with_icon("GitBranch")
+                        .locked(),
                     ]),
                 WorkflowColumn::new("in_review", "In Review", InternalStatus::PendingReview)
                     .with_groups(vec![

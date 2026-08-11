@@ -1,4 +1,7 @@
 use super::*;
+use crate::domain::entities::app_state::{ExecutionHaltMode, UpdateChannel};
+use crate::domain::entities::ProjectId;
+use crate::domain::repositories::AppStateRepository;
 
 #[tokio::test]
 async fn test_get_default_app_state() {
@@ -7,7 +10,41 @@ async fn test_get_default_app_state() {
     let settings = repo.get().await.unwrap();
     assert!(settings.active_project_id.is_none());
     assert_eq!(settings.execution_halt_mode, ExecutionHaltMode::Running);
+    assert_eq!(settings.update_channel, UpdateChannel::Stable);
     assert!(settings.last_seen_release_notes_version.is_none());
+    assert!(settings.remove_inherited_github_cli_tokens);
+}
+
+#[tokio::test]
+async fn update_channel_updates_for_both_supported_values() {
+    let repo = MemoryAppStateRepository::new();
+
+    repo.set_update_channel(UpdateChannel::Nightly)
+        .await
+        .unwrap();
+    assert_eq!(
+        repo.get().await.unwrap().update_channel,
+        UpdateChannel::Nightly
+    );
+
+    repo.set_update_channel(UpdateChannel::Stable)
+        .await
+        .unwrap();
+    assert_eq!(
+        repo.get().await.unwrap().update_channel,
+        UpdateChannel::Stable
+    );
+}
+
+#[tokio::test]
+async fn github_cli_token_environment_preference_updates() {
+    let repo = MemoryAppStateRepository::new();
+
+    repo.set_remove_inherited_github_cli_tokens(false)
+        .await
+        .unwrap();
+
+    assert!(!repo.get().await.unwrap().remove_inherited_github_cli_tokens);
 }
 
 #[tokio::test]

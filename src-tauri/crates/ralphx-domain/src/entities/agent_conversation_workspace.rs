@@ -16,8 +16,12 @@ pub enum AgentConversationWorkspaceMode {
     Chat,
     Edit,
     Plan,
+    Tasks,
+    Autopilot,
     Ideation,
     ReviewPr,
+    Automation,
+    PersonaBuilder,
 }
 
 impl std::fmt::Display for AgentConversationWorkspaceMode {
@@ -26,8 +30,12 @@ impl std::fmt::Display for AgentConversationWorkspaceMode {
             AgentConversationWorkspaceMode::Chat => write!(f, "chat"),
             AgentConversationWorkspaceMode::Edit => write!(f, "edit"),
             AgentConversationWorkspaceMode::Plan => write!(f, "plan"),
+            AgentConversationWorkspaceMode::Tasks => write!(f, "tasks"),
+            AgentConversationWorkspaceMode::Autopilot => write!(f, "autopilot"),
             AgentConversationWorkspaceMode::Ideation => write!(f, "ideation"),
             AgentConversationWorkspaceMode::ReviewPr => write!(f, "review_pr"),
+            AgentConversationWorkspaceMode::Automation => write!(f, "automation"),
+            AgentConversationWorkspaceMode::PersonaBuilder => write!(f, "persona_builder"),
         }
     }
 }
@@ -40,8 +48,12 @@ impl FromStr for AgentConversationWorkspaceMode {
             "chat" => Ok(Self::Chat),
             "edit" => Ok(Self::Edit),
             "plan" => Ok(Self::Plan),
+            "tasks" => Ok(Self::Tasks),
+            "autopilot" => Ok(Self::Autopilot),
             "ideation" => Ok(Self::Ideation),
             "review_pr" => Ok(Self::ReviewPr),
+            "automation" => Ok(Self::Automation),
+            "persona_builder" => Ok(Self::PersonaBuilder),
             _ => Err(format!(
                 "unknown agent conversation workspace mode: '{value}'"
             )),
@@ -91,6 +103,7 @@ pub enum AgentWorkspacePrReviewMonitorStatus {
     Watching,
     Submitting,
     Blocked,
+    Paused,
     Terminal,
 }
 
@@ -101,6 +114,45 @@ pub enum AgentWorkspaceReviewMonitorStatus {
     Reviewing,
     Ready,
     Blocked,
+}
+
+pub const WORKSPACE_REVIEW_FIXER_STATUS_ROUTING: &str = "routing";
+pub const WORKSPACE_REVIEW_FIXER_STATUS_QUEUED: &str = "queued";
+pub const WORKSPACE_REVIEW_FIXER_STATUS_RUNNING: &str = "running";
+pub const WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED: &str = "cycle_capped";
+
+pub fn workspace_review_fixer_status_is_active(status: Option<&str>) -> bool {
+    matches!(
+        status,
+        Some(
+            WORKSPACE_REVIEW_FIXER_STATUS_ROUTING
+                | WORKSPACE_REVIEW_FIXER_STATUS_QUEUED
+                | WORKSPACE_REVIEW_FIXER_STATUS_RUNNING
+        )
+    )
+}
+
+/// Response-only classification of whether the current runtime owns Review mutations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentWorkspaceReviewRuntimeState {
+    ActiveOwned,
+    Terminal,
+    MissingRuntimeIdentity,
+    MalformedRuntimeIdentity,
+    StaleRuntime,
+}
+
+impl std::fmt::Display for AgentWorkspaceReviewRuntimeState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ActiveOwned => write!(f, "active_owned"),
+            Self::Terminal => write!(f, "terminal"),
+            Self::MissingRuntimeIdentity => write!(f, "missing_runtime_identity"),
+            Self::MalformedRuntimeIdentity => write!(f, "malformed_runtime_identity"),
+            Self::StaleRuntime => write!(f, "stale_runtime"),
+        }
+    }
 }
 
 impl std::fmt::Display for AgentWorkspaceReviewMonitorStatus {
@@ -128,6 +180,57 @@ impl FromStr for AgentWorkspaceReviewMonitorStatus {
             )),
         }
     }
+}
+
+/// Durable GitHub auto-merge state owned by an authoritative workspace Review.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentWorkspaceReviewAutoMergeGuardStatus {
+    Pausing,
+    PausedForReview,
+    AwaitingPublish,
+    Restoring,
+    RestoreFailed,
+}
+
+impl std::fmt::Display for AgentWorkspaceReviewAutoMergeGuardStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Pausing => write!(f, "pausing"),
+            Self::PausedForReview => write!(f, "paused_for_review"),
+            Self::AwaitingPublish => write!(f, "awaiting_publish"),
+            Self::Restoring => write!(f, "restoring"),
+            Self::RestoreFailed => write!(f, "restore_failed"),
+        }
+    }
+}
+
+impl FromStr for AgentWorkspaceReviewAutoMergeGuardStatus {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "pausing" => Ok(Self::Pausing),
+            "paused_for_review" => Ok(Self::PausedForReview),
+            "awaiting_publish" => Ok(Self::AwaitingPublish),
+            "restoring" => Ok(Self::Restoring),
+            "restore_failed" => Ok(Self::RestoreFailed),
+            _ => Err(format!(
+                "unknown workspace review auto-merge guard status: '{value}'"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentWorkspaceReviewAutoMergeGuard {
+    pub status: AgentWorkspaceReviewAutoMergeGuardStatus,
+    pub pr_number: i64,
+    pub merge_method: String,
+    pub target_scope: AgentWorkspaceReviewTargetScope,
+    pub diff_fingerprint: String,
+    pub head_sha: Option<String>,
+    pub last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -268,6 +371,7 @@ impl std::fmt::Display for AgentWorkspacePrReviewMonitorStatus {
             Self::Watching => write!(f, "watching"),
             Self::Submitting => write!(f, "submitting"),
             Self::Blocked => write!(f, "blocked"),
+            Self::Paused => write!(f, "paused"),
             Self::Terminal => write!(f, "terminal"),
         }
     }
@@ -284,6 +388,7 @@ impl FromStr for AgentWorkspacePrReviewMonitorStatus {
             "watching" => Ok(Self::Watching),
             "submitting" => Ok(Self::Submitting),
             "blocked" => Ok(Self::Blocked),
+            "paused" => Ok(Self::Paused),
             "terminal" => Ok(Self::Terminal),
             _ => Err(format!("unknown PR review monitor status: '{value}'")),
         }
@@ -330,6 +435,7 @@ pub enum AgentWorkspacePrReviewActionStatus {
     Submitting,
     Submitted,
     Failed,
+    Superseded,
 }
 
 impl std::fmt::Display for AgentWorkspacePrReviewActionStatus {
@@ -341,6 +447,7 @@ impl std::fmt::Display for AgentWorkspacePrReviewActionStatus {
             Self::Submitting => write!(f, "submitting"),
             Self::Submitted => write!(f, "submitted"),
             Self::Failed => write!(f, "failed"),
+            Self::Superseded => write!(f, "superseded"),
         }
     }
 }
@@ -356,6 +463,7 @@ impl FromStr for AgentWorkspacePrReviewActionStatus {
             "submitting" => Ok(Self::Submitting),
             "submitted" => Ok(Self::Submitted),
             "failed" => Ok(Self::Failed),
+            "superseded" => Ok(Self::Superseded),
             _ => Err(format!("unknown PR review action status: '{value}'")),
         }
     }
@@ -423,7 +531,9 @@ pub struct AgentWorkspacePrReviewMonitor {
     pub pr_number: i64,
     pub status: AgentWorkspacePrReviewMonitorStatus,
     pub monitor_enabled: bool,
+    pub auto_approve_enabled: bool,
     pub first_review_completed: bool,
+    pub first_action_resolved: bool,
     pub last_seen_head_sha: Option<String>,
     pub last_reviewed_head_sha: Option<String>,
     pub last_review_run_id: Option<String>,
@@ -451,8 +561,17 @@ pub struct AgentWorkspaceReviewMonitor {
     pub review_artifact_id: Option<ArtifactId>,
     pub review_artifact_version: Option<u32>,
     pub review_artifact_updated_at: Option<DateTime<Utc>>,
+    pub review_requested_changes_artifact_id: Option<ArtifactId>,
+    pub review_requested_changes_artifact_version: Option<u32>,
+    pub review_requested_changes_artifact_updated_at: Option<DateTime<Utc>>,
+    pub review_gate_bypassed_at: Option<DateTime<Utc>>,
+    pub review_gate_bypassed_target_scope: Option<AgentWorkspaceReviewTargetScope>,
+    pub review_gate_bypassed_diff_fingerprint: Option<String>,
+    pub review_gate_bypassed_artifact_id: Option<ArtifactId>,
+    pub review_gate_bypassed_artifact_version: Option<u32>,
     pub reviewed_head_sha: Option<String>,
     pub reviewed_diff_fingerprint: Option<String>,
+    pub reviewed_plan_context_fingerprint: Option<String>,
     pub selected_source_base_ref: Option<String>,
     pub selected_source_base_sha: Option<String>,
     pub selected_source_head_ref: Option<String>,
@@ -463,14 +582,21 @@ pub struct AgentWorkspaceReviewMonitor {
     pub workspace_head_ref: Option<String>,
     pub workspace_head_sha: Option<String>,
     pub current_diff_fingerprint: Option<String>,
+    pub current_plan_context_fingerprint: Option<String>,
     pub previous_version_id: Option<ArtifactId>,
+    pub review_requested_changes_previous_version_id: Option<ArtifactId>,
     pub review_blocking_summary: Option<String>,
     pub review_blocking_fingerprint: Option<String>,
     pub review_fixer_run_id: Option<String>,
     pub review_fixer_conversation_id: Option<ChatConversationId>,
     pub review_fixer_status: Option<String>,
+    /// Backend-owned identity for the exact blocker repair reservation.
+    pub review_fixer_attempt_id: Option<String>,
+    /// Number of automatic or manual workspace Review fixer attempts since the last clean gate.
+    pub review_fixer_cycle_count: i64,
     pub last_run_id: Option<String>,
     pub last_error: Option<String>,
+    pub auto_merge_guard: Option<AgentWorkspaceReviewAutoMergeGuard>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -490,8 +616,17 @@ impl AgentWorkspaceReviewMonitor {
             review_artifact_id: None,
             review_artifact_version: None,
             review_artifact_updated_at: None,
+            review_requested_changes_artifact_id: None,
+            review_requested_changes_artifact_version: None,
+            review_requested_changes_artifact_updated_at: None,
+            review_gate_bypassed_at: None,
+            review_gate_bypassed_target_scope: None,
+            review_gate_bypassed_diff_fingerprint: None,
+            review_gate_bypassed_artifact_id: None,
+            review_gate_bypassed_artifact_version: None,
             reviewed_head_sha: None,
             reviewed_diff_fingerprint: None,
+            reviewed_plan_context_fingerprint: None,
             selected_source_base_ref: None,
             selected_source_base_sha: None,
             selected_source_head_ref: None,
@@ -502,14 +637,19 @@ impl AgentWorkspaceReviewMonitor {
             workspace_head_ref: None,
             workspace_head_sha: None,
             current_diff_fingerprint: None,
+            current_plan_context_fingerprint: None,
             previous_version_id: None,
+            review_requested_changes_previous_version_id: None,
             review_blocking_summary: None,
             review_blocking_fingerprint: None,
             review_fixer_run_id: None,
             review_fixer_conversation_id: None,
             review_fixer_status: None,
+            review_fixer_attempt_id: None,
+            review_fixer_cycle_count: 0,
             last_run_id: None,
             last_error: None,
+            auto_merge_guard: None,
             created_at: now,
             updated_at: now,
         }
@@ -517,6 +657,13 @@ impl AgentWorkspaceReviewMonitor {
 }
 
 impl AgentWorkspaceReviewMonitor {
+    pub fn has_review_artifact_pair(&self) -> bool {
+        self.review_artifact_id.is_some()
+            && self.review_artifact_version.is_some()
+            && self.review_requested_changes_artifact_id.is_some()
+            && self.review_requested_changes_artifact_version.is_some()
+    }
+
     pub fn is_current_for_target(
         &self,
         target_scope: AgentWorkspaceReviewTargetScope,
@@ -525,6 +672,7 @@ impl AgentWorkspaceReviewMonitor {
     ) -> bool {
         if self.reviewed_target_scope != Some(target_scope)
             || self.reviewed_diff_fingerprint.as_deref() != Some(diff_fingerprint)
+            || self.reviewed_plan_context_fingerprint != self.current_plan_context_fingerprint
         {
             return false;
         }
@@ -545,7 +693,133 @@ impl AgentWorkspaceReviewMonitor {
     ) -> bool {
         self.review_outcome == AgentWorkspaceReviewOutcome::Passed
             && self.is_current_for_target(target_scope, head_sha, diff_fingerprint)
-            && self.review_artifact_id.is_some()
+            && self.has_review_artifact_pair()
+    }
+
+    pub fn has_current_review_bypass_for_target(
+        &self,
+        target_scope: AgentWorkspaceReviewTargetScope,
+        head_sha: Option<&str>,
+        diff_fingerprint: &str,
+    ) -> bool {
+        self.status == AgentWorkspaceReviewMonitorStatus::Ready
+            && self.review_outcome == AgentWorkspaceReviewOutcome::Blocking
+            && self.review_gate_bypassed_at.is_some()
+            && self.review_gate_bypassed_target_scope == Some(target_scope)
+            && self.review_gate_bypassed_diff_fingerprint.as_deref() == Some(diff_fingerprint)
+            && self.review_gate_bypassed_artifact_id == self.review_artifact_id
+            && self.review_gate_bypassed_artifact_version == self.review_artifact_version
+            && self.has_review_artifact_pair()
+            && self.is_current_for_target(target_scope, head_sha, diff_fingerprint)
+    }
+
+    pub fn has_current_review_publish_authorization_for_target(
+        &self,
+        target_scope: AgentWorkspaceReviewTargetScope,
+        head_sha: Option<&str>,
+        diff_fingerprint: &str,
+    ) -> bool {
+        self.has_current_passing_review_for_target(target_scope, head_sha, diff_fingerprint)
+            || self.has_current_review_bypass_for_target(target_scope, head_sha, diff_fingerprint)
+    }
+
+    pub fn clear_review_gate_bypass(&mut self) {
+        self.review_gate_bypassed_at = None;
+        self.review_gate_bypassed_target_scope = None;
+        self.review_gate_bypassed_diff_fingerprint = None;
+        self.review_gate_bypassed_artifact_id = None;
+        self.review_gate_bypassed_artifact_version = None;
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentWorkspaceReviewApprovalSnapshot {
+    pub target_scope: AgentWorkspaceReviewTargetScope,
+    pub diff_fingerprint: String,
+    pub artifact_id: ArtifactId,
+    pub artifact_version: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentWorkspaceReviewFixerSnapshot {
+    pub target_scope: AgentWorkspaceReviewTargetScope,
+    pub diff_fingerprint: String,
+    pub artifact_id: ArtifactId,
+    pub artifact_version: u32,
+    pub requested_changes_artifact_id: ArtifactId,
+    pub requested_changes_artifact_version: u32,
+    pub blocking_fingerprint: String,
+    pub plan_context_fingerprint: Option<String>,
+}
+
+impl AgentWorkspaceReviewFixerSnapshot {
+    pub fn from_monitor(monitor: &AgentWorkspaceReviewMonitor) -> Option<Self> {
+        let target_scope = monitor.current_target_scope?;
+        if monitor.reviewed_target_scope != Some(target_scope) {
+            return None;
+        }
+        let diff_fingerprint = monitor
+            .current_diff_fingerprint
+            .clone()
+            .filter(|value| !value.trim().is_empty())?;
+        if monitor.reviewed_diff_fingerprint.as_deref() != Some(diff_fingerprint.as_str()) {
+            return None;
+        }
+        if monitor.reviewed_plan_context_fingerprint != monitor.current_plan_context_fingerprint {
+            return None;
+        }
+        let artifact_id = monitor
+            .review_artifact_id
+            .clone()
+            .filter(|value| !value.as_str().trim().is_empty())?;
+        let artifact_version = monitor
+            .review_artifact_version
+            .filter(|version| *version > 0)?;
+        let requested_changes_artifact_id = monitor
+            .review_requested_changes_artifact_id
+            .clone()
+            .filter(|value| !value.as_str().trim().is_empty())?;
+        let requested_changes_artifact_version = monitor
+            .review_requested_changes_artifact_version
+            .filter(|version| *version > 0)?;
+        let blocking_fingerprint = monitor
+            .review_blocking_fingerprint
+            .clone()
+            .filter(|value| !value.trim().is_empty())?;
+        Some(Self {
+            target_scope,
+            diff_fingerprint,
+            artifact_id,
+            artifact_version,
+            requested_changes_artifact_id,
+            requested_changes_artifact_version,
+            blocking_fingerprint,
+            plan_context_fingerprint: monitor.current_plan_context_fingerprint.clone(),
+        })
+    }
+}
+
+impl AgentWorkspaceReviewApprovalSnapshot {
+    pub fn audit_event(
+        &self,
+        conversation_id: ChatConversationId,
+        approved_at: DateTime<Utc>,
+    ) -> AgentConversationWorkspacePublicationEvent {
+        let mut event = AgentConversationWorkspacePublicationEvent::new(
+            conversation_id,
+            "workspace_review_approved_anyway",
+            "succeeded",
+            format!(
+                "Human approved blocking Workspace Review artifact {} v{} for {} at diff {}.",
+                self.artifact_id.as_str(),
+                self.artifact_version,
+                self.target_scope,
+                self.diff_fingerprint
+            ),
+            Some("workspace_review_approved_anyway".to_string()),
+        );
+        event.created_at = approved_at;
+        event
     }
 }
 
@@ -563,7 +837,9 @@ impl AgentWorkspacePrReviewMonitor {
             pr_number,
             status: AgentWorkspacePrReviewMonitorStatus::Idle,
             monitor_enabled: false,
+            auto_approve_enabled: true,
             first_review_completed: false,
+            first_action_resolved: false,
             last_seen_head_sha: head_sha,
             last_reviewed_head_sha: None,
             last_review_run_id: None,
@@ -576,6 +852,32 @@ impl AgentWorkspacePrReviewMonitor {
             last_error: None,
             created_at: now,
             updated_at: now,
+        }
+    }
+
+    pub fn can_auto_approve(&self, action: &AgentWorkspacePrReviewAction) -> bool {
+        self.auto_approve_enabled
+            && self.first_action_resolved
+            && action.proposed_action == AgentWorkspacePrReviewActionKind::Approve
+            && action.status == AgentWorkspacePrReviewActionStatus::Pending
+            && action.created_by_run_id.is_some()
+            && self.last_review_run_id == action.created_by_run_id
+            && self.review_artifact_id.is_some()
+            && self.review_artifact_head_sha.as_deref() == Some(action.head_sha.as_str())
+    }
+
+    pub fn settlement_status(&self) -> AgentWorkspacePrReviewMonitorStatus {
+        if self.status == AgentWorkspacePrReviewMonitorStatus::Terminal {
+            return AgentWorkspacePrReviewMonitorStatus::Terminal;
+        }
+        if self.monitor_enabled {
+            if self.last_error.is_some() {
+                AgentWorkspacePrReviewMonitorStatus::Blocked
+            } else {
+                AgentWorkspacePrReviewMonitorStatus::Watching
+            }
+        } else {
+            AgentWorkspacePrReviewMonitorStatus::Paused
         }
     }
 }
@@ -642,23 +944,38 @@ pub struct AgentConversationWorkspace {
     pub branch_name: String,
     pub worktree_path: String,
     pub linked_ideation_session_id: Option<IdeationSessionId>,
+    pub task_pipeline_session_id: Option<IdeationSessionId>,
     pub linked_plan_branch_id: Option<PlanBranchId>,
     pub source_pull_request: Option<AgentWorkspaceSourcePullRequest>,
     pub publication_pr_number: Option<i64>,
     pub publication_pr_url: Option<String>,
     pub publication_pr_status: Option<String>,
     pub publication_push_status: Option<String>,
+    /// Durable publication authority. Legacy rows have no owner and use the timestamp fallback.
+    pub publish_lease_owner_run_id: Option<String>,
+    pub publish_lease_token: Option<String>,
+    pub publish_lease_heartbeat_at: Option<DateTime<Utc>>,
+    pub publication_metadata_phase: Option<AgentWorkspacePublicationMetadataPhase>,
+    pub publication_metadata_state: Option<AgentWorkspacePublicationMetadataState>,
+    pub publication_metadata_attempt_id: Option<String>,
     pub auto_publish_enabled: bool,
     pub auto_publish_initial_pr_enabled: bool,
     pub auto_publish_paused_pr_autofix_enabled: Option<bool>,
     pub auto_publish_paused_pr_auto_merge_desired: Option<bool>,
     pub pr_autofix_enabled: bool,
+    /// Per-workspace automation choice: None inherits global Review settings.
+    pub review_automation_override: Option<bool>,
     pub pr_auto_merge_desired: bool,
     pub pr_auto_merge_method: String,
     pub pr_auto_merge_current: Option<bool>,
     pub pr_supervision_status: Option<String>,
     pub pr_supervision_summary: Option<String>,
     pub pr_supervision_updated_at: Option<DateTime<Utc>>,
+    /// The failure identity the most recent PR autofix streak exhausted itself against. Repair
+    /// attempts are per-streak, so without this the next streak has no memory of what already
+    /// failed and re-spends agents on identical evidence.
+    pub last_blocked_pr_health_fingerprint: Option<String>,
+    pub last_blocked_pr_health_at: Option<DateTime<Utc>>,
     pub status: AgentConversationWorkspaceStatus,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -689,23 +1006,33 @@ impl AgentConversationWorkspace {
             branch_name,
             worktree_path,
             linked_ideation_session_id: None,
+            task_pipeline_session_id: None,
             linked_plan_branch_id: None,
             source_pull_request: None,
             publication_pr_number: None,
             publication_pr_url: None,
             publication_pr_status: None,
             publication_push_status: None,
+            publish_lease_owner_run_id: None,
+            publish_lease_token: None,
+            publish_lease_heartbeat_at: None,
+            publication_metadata_phase: None,
+            publication_metadata_state: None,
+            publication_metadata_attempt_id: None,
             auto_publish_enabled: true,
             auto_publish_initial_pr_enabled: false,
             auto_publish_paused_pr_autofix_enabled: None,
             auto_publish_paused_pr_auto_merge_desired: None,
             pr_autofix_enabled: false,
+            review_automation_override: None,
             pr_auto_merge_desired: false,
             pr_auto_merge_method: DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD.to_string(),
             pr_auto_merge_current: None,
             pr_supervision_status: None,
             pr_supervision_summary: None,
             pr_supervision_updated_at: None,
+            last_blocked_pr_health_fingerprint: None,
+            last_blocked_pr_health_at: None,
             status: AgentConversationWorkspaceStatus::Active,
             created_at: now,
             updated_at: now,
@@ -714,6 +1041,24 @@ impl AgentConversationWorkspace {
 
     pub fn is_execution_owned(&self) -> bool {
         self.linked_plan_branch_id.is_some()
+    }
+
+    /// Whether this active workspace owns a publication PR mutation surface.
+    ///
+    /// Keep this positive and shape-aware: direct Edit workspaces and linked
+    /// Ideation workspaces are the only established owned-PR mutation modes.
+    pub fn allows_owned_pr_mutation(&self) -> bool {
+        if self.status != AgentConversationWorkspaceStatus::Active {
+            return false;
+        }
+
+        match self.mode {
+            AgentConversationWorkspaceMode::Edit => self.linked_plan_branch_id.is_none(),
+            AgentConversationWorkspaceMode::Ideation => {
+                self.linked_plan_branch_id.is_some() && self.linked_ideation_session_id.is_some()
+            }
+            _ => false,
+        }
     }
 
     pub fn has_terminal_publication_pr_status(&self) -> bool {
@@ -748,7 +1093,114 @@ pub fn is_pr_status_pollable_push_status(status: Option<&str>) -> bool {
     matches!(status, None | Some("pushed" | "refreshed"))
 }
 
+/// Whether a workspace publication workflow is actively mutating its branch.
+pub fn is_publication_push_active(status: Option<&str>) -> bool {
+    matches!(
+        status,
+        Some("checking" | "committing" | "refreshing" | "describing" | "pushing")
+    )
+}
+
 pub const DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD: &str = "squash";
+
+/// Durable stage for an existing-PR metadata publication receipt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentWorkspacePublicationMetadataPhase {
+    Prepared,
+    Mutating,
+    Reconciling,
+    Settled,
+}
+
+impl std::fmt::Display for AgentWorkspacePublicationMetadataPhase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Prepared => write!(f, "prepared"),
+            Self::Mutating => write!(f, "mutating"),
+            Self::Reconciling => write!(f, "reconciling"),
+            Self::Settled => write!(f, "settled"),
+        }
+    }
+}
+
+impl FromStr for AgentWorkspacePublicationMetadataPhase {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "prepared" => Ok(Self::Prepared),
+            "mutating" => Ok(Self::Mutating),
+            "reconciling" => Ok(Self::Reconciling),
+            "settled" => Ok(Self::Settled),
+            _ => Err(format!(
+                "unknown workspace publication metadata phase: '{value}'"
+            )),
+        }
+    }
+}
+
+/// Durable outcome for an existing-PR metadata publication receipt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentWorkspacePublicationMetadataState {
+    NotAttempted,
+    Applied,
+    NotApplied,
+    Unknown,
+    Reconciled,
+    Conflicted,
+}
+
+impl std::fmt::Display for AgentWorkspacePublicationMetadataState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotAttempted => write!(f, "not_attempted"),
+            Self::Applied => write!(f, "applied"),
+            Self::NotApplied => write!(f, "not_applied"),
+            Self::Unknown => write!(f, "unknown"),
+            Self::Reconciled => write!(f, "reconciled"),
+            Self::Conflicted => write!(f, "conflicted"),
+        }
+    }
+}
+
+impl FromStr for AgentWorkspacePublicationMetadataState {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "not_attempted" => Ok(Self::NotAttempted),
+            "applied" => Ok(Self::Applied),
+            "not_applied" => Ok(Self::NotApplied),
+            "unknown" => Ok(Self::Unknown),
+            "reconciled" => Ok(Self::Reconciled),
+            "conflicted" => Ok(Self::Conflicted),
+            _ => Err(format!(
+                "unknown workspace publication metadata state: '{value}'"
+            )),
+        }
+    }
+}
+
+/// Durable, non-secret authority used to recover an existing-PR metadata mutation.
+///
+/// The selected title/body decision is persisted separately because its existing columns are
+/// intentionally shared with the publication workflow; this receipt keeps fingerprints only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentWorkspacePublicationMetadataReceipt {
+    pub attempt_id: String,
+    pub phase: AgentWorkspacePublicationMetadataPhase,
+    pub state: AgentWorkspacePublicationMetadataState,
+    pub target_pr_number: i64,
+    pub before_authority_sha256: String,
+    pub before_title_sha256: String,
+    pub before_editable_body_sha256: String,
+    pub before_managed_suffix_sha256: Option<String>,
+    pub intended_title_sha256: Option<String>,
+    pub intended_editable_body_sha256: Option<String>,
+    pub updated_at: DateTime<Utc>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentConversationWorkspacePublicationEvent {
@@ -758,6 +1210,8 @@ pub struct AgentConversationWorkspacePublicationEvent {
     pub status: String,
     pub summary: String,
     pub classification: Option<String>,
+    /// Backend-owned receipt identity. `None` keeps pre-receipt events readable.
+    pub attempt_id: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -866,553 +1320,6 @@ impl AgentWorkspacePrDescription {
     }
 }
 
-#[cfg(test)]
-mod pr_comment_evidence_tests {
-    use super::{pr_comment_body_excerpt, pr_comment_body_sha256};
-
-    #[test]
-    fn pr_comment_body_excerpt_respects_tiny_limits() {
-        assert_eq!(pr_comment_body_excerpt("abcdef", 0), "");
-        assert_eq!(pr_comment_body_excerpt("abcdef", 2), "..");
-        assert_eq!(pr_comment_body_excerpt("abcdef", 3), "...");
-        assert_eq!(pr_comment_body_excerpt("abcdef", 5), "ab...");
-        assert_eq!(pr_comment_body_excerpt("abcdef", 6), "abcdef");
-    }
-
-    #[test]
-    fn pr_comment_body_sha256_is_stable() {
-        assert_eq!(
-            pr_comment_body_sha256("coverage"),
-            pr_comment_body_sha256("coverage")
-        );
-        assert_ne!(
-            pr_comment_body_sha256("coverage"),
-            pr_comment_body_sha256("different")
-        );
-    }
-}
-
-#[cfg(test)]
-mod publication_status_helpers_tests {
-    use super::{
-        is_pr_status_pollable_push_status, is_terminal_publication_pr_status,
-        AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversationId,
-        IdeationAnalysisBaseRefKind, PlanBranchId, ProjectId,
-    };
-
-    fn workspace() -> AgentConversationWorkspace {
-        AgentConversationWorkspace::new(
-            ChatConversationId::new(),
-            ProjectId("project-1".to_string()),
-            AgentConversationWorkspaceMode::Edit,
-            IdeationAnalysisBaseRefKind::ProjectDefault,
-            "main".to_string(),
-            None,
-            None,
-            "feature/branch".to_string(),
-            "/tmp/worktree".to_string(),
-        )
-    }
-
-    #[test]
-    fn terminal_publication_pr_status_matches_merged_and_closed_only() {
-        assert!(is_terminal_publication_pr_status(Some("merged")));
-        assert!(is_terminal_publication_pr_status(Some("closed")));
-        assert!(!is_terminal_publication_pr_status(Some("open")));
-        assert!(!is_terminal_publication_pr_status(Some("draft")));
-        assert!(!is_terminal_publication_pr_status(None));
-    }
-
-    #[test]
-    fn pr_status_pollable_push_status_matches_none_pushed_and_refreshed() {
-        assert!(is_pr_status_pollable_push_status(None));
-        assert!(is_pr_status_pollable_push_status(Some("pushed")));
-        assert!(is_pr_status_pollable_push_status(Some("refreshed")));
-        assert!(!is_pr_status_pollable_push_status(Some("pending")));
-        assert!(!is_pr_status_pollable_push_status(Some("failed")));
-    }
-
-    #[test]
-    fn has_terminal_publication_pr_status_delegates() {
-        let mut ws = workspace();
-        ws.publication_pr_status = Some("merged".to_string());
-        assert!(ws.has_terminal_publication_pr_status());
-        ws.publication_pr_status = Some("open".to_string());
-        assert!(!ws.has_terminal_publication_pr_status());
-        ws.publication_pr_status = None;
-        assert!(!ws.has_terminal_publication_pr_status());
-    }
-
-    #[test]
-    fn has_pr_status_pollable_push_status_delegates() {
-        let mut ws = workspace();
-        ws.publication_push_status = None;
-        assert!(ws.has_pr_status_pollable_push_status());
-        ws.publication_push_status = Some("pushed".to_string());
-        assert!(ws.has_pr_status_pollable_push_status());
-        ws.publication_push_status = Some("failed".to_string());
-        assert!(!ws.has_pr_status_pollable_push_status());
-    }
-
-    #[test]
-    fn is_execution_owned_tracks_linked_plan_branch() {
-        let mut ws = workspace();
-        assert!(!ws.is_execution_owned());
-        ws.linked_plan_branch_id = Some(PlanBranchId::new());
-        assert!(ws.is_execution_owned());
-    }
-
-    #[test]
-    fn new_workspace_uses_default_auto_merge_method_and_active_status() {
-        let ws = workspace();
-        assert_eq!(
-            ws.pr_auto_merge_method,
-            super::super::DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD
-        );
-        assert_eq!(
-            ws.status,
-            super::super::AgentConversationWorkspaceStatus::Active
-        );
-        assert!(ws.auto_publish_enabled);
-        assert!(!ws.auto_publish_initial_pr_enabled);
-    }
-}
-
-#[cfg(test)]
-mod pr_description_tests {
-    use super::AgentWorkspacePrDescription;
-
-    #[test]
-    fn new_trims_title_and_drops_blank() {
-        let desc = AgentWorkspacePrDescription::new(
-            Some("  My PR title  ".to_string()),
-            "body".to_string(),
-        );
-        assert_eq!(desc.title.as_deref(), Some("My PR title"));
-        assert_eq!(desc.body_markdown, "body");
-    }
-
-    #[test]
-    fn new_drops_blank_or_absent_title() {
-        assert!(
-            AgentWorkspacePrDescription::new(Some("   ".to_string()), "b".to_string())
-                .title
-                .is_none()
-        );
-        assert!(AgentWorkspacePrDescription::new(None, "b".to_string())
-            .title
-            .is_none());
-    }
-}
-
-#[cfg(test)]
-mod monitor_and_action_constructor_tests {
-    use super::{
-        AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
-        AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
-        AgentWorkspacePrReviewMonitorStatus, ChatConversationId, ProjectId,
-    };
-
-    #[test]
-    fn monitor_new_starts_idle_and_disabled() {
-        let monitor = AgentWorkspacePrReviewMonitor::new(
-            ChatConversationId::new(),
-            ProjectId("p".to_string()),
-            42,
-            Some("abc".to_string()),
-        );
-        assert_eq!(monitor.status, AgentWorkspacePrReviewMonitorStatus::Idle);
-        assert!(!monitor.monitor_enabled);
-        assert!(!monitor.first_review_completed);
-        assert_eq!(monitor.pr_number, 42);
-        assert_eq!(monitor.last_seen_head_sha.as_deref(), Some("abc"));
-        assert!(monitor.last_reviewed_head_sha.is_none());
-    }
-
-    #[test]
-    fn action_new_starts_pending_with_generated_id() {
-        let action = AgentWorkspacePrReviewAction::new(
-            ChatConversationId::new(),
-            7,
-            "head-sha".to_string(),
-            AgentWorkspacePrReviewActionKind::Approve,
-            "summary".to_string(),
-            "review body".to_string(),
-            Some("{}".to_string()),
-            Some("run-1".to_string()),
-        );
-        assert_eq!(action.status, AgentWorkspacePrReviewActionStatus::Pending);
-        assert!(!action.id.is_empty());
-        assert_eq!(
-            action.proposed_action,
-            AgentWorkspacePrReviewActionKind::Approve
-        );
-        assert_eq!(action.head_sha, "head-sha");
-        assert_eq!(action.created_by_run_id.as_deref(), Some("run-1"));
-        assert!(action.submitted_review_id.is_none());
-        assert!(action.resolved_at.is_none());
-    }
-}
-
-#[cfg(test)]
-mod enum_roundtrip_tests {
-    use super::{
-        AgentConversationWorkspaceBranchMode, AgentConversationWorkspaceMode,
-        AgentConversationWorkspaceStatus, AgentWorkspacePrReviewActionKind,
-        AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitorStatus,
-        AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitorStatus,
-        AgentWorkspaceReviewOutcome, AgentWorkspaceReviewTargetScope,
-    };
-    use std::str::FromStr;
-
-    #[test]
-    fn workspace_mode_display_and_from_str_roundtrip() {
-        for (variant, text) in [
-            (AgentConversationWorkspaceMode::Chat, "chat"),
-            (AgentConversationWorkspaceMode::Edit, "edit"),
-            (AgentConversationWorkspaceMode::Plan, "plan"),
-            (AgentConversationWorkspaceMode::Ideation, "ideation"),
-            (AgentConversationWorkspaceMode::ReviewPr, "review_pr"),
-        ] {
-            assert_eq!(variant.to_string(), text);
-            assert_eq!(
-                AgentConversationWorkspaceMode::from_str(text).unwrap(),
-                variant
-            );
-        }
-        assert!(AgentConversationWorkspaceMode::from_str("bogus").is_err());
-    }
-
-    #[test]
-    fn workspace_status_display_and_from_str_roundtrip() {
-        for (variant, text) in [
-            (AgentConversationWorkspaceStatus::Active, "active"),
-            (AgentConversationWorkspaceStatus::Archived, "archived"),
-            (AgentConversationWorkspaceStatus::Missing, "missing"),
-        ] {
-            assert_eq!(variant.to_string(), text);
-            assert_eq!(
-                AgentConversationWorkspaceStatus::from_str(text).unwrap(),
-                variant
-            );
-        }
-        assert!(AgentConversationWorkspaceStatus::from_str("bogus").is_err());
-    }
-
-    #[test]
-    fn workspace_branch_mode_display_and_from_str_roundtrip() {
-        for (variant, text) in [
-            (AgentConversationWorkspaceBranchMode::Isolated, "isolated"),
-            (AgentConversationWorkspaceBranchMode::Linked, "linked"),
-        ] {
-            assert_eq!(variant.to_string(), text);
-            assert_eq!(
-                AgentConversationWorkspaceBranchMode::from_str(text).unwrap(),
-                variant
-            );
-        }
-        assert_eq!(
-            AgentConversationWorkspaceBranchMode::default(),
-            AgentConversationWorkspaceBranchMode::Isolated
-        );
-        assert!(AgentConversationWorkspaceBranchMode::from_str("bogus").is_err());
-    }
-
-    #[test]
-    fn monitor_status_display_and_from_str_roundtrip() {
-        for (variant, text) in [
-            (AgentWorkspacePrReviewMonitorStatus::Idle, "idle"),
-            (AgentWorkspacePrReviewMonitorStatus::Reviewing, "reviewing"),
-            (
-                AgentWorkspacePrReviewMonitorStatus::AwaitingUser,
-                "awaiting_user",
-            ),
-            (AgentWorkspacePrReviewMonitorStatus::Watching, "watching"),
-            (
-                AgentWorkspacePrReviewMonitorStatus::Submitting,
-                "submitting",
-            ),
-            (AgentWorkspacePrReviewMonitorStatus::Blocked, "blocked"),
-            (AgentWorkspacePrReviewMonitorStatus::Terminal, "terminal"),
-        ] {
-            assert_eq!(variant.to_string(), text);
-            assert_eq!(
-                AgentWorkspacePrReviewMonitorStatus::from_str(text).unwrap(),
-                variant
-            );
-        }
-        assert!(AgentWorkspacePrReviewMonitorStatus::from_str("bogus").is_err());
-    }
-
-    #[test]
-    fn workspace_review_monitor_status_display_and_from_str_roundtrip() {
-        for (variant, text) in [
-            (AgentWorkspaceReviewMonitorStatus::Idle, "idle"),
-            (AgentWorkspaceReviewMonitorStatus::Reviewing, "reviewing"),
-            (AgentWorkspaceReviewMonitorStatus::Ready, "ready"),
-            (AgentWorkspaceReviewMonitorStatus::Blocked, "blocked"),
-        ] {
-            assert_eq!(variant.to_string(), text);
-            assert_eq!(
-                AgentWorkspaceReviewMonitorStatus::from_str(text).unwrap(),
-                variant
-            );
-        }
-        assert!(AgentWorkspaceReviewMonitorStatus::from_str("bogus").is_err());
-    }
-
-    #[test]
-    fn workspace_review_outcome_display_and_from_str_roundtrip() {
-        for (variant, text) in [
-            (AgentWorkspaceReviewOutcome::None, "none"),
-            (AgentWorkspaceReviewOutcome::Passed, "passed"),
-            (AgentWorkspaceReviewOutcome::Blocking, "blocking"),
-            (AgentWorkspaceReviewOutcome::NoChanges, "no_changes"),
-            (AgentWorkspaceReviewOutcome::RunFailed, "run_failed"),
-        ] {
-            assert_eq!(variant.to_string(), text);
-            assert_eq!(
-                AgentWorkspaceReviewOutcome::from_str(text).unwrap(),
-                variant
-            );
-        }
-        assert_eq!(
-            AgentWorkspaceReviewOutcome::from_str("reviewed").unwrap(),
-            AgentWorkspaceReviewOutcome::Passed
-        );
-        assert_eq!(
-            AgentWorkspaceReviewOutcome::from_str("blocked").unwrap(),
-            AgentWorkspaceReviewOutcome::RunFailed
-        );
-        assert!(AgentWorkspaceReviewOutcome::from_str("bogus").is_err());
-    }
-
-    #[test]
-    fn workspace_review_gate_status_display_and_from_str_roundtrip() {
-        for (variant, text) in [
-            (AgentWorkspaceReviewGateStatus::NotRequired, "not_required"),
-            (AgentWorkspaceReviewGateStatus::Required, "required"),
-            (AgentWorkspaceReviewGateStatus::Reviewing, "reviewing"),
-            (AgentWorkspaceReviewGateStatus::Passed, "passed"),
-            (AgentWorkspaceReviewGateStatus::Blocking, "blocking"),
-            (AgentWorkspaceReviewGateStatus::Failed, "failed"),
-        ] {
-            assert_eq!(variant.to_string(), text);
-            assert_eq!(
-                AgentWorkspaceReviewGateStatus::from_str(text).unwrap(),
-                variant
-            );
-        }
-        assert!(AgentWorkspaceReviewGateStatus::from_str("bogus").is_err());
-    }
-
-    #[test]
-    fn workspace_review_target_scope_display_and_from_str_roundtrip() {
-        for (variant, text) in [
-            (
-                AgentWorkspaceReviewTargetScope::SelectedSource,
-                "selected_source",
-            ),
-            (
-                AgentWorkspaceReviewTargetScope::WorkspaceDelta,
-                "workspace_delta",
-            ),
-        ] {
-            assert_eq!(variant.to_string(), text);
-            assert_eq!(
-                AgentWorkspaceReviewTargetScope::from_str(text).unwrap(),
-                variant
-            );
-        }
-        assert!(AgentWorkspaceReviewTargetScope::from_str("bogus").is_err());
-    }
-
-    #[test]
-    fn action_kind_display_and_from_str_roundtrip() {
-        for (variant, text) in [
-            (
-                AgentWorkspacePrReviewActionKind::RequestChanges,
-                "request_changes",
-            ),
-            (AgentWorkspacePrReviewActionKind::Approve, "approve"),
-            (AgentWorkspacePrReviewActionKind::Comment, "comment"),
-        ] {
-            assert_eq!(variant.to_string(), text);
-            assert_eq!(
-                AgentWorkspacePrReviewActionKind::from_str(text).unwrap(),
-                variant
-            );
-        }
-        assert!(AgentWorkspacePrReviewActionKind::from_str("bogus").is_err());
-    }
-
-    #[test]
-    fn action_status_display_and_from_str_roundtrip() {
-        for (variant, text) in [
-            (AgentWorkspacePrReviewActionStatus::Pending, "pending"),
-            (AgentWorkspacePrReviewActionStatus::Approved, "approved"),
-            (AgentWorkspacePrReviewActionStatus::Skipped, "skipped"),
-            (AgentWorkspacePrReviewActionStatus::Submitting, "submitting"),
-            (AgentWorkspacePrReviewActionStatus::Submitted, "submitted"),
-            (AgentWorkspacePrReviewActionStatus::Failed, "failed"),
-        ] {
-            assert_eq!(variant.to_string(), text);
-            assert_eq!(
-                AgentWorkspacePrReviewActionStatus::from_str(text).unwrap(),
-                variant
-            );
-        }
-        assert!(AgentWorkspacePrReviewActionStatus::from_str("bogus").is_err());
-    }
-}
-
-#[cfg(test)]
-mod workspace_review_monitor_tests {
-    use super::{
-        AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor,
-        AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
-        AgentWorkspaceReviewTargetScope, ArtifactId, ChatConversationId, ProjectId,
-    };
-
-    #[test]
-    fn workspace_review_monitor_defaults_and_currentness_are_explicit() {
-        let conversation_id = ChatConversationId::from_string("review-monitor-conversation");
-        let project_id = ProjectId::from_string("project-1".to_string());
-        let mut monitor = AgentWorkspaceReviewMonitor::new(conversation_id.clone(), project_id);
-
-        assert_eq!(monitor.conversation_id, conversation_id);
-        assert_eq!(monitor.status, AgentWorkspaceReviewMonitorStatus::Idle);
-        assert_eq!(monitor.review_outcome, AgentWorkspaceReviewOutcome::None);
-        assert_eq!(
-            monitor.review_gate_status,
-            AgentWorkspaceReviewGateStatus::NotRequired
-        );
-        assert!(monitor.current_target_scope.is_none());
-        assert!(monitor.review_conversation_id.is_none());
-        assert!(monitor.review_artifact_id.is_none());
-        assert!(!monitor.is_current_for_target(
-            AgentWorkspaceReviewTargetScope::WorkspaceDelta,
-            Some("head"),
-            "fingerprint"
-        ));
-
-        monitor.reviewed_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
-        monitor.reviewed_head_sha = Some("head".to_string());
-        monitor.reviewed_diff_fingerprint = Some("fingerprint".to_string());
-        monitor.review_artifact_id = Some(ArtifactId::from_string("artifact-1"));
-
-        assert!(monitor.is_current_for_target(
-            AgentWorkspaceReviewTargetScope::WorkspaceDelta,
-            Some("head"),
-            "fingerprint"
-        ));
-        assert!(!monitor.has_current_passing_review_for_target(
-            AgentWorkspaceReviewTargetScope::WorkspaceDelta,
-            Some("head"),
-            "fingerprint"
-        ));
-        monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
-        assert!(monitor.has_current_passing_review_for_target(
-            AgentWorkspaceReviewTargetScope::WorkspaceDelta,
-            Some("head"),
-            "fingerprint"
-        ));
-        assert!(monitor.is_current_for_target(
-            AgentWorkspaceReviewTargetScope::WorkspaceDelta,
-            Some("different-head"),
-            "fingerprint"
-        ));
-        assert!(monitor.has_current_passing_review_for_target(
-            AgentWorkspaceReviewTargetScope::WorkspaceDelta,
-            Some("different-head"),
-            "fingerprint"
-        ));
-        assert!(!monitor.is_current_for_target(
-            AgentWorkspaceReviewTargetScope::SelectedSource,
-            Some("head"),
-            "fingerprint"
-        ));
-        assert!(!monitor.is_current_for_target(
-            AgentWorkspaceReviewTargetScope::WorkspaceDelta,
-            Some("head"),
-            "different-fingerprint"
-        ));
-
-        monitor.reviewed_target_scope = Some(AgentWorkspaceReviewTargetScope::SelectedSource);
-        assert!(monitor.is_current_for_target(
-            AgentWorkspaceReviewTargetScope::SelectedSource,
-            Some("head"),
-            "fingerprint"
-        ));
-        assert!(!monitor.is_current_for_target(
-            AgentWorkspaceReviewTargetScope::SelectedSource,
-            Some("different-head"),
-            "fingerprint"
-        ));
-    }
-}
-
-#[cfg(test)]
-mod is_open_pr_tests {
-    use super::{
-        is_open_pr, AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversationId,
-        IdeationAnalysisBaseRefKind, ProjectId,
-    };
-
-    #[test]
-    fn no_pr_number_is_not_open() {
-        // No PR number → never open, regardless of status.
-        assert!(!is_open_pr(None, None));
-        assert!(!is_open_pr(None, Some("open")));
-        assert!(!is_open_pr(None, Some("draft")));
-    }
-
-    #[test]
-    fn terminal_status_is_not_open() {
-        assert!(!is_open_pr(Some(42), Some("merged")));
-        assert!(!is_open_pr(Some(42), Some("closed")));
-    }
-
-    #[test]
-    fn non_terminal_status_with_number_is_open() {
-        assert!(is_open_pr(Some(42), Some("draft")));
-        assert!(is_open_pr(Some(42), Some("open")));
-        // An unknown / not-yet-known status with a PR number is treated as open.
-        assert!(is_open_pr(Some(42), None));
-        assert!(is_open_pr(Some(42), Some("queued")));
-    }
-
-    fn workspace_with_pr(
-        publication_pr_number: Option<i64>,
-        publication_pr_status: Option<&str>,
-    ) -> AgentConversationWorkspace {
-        let mut workspace = AgentConversationWorkspace::new(
-            ChatConversationId::new(),
-            ProjectId("project-1".to_string()),
-            AgentConversationWorkspaceMode::Chat,
-            IdeationAnalysisBaseRefKind::ProjectDefault,
-            "main".to_string(),
-            None,
-            None,
-            "feature/branch".to_string(),
-            "/tmp/worktree".to_string(),
-        );
-        workspace.publication_pr_number = publication_pr_number;
-        workspace.publication_pr_status = publication_pr_status.map(str::to_string);
-        workspace
-    }
-
-    #[test]
-    fn has_open_pr_delegates_to_is_open_pr() {
-        assert!(!workspace_with_pr(None, None).has_open_pr());
-        assert!(!workspace_with_pr(Some(7), Some("merged")).has_open_pr());
-        assert!(!workspace_with_pr(Some(7), Some("closed")).has_open_pr());
-        assert!(workspace_with_pr(Some(7), Some("open")).has_open_pr());
-        assert!(workspace_with_pr(Some(7), Some("draft")).has_open_pr());
-        assert!(workspace_with_pr(Some(7), None).has_open_pr());
-    }
-}
-
 impl AgentConversationWorkspacePublicationEvent {
     pub fn new(
         conversation_id: ChatConversationId,
@@ -1428,6 +1335,7 @@ impl AgentConversationWorkspacePublicationEvent {
             status: status.into(),
             summary: summary.into(),
             classification,
+            attempt_id: None,
             created_at: Utc::now(),
         }
     }

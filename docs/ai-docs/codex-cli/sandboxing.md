@@ -12,4 +12,6 @@ RalphX notes:
 
 - Codex sandbox semantics are the biggest vendor-level difference from Claude CLI for backend spawning.
 - The RalphX Codex harness must make sandbox mode explicit in spawn metadata and raw logs.
-- Reefagent chose HTTP MCP bridging plus `danger-full-access` in order to preserve localhost MCP access; RalphX must validate whether it needs the same tradeoff.
+- Provider/lane defaults and compatibility-locked workflows remain `danger-full-access` for compatibility with the current bridge.
+- Standalone Chat runs against its private RalphX workspace with `workspace-write`; its MCP launch arguments still carry the backend-derived working directory, read roots, and `--filesystem-enforced 1` containment gate.
+- Standalone PersonaBuilder remains on `danger-full-access` because its MCP workflow is not part of the Standalone Chat exception.

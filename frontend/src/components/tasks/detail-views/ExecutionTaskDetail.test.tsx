@@ -73,9 +73,6 @@ vi.mock("../StepList", () => ({
 import { useTaskSteps, useStepProgress } from "@/hooks/useTaskSteps";
 import { useTaskStateHistory } from "@/hooks/useReviews";
 import { api } from "@/lib/tauri";
-import { useChatStore } from "@/stores/chatStore";
-import { useTeamStore } from "@/stores/teamStore";
-import { buildStoreKey } from "@/lib/chat-context-registry";
 
 const mockUseTaskSteps = vi.mocked(useTaskSteps);
 const mockUseStepProgress = vi.mocked(useStepProgress);
@@ -208,6 +205,36 @@ describe("ExecutionTaskDetail", () => {
     expect(screen.getByText("100%")).toBeInTheDocument();
     expect(progressSection.textContent).toContain("Step 3 of 3");
     expect(progressSection.textContent).not.toContain("Step 3 of 4");
+  });
+
+  it("renders completed progress separately from the active in-progress layer", () => {
+    const task = createTestTask();
+    mockUseStepProgress.mockReturnValue({
+      data: {
+        total: 5,
+        completed: 1,
+        inProgress: 1,
+        pending: 1,
+        skipped: 2,
+        failed: 0,
+        percentComplete: 33.333,
+      },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useStepProgress>);
+
+    render(<ExecutionTaskDetail task={task} />, { wrapper: TestWrapper });
+
+    const progressSection = screen.getByTestId("execution-progress-section");
+    const completedFill = screen.getByTestId("progress-completed-fill");
+    const activeSegment = screen.getByTestId("progress-active-segment");
+
+    expect(progressSection.textContent).toContain("Step 1 of 3");
+    expect(screen.getByText("33%")).toBeInTheDocument();
+    expect(parseFloat(completedFill.style.width)).toBeCloseTo(33.333, 2);
+    expect(parseFloat(activeSegment.style.left)).toBeCloseTo(33.333, 2);
+    expect(parseFloat(activeSegment.style.width)).toBeCloseTo(33.333, 2);
+    expect(activeSegment).toHaveAttribute("data-animated", "true");
   });
 
   it("renders revision feedback section for re_executing tasks", () => {
@@ -498,39 +525,30 @@ describe("ExecutionTaskDetail", () => {
       ).toBe(true);
     });
 
-    it("renders team progress section with teammate role and activity", () => {
-      const task = createTestTask({ internalStatus: "executing" });
-      const contextKey = buildStoreKey("task_execution", task.id);
-
-      // Activate team mode and seed a teammate with role + activity so the
-      // role-description and current-activity branches render.
-      useChatStore.getState().setTeamActive(contextKey, true);
-      useTeamStore
-        .getState()
-        .createTeam(contextKey, "exec-team", "lead-agent");
-      useTeamStore.getState().addTeammate(contextKey, {
-        name: "researcher",
-        status: "running",
-        color: "#ff6b35",
-        model: "sonnet",
-        roleDescription: "investigates code paths",
-        currentActivity: "scanning auth.ts",
-        tokensUsed: 0,
-        estimatedCostUsd: 0,
-        conversationId: null,
+    it("renders validation failure metadata as validation failure in historical mode", () => {
+      const task = createTestTask({
+        internalStatus: "executing",
+        completedAt: "2026-02-15T11:00:00+00:00",
+        metadata: JSON.stringify({
+          failure_source: "validation_failed",
+          last_agent_error: "Validation failed: 1 failed, 9 passed",
+          last_agent_error_context: "execution",
+        }),
       });
 
-      render(<ExecutionTaskDetail task={task} />, { wrapper: TestWrapper });
+      render(<ExecutionTaskDetail task={task} isHistorical={true} />, {
+        wrapper: TestWrapper,
+      });
 
-      expect(screen.getByTestId("team-progress-section")).toBeInTheDocument();
-      expect(screen.getByText("researcher")).toBeInTheDocument();
-      expect(screen.getByText("sonnet")).toBeInTheDocument();
-      expect(screen.getByText("investigates code paths")).toBeInTheDocument();
-      expect(screen.getByText("scanning auth.ts")).toBeInTheDocument();
-
-      // Cleanup so other tests don't see the active team state.
-      useChatStore.getState().setTeamActive(contextKey, false);
+      const section = screen.getByTestId("agent-error-section");
+      expect(section).toBeInTheDocument();
+      expect(screen.getByText("Validation Failed")).toBeInTheDocument();
+      expect(screen.queryByText("Worker Error")).not.toBeInTheDocument();
+      expect(
+        screen.getByText("Validation failed: 1 failed, 9 passed")
+      ).toBeInTheDocument();
     });
+
 
     it("renders an error paragraph when the stop mutation rejects", async () => {
       const user = userEvent.setup();

@@ -23,11 +23,11 @@
 //   repo BEFORE the transition executes, and verify the final task status.
 
 use crate::application::AppState;
+use crate::application::TaskTransitionService;
 use crate::commands::ExecutionState;
 use crate::domain::entities::{InternalStatus, Project, Task};
 use crate::domain::services::{MemoryRunningAgentRegistry, MessageQueue};
 use crate::domain::state_machine::transition_handler::freshness::FreshnessMetadata;
-use crate::application::TaskTransitionService;
 use serde_json::json;
 use std::sync::Arc;
 
@@ -35,7 +35,7 @@ use std::sync::Arc;
 // Shared helpers
 // ============================================================================
 
-fn build_transition_service(app_state: &AppState) -> TaskTransitionService<tauri::Wry> {
+fn build_transition_service(app_state: &AppState) -> TaskTransitionService {
     let execution_state = Arc::new(ExecutionState::new());
     let message_queue = Arc::new(MessageQueue::new());
     let running_registry = Arc::new(MemoryRunningAgentRegistry::new());
@@ -393,7 +393,12 @@ async fn test_reviewing_freshness_conflict_routes_to_pending_review_after_merge_
     // --- Step 2: Transition via TaskTransitionService (same as handle_freshness_return_routing) ---
     let service = build_transition_service(&app_state);
     let result = service
-        .transition_task_corrective_with_exit(&task_id, InternalStatus::PendingReview, None, "system")
+        .transition_task_corrective_with_exit(
+            &task_id,
+            InternalStatus::PendingReview,
+            None,
+            "system",
+        )
         .await;
 
     assert!(

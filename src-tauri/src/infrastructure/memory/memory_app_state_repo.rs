@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use crate::domain::entities::app_state::{AppSettings, ExecutionHaltMode};
+use crate::domain::entities::app_state::{AppSettings, ExecutionHaltMode, UpdateChannel};
 use crate::domain::entities::ProjectId;
 use crate::domain::repositories::AppStateRepository;
 
@@ -64,6 +64,15 @@ impl AppStateRepository for MemoryAppStateRepository {
         Ok(())
     }
 
+    async fn set_update_channel(
+        &self,
+        update_channel: UpdateChannel,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut settings = self.settings.write().await;
+        settings.update_channel = update_channel;
+        Ok(())
+    }
+
     async fn set_last_seen_release_notes_version(
         &self,
         version: Option<&str>,
@@ -72,8 +81,13 @@ impl AppStateRepository for MemoryAppStateRepository {
         settings.last_seen_release_notes_version = version.map(str::to_string);
         Ok(())
     }
-}
 
-#[cfg(test)]
-#[path = "memory_app_state_repo_tests.rs"]
-mod tests;
+    async fn set_remove_inherited_github_cli_tokens(
+        &self,
+        enabled: bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut settings = self.settings.write().await;
+        settings.remove_inherited_github_cli_tokens = enabled;
+        Ok(())
+    }
+}

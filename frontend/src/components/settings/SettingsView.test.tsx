@@ -24,6 +24,18 @@ vi.mock("@/providers/EventProvider", () => ({
   }),
 }));
 
+vi.mock("@/api/execution", () => ({
+  executionApi: {
+    getGlobalSettings: vi.fn().mockResolvedValue({
+      globalMaxConcurrent: 20,
+      workspaceMaxConcurrent: 10,
+      globalIdeationMax: 10,
+      allowIdeationBorrowIdleExecution: false,
+    }),
+    updateGlobalSettings: vi.fn().mockResolvedValue(undefined),
+  },
+}));
+
 vi.mock("./sections/WorkspaceReviewSection", () => ({
   default: () => <div data-testid="workspace-review-section">Workspace Review</div>,
 }));
@@ -65,12 +77,9 @@ describe("SettingsView", () => {
 
     it("renders core sections", () => {
       render(<SettingsView />);
-      expect(screen.getByText("Execution")).toBeInTheDocument();
-    });
-
-    it("renders section icons", () => {
-      render(<SettingsView />);
-      expect(screen.getByText("Control task execution behavior and concurrency")).toBeInTheDocument();
+      // Sections carry no headers of their own; identify them by their rows.
+      expect(screen.getByText("Max Concurrent Tasks")).toBeInTheDocument();
+      expect(screen.getByText("Project Ideation Cap")).toBeInTheDocument();
     });
   });
 
@@ -226,25 +235,19 @@ describe("SettingsView", () => {
   });
 
   describe("Error Banner", () => {
-    it("can dismiss error by clicking X button", async () => {
+    it("can dismiss an error with the accessible dismiss button", async () => {
       const user = userEvent.setup();
       const errorMessage = "Failed to save settings";
       render(<SettingsView error={errorMessage} />);
 
       expect(screen.getByText(errorMessage)).toBeInTheDocument();
 
-      // Find and click the dismiss button
-      const dismissButton = screen.getByRole("button", { name: "" });
+      const dismissButton = screen.getByRole("button", {
+        name: "Dismiss error",
+      });
       await user.click(dismissButton);
 
       expect(screen.queryByText(errorMessage)).not.toBeInTheDocument();
-    });
-  });
-
-  describe("Premium Design Elements", () => {
-    it("renders execution section card", () => {
-      render(<SettingsView />);
-      expect(screen.getByText("Execution")).toBeInTheDocument();
     });
   });
 

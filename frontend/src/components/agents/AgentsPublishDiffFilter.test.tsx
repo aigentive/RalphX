@@ -1,7 +1,7 @@
 /**
  * AgentsPublishDiffFilter tests
  * Popover-based diff mode selector: "Workspace changes (N files)" radio + "Specific Commit" collapsible.
- * "All commits" mode is intentionally omitted in v1.
+ * Includes Workspace changes, worktree buckets, All commits, and specific-commit modes.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -153,6 +153,30 @@ describe("AgentsPublishDiffFilter", () => {
       expect(screen.getByTestId("diff-filter-trigger")).toHaveTextContent("All commits");
       expect(screen.getByTestId("diff-filter-trigger")).toHaveTextContent("2");
     });
+
+    it.each(["Published changes", "Pull request changes"])(
+      "uses count-free terminal history label %s in cumulative mode",
+      (cumulativeModeLabel) => {
+        render(
+          withProviders(
+            <AgentsPublishDiffFilter
+              mode="cumulative"
+              workspaceChangeCount={0}
+              cumulativeModeLabel={cumulativeModeLabel}
+              commits={[]}
+              onModeChange={onModeChange}
+            />,
+          ),
+        );
+
+        expect(screen.getByTestId("diff-filter-trigger")).toHaveTextContent(
+          cumulativeModeLabel,
+        );
+        expect(screen.getByTestId("diff-filter-trigger")).not.toHaveTextContent(
+          "0 commits",
+        );
+      },
+    );
   });
 
   describe("popover content", () => {
@@ -303,6 +327,28 @@ describe("AgentsPublishDiffFilter", () => {
       );
       await user.click(screen.getByTestId("diff-filter-trigger"));
       expect(screen.getByTestId("diff-filter-option-cumulative")).toBeInTheDocument();
+    });
+
+    it("uses the terminal history label in the cumulative radio option", async () => {
+      const user = userEvent.setup();
+      render(
+        withProviders(
+          <AgentsPublishDiffFilter
+            mode="cumulative"
+            workspaceChangeCount={0}
+            cumulativeModeLabel="Published changes"
+            commits={[]}
+            onModeChange={onModeChange}
+          />,
+        ),
+      );
+      await user.click(screen.getByTestId("diff-filter-trigger"));
+      expect(
+        screen.getByTestId("diff-filter-option-cumulative"),
+      ).toHaveTextContent("Published changes");
+      expect(
+        screen.getByTestId("diff-filter-option-cumulative"),
+      ).not.toHaveTextContent("0 commits");
     });
 
     it("hides worktree-only modes for read-only historical reviews", async () => {

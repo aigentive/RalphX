@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use crate::agents::ProviderSessionRef;
 use crate::domain::entities::{
     AgentRunUsage, ChatConversationId, ChatMessage, ChatMessageAttribution, ChatMessageId,
-    IdeationSessionId, ProjectId, TaskId,
+    IdeationSessionId, ProjectId, TaskId, UsageCapture,
 };
 use crate::error::AppResult;
 
@@ -93,6 +93,15 @@ pub trait ChatMessageRepository: Send + Sync {
 
     /// Update captured usage/cost metadata for a persisted assistant message.
     async fn update_usage(&self, id: &ChatMessageId, usage: &AgentRunUsage) -> AppResult<()>;
+
+    /// Atomically replace the complete normalized/raw capture for a message.
+    async fn replace_usage_capture(
+        &self,
+        id: &ChatMessageId,
+        capture: &UsageCapture,
+    ) -> AppResult<()> {
+        self.update_usage(id, &capture.normalized).await
+    }
 
     /// Update attribution metadata for a persisted assistant/provider message.
     async fn update_attribution(

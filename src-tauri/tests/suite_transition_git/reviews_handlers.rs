@@ -18,9 +18,7 @@
 
 use crate::support::real_git_repo::setup_real_git_repo;
 use axum::{extract::State, http::StatusCode, Json};
-use ralphx_lib::application::{
-    interactive_process_registry::InteractiveProcessKey, AppState, TeamService, TeamStateTracker,
-};
+use ralphx_lib::application::{interactive_process_registry::InteractiveProcessKey, AppState};
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentWorkspaceFollowupProvenance,
@@ -29,6 +27,7 @@ use ralphx_lib::domain::entities::{
     ReviewerType, Task, TaskProposal,
 };
 use ralphx_lib::domain::review::ReviewSettings;
+use ralphx_lib::domain::state_machine::transition_handler::set_no_code_changes_metadata;
 use ralphx_lib::http_server::handlers::*;
 use ralphx_lib::http_server::helpers::get_task_context_impl;
 use ralphx_lib::http_server::project_scope::ProjectScope;
@@ -41,14 +40,10 @@ use std::sync::Arc;
 async fn setup_review_test_state() -> HttpServerState {
     let app_state = Arc::new(AppState::new_test());
     let execution_state = Arc::new(ExecutionState::new());
-    let tracker = TeamStateTracker::new();
-    let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
 
     HttpServerState {
         app_state,
         execution_state,
-        team_tracker: tracker,
-        team_service,
         delegation_service: Default::default(),
     }
 }
@@ -56,13 +51,9 @@ async fn setup_review_test_state() -> HttpServerState {
 async fn setup_review_scope_drift_state() -> (HttpServerState, Task) {
     let app_state = Arc::new(AppState::new_sqlite_test());
     let execution_state = Arc::new(ExecutionState::new());
-    let tracker = TeamStateTracker::new();
-    let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
     let state = HttpServerState {
         app_state,
         execution_state,
-        team_tracker: tracker,
-        team_service,
         delegation_service: Default::default(),
     };
 
@@ -183,8 +174,6 @@ async fn test_get_task_context_includes_existing_task_followup_sessions() {
             source_context_id: Some(task.id.as_str().to_string()),
             spawn_reason: Some("out_of_scope_failure".to_string()),
             blocker_fingerprint: None,
-            team_mode: None,
-            team_config: None,
             purpose: Some("follow_up".to_string()),
             is_external_trigger: false,
         }),
@@ -253,8 +242,27 @@ async fn seed_project_task_with_status(
     task
 }
 
+fn git_stdout(repo_path: &std::path::Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(repo_path)
+        .env("GIT_AUTHOR_NAME", "Test")
+        .env("GIT_AUTHOR_EMAIL", "test@test.com")
+        .env("GIT_COMMITTER_NAME", "Test")
+        .env("GIT_COMMITTER_EMAIL", "test@test.com")
+        .output()
+        .expect("git command failed");
+    assert!(
+        output.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
 #[tokio::test]
-async fn test_complete_review_approved_without_human_review_succeeds_for_branchless_task() {
+async fn test_complete_review_approved_without_human_review_succeeds_for_no_code_branchless_task() {
     let state = setup_review_test_state().await;
 
     let project = Project::new(
@@ -280,6 +288,7 @@ async fn test_complete_review_approved_without_human_review_succeeds_for_branchl
 
     let mut task = Task::new(project.id.clone(), "Branchless reviewed task".to_string());
     task.internal_status = InternalStatus::Reviewing;
+    set_no_code_changes_metadata(&mut task);
     state
         .app_state
         .task_repo
@@ -364,12 +373,30 @@ async fn test_approve_task_rejects_merged_status() {
 #[tokio::test]
 async fn test_approve_task_accepts_review_passed_status() {
     let state = setup_review_test_state().await;
-    let task = seed_project_task_with_status(
-        &state,
-        "Human approve success",
-        InternalStatus::ReviewPassed,
-    )
-    .await;
+    let repo = setup_real_git_repo();
+    let base_sha = git_stdout(repo.path(), &["rev-parse", "main"]);
+    git_stdout(repo.path(), &["checkout", &repo.task_branch]);
+
+    let mut project = Project::new(
+        "Human approve success Project".to_string(),
+        repo.path_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    let project_id = project.id.clone();
+    state.app_state.project_repo.create(project).await.unwrap();
+
+    let mut task = Task::new(project_id, "Human approve success task".to_string());
+    task.internal_status = InternalStatus::ReviewPassed;
+    task.task_branch = Some(repo.task_branch.clone());
+    task.task_branch_base_ref = Some("main".to_string());
+    task.task_branch_base_sha = Some(base_sha);
+    task.worktree_path = Some(repo.path_string());
+    state
+        .app_state
+        .task_repo
+        .create(task.clone())
+        .await
+        .unwrap();
 
     let response = approve_task(
         State(state.clone()),
@@ -392,13 +419,10 @@ async fn test_approve_task_accepts_review_passed_status() {
         .await
         .unwrap()
         .unwrap();
-    assert!(
-        matches!(
-            persisted.internal_status,
-            InternalStatus::Approved | InternalStatus::PendingMerge | InternalStatus::Merged
-        ),
-        "approved human review must advance past review_passed; got {:?}",
-        persisted.internal_status
+    assert_ne!(
+        persisted.internal_status,
+        InternalStatus::ReviewPassed,
+        "approved human review must advance past review_passed"
     );
 
     let notes = state
@@ -414,6 +438,72 @@ async fn test_approve_task_accepts_review_passed_status() {
                 && note.reviewer == ReviewerType::Human
         }),
         "approve_task must persist a human approval note"
+    );
+}
+
+#[tokio::test]
+async fn test_approve_task_accepts_no_code_review_passed_status() {
+    let state = setup_review_test_state().await;
+    let project = Project::new(
+        "Human approve no-code Project".to_string(),
+        "/tmp/test".to_string(),
+    );
+    let project_id = project.id.clone();
+    state.app_state.project_repo.create(project).await.unwrap();
+
+    let mut task = Task::new(project_id, "Human approve no-code task".to_string());
+    task.internal_status = InternalStatus::ReviewPassed;
+    set_no_code_changes_metadata(&mut task);
+    state
+        .app_state
+        .task_repo
+        .create(task.clone())
+        .await
+        .unwrap();
+
+    let response = approve_task(
+        State(state.clone()),
+        ProjectScope(None),
+        Json(ApproveTaskRequest {
+            task_id: task.id.as_str().to_string(),
+            comment: Some("Human verified no code changes".to_string()),
+        }),
+    )
+    .await
+    .expect("approve_task should accept explicitly no-code review_passed")
+    .0;
+
+    assert_eq!(response.new_status, "approved");
+
+    let persisted = state
+        .app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(
+            persisted.internal_status,
+            InternalStatus::Approved | InternalStatus::PendingMerge | InternalStatus::Merged
+        ),
+        "no-code human approval must advance past review_passed; got {:?}",
+        persisted.internal_status
+    );
+
+    let notes = state
+        .app_state
+        .review_repo
+        .get_notes_by_task_id(&task.id)
+        .await
+        .unwrap();
+    assert!(
+        notes.iter().any(|note| {
+            note.outcome == ReviewOutcome::Approved
+                && note.notes.as_deref() == Some("Human verified no code changes")
+                && note.reviewer == ReviewerType::Human
+        }),
+        "no-code approval must persist a human approval note"
     );
 }
 
@@ -644,7 +734,9 @@ async fn test_complete_review_rejected_when_task_ready() {
 async fn test_complete_review_guard_does_not_fire_for_reviewing_task() {
     let state = setup_review_test_state().await;
 
-    let task = seed_task_with_status(&state, InternalStatus::Reviewing).await;
+    let mut task = seed_task_with_status(&state, InternalStatus::Reviewing).await;
+    set_no_code_changes_metadata(&mut task);
+    state.app_state.task_repo.update(&task).await.unwrap();
     let task_id = task.id.as_str().to_string();
 
     let req = CompleteReviewRequest {
@@ -959,6 +1051,7 @@ async fn test_complete_review_allows_unrelated_drift_escalation_after_revision_b
         .review_settings_repo
         .update_settings(&ReviewSettings {
             max_revision_cycles: 1,
+            auto_create_followup_agent_conversation: true,
             ..ReviewSettings::default()
         })
         .await
@@ -1045,6 +1138,7 @@ async fn test_complete_review_reuses_existing_unrelated_drift_followup_session()
         .review_settings_repo
         .update_settings(&ReviewSettings {
             max_revision_cycles: 1,
+            auto_create_followup_agent_conversation: true,
             ..ReviewSettings::default()
         })
         .await
@@ -1356,7 +1450,9 @@ async fn test_unrelated_drift_revise_first_then_followup_after_budget_exhausted(
 #[tokio::test]
 async fn test_complete_review_no_ipr_entry_is_safe() {
     let state = setup_review_test_state().await;
-    let task = seed_task_with_status(&state, InternalStatus::Reviewing).await;
+    let mut task = seed_task_with_status(&state, InternalStatus::Reviewing).await;
+    set_no_code_changes_metadata(&mut task);
+    state.app_state.task_repo.update(&task).await.unwrap();
     let task_id = task.id.as_str().to_string();
 
     // No IPR entry registered — IPR removal is a no-op
@@ -1392,7 +1488,9 @@ async fn test_complete_review_no_ipr_entry_is_safe() {
 #[tokio::test]
 async fn test_complete_review_ipr_removed_on_success() {
     let state = setup_review_test_state().await;
-    let task = seed_task_with_status(&state, InternalStatus::Reviewing).await;
+    let mut task = seed_task_with_status(&state, InternalStatus::Reviewing).await;
+    set_no_code_changes_metadata(&mut task);
+    state.app_state.task_repo.update(&task).await.unwrap();
     let task_id = task.id.clone();
 
     // Register IPR entry for the reviewer agent
@@ -1607,7 +1705,9 @@ async fn test_complete_review_ipr_removed_on_escalate() {
 #[tokio::test]
 async fn test_approved_no_changes_string_parsed_correctly() {
     let state = setup_review_test_state().await;
-    let task = seed_task_with_status(&state, InternalStatus::Reviewing).await;
+    let mut task = seed_task_with_status(&state, InternalStatus::Reviewing).await;
+    set_no_code_changes_metadata(&mut task);
+    state.app_state.task_repo.update(&task).await.unwrap();
     let task_id = task.id.as_str().to_string();
 
     let req = CompleteReviewRequest {

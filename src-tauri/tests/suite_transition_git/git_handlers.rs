@@ -1,7 +1,9 @@
-use axum::{extract::{Path, State}, http::StatusCode, Json};
-use ralphx_lib::application::{
-    AppState, InteractiveProcessKey, TeamService, TeamStateTracker,
+use axum::{
+    extract::{Path, State},
+    http::StatusCode,
+    Json,
 };
+use ralphx_lib::application::{AppState, InteractiveProcessKey};
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{InternalStatus, Project, ProjectId, Task, TaskId};
 use ralphx_lib::http_server::handlers::*;
@@ -124,15 +126,9 @@ mod task_commits {
     async fn setup_state() -> HttpServerState {
         let app_state = Arc::new(AppState::new_test());
         let execution_state = Arc::new(ExecutionState::new());
-        let tracker = TeamStateTracker::new();
-        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
-            tracker.clone(),
-        )));
         HttpServerState {
             app_state,
             execution_state,
-            team_tracker: tracker,
-            team_service,
             delegation_service: Default::default(),
         }
     }
@@ -196,6 +192,33 @@ mod task_commits {
         (dir, task_sha)
     }
 
+    fn setup_repo_with_captured_base_and_advanced_main() -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let repo = dir.path();
+
+        run_git(repo, &["init", "-b", "main"]);
+        run_git(repo, &["config", "user.email", "test@test.com"]);
+        run_git(repo, &["config", "user.name", "Test"]);
+
+        std::fs::write(repo.join("README.md"), "initial").unwrap();
+        run_git(repo, &["add", "."]);
+        run_git(repo, &["commit", "-m", "initial commit"]);
+        let captured_base_sha = run_git_output(repo, &["rev-parse", "HEAD"]);
+
+        run_git(repo, &["checkout", "-b", "task-branch"]);
+        std::fs::write(repo.join("task.txt"), "task work").unwrap();
+        run_git(repo, &["add", "."]);
+        run_git(repo, &["commit", "-m", "feat: selected task work"]);
+
+        run_git(repo, &["checkout", "main"]);
+        std::fs::write(repo.join("base.txt"), "later base work").unwrap();
+        run_git(repo, &["add", "."]);
+        run_git(repo, &["commit", "-m", "fix: unrelated base branch work"]);
+        run_git(repo, &["checkout", "task-branch"]);
+
+        (dir, captured_base_sha)
+    }
+
     #[tokio::test]
     async fn get_task_commits_scopes_merged_task_to_recorded_merge_sha() {
         let (repo, task_sha) = setup_repo_with_advanced_base();
@@ -215,12 +238,9 @@ mod task_commits {
         let task_id = task.id.clone();
         state.app_state.task_repo.create(task).await.unwrap();
 
-        let Json(commits) = get_task_commits(
-            State(state),
-            Path(task_id.as_str().to_string()),
-        )
-        .await
-        .expect("merged task commits should resolve from recorded merge sha");
+        let Json(commits) = get_task_commits(State(state), Path(task_id.as_str().to_string()))
+            .await
+            .expect("merged task commits should resolve from recorded merge sha");
 
         let messages: Vec<_> = commits
             .iter()
@@ -232,6 +252,35 @@ mod task_commits {
             "task details must not show later base-branch commits"
         );
     }
+
+    #[tokio::test]
+    async fn get_task_diff_stats_uses_captured_base_when_main_advances() {
+        let (repo, captured_base_sha) = setup_repo_with_captured_base_and_advanced_main();
+        let state = setup_state().await;
+
+        let mut project = Project::new(
+            "task-diff-project".to_string(),
+            repo.path().to_string_lossy().to_string(),
+        );
+        project.base_branch = Some("main".to_string());
+        let project_id = project.id.clone();
+        state.app_state.project_repo.create(project).await.unwrap();
+
+        let mut task = Task::new(project_id, "Diff stats task".to_string());
+        task.task_branch = Some("task-branch".to_string());
+        task.worktree_path = Some(repo.path().to_string_lossy().to_string());
+        task.task_branch_base_ref = Some("main".to_string());
+        task.task_branch_base_sha = Some(captured_base_sha);
+        let task_id = task.id.clone();
+        state.app_state.task_repo.create(task).await.unwrap();
+
+        let Json(stats) = get_task_diff_stats(State(state), Path(task_id.as_str().to_string()))
+            .await
+            .expect("task diff stats should resolve from captured base");
+
+        assert_eq!(stats.changed_files, vec!["task.txt"]);
+        assert_eq!(stats.files_changed, 1);
+    }
 }
 
 mod ipr_removal {
@@ -240,13 +289,9 @@ mod ipr_removal {
     async fn setup_git_test_state() -> HttpServerState {
         let app_state = Arc::new(AppState::new_test());
         let execution_state = Arc::new(ExecutionState::new());
-        let tracker = TeamStateTracker::new();
-        let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
         HttpServerState {
             app_state,
             execution_state,
-            team_tracker: tracker,
-            team_service,
             delegation_service: Default::default(),
         }
     }
@@ -256,7 +301,12 @@ mod ipr_removal {
         let project_id = ProjectId::new();
         let mut task = Task::new(project_id, "Merging task".to_string());
         task.internal_status = InternalStatus::Merging;
-        state.app_state.task_repo.create(task.clone()).await.unwrap();
+        state
+            .app_state
+            .task_repo
+            .create(task.clone())
+            .await
+            .unwrap();
         task
     }
 
@@ -305,7 +355,11 @@ mod ipr_removal {
         )
         .await;
 
-        assert!(result.is_ok(), "report_conflict handler should succeed: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "report_conflict handler should succeed: {:?}",
+            result
+        );
         assert!(
             !state
                 .app_state
@@ -456,10 +510,7 @@ mod ipr_removal {
         state: &HttpServerState,
         repo_path: &std::path::Path,
         worktree_path: Option<&std::path::Path>,
-    ) -> (
-        TaskId,
-        InteractiveProcessKey,
-    ) {
+    ) -> (TaskId, InteractiveProcessKey) {
         let project_id = ProjectId::new();
         let mut project = Project::new(
             "test-project".to_string(),
@@ -545,7 +596,11 @@ mod ipr_removal {
         )
         .await;
 
-        assert!(result.is_ok(), "complete_merge handler should succeed: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "complete_merge handler should succeed: {:?}",
+            result
+        );
         assert!(
             !state
                 .app_state
@@ -609,7 +664,11 @@ mod ipr_removal {
         )
         .await;
 
-        assert!(result.is_ok(), "complete_merge rebase retry handler should succeed: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "complete_merge rebase retry handler should succeed: {:?}",
+            result
+        );
         assert!(
             !state
                 .app_state
@@ -863,7 +922,11 @@ mod ipr_removal {
         )
         .await;
 
-        assert!(result.is_ok(), "report_incomplete handler should succeed: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "report_incomplete handler should succeed: {:?}",
+            result
+        );
         assert!(
             !state
                 .app_state
@@ -889,13 +952,9 @@ mod source_update_conflict {
     async fn setup_git_test_state() -> HttpServerState {
         let app_state = Arc::new(AppState::new_test());
         let execution_state = Arc::new(ExecutionState::new());
-        let tracker = TeamStateTracker::new();
-        let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
         HttpServerState {
             app_state,
             execution_state,
-            team_tracker: tracker,
-            team_service,
             delegation_service: Default::default(),
         }
     }
@@ -1004,10 +1063,9 @@ mod source_update_conflict {
         task_id
     }
 
-    /// complete_merge with source_update_conflict: transitions to PendingMerge,
-    /// sets source_conflict_resolved, removes IPR, returns success.
+    /// Legacy source-update evidence cannot authorize merge completion.
     #[tokio::test]
-    async fn test_source_update_conflict_transitions_to_pending_merge() {
+    async fn test_source_update_conflict_is_rejected_without_side_effects() {
         let (dir, source_sha) = setup_source_update_repo();
         let state = setup_git_test_state().await;
 
@@ -1038,16 +1096,8 @@ mod source_update_conflict {
         )
         .await;
 
-        assert!(
-            result.is_ok(),
-            "complete_merge should succeed for source_update_conflict: {:?}",
-            result
-        );
-
-        let resp = result.unwrap().0;
-        assert!(resp.success);
-        assert_eq!(resp.new_status, "pending_merge");
-        assert!(resp.message.contains("Source update completed"));
+        let err = result.expect_err("legacy source-update evidence must be rejected");
+        assert_eq!(err.0, StatusCode::CONFLICT);
 
         // Verify task state
         let task = state
@@ -1057,41 +1107,20 @@ mod source_update_conflict {
             .await
             .unwrap()
             .unwrap();
-        // After transitioning to PendingMerge, the on_enter handler may auto-complete
-        // the merge (since source is now up-to-date with target). Either PendingMerge
-        // or Merged is correct — both prove the handler worked.
-        assert!(
-            task.internal_status == InternalStatus::PendingMerge
-                || task.internal_status == InternalStatus::Merged,
-            "Task should be in PendingMerge or Merged (auto-completed). Got: {:?}",
-            task.internal_status
-        );
+        assert_eq!(task.internal_status, InternalStatus::Merging);
         let meta = parse_task_metadata(&task).unwrap();
         assert_eq!(
-            meta.get("source_conflict_resolved").and_then(|v| v.as_bool()),
+            meta.get("source_update_conflict").and_then(|v| v.as_bool()),
             Some(true),
-            "source_conflict_resolved flag must be set in metadata"
-        );
-
-        // source_update_conflict should be cleared from metadata
-        let meta = parse_task_metadata(&task).unwrap();
-        assert!(
-            meta.get("source_update_conflict").is_none(),
-            "source_update_conflict must be cleared from metadata"
+            "rejection must preserve branch-update evidence"
         );
         assert!(
-            meta.get("conflict_files").is_none(),
-            "conflict_files must be cleared from metadata"
-        );
-
-        // IPR should be removed
-        assert!(
-            !state
+            state
                 .app_state
                 .interactive_process_registry
                 .has_process(&key)
                 .await,
-            "IPR must be removed after source update conflict resolution"
+            "rejected merge completion must not terminate the active process"
         );
 
         let _ = child.kill().await;
@@ -1123,21 +1152,20 @@ mod source_update_conflict {
 
         let err = result.unwrap_err();
         assert_eq!(
-            err.0, StatusCode::BAD_REQUEST,
+            err.0,
+            StatusCode::BAD_REQUEST,
             "Should return 400 BAD_REQUEST"
         );
     }
 
-    /// complete_merge with source_update_conflict when source_conflict_resolved already set
-    /// is idempotent — still transitions to PendingMerge successfully.
+    /// A legacy resolved marker does not make branch-update evidence valid merge authority.
     #[tokio::test]
-    async fn test_source_update_idempotent_with_existing_resolved_flag() {
+    async fn test_source_update_existing_resolved_flag_is_still_rejected() {
         let (dir, source_sha) = setup_source_update_repo();
         let state = setup_git_test_state().await;
 
         // Both flags set (edge case: resolved already set from prior attempt)
-        let metadata =
-            r#"{"source_update_conflict": true, "source_conflict_resolved": true, "target_branch": "main"}"#;
+        let metadata = r#"{"source_update_conflict": true, "source_conflict_resolved": true, "target_branch": "main"}"#;
         let task_id = seed_source_update_task(&state, dir.path(), Some(metadata)).await;
 
         let result = complete_merge(
@@ -1149,14 +1177,8 @@ mod source_update_conflict {
         )
         .await;
 
-        assert!(
-            result.is_ok(),
-            "complete_merge should still succeed when source_conflict_resolved already set: {:?}",
-            result
-        );
-
-        let resp = result.unwrap().0;
-        assert_eq!(resp.new_status, "pending_merge");
+        let err = result.expect_err("legacy resolved marker must not bypass authority checks");
+        assert_eq!(err.0, StatusCode::CONFLICT);
 
         // Verify flag is still set
         let task = state
@@ -1167,8 +1189,10 @@ mod source_update_conflict {
             .unwrap()
             .unwrap();
         let meta = parse_task_metadata(&task).unwrap();
+        assert_eq!(task.internal_status, InternalStatus::Merging);
         assert_eq!(
-            meta.get("source_conflict_resolved").and_then(|v| v.as_bool()),
+            meta.get("source_conflict_resolved")
+                .and_then(|v| v.as_bool()),
             Some(true),
             "source_conflict_resolved flag must still be set"
         );
@@ -1220,13 +1244,9 @@ mod freshness_routing_integration {
     async fn setup_state() -> HttpServerState {
         let app_state = Arc::new(AppState::new_test());
         let execution_state = Arc::new(ExecutionState::new());
-        let tracker = TeamStateTracker::new();
-        let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
         HttpServerState {
             app_state,
             execution_state,
-            team_tracker: tracker,
-            team_service,
             delegation_service: Default::default(),
         }
     }
@@ -1325,20 +1345,11 @@ mod freshness_routing_integration {
         task_id
     }
 
-    /// Integration test #5: complete_merge with plan_update_conflict=true AND
-    /// branch_freshness_conflict=true → freshness intercept fires, task routed
-    /// back to reviewing, merge_commit_sha NOT set, IPR removed.
+    /// Merge completion rejects legacy plan-update markers before any side effect.
     ///
-    /// Assertions:
-    /// - Handler returns success=true with new_status NOT "merged"
-    /// - Task internal_status transitions to PendingReview (not Merged)
-    /// - task.merge_commit_sha is NOT set (intercept fired before SHA assignment)
-    /// - plan_update_conflict cleared from metadata
-    /// - branch_freshness_conflict cleared from metadata
-    /// - IPR entry removed
-    /// - task_branch NOT deleted (preserved for re-execution)
+    /// The task, metadata, process registration, merge SHA, and branch remain unchanged.
     #[tokio::test]
-    async fn test_complete_merge_freshness_routes_to_reviewing() {
+    async fn test_complete_merge_freshness_evidence_is_rejected() {
         let (dir, _task_sha) = setup_freshness_repo();
         let state = setup_state().await;
 
@@ -1365,8 +1376,7 @@ mod freshness_routing_integration {
             .register(key.clone(), stdin)
             .await;
 
-        // Any valid 40-char SHA — handler must exit at step 5a freshness check
-        // before reaching SHA verification (step 6).
+        // Any valid 40-char SHA — authority rejection happens before Git verification.
         let dummy_sha = "f".repeat(40);
         let result = complete_merge(
             State(state.clone()),
@@ -1377,20 +1387,9 @@ mod freshness_routing_integration {
         )
         .await;
 
-        assert!(
-            result.is_ok(),
-            "complete_merge should succeed for freshness-routed task: {:?}",
-            result
-        );
+        let err = result.expect_err("legacy plan-update evidence must be rejected");
+        assert_eq!(err.0, StatusCode::CONFLICT);
 
-        let resp = result.unwrap().0;
-        assert!(resp.success, "response.success must be true");
-        assert_ne!(
-            resp.new_status, "merged",
-            "Freshness-routed task must NOT reach 'merged'"
-        );
-
-        // Task should be in PendingReview (origin state was "reviewing")
         let task = state
             .app_state
             .task_repo
@@ -1399,65 +1398,51 @@ mod freshness_routing_integration {
             .unwrap()
             .unwrap();
 
-        // The transition goes to PendingReview (auto-route from Reviewing origin).
-        // PendingReview auto-advances to Reviewing. If the task has no worktree_path
-        // (as in this test), on_enter(Reviewing) returns ReviewWorktreeMissing which
-        // routes to Escalated. All three outcomes indicate the freshness intercept fired.
-        assert!(
-            task.internal_status == InternalStatus::PendingReview
-                || task.internal_status == InternalStatus::Reviewing
-                || task.internal_status == InternalStatus::Escalated,
-            "Task must be in PendingReview, Reviewing, or Escalated after freshness routing. Got: {:?}",
-            task.internal_status
-        );
+        assert_eq!(task.internal_status, InternalStatus::Merging);
 
-        // merge_commit_sha must NOT be set (intercept fires before SHA assignment at step 6)
+        // Authority rejection happens before merge SHA assignment.
         assert!(
             task.merge_commit_sha.is_none(),
-            "merge_commit_sha must NOT be set when freshness intercept fires"
+            "merge_commit_sha must not be set by a rejected request"
         );
 
-        // Freshness routing flags must be cleared
+        // Rejection leaves evidence intact for the dedicated remediation path.
         let meta = parse_task_metadata(&task).unwrap_or_else(|| serde_json::json!({}));
-        assert!(
-            meta.get("plan_update_conflict").is_none()
-                || meta
-                    .get("plan_update_conflict")
-                    .and_then(|v| v.as_bool())
-                    == Some(false),
-            "plan_update_conflict must be cleared after freshness routing"
+        assert_eq!(
+            meta.get("plan_update_conflict").and_then(|v| v.as_bool()),
+            Some(true)
         );
-        assert!(
-            meta.get("branch_freshness_conflict").is_none()
-                || meta
-                    .get("branch_freshness_conflict")
-                    .and_then(|v| v.as_bool())
-                    == Some(false),
-            "branch_freshness_conflict must be cleared after freshness routing"
+        assert_eq!(
+            meta.get("branch_freshness_conflict")
+                .and_then(|v| v.as_bool()),
+            Some(true)
         );
 
-        // IPR must be removed (merger agent should get EOF and exit)
+        // Rejected requests do not terminate the active process.
         assert!(
-            !state
+            state
                 .app_state
                 .interactive_process_registry
                 .has_process(&key)
                 .await,
-            "IPR must be removed after freshness routing"
+            "authority rejection must not remove the IPR"
         );
 
-        // task_branch must NOT be deleted — worktree cleanup in freshness_return_route
-        // only deletes the merge worktree, not the task branch itself.
+        // The rejected endpoint must not delete the task branch.
         let task_branch = task.task_branch.as_deref().unwrap_or("task-branch");
         let branch_exists = std::process::Command::new("git")
-            .args(["rev-parse", "--verify", &format!("refs/heads/{}", task_branch)])
+            .args([
+                "rev-parse",
+                "--verify",
+                &format!("refs/heads/{}", task_branch),
+            ])
             .current_dir(dir.path())
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false);
         assert!(
             branch_exists,
-            "task_branch '{}' must NOT be deleted when freshness intercept fires",
+            "task_branch '{}' must not be deleted by a rejected request",
             task_branch
         );
 
@@ -1687,13 +1672,9 @@ mod webhook_emission {
     async fn setup_state() -> HttpServerState {
         let app_state = Arc::new(AppState::new_test());
         let execution_state = Arc::new(ExecutionState::new());
-        let tracker = TeamStateTracker::new();
-        let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
         HttpServerState {
             app_state,
             execution_state,
-            team_tracker: tracker,
-            team_service,
             delegation_service: Default::default(),
         }
     }
@@ -1781,8 +1762,7 @@ mod webhook_emission {
     async fn test_complete_merge_inserts_external_event() {
         let (dir, merge_sha) = setup_merged_repo();
         let state = setup_state().await;
-        let (task_id, project_id) =
-            seed_merging_task_with_project_id(&state, dir.path()).await;
+        let (task_id, project_id) = seed_merging_task_with_project_id(&state, dir.path()).await;
 
         let result = complete_merge(
             State(state.clone()),
@@ -1793,7 +1773,11 @@ mod webhook_emission {
         )
         .await;
 
-        assert!(result.is_ok(), "complete_merge should succeed: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "complete_merge should succeed: {:?}",
+            result
+        );
 
         let events = state
             .app_state
@@ -1814,9 +1798,8 @@ mod webhook_emission {
             events.iter().map(|e| &e.event_type).collect::<Vec<_>>()
         );
 
-        let payload: serde_json::Value =
-            serde_json::from_str(&merge_completed_events[0].payload)
-                .expect("payload must be valid JSON");
+        let payload: serde_json::Value = serde_json::from_str(&merge_completed_events[0].payload)
+            .expect("payload must be valid JSON");
         assert_eq!(
             payload["task_id"].as_str().unwrap(),
             task_id.as_str(),
@@ -1860,7 +1843,11 @@ mod webhook_emission {
         )
         .await;
 
-        assert!(result.is_ok(), "report_conflict should succeed: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "report_conflict should succeed: {:?}",
+            result
+        );
 
         let events = state
             .app_state
@@ -1882,8 +1869,7 @@ mod webhook_emission {
         );
 
         let payload: serde_json::Value =
-            serde_json::from_str(&conflict_events[0].payload)
-                .expect("payload must be valid JSON");
+            serde_json::from_str(&conflict_events[0].payload).expect("payload must be valid JSON");
         assert_eq!(
             payload["task_id"].as_str().unwrap(),
             task_id.as_str(),

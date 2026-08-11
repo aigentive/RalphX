@@ -210,7 +210,7 @@ Backend rules extend src-tauri/CLAUDE.md and root CLAUDE.md Key Principles. Rule
 
 - `commands/` and HTTP handlers stay thin. Parse, delegate, return.
 - Domain code must not depend on Tauri, SQLite, CLI, or process primitives.
-- No blocking I/O on Tokio worker threads. `DbConnection` handles SQLite; git commands, `std::process::Command`, and filesystem operations in async functions must use `spawn_blocking` or run on a dedicated OS thread. Blocking a Tokio thread stalls agent stream readers, triggers false `team_line_read_secs` timeouts, and deadlocks IPC handlers.
+- No blocking I/O on Tokio worker threads. `DbConnection` handles SQLite; git commands, `std::process::Command`, and filesystem operations in async functions must use `spawn_blocking` or run on a dedicated OS thread. Blocking a Tokio thread stalls agent stream readers, triggers false line-read timeouts, and deadlocks IPC handlers.
 - Avoid `unwrap()` and `expect()` in runtime request, agent, transition, and reconciliation paths. Convert failures into typed errors with context. RalphX is a desktop app — a panic kills the entire process, orphans running agents, and may corrupt in-flight state. `unwrap()`/`expect()` are allowed only in: tests, startup invariants (with informative message), and provably unreachable paths (with a comment explaining why).
 - Exhaustive enum matching for critical workflows. In state machine transitions, context type routing, and merge/review pipeline logic, list all variants explicitly. No wildcard `_ =>` arms that silently swallow new states — the 24-state task machine and 6-variant `ChatContextType` rely on compiler exhaustiveness warnings to catch unhandled additions.
 - RAII cleanup guards for shared resources. Worktrees, process slots, and merge-in-flight tracking use `Drop`-based guards (`WorktreePermit`, `AutoCompleteGuard`, `InFlightGuard`). New code that acquires shared resources must follow the same pattern — partial failure must still leave the system recoverable.
@@ -398,11 +398,10 @@ rustup install stable
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
-Register the RalphX MCP server with Claude:
-
-```bash
-claude mcp add ralphx node plugins/app/ralphx-mcp-server/build/index.js
-```
+RalphX injects its required Claude MCP server per launch. Do not register a
+user-scoped server named `ralphx` or `ralphx_internal`; those IDs are reserved
+for RalphX transports. Add unrelated third-party servers through the provider's
+native MCP configuration.
 
 Install MCP server dependencies:
 

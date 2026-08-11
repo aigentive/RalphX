@@ -8,6 +8,11 @@ export class SettingsPage extends BasePage {
   readonly closeButton: Locator;
   readonly savingIndicator: Locator;
   readonly errorBanner: Locator;
+  readonly agentRuntimePicker: Locator;
+  readonly updateChannelGroup: Locator;
+  readonly stableUpdateChannel: Locator;
+  readonly nightlyUpdateChannel: Locator;
+  readonly updateChannelSaveError: Locator;
 
   // Execution Section
   readonly executionSection: Locator;
@@ -41,6 +46,19 @@ export class SettingsPage extends BasePage {
     this.closeButton = this.settingsDialog.getByRole("button", { name: "Close settings" });
     this.savingIndicator = page.locator("text=Saving...");
     this.errorBanner = page.locator('[role="alert"]');
+    this.agentRuntimePicker = this.settingsDialog.getByTestId("agent-composer-runtime-pill");
+    this.updateChannelGroup = this.settingsDialog.getByRole("radiogroup", {
+      name: "Update channel",
+    });
+    this.stableUpdateChannel = this.updateChannelGroup.getByRole("radio", {
+      name: "Stable — Recommended",
+    });
+    this.nightlyUpdateChannel = this.updateChannelGroup.getByRole("radio", {
+      name: "Nightly — Early access",
+    });
+    this.updateChannelSaveError = this.settingsDialog.getByRole("alert").filter({
+      hasText: "Unable to save update channel",
+    });
 
     // Execution Section
     this.executionSection = page.locator("text=Control task execution behavior and concurrency").locator("..");
@@ -89,31 +107,68 @@ export class SettingsPage extends BasePage {
     await this.settingsDialog.waitFor({ state: "visible" });
   }
 
-  /** Select a section by its ID using the left-rail navigation */
+  /**
+   * Select a leaf section. Prefers the real user path — nav entry, then leaf
+   * tab or Integrations hub card — and falls back to the store deep link when
+   * the rail is collapsed (narrow viewports).
+   */
   async selectSection(sectionId: string) {
-    const sectionButton = this.settingsDialog.locator(
-      `[data-testid="settings-section-${sectionId}"]`,
+    const leafTab = this.settingsDialog.locator(
+      `[data-testid="settings-leaf-${sectionId}"]`,
     );
-    if (await sectionButton.isVisible()) {
-      await sectionButton.click();
-    } else {
-      await this.openViaStore(sectionId);
+    if (await leafTab.isVisible()) {
+      await leafTab.click();
+      return;
     }
+    const hubCard = this.settingsDialog.locator(
+      `[data-testid="integration-card-${sectionId}"]`,
+    );
+    if (await hubCard.isVisible()) {
+      await hubCard.getByRole("button").click();
+      return;
+    }
+    await this.openViaStore(sectionId);
   }
 
-  async waitForSection(sectionId: string, heading: string) {
-    const sectionButton = this.settingsDialog.locator(
-      `[data-testid="settings-section-${sectionId}"]`,
-    );
-    await expect(sectionButton).toHaveAttribute("aria-current", "page", {
-      timeout: 10000,
-    });
+  /** Click one of the seven consolidated nav entries. */
+  async selectNav(navId: string) {
+    await this.settingsDialog.getByTestId(`settings-nav-${navId}`).click();
+  }
+
+  /**
+   * Sections render no heading of their own — the page header names the nav
+   * entry (or the leaf, on Integrations drill-ins) and the leaf tab bar names
+   * the section — so readiness is proven by nav/leaf selection plus rendered
+   * body content.
+   */
+  async waitForSection(sectionId: string) {
+    await expect(
+      this.settingsDialog.locator('.settings-nav__item[aria-current="page"]'),
+    ).toHaveCount(1, { timeout: 10000 });
     await expect(this.page.getByTestId("settings-section-loading")).toBeHidden({
       timeout: 10000,
     });
+    const leafTab = this.settingsDialog.locator(
+      `[data-testid="settings-leaf-${sectionId}"]`,
+    );
+    if (await leafTab.count()) {
+      await expect(leafTab).toHaveAttribute("aria-selected", "true", {
+        timeout: 10000,
+      });
+    }
+    await expect(this.page.getByTestId("settings-page-title")).toBeVisible({
+      timeout: 10000,
+    });
     await expect(
-      this.settingsDialog.getByRole("heading", { name: heading, exact: true }),
+      this.settingsDialog.locator(".settings-page__body > *").first(),
     ).toBeVisible({ timeout: 10000 });
+  }
+
+  async selectUpdateChannel(channel: "stable" | "nightly") {
+    await (channel === "stable"
+      ? this.stableUpdateChannel
+      : this.nightlyUpdateChannel
+    ).click();
   }
 
   /** Close the settings dialog via the close button */

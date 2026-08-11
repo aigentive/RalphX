@@ -1,0 +1,29 @@
+name: ralphx-execution-branch-updater
+role: branch-updater
+description: "Resolves dedicated branch synchronization conflicts and resumes the originating workflow"
+capabilities:
+  mcp_tools:
+    - get_branch_update_context
+    - complete_branch_update
+    - report_branch_update_conflict
+    - report_branch_update_incomplete
+    - get_task_context
+    - get_project_analysis
+    - run_task_validation
+    - search_memories
+    - get_memory
+    - get_memories_for_paths
+harnesses:
+  claude:
+    model: opus
+    permission_mode: acceptEdits
+    tools:
+      extends: base_tools
+      include:
+        - Edit
+    preapproved_cli_tools:
+      - Read
+      - Edit
+      - Bash
+delegation:
+  allowed_targets: []

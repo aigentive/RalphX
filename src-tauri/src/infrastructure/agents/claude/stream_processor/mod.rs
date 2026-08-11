@@ -10,7 +10,7 @@ pub use types::{
     ParsedLine, StreamEvent, StreamMessage, StreamResult, ToolCall, ToolCallStats, UserContent,
 };
 
-use crate::domain::entities::AgentRunUsage;
+use crate::domain::entities::{AgentRunUsage, UsageCapture, UsageProvenance};
 
 // Re-export types and parser helpers only used by tests (via `use super::*`)
 #[cfg(test)]
@@ -40,8 +40,10 @@ pub struct StreamProcessor {
     pub result_subtype: Option<String>,
     /// Usage accumulated across already-finalized turns in this run.
     finalized_usage: AgentRunUsage,
+    finalized_usage_provenance: Option<UsageProvenance>,
     /// Usage currently accumulating for the in-flight turn.
     current_turn_usage: AgentRunUsage,
+    current_turn_usage_provenance: Option<UsageProvenance>,
 
     // Internal state for partial tool calls
     current_tool_name: String,
@@ -53,8 +55,12 @@ pub struct StreamProcessor {
     in_thinking_block: bool,
     // Accumulated thinking text during streaming
     current_thinking_block: String,
+    // Start time for the current streamed thinking block.
+    thinking_block_started_at: Option<std::time::Instant>,
     // Track if any ContentBlockDelta text events were received (for dedup guard)
     had_streaming_text_deltas: bool,
+    // Track if any non-empty thinking deltas were received (for dedup guard)
+    had_streaming_thinking_deltas: bool,
 }
 
 impl StreamProcessor {
@@ -84,10 +90,6 @@ impl StreamProcessor {
     }
 
     /// Detect team-related events from tool result JSON.
-    fn detect_team_event(tool_use_id: &str, result: &serde_json::Value) -> Option<StreamEvent> {
-        parser::detect_team_event(tool_use_id, result)
-    }
-
     /// Process a stream message with optional parent_tool_use_id, is_synthetic, and tool_use_result context.
     /// `tool_use_result` is the top-level structured metadata from Claude Code stream JSON
     /// (e.g. `{"status": "teammate_spawned", ...}`) — distinct from `message.content[].content`.
@@ -102,8 +104,14 @@ impl StreamProcessor {
 
         match msg {
             StreamMessage::MessageDelta { usage, .. } => {
-                if let Some(usage) = usage.as_ref() {
-                    update_turn_usage_from_value(&mut self.current_turn_usage, usage);
+                if parent_tool_use_id.is_none() {
+                    if let Some(usage) = usage.as_ref() {
+                        update_turn_usage_from_value(&mut self.current_turn_usage, usage);
+                        if !self.current_turn_usage.is_empty() {
+                            self.current_turn_usage_provenance =
+                                Some(UsageProvenance::ProviderSnapshotFallback);
+                        }
+                    }
                 }
             }
             StreamMessage::ContentBlockStart { content_block, .. } => {
@@ -126,9 +134,14 @@ impl StreamProcessor {
                         parent_tool_use_id: parent_tool_use_id.clone(),
                     });
                 } else if content_block.block_type == "thinking" {
-                    // Start of a thinking block - mark state for thinking delta handling
+                    if !self.current_text_block.is_empty() {
+                        self.content_blocks.push(ContentBlockItem::Text {
+                            text: std::mem::take(&mut self.current_text_block),
+                        });
+                    }
                     self.in_thinking_block = true;
                     self.current_thinking_block.clear();
+                    self.thinking_block_started_at = Some(std::time::Instant::now());
                 }
             }
             StreamMessage::ContentBlockDelta { delta, .. } => {
@@ -142,8 +155,14 @@ impl StreamProcessor {
                 } else if delta.delta_type == "thinking_delta" {
                     // Thinking block delta - accumulate and emit
                     if let Some(text) = delta.text {
-                        self.current_thinking_block.push_str(&text);
-                        events.push(StreamEvent::Thinking(text));
+                        if !text.is_empty() {
+                            self.had_streaming_thinking_deltas = true;
+                            self.current_thinking_block.push_str(&text);
+                            events.push(StreamEvent::Thinking {
+                                text,
+                                block_index: self.content_blocks.len() as u64,
+                            });
+                        }
                     }
                 } else if delta.delta_type == "input_json_delta" {
                     if let Some(json) = delta.partial_json {
@@ -173,14 +192,6 @@ impl StreamProcessor {
                                     .map(|s| s.to_string()),
                                 model: args
                                     .get("model")
-                                    .and_then(|v| v.as_str())
-                                    .map(|s| s.to_string()),
-                                teammate_name: args
-                                    .get("name")
-                                    .and_then(|v| v.as_str())
-                                    .map(|s| s.to_string()),
-                                team_name: args
-                                    .get("team_name")
                                     .and_then(|v| v.as_str())
                                     .map(|s| s.to_string()),
                             });
@@ -219,10 +230,38 @@ impl StreamProcessor {
                     self.current_tool_id = None;
                     self.current_tool_input.clear();
                 } else if self.in_thinking_block {
-                    // End of thinking block - reset state
-                    // (thinking content was already emitted as chunks)
+                    if !self.current_text_block.is_empty() {
+                        self.content_blocks.push(ContentBlockItem::Text {
+                            text: std::mem::take(&mut self.current_text_block),
+                        });
+                    }
+                    if !self.current_thinking_block.is_empty() {
+                        let duration_ms = self
+                            .thinking_block_started_at
+                            .take()
+                            .map(|started_at| started_at.elapsed().as_millis() as u64);
+                        let block_index = self.content_blocks.len() as u64;
+                        self.content_blocks.push(ContentBlockItem::Thinking {
+                            text: std::mem::take(&mut self.current_thinking_block),
+                            duration_ms,
+                            reasoning_tokens: None,
+                        });
+                        events.push(StreamEvent::ThinkingSettled {
+                            block_index,
+                            duration_ms,
+                        });
+                    }
                     self.in_thinking_block = false;
-                    self.current_thinking_block.clear();
+                    self.thinking_block_started_at = None;
+                } else if !self.current_text_block.is_empty() {
+                    // Seal the delta-streamed text block here rather than waiting
+                    // for finish(). With --include-partial-messages the verbose
+                    // assistant summary is suppressed by the dedup guard below,
+                    // so this is the only path that puts streamed text into
+                    // content_blocks — and TurnComplete persists from there.
+                    self.content_blocks.push(ContentBlockItem::Text {
+                        text: std::mem::take(&mut self.current_text_block),
+                    });
                 }
             }
             StreamMessage::Result {
@@ -231,17 +270,31 @@ impl StreamProcessor {
                 errors,
                 subtype,
                 cost_usd,
+                usage,
                 ..
             } => {
-                if cost_usd > 0.0 {
-                    self.current_turn_usage.estimated_usd =
-                        Some(self.current_turn_usage.estimated_usd.unwrap_or(0.0) + cost_usd);
-                }
                 // Only capture session_id from top-level (lead's own) result events.
                 // Teammate result events carry a non-None parent_tool_use_id; capturing
                 // their session_id would overwrite the lead's session and cause --resume
                 // to open the teammate's context instead of the orchestrator's.
                 if parent_tool_use_id.is_none() {
+                    let estimated_usd = (cost_usd > 0.0).then_some(cost_usd);
+                    if let Some(usage) = usage {
+                        let terminal_usage = usage.into_agent_run_usage(estimated_usd);
+                        if !terminal_usage.is_empty() {
+                            self.current_turn_usage = terminal_usage;
+                            self.current_turn_usage_provenance =
+                                Some(UsageProvenance::ProviderTurnDelta);
+                        } else if let Some(cost_usd) = estimated_usd {
+                            self.current_turn_usage.estimated_usd = Some(cost_usd);
+                        }
+                    } else if let Some(cost_usd) = estimated_usd {
+                        self.current_turn_usage.estimated_usd = Some(cost_usd);
+                        if self.current_turn_usage_provenance.is_none() {
+                            self.current_turn_usage_provenance =
+                                Some(UsageProvenance::ProviderSnapshotFallback);
+                        }
+                    }
                     if let Some(ref id) = session_id {
                         self.session_id = session_id.clone();
                         events.push(StreamEvent::SessionId(id.clone()));
@@ -270,8 +323,14 @@ impl StreamProcessor {
                 message,
                 session_id,
             } => {
-                if let Some(usage) = message.usage.as_ref() {
-                    update_turn_usage_from_value(&mut self.current_turn_usage, usage);
+                if parent_tool_use_id.is_none() {
+                    if let Some(usage) = message.usage.as_ref() {
+                        update_turn_usage_from_value(&mut self.current_turn_usage, usage);
+                        if !self.current_turn_usage.is_empty() {
+                            self.current_turn_usage_provenance =
+                                Some(UsageProvenance::ProviderSnapshotFallback);
+                        }
+                    }
                 }
                 // Handle --verbose mode assistant messages (full content in one message)
                 for content in message.content {
@@ -308,14 +367,6 @@ impl StreamProcessor {
                                         .get("model")
                                         .and_then(|v| v.as_str())
                                         .map(|s| s.to_string()),
-                                    teammate_name: input
-                                        .get("name")
-                                        .and_then(|v| v.as_str())
-                                        .map(|s| s.to_string()),
-                                    team_name: input
-                                        .get("team_name")
-                                        .and_then(|v| v.as_str())
-                                        .map(|s| s.to_string()),
                                 });
                             }
 
@@ -345,8 +396,22 @@ impl StreamProcessor {
                             });
                         }
                         AssistantContent::Thinking { thinking } => {
-                            // Emit complete thinking block from verbose mode
-                            events.push(StreamEvent::Thinking(thinking));
+                            if !thinking.is_empty() && !self.had_streaming_thinking_deltas {
+                                let block_index = self.content_blocks.len() as u64;
+                                self.content_blocks.push(ContentBlockItem::Thinking {
+                                    text: thinking.clone(),
+                                    duration_ms: None,
+                                    reasoning_tokens: None,
+                                });
+                                events.push(StreamEvent::Thinking {
+                                    text: thinking,
+                                    block_index,
+                                });
+                                events.push(StreamEvent::ThinkingSettled {
+                                    block_index,
+                                    duration_ms: None,
+                                });
+                            }
                         }
                         AssistantContent::Other => {}
                     }
@@ -371,6 +436,8 @@ impl StreamProcessor {
                 output,
                 exit_code,
                 outcome,
+                estimated_tokens,
+                estimated_tokens_delta,
                 ..
             } => {
                 if let Some(ref id) = session_id {
@@ -379,6 +446,14 @@ impl StreamProcessor {
                 }
 
                 match subtype.as_deref() {
+                    Some("thinking_tokens") => {
+                        if let Some(estimated_tokens) = estimated_tokens {
+                            events.push(StreamEvent::ThinkingProgress {
+                                estimated_tokens,
+                                estimated_tokens_delta,
+                            });
+                        }
+                    }
                     Some("hook_started") => {
                         if let (Some(hid), Some(hname), Some(hevent)) =
                             (hook_id, hook_name, hook_event)
@@ -423,14 +498,14 @@ impl StreamProcessor {
                     if let UserContent::ToolResult {
                         tool_use_id,
                         content,
-                        is_error: _,
+                        is_error,
                     } = content
                     {
                         // Check if this is a Task tool_result by finding the matching tool_call
-                        let is_task_result = self
-                            .tool_calls
-                            .iter()
-                            .any(|tc| tc.id.as_ref() == Some(&tool_use_id) && (tc.name == "Task" || tc.name == "Agent"));
+                        let is_task_result = self.tool_calls.iter().any(|tc| {
+                            tc.id.as_ref() == Some(&tool_use_id)
+                                && (tc.name == "Task" || tc.name == "Agent")
+                        });
 
                         // Find the tool call by ID and update its result
                         if let Some(tool_call) = self
@@ -512,16 +587,13 @@ impl StreamProcessor {
                         events.push(StreamEvent::ToolResultReceived {
                             tool_use_id: tool_use_id.clone(),
                             result: content.clone(),
+                            is_error,
                             parent_tool_use_id: parent_tool_use_id.clone(),
                         });
 
                         // Check if this is a team event result.
                         // Use top-level tool_use_result (structured JSON from Claude Code stream)
                         // which contains the actual team metadata. The content field is just text.
-                        let team_data = tool_use_result.as_ref().unwrap_or(&content);
-                        if let Some(team_event) = Self::detect_team_event(&tool_use_id, team_data) {
-                            events.push(team_event);
-                        }
                     }
                 }
             }
@@ -550,16 +622,34 @@ impl StreamProcessor {
         self.current_tool_input.clear();
         self.in_thinking_block = false;
         self.current_thinking_block.clear();
+        self.thinking_block_started_at = None;
         self.had_streaming_text_deltas = false;
+        self.had_streaming_thinking_deltas = false;
         self.result_is_error = false;
         self.result_errors.clear();
         self.result_subtype = None;
         accumulate_usage(&mut self.finalized_usage, &self.current_turn_usage);
+        self.finalized_usage_provenance = combine_usage_provenance(
+            self.finalized_usage_provenance,
+            self.current_turn_usage_provenance,
+        );
         self.current_turn_usage = AgentRunUsage::default();
+        self.current_turn_usage_provenance = None;
     }
 
     pub fn current_turn_usage(&self) -> AgentRunUsage {
         self.current_turn_usage.clone()
+    }
+
+    pub fn current_turn_capture(&self) -> Option<UsageCapture> {
+        if self.current_turn_usage.is_empty() {
+            return None;
+        }
+        Some(UsageCapture::normalized(
+            self.current_turn_usage.clone(),
+            self.current_turn_usage_provenance
+                .unwrap_or(UsageProvenance::ProviderSnapshotFallback),
+        ))
     }
 
     /// Get the final result after stream is complete
@@ -577,10 +667,28 @@ impl StreamProcessor {
             content_blocks: self.content_blocks,
             session_id: self.session_id,
             usage: combined_usage(&self.finalized_usage, &self.current_turn_usage),
+            usage_provenance: combine_usage_provenance(
+                self.finalized_usage_provenance,
+                self.current_turn_usage_provenance,
+            ),
             is_error: self.result_is_error,
             errors: self.result_errors,
             error_subtype: self.result_subtype,
         }
+    }
+}
+
+fn combine_usage_provenance(
+    finalized: Option<UsageProvenance>,
+    current: Option<UsageProvenance>,
+) -> Option<UsageProvenance> {
+    match (finalized, current) {
+        (None, next) | (next, None) => next,
+        (Some(UsageProvenance::ProviderSnapshotFallback), _)
+        | (_, Some(UsageProvenance::ProviderSnapshotFallback)) => {
+            Some(UsageProvenance::ProviderSnapshotFallback)
+        }
+        _ => Some(UsageProvenance::ProviderTurnDelta),
     }
 }
 
@@ -620,7 +728,7 @@ fn update_max_usage_field(target: &mut Option<u64>, next: Option<u64>) {
 
 fn add_optional_u64(lhs: Option<u64>, rhs: Option<u64>) -> Option<u64> {
     match (lhs, rhs) {
-        (Some(left), Some(right)) => Some(left + right),
+        (Some(left), Some(right)) => Some(left.saturating_add(right)),
         (Some(left), None) => Some(left),
         (None, Some(right)) => Some(right),
         (None, None) => None,

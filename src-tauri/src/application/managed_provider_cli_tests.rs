@@ -87,6 +87,24 @@ fn custom_codex_wrapper_path_takes_launch_precedence() {
     assert!(probe.available);
     assert_eq!(probe.cli_version.as_deref(), Some("0.144.0"));
     assert!(probe.missing_core_exec_features.is_empty());
+    assert_eq!(
+        probe.supported_model_aliases,
+        Some(vec![
+            "gpt-5.5".to_string(),
+            "gpt-5.6-sol".to_string(),
+            "gpt-5.6-terra".to_string(),
+        ])
+    );
+    assert_eq!(
+        probe.supported_efforts,
+        Some(vec![
+            "low".to_string(),
+            "medium".to_string(),
+            "high".to_string(),
+            "xhigh".to_string(),
+            "max".to_string(),
+        ])
+    );
 }
 
 #[test]
@@ -359,6 +377,7 @@ fn managed_probe_error_falls_back_to_purpose_and_provider() {
         cli_version: None,
         supported_model_aliases: None,
         supported_efforts: None,
+        ultra_supported_models: Vec::new(),
         supports_fast_mode: false,
         fast_mode_supported_models: Vec::new(),
         error: None,
@@ -410,21 +429,7 @@ fn checked_rx_managed_codex_launch_path_accepts_available_cli() {
         .expect("test env mutex");
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let codex_path = temp_dir.path().join("codex");
-    write_executable(
-        &codex_path,
-        r#"#!/bin/sh
-if [ "$1" = "--version" ]; then
-  printf 'codex-cli 0.144.0\n'
-elif [ "$1" = "--help" ]; then
-  printf '%s\n' 'Codex CLI' 'Commands:' '  exec' '  resume' '  mcp' 'Options:' '  -c, --config <key=value>' '  -m, --model <MODEL>' '  -s, --sandbox <SANDBOX>' '      --search' '      --add-dir <DIR>'
-elif [ "$1" = "exec" ] && [ "$2" = "--help" ]; then
-  printf '%s\n' 'Run Codex non-interactively' 'Options:' '  -c, --config <key=value>' '  -m, --model <MODEL>' '  -s, --sandbox <SANDBOX>' '      --add-dir <DIR>' '      --json'
-else
-  printf 'unexpected args: %s\n' "$*" >&2
-  exit 64
-fi
-"#,
-    );
+    write_modern_codex_cli(&codex_path);
     let _override = override_managed_codex_binary_path_for_tests(codex_path.clone());
     let settings = provider_settings(
         AgentHarnessKind::Codex,
@@ -489,21 +494,7 @@ fn rx_managed_codex_runtime_probe_reports_available_modern_cli() {
         .expect("test env mutex");
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let codex_path = temp_dir.path().join("codex");
-    write_executable(
-        &codex_path,
-        r#"#!/bin/sh
-if [ "$1" = "--version" ]; then
-  printf 'codex-cli 0.144.0\n'
-elif [ "$1" = "--help" ]; then
-  printf '%s\n' 'Codex CLI' 'Commands:' '  exec' '  resume' '  mcp' 'Options:' '  -c, --config <key=value>' '  -m, --model <MODEL>' '  -s, --sandbox <SANDBOX>' '      --search' '      --add-dir <DIR>'
-elif [ "$1" = "exec" ] && [ "$2" = "--help" ]; then
-  printf '%s\n' 'Run Codex non-interactively' 'Options:' '  -c, --config <key=value>' '  -m, --model <MODEL>' '  -s, --sandbox <SANDBOX>' '      --add-dir <DIR>' '      --json'
-else
-  printf 'unexpected args: %s\n' "$*" >&2
-  exit 64
-fi
-"#,
-    );
+    write_modern_codex_cli(&codex_path);
     let _override = override_managed_codex_binary_path_for_tests(codex_path);
     let settings = provider_settings(
         AgentHarnessKind::Codex,
@@ -517,6 +508,24 @@ fi
     assert!(probe.available);
     assert_eq!(probe.cli_version.as_deref(), Some("0.144.0"));
     assert!(probe.missing_core_exec_features.is_empty());
+    assert_eq!(
+        probe.supported_model_aliases,
+        Some(vec![
+            "gpt-5.5".to_string(),
+            "gpt-5.6-sol".to_string(),
+            "gpt-5.6-terra".to_string(),
+        ])
+    );
+    assert_eq!(
+        probe.supported_efforts,
+        Some(vec![
+            "low".to_string(),
+            "medium".to_string(),
+            "high".to_string(),
+            "xhigh".to_string(),
+            "max".to_string(),
+        ])
+    );
     assert_eq!(probe.error, None);
 }
 
@@ -543,6 +552,12 @@ elif [ "$1" = "--help" ]; then
   printf '%s\n' 'Codex CLI' 'Commands:' '  exec' '  resume' '  mcp' 'Options:' '  -c, --config <key=value>' '  -m, --model <MODEL>' '  -s, --sandbox <SANDBOX>' '      --search' '      --add-dir <DIR>'
 elif [ "$1" = "exec" ] && [ "$2" = "--help" ]; then
   printf '%s\n' 'Run Codex non-interactively' 'Options:' '  -c, --config <key=value>' '  -m, --model <MODEL>' '  -s, --sandbox <SANDBOX>' '      --add-dir <DIR>' '      --json'
+elif [ "$1" = "features" ] && [ "$2" = "list" ]; then
+  printf '%s\n' 'fast_mode stable true'
+elif [ "$1" = "debug" ] && [ "$2" = "models" ] && [ -z "$3" ]; then
+  printf '%s\n' '{"models":[{"slug":"gpt-5.5","visibility":"list","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"}],"additional_speed_tiers":["fast"]},{"slug":"gpt-5.6-sol","visibility":"list","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"},{"effort":"ultra"}]},{"slug":"gpt-5.6-terra","visibility":"list","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"},{"effort":"ultra"}]}]}'
+elif [ "$1" = "debug" ] && [ "$2" = "models" ] && [ "$3" = "--bundled" ]; then
+  printf '%s\n' '{"models":[{"slug":"gpt-5.5","visibility":"list","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"}],"additional_speed_tiers":["fast"]}]}'
 else
   printf 'unexpected args: %s\n' "$*" >&2
   exit 64

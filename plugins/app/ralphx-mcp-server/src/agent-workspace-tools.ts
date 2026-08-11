@@ -5,12 +5,23 @@
  */
 
 import { Tool } from "@modelcontextprotocol/sdk/types.js";
+import { buildRuntimeIdentityTransportHeaders } from "./runtime-context.js";
+import type { TauriCallOptions } from "./tauri-client.js";
 
-type TauriPost = (path: string, body: Record<string, unknown>) => Promise<unknown>;
-type TauriGet = (path: string) => Promise<unknown>;
+type TauriPost = (
+  path: string,
+  body: Record<string, unknown>,
+  options?: TauriCallOptions,
+) => Promise<unknown>;
+type TauriGet = (
+  path: string,
+  options?: { headers?: Record<string, string> },
+) => Promise<unknown>;
 
 export type AgentWorkspaceToolRuntimeContext = {
   parentConversationId?: string;
+  conversationId?: string;
+  agentRunId?: string;
 };
 
 export const AGENT_WORKSPACE_TOOLS: Tool[] = [
@@ -127,7 +138,7 @@ export const AGENT_WORKSPACE_TOOLS: Tool[] = [
   {
     name: "get_workspace_review_context",
     description:
-      "Read the current general workspace Review context, including the selected review target, compact review packet, diff fingerprint, prior Review artifact version, and freshness state. " +
+      "Read the current general workspace Review context, including the selected review target, compact review packet, prior Review artifact freshness, and backend-derived runtime mutation authority. Artifact freshness does not determine whether an active owned run may refresh it. " +
       "Call this first when running as the workspace Review artifact writer.",
     inputSchema: {
       type: "object",
@@ -141,9 +152,60 @@ export const AGENT_WORKSPACE_TOOLS: Tool[] = [
     },
   },
   {
+    name: "list_workspace_review_files",
+    description:
+      "Page the complete current Workspace Review changed-file inventory when the compact context reports truncation. " +
+      "The backend binds every cursor to the active reviewer runtime and current target/source snapshot.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        cursor: {
+          type: "string",
+          description: "Opaque continuation cursor returned by the previous file page.",
+        },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 200,
+          description: "Optional bounded number of changed files to return.",
+        },
+      },
+    },
+  },
+  {
+    name: "get_workspace_review_diff_page",
+    description:
+      "Read a bounded structured diff page for one current Workspace Review file/source. " +
+      "For the first page provide path and source; for continuation provide only the opaque cursor and optional limit.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "First-page path selected from the current review file inventory.",
+        },
+        source: {
+          type: "string",
+          enum: ["selected_source", "committed", "staged", "unstaged"],
+          description: "First-page exact diff source listed for the selected path.",
+        },
+        cursor: {
+          type: "string",
+          description: "Opaque continuation cursor returned by the previous diff page.",
+        },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 400,
+          description: "Optional bounded number of structured diff rows to return.",
+        },
+      },
+    },
+  },
+  {
     name: "write_workspace_review_artifact",
     description:
-      "Create a new version of the durable Markdown Review artifact for the current agent workspace review target. " +
+      "Create new versions of the durable Workspace Review Overview and Requested Changes artifacts for the current target. " +
       "Call this after reviewing the selected_source or workspace_delta review packet and any targeted read-only follow-up.",
     inputSchema: {
       type: "object",
@@ -160,7 +222,17 @@ export const AGENT_WORKSPACE_TOOLS: Tool[] = [
         },
         content: {
           type: "string",
-          description: "Full Markdown content for the durable Review tab artifact.",
+          description: "Full Markdown content for the durable Overview artifact.",
+        },
+        requested_changes_title: {
+          type: "string",
+          description:
+            "Optional Requested Changes artifact title. Usually omit it; RalphX derives it from the Overview title.",
+        },
+        requested_changes_content: {
+          type: "string",
+          description:
+            "Full Markdown repair blueprint. For blocking reviews, provide ordered, codebase-grounded implementation steps with exact files/symbols, behavior, failure edges, and focused validation. For clean reviews, state that no changes are requested.",
         },
         target_scope: {
           type: "string",
@@ -175,12 +247,14 @@ export const AGENT_WORKSPACE_TOOLS: Tool[] = [
           type: "string",
           description: "Target diff fingerprint from get_workspace_review_context.",
         },
-        created_by_run_id: {
-          type: "string",
-          description: "monitor.last_run_id from get_workspace_review_context.",
-        },
       },
-      required: ["content", "target_scope", "head_sha", "diff_fingerprint", "created_by_run_id"],
+      required: [
+        "content",
+        "requested_changes_content",
+        "target_scope",
+        "head_sha",
+        "diff_fingerprint",
+      ],
     },
   },
   {
@@ -208,10 +282,6 @@ export const AGENT_WORKSPACE_TOOLS: Tool[] = [
         diff_fingerprint: {
           type: "string",
           description: "Target diff fingerprint from get_workspace_review_context.",
-        },
-        created_by_run_id: {
-          type: "string",
-          description: "monitor.last_run_id from get_workspace_review_context.",
         },
         annotations: {
           type: "array",
@@ -278,7 +348,7 @@ export const AGENT_WORKSPACE_TOOLS: Tool[] = [
           },
         },
       },
-      required: ["target_scope", "head_sha", "diff_fingerprint", "created_by_run_id", "annotations"],
+      required: ["target_scope", "head_sha", "diff_fingerprint", "annotations"],
     },
   },
   {
@@ -307,12 +377,8 @@ export const AGENT_WORKSPACE_TOOLS: Tool[] = [
           type: "string",
           description: "Optional blocker when review could not be completed safely.",
         },
-        created_by_run_id: {
-          type: "string",
-          description: "monitor.last_run_id from get_workspace_review_context.",
-        },
       },
-      required: ["summary", "created_by_run_id"],
+      required: ["summary"],
     },
   },
   {
@@ -469,6 +535,18 @@ export const AGENT_WORKSPACE_TOOLS: Tool[] = [
           type: "string",
           description: "Optional blocker explanation when the PR fix cannot be completed safely",
         },
+        resolution: {
+          type: "string",
+          enum: ["fixed", "transient_ci", "pre_existing_on_base", "needs_human"],
+          description:
+            "Use fixed only after pushing a real fix. transient_ci is only for GitHub Actions infrastructure failures; pre_existing_on_base requires evidence the failure reproduces on base; needs_human is for a blocker needing user action. Classify honestly rather than fabricating a commit.",
+        },
+        fix_commit_sha: {
+          type: "string",
+          pattern: "^[0-9a-f]{40}$",
+          description:
+            "Full 40-character SHA of the current committed workspace HEAD. Required for a fixed completion; RalphX verifies the actual branch head changed from dispatch.",
+        },
       },
       required: ["conversation_id", "summary"],
     },
@@ -476,46 +554,42 @@ export const AGENT_WORKSPACE_TOOLS: Tool[] = [
   {
     name: "complete_agent_workspace_repair",
     description:
-      "Signal that an agent workspace publish/update repair has been committed, then let RalphX verify the repair and continue the original workflow. " +
-      "Call this only after the workspace branch contains the current base, the repair is committed, and the worktree is clean.",
+      "Signal that an agent workspace publish/update repair is complete, then let RalphX verify the workspace and continue the original workflow. " +
+      "Provide a blocker instead when the repair cannot be completed safely.",
     inputSchema: {
       type: "object",
       properties: {
-        conversation_id: {
-          type: "string",
-          description: "The agent workspace conversation ID from the repair prompt",
-        },
-        repair_commit_sha: {
-          type: "string",
-          description: "Full 40-character SHA of the current workspace HEAD (from `git rev-parse HEAD`)",
-        },
-        resolved_base_ref: {
-          type: "string",
-          description: "The base ref that was resolved into the workspace branch",
-        },
-        resolved_base_commit: {
-          type: "string",
-          description: "Full 40-character SHA of the resolved base ref",
-        },
         summary: {
           type: "string",
+          minLength: 1,
           description: "Brief summary of the repair performed",
         },
+        blocker: {
+          type: "string",
+          minLength: 1,
+          description: "Optional human-readable blocker when the repair cannot be completed safely",
+        },
+        resolution: {
+          type: "string",
+          enum: ["fixed", "transient_ci", "pre_existing_on_base", "needs_human"],
+          description:
+            "Classify the repair outcome honestly: fixed after a real repair, transient_ci only for GitHub Actions infrastructure failures, pre_existing_on_base with evidence the failure reproduces on base, or needs_human for a blocker requiring user action.",
+        },
+        fix_commit_sha: {
+          type: "string",
+          pattern: "^[0-9a-f]{40}$",
+          description:
+            "Full 40-character SHA of the current committed workspace HEAD. Required for a fixed repair completion; RalphX verifies the actual branch head changed from dispatch.",
+        },
       },
-      required: [
-        "conversation_id",
-        "repair_commit_sha",
-        "resolved_base_ref",
-        "resolved_base_commit",
-        "summary",
-      ],
+      required: ["summary"],
+      additionalProperties: false,
     },
   },
   {
     name: "submit_agent_workspace_pr_description",
     description:
-      "Submit the completed pull request title/body for an agent workspace publish. " +
-      "Call this exactly once after writing a reviewer-focused body that follows the supplied pull request template.",
+      "Submit a preserve-or-patch decision for an agent workspace pull request's metadata.",
     inputSchema: {
       type: "object",
       properties: {
@@ -525,14 +599,20 @@ export const AGENT_WORKSPACE_TOOLS: Tool[] = [
         },
         title: {
           type: "string",
-          description: "Optional pull request title. Omit unless the prompt context supports a better title.",
+          description: "Optional improved pull request title; only valid for a patch decision.",
         },
         body_markdown: {
           type: "string",
-          description: "Complete Markdown pull request body following the supplied template",
+          description:
+            "Optional reviewer-focused editable Markdown body; valid only for a new PR or when the existing PR prompt marks the editable body patch_allowed=true. Exclude RalphX-managed Plan/signature content and every preserved trailing integration block.",
+        },
+        decision: {
+          type: "string",
+          enum: ["preserve", "patch"],
+          description: "Preserve existing metadata, or patch one or both fields.",
         },
       },
-      required: ["conversation_id", "body_markdown"],
+      required: ["conversation_id", "decision"],
     },
   },
 ];
@@ -571,6 +651,10 @@ export async function callAgentWorkspaceTool(
       return callGetPrReviewContextTool(callTauriGet, args, runtimeContext);
     case "get_workspace_review_context":
       return callGetWorkspaceReviewContextTool(callTauriGet, args, runtimeContext);
+    case "list_workspace_review_files":
+      return callListWorkspaceReviewFilesTool(callTauriGet, args, runtimeContext);
+    case "get_workspace_review_diff_page":
+      return callGetWorkspaceReviewDiffPageTool(callTauriGet, args, runtimeContext);
     case "write_workspace_review_artifact":
       return callWriteWorkspaceReviewArtifactTool(callTauri, args, runtimeContext);
     case "write_workspace_review_hunk_annotations":
@@ -590,9 +674,9 @@ export async function callAgentWorkspaceTool(
     case "read_agent_workspace_pr_comment":
       return callReadAgentWorkspacePrCommentTool(callTauriGet, args);
     case "complete_agent_workspace_pr_fix":
-      return callCompleteAgentWorkspacePrFixTool(callTauri, args);
+      return callCompleteAgentWorkspacePrFixTool(callTauri, args, runtimeContext);
     case "complete_agent_workspace_repair":
-      return callCompleteAgentWorkspaceRepairTool(callTauri, args);
+      return callCompleteAgentWorkspaceRepairTool(callTauri, args, runtimeContext);
     case "submit_agent_workspace_pr_description":
       return callSubmitAgentWorkspacePrDescriptionTool(callTauri, args);
     default:
@@ -623,6 +707,24 @@ function resolveAgentWorkspaceConversationId(
   throw new Error(
     `${toolName} requires conversation_id because RalphX did not provide the current workspace conversation id to the MCP runtime context.`
   );
+}
+
+function resolveRuntimeAgentWorkspaceConversationId(
+  toolName: string,
+  runtimeContext?: AgentWorkspaceToolRuntimeContext
+): string {
+  const conversationId = runtimeContext?.parentConversationId?.trim() ?? "";
+  if (conversationId.length > 0) return conversationId;
+  throw new Error(
+    `${toolName} requires the current agent workspace conversation from runtime context`
+  );
+}
+
+function resolveWorkspaceReviewCallerRunId(
+  runtimeContext?: AgentWorkspaceToolRuntimeContext
+): string | undefined {
+  const runId = runtimeContext?.agentRunId?.trim() ?? "";
+  return runId.length > 0 ? runId : undefined;
 }
 
 export async function callGetAgentWorkspacePublishStatusTool(
@@ -672,6 +774,7 @@ export async function callUpdateAgentWorkspaceFromBaseTool(
     base_ref_kind,
     base_ref,
     base_display_name,
+    created_by_run_id: resolveWorkspaceReviewCallerRunId(runtimeContext),
   });
 }
 
@@ -719,9 +822,75 @@ export async function callGetWorkspaceReviewContextTool(
     args,
     runtimeContext
   );
-  return callTauriGet(
-    `agent-workspaces/${conversation_id}/workspace-review-context?include_review_packet=true`
+  const path =
+    `agent-workspaces/${conversation_id}/workspace-review-context?include_review_packet=true`;
+  const headers = buildRuntimeIdentityTransportHeaders({
+    agentRunId: runtimeContext?.agentRunId,
+    conversationId: runtimeContext?.conversationId,
+  });
+  return headers ? callTauriGet(path, { headers }) : callTauriGet(path);
+}
+
+export async function callListWorkspaceReviewFilesTool(
+  callTauriGet: TauriGet,
+  args: unknown,
+  runtimeContext?: AgentWorkspaceToolRuntimeContext
+): Promise<unknown> {
+  const conversation_id = resolveRuntimeAgentWorkspaceConversationId(
+    "list_workspace_review_files",
+    runtimeContext
   );
+  const pageArgs = (args && typeof args === "object" ? args : {}) as {
+    cursor?: string;
+    limit?: number;
+  };
+  const query = new URLSearchParams();
+  if (typeof pageArgs.cursor === "string") query.set("cursor", pageArgs.cursor);
+  if (typeof pageArgs.limit === "number") query.set("limit", String(pageArgs.limit));
+  const suffix = query.size > 0 ? `?${query.toString()}` : "";
+  const path = `agent-workspaces/${conversation_id}/workspace-review-files${suffix}`;
+  const headers = buildRuntimeIdentityTransportHeaders({
+    agentRunId: runtimeContext?.agentRunId,
+    conversationId: runtimeContext?.conversationId,
+  });
+  return headers ? callTauriGet(path, { headers }) : callTauriGet(path);
+}
+
+export async function callGetWorkspaceReviewDiffPageTool(
+  callTauriGet: TauriGet,
+  args: unknown,
+  runtimeContext?: AgentWorkspaceToolRuntimeContext
+): Promise<unknown> {
+  const conversation_id = resolveRuntimeAgentWorkspaceConversationId(
+    "get_workspace_review_diff_page",
+    runtimeContext
+  );
+  const pageArgs = (args && typeof args === "object" ? args : {}) as {
+    path?: string;
+    source?: string;
+    cursor?: string;
+    limit?: number;
+  };
+  const hasCursor = typeof pageArgs.cursor === "string" && pageArgs.cursor.length > 0;
+  const hasPath = typeof pageArgs.path === "string" && pageArgs.path.length > 0;
+  const hasSource = typeof pageArgs.source === "string" && pageArgs.source.length > 0;
+  if ((hasCursor && (hasPath || hasSource)) || (!hasCursor && !(hasPath && hasSource))) {
+    throw new Error(
+      "get_workspace_review_diff_page requires either path and source for the first page, or cursor for continuation"
+    );
+  }
+  const query = new URLSearchParams();
+  if (hasPath) query.set("path", pageArgs.path!);
+  if (hasSource) query.set("source", pageArgs.source!);
+  if (hasCursor) query.set("cursor", pageArgs.cursor!);
+  if (typeof pageArgs.limit === "number") query.set("limit", String(pageArgs.limit));
+  const suffix = query.size > 0 ? `?${query.toString()}` : "";
+  const path = `agent-workspaces/${conversation_id}/workspace-review-diff-page${suffix}`;
+  const headers = buildRuntimeIdentityTransportHeaders({
+    agentRunId: runtimeContext?.agentRunId,
+    conversationId: runtimeContext?.conversationId,
+  });
+  return headers ? callTauriGet(path, { headers }) : callTauriGet(path);
 }
 
 export async function callWriteWorkspaceReviewArtifactTool(
@@ -737,18 +906,21 @@ export async function callWriteWorkspaceReviewArtifactTool(
   const artifactArgs = (args && typeof args === "object" ? args : {}) as {
     title?: string;
     content?: string;
+    requested_changes_title?: string;
+    requested_changes_content?: string;
     target_scope?: string;
     head_sha?: string;
     diff_fingerprint?: string;
-    created_by_run_id?: string;
   };
   return callTauri(`agent-workspaces/${conversation_id}/workspace-review-artifact`, {
     title: artifactArgs.title,
     content: artifactArgs.content,
+    requested_changes_title: artifactArgs.requested_changes_title,
+    requested_changes_content: artifactArgs.requested_changes_content,
     target_scope: artifactArgs.target_scope,
     head_sha: artifactArgs.head_sha,
     diff_fingerprint: artifactArgs.diff_fingerprint,
-    created_by_run_id: artifactArgs.created_by_run_id,
+    created_by_run_id: resolveWorkspaceReviewCallerRunId(runtimeContext),
   });
 }
 
@@ -766,14 +938,13 @@ export async function callWriteWorkspaceReviewHunkAnnotationsTool(
     target_scope?: string;
     head_sha?: string;
     diff_fingerprint?: string;
-    created_by_run_id?: string;
     annotations?: unknown;
   };
   return callTauri(`agent-workspaces/${conversation_id}/workspace-review-hunk-annotations`, {
     target_scope: annotationArgs.target_scope,
     head_sha: annotationArgs.head_sha,
     diff_fingerprint: annotationArgs.diff_fingerprint,
-    created_by_run_id: annotationArgs.created_by_run_id,
+    created_by_run_id: resolveWorkspaceReviewCallerRunId(runtimeContext),
     annotations: annotationArgs.annotations,
   });
 }
@@ -792,13 +963,12 @@ export async function callCompleteWorkspaceReviewRunTool(
     outcome?: string;
     summary?: string;
     blocker?: string;
-    created_by_run_id?: string;
   };
   return callTauri(`agent-workspaces/${conversation_id}/complete-workspace-review-run`, {
     outcome: runArgs.outcome,
     summary: runArgs.summary,
     blocker: runArgs.blocker,
-    created_by_run_id: runArgs.created_by_run_id,
+    created_by_run_id: resolveWorkspaceReviewCallerRunId(runtimeContext),
   });
 }
 
@@ -895,57 +1065,72 @@ export async function callReadAgentWorkspacePrCommentTool(
 
 export async function callCompleteAgentWorkspacePrFixTool(
   callTauri: TauriPost,
-  args: unknown
+  args: unknown,
+  runtimeContext?: AgentWorkspaceToolRuntimeContext
 ): Promise<unknown> {
-  const { conversation_id, summary, blocker } = args as {
+  const { conversation_id, summary, blocker, resolution, fix_commit_sha } = args as {
     conversation_id: string;
     summary: string;
     blocker?: string;
+    resolution?: string;
+    fix_commit_sha?: string;
   };
 
   return callTauri(`agent-workspaces/${conversation_id}/complete-pr-fix`, {
     summary,
     blocker,
+    resolution,
+    fix_commit_sha,
+    created_by_run_id: resolveWorkspaceReviewCallerRunId(runtimeContext),
   });
 }
 
 export async function callCompleteAgentWorkspaceRepairTool(
   callTauri: TauriPost,
-  args: unknown
+  args: unknown,
+  runtimeContext?: AgentWorkspaceToolRuntimeContext,
 ): Promise<unknown> {
-  const {
-    conversation_id,
-    repair_commit_sha,
-    resolved_base_ref,
-    resolved_base_commit,
-    summary,
-  } = args as {
-    conversation_id: string;
-    repair_commit_sha: string;
-    resolved_base_ref: string;
-    resolved_base_commit: string;
+  const { summary, blocker, resolution, fix_commit_sha } = (args && typeof args === "object" ? args : {}) as {
     summary: string;
+    blocker?: string;
+    resolution?: string;
+    fix_commit_sha?: string;
   };
+  const conversation_id = resolveRuntimeAgentWorkspaceConversationId(
+    "complete_agent_workspace_repair",
+    runtimeContext,
+  );
+  const headers = buildRuntimeIdentityTransportHeaders({
+    agentRunId: runtimeContext?.agentRunId,
+    conversationId: runtimeContext?.conversationId,
+  });
+  if (!headers) {
+    throw new Error(
+      "complete_agent_workspace_repair requires trusted agent run and conversation identity from runtime context",
+    );
+  }
 
   return callTauri(`agent-workspaces/${conversation_id}/complete-repair`, {
-    repair_commit_sha,
-    resolved_base_ref,
-    resolved_base_commit,
     summary,
-  });
+    blocker,
+    ...(resolution === undefined ? {} : { resolution }),
+    ...(fix_commit_sha === undefined ? {} : { reported_fix_commit_sha: fix_commit_sha }),
+  }, { headers });
 }
 
 export async function callSubmitAgentWorkspacePrDescriptionTool(
   callTauri: TauriPost,
   args: unknown
 ): Promise<unknown> {
-  const { conversation_id, title, body_markdown } = args as {
+  const { conversation_id, decision, title, body_markdown } = args as {
     conversation_id: string;
+    decision: "preserve" | "patch";
     title?: string;
-    body_markdown: string;
+    body_markdown?: string;
   };
 
   return callTauri(`agent-workspaces/${conversation_id}/pr-description`, {
+    decision,
     title,
     body_markdown,
   });

@@ -4,15 +4,23 @@
 use serde::{Deserialize, Serialize};
 
 fn default_auto_create_followup_agent_conversation() -> bool {
-    true
+    false
 }
 
 fn default_require_workspace_review() -> bool {
     true
 }
 
+fn default_autofix_workspace_review_blocking_findings() -> bool {
+    true
+}
+
 fn default_run_task_validations() -> bool {
     true
+}
+
+fn default_workspace_review_fixer_cycle_cap() -> i64 {
+    3
 }
 
 /// Global review settings stored in project settings
@@ -22,7 +30,7 @@ fn default_run_task_validations() -> bool {
 /// - Whether to auto-create fix tasks
 /// - Human review requirements
 /// - Max fix attempts before giving up
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewSettings {
     /// Master toggle for AI review system
     /// Default: true
@@ -47,6 +55,15 @@ pub struct ReviewSettings {
     #[serde(default = "default_require_workspace_review")]
     pub require_workspace_review: bool,
 
+    /// Automatically spawn the workspace repair agent when Workspace Review blocks publishing
+    /// Default: true
+    #[serde(default = "default_autofix_workspace_review_blocking_findings")]
+    pub autofix_workspace_review_blocking_findings: bool,
+
+    /// Maximum automatic workspace Review fixer cycles per workspace. Zero disables auto-routing.
+    #[serde(default = "default_workspace_review_fixer_cycle_cap")]
+    pub workspace_review_fixer_cycle_cap: i64,
+
     /// Allow task execution pipeline agents to run/cache backend task validation
     /// Default: true
     #[serde(default = "default_run_task_validations")]
@@ -61,9 +78,15 @@ pub struct ReviewSettings {
     pub max_revision_cycles: u32,
 
     /// Automatically create visible follow-up Agent conversations for eligible drift/issues
-    /// Default: true
+    /// Default: false
     #[serde(default = "default_auto_create_followup_agent_conversation")]
     pub auto_create_followup_agent_conversation: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EffectiveWorkspaceReviewAutomation {
+    pub autofix_blocking_findings: bool,
+    pub auto_review: bool,
 }
 
 impl Default for ReviewSettings {
@@ -74,15 +97,28 @@ impl Default for ReviewSettings {
             require_fix_approval: false,
             require_human_review: false,
             require_workspace_review: true,
+            autofix_workspace_review_blocking_findings: true,
+            workspace_review_fixer_cycle_cap: 3,
             run_task_validations: true,
             max_fix_attempts: 3,
             max_revision_cycles: 5,
-            auto_create_followup_agent_conversation: true,
+            auto_create_followup_agent_conversation: false,
         }
     }
 }
 
 impl ReviewSettings {
+    pub fn effective_workspace_review_automation(
+        &self,
+        workspace_override: Option<bool>,
+    ) -> EffectiveWorkspaceReviewAutomation {
+        EffectiveWorkspaceReviewAutomation {
+            autofix_blocking_findings: workspace_override
+                .unwrap_or(self.autofix_workspace_review_blocking_findings),
+            auto_review: workspace_override.unwrap_or(self.require_workspace_review),
+        }
+    }
+
     /// Create review settings with AI review disabled
     pub fn ai_disabled() -> Self {
         Self {

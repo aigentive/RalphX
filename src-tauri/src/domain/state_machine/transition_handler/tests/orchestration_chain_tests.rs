@@ -5,7 +5,7 @@
 // Mock agent spawning only → verify call_count() and ChatContextType::Merge.
 //
 // Paths tested:
-//   B2: Normal merge conflict → Merging + merger agent spawned
+//   B2: Source freshness conflict → UpdatingTaskBranch + branch updater spawned
 //   C1: AutoFix validation failure → Merging + validation_recovery=true + merger agent spawned
 //   TOCTOU: Metadata caching at dispatch (merge_target_branch/merge_source_branch in metadata)
 
@@ -32,12 +32,16 @@ fn make_services_with_tracked_chat(
     project_repo: Arc<MemoryProjectRepository>,
 ) -> (Arc<MockChatService>, TaskServices) {
     let chat_service = Arc::new(MockChatService::new());
-    let services = TaskServices::new(
-        Arc::new(MockAgentSpawner::new()) as Arc<dyn AgentSpawner>,
-        Arc::new(MockEventEmitter::new()) as Arc<dyn EventEmitter>,
-        Arc::new(MockNotifier::new()) as Arc<dyn Notifier>,
-        Arc::new(MockDependencyManager::new()) as Arc<dyn DependencyManager>,
-        Arc::new(MockReviewStarter::new()) as Arc<dyn ReviewStarter>,
+    let services = with_test_branch_update_authority(
+        TaskServices::new(
+            Arc::new(MockAgentSpawner::new()) as Arc<dyn AgentSpawner>,
+            Arc::new(MockEventEmitter::new()) as Arc<dyn EventEmitter>,
+            Arc::new(MockNotifier::new()) as Arc<dyn Notifier>,
+            Arc::new(MockDependencyManager::new()) as Arc<dyn DependencyManager>,
+            Arc::new(MockReviewStarter::new()) as Arc<dyn ReviewStarter>,
+            Arc::clone(&chat_service) as Arc<dyn ChatService>,
+        ),
+        Arc::clone(&task_repo) as Arc<dyn TaskRepository>,
         Arc::clone(&chat_service) as Arc<dyn ChatService>,
     )
     .with_task_scheduler(Arc::new(MockTaskScheduler::new()) as Arc<dyn TaskScheduler>)
@@ -47,23 +51,21 @@ fn make_services_with_tracked_chat(
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// B2: Normal merge conflict (PendingMerge → Merging + agent spawned)
+// B2: Source freshness conflict (PendingMerge → UpdatingTaskBranch + agent spawned)
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// B2: Normal merge conflict → task transitions to Merging AND a merger agent is spawned.
+/// B2: A source freshness conflict routes to the dedicated task-branch update state
+/// and spawns the branch updater before the merge strategy is allowed to run.
 ///
 /// Orchestration chain:
 ///   on_enter(PendingMerge)
 ///   → attempt_programmatic_merge
-///   → MergeStrategy::Merge → MergeOutcome::NeedsAgent (conflicting file on both branches)
-///   → handle_outcome_needs_agent
-///   → task.internal_status = Merging
-///   → chat_service.send_message(ChatContextType::Merge, task_id, ...)  ← verified by call_count
-///
-/// The existing `test_merge_with_conflict_transitions_to_merging` in real_git_integration.rs
-/// only asserts status. This test additionally wires MockChatService and verifies call_count >= 1.
+///   → dedicated freshness checkpoint detects task branch is stale
+///   → programmatic task-branch update reports conflicts
+///   → task.internal_status = UpdatingTaskBranch
+///   → chat_service.send_message(ChatContextType::BranchUpdate, task_id, ...)
 #[tokio::test]
-async fn b2_merge_conflict_transitions_to_merging_and_spawns_agent() {
+async fn b2_source_freshness_conflict_transitions_to_task_update_and_spawns_agent() {
     let git_repo = setup_real_git_repo();
 
     // Create a conflicting commit on main: feature.rs was added on the task branch,
@@ -111,15 +113,14 @@ async fn b2_merge_conflict_transitions_to_merging_and_spawns_agent() {
     let updated = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
     assert_eq!(
         updated.internal_status,
-        InternalStatus::Merging,
-        "Merge conflict must transition task to Merging. Got {:?}. Metadata: {:?}",
+        InternalStatus::UpdatingTaskBranch,
+        "Source freshness conflict must transition task to UpdatingTaskBranch. Got {:?}. Metadata: {:?}",
         updated.internal_status,
         updated.metadata,
     );
     assert!(
         chat_service.call_count() >= 1,
-        "Merge conflict must spawn a merger agent (call_count={}). \
-         handle_outcome_needs_agent must call chat_service.send_message(ChatContextType::Merge, ...).",
+        "Source freshness conflict must spawn a branch updater (call_count={}).",
         chat_service.call_count(),
     );
 }

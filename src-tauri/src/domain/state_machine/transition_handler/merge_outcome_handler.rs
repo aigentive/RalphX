@@ -19,9 +19,13 @@ use crate::domain::entities::{
     InternalStatus, MergeValidationMode, Project, Task, TaskId,
 };
 use crate::domain::repositories::{PlanBranchRepository, TaskRepository};
+use crate::domain::state_machine::services::{NotificationContext, Notifier, TaskNotification};
 
-use super::merge_completion::complete_merge_internal_with_pr_sync;
-use super::merge_helpers::{compute_merge_worktree_path, parse_metadata};
+use super::merge_completion::complete_merge_internal_with_pr_sync_and_notifier;
+use super::merge_helpers::{
+    compute_merge_worktree_path, is_pr_branch_publication_conflict_routed_error, parse_metadata,
+    task_has_pr_branch_publication_conflict,
+};
 use super::merge_strategies::MergeOutcome;
 use super::merge_validation::{
     emit_merge_progress, extract_cached_validation, format_validation_warn_metadata,
@@ -117,7 +121,18 @@ async fn transition_to_merge_incomplete(
     task_id_str: &str,
     task_repo: &Arc<dyn TaskRepository>,
     event_emitter: &Arc<dyn super::super::services::EventEmitter>,
+    notifier: &Arc<dyn Notifier>,
 ) {
+    // `complete_merge_internal_with_pr_sync_and_notifier` can already have committed
+    // this terminal state after a PR-publication failure. Preserve its history-id-scoped
+    // notification instead of writing a duplicate MergeIncomplete entry/effect.
+    if task.internal_status == InternalStatus::MergeIncomplete {
+        event_emitter
+            .emit_status_change(task_id_str, "pending_merge", "merge_incomplete")
+            .await;
+        return;
+    }
+
     task.internal_status = InternalStatus::MergeIncomplete;
     task.touch();
 
@@ -125,7 +140,7 @@ async fn transition_to_merge_incomplete(
         tracing::error!(error = %e, "Failed to update task to MergeIncomplete status");
         return;
     }
-    if let Err(e) = task_repo
+    let history_entry_id = match task_repo
         .persist_status_change(
             task_id,
             InternalStatus::PendingMerge,
@@ -134,23 +149,26 @@ async fn transition_to_merge_incomplete(
         )
         .await
     {
-        tracing::warn!(error = %e, "Failed to record merge incomplete transition (non-fatal)");
-    }
+        Ok(history_entry_id) => history_entry_id,
+        Err(error) => {
+            tracing::warn!(error = %error, "Failed to record merge incomplete transition; skipping notification effect");
+            return;
+        }
+    };
+    notifier
+        .notify(
+            NotificationContext {
+                task: task.clone(),
+                history_entry_id,
+                project_id: task.project_id.clone(),
+            },
+            TaskNotification::StateEntered(InternalStatus::MergeIncomplete),
+        )
+        .await;
     event_emitter
         .emit_status_change(task_id_str, "pending_merge", "merge_incomplete")
         .await;
 }
-
-/// Patterns that indicate transient git errors (lock contention, concurrent access).
-/// These match the patterns in `git_cmd::TRANSIENT_PATTERNS` plus additional merge-specific ones.
-// NOTE: All patterns must be lowercase — comparison uses .to_lowercase() on error messages
-const TRANSIENT_GIT_PATTERNS: &[&str] = &[
-    "index.lock",
-    "unable to create",
-    "cannot lock ref",
-    "fetch_head",
-    "shallow file has changed",
-];
 
 /// Classify whether a merge error is transient (worth retrying immediately)
 /// vs permanent (should go to MergeIncomplete for reconciliation).
@@ -158,11 +176,16 @@ const TRANSIENT_GIT_PATTERNS: &[&str] = &[
 /// Transient: lock contention, index.lock, concurrent ref updates
 /// Permanent: not a git repo, merge conflicts, unrelated histories
 pub(super) fn is_transient_merge_error(error: &crate::error::AppError) -> bool {
-    if !matches!(error, crate::error::AppError::GitOperation(_)) {
-        return false;
-    }
-    let msg = error.to_string().to_lowercase();
-    TRANSIENT_GIT_PATTERNS.iter().any(|pat| msg.contains(pat))
+    matches!(
+        git_cmd::classify_git_failure_source(error),
+        MergeFailureSource::TransientGit | MergeFailureSource::LockContention
+    )
+}
+
+pub(in crate::domain::state_machine::transition_handler) fn classify_merge_failure_source(
+    error: &crate::error::AppError,
+) -> MergeFailureSource {
+    git_cmd::classify_git_failure_source(error)
 }
 
 impl<'a> super::TransitionHandler<'a> {
@@ -178,9 +201,20 @@ impl<'a> super::TransitionHandler<'a> {
                 merge_path,
             } => {
                 self.handle_outcome_success(
-                    super::TaskCore { task: &mut *ctx.task, task_id: ctx.task_id, task_id_str: ctx.task_id_str, task_repo: ctx.task_repo },
-                    super::BranchPair { source_branch: ctx.source_branch, target_branch: ctx.target_branch },
-                    super::ProjectCtx { project: ctx.project, repo_path: ctx.repo_path },
+                    super::TaskCore {
+                        task: &mut *ctx.task,
+                        task_id: ctx.task_id,
+                        task_id_str: ctx.task_id_str,
+                        task_repo: ctx.task_repo,
+                    },
+                    super::BranchPair {
+                        source_branch: ctx.source_branch,
+                        target_branch: ctx.target_branch,
+                    },
+                    super::ProjectCtx {
+                        project: ctx.project,
+                        repo_path: ctx.repo_path,
+                    },
                     ctx.plan_branch_repo,
                     &commit_sha,
                     &merge_path,
@@ -193,9 +227,20 @@ impl<'a> super::TransitionHandler<'a> {
                 merge_worktree,
             } => {
                 self.handle_outcome_needs_agent(
-                    super::TaskCore { task: &mut *ctx.task, task_id: ctx.task_id, task_id_str: ctx.task_id_str, task_repo: ctx.task_repo },
-                    super::BranchPair { source_branch: ctx.source_branch, target_branch: ctx.target_branch },
-                    super::ProjectCtx { project: ctx.project, repo_path: ctx.repo_path },
+                    super::TaskCore {
+                        task: &mut *ctx.task,
+                        task_id: ctx.task_id,
+                        task_id_str: ctx.task_id_str,
+                        task_repo: ctx.task_repo,
+                    },
+                    super::BranchPair {
+                        source_branch: ctx.source_branch,
+                        target_branch: ctx.target_branch,
+                    },
+                    super::ProjectCtx {
+                        project: ctx.project,
+                        repo_path: ctx.repo_path,
+                    },
                     &conflict_files,
                     merge_worktree.as_deref(),
                     ctx.opts,
@@ -204,8 +249,16 @@ impl<'a> super::TransitionHandler<'a> {
             }
             MergeOutcome::BranchNotFound { branch } => {
                 self.handle_outcome_branch_not_found(
-                    super::TaskCore { task: &mut *ctx.task, task_id: ctx.task_id, task_id_str: ctx.task_id_str, task_repo: ctx.task_repo },
-                    super::BranchPair { source_branch: ctx.source_branch, target_branch: ctx.target_branch },
+                    super::TaskCore {
+                        task: &mut *ctx.task,
+                        task_id: ctx.task_id,
+                        task_id_str: ctx.task_id_str,
+                        task_repo: ctx.task_repo,
+                    },
+                    super::BranchPair {
+                        source_branch: ctx.source_branch,
+                        target_branch: ctx.target_branch,
+                    },
                     &branch,
                     ctx.repo_path,
                 )
@@ -213,16 +266,32 @@ impl<'a> super::TransitionHandler<'a> {
             }
             MergeOutcome::Deferred { reason } => {
                 self.handle_outcome_deferred(
-                    super::TaskCore { task: &mut *ctx.task, task_id: ctx.task_id, task_id_str: ctx.task_id_str, task_repo: ctx.task_repo },
-                    super::BranchPair { source_branch: ctx.source_branch, target_branch: ctx.target_branch },
+                    super::TaskCore {
+                        task: &mut *ctx.task,
+                        task_id: ctx.task_id,
+                        task_id_str: ctx.task_id_str,
+                        task_repo: ctx.task_repo,
+                    },
+                    super::BranchPair {
+                        source_branch: ctx.source_branch,
+                        target_branch: ctx.target_branch,
+                    },
                     &reason,
                 )
                 .await;
             }
             MergeOutcome::GitError(e) => {
                 self.handle_outcome_git_error(
-                    super::TaskCore { task: &mut *ctx.task, task_id: ctx.task_id, task_id_str: ctx.task_id_str, task_repo: ctx.task_repo },
-                    super::BranchPair { source_branch: ctx.source_branch, target_branch: ctx.target_branch },
+                    super::TaskCore {
+                        task: &mut *ctx.task,
+                        task_id: ctx.task_id,
+                        task_id_str: ctx.task_id_str,
+                        task_repo: ctx.task_repo,
+                    },
+                    super::BranchPair {
+                        source_branch: ctx.source_branch,
+                        target_branch: ctx.target_branch,
+                    },
                     e,
                     ctx.opts,
                 )
@@ -242,13 +311,14 @@ impl<'a> super::TransitionHandler<'a> {
         merge_path: &Path,
         opts: &MergeHandlerOptions,
     ) {
-        let (task, task_id, task_id_str, task_repo) = (tc.task, tc.task_id, tc.task_id_str, tc.task_repo);
+        let (task, task_id, task_id_str, task_repo) =
+            (tc.task, tc.task_id, tc.task_id_str, tc.task_repo);
         let (source_branch, target_branch) = (bp.source_branch, bp.target_branch);
         let (project, repo_path) = (pc.project, pc.repo_path);
         tracing::info!(task_id = task_id_str, commit_sha = %commit_sha, strategy = opts.strategy_label, "Merge succeeded");
 
         emit_merge_progress(
-            self.machine.context.services.app_handle.as_ref(),
+            self.machine.context.services.event_sink.as_deref(),
             task_id_str,
             MergePhase::programmatic_merge(),
             MergePhaseStatus::Passed,
@@ -291,7 +361,7 @@ impl<'a> super::TransitionHandler<'a> {
                     task,
                     merge_path,
                     task_id_str,
-                    self.machine.context.services.app_handle.as_ref(),
+                    self.machine.context.services.event_sink.as_deref(),
                     cached_log.as_deref(),
                     validation_mode,
                     &validation_cancel,
@@ -321,8 +391,16 @@ impl<'a> super::TransitionHandler<'a> {
                         stderr: format!("Validation timed out after {}s", validation_deadline_secs),
                     };
                     self.handle_validation_failure(
-                        super::TaskCore { task: &mut *task, task_id, task_id_str, task_repo },
-                        super::BranchPair { source_branch, target_branch },
+                        super::TaskCore {
+                            task: &mut *task,
+                            task_id,
+                            task_id_str,
+                            task_repo,
+                        },
+                        super::BranchPair {
+                            source_branch,
+                            target_branch,
+                        },
                         super::ProjectCtx { project, repo_path },
                         &[timeout_failure],
                         &[],
@@ -355,8 +433,16 @@ impl<'a> super::TransitionHandler<'a> {
                             ));
                         } else {
                             self.handle_validation_failure(
-                                super::TaskCore { task: &mut *task, task_id, task_id_str, task_repo },
-                                super::BranchPair { source_branch, target_branch },
+                                super::TaskCore {
+                                    task: &mut *task,
+                                    task_id,
+                                    task_id_str,
+                                    task_repo,
+                                },
+                                super::BranchPair {
+                                    source_branch,
+                                    target_branch,
+                                },
                                 super::ProjectCtx { project, repo_path },
                                 &validation.failures,
                                 &validation.log,
@@ -396,10 +482,10 @@ impl<'a> super::TransitionHandler<'a> {
         }
 
         // Complete merge
-        let app_handle = self.machine.context.services.app_handle.as_ref();
+        let event_sink = self.machine.context.services.event_sink.as_deref();
         let external_events_repo = self.machine.context.services.external_events_repo.as_ref();
         let webhook_publisher = self.machine.context.services.webhook_publisher.as_ref();
-        if let Err(e) = complete_merge_internal_with_pr_sync(
+        if let Err(e) = complete_merge_internal_with_pr_sync_and_notifier(
             task,
             project,
             commit_sha,
@@ -408,27 +494,55 @@ impl<'a> super::TransitionHandler<'a> {
             task_repo,
             external_events_repo,
             webhook_publisher,
-            app_handle,
+            event_sink,
             None,
-            Some(super::merge_helpers::PlanBranchPrSyncServices::from_task_services(
-                &self.machine.context.services,
-            )),
+            Some(
+                super::merge_helpers::PlanBranchPrSyncServices::from_task_services(
+                    &self.machine.context.services,
+                ),
+            ),
+            Some(&self.machine.context.services.notifier),
         )
         .await
         {
+            if is_pr_branch_publication_conflict_routed_error(&e)
+                || task_has_pr_branch_publication_conflict(task)
+            {
+                tracing::info!(
+                    task_id = task_id_str,
+                    strategy = opts.strategy_label,
+                    "PR branch publication conflict routed to branch updater; skipping MergeIncomplete fallback"
+                );
+                if let Some(transition_service) = &self.machine.context.services.transition_service
+                {
+                    transition_service
+                        .execute_entry_actions(task_id, task, task.internal_status)
+                        .await;
+                } else {
+                    tracing::warn!(
+                        task_id = task_id_str,
+                        "PR branch publication conflict routed but transition_service is unavailable to start branch updater"
+                    );
+                }
+                return;
+            }
             tracing::error!(error = %e, task_id = task_id_str, strategy = opts.strategy_label, "Failed to complete merge");
             // Merge INTO existing metadata to preserve recovery history
-            super::merge_helpers::merge_metadata_into(task, &serde_json::json!({
-                "error": format!("complete_merge_internal failed: {}", e),
-                "source_branch": source_branch,
-                "target_branch": target_branch,
-            }));
+            super::merge_helpers::merge_metadata_into(
+                task,
+                &serde_json::json!({
+                    "error": format!("complete_merge_internal failed: {}", e),
+                    "source_branch": source_branch,
+                    "target_branch": target_branch,
+                }),
+            );
             transition_to_merge_incomplete(
                 task,
                 task_id,
                 task_id_str,
                 task_repo,
                 &self.machine.context.services.event_emitter,
+                &self.machine.context.services.notifier,
             )
             .await;
         } else {
@@ -465,7 +579,9 @@ impl<'a> super::TransitionHandler<'a> {
         // This is the temporary worktree used for the merge operation itself,
         // separate from the task's worktree (handled by Phase 3).
         if merge_path != repo_path {
-            if let Err(e) = super::cleanup_helpers::remove_worktree_fast(merge_path, repo_path).await {
+            if let Err(e) =
+                super::cleanup_helpers::remove_worktree_fast(merge_path, repo_path).await
+            {
                 tracing::warn!(task_id = task_id_str, error = %e, "Failed to delete merge worktree after merge completion (non-fatal)");
             }
         }
@@ -480,7 +596,8 @@ impl<'a> super::TransitionHandler<'a> {
         merge_worktree: Option<&Path>,
         opts: &MergeHandlerOptions,
     ) {
-        let (task, task_id, task_id_str, task_repo) = (tc.task, tc.task_id, tc.task_id_str, tc.task_repo);
+        let (task, task_id, task_id_str, task_repo) =
+            (tc.task, tc.task_id, tc.task_id_str, tc.task_repo);
         let (source_branch, target_branch) = (bp.source_branch, bp.target_branch);
         let (project, repo_path) = (pc.project, pc.repo_path);
         tracing::info!(
@@ -491,7 +608,7 @@ impl<'a> super::TransitionHandler<'a> {
         );
 
         emit_merge_progress(
-            self.machine.context.services.app_handle.as_ref(),
+            self.machine.context.services.event_sink.as_deref(),
             task_id_str,
             MergePhase::programmatic_merge(),
             MergePhaseStatus::Failed,
@@ -592,7 +709,11 @@ impl<'a> super::TransitionHandler<'a> {
             });
             if let Some(ref repo) = self.machine.context.services.external_events_repo {
                 if let Err(e) = repo
-                    .insert_event("merge:conflict", &project_id_str, &conflict_payload.to_string())
+                    .insert_event(
+                        "merge:conflict",
+                        &project_id_str,
+                        &conflict_payload.to_string(),
+                    )
                     .await
                 {
                     tracing::warn!(
@@ -650,13 +771,18 @@ impl<'a> super::TransitionHandler<'a> {
         missing_branch: &str,
         repo_path: &Path,
     ) {
-        let (task, task_id, task_id_str, task_repo) = (tc.task, tc.task_id, tc.task_id_str, tc.task_repo);
+        let (task, task_id, task_id_str, task_repo) =
+            (tc.task, tc.task_id, tc.task_id_str, tc.task_repo);
         let (source_branch, target_branch) = (bp.source_branch, bp.target_branch);
         tracing::warn!(task_id = task_id_str, missing_branch = %missing_branch, "Branch not found, re-checking");
 
         // Re-check if branch exists now (race condition: concurrent operation may have created it)
         let branch_exists = git_cmd::run_status(
-            &["rev-parse", "--verify", &format!("refs/heads/{}", missing_branch)],
+            &[
+                "rev-parse",
+                "--verify",
+                &format!("refs/heads/{}", missing_branch),
+            ],
             repo_path,
         )
         .await
@@ -669,9 +795,20 @@ impl<'a> super::TransitionHandler<'a> {
                 "Branch found on re-check — deferring for fast retry"
             );
             self.handle_outcome_deferred(
-                super::TaskCore { task: &mut *task, task_id, task_id_str, task_repo },
-                super::BranchPair { source_branch, target_branch },
-                &format!("branch '{}' appeared on re-check (race condition)", missing_branch),
+                super::TaskCore {
+                    task: &mut *task,
+                    task_id,
+                    task_id_str,
+                    task_repo,
+                },
+                super::BranchPair {
+                    source_branch,
+                    target_branch,
+                },
+                &format!(
+                    "branch '{}' appeared on re-check (race condition)",
+                    missing_branch
+                ),
             )
             .await;
             return;
@@ -725,6 +862,7 @@ impl<'a> super::TransitionHandler<'a> {
             task_id_str,
             task_repo,
             &self.machine.context.services.event_emitter,
+            &self.machine.context.services.notifier,
         )
         .await;
     }
@@ -781,13 +919,22 @@ impl<'a> super::TransitionHandler<'a> {
         error: crate::error::AppError,
         opts: &MergeHandlerOptions,
     ) {
-        let (task, task_id, task_id_str, task_repo) = (tc.task, tc.task_id, tc.task_id_str, tc.task_repo);
+        let (task, task_id, task_id_str, task_repo) =
+            (tc.task, tc.task_id, tc.task_id_str, tc.task_repo);
         let (source_branch, target_branch) = (bp.source_branch, bp.target_branch);
         if GitService::is_branch_lock_error(&error) {
             tracing::warn!(task_id = task_id_str, error = %error, strategy = opts.strategy_label, "Branch lock, deferring");
             self.handle_outcome_deferred(
-                super::TaskCore { task: &mut *task, task_id, task_id_str, task_repo },
-                super::BranchPair { source_branch, target_branch },
+                super::TaskCore {
+                    task: &mut *task,
+                    task_id,
+                    task_id_str,
+                    task_repo,
+                },
+                super::BranchPair {
+                    source_branch,
+                    target_branch,
+                },
                 &format!("branch lock: {}", error),
             )
             .await;
@@ -805,8 +952,16 @@ impl<'a> super::TransitionHandler<'a> {
                 "Transient git error, deferring for fast retry"
             );
             self.handle_outcome_deferred(
-                super::TaskCore { task: &mut *task, task_id, task_id_str, task_repo },
-                super::BranchPair { source_branch, target_branch },
+                super::TaskCore {
+                    task: &mut *task,
+                    task_id,
+                    task_id_str,
+                    task_repo,
+                },
+                super::BranchPair {
+                    source_branch,
+                    target_branch,
+                },
                 &format!("transient git error: {}", error),
             )
             .await;
@@ -864,14 +1019,7 @@ impl<'a> super::TransitionHandler<'a> {
 
         let mut recovery = get_or_create_recovery(task);
         let attempt = retry_attempt_count(&recovery);
-        let error_str = error.to_string().to_lowercase();
-        let failure_source = if error_str.contains(git_cmd::ENOENT_MARKER) {
-            MergeFailureSource::WorktreeMissing
-        } else if error_str.contains("index.lock") || error_str.contains(".lock") {
-            MergeFailureSource::LockContention
-        } else {
-            MergeFailureSource::TransientGit
-        };
+        let failure_source = git_cmd::classify_git_failure_source(&error);
         let failed_event = MergeRecoveryEvent::new(
             MergeRecoveryEventKind::AttemptFailed,
             MergeRecoverySource::System,
@@ -917,6 +1065,7 @@ impl<'a> super::TransitionHandler<'a> {
             task_id_str,
             task_repo,
             &self.machine.context.services.event_emitter,
+            &self.machine.context.services.notifier,
         )
         .await;
     }
@@ -1059,6 +1208,7 @@ impl<'a> super::TransitionHandler<'a> {
             task_id_str,
             task_repo,
             &self.machine.context.services.event_emitter,
+            &self.machine.context.services.notifier,
         )
         .await;
     }
@@ -1077,7 +1227,12 @@ impl<'a> super::TransitionHandler<'a> {
         };
 
         match transition_service
-            .reroute_commit_hook_merge_failure(task_id, Some(full_error.to_string()), true, "system")
+            .reroute_commit_hook_merge_failure(
+                task_id,
+                Some(full_error.to_string()),
+                true,
+                "system",
+            )
             .await
         {
             Ok(_) => true,

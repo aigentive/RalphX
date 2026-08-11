@@ -9,9 +9,8 @@ impl<'a> TransitionHandler<'a> {
         project: &Project,
         target_branch: &str,
     ) -> AppResult<Option<MergeScopeBackstopViolation>> {
-        let Some(review_scope) =
-            ReviewScopeMetadata::from_task_metadata(task.metadata.as_deref())
-                .map_err(|e| crate::error::AppError::Validation(e.to_string()))?
+        let Some(review_scope) = ReviewScopeMetadata::from_task_metadata(task.metadata.as_deref())
+            .map_err(|e| crate::error::AppError::Validation(e.to_string()))?
         else {
             return Ok(None);
         };
@@ -25,8 +24,12 @@ impl<'a> TransitionHandler<'a> {
             return Ok(None);
         };
 
-        let diff = GitService::get_diff_stats_between(&repo_path, target_branch, source_branch).await?;
-        Ok(evaluate_merge_scope_backstop(&review_scope, &diff.changed_files))
+        let diff =
+            GitService::get_diff_stats_between(&repo_path, target_branch, source_branch).await?;
+        Ok(evaluate_merge_scope_backstop(
+            &review_scope,
+            &diff.changed_files,
+        ))
     }
 
     pub(super) async fn route_merge_scope_violation_to_revision(

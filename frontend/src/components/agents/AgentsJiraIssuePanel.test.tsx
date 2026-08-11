@@ -97,6 +97,20 @@ describe("AgentsJiraIssuePanel", () => {
     vi.clearAllMocks();
   });
 
+  it("removes line selection while keeping Jira details selectable", async () => {
+    getIssueMock.mockResolvedValue(issue());
+
+    renderPanel();
+
+    const body = await screen.findByText("Body text");
+    expect(
+      screen.queryByRole("button", { name: "Select ticket lines" }),
+    ).not.toBeInTheDocument();
+    expect(
+      body.closest("[data-artifact-selectable-region='true']"),
+    ).not.toBeNull();
+  });
+
   it("renders Jira markdown headings with theme color and full-width body text", async () => {
     getIssueMock.mockResolvedValue(issue());
 
@@ -129,7 +143,7 @@ describe("AgentsJiraIssuePanel", () => {
     expect(screen.queryByRole("button", { name: /copy code/i })).not.toBeInTheDocument();
   });
 
-  it("hides empty optional Jira sections", async () => {
+  it("shows a clear empty state after Jira loads without acceptance criteria", async () => {
     getIssueMock.mockResolvedValue(
       issue({
         acceptanceCriteriaMarkdown: null,
@@ -142,9 +156,50 @@ describe("AgentsJiraIssuePanel", () => {
     renderPanel();
 
     expect(await screen.findByRole("heading", { name: "Description" })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Acceptance Criteria" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Acceptance Criteria" })).toBeInTheDocument();
+    expect(screen.getByText("No acceptance criteria on this issue.")).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Comments (0)" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Attachments (0)" })).not.toBeInTheDocument();
+  });
+
+  it("hides the acceptance criteria empty state while Jira details are not loaded", async () => {
+    getIssueMock.mockResolvedValue(
+      issue({
+        acceptanceCriteriaMarkdown: null,
+        acceptanceCriteriaText: null,
+        refreshStatus: "not_loaded",
+      }),
+    );
+    refreshIssueMock.mockReturnValue(new Promise(() => {}));
+
+    renderPanel();
+
+    expect(await screen.findByRole("heading", { name: "Description" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Acceptance Criteria" })).not.toBeInTheDocument();
+    expect(screen.queryByText("No acceptance criteria on this issue.")).not.toBeInTheDocument();
+  });
+
+  it("renders Jira comments with author and body", async () => {
+    getIssueMock.mockResolvedValue(
+      issue({
+        comments: [
+          {
+            id: "comment-1",
+            author: "Jira Reviewer",
+            bodyMarkdown: "Please cover the **custom field**.",
+            bodyText: "Please cover the custom field.",
+            createdAt: "2026-06-18T08:06:00Z",
+            updatedAt: null,
+          },
+        ],
+      }),
+    );
+
+    renderPanel();
+
+    expect(await screen.findByRole("heading", { name: "Comments (1)" })).toBeInTheDocument();
+    expect(screen.getByText("Jira Reviewer")).toBeInTheDocument();
+    expect(screen.getByText("custom field")).toBeInTheDocument();
   });
 
   it("renders Jira metadata as a compact summary row", async () => {

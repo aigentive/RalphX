@@ -1,6 +1,9 @@
 use super::*;
 use crate::domain::agents::{AgentHarnessKind, ProviderSessionRef};
-use crate::domain::entities::{AttributionBackfillStatus, IdeationSessionId, ProjectId};
+use crate::domain::entities::{
+    AgentConversationWorkspaceMode, AttributionBackfillStatus, CoordinationMode, IdeationSessionId,
+    ProjectId,
+};
 
 #[tokio::test]
 async fn test_create_and_get() {
@@ -13,6 +16,132 @@ async fn test_create_and_get() {
 
     let retrieved = repo.get_by_id(&id).await.unwrap().unwrap();
     assert_eq!(retrieved.id, id);
+}
+
+#[tokio::test]
+async fn create_accepts_valid_standalone_self_key() {
+    let repo = MemoryChatConversationRepository::new();
+    let conversation = ChatConversation::new_standalone();
+
+    let created = repo
+        .create(conversation.clone())
+        .await
+        .expect("valid standalone self-key should persist");
+
+    assert_eq!(created.id, conversation.id);
+    assert!(created.is_valid_standalone_self_key());
+}
+
+#[tokio::test]
+async fn create_rejects_invalid_standalone_self_key() {
+    let repo = MemoryChatConversationRepository::new();
+    let mut conversation = ChatConversation::new_standalone();
+    conversation.context_id = "not-the-conversation-id".to_string();
+
+    let error = repo
+        .create(conversation.clone())
+        .await
+        .expect_err("mismatched standalone self-key must be rejected");
+
+    assert!(matches!(error, crate::error::AppError::Validation(_)));
+    assert!(repo.get_by_id(&conversation.id).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn test_update_builder_draft_binding_sets_and_clears() {
+    let repo = MemoryChatConversationRepository::new();
+    let conversation =
+        ChatConversation::new_project(ProjectId::from_string("project-1".to_string()));
+    repo.create(conversation.clone()).await.unwrap();
+
+    repo.update_builder_draft_binding(&conversation.id, Some("draft-1"))
+        .await
+        .unwrap();
+    assert_eq!(
+        repo.get_by_id(&conversation.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .builder_draft_id
+            .as_deref(),
+        Some("draft-1")
+    );
+
+    repo.update_builder_draft_binding(&conversation.id, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        repo.get_by_id(&conversation.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .builder_draft_id,
+        None
+    );
+}
+
+#[tokio::test]
+async fn update_agent_mode_and_role_bindings_persists_one_tuple() {
+    let repo = MemoryChatConversationRepository::new();
+    let conversation =
+        ChatConversation::new_project(ProjectId::from_string("project-atomic-edit".to_string()));
+    let conversation_id = conversation.id;
+    repo.create(conversation).await.unwrap();
+
+    repo.update_agent_mode_and_role_default_bindings(
+        &conversation_id,
+        AgentConversationWorkspaceMode::Edit,
+        CoordinationMode::RxNativeWorkflow,
+        Some("persona-edit"),
+        false,
+    )
+    .await
+    .unwrap();
+
+    let loaded = repo.get_by_id(&conversation_id).await.unwrap().unwrap();
+    assert_eq!(
+        loaded.agent_mode,
+        Some(AgentConversationWorkspaceMode::Edit)
+    );
+    assert_eq!(loaded.coordination_mode, CoordinationMode::RxNativeWorkflow);
+    assert_eq!(loaded.persona_id.as_deref(), Some("persona-edit"));
+}
+
+#[tokio::test]
+async fn test_get_by_builder_draft_id_returns_newest_active_binding() {
+    let repo = MemoryChatConversationRepository::new();
+    let project = ProjectId::from_string("project-1".to_string());
+    let mut older = ChatConversation::new_project(project.clone());
+    older.builder_draft_id = Some("draft-1".to_string());
+    older.created_at = chrono::Utc::now() - chrono::Duration::minutes(2);
+    let mut newest = ChatConversation::new_project(project.clone());
+    newest.builder_draft_id = Some("draft-1".to_string());
+    newest.created_at = chrono::Utc::now() - chrono::Duration::minutes(1);
+    let mut archived = ChatConversation::new_project(project);
+    archived.builder_draft_id = Some("draft-1".to_string());
+    archived.archived_at = Some(chrono::Utc::now());
+    let mut other_draft =
+        ChatConversation::new_project(ProjectId::from_string("project-2".to_string()));
+    other_draft.builder_draft_id = Some("draft-2".to_string());
+
+    repo.create(older).await.unwrap();
+    repo.create(newest.clone()).await.unwrap();
+    repo.create(archived).await.unwrap();
+    repo.create(other_draft).await.unwrap();
+
+    assert_eq!(
+        repo.get_by_builder_draft_id("draft-1")
+            .await
+            .unwrap()
+            .unwrap()
+            .id,
+        newest.id
+    );
+    assert!(repo
+        .get_by_builder_draft_id("missing-draft")
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]
@@ -190,6 +319,21 @@ async fn test_update_provider_origin() {
 }
 
 #[tokio::test]
+async fn test_update_coordination_mode() {
+    let repo = MemoryChatConversationRepository::new();
+    let conv = ChatConversation::new_project(ProjectId::from_string("project-1".to_string()));
+    let id = conv.id;
+
+    repo.create(conv).await.unwrap();
+    repo.update_coordination_mode(&id, CoordinationMode::RxNativeTeam)
+        .await
+        .unwrap();
+
+    let retrieved = repo.get_by_id(&id).await.unwrap().unwrap();
+    assert_eq!(retrieved.coordination_mode, CoordinationMode::RxNativeTeam);
+}
+
+#[tokio::test]
 async fn test_get_attribution_backfill_summary_counts_legacy_states() {
     let repo = MemoryChatConversationRepository::new();
 
@@ -285,4 +429,43 @@ async fn test_reset_running_attribution_backfill_to_pending() {
         updated.attribution_backfill_status,
         Some(AttributionBackfillStatus::Pending)
     );
+}
+
+#[tokio::test]
+async fn test_list_by_automation_id_returns_only_matching_conversations() {
+    use crate::domain::entities::{AutomationId, AutomationRunId};
+
+    let repo = MemoryChatConversationRepository::new();
+    let project_id = ProjectId::new();
+    let automation_id = AutomationId::from_string("automation-mem-1");
+
+    let mut setup = ChatConversation::new_project(project_id.clone());
+    setup.automation_id = Some(automation_id.clone());
+    let setup_id = setup.id;
+    repo.create(setup).await.unwrap();
+
+    let mut run_conv = ChatConversation::new_project(project_id.clone());
+    run_conv.automation_id = Some(automation_id.clone());
+    run_conv.automation_run_id = Some(AutomationRunId::from_string("run-1"));
+    let run_id = run_conv.id;
+    repo.create(run_conv).await.unwrap();
+
+    // Archived conversation for the same automation is still returned.
+    let mut archived = ChatConversation::new_project(project_id.clone());
+    archived.automation_id = Some(automation_id.clone());
+    let archived_id = archived.id;
+    repo.create(archived).await.unwrap();
+    repo.archive(&archived_id).await.unwrap();
+
+    // Unrelated automation is excluded.
+    let mut other = ChatConversation::new_project(project_id);
+    other.automation_id = Some(AutomationId::from_string("automation-other"));
+    repo.create(other).await.unwrap();
+
+    let listed = repo.list_by_automation_id(&automation_id).await.unwrap();
+    let ids: Vec<_> = listed.iter().map(|c| c.id).collect();
+    assert_eq!(ids.len(), 3);
+    assert!(ids.contains(&setup_id));
+    assert!(ids.contains(&run_id));
+    assert!(ids.contains(&archived_id));
 }

@@ -1229,9 +1229,9 @@ export function TicketingDashboardView({
     : mergeProviderAndTicketColumns(columns, [...effectiveTicketColumns, ...transitionColumns]);
   const providerName = selectedProvider?.label ?? (activeProvider ? providerLabel(activeProvider) : "Provider");
   const containerLabels = containerLabelsForProvider(activeProvider);
-  // ClickUp conversation-linking is deferred (no ClickUp link table yet), so
-  // binding an existing conversation stays hidden. Starting new RalphX work is
-  // still provider-neutral and includes the ticket reference in the composer.
+  // ClickUp links are created by ticket-origin starts and Git/PR reconciliation.
+  // Keep manual binding hidden until this mutation routes to the provider-neutral
+  // external-link command instead of the Linear-specific fallback below.
   const supportsConversationBinding = activeProvider !== "clickup";
   const statusMessage = selectedProvider?.errorMessage ?? selectedProvider?.permissionMessage ?? undefined;
   const statusNotices: TicketingStatusNotice[] = [

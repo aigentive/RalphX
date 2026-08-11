@@ -311,6 +311,92 @@ async fn jira_assignment_commands_round_trip_and_refresh_cached_issue() {
 }
 
 #[tokio::test]
+async fn resolve_atlassian_resource_urls_returns_resources_for_owned_urls() {
+    let app_state = AppState::new_test();
+    app_state
+        .atlassian_integration_service
+        .save_settings(
+            Some(AtlassianAuthMethod::ApiToken),
+            Some("https://example.atlassian.net".to_string()),
+            Some("dev@example.com".to_string()),
+            Some("token".to_string()),
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("save Atlassian settings");
+    app_state
+        .atlassian_integration_service
+        .validate_and_enable()
+        .await
+        .expect("enable Atlassian");
+    let app = mock_builder()
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+
+    let response = resolve_atlassian_resource_urls(
+        ResolveAtlassianResourceUrlsInput {
+            urls: vec![
+                "https://example.atlassian.net/browse/rx-42".to_string(),
+                "https://other.atlassian.net/browse/RX-99".to_string(),
+            ],
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("resolve URLs");
+
+    assert_eq!(response.results.len(), 2);
+    let resource = response.results[0].resource.as_ref().expect("resource");
+    assert_eq!(resource.kind, AtlassianResourceKind::Jira);
+    assert_eq!(resource.id, "RX-42");
+    assert_eq!(resource.key.as_deref(), Some("RX-42"));
+    assert_eq!(
+        resource.url.as_deref(),
+        Some("https://example.atlassian.net/browse/RX-42")
+    );
+    assert!(response.results[1].resource.is_none());
+}
+
+#[tokio::test]
+async fn resolve_atlassian_resource_urls_rejects_oauth_when_feature_disabled() {
+    let app_state = AppState::new_test();
+    app_state
+        .atlassian_integration_service
+        .save_settings(
+            Some(AtlassianAuthMethod::OAuth),
+            Some("https://example.atlassian.net".to_string()),
+            None,
+            None,
+            Some("client-id".to_string()),
+            Some("client-secret".to_string()),
+            Some("http://127.0.0.1:8765/atlassian/oauth/callback".to_string()),
+        )
+        .await
+        .expect("save OAuth settings");
+    let app = mock_builder()
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+
+    let error = resolve_atlassian_resource_urls(
+        ResolveAtlassianResourceUrlsInput {
+            urls: vec!["https://example.atlassian.net/browse/RX-42".to_string()],
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(
+        error,
+        "Atlassian OAuth setup is disabled. Use API token setup for now."
+    );
+}
+
+#[tokio::test]
 async fn disconnect_atlassian_integration_resets_saved_connection() {
     let app_state = AppState::new_test();
     app_state

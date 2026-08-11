@@ -9,7 +9,7 @@ mod tests;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::sync::Weak;
+use std::sync::{OnceLock, Weak};
 
 use lazy_static::lazy_static;
 use rusqlite::Connection;
@@ -59,12 +59,94 @@ lazy_static! {
         std::sync::Mutex::new(std::collections::HashMap::new());
 }
 
+static STARTUP_BOOT_ID: OnceLock<String> = OnceLock::new();
+
+#[derive(Debug, Clone, Copy)]
+struct DbLockTelemetryThresholds {
+    wait_warn_ms: u128,
+    hold_warn_ms: u128,
+}
+
+impl DbLockTelemetryThresholds {
+    fn from_runtime() -> Self {
+        let config = crate::infrastructure::agents::claude::stream_timeouts();
+        Self {
+            wait_warn_ms: u128::from(config.db_lock_wait_warn_ms),
+            hold_warn_ms: u128::from(config.db_lock_hold_warn_ms),
+        }
+    }
+}
+
+pub(crate) fn register_startup_boot_id(boot_id: &str) {
+    let _ = STARTUP_BOOT_ID.set(boot_id.to_string());
+}
+
+fn startup_boot_id() -> &'static str {
+    STARTUP_BOOT_ID
+        .get()
+        .map(String::as_str)
+        .unwrap_or("unregistered")
+}
+
 fn db_caller_module(caller_file: &str) -> String {
     std::path::Path::new(caller_file)
         .file_stem()
         .and_then(|value| value.to_str())
-        .unwrap_or(caller_file)
+        .unwrap_or("unknown")
         .to_string()
+}
+
+fn db_lock_observation_is_slow(
+    lock_wait_ms: u128,
+    lock_hold_ms: u128,
+    thresholds: DbLockTelemetryThresholds,
+) -> bool {
+    lock_wait_ms >= thresholds.wait_warn_ms || lock_hold_ms >= thresholds.hold_warn_ms
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_db_lock_observation(
+    lock_wait_ms: u128,
+    lock_hold_ms: u128,
+    method: &'static str,
+    caller_module: &str,
+    caller_line: u32,
+    connection_backend: &'static str,
+    connection_index: usize,
+    connection_pick: &'static str,
+    thresholds: DbLockTelemetryThresholds,
+) {
+    let boot_id = startup_boot_id();
+    if db_lock_observation_is_slow(lock_wait_ms, lock_hold_ms, thresholds) {
+        tracing::warn!(
+            target: "ralphx::db",
+            boot_id,
+            lock_wait_ms,
+            lock_hold_ms,
+            wait_warn_ms = thresholds.wait_warn_ms,
+            hold_warn_ms = thresholds.hold_warn_ms,
+            method,
+            caller_module,
+            caller_line,
+            connection_backend,
+            connection_index,
+            connection_pick,
+            "Slow SQLite lock operation"
+        );
+    } else {
+        tracing::debug!(
+            target: "ralphx::db",
+            boot_id,
+            lock_wait_ms,
+            lock_hold_ms,
+            method,
+            caller_module,
+            caller_line,
+            connection_backend,
+            connection_index,
+            connection_pick,
+        );
+    }
 }
 
 impl DbConnection {
@@ -111,55 +193,31 @@ impl DbConnection {
         T: Send + 'static,
     {
         let caller = std::panic::Location::caller();
-        let caller_file = caller.file().to_string();
         let caller_line = caller.line();
-        let caller_module = db_caller_module(&caller_file);
+        let caller_module = db_caller_module(caller.file());
+        let telemetry_thresholds = DbLockTelemetryThresholds::from_runtime();
         let (conn, connection_backend, connection_index, connection_pick) = self.pick_connection();
         async move {
             tokio::task::spawn_blocking(move || {
-                #[cfg(debug_assertions)]
                 let lock_start = std::time::Instant::now();
 
                 let guard = conn.blocking_lock();
 
-                #[cfg(debug_assertions)]
                 let lock_acquired = std::time::Instant::now();
 
                 let result = f(&guard);
 
-                #[cfg(debug_assertions)]
-                {
-                    let lock_wait_ms = lock_acquired.duration_since(lock_start).as_millis();
-                    let lock_hold_ms = lock_acquired.elapsed().as_millis();
-                    if lock_wait_ms > 100 {
-                        tracing::warn!(
-                            target: "ralphx::db",
-                            lock_wait_ms,
-                            lock_hold_ms,
-                            method = "run",
-                            caller_module = caller_module.as_str(),
-                            caller_file = caller_file.as_str(),
-                            caller_line,
-                            connection_backend,
-                            connection_index,
-                            connection_pick,
-                            "DB lock contention: lock wait exceeded 100ms"
-                        );
-                    } else {
-                        tracing::debug!(
-                            target: "ralphx::db",
-                            lock_wait_ms,
-                            lock_hold_ms,
-                            method = "run",
-                            caller_module = caller_module.as_str(),
-                            caller_file = caller_file.as_str(),
-                            caller_line,
-                            connection_backend,
-                            connection_index,
-                            connection_pick,
-                        );
-                    }
-                }
+                emit_db_lock_observation(
+                    lock_acquired.duration_since(lock_start).as_millis(),
+                    lock_acquired.elapsed().as_millis(),
+                    "run",
+                    &caller_module,
+                    caller_line,
+                    connection_backend,
+                    connection_index,
+                    connection_pick,
+                    telemetry_thresholds,
+                );
 
                 result
             })
@@ -195,18 +253,16 @@ impl DbConnection {
         T: Send + 'static,
     {
         let caller = std::panic::Location::caller();
-        let caller_file = caller.file().to_string();
         let caller_line = caller.line();
-        let caller_module = db_caller_module(&caller_file);
+        let caller_module = db_caller_module(caller.file());
+        let telemetry_thresholds = DbLockTelemetryThresholds::from_runtime();
         let (conn, connection_backend, connection_index, connection_pick) = self.pick_connection();
         async move {
             tokio::task::spawn_blocking(move || {
-                #[cfg(debug_assertions)]
                 let lock_start = std::time::Instant::now();
 
                 let guard = conn.blocking_lock();
 
-                #[cfg(debug_assertions)]
                 let lock_acquired = std::time::Instant::now();
 
                 guard
@@ -225,39 +281,17 @@ impl DbConnection {
                     }
                 };
 
-                #[cfg(debug_assertions)]
-                {
-                    let lock_wait_ms = lock_acquired.duration_since(lock_start).as_millis();
-                    let lock_hold_ms = lock_acquired.elapsed().as_millis();
-                    if lock_wait_ms > 100 {
-                        tracing::warn!(
-                            target: "ralphx::db",
-                            lock_wait_ms,
-                            lock_hold_ms,
-                            method = "run_transaction",
-                            caller_module = caller_module.as_str(),
-                            caller_file = caller_file.as_str(),
-                            caller_line,
-                            connection_backend,
-                            connection_index,
-                            connection_pick,
-                            "DB lock contention: lock wait exceeded 100ms"
-                        );
-                    } else {
-                        tracing::debug!(
-                            target: "ralphx::db",
-                            lock_wait_ms,
-                            lock_hold_ms,
-                            method = "run_transaction",
-                            caller_module = caller_module.as_str(),
-                            caller_file = caller_file.as_str(),
-                            caller_line,
-                            connection_backend,
-                            connection_index,
-                            connection_pick,
-                        );
-                    }
-                }
+                emit_db_lock_observation(
+                    lock_acquired.duration_since(lock_start).as_millis(),
+                    lock_acquired.elapsed().as_millis(),
+                    "run_transaction",
+                    &caller_module,
+                    caller_line,
+                    connection_backend,
+                    connection_index,
+                    connection_pick,
+                    telemetry_thresholds,
+                );
 
                 result
             })
@@ -369,11 +403,7 @@ impl ConnectionPool {
             connections.push(Arc::new(Mutex::new(conn)));
         }
 
-        tracing::info!(
-            path = %path.display(),
-            pool_size,
-            "Initialized pooled SQLite backend"
-        );
+        tracing::info!(pool_size, "Initialized pooled SQLite backend");
 
         Ok(Self {
             primary,

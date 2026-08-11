@@ -20,8 +20,9 @@ use axum::{
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
+use crate::support::real_git_repo::setup_real_git_repo;
 use ralphx_domain::entities::EventType;
-use ralphx_lib::application::{AppState, TeamService, TeamStateTracker};
+use ralphx_lib::application::AppState;
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
     IdeationSession, IdeationSessionId, Priority, Project, ProjectId, ProposalCategory,
@@ -34,7 +35,6 @@ use ralphx_lib::http_server::project_scope::ProjectScope;
 use ralphx_lib::http_server::types::HttpServerState;
 use ralphx_lib::infrastructure::memory::MemoryWebhookRegistrationRepository;
 use ralphx_lib::infrastructure::{ConcreteWebhookPublisher, MockWebhookHttpClient};
-use crate::support::real_git_repo::setup_real_git_repo;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -45,13 +45,9 @@ type HmacSha256 = Hmac<Sha256>;
 async fn setup_test_state() -> HttpServerState {
     let app_state = Arc::new(AppState::new_sqlite_for_apply_test());
     let execution_state = Arc::new(ExecutionState::new());
-    let tracker = TeamStateTracker::new();
-    let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
     HttpServerState {
         app_state,
         execution_state,
-        team_tracker: tracker,
-        team_service,
         delegation_service: Default::default(),
     }
 }

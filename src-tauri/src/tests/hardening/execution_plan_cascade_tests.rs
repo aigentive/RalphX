@@ -28,7 +28,7 @@ use crate::domain::services::{MemoryRunningAgentRegistry, RunningAgentKey, Runni
 fn build_reconciler_for_tests(
     app_state: &crate::application::AppState,
     execution_state: &Arc<ExecutionState>,
-) -> crate::application::ReconciliationRunner<tauri::Wry> {
+) -> crate::application::ReconciliationRunner {
     use crate::application::TaskTransitionService;
     let transition_service = Arc::new(TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),

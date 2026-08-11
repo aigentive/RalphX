@@ -26,7 +26,6 @@ const EXTERNAL_MCP_SERVER_DIR: &str = "ralphx-external-mcp";
 const FALLBACK_RUNTIME_ENTRY_NAMES: &[&str] = &[INTERNAL_MCP_SERVER_DIR, EXTERNAL_MCP_SERVER_DIR];
 const GENERATED_PLUGIN_ENTRY_NAMES: &[&str] = &[
     ".claude-plugin",
-    ".mcp.json",
     HOOKS_ENTRY_NAME,
     "memory-framework.md",
     "skills",
@@ -1042,10 +1041,6 @@ mod tests {
             ),
             base_plugin_dir.join(EXTERNAL_MCP_SERVER_DIR)
         );
-        assert_eq!(
-            expected_runtime_entry_source(&base_plugin_dir, &fallback_plugin_dir, ".mcp.json"),
-            base_plugin_dir.join(".mcp.json")
-        );
     }
 
     fn seed_generated_runtime_links(base_plugin_dir: &Path, generated_dir: &Path) {
@@ -1402,8 +1397,8 @@ mod tests {
     #[test]
     fn generated_agent_markdown_includes_internal_sidecar_stdio_tools() {
         let definition = CanonicalAgentDefinition {
-            name: "ralphx-plan-verifier".to_string(),
-            role: "plan_verifier".to_string(),
+            name: "ralphx-general-explorer".to_string(),
+            role: "explorer".to_string(),
             description: None,
             capabilities: Default::default(),
             harnesses: Default::default(),
@@ -1417,10 +1412,10 @@ mod tests {
         };
 
         let markdown = render_generated_agent_markdown(
-            "ralphx-plan-verifier",
+            "ralphx-general-explorer",
             &definition,
             &claude_metadata,
-            "Verifier prompt",
+            "Explorer prompt",
         )
         .expect("render generated markdown");
 

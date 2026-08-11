@@ -10,9 +10,7 @@ impl<'a> TransitionHandler<'a> {
         task_repo: &Arc<dyn TaskRepository>,
         task_id_str: &str,
     ) {
-        match merge_helpers::discover_and_attach_task_branch(task, project, task_repo)
-            .await
-        {
+        match merge_helpers::discover_and_attach_task_branch(task, project, task_repo).await {
             Ok(true) => {
                 tracing::info!(
                     task_id = task_id_str,

@@ -14,16 +14,21 @@ export type AgentIdeationSession = Pick<
 >;
 
 export type AgentConversation = ChatConversation & {
-  projectId: string;
+  projectId: string | null;
   ideationSessionId: string | null;
 };
+
+export interface AgentConversationArchiveOptions {
+  closePullRequest: boolean;
+}
 
 export function toProjectAgentConversation(
   conversation: ChatConversation
 ): AgentConversation {
   return {
     ...conversation,
-    projectId: conversation.contextId,
+    projectId:
+      conversation.contextType === "standalone" ? null : conversation.contextId,
     ideationSessionId: null,
   };
 }

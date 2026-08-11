@@ -30,6 +30,12 @@ export interface AcceptAndScheduleResult {
     success: boolean;
     taskIds: string[];
     progress: AcceptAndScheduleProgress;
+    verification?: {
+        status: "queued" | "in_progress";
+        sessionId: string;
+        pollTool: "v1_get_plan_verification";
+        retryTool: "v1_accept_plan_and_schedule";
+    };
 }
 /**
  * Accept all proposals for a session and schedule the resulting tasks.

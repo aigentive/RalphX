@@ -1,6 +1,9 @@
-# RalphX — New Layout (ASCII Spec)
+# RalphX — Agents Layout (ASCII Spec)
 
-> Adds a **conversation-first 3-pane layout** behind a new `Agents` navbar button. The existing navbar (Ideation / Graph / Kanban / Insights / Settings / project select) stays **exactly as it is** — this spec is purely **additive**. Toggling `Agents` swaps the main content area to show the sidebar / chat / artifact layout described below.
+> The conversation-first layout is now the live shell. Agents is a root view;
+> Plan, Ideation, Tasks, Graph, and Kanban are artifacts within it. References
+> below to standalone task/planning roots describe the pre-migration proposal
+> and must not be used to add new navigation or persisted route state.
 
 ---
 
@@ -8,11 +11,11 @@
 
 | # | Goal |
 |---|------|
-| 1 | Keep the existing top navbar **as is** — no removals, no reorders |
-| 2 | Add a new **`Agents`** button to the navbar that toggles the 3-pane conversation layout described below |
+| 1 | Keep the live root rail aligned with the eight-value `AppView` contract |
+| 2 | Use **`Agents`** as the conversation-first workspace and host task/planning artifacts inside it |
 | 3 | Inside the Agents view: left sidebar shows project-scoped conversations (multi-project tree) |
 | 4 | Active session owns the middle pane; artifact views split it into 2 cols on demand |
-| 5 | Collapse Ideation flow into regular chat — plan / verify / proposal / tasks become per-session artifacts **inside the Agents view** (the standalone Ideation / Graph / Kanban / Insights / Settings navbar tabs continue to work unchanged) |
+| 5 | Keep Plan / Verify / Proposal / Tasks as per-session artifacts **inside the Agents view** |
 | 6 | Reuse the existing chat component (messages, composer, model picker, send, streaming, attachments, etc.) verbatim inside the middle pane — no rework of chat capabilities in this spec |
 
 ### ⚠ Non-negotiable — reuse, don't rebuild

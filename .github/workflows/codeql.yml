@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  merge_group:
   schedule:
     - cron: "23 4 * * 1"
   workflow_dispatch:
@@ -34,19 +35,26 @@ jobs:
 
       - name: Detect changed paths
         id: filter
+        if: github.event_name != 'merge_group'
         uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
         with:
+          predicate-quantifier: every
           filters: |
             actions:
-              - '.github/workflows/**'
-              - '.github/codeql/**'
+              - added|modified|deleted:
+                  - '.github/workflows/**'
+                  - '.github/codeql/**'
             javascript:
-              - 'frontend/**'
-              - 'plugins/app/ralphx-external-mcp/**'
-              - 'plugins/app/ralphx-mcp-server/**'
+              - added|modified|deleted:
+                  - 'frontend/**'
+                  - 'plugins/app/ralphx-external-mcp/**'
+                  - 'plugins/app/ralphx-mcp-server/**'
+              - '!**/CLAUDE.md'
             rust:
-              - 'src-tauri/**'
-              - 'rust-toolchain.toml'
+              - added|modified|deleted:
+                  - 'src-tauri/**'
+                  - 'rust-toolchain.toml'
+              - '!**/CLAUDE.md'
 
       - name: Decide CodeQL scope
         id: decide
@@ -55,15 +63,19 @@ jobs:
           set -euo pipefail
 
           if [[ "${GITHUB_EVENT_NAME}" != "pull_request" ]]; then
-            echo "run_actions=true" >> "${GITHUB_OUTPUT}"
-            echo "run_javascript=true" >> "${GITHUB_OUTPUT}"
-            echo "run_rust=true" >> "${GITHUB_OUTPUT}"
+            {
+              echo "run_actions=true"
+              echo "run_javascript=true"
+              echo "run_rust=true"
+            } >> "${GITHUB_OUTPUT}"
             exit 0
           fi
 
-          echo "run_actions=${{ steps.filter.outputs.actions }}" >> "${GITHUB_OUTPUT}"
-          echo "run_javascript=${{ steps.filter.outputs.javascript }}" >> "${GITHUB_OUTPUT}"
-          echo "run_rust=${{ steps.filter.outputs.rust }}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "run_actions=${{ steps.filter.outputs.actions }}"
+            echo "run_javascript=${{ steps.filter.outputs.javascript }}"
+            echo "run_rust=${{ steps.filter.outputs.rust }}"
+          } >> "${GITHUB_OUTPUT}"
 
   analyze-actions:
     name: Analyze (actions)
@@ -126,20 +138,41 @@ jobs:
   code-scanning-gate:
     name: Code scanning gate
     needs:
+      - changes
       - analyze-actions
       - analyze-javascript
       - analyze-rust
-    if: ${{ github.event_name == 'pull_request' && always() }}
+    if: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && always() }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
       security-events: read
     steps:
+      - name: Finalize CodeQL analysis status
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ needs.changes.result }}" != "success" ]]; then
+            echo "CodeQL scope detection failed." >&2
+            exit 1
+          fi
+
+          for job_result in \
+            "${{ needs.analyze-actions.result }}" \
+            "${{ needs.analyze-javascript.result }}" \
+            "${{ needs.analyze-rust.result }}"; do
+            if [[ "${job_result}" != "success" && "${job_result}" != "skipped" ]]; then
+              echo "CodeQL analysis result: ${job_result}" >&2
+              exit 1
+            fi
+          done
+
       - name: Fail on open medium+ CodeQL alerts for this pull request
         env:
           GH_TOKEN: ${{ github.token }}
-          BASE_REF: refs/heads/${{ github.event.pull_request.base.ref }}
-          PR_REF: refs/pull/${{ github.event.pull_request.number }}/merge
+          BASE_REF: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_ref || format('refs/heads/{0}', github.event.pull_request.base.ref) }}
+          PR_REF: ${{ github.event_name == 'merge_group' && github.ref || format('refs/pull/{0}/merge', github.event.pull_request.number) }}
         shell: bash
         run: |
           set -euo pipefail

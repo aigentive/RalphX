@@ -84,6 +84,124 @@ fn test_new_agent_run() {
     assert_eq!(run.sandbox_mode, None);
     assert!(run.run_chain_id.is_some());
     assert_eq!(run.parent_run_id, None);
+    assert_eq!(run.action_kind, None);
+    assert_eq!(run.action_context_id, None);
+    assert_eq!(run.action_target_id, None);
+}
+
+#[test]
+fn verify_plan_action_metadata_is_typed_and_roundtrips() {
+    let parsed = AgentRunAction::from_metadata_json(Some(
+        r#"{"ralphx_action_kind":"verify_plan","ralphx_action_context_id":"session-1","ralphx_action_target_id":"artifact-1"}"#,
+    ))
+    .expect("complete action tuple");
+    assert_eq!(parsed.kind, AgentRunActionKind::VerifyPlan);
+    assert_eq!(parsed.context_id, "session-1");
+    assert_eq!(parsed.target_id, "artifact-1");
+
+    let mut run = AgentRun::new(ChatConversationId::new());
+    run.apply_action_metadata_json(Some(
+        r#"{"ralphx_action_kind":"verify_plan","ralphx_action_context_id":"session-1","ralphx_action_target_id":"artifact-1"}"#,
+    ));
+
+    assert_eq!(run.action_kind, Some(AgentRunActionKind::VerifyPlan));
+    assert_eq!(run.action_context_id.as_deref(), Some("session-1"));
+    assert_eq!(run.action_target_id.as_deref(), Some("artifact-1"));
+    assert_eq!(AgentRunActionKind::VerifyPlan.to_string(), "verify_plan");
+    assert_eq!(
+        "verify_plan".parse::<AgentRunActionKind>().unwrap(),
+        AgentRunActionKind::VerifyPlan
+    );
+}
+
+#[test]
+fn delegation_park_wake_action_metadata_is_typed_and_roundtrips() {
+    let metadata = r#"{"ralphx_action_kind":"delegation_park_wake","ralphx_action_context_id":"conversation-1","ralphx_action_target_id":"7e231618-a84f-4a58-a26e-3528d78c024d"}"#;
+    let parsed = AgentRunAction::from_metadata_json(Some(metadata)).expect("complete action tuple");
+
+    assert_eq!(parsed.kind, AgentRunActionKind::DelegationParkWake);
+    assert_eq!(parsed.context_id, "conversation-1");
+    assert_eq!(parsed.target_id, "7e231618-a84f-4a58-a26e-3528d78c024d");
+
+    let mut run = AgentRun::new(ChatConversationId::new());
+    run.apply_action_metadata_json(Some(metadata));
+    assert_eq!(
+        run.action_kind,
+        Some(AgentRunActionKind::DelegationParkWake)
+    );
+    assert_eq!(run.action_context_id.as_deref(), Some("conversation-1"));
+    assert_eq!(
+        run.action_target_id.as_deref(),
+        Some("7e231618-a84f-4a58-a26e-3528d78c024d")
+    );
+    assert_eq!(run.launch_role, None);
+    assert_eq!(
+        AgentRunActionKind::DelegationParkWake.to_string(),
+        "delegation_park_wake"
+    );
+    assert_eq!(
+        "delegation_park_wake"
+            .parse::<AgentRunActionKind>()
+            .unwrap(),
+        AgentRunActionKind::DelegationParkWake
+    );
+}
+
+#[test]
+fn workspace_review_fixer_action_metadata_is_typed_and_roundtrips() {
+    let parsed = AgentRunAction::from_metadata_json(Some(
+        r#"{"ralphx_action_kind":"workspace_review_fixer","ralphx_action_context_id":"conversation-1","ralphx_action_target_id":"attempt-1"}"#,
+    ))
+    .expect("complete action tuple");
+
+    assert_eq!(parsed.kind, AgentRunActionKind::WorkspaceReviewFixer);
+    assert_eq!(parsed.context_id, "conversation-1");
+    assert_eq!(parsed.target_id, "attempt-1");
+    assert_eq!(
+        AgentRunActionKind::WorkspaceReviewFixer.to_string(),
+        "workspace_review_fixer"
+    );
+    assert_eq!(
+        "workspace_review_fixer"
+            .parse::<AgentRunActionKind>()
+            .unwrap(),
+        AgentRunActionKind::WorkspaceReviewFixer
+    );
+}
+
+#[test]
+fn malformed_or_partial_action_metadata_is_not_authoritative() {
+    for metadata in [
+        None,
+        Some("not-json"),
+        Some(r#"{"ralphx_action_kind":"ordinary"}"#),
+        Some(r#"{"ralphx_action_kind":"verify_plan","ralphx_action_context_id":"session-1"}"#),
+        Some(
+            r#"{"ralphx_action_kind":"verify_plan","ralphx_action_context_id":" ","ralphx_action_target_id":"artifact-1"}"#,
+        ),
+        Some(
+            r#"{"ralphx_action_kind":"verify_plan","ralphx_action_context_id":"session-1","ralphx_action_target_id":" "}"#,
+        ),
+    ] {
+        let mut run = AgentRun::new(ChatConversationId::new());
+        run.apply_action_metadata_json(metadata);
+        assert_eq!(run.action_kind, None);
+        assert_eq!(run.action_context_id, None);
+        assert_eq!(run.action_target_id, None);
+    }
+}
+
+#[test]
+fn pr_autofix_action_metadata_roundtrips() {
+    let parsed = AgentRunAction::from_metadata_json(Some(
+        r#"{"ralphx_action_kind":"pr_autofix","ralphx_action_context_id":"42","ralphx_action_target_id":"github_pr_autofix:42:abc"}"#,
+    ))
+    .unwrap();
+
+    assert_eq!(parsed.kind, AgentRunActionKind::PrAutofix);
+    assert_eq!(parsed.context_id, "42");
+    assert_eq!(parsed.target_id, "github_pr_autofix:42:abc");
+    assert_eq!(AgentRunActionKind::PrAutofix.to_string(), "pr_autofix");
 }
 
 #[test]
@@ -119,6 +237,21 @@ fn test_agent_run_provider_metadata_serialization() {
     assert_eq!(serialized["logical_effort"], "xhigh");
     assert_eq!(serialized["service_tier"], "fast");
     assert_eq!(serialized["sandbox_mode"], "workspace-write");
+}
+
+#[test]
+fn runtime_source_serializes_as_snake_case_and_ignores_unknown_values() {
+    let mut run = AgentRun::new(ChatConversationId::new());
+    run.runtime_source = Some(RuntimeSource::RoleDefault);
+
+    let serialized = serde_json::to_value(&run).expect("serialize agent run");
+    assert_eq!(serialized["runtime_source"], "role_default");
+
+    let mut unknown = serialized;
+    unknown["runtime_source"] = serde_json::Value::String("future_runtime_source".to_string());
+    let hydrated: AgentRun =
+        serde_json::from_value(unknown).expect("unknown source is legacy-safe");
+    assert_eq!(hydrated.runtime_source, None);
 }
 
 #[test]

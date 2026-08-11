@@ -25,10 +25,10 @@ import type {
 import { extractConversationProviderMetadataFromRunPayload } from "@/types/events";
 import { useChatStore } from "@/stores/chatStore";
 import { useIdeationStore } from "@/stores/ideationStore";
-import { useTeamStore } from "@/stores/teamStore";
 import { buildStoreKey, parseStoreKey } from "@/lib/chat-context-registry";
 import { buildAgentEventStoreKey } from "@/lib/agent-store-key";
 import { findStoreKeyForContextId } from "@/lib/agent-event-utils";
+import { agentWorkspaceKeys } from "@/components/agents/agentWorkspaceQueries";
 import {
   chatKeys,
   invalidateConversationDataQueries,
@@ -93,6 +93,18 @@ function patchConversationMode<T>(
     return value;
   }
   return { ...record, agentMode: mode } as T;
+}
+
+function invalidateConversationAgentTasks(
+  queryClient: QueryClient,
+  conversationId: string | null | undefined
+) {
+  if (!conversationId) {
+    return;
+  }
+  void queryClient.invalidateQueries({
+    queryKey: agentWorkspaceKeys.agentTasks(conversationId),
+  });
 }
 
 function patchConversationModeInListPages<T>(
@@ -212,7 +224,6 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
   const setActiveConversation = useChatStore((s) => s.setActiveConversation);
   const setActiveAgentRun = useChatStore((s) => s.setActiveAgentRun);
   const clearActiveAgentRun = useChatStore((s) => s.clearActiveAgentRun);
-  const clearPendingPlan = useTeamStore((s) => s.clearPendingPlan);
 
   useEffect(() => {
     const unsubscribes: Unsubscribe[] = [];
@@ -311,7 +322,6 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
     ) {
       clearActiveAgentRun(storeKey, eventRunId);
       setAgentStatus(storeKey, "idle");
-      clearPendingPlan(storeKey);
       queryClient.invalidateQueries({ queryKey: chatKeys.agentRun(conversationId) });
       invalidateConversationDataQueries(queryClient, conversationId);
       queryClient.invalidateQueries({ queryKey: conversationStatsKey(conversationId) });
@@ -391,6 +401,14 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
         return false;
       }
 
+      const activeRunId = useChatStore.getState().activeAgentRunIds[storeKey];
+      if (eventRunId == null && activeRunId != null) {
+        logger.warn(
+          `[AgentEvents] Ignoring ${eventName} without a run id while active=${activeRunId} for key=${storeKey}`
+        );
+        return false;
+      }
+
       const parsed = parseStoreKey(storeKey);
       if (parsed?.contextType === "ideation") {
         const activeChildId = useIdeationStore.getState().activeVerificationChildId[parsed.contextId];
@@ -414,10 +432,8 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
     // issues with mismatched tool calls/results and partial content.
 
     // Listen for run started - set agent running state to true and update conversation cache
-    // Skip teammate events — useTeamEvents handles those independently
     unsubscribes.push(
       bus.subscribe<AgentRunStartedPayload>("agent:run_started", (payload) => {
-        if (payload.teammate_name) return;
         const { context_type, context_id: eventContextId, conversation_id } = payload;
 
         // Build context key from the event payload
@@ -437,7 +453,11 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
 
         // Set agent as generating for this context
         setAgentStatus(eventContextKey, "generating");
-        setActiveAgentRun(eventContextKey, payload.run_id);
+        setActiveAgentRun(
+          eventContextKey,
+          payload.run_id,
+          payload.provider_harness ?? payload.providerHarness ?? null,
+        );
 
         updateConversationProviderMetadata({
           conversationId: conversation_id,
@@ -512,8 +532,8 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
         updateLastAgentEvent(msgContextKey);
 
         // Always invalidate the conversation query for this message's conversation.
-        // This handles both lead and teammate conversations — teammate messages
-        // have their own conversation_id that won't match activeConversationId.
+        // This also handles delegated conversations whose conversation_id does not
+        // match activeConversationId.
         if (role === "user" && conversation_id === activeConversationId) {
           const newMessage: ChatMessageResponse = {
             id: message_id,
@@ -550,7 +570,7 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
             (oldData) => appendMessageToConversationHistory(oldData, newMessage)
           );
         } else if (conversation_id !== activeConversationId) {
-          // Non-active conversation (e.g. teammate messages): invalidate to refetch from DB.
+          // Non-active conversation: invalidate to refetch from DB.
           // Active-conversation assistant messages are handled exclusively by useChatEvents
           // to avoid duplicate DB refetches that cause visual artifacts during streaming.
           invalidateConversationDataQueries(queryClient, conversation_id);
@@ -563,10 +583,8 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
 
     // Listen for run completion
     // Unified event: agent:run_completed (replaces chat:run_completed)
-    // Skip teammate events — useTeamEvents handles those independently
     unsubscribes.push(
       bus.subscribe<AgentRunCompletedPayload>("agent:run_completed", (payload) => {
-        if (payload.teammate_name) return;
         const { conversation_id, context_type, context_id: eventContextId } = payload;
 
         // Build context key from the event payload
@@ -617,10 +635,8 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
     // Listen for turn completion (interactive mode - agent still alive)
     // Sets status to "waiting_for_input" so the UI shows the agent is idle between turns
     // (not "generating"), while the process remains alive.
-    // Skip teammate events — useTeamEvents handles those independently
     unsubscribes.push(
       bus.subscribe<AgentRunCompletedPayload>("agent:turn_completed", (payload) => {
-        if (payload.teammate_name) return;
         const { conversation_id, context_type, context_id: eventContextId } = payload;
 
         // Agent is still alive but waiting for user input — transition from "generating" to "waiting_for_input"
@@ -726,7 +742,14 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
           eventContextId,
           payload.conversation_id
         );
-        queueMessage(eventContextKey, content, message_id, payload.attachment_ids);
+        queueMessage(
+          eventContextKey,
+          content,
+          message_id,
+          payload.attachment_ids,
+          undefined,
+          "backend",
+        );
       })
     );
 
@@ -751,16 +774,13 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
     // Listen for agent stopped - defensive cleanup if agent:run_completed emission regresses.
     // Backend emits agent:stopped immediately on SIGTERM, before agent:run_completed.
     // This ensures running state clears even if the subsequent run_completed is lost.
-    // Skip teammate events — useTeamEvents handles those independently
     unsubscribes.push(
       bus.subscribe<{
         context_type: string;
         context_id: string;
         conversation_id: string;
         agent_run_id: string;
-        teammate_name?: string | null;
       }>("agent:stopped", (payload) => {
-        if (payload.teammate_name) return;
         const { conversation_id, context_type, context_id: eventContextId } = payload;
 
         const eventContextKey = buildAgentEventStoreKey(
@@ -787,7 +807,6 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
 
     // Listen for agent errors
     // Unified event: agent:error
-    // Skip teammate events — useTeamEvents handles those independently
     unsubscribes.push(
       bus.subscribe<{
         context_type: string;
@@ -795,9 +814,7 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
         conversation_id: string;
         agent_run_id?: string | null;
         error: string;
-        teammate_name?: string | null;
       }>("agent:error", (payload) => {
-        if (payload.teammate_name) return;
         const { conversation_id, context_type, context_id: eventContextId } = payload;
 
         // Build context key from the event payload
@@ -865,6 +882,7 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
         conversation_id: string;
         context_id: string;
       }>("agent:task_started", (payload) => {
+        invalidateConversationAgentTasks(queryClient, payload.conversation_id);
         const key = findStoreKeyForContextId(payload.context_id);
         if (key) updateLastAgentEvent(key);
       })
@@ -875,6 +893,7 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
         conversation_id: string;
         context_id: string;
       }>("agent:task_completed", (payload) => {
+        invalidateConversationAgentTasks(queryClient, payload.conversation_id);
         const key = findStoreKeyForContextId(payload.context_id);
         if (key) updateLastAgentEvent(key);
       })
@@ -883,7 +902,7 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
     return () => {
       unsubscribes.forEach((unsub) => unsub());
     };
-  }, [bus, activeConversationId, storeKey, queryClient, setAgentStatus, updateLastAgentEvent, deleteQueuedMessage, queueMessage, setActiveConversation, setActiveAgentRun, clearActiveAgentRun, clearPendingPlan]);
+  }, [bus, activeConversationId, storeKey, queryClient, setAgentStatus, updateLastAgentEvent, deleteQueuedMessage, queueMessage, setActiveConversation, setActiveAgentRun, clearActiveAgentRun]);
 
   // Global singleton watchdog — defense-in-depth for stuck generating state.
   // If the backend misses run_completed for any reason, this forces idle after
@@ -925,15 +944,18 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
           if (ideationState.activeVerificationChildId[parsedKey.contextId]) continue;
         }
 
-        // Project agent conversations are runtime-keyed by conversation id. Before
+        // Project and standalone agent conversations are runtime-keyed by conversation id. Before
         // clearing their UI status, ask the backend registry whether that process
         // is still alive; otherwise long but healthy Agents runs can lose Stop
         // state until the user reselects the conversation.
-        if (parsedKey?.contextType === "project") {
+        if (
+          parsedKey?.contextType === "project" ||
+          parsedKey?.contextType === "standalone"
+        ) {
           if (projectLivenessChecksInFlight.has(key)) continue;
           projectLivenessChecksInFlight.add(key);
           void chatApi
-            .isAgentRunning("project", parsedKey.contextId)
+            .isAgentRunning(parsedKey.contextType, parsedKey.contextId)
             .then((isRunning) => {
               const latestState = useChatStore.getState();
               if (latestState.agentStatus[key] !== "generating") return;

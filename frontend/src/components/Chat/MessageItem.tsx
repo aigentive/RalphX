@@ -18,6 +18,7 @@ import { TextBubble } from "./TextBubble";
 import { formatTimestamp, formatTimestampTitle } from "./MessageItem.utils";
 import { isDiffToolCall, isTaskToolCall } from "./DiffToolCallView.utils";
 import { getToolCallWidget } from "./tool-widgets/registry";
+import { canonicalizeToolName } from "./tool-widgets/tool-name";
 import { MessageAttachments, type MessageAttachment } from "./MessageAttachments";
 import { MessageReferences } from "./MessageReferences";
 import type { MessageComposerReferences } from "./MessageReferences.parse";
@@ -35,7 +36,13 @@ import {
 } from "./provider-harness";
 import {
   normalizeToolCallTranscriptPayload,
-} from "./verification-tool-calls";
+} from "./tool-call-transcript";
+import { PersonaRunBadge } from "./PersonaRunBadge";
+import { ToolActivityGroupToggle } from "./ToolActivityGroupToggle";
+import { summarizeToolActivity } from "./tool-activity-summary";
+import { ThinkingGroupToggle } from "./ThinkingGroupToggle";
+import { ThinkingWidget } from "./tool-widgets/ThinkingWidget";
+import { aggregateThinkingSegments, joinThinkingSegmentTexts } from "./thinking-group";
 
 // ============================================================================
 // Types
@@ -45,8 +52,12 @@ import {
  * Content block item - represents either text or a tool use
  */
 export interface ContentBlockItem {
-  type: "text" | "tool_use";
+  type: "text" | "tool_use" | "thinking";
   text?: string;
+  durationMs?: number;
+  isSettled?: boolean;
+  estimatedTokens?: number;
+  reasoningTokens?: number;
   id?: string;
   name?: string;
   arguments?: unknown;
@@ -84,14 +95,17 @@ export interface MessageItemProps {
   contentBlocks?: ContentBlockItem[] | null;
   /** Collapse consecutive content-block tool calls when no higher-level timeline grouping owns them. */
   groupContentBlockToolCalls?: boolean | undefined;
+  /** Stable parent scope used when ChatMessageList owns thinking-group intent across virtualization. */
+  contentThinkingGroupKeyPrefix?: string | undefined;
+  isContentThinkingGroupExpanded?: ((groupKey: string) => boolean) | undefined;
+  onToggleContentThinkingGroup?: ((
+    groupKey: string,
+    toggleElement: HTMLElement | null,
+  ) => void) | undefined;
   /** File attachments for user messages */
   attachments?: MessageAttachment[];
   /** Structured project and integration references for user messages */
   composerReferences?: MessageComposerReferences;
-  /** Teammate name for team mode messages */
-  teammateName?: string | null | undefined;
-  /** Teammate color for left-border indicator */
-  teammateColor?: string | null | undefined;
   providerHarness?: string | null | undefined;
   providerSessionId?: string | null | undefined;
   upstreamProvider?: string | null | undefined;
@@ -109,6 +123,12 @@ export interface MessageItemProps {
   reserveAssistantIconSpace?: boolean | undefined;
   showProviderMeta?: boolean | undefined;
   hideMeta?: boolean | undefined;
+  agentPersonasEnabled?: boolean | undefined;
+  personaId?: string | null | undefined;
+  personaSlug?: string | null | undefined;
+  personaVersion?: number | null | undefined;
+  personaInjected?: boolean | null | undefined;
+  personaSkippedReason?: string | null | undefined;
 }
 
 export interface MessageMetaProps {
@@ -178,42 +198,22 @@ export function MessageMeta({
   );
 }
 
-function ContentToolCallGroupToggle({
-  groupKey,
-  count,
-  isExpanded,
-  onToggle,
-}: {
-  groupKey: string;
-  count: number;
-  isExpanded: boolean;
-  onToggle: React.MouseEventHandler<HTMLButtonElement>;
-}) {
-  const label = isExpanded ? `Hide ${count} tool call${count === 1 ? "" : "s"}` : `Agent called ${count} tool${count === 1 ? "" : "s"}`;
-  return (
-    <button
-      type="button"
-      data-testid="tool-call-group-toggle"
-      data-chat-tool-call-group-key={groupKey}
-      aria-expanded={isExpanded}
-      aria-label={label}
-      onClick={onToggle}
-      className="inline-flex max-w-full items-center rounded-md px-2 py-1 text-[0.6875rem] font-medium transition-opacity hover:opacity-80"
-      style={{
-        backgroundColor: "var(--bg-elevated)",
-        color: "var(--text-secondary)",
-      }}
-    >
-      {label}
-    </button>
-  );
-}
+const GROUPABLE_WIDGET_TOOL_NAMES = new Set([
+  "bash",
+  "read",
+  "grep",
+  "glob",
+  "list_dir",
+]);
 
-function shouldGroupContentBlockToolCall(toolCall: ToolCall): boolean {
+function shouldIncludeInContentActivityGroup(toolCall: ToolCall): boolean {
   if (isDiffToolCall(toolCall.name) || isTaskToolCall(toolCall.name)) {
-    return false;
+    return true;
   }
-  if (getToolCallWidget(toolCall.name)) {
+  if (
+    getToolCallWidget(toolCall.name) &&
+    !GROUPABLE_WIDGET_TOOL_NAMES.has(canonicalizeToolName(toolCall.name))
+  ) {
     return false;
   }
   if (toolCall.resultPreviewTruncated) {
@@ -235,10 +235,11 @@ export const MessageItem = React.memo(function MessageItem({
   toolCalls,
   contentBlocks,
   groupContentBlockToolCalls = true,
+  contentThinkingGroupKeyPrefix,
+  isContentThinkingGroupExpanded,
+  onToggleContentThinkingGroup,
   attachments,
   composerReferences,
-  teammateName,
-  teammateColor,
   providerHarness,
   providerSessionId,
   upstreamProvider,
@@ -256,6 +257,12 @@ export const MessageItem = React.memo(function MessageItem({
   reserveAssistantIconSpace = showAssistantIcon,
   showProviderMeta = true,
   hideMeta = false,
+  agentPersonasEnabled = false,
+  personaId,
+  personaSlug,
+  personaVersion,
+  personaInjected,
+  personaSkippedReason,
 }: MessageItemProps) {
   const isUser = role === "user";
   const hasCustomBody = children != null;
@@ -285,10 +292,13 @@ export const MessageItem = React.memo(function MessageItem({
   const shouldShowProviderMeta =
     showProviderMeta &&
     !isUser &&
-    !teammateName &&
     (providerHarnessLabel !== null || modelEffortLabel !== null);
-  const shouldReserveAssistantIconSpace =
-    !isUser && !teammateName && reserveAssistantIconSpace;
+  const shouldShowPersonaMeta =
+    agentPersonasEnabled &&
+    !isUser &&
+    personaSlug != null &&
+    personaInjected != null;
+  const shouldReserveAssistantIconSpace = !isUser && reserveAssistantIconSpace;
 
   // Use pre-parsed data directly (parsing now happens at API layer)
   const { contentBlocks: parsedContentBlocks, toolCalls: parsedToolCalls } = useMemo(
@@ -354,8 +364,20 @@ export const MessageItem = React.memo(function MessageItem({
     return ids;
   }, [parsedContentBlocks, parsedToolCallsById]);
   const [expandedContentToolGroupKeys, setExpandedContentToolGroupKeys] = useState<Set<string>>(() => new Set());
+  const [collapsedContentThinkingGroupKeys, setCollapsedContentThinkingGroupKeys] = useState<Set<string>>(() => new Set());
   const toggleContentToolGroup = useCallback((groupKey: string) => {
     setExpandedContentToolGroupKeys((previousKeys) => {
+      const nextKeys = new Set(previousKeys);
+      if (nextKeys.has(groupKey)) {
+        nextKeys.delete(groupKey);
+      } else {
+        nextKeys.add(groupKey);
+      }
+      return nextKeys;
+    });
+  }, []);
+  const toggleContentThinkingGroup = useCallback((groupKey: string) => {
+    setCollapsedContentThinkingGroupKeys((previousKeys) => {
       const nextKeys = new Set(previousKeys);
       if (nextKeys.has(groupKey)) {
         nextKeys.delete(groupKey);
@@ -434,6 +456,39 @@ export const MessageItem = React.memo(function MessageItem({
   }, [childToolCallIds, parsedToolCallsById]);
   const renderedContentBlocks = useMemo(() => {
     const renderedBlocks: React.ReactNode[] = [];
+    const pendingThinking: Array<{ index: number; block: ContentBlockItem }> = [];
+    const flushThinkingGroup = () => {
+      const first = pendingThinking[0];
+      if (!first) {
+        return;
+      }
+      const localGroupKey = `content-thinking-group:${first.index}`;
+      const groupKey = contentThinkingGroupKeyPrefix
+        ? `${contentThinkingGroupKeyPrefix}:${localGroupKey}`
+        : localGroupKey;
+      const isExpanded = isContentThinkingGroupExpanded
+        ? isContentThinkingGroupExpanded(groupKey)
+        : !collapsedContentThinkingGroupKeys.has(groupKey);
+      const aggregate = aggregateThinkingSegments(pendingThinking.map(({ block }) => block), true);
+      const text = joinThinkingSegmentTexts(pendingThinking.map(({ block }) => block.text));
+      renderedBlocks.push(
+        <div key={groupKey} className="space-y-1.5 overflow-hidden">
+          <ThinkingGroupToggle groupKey={groupKey} isExpanded={isExpanded}
+            isSettled={aggregate.isSettled} segmentCount={aggregate.segmentCount}
+            {...(aggregate.totalDurationMs != null ? { durationMs: aggregate.totalDurationMs } : {})}
+            {...(aggregate.reasoningTokens != null ? { reasoningTokens: aggregate.reasoningTokens } : {})}
+            onToggle={(event) => {
+              if (onToggleContentThinkingGroup) {
+                onToggleContentThinkingGroup(groupKey, event.currentTarget);
+              } else {
+                toggleContentThinkingGroup(groupKey);
+              }
+            }} />
+          {isExpanded && text ? <ThinkingWidget text={text} /> : null}
+        </div>,
+      );
+      pendingThinking.length = 0;
+    };
 
     for (let index = 0; index < parsedContentBlocks.length; index += 1) {
       const block = parsedContentBlocks[index];
@@ -441,6 +496,7 @@ export const MessageItem = React.memo(function MessageItem({
         continue;
       }
       if (block.type === "text" && block.text) {
+        flushThinkingGroup();
         renderedBlocks.push(
           <TextBubble
             key={`block-${index}`}
@@ -450,6 +506,12 @@ export const MessageItem = React.memo(function MessageItem({
         );
         continue;
       }
+      if (block.type === "thinking") {
+        if (block.text?.trim()) {
+          pendingThinking.push({ index, block });
+        }
+        continue;
+      }
 
       if (block.type === "tool_use") {
         const firstToolCall = buildContentBlockToolCall(block, index);
@@ -457,7 +519,9 @@ export const MessageItem = React.memo(function MessageItem({
           continue;
         }
 
-        if (!groupContentBlockToolCalls || !shouldGroupContentBlockToolCall(firstToolCall)) {
+        flushThinkingGroup();
+
+        if (!groupContentBlockToolCalls || !shouldIncludeInContentActivityGroup(firstToolCall)) {
           renderedBlocks.push(
             <ToolCallIndicator key={`block-${index}`} toolCall={firstToolCall} />,
           );
@@ -472,7 +536,7 @@ export const MessageItem = React.memo(function MessageItem({
           const groupBlock = parsedContentBlocks[groupEndIndex];
           if (groupBlock) {
             const toolCall = buildContentBlockToolCall(groupBlock, groupEndIndex);
-            if (toolCall && shouldGroupContentBlockToolCall(toolCall)) {
+            if (toolCall && shouldIncludeInContentActivityGroup(toolCall)) {
               toolCallGroup.push({ index: groupEndIndex, toolCall });
             } else if (toolCall) {
               break;
@@ -485,16 +549,21 @@ export const MessageItem = React.memo(function MessageItem({
           const groupIds = toolCallGroup.map(({ toolCall }) => toolCall.id).join("\u0000");
           const groupKey = `content-tool-group:${index}:${groupIds || "anonymous"}`;
           const isExpanded = expandedContentToolGroupKeys.has(groupKey);
+          const summary = summarizeToolActivity({
+            toolCalls: toolCallGroup.map(({ toolCall }) => toolCall),
+          });
           renderedBlocks.push(
             <div key={groupKey} className="space-y-1.5 overflow-hidden">
-              <ContentToolCallGroupToggle
+              <ToolActivityGroupToggle
                 groupKey={groupKey}
-                count={toolCallGroup.length}
+                summary={summary}
                 isExpanded={isExpanded}
                 onToggle={() => toggleContentToolGroup(groupKey)}
               />
-              {isExpanded && toolCallGroup.map(({ index: toolCallIndex, toolCall }) => (
-                <ToolCallIndicator key={`block-${toolCallIndex}`} toolCall={toolCall} />
+              {toolCallGroup.map(({ index: toolCallIndex, toolCall }) => (
+                isTaskToolCall(toolCall.name) || isExpanded
+                  ? <ToolCallIndicator key={`block-${toolCallIndex}`} toolCall={toolCall} />
+                  : null
               ))}
             </div>,
           );
@@ -503,13 +572,20 @@ export const MessageItem = React.memo(function MessageItem({
       }
     }
 
+    flushThinkingGroup();
+
     return renderedBlocks;
   }, [
     buildContentBlockToolCall,
+    collapsedContentThinkingGroupKeys,
+    contentThinkingGroupKeyPrefix,
     expandedContentToolGroupKeys,
     groupContentBlockToolCalls,
+    isContentThinkingGroupExpanded,
     isUser,
+    onToggleContentThinkingGroup,
     parsedContentBlocks,
+    toggleContentThinkingGroup,
     toggleContentToolGroup,
   ]);
 
@@ -521,47 +597,36 @@ export const MessageItem = React.memo(function MessageItem({
         isUser ? "justify-end" : "justify-start"
       )}
       data-chat-message-item="true"
-      style={teammateColor ? { borderLeft: `2px solid ${teammateColor}`, paddingLeft: "8px" } : undefined}
     >
       {/* Agent indicator for assistant messages */}
       {shouldReserveAssistantIconSpace && (
         showAssistantIcon ? (
-          <Bot className={cn("w-3.5 h-3.5 mr-2 shrink-0 text-text-primary/40", shouldShowProviderMeta ? "mt-0.5" : "mt-2")} />
+          <Bot className={cn("w-3.5 h-3.5 mr-2 shrink-0 text-text-primary/40", shouldShowProviderMeta || shouldShowPersonaMeta ? "mt-0.5" : "mt-2")} />
         ) : (
           <span
             aria-hidden="true"
-            className={cn("w-3.5 h-3.5 mr-2 shrink-0", shouldShowProviderMeta ? "mt-0.5" : "mt-2")}
+            className={cn("w-3.5 h-3.5 mr-2 shrink-0", shouldShowProviderMeta || shouldShowPersonaMeta ? "mt-0.5" : "mt-2")}
             data-testid="message-assistant-icon-spacer"
           />
         )
       )}
-      {/* Teammate name badge */}
-      {!isUser && teammateName && (
-        <div className="flex items-center gap-1 mt-2 mr-2 shrink-0">
-          {teammateColor && (
-            <span className="w-2 h-2 rounded-full" style={{ backgroundColor: teammateColor }} />
-          )}
-          <span className="text-[0.625rem] font-medium" style={{ color: teammateColor ?? "var(--text-muted)" }}>
-            {teammateName}
-          </span>
-        </div>
-      )}
-
       <div className="flex flex-col gap-3 min-w-0 w-full">
-        {shouldShowProviderMeta && (
+        {(shouldShowProviderMeta || shouldShowPersonaMeta) && (
           <div
             className="flex items-center gap-2 min-w-0"
             data-testid="message-provider-meta"
           >
-            <span
-              className="rounded-full px-1.5 py-0.5 text-[0.5625rem] font-semibold uppercase tracking-[0.08em]"
-              style={providerHarnessStyle}
-              title={providerTooltip ?? undefined}
-              aria-label={providerTooltip ?? providerHarnessLabel ?? undefined}
-              data-testid="message-provider-badge"
-            >
-              {providerHarnessLabel}
-            </span>
+            {shouldShowProviderMeta && (
+              <span
+                className="rounded-full px-1.5 py-0.5 text-[0.5625rem] font-semibold uppercase tracking-[0.08em]"
+                style={providerHarnessStyle}
+                title={providerTooltip ?? undefined}
+                aria-label={providerTooltip ?? providerHarnessLabel ?? undefined}
+                data-testid="message-provider-badge"
+              >
+                {providerHarnessLabel}
+              </span>
+            )}
             {modelEffortLabel && (
               <span
                 className="text-[0.625rem] min-w-0 truncate text-text-primary/50"
@@ -571,6 +636,14 @@ export const MessageItem = React.memo(function MessageItem({
                 {modelEffortLabel}
               </span>
             )}
+            <PersonaRunBadge
+              enabled={agentPersonasEnabled}
+              personaId={personaId}
+              personaSlug={personaSlug}
+              personaVersion={personaVersion}
+              personaInjected={personaInjected}
+              skippedReason={personaSkippedReason}
+            />
           </div>
         )}
 
@@ -584,6 +657,12 @@ export const MessageItem = React.memo(function MessageItem({
             projectReferences={composerReferences.projectReferences}
             integrationReferences={composerReferences.integrationReferences}
             artifactReferences={composerReferences.artifactReferences}
+            {...(composerReferences.folderReferences
+              ? { folderReferences: composerReferences.folderReferences }
+              : {})}
+            {...(composerReferences.selectionSnapshot
+              ? { selectionSnapshot: composerReferences.selectionSnapshot }
+              : {})}
           />
         )}
 
@@ -630,10 +709,11 @@ export const MessageItem = React.memo(function MessageItem({
     && prev.toolCalls === next.toolCalls
     && prev.contentBlocks === next.contentBlocks
     && prev.groupContentBlockToolCalls === next.groupContentBlockToolCalls
+    && prev.contentThinkingGroupKeyPrefix === next.contentThinkingGroupKeyPrefix
+    && prev.isContentThinkingGroupExpanded === next.isContentThinkingGroupExpanded
+    && prev.onToggleContentThinkingGroup === next.onToggleContentThinkingGroup
     && prev.attachments === next.attachments
     && prev.composerReferences === next.composerReferences
-    && prev.teammateName === next.teammateName
-    && prev.teammateColor === next.teammateColor
     && prev.providerHarness === next.providerHarness
     && prev.providerSessionId === next.providerSessionId
     && prev.upstreamProvider === next.upstreamProvider
@@ -650,5 +730,11 @@ export const MessageItem = React.memo(function MessageItem({
     && prev.showAssistantIcon === next.showAssistantIcon
     && prev.reserveAssistantIconSpace === next.reserveAssistantIconSpace
     && prev.showProviderMeta === next.showProviderMeta
-    && prev.hideMeta === next.hideMeta;
+    && prev.hideMeta === next.hideMeta
+    && prev.agentPersonasEnabled === next.agentPersonasEnabled
+    && prev.personaId === next.personaId
+    && prev.personaSlug === next.personaSlug
+    && prev.personaVersion === next.personaVersion
+    && prev.personaInjected === next.personaInjected
+    && prev.personaSkippedReason === next.personaSkippedReason;
 });

@@ -7,12 +7,17 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::domain::entities::{
-    merge_agent_task_metadata, AgentTaskCreate, AgentTaskDetail, AgentTaskId, AgentTaskList,
-    AgentTaskListId, AgentTaskListSummary, AgentTaskMutationResult, AgentTaskPatch, AgentTaskScope,
-    AgentTaskState, AgentTaskStateChange, AgentTaskSummary,
+    merge_agent_task_metadata, AgentRunId, AgentTaskAssignment, AgentTaskAssignmentId,
+    AgentTaskAssignmentReservation, AgentTaskAssignmentSettlement,
+    AgentTaskAssignmentTerminalStatus, AgentTaskAssignmentView, AgentTaskCreate, AgentTaskDetail,
+    AgentTaskId, AgentTaskList, AgentTaskListId, AgentTaskListSummary, AgentTaskMutationResult,
+    AgentTaskPatch, AgentTaskScope, AgentTaskState, AgentTaskStateChange, AgentTaskSummary,
+    DelegatedSessionId,
 };
 use crate::domain::repositories::{AgentTaskListOptions, AgentTaskRepository};
 use crate::error::{AppError, AppResult};
+
+mod assignments;
 
 #[derive(Clone)]
 struct AgentTaskRow {
@@ -43,6 +48,7 @@ struct MemoryAgentTaskState {
     tasks: Vec<AgentTaskRow>,
     dependencies: HashSet<(AgentTaskListId, AgentTaskId, AgentTaskId)>,
     events: Vec<AgentTaskEventRow>,
+    assignments: Vec<AgentTaskAssignment>,
 }
 
 pub struct MemoryAgentTaskRepository {
@@ -174,6 +180,12 @@ impl AgentTaskRepository for MemoryAgentTaskRepository {
         let Some(index) = find_task_index(&state, &list.id, task_ref) else {
             return Ok(None);
         };
+        assignments::ensure_mutation_allowed(
+            &state,
+            &list.id,
+            &state.tasks[index].task_id,
+            &patch,
+        )?;
 
         let mut changed_fields = Vec::new();
         let mut state_change = None;
@@ -271,6 +283,130 @@ impl AgentTaskRepository for MemoryAgentTaskRepository {
             changed_fields,
             state_change,
         }))
+    }
+
+    async fn reserve_assignment(
+        &self,
+        scope: &AgentTaskScope,
+        task_ref: &str,
+        delegated_session_id: &DelegatedSessionId,
+        caller_agent_run_id: &AgentRunId,
+        delegate_agent_name: &str,
+    ) -> AppResult<Option<AgentTaskAssignmentReservation>> {
+        assignments::reserve(
+            self,
+            scope,
+            task_ref,
+            delegated_session_id,
+            caller_agent_run_id,
+            delegate_agent_name,
+        )
+    }
+
+    async fn bind_assignment_run(
+        &self,
+        assignment_id: &AgentTaskAssignmentId,
+        delegated_session_id: &DelegatedSessionId,
+        delegated_agent_run_id: &AgentRunId,
+    ) -> AppResult<Option<AgentTaskAssignmentView>> {
+        assignments::bind_run(
+            self,
+            assignment_id,
+            delegated_session_id,
+            delegated_agent_run_id,
+        )
+    }
+
+    async fn plan_assignment_run(
+        &self,
+        assignment_id: &AgentTaskAssignmentId,
+        delegated_session_id: &DelegatedSessionId,
+        delegated_agent_run_id: &AgentRunId,
+    ) -> AppResult<Option<AgentTaskAssignmentView>> {
+        assignments::plan_run(
+            self,
+            assignment_id,
+            delegated_session_id,
+            delegated_agent_run_id,
+        )
+    }
+
+    async fn set_assignment_team_identity(
+        &self,
+        assignment_id: &AgentTaskAssignmentId,
+        delegated_session_id: &DelegatedSessionId,
+        team_id: &crate::domain::entities::TeamSessionId,
+        team_member_id: &crate::domain::entities::TeamMemberId,
+        team_member_generation: i64,
+    ) -> AppResult<Option<AgentTaskAssignmentView>> {
+        assignments::set_team_identity(
+            self,
+            assignment_id,
+            delegated_session_id,
+            team_id,
+            team_member_id,
+            team_member_generation,
+        )
+    }
+
+    async fn get_unresolved_assignment(
+        &self,
+        delegated_session_id: &DelegatedSessionId,
+    ) -> AppResult<Option<AgentTaskAssignmentView>> {
+        assignments::get_unresolved(self, delegated_session_id)
+    }
+
+    async fn request_assignment_completion(
+        &self,
+        delegated_session_id: &DelegatedSessionId,
+        delegated_agent_run_id: &AgentRunId,
+        local_scope: &AgentTaskScope,
+        completion_metadata: Option<Value>,
+    ) -> AppResult<Option<AgentTaskAssignmentView>> {
+        assignments::request_completion(
+            self,
+            delegated_session_id,
+            delegated_agent_run_id,
+            local_scope,
+            completion_metadata,
+        )
+    }
+
+    async fn request_assignment_release(
+        &self,
+        delegated_session_id: &DelegatedSessionId,
+        delegated_agent_run_id: &AgentRunId,
+        reason: &str,
+    ) -> AppResult<Option<AgentTaskAssignmentView>> {
+        assignments::request_release(self, delegated_session_id, delegated_agent_run_id, reason)
+    }
+
+    async fn settle_assignment_for_run(
+        &self,
+        delegated_agent_run_id: &AgentRunId,
+        terminal_status: AgentTaskAssignmentTerminalStatus,
+        reason: Option<&str>,
+    ) -> AppResult<Option<AgentTaskAssignmentSettlement>> {
+        assignments::settle(self, delegated_agent_run_id, terminal_status, reason)
+    }
+
+    async fn get_assignment_for_run(
+        &self,
+        delegated_agent_run_id: &AgentRunId,
+    ) -> AppResult<Option<AgentTaskAssignmentView>> {
+        assignments::get_for_run(self, delegated_agent_run_id)
+    }
+
+    async fn fail_reserved_assignment(
+        &self,
+        delegated_session_id: &DelegatedSessionId,
+        reason: &str,
+    ) -> AppResult<Option<AgentTaskAssignmentSettlement>> {
+        assignments::fail_reserved(self, delegated_session_id, reason)
+    }
+
+    async fn list_unresolved_assignments(&self) -> AppResult<Vec<AgentTaskAssignmentView>> {
+        assignments::list_unresolved(self)
     }
 }
 
@@ -632,6 +768,9 @@ fn append_event(
     });
 }
 
+#[cfg(test)]
+#[path = "memory_agent_task_assignment_repo_tests.rs"]
+mod assignment_tests;
 #[cfg(test)]
 #[path = "memory_agent_task_repo_tests.rs"]
 mod tests;

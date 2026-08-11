@@ -44,6 +44,30 @@ vi.mock("@/hooks/useGlobalAgentLifecycle", () => ({
   useGlobalAgentLifecycle: vi.fn(),
 }));
 
+vi.mock("@/hooks/useDelegationParkAttention", () => ({
+  useDelegationParkAttention: vi.fn(),
+}));
+
+vi.mock("@/hooks/useAgentWorkflowEvents", () => ({
+  useAgentWorkflowEvents: vi.fn(),
+}));
+
+vi.mock("@/hooks/useNotificationEvents", () => ({
+  useNotificationEvents: vi.fn(),
+}));
+
+vi.mock("@/hooks/useNotificationToasts", () => ({
+  useNotificationToasts: vi.fn(),
+}));
+
+vi.mock("@/hooks/useUsageStatsEvents", () => ({
+  useUsageStatsEvents: vi.fn(),
+}));
+
+vi.mock("@/components/agents/useAgentWorkspaceOperationToasts", () => ({
+  useAgentWorkspaceOperationToasts: vi.fn(),
+}));
+
 // Mock the event bus module
 vi.mock("@/lib/event-bus", () => ({
   createEventBus: vi.fn(() => ({
@@ -58,6 +82,9 @@ import {
   useReviewEvents,
   useFileChangeEvents,
 } from "@/hooks/useEvents";
+import { useNotificationEvents } from "@/hooks/useNotificationEvents";
+import { useNotificationToasts } from "@/hooks/useNotificationToasts";
+import { useUsageStatsEvents } from "@/hooks/useUsageStatsEvents";
 
 describe("EventProvider", () => {
   beforeEach(() => {
@@ -112,6 +139,21 @@ describe("EventProvider", () => {
     );
 
     expect(useFileChangeEvents).toHaveBeenCalled();
+  });
+
+  it("should call useNotificationEvents hook", () => {
+    render(<EventProvider><div>Test</div></EventProvider>);
+    expect(useNotificationEvents).toHaveBeenCalled();
+  });
+
+  it("should call useNotificationToasts hook", () => {
+    render(<EventProvider><div>Test</div></EventProvider>);
+    expect(useNotificationToasts).toHaveBeenCalled();
+  });
+
+  it("should call useUsageStatsEvents hook", () => {
+    render(<EventProvider><div>Test</div></EventProvider>);
+    expect(useUsageStatsEvents).toHaveBeenCalled();
   });
 
   it("should render multiple children", () => {

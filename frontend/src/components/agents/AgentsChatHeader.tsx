@@ -26,6 +26,7 @@ import {
   ShieldCheck,
   Terminal as TerminalIcon,
   Ticket,
+  UsersRound,
 } from "lucide-react";
 
 import type { AgentConversationWorkspace, WorkspaceOpenTarget } from "@/api/chat";
@@ -63,20 +64,20 @@ import {
   type AgentsChatFocusTone,
   type AgentsChatFocusType,
 } from "./agentChatFocus";
-import type { IdeationArtifactTab } from "./agentArtifactTabs";
 import { resolveConversationAgentMode } from "./agentConversationMode";
 import {
   getAgentWorkspaceEffectiveBaseLabel,
-  hasPublishedWorkspacePr,
+  isAgentWorkspacePublishActive,
   shouldShowAgentWorkspacePublishSurface,
 } from "./agentWorkspacePublishState";
 import {
   AGENT_WORKSPACE_FRESHNESS_STALE_MS,
   agentWorkspaceKeys,
+  canInspectAgentWorkspaceFreshness,
 } from "./agentWorkspaceQueries";
 
 const HEADER_ARTIFACT_TABS: Array<{
-  id: IdeationArtifactTab;
+  id: AgentArtifactTab;
   label: string;
   icon: ElementType;
 }> = [
@@ -84,8 +85,8 @@ const HEADER_ARTIFACT_TABS: Array<{
   { id: "issues", label: "Issues", icon: AlertCircle },
   { id: "plan", label: "Plan", icon: FileText },
   { id: "verification", label: "Verification", icon: CheckCircle2 },
-  { id: "proposal", label: "Proposals", icon: GitPullRequestArrow },
   { id: "tasks", label: "Tasks", icon: ClipboardList },
+  { id: "team", label: "Team", icon: UsersRound },
 ];
 
 const FOCUS_TONE_STYLES: Record<
@@ -114,7 +115,7 @@ export interface AgentsChatHeaderProps {
   workspace: AgentConversationWorkspace | null;
   chatFocus?: AgentsChatFocus | undefined;
   modelDisplay?: ModelDisplay | undefined;
-  availableArtifactTabs?: readonly IdeationArtifactTab[] | undefined;
+  availableArtifactTabs?: readonly AgentArtifactTab[] | undefined;
   artifactOpen: boolean;
   activeArtifactTab: AgentArtifactTab;
   terminalOpen?: boolean;
@@ -331,6 +332,20 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
       ? "Collapse terminal"
       : "Expand terminal";
   const terminalPreloadHandler = terminalArchivedReason ? undefined : onPreloadTerminal;
+  const builtInTerminalAction = useMemo(
+    () => ({
+      open: terminalOpen,
+      unavailableReason: terminalUnavailableReason,
+      onToggle: onToggleTerminal,
+      onPreload: terminalPreloadHandler,
+    }),
+    [
+      onToggleTerminal,
+      terminalOpen,
+      terminalPreloadHandler,
+      terminalUnavailableReason,
+    ],
+  );
   const title = conversation?.title || "Untitled agent";
   const conversationMode = conversation
     ? resolveConversationAgentMode(conversation, workspace)
@@ -366,6 +381,17 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
   const showPromotedPublishShortcut =
     promotePublishShortcut && artifactOpen && activeArtifactTab === "review";
   const effectivePublishWorkspace = publishShortcutWorkspace ?? workspace;
+  const isPublishShortcutPublishing =
+    isPublishingWorkspace || isAgentWorkspacePublishActive(effectivePublishWorkspace);
+  const publishShortcutDisplayLabel = isPublishShortcutPublishing
+    ? "Publishing"
+    : publishShortcutLabel;
+  const publishShortcutAriaLabel = isPublishShortcutPublishing
+    ? "Publishing"
+    : `Open workspace publish panel: ${publishShortcutDisplayLabel}`;
+  const publishShortcutTooltip = isPublishShortcutPublishing
+    ? "Publishing"
+    : "Open the workspace publish panel";
   // Hide the publish shortcut whenever most artifact panes are open because the
   // tab bar already exposes it. A current passed Review promotes publishing so
   // the user does not have to switch tabs just to reach the publish flow.
@@ -427,9 +453,9 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
     if (!linkedTicket) {
       return;
     }
-    // Open the linked issue in the right-hand artifact sidebar (Jira/Linear tab)
+    // Open the linked issue in the provider-specific right-hand artifact tab
     // rather than navigating away to the ticketing dashboard.
-    onSelectArtifact(linkedTicket.ticketRef.provider === "jira" ? "jira" : "linear");
+    onSelectArtifact(linkedTicket.ticketRef.provider);
   }, [linkedTicket, onSelectArtifact]);
 
   return (
@@ -588,6 +614,7 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
             targets={workspaceOpenTargets}
             openingTargetId={openingWorkspaceTargetId}
             onOpenTarget={onOpenWorkspaceTarget}
+            builtInTerminal={builtInTerminalAction}
           />
         )}
 
@@ -605,23 +632,25 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
                 disabled={
                   !onPublishWorkspace ||
                   !onOpenPublishPane ||
-                  isPublishingWorkspace ||
+                  isPublishShortcutPublishing ||
                   (effectivePublishWorkspace?.mode === "edit" &&
                     effectivePublishWorkspace?.status === "missing")
                 }
-                aria-label={`Open workspace publish panel: ${publishShortcutLabel}`}
+                aria-label={publishShortcutAriaLabel}
                 data-testid="agents-publish-workspace"
               >
-                {isPublishingWorkspace ? (
+                {isPublishShortcutPublishing ? (
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 ) : (
                   <GitPullRequestArrow className="h-3.5 w-3.5" />
                 )}
-                <span className="hidden xl:inline">{publishShortcutLabel}</span>
+                <span className="hidden xl:inline">
+                  {publishShortcutDisplayLabel}
+                </span>
               </Button>
             </TooltipTrigger>
             <TooltipContent side="bottom" className="text-xs">
-              Open the workspace publish panel
+              {publishShortcutTooltip}
             </TooltipContent>
           </Tooltip>
         )}
@@ -707,7 +736,7 @@ const AgentsWorkspaceStatusPill = memo(function AgentsWorkspaceStatusPill({
       }),
     enabled:
       !terminalStatus &&
-      (workspace.mode === "edit" || hasPublishedWorkspacePr(workspace)),
+      canInspectAgentWorkspaceFreshness(workspace),
     staleTime: AGENT_WORKSPACE_FRESHNESS_STALE_MS,
   });
   const isBaseBlocked = freshness?.baseStatus === "blocked";

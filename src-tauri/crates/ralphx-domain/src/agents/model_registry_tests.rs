@@ -1,5 +1,16 @@
 use super::*;
 
+fn codex_full_reasoning_efforts() -> Vec<LogicalEffort> {
+    vec![
+        LogicalEffort::Low,
+        LogicalEffort::Medium,
+        LogicalEffort::High,
+        LogicalEffort::XHigh,
+        LogicalEffort::Max,
+        LogicalEffort::Ultra,
+    ]
+}
+
 #[test]
 fn built_in_registry_tracks_provider_model_effort_compatibility() {
     let snapshot = AgentModelRegistrySnapshot::merged(Vec::new());
@@ -18,6 +29,29 @@ fn built_in_registry_tracks_provider_model_effort_compatibility() {
         ]
     );
     assert_eq!(opus.default_effort, LogicalEffort::XHigh);
+
+    for (model_id, label) in [
+        ("claude-opus-4-7", "Claude Opus 4.7"),
+        ("claude-opus-4-8", "Claude Opus 4.8"),
+        ("claude-opus-5", "Claude Opus 5"),
+    ] {
+        let model = snapshot
+            .find_enabled(AgentHarnessKind::Claude, model_id)
+            .expect("pinned Opus model should be registered");
+        assert_eq!(model.label, label);
+        assert_eq!(model.menu_label, label);
+        assert_eq!(
+            model.supported_efforts,
+            vec![
+                LogicalEffort::Low,
+                LogicalEffort::Medium,
+                LogicalEffort::High,
+                LogicalEffort::XHigh,
+                LogicalEffort::Max,
+            ]
+        );
+        assert_eq!(model.default_effort, LogicalEffort::High);
+    }
 
     let sonnet_5 = snapshot
         .find_enabled(AgentHarnessKind::Claude, "claude-sonnet-5")
@@ -63,6 +97,50 @@ fn built_in_registry_tracks_provider_model_effort_compatibility() {
     );
     assert_eq!(fable.default_effort, LogicalEffort::High);
 
+    let codex_sol = snapshot
+        .find_enabled(AgentHarnessKind::Codex, "gpt-5.6-sol")
+        .expect("gpt-5.6-sol should be registered");
+    assert_eq!(codex_sol.supported_efforts, codex_full_reasoning_efforts());
+    assert_eq!(codex_sol.default_effort, LogicalEffort::Medium);
+
+    let codex_terra = snapshot
+        .find_enabled(AgentHarnessKind::Codex, "gpt-5.6-terra")
+        .expect("gpt-5.6-terra should be registered");
+    assert_eq!(
+        codex_terra.supported_efforts,
+        codex_full_reasoning_efforts()
+    );
+    assert_eq!(codex_terra.default_effort, LogicalEffort::Medium);
+
+    let codex_luna = snapshot
+        .find_enabled(AgentHarnessKind::Codex, "gpt-5.6-luna")
+        .expect("gpt-5.6-luna should be registered");
+    assert_eq!(
+        codex_luna.supported_efforts,
+        vec![
+            LogicalEffort::Low,
+            LogicalEffort::Medium,
+            LogicalEffort::High,
+            LogicalEffort::XHigh,
+            LogicalEffort::Max,
+        ]
+    );
+    assert_eq!(codex_luna.default_effort, LogicalEffort::Medium);
+
+    let codex_5_5 = snapshot
+        .find_enabled(AgentHarnessKind::Codex, "gpt-5.5")
+        .expect("gpt-5.5 should be registered");
+    assert_eq!(
+        codex_5_5.supported_efforts,
+        vec![
+            LogicalEffort::Low,
+            LogicalEffort::Medium,
+            LogicalEffort::High,
+            LogicalEffort::XHigh,
+        ]
+    );
+    assert_eq!(codex_5_5.default_effort, LogicalEffort::XHigh);
+
     let codex_mini = snapshot
         .find_enabled(AgentHarnessKind::Codex, "gpt-5.4-mini")
         .expect("gpt-5.4-mini should be registered");
@@ -105,13 +183,30 @@ fn custom_models_override_built_ins() {
 fn built_in_registry_exposes_expected_defaults_for_each_provider() {
     let models = built_in_agent_models();
 
-    assert_eq!(models.len(), 11);
-    assert_eq!(default_model_for_provider(AgentHarnessKind::Claude), "sonnet");
-    assert_eq!(default_model_for_provider(AgentHarnessKind::Codex), "gpt-5.5");
-    assert_eq!(lightweight_model_for_provider(AgentHarnessKind::Claude), "haiku");
+    assert_eq!(models.len(), 17);
+    assert_eq!(
+        default_model_for_provider(AgentHarnessKind::Claude),
+        "sonnet"
+    );
+    assert_eq!(
+        default_model_for_provider(AgentHarnessKind::Codex),
+        "gpt-5.5"
+    );
+    assert_eq!(
+        lightweight_model_for_provider(AgentHarnessKind::Claude),
+        "haiku"
+    );
     assert_eq!(
         lightweight_model_for_provider(AgentHarnessKind::Codex),
         "gpt-5.4-mini"
+    );
+    assert_eq!(
+        plan_judge_model_for_provider(AgentHarnessKind::Claude),
+        "sonnet"
+    );
+    assert_eq!(
+        plan_judge_model_for_provider(AgentHarnessKind::Codex),
+        "gpt-5.4"
     );
     assert_eq!(
         default_effort_for_provider(AgentHarnessKind::Claude),
@@ -136,6 +231,8 @@ fn built_in_registry_exposes_expected_defaults_for_each_provider() {
             LogicalEffort::Medium,
             LogicalEffort::High,
             LogicalEffort::XHigh,
+            LogicalEffort::Max,
+            LogicalEffort::Ultra,
         ]
     );
 
@@ -152,17 +249,23 @@ fn built_in_registry_exposes_expected_defaults_for_each_provider() {
     assert_eq!(
         claude_models,
         vec![
-            "sonnet",
-            "claude-sonnet-4-6",
-            "claude-sonnet-5",
-            "opus",
-            "haiku",
             "fable",
+            "claude-opus-5",
+            "claude-opus-4-8",
+            "claude-opus-4-7",
+            "opus",
+            "claude-sonnet-5",
+            "claude-sonnet-4-6",
+            "sonnet",
+            "haiku",
         ]
     );
     assert_eq!(
         codex_models,
         vec![
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
             "gpt-5.5",
             "gpt-5.4",
             "gpt-5.4-mini",
@@ -186,11 +289,7 @@ fn custom_model_normalization_trims_sorts_and_falls_back_safely() {
         "  ",
         "  ",
         Some("  \n ".to_string()),
-        vec![
-            LogicalEffort::High,
-            LogicalEffort::Low,
-            LogicalEffort::High,
-        ],
+        vec![LogicalEffort::High, LogicalEffort::Low, LogicalEffort::High],
         LogicalEffort::Max,
         true,
     )
@@ -219,15 +318,12 @@ fn custom_model_normalization_trims_sorts_and_falls_back_safely() {
     .normalized();
 
     assert_eq!(provider_defaults.menu_label, "GPT-5.6");
-    assert_eq!(
-        provider_defaults.description.as_deref(),
-        Some("next model")
-    );
+    assert_eq!(provider_defaults.description.as_deref(), Some("next model"));
     assert_eq!(
         provider_defaults.supported_efforts,
         default_efforts_for_provider(AgentHarnessKind::Codex)
     );
-    assert_eq!(provider_defaults.default_effort, LogicalEffort::XHigh);
+    assert_eq!(provider_defaults.default_effort, LogicalEffort::Max);
     assert!(!provider_defaults.enabled);
 }
 
@@ -251,6 +347,6 @@ fn disabled_custom_override_is_not_selectable_as_default() {
         snapshot
             .default_for_provider(AgentHarnessKind::Codex)
             .map(|model| model.model_id.as_str()),
-        Some("gpt-5.4")
+        Some("gpt-5.6-sol")
     );
 }

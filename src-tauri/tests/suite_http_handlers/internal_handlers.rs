@@ -10,7 +10,7 @@ use axum::{
     routing::get,
     Json, Router,
 };
-use ralphx_lib::application::{AppState, TeamService, TeamStateTracker};
+use ralphx_lib::application::AppState;
 use ralphx_lib::commands::ideation_commands::{
     migrate_proposals_impl, CreateCrossProjectSessionInput, MigrateProposalsInput,
 };
@@ -35,13 +35,19 @@ use tower_http::cors::{Any, CorsLayer};
 async fn setup_test_state() -> HttpServerState {
     let app_state = Arc::new(AppState::new_test());
     let execution_state = Arc::new(ExecutionState::new());
-    let tracker = TeamStateTracker::new();
-    let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
     HttpServerState {
         app_state,
         execution_state,
-        team_tracker: tracker,
-        team_service,
+        delegation_service: Default::default(),
+    }
+}
+
+async fn setup_sqlite_apply_state() -> HttpServerState {
+    let app_state = Arc::new(AppState::new_sqlite_for_apply_test());
+    let execution_state = Arc::new(ExecutionState::new());
+    HttpServerState {
+        app_state,
+        execution_state,
         delegation_service: Default::default(),
     }
 }
@@ -133,10 +139,16 @@ async fn test_list_projects_internal_includes_working_directory() {
     let summaries = result.unwrap().0;
     assert_eq!(summaries.len(), 2);
 
-    let repo_a = summaries.iter().find(|p| p.name == "RepoA").expect("RepoA not found");
+    let repo_a = summaries
+        .iter()
+        .find(|p| p.name == "RepoA")
+        .expect("RepoA not found");
     assert_eq!(repo_a.working_directory, "/home/user/projects/repo-a");
 
-    let repo_b = summaries.iter().find(|p| p.name == "RepoB").expect("RepoB not found");
+    let repo_b = summaries
+        .iter()
+        .find(|p| p.name == "RepoB")
+        .expect("RepoB not found");
     assert_eq!(repo_b.working_directory, "/srv/repos/repo-b");
 }
 
@@ -188,17 +200,12 @@ async fn build_cors_test_app() -> Router {
     let state = setup_test_state().await;
 
     // Internal routes — NO CORS (matches production)
-    let internal_routes = Router::new().route(
-        "/api/internal/projects",
-        get(list_projects_internal),
-    );
+    let internal_routes =
+        Router::new().route("/api/internal/projects", get(list_projects_internal));
 
     // Minimal public routes with permissive CORS (matches production)
     let public_routes = Router::new()
-        .route(
-            "/health",
-            get(|| async { axum::http::StatusCode::OK }),
-        )
+        .route("/health", get(|| async { axum::http::StatusCode::OK }))
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)
@@ -230,7 +237,10 @@ async fn test_internal_routes_have_no_cors_headers() {
 
     // Internal routes must NOT have Access-Control-Allow-Origin
     assert!(
-        response.headers().get("access-control-allow-origin").is_none(),
+        response
+            .headers()
+            .get("access-control-allow-origin")
+            .is_none(),
         "Expected no CORS headers on /api/internal/ routes, but found Access-Control-Allow-Origin"
     );
 }
@@ -279,7 +289,10 @@ async fn test_internal_route_options_preflight_has_no_cors() {
     // The preflight should either 404 or succeed without CORS headers
     // (no CorsLayer means no ACAO header regardless of response status)
     assert!(
-        response.headers().get("access-control-allow-origin").is_none(),
+        response
+            .headers()
+            .get("access-control-allow-origin")
+            .is_none(),
         "CORS preflight to internal route must not return Access-Control-Allow-Origin"
     );
 }
@@ -333,7 +346,12 @@ async fn test_migrate_proposals_target_not_found() {
 
     let session = make_session("proj-1");
     let source_id = session.id.as_str().to_string();
-    state.app_state.ideation_session_repo.create(session).await.unwrap();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(session)
+        .await
+        .unwrap();
 
     let input = MigrateProposalsInput {
         source_session_id: source_id,
@@ -355,8 +373,18 @@ async fn test_migrate_proposals_empty_source_returns_empty() {
     let dst = make_session("proj-2");
     let source_id = src.id.as_str().to_string();
     let target_id = dst.id.as_str().to_string();
-    state.app_state.ideation_session_repo.create(src).await.unwrap();
-    state.app_state.ideation_session_repo.create(dst).await.unwrap();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(src)
+        .await
+        .unwrap();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(dst)
+        .await
+        .unwrap();
 
     let input = MigrateProposalsInput {
         source_session_id: source_id,
@@ -365,7 +393,9 @@ async fn test_migrate_proposals_empty_source_returns_empty() {
         target_project_filter: None,
     };
 
-    let result = migrate_proposals_impl(&state.app_state, input).await.unwrap();
+    let result = migrate_proposals_impl(&state.app_state, input)
+        .await
+        .unwrap();
     assert!(result.migrated.is_empty());
     assert!(result.dropped_dependencies.is_empty());
 }
@@ -379,8 +409,18 @@ async fn test_migrate_proposals_basic_export() {
     let source_sid = IdeationSessionId::from_string(src.id.as_str().to_string());
     let source_id = src.id.as_str().to_string();
     let target_id = dst.id.as_str().to_string();
-    state.app_state.ideation_session_repo.create(src).await.unwrap();
-    state.app_state.ideation_session_repo.create(dst).await.unwrap();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(src)
+        .await
+        .unwrap();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(dst)
+        .await
+        .unwrap();
 
     let p1 = make_proposal(&source_sid, "Proposal A");
     let p2 = make_proposal(&source_sid, "Proposal B");
@@ -394,14 +434,19 @@ async fn test_migrate_proposals_basic_export() {
         target_project_filter: None,
     };
 
-    let result = migrate_proposals_impl(&state.app_state, input).await.unwrap();
+    let result = migrate_proposals_impl(&state.app_state, input)
+        .await
+        .unwrap();
 
     assert_eq!(result.migrated.len(), 2, "Should migrate both proposals");
     assert!(result.dropped_dependencies.is_empty());
 
     // Verify source IDs match
-    let source_ids: std::collections::HashSet<_> =
-        result.migrated.iter().map(|m| m.source_id.as_str()).collect();
+    let source_ids: std::collections::HashSet<_> = result
+        .migrated
+        .iter()
+        .map(|m| m.source_id.as_str())
+        .collect();
     assert!(source_ids.contains(p1.id.as_str()));
     assert!(source_ids.contains(p2.id.as_str()));
 
@@ -431,8 +476,18 @@ async fn test_migrate_proposals_partial_subset() {
     let source_sid = IdeationSessionId::from_string(src.id.as_str().to_string());
     let source_id = src.id.as_str().to_string();
     let target_id = dst.id.as_str().to_string();
-    state.app_state.ideation_session_repo.create(src).await.unwrap();
-    state.app_state.ideation_session_repo.create(dst).await.unwrap();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(src)
+        .await
+        .unwrap();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(dst)
+        .await
+        .unwrap();
 
     let p1 = make_proposal(&source_sid, "Proposal A");
     let p2 = make_proposal(&source_sid, "Proposal B");
@@ -445,16 +500,19 @@ async fn test_migrate_proposals_partial_subset() {
     let input = MigrateProposalsInput {
         source_session_id: source_id,
         target_session_id: target_id.clone(),
-        proposal_ids: Some(vec![
-            p1.id.as_str().to_string(),
-            p3.id.as_str().to_string(),
-        ]),
+        proposal_ids: Some(vec![p1.id.as_str().to_string(), p3.id.as_str().to_string()]),
         target_project_filter: None,
     };
 
-    let result = migrate_proposals_impl(&state.app_state, input).await.unwrap();
+    let result = migrate_proposals_impl(&state.app_state, input)
+        .await
+        .unwrap();
 
-    assert_eq!(result.migrated.len(), 2, "Should migrate only the 2 specified proposals");
+    assert_eq!(
+        result.migrated.len(),
+        2,
+        "Should migrate only the 2 specified proposals"
+    );
 
     let target_session_id = IdeationSessionId::from_string(target_id);
     let target_proposals = state
@@ -475,8 +533,18 @@ async fn test_migrate_proposals_target_project_filter() {
     let source_sid = IdeationSessionId::from_string(src.id.as_str().to_string());
     let source_id = src.id.as_str().to_string();
     let target_id = dst.id.as_str().to_string();
-    state.app_state.ideation_session_repo.create(src).await.unwrap();
-    state.app_state.ideation_session_repo.create(dst).await.unwrap();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(src)
+        .await
+        .unwrap();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(dst)
+        .await
+        .unwrap();
 
     let p1 = make_proposal_with_target(&source_sid, "Proposal A", "project-alpha");
     let p2 = make_proposal_with_target(&source_sid, "Proposal B", "project-beta");
@@ -494,9 +562,15 @@ async fn test_migrate_proposals_target_project_filter() {
         target_project_filter: Some("project-alpha".to_string()),
     };
 
-    let result = migrate_proposals_impl(&state.app_state, input).await.unwrap();
+    let result = migrate_proposals_impl(&state.app_state, input)
+        .await
+        .unwrap();
 
-    assert_eq!(result.migrated.len(), 1, "Should migrate only the alpha proposal");
+    assert_eq!(
+        result.migrated.len(),
+        1,
+        "Should migrate only the alpha proposal"
+    );
 
     let target_session_id = IdeationSessionId::from_string(target_id);
     let target_proposals = state
@@ -506,7 +580,10 @@ async fn test_migrate_proposals_target_project_filter() {
         .await
         .unwrap();
     assert_eq!(target_proposals.len(), 1);
-    assert_eq!(target_proposals[0].target_project, None, "target_project must be cleared on migrated proposals");
+    assert_eq!(
+        target_proposals[0].target_project, None,
+        "target_project must be cleared on migrated proposals"
+    );
 }
 
 #[tokio::test]
@@ -518,8 +595,18 @@ async fn test_migrate_proposals_dependency_remapping() {
     let source_sid = IdeationSessionId::from_string(src.id.as_str().to_string());
     let source_id = src.id.as_str().to_string();
     let target_id = dst.id.as_str().to_string();
-    state.app_state.ideation_session_repo.create(src).await.unwrap();
-    state.app_state.ideation_session_repo.create(dst).await.unwrap();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(src)
+        .await
+        .unwrap();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(dst)
+        .await
+        .unwrap();
 
     let p1 = make_proposal(&source_sid, "Proposal A");
     let p2 = make_proposal(&source_sid, "Proposal B");
@@ -541,14 +628,29 @@ async fn test_migrate_proposals_dependency_remapping() {
         target_project_filter: None,
     };
 
-    let result = migrate_proposals_impl(&state.app_state, input).await.unwrap();
+    let result = migrate_proposals_impl(&state.app_state, input)
+        .await
+        .unwrap();
 
     assert_eq!(result.migrated.len(), 2);
-    assert!(result.dropped_dependencies.is_empty(), "Internal dependency should be remapped, not dropped");
+    assert!(
+        result.dropped_dependencies.is_empty(),
+        "Internal dependency should be remapped, not dropped"
+    );
 
     // Find the target IDs for p1 and p2
-    let new_p1_id = result.migrated.iter().find(|m| m.source_id == p1.id.as_str()).map(|m| &m.target_id).unwrap();
-    let new_p2_id = result.migrated.iter().find(|m| m.source_id == p2.id.as_str()).map(|m| &m.target_id).unwrap();
+    let new_p1_id = result
+        .migrated
+        .iter()
+        .find(|m| m.source_id == p1.id.as_str())
+        .map(|m| &m.target_id)
+        .unwrap();
+    let new_p2_id = result
+        .migrated
+        .iter()
+        .find(|m| m.source_id == p2.id.as_str())
+        .map(|m| &m.target_id)
+        .unwrap();
 
     // Verify dependency was remapped
     let new_p2 = TaskProposalId::from_string(new_p2_id.clone());
@@ -571,8 +673,18 @@ async fn test_migrate_proposals_cross_session_dep_dropped_with_warning() {
     let source_sid = IdeationSessionId::from_string(src.id.as_str().to_string());
     let source_id = src.id.as_str().to_string();
     let target_id = dst.id.as_str().to_string();
-    state.app_state.ideation_session_repo.create(src).await.unwrap();
-    state.app_state.ideation_session_repo.create(dst).await.unwrap();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(src)
+        .await
+        .unwrap();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(dst)
+        .await
+        .unwrap();
 
     // p1 and p2 are in source session; only p1 will be migrated
     let p1 = make_proposal(&source_sid, "Proposal A");
@@ -596,11 +708,19 @@ async fn test_migrate_proposals_cross_session_dep_dropped_with_warning() {
         target_project_filter: None,
     };
 
-    let result = migrate_proposals_impl(&state.app_state, input).await.unwrap();
+    let result = migrate_proposals_impl(&state.app_state, input)
+        .await
+        .unwrap();
 
     assert_eq!(result.migrated.len(), 1);
-    assert_eq!(result.dropped_dependencies.len(), 1, "Cross-session dep should be dropped with warning");
-    assert!(result.dropped_dependencies[0].reason.contains("not included in the migration set"));
+    assert_eq!(
+        result.dropped_dependencies.len(),
+        1,
+        "Cross-session dep should be dropped with warning"
+    );
+    assert!(result.dropped_dependencies[0]
+        .reason
+        .contains("not included in the migration set"));
 }
 
 #[tokio::test]
@@ -612,8 +732,18 @@ async fn test_migrate_proposals_traceability_fields_set() {
     let source_sid = IdeationSessionId::from_string(src.id.as_str().to_string());
     let source_id = src.id.as_str().to_string();
     let target_id = dst.id.as_str().to_string();
-    state.app_state.ideation_session_repo.create(src).await.unwrap();
-    state.app_state.ideation_session_repo.create(dst).await.unwrap();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(src)
+        .await
+        .unwrap();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(dst)
+        .await
+        .unwrap();
 
     let p1 = make_proposal(&source_sid, "Proposal A");
     let p1 = state.app_state.task_proposal_repo.create(p1).await.unwrap();
@@ -626,7 +756,9 @@ async fn test_migrate_proposals_traceability_fields_set() {
         target_project_filter: None,
     };
 
-    let result = migrate_proposals_impl(&state.app_state, input).await.unwrap();
+    let result = migrate_proposals_impl(&state.app_state, input)
+        .await
+        .unwrap();
     assert_eq!(result.migrated.len(), 1);
 
     let new_id = &result.migrated[0].target_id;
@@ -638,10 +770,22 @@ async fn test_migrate_proposals_traceability_fields_set() {
         .await
         .unwrap();
 
-    let migrated = target_proposals.iter().find(|p| p.id.as_str() == new_id).unwrap();
-    assert_eq!(migrated.migrated_from_session_id.as_deref(), Some(source_id.as_str()));
-    assert_eq!(migrated.migrated_from_proposal_id.as_deref(), Some(p1_id.as_str()));
-    assert!(migrated.created_task_id.is_none(), "created_task_id should be reset on migration");
+    let migrated = target_proposals
+        .iter()
+        .find(|p| p.id.as_str() == new_id)
+        .unwrap();
+    assert_eq!(
+        migrated.migrated_from_session_id.as_deref(),
+        Some(source_id.as_str())
+    );
+    assert_eq!(
+        migrated.migrated_from_proposal_id.as_deref(),
+        Some(p1_id.as_str())
+    );
+    assert!(
+        migrated.created_task_id.is_none(),
+        "created_task_id should be reset on migration"
+    );
 }
 
 // ============================================================================
@@ -657,7 +801,7 @@ async fn test_migrate_proposals_traceability_fields_set() {
 ///   - persist `Accepted` status on the session in the repo
 #[tokio::test]
 async fn test_all_foreign_finalize_transitions_session_to_accepted() {
-    let state = setup_test_state().await;
+    let state = setup_sqlite_apply_state().await;
 
     // Create a project with a known working directory
     let project = make_project("foreign-proj-1", "SourceProject", "/tmp/source-project");
@@ -686,7 +830,11 @@ async fn test_all_foreign_finalize_transitions_session_to_accepted() {
     // Call finalize_proposals_impl — accessible via the handlers::* glob re-export
     let result = finalize_proposals_impl(&state.app_state, &session_id, false).await;
 
-    assert!(result.is_ok(), "finalize_proposals_impl should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "finalize_proposals_impl should succeed: {:?}",
+        result.err()
+    );
     let response = result.unwrap();
 
     // Session status must be "accepted" (all proposals were foreign)
@@ -730,8 +878,8 @@ async fn test_all_foreign_finalize_transitions_session_to_accepted() {
 }
 
 #[tokio::test]
-async fn test_all_foreign_finalize_blocks_active_verification_when_accept_gate_disabled() {
-    let state = setup_test_state().await;
+async fn test_all_foreign_finalize_ignores_retired_state_when_accept_gate_disabled() {
+    let state = setup_sqlite_apply_state().await;
 
     let project = make_project(
         "foreign-proj-active-verification",
@@ -762,13 +910,10 @@ async fn test_all_foreign_finalize_blocks_active_verification_when_accept_gate_d
     state.app_state.task_proposal_repo.create(p1).await.unwrap();
     state.app_state.task_proposal_repo.create(p2).await.unwrap();
 
-    let result = finalize_proposals_impl(&state.app_state, &session_id, false).await;
-
-    assert!(
-        matches!(result, Err(AppError::Validation(_))),
-        "all-foreign finalize must block active verification, got: {:?}",
-        result
-    );
+    let result = finalize_proposals_impl(&state.app_state, &session_id, false)
+        .await
+        .expect("retired verifier summary state must not block acceptance");
+    assert_eq!(result.session_status, "accepted");
 
     let updated_session = state
         .app_state
@@ -780,9 +925,72 @@ async fn test_all_foreign_finalize_blocks_active_verification_when_accept_gate_d
 
     assert_eq!(
         updated_session.status,
-        IdeationSessionStatus::Active,
-        "Session in repo must remain Active when verification blocks finalize"
+        IdeationSessionStatus::Accepted,
+        "Session should be accepted when exact proof is advisory"
     );
+}
+
+#[tokio::test]
+async fn test_all_foreign_finalize_respects_required_exact_verification() {
+    let state = setup_sqlite_apply_state().await;
+    let project = make_project(
+        "foreign-proj-required-verification",
+        "SourceProject",
+        "/tmp/source-project",
+    );
+    let project_id = project.id.clone();
+    state.app_state.project_repo.create(project).await.unwrap();
+
+    let session = IdeationSession::builder()
+        .project_id(project_id)
+        .plan_artifact_id(ralphx_lib::domain::entities::ArtifactId::from_string(
+            "unverified-plan".to_string(),
+        ))
+        .build();
+    let session_id = session.id.clone();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(session)
+        .await
+        .unwrap();
+    let mut proposal = make_proposal_with_target(&session_id, "Foreign Task", "/tmp/other-project");
+    proposal.affected_paths = Some("[\"README.md\"]".to_string());
+    state
+        .app_state
+        .task_proposal_repo
+        .create(proposal)
+        .await
+        .unwrap();
+
+    let mut settings = state
+        .app_state
+        .ideation_settings_repo
+        .get_settings()
+        .await
+        .unwrap();
+    settings.require_verification_for_accept = true;
+    settings.auto_verify_plans = false;
+    state
+        .app_state
+        .ideation_settings_repo
+        .update_settings(&settings)
+        .await
+        .unwrap();
+
+    let result = finalize_proposals_impl(&state.app_state, session_id.as_str(), false).await;
+    assert!(
+        matches!(result, Err(AppError::Validation(_))),
+        "all-foreign terminal acceptance must require exact proof: {result:?}"
+    );
+    let persisted = state
+        .app_state
+        .ideation_session_repo
+        .get_by_id(&session_id)
+        .await
+        .unwrap()
+        .expect("session should exist");
+    assert_eq!(persisted.status, IdeationSessionStatus::Active);
 }
 
 #[tokio::test]
@@ -817,17 +1025,25 @@ async fn test_migrate_then_finalize_target_session_accepted() {
         proposal_ids: None,
         target_project_filter: Some("proj-dst".to_string()),
     };
-    let result = migrate_proposals_impl(&app_state, migrate_input).await.unwrap();
+    let result = migrate_proposals_impl(&app_state, migrate_input)
+        .await
+        .unwrap();
     assert_eq!(result.migrated.len(), 1);
 
     // After fix: target_project is cleared so the proposal is local to the target session
     let target_sid = IdeationSessionId::from_string(target_id.clone());
-    let target_proposals = app_state.task_proposal_repo.get_by_session(&target_sid).await.unwrap();
+    let target_proposals = app_state
+        .task_proposal_repo
+        .get_by_session(&target_sid)
+        .await
+        .unwrap();
     assert_eq!(target_proposals[0].target_project, None);
 
     // finalize_proposals_impl sees all proposals as local → calls apply_proposals_core
     // → session converts to Accepted
-    let response = finalize_proposals_impl(&app_state, &target_id, false).await.unwrap();
+    let response = finalize_proposals_impl(&app_state, &target_id, false)
+        .await
+        .unwrap();
     assert_eq!(
         response.session_status, "accepted",
         "All proposals local (target_project cleared) — session should transition to Accepted"

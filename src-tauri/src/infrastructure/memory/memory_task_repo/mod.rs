@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 
 use crate::domain::entities::{IdeationSessionId, InternalStatus, ProjectId, Task, TaskId};
+use crate::domain::ideation::TasksFeatureAction;
 use crate::domain::repositories::{StateHistoryMetadata, StatusTransition, TaskRepository};
 use crate::error::AppResult;
 
@@ -116,6 +117,30 @@ impl TaskRepository for MemoryTaskRepository {
         Ok(true)
     }
 
+    async fn update_with_expected_status_and_history_for_action(
+        &self,
+        task: &Task,
+        expected_status: InternalStatus,
+        trigger: &str,
+        _action: TasksFeatureAction,
+    ) -> AppResult<Option<String>> {
+        let mut tasks = self.tasks.write().await;
+        if tasks
+            .get(&task.id)
+            .is_none_or(|existing| existing.internal_status != expected_status)
+        {
+            return Ok(None);
+        }
+        tasks.insert(task.id.clone(), task.clone());
+        let mut history = self.history.write().await;
+        let history_id = uuid::Uuid::new_v4().to_string();
+        history.push((
+            task.id.clone(),
+            StatusTransition::new(expected_status, task.internal_status, trigger),
+        ));
+        Ok(Some(history_id))
+    }
+
     async fn update_metadata(&self, id: &TaskId, metadata: Option<String>) -> AppResult<()> {
         let mut tasks = self.tasks.write().await;
         if let Some(task) = tasks.get_mut(id) {
@@ -160,7 +185,7 @@ impl TaskRepository for MemoryTaskRepository {
         from: InternalStatus,
         to: InternalStatus,
         trigger: &str,
-    ) -> AppResult<()> {
+    ) -> AppResult<String> {
         // Update task status
         let mut tasks = self.tasks.write().await;
         if let Some(task) = tasks.get_mut(id) {
@@ -171,9 +196,10 @@ impl TaskRepository for MemoryTaskRepository {
 
         // Record history
         let mut history = self.history.write().await;
+        let history_id = uuid::Uuid::new_v4().to_string();
         history.push((id.clone(), StatusTransition::new(from, to, trigger)));
 
-        Ok(())
+        Ok(history_id)
     }
 
     async fn get_status_history(&self, id: &TaskId) -> AppResult<Vec<StatusTransition>> {

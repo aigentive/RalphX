@@ -1,9 +1,12 @@
+use std::collections::HashSet;
+
 use serde::{Deserialize, Serialize};
 
 use crate::application::AppState;
 use crate::domain::entities::{
-    ExecutionPlan, IdeationSessionId, IdeationSessionStatus, InternalStatus, PlanBranch,
-    PlanBranchStatus, Task, TaskCategory, TaskId, TaskStep,
+    AgentConversationWorkspaceMode, ChatConversationId, ChatMessageId, ExecutionPlan,
+    IdeationSessionId, IdeationSessionStatus, InternalStatus, MessageRole, PlanBranch,
+    PlanBranchStatus, Task, TaskCategory, TaskStep,
 };
 use crate::error::{AppError, AppResult};
 
@@ -51,6 +54,86 @@ pub async fn append_ideation_plan_task_core(
     }
 
     let session_id = IdeationSessionId::from_string(input.session_id.clone());
+    crate::application::tasks_feature_policy::TasksFeaturePolicy::from_state(app_state)
+        .authorize_session(
+            Some(&session_id),
+            crate::domain::ideation::TasksFeatureAction::Progress,
+        )
+        .await?;
+    let tasks_owner = app_state
+        .agent_conversation_workspace_repo
+        .get_by_task_pipeline_session_id(&session_id)
+        .await?
+        .filter(|workspace| workspace.mode == AgentConversationWorkspaceMode::Tasks);
+    let tasks_source_identity = if let Some(workspace) = tasks_owner {
+        let conversation_id = input
+            .source_conversation_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                AppError::Validation(
+                    "Tasks follow-ups require an explicit source user message".to_string(),
+                )
+            })?;
+        let message_id = input
+            .source_message_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                AppError::Validation(
+                    "Tasks follow-ups require an explicit source user message".to_string(),
+                )
+            })?;
+        if conversation_id != workspace.conversation_id.as_str() {
+            return Err(AppError::Validation(
+                "Tasks follow-ups must come from the owning conversation".to_string(),
+            ));
+        }
+        if workspace
+            .publication_pr_status
+            .as_deref()
+            .is_some_and(|status| matches!(status, "closed" | "merged"))
+        {
+            return Err(AppError::Validation(
+                "Cannot append after the attached pull request is closed or merged".to_string(),
+            ));
+        }
+        let source_message = app_state
+            .chat_message_repo
+            .get_by_id(&ChatMessageId::from_string(message_id.to_string()))
+            .await?
+            .ok_or_else(|| {
+                AppError::Validation("Tasks follow-up source message was not found".to_string())
+            })?;
+        if source_message.role != MessageRole::User
+            || source_message.conversation_id.as_ref() != Some(&workspace.conversation_id)
+        {
+            return Err(AppError::Validation(
+                "Tasks follow-ups must reference a user message from the owning conversation"
+                    .to_string(),
+            ));
+        }
+        Some((conversation_id.to_string(), message_id.to_string()))
+    } else if let Some(conversation_id) = input.source_conversation_id.as_deref() {
+        let workspace = app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&ChatConversationId::from_string(
+                conversation_id.to_string(),
+            ))
+            .await?;
+        if workspace
+            .is_some_and(|workspace| workspace.mode == AgentConversationWorkspaceMode::Tasks)
+        {
+            return Err(AppError::Validation(
+                "Tasks conversation is not attached to this pipeline".to_string(),
+            ));
+        }
+        None
+    } else {
+        None
+    };
+    let _attempt_mutation_guard =
+        super::ideation_commands_restart::RestartInFlightGuard::acquire(&session_id)?;
     let session = app_state
         .ideation_session_repo
         .get_by_id(&session_id)
@@ -101,50 +184,7 @@ pub async fn append_ideation_plan_task_core(
         AppError::Validation(format!("Plan branch {} has no merge task", branch.id))
     })?;
 
-    let mut blocker_tasks = Vec::new();
-    for blocker_id in input
-        .depends_on_task_ids
-        .iter()
-        .filter(|id| !id.trim().is_empty())
-    {
-        let task_id = TaskId::from_string(blocker_id.trim().to_string());
-        let blocker = app_state
-            .task_repo
-            .get_by_id(&task_id)
-            .await
-            .map_err(|e| AppError::Database(format!("Failed to load blocker task: {}", e)))?
-            .ok_or_else(|| AppError::NotFound(format!("Task {} not found", task_id)))?;
-
-        if blocker.project_id != session.project_id {
-            return Err(AppError::Validation(format!(
-                "Blocker task {} belongs to a different project",
-                blocker.id
-            )));
-        }
-        if blocker.category == TaskCategory::PlanMerge {
-            return Err(AppError::Validation(
-                "Cannot use the plan merge task as an appended task blocker".to_string(),
-            ));
-        }
-        if blocker.ideation_session_id.as_ref() != Some(&session_id)
-            || blocker.execution_plan_id.as_ref() != Some(&execution_plan.id)
-        {
-            return Err(AppError::Validation(format!(
-                "Blocker task {} is not part of the accepted ideation plan",
-                blocker.id
-            )));
-        }
-        blocker_tasks.push(blocker);
-    }
-
-    let has_unsatisfied_blocker = blocker_tasks
-        .iter()
-        .any(|task| task.internal_status.is_active_dependency_blocker());
-    let initial_status = if has_unsatisfied_blocker {
-        InternalStatus::Blocked
-    } else {
-        InternalStatus::Ready
-    };
+    let requested_blocker_ids = normalize_dependency_ids(&input.depends_on_task_ids);
 
     let mut task = Task::new(session.project_id.clone(), title.clone());
     task.description = input
@@ -152,21 +192,11 @@ pub async fn append_ideation_plan_task_core(
         .as_ref()
         .map(|value| value.trim().to_string());
     task.priority = input.priority.unwrap_or(0);
-    task.internal_status = initial_status;
+    task.internal_status = InternalStatus::Ready;
     task.plan_artifact_id = session.plan_artifact_id.clone();
     task.ideation_session_id = Some(session_id.clone());
     task.execution_plan_id = Some(execution_plan.id.clone());
-    task.blocked_reason = if has_unsatisfied_blocker {
-        let blocker_titles = blocker_tasks
-            .iter()
-            .filter(|task| task.internal_status.is_active_dependency_blocker())
-            .map(|task| task.title.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
-        Some(format!("Waiting for: {}", blocker_titles))
-    } else {
-        None
-    };
+    task.blocked_reason = None;
     task.metadata = Some(
         serde_json::json!({
             "created_via": "ideation_plan_append",
@@ -186,23 +216,54 @@ pub async fn append_ideation_plan_task_core(
         .map(|step| step.trim().to_string())
         .filter(|step| !step.is_empty())
         .collect::<Vec<_>>();
-    let blocker_ids = blocker_tasks
-        .iter()
-        .map(|task| task.id.as_str().to_string())
-        .collect::<Vec<_>>();
 
     let tx_task = task.clone();
     let tx_steps = steps.clone();
-    let tx_blocker_ids = blocker_ids.clone();
+    let tx_requested_blocker_ids = requested_blocker_ids.clone();
     let tx_session_id = session_id.as_str().to_string();
     let tx_execution_plan_id = execution_plan.id.as_str().to_string();
     let tx_branch_id = branch.id.as_str().to_string();
     let tx_merge_task_id = merge_task_id.as_str().to_string();
     let tx_title = title.clone();
+    let tx_tasks_source_identity = tasks_source_identity.clone();
 
-    let (dependencies_created, was_waiting_on_pr) = app_state
+    let (dependencies_created, was_waiting_on_pr, inserted_status) = app_state
         .db
         .run_transaction(move |conn| {
+            crate::application::tasks_feature_policy::authorize_tasks_session_sync(
+                conn,
+                Some(&tx_session_id),
+                crate::domain::ideation::TasksFeatureAction::Progress,
+            )?;
+            if let Some((source_conversation_id, source_message_id)) =
+                tx_tasks_source_identity.as_ref()
+            {
+                conn.execute(
+                    "INSERT INTO agent_task_pipeline_append_replays (
+                        session_id, source_conversation_id, source_message_id, task_id
+                     ) VALUES (?1, ?2, ?3, ?4)",
+                    rusqlite::params![
+                        tx_session_id.as_str(),
+                        source_conversation_id,
+                        source_message_id,
+                        tx_task.id.as_str(),
+                    ],
+                )
+                .map_err(|error| match error {
+                    rusqlite::Error::SqliteFailure(ref failure, _)
+                        if failure.extended_code
+                            == rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY =>
+                    {
+                        AppError::Conflict(
+                            "This Tasks follow-up message was already appended".to_string(),
+                        )
+                    }
+                    _ => AppError::Database(format!(
+                        "Failed to reserve Tasks follow-up replay key: {}",
+                        error
+                    )),
+                })?;
+            }
             let current_plan = conn
                 .query_row(
                     "SELECT * FROM execution_plans WHERE id = ?1 AND session_id = ?2 AND status = 'active'",
@@ -285,11 +346,30 @@ pub async fn append_ideation_plan_task_core(
             }
             let was_waiting_on_pr = merge_task.internal_status == InternalStatus::WaitingOnPr;
 
-            insert_task_row(conn, &tx_task)?;
+            let blocker_tasks = resolve_append_blocker_tasks(
+                conn,
+                &tx_requested_blocker_ids,
+                tx_task.project_id.as_str(),
+                tx_session_id.as_str(),
+                tx_execution_plan_id.as_str(),
+                tx_merge_task_id.as_str(),
+            )?;
+            let has_unsatisfied_blocker = blocker_tasks
+                .iter()
+                .any(|task| task.internal_status.is_active_dependency_blocker());
+            let mut task_to_insert = tx_task.clone();
+            task_to_insert.internal_status = if has_unsatisfied_blocker {
+                InternalStatus::Blocked
+            } else {
+                InternalStatus::Ready
+            };
+            task_to_insert.blocked_reason = append_blocked_reason(&blocker_tasks);
+
+            insert_task_row(conn, &task_to_insert)?;
 
             for (idx, title) in tx_steps.iter().enumerate() {
                 let step = TaskStep::new(
-                    tx_task.id.clone(),
+                    task_to_insert.id.clone(),
                     title.clone(),
                     idx as i32,
                     "ideation_plan_append".to_string(),
@@ -298,11 +378,15 @@ pub async fn append_ideation_plan_task_core(
             }
 
             let mut dependencies_created = 0usize;
-            for blocker_id in &tx_blocker_ids {
-                insert_task_dependency_row(conn, tx_task.id.as_str(), blocker_id)?;
+            for blocker in &blocker_tasks {
+                insert_task_dependency_row(conn, task_to_insert.id.as_str(), blocker.id.as_str())?;
                 dependencies_created += 1;
             }
-            insert_task_dependency_row(conn, tx_merge_task_id.as_str(), tx_task.id.as_str())?;
+            insert_task_dependency_row(
+                conn,
+                tx_merge_task_id.as_str(),
+                task_to_insert.id.as_str(),
+            )?;
             dependencies_created += 1;
 
             merge_task.internal_status = InternalStatus::Blocked;
@@ -337,7 +421,11 @@ pub async fn append_ideation_plan_task_core(
                 })?;
             }
 
-            Ok((dependencies_created, was_waiting_on_pr))
+            Ok((
+                dependencies_created,
+                was_waiting_on_pr,
+                task_to_insert.internal_status,
+            ))
         })
         .await?;
 
@@ -352,10 +440,186 @@ pub async fn append_ideation_plan_task_core(
         execution_plan_id: execution_plan.id.as_str().to_string(),
         plan_branch_id: branch.id.as_str().to_string(),
         merge_task_id: merge_task_id.as_str().to_string(),
-        task_status: task.internal_status.as_str().to_string(),
+        task_status: inserted_status.as_str().to_string(),
         dependencies_created,
-        any_ready_tasks: task.internal_status == InternalStatus::Ready,
+        any_ready_tasks: inserted_status == InternalStatus::Ready,
     })
+}
+
+fn normalize_dependency_ids(ids: &[String]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut normalized = Vec::new();
+    for id in ids {
+        let trimmed = id.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let trimmed = trimmed.to_string();
+        if seen.insert(trimmed.clone()) {
+            normalized.push(trimmed);
+        }
+    }
+    normalized
+}
+
+fn resolve_append_blocker_tasks(
+    conn: &rusqlite::Connection,
+    requested_blocker_ids: &[String],
+    project_id: &str,
+    session_id: &str,
+    execution_plan_id: &str,
+    merge_task_id: &str,
+) -> AppResult<Vec<Task>> {
+    if requested_blocker_ids.is_empty() {
+        infer_plan_leaf_blockers(conn, project_id, session_id, execution_plan_id)
+    } else {
+        validate_requested_blockers(
+            conn,
+            requested_blocker_ids,
+            project_id,
+            session_id,
+            execution_plan_id,
+            merge_task_id,
+        )
+    }
+}
+
+fn validate_requested_blockers(
+    conn: &rusqlite::Connection,
+    requested_blocker_ids: &[String],
+    project_id: &str,
+    session_id: &str,
+    execution_plan_id: &str,
+    merge_task_id: &str,
+) -> AppResult<Vec<Task>> {
+    let mut blockers = Vec::new();
+    for blocker_id in requested_blocker_ids {
+        let blocker = query_task_by_id(conn, blocker_id)?
+            .ok_or_else(|| AppError::NotFound(format!("Task {} not found", blocker_id)))?;
+        validate_append_blocker(
+            &blocker,
+            project_id,
+            session_id,
+            execution_plan_id,
+            merge_task_id,
+        )?;
+        blockers.push(blocker);
+    }
+    Ok(blockers)
+}
+
+fn infer_plan_leaf_blockers(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    session_id: &str,
+    execution_plan_id: &str,
+) -> AppResult<Vec<Task>> {
+    let plan_merge_category = TaskCategory::PlanMerge.to_string();
+    let mut stmt = conn
+        .prepare(
+            "SELECT t.*
+             FROM tasks t
+             WHERE t.project_id = ?1
+               AND t.ideation_session_id = ?2
+               AND t.execution_plan_id = ?3
+               AND t.category != ?4
+               AND t.archived_at IS NULL
+               AND NOT EXISTS (
+                   SELECT 1
+                   FROM task_dependencies td
+                   JOIN tasks dependent ON dependent.id = td.task_id
+                   WHERE td.depends_on_task_id = t.id
+                     AND dependent.ideation_session_id = ?2
+                     AND dependent.execution_plan_id = ?3
+                     AND dependent.category != ?4
+                     AND dependent.archived_at IS NULL
+               )
+             ORDER BY t.created_at ASC, t.id ASC",
+        )
+        .map_err(|e| AppError::Database(format!("Failed to prepare blocker inference: {}", e)))?;
+
+    let rows = stmt
+        .query_map(
+            rusqlite::params![
+                project_id,
+                session_id,
+                execution_plan_id,
+                plan_merge_category
+            ],
+            Task::from_row,
+        )
+        .map_err(|e| AppError::Database(format!("Failed to infer plan leaf blockers: {}", e)))?;
+
+    let mut blockers = Vec::new();
+    for row in rows {
+        blockers.push(
+            row.map_err(|e| AppError::Database(format!("Failed to read inferred blocker: {}", e)))?,
+        );
+    }
+    Ok(blockers)
+}
+
+fn query_task_by_id(conn: &rusqlite::Connection, task_id: &str) -> AppResult<Option<Task>> {
+    match conn.query_row(
+        "SELECT * FROM tasks WHERE id = ?1",
+        rusqlite::params![task_id],
+        Task::from_row,
+    ) {
+        Ok(task) => Ok(Some(task)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(AppError::Database(format!(
+            "Failed to load blocker task: {}",
+            e
+        ))),
+    }
+}
+
+fn validate_append_blocker(
+    blocker: &Task,
+    project_id: &str,
+    session_id: &str,
+    execution_plan_id: &str,
+    merge_task_id: &str,
+) -> AppResult<()> {
+    if blocker.id.as_str() == merge_task_id || blocker.category == TaskCategory::PlanMerge {
+        return Err(AppError::Validation(
+            "Cannot use the plan merge task as an appended task blocker".to_string(),
+        ));
+    }
+    if blocker.archived_at.is_some() {
+        return Err(AppError::Validation(format!(
+            "Blocker task {} is archived",
+            blocker.id
+        )));
+    }
+    if blocker.project_id.as_str() != project_id {
+        return Err(AppError::Validation(format!(
+            "Blocker task {} belongs to a different project",
+            blocker.id
+        )));
+    }
+    if blocker.ideation_session_id.as_ref().map(|id| id.as_str()) != Some(session_id)
+        || blocker.execution_plan_id.as_ref().map(|id| id.as_str()) != Some(execution_plan_id)
+    {
+        return Err(AppError::Validation(format!(
+            "Blocker task {} is not part of the accepted ideation plan",
+            blocker.id
+        )));
+    }
+    Ok(())
+}
+
+fn append_blocked_reason(blocker_tasks: &[Task]) -> Option<String> {
+    let blocker_titles = blocker_tasks
+        .iter()
+        .filter(|task| task.internal_status.is_active_dependency_blocker())
+        .map(|task| task.title.as_str())
+        .collect::<Vec<_>>();
+    if blocker_titles.is_empty() {
+        None
+    } else {
+        Some(format!("Waiting for: {}", blocker_titles.join(", ")))
+    }
 }
 
 fn insert_task_row(conn: &rusqlite::Connection, task: &Task) -> AppResult<()> {
@@ -434,282 +698,4 @@ fn insert_task_dependency_row(
     )
     .map_err(|e| AppError::Database(format!("Failed to create task dependency: {}", e)))?;
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::domain::entities::{
-        ArtifactId, ExecutionPlan, IdeationSession, IdeationSessionStatus, InternalStatus,
-        PlanBranch, PlanBranchId, PlanBranchStatus, Project, ProjectId, Task, TaskCategory,
-    };
-
-    struct AcceptedPlanFixture {
-        state: AppState,
-        project_id: ProjectId,
-        session_id: IdeationSessionId,
-        execution_plan_id: String,
-        plan_branch_id: String,
-        merge_task_id: TaskId,
-    }
-
-    async fn accepted_plan_fixture(merge_status: InternalStatus) -> AcceptedPlanFixture {
-        let state = AppState::new_sqlite_for_apply_test();
-        let mut project = Project::new("RalphX".to_string(), "/tmp/ralphx-append-test".to_string());
-        project.base_branch = Some("main".to_string());
-        let project = state.project_repo.create(project).await.unwrap();
-
-        let mut session = IdeationSession::new_with_title(
-            project.id.clone(),
-            "Accepted append target".to_string(),
-        );
-        session.status = IdeationSessionStatus::Accepted;
-        session.plan_artifact_id = Some(ArtifactId::from_string("plan-artifact-append-test"));
-        let session = state.ideation_session_repo.create(session).await.unwrap();
-
-        let execution_plan = state
-            .execution_plan_repo
-            .create(ExecutionPlan::new(session.id.clone()))
-            .await
-            .unwrap();
-
-        let mut branch = PlanBranch::new(
-            session.plan_artifact_id.clone().unwrap(),
-            session.id.clone(),
-            project.id.clone(),
-            "ralphx/ralphx/plan-append-test".to_string(),
-            "main".to_string(),
-        );
-        branch.status = PlanBranchStatus::Active;
-        branch.execution_plan_id = Some(execution_plan.id.clone());
-        let branch = state.plan_branch_repo.create(branch).await.unwrap();
-
-        let mut merge_task = Task::new_with_category(
-            project.id.clone(),
-            "Merge plan into main".to_string(),
-            TaskCategory::PlanMerge,
-        );
-        merge_task.internal_status = merge_status;
-        merge_task.plan_artifact_id = session.plan_artifact_id.clone();
-        merge_task.ideation_session_id = Some(session.id.clone());
-        merge_task.execution_plan_id = Some(execution_plan.id.clone());
-        merge_task.blocked_reason = match merge_status {
-            InternalStatus::Blocked => Some("Waiting for all plan tasks to complete".to_string()),
-            _ => None,
-        };
-        let merge_task = state.task_repo.create(merge_task).await.unwrap();
-        state
-            .plan_branch_repo
-            .set_merge_task_id(&branch.id, &merge_task.id)
-            .await
-            .unwrap();
-
-        AcceptedPlanFixture {
-            state,
-            project_id: project.id,
-            session_id: session.id,
-            execution_plan_id: execution_plan.id.as_str().to_string(),
-            plan_branch_id: branch.id.as_str().to_string(),
-            merge_task_id: merge_task.id,
-        }
-    }
-
-    #[tokio::test]
-    async fn append_creates_linked_task_steps_and_merge_dependency() {
-        let fixture = accepted_plan_fixture(InternalStatus::Ready).await;
-
-        let result = append_ideation_plan_task_core(
-            &fixture.state,
-            AppendIdeationPlanTaskInput {
-                project_id: Some(fixture.project_id.as_str().to_string()),
-                session_id: fixture.session_id.as_str().to_string(),
-                title: "Polish publish CTA".to_string(),
-                description: Some("Tune the managed publish action copy.".to_string()),
-                steps: vec![
-                    "Find the publish panel action".to_string(),
-                    "Adjust the CTA treatment".to_string(),
-                ],
-                acceptance_criteria: vec!["CTA copy is clear".to_string()],
-                depends_on_task_ids: vec![],
-                priority: Some(8),
-                source_conversation_id: Some("conversation-1".to_string()),
-                source_message_id: Some("message-1".to_string()),
-            },
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(result.project_id, fixture.project_id.as_str());
-        assert_eq!(result.session_id, fixture.session_id.as_str());
-        assert_eq!(result.execution_plan_id, fixture.execution_plan_id);
-        assert_eq!(result.plan_branch_id, fixture.plan_branch_id);
-        assert_eq!(result.merge_task_id, fixture.merge_task_id.as_str());
-        assert_eq!(result.task_status, "ready");
-        assert_eq!(result.dependencies_created, 1);
-        assert!(result.any_ready_tasks);
-
-        let appended_task = fixture
-            .state
-            .task_repo
-            .get_by_id(&TaskId::from_string(result.task_id.clone()))
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(appended_task.category, TaskCategory::Regular);
-        assert_eq!(appended_task.internal_status, InternalStatus::Ready);
-        assert_eq!(
-            appended_task.ideation_session_id,
-            Some(fixture.session_id.clone())
-        );
-        assert_eq!(
-            appended_task.execution_plan_id.as_ref().unwrap().as_str(),
-            fixture.execution_plan_id
-        );
-        assert!(appended_task.source_proposal_id.is_none());
-        assert!(appended_task
-            .metadata
-            .as_deref()
-            .unwrap()
-            .contains("ideation_plan_append"));
-        assert!(appended_task
-            .metadata
-            .as_deref()
-            .unwrap()
-            .contains("CTA copy is clear"));
-
-        let steps = fixture
-            .state
-            .task_step_repo
-            .get_by_task(&appended_task.id)
-            .await
-            .unwrap();
-        assert_eq!(steps.len(), 2);
-        assert_eq!(steps[0].title, "Find the publish panel action");
-        assert_eq!(steps[0].created_by, "ideation_plan_append");
-
-        let merge_blockers = fixture
-            .state
-            .task_dependency_repo
-            .get_blockers(&fixture.merge_task_id)
-            .await
-            .unwrap();
-        assert!(merge_blockers.contains(&appended_task.id));
-
-        let merge_task = fixture
-            .state
-            .task_repo
-            .get_by_id(&fixture.merge_task_id)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(merge_task.internal_status, InternalStatus::Blocked);
-        assert!(merge_task
-            .blocked_reason
-            .as_deref()
-            .unwrap()
-            .contains("Polish publish CTA"));
-    }
-
-    #[tokio::test]
-    async fn append_allows_waiting_on_pr_plan_and_blocks_merge_again() {
-        let fixture = accepted_plan_fixture(InternalStatus::WaitingOnPr).await;
-        let plan_branch_id = PlanBranchId::from_string(fixture.plan_branch_id.clone());
-        fixture
-            .state
-            .plan_branch_repo
-            .update_last_polled_at(&plan_branch_id, chrono::Utc::now())
-            .await
-            .unwrap();
-
-        let result = append_ideation_plan_task_core(
-            &fixture.state,
-            AppendIdeationPlanTaskInput {
-                project_id: Some(fixture.project_id.as_str().to_string()),
-                session_id: fixture.session_id.as_str().to_string(),
-                title: "Apply requested PR adjustment".to_string(),
-                description: Some(
-                    "Handle a follow-up while the plan PR is still open.".to_string(),
-                ),
-                steps: vec!["Make the requested adjustment".to_string()],
-                acceptance_criteria: vec!["The existing PR includes the follow-up".to_string()],
-                depends_on_task_ids: vec![],
-                priority: None,
-                source_conversation_id: None,
-                source_message_id: None,
-            },
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(result.task_status, "ready");
-        assert!(result.any_ready_tasks);
-
-        let appended_task = fixture
-            .state
-            .task_repo
-            .get_by_id(&TaskId::from_string(result.task_id))
-            .await
-            .unwrap()
-            .unwrap();
-        let merge_blockers = fixture
-            .state
-            .task_dependency_repo
-            .get_blockers(&fixture.merge_task_id)
-            .await
-            .unwrap();
-        assert!(merge_blockers.contains(&appended_task.id));
-
-        let merge_task = fixture
-            .state
-            .task_repo
-            .get_by_id(&fixture.merge_task_id)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(merge_task.internal_status, InternalStatus::Blocked);
-        assert!(merge_task
-            .blocked_reason
-            .as_deref()
-            .unwrap()
-            .contains("Apply requested PR adjustment"));
-
-        let branch = fixture
-            .state
-            .plan_branch_repo
-            .get_by_id(&plan_branch_id)
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(
-            !branch.pr_polling_active,
-            "appending to a waiting-on-PR plan must stop the stale PR poller"
-        );
-    }
-
-    #[tokio::test]
-    async fn append_rejects_after_merge_has_started() {
-        let fixture = accepted_plan_fixture(InternalStatus::PendingMerge).await;
-
-        let error = append_ideation_plan_task_core(
-            &fixture.state,
-            AppendIdeationPlanTaskInput {
-                project_id: Some(fixture.project_id.as_str().to_string()),
-                session_id: fixture.session_id.as_str().to_string(),
-                title: "Too late".to_string(),
-                description: None,
-                steps: vec![],
-                acceptance_criteria: vec![],
-                depends_on_task_ids: vec![],
-                priority: None,
-                source_conversation_id: None,
-                source_message_id: None,
-            },
-        )
-        .await
-        .unwrap_err();
-
-        assert!(error
-            .to_string()
-            .contains("Cannot append a task to a closed or actively merging plan"));
-    }
 }

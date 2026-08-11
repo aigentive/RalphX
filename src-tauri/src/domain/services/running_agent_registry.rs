@@ -98,6 +98,29 @@ pub struct RunningAgentInfo {
     pub model: Option<String>,
 }
 
+/// Result of atomically attaching a spawned child to its launch reservation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttachProcessResult {
+    Attached,
+    ClaimLost,
+}
+
+/// Failure to reserve an agent slot.
+#[derive(Debug, Clone)]
+pub enum TryRegisterError {
+    Occupied(RunningAgentInfo),
+    Storage(String),
+}
+
+impl TryRegisterError {
+    pub fn occupied(&self) -> Option<&RunningAgentInfo> {
+        match self {
+            Self::Occupied(info) => Some(info),
+            Self::Storage(_) => None,
+        }
+    }
+}
+
 /// Trait for tracking running agent processes.
 ///
 /// Thread-safe registry that maps context keys to process information.
@@ -134,6 +157,23 @@ pub trait RunningAgentRegistry: Send + Sync {
     /// Stop a running agent by sending SIGTERM to the process
     async fn stop(&self, key: &RunningAgentKey) -> Result<Option<RunningAgentInfo>, String>;
 
+    /// Stop only when `agent_run_id` still owns the registry row.
+    async fn stop_if_owned(
+        &self,
+        key: &RunningAgentKey,
+        agent_run_id: &str,
+    ) -> Result<Option<RunningAgentInfo>, String>;
+
+    /// Stop the owned process while retaining a `pid == 0` reservation.
+    ///
+    /// Cleanup callers use this to keep replacement launches excluded until
+    /// owner-derived side effects such as worktree cleanup are complete.
+    async fn quiesce_if_owned(
+        &self,
+        key: &RunningAgentKey,
+        agent_run_id: &str,
+    ) -> Result<Option<RunningAgentInfo>, String>;
+
     /// Get all running agents (for debugging/monitoring)
     async fn list_all(&self) -> Vec<(RunningAgentKey, RunningAgentInfo)>;
 
@@ -163,7 +203,12 @@ pub trait RunningAgentRegistry: Send + Sync {
 
     /// Update the last_active_at timestamp for a running agent (throttled heartbeat).
     /// Called from the streaming loop every ~5 seconds on any parsed event.
-    async fn update_heartbeat(&self, key: &RunningAgentKey, at: chrono::DateTime<chrono::Utc>);
+    async fn update_heartbeat(
+        &self,
+        key: &RunningAgentKey,
+        agent_run_id: &str,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool, String>;
 
     /// Atomically check-and-register an agent slot.
     ///
@@ -172,7 +217,7 @@ pub trait RunningAgentRegistry: Send + Sync {
     /// existing agent's info. This prevents the TOCTOU race between separate
     /// `is_running()` + `register()` calls.
     ///
-    /// After a successful `try_register`, call `update_agent_process()` once the
+    /// After a successful `try_register`, call `attach_process()` once the
     /// CLI process has been spawned. On spawn failure, call `unregister()` to
     /// release the slot.
     async fn try_register(
@@ -180,27 +225,34 @@ pub trait RunningAgentRegistry: Send + Sync {
         key: RunningAgentKey,
         conversation_id: String,
         agent_run_id: String,
-    ) -> Result<(), RunningAgentInfo>;
+    ) -> Result<(), TryRegisterError>;
 
-    /// Update process details for an already-registered agent.
-    ///
-    /// Called after the CLI process has been spawned to fill in the real PID,
-    /// agent_run_id, worktree path, and cancellation token.
-    ///
-    /// If the placeholder row was pruned between `try_register` and this call
-    /// (TOCTOU race with GC), re-inserts the full registration via INSERT OR REPLACE.
-    ///
-    /// Returns `Err` only if the DB operation itself fails.
-    async fn update_agent_process(
+    /// Renew a launch reservation while it is still owned and has no attached PID.
+    async fn renew_reservation(
         &self,
         key: &RunningAgentKey,
-        pid: u32,
-        conversation_id: &str,
         agent_run_id: &str,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool, String>;
+
+    /// Attach process details to an already-registered launch reservation.
+    ///
+    /// Called after the CLI process has been spawned to fill in the real PID,
+    /// worktree path, and cancellation token while preserving exact run ownership.
+    ///
+    /// If the reservation was removed or replaced between `try_register` and this
+    /// call, returns `AttachProcessResult::ClaimLost` and never recreates it.
+    ///
+    /// Returns `Err` only if the DB operation itself fails.
+    async fn attach_process(
+        &self,
+        key: &RunningAgentKey,
+        expected_agent_run_id: &str,
+        pid: u32,
         worktree_path: Option<String>,
         cancellation_token: Option<CancellationToken>,
         model: Option<String>,
-    ) -> Result<(), String>;
+    ) -> Result<AttachProcessResult, String>;
 
     /// Remove a stale registry entry only if its process is no longer alive.
     ///
@@ -215,6 +267,7 @@ pub trait RunningAgentRegistry: Send + Sync {
     async fn cleanup_stale_entry(
         &self,
         key: &RunningAgentKey,
+        expected_agent_run_id: &str,
     ) -> Result<Option<RunningAgentInfo>, String>;
 }
 
@@ -255,7 +308,10 @@ pub fn is_process_alive(pid: u32) -> bool {
 /// This prevents orphaned child processes (e.g. MCP server nodes) from lingering.
 pub fn kill_process(pid: u32) {
     if pid <= 1 {
-        tracing::warn!(pid, "kill_process: refusing to kill PID {pid} (safety guard)");
+        tracing::warn!(
+            pid,
+            "kill_process: refusing to kill PID {pid} (safety guard)"
+        );
         return;
     }
     #[cfg(unix)]
@@ -305,7 +361,10 @@ pub fn kill_process(pid: u32) {
 /// would kill every process the user owns.
 pub fn kill_process_immediate(pid: u32) {
     if pid <= 1 {
-        tracing::warn!(pid, "kill_process_immediate: refusing to kill PID {pid} (safety guard)");
+        tracing::warn!(
+            pid,
+            "kill_process_immediate: refusing to kill PID {pid} (safety guard)"
+        );
         return;
     }
     #[cfg(unix)]
@@ -480,7 +539,11 @@ pub async fn kill_worktree_processes_async(path: &Path, timeout_secs: u64, immed
 
     match result {
         Ok(Ok(pids)) => {
-            let unique_pids: Vec<u32> = pids.into_iter().collect::<HashSet<u32>>().into_iter().collect();
+            let unique_pids: Vec<u32> = pids
+                .into_iter()
+                .collect::<HashSet<u32>>()
+                .into_iter()
+                .collect();
             let elapsed_ms = start.elapsed().as_millis();
             tracing::info!(
                 worktree = %display_path,
@@ -502,8 +565,12 @@ pub async fn kill_worktree_processes_async(path: &Path, timeout_secs: u64, immed
                 }
             }
             // Wait for processes to die; immediate_kill skips SIGTERM grace period.
-            let survivors =
-                await_process_death(&unique_pids, std::time::Duration::from_secs(5), immediate_kill).await;
+            let survivors = await_process_death(
+                &unique_pids,
+                std::time::Duration::from_secs(5),
+                immediate_kill,
+            )
+            .await;
             if !survivors.is_empty() {
                 tracing::warn!(
                     survivor_pids = ?survivors,
@@ -835,7 +902,15 @@ impl RunningAgentRegistry for MemoryRunningAgentRegistry {
                 .map(|i| i.agent_run_id.clone())
                 .unwrap_or_default()
         };
-        let info = self.unregister(key, &agent_run_id).await;
+        self.stop_if_owned(key, &agent_run_id).await
+    }
+
+    async fn stop_if_owned(
+        &self,
+        key: &RunningAgentKey,
+        agent_run_id: &str,
+    ) -> Result<Option<RunningAgentInfo>, String> {
+        let info = self.unregister(key, agent_run_id).await;
 
         if let Some(ref agent_info) = info {
             // Cancel the async task before killing the process
@@ -846,6 +921,33 @@ impl RunningAgentRegistry for MemoryRunningAgentRegistry {
         }
 
         Ok(info)
+    }
+
+    async fn quiesce_if_owned(
+        &self,
+        key: &RunningAgentKey,
+        agent_run_id: &str,
+    ) -> Result<Option<RunningAgentInfo>, String> {
+        let info = {
+            let mut agents = self.agents.lock().await;
+            let Some(entry) = agents.get_mut(key) else {
+                return Ok(None);
+            };
+            if entry.agent_run_id != agent_run_id {
+                return Ok(None);
+            }
+            let info = entry.clone();
+            entry.pid = 0;
+            entry.cancellation_token = None;
+            entry.last_active_at = Some(chrono::Utc::now());
+            info
+        };
+
+        if let Some(token) = info.cancellation_token.as_ref() {
+            token.cancel();
+        }
+        self.process_ops.kill(info.pid);
+        Ok(Some(info))
     }
 
     async fn list_all(&self) -> Vec<(RunningAgentKey, RunningAgentInfo)> {
@@ -909,11 +1011,21 @@ impl RunningAgentRegistry for MemoryRunningAgentRegistry {
         stopped
     }
 
-    async fn update_heartbeat(&self, key: &RunningAgentKey, at: chrono::DateTime<chrono::Utc>) {
+    async fn update_heartbeat(
+        &self,
+        key: &RunningAgentKey,
+        agent_run_id: &str,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool, String> {
         let mut agents = self.agents.lock().await;
-        if let Some(info) = agents.get_mut(key) {
+        if let Some(info) = agents
+            .get_mut(key)
+            .filter(|info| info.agent_run_id == agent_run_id)
+        {
             info.last_active_at = Some(at);
+            return Ok(true);
         }
+        Ok(false)
     }
 
     async fn try_register(
@@ -921,79 +1033,81 @@ impl RunningAgentRegistry for MemoryRunningAgentRegistry {
         key: RunningAgentKey,
         conversation_id: String,
         agent_run_id: String,
-    ) -> Result<(), RunningAgentInfo> {
+    ) -> Result<(), TryRegisterError> {
         let mut agents = self.agents.lock().await;
         if let Some(existing) = agents.get(&key) {
-            return Err(existing.clone());
+            return Err(TryRegisterError::Occupied(existing.clone()));
         }
+        let now = chrono::Utc::now();
         agents.insert(
             key,
             RunningAgentInfo {
                 pid: 0,
                 conversation_id,
                 agent_run_id,
-                started_at: chrono::Utc::now(),
+                started_at: now,
                 worktree_path: None,
                 cancellation_token: None,
-                last_active_at: None,
+                last_active_at: Some(now),
                 model: None,
             },
         );
         Ok(())
     }
 
-    async fn update_agent_process(
+    async fn renew_reservation(
         &self,
         key: &RunningAgentKey,
-        pid: u32,
-        conversation_id: &str,
         agent_run_id: &str,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool, String> {
+        let mut agents = self.agents.lock().await;
+        if let Some(info) = agents
+            .get_mut(key)
+            .filter(|info| info.agent_run_id == agent_run_id && info.pid == 0)
+        {
+            info.last_active_at = Some(at);
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    async fn attach_process(
+        &self,
+        key: &RunningAgentKey,
+        expected_agent_run_id: &str,
+        pid: u32,
         worktree_path: Option<String>,
         cancellation_token: Option<CancellationToken>,
         model: Option<String>,
-    ) -> Result<(), String> {
+    ) -> Result<AttachProcessResult, String> {
         let mut agents = self.agents.lock().await;
-        if let Some(info) = agents.get_mut(key) {
+        if let Some(info) = agents
+            .get_mut(key)
+            .filter(|info| info.agent_run_id == expected_agent_run_id && info.pid == 0)
+        {
             info.pid = pid;
-            info.agent_run_id = agent_run_id.to_string();
             info.worktree_path = worktree_path;
             info.cancellation_token = cancellation_token;
             info.model = model;
-        } else {
-            tracing::warn!(
-                context_type = %key.context_type,
-                context_id = %key.context_id,
-                pid,
-                "update_agent_process: entry pruned — re-inserting full registration"
-            );
-            agents.insert(
-                key.clone(),
-                RunningAgentInfo {
-                    pid,
-                    conversation_id: conversation_id.to_string(),
-                    agent_run_id: agent_run_id.to_string(),
-                    started_at: chrono::Utc::now(),
-                    worktree_path,
-                    cancellation_token,
-                    last_active_at: None,
-                    model,
-                },
-            );
+            return Ok(AttachProcessResult::Attached);
         }
-        Ok(())
+        Ok(AttachProcessResult::ClaimLost)
     }
 
     async fn cleanup_stale_entry(
         &self,
         key: &RunningAgentKey,
+        expected_agent_run_id: &str,
     ) -> Result<Option<RunningAgentInfo>, String> {
         let info = {
             let agents = self.agents.lock().await;
             agents.get(key).cloned()
         };
         let info = match info {
-            Some(i) => i,
+            Some(i) if i.agent_run_id == expected_agent_run_id => i,
             None => return Ok(None),
+            Some(_) => return Ok(None),
         };
 
         // Only remove if the process is actually dead (Proof Obligation 7)
@@ -1009,7 +1123,13 @@ impl RunningAgentRegistry for MemoryRunningAgentRegistry {
 
         // Process is dead — remove the entry
         let mut agents = self.agents.lock().await;
-        let removed = agents.remove(key);
+        let removed = if agents.get(key).map(|info| info.agent_run_id.as_str())
+            == Some(expected_agent_run_id)
+        {
+            agents.remove(key)
+        } else {
+            None
+        };
         Ok(removed)
     }
 }

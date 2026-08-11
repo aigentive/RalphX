@@ -4,12 +4,16 @@ use async_trait::async_trait;
 use std::collections::{HashMap, HashSet};
 use tokio::sync::RwLock;
 
+use crate::domain::entities::agent_run::PersonaRunAttribution;
 use crate::domain::entities::{
-    AgentRun, AgentRunAttribution, AgentRunId, AgentRunStatus, AgentRunUsage, ChatConversationId,
-    InterruptedConversation,
+    AgentRun, AgentRunActionKind, AgentRunAttribution, AgentRunId, AgentRunStatus, AgentRunUsage,
+    ChatConversationId, InterruptedConversation, UsageCapture,
 };
-use crate::domain::repositories::{AgentRunRepository, ORPHANED_AGENT_RUN_ON_APP_RESTART};
+use crate::domain::repositories::{
+    AgentRunRepository, ORPHANED_AGENT_RUN_ON_APP_RESTART, PRUNED_STALE_AGENT_RUN,
+};
 use crate::error::AppResult;
+use crate::infrastructure::agent_run_error_message::truncate_persisted_error_message;
 
 /// In-memory implementation of AgentRunRepository for testing
 pub struct MemoryAgentRunRepository {
@@ -65,6 +69,25 @@ impl AgentRunRepository for MemoryAgentRunRepository {
             .cloned())
     }
 
+    async fn get_latest_completed_for_provider_session(
+        &self,
+        conversation_id: &ChatConversationId,
+        harness: crate::domain::agents::AgentHarnessKind,
+        provider_session_id: &str,
+    ) -> AppResult<Option<AgentRun>> {
+        let runs = self.runs.read().await;
+        Ok(runs
+            .values()
+            .filter(|run| {
+                run.conversation_id == *conversation_id
+                    && run.status == AgentRunStatus::Completed
+                    && run.harness == Some(harness)
+                    && run.provider_session_id.as_deref() == Some(provider_session_id)
+            })
+            .max_by_key(|run| run.started_at)
+            .cloned())
+    }
+
     async fn get_active_for_conversation(
         &self,
         conversation_id: &ChatConversationId,
@@ -73,6 +96,47 @@ impl AgentRunRepository for MemoryAgentRunRepository {
         Ok(runs
             .values()
             .find(|r| r.conversation_id == *conversation_id && r.is_active())
+            .cloned())
+    }
+
+    async fn get_latest_action(
+        &self,
+        conversation_id: &ChatConversationId,
+        action_kind: AgentRunActionKind,
+        action_context_id: &str,
+        action_target_id: &str,
+    ) -> AppResult<Option<AgentRun>> {
+        let runs = self.runs.read().await;
+        Ok(runs
+            .values()
+            .filter(|run| {
+                run.conversation_id == *conversation_id
+                    && run.action_kind == Some(action_kind)
+                    && run.action_context_id.as_deref() == Some(action_context_id)
+                    && run.action_target_id.as_deref() == Some(action_target_id)
+            })
+            .max_by_key(|run| run.started_at)
+            .cloned())
+    }
+
+    async fn get_active_action(
+        &self,
+        conversation_id: &ChatConversationId,
+        action_kind: AgentRunActionKind,
+        action_context_id: &str,
+        action_target_id: &str,
+    ) -> AppResult<Option<AgentRun>> {
+        let runs = self.runs.read().await;
+        Ok(runs
+            .values()
+            .filter(|run| {
+                run.conversation_id == *conversation_id
+                    && run.status == AgentRunStatus::Running
+                    && run.action_kind == Some(action_kind)
+                    && run.action_context_id.as_deref() == Some(action_context_id)
+                    && run.action_target_id.as_deref() == Some(action_target_id)
+            })
+            .max_by_key(|run| run.started_at)
             .cloned())
     }
 
@@ -98,6 +162,8 @@ impl AgentRunRepository for MemoryAgentRunRepository {
             if status == AgentRunStatus::Running {
                 run.completed_at = None;
                 run.error_message = None;
+            } else if run.completed_at.is_none() {
+                run.completed_at = Some(chrono::Utc::now());
             }
         }
         Ok(())
@@ -108,6 +174,22 @@ impl AgentRunRepository for MemoryAgentRunRepository {
         if let Some(run) = runs.get_mut(id) {
             run.apply_usage(usage);
         }
+        Ok(())
+    }
+
+    async fn replace_usage_capture(
+        &self,
+        id: &AgentRunId,
+        capture: &UsageCapture,
+    ) -> AppResult<()> {
+        let mut runs = self.runs.write().await;
+        let Some(run) = runs.get_mut(id) else {
+            return Err(crate::error::AppError::NotFound(format!(
+                "Agent run not found: {}",
+                id.as_str()
+            )));
+        };
+        run.replace_usage_capture(capture);
         Ok(())
     }
 
@@ -123,6 +205,18 @@ impl AgentRunRepository for MemoryAgentRunRepository {
         Ok(())
     }
 
+    async fn set_persona_attribution(
+        &self,
+        id: &AgentRunId,
+        attribution: PersonaRunAttribution,
+    ) -> AppResult<()> {
+        let mut runs = self.runs.write().await;
+        if let Some(run) = runs.get_mut(id) {
+            run.apply_persona_attribution(attribution);
+        }
+        Ok(())
+    }
+
     async fn complete(&self, id: &AgentRunId) -> AppResult<()> {
         let mut runs = self.runs.write().await;
         if let Some(run) = runs.get_mut(id) {
@@ -131,10 +225,38 @@ impl AgentRunRepository for MemoryAgentRunRepository {
         Ok(())
     }
 
+    async fn complete_if_running(&self, id: &AgentRunId) -> AppResult<bool> {
+        let mut runs = self.runs.write().await;
+        let Some(run) = runs.get_mut(id) else {
+            return Ok(false);
+        };
+        if run.status != AgentRunStatus::Running {
+            return Ok(false);
+        }
+        run.complete();
+        Ok(true)
+    }
+
+    async fn complete_if_prune_cancelled(&self, id: &AgentRunId) -> AppResult<bool> {
+        let mut runs = self.runs.write().await;
+        let Some(run) = runs.get_mut(id) else {
+            return Ok(false);
+        };
+        if run.status != AgentRunStatus::Cancelled
+            || run.error_message.as_deref() != Some(PRUNED_STALE_AGENT_RUN)
+        {
+            return Ok(false);
+        }
+        run.complete();
+        Ok(true)
+    }
+
     async fn fail(&self, id: &AgentRunId, error_message: &str) -> AppResult<()> {
+        // Same bound as the SQLite repo so both implementations record an equivalent cause.
+        let error_message = truncate_persisted_error_message(error_message);
         let mut runs = self.runs.write().await;
         if let Some(run) = runs.get_mut(id) {
-            run.fail(error_message);
+            run.fail(&error_message);
         }
         Ok(())
     }
@@ -143,6 +265,18 @@ impl AgentRunRepository for MemoryAgentRunRepository {
         let mut runs = self.runs.write().await;
         if let Some(run) = runs.get_mut(id) {
             run.cancel();
+        }
+        Ok(())
+    }
+
+    async fn cancel_with_reason(&self, id: &AgentRunId, reason: &str) -> AppResult<()> {
+        let mut runs = self.runs.write().await;
+        if let Some(run) = runs
+            .get_mut(id)
+            .filter(|run| run.status == AgentRunStatus::Running)
+        {
+            run.cancel();
+            run.error_message = Some(reason.to_string());
         }
         Ok(())
     }

@@ -1,8 +1,10 @@
 import { useCallback } from "react";
 import type { QueryClient } from "@tanstack/react-query";
 
+import { attentionKeys } from "@/hooks/useAttentionItems";
 import { chatKeys } from "@/hooks/useChat";
 import { ideationKeys } from "@/hooks/useIdeation";
+import { notificationKeys } from "@/hooks/useNotificationHistory";
 
 import { archivedConversationCountKey } from "./useArchivedConversationCounts";
 import {
@@ -28,6 +30,8 @@ export function useAgentConversationInvalidation(queryClient: QueryClient) {
           refetchType: "active",
         }),
         queryClient.invalidateQueries({ queryKey: ideationKeys.sessions() }),
+        queryClient.invalidateQueries({ queryKey: attentionKeys.all }),
+        queryClient.invalidateQueries({ queryKey: notificationKeys.all }),
       ]);
     },
     [queryClient]

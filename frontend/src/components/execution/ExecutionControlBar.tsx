@@ -28,7 +28,6 @@ import {
 } from "@/components/ui/tooltip";
 import { useAgentTerminalStore } from "@/components/agents/agentTerminalStore";
 import { cn } from "@/lib/utils";
-import { useTeamModeAvailability } from "@/hooks/useTeamModeAvailability";
 import { RunningProcessPopover } from "./RunningProcessPopover";
 import { TerminalsPopover, type ExecutionBarTerminalSession } from "./TerminalsPopover";
 import type {
@@ -43,6 +42,7 @@ import type { MergePipelineResponse } from "@/api/merge-pipeline";
 import { QueuedTasksPopover } from "./QueuedTasksPopover";
 import { PausedTasksPopover } from "./PausedTasksPopover";
 import { InfoTooltip } from "./InfoTooltip";
+import type { ExecutionBarTaskNavigationTarget } from "./executionTaskNavigation";
 import { getStatusIconConfig } from "@/types/status-icons";
 import { useProjectStore } from "@/stores/projectStore";
 import type { Task } from "@/types/task";
@@ -109,7 +109,13 @@ interface ExecutionControlBarProps {
   /** Called when an ideation session is clicked in the running processes popover */
   onNavigateToSession?: (sessionId: string) => void;
   /** Called when a workspace row is clicked in the running processes popover */
-  onNavigateToWorkspace?: (projectId: string, conversationId: string) => void;
+  onNavigateToWorkspace?: (
+    projectId: string,
+    conversationId: string,
+    session?: RunningWorkspaceSession
+  ) => void;
+  /** Called when any execution-bar task row should open its Agent task detail */
+  onNavigateToTask?: (target: ExecutionBarTaskNavigationTarget) => void;
 }
 
 /**
@@ -185,11 +191,8 @@ export function ExecutionControlBar({
   onOpenSettings = () => {},
   onNavigateToSession,
   onNavigateToWorkspace,
+  onNavigateToTask,
 }: ExecutionControlBarProps) {
-  const {
-    ideationTeamModeAvailable,
-    executionTeamModeAvailable,
-  } = useTeamModeAvailability(projectId);
   const laneByName = new Map(lanes.map((lane) => [lane.lane, lane]));
   const workspaceLane = laneByName.get("workspaces");
   const taskLane = laneByName.get("tasks");
@@ -356,11 +359,10 @@ export function ExecutionControlBar({
               onOpenSettings={onOpenSettings}
               {...(onNavigateToSession !== undefined && { onNavigateToSession })}
               {...(onNavigateToWorkspace !== undefined && { onNavigateToWorkspace })}
+              {...(onNavigateToTask !== undefined && { onNavigateToTask })}
               alignOffset={POPOVER_ALIGN_TO_SEPARATOR_DOT}
               initialTab={activeTab}
               showIdeation={showIdeation}
-              showExecutionTeamUi={executionTeamModeAvailable}
-              showIdeationTeamUi={ideationTeamModeAvailable}
             >
               <button
                 data-testid="running-count"
@@ -420,6 +422,7 @@ export function ExecutionControlBar({
               alignOffset={POPOVER_ALIGN_TO_SEPARATOR_DOT}
               open={openPopover === "queued"}
               onOpenChange={(open) => setPopoverOpen("queued", open)}
+              {...(onNavigateToTask !== undefined && { onNavigateToTask })}
             >
               <button
                 data-testid="queued-count"
@@ -510,6 +513,7 @@ export function ExecutionControlBar({
                 alignOffset={POPOVER_ALIGN_TO_SEPARATOR_DOT}
                 open={openPopover === "paused"}
                 onOpenChange={(open) => setPopoverOpen("paused", open)}
+                {...(onNavigateToTask !== undefined && { onNavigateToTask })}
               >
                 <button
                   data-testid="paused-count"
@@ -547,6 +551,7 @@ export function ExecutionControlBar({
                   alignOffset={POPOVER_ALIGN_TO_SEPARATOR_DOT}
                   open={openPopover === "merge"}
                   onOpenChange={(open) => setPopoverOpen("merge", open)}
+                  {...(onNavigateToTask !== undefined && { onNavigateToTask })}
                 >
                   <button
                     data-testid="merging-count"

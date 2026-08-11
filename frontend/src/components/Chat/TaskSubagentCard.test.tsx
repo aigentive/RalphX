@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { TaskSubagentCard } from "./TaskSubagentCard";
@@ -56,6 +56,7 @@ function renderWithQueryClient(ui: React.ReactElement) {
 
 afterEach(() => {
   listeners.clear();
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -85,6 +86,78 @@ describe("TaskSubagentCard", () => {
     );
     expect(screen.getByText("gpt-5.4")).toBeInTheDocument();
     expect(screen.queryByText("delegated")).not.toBeInTheDocument();
+  });
+
+  it("keeps a user-expanded delegate open through terminal settlement and shows runtime details", async () => {
+    const user = userEvent.setup();
+    const running = makeStreamingTask({
+      toolUseId: "call-delegate-stable",
+      toolName: "delegate_start",
+      description: "Inspect runtime metadata",
+      subagentType: "delegated",
+      status: "running",
+      providerHarness: "codex",
+      upstreamProvider: "openai",
+      providerProfile: "production",
+      logicalModel: "gpt-5.4",
+      effectiveModelId: "gpt-5.4-2026-07-01",
+      logicalEffort: "high",
+      effectiveEffort: "high",
+      approvalPolicy: "never",
+      sandboxMode: "danger-full-access",
+    });
+    const { rerender } = render(<TaskSubagentCard task={running} />);
+
+    await user.click(screen.getByRole("button", { name: /inspect runtime metadata/i }));
+    expect(screen.getByTestId("delegate-runtime-details")).toHaveTextContent(
+      "gpt-5.4-2026-07-01",
+    );
+    expect(screen.getByTestId("delegate-runtime-details")).toHaveTextContent(
+      "danger-full-access",
+    );
+
+    rerender(
+      <TaskSubagentCard
+        task={{ ...running, status: "completed", completedAt: Date.now() }}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /click to collapse/i })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    expect(screen.getByTestId("delegate-runtime-details")).toBeInTheDocument();
+  });
+
+  it("uses backend clocks across remounts and freezes elapsed time at terminal settlement", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-23T00:00:03Z"));
+    const running = makeStreamingTask({
+      toolUseId: "delegate-clock",
+      toolName: "delegate_start",
+      subagentType: "delegated",
+      status: "running",
+      startedAt: Date.parse("2026-07-23T00:00:00Z"),
+      totalDurationMs: undefined,
+    });
+    const { rerender, unmount } = render(<TaskSubagentCard task={running} />);
+
+    expect(screen.getByRole("button", { name: /inspect repository layout/i })).toHaveTextContent("3s");
+    act(() => {
+      vi.advanceTimersByTime(1_000);
+    });
+    expect(screen.getByRole("button", { name: /inspect repository layout/i })).toHaveTextContent("4s");
+
+    const terminal = { ...running, status: "completed" as const, completedAt: Date.now(), totalDurationMs: 4_000 };
+    rerender(<TaskSubagentCard task={terminal} />);
+    act(() => {
+      vi.advanceTimersByTime(5_000);
+    });
+    expect(screen.getByRole("button", { name: /inspect repository layout/i })).toHaveTextContent("4s");
+
+    unmount();
+    render(<TaskSubagentCard task={terminal} />);
+    expect(screen.getByRole("button", { name: /inspect repository layout/i })).toHaveTextContent("4s");
   });
 
   it("shows collapsed completed summary metrics", () => {

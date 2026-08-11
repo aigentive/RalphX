@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { chatApi, type ConversationStatsResponse } from "@/api/chat";
+import { useConversationStats } from "@/hooks/useConversationStats";
 import { useConversationTicket } from "@/hooks/useTicketing";
 import { useChatStore } from "@/stores/chatStore";
 import { useProjectStore } from "@/stores/projectStore";
@@ -27,6 +28,10 @@ vi.mock("@/hooks/useTicketing", () => ({
   useConversationTicket: vi.fn(),
 }));
 
+vi.mock("@/hooks/useConversationStats", () => ({
+  useConversationStats: vi.fn(),
+}));
+
 function conversationStats(
   overrides: Partial<ConversationStatsResponse> = {},
 ): ConversationStatsResponse {
@@ -42,6 +47,7 @@ function conversationStats(
       outputTokens: 0,
       cacheCreationTokens: 0,
       cacheReadTokens: 0,
+      processedTokens: null,
       estimatedUsd: null,
     },
     runUsageTotals: {
@@ -49,6 +55,7 @@ function conversationStats(
       outputTokens: 0,
       cacheCreationTokens: 0,
       cacheReadTokens: 0,
+      processedTokens: null,
       estimatedUsd: null,
     },
     effectiveUsageTotals: {
@@ -56,6 +63,7 @@ function conversationStats(
       outputTokens: 0,
       cacheCreationTokens: 0,
       cacheReadTokens: 0,
+      processedTokens: null,
       estimatedUsd: null,
     },
     usageCoverage: {
@@ -63,6 +71,11 @@ function conversationStats(
       providerMessagesWithUsage: 0,
       runCount: 0,
       runsWithUsage: 0,
+      effectiveRunConversationCount: 0,
+      effectiveMessageConversationCount: 0,
+      legacyEstimatedSampleCount: 0,
+      fallbackEstimatedSampleCount: 0,
+      uncountedSampleCount: 0,
       effectiveTotalsSource: "none",
     },
     attributionCoverage: {
@@ -87,16 +100,24 @@ describe("AgentsChatHeader", () => {
       isError: false,
       error: null,
     } as ReturnType<typeof useConversationTicket>);
+    vi.mocked(useConversationStats).mockReturnValue({
+      data: conversationStats(),
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof useConversationStats>);
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
     vi.useRealTimers();
     window.localStorage.clear();
-    useChatStore.setState({ agentStatus: {}, isSending: {} });
-    useTicketingStore.getState().reset();
-    useProjectStore.setState({ activeProjectId: null });
-    useUiStore.setState({ currentView: "agents" });
+    act(() => {
+      useChatStore.setState({ agentStatus: {}, isSending: {} });
+      useTicketingStore.getState().reset();
+      useProjectStore.setState({ activeProjectId: null });
+      useUiStore.setState({ currentView: "agents" });
+    });
   });
 
   it("opens the linked ticket in the artifact sidebar from the header ticket button", () => {
@@ -161,6 +182,37 @@ describe("AgentsChatHeader", () => {
     fireEvent.click(screen.getByRole("button", { name: "Open ticket RX-42" }));
 
     expect(onSelectArtifact).toHaveBeenCalledWith("jira");
+  });
+
+  it("opens the linked ClickUp ticket in the ClickUp artifact tab", () => {
+    vi.mocked(useConversationTicket).mockReturnValue({
+      data: {
+        ticketRef: { provider: "clickup", id: "task-1", key: "TASK-1" },
+        projectId: "project-2",
+        title: "Fix ClickUp tickets",
+        url: null,
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof useConversationTicket>);
+
+    const onSelectArtifact = vi.fn();
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation({ id: "conversation-clickup", projectId: "project-2" })}
+        workspace={null}
+        artifactOpen={false}
+        activeArtifactTab="plan"
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={onSelectArtifact}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Open ticket TASK-1" }));
+
+    expect(onSelectArtifact).toHaveBeenCalledWith("clickup");
   });
 
   it("does not render the linked ticket button when no ticket is linked", () => {
@@ -448,7 +500,11 @@ describe("AgentsChatHeader", () => {
       <AgentsChatHeader
         conversation={conversation()}
         workspace={null}
-        chatFocus={{ type: "ideation", sessionId: "session-child" }}
+        chatFocus={{
+          type: "ideation",
+          conversationId: "conversation-1",
+          sessionId: "session-child",
+        }}
         artifactOpen={false}
         activeArtifactTab="plan"
         onRenameConversation={vi.fn().mockResolvedValue(undefined)}
@@ -503,6 +559,7 @@ describe("AgentsChatHeader", () => {
         workspace={null}
         chatFocus={{
           type: "verification",
+          conversationId: "conversation-1",
           parentSessionId: "session-parent",
           childSessionId: "verification-child",
         }}
@@ -531,6 +588,7 @@ describe("AgentsChatHeader", () => {
         workspace={null}
         chatFocus={{
           type: "verification",
+          conversationId: "conversation-1",
           parentSessionId: "session-parent",
           childSessionId: "verification-child",
         }}
@@ -622,11 +680,19 @@ describe("AgentsChatHeader", () => {
   });
 
   it("marks conversation stats as pending while the active Agents turn has no usage yet", async () => {
-    vi.spyOn(chatApi, "getConversationStats").mockResolvedValue(conversationStats());
-    useChatStore
-      .getState()
-      .setAgentStatus("project:conversation-1", "generating");
+    vi.mocked(useConversationStats).mockReturnValue({
+      data: conversationStats(),
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof useConversationStats>);
+    act(() => {
+      useChatStore
+        .getState()
+        .setAgentStatus("project:conversation-1", "generating");
+    });
 
+    const user = userEvent.setup();
     renderWithProviders(
       <AgentsChatHeader
         conversation={conversation()}
@@ -640,14 +706,23 @@ describe("AgentsChatHeader", () => {
       />
     );
 
-    fireEvent.click(screen.getByTestId("chat-session-stats-button"));
+    await user.click(screen.getByTestId("chat-session-stats-button"));
 
     expect(
       await screen.findByText(
         "Usage totals are pending until the provider reports the current turn.",
       ),
     ).toBeInTheDocument();
-    expect(screen.getAllByText("Pending")).toHaveLength(4);
+    expect(screen.getAllByText("Pending")).toHaveLength(5);
+
+    await user.keyboard("{Escape}");
+    await waitFor(() => {
+      expect(
+        screen.queryByText(
+          "Usage totals are pending until the provider reports the current turn.",
+        ),
+      ).not.toBeInTheDocument();
+    });
   });
 
   it("shows workspace status in the left header group", () => {
@@ -842,6 +917,8 @@ describe("AgentsChatHeader", () => {
         activeArtifactTab="plan"
         workspaceOpenTargets={[
           { id: "cursor", label: "Cursor", kind: "editor" },
+          { id: "iterm2", label: "iTerm2", kind: "terminal" },
+          { id: "terminal", label: "Terminal", kind: "terminal" },
           { id: "file-manager", label: "Finder", kind: "fileManager" },
         ]}
         onOpenWorkspaceTarget={openWorkspaceTarget}
@@ -869,6 +946,172 @@ describe("AgentsChatHeader", () => {
     expect(window.localStorage.getItem("ralphx:agents:preferred-workspace-open-target")).toBe(
       "file-manager"
     );
+  });
+
+  it("opens an external terminal target and persists it as the external preference", () => {
+    const openWorkspaceTarget = vi.fn();
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation({ id: "conversation-1" })}
+        workspace={conversationWorkspace({ mode: "edit" })}
+        artifactOpen={false}
+        activeArtifactTab="plan"
+        workspaceOpenTargets={[
+          { id: "cursor", label: "Cursor", kind: "editor" },
+          { id: "iterm2", label: "iTerm2", kind: "terminal" },
+          { id: "terminal", label: "Terminal", kind: "terminal" },
+          { id: "file-manager", label: "Finder", kind: "fileManager" },
+        ]}
+        onOpenWorkspaceTarget={openWorkspaceTarget}
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onToggleTerminal={vi.fn()}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+      />
+    );
+
+    fireEvent.pointerDown(screen.getByTestId("agents-open-workspace-options"), {
+      button: 0,
+      ctrlKey: false,
+    });
+    fireEvent.click(screen.getByRole("menuitem", { name: "Terminal" }));
+
+    expect(openWorkspaceTarget).toHaveBeenCalledWith("terminal");
+    expect(screen.getByTestId("agents-open-workspace-current-target")).toHaveTextContent(
+      "Terminal"
+    );
+    expect(window.localStorage.getItem("ralphx:agents:preferred-workspace-open-target")).toBe(
+      "terminal"
+    );
+  });
+
+  it("toggles Built-in Terminal without changing the external preference", () => {
+    const toggleTerminal = vi.fn();
+    const preloadTerminal = vi.fn();
+    window.localStorage.setItem(
+      "ralphx:agents:preferred-workspace-open-target",
+      "cursor",
+    );
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation({ id: "conversation-1" })}
+        workspace={conversationWorkspace({ mode: "edit" })}
+        artifactOpen={false}
+        activeArtifactTab="plan"
+        terminalOpen
+        workspaceOpenTargets={[
+          { id: "cursor", label: "Cursor", kind: "editor" },
+          { id: "terminal", label: "Terminal", kind: "terminal" },
+        ]}
+        onOpenWorkspaceTarget={vi.fn()}
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onToggleTerminal={toggleTerminal}
+        onPreloadTerminal={preloadTerminal}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+      />
+    );
+
+    expect(screen.getByTestId("agents-terminal-toggle")).toBeInTheDocument();
+    fireEvent.pointerDown(screen.getByTestId("agents-open-workspace-options"), {
+      button: 0,
+      ctrlKey: false,
+    });
+    const builtInTerminal = screen.getByRole("menuitem", {
+      name: "Built-in Terminal",
+    });
+    expect(screen.getByTestId("agents-built-in-terminal-open-indicator")).toBeInTheDocument();
+
+    fireEvent.pointerEnter(builtInTerminal);
+    fireEvent.focus(builtInTerminal);
+    fireEvent.click(builtInTerminal);
+
+    expect(preloadTerminal).toHaveBeenCalledTimes(2);
+    expect(toggleTerminal).toHaveBeenCalledTimes(1);
+    expect(window.localStorage.getItem("ralphx:agents:preferred-workspace-open-target")).toBe(
+      "cursor"
+    );
+    expect(screen.getByTestId("agents-open-workspace-current-target")).toHaveTextContent(
+      "Cursor"
+    );
+  });
+
+  it("keeps archived Built-in Terminal enabled without preloading from the menu", () => {
+    const toggleTerminal = vi.fn();
+    const preloadTerminal = vi.fn();
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation({ id: "conversation-1" })}
+        workspace={conversationWorkspace({ mode: "edit" })}
+        artifactOpen={false}
+        activeArtifactTab="plan"
+        terminalArchivedReason="Workspace archived after PR merge. Send a follow-up to continue in a fresh workspace."
+        workspaceOpenTargets={[{ id: "cursor", label: "Cursor", kind: "editor" }]}
+        onOpenWorkspaceTarget={vi.fn()}
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onToggleTerminal={toggleTerminal}
+        onPreloadTerminal={preloadTerminal}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+      />
+    );
+
+    fireEvent.pointerDown(screen.getByTestId("agents-open-workspace-options"), {
+      button: 0,
+      ctrlKey: false,
+    });
+    const builtInTerminal = screen.getByRole("menuitem", {
+      name: "Built-in Terminal",
+    });
+    expect(builtInTerminal).not.toHaveAttribute("data-disabled");
+
+    fireEvent.pointerEnter(builtInTerminal);
+    fireEvent.focus(builtInTerminal);
+    fireEvent.click(builtInTerminal);
+
+    expect(preloadTerminal).not.toHaveBeenCalled();
+    expect(toggleTerminal).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables Built-in Terminal in the Open menu with the unavailable reason", () => {
+    const toggleTerminal = vi.fn();
+    const preloadTerminal = vi.fn();
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation({ id: "conversation-1" })}
+        workspace={conversationWorkspace({ mode: "edit" })}
+        artifactOpen={false}
+        activeArtifactTab="plan"
+        terminalUnavailableReason="Terminal is unavailable for this workspace"
+        workspaceOpenTargets={[{ id: "cursor", label: "Cursor", kind: "editor" }]}
+        onOpenWorkspaceTarget={vi.fn()}
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onToggleTerminal={toggleTerminal}
+        onPreloadTerminal={preloadTerminal}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+      />
+    );
+
+    fireEvent.pointerDown(screen.getByTestId("agents-open-workspace-options"), {
+      button: 0,
+      ctrlKey: false,
+    });
+    const builtInTerminal = screen.getByRole("menuitem", {
+      name: "Built-in Terminal unavailable: Terminal is unavailable for this workspace",
+    });
+    expect(builtInTerminal).toHaveAttribute("data-disabled");
+    expect(builtInTerminal).toHaveAttribute(
+      "title",
+      "Terminal is unavailable for this workspace",
+    );
+
+    fireEvent.pointerEnter(builtInTerminal);
+    fireEvent.focus(builtInTerminal);
+    fireEvent.click(builtInTerminal);
+
+    expect(preloadTerminal).not.toHaveBeenCalled();
+    expect(toggleTerminal).not.toHaveBeenCalled();
   });
 
   it("shows an opening state while launching a workspace target", () => {
@@ -958,6 +1201,41 @@ describe("AgentsChatHeader", () => {
       await vi.advanceTimersByTimeAsync(1);
     });
     expect(openButton).not.toBeDisabled();
+  });
+
+  it("opens the workspace using the workspace owner conversation id", async () => {
+    vi.spyOn(chatApi, "listWorkspaceOpenTargets").mockResolvedValue([
+      { id: "cursor", label: "Cursor", kind: "editor" },
+    ]);
+    const openWorkspace = vi
+      .spyOn(chatApi, "openAgentConversationWorkspace")
+      .mockResolvedValue(undefined);
+
+    renderWithProviders(
+      <AgentsChatHeaderController
+        conversation={conversation({ id: "selected-conversation" })}
+        workspace={conversationWorkspace({
+          conversationId: "workspace-conversation",
+          mode: "ideation",
+          linkedPlanBranchId: "plan-branch-1",
+        })}
+        hasAutoOpenArtifacts={false}
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onPublishWorkspace={vi.fn().mockResolvedValue(undefined)}
+        onOpenPublishPane={vi.fn()}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByTestId("agents-open-workspace"));
+
+    await waitFor(() =>
+      expect(openWorkspace).toHaveBeenCalledWith(
+        "workspace-conversation",
+        "cursor",
+      ),
+    );
   });
 
   it("clears the workspace opening state immediately when launch fails", async () => {
@@ -1070,6 +1348,37 @@ describe("AgentsChatHeader", () => {
     );
   });
 
+  it("locks the publish shortcut when the effective workspace is publishing in the background", () => {
+    const openPublishPane = vi.fn();
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation({ id: "conversation-1", agentMode: "edit" })}
+        workspace={conversationWorkspace({ mode: "edit" })}
+        artifactOpen={false}
+        activeArtifactTab="plan"
+        publishShortcutWorkspace={conversationWorkspace({
+          conversationId: "conversation-2",
+          mode: "edit",
+          publicationPushStatus: "  PuShInG  ",
+        })}
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onPublishWorkspace={vi.fn().mockResolvedValue(undefined)}
+        onOpenPublishPane={openPublishPane}
+        onToggleTerminal={vi.fn()}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+      />
+    );
+
+    const publishShortcut = screen.getByRole("button", { name: "Publishing" });
+    expect(publishShortcut).toBeDisabled();
+    expect(publishShortcut).toHaveTextContent("Publishing");
+
+    fireEvent.click(publishShortcut);
+
+    expect(openPublishPane).not.toHaveBeenCalled();
+  });
+
   it("hides the publish header shortcut while the publish pane is open", () => {
     renderWithProviders(
       <AgentsChatHeader
@@ -1090,24 +1399,29 @@ describe("AgentsChatHeader", () => {
     expect(screen.getByTestId("agents-workspace-status")).toBeInTheDocument();
   });
 
-  it("hides ideation artifact shortcuts for edit-mode conversations", () => {
+  it("shows the Plan shortcut for edit-mode project conversations", () => {
+    const onSelectArtifact = vi.fn();
     renderWithProviders(
       <AgentsChatHeader
         conversation={conversation({ agentMode: "edit" })}
         workspace={conversationWorkspace({ mode: "edit" })}
+        availableArtifactTabs={["plan"]}
         artifactOpen={false}
         activeArtifactTab="plan"
         onRenameConversation={vi.fn().mockResolvedValue(undefined)}
         onToggleTerminal={vi.fn()}
         onToggleArtifacts={vi.fn()}
-        onSelectArtifact={vi.fn()}
+        onSelectArtifact={onSelectArtifact}
       />
     );
 
-    expect(screen.queryByLabelText("Plan")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Plan"));
+
+    expect(onSelectArtifact).toHaveBeenCalledWith("plan");
     expect(screen.queryByLabelText("Verification")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Proposals")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Tasks")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Open artifacts")).toBeInTheDocument();
   });
 
   it("shows the attached Plan shortcut for linked edit workspaces", () => {
@@ -1119,7 +1433,7 @@ describe("AgentsChatHeader", () => {
           mode: "edit",
           linkedIdeationSessionId: "planning-session-1",
         })}
-        availableArtifactTabs={["plan", "verification", "proposal"]}
+        availableArtifactTabs={["plan", "verification"]}
         artifactOpen={false}
         activeArtifactTab="plan"
         onRenameConversation={vi.fn().mockResolvedValue(undefined)}
@@ -1136,12 +1450,12 @@ describe("AgentsChatHeader", () => {
     expect(screen.queryByLabelText("Proposals")).not.toBeInTheDocument();
   });
 
-  it("shows ideation artifact shortcuts for ideation-mode conversations", () => {
+  it("shows ideation artifact shortcuts without a standalone Proposals shortcut", () => {
     renderWithProviders(
       <AgentsChatHeader
         conversation={conversation({ agentMode: "ideation" })}
         workspace={conversationWorkspace({ mode: "ideation" })}
-        availableArtifactTabs={["plan", "verification", "proposal", "tasks"]}
+        availableArtifactTabs={["plan", "verification", "tasks"]}
         artifactOpen={false}
         activeArtifactTab="plan"
         onRenameConversation={vi.fn().mockResolvedValue(undefined)}
@@ -1153,7 +1467,7 @@ describe("AgentsChatHeader", () => {
 
     expect(screen.getByLabelText("Plan")).toBeInTheDocument();
     expect(screen.getByLabelText("Verification")).toBeInTheDocument();
-    expect(screen.getByLabelText("Proposals")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Proposals")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Tasks")).toBeInTheDocument();
   });
 
@@ -1180,24 +1494,27 @@ describe("AgentsChatHeader", () => {
     expect(screen.getByLabelText("Open artifacts")).toBeInTheDocument();
   });
 
-  it("hides plan-mode artifact controls until a plan exists", () => {
+  it("shows plan-mode artifact controls before a plan exists", () => {
+    const onSelectArtifact = vi.fn();
     renderWithProviders(
       <AgentsChatHeader
         conversation={conversation({ agentMode: "plan" })}
         workspace={conversationWorkspace({ mode: "plan" })}
-        availableArtifactTabs={[]}
+        availableArtifactTabs={["plan"]}
         artifactOpen={false}
         activeArtifactTab="plan"
         onRenameConversation={vi.fn().mockResolvedValue(undefined)}
         onToggleTerminal={vi.fn()}
         onToggleArtifacts={vi.fn()}
-        onSelectArtifact={vi.fn()}
+        onSelectArtifact={onSelectArtifact}
       />
     );
 
-    expect(screen.queryByLabelText("Plan")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Plan"));
+
+    expect(onSelectArtifact).toHaveBeenCalledWith("plan");
     expect(screen.queryByLabelText("Verification")).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("Open artifacts")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Open artifacts")).toBeInTheDocument();
   });
 
   it("hides ideation artifact shortcuts when no artifact tabs are available yet", () => {

@@ -176,7 +176,7 @@ pub struct Project {
     pub custom_analysis: Option<String>,
     /// Last analysis timestamp (RFC3339)
     pub analyzed_at: Option<String>,
-    /// Whether GitHub PR workflow is enabled for this project (default: true)
+    /// User preference for future GitHub PR workflows; live repository capability authorizes each new PR flow.
     #[serde(default = "default_github_pr_enabled")]
     pub github_pr_enabled: bool,
     /// When the project was created
@@ -206,7 +206,10 @@ impl Project {
             detected_analysis: None,
             custom_analysis: None,
             analyzed_at: None,
-            github_pr_enabled: true,
+            // New projects require an explicit user opt-in in Repository Settings.
+            // Keep the serde/database fallback above for legacy records that predate
+            // the persisted preference.
+            github_pr_enabled: false,
             created_at: now,
             updated_at: now,
             archived_at: None,

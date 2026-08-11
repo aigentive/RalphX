@@ -8,7 +8,6 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tauri::Runtime;
 
 use crate::application::git_service::GitService;
 use crate::application::interactive_process_registry::{
@@ -19,7 +18,8 @@ use crate::domain::entities::{InternalStatus, Project, Task};
 use crate::domain::repositories::TaskRepository;
 use crate::domain::state_machine::transition_handler::{
     is_merge_worktree_path, merge_metadata_into, publish_plan_branch_pr_after_freshness_update,
-    restore_task_worktree, PlanBranchPrSyncServices,
+    restore_task_worktree, sync_plan_branch_pr_after_regular_task_merge, PlanBranchPrSyncOutcome,
+    PlanBranchPrSyncServices,
 };
 use crate::error::{AppError, AppResult};
 
@@ -59,10 +59,10 @@ pub(crate) enum FreshnessRouteResult {
 /// Returns `Err` if the DB update or task transition fails. On transition
 /// failure the function re-inserts `plan_update_conflict` and
 /// `branch_freshness_conflict` so the next attempt can retry.
-pub(crate) async fn freshness_return_route<R: Runtime>(
+pub(crate) async fn freshness_return_route(
     task: &Task,
     task_repo: Arc<dyn TaskRepository>,
-    transition_service: &TaskTransitionService<R>,
+    transition_service: &TaskTransitionService,
     project: &Project,
     interactive_process_registry: Option<&InteractiveProcessRegistry>,
     pr_sync_services: Option<&PlanBranchPrSyncServices>,
@@ -128,6 +128,13 @@ pub(crate) async fn freshness_return_route<R: Runtime>(
                 "freshness_return_route: routing back to WaitingOnPr (PR branch update origin)"
             );
             (InternalStatus::WaitingOnPr, "waiting_on_pr".to_owned())
+        }
+        Some("pr_branch_publication") => {
+            tracing::info!(
+                task_id = %task.id,
+                "freshness_return_route: finalizing regular task after PR branch publication conflict"
+            );
+            (InternalStatus::Merged, "pr_branch_publication".to_owned())
         }
         Some(unknown) => {
             tracing::warn!(
@@ -198,15 +205,115 @@ pub(crate) async fn freshness_return_route<R: Runtime>(
             fresh_task.internal_status = InternalStatus::MergeIncomplete;
             fresh_task.touch();
             task_repo.update(&fresh_task).await?;
-            let _ = task_repo
+            if let Ok(history_entry_id) = task_repo
                 .persist_status_change(
                     &task.id,
                     InternalStatus::Merging,
                     InternalStatus::MergeIncomplete,
                     "pr_branch_publication_failed",
                 )
-                .await;
+                .await
+            {
+                transition_service
+                    .notify_state_entered(
+                        &fresh_task,
+                        history_entry_id,
+                        InternalStatus::MergeIncomplete,
+                    )
+                    .await;
+            }
             return Err(error);
+        }
+    } else if origin_state_name == "pr_branch_publication" {
+        if let (Some(commit_sha), Some(target_branch)) = (
+            commit_sha,
+            meta_val.get("target_branch").and_then(|v| v.as_str()),
+        ) {
+            let repo_path = PathBuf::from(&project.working_directory);
+            let commit_on_target =
+                GitService::is_commit_on_branch(&repo_path, commit_sha, target_branch).await?;
+            if !commit_on_target {
+                return Err(AppError::Validation(format!(
+                    "Commit {} is not on PR publication target branch {}",
+                    commit_sha, target_branch
+                )));
+            }
+        }
+
+        let publication_result = match pr_sync_services {
+            Some(services) => {
+                match sync_plan_branch_pr_after_regular_task_merge(&fresh_task, project, services)
+                    .await
+                {
+                    Ok(PlanBranchPrSyncOutcome::Complete) => Ok(()),
+                    Ok(PlanBranchPrSyncOutcome::Conflict(conflict)) => {
+                        Err(conflict.conflict_error())
+                    }
+                    Err(error) => Err(error),
+                }
+            }
+            None => Err(AppError::GitOperation(
+                "Cannot publish PR branch during publication conflict return: PR sync services unavailable"
+                    .to_string(),
+            )),
+        };
+
+        if let Err(error) = publication_result {
+            tracing::warn!(
+                task_id = %task.id,
+                error = %error,
+                "freshness_return_route: PR branch publication failed before finalizing regular task"
+            );
+            merge_metadata_into(
+                &mut fresh_task,
+                &serde_json::json!({
+                    "error": format!("PR branch publication failed: {}", error),
+                    "error_code": "pr_branch_publication_failed",
+                    "commit_sha": commit_sha,
+                }),
+            );
+            fresh_task.internal_status = InternalStatus::MergeIncomplete;
+            fresh_task.touch();
+            task_repo.update(&fresh_task).await?;
+            if let Ok(history_entry_id) = task_repo
+                .persist_status_change(
+                    &task.id,
+                    InternalStatus::Merging,
+                    InternalStatus::MergeIncomplete,
+                    "pr_branch_publication_failed",
+                )
+                .await
+            {
+                transition_service
+                    .notify_state_entered(
+                        &fresh_task,
+                        history_entry_id,
+                        InternalStatus::MergeIncomplete,
+                    )
+                    .await;
+            }
+            return Err(error);
+        }
+
+        let final_commit_sha = match commit_sha {
+            Some(sha) => Some(sha.to_string()),
+            None => {
+                let target_branch = meta_val.get("target_branch").and_then(|v| v.as_str());
+                match target_branch {
+                    Some(branch) => {
+                        GitService::get_branch_sha(Path::new(&project.working_directory), branch)
+                            .await
+                            .ok()
+                    }
+                    None => meta_val
+                        .get("commit_sha")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_owned),
+                }
+            }
+        };
+        if let Some(sha) = final_commit_sha {
+            fresh_task.merge_commit_sha = Some(sha);
         }
     }
 
@@ -229,9 +336,17 @@ pub(crate) async fn freshness_return_route<R: Runtime>(
     if let Some(obj) = meta_val.as_object_mut() {
         obj.remove("plan_update_conflict");
         obj.remove("pr_branch_update_conflict");
+        obj.remove("pr_branch_publication_conflict");
         obj.remove("pr_branch_update_source");
         obj.remove("branch_freshness_conflict");
         obj.remove("freshness_backoff_until");
+        if origin_state_name == "pr_branch_publication" {
+            obj.remove("error");
+            obj.remove("error_code");
+            obj.remove("publication_remote_ref");
+            obj.remove("conflict_files");
+            obj.insert("pending_cleanup".to_owned(), serde_json::json!(true));
+        }
     }
 
     if matches!(target_status, InternalStatus::Ready)
@@ -322,9 +437,17 @@ pub(crate) async fn freshness_return_route<R: Runtime>(
                         "branch_freshness_conflict".to_owned(),
                         serde_json::Value::Bool(true),
                     );
-                    if target_status == InternalStatus::WaitingOnPr {
+                    if target_status == InternalStatus::WaitingOnPr
+                        || origin_state_name == "pr_branch_publication"
+                    {
                         obj.insert(
                             "pr_branch_update_conflict".to_owned(),
+                            serde_json::Value::Bool(true),
+                        );
+                    }
+                    if origin_state_name == "pr_branch_publication" {
+                        obj.insert(
+                            "pr_branch_publication_conflict".to_owned(),
                             serde_json::Value::Bool(true),
                         );
                     }
@@ -395,5 +518,11 @@ pub(crate) async fn freshness_return_route<R: Runtime>(
         "freshness_return_route: task successfully routed back to origin state"
     );
 
-    Ok(FreshnessRouteResult::FreshnessRouted(origin_state_name))
+    let routed_state_name = if target_status == InternalStatus::Merged {
+        "merged".to_owned()
+    } else {
+        origin_state_name
+    };
+
+    Ok(FreshnessRouteResult::FreshnessRouted(routed_state_name))
 }

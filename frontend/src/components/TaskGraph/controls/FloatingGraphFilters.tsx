@@ -49,7 +49,7 @@ import type {
   LayoutDirection,
   GroupingState,
   NodeMode,
-} from "./GraphControls";
+} from "./graph-controls";
 
 // ============================================================================
 // Types

@@ -16,6 +16,7 @@ export interface ScopeUsageTotals {
   outputTokens: number;
   cacheCreationTokens: number;
   cacheReadTokens: number;
+  processedTokens: number | null;
   estimatedUsd: number | null;
 }
 
@@ -30,6 +31,11 @@ export interface ScopeUsageCoverage {
   providerMessagesWithUsage: number;
   runCount: number;
   runsWithUsage: number;
+  effectiveRunConversationCount: number;
+  effectiveMessageConversationCount: number;
+  legacyEstimatedSampleCount: number;
+  fallbackEstimatedSampleCount: number;
+  uncountedSampleCount: number;
   effectiveTotalsSource: string;
 }
 
@@ -61,6 +67,7 @@ const ScopeUsageTotalsSchema = z.object({
   outputTokens: z.number(),
   cacheCreationTokens: z.number(),
   cacheReadTokens: z.number(),
+  processedTokens: z.number().nullable(),
   estimatedUsd: z.number().nullable(),
 });
 
@@ -75,6 +82,11 @@ const ScopeUsageCoverageSchema = z.object({
   providerMessagesWithUsage: z.number(),
   runCount: z.number(),
   runsWithUsage: z.number(),
+  effectiveRunConversationCount: z.number(),
+  effectiveMessageConversationCount: z.number(),
+  legacyEstimatedSampleCount: z.number(),
+  fallbackEstimatedSampleCount: z.number(),
+  uncountedSampleCount: z.number(),
   effectiveTotalsSource: z.string(),
 });
 
@@ -107,6 +119,7 @@ function transformTotals(raw: z.infer<typeof ScopeUsageTotalsSchema>): ScopeUsag
     outputTokens: raw.outputTokens,
     cacheCreationTokens: raw.cacheCreationTokens,
     cacheReadTokens: raw.cacheReadTokens,
+    processedTokens: raw.processedTokens,
     estimatedUsd: raw.estimatedUsd,
   };
 }
@@ -134,6 +147,15 @@ function transformScopeUsageStats(
       providerMessagesWithUsage: raw.usageCoverage.providerMessagesWithUsage,
       runCount: raw.usageCoverage.runCount,
       runsWithUsage: raw.usageCoverage.runsWithUsage,
+      effectiveRunConversationCount:
+        raw.usageCoverage.effectiveRunConversationCount,
+      effectiveMessageConversationCount:
+        raw.usageCoverage.effectiveMessageConversationCount,
+      legacyEstimatedSampleCount:
+        raw.usageCoverage.legacyEstimatedSampleCount,
+      fallbackEstimatedSampleCount:
+        raw.usageCoverage.fallbackEstimatedSampleCount,
+      uncountedSampleCount: raw.usageCoverage.uncountedSampleCount,
       effectiveTotalsSource: raw.usageCoverage.effectiveTotalsSource,
     },
     attributionCoverage: {

@@ -28,11 +28,11 @@ On failure, call the appropriate signal:
 
 For each file in `conflict_files`, read the conflict markers:
 ```
-<<<<<<< HEAD
+[HEAD marker]
 [Current branch version - base branch]
-=======
+[separator marker]
 [Incoming changes - task branch]
->>>>>>> task-branch
+[incoming marker]
 ```
 
 HEAD = base branch changes since task started; Incoming = task execution changes. Determine if changes are additive (combine both), same line modified (choose/merge), or incompatible (implement combined solution).
@@ -67,14 +67,14 @@ Resolution patterns:
 
 **Validation cache check** — Before running tests, check `validation_hint` in the task context:
 - `skip_tests` or `skip_test_validation`: skip pre-merge test execution (non-test validation always runs)
-- `run_tests` or hint absent: run all validation commands including tests
+- `run_tests` or hint absent: select focused validation using the target project's local instructions
 - Note: post-conflict-resolution validation always runs regardless of cache — only the test-running portion is skippable.
 
-1. `get_project_analysis(project_id, task_id)` — get validation commands. Retry if `status: "analyzing"`.
-2. Call `run_task_validation` with ALL relevant `validate` commands for ALL path entries (merges can break anything beyond affected paths). Use `purpose: "final"` and `mode: "reuse_or_run"` for the first pass.
+1. `get_project_analysis(project_id, task_id)` — load project context and any explicit custom validation. Retry if `status: "analyzing"`.
+2. Follow the target project's local validation policy and call `run_task_validation` with the narrowest checks covering the resolved conflicts and their affected surfaces. Never substitute a broad suite solely because conflict impact is uncertain. Use `purpose: "final"` and `mode: "reuse_or_run"` for the first pass.
 3. Validation fails → inspect the native validation output, fix the issue in the current merge worktree, then rerun `run_task_validation` with `mode: "force"`.
 4. Make up to two focused repair attempts unless the failure is clearly unsafe or outside the merge scope. Only then call `report_incomplete` with validation run context and blocker details.
-5. Validation unavailable → fall back to the safest targeted validation command available for the project (for RalphX Rust work, follow `.claude/rules/rust-test-execution.md` and do NOT use `cargo check`), then report the fallback limitation in the final merge signal if completion cannot proceed.
+5. Validation unavailable → use the safest focused command allowed by target-project instructions, then report the limitation in the final merge signal if completion cannot proceed.
 
 ### Step 5: Complete the Merge
 
@@ -115,7 +115,7 @@ The user will be notified to resolve the conflicts manually.
 | `complete_merge` | Signal successful merge completion with commit SHA | Yes - on success |
 | `report_conflict` | Signal that conflicts need manual resolution with context | Yes - if you cannot resolve |
 | `report_incomplete` | Signal that merge is incomplete and needs further work | Yes - if merge cannot finish |
-| `get_project_analysis` | Get project-specific validation commands | Yes - for post-resolution validation |
+| `get_project_analysis` | Get project context and explicit custom validation | Yes - for post-resolution validation |
 | `run_task_validation` | Run/reuse backend-owned validation and persist evidence in the task validation section | Yes - before `complete_merge`, and after each validation repair |
 
 ## Validation Recovery Mode
@@ -132,7 +132,7 @@ Sometimes you are spawned not because of git conflicts, but because post-merge v
 
 **Workflow:**
 1. Call `get_task_context(task_id)` — read validation failures from metadata
-2. Call `get_project_analysis(project_id)` — get validation commands
+2. Call `get_project_analysis(project_id)` — get project context and explicit custom validation
 3. Read the failing code and error output
 4. Fix the code (edit files, add imports, fix types, etc.)
 5. Call `run_task_validation` with the relevant commands; use `mode: "force"` after each repair

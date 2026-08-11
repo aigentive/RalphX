@@ -1,10 +1,13 @@
 use super::*;
-use crate::application::{AppState, TeamService, TeamStateTracker};
-use crate::commands::ExecutionState;
+use crate::application::AppState;
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentWorkspaceFollowupProvenance,
-    ChatConversation, IdeationAnalysisBaseRefKind, IdeationSessionId, ProjectId, Task,
-    AGENT_CONVERSATION_ISSUE_STATUS_DISMISSED, AGENT_CONVERSATION_ISSUE_STATUS_RESOLVED,
+    AgentConversationIssueCanonicalIdentity, AgentConversationWorkspace,
+    AgentConversationWorkspaceMode, AgentWorkspaceFollowupProvenance, ChatConversation,
+    IdeationAnalysisBaseRefKind, IdeationSessionId, ProjectId, Task,
+    AGENT_CONVERSATION_ISSUE_DEDUPE_CANDIDATE_ATTACHED,
+    AGENT_CONVERSATION_ISSUE_DEDUPE_CONFIRMED_NEW, AGENT_CONVERSATION_ISSUE_DEDUPE_CREATED,
+    AGENT_CONVERSATION_ISSUE_DEDUPE_EXACT_ATTACHED, AGENT_CONVERSATION_ISSUE_STATUS_DISMISSED,
+    AGENT_CONVERSATION_ISSUE_STATUS_RESOLVED,
 };
 use crate::domain::review::ReviewSettings;
 use crate::http_server::types::HttpServerState;
@@ -12,15 +15,7 @@ use axum::{extract::State, Json};
 use std::sync::Arc;
 
 fn test_http_state(app_state: Arc<AppState>) -> HttpServerState {
-    let tracker = TeamStateTracker::new();
-    let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
-    HttpServerState {
-        app_state,
-        execution_state: Arc::new(ExecutionState::new()),
-        team_tracker: tracker,
-        team_service,
-        delegation_service: Default::default(),
-    }
+    HttpServerState::new_test(app_state)
 }
 
 fn issue_request(origin_conversation_id: Option<String>) -> RegisterAgentConversationIssueRequest {
@@ -38,6 +33,10 @@ fn issue_request(origin_conversation_id: Option<String>) -> RegisterAgentConvers
         evidence: Some("src/lib.rs".to_string()),
         recommendation: Some("Open a separate branch conversation.".to_string()),
         blocker_fingerprint: Some(" drift:task-1 ".to_string()),
+        attach_to_issue_id: None,
+        confirm_new: false,
+        new_issue_reason: None,
+        issue_check_token: None,
         followup_title: Some("Follow up on drift".to_string()),
         followup_prompt: Some("Decide how to handle unrelated drift.".to_string()),
         auto_followup_eligible: false,
@@ -275,7 +274,10 @@ async fn register_issue_resolves_origin_from_source_task_workspace() {
     .await;
 
     assert_eq!(response.issue.conversation_id, origin.id.as_str());
-    assert_eq!(response.issue.source_task_id.as_deref(), Some(task.id.as_str()));
+    assert_eq!(
+        response.issue.source_task_id.as_deref(),
+        Some(task.id.as_str())
+    );
     assert!(!response.auto_followup_created);
 }
 
@@ -369,11 +371,220 @@ async fn register_issue_saves_and_refreshes_existing_when_auto_followup_disabled
     assert_eq!(second.issue.title, "Updated drift title");
     assert_eq!(second.issue.evidence.as_deref(), Some("new evidence"));
     assert_eq!(second.issue.status, AGENT_CONVERSATION_ISSUE_STATUS_OPEN);
+    assert_eq!(first.dedupe_result, AGENT_CONVERSATION_ISSUE_DEDUPE_CREATED);
+    assert_eq!(
+        second.dedupe_result,
+        AGENT_CONVERSATION_ISSUE_DEDUPE_EXACT_ATTACHED
+    );
+    assert_eq!(second.occurrence_count, Some(2));
+}
+
+#[tokio::test]
+async fn register_issue_exact_canonical_duplicate_appends_occurrence() {
+    let app_state = Arc::new(AppState::new_test());
+    let settings = ReviewSettings {
+        auto_create_followup_agent_conversation: false,
+        ..Default::default()
+    };
+    app_state
+        .review_settings_repo
+        .update_settings(&settings)
+        .await
+        .unwrap();
+    let state = test_http_state(Arc::clone(&app_state));
+    let (_project_id, origin) = seed_project_conversation(&app_state).await;
+
+    let mut first_req = origin_only_issue_request(Some(origin.id.as_str()));
+    first_req.title =
+        "Frontend validation analysis uses repo-root setup for frontend package".to_string();
+    first_req.summary =
+        "The frontend validation command could not find frontend/node_modules.".to_string();
+    first_req.evidence = Some("pnpm exec tsc missing frontend/node_modules".to_string());
+    first_req.blocker_fingerprint = Some("frontend-validation-cwd-node-modules-setup".to_string());
+    let first = register_issue_ok(state.clone(), first_req).await;
+
+    let mut second_req = origin_only_issue_request(Some(origin.id.as_str()));
+    second_req.title = "Merge hook cannot find tsc".to_string();
+    second_req.summary = "The merge hook failed because tsc was not found on PATH.".to_string();
+    second_req.evidence = Some("sh: tsc: command not found".to_string());
+    second_req.blocker_fingerprint = Some("merge-hook-env:task-b:tsc-not-found".to_string());
+    let second = register_issue_ok(state, second_req).await;
+
+    assert_eq!(second.issue.id, first.issue.id);
+    assert_eq!(
+        second.dedupe_result,
+        AGENT_CONVERSATION_ISSUE_DEDUPE_EXACT_ATTACHED
+    );
+    assert_eq!(
+        second.canonical_fingerprint.as_deref(),
+        Some("v1:setup:project:frontend-package:missing-frontend-dependency")
+    );
+    assert_eq!(second.occurrence_count, Some(2));
+    assert_eq!(second.issue.occurrences.len(), 2);
+}
+
+fn candidate_identity() -> AgentConversationIssueCanonicalIdentity {
+    AgentConversationIssueCanonicalIdentity {
+        fingerprint: "v1:setup:project:frontend-package:other-setup-failure".to_string(),
+        scope_kind: "project".to_string(),
+        scope_subject: "frontend-package".to_string(),
+        family: "setup".to_string(),
+        candidate_match_eligible: true,
+    }
+}
+
+async fn seed_frontend_setup_candidate(
+    app_state: &AppState,
+    project_id: ProjectId,
+    origin: &ChatConversation,
+) -> AgentConversationIssue {
+    let mut issue = AgentConversationIssue::new(
+        project_id,
+        origin.id.clone(),
+        None,
+        Some("review".to_string()),
+        Some("review-1".to_string()),
+        Some("ralphx-execution-reviewer".to_string()),
+        "plan_drift".to_string(),
+        "medium".to_string(),
+        "followup_only".to_string(),
+        "Existing frontend setup issue".to_string(),
+        "A related but not exact frontend setup issue already exists.".to_string(),
+        None,
+        None,
+        Some("frontend-setup:other".to_string()),
+        None,
+        None,
+        false,
+    );
+    issue.apply_canonical_identity(&candidate_identity());
+    app_state
+        .agent_conversation_issue_repo
+        .save(&issue)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn register_issue_requires_disambiguation_for_canonical_candidates() {
+    let app_state = Arc::new(AppState::new_test());
+    let state = test_http_state(Arc::clone(&app_state));
+    let (project_id, origin) = seed_project_conversation(&app_state).await;
+    let candidate = seed_frontend_setup_candidate(&app_state, project_id, &origin).await;
+
+    let mut req = origin_only_issue_request(Some(origin.id.as_str()));
+    req.title = "Merge hook cannot find tsc".to_string();
+    req.summary = "The merge hook failed because tsc was not found on PATH.".to_string();
+    req.evidence = Some("sh: tsc: command not found".to_string());
+    req.blocker_fingerprint = Some("merge-hook-env:task-b:tsc-not-found".to_string());
+
+    let error = register_issue_error(state.clone(), req).await;
+    assert_eq!(error.0, StatusCode::CONFLICT);
+    assert_eq!(
+        error.1 .0.get("error").and_then(|value| value.as_str()),
+        Some("needs_issue_disambiguation")
+    );
+    assert_eq!(
+        error.1 .0["candidate_issues"][0]["id"].as_str(),
+        Some(candidate.id.as_str())
+    );
+
+    let list = list_agent_conversation_issues(
+        State(state),
+        Json(ListAgentConversationIssuesRequest {
+            conversation_id: origin.id.as_str(),
+            include_resolved: false,
+        }),
+    )
+    .await
+    .unwrap()
+    .0;
+    assert_eq!(list.issues.len(), 1);
+}
+
+#[tokio::test]
+async fn register_issue_confirm_new_requires_reason_and_token() {
+    let app_state = Arc::new(AppState::new_test());
+    let state = test_http_state(Arc::clone(&app_state));
+    let (project_id, origin) = seed_project_conversation(&app_state).await;
+    seed_frontend_setup_candidate(&app_state, project_id, &origin).await;
+
+    let mut req = origin_only_issue_request(Some(origin.id.as_str()));
+    req.title = "Merge hook cannot find tsc".to_string();
+    req.summary = "The merge hook failed because tsc was not found on PATH.".to_string();
+    req.evidence = Some("sh: tsc: command not found".to_string());
+    req.blocker_fingerprint = Some("merge-hook-env:task-b:tsc-not-found".to_string());
+
+    let conflict = register_issue_error(state.clone(), req.clone()).await;
+    let token = conflict.1 .0["issue_check_token"]
+        .as_str()
+        .expect("candidate conflict should return token")
+        .to_string();
+
+    let mut missing_reason = req.clone();
+    missing_reason.confirm_new = true;
+    missing_reason.issue_check_token = Some(token.clone());
+    assert_eq!(
+        register_issue_error(state.clone(), missing_reason).await.0,
+        StatusCode::BAD_REQUEST
+    );
+
+    req.confirm_new = true;
+    req.new_issue_reason = Some("This hook failure is a separate PATH issue.".to_string());
+    req.issue_check_token = Some(token);
+    let response = register_issue_ok(state.clone(), req).await;
+    assert_eq!(
+        response.dedupe_result,
+        AGENT_CONVERSATION_ISSUE_DEDUPE_CONFIRMED_NEW
+    );
+
+    let list = list_agent_conversation_issues(
+        State(state),
+        Json(ListAgentConversationIssuesRequest {
+            conversation_id: origin.id.as_str(),
+            include_resolved: false,
+        }),
+    )
+    .await
+    .unwrap()
+    .0;
+    assert_eq!(list.issues.len(), 2);
+}
+
+#[tokio::test]
+async fn register_issue_attach_to_issue_id_appends_candidate_occurrence() {
+    let app_state = Arc::new(AppState::new_test());
+    let state = test_http_state(Arc::clone(&app_state));
+    let (project_id, origin) = seed_project_conversation(&app_state).await;
+    let candidate = seed_frontend_setup_candidate(&app_state, project_id, &origin).await;
+
+    let mut req = origin_only_issue_request(Some(origin.id.as_str()));
+    req.title = "Merge hook cannot find tsc".to_string();
+    req.summary = "The merge hook failed because tsc was not found on PATH.".to_string();
+    req.evidence = Some("sh: tsc: command not found".to_string());
+    req.blocker_fingerprint = Some("merge-hook-env:task-b:tsc-not-found".to_string());
+    req.attach_to_issue_id = Some(candidate.id.clone());
+
+    let response = register_issue_ok(state, req).await;
+    assert_eq!(response.issue.id, candidate.id);
+    assert_eq!(
+        response.dedupe_result,
+        AGENT_CONVERSATION_ISSUE_DEDUPE_CANDIDATE_ATTACHED
+    );
+    assert_eq!(response.occurrence_count, Some(1));
 }
 
 #[tokio::test]
 async fn register_issue_attempts_auto_followup_when_enabled() {
     let app_state = Arc::new(AppState::new_test());
+    app_state
+        .review_settings_repo
+        .update_settings(&ReviewSettings {
+            auto_create_followup_agent_conversation: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
     let state = test_http_state(Arc::clone(&app_state));
     let (_project_id, origin) = seed_project_conversation(&app_state).await;
 

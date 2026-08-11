@@ -35,10 +35,6 @@ export interface ChatContextConfig {
   supportsDiffViews: boolean;
   supportsHookEvents: boolean;
   supportsQueue: boolean;
-  /** Whether this context can have an agent team */
-  supportsTeamMode: boolean;
-  /** Where to show the team activity panel (null = not supported) */
-  teamActivityPanelPosition: "right" | "bottom" | null;
 }
 
 // ============================================================================
@@ -56,8 +52,6 @@ export const CHAT_CONTEXT_REGISTRY: Record<ContextType, ChatContextConfig> = {
     supportsDiffViews: false,
     supportsHookEvents: false,
     supportsQueue: true,
-    supportsTeamMode: true,
-    teamActivityPanelPosition: "right",
   },
   task: {
     storeKeyPrefix: "task",
@@ -69,8 +63,6 @@ export const CHAT_CONTEXT_REGISTRY: Record<ContextType, ChatContextConfig> = {
     supportsDiffViews: false,
     supportsHookEvents: false,
     supportsQueue: true,
-    supportsTeamMode: false,
-    teamActivityPanelPosition: null,
   },
   project: {
     storeKeyPrefix: "project",
@@ -82,8 +74,17 @@ export const CHAT_CONTEXT_REGISTRY: Record<ContextType, ChatContextConfig> = {
     supportsDiffViews: false,
     supportsHookEvents: false,
     supportsQueue: true,
-    supportsTeamMode: false,
-    teamActivityPanelPosition: null,
+  },
+  standalone: {
+    storeKeyPrefix: "standalone",
+    placeholder: "Send a message...",
+    label: "Standalone",
+    agentType: "chat",
+    supportsStreamingText: true,
+    supportsSubagentTasks: false,
+    supportsDiffViews: false,
+    supportsHookEvents: false,
+    supportsQueue: true,
   },
   task_execution: {
     storeKeyPrefix: "task_execution",
@@ -95,8 +96,6 @@ export const CHAT_CONTEXT_REGISTRY: Record<ContextType, ChatContextConfig> = {
     supportsDiffViews: true,
     supportsHookEvents: true,
     supportsQueue: true,
-    supportsTeamMode: true,
-    teamActivityPanelPosition: "bottom",
   },
   review: {
     storeKeyPrefix: "review",
@@ -108,8 +107,6 @@ export const CHAT_CONTEXT_REGISTRY: Record<ContextType, ChatContextConfig> = {
     supportsDiffViews: true,
     supportsHookEvents: false,
     supportsQueue: true,
-    supportsTeamMode: false,
-    teamActivityPanelPosition: null,
   },
   merge: {
     storeKeyPrefix: "merge",
@@ -121,8 +118,17 @@ export const CHAT_CONTEXT_REGISTRY: Record<ContextType, ChatContextConfig> = {
     supportsDiffViews: true,
     supportsHookEvents: false,
     supportsQueue: true,
-    supportsTeamMode: false,
-    teamActivityPanelPosition: null,
+  },
+  branch_update: {
+    storeKeyPrefix: "branch_update",
+    placeholder: "Message branch updater...",
+    label: "Branch Update",
+    agentType: "reviewer",
+    supportsStreamingText: true,
+    supportsSubagentTasks: false,
+    supportsDiffViews: true,
+    supportsHookEvents: false,
+    supportsQueue: true,
   },
   delegation: {
     storeKeyPrefix: "delegation",
@@ -134,8 +140,6 @@ export const CHAT_CONTEXT_REGISTRY: Record<ContextType, ChatContextConfig> = {
     supportsDiffViews: false,
     supportsHookEvents: false,
     supportsQueue: true,
-    supportsTeamMode: false,
-    teamActivityPanelPosition: null,
   },
 };
 
@@ -218,6 +222,13 @@ export function resolveContextType(
 
   // Task-related contexts — check status to determine specific type
   if (taskId && internalStatus) {
+    if (
+      internalStatus === "updating_plan_branch" ||
+      internalStatus === "updating_task_branch" ||
+      internalStatus === "branch_update_blocked"
+    ) {
+      return "branch_update";
+    }
     if (internalStatus === "waiting_on_pr") {
       return "task";
     }
@@ -266,5 +277,10 @@ export function getContextConfig(contextType: ContextType): ChatContextConfig {
  * Useful for determining if the chat panel should show agent-specific UI.
  */
 export function isAgentContext(contextType: ContextType): boolean {
-  return contextType === "task_execution" || contextType === "review" || contextType === "merge";
+  return (
+    contextType === "task_execution" ||
+    contextType === "review" ||
+    contextType === "merge" ||
+    contextType === "branch_update"
+  );
 }

@@ -31,12 +31,16 @@ fn make_services_with_tracked_chat(
     project_repo: Arc<MemoryProjectRepository>,
 ) -> (Arc<MockChatService>, TaskServices) {
     let chat_service = Arc::new(MockChatService::new());
-    let services = TaskServices::new(
-        Arc::new(MockAgentSpawner::new()) as Arc<dyn AgentSpawner>,
-        Arc::new(MockEventEmitter::new()) as Arc<dyn EventEmitter>,
-        Arc::new(MockNotifier::new()) as Arc<dyn Notifier>,
-        Arc::new(MockDependencyManager::new()) as Arc<dyn DependencyManager>,
-        Arc::new(MockReviewStarter::new()) as Arc<dyn ReviewStarter>,
+    let services = with_test_branch_update_authority(
+        TaskServices::new(
+            Arc::new(MockAgentSpawner::new()) as Arc<dyn AgentSpawner>,
+            Arc::new(MockEventEmitter::new()) as Arc<dyn EventEmitter>,
+            Arc::new(MockNotifier::new()) as Arc<dyn Notifier>,
+            Arc::new(MockDependencyManager::new()) as Arc<dyn DependencyManager>,
+            Arc::new(MockReviewStarter::new()) as Arc<dyn ReviewStarter>,
+            Arc::clone(&chat_service) as Arc<dyn ChatService>,
+        ),
+        Arc::clone(&task_repo) as Arc<dyn TaskRepository>,
         Arc::clone(&chat_service) as Arc<dyn ChatService>,
     )
     .with_task_scheduler(Arc::new(MockTaskScheduler::new()) as Arc<dyn TaskScheduler>)
@@ -388,9 +392,9 @@ async fn metadata_toctou_guard_survives_conflict_metadata() {
 ///   2. Create conflicting content on both main and plan branch (same file)
 ///   3. Task with ideation_session_id → resolves target to plan branch
 ///   4. on_enter(PendingMerge) → update_plan_from_main → Conflicts
-///   5. plan_update_conflict path: Merging + merger agent spawned
+///   5. plan_update_conflict path: UpdatingPlanBranch + branch updater spawned
 ///   6. Assert: metadata.merge_target_branch = plan branch (NOT main)
-///   7. Assert: task status = Merging (agent needed for conflict resolution)
+///   7. Assert: task status = UpdatingPlanBranch (agent needed for conflict resolution)
 #[tokio::test]
 async fn plan_update_conflict_retry_uses_correct_target() {
     let dir = tempfile::TempDir::new().expect("create temp dir");
@@ -521,11 +525,11 @@ async fn plan_update_conflict_retry_uses_correct_target() {
         updated.metadata,
     );
 
-    // The task should be in Merging (conflict needs agent resolution)
+    // The task should remain in the dedicated plan-update state for resolution.
     assert_eq!(
         updated.internal_status,
-        InternalStatus::Merging,
-        "Task should be Merging after plan_update_conflict (agent needed). Got {:?}. Metadata: {:?}",
+        InternalStatus::UpdatingPlanBranch,
+        "Task should be UpdatingPlanBranch after plan_update_conflict. Got {:?}. Metadata: {:?}",
         updated.internal_status,
         updated.metadata,
     );
@@ -538,10 +542,10 @@ async fn plan_update_conflict_retry_uses_correct_target() {
         updated.metadata,
     );
 
-    // Verify: a merger agent was spawned
+    // Verify: the branch updater was spawned.
     assert!(
         chat_service.call_count() >= 1,
-        "plan_update_conflict must spawn a merger agent (call_count={}). Metadata: {:?}",
+        "plan_update_conflict must spawn a branch updater (call_count={}). Metadata: {:?}",
         chat_service.call_count(),
         updated.metadata,
     );

@@ -1,21 +1,23 @@
+pub mod live_flags;
+pub mod process_config;
 pub mod runtime_config;
-pub mod team_config;
 mod tool_sets;
 mod ui_config;
+pub use live_flags::{agent_personas_enabled, standalone_conversations_enabled};
 pub use ui_config::{UiConfig, UiFeatureFlagsConfig};
 
 use crate::domain::agents::{
-    standard_agent_lane_defaults, AgentHarnessKind, AgentLane, AgentLaneSettings,
-    LogicalEffort, CLAUDE_DEFAULT_ALLOW_DANGEROUSLY_SKIP_PERMISSIONS,
-    CLAUDE_DEFAULT_DANGEROUSLY_SKIP_PERMISSIONS, CLAUDE_DEFAULT_PERMISSION_MODE,
+    standard_agent_lane_defaults, AgentHarnessKind, AgentLane, AgentLaneSettings, LogicalEffort,
+    CLAUDE_DEFAULT_ALLOW_DANGEROUSLY_SKIP_PERMISSIONS, CLAUDE_DEFAULT_DANGEROUSLY_SKIP_PERMISSIONS,
+    CLAUDE_DEFAULT_PERMISSION_MODE,
 };
 use crate::domain::execution::{ExecutionSettings, GlobalExecutionSettings};
 use crate::infrastructure::agents::harness_agent_catalog::{
     internal_mcp_server_name, list_canonical_prompt_backed_agents, load_canonical_agent_definition,
-    load_canonical_agent_definition_for_profile,
-    resolve_harness_agent_prompt_path, resolve_project_root_from_catalog_path,
-    resolve_project_root_from_plugin_dir, try_load_canonical_claude_metadata,
-    try_load_canonical_claude_metadata_for_profile, AgentPromptHarness, CanonicalClaudeToolSpec,
+    load_canonical_agent_definition_for_profile, resolve_harness_agent_prompt_path,
+    resolve_project_root_from_catalog_path, resolve_project_root_from_plugin_dir,
+    try_load_canonical_claude_metadata, try_load_canonical_claude_metadata_for_profile,
+    AgentPromptHarness, CanonicalClaudeToolSpec,
 };
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
@@ -24,18 +26,14 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use tool_sets::canonical_claude_tool_sets;
 
-#[allow(unused_imports)]
-pub use team_config::{
-    canonical_process_mapping, resolve_canonical_process_mapping, ApprovedTeamPlan,
-    ApprovedTeammate, ProcessMapping, ProcessSlot, TeamConstraintError, TeamConstraints,
-    TeamConstraintsConfig, TeamMode, TeammateSpawnRequest, canonical_team_constraints_config,
-    resolve_canonical_team_constraints_config,
-};
+use process_config::{resolve_canonical_process_mapping, ProcessMapping};
 
 pub use runtime_config::{
-    validate_external_mcp_config, AllRuntimeConfig, ExternalMcpConfig, GitRuntimeConfig,
-    LimitsConfig, ReconciliationConfig, SchedulerConfig, SpecialistEntry, StreamTimeoutsConfig,
-    SupervisorRuntimeConfig, VerificationConfig,
+    bounded_external_mcp_shutdown_grace_ms, bounded_shutdown_watchdog_deadline_secs,
+    validate_external_mcp_config, AllRuntimeConfig, AutomationsRuntimeConfig,
+    DatabaseMaintenanceConfig, DelegationConfig, ExternalMcpConfig, GitRuntimeConfig, LimitsConfig,
+    ReconciliationConfig, SchedulerConfig, ShutdownConfig, SpecialistEntry, StreamTimeoutsConfig,
+    SupervisorRuntimeConfig, VerificationConfig, MAX_EXTERNAL_MCP_SHUTDOWN_GRACE_MS,
 };
 
 const VALID_EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
@@ -239,8 +237,6 @@ struct RalphxConfig {
     agents: Vec<AgentConfigRaw>,
     #[serde(default)]
     process_mapping: ProcessMapping,
-    #[serde(default)]
-    team_constraints: TeamConstraintsConfig,
     /// If true (default), defers merges when conflicts exist or agents are running.
     /// If false, all merges proceed immediately without deferral.
     #[serde(default = "default_defer_merge_enabled")]
@@ -252,11 +248,17 @@ struct RalphxConfig {
     #[serde(default)]
     timeouts: runtime_config::TimeoutsWrapper,
     #[serde(default)]
+    database_maintenance: runtime_config::DatabaseMaintenanceConfig,
+    #[serde(default)]
     reconciliation: ReconciliationConfig,
     #[serde(default)]
     git: GitRuntimeConfig,
     #[serde(default)]
     scheduler: SchedulerConfig,
+    #[serde(default)]
+    shutdown: ShutdownConfig,
+    #[serde(default)]
+    automations: AutomationsRuntimeConfig,
     #[serde(default)]
     supervisor: SupervisorRuntimeConfig,
     #[serde(default)]
@@ -265,6 +267,8 @@ struct RalphxConfig {
     ideation: runtime_config::IdeationConfigWrapper,
     #[serde(default)]
     external_mcp: ExternalMcpConfig,
+    #[serde(default)]
+    delegation: runtime_config::DelegationConfig,
     #[serde(default)]
     ui: Option<UiConfig>,
     #[serde(default)]
@@ -306,8 +310,6 @@ struct CodexConfigOverlay {
 struct ProcessConfigOverlay {
     #[serde(default)]
     process_mapping: Option<ProcessMapping>,
-    #[serde(default)]
-    team_constraints: Option<TeamConstraintsConfig>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -318,6 +320,8 @@ struct ExternalMcpConfigRawOverlay {
     host: Option<String>,
     max_restart_attempts: Option<u32>,
     restart_delay_ms: Option<u64>,
+    shutdown_grace_ms: Option<u64>,
+    startup_timeout_secs: Option<u64>,
     human_wait_timeout_secs: Option<u64>,
     auth_token: Option<String>,
     node_path: Option<String>,
@@ -334,8 +338,10 @@ struct ExternalMcpConfigOverlay {
     external_mcp: Option<ExternalMcpConfigRawOverlay>,
 }
 
-const EMBEDDED_CONFIG: &str =
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../config/ralphx.yaml"));
+const EMBEDDED_CONFIG: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../config/ralphx.yaml"
+));
 const EMBEDDED_EXTERNAL_MCP_CONFIG: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../config/external-mcp.yaml"
@@ -349,15 +355,24 @@ fn default_file_logging() -> bool {
     true
 }
 
+fn default_file_logging_max_bytes() -> u64 {
+    1024 * 1024 * 1024
+}
+
+fn default_file_logging_keep_files() -> usize {
+    5
+}
+
 struct LoadedConfig {
     agents: Vec<AgentConfig>,
     claude: ClaudeRuntimeConfig,
     tool_sets: HashMap<String, Vec<String>>,
     process_mapping: ProcessMapping,
-    team_constraints: TeamConstraintsConfig,
     defer_merge_enabled: bool,
     file_logging: bool,
+    shutdown: ShutdownConfig,
     runtime: AllRuntimeConfig,
+    automations: AutomationsRuntimeConfig,
     execution_defaults: ExecutionDefaultsConfig,
     agent_harness_defaults: AgentHarnessDefaultsConfig,
 }
@@ -511,7 +526,8 @@ fn load_claude_config_overlay() -> Option<(PathBuf, ClaudeConfigOverlay)> {
 }
 
 fn apply_codex_config_overlay(cfg: &mut RalphxConfig, overlay: CodexConfigOverlay) {
-    cfg.agent_harness_defaults.extend(overlay.agent_harness_defaults);
+    cfg.agent_harness_defaults
+        .extend(overlay.agent_harness_defaults);
 }
 
 fn parse_codex_config_overlay(yaml: &str) -> Option<CodexConfigOverlay> {
@@ -533,18 +549,17 @@ fn load_codex_config_overlay() -> Option<(PathBuf, CodexConfigOverlay)> {
 }
 
 fn parse_process_config_overlay(yaml: &str) -> Option<ProcessConfigOverlay> {
-    serde_yaml::from_str::<ProcessConfigOverlay>(yaml).map_err(|e| {
-        tracing::warn!(error = %e, "Failed to parse process config overlay");
-        e
-    }).ok()
+    serde_yaml::from_str::<ProcessConfigOverlay>(yaml)
+        .map_err(|e| {
+            tracing::warn!(error = %e, "Failed to parse process config overlay");
+            e
+        })
+        .ok()
 }
 
 fn apply_process_config_overlay(cfg: &mut LoadedConfig, overlay: ProcessConfigOverlay) {
     if let Some(process_mapping) = overlay.process_mapping {
         cfg.process_mapping = resolve_canonical_process_mapping(&process_mapping);
-    }
-    if let Some(team_constraints) = overlay.team_constraints {
-        cfg.team_constraints = resolve_canonical_team_constraints_config(&team_constraints);
     }
 }
 
@@ -557,10 +572,7 @@ fn load_process_config_overlay() -> Option<(PathBuf, ProcessConfigOverlay)> {
     Some((path, overlay))
 }
 
-fn apply_external_mcp_config_overlay(
-    cfg: &mut RalphxConfig,
-    overlay: ExternalMcpConfigOverlay,
-) {
+fn apply_external_mcp_config_overlay(cfg: &mut RalphxConfig, overlay: ExternalMcpConfigOverlay) {
     let Some(overlay) = overlay.external_mcp else {
         return;
     };
@@ -580,6 +592,12 @@ fn apply_external_mcp_config_overlay(
     if let Some(restart_delay_ms) = overlay.restart_delay_ms {
         cfg.external_mcp.restart_delay_ms = restart_delay_ms;
     }
+    if let Some(shutdown_grace_ms) = overlay.shutdown_grace_ms {
+        cfg.external_mcp.shutdown_grace_ms = shutdown_grace_ms;
+    }
+    if let Some(startup_timeout_secs) = overlay.startup_timeout_secs {
+        cfg.external_mcp.startup_timeout_secs = startup_timeout_secs;
+    }
     if let Some(human_wait_timeout_secs) = overlay.human_wait_timeout_secs {
         cfg.external_mcp.human_wait_timeout_secs = human_wait_timeout_secs;
     }
@@ -598,7 +616,9 @@ fn apply_external_mcp_config_overlay(
     if let Some(external_message_queue_cap) = overlay.external_message_queue_cap {
         cfg.external_mcp.external_message_queue_cap = external_message_queue_cap;
     }
-    if let Some(external_session_similarity_threshold) = overlay.external_session_similarity_threshold {
+    if let Some(external_session_similarity_threshold) =
+        overlay.external_session_similarity_threshold
+    {
         cfg.external_mcp.external_session_similarity_threshold =
             external_session_similarity_threshold;
     }
@@ -609,10 +629,12 @@ fn apply_external_mcp_config_overlay(
 }
 
 fn parse_external_mcp_config_overlay(yaml: &str) -> Option<ExternalMcpConfigOverlay> {
-    serde_yaml::from_str::<ExternalMcpConfigOverlay>(yaml).map_err(|e| {
-        tracing::warn!(error = %e, "Failed to parse external MCP config overlay");
-        e
-    }).ok()
+    serde_yaml::from_str::<ExternalMcpConfigOverlay>(yaml)
+        .map_err(|e| {
+            tracing::warn!(error = %e, "Failed to parse external MCP config overlay");
+            e
+        })
+        .ok()
 }
 
 fn load_external_mcp_config_overlay_from_path(
@@ -649,34 +671,119 @@ fn apply_external_mcp_overlay_or_embedded_from_path(
     }
 }
 
-/// Resolve file_logging setting for early use (before tracing subscriber init).
-/// Priority: RALPHX_FILE_LOGGING env > config/ralphx.yaml `file_logging` field > default (true).
-///
-/// This does a lightweight YAML parse — the full config is loaded lazily later.
-pub fn resolve_file_logging_early() -> bool {
-    if let Ok(val) = std::env::var("RALPHX_FILE_LOGGING") {
-        return matches!(val.to_lowercase().as_str(), "true" | "1" | "yes");
+#[derive(Deserialize)]
+struct MinimalEarlyConfig {
+    #[serde(default = "default_file_logging")]
+    file_logging: bool,
+    #[serde(default = "default_file_logging_max_bytes")]
+    file_logging_max_bytes: u64,
+    #[serde(default = "default_file_logging_keep_files")]
+    file_logging_keep_files: usize,
+}
+
+fn parse_early_file_logging(yaml: &str) -> Option<bool> {
+    serde_yaml::from_str::<MinimalEarlyConfig>(yaml)
+        .ok()
+        .map(|config| config.file_logging)
+}
+
+fn parse_early_file_logging_limits(yaml: &str) -> Option<(u64, usize)> {
+    serde_yaml::from_str::<MinimalEarlyConfig>(yaml)
+        .ok()
+        .map(|config| {
+            (
+                config.file_logging_max_bytes,
+                config.file_logging_keep_files,
+            )
+        })
+}
+
+fn resolve_file_logging_limits_from_sources(
+    max_bytes_environment_value: Option<&str>,
+    keep_files_environment_value: Option<&str>,
+    runtime_config_path: Option<&Path>,
+    embedded_config: &str,
+) -> (u64, usize) {
+    let embedded = parse_early_file_logging_limits(embedded_config).unwrap_or_else(|| {
+        (
+            default_file_logging_max_bytes(),
+            default_file_logging_keep_files(),
+        )
+    });
+    let configured = runtime_config_path
+        .and_then(|path| {
+            // Runtime config paths are established from RalphX-owned bundled resources.
+            // codeql[rust/path-injection]
+            std::fs::read_to_string(path)
+                .ok()
+                .and_then(|contents| parse_early_file_logging_limits(&contents))
+        })
+        .unwrap_or(embedded);
+
+    let max_bytes = max_bytes_environment_value
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(configured.0);
+    // A zero cap (from any source, including YAML) would create a writer that
+    // silently records nothing; fall back to the default instead.
+    let max_bytes = if max_bytes == 0 {
+        default_file_logging_max_bytes()
+    } else {
+        max_bytes
+    };
+    let keep_files = keep_files_environment_value
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(configured.1);
+    (max_bytes, keep_files)
+}
+
+fn resolve_file_logging_from_sources(
+    environment_value: Option<&str>,
+    runtime_config_path: Option<&Path>,
+    embedded_config: &str,
+) -> bool {
+    if let Some(value) = environment_value {
+        return matches!(value.to_lowercase().as_str(), "true" | "1" | "yes");
     }
 
-    #[derive(Deserialize)]
-    struct MinimalConfig {
-        #[serde(default = "default_file_logging_true")]
-        file_logging: bool,
-    }
-    fn default_file_logging_true() -> bool {
-        true
-    }
-
-    let path = config_path();
-    // Main config path is a RalphX-owned runtime config path.
-    // codeql[rust/path-injection]
-    if let Ok(contents) = std::fs::read_to_string(path) {
-        if let Ok(cfg) = serde_yaml::from_str::<MinimalConfig>(&contents) {
-            return cfg.file_logging;
+    if let Some(path) = runtime_config_path {
+        // Runtime config paths are established from RalphX-owned bundled resources.
+        // codeql[rust/path-injection]
+        if let Ok(contents) = std::fs::read_to_string(path) {
+            if let Some(file_logging) = parse_early_file_logging(&contents) {
+                return file_logging;
+            }
         }
     }
 
-    true
+    parse_early_file_logging(embedded_config).unwrap_or(true)
+}
+
+/// Resolve file logging before tracing initialization.
+///
+/// Priority: environment override, configured bundled runtime file, embedded canonical config,
+/// then the fail-safe default (`true`).
+pub fn resolve_file_logging_early() -> bool {
+    let environment_value = std::env::var("RALPHX_FILE_LOGGING").ok();
+    let runtime_config_path = configured_runtime_config_dir().map(|dir| dir.join("ralphx.yaml"));
+    resolve_file_logging_from_sources(
+        environment_value.as_deref(),
+        runtime_config_path.as_deref(),
+        EMBEDDED_CONFIG,
+    )
+}
+
+/// Resolves the file logging cap and retained previous-run file count before tracing starts.
+pub fn resolve_file_logging_limits_early() -> (u64, usize) {
+    let max_bytes_environment_value = std::env::var("RALPHX_FILE_LOGGING_MAX_BYTES").ok();
+    let keep_files_environment_value = std::env::var("RALPHX_FILE_LOGGING_KEEP_FILES").ok();
+    let runtime_config_path = configured_runtime_config_dir().map(|dir| dir.join("ralphx.yaml"));
+    resolve_file_logging_limits_from_sources(
+        max_bytes_environment_value.as_deref(),
+        keep_files_environment_value.as_deref(),
+        runtime_config_path.as_deref(),
+        EMBEDDED_CONFIG,
+    )
 }
 
 fn resolve_tools_from_spec(
@@ -773,16 +880,13 @@ fn canonical_agent_project_root_from_config_path(
 }
 
 fn resolve_system_prompt_file(project_root: &Path, raw: &AgentConfigRaw) -> String {
-    let canonical_prompt = resolve_harness_agent_prompt_path(
-        project_root,
-        &raw.name,
-        AgentPromptHarness::Claude,
-    )
-    .and_then(|path| {
-        path.strip_prefix(project_root)
-            .ok()
-            .map(|relative| relative.to_string_lossy().to_string())
-    });
+    let canonical_prompt =
+        resolve_harness_agent_prompt_path(project_root, &raw.name, AgentPromptHarness::Claude)
+            .and_then(|path| {
+                path.strip_prefix(project_root)
+                    .ok()
+                    .map(|relative| relative.to_string_lossy().to_string())
+            });
 
     if let Some(canonical_prompt) = canonical_prompt {
         if raw.system_prompt_file.as_deref().is_some()
@@ -1145,6 +1249,7 @@ fn resolve_loaded_config_with_lookup(
         .and_then(|u| u.feature_flags.clone())
         .unwrap_or_default();
     let mut runtime = AllRuntimeConfig {
+        database_maintenance: parsed.database_maintenance,
         stream: parsed.timeouts.stream,
         reconciliation: parsed.reconciliation,
         git: parsed.git,
@@ -1153,11 +1258,13 @@ fn resolve_loaded_config_with_lookup(
         limits: parsed.limits,
         verification: parsed.ideation.verification,
         external_mcp: parsed.external_mcp,
+        delegation: parsed.delegation,
         child_session_activity_threshold_secs: parsed
             .ideation
             .child_session_activity_threshold_secs,
         ui_feature_flags,
     };
+    let mut automations = parsed.automations;
     if runtime.external_mcp.max_external_ideation_sessions != 1 {
         tracing::warn!(
             value = runtime.external_mcp.max_external_ideation_sessions,
@@ -1167,6 +1274,9 @@ fn resolve_loaded_config_with_lookup(
         );
     }
     runtime_config::apply_env_overrides_with_lookup(&mut runtime, lookup);
+    let mut shutdown = parsed.shutdown;
+    runtime_config::apply_shutdown_env_overrides_with_lookup(&mut shutdown, lookup);
+    runtime_config::apply_automations_env_overrides_with_lookup(&mut automations, lookup);
     let mut agent_harness_defaults = parsed
         .agent_harness_defaults
         .into_iter()
@@ -1175,17 +1285,17 @@ fn resolve_loaded_config_with_lookup(
     apply_agent_harness_env_overrides_with(&mut agent_harness_defaults, lookup);
 
     let process_mapping = resolve_canonical_process_mapping(&parsed.process_mapping);
-    let team_constraints = resolve_canonical_team_constraints_config(&parsed.team_constraints);
 
     Some(LoadedConfig {
         agents: resolved,
         claude,
         tool_sets: parsed.tool_sets,
         process_mapping,
-        team_constraints,
         defer_merge_enabled: parsed.defer_merge_enabled,
         file_logging: parsed.file_logging,
+        shutdown,
         runtime,
+        automations,
         execution_defaults: parsed.execution_defaults,
         agent_harness_defaults,
     })
@@ -1261,7 +1371,7 @@ fn normalize_override_value(raw: Option<String>) -> Option<String> {
     })
 }
 
-fn all_agent_lanes() -> [AgentLane; 8] {
+fn all_agent_lanes() -> [AgentLane; 9] {
     [
         AgentLane::IdeationPrimary,
         AgentLane::IdeationVerifier,
@@ -1271,6 +1381,7 @@ fn all_agent_lanes() -> [AgentLane; 8] {
         AgentLane::ExecutionReviewer,
         AgentLane::ExecutionReexecutor,
         AgentLane::ExecutionMerger,
+        AgentLane::ExecutionBranchUpdater,
     ]
 }
 
@@ -1600,6 +1711,7 @@ fn load_config() -> LoadedConfig {
         })
         .unwrap_or_else(|| {
             let mut runtime = AllRuntimeConfig {
+                database_maintenance: runtime_config::DatabaseMaintenanceConfig::default(),
                 stream: StreamTimeoutsConfig::default(),
                 reconciliation: ReconciliationConfig::default(),
                 git: GitRuntimeConfig::default(),
@@ -1608,10 +1720,16 @@ fn load_config() -> LoadedConfig {
                 limits: LimitsConfig::default(),
                 verification: VerificationConfig::default(),
                 external_mcp: ExternalMcpConfig::default(),
+                delegation: runtime_config::DelegationConfig::default(),
                 child_session_activity_threshold_secs: None,
                 ui_feature_flags: UiFeatureFlagsConfig::default(),
             };
             runtime_config::apply_env_overrides(&mut runtime);
+            let mut automations = AutomationsRuntimeConfig::default();
+            runtime_config::apply_automations_env_overrides_with_lookup(
+                &mut automations,
+                &|name| std::env::var(name).ok(),
+            );
             LoadedConfig {
                 agents: Vec::new(),
                 claude: ClaudeRuntimeConfig {
@@ -1628,10 +1746,11 @@ fn load_config() -> LoadedConfig {
                 },
                 tool_sets: canonical_claude_tool_sets().clone(),
                 process_mapping: ProcessMapping::default(),
-                team_constraints: TeamConstraintsConfig::default(),
                 defer_merge_enabled: true,
                 file_logging: true,
+                shutdown: ShutdownConfig::default(),
                 runtime,
+                automations,
                 execution_defaults: ExecutionDefaultsConfig::default(),
                 agent_harness_defaults: default_agent_harness_defaults(),
             }
@@ -1679,11 +1798,17 @@ pub fn get_agent_config_for_profile(
         return Some(config);
     };
     let project_root = canonical_agent_project_root();
-    let definition =
-        load_canonical_agent_definition_for_profile(&project_root, lookup_name, Some(profile_name))?;
-    let metadata =
-        try_load_canonical_claude_metadata_for_profile(&project_root, lookup_name, Some(profile_name))
-            .ok()?;
+    let definition = load_canonical_agent_definition_for_profile(
+        &project_root,
+        lookup_name,
+        Some(profile_name),
+    )?;
+    let metadata = try_load_canonical_claude_metadata_for_profile(
+        &project_root,
+        lookup_name,
+        Some(profile_name),
+    )
+    .ok()?;
 
     if !definition.capabilities.mcp_tools.is_empty() {
         config.allowed_mcp_tools = definition.capabilities.mcp_tools;
@@ -1691,8 +1816,7 @@ pub fn get_agent_config_for_profile(
     if let Some(spec) = metadata.tools.as_ref() {
         let tools = runtime_tools_spec_from_canonical(spec);
         config.mcp_only = tools.mcp_only;
-        config.resolved_cli_tools =
-            resolve_tools_from_spec(lookup_name, &tools, &loaded.tool_sets);
+        config.resolved_cli_tools = resolve_tools_from_spec(lookup_name, &tools, &loaded.tool_sets);
     }
     config.preapproved_cli_tools = metadata.preapproved_cli_tools;
     if metadata.model.is_some() {
@@ -1750,10 +1874,6 @@ pub fn process_mapping() -> &'static ProcessMapping {
     &LOADED_CONFIG_CELL.get_or_init(load_config).process_mapping
 }
 
-pub fn team_constraints_config() -> &'static TeamConstraintsConfig {
-    &LOADED_CONFIG_CELL.get_or_init(load_config).team_constraints
-}
-
 pub fn defer_merge_enabled() -> bool {
     LOADED_CONFIG_CELL
         .get_or_init(load_config)
@@ -1762,6 +1882,10 @@ pub fn defer_merge_enabled() -> bool {
 
 pub fn file_logging_enabled() -> bool {
     LOADED_CONFIG_CELL.get_or_init(load_config).file_logging
+}
+
+pub fn shutdown_config() -> &'static ShutdownConfig {
+    &LOADED_CONFIG_CELL.get_or_init(load_config).shutdown
 }
 
 pub fn execution_defaults_config() -> &'static ExecutionDefaultsConfig {
@@ -1780,6 +1904,18 @@ pub fn stream_timeouts() -> &'static StreamTimeoutsConfig {
     &LOADED_CONFIG_CELL.get_or_init(load_config).runtime.stream
 }
 
+/// Backend-held delegation waiting settings (bounded `delegate_wait` + park/wake).
+pub fn delegation_config() -> &'static runtime_config::DelegationConfig {
+    &LOADED_CONFIG_CELL.get_or_init(load_config).runtime.delegation
+}
+
+pub fn database_maintenance_config() -> &'static runtime_config::DatabaseMaintenanceConfig {
+    &LOADED_CONFIG_CELL
+        .get_or_init(load_config)
+        .runtime
+        .database_maintenance
+}
+
 pub fn reconciliation_config() -> &'static ReconciliationConfig {
     &LOADED_CONFIG_CELL
         .get_or_init(load_config)
@@ -1796,6 +1932,10 @@ pub fn scheduler_config() -> &'static SchedulerConfig {
         .get_or_init(load_config)
         .runtime
         .scheduler
+}
+
+pub fn automations_config() -> &'static AutomationsRuntimeConfig {
+    &LOADED_CONFIG_CELL.get_or_init(load_config).automations
 }
 
 pub fn supervisor_runtime_config() -> &'static SupervisorRuntimeConfig {

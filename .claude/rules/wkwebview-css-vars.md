@@ -1,3 +1,9 @@
+---
+paths:
+  - "frontend/src/**/*.css"
+  - "frontend/src/**/*.{ts,tsx}"
+---
+
 > **Maintainer note:** This file optimizes for LLM context efficiency. Rules: (1) Tables > prose (2) One example max per concept (3) No redundant explanations (4) Use symbols: → = leads to, | = or, ❌/✅ = wrong/right (5) Before adding content, ask: "Can this be a single line?" If yes, make it one line.
 
 # WKWebView CSS Custom-Property Rules
@@ -6,7 +12,7 @@
 
 RalphX ships in Tauri (macOS WKWebView). WKWebView drops chained `var()` references on certain document-canvas properties, leaving `body` transparent while the attribute + CSS file are loaded. The web build (`npm run dev:web` in Chromium) doesn't reproduce this — Playwright audits pass while the Tauri window shows white. Root-caused 2026-04-19.
 
-Incident: HC theme `--bg-base: var(--color-black)` failed to cascade to `body` in WKWebView even though `--color-black` resolved correctly on `<html>`. Fixed in `bd9ee48d2`.
+Incident: HC theme `--bg-base: var(--color-black)` failed to cascade to `body` in WKWebView even though `--color-black` resolved correctly on `<html>`. Fixed 2026-04-19.
 
 ## Rules (NON-NEGOTIABLE)
 
@@ -15,8 +21,8 @@ Incident: HC theme `--bg-base: var(--color-black)` failed to cascade to `body` i
 | 1 | **No chained `var()` for canvas paint tokens.** `--bg-base`, `--bg-surface`, `--bg-elevated`, and any other token painted directly on `html` / `body` / `main` MUST use a literal color value (`#rrggbb`, `hsl(...)`, `hsla(...)`) — ❌ `var(--primitive)`. |
 | 2 | **Defensive canvas paint on new themes.** Every theme file adding a new `[data-theme="X"]` block MUST include an explicit `html[data-theme="X"], html[data-theme="X"] body, html[data-theme="X"] main { background-color: <literal> !important; }` rule so the canvas paints even if a later var-chain breaks. |
 | 3 | **Token-chain depth ≤ 1 for role tokens consumed by `background-color`.** `--card-bg: var(--bg-elevated)` is fine (one hop). `--card-bg: var(--bg-elevated)` where `--bg-elevated: var(--color-black)` (two hops into a primitive) is not — flatten to literal on the final hop. |
-| 4 | **Verify in Tauri, not just `dev:web`.** Any theme or canvas token change MUST be verified inside `npm run tauri dev`. ❌ Shipping purely on Playwright/web screenshots. |
-| 5 | **Light/Dark use literals too.** Uniform rule — Light uses `hsl(35 12% 97%)`, Dark uses `hsl(220 10% 8%)` — both literals. Don't reintroduce primitives for canvas tokens just because they "work" in Light/Dark today; the next WKWebView build might drop those too. |
+| 4 | **Playwright-first verification.** Add or run the relevant automated visual coverage first. Native Tauri/WKWebView QA through Computer Use is prohibited unless the user explicitly requests it in the current request; never infer that permission from a theme or canvas change. If explicitly requested, verify inside `npm run tauri dev` in addition to `dev:web`. |
+| 5 | **Light/Dark use literals too.** Uniform rule — Light uses `#FFFFFF`, Dark uses `#18181D` (see `frontend/src/styles/themes/light.css` / `dark.css`) — both literals. Don't reintroduce primitives for canvas tokens just because they "work" in Light/Dark today; the next WKWebView build might drop those too. |
 | 6 | **Themed surfaces use paint/border longhands.** Cards, sidebars, nav bars, and Kanban/task surfaces MUST set explicit `background-color` / `border-color` / `border-width` / `border-style` (or React `backgroundColor` / `borderColor` / `borderWidth` / `borderStyle`) with fallbacks. ❌ Relying on `background` / `border` shorthand after theme-token changes; WKWebView can render transparent or default-border surfaces while Chromium looks correct. |
 | 7 | **No `var()` inside inline-style gradients.** `linear-gradient(...)` / `radial-gradient(...)` / `conic-gradient(...)` delivered via React inline `style` (or any `style="..."` attribute) MUST use literal color values — ❌ `style={{ backgroundImage: "linear-gradient(180deg, var(--x), var(--y))" }}`. WKWebView's CSSOM does not always substitute custom properties inside the `<image>`-typed gradient function when parsed from the inline-style attribute, even though the same vars resolve in stylesheet rules and in plain `backgroundColor: "var(--x)"`. Fix: use literal `rgba(...)` / `hsl(...)` / `#rrggbb` inline, or move the gradient into a stylesheet rule and toggle via `data-*` / `aria-current` selectors. Root-caused 2026-05-05 (agents sidebar active-project highlight). |
 

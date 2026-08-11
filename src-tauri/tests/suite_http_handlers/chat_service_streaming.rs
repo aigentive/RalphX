@@ -5,7 +5,6 @@ use ralphx_lib::application::chat_service::{
     StreamOutcome, StreamTimeoutConfig,
 };
 use ralphx_lib::domain::entities::{AgentRunUsage, ChatContextType};
-use ralphx_lib::infrastructure::agents::claude::stream_timeouts;
 use ralphx_lib::utils::secret_redactor::redact;
 use std::time::Duration;
 
@@ -209,7 +208,7 @@ fn test_long_idle_kills_agent() {
         dur(1800),
         false,
         false,
-        true,  // even with pid alive
+        true, // even with pid alive
         false,
         false,
         false,
@@ -222,7 +221,7 @@ fn test_long_idle_kills_agent() {
 #[test]
 fn test_active_tasks_bypass_idle_timeout() {
     assert!(!should_kill_on_timeout(
-        dur(700),  // idle 11+ minutes — above line_read_timeout but under max_idle
+        dur(700), // idle 11+ minutes — above line_read_timeout but under max_idle
         dur(1800),
         false,
         false,
@@ -237,7 +236,7 @@ fn test_active_tasks_bypass_idle_timeout() {
 #[test]
 fn test_dead_process_killed_despite_short_idle() {
     assert!(should_kill_on_timeout(
-        dur(300),  // idle only 5 minutes
+        dur(300), // idle only 5 minutes
         dur(1800),
         false,
         false,
@@ -250,24 +249,35 @@ fn test_dead_process_killed_despite_short_idle() {
 
 #[test]
 fn test_completion_tool_detection_marks_tracker_and_bypasses_timeout() {
-    let mut tracker = CompletionSignalTracker::default();
+    for tool_name in [
+        "mcp__ralphx__execution_complete",
+        "mcp__ralphx__complete_workspace_review_run",
+    ] {
+        let mut tracker = CompletionSignalTracker::default();
 
-    if is_completion_tool_name("mcp__ralphx__execution_complete") {
-        tracker.mark_completion_called();
+        if is_completion_tool_name(tool_name) {
+            tracker.mark_completion_called();
+        }
+
+        assert!(tracker.was_called(), "{tool_name} should mark completion");
+        assert!(
+            tracker.is_in_grace_period(dur(30)),
+            "{tool_name} should be inside completion grace"
+        );
+        assert!(
+            !should_kill_on_timeout(
+                dur(601),
+                dur(1800),
+                false,
+                false,
+                false,
+                true,
+                false,
+                tracker.is_in_grace_period(dur(30)),
+            ),
+            "{tool_name} completion grace should bypass the timeout"
+        );
     }
-
-    assert!(tracker.was_called());
-    assert!(tracker.is_in_grace_period(dur(30)));
-    assert!(!should_kill_on_timeout(
-        dur(601),
-        dur(1800),
-        false,
-        false,
-        false,
-        true,
-        false,
-        tracker.is_in_grace_period(dur(30)),
-    ));
 }
 
 #[test]
@@ -387,23 +397,6 @@ fn test_timeout_config_project_uses_defaults() {
 }
 
 #[test]
-fn test_timeout_config_with_teammate() {
-    let config = StreamTimeoutConfig::for_context(&ChatContextType::Ideation)
-        .with_teammate("researcher".to_string(), "#ff6b35".to_string());
-    assert_eq!(config.teammate_name, Some("researcher".to_string()));
-    assert_eq!(config.teammate_color, Some("#ff6b35".to_string()));
-    // Timeouts should be unchanged
-    assert_eq!(config.line_read_timeout, Duration::from_secs(600));
-}
-
-#[test]
-fn test_timeout_config_default_no_teammate() {
-    let config = StreamTimeoutConfig::for_context(&ChatContextType::Ideation);
-    assert!(config.teammate_name.is_none());
-    assert!(config.teammate_color.is_none());
-}
-
-#[test]
 fn test_timeout_config_ordering() {
     // Both review and merge match default line_read_timeout (600s) to prevent false kills
     // during long cargo test runs. Review parse_stall is still tighter than default.
@@ -423,6 +416,8 @@ fn test_payloads_serialize_with_seq() {
     // Verify AgentChunkPayload includes seq field
     let chunk = AgentChunkPayload {
         text: "test".to_string(),
+        run_id: Some("run-1".to_string()),
+        block_index: Some(1),
         conversation_id: "conv-1".to_string(),
         context_type: "task".to_string(),
         context_id: "task-1".to_string(),
@@ -434,6 +429,10 @@ fn test_payloads_serialize_with_seq() {
         json.contains("\"seq\":0"),
         "AgentChunkPayload should serialize with seq field"
     );
+    assert!(
+        json.contains("\"block_index\":1"),
+        "AgentChunkPayload should serialize with its text-block identity"
+    );
 
     // Verify AgentToolCallPayload includes seq field
     let tool_call = AgentToolCallPayload {
@@ -441,6 +440,7 @@ fn test_payloads_serialize_with_seq() {
         tool_id: Some("tool-1".to_string()),
         arguments: serde_json::json!({}),
         result: None,
+        run_id: Some("run-1".to_string()),
         preview: AgentToolCallPreviewFields::default(),
         conversation_id: "conv-1".to_string(),
         context_type: "task".to_string(),
@@ -458,15 +458,16 @@ fn test_payloads_serialize_with_seq() {
     // Verify AgentTaskStartedPayload includes seq field
     let task_started = AgentTaskStartedPayload {
         tool_use_id: "tool-1".to_string(),
+        run_id: Some("run-1".to_string()),
         tool_name: "Task".to_string(),
         description: Some("test".to_string()),
         subagent_type: Some("bash".to_string()),
         model: Some("sonnet".to_string()),
-        teammate_name: None,
         delegated_job_id: None,
         delegated_session_id: None,
         delegated_conversation_id: None,
         delegated_agent_run_id: None,
+        teammate_name: None,
         provider_harness: None,
         provider_session_id: None,
         upstream_provider: None,
@@ -477,6 +478,9 @@ fn test_payloads_serialize_with_seq() {
         effective_effort: None,
         approval_policy: None,
         sandbox_mode: None,
+        started_at: None,
+        completed_at: None,
+        timestamp_provenance: None,
         conversation_id: "conv-1".to_string(),
         context_type: "task".to_string(),
         context_id: "task-1".to_string(),
@@ -491,16 +495,17 @@ fn test_payloads_serialize_with_seq() {
     // Verify AgentTaskCompletedPayload includes seq field
     let task_completed = AgentTaskCompletedPayload {
         tool_use_id: "tool-1".to_string(),
+        run_id: Some("run-1".to_string()),
         agent_id: Some("agent-1".to_string()),
         status: None,
         total_duration_ms: Some(1000),
         total_tokens: Some(100),
         total_tool_use_count: Some(5),
-        teammate_name: None,
         delegated_job_id: None,
         delegated_session_id: None,
         delegated_conversation_id: None,
         delegated_agent_run_id: None,
+        teammate_name: None,
         provider_harness: None,
         provider_session_id: None,
         upstream_provider: None,
@@ -511,6 +516,9 @@ fn test_payloads_serialize_with_seq() {
         effective_effort: None,
         approval_policy: None,
         sandbox_mode: None,
+        started_at: None,
+        completed_at: None,
+        timestamp_provenance: None,
         input_tokens: None,
         output_tokens: None,
         cache_creation_tokens: None,
@@ -554,57 +562,6 @@ fn test_seq_values_are_monotonic() {
     assert!(seq3 > seq2, "seq must be strictly increasing");
     assert!(seq4 > seq3, "seq must be strictly increasing");
 }
-
-// --- Dynamic team_mode upgrade tests ---
-
-#[test]
-fn test_timeout_config_dynamic_team_upgrade() {
-    // Scenario: lead spawned with team_mode=false (default), then TeamCreated is detected.
-    // The timeout should upgrade from default (600s) to team (3600s).
-    let mut config = StreamTimeoutConfig::for_context(&ChatContextType::Ideation);
-    assert_eq!(
-        config.line_read_timeout,
-        Duration::from_secs(600),
-        "Before upgrade: should use default timeout"
-    );
-
-    // Simulate the dynamic upgrade that happens in process_stream_background
-    // when StreamEvent::TeamCreated is detected and team_mode was false
-    let cfg = stream_timeouts();
-    config.line_read_timeout = Duration::from_secs(cfg.team_line_read_secs);
-    config.parse_stall_timeout = Duration::from_secs(cfg.team_parse_stall_secs);
-
-    assert_eq!(
-        config.line_read_timeout,
-        Duration::from_secs(3600),
-        "After upgrade: should use team timeout"
-    );
-    assert_eq!(
-        config.parse_stall_timeout,
-        Duration::from_secs(3600),
-        "After upgrade: parse stall should also use team timeout"
-    );
-}
-
-#[test]
-fn test_timeout_config_team_mode_true_already_upgraded() {
-    // When team_mode=true at spawn time, timeout is already set correctly.
-    // The dynamic upgrade should be a no-op (guarded by `if !team_mode`).
-    let mut config = StreamTimeoutConfig::for_context(&ChatContextType::Ideation);
-    let cfg = stream_timeouts();
-
-    // Simulate team_mode=true at spawn time
-    config.line_read_timeout = Duration::from_secs(cfg.team_line_read_secs);
-    config.parse_stall_timeout = Duration::from_secs(cfg.team_parse_stall_secs);
-
-    let before = config.line_read_timeout;
-
-    // Even if we re-apply, the value stays the same
-    config.line_read_timeout = Duration::from_secs(cfg.team_line_read_secs);
-    assert_eq!(config.line_read_timeout, before, "Should be idempotent");
-}
-
-// --- ActiveTaskTracker tests ---
 
 #[test]
 fn test_active_task_tracker_empty_by_default() {
@@ -683,6 +640,7 @@ fn test_completion_tracker_recognizes_all_completion_tools() {
         "mcp__ralphx__execution_complete",
         "mcp__ralphx__complete_review",
         "mcp__ralphx__complete_merge",
+        "mcp__ralphx__complete_workspace_review_run",
         "mcp__ralphx__finalize_proposals",
     ] {
         let mut tracker = CompletionSignalTracker::default();
@@ -834,11 +792,14 @@ fn test_stream_outcome_turns_finalized_controls_post_loop_behavior() {
         content_blocks: vec![],
         session_id: Some("session-1".to_string()),
         usage: AgentRunUsage::default(),
+        usage_provenance: None,
         stderr_text: String::new(),
         turns_finalized: 2,
+        completion_applied: false,
         execution_slot_held: false, // idle between turns at exit
         completion_tool_called: false,
         silent_interactive_exit: false,
+        mode_handoff_exit: false,
     };
     let has_output = outcome.has_meaningful_output();
     let skip_post_loop = outcome.turns_finalized > 0 && !has_output;
@@ -858,11 +819,14 @@ fn test_stream_outcome_turns_finalized_controls_post_loop_behavior() {
         content_blocks: vec![],
         session_id: Some("session-2".to_string()),
         usage: AgentRunUsage::default(),
+        usage_provenance: None,
         stderr_text: String::new(),
         turns_finalized: 0,
+        completion_applied: false,
         execution_slot_held: true, // normal exit — slot still held
         completion_tool_called: false,
         silent_interactive_exit: false,
+        mode_handoff_exit: false,
     };
     let has_output = outcome_non_interactive.has_meaningful_output();
     let skip_post_loop = outcome_non_interactive.turns_finalized > 0 && !has_output;
@@ -890,11 +854,14 @@ fn test_stream_outcome_execution_slot_held_reflects_interactive_state() {
         content_blocks: vec![],
         session_id: None,
         usage: AgentRunUsage::default(),
+        usage_provenance: None,
         stderr_text: String::new(),
         turns_finalized: 1,
+        completion_applied: false,
         execution_slot_held: false,
         completion_tool_called: false,
         silent_interactive_exit: false,
+        mode_handoff_exit: false,
     };
     assert!(
         !idle_outcome.execution_slot_held,
@@ -908,11 +875,14 @@ fn test_stream_outcome_execution_slot_held_reflects_interactive_state() {
         content_blocks: vec![],
         session_id: None,
         usage: AgentRunUsage::default(),
+        usage_provenance: None,
         stderr_text: String::new(),
         turns_finalized: 0,
+        completion_applied: false,
         execution_slot_held: true,
         completion_tool_called: false,
         silent_interactive_exit: false,
+        mode_handoff_exit: false,
     };
     assert!(
         active_outcome.execution_slot_held,
@@ -973,11 +943,14 @@ fn test_will_process_queue_suppressed_on_silent_exit() {
         content_blocks: vec![],
         session_id: Some("session-abc".to_string()),
         usage: AgentRunUsage::default(),
+        usage_provenance: None,
         stderr_text: String::new(),
         turns_finalized: 1,
+        completion_applied: false,
         execution_slot_held: false,
         completion_tool_called: false,
         silent_interactive_exit: false,
+        mode_handoff_exit: false,
     };
     let will_process_queue_normal = will_process_queue(&outcome_normal, false);
     assert!(
@@ -992,11 +965,14 @@ fn test_will_process_queue_suppressed_on_silent_exit() {
         content_blocks: vec![],
         session_id: Some("session-abc".to_string()),
         usage: AgentRunUsage::default(),
+        usage_provenance: None,
         stderr_text: String::new(),
         turns_finalized: 1,
+        completion_applied: false,
         execution_slot_held: false,
         completion_tool_called: false,
         silent_interactive_exit: true,
+        mode_handoff_exit: false,
     };
     let will_process_queue_silent = will_process_queue(&outcome_silent, true);
     assert!(
@@ -1018,11 +994,14 @@ fn test_will_process_queue_suppressed_on_silent_exit() {
         content_blocks: vec![],
         session_id: None,
         usage: AgentRunUsage::default(),
+        usage_provenance: None,
         stderr_text: String::new(),
         turns_finalized: 1,
+        completion_applied: false,
         execution_slot_held: false,
         completion_tool_called: false,
         silent_interactive_exit: false,
+        mode_handoff_exit: false,
     };
     let will_process_queue_no_session = will_process_queue(&outcome_no_session, false);
     assert!(
@@ -1273,11 +1252,14 @@ fn test_silent_interactive_exit_flag_semantics() {
         content_blocks: vec![],
         session_id: Some("sess-1".to_string()),
         usage: AgentRunUsage::default(),
+        usage_provenance: None,
         stderr_text: String::new(),
         turns_finalized: 1,
+        completion_applied: false,
         execution_slot_held: false, // slot released at TurnComplete
         completion_tool_called: false,
         silent_interactive_exit: true,
+        mode_handoff_exit: false,
     };
     assert!(
         idle_exit.silent_interactive_exit,
@@ -1295,11 +1277,14 @@ fn test_silent_interactive_exit_flag_semantics() {
         content_blocks: vec![],
         session_id: None,
         usage: AgentRunUsage::default(),
+        usage_provenance: None,
         stderr_text: String::new(),
         turns_finalized: 0,
+        completion_applied: false,
         execution_slot_held: true, // slot not yet released
         completion_tool_called: false,
         silent_interactive_exit: false,
+        mode_handoff_exit: false,
     };
     assert!(
         !active_exit.silent_interactive_exit,
@@ -1315,11 +1300,14 @@ fn test_silent_interactive_exit_flag_semantics() {
         content_blocks: vec![],
         session_id: None,
         usage: AgentRunUsage::default(),
+        usage_provenance: None,
         stderr_text: "error: session expired".to_string(),
         turns_finalized: 1,
+        completion_applied: false,
         execution_slot_held: false,
         completion_tool_called: false,
         silent_interactive_exit: true, // set in Ok(Err(e)) branch when between_interactive_turns
+        mode_handoff_exit: false,
     };
     assert!(
         crash_idle.silent_interactive_exit,

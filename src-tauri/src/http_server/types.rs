@@ -5,7 +5,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 
-use crate::application::{AppState, TeamService, TeamStateTracker};
+use crate::application::AppState;
 use crate::commands::unified_chat_commands::{
     AgentConversationResponse, AgentConversationWorkspaceResponse, SendAgentMessageResponse,
 };
@@ -28,9 +28,18 @@ use crate::http_server::handlers::artifacts::EditError;
 pub struct HttpServerState {
     pub app_state: Arc<AppState>,
     pub execution_state: Arc<ExecutionState>,
-    pub team_tracker: TeamStateTracker,
-    pub team_service: Arc<TeamService>,
     pub delegation_service: Arc<DelegationService>,
+}
+
+#[cfg(test)]
+impl HttpServerState {
+    pub(crate) fn new_test(app_state: Arc<AppState>) -> Self {
+        Self {
+            app_state,
+            execution_state: Arc::new(ExecutionState::new()),
+            delegation_service: Default::default(),
+        }
+    }
 }
 
 // ============================================================================
@@ -135,6 +144,7 @@ pub struct DelegatedRunSummary {
     pub output_tokens: Option<u64>,
     pub cache_creation_tokens: Option<u64>,
     pub cache_read_tokens: Option<u64>,
+    pub processed_tokens: Option<u64>,
     pub estimated_usd: Option<f64>,
 }
 
@@ -189,7 +199,7 @@ pub struct CreateFollowupAgentConversationResponse {
 // Request/Response Types - Agent Conversation Issues
 // ============================================================================
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct RegisterAgentConversationIssueRequest {
     pub origin_conversation_id: Option<String>,
     pub source_task_id: Option<String>,
@@ -204,6 +214,11 @@ pub struct RegisterAgentConversationIssueRequest {
     pub evidence: Option<String>,
     pub recommendation: Option<String>,
     pub blocker_fingerprint: Option<String>,
+    pub attach_to_issue_id: Option<String>,
+    #[serde(default)]
+    pub confirm_new: bool,
+    pub new_issue_reason: Option<String>,
+    pub issue_check_token: Option<String>,
     pub followup_title: Option<String>,
     pub followup_prompt: Option<String>,
     #[serde(default)]
@@ -237,6 +252,53 @@ pub struct ConvertAgentConversationIssueFollowupRequest {
 }
 
 #[derive(Debug, Serialize)]
+pub struct AgentConversationIssueOccurrenceResponse {
+    pub id: String,
+    pub issue_id: String,
+    pub source_task_id: Option<String>,
+    pub source_context_type: Option<String>,
+    pub source_context_id: Option<String>,
+    pub source_agent_name: Option<String>,
+    pub issue_kind: String,
+    pub severity: String,
+    pub blocking_scope: String,
+    pub title: String,
+    pub summary: String,
+    pub evidence: Option<String>,
+    pub recommendation: Option<String>,
+    pub raw_blocker_fingerprint: Option<String>,
+    pub canonical_fingerprint: Option<String>,
+    pub dedupe_decision: Option<String>,
+    pub created_at: String,
+}
+
+impl From<crate::domain::entities::AgentConversationIssueOccurrence>
+    for AgentConversationIssueOccurrenceResponse
+{
+    fn from(occurrence: crate::domain::entities::AgentConversationIssueOccurrence) -> Self {
+        Self {
+            id: occurrence.id,
+            issue_id: occurrence.issue_id,
+            source_task_id: occurrence.source_task_id,
+            source_context_type: occurrence.source_context_type,
+            source_context_id: occurrence.source_context_id,
+            source_agent_name: occurrence.source_agent_name,
+            issue_kind: occurrence.issue_kind,
+            severity: occurrence.severity,
+            blocking_scope: occurrence.blocking_scope,
+            title: occurrence.title,
+            summary: occurrence.summary,
+            evidence: occurrence.evidence,
+            recommendation: occurrence.recommendation,
+            raw_blocker_fingerprint: occurrence.raw_blocker_fingerprint,
+            canonical_fingerprint: occurrence.canonical_fingerprint,
+            dedupe_decision: occurrence.dedupe_decision,
+            created_at: occurrence.created_at.to_rfc3339(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
 pub struct AgentConversationIssueResponse {
     pub id: String,
     pub project_id: String,
@@ -254,6 +316,13 @@ pub struct AgentConversationIssueResponse {
     pub evidence: Option<String>,
     pub recommendation: Option<String>,
     pub blocker_fingerprint: Option<String>,
+    pub canonical_fingerprint: Option<String>,
+    pub canonical_scope_kind: Option<String>,
+    pub canonical_scope_subject: Option<String>,
+    pub canonical_family: Option<String>,
+    pub superseded_by_issue_id: Option<String>,
+    pub occurrence_count: Option<usize>,
+    pub occurrences: Vec<AgentConversationIssueOccurrenceResponse>,
     pub followup_title: Option<String>,
     pub followup_prompt: Option<String>,
     pub auto_followup_eligible: bool,
@@ -282,6 +351,13 @@ impl From<crate::domain::entities::AgentConversationIssue> for AgentConversation
             evidence: issue.evidence,
             recommendation: issue.recommendation,
             blocker_fingerprint: issue.blocker_fingerprint,
+            canonical_fingerprint: issue.canonical_fingerprint,
+            canonical_scope_kind: issue.canonical_scope_kind,
+            canonical_scope_subject: issue.canonical_scope_subject,
+            canonical_family: issue.canonical_family,
+            superseded_by_issue_id: issue.superseded_by_issue_id,
+            occurrence_count: None,
+            occurrences: Vec::new(),
             followup_title: issue.followup_title,
             followup_prompt: issue.followup_prompt,
             auto_followup_eligible: issue.auto_followup_eligible,
@@ -295,16 +371,34 @@ impl From<crate::domain::entities::AgentConversationIssue> for AgentConversation
     }
 }
 
+impl AgentConversationIssueResponse {
+    pub fn with_occurrences(
+        mut self,
+        occurrences: Vec<crate::domain::entities::AgentConversationIssueOccurrence>,
+    ) -> Self {
+        self.occurrence_count = Some(occurrences.len());
+        self.occurrences = occurrences.into_iter().map(Into::into).collect();
+        self
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct RegisterAgentConversationIssueResponse {
     pub issue: AgentConversationIssueResponse,
     pub auto_followup_created: bool,
     pub followup: Option<CreateFollowupAgentConversationResponse>,
+    pub dedupe_result: String,
+    pub canonical_fingerprint: Option<String>,
+    pub occurrence_id: Option<String>,
+    pub occurrence_count: Option<usize>,
+    pub candidate_issues: Vec<AgentConversationIssueResponse>,
+    pub issue_check_token: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct ListAgentConversationIssuesResponse {
     pub issues: Vec<AgentConversationIssueResponse>,
+    pub issue_check_token: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -416,6 +510,34 @@ pub struct CompleteAgentTaskRequest {
     #[serde(alias = "task_id")]
     pub task_ref: String,
     pub metadata: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CompleteDelegateAssignmentRequest {
+    pub metadata: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ReleaseDelegateAssignmentRequest {
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DelegateAssignmentDto {
+    pub task_number: i64,
+    pub title: String,
+    pub details: String,
+    pub task_state: String,
+    pub assignment_state: String,
+    pub delegate_agent_name: String,
+    pub caller_scope_type: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DelegateAssignmentResponse {
+    pub success: bool,
+    pub assignment: Option<DelegateAssignmentDto>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -818,6 +940,10 @@ pub struct TaskResponse {
 pub struct RegisterProjectExternalRequest {
     pub working_directory: String,
     pub name: Option<String>,
+    #[serde(default)]
+    pub base_branch: Option<String>,
+    #[serde(default)]
+    pub worktree_parent_directory: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -945,6 +1071,8 @@ pub struct RequestTaskChangesRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct PermissionRequestInput {
+    #[serde(default)]
+    pub request_id: Option<String>,
     pub tool_name: String,
     #[serde(default)]
     pub tool_input: serde_json::Value,
@@ -981,6 +1109,10 @@ pub struct CreatePlanArtifactRequest {
     pub session_id: String,
     pub title: String,
     pub content: String,
+    #[serde(default)]
+    pub blueprint_title: Option<String>,
+    #[serde(default)]
+    pub blueprint_content: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1004,6 +1136,12 @@ pub struct ApprovePlanArtifactRequest {
     pub session_id: String,
     #[serde(default)]
     pub artifact_id: Option<String>,
+    /// The Blueprint identity displayed alongside the Overview being approved.
+    /// Required for v2 bundles so a stale UI cannot approve a revised Blueprint.
+    #[serde(default)]
+    pub blueprint_artifact_id: Option<String>,
+    #[serde(default)]
+    pub blueprint_artifact_version: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1011,6 +1149,10 @@ pub struct SubmitPlanComplexityAssessmentRequest {
     pub session_id: String,
     pub artifact_id: String,
     pub artifact_version: u32,
+    #[serde(default)]
+    pub blueprint_artifact_id: Option<String>,
+    #[serde(default)]
+    pub blueprint_artifact_version: Option<u32>,
     pub level: String,
     pub score: u8,
     pub recommended_action: String,
@@ -1032,6 +1174,10 @@ pub struct PlanComplexityAssessmentResponse {
     pub session_id: String,
     pub artifact_id: String,
     pub artifact_version: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blueprint_artifact_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blueprint_artifact_version: Option<u32>,
     pub level: String,
     pub score: u8,
     pub recommended_action: String,
@@ -1088,6 +1234,18 @@ pub struct ArtifactResponse {
     pub task_id: Option<String>,
     pub process_id: Option<String>,
     pub derived_from: Vec<String>,
+    /// Companion detailed implementation blueprint for plan bundle responses.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blueprint_artifact: Option<Box<ArtifactResponse>>,
+    /// Plan contract version (1 = legacy overview-only, 2 = paired bundle).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_contract_version: Option<i32>,
+    /// Backend-derived verification/approval target for the exact current bundle.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_target_id: Option<String>,
+    /// Role of the returned artifact within a plan bundle.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifact_role: Option<String>,
     /// The artifact ID that was replaced (only set on update responses)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub previous_artifact_id: Option<String>,
@@ -1110,6 +1268,10 @@ pub struct ArtifactResponse {
     /// Approved artifact version when the current artifact version is approved.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plan_approved_version: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_approved_blueprint_artifact_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_approved_blueprint_version: Option<u32>,
     /// Approval timestamp for the current artifact version.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plan_approved_at: Option<String>,
@@ -1142,6 +1304,10 @@ impl From<Artifact> for ArtifactResponse {
                 .iter()
                 .map(|id| id.as_str().to_string())
                 .collect(),
+            blueprint_artifact: None,
+            plan_contract_version: None,
+            plan_target_id: None,
+            artifact_role: None,
             previous_artifact_id: None,
             session_id: None,
             is_inherited: None,
@@ -1149,6 +1315,8 @@ impl From<Artifact> for ArtifactResponse {
             plan_approval_status: None,
             plan_approved_artifact_id: None,
             plan_approved_version: None,
+            plan_approved_blueprint_artifact_id: None,
+            plan_approved_blueprint_version: None,
             plan_approved_at: None,
         }
     }
@@ -1168,6 +1336,8 @@ pub struct ArtifactVersionSummaryResponse {
     pub version: u32,
     pub name: String,
     pub created_at: String,
+    pub created_by: String,
+    pub metadata: Option<serde_json::Value>,
 }
 
 impl From<crate::domain::repositories::ArtifactVersionSummary> for ArtifactVersionSummaryResponse {
@@ -1177,6 +1347,8 @@ impl From<crate::domain::repositories::ArtifactVersionSummary> for ArtifactVersi
             version: summary.version,
             name: summary.name,
             created_at: summary.created_at.to_rfc3339(),
+            created_by: summary.created_by,
+            metadata: summary.metadata,
         }
     }
 }
@@ -1301,6 +1473,8 @@ pub struct QuestionOptionInput {
 
 #[derive(Debug, Deserialize)]
 pub struct QuestionRequestInput {
+    #[serde(default)]
+    pub request_id: Option<String>,
     pub session_id: String,
     pub question: String,
     pub header: Option<String>,
@@ -1505,12 +1679,6 @@ pub struct CreateChildSessionRequest {
     #[serde(default = "default_inherit_context")]
     pub inherit_context: bool,
     pub initial_prompt: Option<String>,
-    /// Team mode override: "solo", "research", or "debate"
-    /// If omitted and inherit_context=true, inherits from parent session
-    pub team_mode: Option<String>,
-    /// Team constraints override (max_teammates, model_ceiling, etc.)
-    /// If omitted and inherit_context=true, inherits from parent session
-    pub team_config: Option<TeamConfigInput>,
     /// Purpose of the child session: "general" (default) or "verification"
     pub purpose: Option<String>,
     /// When true, the child session origin is set to External (triggered via external MCP).
@@ -1530,15 +1698,6 @@ pub struct CreateChildSessionRequest {
     pub blocker_fingerprint: Option<String>,
 }
 
-/// Team configuration input for create_child_session
-#[derive(Debug, Deserialize, Serialize)]
-pub struct TeamConfigInput {
-    pub max_teammates: Option<i32>,
-    pub model_ceiling: Option<String>,
-    pub budget_limit: Option<f64>,
-    pub composition_mode: Option<String>,
-}
-
 #[derive(Debug, Deserialize)]
 pub struct DelegateStartRequest {
     pub caller_agent_name: Option<String>,
@@ -1552,6 +1711,7 @@ pub struct DelegateStartRequest {
     pub parent_tool_use_id: Option<String>,
     pub delegated_session_id: Option<String>,
     pub child_session_id: Option<String>,
+    pub task_ref: Option<String>,
     pub agent_name: String,
     #[serde(alias = "message")]
     pub prompt: String,
@@ -1567,7 +1727,13 @@ pub struct DelegateStartRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct DelegateWaitRequest {
-    pub job_id: String,
+    /// Exactly one of `job_id` / `job_ids` must be present.
+    pub job_id: Option<String>,
+    /// Watch a whole delegated wave with one call; returns as soon as any member settles.
+    pub job_ids: Option<Vec<String>>,
+    /// Opt-in backend-held block. Absent means today's immediate-return behavior.
+    /// Clamped to `delegation.wait_block_max_secs`.
+    pub wait_timeout_ms: Option<u64>,
     pub include_delegated_status: Option<bool>,
     pub include_child_status: Option<bool>,
     pub include_messages: Option<bool>,
@@ -1577,6 +1743,53 @@ pub struct DelegateWaitRequest {
 #[derive(Debug, Deserialize)]
 pub struct DelegateCancelRequest {
     pub job_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DelegateParkRequest {
+    /// Delegation job IDs the coordinator is waiting on. Parent identity is transport-owned
+    /// (headers), never accepted from the model.
+    pub job_ids: Vec<String>,
+    /// `"all"` (default) or `"any"`.
+    pub wake_on: Option<String>,
+    /// Wake immediately when a watched delegate fails or is cancelled. Defaults to true.
+    pub wake_on_failure: Option<bool>,
+    /// Clamped by the backend to `delegation.park_max_secs`.
+    pub max_wait_secs: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ParkedJobSummary {
+    pub job_id: String,
+    pub delegated_session_id: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DelegateParkResponse {
+    pub park_id: String,
+    pub parked: bool,
+    pub wake_on: String,
+    pub wake_on_failure: bool,
+    pub watched_jobs: Vec<ParkedJobSummary>,
+    pub deadline_at: String,
+    /// Explicit permission to end the turn, plus the exact wake condition and deadline.
+    pub guidance: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GetDelegateParentContextRequest {
+    /// Number of eligible messages to return from the caller-conversation tail.
+    /// The backend applies a default and clamps the value to its safe maximum.
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GetDelegateParentContextResponse {
+    pub source_conversation_id: String,
+    pub source_context_type: String,
+    pub messages: Vec<ChatMessageSummary>,
+    pub truncated: bool,
+    pub total_available: u32,
 }
 
 fn default_inherit_context() -> bool {
@@ -1598,12 +1811,6 @@ pub struct CreateChildSessionResponse {
     pub parent_context: Option<ParentContextResponse>,
     /// Whether an orchestrator job was enqueued (true when description is provided)
     pub orchestration_triggered: bool,
-    /// Resolved team mode: inherited from parent or explicitly set via request
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub team_mode: Option<String>,
-    /// Resolved team configuration: inherited from parent or explicitly set via request
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub team_config: Option<TeamConfigInput>,
     /// Verification generation number; only set when purpose == "verification" and initialization succeeded
     #[serde(skip_serializing_if = "Option::is_none")]
     pub generation: Option<i32>,
@@ -1698,123 +1905,6 @@ pub struct GetSessionMessagesResponse {
     pub total_available: usize,
 }
 
-// ============================================================================
-// Request/Response Types - Team Endpoints
-// ============================================================================
-
-/// POST /api/team/plan/request — Phase 1: register team plan and return plan_id immediately
-#[derive(Debug, Serialize)]
-pub struct TeamPlanRegisterResponse {
-    pub success: bool,
-    pub plan_id: String,
-    pub message: String,
-    /// Whether the plan was auto-approved (spawning happened in Phase 1, no Phase 2 needed)
-    pub auto_approved: bool,
-    /// Teammates spawned during auto-approve (empty when auto_approved is false)
-    pub teammates_spawned: Vec<SpawnedTeammateInfo>,
-}
-
-/// GET /api/team/plan/pending/:context_id — frontend reconciliation response
-#[derive(Debug, Serialize)]
-pub struct GetPendingPlanResponse {
-    pub has_pending: bool,
-    pub plan_id: Option<String>,
-    pub context_id: String,
-    pub process: Option<String>,
-    pub teammate_count: Option<usize>,
-    pub created_at: Option<String>,
-}
-
-/// POST /api/team/plan — request approval for a team plan
-#[derive(Debug, Deserialize)]
-pub struct RequestTeamPlanRequest {
-    pub context_type: String,
-    pub context_id: String,
-    pub process: String,
-    pub teammates: Vec<TeamPlanTeammate>,
-    /// Team name from the lead agent's TeamCreate call.
-    /// Must match the Claude Code team registry name so teammates join the right team.
-    pub team_name: String,
-    /// Lead agent's Claude Code session ID (from RALPHX_LEAD_SESSION_ID env var).
-    /// When present, used as parent-session-id for teammate spawns instead of
-    /// reading from the team config file.
-    pub lead_session_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct TeamPlanTeammate {
-    pub role: String,
-    pub tools: Vec<String>,
-    pub mcp_tools: Vec<String>,
-    pub model: String,
-    pub preset: Option<String>,
-    pub prompt_summary: String,
-    /// Full prompt for the teammate — required for batch-spawn on plan approval.
-    /// When present, approve_team_plan can spawn without further MCP calls.
-    pub prompt: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct RequestTeamPlanResponse {
-    pub success: bool,
-    pub plan_id: String,
-    /// When approved: team name
-    pub team_name: Option<String>,
-    /// When approved: list of spawned teammates
-    pub teammates_spawned: Vec<SpawnedTeammateInfo>,
-    pub message: String,
-}
-
-/// POST /api/team/plan/approve — approve a validated team plan and batch-spawn
-#[derive(Debug, Deserialize)]
-pub struct ApproveTeamPlanRequest {
-    pub plan_id: String,
-    /// Context for the team (e.g., ideation session context_type + context_id).
-    /// Required so the backend can create the team and attach teammates.
-    pub context_type: String,
-    pub context_id: String,
-}
-
-/// POST /api/team/plan/reject — reject a team plan
-#[derive(Debug, Deserialize)]
-pub struct RejectTeamPlanRequest {
-    pub plan_id: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ApproveTeamPlanResponse {
-    pub success: bool,
-    pub team_name: String,
-    pub teammates_spawned: Vec<SpawnedTeammateInfo>,
-    pub message: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct SpawnedTeammateInfo {
-    pub name: String,
-    pub role: String,
-    pub model: String,
-    pub color: String,
-}
-
-/// POST /api/team/spawn — request to spawn a single teammate
-#[derive(Debug, Deserialize)]
-pub struct RequestTeammateSpawnRequest {
-    pub role: String,
-    pub prompt: String,
-    pub model: String,
-    pub tools: Vec<String>,
-    pub mcp_tools: Vec<String>,
-    pub preset: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct RequestTeammateSpawnResponse {
-    pub success: bool,
-    pub message: String,
-    pub teammate_name: String,
-}
-
 /// POST /api/team/artifact — create a team artifact
 #[derive(Debug, Deserialize)]
 pub struct CreateTeamArtifactRequest {
@@ -1829,36 +1919,6 @@ pub struct CreateTeamArtifactRequest {
 pub struct CreateTeamArtifactResponse {
     pub artifact_id: String,
 }
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct VerificationFindingGapPayload {
-    pub severity: String,
-    pub category: String,
-    pub description: String,
-    pub why_it_matters: Option<String>,
-    pub source: Option<String>,
-    pub lens: Option<String>,
-}
-
-/// POST /api/team/verification_finding — publish a typed verification finding
-#[derive(Debug, Deserialize)]
-pub struct PublishVerificationFindingRequest {
-    pub session_id: String,
-    pub critic: String,
-    pub round: u32,
-    pub status: String,
-    pub coverage: Option<String>,
-    pub summary: String,
-    #[serde(default)]
-    pub gaps: Vec<VerificationFindingGapPayload>,
-    pub title_suffix: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct PublishVerificationFindingResponse {
-    pub artifact_id: String,
-}
-
 /// GET /api/team/artifacts/:session_id response
 #[derive(Debug, Serialize)]
 pub struct TeamArtifactSummary {
@@ -1877,66 +1937,6 @@ pub struct GetTeamArtifactsResponse {
     pub count: usize,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct VerificationFindingQuery {
-    pub critic: Option<String>,
-    pub round: Option<u32>,
-    pub created_after: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct VerificationFindingSummary {
-    pub artifact_id: String,
-    pub title: String,
-    pub created_at: String,
-    pub author_teammate: Option<String>,
-    pub critic: String,
-    pub round: u32,
-    pub status: String,
-    pub coverage: Option<String>,
-    pub summary: String,
-    pub gaps: Vec<VerificationFindingGapPayload>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct GetVerificationFindingsResponse {
-    pub findings: Vec<VerificationFindingSummary>,
-    pub count: usize,
-}
-
-/// GET /api/team/session_state/:session_id response
-#[derive(Debug, Serialize)]
-pub struct TeamSessionStateResponse {
-    pub session_id: String,
-    pub team_name: Option<String>,
-    pub phase: String,
-    pub team_composition: Vec<TeamCompositionEntry>,
-    pub artifact_ids: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct TeamCompositionEntry {
-    pub name: String,
-    pub role: String,
-    pub prompt: String,
-    pub model: String,
-}
-
-/// POST /api/team/session_state — save team session state
-#[derive(Debug, Deserialize)]
-pub struct SaveTeamSessionStateRequest {
-    pub session_id: String,
-    pub team_composition: Vec<TeamCompositionEntry>,
-    pub phase: String,
-    pub artifact_ids: Option<Vec<String>>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct SaveTeamSessionStateResponse {
-    pub success: bool,
-    pub message: String,
-}
-
 // ============================================================================
 // Request/Response Types - Active Streaming State
 // ============================================================================
@@ -1949,6 +1949,9 @@ pub struct SaveTeamSessionStateResponse {
 pub struct ActiveStateResponse {
     /// Whether an agent is currently running for this conversation
     pub is_active: bool,
+    /// Owning run for the transient projection.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
     /// Tool calls currently in progress or recently completed
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<ActiveToolCall>,
@@ -1958,6 +1961,10 @@ pub struct ActiveStateResponse {
     /// Partial text content accumulated from agent:chunk events
     #[serde(skip_serializing_if = "String::is_empty")]
     pub partial_text: String,
+    /// Partial text content grouped by its text-block ordinal.
+    pub partial_text_segments: Vec<String>,
+    /// Partial thinking content grouped by its thinking-block ordinal.
+    pub partial_thinking_segments: Vec<String>,
 }
 
 /// A tool call in the active state response.
@@ -1969,6 +1976,9 @@ pub struct ActiveToolCall {
     pub id: String,
     /// Tool name (e.g., "bash", "read", "edit")
     pub name: String,
+    /// Authoritative logical content-block position for recovered active-state ordering.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub block_index: Option<u64>,
     /// Current arguments (may be partial during streaming)
     pub arguments: serde_json::Value,
     /// Result if completed
@@ -1987,6 +1997,7 @@ impl From<crate::application::chat_service::CachedToolCall> for ActiveToolCall {
         Self {
             id: cached.id,
             name: cached.name,
+            block_index: cached.block_index,
             arguments: cached.arguments,
             result: cached.result,
             diff_context: cached.diff_context,
@@ -2016,9 +2027,6 @@ pub struct ActiveStreamingTask {
     /// Agent ID if available
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
-    /// Teammate name if this is a team member task
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub teammate_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delegated_job_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2068,6 +2076,14 @@ pub struct ActiveStreamingTask {
     pub estimated_usd: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text_output: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp_provenance: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seq: Option<u64>,
 }
 
 impl From<crate::application::chat_service::CachedStreamingTask> for ActiveStreamingTask {
@@ -2079,7 +2095,6 @@ impl From<crate::application::chat_service::CachedStreamingTask> for ActiveStrea
             model: cached.model,
             status: cached.status,
             agent_id: cached.agent_id,
-            teammate_name: cached.teammate_name,
             delegated_job_id: cached.delegated_job_id,
             delegated_session_id: cached.delegated_session_id,
             delegated_conversation_id: cached.delegated_conversation_id,
@@ -2103,6 +2118,10 @@ impl From<crate::application::chat_service::CachedStreamingTask> for ActiveStrea
             cache_read_tokens: cached.cache_read_tokens,
             estimated_usd: cached.estimated_usd,
             text_output: cached.text_output,
+            started_at: cached.started_at,
+            completed_at: cached.completed_at,
+            timestamp_provenance: cached.timestamp_provenance,
+            seq: cached.seq,
         }
     }
 }
@@ -2476,14 +2495,10 @@ pub struct RevertAndSkipRequest {
 // Request/Response Types - Verification Confirmation (Wave 2)
 // ============================================================================
 
-/// POST /api/verification/confirm — trigger verification with optional specialist exclusions.
+/// POST /api/verification/confirm — queue a model-native Verify Plan action.
 #[derive(Debug, Deserialize)]
 pub struct ConfirmVerificationRequest {
     pub session_id: String,
-    /// Agent names to exclude from this verification run (e.g. ["ralphx-ideation-specialist-ux"]).
-    /// Empty list = all specialists enabled.
-    #[serde(default)]
-    pub disabled_specialists: Vec<String>,
 }
 
 /// POST /api/verification/dismiss — remove a pending verification entry.
@@ -2623,4 +2638,132 @@ mod http_error_tests {
         let response = err.into_response();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
+}
+
+// ============================================================================
+// Request/Response Types - Managed Team (/api/managed_team/*)
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnsureManagedTeamRequest {
+    pub conversation_id: String,
+    pub project_id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedTeamSessionSummary {
+    pub id: String,
+    pub project_id: String,
+    pub coordinator_conversation_id: String,
+    pub status: String,
+    pub configured_concurrency: u32,
+    pub effective_concurrency: u32,
+    pub automatic_wake_limit: u32,
+    pub version: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedTeamMemberSummary {
+    pub id: String,
+    pub team_id: String,
+    pub name: String,
+    pub normalized_name: String,
+    pub canonical_agent_name: String,
+    pub role_summary: String,
+    pub status: String,
+    pub generation: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedTeamStatusResponse {
+    pub session: ManagedTeamSessionSummary,
+    pub members: Vec<ManagedTeamMemberSummary>,
+    pub usage: ManagedTeamUsageSummary,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedTeamUsageSummary {
+    pub tokens: u64,
+    pub cost_micros: u64,
+    pub members: Vec<ManagedTeamMemberUsageSummary>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedTeamMemberUsageSummary {
+    pub member_id: Option<String>,
+    pub tokens: u64,
+    pub cost_micros: u64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AddManagedTeamMemberRequest {
+    pub name: String,
+    pub canonical_agent_name: String,
+    pub role_summary: String,
+    pub harness: Option<String>,
+    pub logical_model: Option<String>,
+    pub logical_effort: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AssignManagedTeamMemberRequest {
+    pub member_name: String,
+    pub task_ref: String,
+    pub work_classification: String,
+    #[serde(default)]
+    pub writable_paths: Vec<String>,
+    #[serde(default)]
+    pub generated_outputs: Vec<String>,
+    #[serde(default)]
+    pub resource_locks: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct StopManagedTeamMemberRequest {
+    pub member_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ExitManagedTeamRequest {
+    pub action: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedTeamAssignmentResponse {
+    pub assignment_id: String,
+    pub agent_run_id: String,
+    pub member: ManagedTeamMemberSummary,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SendManagedTeamMessageRequest {
+    pub target: String,
+    pub member_name: Option<String>,
+    pub kind: Option<String>,
+    pub content: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedTeamMessageResponse {
+    pub sequence: i64,
+    pub recipient_count: u32,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedTeamRosterEntry {
+    pub name: String,
+    pub normalized_name: String,
+    pub role_summary: String,
+    pub status: String,
 }

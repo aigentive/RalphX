@@ -18,18 +18,21 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema, } from "@modelcontextprotocol/sdk/types.js";
 import { callTauri, callTauriGet, TauriClientError } from "./tauri-client.js";
-import { getTraceLogPath, safeError, safeTrace } from "./redact.js";
+import { getTraceLogPath, redactToolArgsForLog, redactToolResultForLog, safeError, safeTrace, } from "./redact.js";
 import { getFilteredTools, isToolAllowed, getAllowedToolNames, parseAllowedToolsFromArgs, formatToolErrorMessage, logAllTools, getToolsByAgent, setAgentType, } from "./tools.js";
 import { FILESYSTEM_TOOL_NAMES, formatFilesystemToolError, handleFilesystemToolCall, } from "./filesystem-tools.js";
 import { permissionRequestTool, handlePermissionRequest, } from "./permission-handler.js";
 import { handleAskUserQuestion, handleProposePlanMode, } from "./question-handler.js";
-import { handleRequestTeamPlan } from "./team-plan-handler.js";
-import { hydrateRalphxRuntimeEnvFromCli, parseCliOptionFromArgs, } from "./runtime-context.js";
-import { createVerificationRuntime } from "./verification-runtime.js";
+import { buildArtifactMutationTransportHeaders, buildRuntimeIdentityTransportHeaders, hydrateRalphxRuntimeEnvFromCli, parseCliOptionFromArgs, } from "./runtime-context.js";
 import { buildAppendTaskToIdeationPlanPayload } from "./append-task-payload.js";
 import { callAgentWorkspaceTool, isAgentWorkspaceToolName, } from "./agent-workspace-tools.js";
+import { callAutomationSetupTool, isAutomationSetupToolName, } from "./automation-tools.js";
+import { callTicketAttachmentTool, isTicketAttachmentToolName, } from "./ticket-attachment-tools.js";
+import { callPersonaTool, isPersonaToolName } from "./persona-tools.js";
 import { AGENT_TASK_TOOL_NAMES } from "./agent-task-tools.js";
 import { withAgentTaskRuntimeContext } from "./agent-task-context.js";
+import { callTeamTool, isTeamToolName } from "./team-tools.js";
+import { callGetParentContextTool } from "./ideation-tools.js";
 /**
  * Semantic keyword patterns for cross-project detection in plan text.
  * Exported for unit testing.
@@ -137,21 +140,7 @@ const RALPHX_CONTEXT_TYPE = runtimeContext.contextType;
 const RALPHX_CONTEXT_ID = runtimeContext.contextId;
 const RALPHX_CONVERSATION_ID = runtimeContext.conversationId;
 const RALPHX_PARENT_CONVERSATION_ID = runtimeContext.parentConversationId;
-function buildArtifactMutationTransportHeaders() {
-    if (RALPHX_CONTEXT_TYPE !== "ideation" || !RALPHX_CONTEXT_ID) {
-        return undefined;
-    }
-    return {
-        "X-RalphX-Caller-Session-Id": RALPHX_CONTEXT_ID,
-    };
-}
-const { getPlanVerificationForTool, reportVerificationRoundForTool, completePlanVerificationForTool, runVerificationEnrichment, runVerificationRound, resolveVerificationFindingSessionId, resolveContextSessionId, } = createVerificationRuntime({
-    callTauri,
-    callTauriGet,
-    agentType: AGENT_TYPE,
-    contextType: RALPHX_CONTEXT_TYPE,
-    contextId: RALPHX_CONTEXT_ID,
-});
+const RALPHX_AGENT_RUN_ID = runtimeContext.agentRunId;
 /**
  * Validate that a tool call's task_id parameter matches the assigned task
  * @param toolName - Name of the tool being called
@@ -189,6 +178,10 @@ function validateTaskScope(toolName, args) {
         "report_incomplete",
         "complete_merge",
         "get_merge_target",
+        "get_branch_update_context",
+        "complete_branch_update",
+        "report_branch_update_conflict",
+        "report_branch_update_incomplete",
         // Issue tools (worker + reviewer agents)
         "get_task_issues",
         "get_issue_progress",
@@ -276,11 +269,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
  */
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
-    safeTrace("tool.request", { name, args });
+    safeTrace("tool.request", { name, args: redactToolArgsForLog(name, args) });
     // Special handling for permission_request tool (always allowed, not scoped by agent type)
     if (name === "permission_request") {
         try {
-            const result = await handlePermissionRequest(args);
+            const result = await handlePermissionRequest(args, runtimeContext);
             safeTrace("tool.success", {
                 name,
                 result: summarizeResult(result),
@@ -311,7 +304,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             };
         }
         try {
-            const result = await handleFilesystemToolCall(name, args);
+            const result = await handleFilesystemToolCall(name, args, runtimeContext);
             safeTrace("tool.success", {
                 name,
                 result: summarizeResult(result),
@@ -394,41 +387,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             };
         }
     }
-    // Special handling for request_team_plan (two-phase: register POST + long-poll GET)
-    if (name === "request_team_plan") {
-        // Still check authorization (must be in agent's allowlist)
-        if (!isToolAllowed(name)) {
-            return {
-                content: [
-                    {
-                        type: "text",
-                        text: `ERROR: Tool "${name}" is not available for agent type "${AGENT_TYPE}".`,
-                    },
-                ],
-                isError: true,
-            };
-        }
-        const leadSessionId = globalThis.process.env.RALPHX_LEAD_SESSION_ID;
-        try {
-            const result = await handleRequestTeamPlan(args, RALPHX_CONTEXT_TYPE ?? "ideation", RALPHX_CONTEXT_ID ?? "", leadSessionId);
-            safeTrace("tool.success", {
-                name,
-                result: summarizeResult(result),
-            });
-            return result;
-        }
-        catch (error) {
-            safeTrace("tool.error", {
-                name,
-                error: error instanceof Error ? error.message : String(error),
-            });
-            const message = error instanceof Error ? error.message : String(error);
-            return {
-                content: [{ type: "text", text: `ERROR: Unexpected error: ${message}` }],
-                isError: true,
-            };
-        }
-    }
     // Authorization check (defense in depth)
     if (!isToolAllowed(name)) {
         const allowedNames = getAllowedToolNames();
@@ -479,7 +437,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
     try {
         // Forward to Tauri backend
-        safeError(`[RalphX MCP] Calling Tauri: ${name} with args:`, JSON.stringify(args));
+        safeError(`[RalphX MCP] Calling Tauri: ${name} with args:`, JSON.stringify(redactToolArgsForLog(name, args)));
         safeTrace("tool.dispatch", { name });
         let result;
         const requestArgs = (args ?? {});
@@ -531,33 +489,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             const artifactMutationArgs = { ...(args ?? {}) };
             delete artifactMutationArgs.caller_session_id;
             result = await callTauri(name, artifactMutationArgs, {
-                headers: buildArtifactMutationTransportHeaders(),
+                headers: buildArtifactMutationTransportHeaders(runtimeContext),
             });
         }
         else if (name === "get_plan_verification") {
-            result = await getPlanVerificationForTool(args);
-        }
-        else if (name === "report_verification_round") {
-            result = await reportVerificationRoundForTool(args);
-        }
-        else if (name === "run_verification_enrichment") {
-            result = await runVerificationEnrichment(args);
-        }
-        else if (name === "run_verification_round") {
-            result = await runVerificationRound(args);
+            const { session_id } = args;
+            const resolvedSessionId = session_id ||
+                (RALPHX_CONTEXT_TYPE === "ideation" ? RALPHX_CONTEXT_ID : undefined);
+            if (!resolvedSessionId) {
+                throw new Error("get_plan_verification requires session_id outside an ideation context.");
+            }
+            result = await callTauriGet(`ideation/sessions/${resolvedSessionId}/verification`);
         }
         else if (name === "complete_plan_verification") {
-            result = await completePlanVerificationForTool(args);
-        }
-        else if (name === "revert_and_skip") {
-            // POST /api/ideation/sessions/:id/revert-and-skip
-            const { session_id, plan_version_to_restore } = args;
-            result = await callTauri(`ideation/sessions/${session_id}/revert-and-skip`, { plan_version_to_restore });
-        }
-        else if (name === "stop_verification") {
-            // POST /api/ideation/sessions/:id/stop-verification
-            const { session_id } = args;
-            result = await callTauri(`ideation/sessions/${session_id}/stop-verification`, {});
+            result = await callTauri("plan-verification/complete", {}, {
+                headers: {
+                    "x-ralphx-agent-run-id": RALPHX_AGENT_RUN_ID ?? "",
+                    "x-ralphx-conversation-id": RALPHX_CONVERSATION_ID ?? "",
+                },
+            });
         }
         else if (name === "get_task_steps") {
             // GET /api/task_steps/:task_id
@@ -608,6 +558,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         else if (isAgentWorkspaceToolName(name)) {
             result = await callAgentWorkspaceTool(name, callTauri, callTauriGet, args, {
                 parentConversationId: RALPHX_PARENT_CONVERSATION_ID,
+                conversationId: RALPHX_CONVERSATION_ID,
+                agentRunId: RALPHX_AGENT_RUN_ID,
+            });
+        }
+        else if (isAutomationSetupToolName(name)) {
+            result = await callAutomationSetupTool(name, callTauri, args, {
+                conversationId: RALPHX_CONVERSATION_ID,
+            });
+        }
+        else if (isTicketAttachmentToolName(name)) {
+            result = await callTicketAttachmentTool(name, callTauri, args);
+        }
+        else if (isPersonaToolName(name)) {
+            result = await callPersonaTool(name, callTauri, callTauriGet, args, {
+                conversationId: RALPHX_CONVERSATION_ID,
+            });
+        }
+        else if (isTeamToolName(name)) {
+            result = await callTeamTool(name, callTauri, callTauriGet, args, {
+                conversationId: RALPHX_CONVERSATION_ID,
+                agentRunId: RALPHX_AGENT_RUN_ID,
             });
         }
         else if (name === "report_conflict") {
@@ -623,6 +594,49 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         else if (name === "get_merge_target") {
             const { task_id } = args;
             result = await callTauriGet(`git/tasks/${task_id}/merge-target`);
+        }
+        else if (name === "get_branch_update_context") {
+            const { task_id } = args;
+            result = await callTauriGet(`branch-updates/tasks/${task_id}/context`, {
+                headers: {
+                    "x-ralphx-agent-run-id": RALPHX_AGENT_RUN_ID ?? "",
+                    "x-ralphx-conversation-id": RALPHX_CONVERSATION_ID ?? "",
+                },
+            });
+        }
+        else if (name === "complete_branch_update") {
+            const { task_id } = args;
+            result = await callTauri(`branch-updates/tasks/${task_id}/complete`, {}, {
+                headers: {
+                    "x-ralphx-agent-run-id": RALPHX_AGENT_RUN_ID ?? "",
+                    "x-ralphx-conversation-id": RALPHX_CONVERSATION_ID ?? "",
+                },
+            });
+        }
+        else if (name === "report_branch_update_conflict") {
+            const { task_id, conflict_files, reason, diagnostic_info } = args;
+            result = await callTauri(`branch-updates/tasks/${task_id}/report-conflict`, {
+                conflict_files,
+                reason,
+                diagnostic_info,
+            }, {
+                headers: {
+                    "x-ralphx-agent-run-id": RALPHX_AGENT_RUN_ID ?? "",
+                    "x-ralphx-conversation-id": RALPHX_CONVERSATION_ID ?? "",
+                },
+            });
+        }
+        else if (name === "report_branch_update_incomplete") {
+            const { task_id, reason, diagnostic_info } = args;
+            result = await callTauri(`branch-updates/tasks/${task_id}/report-incomplete`, {
+                reason,
+                diagnostic_info,
+            }, {
+                headers: {
+                    "x-ralphx-agent-run-id": RALPHX_AGENT_RUN_ID ?? "",
+                    "x-ralphx-conversation-id": RALPHX_CONVERSATION_ID ?? "",
+                },
+            });
         }
         else if (name === "get_task_issues") {
             // GET /api/task_issues/:task_id?status=<filter>
@@ -647,12 +661,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         else if (name === "create_child_session") {
             // POST /api/create_child_session
-            const { parent_session_id, title, description, inherit_context, initial_prompt, team_mode, team_config, purpose } = args;
+            const { parent_session_id, title, description, inherit_context, initial_prompt, purpose } = args;
             // Propagate external trigger context from the spawning process env var.
             // RALPHX_IS_EXTERNAL_TRIGGER=1 is set by the backend when the agent was spawned
             // in response to an external MCP message (is_external_mcp=true).
             const is_external_trigger = process.env.RALPHX_IS_EXTERNAL_TRIGGER === "1";
-            result = await callTauri("create_child_session", { parent_session_id, title, description, inherit_context, initial_prompt, team_mode, team_config, purpose, is_external_trigger });
+            result = await callTauri("create_child_session", { parent_session_id, title, description, inherit_context, initial_prompt, purpose, is_external_trigger });
         }
         else if (name === "create_followup_session") {
             // POST /api/create_child_session with first-class execution/review provenance
@@ -705,7 +719,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             });
         }
         else if (name === "register_agent_issue") {
-            const { origin_conversation_id, source_task_id, source_context_type, source_context_id, source_agent_name, issue_kind, severity, blocking_scope, title, summary, evidence, recommendation, blocker_fingerprint, followup_title, followup_prompt, auto_followup_eligible, provider_harness, model_override, logical_effort, } = args;
+            const { origin_conversation_id, source_task_id, source_context_type, source_context_id, source_agent_name, issue_kind, severity, blocking_scope, title, summary, evidence, recommendation, blocker_fingerprint, attach_to_issue_id, confirm_new, new_issue_reason, issue_check_token, followup_title, followup_prompt, auto_followup_eligible, provider_harness, model_override, logical_effort, } = args;
             const resolvedSourceTaskId = typeof source_task_id === "string" && source_task_id.trim().length > 0
                 ? source_task_id
                 : RALPHX_TASK_ID || undefined;
@@ -723,6 +737,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 evidence,
                 recommendation,
                 blocker_fingerprint,
+                attach_to_issue_id,
+                confirm_new,
+                new_issue_reason,
+                issue_check_token,
                 followup_title,
                 followup_prompt,
                 auto_followup_eligible: auto_followup_eligible ?? false,
@@ -735,6 +753,38 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             // GET /api/parent_session_context/:session_id
             const { session_id } = args;
             result = await callTauriGet(`parent_session_context/${session_id}`);
+        }
+        else if (name === "get_parent_context") {
+            result = await callGetParentContextTool(callTauri, args, runtimeContext);
+        }
+        else if (name === "create_agent_workflow_script") {
+            if (!RALPHX_CONVERSATION_ID || RALPHX_CONTEXT_TYPE !== "project" || !RALPHX_CONTEXT_ID) {
+                throw new Error("Agent Workflow authoring requires a project Agent conversation context");
+            }
+            result = await callTauri("agent_workflows/scripts/create", {
+                ...args,
+                conversation_id: RALPHX_CONVERSATION_ID,
+                project_id: RALPHX_CONTEXT_ID,
+            });
+        }
+        else if (name === "start_agent_workflow_run") {
+            result = await callTauri("agent_workflows/runs/start", {
+                ...args,
+                caller_agent_name: AGENT_TYPE,
+                caller_agent_profile: RALPHX_AGENT_PROFILE,
+            });
+        }
+        else if (["get_agent_workflow_run", "pause_agent_workflow_run", "resume_agent_workflow_run", "cancel_agent_workflow_run"].includes(name)) {
+            const action = name.split("_agent_workflow_run")[0];
+            result = await callTauri(`agent_workflows/runs/${action}`, {
+                ...args,
+                ...(action === "resume"
+                    ? {
+                        caller_agent_name: AGENT_TYPE,
+                        caller_agent_profile: RALPHX_AGENT_PROFILE,
+                    }
+                    : {}),
+            });
         }
         else if (name === "delegate_start") {
             const delegateArgs = args;
@@ -754,10 +804,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 caller_agent_profile: RALPHX_AGENT_PROFILE,
                 caller_context_type: RALPHX_CONTEXT_TYPE,
                 caller_context_id: RALPHX_CONTEXT_ID,
+            }, {
+                headers: buildRuntimeIdentityTransportHeaders(runtimeContext),
             });
         }
         else if (name === "delegate_wait") {
             result = await callTauri("coordination/delegate/wait", args);
+        }
+        else if (name === "delegate_park") {
+            result = await callTauri("coordination/delegate/park", args, {
+                headers: buildRuntimeIdentityTransportHeaders(runtimeContext),
+            });
         }
         else if (name === "delegate_cancel") {
             result = await callTauri("coordination/delegate/cancel", args);
@@ -771,14 +828,30 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 claim_agent_task: "agent_tasks/claim",
                 complete_agent_task: "agent_tasks/complete",
             };
-            const endpoint = endpointByTool[name];
-            result = await callTauri(endpoint, withAgentTaskRuntimeContext(args, {
-                contextType: RALPHX_CONTEXT_TYPE,
-                contextId: RALPHX_CONTEXT_ID,
-                projectId: RALPHX_PROJECT_ID,
-                actorAgent: AGENT_TYPE,
-                parentConversationId: RALPHX_PARENT_CONVERSATION_ID,
-            }));
+            if (name === "get_delegate_assignment" ||
+                name === "complete_delegate_assignment" ||
+                name === "release_delegate_assignment") {
+                const assignmentEndpointByTool = {
+                    get_delegate_assignment: "agent_tasks/delegate_assignment/get",
+                    complete_delegate_assignment: "agent_tasks/delegate_assignment/complete",
+                    release_delegate_assignment: "agent_tasks/delegate_assignment/release",
+                };
+                result = await callTauri(assignmentEndpointByTool[name], args, {
+                    headers: buildRuntimeIdentityTransportHeaders(runtimeContext),
+                });
+            }
+            else {
+                const endpoint = endpointByTool[name];
+                result = await callTauri(endpoint, withAgentTaskRuntimeContext(args, {
+                    contextType: RALPHX_CONTEXT_TYPE,
+                    contextId: RALPHX_CONTEXT_ID,
+                    projectId: RALPHX_PROJECT_ID,
+                    actorAgent: AGENT_TYPE,
+                    conversationId: RALPHX_CONVERSATION_ID,
+                    parentConversationId: RALPHX_PARENT_CONVERSATION_ID,
+                    agentRunId: RALPHX_AGENT_RUN_ID,
+                }));
+            }
         }
         else if (name === "get_project_analysis") {
             // GET /api/projects/:project_id/analysis?task_id=
@@ -791,11 +864,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             const { project_id, entries } = args;
             result = await callTauri(`projects/${project_id}/analysis`, { entries });
         }
-        else if (name === "request_teammate_spawn") {
-            // POST /api/team/spawn
-            const { role, prompt, model, tools, mcp_tools, preset } = args;
-            result = await callTauri("team/spawn", { role, prompt, model, tools, mcp_tools, preset });
-        }
         else if (name === "create_team_artifact") {
             // POST /api/team/artifact
             const { session_id, title, content, artifact_type, related_artifact_id } = args;
@@ -805,40 +873,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 content,
                 artifact_type,
                 related_artifact_id,
-            });
-        }
-        else if (name === "publish_verification_finding") {
-            const { session_id, critic, round, status, coverage, summary, gaps, title_suffix, } = args;
-            result = await callTauri("team/verification_finding", {
-                session_id: await resolveVerificationFindingSessionId(session_id, "publish_verification_finding"),
-                critic,
-                round,
-                status,
-                coverage,
-                summary,
-                gaps,
-                title_suffix,
+            }, {
+                headers: {
+                    ...(buildArtifactMutationTransportHeaders(runtimeContext) ?? {}),
+                    "x-ralphx-agent-type": AGENT_TYPE,
+                },
             });
         }
         else if (name === "get_team_artifacts") {
             // GET /api/team/artifacts/:session_id
             const { session_id } = args;
             result = await callTauriGet(`team/artifacts/${session_id}`);
-        }
-        else if (name === "get_team_session_state") {
-            // GET /api/team/session_state/:session_id
-            const { session_id } = args;
-            result = await callTauriGet(`team/session_state/${session_id}`);
-        }
-        else if (name === "save_team_session_state") {
-            // POST /api/team/session_state
-            const { session_id, team_composition, phase, artifact_ids } = args;
-            result = await callTauri("team/session_state", {
-                session_id,
-                team_composition,
-                phase,
-                artifact_ids,
-            });
         }
         else if (name === "execution_complete") {
             // POST /api/execution/tasks/:task_id/complete
@@ -995,11 +1040,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             }
             result = await callTauriGet(`ideation/pending-confirmations?project_id=${encodeURIComponent(projectId)}`);
         }
-        else if (name === "get_verification_confirmation_status") {
-            // GET /api/verification/confirmation-status/{session_id}
-            const { session_id } = args;
-            result = await callTauriGet(`verification/confirmation-status/${encodeURIComponent(session_id)}`);
-        }
         else if (name === "delete_task_proposal") {
             // Alias for archive_task_proposal — no /api/delete_task_proposal route exists in backend
             const { proposal_id } = args;
@@ -1015,7 +1055,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         safeError(`[RalphX MCP] Success: ${name}`);
         safeTrace("tool.success", {
             name,
-            result: summarizeResult(result),
+            result: summarizeResult(redactToolResultForLog(name, result)),
         });
         // Return result as JSON text
         return {
@@ -1028,11 +1068,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
     }
     catch (error) {
-        safeError(`[RalphX MCP] Error calling ${name}:`, error);
+        const rawErrorMessage = error instanceof Error ? error.message : String(error);
+        const errorForLog = redactToolResultForLog(name, rawErrorMessage);
+        safeError(`[RalphX MCP] Error calling ${name}:`, errorForLog === rawErrorMessage ? error : errorForLog);
         safeTrace("tool.error", {
             name,
-            error: error instanceof Error ? error.message : String(error),
-            details: error instanceof TauriClientError ? error.details : undefined,
+            error: errorForLog,
+            details: error instanceof TauriClientError
+                ? redactToolResultForLog(name, error.details)
+                : undefined,
         });
         if (error instanceof TauriClientError) {
             return {

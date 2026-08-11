@@ -9,13 +9,11 @@ Replace the current Claude-shaped agent prompt/config source of truth with a can
 In progress.
 
 Landed so far:
-- phase 1 pilot skeleton under `agents/` for `ralphx-ideation`, `ralphx-ideation-team-lead`, and `ralphx-utility-session-namer`
-- verification cohort canonicalized for Claude generation: `ralphx-plan-verifier`, `ralphx-plan-critic-completeness`, `ralphx-plan-critic-implementation-feasibility`
+- phase 1 pilot skeleton under `agents/` for `ralphx-ideation` and `ralphx-utility-session-namer`
+- model-native Verify Plan now reuses the active Plan conversation model and its general-purpose delegation surface; the former verifier cohort was removed
 - specialist/debate cohort canonicalized as Claude-only agents: ideation specialists plus `ralphx-ideation-advocate` / `ralphx-ideation-critic`
-- worker team lead canonicalized as Claude-only under `agents/ralphx-execution-team-lead/`; canonical-to-legacy prompt filename mapping is now explicit so runtime agent ids no longer need to match legacy markdown stems during migration
 - first cross-harness execution pair canonicalized: `ralphx-execution-reviewer` + `ralphx-execution-merger`
 - resolver-backed canonical prompt loading for migrated agents on the Codex path
-- `ralphx-ideation-team-lead` intentionally remains Claude-only because Codex team mode is not supported; canonical agents without a Codex prompt no longer silently inherit the legacy Claude prompt
 - Claude runtime now materializes a generated plugin cache dir instead of reading authored prompt files directly from `plugins/app/agents`
 
 Tracker reference:
@@ -258,7 +256,6 @@ No runtime cutover yet.
 
 Migrate only:
 - `ralphx-ideation`
-- `ralphx-ideation-team-lead`
 - `ralphx-utility-session-namer`
 
 Reason:
@@ -269,7 +266,6 @@ Deliverables:
 - Codex uses Codex-native prompt files for these agents
 - Claude plugin assets for these agents are generated from canonical config
 - no Claude-only instructions remain in the Codex versions
-- `ralphx-ideation-team-lead` stays Claude-only until Codex team mode exists
 
 ## Phase 3: Core Execution Agents
 
@@ -364,8 +360,6 @@ Requirements for the readonly ideation agent:
 Migrate:
 - ideation specialists
 - advocate/critic
-- plan critics
-- plan verifier
 
 This is where harness-specific delegation semantics matter most.
 
@@ -387,7 +381,6 @@ Remaining:
 ### Pilot
 
 - `ralphx-ideation`
-- `ralphx-ideation-team-lead`
 - `ralphx-utility-session-namer`
 
 ### Core User-Facing
@@ -403,13 +396,9 @@ Remaining:
 - `ralphx-execution-coder`
 - `ralphx-execution-reviewer`
 - `ralphx-execution-merger`
-- `ralphx-execution-team-lead`
 
-### Verification / Debate
+### Debate
 
-- `ralphx-plan-verifier`
-- `ralphx-plan-critic-completeness`
-- `ralphx-plan-critic-implementation-feasibility`
 - `ralphx-ideation-advocate`
 - `ralphx-ideation-critic`
 
@@ -418,12 +407,6 @@ Remaining:
 - `ralphx-ideation-specialist-backend`
 - `ralphx-ideation-specialist-frontend`
 - `ralphx-ideation-specialist-infra`
-- `ralphx-ideation-specialist-ux`
-- `ralphx-ideation-specialist-code-quality`
-- `ralphx-ideation-specialist-prompt-quality`
-- `ralphx-ideation-specialist-intent`
-- `ralphx-ideation-specialist-pipeline-safety`
-- `ralphx-ideation-specialist-state-machine`
 
 ## Required Tests
 
@@ -508,7 +491,6 @@ Implement only:
 
 Pilot agents:
 - `ralphx-ideation`
-- `ralphx-ideation-team-lead`
 - `ralphx-utility-session-namer`
 
 That is the smallest slice that fixes the current Codex/Claude prompt coupling without forcing a repo-wide migration in one round.

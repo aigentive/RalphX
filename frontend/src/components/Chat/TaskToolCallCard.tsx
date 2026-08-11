@@ -8,7 +8,7 @@
  * Matches the TaskSubagentCard streaming design but for persisted messages.
  */
 
-import React, { useState, useMemo } from "react";
+import React, { useMemo } from "react";
 import { ChevronDown, ChevronRight, Bot } from "lucide-react";
 import { withAlpha } from "@/lib/theme-colors";
 import type { ToolCall } from "./tool-widgets/shared.constants";
@@ -34,10 +34,12 @@ import {
   TaskCardKindBadge,
   TaskCardModelBadge,
   TaskCardProviderHarnessBadge,
+  TaskCardRuntimeDetails,
   TaskCardStatusBadge,
   TaskCardSubagentTypeBadge,
   TaskCardSummary,
 } from "./TaskCardShared";
+import { useDelegateCardExpansion } from "./useDelegateCardExpansion";
 
 // ============================================================================
 // Types
@@ -61,7 +63,7 @@ export const TaskToolCallCard = React.memo(function TaskToolCallCard({
   toolCall,
   className = "",
 }: TaskToolCallCardProps) {
-  const [isExpanded, setIsExpanded] = useState(false);
+  const isDelegateCall = isDelegationStartToolCall(toolCall.name);
   const hasError = Boolean(toolCall.error);
 
   const taskArgs = useMemo(() => extractTaskArgs(toolCall.arguments), [toolCall.arguments]);
@@ -69,7 +71,10 @@ export const TaskToolCallCard = React.memo(function TaskToolCallCard({
     () => extractDelegationMetadata(toolCall.arguments, toolCall.result),
     [toolCall.arguments, toolCall.result],
   );
-  const isDelegateCall = isDelegationStartToolCall(toolCall.name);
+  const { isExpanded, setIsExpanded } = useDelegateCardExpansion(
+    delegation.jobId ?? toolCall.id,
+    isDelegateCall,
+  );
   const taskStats = useMemo(
     () => isDelegateCall
       ? {
@@ -109,7 +114,7 @@ export const TaskToolCallCard = React.memo(function TaskToolCallCard({
       })
     : null;
 
-  // Card title: Agent with name → show name (team mode); otherwise description or fallback
+  // Card title: named delegated call → show name; otherwise description or fallback
   const cardTitle = isDelegateCall
     ? delegation.agentName || delegation.title || "Delegated specialist"
     : isAgentCall && taskArgs.name
@@ -145,7 +150,7 @@ export const TaskToolCallCard = React.memo(function TaskToolCallCard({
     [bodyText, childToolCalls, toolCall.id],
   );
   const hasTranscriptBody = transcriptEntry.blocks.length > 0;
-  const hasBody = hasTranscriptBody || hasError || delegatedConversationId != null;
+  const hasBody = hasTranscriptBody || hasError || delegatedConversationId != null || isDelegateCall;
   const providerMetadata = {
     providerHarness: delegation.providerHarness,
     providerSessionId: delegation.providerSessionId,
@@ -155,6 +160,8 @@ export const TaskToolCallCard = React.memo(function TaskToolCallCard({
     effectiveModelId: delegation.effectiveModelId,
     logicalEffort: delegation.logicalEffort,
     effectiveEffort: delegation.effectiveEffort,
+    approvalPolicy: delegation.approvalPolicy,
+    sandboxMode: delegation.sandboxMode,
     inputTokens: delegation.inputTokens,
     outputTokens: delegation.outputTokens,
     cacheCreationTokens: delegation.cacheCreationTokens,
@@ -168,7 +175,9 @@ export const TaskToolCallCard = React.memo(function TaskToolCallCard({
       className={`rounded-lg overflow-hidden ${className}`}
       style={{
         backgroundColor: hasError ? "var(--status-error-muted)" : "var(--bg-elevated)",
-        border: `1px solid ${hasError ? "var(--status-error-border)" : "var(--border-subtle)"}`,
+        borderColor: hasError ? "var(--status-error-border)" : "var(--border-subtle)",
+        borderStyle: "solid",
+        borderWidth: "1px",
       }}
     >
       {/* Header */}
@@ -275,6 +284,27 @@ export const TaskToolCallCard = React.memo(function TaskToolCallCard({
         </div>
       )}
 
+      {isDelegateCall && delegation.assignment?.title && (
+        <div
+          className="px-3 pb-1.5"
+          style={{ paddingLeft: "2.25rem" }}
+        >
+          <span
+            className="text-[0.6875rem] truncate block"
+            style={{ color: "var(--accent-primary)" }}
+          >
+            Assigned work
+            {delegation.assignment.taskNumber != null
+              ? ` #${delegation.assignment.taskNumber}`
+              : ""}
+            {` · ${delegation.assignment.title}`}
+            {delegation.assignment.assignmentState
+              ? ` · ${delegation.assignment.assignmentState.replace(/_/g, " ")}`
+              : ""}
+          </span>
+        </div>
+      )}
+
       {/* Stats summary (shown below header when collapsed) */}
       {(
         taskStats.totalDurationMs != null ||
@@ -314,6 +344,9 @@ export const TaskToolCallCard = React.memo(function TaskToolCallCard({
               : undefined,
           }}
         >
+          {isDelegateCall && (
+            <TaskCardRuntimeDetails providerMetadata={providerMetadata} />
+          )}
           {/* Error message */}
           {hasError && toolCall.error && (
             <pre
@@ -333,13 +366,26 @@ export const TaskToolCallCard = React.memo(function TaskToolCallCard({
           {delegatedConversationId ? (
             <TaskToolCallDelegatedTranscript
               conversationId={delegatedConversationId}
+              delegatedAgentRunId={delegation.delegatedAgentRunId}
               fallbackText={bodyText}
             />
           ) : hasTranscriptBody ? (
             <div className="max-h-64 overflow-y-auto">
               <TaskCardTranscriptView entries={[transcriptEntry]} />
             </div>
-          ) : null}
+          ) : (
+            <div
+              className="text-[0.6875rem] px-2 py-1.5 rounded"
+              style={{
+                backgroundColor: "var(--bg-surface)",
+                color: "var(--text-muted)",
+              }}
+            >
+              {delegation.status === "running"
+                ? "Waiting for delegated output..."
+                : "No delegated output available."}
+            </div>
+          )}
         </div>
       )}
     </div>

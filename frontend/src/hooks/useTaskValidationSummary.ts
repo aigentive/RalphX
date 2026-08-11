@@ -39,6 +39,10 @@ export interface ValidationRunSummary {
   base_ref: string | null;
   started_at: string;
   completed_at: string | null;
+  current_for_head?: boolean;
+  current_for_execution_episode?: boolean;
+  review_evidence_eligible?: boolean;
+  ineligible_reason?: string | null;
 }
 
 export interface ValidationCommandSummary {

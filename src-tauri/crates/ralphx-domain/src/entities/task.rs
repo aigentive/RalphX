@@ -89,6 +89,10 @@ pub struct Task {
     /// Used by worker to fetch implementation context during execution
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_artifact_id: Option<ArtifactId>,
+    /// Blueprint artifact paired with the plan overview at task creation.
+    /// This immutable snapshot prevents later plan edits from changing execution context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_blueprint_artifact_id: Option<ArtifactId>,
     /// Direct link to the originating ideation session
     /// Always valid (no FK constraint issues unlike plan_artifact_id fallback)
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -115,6 +119,14 @@ pub struct Task {
     /// Format: ralphx/{project-slug}/task-{task-id}
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_branch: Option<String>,
+    /// Branch/ref used when the task branch was first created.
+    /// Used as display context for immutable task-owned diffs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_branch_base_ref: Option<String>,
+    /// Exact commit SHA resolved from task_branch_base_ref at task branch creation.
+    /// Diff, validation, and review guards use this immutable SHA instead of the moving plan branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_branch_base_sha: Option<String>,
     /// Worktree path for this task (Worktree mode only, Phase 66)
     /// Only set when project.git_mode == Worktree
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -155,6 +167,7 @@ impl Task {
             needs_review_point: false,
             source_proposal_id: None,
             plan_artifact_id: None,
+            plan_blueprint_artifact_id: None,
             ideation_session_id: None,
             execution_plan_id: None,
             created_at: now,
@@ -164,6 +177,8 @@ impl Task {
             archived_at: None,
             blocked_reason: None,
             task_branch: None,
+            task_branch_base_ref: None,
+            task_branch_base_sha: None,
             worktree_path: None,
             merge_commit_sha: None,
             metadata: None,
@@ -248,6 +263,10 @@ impl Task {
             plan_artifact_id: row
                 .get::<_, Option<String>>("plan_artifact_id")?
                 .map(ArtifactId::from_string),
+            plan_blueprint_artifact_id: row
+                .get::<_, Option<String>>("plan_blueprint_artifact_id")
+                .unwrap_or(None)
+                .map(ArtifactId::from_string),
             ideation_session_id: row
                 .get::<_, Option<String>>("ideation_session_id")?
                 .map(IdeationSessionId::from_string),
@@ -267,6 +286,8 @@ impl Task {
                 .map(Self::parse_datetime),
             blocked_reason: row.get("blocked_reason")?,
             task_branch: row.get("task_branch")?,
+            task_branch_base_ref: row.get("task_branch_base_ref")?,
+            task_branch_base_sha: row.get("task_branch_base_sha")?,
             worktree_path: row.get("worktree_path")?,
             merge_commit_sha: row.get("merge_commit_sha")?,
             metadata: row.get("metadata")?,

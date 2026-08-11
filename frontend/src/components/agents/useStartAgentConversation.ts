@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import type { InfiniteData, QueryClient } from "@tanstack/react-query";
+import { invoke } from "@tauri-apps/api/core";
 
 import {
   chatApi,
@@ -13,7 +14,12 @@ import {
   type ChatMessageResponse,
   type ConversationMessagesPageResponse,
   type ConversationTimelinePageResponse,
+  type CapabilityIntent,
+  type TeamIntent,
 } from "@/api/chat";
+import { automationsApi } from "@/api/automations";
+import type { AutomationAuthoringMode } from "@/api/automations";
+import { ticketingApi, type TicketRef } from "@/api/ticketing";
 import type { MessageAttachment } from "@/components/Chat/MessageAttachments";
 import { serializeComposerReferencesMetadata } from "@/components/Chat/MessageReferences.parse";
 import {
@@ -21,15 +27,20 @@ import {
   createOptimisticConversationId,
   invalidateConversationDataQueries,
 } from "@/hooks/useChat";
+import { invalidateAutomationQueries } from "@/hooks/useAutomations";
 import { useAgentModels } from "@/hooks/useAgentModels";
 import { getModelLabel } from "@/lib/model-utils";
+import { extractErrorMessage } from "@/lib/errors";
 import {
   useAgentSessionStore,
   type AgentArtifactState,
   type AgentArtifactTab,
+  type AgentRuntimeProviderContext,
   type AgentRuntimeSelection,
 } from "@/stores/agentSessionStore";
 import { useChatStore } from "@/stores/chatStore";
+import { agentSidebarConversationKeys } from "@/hooks/agentSidebarConversationKeys";
+import { conversationFolderReferencesApi } from "@/api/conversation-folder-references";
 import type { ChatConversation } from "@/types/chat-conversation";
 
 import { DEFAULT_AGENT_ARTIFACT_UI_STATE } from "./agentArtifactUiStore";
@@ -50,18 +61,30 @@ import {
   hasGranolaIntegrationReference,
   invalidateAgentConversationGranolaNote,
 } from "./agentGranolaNoteQueries";
-import { normalizeRuntimeSelection } from "./agentOptions";
+import {
+  hasClickUpIntegrationReference,
+  invalidateAgentConversationClickUpTicket,
+} from "./agentClickUpTicketQueries";
+import {
+  buildAgentStartConversationRetryInput,
+  parseLinkedSetupFailure,
+  parseMcpSetupPreflightFailure,
+} from "./agentStartErrors";
+import {
+  normalizeRuntimeForPersistence,
+  normalizeRuntimeSelection,
+} from "./agentOptions";
 import { uploadDraftAttachment } from "./chatAttachmentUpload";
 
 type SupportedStartIntegrationTab = Extract<
   AgentArtifactTab,
-  "jira" | "linear" | "granola"
+  "jira" | "linear" | "clickup" | "granola"
 >;
 
 interface HandleAutoManagedTitleArgs {
   content: string;
   conversationId: string;
-  targetProjectId: string;
+  targetProjectId: string | null;
   shouldSpawnSessionNamer: boolean;
   providerHarness?: string | null;
 }
@@ -70,22 +93,51 @@ interface UseStartAgentConversationArgs {
   handleAutoManagedTitle: (args: HandleAutoManagedTitleArgs) => void;
   invalidateProjectConversations: (targetProjectId: string) => Promise<unknown>;
   queryClient: QueryClient;
-  selectConversation: (projectId: string, conversationId: string) => void;
-  setActiveConversation: (contextKey: string, conversationId: string | null) => void;
+  selectConversation: (
+    projectId: string | null,
+    conversationId: string,
+  ) => void;
+  setActiveConversation: (
+    contextKey: string,
+    conversationId: string | null,
+  ) => void;
   setFocusedProject: (projectId: string | null) => void;
-  setOptimisticConversationsById: Dispatch<SetStateAction<Record<string, AgentConversation>>>;
+  setOptimisticConversationsById: Dispatch<
+    SetStateAction<Record<string, AgentConversation>>
+  >;
   setOptimisticSelectedConversationId: Dispatch<SetStateAction<string | null>>;
   setOptimisticWorkspacesByConversationId: Dispatch<
     SetStateAction<Record<string, AgentConversationWorkspace>>
   >;
   setRuntimeForConversation: (
     conversationId: string,
-    projectId: string,
-    runtime: AgentRuntimeSelection
+    projectId: string | null,
+    runtime: AgentRuntimeSelection,
   ) => void;
   onJiraLinked?: (conversationId: string) => void;
   onLinearLinked?: (conversationId: string) => void;
+  onClickUpLinked?: (conversationId: string) => void;
   onGranolaLinked?: (conversationId: string) => void;
+}
+
+const AUTOMATION_DRAFT_TITLE_MAX_LENGTH = 80;
+const SEEDED_AGENT_CONVERSATION_ALREADY_STARTED =
+  "SEEDED_AGENT_CONVERSATION_ALREADY_STARTED";
+
+function automationDraftNameFromContent(content: string): string | undefined {
+  const normalized = content.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return undefined;
+  }
+  const withoutTrailingPunctuation = normalized.replace(/[.!?;:,\s]+$/u, "");
+  const title =
+    withoutTrailingPunctuation.length > 0
+      ? withoutTrailingPunctuation
+      : normalized;
+  if (title.length <= AUTOMATION_DRAFT_TITLE_MAX_LENGTH) {
+    return title;
+  }
+  return `${title.slice(0, AUTOMATION_DRAFT_TITLE_MAX_LENGTH - 3).trimEnd()}...`;
 }
 
 export function useStartAgentConversation({
@@ -101,6 +153,7 @@ export function useStartAgentConversation({
   setRuntimeForConversation,
   onJiraLinked,
   onLinearLinked,
+  onClickUpLinked,
   onGranolaLinked,
 }: UseStartAgentConversationArgs) {
   const { registry: modelRegistry } = useAgentModels();
@@ -114,26 +167,61 @@ export function useStartAgentConversation({
       projectId: targetProjectId,
       content,
       runtime,
+      runtimeProviderContext,
+      useRoleDefault = false,
       mode,
+      automationAuthoringMode,
       base,
       files,
+      folders = [],
       codexFastMode,
+      personaId,
+      capabilityIntent,
+      teamIntent,
+      sourcePersonaId,
       composerArtifactReferences,
       composerIntegrationReferences,
       composerProjectReferences,
     }: {
-      projectId: string;
+      projectId: string | null;
       content: string;
       runtime: AgentRuntimeSelection;
+      runtimeProviderContext?: AgentRuntimeProviderContext | undefined;
+      useRoleDefault?: boolean | undefined;
       mode: AgentConversationWorkspaceMode;
+      automationAuthoringMode?: AutomationAuthoringMode | undefined;
       base: AgentConversationBaseSelection | null;
       files: File[];
+      folders?: { folderPath: string; displayName: string }[];
       codexFastMode?: boolean | null;
+      personaId?: string | null;
+      capabilityIntent?: CapabilityIntent | null;
+      teamIntent?: TeamIntent | null;
+      sourcePersonaId?: string | undefined;
       composerArtifactReferences?: ComposerArtifactReference[] | undefined;
-      composerIntegrationReferences?: ComposerIntegrationReference[] | undefined;
+      composerIntegrationReferences?:
+        ComposerIntegrationReference[] | undefined;
       composerProjectReferences?: ComposerProjectReference[] | undefined;
     }) => {
-      const normalizedRuntime = normalizeRuntimeSelection(runtime, modelRegistry);
+      const isStandalone = targetProjectId === null;
+      const conversationContextType = isStandalone ? "standalone" : "project";
+      const effectiveMode =
+        isStandalone && mode !== "persona_builder" ? "chat" : mode;
+      const effectiveFolders =
+        isStandalone && mode !== "persona_builder" ? [] : folders;
+      const effectiveProjectReferences = isStandalone
+        ? undefined
+        : composerProjectReferences;
+      const persistenceRuntime = normalizeRuntimeForPersistence(
+        runtime,
+        modelRegistry,
+      );
+      const normalizedRuntime = normalizeRuntimeSelection(
+        persistenceRuntime,
+        modelRegistry,
+        runtimeProviderContext?.supportedEfforts,
+        runtimeProviderContext?.supportedModelAliases,
+      );
       const startIntegrationTab = getSupportedStartIntegrationTab(
         composerIntegrationReferences,
       );
@@ -161,42 +249,44 @@ export function useStartAgentConversation({
           conversation,
           messages: optimisticMessages,
         });
+        queryClient.setQueryData(
+          chatKeys.conversationSummary(conversationId),
+          conversation,
+        );
         if (optimisticMessages.length > 0) {
-          queryClient.setQueryData<InfiniteData<ConversationMessagesPageResponse>>(
-            chatKeys.conversationHistory(conversationId),
-            {
-              pages: [
-                {
-                  conversation,
-                  messages: optimisticMessages,
-                  limit: 40,
-                  offset: 0,
-                  totalMessageCount: optimisticMessages.length,
-                  hasOlder: false,
-                },
-              ],
-              pageParams: [0],
-            }
-          );
-          queryClient.setQueryData<InfiniteData<ConversationTimelinePageResponse>>(
-            chatKeys.conversationTimeline(conversationId),
-            {
-              pages: [
-                {
-                  conversation,
-                  items: [],
-                  messages: optimisticMessages,
-                  limit: 40,
-                  beforeSequence: null,
-                  totalItemCount: optimisticMessages.length,
-                  hasOlder: false,
-                  oldestLoadedSequence: null,
-                  newestLoadedSequence: null,
-                },
-              ],
-              pageParams: [null],
-            }
-          );
+          queryClient.setQueryData<
+            InfiniteData<ConversationMessagesPageResponse>
+          >(chatKeys.conversationHistory(conversationId), {
+            pages: [
+              {
+                conversation,
+                messages: optimisticMessages,
+                limit: 40,
+                offset: 0,
+                totalMessageCount: optimisticMessages.length,
+                hasOlder: false,
+              },
+            ],
+            pageParams: [0],
+          });
+          queryClient.setQueryData<
+            InfiniteData<ConversationTimelinePageResponse>
+          >(chatKeys.conversationTimeline(conversationId), {
+            pages: [
+              {
+                conversation,
+                items: [],
+                messages: optimisticMessages,
+                limit: 40,
+                beforeSequence: null,
+                totalItemCount: optimisticMessages.length,
+                hasOlder: false,
+                oldestLoadedSequence: null,
+                newestLoadedSequence: null,
+              },
+            ],
+            pageParams: [null],
+          });
         }
         queryClient.setQueryData(
           ["agents", "conversation-workspace", conversationId],
@@ -204,7 +294,11 @@ export function useStartAgentConversation({
         );
         setOptimisticSelectedConversationId(conversationId);
         setFocusedProject(targetProjectId);
-        setRuntimeForConversation(conversationId, targetProjectId, normalizedRuntime);
+        setRuntimeForConversation(
+          conversationId,
+          targetProjectId,
+          normalizedRuntime,
+        );
         useAgentSessionStore
           .getState()
           .setArtifactState(conversationId, startArtifactState);
@@ -212,7 +306,10 @@ export function useStartAgentConversation({
         setActiveConversation(storeKey, conversationId);
         return storeKey;
       };
-      const removeOptimisticConversation = (conversationId: string, storeKey: string) => {
+      const removeOptimisticConversation = (
+        conversationId: string,
+        storeKey: string,
+      ) => {
         setOptimisticConversationsById((current) => {
           if (!(conversationId in current)) return current;
           const next = { ...current };
@@ -226,9 +323,29 @@ export function useStartAgentConversation({
           return next;
         });
         setOptimisticSelectedConversationId((current) =>
-          current === conversationId ? null : current
+          current === conversationId ? null : current,
         );
-        queryClient.removeQueries({ queryKey: chatKeys.conversation(conversationId) });
+        if (
+          useAgentSessionStore.getState().selectedConversationId ===
+          conversationId
+        ) {
+          useAgentSessionStore.getState().clearSelection();
+        }
+        queryClient.removeQueries({
+          queryKey: chatKeys.conversation(conversationId),
+        });
+        queryClient.removeQueries({
+          queryKey: chatKeys.conversationSummary(conversationId),
+        });
+        queryClient.removeQueries({
+          queryKey: chatKeys.conversationHistory(conversationId),
+        });
+        queryClient.removeQueries({
+          queryKey: chatKeys.conversationTimeline(conversationId),
+        });
+        queryClient.removeQueries({
+          queryKey: ["agents", "conversation-workspace", conversationId],
+        });
         setActiveConversation(storeKey, null);
         setAgentActivityLabel(storeKey, null);
         setAgentRunning(storeKey, false);
@@ -237,20 +354,27 @@ export function useStartAgentConversation({
 
       const now = new Date().toISOString();
       const optimisticReferenceMetadata = serializeComposerReferencesMetadata({
-        projectReferences: composerProjectReferences,
+        folderReferences: effectiveFolders,
+        projectReferences: effectiveProjectReferences,
         integrationReferences: composerIntegrationReferences,
         artifactReferences: composerArtifactReferences,
       });
+      const optimisticCoordinationMode =
+        capabilityIntent?.coordinationMode ??
+        teamIntent?.coordinationMode ??
+        "solo";
+      const optimisticConversationId = createOptimisticConversationId();
       const initialConversation: ChatConversation = {
-        id: createOptimisticConversationId(),
-        contextType: "project",
-        contextId: targetProjectId,
+        id: optimisticConversationId,
+        contextType: conversationContextType,
+        contextId: targetProjectId ?? optimisticConversationId,
         claudeSessionId: null,
         providerSessionId: null,
         providerHarness: normalizedRuntime.provider,
+        coordinationMode: optimisticCoordinationMode,
         upstreamProvider: null,
         providerProfile: null,
-        agentMode: mode,
+        agentMode: effectiveMode,
         title: null,
         messageCount: 1,
         lastMessageAt: now,
@@ -266,11 +390,15 @@ export function useStartAgentConversation({
         ...(optimisticReferenceMetadata
           ? { metadata: optimisticReferenceMetadata }
           : {}),
-        ...(optimisticAttachments ? { attachments: optimisticAttachments } : {}),
+        ...(optimisticAttachments
+          ? { attachments: optimisticAttachments }
+          : {}),
       });
-      const optimisticStoreKey = seedConversationState(initialConversation, null, [
-        optimisticUserMessage,
-      ]);
+      const optimisticStoreKey = seedConversationState(
+        initialConversation,
+        null,
+        [optimisticUserMessage],
+      );
       setAgentActivityLabel(optimisticStoreKey, "Creating chat");
       setEffectiveModel(optimisticStoreKey, {
         id: normalizedRuntime.modelId,
@@ -279,66 +407,212 @@ export function useStartAgentConversation({
       setAgentRunning(optimisticStoreKey, true);
       setSending(optimisticStoreKey, true);
 
+      const requiresSeededConversation =
+        isStandalone ||
+        effectiveMode === "automation" ||
+        files.length > 0 ||
+        effectiveFolders.length > 0;
       let seededStoreKey: string | null = null;
+      let seededConversationId: string | null = null;
+      let abortableSeededConversationId: string | null = null;
       try {
-        const resultConversationSeed = await chatApi.createConversation(
-          "project",
-          targetProjectId
-        );
-        const seededConversation: ChatConversation = {
-          ...resultConversationSeed,
-          agentMode: mode,
-        };
-        const storeKey = getAgentConversationStoreKey({
-          id: seededConversation.id,
-          contextType: "project",
-          contextId: targetProjectId,
-        });
-        seededStoreKey = storeKey;
-        const seededOptimisticUserMessage = buildOptimisticUserMessage({
-          conversation: seededConversation,
-          content,
-          runtime: normalizedRuntime,
-          ...(optimisticReferenceMetadata
-            ? { metadata: optimisticReferenceMetadata }
-            : {}),
-          ...(optimisticAttachments ? { attachments: optimisticAttachments } : {}),
-        });
-        seedConversationState(seededConversation, null, [seededOptimisticUserMessage]);
-        removeOptimisticConversation(initialConversation.id, optimisticStoreKey);
-        setEffectiveModel(storeKey, {
-          id: normalizedRuntime.modelId,
-          label: getModelLabel(normalizedRuntime.modelId),
-        });
-        setAgentActivityLabel(storeKey, files.length > 0 ? "Uploading files" : "Setup workspace");
-        setAgentRunning(storeKey, true);
-        setSending(storeKey, true);
-
-        let uploadedAttachmentIds: string[] = [];
-        if (files.length > 0) {
-          const uploadedAttachments = await Promise.all(
-            files.map((file) => uploadDraftAttachment(seededConversation.id, file))
+        const automationDraft =
+          effectiveMode === "automation"
+            ? await automationsApi.createDraft({
+                projectId: targetProjectId!,
+                name: automationDraftNameFromContent(content),
+                ...(base ? { base } : {}),
+                ...(automationAuthoringMode
+                  ? { authoringMode: automationAuthoringMode }
+                  : {}),
+              })
+            : null;
+        const setupConversationId =
+          automationDraft?.setupConversationId ?? null;
+        if (effectiveMode === "automation" && !setupConversationId) {
+          throw new Error(
+            "Automation draft did not create a setup conversation",
           );
-          uploadedAttachmentIds = uploadedAttachments.map((attachment) => attachment.id);
+        }
+        if (automationDraft) {
+          await automationsApi.setupAgent.updateAutomation(
+            setupConversationId!,
+            {
+              providerHarness: normalizedRuntime.provider,
+              modelId: normalizedRuntime.modelId,
+              logicalEffort: normalizedRuntime.effort,
+            },
+          );
+          invalidateAutomationQueries(
+            queryClient,
+            automationDraft.automation.id,
+          );
+        }
+
+        const resultConversationSeed =
+          requiresSeededConversation && effectiveMode !== "automation"
+            ? effectiveMode === "persona_builder"
+              ? await chatApi.createConversation(
+                  conversationContextType,
+                  targetProjectId,
+                  undefined,
+                  effectiveMode,
+                )
+              : await chatApi.createConversation(
+                  conversationContextType,
+                  targetProjectId,
+                )
+            : null;
+        const seededConversation: ChatConversation | null =
+          resultConversationSeed
+            ? {
+                ...resultConversationSeed,
+                agentMode: effectiveMode,
+                coordinationMode: optimisticCoordinationMode,
+              }
+            : automationDraft
+              ? {
+                  id: setupConversationId!,
+                  contextType: "project",
+                  contextId: targetProjectId!,
+                  claudeSessionId: null,
+                  providerSessionId: null,
+                  providerHarness: normalizedRuntime.provider,
+                  upstreamProvider: null,
+                  providerProfile: null,
+                  agentMode: "automation",
+                  automationId: automationDraft.automation.id,
+                  automationRunId: null,
+                  parentConversationId: null,
+                  coordinationMode: optimisticCoordinationMode,
+                  title: automationDraft.automation.name,
+                  messageCount: 1,
+                  lastMessageAt: now,
+                  createdAt: now,
+                  updatedAt: now,
+                  archivedAt: null,
+                }
+              : null;
+        abortableSeededConversationId = resultConversationSeed?.id ?? null;
+        const activeConversation = seededConversation ?? initialConversation;
+        const storeKey = seededConversation
+          ? getAgentConversationStoreKey({
+              id: seededConversation.id,
+              contextType: seededConversation.contextType,
+              contextId: seededConversation.contextId,
+            })
+          : optimisticStoreKey;
+        const activeOptimisticUserMessage = seededConversation
+          ? buildOptimisticUserMessage({
+              conversation: seededConversation,
+              content,
+              runtime: normalizedRuntime,
+              ...(optimisticReferenceMetadata
+                ? { metadata: optimisticReferenceMetadata }
+                : {}),
+              ...(optimisticAttachments
+                ? { attachments: optimisticAttachments }
+                : {}),
+            })
+          : optimisticUserMessage;
+        if (seededConversation) {
+          seededStoreKey = storeKey;
+          seededConversationId = seededConversation.id;
+          seedConversationState(seededConversation, null, [
+            activeOptimisticUserMessage,
+          ]);
+          removeOptimisticConversation(
+            initialConversation.id,
+            optimisticStoreKey,
+          );
+          setEffectiveModel(storeKey, {
+            id: normalizedRuntime.modelId,
+            label: getModelLabel(normalizedRuntime.modelId),
+          });
+          setAgentActivityLabel(
+            storeKey,
+            files.length > 0 ? "Uploading files" : "Setup workspace",
+          );
+          setAgentRunning(storeKey, true);
+          setSending(storeKey, true);
+        } else {
           setAgentActivityLabel(storeKey, "Setup workspace");
         }
 
-        const result = await chatApi.startAgentConversation({
-          projectId: targetProjectId,
+        let uploadedAttachmentIds: string[] = [];
+        if (effectiveFolders.length > 0) {
+          if (!seededConversation) {
+            throw new Error(
+              "Folder registration requires a draft conversation",
+            );
+          }
+          await Promise.all(
+            effectiveFolders.map((folder) =>
+              conversationFolderReferencesApi.add({
+                conversationId: seededConversation.id,
+                folderPath: folder.folderPath,
+                displayName: folder.displayName,
+              }),
+            ),
+          );
+        }
+        if (files.length > 0) {
+          if (!seededConversation) {
+            throw new Error("Attachment upload requires a draft conversation");
+          }
+          const uploadedAttachments = await Promise.all(
+            files.map((file) =>
+              uploadDraftAttachment(seededConversation.id, file),
+            ),
+          );
+          uploadedAttachmentIds = uploadedAttachments.map(
+            (attachment) => attachment.id,
+          );
+          setAgentActivityLabel(storeKey, "Setup workspace");
+        }
+
+        const startInput = {
+          ...(targetProjectId ? { projectId: targetProjectId } : {}),
           content,
-          conversationId: seededConversation.id,
-          providerHarness: normalizedRuntime.provider,
-          modelId: normalizedRuntime.modelId,
-          logicalEffort: normalizedRuntime.effort,
-          ...(codexFastMode !== undefined
+          ...(seededConversation
+            ? { conversationId: seededConversation.id }
+            : {}),
+          ...(!useRoleDefault
             ? {
-                codexFastMode:
-                  normalizedRuntime.provider === "codex" ? codexFastMode : null,
+                providerHarness: normalizedRuntime.provider,
+                modelId: normalizedRuntime.modelId,
+                logicalEffort: normalizedRuntime.effort,
+                ...(codexFastMode !== undefined
+                  ? {
+                      codexFastMode:
+                        normalizedRuntime.provider === "codex"
+                          ? codexFastMode
+                          : null,
+                    }
+                  : {}),
+                ...(!isStandalone &&
+                effectiveMode !== "persona_builder" &&
+                personaId
+                  ? { personaId }
+                  : {}),
+                ...(!isStandalone &&
+                effectiveMode !== "persona_builder" &&
+                capabilityIntent
+                  ? { capabilityIntent }
+                  : {}),
+                ...(!isStandalone &&
+                effectiveMode !== "persona_builder" &&
+                teamIntent
+                  ? { teamIntent }
+                  : {}),
               }
             : {}),
-          mode,
-          ...(composerProjectReferences?.length
-            ? { composerProjectReferences }
+          mode: effectiveMode,
+          ...(effectiveMode === "persona_builder" && sourcePersonaId
+            ? { sourcePersonaId }
+            : {}),
+          ...(effectiveProjectReferences?.length
+            ? { composerProjectReferences: effectiveProjectReferences }
             : {}),
           ...(composerIntegrationReferences?.length
             ? { composerIntegrationReferences }
@@ -346,18 +620,31 @@ export function useStartAgentConversation({
           ...(composerArtifactReferences?.length
             ? { composerArtifactReferences }
             : {}),
-          ...(base ? { base } : {}),
-        });
+          ...(!isStandalone && base ? { base } : {}),
+        };
+        const ticketRef = ticketRefFromIntegrationReferences(
+          composerIntegrationReferences,
+        );
+        const result =
+          ticketRef && targetProjectId
+            ? await ticketingApi.startWorkFromTicket({
+                ...startInput,
+                projectId: targetProjectId,
+                ticketRef,
+              })
+            : await chatApi.startAgentConversation(startInput);
+        abortableSeededConversationId = null;
         const resolvedConversation: ChatConversation = {
           ...result.conversation,
-          agentMode: result.conversation.agentMode ?? mode,
+          agentMode: result.conversation.agentMode ?? effectiveMode,
         };
         const resolvedConversationId = resolvedConversation.id;
         const optimisticWorkspace = result.workspace;
-        const resolvedStoreKey = getAgentConversationStoreKey(resolvedConversation);
+        const resolvedStoreKey =
+          getAgentConversationStoreKey(resolvedConversation);
         const resolvedOptimisticUserMessage =
-          resolvedConversationId === seededConversation.id
-            ? seededOptimisticUserMessage
+          resolvedConversationId === activeConversation.id
+            ? activeOptimisticUserMessage
             : buildOptimisticUserMessage({
                 conversation: resolvedConversation,
                 content,
@@ -365,13 +652,21 @@ export function useStartAgentConversation({
                 ...(optimisticReferenceMetadata
                   ? { metadata: optimisticReferenceMetadata }
                   : {}),
-                ...(optimisticAttachments ? { attachments: optimisticAttachments } : {}),
+                ...(optimisticAttachments
+                  ? { attachments: optimisticAttachments }
+                  : {}),
               });
         seedConversationState(
           resolvedConversation,
           optimisticWorkspace ?? null,
-          [resolvedOptimisticUserMessage]
+          [resolvedOptimisticUserMessage],
         );
+        if (!seededConversation && resolvedStoreKey !== storeKey) {
+          removeOptimisticConversation(
+            initialConversation.id,
+            optimisticStoreKey,
+          );
+        }
         if (resolvedStoreKey !== storeKey) {
           setAgentActivityLabel(storeKey, null);
           setAgentRunning(storeKey, false);
@@ -391,7 +686,9 @@ export function useStartAgentConversation({
             resolvedStoreKey,
             content,
             result.sendResult.queuedMessageId,
-            uploadedAttachmentIds.length > 0 ? uploadedAttachmentIds : undefined
+            uploadedAttachmentIds.length > 0
+              ? uploadedAttachmentIds
+              : undefined,
           );
         }
         if (result.sendResult.wasQueued || result.sendResult.queuedAsPending) {
@@ -417,6 +714,15 @@ export function useStartAgentConversation({
             resolvedConversationId,
           );
         }
+        if (hasClickUpIntegrationReference(composerIntegrationReferences)) {
+          if (startIntegrationTab === "clickup") {
+            onClickUpLinked?.(resolvedConversationId);
+          }
+          await invalidateAgentConversationClickUpTicket(
+            queryClient,
+            resolvedConversationId,
+          );
+        }
         if (hasGranolaIntegrationReference(composerIntegrationReferences)) {
           if (startIntegrationTab === "granola") {
             onGranolaLinked?.(resolvedConversationId);
@@ -426,7 +732,13 @@ export function useStartAgentConversation({
             resolvedConversationId,
           );
         }
-        await invalidateProjectConversations(targetProjectId);
+        if (targetProjectId) {
+          await invalidateProjectConversations(targetProjectId);
+        } else {
+          await queryClient.invalidateQueries({
+            queryKey: agentSidebarConversationKeys.all,
+          });
+        }
         handleAutoManagedTitle({
           content,
           conversationId: resolvedConversationId,
@@ -435,12 +747,99 @@ export function useStartAgentConversation({
           providerHarness: normalizedRuntime.provider,
         });
       } catch (err) {
+        let seededAbortRefused = false;
+        if (abortableSeededConversationId) {
+          try {
+            await invoke("abort_seeded_agent_conversation", {
+              conversationId: abortableSeededConversationId,
+            });
+          } catch (abortError) {
+            seededAbortRefused = extractErrorMessage(abortError, "").includes(
+              SEEDED_AGENT_CONVERSATION_ALREADY_STARTED,
+            );
+            if (!seededAbortRefused) {
+              console.warn(
+                "Failed to abort a never-started seeded agent conversation",
+                abortError,
+              );
+            }
+          }
+        }
+        const linkedFailure = parseLinkedSetupFailure(err);
+        const mcpFailure = parseMcpSetupPreflightFailure(err);
+        if (linkedFailure) {
+          useAgentSessionStore.getState().setStartConversationFailure({
+            kind: "linked_setup",
+            message: linkedFailure.message,
+            retryInput: buildAgentStartConversationRetryInput({
+              projectId: targetProjectId,
+              content,
+              runtime: normalizedRuntime,
+              runtimeProviderContext,
+              useRoleDefault,
+              mode: effectiveMode,
+              base,
+              codexFastMode,
+              personaId,
+              capabilityIntent,
+              teamIntent,
+              composerArtifactReferences,
+              composerIntegrationReferences,
+              composerProjectReferences,
+            }),
+          });
+        } else if (mcpFailure) {
+          useAgentSessionStore.getState().setStartConversationFailure({
+            kind: "mcp_setup",
+            ...mcpFailure,
+            retryInput: buildAgentStartConversationRetryInput({
+              projectId: targetProjectId,
+              content,
+              runtime: normalizedRuntime,
+              runtimeProviderContext,
+              useRoleDefault,
+              mode,
+              base,
+              codexFastMode,
+              personaId,
+              capabilityIntent,
+              teamIntent,
+              composerArtifactReferences,
+              composerIntegrationReferences,
+              composerProjectReferences,
+            }),
+          });
+        }
         if (seededStoreKey) {
           setAgentActivityLabel(seededStoreKey, null);
           setAgentRunning(seededStoreKey, false);
           setSending(seededStoreKey, false);
         }
-        removeOptimisticConversation(initialConversation.id, optimisticStoreKey);
+        if (seededConversationId && seededStoreKey) {
+          if (seededAbortRefused) {
+            invalidateConversationDataQueries(
+              queryClient,
+              seededConversationId,
+            );
+            await queryClient.invalidateQueries({
+              queryKey: agentSidebarConversationKeys.all,
+            });
+            setOptimisticSelectedConversationId(seededConversationId);
+            setFocusedProject(targetProjectId);
+            selectConversation(targetProjectId, seededConversationId);
+            setActiveConversation(seededStoreKey, seededConversationId);
+          } else {
+            removeOptimisticConversation(seededConversationId, seededStoreKey);
+          }
+        }
+        removeOptimisticConversation(
+          initialConversation.id,
+          optimisticStoreKey,
+        );
+        if (!seededAbortRefused) {
+          setOptimisticSelectedConversationId(null);
+          useAgentSessionStore.getState().clearSelection();
+        }
         throw err;
       }
     },
@@ -462,12 +861,38 @@ export function useStartAgentConversation({
       setRuntimeForConversation,
       onJiraLinked,
       onLinearLinked,
+      onClickUpLinked,
       onGranolaLinked,
       setSending,
-    ]
+    ],
   );
 
   return handleStartAgentConversation;
+}
+
+function ticketRefFromIntegrationReferences(
+  references: ComposerIntegrationReference[] | undefined,
+): TicketRef | null {
+  for (const reference of references ?? []) {
+    const provider = reference.provider.trim().toLowerCase();
+    const kind = reference.kind.trim().toLowerCase();
+    const ticketProvider =
+      kind === "jira" && (provider === "atlassian" || provider === "jira")
+        ? "jira"
+        : kind === "linear" && provider === "linear"
+          ? "linear"
+          : kind === "clickup" && provider === "clickup"
+            ? "clickup"
+            : null;
+    if (ticketProvider && reference.id.trim()) {
+      return {
+        provider: ticketProvider,
+        id: reference.id.trim(),
+        ...(reference.key?.trim() ? { key: reference.key.trim() } : {}),
+      };
+    }
+  }
+  return null;
 }
 
 function getSupportedStartIntegrationTab(
@@ -479,6 +904,9 @@ function getSupportedStartIntegrationTab(
     }
     if (reference.kind === "linear") {
       return "linear";
+    }
+    if (reference.provider === "clickup" && reference.kind === "clickup") {
+      return "clickup";
     }
     if (reference.provider === "granola" && reference.kind === "note") {
       return "granola";
@@ -494,6 +922,7 @@ function buildStartArtifactState(
     isOpen: integrationTab !== null,
     activeTab: integrationTab ?? "plan",
     taskMode: DEFAULT_AGENT_ARTIFACT_UI_STATE.taskMode,
+    hiddenTabs: [],
   };
 }
 
@@ -513,7 +942,8 @@ function buildOptimisticUserMessage({
   return {
     id: `optimistic:${conversation.id}:initial-user`,
     sessionId: null,
-    projectId: conversation.contextType === "project" ? conversation.contextId : null,
+    projectId:
+      conversation.contextType === "project" ? conversation.contextId : null,
     taskId: null,
     role: "user",
     content,
@@ -542,7 +972,9 @@ function buildOptimisticUserMessage({
   };
 }
 
-function buildOptimisticMessageAttachments(files: File[]): MessageAttachment[] | undefined {
+function buildOptimisticMessageAttachments(
+  files: File[],
+): MessageAttachment[] | undefined {
   if (files.length === 0) {
     return undefined;
   }
@@ -552,7 +984,8 @@ function buildOptimisticMessageAttachments(files: File[]): MessageAttachment[] |
     fileName: file.name || "attachment",
     fileSize: file.size,
     ...(file.type ? { mimeType: file.type } : {}),
-    ...(file.type.startsWith("image/") && typeof URL.createObjectURL === "function"
+    ...(file.type.startsWith("image/") &&
+    typeof URL.createObjectURL === "function"
       ? { previewUrl: URL.createObjectURL(file) }
       : {}),
   }));

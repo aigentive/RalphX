@@ -342,14 +342,60 @@ describe("TaskToolCallCard — RalphX native delegation", () => {
     expect(screen.getByText("gpt-5.4 · high")).toBeInTheDocument();
   });
 
-  it("shows delegated usage and final output when expanded", async () => {
+  it("shows bound work and its current settlement state on the existing delegate card", () => {
+    render(
+      <TaskToolCallCard
+        toolCall={makeDelegateToolCall({
+          result: {
+            job_id: "job-assigned",
+            status: "running",
+            agent_name: "ralphx-execution-reviewer",
+            assignment: {
+              task_number: 6,
+              title: "Review state recovery",
+              task_state: "active",
+              assignment_state: "completion_requested",
+              delegate_agent_name: "ralphx-execution-reviewer",
+            },
+          },
+        })}
+      />,
+    );
+
+    expect(
+      screen.getByText("Assigned work #6 · Review state recovery · completion requested"),
+    ).toBeInTheDocument();
+  });
+
+  it("shows provider-correct delegated usage and final output when expanded", async () => {
     const user = userEvent.setup();
     render(<TaskToolCallCard toolCall={makeDelegateToolCall()} />);
-    expect(screen.getByText(/175 tokens/)).toBeInTheDocument();
+    expect(screen.getByText(/165 tokens/)).toBeInTheDocument();
     expect(screen.getByText(/\$0\.34/)).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /delegated task: ralphx-execution-reviewer/i }));
     expect(screen.getByText("Delegated review finished")).toBeInTheDocument();
+  });
+
+  it("renders the typed empty-completion cause and safe terminal details when expanded", async () => {
+    const user = userEvent.setup();
+    render(
+      <TaskToolCallCard
+        toolCall={makeDelegateToolCall({
+          result: {
+            job_id: "job-no-output",
+            status: "failed",
+            error: "Codex exited without a response (context=project, code=Some(1), signal=None); diagnostics: Reading additional input from stdin...",
+          },
+        })}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /delegated task: ralphx-execution-reviewer/i }));
+
+    expect(screen.getByText(/Delegate completed without a response/)).toBeInTheDocument();
+    expect(screen.getByText(/Exit code: 1/)).toBeInTheDocument();
+    expect(screen.queryByText(/Reading additional input from stdin/)).not.toBeInTheDocument();
   });
 
   it("does not fetch the delegated conversation until the card is expanded", () => {

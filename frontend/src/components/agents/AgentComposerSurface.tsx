@@ -7,42 +7,50 @@ import {
   type ComponentType,
   type ReactNode,
 } from "react";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useInputHistory } from "@/hooks/useInputHistory";
 import {
   useAgentComposerEntries,
+  useAgentComposerIntegrationAvailability,
   useAgentComposerIntegrationResources,
   useAgentComposerPlanReferences,
   useAgentComposerSkills,
+  type AgentComposerIntegrationAvailability,
 } from "@/hooks/useAgentComposerResources";
+import { atlassianApi, type AtlassianResourceSummary } from "@/api/atlassian";
 import {
-  AlertCircle,
   ArrowUp,
-  Bot,
   BookOpen,
   Check,
   ChevronDown,
-  Cpu,
   FileText,
   FolderOpen,
-  Gauge,
+  CircleOff,
   GitFork,
   Loader2,
   Paperclip,
   Plus,
   Search,
-  Settings,
   ScrollText,
   Square,
   Ticket,
-  X,
 } from "lucide-react";
 
 import { useChatAttachmentDrop } from "@/hooks/useChatAttachmentDrop";
+import { useFeatureFlags } from "@/hooks/useFeatureFlags";
+import {
+  useAddConversationFolderReference,
+  useConversationFolderReferences,
+  useRemoveConversationFolderReference,
+} from "@/hooks/useConversationFolderReferences";
+import type { ChatComposerFolder } from "@/stores/chatStore";
+import type { CapabilityIntent, TeamIntent, TeamMessageTarget } from "@/api/chat";
+import type { ManagedTeamMember } from "@/api/managed-team";
 import type { AgentStatus } from "@/stores/chatStore";
-import type { AgentProvider } from "@/stores/agentSessionStore";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ChatAttachmentDropOverlay } from "@/components/Chat/ChatAttachmentDropOverlay";
+import type { MessageFolderReference } from "@/components/Chat/MessageReferences.parse";
 import {
   ChatAttachmentGallery,
   type ChatAttachment as ComposerAttachment,
@@ -58,12 +66,6 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
-import { Switch } from "@/components/ui/switch";
 import { withAlpha } from "@/lib/theme-colors";
 import { extractErrorMessage } from "@/lib/errors";
 import { cn } from "@/lib/utils";
@@ -71,10 +73,12 @@ import {
   appendInternalSkillDirectives,
   detectAgentComposerTrigger,
   extractComposerArtifactTokens,
-  extractComposerSkillTokens,
+  extractPastedAtlassianResourceUrls,
+  extractComposerSlashSkillTokens,
   normalizeComposerArtifactReferences,
   normalizeComposerIntegrationReferences,
   normalizeComposerProjectReferences,
+  removeResolvedAtlassianResourceUrls,
   replaceAgentComposerTrigger,
   type AgentComposerArtifactReference,
   type AgentComposerIntegrationKind,
@@ -85,18 +89,61 @@ import {
   AgentComposerCommandMenu,
   type AgentComposerMenuItem,
 } from "./composer/AgentComposerCommandMenu";
+import { ComposerRuntimeSelector } from "./composer/runtime/ComposerRuntimeSelector";
+import { ComposerReferencePill } from "./ComposerReferencePill";
+import { TeamComposerTarget } from "./team/TeamComposerTarget";
+import { FolderReferenceChips } from "./FolderReferenceChips";
+import { subscribeToComposerExcerptReferences } from "./artifact-selection/composerExcerptBridge";
+import {
+  composerExcerptReferenceKey,
+  normalizeComposerExcerptReferences,
+  type ComposerExcerptReference,
+} from "./artifact-selection/artifactSelection.types";
+import type {
+  ComposerRuntimeCapabilityField,
+  ComposerRuntimeEffortField,
+  ComposerRuntimeModelField,
+  ComposerRuntimeOption,
+  ComposerRuntimePersonaField,
+  ComposerRuntimeProviderField,
+  ComposerRuntimeSpeedField,
+} from "./composer/runtime/runtimeSelectorTypes";
 import type { AgentComposerSkill } from "@/api/agent-composer";
 
-interface ComposerOption {
-  id: string;
-  label: string;
-  description?: string;
-  disabled?: boolean;
-  disabledReason?: string;
-}
+type ComposerOption = ComposerRuntimeOption;
 
 const PLAN_REFINE_COMMAND_MESSAGE =
   "Please verify and refine the current plan.";
+
+const COMPOSER_INTEGRATION_ACTIONS: ReadonlyArray<{
+  kind: AgentComposerIntegrationKind;
+  label: string;
+}> = [
+  { kind: "jira", label: "Jira" },
+  { kind: "confluence", label: "Confluence" },
+  { kind: "linear", label: "Linear" },
+  { kind: "clickup", label: "ClickUp" },
+  { kind: "granola", label: "Granola" },
+];
+
+function integrationReferenceKey(
+  reference: AgentComposerIntegrationReference,
+): string {
+  return `${reference.provider}:${reference.kind}:${reference.id}`;
+}
+
+function atlassianResourceToIntegrationReference(
+  resource: AtlassianResourceSummary,
+): AgentComposerIntegrationReference {
+  return {
+    provider: "atlassian",
+    kind: resource.kind,
+    id: resource.id,
+    ...(resource.key ? { key: resource.key } : {}),
+    title: resource.title,
+    ...(resource.url ? { url: resource.url } : {}),
+  };
+}
 
 function getSkillSourceLabel(skill: AgentComposerSkill): string {
   return skill.source === "ralphx-internal"
@@ -105,10 +152,7 @@ function getSkillSourceLabel(skill: AgentComposerSkill): string {
 }
 
 function getSlashSkillLabel(skill: AgentComposerSkill): string {
-  if (skill.source === "ralphx-internal") {
-    return `/${skill.name}`;
-  }
-  return skill.invocationValue || skill.name;
+  return `/${skill.name}`;
 }
 
 function getSkillInsertionText(
@@ -146,64 +190,34 @@ function skillMatchesComposerQuery(
 }
 
 interface ProjectFieldConfig {
-  value: string;
-  onValueChange: (value: string) => void;
+  value: string | null;
+  onValueChange: (value: string | null) => void;
   options: ComposerOption[];
   placeholder: string;
   disabled?: boolean;
-  endAction?: ReactNode;
   testId?: string;
   className?: string;
+  allowNoProject?: boolean;
+  standaloneCaption?: string;
 }
 
-interface ProviderFieldConfig {
-  value: AgentProvider;
-  onValueChange: (value: AgentProvider) => void;
-  options: Array<ComposerOption & { id: AgentProvider }>;
-  disabled?: boolean;
-  footerAction?: ReactNode;
-  compactFooterAction?: ReactNode;
-  testId?: string;
-  className?: string;
-}
-
-interface ModelFieldConfig {
-  value: string;
-  onValueChange: (value: string) => void;
-  options: ComposerOption[];
-  disabled?: boolean;
-  allowCustomValue?: boolean;
-  customPlaceholder?: string | undefined;
-  onOpenModelSettings?: () => void;
-  fastMode?: {
-    visible: boolean;
-    value: boolean;
-    onValueChange: (value: boolean) => void;
-    disabled?: boolean;
-    description?: string;
-    testId?: string;
-  };
-  testId?: string;
-  className?: string;
-}
-
-interface EffortFieldConfig {
-  value: string;
-  onValueChange: (value: string) => void;
-  options: ComposerOption[];
-  disabled?: boolean;
-  testId?: string;
-  className?: string;
-}
+type ProviderFieldConfig = ComposerRuntimeProviderField;
+type ModelFieldConfig = ComposerRuntimeModelField;
+type EffortFieldConfig = ComposerRuntimeEffortField;
+type PersonaFieldConfig = ComposerRuntimePersonaField;
+type SpeedFieldConfig = ComposerRuntimeSpeedField;
 
 interface ModeFieldConfig {
   value: string;
   onValueChange: (value: string) => void;
   onOpen?: () => void | Promise<unknown>;
   options: ComposerOption[];
+  secondaryOptionIds?: string[];
   disabled?: boolean;
   testId?: string;
 }
+
+export type CapabilityFieldConfig = ComposerRuntimeCapabilityField;
 
 export interface ChatFocusOption {
   id: string;
@@ -230,9 +244,21 @@ export interface AgentComposerQuestionMode {
 }
 
 export interface AgentComposerSendOptions {
+  folderReferences?: MessageFolderReference[];
   projectReferences?: AgentComposerProjectReference[];
   integrationReferences?: AgentComposerIntegrationReference[];
   artifactReferences?: AgentComposerArtifactReference[];
+  excerptReferences?: ComposerExcerptReference[];
+  capabilityIntent?: CapabilityIntent | null;
+  teamIntent?: TeamIntent | null;
+  teamMessageTarget?: TeamMessageTarget | null;
+}
+
+export interface TeamTargetFieldConfig {
+  value: TeamMessageTarget | null;
+  onValueChange: (target: TeamMessageTarget | null) => void;
+  members: readonly ManagedTeamMember[];
+  disabled?: boolean;
 }
 
 export interface AgentComposerSlashCommand {
@@ -250,6 +276,16 @@ export interface AgentComposerSurfaceProps {
   provider: ProviderFieldConfig;
   model: ModelFieldConfig;
   effort: EffortFieldConfig;
+  persona?: PersonaFieldConfig;
+  speed?: SpeedFieldConfig;
+  runtimeDefault?: {
+    source?: string | null;
+    scopeLabel?: string;
+    isResetting?: boolean;
+    disabled?: boolean;
+    onReset: () => Promise<unknown> | void;
+  };
+  runtimeTag?: string;
   onSend: (
     message: string,
     options?: AgentComposerSendOptions,
@@ -261,7 +297,6 @@ export interface AgentComposerSurfaceProps {
   value?: string;
   onChange?: (value: string) => void;
   onFocusChange?: (focused: boolean) => void;
-  onLayoutChange?: () => void;
   isReadOnly?: boolean;
   autoFocus?: boolean;
   showHelperText?: boolean;
@@ -281,12 +316,19 @@ export interface AgentComposerSurfaceProps {
   onFilesSelected?: ((files: File[]) => void | Promise<unknown>) | undefined;
   onRemoveAttachment?: ((id: string) => void | Promise<unknown>) | undefined;
   attachmentsUploading?: boolean;
+  folders?: ChatComposerFolder[];
+  onFoldersSelected?: ((folders: ChatComposerFolder[]) => void) | undefined;
+  onRemoveFolder?: ((id: string) => void) | undefined;
   initialProjectReferences?: AgentComposerProjectReference[];
   initialIntegrationReferences?: AgentComposerIntegrationReference[];
   initialArtifactReferences?: AgentComposerArtifactReference[];
   onIntegrationReferencesChange?: (references: AgentComposerIntegrationReference[]) => void;
   mode?: ModeFieldConfig;
+  capability?: CapabilityFieldConfig;
+  teamTarget?: TeamTargetFieldConfig;
   chatFocus?: ChatFocusFieldConfig;
+  /** Optional compact control appended to the composer toolbar. */
+  personaControl?: ReactNode;
   slashCommands?: AgentComposerSlashCommand[];
   onForkSession?: (() => Promise<unknown> | void) | undefined;
   forkSessionDisabled?: boolean;
@@ -309,8 +351,6 @@ const COMPOSER_COLLAPSED_MIN_HEIGHT = 38;
 const COMPOSER_EXPANDED_MIN_HEIGHT = 92;
 /** Textarea growth ceiling (px) before it scrolls internally. */
 const COMPOSER_MAX_HEIGHT = 220;
-/** Covers the 150ms composer transitions plus a small settle margin. */
-const COMPOSER_LAYOUT_SETTLE_MS = 180;
 const EMPTY_PROJECT_REFERENCES: AgentComposerProjectReference[] = [];
 const EMPTY_INTEGRATION_REFERENCES: AgentComposerIntegrationReference[] = [];
 const EMPTY_ARTIFACT_REFERENCES: AgentComposerArtifactReference[] = [];
@@ -320,6 +360,10 @@ export function AgentComposerSurface({
   provider,
   model,
   effort,
+  persona,
+  speed,
+  runtimeDefault,
+  runtimeTag,
   onSend,
   onStop,
   placeholder = "Ask the agent to plan, build, debug, or review something",
@@ -328,7 +372,6 @@ export function AgentComposerSurface({
   value: controlledValue,
   onChange: onChangeProp,
   onFocusChange,
-  onLayoutChange,
   isReadOnly = false,
   autoFocus = false,
   showHelperText = true,
@@ -341,12 +384,18 @@ export function AgentComposerSurface({
   onFilesSelected,
   onRemoveAttachment,
   attachmentsUploading = false,
+  folders = [],
+  onFoldersSelected,
+  onRemoveFolder,
   initialProjectReferences = EMPTY_PROJECT_REFERENCES,
   initialIntegrationReferences = EMPTY_INTEGRATION_REFERENCES,
   initialArtifactReferences = EMPTY_ARTIFACT_REFERENCES,
   onIntegrationReferencesChange,
   mode,
+  capability,
+  teamTarget,
   chatFocus,
+  personaControl,
   slashCommands = [],
   onForkSession,
   forkSessionDisabled = false,
@@ -360,6 +409,15 @@ export function AgentComposerSurface({
   conversationId = null,
   className,
 }: AgentComposerSurfaceProps) {
+  const { data: featureFlags } = useFeatureFlags();
+  const [folderReferencesEnabled, setFolderReferencesEnabled] = useState(false);
+  const [folderError, setFolderError] = useState<string | null>(null);
+  const addFolderReference = useAddConversationFolderReference();
+  const removeFolderReference = useRemoveConversationFolderReference();
+  const folderReferences = useConversationFolderReferences(
+    conversationId,
+    folderReferencesEnabled,
+  );
   const isControlled = controlledValue !== undefined;
   const [internalValue, setInternalValue] = useState("");
   const [isFocused, setIsFocused] = useState(false);
@@ -377,7 +435,26 @@ export function AgentComposerSurface({
   const [selectedArtifactReferences, setSelectedArtifactReferences] = useState<
     Map<string, AgentComposerArtifactReference>
   >(() => new Map());
+  const [selectedExcerptReferences, setSelectedExcerptReferences] = useState<
+    Map<string, ComposerExcerptReference>
+  >(() => new Map());
   const surfaceRef = useRef<HTMLDivElement>(null);
+  const runtimePersona =
+    persona ??
+    (personaControl
+      ? {
+          value: "conversation",
+          onValueChange: () => undefined,
+          options: [
+            {
+              id: "conversation",
+              label: "Conversation persona",
+              description: "Choose the persona for this conversation below.",
+            },
+          ],
+          footerAction: personaControl,
+        }
+      : undefined);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const restoreTextareaFocusOnActionMenuCloseRef = useRef(false);
@@ -385,11 +462,16 @@ export function AgentComposerSurface({
   const hydratedInitialReferencesSignatureRef = useRef<string | null>(null);
   const value = isControlled ? controlledValue : internalValue;
   const textareaValueRef = useRef(value);
+  const latestValueRef = useRef(value);
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
+  const integrationAvailability = useAgentComposerIntegrationAvailability({
+    projectId: project.value,
+    enabled: actionMenuOpen,
+  });
   const isAgentAlive = agentStatus !== "idle";
   const isAgentGenerating = agentStatus === "generating";
-  const canQueue = !isReadOnly && isAgentAlive;
+  const canSendWhileAgentActive = !isReadOnly && isAgentAlive;
   const shouldShowStop =
     Boolean(onStop) && isAgentGenerating && value.trim().length === 0;
   const emptySubmitValue = emptySubmitMessage?.trim() ?? "";
@@ -399,8 +481,12 @@ export function AgentComposerSurface({
     hasSubmittableValue &&
     !isReadOnly &&
     !sendDisabledReason &&
-    (!isSubmitting || canQueue);
-  const attachmentDisabled = isReadOnly || (isSubmitting && !canQueue);
+    (!isSubmitting || canSendWhileAgentActive);
+  const attachmentDisabled =
+    isReadOnly || (isSubmitting && !canSendWhileAgentActive);
+  const folderReferencesSupported =
+    (mode?.value === "persona_builder" && featureFlags.agentPersonas === true) ||
+    (mode?.value !== "persona_builder" && Boolean(project.value?.trim()));
   const effectivePlaceholder = isReadOnly
     ? "Viewing historical state (read-only)"
     : questionMode
@@ -411,7 +497,7 @@ export function AgentComposerSurface({
     [cursorPosition, value],
   );
   const composerAssistEnabled =
-    !isReadOnly && !questionMode && project.value.trim().length > 0;
+    !isReadOnly && !questionMode && Boolean(project.value?.trim());
   const pathQuery = activeTrigger?.kind === "path" ? activeTrigger.query : "";
   const integrationQuery =
     activeTrigger?.kind === "integration" ? activeTrigger.query : "";
@@ -421,7 +507,7 @@ export function AgentComposerSurface({
       ? activeTrigger.integrationKind
       : null;
   const pathEntriesQuery = useAgentComposerEntries({
-    projectId: project.value,
+    projectId: project.value ?? "",
     conversationId,
     query: pathQuery,
     enabled:
@@ -436,13 +522,13 @@ export function AgentComposerSurface({
       activeTrigger?.kind === "integration",
   });
   const planReferencesQuery = useAgentComposerPlanReferences({
-    projectId: project.value,
+    projectId: project.value ?? "",
     query: planQuery,
     enabled:
       composerAssistEnabled && isFocused && activeTrigger?.kind === "plan",
   });
   const skillsQuery = useAgentComposerSkills({
-    projectId: project.value,
+    projectId: project.value ?? "",
     conversationId,
     providerHarness: provider.value,
     mode: mode?.value ?? null,
@@ -503,6 +589,7 @@ export function AgentComposerSurface({
 
   const setValue = useCallback(
     (nextValue: string) => {
+      latestValueRef.current = nextValue;
       if (isControlled) {
         onChangeProp?.(nextValue);
       } else {
@@ -513,11 +600,15 @@ export function AgentComposerSurface({
     [isControlled, matchOptionsFromInput, onChangeProp],
   );
 
+  useEffect(() => {
+    latestValueRef.current = value;
+  }, [value]);
+
   const { addEntry: addHistoryEntry, handleHistoryKeyDown } = useInputHistory({
     setValue,
   });
 
-  const clearValue = useCallback(() => {
+  const clearValue = useCallback((options?: { preserveExcerptReferences?: boolean }) => {
     if (isControlled) {
       onChangeProp?.("");
     } else {
@@ -528,6 +619,9 @@ export function AgentComposerSurface({
     setSelectedProjectReferences(new Map());
     setSelectedIntegrationReferences(new Map());
     setSelectedArtifactReferences(new Map());
+    if (!options?.preserveExcerptReferences) {
+      setSelectedExcerptReferences(new Map());
+    }
     questionMode?.onMatchedOptions([]);
   }, [isControlled, onChangeProp, questionMode]);
 
@@ -557,6 +651,23 @@ export function AgentComposerSurface({
     [markComposerFocused],
   );
 
+  useEffect(
+    () =>
+      subscribeToComposerExcerptReferences(conversationId, (reference) => {
+        setSelectedExcerptReferences((current) => {
+          const next = normalizeComposerExcerptReferences([
+            ...current.values(),
+            reference,
+          ]);
+          return new Map(
+            next.map((item) => [composerExcerptReferenceKey(item), item]),
+          );
+        });
+        focusTextareaAtComposerCursor(latestValueRef.current.length);
+      }),
+    [conversationId, focusTextareaAtComposerCursor],
+  );
+
   const applyComposerText = useCallback(
     (nextValue: string, nextCursor: number) => {
       setValue(nextValue);
@@ -565,6 +676,22 @@ export function AgentComposerSurface({
       focusTextareaAtComposerCursor(nextCursor);
     },
     [focusTextareaAtComposerCursor, setValue],
+  );
+
+  const addSelectedIntegrationReferences = useCallback(
+    (references: readonly AgentComposerIntegrationReference[]) => {
+      const normalizedReferences =
+        normalizeComposerIntegrationReferences(references);
+      setSelectedIntegrationReferences((current) => {
+        const nextSet = new Map(current);
+        for (const reference of normalizedReferences) {
+          nextSet.delete(`${reference.kind}:${reference.id}`);
+          nextSet.set(integrationReferenceKey(reference), reference);
+        }
+        return nextSet;
+      });
+    },
+    [],
   );
 
   const skills = useMemo(
@@ -680,6 +807,10 @@ export function AgentComposerSurface({
       ]),
     [selectedArtifactReferences],
   );
+  const selectedExcerptReferenceList = useMemo(
+    () => normalizeComposerExcerptReferences([...selectedExcerptReferences.values()]),
+    [selectedExcerptReferences],
+  );
   useEffect(() => {
     onIntegrationReferencesChange?.(selectedIntegrationReferenceList);
   }, [onIntegrationReferencesChange, selectedIntegrationReferenceList]);
@@ -736,7 +867,8 @@ export function AgentComposerSurface({
   const hasSelectedReferences =
     selectedProjectReferenceList.length > 0 ||
     selectedIntegrationReferenceList.length > 0 ||
-    selectedArtifactReferenceList.length > 0;
+    selectedArtifactReferenceList.length > 0 ||
+    selectedExcerptReferenceList.length > 0;
 
   // Collapsed (minimal) resting state. The composer expands when the textarea
   // is focused (cursor active, even with no text yet) or when there is real
@@ -757,7 +889,6 @@ export function AgentComposerSurface({
   const isCollapsed = collapsible && !isFocused && !hasComposerActivity;
   const isExpanded = !isCollapsed;
   const compact = isCollapsed;
-  const previousCollapsedRef = useRef(isCollapsed);
 
   // Auto-resize the textarea to its content, floored at a min-height that
   // depends on the collapsed/expanded state and capped before it scrolls.
@@ -772,7 +903,6 @@ export function AgentComposerSurface({
     if (!textarea) {
       return;
     }
-    const previousValue = textareaValueRef.current;
     textareaValueRef.current = value;
 
     textarea.style.height = "auto";
@@ -788,29 +918,7 @@ export function AgentComposerSurface({
       return;
     }
     textareaAppliedHeightRef.current = appliedHeight;
-    if (previousValue !== value) {
-      onLayoutChange?.();
-    }
-  }, [onLayoutChange, value, textareaMinHeight]);
-
-  useEffect(() => {
-    if (!collapsible || !onLayoutChange) {
-      return undefined;
-    }
-    if (previousCollapsedRef.current === isCollapsed) {
-      return undefined;
-    }
-    previousCollapsedRef.current = isCollapsed;
-
-    onLayoutChange();
-    const frameId = window.requestAnimationFrame(onLayoutChange);
-    const settleTimer = window.setTimeout(onLayoutChange, COMPOSER_LAYOUT_SETTLE_MS);
-
-    return () => {
-      window.cancelAnimationFrame(frameId);
-      window.clearTimeout(settleTimer);
-    };
-  }, [collapsible, isCollapsed, onLayoutChange]);
+  }, [value, textareaMinHeight]);
 
   const slashCommandItems = useMemo<AgentComposerMenuItem[]>(() => {
     const items: AgentComposerMenuItem[] = [];
@@ -925,7 +1033,7 @@ export function AgentComposerSurface({
           const item: AgentComposerMenuItem = {
             id: `skill:${skill.id}`,
             kind: "skill",
-            label: `$${skill.name}`,
+            label: getSlashSkillLabel(skill),
             detail: skill.name,
             sourceLabel: getSkillSourceLabel(skill),
           };
@@ -1146,11 +1254,7 @@ export function AgentComposerSurface({
         if (!reference) {
           return;
         }
-        setSelectedIntegrationReferences((current) => {
-          const nextSet = new Map(current);
-          nextSet.set(`${reference.kind}:${reference.id}`, reference);
-          return nextSet;
-        });
+        addSelectedIntegrationReferences([reference]);
         const next = replaceAgentComposerTrigger(value, activeTrigger, "");
         applyComposerText(next.text, next.cursor);
         return;
@@ -1160,7 +1264,7 @@ export function AgentComposerSurface({
         return;
       }
       if (item.detail === "plan:refine") {
-        if ((isSubmitting && !canQueue) || isReadOnly || sendDisabledReason) {
+        if ((isSubmitting && !canSendWhileAgentActive) || isReadOnly || sendDisabledReason) {
           return;
         }
         addHistoryEntry(PLAN_REFINE_COMMAND_MESSAGE);
@@ -1225,8 +1329,9 @@ export function AgentComposerSurface({
     [
       activeTrigger,
       addHistoryEntry,
+      addSelectedIntegrationReferences,
       applyComposerText,
-      canQueue,
+      canSendWhileAgentActive,
       clearValue,
       integrationByMenuId,
       isReadOnly,
@@ -1245,10 +1350,34 @@ export function AgentComposerSurface({
     (
       message: string,
     ): { message: string; options?: AgentComposerSendOptions } => {
+      const folderReferenceSnapshots = (
+        conversationId ? folderReferences.data ?? [] : folders
+      ).map(
+        (reference): MessageFolderReference => ({
+          ...(reference.id ? { id: reference.id } : {}),
+          folderPath: reference.folderPath,
+          displayName: reference.displayName,
+        }),
+      );
+      const excerptReferences = normalizeComposerExcerptReferences(
+        selectedExcerptReferenceList,
+      );
       if (questionMode) {
-        return { message };
+        return {
+          message,
+          ...(folderReferenceSnapshots.length > 0 || excerptReferences.length > 0
+            ? {
+                options: {
+                  ...(folderReferenceSnapshots.length > 0
+                    ? { folderReferences: folderReferenceSnapshots }
+                    : {}),
+                  ...(excerptReferences.length > 0 ? { excerptReferences } : {}),
+                },
+              }
+            : {}),
+        };
       }
-      const tokens = new Set(extractComposerSkillTokens(message));
+      const tokens = new Set(extractComposerSlashSkillTokens(message));
       const internalNames = new Set(selectedInternalSkillNames);
       for (const skill of skills) {
         if (skill.source === "ralphx-internal" && tokens.has(skill.name)) {
@@ -1299,13 +1428,24 @@ export function AgentComposerSurface({
       const normalizedArtifactReferences = normalizeComposerArtifactReferences([
         ...artifactReferences.values(),
       ]);
+      const capabilityIntent = capability
+        ? ({ coordinationMode: capability.value } satisfies CapabilityIntent)
+        : null;
+      const teamMessageTarget = teamTarget?.value ?? null;
       return {
         message: withInternalSkillDirectives,
-        ...(projectReferences.length > 0 ||
-        normalizedIntegrationReferences.length > 0 ||
-        normalizedArtifactReferences.length > 0
+        ...(folderReferenceSnapshots.length > 0 ||
+          projectReferences.length > 0 ||
+          normalizedIntegrationReferences.length > 0 ||
+          normalizedArtifactReferences.length > 0 ||
+          excerptReferences.length > 0 ||
+          capabilityIntent ||
+          teamMessageTarget
           ? {
               options: {
+                ...(folderReferenceSnapshots.length > 0
+                  ? { folderReferences: folderReferenceSnapshots }
+                  : {}),
                 ...(projectReferences.length > 0 ? { projectReferences } : {}),
                 ...(normalizedIntegrationReferences.length > 0
                   ? { integrationReferences: normalizedIntegrationReferences }
@@ -1313,18 +1453,27 @@ export function AgentComposerSurface({
                 ...(normalizedArtifactReferences.length > 0
                   ? { artifactReferences: normalizedArtifactReferences }
                   : {}),
+                ...(excerptReferences.length > 0 ? { excerptReferences } : {}),
+                ...(capabilityIntent ? { capabilityIntent } : {}),
+                ...(teamMessageTarget ? { teamMessageTarget } : {}),
               },
             }
           : {}),
       };
     },
     [
+      conversationId,
+      folderReferences.data,
+      folders,
       questionMode,
       selectedArtifactReferenceList,
       selectedIntegrationReferenceList,
+      selectedExcerptReferenceList,
       selectedInternalSkillNames,
       selectedProjectReferenceList,
       skills,
+      capability,
+      teamTarget,
     ],
   );
 
@@ -1365,6 +1514,18 @@ export function AgentComposerSurface({
     [cursorPosition, focusTextareaAtComposerCursor],
   );
 
+  const removeSelectedExcerptReference = useCallback(
+    (reference: ComposerExcerptReference) => {
+      setSelectedExcerptReferences((current) => {
+        const next = new Map(current);
+        next.delete(composerExcerptReferenceKey(reference));
+        return next;
+      });
+      focusTextareaAtComposerCursor(cursorPosition);
+    },
+    [cursorPosition, focusTextareaAtComposerCursor],
+  );
+
   const handleAttachmentSelect = useCallback(
     (event: React.ChangeEvent<HTMLInputElement>) => {
       const fileList = event.target.files;
@@ -1392,6 +1553,55 @@ export function AgentComposerSurface({
     }
   }, [attachmentDisabled]);
 
+  const handleAddFolder = useCallback(async () => {
+    if (attachmentDisabled) return;
+    const selected = await openDialog({ directory: true, multiple: false });
+    const folderPath = Array.isArray(selected) ? selected[0] : selected;
+    if (!folderPath) return;
+    const displayName =
+      folderPath.split(/[\\/]/).filter(Boolean).pop() ?? folderPath;
+    setFolderError(null);
+    if (conversationId) {
+      try {
+        await addFolderReference.mutateAsync({
+          conversationId,
+          folderPath,
+          displayName,
+        });
+      } catch (error) {
+        setFolderError(
+          extractErrorMessage(error, "Unable to add folder."),
+        );
+      }
+      return;
+    }
+    onFoldersSelected?.([
+      ...folders,
+      {
+        id:
+          globalThis.crypto?.randomUUID?.() ??
+          `${folderPath}-${Date.now()}`,
+        folderPath,
+        displayName,
+      },
+    ]);
+  }, [
+    addFolderReference,
+    attachmentDisabled,
+    conversationId,
+    folders,
+    onFoldersSelected,
+  ]);
+
+  useEffect(() => {
+    if (!folderReferencesSupported || !conversationId) return;
+    const frame = requestAnimationFrame(() => setTimeout(() => setFolderReferencesEnabled(true), 0));
+    return () => {
+      cancelAnimationFrame(frame);
+      setFolderReferencesEnabled(false);
+    };
+  }, [conversationId, folderReferencesSupported]);
+
   const handleSend = useCallback(async () => {
     const trimmedValue = value.trim();
     const messageValue = trimmedValue || emptySubmitValue;
@@ -1402,7 +1612,7 @@ export function AgentComposerSurface({
       return;
     }
 
-    if ((isSubmitting && !canQueue) || isReadOnly || sendDisabledReason) {
+    if ((isSubmitting && !canSendWhileAgentActive) || isReadOnly || sendDisabledReason) {
       return;
     }
 
@@ -1415,23 +1625,29 @@ export function AgentComposerSurface({
         : onSend(outgoing.message);
 
     if (questionMode || isControlled) {
-      await sendOutgoing();
+      try {
+        await sendOutgoing();
+      } catch {
+        return;
+      }
       setSelectedInternalSkillNames(new Set());
       setSelectedProjectReferences(new Map());
       setSelectedIntegrationReferences(new Map());
       setSelectedArtifactReferences(new Map());
+      setSelectedExcerptReferences(new Map());
       return;
     }
 
-    clearValue();
+    clearValue({ preserveExcerptReferences: true });
     try {
       await sendOutgoing();
+      setSelectedExcerptReferences(new Map());
     } catch {
       // Errors surface through the parent; preserve the current interaction model.
     }
   }, [
     addHistoryEntry,
-    canQueue,
+    canSendWhileAgentActive,
     clearValue,
     emptySubmitValue,
     isControlled,
@@ -1554,6 +1770,84 @@ export function AgentComposerSurface({
     [setValue, updateCursorFromTextarea],
   );
 
+  const resolvePastedAtlassianUrls = useCallback(
+    async (urls: readonly string[]) => {
+      try {
+        const results = await atlassianApi.resolveResourceUrls({
+          urls: [...urls],
+        });
+        const resolvedUrls: string[] = [];
+        const references: AgentComposerIntegrationReference[] = [];
+        for (const result of results) {
+          if (!result.resource) {
+            continue;
+          }
+          resolvedUrls.push(result.inputUrl.trim());
+          references.push(
+            atlassianResourceToIntegrationReference(result.resource),
+          );
+        }
+        if (references.length === 0) {
+          return;
+        }
+        addSelectedIntegrationReferences(references);
+        const currentValue = latestValueRef.current;
+        const nextValue = removeResolvedAtlassianResourceUrls(
+          currentValue,
+          resolvedUrls,
+        );
+        if (nextValue === currentValue) {
+          return;
+        }
+        const nextCursor = Math.min(
+          textareaRef.current?.selectionStart ?? nextValue.length,
+          nextValue.length,
+        );
+        setValue(nextValue);
+        setCursorPosition(nextCursor);
+      } catch {
+        // Disabled, invalid, or inaccessible integrations leave pasted text intact.
+      }
+    },
+    [addSelectedIntegrationReferences, setValue],
+  );
+
+  const handleTextareaPaste = useCallback(
+    (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+      if (questionMode || isReadOnly || (isSubmitting && !canSendWhileAgentActive)) {
+        return;
+      }
+      const pastedText = event.clipboardData.getData("text");
+      const urls = extractPastedAtlassianResourceUrls(pastedText);
+      if (urls.length === 0) {
+        return;
+      }
+      event.preventDefault();
+      const textarea = event.currentTarget;
+      const selectionStart = textarea.selectionStart ?? value.length;
+      const selectionEnd = textarea.selectionEnd ?? selectionStart;
+      const nextValue = `${value.slice(0, selectionStart)}${pastedText}${value.slice(selectionEnd)}`;
+      const nextCursor = selectionStart + pastedText.length;
+      setValue(nextValue);
+      setCursorPosition(nextCursor);
+      restoreTextareaFocusCursorRef.current = nextCursor;
+      window.requestAnimationFrame(() => {
+        window.setTimeout(() => {
+          void resolvePastedAtlassianUrls(urls);
+        }, 0);
+      });
+    },
+    [
+      canSendWhileAgentActive,
+      isReadOnly,
+      isSubmitting,
+      questionMode,
+      resolvePastedAtlassianUrls,
+      setValue,
+      value,
+    ],
+  );
+
   const attachmentDropEnabled =
     enableAttachments && !attachmentDisabled && onFilesSelected !== undefined;
   const { isDragging: isAttachmentDragging, dropProps: attachmentDropProps } =
@@ -1605,6 +1899,7 @@ export function AgentComposerSurface({
           data-testid={textareaTestId}
           value={value}
           onChange={handleTextareaChange}
+          onPaste={handleTextareaPaste}
           onKeyDown={handleKeyDown}
           onKeyUp={(event) => updateCursorFromTextarea(event.currentTarget)}
           onClick={(event) => updateCursorFromTextarea(event.currentTarget)}
@@ -1618,7 +1913,7 @@ export function AgentComposerSurface({
             setIsFocused(false);
             onFocusChange?.(false);
           }}
-          disabled={isReadOnly || (isSubmitting && !canQueue)}
+          disabled={isReadOnly || (isSubmitting && !canSendWhileAgentActive)}
           placeholder={effectivePlaceholder}
           className={cn(
             "agent-composer-textarea block w-full resize-none border-0 bg-transparent px-5 text-[0.9375rem] leading-[1.5] shadow-none outline-none ring-0 focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0 sm:text-[1rem]",
@@ -1635,10 +1930,55 @@ export function AgentComposerSurface({
           aria-label="Message input"
         />
 
-        {(attachments.length > 0 ||
+        {(attachments.length > 0 || folders.length > 0 || folderReferences.data?.length ||
+          folderReferences.isError ||
           hasSelectedReferences ||
           attachmentsUploading) && (
           <div className="px-5 pb-3">
+            {folderReferences.isError && (
+              <div
+                className="mb-3 flex items-center justify-between gap-3 rounded-md border px-3 py-2 text-xs"
+                style={{
+                  borderColor: "var(--status-warning-border)",
+                  backgroundColor: "var(--status-warning-muted)",
+                  color: "var(--status-warning)",
+                }}
+              >
+                <span>
+                  Couldn't load folder references — previously attached folders may still be visible to the agent
+                </span>
+                <button
+                  type="button"
+                  className="shrink-0 font-medium underline underline-offset-2"
+                  aria-label="Retry folder references"
+                  onClick={() => void folderReferences.refetch()}
+                >
+                  Retry
+                </button>
+              </div>
+            )}
+            {folderReferences.data && (
+              <FolderReferenceChips
+                references={folderReferences.data}
+                {...(removeFolderReference.isPending &&
+                removeFolderReference.variables?.folderReferenceId
+                  ? { removingId: removeFolderReference.variables.folderReferenceId }
+                  : {})}
+                onRemove={(reference) => {
+                  void removeFolderReference.mutateAsync({
+                    conversationId: reference.conversationId,
+                    folderReferenceId: reference.id,
+                  }).catch((error: unknown) => setFolderError(extractErrorMessage(error, "Unable to remove folder.")));
+                }}
+              />
+            )}
+            {folders.length > 0 && (
+              <FolderReferenceChips
+                references={folders}
+                testId="draft-folder-reference-chips"
+                onRemove={(folder) => onRemoveFolder?.(folder.id)}
+              />
+            )}
             {attachments.length > 0 && (
               <div className="pb-3">
                 <ChatAttachmentGallery
@@ -1657,11 +1997,13 @@ export function AgentComposerSurface({
                   projectReferences={selectedProjectReferenceList}
                   integrationReferences={selectedIntegrationReferenceList}
                   artifactReferences={selectedArtifactReferenceList}
+                  excerptReferences={selectedExcerptReferenceList}
                   onRemoveProjectReference={removeSelectedProjectReference}
                   onRemoveIntegrationReference={
                     removeSelectedIntegrationReference
                   }
                   onRemoveArtifactReference={removeSelectedArtifactReference}
+                  onRemoveExcerptReference={removeSelectedExcerptReference}
                 />
               </div>
             )}
@@ -1685,6 +2027,7 @@ export function AgentComposerSurface({
             {helperText}
           </div>
         )}
+        {folderError && <p className="px-5 pb-3 text-xs" role="alert" style={{ color: "var(--status-error)" }}>{folderError}</p>}
 
         <div
           className={cn(
@@ -1718,21 +2061,23 @@ export function AgentComposerSurface({
             )}
 
             <ComposerActionMenu
-              project={project}
               enableAttachments={enableAttachments}
               attachmentDisabled={attachmentDisabled}
               onOpenAttachmentPicker={handleOpenAttachmentPicker}
+              showAddFolder={folderReferencesSupported}
+              onAddFolder={handleAddFolder}
               {...(onForkSession
                 ? {
                     onForkSession,
                     forkSessionDisabled:
                       forkSessionDisabled ||
                       isReadOnly ||
-                      (isSubmitting && !canQueue),
+                      (isSubmitting && !canSendWhileAgentActive),
                   }
                 : {})}
               open={actionMenuOpen}
               onOpenChange={setActionMenuOpen}
+              integrationAvailability={integrationAvailability}
               onInsertIntegrationTrigger={(kind) => {
                 restoreTextareaFocusOnActionMenuCloseRef.current = true;
                 markComposerFocused();
@@ -1780,12 +2125,18 @@ export function AgentComposerSurface({
             )}
 
             <div className="flex min-w-0 flex-[0_1_auto] items-stretch gap-2">
-              <ComposerRuntimePill
+              <ComposerRuntimeSelector
                 provider={provider}
                 model={model}
                 effort={effort}
+                {...(capability ? { capability } : {})}
+                {...(runtimePersona ? { persona: runtimePersona } : {})}
+                {...(speed ? { speed } : {})}
+                {...(runtimeDefault ? { runtimeDefault } : {})}
+                {...(runtimeTag ? { runtimeTag } : {})}
                 compact={compact}
                 className="max-w-[34rem]"
+                surfaceRef={surfaceRef}
               />
             </div>
 
@@ -1798,10 +2149,22 @@ export function AgentComposerSurface({
               </div>
             )}
 
+            {teamTarget && (
+              <TeamComposerTarget
+                members={teamTarget.members}
+                value={teamTarget.value}
+                onValueChange={teamTarget.onValueChange}
+                {...(teamTarget.disabled !== undefined
+                  ? { disabled: teamTarget.disabled }
+                  : {})}
+              />
+            )}
+
             <Button
               type="button"
               className={cn(
-                "agent-composer-action-button ml-auto shrink-0 rounded-full text-[0.75rem] font-semibold tracking-[-0.01em] transition-[height,min-width,padding] duration-150 ease-out",
+                "agent-composer-action-button shrink-0 rounded-full text-[0.75rem] font-semibold tracking-[-0.01em] transition-[height,min-width,padding] duration-150 ease-out",
+                "ml-auto",
                 compact ? "h-8 px-3" : "h-10 px-4",
                 compact
                   ? "min-w-0"
@@ -1833,7 +2196,7 @@ export function AgentComposerSurface({
                   <Square className="h-3.5 w-3.5 fill-current" />
                   <span className="agent-composer-action-label">Stop</span>
                 </>
-              ) : isSubmitting && !canQueue ? (
+              ) : isSubmitting && !canSendWhileAgentActive ? (
                 <>
                   <Loader2 className="h-4 w-4 animate-spin" />
                   <span className="agent-composer-action-label">
@@ -1860,35 +2223,44 @@ export function AgentComposerSurface({
 }
 
 function ComposerActionMenu({
-  project,
   enableAttachments,
   attachmentDisabled,
   onOpenAttachmentPicker,
+  showAddFolder = false,
+  onAddFolder,
   onForkSession,
   forkSessionDisabled = false,
   open,
   onOpenChange,
   onInsertIntegrationTrigger,
+  integrationAvailability,
   onInsertPlanTrigger,
   onCloseAutoFocus,
   compact = false,
 }: {
-  project: ProjectFieldConfig;
   enableAttachments: boolean;
   attachmentDisabled: boolean;
   onOpenAttachmentPicker: () => void;
+  showAddFolder?: boolean;
+  onAddFolder?: () => void;
   onForkSession?: (() => Promise<unknown> | void) | undefined;
   forkSessionDisabled?: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onInsertIntegrationTrigger: (kind: AgentComposerIntegrationKind) => void;
+  integrationAvailability: AgentComposerIntegrationAvailability;
   onInsertPlanTrigger: () => void;
   onCloseAutoFocus?: (event: Event) => void;
   compact?: boolean;
 }) {
+  const availableIntegrationActions = COMPOSER_INTEGRATION_ACTIONS.filter(
+    ({ kind }) => integrationAvailability[kind],
+  );
   const hasPersistentActions = true;
   const hasPrimaryActions =
-    enableAttachments || Boolean(project.endAction) || Boolean(onForkSession);
+    enableAttachments ||
+    showAddFolder ||
+    Boolean(onForkSession);
   const setOpen = onOpenChange;
 
   return (
@@ -1943,21 +2315,25 @@ function ComposerActionMenu({
           </button>
         )}
 
-        {project.endAction && (
-          <>
-            {enableAttachments && (
-              <div
-                className="my-1 h-px"
-                style={{ background: "var(--overlay-weak)" }}
-              />
-            )}
-            <div className="px-1 py-1">{project.endAction}</div>
-          </>
+        {showAddFolder && (
+          <button
+            type="button"
+            disabled={attachmentDisabled}
+            className="flex h-10 w-full items-center gap-2 rounded-lg px-2 text-left text-[0.8125rem] transition-colors disabled:opacity-50"
+            style={{ color: "var(--text-primary)" }}
+            onClick={() => {
+              onAddFolder?.();
+              setOpen(false);
+            }}
+          >
+            <FolderOpen className="h-4 w-4" />
+            Add folder
+          </button>
         )}
 
         {onForkSession && (
           <>
-            {(enableAttachments || project.endAction) && (
+            {(enableAttachments || showAddFolder) && (
               <div
                 className="my-1 h-px"
                 style={{ background: "var(--overlay-weak)" }}
@@ -2000,57 +2376,32 @@ function ComposerActionMenu({
             Plan
           </button>
         </div>
-        <div
-          className="my-1 h-px"
-          style={{ background: "var(--overlay-weak)" }}
-        />
-        <div className="py-1">
-          <div className="px-2 py-1 text-[0.625rem] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
-            Integrations
-          </div>
-          <div className="space-y-1">
-            <button
-              type="button"
-              className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[0.8125rem] transition-colors hover:bg-[var(--bg-hover)]"
-              onClick={() => onInsertIntegrationTrigger("jira")}
-            >
-              <Search className="h-4 w-4" />
-              Jira
-            </button>
-            <button
-              type="button"
-              className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[0.8125rem] transition-colors hover:bg-[var(--bg-hover)]"
-              onClick={() => onInsertIntegrationTrigger("confluence")}
-            >
-              <Search className="h-4 w-4" />
-              Confluence
-            </button>
-            <button
-              type="button"
-              className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[0.8125rem] transition-colors hover:bg-[var(--bg-hover)]"
-              onClick={() => onInsertIntegrationTrigger("linear")}
-            >
-              <Search className="h-4 w-4" />
-              Linear
-            </button>
-            <button
-              type="button"
-              className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[0.8125rem] transition-colors hover:bg-[var(--bg-hover)]"
-              onClick={() => onInsertIntegrationTrigger("clickup")}
-            >
-              <Search className="h-4 w-4" />
-              ClickUp
-            </button>
-            <button
-              type="button"
-              className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[0.8125rem] transition-colors hover:bg-[var(--bg-hover)]"
-              onClick={() => onInsertIntegrationTrigger("granola")}
-            >
-              <Search className="h-4 w-4" />
-              Granola
-            </button>
-          </div>
-        </div>
+        {availableIntegrationActions.length > 0 && (
+          <>
+            <div
+              className="my-1 h-px"
+              style={{ background: "var(--overlay-weak)" }}
+            />
+            <div className="py-1">
+              <div className="px-2 py-1 text-[0.625rem] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
+                Integrations
+              </div>
+              <div className="space-y-1">
+                {availableIntegrationActions.map(({ kind, label }) => (
+                  <button
+                    key={kind}
+                    type="button"
+                    className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[0.8125rem] transition-colors hover:bg-[var(--bg-hover)]"
+                    onClick={() => onInsertIntegrationTrigger(kind)}
+                  >
+                    <Search className="h-4 w-4" />
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </>
+        )}
       </PopoverContent>
     </Popover>
   );
@@ -2060,13 +2411,16 @@ function ComposerReferencePills({
   projectReferences,
   integrationReferences,
   artifactReferences,
+  excerptReferences,
   onRemoveProjectReference,
   onRemoveIntegrationReference,
   onRemoveArtifactReference,
+  onRemoveExcerptReference,
 }: {
   projectReferences: AgentComposerProjectReference[];
   integrationReferences: AgentComposerIntegrationReference[];
   artifactReferences: AgentComposerArtifactReference[];
+  excerptReferences: ComposerExcerptReference[];
   onRemoveProjectReference: (path: string) => void;
   onRemoveIntegrationReference: (
     reference: AgentComposerIntegrationReference,
@@ -2074,11 +2428,13 @@ function ComposerReferencePills({
   onRemoveArtifactReference: (
     reference: AgentComposerArtifactReference,
   ) => void;
+  onRemoveExcerptReference: (reference: ComposerExcerptReference) => void;
 }) {
   if (
     projectReferences.length === 0 &&
     integrationReferences.length === 0 &&
-    artifactReferences.length === 0
+    artifactReferences.length === 0 &&
+    excerptReferences.length === 0
   ) {
     return null;
   }
@@ -2160,64 +2516,30 @@ function ComposerReferencePills({
           />
         );
       })}
+      {excerptReferences.map((reference) => {
+        const label = reference.title ?? reference.sourceId;
+        const description = [
+          reference.version !== undefined ? `v${reference.version}` : null,
+          reference.filePath,
+          reference.locator,
+          reference.excerpt,
+        ]
+          .filter(Boolean)
+          .join(" · ");
+        return (
+          <ComposerReferencePill
+            key={composerExcerptReferenceKey(reference)}
+            testId={`agent-composer-reference-pill-excerpt:${reference.sourceKind}:${reference.sourceId}`}
+            icon={ScrollText}
+            typeLabel={`${reference.sourceLabel} excerpt`}
+            label={label}
+            description={description}
+            removeLabel={`Remove ${reference.sourceLabel} excerpt ${label}`}
+            onRemove={() => onRemoveExcerptReference(reference)}
+          />
+        );
+      })}
     </div>
-  );
-}
-
-function ComposerReferencePill({
-  testId,
-  icon: Icon,
-  typeLabel,
-  label,
-  description,
-  removeLabel,
-  onRemove,
-}: {
-  testId: string;
-  icon: ComponentType<{ className?: string }>;
-  typeLabel: string;
-  label: string;
-  description?: string;
-  removeLabel: string;
-  onRemove: () => void;
-}) {
-  return (
-    <span
-      data-testid={testId}
-      className="inline-flex h-9 max-w-full items-center gap-2 rounded-lg border px-2 text-[0.75rem]"
-      style={{
-        background: "var(--bg-surface)",
-        borderColor: "var(--bg-hover)",
-        color: "var(--text-primary)",
-      }}
-    >
-      <Icon className="h-3.5 w-3.5 shrink-0 text-[var(--text-secondary)]" />
-      <span className="shrink-0 rounded-md border px-1.5 py-0.5 text-[0.625rem] font-medium uppercase text-[var(--text-muted)]">
-        {typeLabel}
-      </span>
-      <span
-        className="min-w-0 max-w-[16rem] truncate font-medium"
-        title={label}
-      >
-        {label}
-      </span>
-      {description && description !== label ? (
-        <span
-          className="hidden min-w-0 max-w-[18rem] truncate text-[var(--text-muted)] sm:inline"
-          title={description}
-        >
-          {description}
-        </span>
-      ) : null}
-      <button
-        type="button"
-        className="ml-0.5 shrink-0 rounded p-0.5 text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-        aria-label={removeLabel}
-        onClick={onRemove}
-      >
-        <X className="h-3.5 w-3.5" />
-      </button>
-    </span>
   );
 }
 
@@ -2482,13 +2804,28 @@ function ComposerModeMenuSection({
   mode: ModeFieldConfig;
   onDone: () => void;
 }) {
+  const secondaryOptionIds = useMemo(
+    () => new Set(mode.secondaryOptionIds ?? []),
+    [mode.secondaryOptionIds],
+  );
+  const [showSecondaryModes, setShowSecondaryModes] = useState(false);
+  const hasSecondaryModes = mode.options.some((option) =>
+    secondaryOptionIds.has(option.id),
+  );
+  const visibleOptions = mode.options.filter(
+    (option) =>
+      !secondaryOptionIds.has(option.id) ||
+      showSecondaryModes ||
+      option.id === mode.value,
+  );
+
   return (
     <div className="py-1">
       <div className="px-2 py-1 text-[0.625rem] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
         Mode
       </div>
       <div className="space-y-1">
-        {mode.options.map((option) => {
+        {visibleOptions.map((option) => {
           const isSelected = option.id === mode.value;
           const optionDisabled = mode.disabled || option.disabled;
           return (
@@ -2537,591 +2874,27 @@ function ComposerModeMenuSection({
           );
         })}
       </div>
-    </div>
-  );
-}
-
-function ClaudeProviderIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 100 100" className={className}>
-      <path
-        d="m19.6 66.5 19.7-11 .3-1-.3-.5h-1l-3.3-.2-11.2-.3L14 53l-9.5-.5-2.4-.5L0 49l.2-1.5 2-1.3 2.9.2 6.3.5 9.5.6 6.9.4L38 49.1h1.6l.2-.7-.5-.4-.4-.4L29 41l-10.6-7-5.6-4.1-3-2-1.5-2-.6-4.2 2.7-3 3.7.3.9.2 3.7 2.9 8 6.1L37 36l1.5 1.2.6-.4.1-.3-.7-1.1L33 25l-6-10.4-2.7-4.3-.7-2.6c-.3-1-.4-2-.4-3l3-4.2L28 0l4.2.6L33.8 2l2.6 6 4.1 9.3L47 29.9l2 3.8 1 3.4.3 1h.7v-.5l.5-7.2 1-8.7 1-11.2.3-3.2 1.6-3.8 3-2L61 2.6l2 2.9-.3 1.8-1.1 7.7L59 27.1l-1.5 8.2h.9l1-1.1 4.1-5.4 6.9-8.6 3-3.5L77 13l2.3-1.8h4.3l3.1 4.7-1.4 4.9-4.4 5.6-3.7 4.7-5.3 7.1-3.2 5.7.3.4h.7l12-2.6 6.4-1.1 7.6-1.3 3.5 1.6.4 1.6-1.4 3.4-8.2 2-9.6 2-14.3 3.3-.2.1.2.3 6.4.6 2.8.2h6.8l12.6 1 3.3 2 1.9 2.7-.3 2-5.1 2.6-6.8-1.6-16-3.8-5.4-1.3h-.8v.4l4.6 4.5 8.3 7.5L89 80.1l.5 2.4-1.3 2-1.4-.2-9.2-7-3.6-3-8-6.8h-.5v.7l1.8 2.7 9.8 14.7.5 4.5-.7 1.4-2.6 1-2.7-.6-5.8-8-6-9-4.7-8.2-.5.4-2.9 30.2-1.3 1.5-3 1.2-2.5-2-1.4-3 1.4-6.2 1.6-8 1.3-6.4 1.2-7.9.7-2.6v-.2H49L43 72l-9 12.3-7.2 7.6-1.7.7-3-1.5.3-2.8L24 86l10-12.8 6-7.9 4-4.6-.1-.5h-.3L17.2 77.4l-4.7.6-2-2 .2-3 1-1 8-5.5Z"
-        fill="currentColor"
-      />
-    </svg>
-  );
-}
-
-function CodexProviderIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      viewBox="0 0 256 260"
-      preserveAspectRatio="xMidYMid"
-      className={className}
-    >
-      <path
-        d="M239.184 106.203a64.716 64.716 0 0 0-5.576-53.103C219.452 28.459 191 15.784 163.213 21.74A65.586 65.586 0 0 0 52.096 45.22a64.716 64.716 0 0 0-43.23 31.36c-14.31 24.602-11.061 55.634 8.033 76.74a64.665 64.665 0 0 0 5.525 53.102c14.174 24.65 42.644 37.324 70.446 31.36a64.72 64.72 0 0 0 48.754 21.744c28.481.025 53.714-18.361 62.414-45.481a64.767 64.767 0 0 0 43.229-31.36c14.137-24.558 10.875-55.423-8.083-76.483Zm-97.56 136.338a48.397 48.397 0 0 1-31.105-11.255l1.535-.87 51.67-29.825a8.595 8.595 0 0 0 4.247-7.367v-72.85l21.845 12.636c.218.111.37.32.409.563v60.367c-.056 26.818-21.783 48.545-48.601 48.601Zm-104.466-44.61a48.345 48.345 0 0 1-5.781-32.589l1.534.921 51.722 29.826a8.339 8.339 0 0 0 8.441 0l63.181-36.425v25.221a.87.87 0 0 1-.358.665l-52.335 30.184c-23.257 13.398-52.97 5.431-66.404-17.803ZM23.549 85.38a48.499 48.499 0 0 1 25.58-21.333v61.39a8.288 8.288 0 0 0 4.195 7.316l62.874 36.272-21.845 12.636a.819.819 0 0 1-.767 0L41.353 151.53c-23.211-13.454-31.171-43.144-17.804-66.405v.256Zm179.466 41.695-63.08-36.63L161.73 77.86a.819.819 0 0 1 .768 0l52.233 30.184a48.6 48.6 0 0 1-7.316 87.635v-61.391a8.544 8.544 0 0 0-4.4-7.213Zm21.742-32.69-1.535-.922-51.619-30.081a8.39 8.39 0 0 0-8.492 0L99.98 99.808V74.587a.716.716 0 0 1 .307-.665l52.233-30.133a48.652 48.652 0 0 1 72.236 50.391v.205ZM88.061 139.097l-21.845-12.585a.87.87 0 0 1-.41-.614V65.685a48.652 48.652 0 0 1 79.757-37.346l-1.535.87-51.67 29.825a8.595 8.595 0 0 0-4.246 7.367l-.051 72.697Zm11.868-25.58 28.138-16.217 28.188 16.218v32.434l-28.086 16.218-28.188-16.218-.052-32.434Z"
-        fill="currentColor"
-      />
-    </svg>
-  );
-}
-
-const PROVIDER_ICONS: Record<
-  AgentProvider,
-  ComponentType<{ className?: string }>
-> = {
-  claude: ClaudeProviderIcon,
-  codex: CodexProviderIcon,
-};
-
-const EFFORT_BAR_COLORS: Record<string, string> = {
-  low: "var(--status-error)",
-  medium: "var(--accent-primary)",
-  high: "var(--status-warning)",
-  xhigh: "var(--status-success)",
-  max: "var(--status-success)",
-};
-
-const EFFORT_ORDER = ["low", "medium", "high", "xhigh", "max"] as const;
-
-function EffortBars({
-  effortId,
-  totalLevels,
-  className,
-}: {
-  effortId: string;
-  totalLevels: number;
-  className?: string;
-}) {
-  const activeIndex = EFFORT_ORDER.indexOf(
-    effortId as (typeof EFFORT_ORDER)[number],
-  );
-  const activeCount = activeIndex >= 0 ? activeIndex + 1 : 0;
-  const color = EFFORT_BAR_COLORS[effortId] ?? "var(--text-muted)";
-  return (
-    <span className={cn("inline-flex items-end gap-px", className)} aria-hidden>
-      {Array.from({ length: totalLevels }, (_, i) => (
-        <span
-          key={i}
-          className="rounded-[1px]"
-          style={{
-            width: 3,
-            height: 6 + i * 2,
-            backgroundColor: i < activeCount ? color : "var(--text-muted)",
-            opacity: i < activeCount ? 1 : 0.25,
-          }}
-        />
-      ))}
-    </span>
-  );
-}
-
-function ComposerRuntimePill({
-  provider,
-  model,
-  effort,
-  compact = false,
-  className,
-}: {
-  provider: ProviderFieldConfig;
-  model: ModelFieldConfig;
-  effort: EffortFieldConfig;
-  compact?: boolean;
-  className?: string;
-}) {
-  const [open, setOpen] = useState(false);
-  const [viewingProvider, setViewingProvider] = useState<AgentProvider | null>(
-    null,
-  );
-  const providerLabel =
-    provider.options.find((o) => o.id === provider.value)?.label ??
-    provider.value;
-  const modelLabel =
-    model.options.find((o) => o.id === model.value)?.label ?? model.value;
-  const effortLabel =
-    effort.options.find((o) => o.id === effort.value)?.label ?? effort.value;
-  const runtimeSummary = [
-    providerLabel,
-    modelLabel,
-    effortLabel ? `${effortLabel} effort` : "",
-    model.fastMode?.visible && model.fastMode.value ? "Fast" : "",
-  ]
-    .filter(Boolean)
-    .join(" · ");
-
-  // Hide the runtime/model pill entirely when model selection is unavailable —
-  // i.e. there is no model to display and none to pick (no options or disabled).
-  // This avoids an empty/disabled pill in contexts like an unresolved ideation
-  // runtime or a read-only verification child chat.
-  const modelText = (modelLabel ?? "").trim();
-  const modelSelectionAvailable =
-    modelText.length > 0 || (model.options.length > 0 && !model.disabled);
-  if (!modelSelectionAvailable) {
-    return null;
-  }
-
-  const hasMultipleProviders = provider.options.length > 1;
-  const activeViewProvider = viewingProvider ?? provider.value;
-  const viewingOption = provider.options.find(
-    (o) => o.id === activeViewProvider,
-  );
-  const viewingProviderDisabled =
-    hasMultipleProviders && (viewingOption?.disabled ?? false);
-  const viewingProviderLabel = viewingOption?.label ?? activeViewProvider;
-
-  return (
-    <Popover
-      open={open}
-      onOpenChange={(next) => {
-        setOpen(next);
-        if (!next) setViewingProvider(null);
-      }}
-    >
-      <PopoverTrigger asChild>
+      {hasSecondaryModes && (
         <button
           type="button"
-          data-testid="agent-composer-runtime-pill"
-          aria-label={`Runtime: ${runtimeSummary}. Click to change.`}
-          className={cn(
-            "flex min-w-0 items-center gap-2 rounded-md border transition-[height,padding,background-color] duration-150 ease-out",
-            compact ? "h-8 px-2.5" : "h-10 px-3",
-            className,
-          )}
-          style={{
-            background:
-              "color-mix(in srgb, var(--bg-base) 24%, var(--bg-surface) 76%)",
-            borderColor: "var(--form-border)",
-          }}
+          aria-expanded={showSecondaryModes}
+          aria-label={
+            showSecondaryModes ? "Show fewer modes" : "Show more modes"
+          }
+          className="mt-1 flex w-full items-center justify-center gap-1.5 border-t border-[var(--border-subtle)] px-2 pt-2 text-[0.6875rem] font-medium text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
+          onClick={() => setShowSecondaryModes((visible) => !visible)}
         >
-          {(() => {
-            const ActiveProviderIcon = PROVIDER_ICONS[provider.value];
-            return ActiveProviderIcon ? (
-              <ActiveProviderIcon className="h-3.5 w-3.5 text-[var(--text-secondary)]" />
-            ) : (
-              <Cpu className="h-3.5 w-3.5 text-[var(--text-secondary)]" />
-            );
-          })()}
-          <span className="truncate text-[0.8125rem] font-medium text-[var(--text-primary)]">
-            {modelLabel}
-          </span>
-          {effort.options.length > 0 && (
-            <Tooltip delayDuration={300}>
-              <TooltipTrigger asChild>
-                <span className="inline-flex shrink-0">
-                  <EffortBars
-                    effortId={effort.value}
-                    totalLevels={effort.options.length}
-                  />
-                </span>
-              </TooltipTrigger>
-              <TooltipContent side="top" className="text-xs">
-                {effortLabel} effort
-              </TooltipContent>
-            </Tooltip>
-          )}
-          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[var(--text-secondary)]" />
-        </button>
-      </PopoverTrigger>
-      <PopoverContent
-        side="top"
-        align="start"
-        sideOffset={6}
-        onOpenAutoFocus={(e) => e.preventDefault()}
-        className={cn(
-          "max-h-[var(--radix-popover-content-available-height)] overflow-x-hidden overflow-y-auto overscroll-contain rounded-xl p-0",
-          hasMultipleProviders ? "w-[21rem]" : "w-72",
-        )}
-        style={{
-          backgroundColor: "var(--bg-elevated)",
-          borderColor: "var(--border-subtle)",
-        }}
-      >
-        <div className="flex">
-          {hasMultipleProviders && (
-            <div
-              className="flex w-12 shrink-0 flex-col gap-1 border-r p-1"
-              style={{
-                borderColor: "var(--border-subtle)",
-                backgroundColor:
-                  "color-mix(in srgb, var(--bg-base) 30%, var(--bg-elevated) 70%)",
-              }}
-            >
-              {provider.options.map((option) => {
-                const isSelected = option.id === activeViewProvider;
-                const ProviderIcon = PROVIDER_ICONS[option.id] ?? Bot;
-                return (
-                  <div key={option.id} className="relative w-full">
-                    {isSelected && (
-                      <span
-                        className="pointer-events-none absolute -right-1 top-1/2 z-10 h-5 w-0.5 -translate-y-1/2 rounded-l-full"
-                        style={{ backgroundColor: "var(--accent-primary)" }}
-                      />
-                    )}
-                    <Tooltip delayDuration={300}>
-                      <TooltipTrigger asChild>
-                        <button
-                          type="button"
-                          data-testid={`agent-composer-runtime-provider-${option.id}`}
-                          aria-label={option.label}
-                          className={cn(
-                            "relative flex aspect-square w-full cursor-pointer items-center justify-center rounded outline-none transition-colors",
-                            isSelected
-                              ? "shadow-sm"
-                              : "hover:bg-[var(--bg-hover)]",
-                            option.disabled && !isSelected && "opacity-50",
-                          )}
-                          style={
-                            isSelected
-                              ? {
-                                  backgroundColor: "var(--bg-elevated)",
-                                  color: option.disabled
-                                    ? "var(--text-muted)"
-                                    : "var(--text-primary)",
-                                }
-                              : {
-                                  color: "var(--text-secondary)",
-                                }
-                          }
-                          onClick={() => {
-                            if (option.disabled) {
-                              setViewingProvider(option.id);
-                            } else {
-                              setViewingProvider(null);
-                              provider.onValueChange(option.id);
-                            }
-                          }}
-                        >
-                          <ProviderIcon className="h-5 w-5" />
-                        </button>
-                      </TooltipTrigger>
-                      <TooltipContent side="right" className="text-xs">
-                        {option.label}
-                      </TooltipContent>
-                    </Tooltip>
-                  </div>
-                );
-              })}
-              {provider.compactFooterAction && (
-                <div
-                  className="mt-auto border-t pt-1"
-                  style={{ borderColor: "var(--border-subtle)" }}
-                >
-                  {provider.compactFooterAction}
-                </div>
-              )}
-            </div>
-          )}
-          <div className="min-w-0 flex-1 p-1.5">
-            {!hasMultipleProviders && (
-              <>
-                <ComposerOptionList
-                  label="Provider"
-                  value={provider.value}
-                  options={provider.options}
-                  disabled={provider.disabled ?? false}
-                  testId={provider.testId ?? "agent-composer-runtime-provider"}
-                  icon={Bot}
-                  onValueChange={(value) => {
-                    provider.onValueChange(value as AgentProvider);
-                  }}
-                />
-                {provider.footerAction && (
-                  <div className="px-1 pb-0.5 pt-1">
-                    {provider.footerAction}
-                  </div>
-                )}
-                <div
-                  className="my-1 h-px"
-                  style={{ background: "var(--overlay-weak)" }}
-                />
-              </>
+          <ChevronDown
+            aria-hidden="true"
+            className={cn(
+              "h-3.5 w-3.5 transition-transform",
+              showSecondaryModes && "rotate-180",
             )}
-            {viewingProviderDisabled ? (
-              <div className="flex flex-col items-center gap-2 px-3 py-4 text-center">
-                <AlertCircle
-                  className="h-5 w-5"
-                  style={{ color: "var(--text-muted)" }}
-                />
-                <span
-                  className="text-[0.8125rem] font-medium"
-                  style={{ color: "var(--text-secondary)" }}
-                >
-                  {viewingProviderLabel} is not enabled
-                </span>
-                <span
-                  className="text-[0.75rem] leading-snug"
-                  style={{ color: "var(--text-muted)" }}
-                >
-                  Enable this provider in settings to use its models.
-                </span>
-                {provider.footerAction && (
-                  <div className="mt-1 w-full">{provider.footerAction}</div>
-                )}
-              </div>
-            ) : (
-              <>
-                <ComposerOptionList
-                  label="Model"
-                  value={model.value}
-                  options={model.options}
-                  disabled={model.disabled ?? false}
-                  testId={model.testId ?? "agent-composer-runtime-model"}
-                  icon={Cpu}
-                  onValueChange={(value) => {
-                    model.onValueChange(value);
-                    setOpen(false);
-                  }}
-                />
-                {model.fastMode?.visible && (
-                  <ComposerRuntimeFastModeControl
-                    value={model.fastMode.value}
-                    disabled={model.fastMode.disabled ?? false}
-                    testId={
-                      model.fastMode.testId ??
-                      "agent-composer-runtime-codex-fast-mode"
-                    }
-                    description={model.fastMode.description}
-                    onValueChange={model.fastMode.onValueChange}
-                  />
-                )}
-                {model.onOpenModelSettings && (
-                  <button
-                    type="button"
-                    className="mt-0.5 flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-[0.6875rem] transition-colors hover:bg-[var(--bg-hover)]"
-                    style={{ color: "var(--text-muted)" }}
-                    onClick={() => {
-                      model.onOpenModelSettings?.();
-                      setOpen(false);
-                    }}
-                  >
-                    <Settings className="h-3 w-3" />
-                    Manage models in Settings
-                  </button>
-                )}
-                {effort.options.length > 0 && (
-                  <>
-                    <div
-                      className="my-1 h-px"
-                      style={{ background: "var(--overlay-weak)" }}
-                    />
-                    <ComposerOptionList
-                      label="Effort"
-                      value={effort.value}
-                      options={effort.options}
-                      disabled={effort.disabled ?? false}
-                      testId={effort.testId ?? "agent-composer-runtime-effort"}
-                      icon={Gauge}
-                      onValueChange={(value) => {
-                        effort.onValueChange(value);
-                        setOpen(false);
-                      }}
-                    />
-                  </>
-                )}
-              </>
-            )}
-          </div>
-        </div>
-      </PopoverContent>
-    </Popover>
-  );
-}
-
-function ComposerRuntimeFastModeControl({
-  value,
-  disabled,
-  testId,
-  description,
-  onValueChange,
-}: {
-  value: boolean;
-  disabled: boolean;
-  testId: string;
-  description?: string | undefined;
-  onValueChange: (value: boolean) => void;
-}) {
-  return (
-    <div
-      className="mt-1 flex items-center justify-between gap-3 rounded-md px-2 py-1.5"
-      style={{
-        backgroundColor:
-          "color-mix(in srgb, var(--bg-base) 24%, var(--bg-elevated) 76%)",
-      }}
-    >
-      <div className="min-w-0">
-        <div className="text-[0.75rem] font-medium text-[var(--text-primary)]">
-          Fast mode
-        </div>
-        <div className="text-[0.6875rem] leading-snug text-[var(--text-muted)]">
-          {description ?? "Use Codex priority service tier"}
-        </div>
-      </div>
-      <Switch
-        checked={value}
-        disabled={disabled}
-        onCheckedChange={onValueChange}
-        aria-label="Codex Fast mode"
-        data-testid={testId}
-        className="data-[state=checked]:bg-[var(--accent-primary)]"
-      />
-    </div>
-  );
-}
-
-function ComposerOptionList({
-  label,
-  value,
-  options,
-  disabled,
-  testId,
-  icon: Icon,
-  onValueChange,
-  allowCustomValue = false,
-  customPlaceholder = "Custom value",
-}: {
-  label: string;
-  value: string;
-  options: ComposerOption[];
-  disabled: boolean;
-  testId?: string;
-  icon: ComponentType<{ className?: string }>;
-  onValueChange: (value: string) => void;
-  allowCustomValue?: boolean;
-  customPlaceholder?: string | undefined;
-}) {
-  const [customValue, setCustomValue] = useState("");
-  const hasCurrentOption = options.some((option) => option.id === value);
-
-  useEffect(() => {
-    if (!hasCurrentOption) {
-      setCustomValue(value);
-    }
-  }, [hasCurrentOption, value]);
-
-  const commitCustomValue = useCallback(() => {
-    const nextValue = customValue.trim();
-    if (!nextValue || disabled) {
-      return;
-    }
-    onValueChange(nextValue);
-  }, [customValue, disabled, onValueChange]);
-
-  return (
-    <div className="py-1">
-      <div className="flex items-center gap-1.5 px-2 py-1">
-        <Icon className="h-3 w-3 text-[var(--text-muted)]" />
-        <span className="text-[0.625rem] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
-          {label}
-        </span>
-      </div>
-      <div className="space-y-0.5">
-        {options.map((option) => {
-          const isSelected = option.id === value;
-          const optionDisabled = disabled || option.disabled;
-          return (
-            <button
-              key={option.id}
-              type="button"
-              disabled={optionDisabled}
-              data-testid={testId ? `${testId}-${option.id}` : undefined}
-              className={cn(
-                "flex w-full items-start justify-between gap-2 rounded-md px-2 py-1.5 text-left text-[0.75rem] transition-colors disabled:cursor-not-allowed disabled:opacity-50",
-                isSelected
-                  ? "bg-[var(--accent-muted)]"
-                  : "hover:bg-[var(--bg-hover)]",
-              )}
-              onClick={() => {
-                if (!optionDisabled) {
-                  onValueChange(option.id);
-                }
-              }}
-            >
-              <span className="min-w-0 flex-1">
-                <span
-                  className="block truncate"
-                  style={{
-                    color: isSelected
-                      ? "var(--accent-primary)"
-                      : "var(--text-primary)",
-                    fontWeight: isSelected ? 600 : 500,
-                  }}
-                >
-                  {option.label}
-                </span>
-                {(option.disabledReason || option.description) && (
-                  <span
-                    className="mt-0.5 block line-clamp-2 text-[0.6875rem] leading-snug"
-                    style={{ color: "var(--text-muted)" }}
-                  >
-                    {option.disabledReason ?? option.description}
-                  </span>
-                )}
-              </span>
-              {isSelected && (
-                <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--accent-primary)]" />
-              )}
-            </button>
-          );
-        })}
-      </div>
-      {allowCustomValue && (
-        <div className="mt-1.5 flex items-center gap-1.5 px-1">
-          <Input
-            value={customValue}
-            onChange={(event) => setCustomValue(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault();
-                commitCustomValue();
-              }
-            }}
-            disabled={disabled}
-            placeholder={customPlaceholder}
-            data-testid={testId ? `${testId}-custom-input` : undefined}
-            className="h-8 min-w-0 flex-1 rounded-md border-[var(--border-default)] bg-[var(--bg-surface)] px-2 text-[12px] text-[var(--text-primary)] placeholder:text-[var(--text-muted)]"
           />
-          <Button
-            type="button"
-            size="sm"
-            variant="secondary"
-            disabled={disabled || customValue.trim().length === 0}
-            onClick={commitCustomValue}
-            data-testid={testId ? `${testId}-custom-apply` : undefined}
-            className="h-8 rounded-md px-2 text-[12px]"
-          >
-            Use
-          </Button>
-        </div>
+          {showSecondaryModes ? "Show less" : "Show more"}
+        </button>
       )}
     </div>
-  );
-}
-
-export function AgentComposerProjectCreateButton({
-  onClick,
-  testId,
-  label = "New project",
-}: {
-  onClick: () => void;
-  testId?: string;
-  label?: string;
-}) {
-  return (
-    <Button
-      type="button"
-      variant="ghost"
-      className="h-7 shrink-0 rounded-[10px] px-2 text-[0.625rem] font-medium"
-      style={{
-        color: "var(--text-secondary)",
-        background: "transparent",
-      }}
-      onClick={onClick}
-      data-testid={testId}
-    >
-      <Plus className="h-3.5 w-3.5" />
-      {label}
-    </Button>
   );
 }
 
@@ -3132,10 +2905,13 @@ export function AgentComposerProjectLine({
   placeholder,
   disabled = false,
   testId,
+  allowNoProject = false,
+  standaloneCaption,
 }: ProjectFieldConfig) {
   const [open, setOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const selectedProject = options.find((option) => option.id === value) ?? null;
+  const isStandalone = value === null;
   const filteredOptions = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
     if (!query) {
@@ -3169,7 +2945,11 @@ export function AgentComposerProjectLine({
       data-theme-button-skip="true"
       aria-label="Project"
     >
-      <FolderOpen className="h-3.5 w-3.5 shrink-0" />
+      {isStandalone ? (
+        <CircleOff className="h-3.5 w-3.5 shrink-0" />
+      ) : (
+        <FolderOpen className="h-3.5 w-3.5 shrink-0" />
+      )}
       <span className="shrink-0 text-[0.625rem] font-medium uppercase tracking-[0.14em]">
         Project
       </span>
@@ -3181,17 +2961,27 @@ export function AgentComposerProjectLine({
             : "var(--text-secondary)",
         }}
       >
-        {selectedProject?.label ?? placeholder}
+        {isStandalone ? "No project" : (selectedProject?.label ?? placeholder)}
       </span>
       {!disabled && <ChevronDown className="h-3.5 w-3.5 shrink-0" />}
     </button>
   );
 
   if (disabled) {
-    return trigger;
+    return (
+      <div className="flex min-w-0 items-center gap-2">
+        {trigger}
+        {isStandalone && standaloneCaption && (
+          <span className="shrink-0 text-[0.6875rem] text-[var(--text-muted)]">
+            {standaloneCaption}
+          </span>
+        )}
+      </div>
+    );
   }
 
   return (
+    <div className="flex min-w-0 items-center gap-2">
     <Popover open={open} onOpenChange={handleOpenChange}>
       <PopoverTrigger asChild>{trigger}</PopoverTrigger>
       <PopoverContent
@@ -3273,9 +3063,40 @@ export function AgentComposerProjectLine({
                 })}
               </div>
             )}
+            {allowNoProject && (
+              <>
+                <div className="my-1 h-px bg-[var(--border-subtle)]" />
+                <button
+                  type="button"
+                  className={cn(
+                    "flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-2 text-left text-xs transition-colors",
+                    isStandalone
+                      ? "bg-[var(--accent-muted)] text-[var(--accent-primary)]"
+                      : "text-[var(--text-primary)] hover:bg-[var(--bg-hover)]",
+                  )}
+                  onClick={() => {
+                    onValueChange(null);
+                    setOpen(false);
+                    setSearchQuery("");
+                  }}
+                  data-testid={`${testId ?? "project"}-standalone`}
+                >
+                  <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
+                    {isStandalone ? <Check className="h-3.5 w-3.5" /> : <CircleOff className="h-3.5 w-3.5" />}
+                  </span>
+                  <span>No project (standalone)</span>
+                </button>
+              </>
+            )}
           </div>
         </div>
       </PopoverContent>
     </Popover>
+    {isStandalone && standaloneCaption && (
+      <span className="shrink-0 text-[0.6875rem] text-[var(--text-muted)]">
+        {standaloneCaption}
+      </span>
+    )}
+    </div>
   );
 }

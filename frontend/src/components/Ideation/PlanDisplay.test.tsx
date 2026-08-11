@@ -1,8 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  act,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { PlanDisplay } from "./PlanDisplay";
-import type { TeamMetadata } from "./PlanDisplay";
+import { PlanDisplay, VersionedArtifactDisplay } from "./PlanDisplay";
 import type { Artifact } from "@/types/artifact";
 
 const mockGetVersionHistory = vi.fn();
@@ -16,20 +22,6 @@ vi.mock("@/api/artifact", () => ({
     getByTask: vi.fn().mockResolvedValue([]),
     getByBucket: vi.fn().mockResolvedValue([]),
   },
-}));
-
-vi.mock("./TeamFindingsSection", () => ({
-  TeamFindingsSection: ({ findings, teamMode, teammateCount }: { findings: unknown[]; teamMode: string; teammateCount: number }) => (
-    <div data-testid="team-findings-section" data-team-mode={teamMode} data-count={teammateCount}>
-      {findings.length} findings
-    </div>
-  ),
-}));
-
-vi.mock("./DebateSummary", () => ({
-  DebateSummary: ({ data }: { data: { winner: { name: string } } }) => (
-    <div data-testid="debate-summary">Winner: {data.winner.name}</div>
-  ),
 }));
 
 vi.mock("./VerificationHistory", () => ({
@@ -159,76 +151,6 @@ describe("PlanDisplay", () => {
 
     render(<PlanDisplay plan={filePlan} isExpanded={true} />);
     expect(screen.getByText("No content available")).toBeInTheDocument();
-  });
-
-  describe("team metadata", () => {
-    const researchMetadata: TeamMetadata = {
-      teamIdeated: true,
-      teamMode: "research",
-      teammateCount: 3,
-      findings: [
-        { specialist: "auth-expert", keyFinding: "Use JWT" },
-        { specialist: "db-expert", keyFinding: "Add indexes" },
-      ],
-    };
-
-    const debateMetadata: TeamMetadata = {
-      teamIdeated: true,
-      teamMode: "debate",
-      teammateCount: 2,
-      findings: [{ specialist: "advocate-1", keyFinding: "REST wins" }],
-      debateSummary: {
-        advocates: [
-          {
-            name: "REST Advocate",
-            role: "advocate",
-            strengths: ["Simple"],
-            weaknesses: ["Limited"],
-            evidence: ["Industry standard"],
-            criticChallenge: "Latency concerns",
-          },
-        ],
-        winner: { name: "REST Advocate", justification: "Better ecosystem" },
-      },
-    };
-
-    it("renders 'Research Team' badge for research mode", () => {
-      render(<PlanDisplay plan={mockPlan} teamMetadata={researchMetadata} />);
-      expect(screen.getByText("Research Team")).toBeInTheDocument();
-    });
-
-    it("renders 'Debate Team' badge for debate mode", () => {
-      render(<PlanDisplay plan={mockPlan} teamMetadata={debateMetadata} />);
-      expect(screen.getByText("Debate Team")).toBeInTheDocument();
-    });
-
-    it("renders team badge when expanded with research metadata", () => {
-      render(<PlanDisplay plan={mockPlan} teamMetadata={researchMetadata} isExpanded={true} />);
-      expect(screen.getByText("Research Team")).toBeInTheDocument();
-    });
-
-    it("renders DebateSummary for debate mode when expanded", () => {
-      render(<PlanDisplay plan={mockPlan} teamMetadata={debateMetadata} isExpanded={true} />);
-      expect(screen.getByTestId("debate-summary")).toBeInTheDocument();
-      expect(screen.getByText("Winner: REST Advocate")).toBeInTheDocument();
-    });
-
-    it("does not render team badge when teamMetadata is absent", () => {
-      render(<PlanDisplay plan={mockPlan} />);
-      expect(screen.queryByText("Research Team")).not.toBeInTheDocument();
-      expect(screen.queryByText("Debate Team")).not.toBeInTheDocument();
-    });
-
-    it("does not render team badge when teamIdeated is false", () => {
-      const inactiveMetadata: TeamMetadata = {
-        teamIdeated: false,
-        teamMode: "research",
-        teammateCount: 0,
-        findings: [],
-      };
-      render(<PlanDisplay plan={mockPlan} teamMetadata={inactiveMetadata} />);
-      expect(screen.queryByText("Research Team")).not.toBeInTheDocument();
-    });
   });
 
   describe("Create Proposals button visibility", () => {
@@ -612,7 +534,7 @@ describe("PlanDisplay", () => {
       ).not.toBeInTheDocument();
     });
 
-    it("calls the action with the selected historical version", async () => {
+    it("hides the action for a selected historical version", async () => {
       const user = userEvent.setup();
       const onStartNewConversationWithPlan = vi.fn();
       const multiVersionPlan: Artifact = {
@@ -633,6 +555,7 @@ describe("PlanDisplay", () => {
         <PlanDisplay
           plan={multiVersionPlan}
           onStartNewConversationWithPlan={onStartNewConversationWithPlan}
+          disableHistoricalNewConversation
         />,
       );
 
@@ -645,13 +568,10 @@ describe("PlanDisplay", () => {
       });
 
       await user.click(screen.getByLabelText("Plan actions"));
-      await user.click(screen.getByText("New Conversation"));
-
-      expect(onStartNewConversationWithPlan).toHaveBeenCalledWith({
-        artifactId: multiVersionPlan.id,
-        title: multiVersionPlan.name,
-        version: 1,
-      });
+      expect(
+        screen.queryByRole("menuitem", { name: /new conversation/i }),
+      ).not.toBeInTheDocument();
+      expect(onStartNewConversationWithPlan).not.toHaveBeenCalled();
     });
   });
 
@@ -770,6 +690,70 @@ describe("PlanDisplay", () => {
       expect(screen.getByText("Plan Approved")).toBeInTheDocument();
     });
 
+    it("supports the same document surface for a non-plan artifact without false Plan selection", () => {
+      render(
+        <VersionedArtifactDisplay
+          artifact={{ ...mockPlan, type: "persona", name: "Support Voice" }}
+          artifactLabel="Persona"
+          chromeless={true}
+          excerptSelectionEnabled={false}
+          artifactActions={<button type="button">Refine Persona</button>}
+        />,
+      );
+
+      expect(screen.getByTestId("plan-display-chromeless")).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Refine Persona" }),
+      ).toBeInTheDocument();
+      expect(document.querySelector("[data-artifact-selectable-region]")).toBeNull();
+    });
+
+    it("renders Overview and Blueprint tabs plus conditional Proposals after approval", () => {
+      const onBodyModeChange = vi.fn();
+      render(
+        <PlanDisplay
+          plan={mockPlan}
+          chromeless={true}
+          isApproved={true}
+          linkedProposalsCount={2}
+          bodyMode="overview"
+          onBodyModeChange={onBodyModeChange}
+        />,
+      );
+
+      const approvedBadge = screen.getByText("Plan Approved");
+      const overviewButton = screen.getByRole("tab", {
+        name: /Overview/i,
+      });
+      const blueprintButton = screen.getByRole("tab", {
+        name: /Blueprint/i,
+      });
+      const proposalsButton = screen.getByRole("tab", {
+        name: /Proposals \(2\)/i,
+      });
+      expect(approvedBadge.compareDocumentPosition(overviewButton)).toBe(
+        Node.DOCUMENT_POSITION_FOLLOWING,
+      );
+      expect(overviewButton).toHaveAttribute("aria-selected", "true");
+      expect(blueprintButton).toHaveAttribute("aria-selected", "false");
+      expect(proposalsButton).toHaveAttribute("aria-selected", "false");
+      const overviewPanel = document.getElementById(
+        overviewButton.getAttribute("aria-controls")!,
+      );
+      expect(overviewPanel).toHaveAttribute("role", "tabpanel");
+      expect(overviewPanel).toBeVisible();
+      expect(
+        within(overviewPanel!).getByText(
+          "Implement JWT-based authentication system.",
+        ),
+      ).toBeVisible();
+
+      fireEvent.mouseDown(proposalsButton);
+      fireEvent.click(proposalsButton);
+
+      expect(onBodyModeChange).toHaveBeenCalledWith("proposals");
+    });
+
     it("renders Create Proposals in chromeless mode and dispatches handler", () => {
       const onCreateProposals = vi.fn();
       render(
@@ -886,21 +870,6 @@ describe("PlanDisplay", () => {
       await waitFor(() => {
         expect(screen.getByText("(latest)")).toBeInTheDocument();
       });
-    });
-
-    it("renders DebateSummary in chromeless mode for debate plans", () => {
-      const debateMetadata: TeamMetadata = {
-        teamIdeated: true,
-        teamMode: "debate",
-        teammateCount: 2,
-        findings: [],
-        debateSummary: {
-          advocates: [],
-          winner: { name: "Team A", justification: "Better" },
-        },
-      };
-      render(<PlanDisplay plan={mockPlan} chromeless={true} teamMetadata={debateMetadata} />);
-      expect(screen.getByTestId("debate-summary")).toBeInTheDocument();
     });
 
     it("renders historical banner + Back to latest in chromeless mode", async () => {

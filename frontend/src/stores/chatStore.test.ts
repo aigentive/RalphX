@@ -8,6 +8,7 @@ import {
   selectIsAgentRunning,
   selectActiveConversationId,
   selectActiveAgentRunId,
+  selectActiveAgentRunHarness,
   selectToolCallStartTimes,
   selectEffectiveModel,
   getContextKey,
@@ -45,17 +46,18 @@ describe("chatStore", () => {
       isLoading: false,
       activeConversationIds: {},
       activeAgentRunIds: {},
+      activeAgentRunHarnesses: {},
       queuedMessages: {},
       agentStatus: {},
       agentActivityLabels: {},
       isSending: {},
-      isTeamActive: {},
       lastAgentEventTimestamp: {},
       toolCallStartTimes: {},
       lastToolCallCompletionTimestamp: {},
       toolCallCompletionTimestamps: {},
       effectiveModel: {},
       composerDraftsByKey: {},
+      delegateExpansionByConversation: {},
     });
   });
 
@@ -83,6 +85,7 @@ describe("chatStore", () => {
     it("has empty activeAgentRunIds", () => {
       const state = useChatStore.getState();
       expect(state.activeAgentRunIds).toEqual({});
+      expect(state.activeAgentRunHarnesses).toEqual({});
     });
 
     it("has empty queuedMessages", () => {
@@ -181,6 +184,42 @@ describe("chatStore", () => {
       expect(useChatStore.getState().composerDraftsByKey["conversation:two"]).toMatchObject({
         content: "second",
       });
+    });
+
+    it("keeps folder-reference drafts scoped by composer key and preserves them alongside content", () => {
+      const store = useChatStore.getState();
+
+      store.setComposerDraftFolders("conversation:one", [
+        { id: "folder-1", folderPath: "/work/design-notes", displayName: "design-notes" },
+      ]);
+
+      expect(
+        useChatStore.getState().composerDraftsByKey["conversation:one"],
+      ).toMatchObject({
+        content: "",
+        attachments: [],
+        folders: [
+          { id: "folder-1", folderPath: "/work/design-notes", displayName: "design-notes" },
+        ],
+      });
+
+      useChatStore.getState().setComposerDraftContent("conversation:one", "add design-notes");
+      expect(
+        useChatStore.getState().composerDraftsByKey["conversation:one"]?.folders,
+      ).toEqual([{ id: "folder-1", folderPath: "/work/design-notes", displayName: "design-notes" }]);
+
+      useChatStore.getState().setComposerDraftFolders("conversation:one", []);
+      // Content is still set, so the draft entry is not deleted — only folders clear.
+      expect(
+        useChatStore.getState().composerDraftsByKey["conversation:one"],
+      ).toMatchObject({
+        content: "add design-notes",
+        folders: [],
+      });
+
+      useChatStore.getState().setComposerDraftContent("conversation:one", "");
+      // Content, attachments, and folders are now all empty — the draft is removed.
+      expect(useChatStore.getState().composerDraftsByKey["conversation:one"]).toBeUndefined();
     });
   });
 
@@ -419,39 +458,110 @@ describe("chatStore", () => {
       const state = useChatStore.getState();
       expect(state.activeConversationIds["unknown:key"]).toBeUndefined();
     });
+
+    it("preserves delegate expansion within a conversation and prunes it on switch", () => {
+      useChatStore.getState().setActiveConversation(storeKeyA, "conv-old");
+      useChatStore.getState().setDelegateExpanded("conv-old", "call-delegate", true);
+
+      expect(
+        useChatStore.getState().delegateExpansionByConversation["conv-old"]?.[
+          "call-delegate"
+        ],
+      ).toBe(true);
+
+      useChatStore.getState().setActiveConversation(storeKeyA, "conv-new");
+
+      expect(
+        useChatStore.getState().delegateExpansionByConversation["conv-old"],
+      ).toBeUndefined();
+    });
   });
 
   describe("active agent run ids", () => {
     const storeKey = "project:conversation-1";
 
     it("sets activeAgentRunIds for a storeKey", () => {
-      useChatStore.getState().setActiveAgentRun(storeKey, "run-123");
+      useChatStore.getState().setActiveAgentRun(storeKey, "run-123", "claude");
 
       const state = useChatStore.getState();
       expect(state.activeAgentRunIds[storeKey]).toBe("run-123");
+      expect(state.activeAgentRunHarnesses[storeKey]).toBe("claude");
     });
 
     it("replaces previous active run id for same storeKey", () => {
-      useChatStore.getState().setActiveAgentRun(storeKey, "run-old");
+      useChatStore.getState().setActiveAgentRun(storeKey, "run-old", "claude");
+      useChatStore.getState().setActiveAgentRun(storeKey, "run-new", "codex");
+
+      const state = useChatStore.getState();
+      expect(state.activeAgentRunIds[storeKey]).toBe("run-new");
+      expect(state.activeAgentRunHarnesses[storeKey]).toBe("codex");
+    });
+
+    it("preserves the original timing anchor when the same run is re-emitted", () => {
+      useChatStore.getState().setActiveAgentRun(storeKey, "run-123", "claude", {
+        startedAt: 100, agentName: "reviewer", launchRole: "workspace_reviewer",
+      });
+      useChatStore.getState().setActiveAgentRun(storeKey, "run-123", "claude", {
+        startedAt: 200, agentName: "reviewer-v2", launchRole: "workspace_reviewer",
+      });
+
+      expect(useChatStore.getState().activeAgentRunMeta[storeKey]).toEqual({
+        startedAt: 100, agentName: "reviewer-v2", launchRole: "workspace_reviewer",
+      });
+    });
+
+    it("resets metadata for a new run and clears it with the active run", () => {
+      useChatStore.getState().setActiveAgentRun(storeKey, "run-old", "claude", {
+        startedAt: 100, agentName: "old", launchRole: "workspace_reviewer",
+      });
+      useChatStore.getState().setActiveAgentRun(storeKey, "run-new", "codex", {
+        startedAt: 200, agentName: "new", launchRole: "pr_fixer",
+      });
+      expect(useChatStore.getState().activeAgentRunMeta[storeKey]).toEqual({
+        startedAt: 200, agentName: "new", launchRole: "pr_fixer",
+      });
+      useChatStore.getState().clearActiveAgentRun(storeKey, "run-new");
+      expect(useChatStore.getState().activeAgentRunMeta[storeKey]).toBeUndefined();
+    });
+
+    it("replaces a known harness with an unknown pair without leaking the old harness", () => {
+      useChatStore.getState().setActiveAgentRun(storeKey, "run-old", "claude");
       useChatStore.getState().setActiveAgentRun(storeKey, "run-new");
 
       const state = useChatStore.getState();
       expect(state.activeAgentRunIds[storeKey]).toBe("run-new");
+      expect(state.activeAgentRunHarnesses[storeKey]).toBeNull();
     });
 
     it("clears active run id only when the expected run id matches", () => {
-      useChatStore.getState().setActiveAgentRun(storeKey, "run-new");
+      useChatStore.getState().setActiveAgentRun(storeKey, "run-new", "codex");
       useChatStore.getState().clearActiveAgentRun(storeKey, "run-old");
 
       expect(useChatStore.getState().activeAgentRunIds[storeKey]).toBe("run-new");
+      expect(useChatStore.getState().activeAgentRunHarnesses[storeKey]).toBe("codex");
 
       useChatStore.getState().clearActiveAgentRun(storeKey, "run-new");
 
       expect(useChatStore.getState().activeAgentRunIds[storeKey]).toBeUndefined();
+      expect(useChatStore.getState().activeAgentRunHarnesses[storeKey]).toBeUndefined();
+    });
+
+    it("keeps a newer unknown pair and another context intact when an old id clears", () => {
+      const otherStoreKey = "task:task-2";
+      useChatStore.getState().setActiveAgentRun(storeKey, "run-new");
+      useChatStore.getState().setActiveAgentRun(otherStoreKey, "run-other", "claude");
+
+      useChatStore.getState().clearActiveAgentRun(storeKey, "run-old");
+
+      const state = useChatStore.getState();
+      expect(state.activeAgentRunIds[storeKey]).toBe("run-new");
+      expect(state.activeAgentRunHarnesses[storeKey]).toBeNull();
+      expect(state.activeAgentRunIds[otherStoreKey]).toBe("run-other");
+      expect(state.activeAgentRunHarnesses[otherStoreKey]).toBe("claude");
     });
 
     it("clears active run id when agent status is set to idle", () => {
-      useChatStore.getState().setActiveAgentRun(storeKey, "run-123");
+      useChatStore.getState().setActiveAgentRun(storeKey, "run-123", "claude");
       useChatStore.getState().setAgentStatus(storeKey, "generating");
       useChatStore.getState().setAgentActivityLabel(storeKey, "Agent working");
       useChatStore.getState().setAgentStatus(storeKey, "idle");
@@ -459,7 +569,20 @@ describe("chatStore", () => {
       const state = useChatStore.getState();
       expect(state.agentStatus[storeKey]).toBeUndefined();
       expect(state.activeAgentRunIds[storeKey]).toBeUndefined();
+      expect(state.activeAgentRunHarnesses[storeKey]).toBeUndefined();
       expect(state.agentActivityLabels[storeKey]).toBeUndefined();
+    });
+
+    it("keeps run pairs isolated by store key and clears both during task cleanup", () => {
+      useChatStore.getState().setActiveAgentRun("task:task-1", "run-task", "claude");
+      useChatStore.getState().setActiveAgentRun("project:conversation-1", "run-project", "codex");
+
+      useChatStore.getState().clearAgentRunningForTask("task-1");
+
+      expect(useChatStore.getState().activeAgentRunIds["task:task-1"]).toBeUndefined();
+      expect(useChatStore.getState().activeAgentRunHarnesses["task:task-1"]).toBeUndefined();
+      expect(useChatStore.getState().activeAgentRunIds["project:conversation-1"]).toBe("run-project");
+      expect(useChatStore.getState().activeAgentRunHarnesses["project:conversation-1"]).toBe("codex");
     });
 
     it("clears an activity label when idle is set before a run id exists", () => {
@@ -470,10 +593,11 @@ describe("chatStore", () => {
       expect(useChatStore.getState().agentActivityLabels[storeKey]).toBeUndefined();
     });
 
-    it("selectActiveAgentRunId returns the stored active run id", () => {
-      useChatStore.getState().setActiveAgentRun(storeKey, "run-123");
+    it("selectors return the paired active run identity and harness", () => {
+      useChatStore.getState().setActiveAgentRun(storeKey, "run-123", "claude");
 
       expect(selectActiveAgentRunId(storeKey)(useChatStore.getState())).toBe("run-123");
+      expect(selectActiveAgentRunHarness(storeKey)(useChatStore.getState())).toBe("claude");
     });
   });
 
@@ -657,6 +781,37 @@ describe("chatStore", () => {
       ]);
     });
 
+    it("stores and merges an immutable composer selection snapshot", () => {
+      const snapshot = {
+        sourceType: "ticket" as const,
+        sourceKind: "clickup" as const,
+        sourceId: "task-1",
+        provider: "clickup" as const,
+        startLine: 4,
+        endLine: 5,
+        content: "first\nsecond",
+      };
+
+      useChatStore
+        .getState()
+        .queueMessage(contextKey, "Test", "msg-with-selection");
+      useChatStore
+        .getState()
+        .queueMessage(
+          contextKey,
+          "Test",
+          "msg-with-selection",
+          undefined,
+          snapshot,
+        );
+
+      expect(useChatStore.getState().queuedMessages[contextKey]).toHaveLength(1);
+      expect(
+        useChatStore.getState().queuedMessages[contextKey]?.[0]
+          .composerSelectionSnapshot,
+      ).toEqual(snapshot);
+    });
+
     it("merges attachment IDs from duplicate backend queue events", () => {
       useChatStore.getState().queueMessage(contextKey, "Test", "msg-with-attachments");
       useChatStore
@@ -753,6 +908,7 @@ describe("chatStore", () => {
           createdAt: "2026-06-19T10:00:00Z",
           isEditing: false,
           attachmentIds: ["att-1"],
+          source: "backend",
         },
         {
           id: "backend-2",
@@ -760,6 +916,7 @@ describe("chatStore", () => {
           createdAt: "2026-06-19T10:01:00Z",
           isEditing: false,
           attachmentIds: [],
+          source: "backend",
         },
       ]);
     });
@@ -1096,6 +1253,7 @@ describe("selectors", () => {
       isLoading: false,
       activeConversationIds: {},
       activeAgentRunIds: {},
+      activeAgentRunHarnesses: {},
       queuedMessages: {},
       agentStatus: {},
       agentActivityLabels: {},

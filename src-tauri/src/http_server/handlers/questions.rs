@@ -3,18 +3,24 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use tauri::Emitter;
 use uuid::Uuid;
 
 use super::*;
 use crate::application::harness_runtime_registry::default_external_mcp_human_wait_timeout_secs;
-use crate::application::{QuestionAnswer, QuestionOption};
+use crate::application::interactive_notification_producer::{
+    question_notification_key, InteractiveNotificationProducer,
+};
+use crate::application::{NotificationContextResolver, QuestionAnswer, QuestionOption};
+use crate::domain::entities::ChatConversationId;
+use crate::domain::entities::NotificationTargetKind;
 
 pub async fn request_question(
     State(state): State<HttpServerState>,
     Json(input): Json<QuestionRequestInput>,
 ) -> Json<QuestionRequestResponse> {
-    let request_id = Uuid::new_v4().to_string();
+    let request_id = input
+        .request_id
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
 
     // Convert input options to domain QuestionOption
     let options: Vec<QuestionOption> = input
@@ -45,24 +51,46 @@ pub async fn request_question(
         )
         .await;
 
-    // Emit Tauri event to frontend
-    if let Some(ref app_handle) = state.app_state.app_handle {
-        let _ = app_handle.emit(
-            "agent:ask_user_question",
-            serde_json::json!({
-                "requestId": &request_id,
-                "sessionId": &input.session_id,
-                "question": &input.question,
-                "header": &input.header,
-                "options": &input.options,
-                "multiSelect": input.multi_select,
-                "allowSkip": input.allow_skip,
-                "batchIndex": input.batch_index,
-                "batchTotal": input.batch_total,
-                "metadata": &input.metadata,
-            }),
-        );
+    let notification_context = NotificationContextResolver::from_app_state(&state.app_state);
+    match notification_context
+        .resolve_conversation_target(&ChatConversationId::from_string(input.session_id.clone()))
+        .await
+    {
+        Ok(resolved) if resolved.target.kind != NotificationTargetKind::None => {
+            state
+                .app_state
+                .notification_service()
+                .record(InteractiveNotificationProducer::agent_question(
+                    &request_id,
+                    &input.question,
+                    resolved,
+                ))
+                .await;
+        }
+        Ok(_) => {
+            tracing::warn!(request_id = %request_id, "Skipped question notification without a navigable target")
+        }
+        Err(error) => {
+            tracing::warn!(error = %error, request_id = %request_id, "Failed to resolve question notification context");
+        }
     }
+
+    crate::http_server::emit_http_event(
+        &state,
+        "agent:ask_user_question",
+        serde_json::json!({
+            "requestId": &request_id,
+            "sessionId": &input.session_id,
+            "question": &input.question,
+            "header": &input.header,
+            "options": &input.options,
+            "multiSelect": input.multi_select,
+            "allowSkip": input.allow_skip,
+            "batchIndex": input.batch_index,
+            "batchTotal": input.batch_total,
+            "metadata": &input.metadata,
+        }),
+    );
 
     Json(QuestionRequestResponse { request_id })
 }
@@ -97,6 +125,11 @@ async fn expire_question_wait(
         .await
         .is_some()
     {
+        state
+            .app_state
+            .notification_service()
+            .resolve_workflow_notification(&question_notification_key(request_id))
+            .await;
         Err(StatusCode::REQUEST_TIMEOUT)
     } else {
         resolved_answer_or_timeout(state, request_id).await
@@ -191,19 +224,27 @@ pub async fn resolve_question(
         .await;
 
     if result.resolved {
+        state
+            .app_state
+            .notification_service()
+            .resolve_workflow_notification(&question_notification_key(&input.request_id))
+            .await;
         if let Some(ref sid) = result.session_id {
-            if let Some(ref app_handle) = state.app_state.app_handle {
-                let _ = app_handle.emit(
-                    "agent:question_resolved",
-                    serde_json::json!({
-                        "sessionId": sid,
-                        "requestId": &input.request_id,
-                    }),
-                );
-            }
+            crate::http_server::emit_http_event(
+                &state,
+                "agent:question_resolved",
+                serde_json::json!({
+                    "sessionId": sid,
+                    "requestId": &input.request_id,
+                }),
+            );
         }
         StatusCode::OK
     } else {
         StatusCode::NOT_FOUND
     }
 }
+
+#[cfg(test)]
+#[path = "questions_tests.rs"]
+mod tests;

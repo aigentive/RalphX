@@ -7,6 +7,9 @@ fn merged_suite_requires_nextest() {
     }
 }
 
+#[path = "../support/mod.rs"]
+mod support;
+
 mod ideation_service;
 mod ideation_capacity_counting;
 mod ideation_webhook_enrichment_test;

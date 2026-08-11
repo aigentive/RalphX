@@ -11,10 +11,11 @@ use crate::application::agent_workspace_pr_description::{
 };
 use crate::application::app_state::ResolvedBackgroundAgentRuntime;
 use crate::application::harness_runtime_registry::resolve_harness_agent_bootstrap;
+use crate::application::manual_role_default_service::ManualRoleDefaultService;
 use crate::application::GitService;
 use crate::domain::agents::{
     default_approval_policy_for_harness, default_sandbox_mode_for_harness, AgentConfig,
-    AgentProviderSettings, AgentRole, DEFAULT_AGENT_HARNESS,
+    AgentProviderSettings, AgentRole, RoutingRole, DEFAULT_AGENT_HARNESS,
 };
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentWorkspacePrDescription,
@@ -33,6 +34,7 @@ pub(crate) struct AppStatePlanPrDescriptionDrafter {
     agent_conversation_workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     chat_conversation_repo: Arc<dyn ChatConversationRepository>,
     agent_provider_settings_repo: Arc<dyn AgentProviderSettingsRepository>,
+    manual_role_default_service: Arc<ManualRoleDefaultService>,
     agent_clients: AgentClientBundle,
 }
 
@@ -41,12 +43,14 @@ impl AppStatePlanPrDescriptionDrafter {
         agent_conversation_workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
         chat_conversation_repo: Arc<dyn ChatConversationRepository>,
         agent_provider_settings_repo: Arc<dyn AgentProviderSettingsRepository>,
+        manual_role_default_service: Arc<ManualRoleDefaultService>,
         agent_clients: AgentClientBundle,
     ) -> Self {
         Self {
             agent_conversation_workspace_repo,
             chat_conversation_repo,
             agent_provider_settings_repo,
+            manual_role_default_service,
             agent_clients,
         }
     }
@@ -56,12 +60,14 @@ pub(crate) fn build_app_state_plan_pr_description_drafter(
     agent_conversation_workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     chat_conversation_repo: Arc<dyn ChatConversationRepository>,
     agent_provider_settings_repo: Arc<dyn AgentProviderSettingsRepository>,
+    manual_role_default_service: Arc<ManualRoleDefaultService>,
     agent_clients: AgentClientBundle,
 ) -> Arc<dyn PlanPrDescriptionDrafter> {
     Arc::new(AppStatePlanPrDescriptionDrafter::new(
         agent_conversation_workspace_repo,
         chat_conversation_repo,
         agent_provider_settings_repo,
+        manual_role_default_service,
         agent_clients,
     ))
 }
@@ -79,6 +85,7 @@ impl PlanPrDescriptionDrafter for AppStatePlanPrDescriptionDrafter {
             &self.agent_conversation_workspace_repo,
             &self.chat_conversation_repo,
             &self.agent_provider_settings_repo,
+            &self.manual_role_default_service,
             &self.agent_clients,
             project,
             plan_branch,
@@ -93,6 +100,7 @@ async fn draft_plan_pr_description(
     workspace_repo: &Arc<dyn AgentConversationWorkspaceRepository>,
     chat_conversation_repo: &Arc<dyn ChatConversationRepository>,
     provider_settings_repo: &Arc<dyn AgentProviderSettingsRepository>,
+    manual_role_default_service: &ManualRoleDefaultService,
     agent_clients: &AgentClientBundle,
     project: &Project,
     plan_branch: &PlanBranch,
@@ -128,6 +136,7 @@ async fn draft_plan_pr_description(
     let result = draft_plan_pr_description_inner(
         workspace_repo,
         provider_settings_repo,
+        manual_role_default_service,
         agent_clients,
         project,
         plan_branch,
@@ -186,6 +195,7 @@ async fn cleanup_synthetic_plan_pr_conversation(
 async fn draft_plan_pr_description_inner(
     workspace_repo: &Arc<dyn AgentConversationWorkspaceRepository>,
     provider_settings_repo: &Arc<dyn AgentProviderSettingsRepository>,
+    manual_role_default_service: &ManualRoleDefaultService,
     agent_clients: &AgentClientBundle,
     project: &Project,
     plan_branch: &PlanBranch,
@@ -243,7 +253,13 @@ async fn draft_plan_pr_description_inner(
         &patch_excerpt,
     );
 
-    let runtime = resolve_plan_pr_describer_runtime(provider_settings_repo, agent_clients).await?;
+    let runtime = resolve_plan_pr_describer_runtime(
+        provider_settings_repo,
+        manual_role_default_service,
+        agent_clients,
+        project,
+    )
+    .await?;
     let agent_client = Arc::clone(&runtime.client);
     let helper_harness = runtime.harness.unwrap_or(DEFAULT_AGENT_HARNESS);
     let bootstrap = resolve_harness_agent_bootstrap(
@@ -279,6 +295,7 @@ async fn draft_plan_pr_description_inner(
             max_tokens: None,
             timeout_secs: Some(120),
             env,
+            mcp_launch_policy: Default::default(),
         })
         .await
         .map_err(|error| {
@@ -320,15 +337,23 @@ async fn draft_plan_pr_description_inner(
 
 async fn resolve_plan_pr_describer_runtime(
     provider_settings_repo: &Arc<dyn AgentProviderSettingsRepository>,
+    manual_role_default_service: &ManualRoleDefaultService,
     agent_clients: &AgentClientBundle,
+    project: &Project,
 ) -> AppResult<ResolvedBackgroundAgentRuntime> {
     let purpose = "plan PR describer default provider";
-    let default_provider =
-        crate::application::resolve_enabled_default_provider(provider_settings_repo, purpose)
-            .await
-            .map_err(AppError::Infrastructure)?;
-
-    let harness = default_provider.provider;
+    let resolved = crate::application::agent_lane_resolution::resolve_manual_role_spawn_settings(
+        agent_names::AGENT_PR_DESCRIBER,
+        Some(project.id.as_str()),
+        Some(Path::new(&project.working_directory)),
+        RoutingRole::UtilityPrDescriber,
+        None,
+        None,
+        None,
+        manual_role_default_service,
+    )
+    .await?;
+    let harness = resolved.effective_harness;
     crate::application::ensure_provider_spawn_enabled(provider_settings_repo, harness, purpose)
         .await
         .map_err(AppError::Infrastructure)?;
@@ -368,20 +393,21 @@ async fn resolve_plan_pr_describer_runtime(
     let runtime = ResolvedBackgroundAgentRuntime {
         client,
         harness: Some(harness),
-        model: provider_settings.model,
+        model: Some(resolved.model),
         cli_path_override,
-        logical_effort: provider_settings.effort,
-        approval_policy: provider_settings
+        logical_effort: resolved.logical_effort,
+        approval_policy: resolved
             .approval_policy
             .or_else(|| default_approval_policy_for_harness(harness).map(str::to_string)),
-        sandbox_mode: provider_settings
+        sandbox_mode: resolved
             .sandbox_mode
             .or_else(|| default_sandbox_mode_for_harness(harness).map(str::to_string)),
-        service_tier: provider_settings.service_tier,
+        service_tier: resolved.service_tier.or(provider_settings.service_tier),
+        runtime_source: resolved.runtime_source,
         env: provider_env,
     };
 
-    Ok(crate::application::app_state::AppState::lock_utility_agent_runtime_model(runtime))
+    Ok(runtime)
 }
 
 pub(crate) async fn read_pr_template(repo_path: &Path) -> String {

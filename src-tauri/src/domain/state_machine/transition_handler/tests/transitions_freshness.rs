@@ -1,11 +1,8 @@
 // State machine transition validation tests for BranchFreshnessConflict event.
 //
-// Tests all 3 freshness → Merging paths at the state machine dispatch level:
-//   Executing + BranchFreshnessConflict → Merging
-//   ReExecuting + BranchFreshnessConflict → Merging
-//   Reviewing + BranchFreshnessConflict → Merging
-//
-// Also validates that BranchFreshnessConflict is NOT handled in other states.
+// Dedicated branch updates are activated through the durable repository contract,
+// so the legacy BranchFreshnessConflict event must not bypass that authority by
+// transitioning any ordinary workflow state directly into Merging.
 
 use super::helpers::{create_context_with_services, create_test_services};
 use crate::domain::state_machine::machine::types::Response;
@@ -16,7 +13,7 @@ use crate::domain::state_machine::{State, TaskEvent, TaskStateMachine};
 // ==================
 
 #[test]
-fn test_executing_branch_freshness_conflict_transitions_to_merging() {
+fn test_executing_branch_freshness_conflict_does_not_bypass_dedicated_update() {
     let (_, _, _, _, _, services) = create_test_services();
     let context = create_context_with_services("task-1", "proj-1", services);
     let mut machine = TaskStateMachine::new(context);
@@ -25,8 +22,8 @@ fn test_executing_branch_freshness_conflict_transitions_to_merging() {
 
     assert_eq!(
         response,
-        Response::Transition(State::Merging),
-        "Executing + BranchFreshnessConflict must transition to Merging"
+        Response::NotHandled,
+        "Executing + BranchFreshnessConflict must not bypass dedicated update activation"
     );
 }
 
@@ -35,7 +32,7 @@ fn test_executing_branch_freshness_conflict_transitions_to_merging() {
 // ==================
 
 #[test]
-fn test_re_executing_branch_freshness_conflict_transitions_to_merging() {
+fn test_re_executing_branch_freshness_conflict_does_not_bypass_dedicated_update() {
     let (_, _, _, _, _, services) = create_test_services();
     let context = create_context_with_services("task-1", "proj-1", services);
     let mut machine = TaskStateMachine::new(context);
@@ -44,8 +41,8 @@ fn test_re_executing_branch_freshness_conflict_transitions_to_merging() {
 
     assert_eq!(
         response,
-        Response::Transition(State::Merging),
-        "ReExecuting + BranchFreshnessConflict must transition to Merging"
+        Response::NotHandled,
+        "ReExecuting + BranchFreshnessConflict must not bypass dedicated update activation"
     );
 }
 
@@ -54,7 +51,7 @@ fn test_re_executing_branch_freshness_conflict_transitions_to_merging() {
 // ==================
 
 #[test]
-fn test_reviewing_branch_freshness_conflict_transitions_to_merging() {
+fn test_reviewing_branch_freshness_conflict_does_not_bypass_dedicated_update() {
     let (_, _, _, _, _, services) = create_test_services();
     let context = create_context_with_services("task-1", "proj-1", services);
     let mut machine = TaskStateMachine::new(context);
@@ -63,8 +60,8 @@ fn test_reviewing_branch_freshness_conflict_transitions_to_merging() {
 
     assert_eq!(
         response,
-        Response::Transition(State::Merging),
-        "Reviewing + BranchFreshnessConflict must transition to Merging"
+        Response::NotHandled,
+        "Reviewing + BranchFreshnessConflict must not bypass dedicated update activation"
     );
 }
 

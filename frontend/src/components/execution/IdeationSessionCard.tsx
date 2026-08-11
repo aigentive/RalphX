@@ -2,7 +2,7 @@
  * IdeationSessionCard - Compact row for a running ideation session
  *
  * Line 1: chat icon | title | "Ideation" badge
- * Line 2: elapsed time · team mode badge
+ * Line 2: elapsed time
  */
 
 import { MessageSquare, Loader2, Pause } from "lucide-react";
@@ -13,13 +13,11 @@ import { formatElapsedTime } from "@/lib/formatters";
 interface IdeationSessionCardProps {
   session: RunningIdeationSession;
   onClick?: () => void;
-  showTeamModeBadge?: boolean;
 }
 
 export function IdeationSessionCard({
   session,
   onClick,
-  showTeamModeBadge = true,
 }: IdeationSessionCardProps) {
   const elapsedTime = useElapsedTimer(session.elapsedSeconds, session.sessionId);
 
@@ -72,7 +70,7 @@ export function IdeationSessionCard({
         </span>
       </div>
 
-      {/* Line 2: Elapsed · Team mode */}
+      {/* Line 2: Elapsed */}
       <div
         className="flex items-center gap-1.5 mt-0.5 pl-[22px] text-[0.6875rem] min-w-0"
         style={{ color: "var(--text-muted)" }}
@@ -81,22 +79,6 @@ export function IdeationSessionCard({
         <span className="shrink-0 tabular-nums">
           {formatElapsedTime(elapsedTime)}
         </span>
-        {showTeamModeBadge && session.teamMode && (
-          <>
-            <span className="shrink-0" style={{ color: "var(--text-muted)" }}>
-              ·
-            </span>
-            <span
-              className="text-[0.625rem] font-medium px-1 rounded shrink-0"
-              style={{
-                color: "var(--text-secondary)",
-                backgroundColor: "var(--overlay-moderate)",
-              }}
-            >
-              {session.teamMode}
-            </span>
-          </>
-        )}
       </div>
     </div>
   );

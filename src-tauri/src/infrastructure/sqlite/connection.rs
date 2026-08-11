@@ -1,8 +1,7 @@
 // Database connection management for SQLite
 
 use rusqlite::Connection;
-use std::path::PathBuf;
-use tauri::{AppHandle, Manager};
+use std::path::{Path, PathBuf};
 
 use crate::error::{AppError, AppResult};
 
@@ -12,13 +11,8 @@ pub fn get_default_db_path() -> PathBuf {
 }
 
 /// Get the database path inside the app data directory
-pub fn get_app_data_db_path(app_handle: &AppHandle) -> AppResult<PathBuf> {
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| AppError::Infrastructure(format!("Failed to resolve app data dir: {}", e)))?;
-
-    std::fs::create_dir_all(&app_data_dir)
+pub fn get_app_data_db_path(app_data_dir: &Path) -> AppResult<PathBuf> {
+    std::fs::create_dir_all(app_data_dir)
         .map_err(|e| AppError::Infrastructure(format!("Failed to create app data dir: {}", e)))?;
 
     Ok(app_data_dir.join("ralphx.db"))

@@ -28,7 +28,7 @@ async fn setup_test_state() -> (Arc<ExecutionState>, AppState) {
 fn build_scheduler(
     app_state: &AppState,
     execution_state: &Arc<ExecutionState>,
-) -> TaskSchedulerService<tauri::Wry> {
+) -> TaskSchedulerService {
     TaskSchedulerService::new(
         Arc::clone(execution_state),
         Arc::clone(&app_state.project_repo),
@@ -357,10 +357,18 @@ async fn test_scheduler_skips_project_at_capacity_and_picks_other_project() {
 
     let mut project_a = Project::new("Project A".to_string(), "/test/a".to_string());
     project_a.git_mode = GitMode::Worktree;
-    app_state.project_repo.create(project_a.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project_a.clone())
+        .await
+        .unwrap();
 
     let project_b = Project::new("Project B".to_string(), "/test/b".to_string());
-    app_state.project_repo.create(project_b.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project_b.clone())
+        .await
+        .unwrap();
 
     app_state
         .execution_settings_repo
@@ -421,7 +429,11 @@ async fn test_scheduler_skips_ready_task_from_superseded_execution_plan() {
     execution_state.set_global_max_concurrent(10);
 
     let project = Project::new("Test Project".to_string(), "/test/path".to_string());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     let session = app_state
         .ideation_session_repo
@@ -431,7 +443,11 @@ async fn test_scheduler_skips_ready_task_from_superseded_execution_plan() {
 
     let mut old_plan = ExecutionPlan::new(session.id.clone());
     old_plan.status = ralphx_lib::domain::entities::ExecutionPlanStatus::Superseded;
-    let old_plan = app_state.execution_plan_repo.create(old_plan).await.unwrap();
+    let old_plan = app_state
+        .execution_plan_repo
+        .create(old_plan)
+        .await
+        .unwrap();
 
     let active_plan = app_state
         .execution_plan_repo
@@ -1601,8 +1617,15 @@ async fn test_watchdog_detects_retryable_pending_review_after_backoff_expiry() {
     .with_stale_threshold_secs(3600);
 
     let count = watchdog.run_once().await;
-    assert_eq!(count, 1, "Expired review backoff should be retried even with a high Ready-task threshold");
-    assert_eq!(calls.load(Ordering::SeqCst), 1, "Watchdog should trigger scheduling when a parked review becomes retryable");
+    assert_eq!(
+        count, 1,
+        "Expired review backoff should be retried even with a high Ready-task threshold"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "Watchdog should trigger scheduling when a parked review becomes retryable"
+    );
 }
 
 #[tokio::test]
@@ -1642,8 +1665,15 @@ async fn test_watchdog_ignores_pending_review_before_freshness_backoff_expires()
     .with_stale_threshold_secs(0);
 
     let count = watchdog.run_once().await;
-    assert_eq!(count, 0, "PendingReview task should stay parked until freshness backoff expires");
-    assert_eq!(calls.load(Ordering::SeqCst), 0, "Watchdog must not schedule review retries before backoff expiry");
+    assert_eq!(
+        count, 0,
+        "PendingReview task should stay parked until freshness backoff expires"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "Watchdog must not schedule review retries before backoff expiry"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1651,11 +1681,7 @@ async fn test_watchdog_ignores_pending_review_before_freshness_backoff_expires()
 // ═══════════════════════════════════════════════════════════════════════
 
 /// Helper: create a task with merge_deferred flag and a timestamp in the past
-fn make_deferred_task_with_age(
-    project_id: &ProjectId,
-    title: &str,
-    seconds_ago: i64,
-) -> Task {
+fn make_deferred_task_with_age(project_id: &ProjectId, title: &str, seconds_ago: i64) -> Task {
     let deferred_at = (chrono::Utc::now() - chrono::Duration::seconds(seconds_ago)).to_rfc3339();
     let mut task = Task::new(project_id.clone(), title.to_string());
     task.internal_status = InternalStatus::PendingMerge;
@@ -1671,11 +1697,7 @@ fn make_deferred_task_with_age(
 }
 
 /// Helper: create a task with main_merge_deferred flag and a timestamp in the past
-fn make_main_deferred_task_with_age(
-    project_id: &ProjectId,
-    title: &str,
-    seconds_ago: i64,
-) -> Task {
+fn make_main_deferred_task_with_age(project_id: &ProjectId, title: &str, seconds_ago: i64) -> Task {
     let deferred_at = (chrono::Utc::now() - chrono::Duration::seconds(seconds_ago)).to_rfc3339();
     let mut task = Task::new(project_id.clone(), title.to_string());
     task.internal_status = InternalStatus::PendingMerge;
@@ -2184,16 +2206,31 @@ fn create_plan_branch_for_exec_plan(
     branch
 }
 
+async fn create_active_execution_plan(
+    app_state: &AppState,
+    session_id: &IdeationSessionId,
+    exec_plan_id: &ExecutionPlanId,
+) {
+    let mut plan = ExecutionPlan::new(session_id.clone());
+    plan.id = exec_plan_id.clone();
+    app_state.execution_plan_repo.create(plan).await.unwrap();
+}
+
 #[tokio::test]
 async fn test_scheduler_skips_task_with_merged_plan_branch() {
     let (execution_state, app_state) = setup_test_state().await;
     execution_state.set_max_concurrent(10);
 
     let project = Project::new("Test Project".to_string(), "/test/path".to_string());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     let session_id = IdeationSessionId::from_string("session-merged");
     let exec_plan_id = ExecutionPlanId::from_string("ep-merged");
+    create_active_execution_plan(&app_state, &session_id, &exec_plan_id).await;
     let mut task = Task::new(project.id.clone(), "Plan Task".to_string());
     task.internal_status = InternalStatus::Ready;
     task.ideation_session_id = Some(session_id.clone());
@@ -2202,7 +2239,10 @@ async fn test_scheduler_skips_task_with_merged_plan_branch() {
 
     // Create a Merged plan branch linked by execution_plan_id
     let branch = create_plan_branch_for_exec_plan(
-        &project.id, &session_id, &exec_plan_id, PlanBranchStatus::Merged,
+        &project.id,
+        &session_id,
+        &exec_plan_id,
+        PlanBranchStatus::Merged,
     );
     app_state.plan_branch_repo.create(branch).await.unwrap();
 
@@ -2213,7 +2253,12 @@ async fn test_scheduler_skips_task_with_merged_plan_branch() {
     scheduler.try_schedule_ready_tasks().await;
 
     // Task should still be Ready (skipped due to merged branch)
-    let updated = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         updated.internal_status,
         InternalStatus::Ready,
@@ -2227,10 +2272,15 @@ async fn test_scheduler_skips_task_with_abandoned_plan_branch() {
     execution_state.set_max_concurrent(10);
 
     let project = Project::new("Test Project".to_string(), "/test/path".to_string());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     let session_id = IdeationSessionId::from_string("session-abandoned");
     let exec_plan_id = ExecutionPlanId::from_string("ep-abandoned");
+    create_active_execution_plan(&app_state, &session_id, &exec_plan_id).await;
     let mut task = Task::new(project.id.clone(), "Plan Task".to_string());
     task.internal_status = InternalStatus::Ready;
     task.ideation_session_id = Some(session_id.clone());
@@ -2239,7 +2289,10 @@ async fn test_scheduler_skips_task_with_abandoned_plan_branch() {
 
     // Create an Abandoned plan branch linked by execution_plan_id
     let branch = create_plan_branch_for_exec_plan(
-        &project.id, &session_id, &exec_plan_id, PlanBranchStatus::Abandoned,
+        &project.id,
+        &session_id,
+        &exec_plan_id,
+        PlanBranchStatus::Abandoned,
     );
     app_state.plan_branch_repo.create(branch).await.unwrap();
 
@@ -2248,7 +2301,12 @@ async fn test_scheduler_skips_task_with_abandoned_plan_branch() {
 
     scheduler.try_schedule_ready_tasks().await;
 
-    let updated = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         updated.internal_status,
         InternalStatus::Ready,
@@ -2262,10 +2320,15 @@ async fn test_scheduler_allows_task_with_active_plan_branch() {
     execution_state.set_max_concurrent(10);
 
     let project = Project::new("Test Project".to_string(), "/test/path".to_string());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     let session_id = IdeationSessionId::from_string("session-active");
     let exec_plan_id = ExecutionPlanId::from_string("ep-active");
+    create_active_execution_plan(&app_state, &session_id, &exec_plan_id).await;
     let mut task = Task::new(project.id.clone(), "Plan Task".to_string());
     task.internal_status = InternalStatus::Ready;
     task.ideation_session_id = Some(session_id.clone());
@@ -2274,7 +2337,10 @@ async fn test_scheduler_allows_task_with_active_plan_branch() {
 
     // Create an Active plan branch linked by execution_plan_id
     let branch = create_plan_branch_for_exec_plan(
-        &project.id, &session_id, &exec_plan_id, PlanBranchStatus::Active,
+        &project.id,
+        &session_id,
+        &exec_plan_id,
+        PlanBranchStatus::Active,
     );
     app_state.plan_branch_repo.create(branch).await.unwrap();
 
@@ -2284,7 +2350,12 @@ async fn test_scheduler_allows_task_with_active_plan_branch() {
     scheduler.try_schedule_ready_tasks().await;
 
     // Task should have been scheduled (moved from Ready)
-    let updated = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_ne!(
         updated.internal_status,
         InternalStatus::Ready,
@@ -2298,7 +2369,11 @@ async fn test_scheduler_allows_task_without_execution_plan() {
     execution_state.set_max_concurrent(10);
 
     let project = Project::new("Test Project".to_string(), "/test/path".to_string());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     // Task with no execution_plan_id (non-plan task)
     let mut task = Task::new(project.id.clone(), "Standalone Task".to_string());
@@ -2311,7 +2386,12 @@ async fn test_scheduler_allows_task_without_execution_plan() {
     scheduler.try_schedule_ready_tasks().await;
 
     // Task should have been scheduled (non-plan tasks bypass the guard)
-    let updated = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_ne!(
         updated.internal_status,
         InternalStatus::Ready,

@@ -8,6 +8,7 @@
 import { Pause, Square, Loader2 } from "lucide-react";
 import type { RunningProcess } from "@/api/running-processes";
 import { getStatusIconConfig } from "@/types/status-icons";
+import { getStepProgressDisplay } from "@/types/task-step";
 import { useElapsedTimer } from "@/hooks/useElapsedTimer";
 import { formatElapsedTime } from "@/lib/formatters";
 
@@ -154,8 +155,11 @@ export function ProcessCard({
   // Live elapsed time ticker (updates every second)
   const elapsedTime = useElapsedTimer(process.elapsedSeconds, process.taskId);
 
-  const stepInfo = process.stepProgress
-    ? `${process.stepProgress.completed}/${process.stepProgress.total} steps`
+  const stepDisplay = process.stepProgress
+    ? getStepProgressDisplay(process.stepProgress)
+    : null;
+  const stepInfo = stepDisplay && stepDisplay.total > 0
+    ? `${stepDisplay.completed}/${stepDisplay.total} steps`
     : null;
 
   return (

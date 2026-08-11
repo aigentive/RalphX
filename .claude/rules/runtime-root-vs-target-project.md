@@ -1,3 +1,13 @@
+---
+paths:
+  - "agents/**"
+  - "plugins/app/ralphx-mcp-server/src/**"
+  - "src-tauri/src/infrastructure/agents/**"
+  - "src-tauri/src/utils/runtime_log_paths.rs"
+  - "src-tauri/src/http_server/handlers/coordination/**"
+  - "src-tauri/tests/suite_http_handlers/delegation_handlers.rs"
+---
+
 > **Maintainer note:** Keep this file compact. Prefer one-line rules, links to source docs, and explicit non-negotiables over prose.
 
 # Runtime Root Vs Target Project
@@ -28,4 +38,4 @@ Prevent regressions where agents or backend code assume the active user project 
 | Generated plugin materialization | `src-tauri/src/infrastructure/agents/claude/generated_plugin.rs` |
 | Runtime log placement | `src-tauri/src/utils/runtime_log_paths.rs`, `plugins/app/ralphx-mcp-server/src/redact.ts` |
 | Delegation policy enforcement | `src-tauri/src/http_server/handlers/coordination/mod.rs` |
-| Regression coverage | `src-tauri/src/infrastructure/agents/harness_agent_catalog_tests.rs`, `src-tauri/tests/delegation_handlers.rs` |
+| Regression coverage | `src-tauri/src/infrastructure/agents/harness_agent_catalog_tests.rs`, `src-tauri/tests/suite_http_handlers/delegation_handlers.rs` |

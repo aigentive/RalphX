@@ -2,125 +2,82 @@
  * Workflow and coordination MCP tool definitions
  */
 export const WORKFLOW_TOOLS = [
-    // ========================================================================
-    // TEAM TOOLS (team lead agents)
-    // ========================================================================
     {
-        name: "request_team_plan",
-        description: "Request approval for a team plan before spawning teammates. " +
-            "The plan includes the process type, teammate roles/models/tools, and execution strategy. " +
-            "User approval is required before teammates can be spawned.",
+        name: "create_agent_workflow_script",
+        description: "Store a generated RalphX Agent Workflow JavaScript program for user review. This never launches the program or grants approval.",
         inputSchema: {
             type: "object",
             properties: {
-                process: {
-                    type: "string",
-                    description: "Process type: 'ideation-research', 'ideation-debate', 'worker-parallel'",
-                },
-                teammates: {
-                    type: "array",
-                    items: {
-                        type: "object",
-                        properties: {
-                            role: {
-                                type: "string",
-                                description: "Teammate role name (e.g., 'frontend-researcher', 'coder-1')",
-                            },
-                            tools: {
-                                type: "array",
-                                items: { type: "string" },
-                                description: "CLI tools for this teammate (e.g., ['Read', 'Grep', 'Glob'])",
-                            },
-                            mcp_tools: {
-                                type: "array",
-                                items: { type: "string" },
-                                description: "MCP tools for this teammate (e.g., ['get_session_plan'])",
-                            },
-                            model: {
-                                type: "string",
-                                description: "Model to use: 'haiku', 'sonnet', or 'opus'",
-                            },
-                            preset: {
-                                type: "string",
-                                description: "Optional predefined agent template (for constrained mode)",
-                            },
-                            prompt_summary: {
-                                type: "string",
-                                description: "Brief summary of what this teammate will do",
-                            },
-                        },
-                        required: ["role", "tools", "mcp_tools", "model", "prompt_summary"],
+                script: { type: "string" },
+                meta: {
+                    type: "object",
+                    properties: {
+                        name: { type: "string" },
+                        description: { type: "string" },
+                        phases: { type: "array", items: { type: "string" } },
+                        maxConcurrency: { type: "integer", minimum: 1, maximum: 16 },
+                        maxInvocations: { type: "integer", minimum: 1, maximum: 1000 },
                     },
-                    description: "Array of teammate configurations to spawn",
+                    required: ["name", "maxConcurrency", "maxInvocations"],
                 },
-                team_name: {
-                    type: "string",
-                    description: "Team name from the lead agent's TeamCreate call. Ensures teammates join the same team registry.",
-                },
+                permission_summary: { type: "object" },
+                estimated_fanout: { type: "integer", minimum: 0, maximum: 1000 },
             },
-            required: ["process", "teammates", "team_name"],
+            required: ["script", "meta", "permission_summary", "estimated_fanout"],
         },
     },
     {
-        name: "request_teammate_spawn",
-        description: "Request to spawn a single teammate. " +
-            "The backend validates the request against team constraints, then spawns the teammate if approved.",
+        name: "start_agent_workflow_run",
+        description: "Launch a previously user-approved Agent Workflow. The exact script and permission hashes must still match; this tool cannot approve its own script.",
         inputSchema: {
             type: "object",
             properties: {
-                role: {
+                script_id: { type: "string" },
+                script_hash: { type: "string" },
+                permission_hash: { type: "string" },
+                launch_id: {
                     type: "string",
-                    description: "Teammate role name (e.g., 'frontend-researcher', 'coder-1')",
+                    description: "Optional UUID idempotency key for retrying the same launch.",
                 },
-                prompt: {
+                args: { type: "object" },
+                harness: {
                     type: "string",
-                    description: "Full prompt for the teammate describing their role and expected output",
-                },
-                model: {
-                    type: "string",
-                    enum: ["haiku", "sonnet", "opus"],
-                    description: "Model to use (must be within model_ceiling constraint)",
-                },
-                tools: {
-                    type: "array",
-                    items: { type: "string" },
-                    description: "Requested CLI tools (intersected with tool_ceiling)",
-                },
-                mcp_tools: {
-                    type: "array",
-                    items: { type: "string" },
-                    description: "Requested MCP tools (intersected with mcp_tool_ceiling)",
-                },
-                preset: {
-                    type: "string",
-                    description: "Optional predefined agent template to use (for constrained mode)",
+                    enum: ["claude", "codex"],
+                    description: "Optional provider override; defaults to the parent conversation runtime.",
                 },
             },
-            required: ["role", "prompt", "model", "tools", "mcp_tools"],
+            required: ["script_id", "script_hash", "permission_hash"],
         },
     },
+    ...["get", "pause", "resume", "cancel"].map((action) => ({
+        name: `${action}_agent_workflow_run`,
+        description: `${action[0].toUpperCase()}${action.slice(1)} a durable Agent Workflow run.`,
+        inputSchema: {
+            type: "object",
+            properties: { run_id: { type: "string" } },
+            required: ["run_id"],
+        },
+    })),
     {
         name: "create_team_artifact",
         description: "Create a team artifact documenting research findings, analysis, or summary. " +
             "Automatically sets bucket_id='team-findings' and populates metadata with team info. " +
             "Use for documenting specialist findings, debate analyses, or lead-synthesized summaries. " +
-            "Verification specialists should target the PARENT ideation session_id. If a verification child session_id is passed, the backend remaps it to the parent ideation session automatically. " +
-            "If a caller is retrying after an incomplete run, reuse the same parent session_id and publish a partial artifact rather than omitting the artifact entirely. " +
-            "This is the general team-artifact path, not the typed verification-finding path.",
+            "If a caller is retrying after an incomplete run, reuse the same session_id and publish a partial artifact rather than omitting the artifact entirely.",
         inputSchema: {
             type: "object",
             examples: [
                 {
                     session_id: "parent-session-id",
-                    title: "Completeness: Round 1 cold boot coverage",
-                    content: "{\"status\":\"partial\",\"critic\":\"completeness\",\"round\":1,\"coverage\":\"affected_files\",\"summary\":\"Need one more pass on recovery edge cases\",\"gaps\":[]}",
+                    title: "Cold boot coverage review",
+                    content: "Reviewed recovery paths and identified one remaining cold-boot edge case.",
                     artifact_type: "TeamResearch",
                 },
             ],
             properties: {
                 session_id: {
                     type: "string",
-                    description: "The ideation or execution session ID. For verification critics/specialists the PARENT ideation session ID is canonical; verification child session IDs are auto-remapped to that parent.",
+                    description: "The ideation or execution session ID that owns this team artifact.",
                 },
                 title: {
                     type: "string",
@@ -144,87 +101,9 @@ export const WORKFLOW_TOOLS = [
         },
     },
     {
-        name: "publish_verification_finding",
-        description: "Publish a typed verification finding for the current verification round. " +
-            "Use this for verification-path specialists and required plan critics so the backend can aggregate gaps directly from structured metadata. " +
-            "If session_id is omitted, the backend uses the current session context and remaps verification child sessions plus delegated verification specialists/critics to the parent ideation session automatically.",
-        inputSchema: {
-            type: "object",
-            examples: [
-                {
-                    critic: "completeness",
-                    round: 1,
-                    status: "partial",
-                    coverage: "affected_files",
-                    summary: "Migration needs an explicit backfill step.",
-                    gaps: [
-                        {
-                            severity: "high",
-                            category: "completeness",
-                            description: "Existing projects are not covered by a concrete backfill step.",
-                            why_it_matters: "Persisted rows can retain the old mode.",
-                        },
-                    ],
-                },
-            ],
-            properties: {
-                session_id: {
-                    type: "string",
-                    description: "Optional parent ideation session ID. Omit this in normal verifier-critic flows and let the backend resolve the correct parent session automatically, including delegated verification specialists and critics.",
-                },
-                critic: {
-                    type: "string",
-                    description: "Critic identifier, for example 'completeness', 'feasibility', 'intent', 'code-quality', 'ux', 'prompt-quality', 'pipeline-safety', or 'state-machine'.",
-                },
-                round: {
-                    type: "integer",
-                    description: "Verification round number (1-based).",
-                },
-                status: {
-                    type: "string",
-                    enum: ["complete", "partial", "error"],
-                    description: "Whether the critic finished fully, partially, or hit an infrastructure error.",
-                },
-                coverage: {
-                    type: "string",
-                    description: "Optional coverage scope such as 'plan_only', 'affected_files', or 'affected_files_plus_adjacent'.",
-                },
-                summary: {
-                    type: "string",
-                    description: "One-sentence synthesis of the critic result.",
-                },
-                gaps: {
-                    type: "array",
-                    description: "Structured verification gaps identified by the critic.",
-                    items: {
-                        type: "object",
-                        properties: {
-                            severity: {
-                                type: "string",
-                                enum: ["critical", "high", "medium", "low"],
-                            },
-                            category: { type: "string" },
-                            description: { type: "string" },
-                            why_it_matters: { type: "string" },
-                            source: { type: "string" },
-                            lens: { type: "string" },
-                        },
-                        required: ["severity", "category", "description"],
-                    },
-                },
-                title_suffix: {
-                    type: "string",
-                    description: "Optional short human-readable suffix appended to the generated artifact title.",
-                },
-            },
-            required: ["critic", "round", "status", "summary", "gaps"],
-        },
-    },
-    {
         name: "get_team_artifacts",
         description: "Retrieve all team artifacts for a session. " +
             "Returns artifacts from the 'team-findings' bucket filtered by session ID. " +
-            "Use the PARENT ideation session_id for verification flows; if a verification child session_id is passed, the backend remaps it to the parent ideation session automatically. " +
             "This is the raw artifact listing surface for cases where you genuinely need the full unfiltered team-artifact list.",
         inputSchema: {
             type: "object",
@@ -236,71 +115,6 @@ export const WORKFLOW_TOOLS = [
                 },
             },
             required: ["session_id"],
-        },
-    },
-    {
-        name: "get_team_session_state",
-        description: "Retrieve persisted team composition and phase progress for session recovery. " +
-            "Returns team composition (teammate names/roles/prompts), current phase, and artifact IDs.",
-        inputSchema: {
-            type: "object",
-            properties: {
-                session_id: {
-                    type: "string",
-                    description: "The ideation or execution session ID",
-                },
-            },
-            required: ["session_id"],
-        },
-    },
-    {
-        name: "save_team_session_state",
-        description: "Persist current team composition to database for session recovery. " +
-            "Called after spawning teammates to enable resume if session is interrupted.",
-        inputSchema: {
-            type: "object",
-            properties: {
-                session_id: {
-                    type: "string",
-                    description: "The ideation or execution session ID",
-                },
-                team_composition: {
-                    type: "array",
-                    items: {
-                        type: "object",
-                        properties: {
-                            name: {
-                                type: "string",
-                                description: "Teammate name",
-                            },
-                            role: {
-                                type: "string",
-                                description: "Teammate role description",
-                            },
-                            prompt: {
-                                type: "string",
-                                description: "Full prompt used to spawn this teammate",
-                            },
-                            model: {
-                                type: "string",
-                                description: "Model used for this teammate",
-                            },
-                        },
-                        required: ["name", "role", "prompt", "model"],
-                    },
-                    description: "Array of teammate configurations",
-                },
-                phase: {
-                    type: "string",
-                    description: "Current workflow phase (e.g., 'EXPLORE', 'PLAN', 'CONFIRM')",
-                },
-                artifact_ids: {
-                    type: "array",
-                    items: { type: "string" },
-                    description: "IDs of team artifacts created so far",
-                },
-            },
-            required: ["session_id", "team_composition", "phase"],
         },
     },
     // ========================================================================
@@ -446,7 +260,7 @@ export const WORKFLOW_TOOLS = [
         name: "append_task_to_ideation_plan",
         description: "Append a one-off task to an already accepted ideation plan while its plan branch is still active, including when its PR is open and waiting. " +
             "Use this instead of starting a new ideation when the user asks for a small follow-up on an accepted, still-open plan. " +
-            "The backend links the task to the existing session/execution plan, creates steps, and blocks the plan merge on the new task.",
+            "The backend links the task to the existing session/execution plan, infers the default graph placement, creates steps, and blocks the plan merge on the new task.",
         inputSchema: {
             type: "object",
             properties: {
@@ -479,7 +293,7 @@ export const WORKFLOW_TOOLS = [
                 depends_on_task_ids: {
                     type: "array",
                     items: { type: "string" },
-                    description: "Optional existing tasks that must complete before this one starts.",
+                    description: "Optional advanced backend-validated task IDs to use instead of inferred placement blockers.",
                 },
                 priority: {
                     type: "number",
@@ -487,11 +301,11 @@ export const WORKFLOW_TOOLS = [
                 },
                 source_conversation_id: {
                     type: "string",
-                    description: "Optional source conversation ID for traceability.",
+                    description: "Source conversation ID. Required when the target is owned by a native Tasks pipeline; optional for legacy/external sessions.",
                 },
                 source_message_id: {
                     type: "string",
-                    description: "Optional source message ID for traceability.",
+                    description: "Exact user message ID authorizing the follow-up. Required when the target is owned by a native Tasks pipeline; optional for legacy/external sessions.",
                 },
             },
             required: ["project_id", "session_id", "title", "steps", "acceptance_criteria"],
@@ -647,6 +461,53 @@ export const WORKFLOW_TOOLS = [
                 task_id: { type: "string", description: "The task ID" },
             },
             required: ["task_id"],
+        },
+    },
+    {
+        name: "get_branch_update_context",
+        description: "Get the active branch-update operation for the assigned task, including direction, source/target branches, operation workspace, conflicts, and continuation intent.",
+        inputSchema: {
+            type: "object",
+            properties: { task_id: { type: "string", description: "The assigned task ID" } },
+            required: ["task_id"],
+        },
+    },
+    {
+        name: "complete_branch_update",
+        description: "Signal that all conflict files in the assigned branch update have been edited. The backend owns staging, commit, ref update, cleanup, and the durable continuation.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                task_id: { type: "string", description: "The assigned task ID" },
+            },
+            required: ["task_id"],
+        },
+    },
+    {
+        name: "report_branch_update_conflict",
+        description: "Report branch-update conflicts that cannot be resolved safely. This blocks the update operation without emitting merge lifecycle state.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                task_id: { type: "string", description: "The assigned task ID" },
+                conflict_files: { type: "array", items: { type: "string" } },
+                reason: { type: "string" },
+                diagnostic_info: { type: "string" },
+            },
+            required: ["task_id", "conflict_files", "reason"],
+        },
+    },
+    {
+        name: "report_branch_update_incomplete",
+        description: "Report a non-conflict Git/workspace/environment blocker for the active branch update.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                task_id: { type: "string", description: "The assigned task ID" },
+                reason: { type: "string" },
+                diagnostic_info: { type: "string" },
+            },
+            required: ["task_id", "reason"],
         },
     },
     // ========================================================================

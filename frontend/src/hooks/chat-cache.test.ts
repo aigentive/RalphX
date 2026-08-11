@@ -20,6 +20,7 @@ const conversation: ChatConversation = {
   providerSessionId: null,
   providerHarness: null,
   claudeSessionId: null,
+  coordinationMode: "solo",
   title: "Conversation",
   messageCount: 1,
   lastMessageAt: "2026-01-01T00:00:00Z",

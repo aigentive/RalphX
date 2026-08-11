@@ -95,6 +95,14 @@ function collectDialogContentViolations(): string[] {
 
   for (const filePath of listTsxFiles(SRC_ROOT)) {
     const sourceText = readFileSync(filePath, "utf8");
+    // Cheap pre-filter: a dialog content violation requires the literal
+    // component name to appear in the file, so skip the expensive full TS
+    // parse for the vast majority of files that reference no content component.
+    // This keeps the whole-tree scan fast enough to stay well under the test
+    // timeout even under parallel CI worker contention.
+    if (![...CONTENT_COMPONENTS].some((name) => sourceText.includes(name))) {
+      continue;
+    }
     const source = ts.createSourceFile(
       filePath,
       sourceText,

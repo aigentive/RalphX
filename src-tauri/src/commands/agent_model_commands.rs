@@ -16,6 +16,7 @@ pub struct AgentModelResponse {
     pub menu_label: String,
     pub description: Option<String>,
     pub supported_efforts: Vec<String>,
+    pub supports_codex_ultra: bool,
     pub default_effort: String,
     pub source: String,
     pub enabled: bool,
@@ -63,6 +64,8 @@ fn source_label(source: AgentModelSource) -> &'static str {
 }
 
 fn to_response(model: AgentModelDefinition) -> AgentModelResponse {
+    let supports_codex_ultra = model.provider == AgentHarnessKind::Codex
+        && model.supported_efforts.contains(&LogicalEffort::Ultra);
     AgentModelResponse {
         provider: model.provider.to_string(),
         model_id: model.model_id,
@@ -72,8 +75,10 @@ fn to_response(model: AgentModelDefinition) -> AgentModelResponse {
         supported_efforts: model
             .supported_efforts
             .into_iter()
+            .filter(|effort| *effort != LogicalEffort::Ultra)
             .map(|effort| effort.to_string())
             .collect(),
+        supports_codex_ultra,
         default_effort: model.default_effort.to_string(),
         source: source_label(model.source).to_string(),
         enabled: model.enabled,

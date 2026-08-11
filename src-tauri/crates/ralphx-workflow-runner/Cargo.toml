@@ -1,0 +1,10 @@
+[package]
+name = "ralphx-workflow-runner"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ralphx-domain = { path = "../ralphx-domain" }
+rquickjs = { version = "0.12", default-features = false, features = ["classes", "properties", "array-buffer"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }

@@ -11,10 +11,11 @@
 //   3. No-op when task_repo is absent (services without repo)
 
 use super::helpers::*;
-use crate::domain::entities::{InternalStatus, Project, ProjectId, Task};
-use crate::domain::state_machine::context::{TaskContext, TaskServices};
-use crate::domain::state_machine::{State, TaskStateMachine, TransitionHandler};
+use crate::domain::entities::{InternalStatus, Project, ProjectId, Task, TaskId};
 use crate::domain::repositories::TaskRepository;
+use crate::domain::state_machine::context::{TaskContext, TaskServices};
+use crate::domain::state_machine::services::{NotificationContext, TaskNotification};
+use crate::domain::state_machine::{State, TaskStateMachine, TransitionHandler};
 use crate::infrastructure::memory::{MemoryProjectRepository, MemoryTaskRepository};
 
 async fn setup_task_with_freshness_metadata(
@@ -49,7 +50,9 @@ fn build_machine_with_repos(
 ) -> TaskStateMachine {
     let services = TaskServices::new_mock()
         .with_task_repo(Arc::clone(task_repo) as Arc<dyn TaskRepository>)
-        .with_project_repo(Arc::clone(project_repo) as Arc<dyn crate::domain::repositories::ProjectRepository>);
+        .with_project_repo(
+            Arc::clone(project_repo) as Arc<dyn crate::domain::repositories::ProjectRepository>
+        );
     let context = TaskContext::new(task_id.as_str(), "proj-1", services);
     TaskStateMachine::new(context)
 }
@@ -81,7 +84,10 @@ async fn on_enter_review_passed_clears_freshness_routing_flags() {
 
     let handler = TransitionHandler::new(&mut machine);
     let result = handler.on_enter(&State::ReviewPassed).await;
-    assert!(result.is_ok(), "on_enter(ReviewPassed) should succeed: {result:?}");
+    assert!(
+        result.is_ok(),
+        "on_enter(ReviewPassed) should succeed: {result:?}"
+    );
 
     // Read back task metadata from repo
     let updated_task = task_repo
@@ -89,20 +95,18 @@ async fn on_enter_review_passed_clears_freshness_routing_flags() {
         .await
         .unwrap()
         .expect("task should exist");
-    let meta: serde_json::Value = serde_json::from_str(
-        updated_task.metadata.as_deref().unwrap_or("{}"),
-    )
-    .unwrap();
+    let meta: serde_json::Value =
+        serde_json::from_str(updated_task.metadata.as_deref().unwrap_or("{}")).unwrap();
 
     // Routing flags cleared
     assert_eq!(
-        meta.get("branch_freshness_conflict").and_then(|v| v.as_bool()),
+        meta.get("branch_freshness_conflict")
+            .and_then(|v| v.as_bool()),
         Some(false),
         "branch_freshness_conflict should be false"
     );
     assert!(
-        meta.get("freshness_origin_state").is_none()
-            || meta["freshness_origin_state"].is_null(),
+        meta.get("freshness_origin_state").is_none() || meta["freshness_origin_state"].is_null(),
         "freshness_origin_state should be absent"
     );
     assert!(
@@ -118,12 +122,14 @@ async fn on_enter_review_passed_clears_freshness_routing_flags() {
 
     // Conflict count preserved (RoutingOnly scope preserves counts)
     assert_eq!(
-        meta.get("freshness_conflict_count").and_then(|v| v.as_i64()),
+        meta.get("freshness_conflict_count")
+            .and_then(|v| v.as_i64()),
         Some(2),
         "freshness_conflict_count should be preserved"
     );
     assert_eq!(
-        meta.get("freshness_auto_reset_count").and_then(|v| v.as_i64()),
+        meta.get("freshness_auto_reset_count")
+            .and_then(|v| v.as_i64()),
         Some(1),
         "freshness_auto_reset_count should be preserved"
     );
@@ -159,10 +165,8 @@ async fn on_enter_review_passed_noop_when_no_stale_flags() {
     assert!(result.is_ok());
 
     let updated_task = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
-    let meta: serde_json::Value = serde_json::from_str(
-        updated_task.metadata.as_deref().unwrap_or("{}"),
-    )
-    .unwrap();
+    let meta: serde_json::Value =
+        serde_json::from_str(updated_task.metadata.as_deref().unwrap_or("{}")).unwrap();
 
     // Non-freshness key preserved
     assert_eq!(
@@ -171,8 +175,7 @@ async fn on_enter_review_passed_noop_when_no_stale_flags() {
     );
     // No routing flags appear
     assert!(
-        meta.get("freshness_origin_state").is_none()
-            || meta["freshness_origin_state"].is_null()
+        meta.get("freshness_origin_state").is_none() || meta["freshness_origin_state"].is_null()
     );
     assert!(
         meta.get("freshness_count_incremented_by").is_none()
@@ -190,16 +193,43 @@ async fn on_enter_review_passed_noop_when_no_stale_flags() {
 async fn on_enter_review_passed_skips_cleanup_without_task_repo() {
     let (_spawner, emitter, notifier, _dep_manager, _review_starter, services) =
         create_test_services();
-    let context = create_context_with_services("task-no-repo", "proj-1", services);
+    let project_id = ProjectId::from_string("proj-1".to_string());
+    let mut task = Task::new(
+        project_id.clone(),
+        "Review passed notification task".to_string(),
+    );
+    task.id = TaskId::from_string("task-no-repo".to_string());
+    let context = create_context_with_services(
+        "task-no-repo",
+        "proj-1",
+        services.with_notification_context(NotificationContext {
+            task,
+            history_entry_id: "committed-history-review-passed".to_string(),
+            project_id,
+        }),
+    );
     let mut machine = TaskStateMachine::new(context);
 
     let handler = TransitionHandler::new(&mut machine);
     let result = handler.on_enter(&State::ReviewPassed).await;
 
     // Should succeed even without a task_repo
-    assert!(result.is_ok(), "on_enter without task_repo should not error");
+    assert!(
+        result.is_ok(),
+        "on_enter without task_repo should not error"
+    );
 
-    // Events and notifications still fired
+    // Events and typed notifications still fired without a task repository.
     assert!(emitter.has_event("review:ai_approved"));
-    assert!(notifier.has_notification("review:ai_approved"));
+    let notifications = notifier.notification_records();
+    assert_eq!(notifications.len(), 1);
+    assert!(matches!(
+        notifications[0].notification,
+        TaskNotification::StateEntered(InternalStatus::ReviewPassed)
+    ));
+    assert_eq!(notifications[0].context.task.id.as_str(), "task-no-repo");
+    assert_eq!(
+        notifications[0].context.history_entry_id,
+        "committed-history-review-passed"
+    );
 }

@@ -12,4 +12,4 @@ RalphX notes:
 
 - This is the vendor-native path for Codex ideation specialist / verifier delegation.
 - RalphX should model delegation in provider-neutral terms and translate to Claude `Task(...)` vs Codex subagents per harness.
-- There is no requirement for team-mode parity in Codex; initial RalphX Codex runs should remain solo plus subagents.
+- RalphX exposes Codex subagents through its provider-neutral delegation and RX-native Team contracts.

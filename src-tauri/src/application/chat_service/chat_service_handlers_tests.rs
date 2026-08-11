@@ -1,7 +1,8 @@
 use super::*;
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
-use std::sync::Arc;
+use chrono::{DateTime, Duration, Utc};
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::{fs, process::Command};
 use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
 use tauri::Manager;
@@ -11,16 +12,212 @@ use crate::application::{
     chat_service::{ProviderErrorCategory, ProviderErrorMetadata},
     AppState, InteractiveProcessRegistry,
 };
-use crate::domain::agents::{AgentHarnessKind, AgentProviderSettings};
-use crate::domain::entities::{
-    app_state::ExecutionHaltMode, AgentRunId, AgentRunStatus, ChatConversation,
-    ChatTimelineItemStatus, ExecutionFailureSource, ExecutionRecoveryMetadata,
-    ExecutionRecoveryReasonCode, ExecutionRecoveryState, IdeationSessionId, InternalStatus,
-    Project, ProjectId, Task, VerificationStatus,
+use crate::domain::agents::{
+    AgentHarnessKind, AgentProviderSettings, McpOverrideState, McpServerKey, ProviderSessionRef,
 };
-use crate::domain::repositories::{StateHistoryMetadata, StatusTransition};
+use crate::domain::entities::{
+    app_state::ExecutionHaltMode, AgentConversationWorkspaceMode, AgentRun, AgentRunId,
+    AgentRunStatus, ChatConversation, ChatConversationId, ChatMessage, ChatTimelineItemStatus,
+    DelegationPark, DelegationParkId, DelegationParkState, DelegationWakePolicy,
+    ExecutionFailureSource, ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode,
+    ExecutionRecoveryState, IdeationSessionId, InternalStatus, NotificationCategory,
+    NotificationSeverity, NotificationTargetKind, Persona, PersonaId, PersonaStatus, Project,
+    ProjectId, Task, ValidationCacheDecision, ValidationCommandCategory, ValidationCommandResult,
+    ValidationCommandSource, ValidationCommandStatus, ValidationContextType, ValidationPurpose,
+    ValidationRun, ValidationRunMode, ValidationRunStatus, VerificationStatus,
+};
+use crate::domain::repositories::{
+    ActivityEventRepository, AgentRunRepository, ArtifactRepository, ChatAttachmentRepository,
+    ChatConversationRepository, ChatMessageRepository, ChatTimelineRepository,
+    ExecutionSettingsRepository, IdeationSessionRepository, MemoryEventRepository,
+    PlanBranchRepository, ProjectRepository, ReviewRepository, StateHistoryMetadata,
+    StatusTransition, TaskDependencyRepository, TaskProposalRepository, TaskRepository,
+    TaskStepRepository, ValidationRunRepository,
+};
+use crate::domain::services::{MessageQueue, RunningAgentRegistry};
 use crate::error::AppResult;
-use crate::infrastructure::agents::claude::{ContentBlockItem, ToolCall};
+use crate::infrastructure::agents::claude::{ContentBlockItem, SpawnableCommand, ToolCall};
+use crate::infrastructure::memory::MemoryValidationRunRepository;
+use tauri::{AppHandle, Runtime};
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_stream_success<R: Runtime>(
+    agent_run_id: &str,
+    context_type: ChatContextType,
+    context_id: &str,
+    has_output: bool,
+    completion_tool_called: bool,
+    execution_slot_held: bool,
+    execution_state: &Option<Arc<ExecutionState>>,
+    task_repo: &Arc<dyn TaskRepository>,
+    task_dependency_repo: &Arc<dyn TaskDependencyRepository>,
+    project_repo: &Arc<dyn ProjectRepository>,
+    artifact_repo: &Arc<dyn ArtifactRepository>,
+    chat_message_repo: &Arc<dyn ChatMessageRepository>,
+    chat_attachment_repo: &Arc<dyn ChatAttachmentRepository>,
+    conversation_repo: &Arc<dyn ChatConversationRepository>,
+    agent_run_repo: &Arc<dyn AgentRunRepository>,
+    ideation_session_repo: &Arc<dyn IdeationSessionRepository>,
+    activity_event_repo: &Arc<dyn ActivityEventRepository>,
+    message_queue: &Arc<MessageQueue>,
+    running_agent_registry: &Arc<dyn RunningAgentRegistry>,
+    memory_event_repo: &Arc<dyn MemoryEventRepository>,
+    plan_branch_repo: &Option<Arc<dyn PlanBranchRepository>>,
+    task_step_repo: &Option<Arc<dyn TaskStepRepository>>,
+    execution_settings_repo: &Option<Arc<dyn ExecutionSettingsRepository>>,
+    app_handle: &Option<AppHandle<R>>,
+    interactive_process_registry: &Option<Arc<InteractiveProcessRegistry>>,
+    review_repo: &Option<Arc<dyn ReviewRepository>>,
+    verification_child_registry: &Option<Arc<VerificationChildProcessRegistry>>,
+) {
+    let validation_run_repo = app_handle.as_ref().and_then(|handle| {
+        handle
+            .try_state::<AppState>()
+            .map(|state| Arc::clone(&state.validation_run_repo))
+    });
+    super::handle_stream_success(
+        agent_run_id,
+        context_type,
+        context_id,
+        has_output,
+        completion_tool_called,
+        execution_slot_held,
+        execution_state,
+        task_repo,
+        task_dependency_repo,
+        project_repo,
+        artifact_repo,
+        chat_message_repo,
+        chat_attachment_repo,
+        conversation_repo,
+        agent_run_repo,
+        ideation_session_repo,
+        activity_event_repo,
+        message_queue,
+        running_agent_registry,
+        memory_event_repo,
+        plan_branch_repo,
+        task_step_repo,
+        &validation_run_repo,
+        &None,
+        &None,
+        execution_settings_repo,
+        &None,
+        &None,
+        app_handle,
+        interactive_process_registry,
+        review_repo,
+        verification_child_registry,
+    )
+    .await;
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_stream_error<R: Runtime + 'static>(
+    error: &str,
+    stream_error: Option<&StreamError>,
+    context_type: ChatContextType,
+    context_id: &str,
+    conversation_id: ChatConversationId,
+    agent_run_id: &str,
+    pre_assistant_msg_id: &str,
+    event_ctx: &EventContextPayload,
+    stored_session_id: Option<&str>,
+    effective_harness: AgentHarnessKind,
+    is_retry_attempt: bool,
+    user_message_content: Option<&str>,
+    conversation: Option<&ChatConversation>,
+    resolved_project_id: Option<String>,
+    cli_path: &std::path::Path,
+    plugin_dir: &std::path::Path,
+    working_directory: &std::path::Path,
+    chat_message_repo: &Arc<dyn ChatMessageRepository>,
+    chat_timeline_repo: &Option<Arc<dyn ChatTimelineRepository>>,
+    chat_attachment_repo: &Arc<dyn ChatAttachmentRepository>,
+    artifact_repo: &Arc<dyn ArtifactRepository>,
+    conversation_repo: &Arc<dyn ChatConversationRepository>,
+    agent_run_repo: &Arc<dyn AgentRunRepository>,
+    task_repo: &Arc<dyn TaskRepository>,
+    task_dependency_repo: &Arc<dyn TaskDependencyRepository>,
+    project_repo: &Arc<dyn ProjectRepository>,
+    ideation_session_repo: &Arc<dyn IdeationSessionRepository>,
+    task_proposal_repo: &Option<Arc<dyn TaskProposalRepository>>,
+    activity_event_repo: &Arc<dyn ActivityEventRepository>,
+    message_queue: &Arc<MessageQueue>,
+    running_agent_registry: &Arc<dyn RunningAgentRegistry>,
+    memory_event_repo: &Arc<dyn MemoryEventRepository>,
+    execution_state: &Option<Arc<ExecutionState>>,
+    question_state: &Option<Arc<QuestionState>>,
+    plan_branch_repo: &Option<Arc<dyn PlanBranchRepository>>,
+    execution_settings_repo: &Option<Arc<dyn ExecutionSettingsRepository>>,
+    app_handle: &Option<AppHandle<R>>,
+    agent_name: Option<&str>,
+    run_chain_id: Option<String>,
+    interactive_process_registry: &Option<Arc<InteractiveProcessRegistry>>,
+    review_repo: &Option<Arc<dyn ReviewRepository>>,
+    task_step_repo: &Option<Arc<dyn TaskStepRepository>>,
+    verification_child_registry: &Option<Arc<VerificationChildProcessRegistry>>,
+) -> bool {
+    let validation_run_repo = app_handle.as_ref().and_then(|handle| {
+        handle
+            .try_state::<AppState>()
+            .map(|state| Arc::clone(&state.validation_run_repo))
+    });
+    super::handle_stream_error(
+        error,
+        stream_error,
+        context_type,
+        context_id,
+        conversation_id,
+        agent_run_id,
+        pre_assistant_msg_id,
+        event_ctx,
+        stored_session_id,
+        effective_harness,
+        is_retry_attempt,
+        false,
+        false,
+        user_message_content,
+        conversation,
+        resolved_project_id,
+        cli_path,
+        plugin_dir,
+        working_directory,
+        chat_message_repo,
+        chat_timeline_repo,
+        chat_attachment_repo,
+        artifact_repo,
+        conversation_repo,
+        agent_run_repo,
+        task_repo,
+        task_dependency_repo,
+        project_repo,
+        ideation_session_repo,
+        task_proposal_repo,
+        activity_event_repo,
+        message_queue,
+        running_agent_registry,
+        memory_event_repo,
+        execution_state,
+        question_state,
+        plan_branch_repo,
+        execution_settings_repo,
+        &None,
+        &None,
+        app_handle,
+        agent_name,
+        run_chain_id,
+        interactive_process_registry,
+        review_repo,
+        task_step_repo,
+        &validation_run_repo,
+        &None,
+        &None,
+        verification_child_registry,
+        &None,
+    )
+    .await
+}
 
 /// Configurable mock: `get_by_id` returns the stored task (or None).
 struct StubTaskRepo {
@@ -28,9 +225,14 @@ struct StubTaskRepo {
     status_entered_at: Option<DateTime<Utc>>,
 }
 
+fn forced_transition_failures() -> &'static Mutex<HashSet<String>> {
+    static FAILURES: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    FAILURES.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
 #[tokio::test]
 async fn provider_env_for_harness_reads_app_state_provider_settings() {
-    let empty = provider_env_for_harness::<MockRuntime>(&None, AgentHarnessKind::Claude)
+    let empty = provider_env_for_harness::<MockRuntime>(&None, &None, AgentHarnessKind::Claude)
         .await
         .expect("missing app handle");
     assert!(empty.is_empty());
@@ -57,7 +259,7 @@ async fn provider_env_for_harness_reads_app_state_provider_settings() {
         .expect("mock app");
     let handle = Some(app.handle().clone());
 
-    let provider_env = provider_env_for_harness(&handle, AgentHarnessKind::Claude)
+    let provider_env = provider_env_for_harness(&handle, &None, AgentHarnessKind::Claude)
         .await
         .expect("load provider env");
 
@@ -68,6 +270,853 @@ async fn provider_env_for_harness_reads_app_state_provider_settings() {
         Some("from-handler")
     );
     assert!(!provider_env.contains_key("CLAUDE_MODEL"));
+}
+
+#[tokio::test]
+async fn provider_env_for_harness_uses_explicit_provider_repo_without_app_handle() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let env_path = temp_dir.path().join("claude.env");
+    std::fs::write(&env_path, "CUSTOM_PROVIDER_TOKEN=from-explicit-repo\n")
+        .expect("write env file");
+    let app_state = AppState::new_test();
+    let mut settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
+    settings.custom_env_file_enabled = true;
+    settings.custom_env_file_path = Some(env_path.to_string_lossy().into_owned());
+    app_state
+        .agent_provider_settings_repo
+        .upsert(&settings)
+        .await
+        .expect("save provider settings");
+    let provider_repo = Some(Arc::clone(&app_state.agent_provider_settings_repo));
+
+    let provider_env =
+        provider_env_for_harness::<MockRuntime>(&None, &provider_repo, AgentHarnessKind::Claude)
+            .await
+            .expect("load provider env");
+
+    assert_eq!(
+        provider_env
+            .get("CUSTOM_PROVIDER_TOKEN")
+            .map(String::as_str),
+        Some("from-explicit-repo")
+    );
+}
+
+#[tokio::test]
+async fn recovery_retry_provider_decision_fails_execution_without_provider_repo() {
+    let decision = recovery_retry_provider_decision::<MockRuntime>(
+        &None,
+        &None,
+        AgentHarnessKind::Claude,
+        ChatContextType::Review,
+    )
+    .await;
+
+    assert_eq!(
+        decision,
+        Err(RecoveryRetryProviderBlock::MissingProviderSettings),
+        "execution-slot recovery retries must fail closed without provider settings"
+    );
+}
+
+#[tokio::test]
+async fn recovery_retry_provider_decision_allows_non_execution_without_provider_repo() {
+    let decision = recovery_retry_provider_decision::<MockRuntime>(
+        &None,
+        &None,
+        AgentHarnessKind::Claude,
+        ChatContextType::Project,
+    )
+    .await
+    .expect("non-execution recovery can run without provider settings");
+
+    assert_eq!(
+        decision,
+        RecoveryRetryProviderDecision::AllowWithoutProviderSettings
+    );
+}
+
+#[tokio::test]
+async fn recovery_retry_provider_decision_blocks_disabled_provider() {
+    let app_state = AppState::new_test();
+    let mut disabled = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
+    disabled.is_default = true;
+    app_state
+        .agent_provider_settings_repo
+        .upsert(&disabled)
+        .await
+        .expect("save disabled default provider");
+    let provider_repo = Some(Arc::clone(&app_state.agent_provider_settings_repo));
+
+    let decision = recovery_retry_provider_decision::<MockRuntime>(
+        &None,
+        &provider_repo,
+        AgentHarnessKind::Claude,
+        ChatContextType::Review,
+    )
+    .await;
+
+    let Err(RecoveryRetryProviderBlock::Disabled(error)) = decision else {
+        panic!("expected disabled provider block");
+    };
+    assert!(
+        error.contains("Choose and enable a default provider")
+            || error.contains("Claude is not enabled"),
+        "unexpected disabled-provider error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn recovery_retry_provider_decision_applies_explicit_provider_env() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let env_path = temp_dir.path().join("claude.env");
+    std::fs::write(
+        &env_path,
+        "CUSTOM_PROVIDER_TOKEN=from-retry\nCLAUDE_MODEL=ignored\n",
+    )
+    .expect("write env file");
+    let app_state = AppState::new_test();
+    let mut settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
+    settings.enabled = true;
+    settings.is_default = true;
+    settings.custom_env_file_enabled = true;
+    settings.custom_env_file_path = Some(env_path.to_string_lossy().into_owned());
+    app_state
+        .agent_provider_settings_repo
+        .upsert(&settings)
+        .await
+        .expect("save enabled provider settings");
+    let provider_repo = Some(Arc::clone(&app_state.agent_provider_settings_repo));
+
+    let decision = recovery_retry_provider_decision::<MockRuntime>(
+        &None,
+        &provider_repo,
+        AgentHarnessKind::Claude,
+        ChatContextType::Review,
+    )
+    .await
+    .expect("recovery retry should load custom provider env");
+
+    let RecoveryRetryProviderDecision::ApplyEnv(provider_env) = decision else {
+        panic!("expected provider env application");
+    };
+    assert_eq!(
+        provider_env
+            .get("CUSTOM_PROVIDER_TOKEN")
+            .map(String::as_str),
+        Some("from-retry")
+    );
+    assert!(
+        !provider_env.contains_key("CLAUDE_MODEL"),
+        "protected model overrides must stay filtered from provider env"
+    );
+}
+
+fn recovery_retry_test_provider_spawnable() -> chat_service_context::ProviderSpawnableCommand {
+    chat_service_context::ProviderSpawnableCommand {
+        spawnable: SpawnableCommand::new(Command::new("true").into(), None),
+    }
+}
+
+fn spawnable_env_value(spawnable: &SpawnableCommand, key: &str) -> Option<String> {
+    spawnable
+        .get_envs_for_test()
+        .into_iter()
+        .find_map(|(env_key, env_value)| {
+            (env_key.to_string_lossy() == key).then(|| env_value.to_string_lossy().into_owned())
+        })
+}
+
+struct EnvVarGuard {
+    key: &'static str,
+    previous: Option<String>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, value: &str) -> Self {
+        let previous = std::env::var(key).ok();
+        std::env::set_var(key, value);
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        match &self.previous {
+            Some(value) => std::env::set_var(self.key, value),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
+
+fn write_claude_session_fixture(dir: &std::path::Path, session_id: &str) -> std::path::PathBuf {
+    let cli_path = dir.join("claude-session-fixture.sh");
+    let script = format!(
+        "#!/bin/sh\nprintf '%s\\n' '{}'\nprintf '%s\\n' '{}'\n",
+        serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "content": [{ "type": "text", "text": "recovered session" }]
+            },
+            "session_id": session_id,
+        }),
+        serde_json::json!({
+            "type": "result",
+            "session_id": session_id,
+            "is_error": false,
+            "result": "recovered session",
+            "cost_usd": 0.0,
+        })
+    );
+    std::fs::write(&cli_path, script).expect("write cli fixture");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(&cli_path)
+            .expect("cli fixture metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&cli_path, permissions).expect("make cli fixture executable");
+    }
+
+    cli_path
+}
+
+#[tokio::test]
+async fn recovery_retry_spawnable_gate_fails_execution_without_provider_repo() {
+    let spawnable = recovery_retry_spawnable_with_provider_gate::<MockRuntime>(
+        &None,
+        &None,
+        AgentHarnessKind::Claude,
+        ChatContextType::Review,
+        None,
+        std::path::Path::new("/tmp"),
+        recovery_retry_test_provider_spawnable(),
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        spawnable.is_none(),
+        "execution-slot recovery retry must not spawn without provider settings"
+    );
+}
+
+#[tokio::test]
+async fn recovery_retry_spawnable_gate_blocks_non_execution_without_app_state() {
+    let spawnable = recovery_retry_spawnable_with_provider_gate::<MockRuntime>(
+        &None,
+        &None,
+        AgentHarnessKind::Claude,
+        ChatContextType::Project,
+        None,
+        std::path::Path::new("/tmp"),
+        recovery_retry_test_provider_spawnable(),
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        spawnable.is_none(),
+        "non-execution recovery retry must not bypass MCP policy without app state"
+    );
+}
+
+#[tokio::test]
+async fn recovery_retry_spawnable_gate_applies_policy_without_provider_repo() {
+    let app_state = AppState::new_test();
+    let key = McpServerKey::new(AgentHarnessKind::Claude, "github").unwrap();
+    app_state
+        .mcp_policy_repo
+        .set_server_state(None, &key, McpOverrideState::Disabled)
+        .await
+        .expect("save global MCP deny");
+    let app = mock_builder()
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let handle = Some(app.handle().clone());
+
+    let spawnable = recovery_retry_spawnable_with_provider_gate(
+        &handle,
+        &None,
+        AgentHarnessKind::Claude,
+        ChatContextType::Project,
+        None,
+        std::path::Path::new("/tmp"),
+        recovery_retry_test_provider_spawnable(),
+    )
+    .await
+    .unwrap()
+    .expect("app state can resolve policy without provider settings");
+
+    assert!(spawnable
+        .get_args_for_test()
+        .windows(2)
+        .any(|args| args == ["--disallowedTools", "mcp__github__*"]));
+}
+
+#[tokio::test]
+async fn recovery_retry_spawnable_gate_blocks_disabled_provider() {
+    let app_state = AppState::new_test();
+    let mut disabled = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
+    disabled.is_default = true;
+    app_state
+        .agent_provider_settings_repo
+        .upsert(&disabled)
+        .await
+        .expect("save disabled default provider");
+    let provider_repo = Some(Arc::clone(&app_state.agent_provider_settings_repo));
+
+    let spawnable = recovery_retry_spawnable_with_provider_gate::<MockRuntime>(
+        &None,
+        &provider_repo,
+        AgentHarnessKind::Claude,
+        ChatContextType::Review,
+        None,
+        std::path::Path::new("/tmp"),
+        recovery_retry_test_provider_spawnable(),
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        spawnable.is_none(),
+        "disabled providers must block recovery retry spawn"
+    );
+}
+
+#[tokio::test]
+async fn recovery_retry_spawnable_gate_applies_provider_env() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let env_path = temp_dir.path().join("claude.env");
+    std::fs::write(&env_path, "CUSTOM_PROVIDER_TOKEN=spawnable-env\n").expect("write env file");
+    let app_state = AppState::new_test();
+    let mut settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
+    settings.enabled = true;
+    settings.is_default = true;
+    settings.custom_env_file_enabled = true;
+    settings.custom_env_file_path = Some(env_path.to_string_lossy().into_owned());
+    app_state
+        .agent_provider_settings_repo
+        .upsert(&settings)
+        .await
+        .expect("save enabled provider settings");
+    let provider_repo = Some(Arc::clone(&app_state.agent_provider_settings_repo));
+    let app = mock_builder()
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let handle = Some(app.handle().clone());
+
+    let spawnable = recovery_retry_spawnable_with_provider_gate(
+        &handle,
+        &provider_repo,
+        AgentHarnessKind::Claude,
+        ChatContextType::Review,
+        None,
+        std::path::Path::new("/tmp"),
+        recovery_retry_test_provider_spawnable(),
+    )
+    .await
+    .unwrap()
+    .expect("enabled provider should allow recovery retry");
+
+    assert_eq!(
+        spawnable_env_value(&spawnable, "CUSTOM_PROVIDER_TOKEN").as_deref(),
+        Some("spawnable-env")
+    );
+}
+
+#[tokio::test]
+async fn resolve_recovery_retry_spawnable_allows_gated_build_success() {
+    let app = mock_builder()
+        .manage(AppState::new_test())
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let app_handle = Some(app.handle().clone());
+    let provider_gate = RecoveryRetryProviderGate::new(
+        &app_handle,
+        &None,
+        AgentHarnessKind::Claude,
+        ChatContextType::Project,
+        None,
+        std::path::Path::new("/tmp"),
+    );
+
+    let spawnable = resolve_recovery_retry_spawnable::<MockRuntime>(
+        Ok(recovery_retry_test_provider_spawnable()),
+        provider_gate,
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        spawnable.is_some(),
+        "successful non-execution retry command should survive provider gating"
+    );
+}
+
+#[tokio::test]
+async fn resolve_recovery_retry_spawnable_drops_build_errors() {
+    let provider_gate = RecoveryRetryProviderGate::new(
+        &None,
+        &None,
+        AgentHarnessKind::Claude,
+        ChatContextType::Project,
+        None,
+        std::path::Path::new("/tmp"),
+    );
+
+    let spawnable = resolve_recovery_retry_spawnable::<MockRuntime>(
+        Err("build failed".to_string()),
+        provider_gate,
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        spawnable.is_none(),
+        "retry command build errors must not launch a recovery retry"
+    );
+}
+
+#[test]
+fn recovery_retry_app_repos_are_empty_without_app_handle() {
+    let repos = RecoveryRetryAppRepos::from_app_handle::<MockRuntime>(&None);
+
+    assert!(repos.ideation_effort_settings_repo.is_none());
+    assert!(repos.ideation_model_settings_repo.is_none());
+    assert!(repos.delegated_session_repo.is_none());
+}
+
+#[test]
+fn recovery_retry_app_repos_read_required_app_state_repos() {
+    let app_state = AppState::new_test();
+    let app = mock_builder()
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let app_handle = Some(app.handle().clone());
+
+    let repos = RecoveryRetryAppRepos::from_app_handle(&app_handle);
+
+    assert!(repos.ideation_effort_settings_repo.is_some());
+    assert!(repos.ideation_model_settings_repo.is_some());
+    assert!(repos.delegated_session_repo.is_some());
+}
+
+#[tokio::test]
+async fn recovery_retry_folder_refs_context_carries_prompt_block_and_roots() {
+    let temp = tempfile::tempdir_in(std::env::current_dir().expect("current directory"))
+        .expect("temp directory");
+    let app_data = crate::utils::path_safety::validate_absolute_non_root_path(
+        &temp.path().join("app-data"),
+        "recovery retry folder reference app data",
+    )
+    .expect("safe app data");
+    let project_root = crate::utils::path_safety::validate_absolute_non_root_path(
+        &temp.path().join("project"),
+        "recovery retry project root",
+    )
+    .expect("safe project root");
+    let folder = crate::utils::path_safety::validate_absolute_non_root_path(
+        &temp.path().join("folder"),
+        "recovery retry folder root",
+    )
+    .expect("safe folder root");
+    std::fs::create_dir(&app_data).expect("create app data");
+    std::fs::create_dir(&project_root).expect("create project root");
+    std::fs::create_dir(&folder).expect("create folder root");
+
+    let mut state = AppState::new_test();
+    state.app_paths = crate::application::AppPaths::new(app_data.clone(), None);
+    let project = Project::new(
+        "Recovery folder refs".to_string(),
+        project_root.to_string_lossy().into_owned(),
+    );
+    let project_id = project.id.clone();
+    state
+        .project_repo
+        .create(project)
+        .await
+        .expect("seed project");
+    let conversation = ChatConversation::new_project(project_id.clone());
+    crate::application::conversation_folder_reference_service::ConversationFolderReferenceService::new(
+        Arc::clone(&state.conversation_folder_reference_repo),
+        app_data,
+        5,
+    )
+    .add(conversation.id, &folder, "Recovery Folder".to_string())
+    .await
+    .expect("seed folder reference");
+    let app = mock_builder()
+        .manage(state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let app_handle = Some(app.handle().clone());
+
+    let (block, roots) = recovery_retry_folder_refs_context(
+        &app_handle,
+        &conversation,
+        Some(project_id.as_str()),
+        &project_root,
+    )
+    .await
+    .expect("resolve recovery retry folder refs");
+
+    assert!(block
+        .expect("folder block")
+        .contains(&folder.to_string_lossy().to_string()));
+    assert!(roots.contains(&folder));
+
+    let mut builder = conversation;
+    builder.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
+    let (builder_block, builder_roots) = recovery_retry_folder_refs_context(
+        &app_handle,
+        &builder,
+        Some(project_id.as_str()),
+        &project_root,
+    )
+    .await
+    .expect("builder folder refs are skipped");
+    assert!(builder_block.is_none());
+    assert!(!builder_roots.contains(&folder));
+}
+
+#[test]
+fn handler_runtime_factory_deps_keep_explicit_lane_and_provider_without_app_handle() {
+    let app_state = AppState::new_test();
+    let execution_settings_repo = Some(Arc::clone(&app_state.execution_settings_repo));
+    let agent_lane_settings_repo = Some(Arc::clone(&app_state.agent_lane_settings_repo));
+    let agent_provider_settings_repo = Some(Arc::clone(&app_state.agent_provider_settings_repo));
+    let runtime_support = RuntimeSupportRepos::new(
+        &execution_settings_repo,
+        &agent_lane_settings_repo,
+        &agent_provider_settings_repo,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    let deps = build_runtime_factory_deps::<MockRuntime>(
+        &None,
+        Arc::clone(&app_state.task_repo),
+        Arc::clone(&app_state.task_dependency_repo),
+        Arc::clone(&app_state.project_repo),
+        Arc::clone(&app_state.artifact_repo),
+        Arc::clone(&app_state.chat_message_repo),
+        Arc::clone(&app_state.chat_attachment_repo),
+        Arc::clone(&app_state.chat_conversation_repo),
+        Arc::clone(&app_state.agent_run_repo),
+        Arc::clone(&app_state.ideation_session_repo),
+        Arc::clone(&app_state.activity_event_repo),
+        Arc::clone(&app_state.message_queue),
+        Arc::clone(&app_state.running_agent_registry),
+        Arc::clone(&app_state.memory_event_repo),
+        runtime_support,
+    );
+
+    assert!(deps.execution_settings_repo.is_some());
+    assert!(deps.agent_lane_settings_repo.is_some());
+    assert!(deps.agent_provider_settings_repo.is_some());
+}
+
+#[test]
+fn handler_runtime_factory_deps_do_not_backfill_missing_lane_and_provider_from_app_handle() {
+    let app_state = AppState::new_test();
+    let execution_settings_repo = Some(Arc::clone(&app_state.execution_settings_repo));
+    let runtime_support = RuntimeSupportRepos::new(
+        &execution_settings_repo,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+    let app = mock_builder()
+        .manage(app_state.clone())
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let app_handle = Some(app.handle().clone());
+
+    let deps = build_runtime_factory_deps::<MockRuntime>(
+        &app_handle,
+        Arc::clone(&app_state.task_repo),
+        Arc::clone(&app_state.task_dependency_repo),
+        Arc::clone(&app_state.project_repo),
+        Arc::clone(&app_state.artifact_repo),
+        Arc::clone(&app_state.chat_message_repo),
+        Arc::clone(&app_state.chat_attachment_repo),
+        Arc::clone(&app_state.chat_conversation_repo),
+        Arc::clone(&app_state.agent_run_repo),
+        Arc::clone(&app_state.ideation_session_repo),
+        Arc::clone(&app_state.activity_event_repo),
+        Arc::clone(&app_state.message_queue),
+        Arc::clone(&app_state.running_agent_registry),
+        Arc::clone(&app_state.memory_event_repo),
+        runtime_support,
+    );
+
+    assert!(deps.execution_settings_repo.is_some());
+    assert!(
+        deps.agent_lane_settings_repo.is_none(),
+        "handler runtime deps must not silently recover missing lane settings from AppState"
+    );
+    assert!(
+        deps.agent_provider_settings_repo.is_none(),
+        "handler runtime deps must not silently recover missing provider settings from AppState"
+    );
+}
+
+#[tokio::test]
+async fn cancelled_stream_preserves_already_terminal_agent_run() {
+    let state = AppState::new_test();
+    let run = state
+        .agent_run_repo
+        .create(AgentRun::new(ChatConversationId::new()))
+        .await
+        .expect("create run");
+    state
+        .agent_run_repo
+        .complete(&run.id)
+        .await
+        .expect("complete run");
+
+    mark_cancelled_stream_as_cancelled(
+        &state.agent_run_repo,
+        &run.id.as_str(),
+        ChatContextType::Project,
+        ProjectId::new().as_str(),
+        &state.task_repo,
+    )
+    .await;
+
+    let stored = state
+        .agent_run_repo
+        .get_by_id(&run.id)
+        .await
+        .expect("load run")
+        .expect("run should exist");
+    assert_eq!(stored.status, AgentRunStatus::Completed);
+    assert!(stored.error_message.is_none());
+}
+
+#[tokio::test]
+async fn handle_stream_success_preserves_armed_delegation_park_for_completed_parent_run() {
+    let state = AppState::new_test();
+    let project_id = ProjectId::new();
+    let conversation = ChatConversation::new_project(project_id.clone());
+    state
+        .chat_conversation_repo
+        .create(conversation.clone())
+        .await
+        .expect("create conversation");
+    let parent_run = state
+        .agent_run_repo
+        .create(AgentRun::new(conversation.id.clone()))
+        .await
+        .expect("create parent run");
+    state
+        .agent_run_repo
+        .complete(&parent_run.id)
+        .await
+        .expect("complete parent run");
+
+    let now = Utc::now();
+    let park = DelegationPark {
+        id: DelegationParkId::new(),
+        parent_conversation_id: conversation.id,
+        parent_agent_run_id: parent_run.id.clone(),
+        generation: 1,
+        wake_policy: DelegationWakePolicy::AllSettled,
+        wake_on_failure: false,
+        state: DelegationParkState::Armed,
+        deadline_at: now + Duration::minutes(5),
+        wake_claimed_at: None,
+        wake_attempts: 0,
+        last_error: None,
+        created_at: now,
+        updated_at: now,
+        jobs: Vec::new(),
+    };
+    state
+        .delegation_park_repo
+        .arm(park.clone())
+        .await
+        .expect("arm delegation park");
+
+    let app = mock_builder()
+        .manage(state.clone())
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let app_handle = Some(app.handle().clone());
+    let parent_run_id = parent_run.id.as_str();
+
+    handle_stream_success::<MockRuntime>(
+        &parent_run_id,
+        ChatContextType::Project,
+        project_id.as_str(),
+        true,
+        false,
+        false,
+        &None,
+        &state.task_repo,
+        &state.task_dependency_repo,
+        &state.project_repo,
+        &state.artifact_repo,
+        &state.chat_message_repo,
+        &state.chat_attachment_repo,
+        &state.chat_conversation_repo,
+        &state.agent_run_repo,
+        &state.ideation_session_repo,
+        &state.activity_event_repo,
+        &state.message_queue,
+        &state.running_agent_registry,
+        &state.memory_event_repo,
+        &None,
+        &None,
+        &None,
+        &app_handle,
+        &None,
+        &None,
+        &None,
+    )
+    .await;
+
+    let stored_run = state
+        .agent_run_repo
+        .get_by_id(&parent_run.id)
+        .await
+        .expect("load parent run")
+        .expect("parent run should exist");
+    assert_eq!(stored_run.status, AgentRunStatus::Completed);
+    let stored_park = state
+        .delegation_park_repo
+        .get(&park.id)
+        .await
+        .expect("load delegation park")
+        .expect("delegation park should exist");
+    assert_eq!(
+        stored_park.state,
+        DelegationParkState::Armed,
+        "normal turn completion must preserve the armed park for a later delegate wake"
+    );
+}
+
+#[tokio::test]
+async fn cancelled_stream_marks_recovery_task_run_as_system_recovery() {
+    let state = AppState::new_test();
+    let project_id = ProjectId::new();
+    let mut task = Task::new(project_id, "Recovery cancellation".to_string());
+    task.metadata = Some(serde_json::json!({ "trigger_origin": "recovery" }).to_string());
+    let task_id = task.id.clone();
+    state.task_repo.create(task).await.expect("create task");
+    let run = state
+        .agent_run_repo
+        .create(AgentRun::new(ChatConversationId::new()))
+        .await
+        .expect("create run");
+
+    mark_cancelled_stream_as_cancelled(
+        &state.agent_run_repo,
+        &run.id.as_str(),
+        ChatContextType::TaskExecution,
+        task_id.as_str(),
+        &state.task_repo,
+    )
+    .await;
+
+    let stored = state
+        .agent_run_repo
+        .get_by_id(&run.id)
+        .await
+        .expect("load run")
+        .expect("run should exist");
+    assert_eq!(stored.status, AgentRunStatus::Failed);
+    assert_eq!(
+        stored.error_message.as_deref(),
+        Some("Agent stream cancelled by system recovery")
+    );
+}
+
+#[test]
+fn stream_error_recovery_reason_code_maps_local_tool_and_validation_failures() {
+    assert_eq!(
+        stream_error_recovery_reason_code(&StreamError::LocalToolFailed {
+            message: "local tool failed".to_string(),
+        }),
+        ExecutionRecoveryReasonCode::LocalToolFailed,
+    );
+    assert_eq!(
+        stream_error_recovery_reason_code(&StreamError::ValidationFailed {
+            message: "validation failed".to_string(),
+        }),
+        ExecutionRecoveryReasonCode::ValidationFailed,
+    );
+}
+
+#[tokio::test]
+async fn cancelled_stream_marks_retrying_recovery_metadata_as_system_recovery() {
+    let state = AppState::new_test();
+    let project_id = ProjectId::new();
+    let mut recovery = ExecutionRecoveryMetadata::new();
+    recovery.last_state = ExecutionRecoveryState::Retrying;
+    recovery.stop_retrying = false;
+    let mut task = Task::new(project_id, "Retrying recovery cancellation".to_string());
+    task.metadata = Some(
+        recovery
+            .update_task_metadata(None)
+            .expect("recovery metadata"),
+    );
+    let task_id = task.id.clone();
+    state.task_repo.create(task).await.expect("create task");
+    let run = state
+        .agent_run_repo
+        .create(AgentRun::new(ChatConversationId::new()))
+        .await
+        .expect("create run");
+
+    mark_cancelled_stream_as_cancelled(
+        &state.agent_run_repo,
+        &run.id.as_str(),
+        ChatContextType::TaskExecution,
+        task_id.as_str(),
+        &state.task_repo,
+    )
+    .await;
+
+    let stored = state
+        .agent_run_repo
+        .get_by_id(&run.id)
+        .await
+        .expect("load run")
+        .expect("run should exist");
+    assert_eq!(stored.status, AgentRunStatus::Failed);
+    assert_eq!(
+        stored.error_message.as_deref(),
+        Some("Agent stream cancelled by system recovery")
+    );
+}
+
+#[test]
+fn stopped_retrying_recovery_metadata_does_not_mark_system_recovery_cancellation() {
+    let mut recovery = ExecutionRecoveryMetadata::new();
+    recovery.last_state = ExecutionRecoveryState::Retrying;
+    recovery.stop_retrying = true;
+    let metadata = recovery
+        .update_task_metadata(None)
+        .expect("recovery metadata");
+
+    assert!(!task_metadata_indicates_recovery_cancellation(Some(
+        &metadata
+    )));
+    assert!(!task_metadata_indicates_recovery_cancellation(Some(
+        "not json"
+    )));
 }
 
 #[async_trait]
@@ -86,7 +1135,16 @@ impl TaskRepository for StubTaskRepo {
     async fn update(&self, _: &Task) -> AppResult<()> {
         Ok(())
     }
-    async fn update_with_expected_status(&self, _: &Task, _: InternalStatus) -> AppResult<bool> {
+    async fn update_with_expected_status(&self, task: &Task, _: InternalStatus) -> AppResult<bool> {
+        if forced_transition_failures()
+            .lock()
+            .unwrap()
+            .contains(task.id.as_str())
+        {
+            return Err(crate::error::AppError::Database(
+                "injected transition failure".to_string(),
+            ));
+        }
         Ok(true)
     }
     async fn update_metadata(&self, _: &TaskId, _: Option<String>) -> AppResult<()> {
@@ -104,8 +1162,8 @@ impl TaskRepository for StubTaskRepo {
         _: InternalStatus,
         _: InternalStatus,
         _: &str,
-    ) -> AppResult<()> {
-        Ok(())
+    ) -> AppResult<String> {
+        Ok(uuid::Uuid::new_v4().to_string())
     }
     async fn get_status_history(&self, _: &TaskId) -> AppResult<Vec<StatusTransition>> {
         Ok(vec![])
@@ -575,6 +1633,73 @@ fn validation_cache_fixture_at(
     }
 }
 
+fn validation_run_fixture(
+    task_id: &TaskId,
+    project_id: &ProjectId,
+    promoted_sha: &str,
+    episode_entered_at: DateTime<Utc>,
+) -> ValidationRun {
+    ValidationRun {
+        id: "validation-current".to_string(),
+        task_id: task_id.clone(),
+        project_id: project_id.clone(),
+        purpose: ValidationPurpose::Final,
+        context_type: ValidationContextType::Execution,
+        requested_by_agent: Some("test".to_string()),
+        status: ValidationRunStatus::Passed,
+        mode: ValidationRunMode::ReuseOrRun,
+        policy_enabled: true,
+        head_sha: Some(promoted_sha.to_string()),
+        start_content_fingerprint: None,
+        validated_content_fingerprint: None,
+        promoted_commit_sha: Some(promoted_sha.to_string()),
+        base_ref: Some("main".to_string()),
+        analysis_fingerprint: None,
+        status_episode_entered_at: Some(episode_entered_at),
+        started_at: episode_entered_at + chrono::Duration::milliseconds(1),
+        completed_at: Some(episode_entered_at + chrono::Duration::seconds(1)),
+    }
+}
+
+fn validation_command_fixture(
+    run_id: &str,
+    task_id: &TaskId,
+    project_id: &ProjectId,
+    head_sha: &str,
+    cwd: &str,
+    episode_entered_at: DateTime<Utc>,
+) -> ValidationCommandResult {
+    ValidationCommandResult {
+        id: "validation-command".to_string(),
+        validation_run_id: run_id.to_string(),
+        task_id: task_id.clone(),
+        project_id: project_id.clone(),
+        command_source: ValidationCommandSource::ProjectAnalysisRef,
+        command_ref: Some("tests".to_string()),
+        command: "cargo test".to_string(),
+        cwd: cwd.to_string(),
+        label: Some("Tests".to_string()),
+        category: ValidationCommandCategory::Test,
+        reason: None,
+        related_files: Vec::new(),
+        cache_key: "validation-cache".to_string(),
+        cache_decision: ValidationCacheDecision::Ran,
+        status: ValidationCommandStatus::Passed,
+        exit_code: Some(0),
+        duration_ms: Some(1),
+        stdout_snippet: None,
+        stderr_snippet: None,
+        stdout_log_path: None,
+        stderr_log_path: None,
+        launcher_kind: None,
+        resolved_shell_path: None,
+        head_sha: Some(head_sha.to_string()),
+        analysis_fingerprint: None,
+        status_episode_entered_at: Some(episode_entered_at),
+        created_at: episode_entered_at + chrono::Duration::seconds(1),
+    }
+}
+
 fn git_worktree_with_initial_commit() -> (tempfile::TempDir, String) {
     let dir = tempfile::tempdir().expect("temp git dir");
     Command::new("git")
@@ -621,6 +1746,49 @@ fn git_worktree_with_initial_commit() -> (tempfile::TempDir, String) {
         .trim()
         .to_string();
     (dir, sha)
+}
+
+fn git_worktree_with_base_and_change() -> (tempfile::TempDir, String, String) {
+    let (dir, base_sha) = git_worktree_with_initial_commit();
+    fs::write(dir.path().join("README.md"), "test\nchanged\n").expect("write changed file");
+    Command::new("git")
+        .args(["add", "README.md"])
+        .current_dir(dir.path())
+        .output()
+        .expect("git add should run");
+    let commit = Command::new("git")
+        .args([
+            "-c",
+            "user.name=RalphX Test",
+            "-c",
+            "user.email=ralphx-test@example.invalid",
+            "commit",
+            "-m",
+            "change",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .expect("git commit should run");
+    assert!(
+        commit.status.success(),
+        "git change commit failed: {}",
+        String::from_utf8_lossy(&commit.stderr)
+    );
+    let head = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(dir.path())
+        .output()
+        .expect("git rev-parse should run");
+    assert!(
+        head.status.success(),
+        "git rev-parse failed: {}",
+        String::from_utf8_lossy(&head.stderr)
+    );
+    let head_sha = String::from_utf8(head.stdout)
+        .expect("HEAD should be utf8")
+        .trim()
+        .to_string();
+    (dir, base_sha, head_sha)
 }
 
 #[test]
@@ -812,6 +1980,54 @@ async fn test_apply_system_wide_provider_pause_pauses_mixed_active_task_states()
     assert_eq!(reviewing_after.internal_status, InternalStatus::Paused);
     assert_eq!(merging_after.internal_status, InternalStatus::Paused);
     assert_eq!(ready_after.internal_status, InternalStatus::Ready);
+
+    let notifications = state
+        .notification_repo
+        .list(None, None, 50)
+        .await
+        .expect("global provider-pause notification should be readable")
+        .notifications;
+    assert_eq!(notifications.len(), 1, "one global pause creates one row");
+    assert_eq!(
+        notifications[0].category,
+        NotificationCategory::ProviderPaused
+    );
+    assert_eq!(notifications[0].title, "Agents paused");
+    assert_eq!(
+        notifications[0].body.as_deref(),
+        Some("Rate limit reached — queue paused, auto-resumes")
+    );
+    assert!(
+        notifications[0]
+            .dedupe_key
+            .as_deref()
+            .is_some_and(|key| key.starts_with("provider:rate_limit:paused:")),
+        "global pause dedupe must use the persisted pause instance"
+    );
+
+    assert!(
+        apply_system_wide_provider_pause::<MockRuntime>(
+            &Some(handle.clone()),
+            &ProviderErrorCategory::RateLimit,
+            "You've hit your limit · resets 11pm (Europe/Bucharest)",
+            &Some((chrono::Utc::now() + chrono::Duration::minutes(30)).to_rfc3339()),
+            ChatContextType::TaskExecution,
+            executing.id.as_str(),
+        )
+        .await,
+        "duplicate provider delivery remains a handled global pause"
+    );
+    assert_eq!(
+        state
+            .notification_repo
+            .list(None, None, 50)
+            .await
+            .expect("duplicate provider-pause notification query should succeed")
+            .notifications
+            .len(),
+        1,
+        "duplicate provider delivery must not duplicate the global row"
+    );
 }
 
 #[tokio::test]
@@ -913,11 +2129,12 @@ async fn test_codex_local_tool_rate_limit_text_does_not_global_pause_execution()
         &runtime_errors,
         &local_tool_errors,
         Some(1),
+        false,
     )
     .expect("local Codex tool failure should produce a stream error");
     assert!(
-        matches!(stream_error, StreamError::AgentExit { .. }),
-        "local command output containing rate_limit must not classify as provider error"
+        matches!(stream_error, StreamError::LocalToolFailed { .. }),
+        "local command output containing rate_limit must not classify as provider or agent-exit error"
     );
 
     let conversation_id = ChatConversationId::new();
@@ -967,7 +2184,6 @@ async fn test_codex_local_tool_rate_limit_text_does_not_global_pause_execution()
         &None,
         &Some(handle.clone()),
         None,
-        false,
         None,
         &None,
         &None,
@@ -1005,7 +2221,6 @@ async fn test_codex_local_tool_rate_limit_text_does_not_global_pause_execution()
 
 use crate::application::chat_service::chat_service_handlers::all_steps_completed;
 use crate::domain::entities::{TaskStep, TaskStepId};
-use crate::domain::repositories::TaskStepRepository;
 use crate::error::AppError;
 use std::collections::HashMap;
 
@@ -1332,14 +2547,22 @@ fn test_fetch_step_completion_state_returns_unknown_on_err_and_none() {
 #[test]
 fn test_validated_completion_override_false_when_no_metadata() {
     let task = Task::new(ProjectId::new(), "no metadata".into());
-    assert!(!run(validated_completion_override(&task, Utc::now())));
+    assert!(!run(validated_completion_override(
+        &task,
+        Utc::now(),
+        &None,
+    )));
 }
 
 #[test]
 fn test_validated_completion_override_false_when_no_validation_cache_key() {
     let mut task = Task::new(ProjectId::new(), "other metadata".into());
     task.metadata = Some(r#"{"some_other_key": true}"#.to_string());
-    assert!(!run(validated_completion_override(&task, Utc::now())));
+    assert!(!run(validated_completion_override(
+        &task,
+        Utc::now(),
+        &None,
+    )));
 }
 
 #[test]
@@ -1347,7 +2570,11 @@ fn test_validated_completion_override_false_on_malformed_validation_cache() {
     let mut task = Task::new(ProjectId::new(), "malformed cache".into());
     // validation_cache present but not a valid ValidationCacheMetadata shape → parse error path.
     task.metadata = Some(r#"{"validation_cache": {"version": "not-a-number"}}"#.to_string());
-    assert!(!run(validated_completion_override(&task, Utc::now())));
+    assert!(!run(validated_completion_override(
+        &task,
+        Utc::now(),
+        &None,
+    )));
 }
 
 #[test]
@@ -1360,7 +2587,11 @@ fn test_validated_completion_override_false_when_worktree_path_missing() {
             .unwrap(),
     );
     task.worktree_path = None;
-    assert!(!run(validated_completion_override(&task, Utc::now())));
+    assert!(!run(validated_completion_override(
+        &task,
+        Utc::now(),
+        &None,
+    )));
 }
 
 #[test]
@@ -1374,10 +2605,18 @@ fn test_validated_completion_override_false_for_unsafe_worktree_path() {
     );
 
     task.worktree_path = Some("relative/worktree".to_string());
-    assert!(!run(validated_completion_override(&task, Utc::now())));
+    assert!(!run(validated_completion_override(
+        &task,
+        Utc::now(),
+        &None,
+    )));
 
     task.worktree_path = Some("/tmp/../escape".to_string());
-    assert!(!run(validated_completion_override(&task, Utc::now())));
+    assert!(!run(validated_completion_override(
+        &task,
+        Utc::now(),
+        &None,
+    )));
 }
 
 #[test]
@@ -1392,7 +2631,69 @@ fn test_validated_completion_override_false_when_head_sha_unresolvable() {
     // A temp dir that is not a git repo → get_head_sha errors → fail-safe false.
     let tmp = tempfile::tempdir().unwrap();
     task.worktree_path = Some(tmp.path().to_string_lossy().to_string());
-    assert!(!run(validated_completion_override(&task, Utc::now())));
+    assert!(!run(validated_completion_override(
+        &task,
+        Utc::now(),
+        &None,
+    )));
+}
+
+#[test]
+fn test_validated_completion_override_accepts_current_validation_run() {
+    let (worktree, _base_sha, head_sha) = git_worktree_with_base_and_change();
+    let project_id = ProjectId::new();
+    let task_id = TaskId::new();
+    let episode_entered_at = Utc::now() - chrono::Duration::seconds(5);
+    let repo = Arc::new(MemoryValidationRunRepository::new());
+    let run_record = validation_run_fixture(&task_id, &project_id, &head_sha, episode_entered_at);
+    let command = validation_command_fixture(
+        &run_record.id,
+        &task_id,
+        &project_id,
+        &head_sha,
+        &worktree.path().to_string_lossy(),
+        episode_entered_at,
+    );
+    run(repo.create_run(&run_record)).unwrap();
+    run(repo.add_command_result(&command)).unwrap();
+
+    let mut task = Task::new(project_id, "first-class validation".into());
+    task.id = task_id;
+    task.worktree_path = Some(worktree.path().to_string_lossy().to_string());
+    let validation_run_repo: Arc<dyn crate::domain::repositories::ValidationRunRepository> = repo;
+
+    assert!(run(validated_completion_override(
+        &task,
+        episode_entered_at,
+        &Some(validation_run_repo),
+    )));
+}
+
+#[test]
+fn test_validated_completion_override_uses_legacy_cache_when_no_run_exists() {
+    let (worktree, _base_sha, head_sha) = git_worktree_with_base_and_change();
+    let episode_entered_at = Utc::now() - chrono::Duration::seconds(5);
+    let cache = validation_cache_fixture_at(
+        &head_sha,
+        true,
+        true,
+        episode_entered_at + chrono::Duration::seconds(1),
+    );
+    let mut task = Task::new(ProjectId::new(), "legacy validation cache".into());
+    task.metadata = Some(
+        cache
+            .update_task_metadata(task.metadata.as_deref())
+            .unwrap(),
+    );
+    task.worktree_path = Some(worktree.path().to_string_lossy().to_string());
+    let validation_run_repo: Arc<dyn crate::domain::repositories::ValidationRunRepository> =
+        Arc::new(MemoryValidationRunRepository::new());
+
+    assert!(run(validated_completion_override(
+        &task,
+        episode_entered_at,
+        &Some(validation_run_repo),
+    )));
 }
 
 /// Non-AgentExit errors should not trigger the override, even with complete steps.
@@ -1663,12 +2964,19 @@ async fn test_zero_step_run_with_output_and_completion_signal_transitions_out_of
     let state = AppState::new_test();
     let exec = Arc::new(ExecutionState::new());
     let execution_state = Some(Arc::clone(&exec));
+    let (worktree, base_sha, _head_sha) = git_worktree_with_base_and_change();
 
-    let project = Project::new("Zero Step Output".into(), "/tmp/zero-step-output".into());
+    let project = Project::new(
+        "Zero Step Output".into(),
+        worktree.path().to_string_lossy().to_string(),
+    );
     state.project_repo.create(project.clone()).await.unwrap();
 
     let mut task = Task::new(project.id.clone(), "Zero-step output run".into());
     task.internal_status = InternalStatus::Executing;
+    task.worktree_path = Some(worktree.path().to_string_lossy().to_string());
+    task.task_branch_base_ref = Some(base_sha.clone());
+    task.task_branch_base_sha = Some(base_sha);
     let task_id = task.id.clone();
     state.task_repo.create(task).await.unwrap();
     let task_step_repo: Option<Arc<dyn TaskStepRepository>> =
@@ -1730,7 +3038,7 @@ async fn test_success_finalizer_uses_head_matched_validation_cache_for_failed_st
     let state = AppState::new_test();
     let exec = Arc::new(ExecutionState::new());
     let execution_state = Some(Arc::clone(&exec));
-    let (_worktree, head_sha) = git_worktree_with_initial_commit();
+    let (_worktree, base_sha, head_sha) = git_worktree_with_base_and_change();
 
     let project = Project::new(
         "Validation Override".into(),
@@ -1741,6 +3049,8 @@ async fn test_success_finalizer_uses_head_matched_validation_cache_for_failed_st
     let mut task = Task::new(project.id.clone(), "Validated execution attempt".into());
     task.internal_status = InternalStatus::Executing;
     task.worktree_path = Some(_worktree.path().to_string_lossy().to_string());
+    task.task_branch_base_ref = Some(base_sha.clone());
+    task.task_branch_base_sha = Some(base_sha);
     let task_id = task.id.clone();
     state.task_repo.create(task).await.unwrap();
     let agent_run_id = seed_current_execution_attempt(&state, &task_id).await;
@@ -1760,6 +3070,11 @@ async fn test_success_finalizer_uses_head_matched_validation_cache_for_failed_st
             make_step(&task_id, TaskStepStatus::Failed),
         ],
     }));
+    let app = mock_builder()
+        .manage(state.clone())
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let app_handle = Some(app.handle().clone());
 
     handle_stream_success::<MockRuntime>(
         agent_run_id.as_str(),
@@ -1785,7 +3100,7 @@ async fn test_success_finalizer_uses_head_matched_validation_cache_for_failed_st
         &None,
         &task_step_repo,
         &None,
-        &None::<tauri::AppHandle<MockRuntime>>,
+        &app_handle,
         &None,
         &None,
         &None,
@@ -2094,7 +3409,6 @@ async fn invoke_handle_stream_error_cancelled(cancelled: &StreamError) -> (bool,
         &None, // execution_settings_repo — not used for Ideation
         &Some(app_handle),
         None,  // agent_name
-        false, // team_mode
         None,  // run_chain_id
         &None, // interactive_process_registry
         &None, // review_repo
@@ -2148,6 +3462,7 @@ async fn test_recovery_retry_background_context_preserves_execution_side_runtime
         &state.delegated_session_repo,
         &Some(Arc::clone(&state.execution_settings_repo)),
         &Some(Arc::clone(&state.agent_lane_settings_repo)),
+        &Some(Arc::clone(&state.agent_provider_settings_repo)),
         &Some(Arc::clone(&state.ideation_effort_settings_repo)),
         &Some(Arc::clone(&state.ideation_model_settings_repo)),
         &Some(Arc::clone(&state.task_proposal_repo)),
@@ -2160,12 +3475,16 @@ async fn test_recovery_retry_background_context_preserves_execution_side_runtime
         &None,
         &None::<tauri::AppHandle<MockRuntime>>,
         Some("run-chain-1".to_string()),
+        false,
+        false,
         Some("retry this review".to_string()).as_deref(),
         retry_conv,
         Some("ralphx:ralphx-execution-reviewer"),
-        false,
         &Some(Arc::clone(&state.review_repo)),
         &Some(Arc::clone(&state.task_step_repo)),
+        &Some(Arc::clone(&state.validation_run_repo)),
+        &Some(Arc::clone(&state.external_events_repo)),
+        &None,
         &interactive_process_registry,
         &verification_child_registry,
     );
@@ -2175,6 +3494,10 @@ async fn test_recovery_retry_background_context_preserves_execution_side_runtime
     assert!(
         ctx.repos.task_step_repo.is_some(),
         "stale-session retry must preserve task_step_repo for execution-side completion handling"
+    );
+    assert!(
+        ctx.repos.agent_provider_settings_repo.is_some(),
+        "stale-session retry must preserve provider settings for disabled-provider enforcement"
     );
     assert!(
         ctx.repos.review_repo.is_some(),
@@ -2191,6 +3514,172 @@ async fn test_recovery_retry_background_context_preserves_execution_side_runtime
 
     let mut child = ctx.child;
     let _ = child.wait().await;
+}
+
+#[tokio::test]
+async fn handle_stream_error_persona_recovery_attributes_retry_run() {
+    let _env = EnvVarGuard::set("ENABLE_SESSION_RECOVERY", "true");
+    let state = AppState::new_test();
+    let mut provider_settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
+    provider_settings.enabled = true;
+    provider_settings.is_default = true;
+    state
+        .agent_provider_settings_repo
+        .upsert(&provider_settings)
+        .await
+        .expect("enable Claude provider for recovery retry");
+
+    let project_id = ProjectId::new();
+    let project = Project::new("Recovered Project".into(), "/tmp/recovered-project".into());
+    state
+        .project_repo
+        .create(Project {
+            id: project_id.clone(),
+            ..project
+        })
+        .await
+        .expect("seed project");
+
+    let mut conversation = ChatConversation::new_project(project_id.clone());
+    let persona = Persona {
+        id: PersonaId::from("handler-recovery-persona"),
+        artifact_id: None,
+
+        project_id: None,
+        slug: "handler-recovery-persona".to_string(),
+        name: "Handler Recovery Persona".to_string(),
+        description: "handler recovery attribution fixture".to_string(),
+        content: "SECRET_HANDLER_RECOVERY_PERSONA_BODY".to_string(),
+        status: PersonaStatus::Active,
+        version: 5,
+        content_hash: "handler-recovery-persona-hash".to_string(),
+        source_session_id: None,
+        source_persona_id: None,
+        source_content_hash: None,
+        source_json: "{}".to_string(),
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    };
+    state
+        .persona_repo
+        .create(persona.clone())
+        .await
+        .expect("seed recovery persona");
+    conversation.persona_id = Some(persona.id.to_string());
+    conversation.set_provider_session_ref(ProviderSessionRef {
+        harness: AgentHarnessKind::Claude,
+        provider_session_id: "old-session".to_string(),
+    });
+    let conversation_id = conversation.id.clone();
+    state
+        .chat_conversation_repo
+        .create(conversation.clone())
+        .await
+        .expect("seed conversation");
+    let mut historical_message = ChatMessage::user_in_project(project_id.clone(), "prior turn");
+    historical_message.conversation_id = Some(conversation_id.clone());
+    state
+        .chat_message_repo
+        .create(historical_message)
+        .await
+        .expect("seed recovery history");
+    let agent_run = state
+        .agent_run_repo
+        .create(AgentRun::new(conversation_id.clone()))
+        .await
+        .expect("seed agent run");
+    let agent_run_id = agent_run.id.as_str();
+    let event_ctx = crate::application::chat_service::event_context(
+        &conversation_id,
+        &ChatContextType::Project,
+        project_id.as_str(),
+    );
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let cli_path = write_claude_session_fixture(temp_dir.path(), "recovered-session");
+    let app = mock_builder()
+        .manage(state.clone())
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let app_handle = Some(app.handle().clone());
+
+    let recovery_spawned = super::handle_stream_error::<MockRuntime>(
+        "No conversation found with session ID old-session",
+        None,
+        ChatContextType::Project,
+        project_id.as_str(),
+        conversation_id.clone(),
+        agent_run_id.as_str(),
+        "message-id-stale-recovery-success",
+        &event_ctx,
+        Some("old-session"),
+        AgentHarnessKind::Claude,
+        false,
+        true,
+        false,
+        Some("retry after stale session"),
+        Some(&conversation),
+        Some(project_id.as_str().to_string()),
+        &cli_path,
+        temp_dir.path(),
+        temp_dir.path(),
+        &state.chat_message_repo,
+        &Some(state.chat_timeline_repo.clone()),
+        &state.chat_attachment_repo,
+        &state.artifact_repo,
+        &state.chat_conversation_repo,
+        &state.agent_run_repo,
+        &state.task_repo,
+        &state.task_dependency_repo,
+        &state.project_repo,
+        &state.ideation_session_repo,
+        &Some(Arc::clone(&state.task_proposal_repo)),
+        &state.activity_event_repo,
+        &state.message_queue,
+        &state.running_agent_registry,
+        &state.memory_event_repo,
+        &None,
+        &None,
+        &None,
+        &None,
+        &Some(Arc::clone(&state.agent_lane_settings_repo)),
+        &Some(Arc::clone(&state.agent_provider_settings_repo)),
+        &app_handle,
+        Some("orchestrator"),
+        Some("chain-stale-recovery".to_string()),
+        &None,
+        &Some(Arc::clone(&state.review_repo)),
+        &Some(Arc::clone(&state.task_step_repo)),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    )
+    .await;
+
+    assert!(
+        recovery_spawned,
+        "successful stale-session recovery must spawn a retry instead of falling through"
+    );
+    let attributed = state
+        .agent_run_repo
+        .get_by_id(&agent_run.id)
+        .await
+        .expect("read handler recovery run")
+        .expect("handler recovery run exists");
+    assert_eq!(
+        attributed.persona_id.as_deref(),
+        Some("handler-recovery-persona")
+    );
+    // Unit fixture has no canonical agents tree, so the retry spawn cannot inject;
+    // what this pins is that the retry path records attribution at all (it did not
+    // before). injected=true is pinned against the real send path in
+    // tests/suite_chat_service/persona_feature_flag.rs.
+    assert_eq!(attributed.persona_injected, Some(false));
+    assert!(attributed.persona_skipped_reason.is_some());
+    assert!(!serde_json::to_string(&attributed)
+        .expect("serialize handler recovery attribution")
+        .contains("SECRET_HANDLER_RECOVERY_PERSONA_BODY"));
 }
 
 #[tokio::test]
@@ -2352,6 +3841,267 @@ async fn test_handle_stream_error_cancelled_false_completion_takes_agent_stopped
 }
 
 #[tokio::test]
+async fn cancelled_incomplete_codex_turn_clears_provider_session_before_next_send() {
+    let state = AppState::new_test();
+    let project_id = ProjectId::new();
+    let mut conversation = ChatConversation::new_project(project_id.clone());
+    conversation.set_provider_session_ref(ProviderSessionRef {
+        harness: AgentHarnessKind::Codex,
+        provider_session_id: "incomplete-codex-thread".to_string(),
+    });
+    let conversation_id = conversation.id.clone();
+    state
+        .chat_conversation_repo
+        .create(conversation.clone())
+        .await
+        .expect("seed Codex conversation");
+
+    let event_ctx = crate::application::chat_service::event_context(
+        &conversation_id,
+        &ChatContextType::Project,
+        project_id.as_str(),
+    );
+    let cancelled = StreamError::Cancelled {
+        turns_finalized: 0,
+        completion_tool_called: false,
+    };
+
+    let recovery_spawned = handle_stream_error::<MockRuntime>(
+        "cancelled",
+        Some(&cancelled),
+        ChatContextType::Project,
+        project_id.as_str(),
+        conversation_id.clone(),
+        "run-id-incomplete-codex-turn",
+        "message-id-incomplete-codex-turn",
+        &event_ctx,
+        Some("incomplete-codex-thread"),
+        AgentHarnessKind::Codex,
+        false,
+        None,
+        Some(&conversation),
+        Some(project_id.as_str().to_string()),
+        std::path::Path::new("/tmp/codex"),
+        std::path::Path::new("/tmp/plugin"),
+        std::path::Path::new("/tmp"),
+        &state.chat_message_repo,
+        &Some(state.chat_timeline_repo.clone()),
+        &state.chat_attachment_repo,
+        &state.artifact_repo,
+        &state.chat_conversation_repo,
+        &state.agent_run_repo,
+        &state.task_repo,
+        &state.task_dependency_repo,
+        &state.project_repo,
+        &state.ideation_session_repo,
+        &None,
+        &state.activity_event_repo,
+        &state.message_queue,
+        &state.running_agent_registry,
+        &state.memory_event_repo,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<tauri::AppHandle<MockRuntime>>,
+        None,
+        None,
+        &None,
+        &None,
+        &None,
+        &None,
+    )
+    .await;
+
+    assert!(!recovery_spawned);
+    let stored = state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .expect("load Codex conversation")
+        .expect("Codex conversation remains present");
+    assert!(
+        stored.provider_session_ref().is_none(),
+        "a cancelled Codex turn without terminal proof must not be resumed"
+    );
+}
+
+#[tokio::test]
+async fn cancelled_incomplete_claude_turn_preserves_provider_session_for_continuation() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let project_id = ProjectId::new();
+    let mut conversation = ChatConversation::new_project(project_id.clone());
+    conversation.id = conversation_id.clone();
+    conversation.set_provider_session_ref(ProviderSessionRef {
+        harness: AgentHarnessKind::Claude,
+        provider_session_id: "continuable-claude-session".to_string(),
+    });
+    state
+        .chat_conversation_repo
+        .create(conversation.clone())
+        .await
+        .expect("insert Claude conversation");
+
+    let event_ctx = crate::application::chat_service::event_context(
+        &conversation_id,
+        &ChatContextType::Project,
+        project_id.as_str(),
+    );
+    let cancelled = StreamError::Cancelled {
+        turns_finalized: 0,
+        completion_tool_called: false,
+    };
+
+    let recovery_spawned = handle_stream_error::<MockRuntime>(
+        "cancelled",
+        Some(&cancelled),
+        ChatContextType::Project,
+        project_id.as_str(),
+        conversation_id.clone(),
+        "run-id-incomplete-claude-turn",
+        "message-id-incomplete-claude-turn",
+        &event_ctx,
+        Some("continuable-claude-session"),
+        AgentHarnessKind::Claude,
+        false,
+        None,
+        Some(&conversation),
+        Some(project_id.as_str().to_string()),
+        std::path::Path::new("/tmp/claude"),
+        std::path::Path::new("/tmp/plugin"),
+        std::path::Path::new("/tmp"),
+        &state.chat_message_repo,
+        &Some(state.chat_timeline_repo.clone()),
+        &state.chat_attachment_repo,
+        &state.artifact_repo,
+        &state.chat_conversation_repo,
+        &state.agent_run_repo,
+        &state.task_repo,
+        &state.task_dependency_repo,
+        &state.project_repo,
+        &state.ideation_session_repo,
+        &None,
+        &state.activity_event_repo,
+        &state.message_queue,
+        &state.running_agent_registry,
+        &state.memory_event_repo,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<tauri::AppHandle<MockRuntime>>,
+        None,
+        None,
+        &None,
+        &None,
+        &None,
+        &None,
+    )
+    .await;
+
+    assert!(!recovery_spawned);
+    let stored = state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .expect("load Claude conversation")
+        .expect("Claude conversation remains present");
+    assert_eq!(
+        stored
+            .provider_session_ref()
+            .map(|session_ref| session_ref.provider_session_id),
+        Some("continuable-claude-session".to_string()),
+        "Claude cancellation keeps its provider continuation semantics"
+    );
+}
+
+#[tokio::test]
+async fn test_handle_stream_error_cancelled_preserves_terminal_system_run_status() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let context_id = ProjectId::new().as_str().to_string();
+    let mut run = AgentRun::new(conversation_id.clone());
+    let agent_run_id = run.id.as_str();
+    run.fail("Agent stopped by system recovery");
+    state
+        .agent_run_repo
+        .create(run)
+        .await
+        .expect("insert terminal agent run");
+
+    let event_ctx = crate::application::chat_service::event_context(
+        &conversation_id,
+        &ChatContextType::Project,
+        &context_id,
+    );
+    let cancelled = StreamError::Cancelled {
+        turns_finalized: 0,
+        completion_tool_called: false,
+    };
+
+    let recovery_spawned = handle_stream_error::<MockRuntime>(
+        "cancelled",
+        Some(&cancelled),
+        ChatContextType::Project,
+        &context_id,
+        conversation_id.clone(),
+        &agent_run_id,
+        "msg-id-terminal-system-stop",
+        &event_ctx,
+        None,
+        crate::domain::agents::AgentHarnessKind::Codex,
+        false,
+        None,
+        None,
+        None,
+        std::path::Path::new("/tmp/codex"),
+        std::path::Path::new("/tmp/plugin"),
+        std::path::Path::new("/tmp"),
+        &state.chat_message_repo,
+        &Some(state.chat_timeline_repo.clone()),
+        &state.chat_attachment_repo,
+        &state.artifact_repo,
+        &state.chat_conversation_repo,
+        &state.agent_run_repo,
+        &state.task_repo,
+        &state.task_dependency_repo,
+        &state.project_repo,
+        &state.ideation_session_repo,
+        &None,
+        &state.activity_event_repo,
+        &state.message_queue,
+        &state.running_agent_registry,
+        &state.memory_event_repo,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<tauri::AppHandle<MockRuntime>>,
+        None,
+        None,
+        &None,
+        &None,
+        &None,
+        &None,
+    )
+    .await;
+
+    assert!(!recovery_spawned);
+    let stored = state
+        .agent_run_repo
+        .get_by_id(&AgentRunId::from_string(&agent_run_id))
+        .await
+        .expect("load terminal run")
+        .expect("terminal run still exists");
+    assert_eq!(stored.status, AgentRunStatus::Failed);
+    assert_eq!(
+        stored.error_message.as_deref(),
+        Some("Agent stopped by system recovery")
+    );
+}
+
+#[tokio::test]
 async fn test_handle_stream_error_cancelled_terminalizes_existing_timeline_blocks() {
     let state = AppState::new_test();
     let conversation_id = ChatConversationId::new();
@@ -2391,6 +4141,7 @@ async fn test_handle_stream_error_cancelled_terminalizes_existing_timeline_block
         &Some(pre_assistant_message_id.clone()),
         &content_blocks,
         ChatTimelineItemStatus::Streaming,
+        None,
     )
     .await;
     assert!(initial_items
@@ -2445,7 +4196,6 @@ async fn test_handle_stream_error_cancelled_terminalizes_existing_timeline_block
         &None,
         &None::<tauri::AppHandle<MockRuntime>>,
         None,
-        false,
         None,
         &None,
         &None,
@@ -2482,6 +4232,111 @@ async fn test_handle_stream_error_cancelled_terminalizes_existing_timeline_block
         .result_json
         .as_deref()
         .is_some_and(|result| result.contains("stopped")));
+}
+
+#[tokio::test]
+async fn test_handle_stream_error_stopped_attributes_timeline_blocks_to_run_id() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let context_id = ProjectId::new().as_str().to_string();
+    let run_id = AgentRunId::new().as_str();
+    let content_blocks = vec![ContentBlockItem::Text {
+        text: "Partial response before stop".to_string(),
+    }];
+    let pre_assistant_message =
+        crate::application::chat_service::chat_service_context::create_assistant_message(
+            ChatContextType::Project,
+            &context_id,
+            "Partial response before stop",
+            conversation_id.clone(),
+            &[],
+            &content_blocks,
+        );
+    let pre_assistant_message_id = pre_assistant_message.id.as_str().to_string();
+    state
+        .chat_message_repo
+        .create(pre_assistant_message)
+        .await
+        .expect("insert pre-assistant message");
+
+    let event_ctx = crate::application::chat_service::event_context(
+        &conversation_id,
+        &ChatContextType::Project,
+        &context_id,
+    );
+    let cancelled = StreamError::Cancelled {
+        turns_finalized: 0,
+        completion_tool_called: false,
+    };
+    let recovery_spawned = handle_stream_error::<MockRuntime>(
+        "cancelled",
+        Some(&cancelled),
+        ChatContextType::Project,
+        &context_id,
+        conversation_id.clone(),
+        run_id.as_str(),
+        &pre_assistant_message_id,
+        &event_ctx,
+        None,
+        crate::domain::agents::AgentHarnessKind::Codex,
+        false,
+        None,
+        None,
+        None,
+        std::path::Path::new("/tmp/codex"),
+        std::path::Path::new("/tmp/plugin"),
+        std::path::Path::new("/tmp"),
+        &state.chat_message_repo,
+        &Some(state.chat_timeline_repo.clone()),
+        &state.chat_attachment_repo,
+        &state.artifact_repo,
+        &state.chat_conversation_repo,
+        &state.agent_run_repo,
+        &state.task_repo,
+        &state.task_dependency_repo,
+        &state.project_repo,
+        &state.ideation_session_repo,
+        &None,
+        &state.activity_event_repo,
+        &state.message_queue,
+        &state.running_agent_registry,
+        &state.memory_event_repo,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<tauri::AppHandle<MockRuntime>>,
+        None,
+        None,
+        &None,
+        &None,
+        &None,
+        &None,
+    )
+    .await;
+
+    assert!(!recovery_spawned);
+    let page = state
+        .chat_timeline_repo
+        .get_page(&conversation_id, 10, None)
+        .await
+        .expect("load timeline page");
+    let assistant_items: Vec<_> = page
+        .items
+        .iter()
+        .filter(|item| {
+            item.message_id
+                .as_ref()
+                .is_some_and(|id| id.as_str() == pre_assistant_message_id)
+        })
+        .collect();
+    assert!(!assistant_items.is_empty());
+    assert!(assistant_items
+        .iter()
+        .all(|item| item.status == ChatTimelineItemStatus::Finalized));
+    assert!(assistant_items
+        .iter()
+        .all(|item| item.run_id.as_ref().map(|id| id.as_str()) == Some(run_id.clone())));
 }
 
 /// Sub-branch A: Cancelled { turns_finalized: 1, completion_tool_called: true }
@@ -2600,7 +4455,6 @@ async fn test_handle_stream_error_preserves_existing_content_blocks_without_seri
         &None,
         &None::<tauri::AppHandle<MockRuntime>>,
         None,
-        false,
         None,
         &None,
         &None,
@@ -2783,7 +4637,6 @@ async fn test_handle_stream_error_terminal_verification_child_seals_unresolved_t
         &None,
         &None::<tauri::AppHandle<MockRuntime>>,
         None,
-        false,
         None,
         &None,
         &None,
@@ -2968,7 +4821,6 @@ async fn test_handle_stream_error_actionable_verification_child_queues_hidden_au
         &None,
         &None::<tauri::AppHandle<MockRuntime>>,
         None,
-        false,
         None,
         &None,
         &None,
@@ -3088,7 +4940,6 @@ async fn test_handle_stream_error_appends_generic_agent_error_to_existing_conten
         &None,
         &None::<tauri::AppHandle<MockRuntime>>,
         None,
-        false,
         None,
         &None,
         &None,
@@ -3223,6 +5074,14 @@ async fn test_task_execution_shutdown_success_persists_startup_recovery_metadata
     let task_id = task.id.clone();
     state.task_repo.create(task).await.unwrap();
 
+    let app = mock_builder()
+        .manage(state)
+        .manage(Arc::clone(&exec))
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let handle = app.handle().clone();
+    let state = handle.state::<AppState>();
+
     handle_stream_success::<MockRuntime>(
         "run-id-shutdown-success",
         ChatContextType::TaskExecution,
@@ -3247,7 +5106,7 @@ async fn test_task_execution_shutdown_success_persists_startup_recovery_metadata
         &None,
         &None,
         &None,
-        &None::<tauri::AppHandle<MockRuntime>>,
+        &Some(handle.clone()),
         &None,
         &None,
         &None,
@@ -3353,7 +5212,6 @@ async fn test_task_execution_shutdown_error_persists_startup_recovery_metadata()
         &None,
         &None::<tauri::AppHandle<MockRuntime>>,
         None,
-        false,
         None,
         &None,
         &None,
@@ -3471,7 +5329,6 @@ async fn test_task_execution_error_finalizer_fails_current_attempt_with_metadata
         &None,
         &None::<tauri::AppHandle<MockRuntime>>,
         None,
-        false,
         None,
         &None,
         &None,
@@ -3595,7 +5452,6 @@ async fn test_task_execution_agent_exit_preserves_worker_error_as_failure_error(
         &None,
         &None::<tauri::AppHandle<MockRuntime>>,
         None,
-        false,
         None,
         &None,
         &None,
@@ -3643,21 +5499,24 @@ async fn test_task_execution_agent_exit_preserves_worker_error_as_failure_error(
 }
 
 #[tokio::test]
-async fn test_task_execution_agent_exit_uses_head_matched_validation_cache_for_failed_steps() {
+async fn test_task_execution_local_tool_failure_uses_head_matched_validation_cache_for_failed_steps(
+) {
     let state = AppState::new_test();
     let exec = Arc::new(ExecutionState::new());
     let execution_state = Some(Arc::clone(&exec));
-    let (_worktree, head_sha) = git_worktree_with_initial_commit();
+    let (_worktree, base_sha, head_sha) = git_worktree_with_base_and_change();
 
     let project = Project::new(
-        "AgentExit Validation Override".into(),
-        "/tmp/agent-exit-validation-override".into(),
+        "Local Tool Validation Override".into(),
+        "/tmp/local-tool-validation-override".into(),
     );
     state.project_repo.create(project.clone()).await.unwrap();
 
     let mut task = Task::new(project.id.clone(), "Executing task".into());
     task.internal_status = InternalStatus::Executing;
     task.worktree_path = Some(_worktree.path().to_string_lossy().to_string());
+    task.task_branch_base_ref = Some(base_sha.clone());
+    task.task_branch_base_sha = Some(base_sha);
     let task_id = task.id.clone();
     state.task_repo.create(task).await.unwrap();
     let agent_run_id = seed_current_execution_attempt(&state, &task_id).await;
@@ -3684,9 +5543,8 @@ async fn test_task_execution_agent_exit_uses_head_matched_validation_cache_for_f
         &ChatContextType::TaskExecution,
         task_id.as_str(),
     );
-    let stream_error = StreamError::AgentExit {
-        exit_code: None,
-        stderr: "agent exited after execution_complete".to_string(),
+    let stream_error = StreamError::LocalToolFailed {
+        message: "late local diagnostic after execution_complete".to_string(),
     };
     let app = mock_builder()
         .manage(state.clone())
@@ -3695,13 +5553,13 @@ async fn test_task_execution_agent_exit_uses_head_matched_validation_cache_for_f
     let app_handle = Some(app.handle().clone());
 
     let recovery_spawned = handle_stream_error::<MockRuntime>(
-        "agent exited after execution_complete",
+        "late local diagnostic after execution_complete",
         Some(&stream_error),
         ChatContextType::TaskExecution,
         task_id.as_str(),
         conversation_id,
         agent_run_id.as_str(),
-        "message-id-agent-exit-validation-cache",
+        "message-id-local-tool-validation-cache",
         &event_ctx,
         None,
         crate::domain::agents::AgentHarnessKind::Codex,
@@ -3733,7 +5591,6 @@ async fn test_task_execution_agent_exit_uses_head_matched_validation_cache_for_f
         &None,
         &app_handle,
         None,
-        false,
         None,
         &None,
         &None,
@@ -3744,7 +5601,7 @@ async fn test_task_execution_agent_exit_uses_head_matched_validation_cache_for_f
 
     assert!(
         !recovery_spawned,
-        "normal agent-exit path should not spawn stale-session recovery"
+        "normal local-tool diagnostic path should not spawn stale-session recovery"
     );
 
     let updated = state
@@ -3758,7 +5615,7 @@ async fn test_task_execution_agent_exit_uses_head_matched_validation_cache_for_f
             updated.internal_status,
             InternalStatus::PendingReview | InternalStatus::Reviewing
         ),
-        "AgentExit should route to review flow when validation cache proves completion, got {:?}",
+        "LocalToolFailed should route to review flow when validation cache proves completion, got {:?}",
         updated.internal_status
     );
 
@@ -3864,7 +5721,6 @@ async fn test_task_execution_provider_error_finalizer_pauses_with_metadata() {
         &None,
         &None::<tauri::AppHandle<MockRuntime>>,
         None,
-        false,
         None,
         &None,
         &None,
@@ -3904,6 +5760,150 @@ async fn test_task_execution_provider_error_finalizer_pauses_with_metadata() {
     assert!(
         metadata.get("pause_reason").is_some(),
         "provider pause metadata should include the unified pause reason"
+    );
+
+    assert!(
+        state
+            .notification_repo
+            .list(None, None, 50)
+            .await
+            .expect("provider pause notification query should succeed")
+            .notifications
+            .is_empty(),
+        "per-task stream finalization must not bypass the global pause producer"
+    );
+}
+
+#[tokio::test]
+async fn task_execution_recovery_failed_records_one_task_stuck_notification() {
+    let app_state = AppState::new_test();
+    let notification_service = app_state.notification_service();
+    let notification_repo = notification_service.repository();
+    let execution_state = Arc::new(ExecutionState::new());
+    let mut task = Task::new(ProjectId::new(), "Recovery-failed task".to_string());
+    task.internal_status = InternalStatus::Executing;
+    let task_id = task.id.clone();
+    let task_repo: Arc<dyn TaskRepository> = Arc::new(StubTaskRepo {
+        task: Some(task),
+        status_entered_at: None,
+    });
+    forced_transition_failures()
+        .lock()
+        .unwrap()
+        .insert(task_id.to_string());
+
+    let app = mock_builder()
+        .manage(app_state)
+        .manage(Arc::clone(&execution_state))
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let handle = app.handle().clone();
+    let state = handle.state::<AppState>();
+    let conversation_id = ChatConversationId::new();
+    let event_ctx = crate::application::chat_service::event_context(
+        &conversation_id,
+        &ChatContextType::TaskExecution,
+        task_id.as_str(),
+    );
+    let stream_error = StreamError::AgentExit {
+        exit_code: Some(1),
+        stderr: "worker crashed".to_string(),
+    };
+
+    let recovery_spawned = super::handle_stream_error::<MockRuntime>(
+        "worker crashed",
+        Some(&stream_error),
+        ChatContextType::TaskExecution,
+        task_id.as_str(),
+        conversation_id,
+        "run-id-recovery-failed",
+        "message-id-recovery-failed",
+        &event_ctx,
+        None,
+        AgentHarnessKind::Codex,
+        false,
+        false,
+        false,
+        None,
+        None,
+        None,
+        std::path::Path::new("/tmp/codex"),
+        std::path::Path::new("/tmp/plugin"),
+        std::path::Path::new("/tmp"),
+        &state.chat_message_repo,
+        &Some(state.chat_timeline_repo.clone()),
+        &state.chat_attachment_repo,
+        &state.artifact_repo,
+        &state.chat_conversation_repo,
+        &state.agent_run_repo,
+        &task_repo,
+        &state.task_dependency_repo,
+        &state.project_repo,
+        &state.ideation_session_repo,
+        &None,
+        &state.activity_event_repo,
+        &state.message_queue,
+        &state.running_agent_registry,
+        &state.memory_event_repo,
+        &Some(Arc::clone(&execution_state)),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &Some(handle.clone()),
+        None,
+        None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &Some(Arc::clone(&notification_service)),
+    )
+    .await;
+
+    forced_transition_failures()
+        .lock()
+        .unwrap()
+        .remove(task_id.as_str());
+
+    assert!(
+        !recovery_spawned,
+        "the fallback-transition failure must not spawn a stale-session recovery"
+    );
+    let notifications = notification_repo
+        .list(None, None, 50)
+        .await
+        .expect("recovery-failed notification should be readable")
+        .notifications;
+    let task_stuck: Vec<_> = notifications
+        .iter()
+        .filter(|notification| notification.category == NotificationCategory::TaskStuck)
+        .collect();
+    assert_eq!(
+        task_stuck.len(),
+        1,
+        "both failed fallback attempts describe one recovery-failed instance"
+    );
+    assert_eq!(task_stuck[0].severity, NotificationSeverity::Warning);
+    let body = task_stuck[0]
+        .body
+        .as_deref()
+        .expect("recovery failure needs notification copy");
+    assert!(body.starts_with("Recovery failed on “Recovery-failed task” — task may be stuck."));
+    assert!(body.contains("The automatic recovery transition failed:"));
+    assert_eq!(task_stuck[0].target.kind, NotificationTargetKind::Task);
+    assert_eq!(
+        task_stuck[0].target.task_id.as_deref(),
+        Some(task_id.as_str())
+    );
+    let expected_dedupe_key = format!("task:{task_id}:stuck:run-id-recovery-failed");
+    assert_eq!(
+        task_stuck[0].dedupe_key.as_deref(),
+        Some(expected_dedupe_key.as_str())
     );
 }
 
@@ -4018,4 +6018,89 @@ async fn test_normal_completion_unaffected_by_verification_guards() {
         !is_unknown,
         "Gate B must return false for unknown sessions (safe fallthrough to normal agent:error)"
     );
+}
+
+#[tokio::test]
+async fn recovery_retry_persona_short_circuits_without_feature_or_app_handle() {
+    let conversation =
+        ChatConversation::new_project(ProjectId::from_string("retry-persona-project".to_string()));
+
+    assert_eq!(
+        resolve_recovery_retry_persona::<MockRuntime>(
+            &None,
+            false,
+            &conversation,
+            ChatContextType::Project,
+            false,
+        )
+        .await
+        .expect("feature-off retries must not resolve personas"),
+        None
+    );
+    assert_eq!(
+        resolve_recovery_retry_persona::<MockRuntime>(
+            &None,
+            true,
+            &conversation,
+            ChatContextType::Project,
+            false,
+        )
+        .await
+        .expect("retries without a Tauri app must keep the prior no-persona behavior"),
+        None
+    );
+}
+
+#[tokio::test]
+async fn recovery_retry_persona_uses_project_binding_without_a_workspace_row() {
+    let now = Utc::now();
+    let persona = Persona {
+        id: PersonaId::from("retry-bound-persona"),
+        artifact_id: None,
+
+        project_id: None,
+        slug: "retry-bound-persona".to_string(),
+        name: "Retry Bound Persona".to_string(),
+        description: "Retry persona fixture".to_string(),
+        content: "Keep the recovered conversation focused.".to_string(),
+        status: PersonaStatus::Active,
+        version: 1,
+        content_hash: "retry-bound-persona-hash".to_string(),
+        source_session_id: None,
+        source_persona_id: None,
+        source_content_hash: None,
+        source_json: "{}".to_string(),
+        created_at: now,
+        updated_at: now,
+    };
+    let mut conversation =
+        ChatConversation::new_project(ProjectId::from_string("retry-persona-project".to_string()));
+    conversation.persona_id = Some(persona.id.to_string());
+    let state = AppState::new_test();
+    state
+        .persona_repo
+        .create(persona)
+        .await
+        .expect("seed active retry persona");
+    let app = mock_builder()
+        .manage(state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let app_handle = Some(app.handle().clone());
+
+    let resolved = resolve_recovery_retry_persona(
+        &app_handle,
+        true,
+        &conversation,
+        ChatContextType::Project,
+        false,
+    )
+    .await
+    .expect("workspace fallback should resolve the bound project persona")
+    .expect("active binding should produce a persona block");
+
+    assert!(resolved.block.contains("<ralphx_agent_persona>"));
+    assert!(resolved
+        .block
+        .contains("Keep the recovered conversation focused."));
 }

@@ -44,10 +44,14 @@ export function useAgentsSelectionModel({
     const conversation = selectedConversationData;
     const isArchivedConversation = Boolean(conversation?.archivedAt);
     if (conversation) {
+      const isStandaloneConversation =
+        conversation.contextType === "standalone" &&
+        conversation.contextId === conversation.id;
       if (
         conversation.id !== selectedConversationId ||
-        conversation.contextType !== "project" ||
-        conversation.contextId !== activeProjectId ||
+        (!isStandaloneConversation &&
+          (conversation.contextType !== "project" ||
+            conversation.contextId !== activeProjectId)) ||
         (showArchived ? !isArchivedConversation : isArchivedConversation)
       ) {
         return null;
@@ -61,8 +65,9 @@ export function useAgentsSelectionModel({
       : null;
     if (
       !optimisticConversation ||
-      optimisticConversation.contextType !== "project" ||
-      optimisticConversation.contextId !== activeProjectId ||
+      (optimisticConversation.contextType !== "standalone" &&
+        (optimisticConversation.contextType !== "project" ||
+          optimisticConversation.contextId !== activeProjectId)) ||
       (showArchived
         ? !optimisticConversation.archivedAt
         : Boolean(optimisticConversation.archivedAt))
@@ -100,7 +105,6 @@ export function useAgentsSelectionModel({
   useEffect(() => {
     if (
       !selectedConversationId ||
-      !activeProjectId ||
       focusedConversations.isLoading ||
       selectedConversationQuery.isLoading
     ) {
@@ -123,7 +127,8 @@ export function useAgentsSelectionModel({
   ]);
   return {
     activeConversation,
-    activeProjectId,
+    activeProjectId:
+      activeConversation?.contextType === "standalone" ? null : activeProjectId,
     defaultProjectId,
     focusedConversations,
     selectedConversationFallback,

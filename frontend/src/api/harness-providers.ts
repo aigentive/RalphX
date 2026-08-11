@@ -35,6 +35,7 @@ export const AgentProviderSettingsResponseSchema = z.object({
   cliVersion: z.string().nullable().optional(),
   supportedModelAliases: z.array(z.string().min(1)).nullable().optional(),
   supportedEfforts: z.array(z.string().min(1)).nullable().optional(),
+  ultraSupportedModels: z.array(z.string().min(1)).default([]),
   supportsFastMode: z.boolean().optional().default(false),
   fastModeSupportedModels: z.array(z.string().min(1)).optional().default([]),
   updatedAt: z.string(),
@@ -78,6 +79,7 @@ export interface UpdateAgentProviderSettingsInput {
 
 export interface ListAgentProviderSettingsOptions {
   refreshRuntime?: boolean;
+  forceRuntime?: boolean;
 }
 
 export const harnessProvidersApi = {
@@ -86,7 +88,12 @@ export const harnessProvidersApi = {
   ): Promise<AgentProvidersSettingsResponse> {
     return typedInvoke(
       "get_agent_provider_settings",
-      { input: { refreshRuntime: options.refreshRuntime ?? false } },
+      {
+        input: {
+          refreshRuntime: options.refreshRuntime ?? false,
+          forceRuntime: options.forceRuntime ?? false,
+        },
+      },
       AgentProvidersSettingsResponseSchema,
     );
   },

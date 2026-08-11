@@ -1,397 +1,241 @@
-// Tests for SqliteTeamMessageRepository
-
-use super::sqlite_team_message_repo::SqliteTeamMessageRepository;
-use crate::domain::entities::team::{TeamMessageId, TeamMessageRecord, TeamSessionId};
+use crate::domain::entities::{
+    TeamMessageDeliveryId, TeamMessageDeliveryStatus, TeamMessageId, TeamSessionId,
+};
 use crate::domain::repositories::TeamMessageRepository;
+use crate::infrastructure::sqlite::SqliteTeamMessageRepository;
+use crate::testing::team_fixtures::{
+    fixed_time, seed_team_session_row, team_delivery, team_message,
+};
 use crate::testing::SqliteTestDb;
 
-fn setup_test_db() -> SqliteTestDb {
-    SqliteTestDb::new("sqlite-team-message-repo")
+fn setup_repo() -> (SqliteTestDb, SqliteTeamMessageRepository) {
+    let db = SqliteTestDb::new("sqlite-team-message-repo");
+    db.with_connection(|conn| {
+        seed_team_session_row(conn, "team-1", 101);
+        seed_team_session_row(conn, "team-2", 102);
+    });
+    let repo = SqliteTeamMessageRepository::from_shared(db.shared_conn());
+    (db, repo)
 }
 
-fn create_test_session(db: &SqliteTestDb) -> TeamSessionId {
-    let id = TeamSessionId::new();
-    db.with_connection(|conn| {
-        conn.execute(
-            "INSERT INTO team_sessions (id, team_name, context_id, context_type, phase, teammate_json, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now'), strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now'))",
-            rusqlite::params![
-                id.as_str(),
-                "test-team",
-                "ctx-1",
-                "project",
-                "forming",
-                "[]",
+#[tokio::test]
+async fn test_envelope_with_deliveries_roundtrip() {
+    let (_db, repo) = setup_repo();
+
+    let (message, deliveries) = repo
+        .create_envelope_with_deliveries(
+            team_message("message-1", "team-1", 1),
+            vec![
+                team_delivery("delivery-1", "message-1", Some("member-1")),
+                team_delivery("delivery-2", "message-1", None),
             ],
         )
+        .await
         .unwrap();
-    });
-    id
-}
+    assert_eq!(deliveries.len(), 2);
 
-// ==================== CREATE TESTS ====================
+    let stored = repo
+        .get_message(&TeamMessageId::from_string("message-1"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.sequence, message.sequence);
+    assert_eq!(stored.content, message.content);
 
-#[tokio::test]
-async fn test_create_returns_message() {
-    let db = setup_test_db();
-    let session_id = create_test_session(&db);
-    let repo = SqliteTeamMessageRepository::new(db.new_connection());
-
-    let msg = TeamMessageRecord::new(session_id.clone(), "alice", "Hello team");
-    let msg_id = msg.id.clone();
-
-    let result = repo.create(msg).await;
-
-    assert!(result.is_ok());
-    let created = result.unwrap();
-    assert_eq!(created.id, msg_id);
-    assert_eq!(created.sender, "alice");
-    assert_eq!(created.content, "Hello team");
-    assert_eq!(created.team_session_id, session_id);
+    let actionable = repo
+        .list_actionable_deliveries(&TeamSessionId::from_string("team-1"), 10)
+        .await
+        .unwrap();
+    assert_eq!(actionable.len(), 2);
 }
 
 #[tokio::test]
-async fn test_create_with_recipient_persists_fields() {
-    let db = setup_test_db();
-    let session_id = create_test_session(&db);
-    let repo = SqliteTeamMessageRepository::new(db.new_connection());
+async fn test_envelope_fan_out_is_atomic() {
+    let (_db, repo) = setup_repo();
 
-    let mut msg = TeamMessageRecord::new(session_id.clone(), "lead", "Task done");
-    msg.recipient = Some("worker1".to_string());
-    msg.message_type = "direct_message".to_string();
-    let msg_id = msg.id.clone();
+    repo.create_envelope_with_deliveries(
+        team_message("message-1", "team-1", 1),
+        vec![team_delivery("delivery-1", "message-1", Some("member-1"))],
+    )
+    .await
+    .unwrap();
 
-    repo.create(msg).await.unwrap();
+    let result = repo
+        .create_envelope_with_deliveries(
+            team_message("message-2", "team-1", 2),
+            vec![
+                team_delivery("delivery-2", "message-2", Some("member-1")),
+                // Duplicate delivery id: second insert fails after the first succeeded.
+                team_delivery("delivery-1", "message-2", Some("member-2")),
+            ],
+        )
+        .await;
+    assert!(result.is_err());
 
-    let messages = repo.get_by_session(&session_id).await.unwrap();
-    let found = messages.iter().find(|m| m.id == msg_id).unwrap();
-    assert_eq!(found.recipient, Some("worker1".to_string()));
-    assert_eq!(found.message_type, "direct_message");
+    assert!(
+        repo.get_message(&TeamMessageId::from_string("message-2"))
+            .await
+            .unwrap()
+            .is_none(),
+        "failed fan-out must roll back the envelope"
+    );
+    let actionable = repo
+        .list_actionable_deliveries(&TeamSessionId::from_string("team-1"), 10)
+        .await
+        .unwrap();
+    assert_eq!(
+        actionable.len(),
+        1,
+        "failed fan-out must not leave partial deliveries"
+    );
 }
 
 #[tokio::test]
-async fn test_create_without_recipient_has_none() {
-    let db = setup_test_db();
-    let session_id = create_test_session(&db);
-    let repo = SqliteTeamMessageRepository::new(db.new_connection());
+async fn test_delivery_envelope_mismatch_is_rejected() {
+    let (_db, repo) = setup_repo();
 
-    let msg = TeamMessageRecord::new(session_id.clone(), "alice", "Broadcast message");
-    let msg_id = msg.id.clone();
-
-    repo.create(msg).await.unwrap();
-
-    let messages = repo.get_by_session(&session_id).await.unwrap();
-    let found = messages.iter().find(|m| m.id == msg_id).unwrap();
-    assert!(found.recipient.is_none());
-}
-
-#[tokio::test]
-async fn test_create_duplicate_id_fails() {
-    let db = setup_test_db();
-    let session_id = create_test_session(&db);
-    let repo = SqliteTeamMessageRepository::new(db.new_connection());
-
-    let msg = TeamMessageRecord::new(session_id.clone(), "alice", "Hello");
-    repo.create(msg.clone()).await.unwrap();
-
-    let result = repo.create(msg).await;
-
+    let result = repo
+        .create_envelope_with_deliveries(
+            team_message("message-1", "team-1", 1),
+            vec![team_delivery(
+                "delivery-1",
+                "message-other",
+                Some("member-1"),
+            )],
+        )
+        .await;
     assert!(result.is_err());
 }
 
-// ==================== GET BY SESSION TESTS ====================
-
 #[tokio::test]
-async fn test_get_by_session_returns_all_messages() {
-    let db = setup_test_db();
-    let session_id = create_test_session(&db);
-    let repo = SqliteTeamMessageRepository::new(db.new_connection());
+async fn test_sequence_and_idempotency_unique_per_team() {
+    let (_db, repo) = setup_repo();
 
-    let msg1 = TeamMessageRecord::new(session_id.clone(), "alice", "Hello");
-    let msg2 = TeamMessageRecord::new(session_id.clone(), "bob", "World");
-    let msg3 = TeamMessageRecord::new(session_id.clone(), "alice", "Again");
+    repo.create_envelope_with_deliveries(
+        team_message("message-1", "team-1", 1),
+        vec![team_delivery("delivery-1", "message-1", None)],
+    )
+    .await
+    .unwrap();
 
-    repo.create(msg1).await.unwrap();
-    repo.create(msg2).await.unwrap();
-    repo.create(msg3).await.unwrap();
+    assert!(
+        repo.create_envelope_with_deliveries(
+            team_message("message-2", "team-1", 1),
+            vec![team_delivery("delivery-2", "message-2", None)],
+        )
+        .await
+        .is_err(),
+        "duplicate sequence in the same team must fail"
+    );
 
-    let result = repo.get_by_session(&session_id).await;
+    let mut duplicate_idem = team_message("message-3", "team-1", 2);
+    duplicate_idem.idempotency_key = "idem-message-1".to_string();
+    assert!(
+        repo.create_envelope_with_deliveries(
+            duplicate_idem,
+            vec![team_delivery("delivery-3", "message-3", None)],
+        )
+        .await
+        .is_err(),
+        "duplicate idempotency key in the same team must fail"
+    );
 
-    assert!(result.is_ok());
-    assert_eq!(result.unwrap().len(), 3);
+    // Same sequence in a different team is allowed.
+    repo.create_envelope_with_deliveries(
+        team_message("message-4", "team-2", 1),
+        vec![team_delivery("delivery-4", "message-4", None)],
+    )
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
-async fn test_get_by_session_returns_empty_when_no_messages() {
-    let db = setup_test_db();
-    let session_id = create_test_session(&db);
-    let repo = SqliteTeamMessageRepository::new(db.new_connection());
-
-    let result = repo.get_by_session(&session_id).await;
-
-    assert!(result.is_ok());
-    assert!(result.unwrap().is_empty());
-}
-
-#[tokio::test]
-async fn test_get_by_session_filters_by_session() {
-    let db = setup_test_db();
-    let session_id1 = create_test_session(&db);
-    let session_id2 = create_test_session(&db);
-    let repo = SqliteTeamMessageRepository::new(db.new_connection());
-
-    let msg1 = TeamMessageRecord::new(session_id1.clone(), "alice", "Session 1 msg");
-    let msg2 = TeamMessageRecord::new(session_id2.clone(), "bob", "Session 2 msg");
-
-    repo.create(msg1).await.unwrap();
-    repo.create(msg2).await.unwrap();
-
-    let messages = repo.get_by_session(&session_id1).await.unwrap();
-
-    assert_eq!(messages.len(), 1);
-    assert_eq!(messages[0].team_session_id, session_id1);
-}
-
-#[tokio::test]
-async fn test_get_by_session_ordered_asc_by_created_at() {
-    let db = setup_test_db();
-    let session_id = create_test_session(&db);
-    let repo = SqliteTeamMessageRepository::new(db.new_connection());
-
-    let msg1 = TeamMessageRecord::new(session_id.clone(), "alice", "First");
-    repo.create(msg1).await.unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-
-    let msg2 = TeamMessageRecord::new(session_id.clone(), "bob", "Second");
-    repo.create(msg2).await.unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-
-    let msg3 = TeamMessageRecord::new(session_id.clone(), "alice", "Third");
-    repo.create(msg3).await.unwrap();
-
-    let messages = repo.get_by_session(&session_id).await.unwrap();
-
-    assert_eq!(messages.len(), 3);
-    assert_eq!(messages[0].content, "First");
-    assert_eq!(messages[1].content, "Second");
-    assert_eq!(messages[2].content, "Third");
-}
-
-// ==================== GET RECENT BY SESSION TESTS ====================
-
-#[tokio::test]
-async fn test_get_recent_by_session_limits_results() {
-    let db = setup_test_db();
-    let session_id = create_test_session(&db);
-    let repo = SqliteTeamMessageRepository::new(db.new_connection());
-
-    for i in 1..=5u32 {
-        let msg = TeamMessageRecord::new(session_id.clone(), "alice", format!("Message {}", i));
-        repo.create(msg).await.unwrap();
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+async fn test_list_messages_after_orders_and_limits() {
+    let (_db, repo) = setup_repo();
+    for sequence in 1..=4 {
+        repo.create_envelope_with_deliveries(
+            team_message(&format!("message-{sequence}"), "team-1", sequence),
+            vec![team_delivery(
+                &format!("delivery-{sequence}"),
+                &format!("message-{sequence}"),
+                None,
+            )],
+        )
+        .await
+        .unwrap();
     }
 
-    let result = repo.get_recent_by_session(&session_id, 3).await;
-
-    assert!(result.is_ok());
-    assert_eq!(result.unwrap().len(), 3);
+    let messages = repo
+        .list_messages_after(&TeamSessionId::from_string("team-1"), 1, 2)
+        .await
+        .unwrap();
+    assert_eq!(
+        messages
+            .iter()
+            .map(|message| message.sequence)
+            .collect::<Vec<_>>(),
+        vec![2, 3]
+    );
 }
 
 #[tokio::test]
-async fn test_get_recent_by_session_returns_latest_in_asc_order() {
-    // Implementation: SQL ORDER BY DESC LIMIT N, then .reverse() → chronological order
-    let db = setup_test_db();
-    let session_id = create_test_session(&db);
-    let repo = SqliteTeamMessageRepository::new(db.new_connection());
+async fn test_transition_delivery_cas() {
+    let (_db, repo) = setup_repo();
+    let id = TeamMessageDeliveryId::from_string("delivery-1");
 
-    for i in 1..=5u32 {
-        let msg = TeamMessageRecord::new(session_id.clone(), "alice", format!("Message {}", i));
-        repo.create(msg).await.unwrap();
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-    }
+    let (_, deliveries) = repo
+        .create_envelope_with_deliveries(
+            team_message("message-1", "team-1", 1),
+            vec![team_delivery("delivery-1", "message-1", Some("member-1"))],
+        )
+        .await
+        .unwrap();
 
-    let messages = repo.get_recent_by_session(&session_id, 2).await.unwrap();
+    let mut updated = deliveries[0].clone();
+    updated
+        .transition_to(TeamMessageDeliveryStatus::Queued, fixed_time())
+        .unwrap();
 
-    // Gets most recent 2 (DESC) then reverses → ascending order
-    assert_eq!(messages.len(), 2);
-    assert_eq!(messages[0].content, "Message 4");
-    assert_eq!(messages[1].content, "Message 5");
-}
+    assert!(repo
+        .transition_delivery(
+            &id,
+            TeamMessageDeliveryStatus::Pending,
+            TeamMessageDeliveryStatus::Queued,
+            updated.clone(),
+        )
+        .await
+        .unwrap());
+    assert!(
+        !repo
+            .transition_delivery(
+                &id,
+                TeamMessageDeliveryStatus::Pending,
+                TeamMessageDeliveryStatus::Queued,
+                updated.clone(),
+            )
+            .await
+            .unwrap(),
+        "stale expected status must not transition again"
+    );
+    assert!(
+        !repo
+            .transition_delivery(
+                &id,
+                TeamMessageDeliveryStatus::Queued,
+                TeamMessageDeliveryStatus::Delivered,
+                updated,
+            )
+            .await
+            .unwrap(),
+        "payload status must match the requested next status"
+    );
 
-#[tokio::test]
-async fn test_get_recent_by_session_returns_all_if_fewer_than_limit() {
-    let db = setup_test_db();
-    let session_id = create_test_session(&db);
-    let repo = SqliteTeamMessageRepository::new(db.new_connection());
-
-    let msg = TeamMessageRecord::new(session_id.clone(), "alice", "Only one");
-    repo.create(msg).await.unwrap();
-
-    let messages = repo.get_recent_by_session(&session_id, 100).await.unwrap();
-
-    assert_eq!(messages.len(), 1);
-}
-
-#[tokio::test]
-async fn test_get_recent_by_session_returns_empty_for_no_messages() {
-    let db = setup_test_db();
-    let session_id = create_test_session(&db);
-    let repo = SqliteTeamMessageRepository::new(db.new_connection());
-
-    let result = repo.get_recent_by_session(&session_id, 10).await;
-
-    assert!(result.is_ok());
-    assert!(result.unwrap().is_empty());
-}
-
-// ==================== COUNT BY SESSION TESTS ====================
-
-#[tokio::test]
-async fn test_count_by_session_returns_zero_when_empty() {
-    let db = setup_test_db();
-    let session_id = create_test_session(&db);
-    let repo = SqliteTeamMessageRepository::new(db.new_connection());
-
-    let count = repo.count_by_session(&session_id).await.unwrap();
-
-    assert_eq!(count, 0);
-}
-
-#[tokio::test]
-async fn test_count_by_session_counts_correctly() {
-    let db = setup_test_db();
-    let session_id = create_test_session(&db);
-    let repo = SqliteTeamMessageRepository::new(db.new_connection());
-
-    for i in 1..=4u32 {
-        let msg = TeamMessageRecord::new(session_id.clone(), "alice", format!("Msg {}", i));
-        repo.create(msg).await.unwrap();
-    }
-
-    let count = repo.count_by_session(&session_id).await.unwrap();
-
-    assert_eq!(count, 4);
-}
-
-#[tokio::test]
-async fn test_count_by_session_filters_by_session() {
-    let db = setup_test_db();
-    let session_id1 = create_test_session(&db);
-    let session_id2 = create_test_session(&db);
-    let repo = SqliteTeamMessageRepository::new(db.new_connection());
-
-    let msg1 = TeamMessageRecord::new(session_id1.clone(), "a", "S1-msg1");
-    let msg2 = TeamMessageRecord::new(session_id1.clone(), "b", "S1-msg2");
-    let msg3 = TeamMessageRecord::new(session_id2.clone(), "c", "S2-msg1");
-
-    repo.create(msg1).await.unwrap();
-    repo.create(msg2).await.unwrap();
-    repo.create(msg3).await.unwrap();
-
-    assert_eq!(repo.count_by_session(&session_id1).await.unwrap(), 2);
-    assert_eq!(repo.count_by_session(&session_id2).await.unwrap(), 1);
-}
-
-// ==================== DELETE BY SESSION TESTS ====================
-
-#[tokio::test]
-async fn test_delete_by_session_removes_all_messages() {
-    let db = setup_test_db();
-    let session_id = create_test_session(&db);
-    let repo = SqliteTeamMessageRepository::new(db.new_connection());
-
-    let msg1 = TeamMessageRecord::new(session_id.clone(), "alice", "Msg 1");
-    let msg2 = TeamMessageRecord::new(session_id.clone(), "bob", "Msg 2");
-
-    repo.create(msg1).await.unwrap();
-    repo.create(msg2).await.unwrap();
-
-    let result = repo.delete_by_session(&session_id).await;
-
-    assert!(result.is_ok());
-    let remaining = repo.get_by_session(&session_id).await.unwrap();
-    assert!(remaining.is_empty());
-}
-
-#[tokio::test]
-async fn test_delete_by_session_does_not_affect_other_sessions() {
-    let db = setup_test_db();
-    let session_id1 = create_test_session(&db);
-    let session_id2 = create_test_session(&db);
-    let repo = SqliteTeamMessageRepository::new(db.new_connection());
-
-    let msg1 = TeamMessageRecord::new(session_id1.clone(), "alice", "S1 msg");
-    let msg2 = TeamMessageRecord::new(session_id2.clone(), "bob", "S2 msg");
-
-    repo.create(msg1).await.unwrap();
-    repo.create(msg2).await.unwrap();
-
-    repo.delete_by_session(&session_id1).await.unwrap();
-
-    let s1_msgs = repo.get_by_session(&session_id1).await.unwrap();
-    let s2_msgs = repo.get_by_session(&session_id2).await.unwrap();
-
-    assert!(s1_msgs.is_empty());
-    assert_eq!(s2_msgs.len(), 1);
-}
-
-#[tokio::test]
-async fn test_delete_by_session_for_nonexistent_session_succeeds() {
-    let db = setup_test_db();
-    let repo = SqliteTeamMessageRepository::new(db.new_connection());
-
-    let nonexistent_id = TeamSessionId::new();
-    let result = repo.delete_by_session(&nonexistent_id).await;
-
-    assert!(result.is_ok());
-}
-
-// ==================== DELETE SINGLE MESSAGE TESTS ====================
-
-#[tokio::test]
-async fn test_delete_removes_single_message() {
-    let db = setup_test_db();
-    let session_id = create_test_session(&db);
-    let repo = SqliteTeamMessageRepository::new(db.new_connection());
-
-    let msg1 = TeamMessageRecord::new(session_id.clone(), "alice", "Keep");
-    let msg2 = TeamMessageRecord::new(session_id.clone(), "bob", "Delete me");
-
-    repo.create(msg1.clone()).await.unwrap();
-    repo.create(msg2.clone()).await.unwrap();
-
-    let result = repo.delete(&msg2.id).await;
-    assert!(result.is_ok());
-
-    let remaining = repo.get_by_session(&session_id).await.unwrap();
-    assert_eq!(remaining.len(), 1);
-    assert_eq!(remaining[0].id, msg1.id);
-}
-
-#[tokio::test]
-async fn test_delete_nonexistent_message_succeeds() {
-    let db = setup_test_db();
-    let repo = SqliteTeamMessageRepository::new(db.new_connection());
-
-    let nonexistent_id = TeamMessageId::new();
-    let result = repo.delete(&nonexistent_id).await;
-
-    assert!(result.is_ok());
-}
-
-// ==================== FROM SHARED TESTS ====================
-
-#[tokio::test]
-async fn test_from_shared_creates_and_retrieves() {
-    let db = setup_test_db();
-    let session_id = create_test_session(&db);
-    let shared_conn = db.shared_conn();
-    let repo = SqliteTeamMessageRepository::from_shared(shared_conn);
-
-    let msg = TeamMessageRecord::new(session_id.clone(), "alice", "Shared conn test");
-    let result = repo.create(msg).await;
-
-    assert!(result.is_ok());
-    let messages = repo.get_by_session(&session_id).await.unwrap();
-    assert_eq!(messages.len(), 1);
+    let actionable = repo
+        .list_actionable_deliveries(&TeamSessionId::from_string("team-1"), 10)
+        .await
+        .unwrap();
+    assert!(
+        actionable.is_empty(),
+        "queued deliveries are no longer actionable"
+    );
 }

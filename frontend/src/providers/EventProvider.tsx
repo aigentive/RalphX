@@ -28,12 +28,16 @@ import {
 } from "@/hooks/useEvents";
 import { useIdeationEvents } from "@/hooks/useIdeationEvents";
 import { usePlanArtifactEvents } from "@/hooks/useEvents.planArtifact";
-import { useVerificationEvents } from "@/hooks/useVerificationEvents";
-import { useVerificationBootstrap } from "@/hooks/useVerificationBootstrap";
 import { useTaskValidationEventInvalidation } from "@/hooks/useTaskValidationEvents";
 import { useFreshnessBlockedNotification } from "@/hooks/useFreshnessBlockedNotification";
 import { useGitAuthStartupNotification } from "@/hooks/useGitAuthStartupNotification";
 import { useGlobalAgentLifecycle } from "@/hooks/useGlobalAgentLifecycle";
+import { useDelegationParkAttention } from "@/hooks/useDelegationParkAttention";
+import { useAgentWorkflowEvents } from "@/hooks/useAgentWorkflowEvents";
+import { useNotificationEvents } from "@/hooks/useNotificationEvents";
+import { useNotificationToasts } from "@/hooks/useNotificationToasts";
+import { useUsageStatsEvents } from "@/hooks/useUsageStatsEvents";
+import { useAgentWorkspaceOperationToasts } from "@/components/agents/useAgentWorkspaceOperationToasts";
 import { createEventBus, type EventBus } from "@/lib/event-bus";
 
 /**
@@ -81,18 +85,22 @@ function GlobalEventListeners({ children }: { children: ReactNode }) {
   useStepEvents(); // Listen to step events for task execution progress
   useSupervisorAlerts();
   useReviewEvents();
+  useNotificationEvents();
+  useNotificationToasts();
+  useAgentWorkspaceOperationToasts(); // Global driver for durable repair/publish/base-update toasts
   useFileChangeEvents();
   useAgentEvents(); // Listen to agent:message events for Activity view (no active conversation)
   useExecutionErrorEvents(); // Handle agent execution errors and unstick UI
   useRecoveryPromptEvents(); // Listen to recovery prompts
   useIdeationEvents(); // Listen to ideation events (session title updates)
   usePlanArtifactEvents(); // Listen to plan artifact events for real-time updates
-  useVerificationEvents(); // Listen to plan verification status changes globally
-  useVerificationBootstrap(); // Hydrate pending verification confirmations on startup and project switch
   useTaskValidationEventInvalidation(); // Refresh task validation summaries on lifecycle events
   useFreshnessBlockedNotification(); // Show toast when task is freshness-blocked
   useGitAuthStartupNotification(); // Warn before Git/GitHub-dependent startup work fails
   useGlobalAgentLifecycle(); // Global agent lifecycle → agentStatus for all sessions
+  useDelegationParkAttention(); // Alert when a parked coordinator's wake could not be delivered
+  useAgentWorkflowEvents(); // Refresh durable scripted workflow progress after backend mutations
+  useUsageStatsEvents(); // Refresh usage totals for foreground and background conversations
 
   return <>{children}</>;
 }

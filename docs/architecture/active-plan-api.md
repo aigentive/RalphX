@@ -2,7 +2,10 @@
 
 ## Overview
 
-The Active Plan feature provides a project-scoped, persisted "active plan" state that drives task filtering across Graph and Kanban views. This document describes the backend API, database schema, ranking algorithm (planned), and frontend integration points.
+The Active Plan feature provides a project-scoped, persisted "active plan"
+state that drives task filtering across the Graph and Kanban tabs embedded in
+the Agents Tasks artifact. This document describes the backend API, database
+schema, ranking algorithm (planned), and frontend integration points.
 
 ## Architecture Layers
 
@@ -406,7 +409,7 @@ export const selectCurrentActivePlan = (state: PlanState & { activeProjectId: st
 
 ## View Integration
 
-### Kanban View (`src/components/tasks/TaskBoard/TaskBoard.tsx`)
+### Agents Tasks — Kanban tab (`frontend/src/components/tasks/TaskBoard/TaskBoard.tsx`)
 
 **Changes:**
 1. Added `<PlanSelectorInline>` to toolbar
@@ -423,7 +426,7 @@ const { data: taskColumns } = useInfiniteTasksQuery({
 });
 ```
 
-### Graph View (`src/components/TaskGraph/TaskGraphView.tsx`)
+### Agents Tasks — Graph tab (`frontend/src/components/TaskGraph/TaskGraphView.tsx`)
 
 **Changes:**
 1. Removed multi-plan filter UI (previously `filters.planIds[]`)
@@ -439,7 +442,7 @@ const { data: graphData } = useQuery({
 });
 ```
 
-### Ideation View (`src/components/Ideation/PlanningView.tsx`)
+### Agents Plan/Ideation artifact (`frontend/src/components/agents/AgentsArtifactPane.tsx`)
 
 **Changes:**
 1. On session acceptance (`apply_proposals_to_kanban` success), call `planStore.setActivePlan(projectId, sessionId, "ideation")`
@@ -455,7 +458,7 @@ const handleApplyProposals = async () => {
   // Auto-set as active plan
   await setActivePlan(projectId, sessionId, "ideation");
 
-  navigate("/kanban");
+  revealAgentArtifactTab(conversationId, "tasks");
 };
 ```
 
@@ -505,7 +508,7 @@ try {
 **Behavior:**
 1. Session is no longer eligible as active plan
 2. Application logic must manually call `clear_active_plan` for the project
-3. Graph/Kanban views show empty state
+3. The Agents Tasks artifact shows an empty state
 
 **Implementation Location:** `src-tauri/src/commands/ideation_commands.rs::reopen_ideation_session`
 
@@ -700,7 +703,7 @@ Add "Recent" section in quick switcher based on `last_selected_at`.
 - Check `plan_selection_stats` foreign key constraints
 - Verify session exists and belongs to project
 
-### Symptom: Graph/Kanban show all tasks despite active plan set
+### Symptom: Agents task tabs show all tasks despite active plan set
 
 **Cause:** Backend query not passing `ideation_session_id` parameter.
 

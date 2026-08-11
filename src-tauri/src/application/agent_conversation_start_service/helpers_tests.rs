@@ -11,8 +11,10 @@ use super::*;
 use crate::application::AppState;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort};
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversationId,
-    IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, Project,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentWorkspacePrReviewMonitor,
+    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceSourcePullRequest, ChatContextType,
+    ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSession,
+    IdeationSessionFlow, Project, ProjectId,
 };
 use crate::domain::services::PrSearchResult;
 use crate::tests::mock_github_service::MockGithubService;
@@ -50,6 +52,10 @@ fn parse_mode_trims_and_parses_known_modes() {
         parse_agent_workspace_mode(Some("review_pr")).unwrap(),
         AgentConversationWorkspaceMode::ReviewPr
     );
+    assert_eq!(
+        parse_agent_workspace_mode(Some("automation")).unwrap(),
+        AgentConversationWorkspaceMode::Automation
+    );
 }
 
 #[test]
@@ -58,6 +64,15 @@ fn parse_mode_rejects_unknown_value() {
     assert!(
         error.contains("nonsense"),
         "error should name the bad value: {error}"
+    );
+}
+
+#[test]
+fn parse_mode_rejects_persona_builder() {
+    let error = parse_agent_workspace_mode(Some("persona_builder")).unwrap_err();
+    assert!(
+        error.contains("PersonaBuilder"),
+        "unexpected error: {error}"
     );
 }
 
@@ -276,7 +291,7 @@ fn normalize_source_pr_drops_blank_optional_fields() {
     assert!(pr.head_ref_oid.is_none());
 }
 
-// ── ticket start base fallback helpers ───────────────────────────────────────
+// ── ticket branch name hint helpers ──────────────────────────────────────────
 
 fn integration_ref(
     provider: &str,
@@ -300,41 +315,63 @@ fn integration_ref(
 }
 
 #[test]
-fn first_ticket_start_base_reference_prefers_ticket_integrations() {
+fn first_ticket_branch_name_hint_prefers_ticket_integrations() {
     let references = vec![
         integration_ref("atlassian", "confluence", "space-1", None),
         integration_ref("atlassian", "jira", "10001", Some("RX-24")),
         integration_ref("linear", "linear", "lin-1", Some("ENG-5")),
     ];
 
-    let ticket = first_ticket_start_base_reference(&references).expect("jira reference");
+    let ticket = first_ticket_branch_name_hint(&references).expect("jira reference");
 
     assert_eq!(ticket.provider, "jira");
-    assert_eq!(ticket.issue_key, "RX-24");
+    assert_eq!(ticket.ticket_token, "RX-24");
 }
 
 #[test]
-fn first_ticket_start_base_reference_supports_linear_clickup_and_id_fallback() {
+fn first_ticket_branch_name_hint_supports_linear_and_clickup_tokens() {
     let linear =
-        first_ticket_start_base_reference(&[integration_ref("linear", "linear", "lin-1", None)])
+        first_ticket_branch_name_hint(&[integration_ref("linear", "linear", "lin-1", None)])
             .expect("linear reference");
     assert_eq!(linear.provider, "linear");
-    assert_eq!(linear.issue_key, "lin-1");
+    assert_eq!(linear.ticket_token, "lin-1");
 
-    let clickup = first_ticket_start_base_reference(&[integration_ref(
+    let clickup_custom = first_ticket_branch_name_hint(&[integration_ref(
         "clickup",
         "clickup",
         "task-1",
         Some("CU-1"),
     )])
     .expect("clickup reference");
-    assert_eq!(clickup.provider, "clickup");
-    assert_eq!(clickup.issue_key, "CU-1");
+    assert_eq!(clickup_custom.provider, "clickup");
+    assert_eq!(clickup_custom.ticket_token, "CU-1");
+
+    let clickup_default =
+        first_ticket_branch_name_hint(&[integration_ref("clickup", "clickup", "8689abc", None)])
+            .expect("clickup default id reference");
+    assert_eq!(clickup_default.provider, "clickup");
+    assert_eq!(clickup_default.ticket_token, "CU-8689abc");
 }
 
 #[test]
-fn first_ticket_start_base_reference_ignores_unsupported_and_blank_ticket_refs() {
-    assert!(first_ticket_start_base_reference(&[integration_ref(
+fn clickup_task_lookup_key_prefers_custom_key_and_rejects_multiple_tasks() {
+    let reference = integration_ref("clickup", "clickup", "8689abc", Some("DEV-42"));
+    assert_eq!(
+        clickup_task_lookup_key_from_references(&[reference]).unwrap(),
+        Some("DEV-42".to_string())
+    );
+
+    let error = clickup_task_lookup_key_from_references(&[
+        integration_ref("clickup", "clickup", "8689abc", Some("DEV-42")),
+        integration_ref("clickup", "clickup", "8689def", Some("DEV-43")),
+    ])
+    .expect_err("multiple ClickUp tasks should fail closed");
+    assert!(error.contains("only start from one ClickUp task"));
+}
+
+#[test]
+fn first_ticket_branch_name_hint_ignores_unsupported_and_blank_ticket_refs() {
+    assert!(first_ticket_branch_name_hint(&[integration_ref(
         "atlassian",
         "confluence",
         "SPACE",
@@ -342,61 +379,13 @@ fn first_ticket_start_base_reference_ignores_unsupported_and_blank_ticket_refs()
     )])
     .is_none());
 
-    assert!(first_ticket_start_base_reference(&[integration_ref(
+    assert!(first_ticket_branch_name_hint(&[integration_ref(
         "linear",
         "linear",
         "   ",
         Some("   "),
     )])
     .is_none());
-}
-
-#[test]
-fn base_selection_allows_ticket_canonical_branch_only_for_default_without_pr() {
-    assert!(base_selection_allows_ticket_canonical_branch(None, None));
-    assert!(base_selection_allows_ticket_canonical_branch(
-        Some(IdeationAnalysisBaseRefKind::ProjectDefault),
-        None,
-    ));
-
-    let source = AgentWorkspaceSourcePullRequest {
-        number: 42,
-        url: None,
-        title: None,
-        head_ref_name: "feature/pr-head".to_string(),
-        base_ref_name: Some("main".to_string()),
-        head_ref_oid: None,
-    };
-    assert!(!base_selection_allows_ticket_canonical_branch(
-        Some(IdeationAnalysisBaseRefKind::LocalBranch),
-        None,
-    ));
-    assert!(!base_selection_allows_ticket_canonical_branch(
-        Some(IdeationAnalysisBaseRefKind::ProjectDefault),
-        Some(&source),
-    ));
-}
-
-#[test]
-fn apply_ticket_canonical_branch_base_selection_sets_local_branch_base() {
-    let mut kind = Some(IdeationAnalysisBaseRefKind::ProjectDefault);
-    let mut base_ref = Some("main".to_string());
-    let mut display_name = Some("Project default (main)".to_string());
-
-    apply_ticket_canonical_branch_base_selection(
-        &mut kind,
-        &mut base_ref,
-        &mut display_name,
-        "RX-24",
-        "ralphx/ticket/jira-rx-24",
-    );
-
-    assert_eq!(kind, Some(IdeationAnalysisBaseRefKind::LocalBranch));
-    assert_eq!(base_ref.as_deref(), Some("ralphx/ticket/jira-rx-24"));
-    assert_eq!(
-        display_name.as_deref(),
-        Some("Ticket RX-24 (ralphx/ticket/jira-rx-24)")
-    );
 }
 
 // ── agent_mode_requires_workspace / agent_mode_should_create_workspace ────────
@@ -406,19 +395,38 @@ fn requires_workspace_is_true_for_non_chat_modes() {
     use AgentConversationWorkspaceMode::*;
     assert!(agent_mode_requires_workspace(Edit));
     assert!(agent_mode_requires_workspace(Plan));
+    assert!(agent_mode_requires_workspace(Tasks));
+    assert!(agent_mode_requires_workspace(Autopilot));
     assert!(agent_mode_requires_workspace(Ideation));
     assert!(agent_mode_requires_workspace(ReviewPr));
     assert!(!agent_mode_requires_workspace(Chat));
+    assert!(!agent_mode_requires_workspace(Automation));
+    assert!(!agent_mode_requires_workspace(PersonaBuilder));
 }
 
 #[test]
 fn should_create_workspace_covers_chat_with_source_pr() {
     use AgentConversationWorkspaceMode::*;
     // Non-chat modes always create a workspace regardless of PR.
-    assert!(agent_mode_should_create_workspace(Edit, None));
+    assert!(agent_mode_should_create_workspace(Edit, None, false));
 
     // Chat without a source PR does not create a workspace.
-    assert!(!agent_mode_should_create_workspace(Chat, None));
+    assert!(!agent_mode_should_create_workspace(Chat, None, false));
+    assert!(!agent_mode_should_create_workspace(Automation, None, false));
+    assert!(!agent_mode_should_create_workspace(
+        PersonaBuilder,
+        None,
+        false
+    ));
+
+    // Chat with a selected plan reference needs workspace-linked plan context.
+    assert!(agent_mode_should_create_workspace(Chat, None, true));
+    assert!(!agent_mode_should_create_workspace(Automation, None, true));
+    assert!(!agent_mode_should_create_workspace(
+        PersonaBuilder,
+        None,
+        true
+    ));
 
     // Chat WITH a source PR does create a workspace.
     let source = AgentWorkspaceSourcePullRequest {
@@ -429,7 +437,215 @@ fn should_create_workspace_covers_chat_with_source_pr() {
         base_ref_name: None,
         head_ref_oid: None,
     };
-    assert!(agent_mode_should_create_workspace(Chat, Some(&source)));
+    assert!(agent_mode_should_create_workspace(
+        Chat,
+        Some(&source),
+        false
+    ));
+    assert!(!agent_mode_should_create_workspace(
+        Automation,
+        Some(&source),
+        false
+    ));
+    assert!(!agent_mode_should_create_workspace(
+        PersonaBuilder,
+        Some(&source),
+        false
+    ));
+}
+
+fn review_pr_workspace() -> AgentConversationWorkspace {
+    AgentConversationWorkspace::new(
+        ChatConversationId::from_string("review-pr-monitor-workspace"),
+        ProjectId::from_string("review-pr-monitor-project".to_string()),
+        AgentConversationWorkspaceMode::ReviewPr,
+        IdeationAnalysisBaseRefKind::LocalBranch,
+        "feature/review-pr".to_string(),
+        Some("PR #42: Review me".to_string()),
+        Some("base-sha".to_string()),
+        "ralphx/review-pr".to_string(),
+        "/tmp/ralphx-review-pr".to_string(),
+    )
+}
+
+#[test]
+fn review_pr_monitor_for_workspace_arms_source_pr_head() {
+    let mut workspace = review_pr_workspace();
+    workspace.source_pull_request = Some(AgentWorkspaceSourcePullRequest {
+        number: 42,
+        url: Some("https://github.com/owner/repo/pull/42".to_string()),
+        title: Some("Review me".to_string()),
+        head_ref_name: "feature/review-pr".to_string(),
+        base_ref_name: Some("main".to_string()),
+        head_ref_oid: Some("head-sha-42".to_string()),
+    });
+
+    let monitor = review_pr_monitor_for_workspace(&workspace)
+        .expect("source PR monitor should build")
+        .expect("Review PR workspace should create monitor");
+
+    assert_eq!(monitor.conversation_id, workspace.conversation_id);
+    assert_eq!(monitor.project_id, workspace.project_id);
+    assert_eq!(monitor.pr_number, 42);
+    assert_eq!(monitor.last_seen_head_sha.as_deref(), Some("head-sha-42"));
+    assert!(monitor.monitor_enabled);
+    assert_eq!(
+        monitor.status,
+        AgentWorkspacePrReviewMonitorStatus::Watching
+    );
+}
+
+#[test]
+fn review_pr_monitor_for_workspace_falls_back_to_publication_pr() {
+    let mut workspace = review_pr_workspace();
+    workspace.publication_pr_number = Some(43);
+
+    let monitor = review_pr_monitor_for_workspace(&workspace)
+        .expect("publication PR monitor should build")
+        .expect("Review PR workspace should create monitor");
+
+    assert_eq!(monitor.pr_number, 43);
+    assert!(monitor.last_seen_head_sha.is_none());
+    assert!(monitor.monitor_enabled);
+}
+
+#[test]
+fn review_pr_monitor_for_workspace_rejects_unlinked_review_pr() {
+    let workspace = review_pr_workspace();
+
+    let error = review_pr_monitor_for_workspace(&workspace)
+        .expect_err("Review PR workspace without PR metadata is invalid");
+
+    assert!(error.contains("requires a linked pull request"));
+}
+
+#[test]
+fn review_pr_monitor_for_workspace_ignores_other_modes() {
+    let mut workspace = review_pr_workspace();
+    workspace.mode = AgentConversationWorkspaceMode::Edit;
+    workspace.source_pull_request = Some(AgentWorkspaceSourcePullRequest {
+        number: 42,
+        url: None,
+        title: None,
+        head_ref_name: "feature/review-pr".to_string(),
+        base_ref_name: None,
+        head_ref_oid: Some("head-sha-42".to_string()),
+    });
+
+    assert!(review_pr_monitor_for_workspace(&workspace)
+        .expect("non-Review PR workspace is supported")
+        .is_none());
+}
+
+#[tokio::test]
+async fn ensure_review_pr_monitor_for_workspace_creates_missing_monitor() {
+    let state = AppState::new_test();
+    let mut workspace = review_pr_workspace();
+    workspace.source_pull_request = Some(AgentWorkspaceSourcePullRequest {
+        number: 42,
+        url: Some("https://github.com/owner/repo/pull/42".to_string()),
+        title: Some("Review me".to_string()),
+        head_ref_name: "feature/review-pr".to_string(),
+        base_ref_name: Some("main".to_string()),
+        head_ref_oid: Some("head-sha-42".to_string()),
+    });
+
+    ensure_review_pr_monitor_for_workspace(
+        state.agent_conversation_workspace_repo.as_ref(),
+        Some(&workspace),
+    )
+    .await
+    .expect("missing Review PR monitor should be created");
+
+    let monitor = state
+        .agent_conversation_workspace_repo
+        .get_pr_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("monitor should exist");
+    assert_eq!(monitor.pr_number, 42);
+    assert_eq!(monitor.last_seen_head_sha.as_deref(), Some("head-sha-42"));
+    assert!(monitor.monitor_enabled);
+    assert_eq!(
+        monitor.status,
+        AgentWorkspacePrReviewMonitorStatus::Watching
+    );
+}
+
+#[tokio::test]
+async fn ensure_review_pr_monitor_for_workspace_preserves_existing_monitor() {
+    let state = AppState::new_test();
+    let mut workspace = review_pr_workspace();
+    workspace.source_pull_request = Some(AgentWorkspaceSourcePullRequest {
+        number: 42,
+        url: Some("https://github.com/owner/repo/pull/42".to_string()),
+        title: Some("Review me".to_string()),
+        head_ref_name: "feature/review-pr".to_string(),
+        base_ref_name: Some("main".to_string()),
+        head_ref_oid: Some("new-head".to_string()),
+    });
+    let mut existing_monitor = AgentWorkspacePrReviewMonitor::new(
+        workspace.conversation_id.clone(),
+        workspace.project_id.clone(),
+        42,
+        Some("existing-head".to_string()),
+    );
+    existing_monitor.monitor_enabled = false;
+    existing_monitor.status = AgentWorkspacePrReviewMonitorStatus::Paused;
+    state
+        .agent_conversation_workspace_repo
+        .upsert_pr_review_monitor(existing_monitor)
+        .await
+        .expect("existing monitor should persist");
+
+    ensure_review_pr_monitor_for_workspace(
+        state.agent_conversation_workspace_repo.as_ref(),
+        Some(&workspace),
+    )
+    .await
+    .expect("existing monitor should be preserved");
+
+    let monitor = state
+        .agent_conversation_workspace_repo
+        .get_pr_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("monitor should remain");
+    assert_eq!(monitor.last_seen_head_sha.as_deref(), Some("existing-head"));
+    assert!(!monitor.monitor_enabled);
+    assert_eq!(monitor.status, AgentWorkspacePrReviewMonitorStatus::Paused);
+}
+
+#[tokio::test]
+async fn ensure_review_pr_monitor_for_workspace_ignores_missing_or_non_review_pr_workspace() {
+    let state = AppState::new_test();
+    let mut workspace = review_pr_workspace();
+    workspace.mode = AgentConversationWorkspaceMode::Edit;
+    workspace.source_pull_request = Some(AgentWorkspaceSourcePullRequest {
+        number: 42,
+        url: None,
+        title: None,
+        head_ref_name: "feature/review-pr".to_string(),
+        base_ref_name: None,
+        head_ref_oid: Some("head-sha-42".to_string()),
+    });
+
+    ensure_review_pr_monitor_for_workspace(state.agent_conversation_workspace_repo.as_ref(), None)
+        .await
+        .expect("missing workspace should be a no-op");
+    ensure_review_pr_monitor_for_workspace(
+        state.agent_conversation_workspace_repo.as_ref(),
+        Some(&workspace),
+    )
+    .await
+    .expect("non-Review PR workspace should be a no-op");
+
+    assert!(state
+        .agent_conversation_workspace_repo
+        .get_pr_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .is_none());
 }
 
 // ── linked branch availability / PR hydration ────────────────────────────────
@@ -515,6 +731,192 @@ async fn linked_branch_availability_detects_conflicts_and_exempts_current_conver
     assert!(conflict.contains("feature/branch"), "got: {conflict}");
 }
 
+#[test]
+fn linked_setup_failure_marker_is_stable_and_idempotent() {
+    let marked = linked_setup_failure_error(
+        "Selected branch 'feature/demo' is already checked out; choose isolated branch mode",
+    );
+    assert!(marked.contains(LINKED_SETUP_FAILURE_MARKER));
+    assert!(marked.contains("feature/demo"), "got: {marked}");
+    assert_eq!(linked_setup_failure_error(&marked), marked);
+    assert_eq!(
+        linked_setup_failure_error("   "),
+        LINKED_SETUP_FAILURE_MARKER
+    );
+}
+
+#[tokio::test]
+async fn archive_empty_seeded_draft_after_setup_failure_hides_safe_project_draft() {
+    let state = AppState::new_test();
+    let project = Project::new("Demo".to_string(), "/tmp/demo".to_string());
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::Edit));
+    let conversation = state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("seed draft conversation");
+
+    let archived = archive_empty_seeded_draft_after_setup_failure(&state, &conversation)
+        .await
+        .expect("cleanup succeeds");
+
+    assert!(archived);
+    let active = state
+        .chat_conversation_repo
+        .get_by_context(ChatContextType::Project, project.id.as_str())
+        .await
+        .expect("load active project conversations");
+    assert!(
+        active.is_empty(),
+        "archived draft should be hidden from active lists"
+    );
+    let stored = state
+        .chat_conversation_repo
+        .get_by_id(&conversation.id)
+        .await
+        .expect("load archived draft")
+        .expect("draft is archived, not hard-deleted");
+    assert!(stored.archived_at.is_some());
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation.id)
+        .await
+        .expect("load workspace");
+    assert!(workspace.is_none());
+}
+
+#[tokio::test]
+async fn archive_supplied_seeded_draft_after_setup_failure_fails_closed_on_lookup_error() {
+    let state = AppState::new_test();
+    let error = archive_seeded_draft_lookup_after_setup_failure(
+        &state,
+        "project-1",
+        Err("lookup exploded".to_string()),
+    )
+    .await
+    .expect_err("lookup errors must not collapse into no draft");
+
+    assert!(
+        error.contains("lookup exploded"),
+        "error should preserve lookup failure evidence: {error}"
+    );
+}
+
+#[tokio::test]
+async fn archive_supplied_seeded_draft_after_setup_failure_archives_safe_project_draft() {
+    let state = AppState::new_test();
+    let project = Project::new("Demo".to_string(), "/tmp/demo".to_string());
+    let conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project.id.clone()))
+        .await
+        .expect("seed supplied draft conversation");
+
+    let archived = archive_supplied_seeded_draft_after_setup_failure(
+        &state,
+        project.id.as_str(),
+        &conversation.id,
+    )
+    .await
+    .expect("supplied draft cleanup succeeds");
+
+    assert!(archived);
+    let stored = state
+        .chat_conversation_repo
+        .get_by_id(&conversation.id)
+        .await
+        .expect("load supplied draft")
+        .expect("draft is archived, not hard-deleted");
+    assert!(stored.archived_at.is_some());
+}
+
+#[tokio::test]
+async fn archive_seeded_draft_lookup_after_setup_failure_ignores_missing_or_wrong_context() {
+    let state = AppState::new_test();
+    let project = Project::new("Demo".to_string(), "/tmp/demo".to_string());
+
+    let missing =
+        archive_seeded_draft_lookup_after_setup_failure(&state, project.id.as_str(), Ok(None))
+            .await
+            .expect("missing supplied draft is a no-op");
+    assert!(!missing);
+
+    let other_project = Project::new("Other".to_string(), "/tmp/other".to_string());
+    let wrong_project = ChatConversation::new_project(other_project.id);
+    let wrong_project = archive_seeded_draft_lookup_after_setup_failure(
+        &state,
+        project.id.as_str(),
+        Ok(Some(wrong_project)),
+    )
+    .await
+    .expect("wrong project draft is ignored");
+    assert!(!wrong_project);
+
+    let mut wrong_context = ChatConversation::new_project(project.id.clone());
+    wrong_context.context_type = ChatContextType::Ideation;
+    wrong_context.context_id = "ideation-session-1".to_string();
+    let wrong_context = archive_seeded_draft_lookup_after_setup_failure(
+        &state,
+        project.id.as_str(),
+        Ok(Some(wrong_context)),
+    )
+    .await
+    .expect("non-project draft is ignored");
+    assert!(!wrong_context);
+}
+
+#[tokio::test]
+async fn archive_empty_seeded_draft_after_setup_failure_preserves_started_or_workspace_rows() {
+    let state = AppState::new_test();
+    let project = Project::new("Demo".to_string(), "/tmp/demo".to_string());
+
+    let mut started = ChatConversation::new_project(project.id.clone());
+    started.message_count = 1;
+    let started = state
+        .chat_conversation_repo
+        .create(started)
+        .await
+        .expect("seed started conversation");
+    let archived_started = archive_empty_seeded_draft_after_setup_failure(&state, &started)
+        .await
+        .expect("started cleanup guard succeeds");
+    assert!(!archived_started);
+    let stored_started = state
+        .chat_conversation_repo
+        .get_by_id(&started.id)
+        .await
+        .expect("load started conversation")
+        .expect("started conversation remains");
+    assert!(stored_started.archived_at.is_none());
+
+    let workspace_conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project.id.clone()))
+        .await
+        .expect("seed workspace conversation");
+    let mut workspace = workspace_for_mode(&project, AgentConversationWorkspaceMode::Edit);
+    workspace.conversation_id = workspace_conversation.id.clone();
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("seed workspace");
+
+    let archived_workspace =
+        archive_empty_seeded_draft_after_setup_failure(&state, &workspace_conversation)
+            .await
+            .expect("workspace cleanup guard succeeds");
+    assert!(!archived_workspace);
+    let stored_workspace = state
+        .chat_conversation_repo
+        .get_by_id(&workspace_conversation.id)
+        .await
+        .expect("load workspace conversation")
+        .expect("workspace conversation remains");
+    assert!(stored_workspace.archived_at.is_none());
+}
+
 fn pr_search_result(
     number: i64,
     head_ref_name: &str,
@@ -529,6 +931,8 @@ fn pr_search_result(
         head_ref_oid: Some(format!("sha-{number}")),
         base_ref_name: base_ref_name.to_string(),
         is_draft: false,
+        state: Some("OPEN".to_string()),
+        merged_at: None,
         updated_at: None,
         author_login: Some("dev".to_string()),
         assignee_logins: Vec::new(),
@@ -579,6 +983,62 @@ async fn linked_branch_pr_hydration_uses_matching_same_repo_pull_request() {
         state.last_search_pull_requests_args,
         Some((Some("feature/shared".to_string()), 20))
     );
+}
+
+#[tokio::test]
+async fn linked_branch_pr_hydration_ignores_closed_unmerged_match() {
+    let github = Arc::new(MockGithubService::new());
+    github.will_return_pull_request_search(vec![PrSearchResult {
+        state: Some("CLOSED".to_string()),
+        ..pr_search_result(7, "feature/shared", "main", false)
+    }]);
+
+    let mut state = AppState::new_test();
+    state.github_service = Some(github);
+    let project = Project::new("Demo".to_string(), "/tmp/demo".to_string());
+
+    let hydrated = hydrate_linked_branch_source_pull_request(
+        &state,
+        &project,
+        Some(AgentConversationWorkspaceBranchMode::Linked),
+        Some("feature/shared"),
+        None,
+    )
+    .await
+    .expect("PR hydration should not fail");
+
+    assert!(hydrated.is_none());
+}
+
+#[tokio::test]
+async fn linked_branch_pr_hydration_prefers_open_match_over_merged_match() {
+    let github = Arc::new(MockGithubService::new());
+    github.will_return_pull_request_search(vec![
+        PrSearchResult {
+            state: Some("MERGED".to_string()),
+            merged_at: Some("2026-08-01T10:00:00Z".to_string()),
+            ..pr_search_result(7, "feature/shared", "main", false)
+        },
+        pr_search_result(8, "feature/shared", "release", false),
+    ]);
+
+    let mut state = AppState::new_test();
+    state.github_service = Some(github);
+    let project = Project::new("Demo".to_string(), "/tmp/demo".to_string());
+
+    let hydrated = hydrate_linked_branch_source_pull_request(
+        &state,
+        &project,
+        Some(AgentConversationWorkspaceBranchMode::Linked),
+        Some("feature/shared"),
+        None,
+    )
+    .await
+    .expect("PR hydration should not fail")
+    .expect("open match should be hydrated");
+
+    assert_eq!(hydrated.number, 8);
+    assert_eq!(hydrated.base_ref_name.as_deref(), Some("release"));
 }
 
 // ── normalized_effort_for_supported ──────────────────────────────────────────
@@ -743,11 +1203,46 @@ fn emit_progress_does_not_panic_on_mock_app_handle() {
     // construction and emit path without asserting delivery.
     emit_start_agent_conversation_progress(
         &app,
+        "project",
         "project-1",
         &conversation_id,
         "stage-1",
         "Preparing workspace",
     );
+}
+
+#[test]
+fn emit_post_creation_progress_self_keys_standalone_context_id() {
+    use std::sync::Mutex;
+    use tauri::Listener;
+
+    let app = crate::testing::create_mock_app_handle();
+    let conversation_id = ChatConversationId::new();
+    let captured = Arc::new(Mutex::new(None));
+    let captured_clone = Arc::clone(&captured);
+    app.listen("agent:startup_progress", move |event| {
+        let payload: serde_json::Value =
+            serde_json::from_str(event.payload()).expect("startup progress payload JSON");
+        *captured_clone.lock().expect("capture lock") = Some(payload);
+    });
+
+    emit_start_agent_conversation_progress(
+        &app,
+        "standalone",
+        "standalone",
+        &conversation_id,
+        "persist_conversation",
+        "Starting agent",
+    );
+
+    let payload = captured
+        .lock()
+        .expect("capture lock")
+        .clone()
+        .expect("startup progress event");
+    assert_eq!(payload["context_type"], "standalone");
+    assert_eq!(payload["context_id"], conversation_id.as_str());
+    assert_eq!(payload["conversation_id"], conversation_id.as_str());
 }
 
 // ── ensure_plan_workspace_planning_session_link (early returns) ───────────────
@@ -794,10 +1289,14 @@ async fn ensure_plan_link_is_noop_when_already_linked_to_planning_session() {
         .await
         .expect("seed project");
 
+    let mut workspace = workspace_for_mode(&project, AgentConversationWorkspaceMode::Plan);
+
     // Seed a Planning-flow ideation session and link the workspace to it.
     let session = IdeationSession::builder()
         .project_id(project.id.clone())
         .session_flow(IdeationSessionFlow::Planning)
+        .source_context_type("agent_conversation")
+        .source_context_id(workspace.conversation_id.as_str())
         .build();
     let session = state
         .ideation_session_repo
@@ -805,7 +1304,6 @@ async fn ensure_plan_link_is_noop_when_already_linked_to_planning_session() {
         .await
         .expect("seed ideation session");
 
-    let mut workspace = workspace_for_mode(&project, AgentConversationWorkspaceMode::Plan);
     workspace.linked_ideation_session_id = Some(session.id.clone());
 
     let created = ensure_plan_workspace_planning_session_link(&state, &project, &mut workspace)

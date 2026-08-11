@@ -24,6 +24,7 @@ import type {
   ConversationMessagesPageResponse,
 } from "@/api/chat";
 import { chatApi } from "@/api/chat";
+import { agentWorkspaceKeys } from "@/components/agents/agentWorkspaceQueries";
 
 // ============================================================================
 // Mock EventBus
@@ -126,6 +127,7 @@ function makeConversation(overrides: Partial<ChatConversation> = {}): ChatConver
     claudeSessionId: null,
     providerSessionId: null,
     providerHarness: null,
+    coordinationMode: "solo",
     title: "Execution",
     messageCount: 0,
     lastMessageAt: null,
@@ -163,6 +165,7 @@ describe("useAgentEvents", () => {
     useChatStore.setState({
       activeConversationIds: {},
       activeAgentRunIds: {},
+      activeAgentRunHarnesses: {},
       queuedMessages: {},
       agentStatus: {},
       isSending: {},
@@ -188,12 +191,14 @@ describe("useAgentEvents", () => {
           context_type: "task",
           context_id: "task-123",
           conversation_id: "conv-1",
+          provider_harness: "claude",
         });
       });
 
       const state = useChatStore.getState();
       expect(state.agentStatus["task:task-123"]).toBe("generating");
       expect(state.activeAgentRunIds["task:task-123"]).toBe("run-1");
+      expect(state.activeAgentRunHarnesses["task:task-123"]).toBe("claude");
     });
 
     it("sets running state for task_execution context", () => {
@@ -389,6 +394,40 @@ describe("useAgentEvents", () => {
       expect(conversationQuery?.conversation.providerHarness).toBe("codex");
       expect(conversationQuery?.conversation.providerSessionId).toBe("thread-9");
       expect(conversationQuery?.conversation.claudeSessionId).toBeNull();
+    });
+  });
+
+  describe("agent:message_queued", () => {
+    it("marks backend queue events as backend-confirmed", () => {
+      const wrapper = createWrapper();
+      renderHook(() => useAgentEvents("conv-1"), { wrapper });
+
+      useChatStore.getState().queueMessage(
+        "task:task-123",
+        "Continue after this turn",
+        "queued-backend-1",
+      );
+      expect(
+        useChatStore.getState().queuedMessages["task:task-123"]?.[0]?.source,
+      ).toBe("optimistic");
+
+      act(() => {
+        emitEvent("agent:message_queued", {
+          message_id: "queued-backend-1",
+          content: "Continue after this turn",
+          context_type: "task",
+          context_id: "task-123",
+          conversation_id: "conv-1",
+          created_at: "2026-07-31T10:00:00Z",
+        });
+      });
+
+      expect(
+        useChatStore.getState().queuedMessages["task:task-123"]?.[0],
+      ).toMatchObject({
+        id: "queued-backend-1",
+        source: "backend",
+      });
     });
   });
 
@@ -751,6 +790,7 @@ describe("useAgentEvents", () => {
         useChatStore.setState({
           activeConversationIds: { "project:conv-1": "conv-1" },
           activeAgentRunIds: { "project:conv-1": "run-new" },
+          activeAgentRunHarnesses: { "project:conv-1": "codex" },
           agentStatus: { "project:conv-1": "generating" },
         });
       });
@@ -769,6 +809,36 @@ describe("useAgentEvents", () => {
       const state = useChatStore.getState();
       expect(state.agentStatus["project:conv-1"]).toBe("generating");
       expect(state.activeAgentRunIds["project:conv-1"]).toBe("run-new");
+      expect(state.activeAgentRunHarnesses["project:conv-1"]).toBe("codex");
+    });
+
+    it("ignores a completion without an id while a newer run pair is active", () => {
+      const wrapper = createWrapper();
+
+      act(() => {
+        useChatStore.setState({
+          activeConversationIds: { "project:conv-1": "conv-1" },
+          activeAgentRunIds: { "project:conv-1": "run-new" },
+          activeAgentRunHarnesses: { "project:conv-1": "codex" },
+          agentStatus: { "project:conv-1": "generating" },
+        });
+      });
+
+      renderHook(() => useAgentEvents("conv-1"), { wrapper });
+
+      act(() => {
+        emitEvent("agent:run_completed", {
+          context_type: "project",
+          context_id: "project-1",
+          conversation_id: "conv-1",
+          status: "completed",
+        });
+      });
+
+      const state = useChatStore.getState();
+      expect(state.agentStatus["project:conv-1"]).toBe("generating");
+      expect(state.activeAgentRunIds["project:conv-1"]).toBe("run-new");
+      expect(state.activeAgentRunHarnesses["project:conv-1"]).toBe("codex");
     });
 
     it("ignores stale completion from a previous active conversation", () => {
@@ -943,6 +1013,7 @@ describe("useAgentEvents", () => {
 
       act(() => {
         emitEvent("agent:run_completed", {
+          run_id: "run-1",
           context_type: "task_execution",
           context_id: "task-123",
           conversation_id: "conv-1",
@@ -1167,6 +1238,7 @@ describe("useAgentEvents", () => {
 
       act(() => {
         emitEvent("agent:error", {
+          agent_run_id: "run-1",
           context_type: "task_execution",
           context_id: "task-123",
           conversation_id: "conv-1",
@@ -1239,6 +1311,42 @@ describe("useAgentEvents", () => {
 
       expect(useChatStore.getState().agentStatus["merge:task-123"]).toBeUndefined();
     });
+
+    // Backend suppresses run_completed for a run persisted as Failed (zero-output or
+    // assistant-persist failure on an otherwise successful stream) and emits
+    // agent:error instead. That substitute event must still terminate the UI state.
+    it.each([
+      ["task_execution", "task_execution:task-123"],
+      ["review", "review:task-123"],
+    ])(
+      "clears generating for %s when the run failed without a stream error",
+      (contextType, storeKey) => {
+        const wrapper = createWrapper();
+
+        act(() => {
+          useChatStore.setState({
+            activeConversationIds: { [storeKey]: "conv-1" },
+            activeAgentRunIds: { [storeKey]: "run-1" },
+            agentStatus: { [storeKey]: "generating" },
+          });
+        });
+
+        renderHook(() => useAgentEvents("conv-1"), { wrapper });
+
+        act(() => {
+          emitEvent("agent:error", {
+            agent_run_id: "run-1",
+            context_type: contextType,
+            context_id: "task-123",
+            conversation_id: "conv-1",
+            error: "Agent completed with no output",
+            stderr: "Agent completed with no output",
+          });
+        });
+
+        expect(useChatStore.getState().agentStatus[storeKey]).toBeUndefined();
+      }
+    );
   });
 
   describe("agent:turn_completed", () => {
@@ -1424,25 +1532,6 @@ describe("useAgentEvents", () => {
       });
     });
 
-    it("skips event and does not invalidate queries when teammate_name is set", () => {
-      const { queryClient, wrapper } = createWrapperWithClient();
-      const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
-
-      renderHook(() => useAgentEvents("conv-1"), { wrapper });
-
-      act(() => {
-        emitEvent("agent:turn_completed", {
-          context_type: "task_execution",
-          context_id: "task-123",
-          conversation_id: "conv-1",
-          status: "turn_complete",
-          teammate_name: "researcher",
-        });
-      });
-
-      // No queries invalidated — teammate event was skipped
-      expect(invalidateSpy).not.toHaveBeenCalled();
-    });
 
     it("merges Claude provider metadata into cached conversation state", () => {
       const { queryClient, wrapper } = createWrapperWithClient();
@@ -1524,6 +1613,7 @@ describe("useAgentEvents", () => {
 
       act(() => {
         emitEvent("agent:run_completed", {
+          run_id: "run-1",
           context_type: "task_execution",
           context_id: "task-123",
           conversation_id: "conv-1",
@@ -1602,6 +1692,9 @@ describe("useAgentEvents", () => {
       expect(
         useChatStore.getState().activeAgentRunIds["task_execution:task-123"]
       ).toBeUndefined();
+      expect(
+        useChatStore.getState().activeAgentRunHarnesses["task_execution:task-123"]
+      ).toBeUndefined();
     });
 
     it("rapid burst: turn_completed ×3 keeps agent alive throughout", () => {
@@ -1673,6 +1766,7 @@ describe("useAgentEvents", () => {
 
       act(() => {
         emitEvent("agent:error", {
+          agent_run_id: "run-1",
           context_type: "task_execution",
           context_id: "task-123",
           conversation_id: "conv-1",
@@ -2414,7 +2508,8 @@ describe("useAgentEvents", () => {
 
   describe("agent:task_started / agent:task_completed", () => {
     it("agent:task_started resets lastAgentEventTimestamp for matching context", () => {
-      const wrapper = createWrapper();
+      const { queryClient, wrapper } = createWrapperWithClient();
+      const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
       renderHook(() => useAgentEvents(null), { wrapper });
 
       act(() => {
@@ -2435,10 +2530,14 @@ describe("useAgentEvents", () => {
       // Timestamp should be updated to a recent value (> 100)
       const ts = useChatStore.getState().lastAgentEventTimestamp["session:task-ctx"] ?? 0;
       expect(ts).toBeGreaterThan(100);
+      expect(invalidateSpy).toHaveBeenCalledWith({
+        queryKey: agentWorkspaceKeys.agentTasks("conv-x"),
+      });
     });
 
     it("agent:task_completed resets lastAgentEventTimestamp for matching context", () => {
-      const wrapper = createWrapper();
+      const { queryClient, wrapper } = createWrapperWithClient();
+      const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
       renderHook(() => useAgentEvents(null), { wrapper });
 
       act(() => {
@@ -2458,6 +2557,9 @@ describe("useAgentEvents", () => {
 
       const ts = useChatStore.getState().lastAgentEventTimestamp["session:task-done"] ?? 0;
       expect(ts).toBeGreaterThan(100);
+      expect(invalidateSpy).toHaveBeenCalledWith({
+        queryKey: agentWorkspaceKeys.agentTasks("conv-x"),
+      });
     });
   });
 });

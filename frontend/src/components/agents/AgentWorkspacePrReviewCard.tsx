@@ -14,7 +14,6 @@ import { toast } from "sonner";
 
 import type {
   AgentWorkspacePrReviewAction,
-  AgentWorkspacePrReviewActionKind,
   AgentWorkspacePrReviewContext,
   AgentWorkspacePrReviewMonitorStatus,
 } from "@/api/chat";
@@ -25,6 +24,12 @@ import {
   agentWorkspaceKeys,
   invalidateWorkspaceQueries,
 } from "./agentWorkspaceQueries";
+import {
+  getAgentWorkspacePrReviewPresentation,
+  lastResolvedPrReviewAction,
+  prReviewActionCopy,
+  prReviewStatusLabel,
+} from "./agentWorkspacePrReviewPresentation";
 
 interface AgentWorkspacePrReviewCardProps {
   conversationId: string;
@@ -41,61 +46,9 @@ const MONITOR_STATUS_LABELS: Record<AgentWorkspacePrReviewMonitorStatus, string>
   watching: "Monitoring",
   submitting: "Submitting",
   blocked: "Blocked",
+  paused: "Re-review paused",
   terminal: "Complete",
 };
-
-function shortSha(value: string | null | undefined): string {
-  return value ? value.slice(0, 8) : "unknown";
-}
-
-function actionCopy(actionKind: AgentWorkspacePrReviewActionKind): {
-  title: string;
-  primaryLabel: string;
-  submittedToast: string;
-  icon: typeof MessageSquare;
-} {
-  switch (actionKind) {
-    case "approve":
-      return {
-        title: "Approve PR proposed",
-        primaryLabel: "Approve PR",
-        submittedToast: "PR approved",
-        icon: ShieldCheck,
-      };
-    case "comment":
-      return {
-        title: "Review comment proposed",
-        primaryLabel: "Submit Comment",
-        submittedToast: "Review comment submitted",
-        icon: MessageSquare,
-      };
-    case "request_changes":
-    default:
-      return {
-        title: "Request changes proposed",
-        primaryLabel: "Request Changes",
-        submittedToast: "Changes requested",
-        icon: XCircle,
-      };
-  }
-}
-
-function statusLabel(status: string): string {
-  return status
-    .split("_")
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
-}
-
-function lastResolvedAction(
-  actions: AgentWorkspacePrReviewAction[],
-): AgentWorkspacePrReviewAction | null {
-  return (
-    actions.find((action) =>
-      ["submitted", "skipped", "failed"].includes(action.status),
-    ) ?? null
-  );
-}
 
 export function AgentWorkspacePrReviewCard({
   conversationId,
@@ -105,17 +58,10 @@ export function AgentWorkspacePrReviewCard({
   error,
 }: AgentWorkspacePrReviewCardProps) {
   const queryClient = useQueryClient();
-  const pendingAction =
-    context?.pendingAction?.status === "pending" ? context.pendingAction : null;
   const resolvedAction = useMemo(
-    () => lastResolvedAction(context?.recentActions ?? []),
+    () => lastResolvedPrReviewAction(context?.recentActions ?? []),
     [context?.recentActions],
   );
-  const monitorStatus = context?.monitor?.status ?? null;
-  const monitorLabel = monitorStatus
-    ? MONITOR_STATUS_LABELS[monitorStatus] ?? statusLabel(monitorStatus)
-    : "Not started";
-
   const submitMutation = useMutation({
     mutationFn: (action: AgentWorkspacePrReviewAction) =>
       chatApi.submitAgentWorkspacePrReviewAction(
@@ -132,6 +78,7 @@ export function AgentWorkspacePrReviewCard({
                 ...previous,
                 monitor: result.monitor,
                 pendingAction: null,
+                pendingActionHeadStatus: null,
                 recentActions: [
                   result.action,
                   ...previous.recentActions.filter(
@@ -141,7 +88,9 @@ export function AgentWorkspacePrReviewCard({
               }
             : previous,
       );
-      toast.success(actionCopy(result.action.proposedAction).submittedToast);
+      toast.success(
+        prReviewActionCopy(result.action.proposedAction).submittedToast,
+      );
       void invalidateWorkspaceQueries(queryClient, conversationId);
     },
     onError: (err) => {
@@ -170,6 +119,7 @@ export function AgentWorkspacePrReviewCard({
                 ...previous,
                 monitor: result.monitor,
                 pendingAction: null,
+                pendingActionHeadStatus: null,
                 recentActions: [
                   result.action,
                   ...previous.recentActions.filter(
@@ -231,20 +181,26 @@ export function AgentWorkspacePrReviewCard({
     return null;
   }
 
-  const copy = pendingAction ? actionCopy(pendingAction.proposedAction) : null;
-  const ActionIcon = copy?.icon ?? GitPullRequestArrow;
+  const presentation = getAgentWorkspacePrReviewPresentation(context);
+  const pendingAction = presentation.pendingAction;
+  const monitorStatus = presentation.isTerminal
+    ? "terminal"
+    : context.monitor?.status ?? null;
+  const monitorLabel = monitorStatus
+    ? MONITOR_STATUS_LABELS[monitorStatus] ?? prReviewStatusLabel(monitorStatus)
+    : "Not started";
+  const copy = pendingAction
+    ? prReviewActionCopy(pendingAction.proposedAction)
+    : null;
+  const ActionIcon = pendingAction
+    ? pendingAction.proposedAction === "approve"
+      ? ShieldCheck
+      : pendingAction.proposedAction === "comment"
+        ? MessageSquare
+        : XCircle
+    : GitPullRequestArrow;
   const isMutating = submitMutation.isPending || skipMutation.isPending;
-  const headSha = pendingAction?.headSha ?? context.currentHeadSha;
-  const hasReviewArtifactForPendingAction = Boolean(
-    pendingAction &&
-      context.monitor?.reviewArtifactId &&
-      context.monitor.reviewArtifactHeadSha === pendingAction.headSha,
-  );
-  const isSubmitBlockedByMissingReviewArtifact = Boolean(
-    pendingAction && !hasReviewArtifactForPendingAction,
-  );
   const submitFailureMessage = pendingAction ? context.monitor?.lastError : null;
-
   return (
     <section
       className="mx-2 mb-3 overflow-hidden rounded-md border text-[0.8125rem]"
@@ -283,7 +239,7 @@ export function AgentWorkspacePrReviewCard({
             style={{ color: "var(--text-muted)" }}
           >
             <span className="min-w-0 truncate">
-              PR #{context.prNumber} · head {shortSha(headSha)}
+              PR #{context.prNumber} · {presentation.headDetail}
             </span>
             {context.prUrl ? (
               <button
@@ -342,7 +298,7 @@ export function AgentWorkspacePrReviewCard({
                 {pendingAction.reviewBody}
               </pre>
             </details>
-            {isSubmitBlockedByMissingReviewArtifact ? (
+            {presentation.submitBlockedMessage ? (
               <div
                 className="rounded-md border px-2.5 py-2 text-[0.75rem] leading-relaxed"
                 style={{
@@ -351,7 +307,7 @@ export function AgentWorkspacePrReviewCard({
                   color: "var(--text-secondary)",
                 }}
               >
-                Write the Review for this PR head before submitting.
+                {presentation.submitBlockedMessage}
               </div>
             ) : null}
             {submitFailureMessage ? (
@@ -381,14 +337,14 @@ export function AgentWorkspacePrReviewCard({
                 type="button"
                 size="sm"
                 onClick={() => submitMutation.mutate(pendingAction)}
-                disabled={isMutating || isSubmitBlockedByMissingReviewArtifact}
+                disabled={isMutating || !presentation.canSubmit}
               >
                 {submitMutation.isPending ? (
                   <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
                 ) : (
                   <CheckCircle2 className="mr-1.5 h-3.5 w-3.5" />
                 )}
-                {actionCopy(pendingAction.proposedAction).primaryLabel}
+                {copy?.primaryLabel}
               </Button>
             </div>
           </>
@@ -400,15 +356,18 @@ export function AgentWorkspacePrReviewCard({
                 style={{ color: "var(--text-secondary)" }}
               >
                 {resolvedAction
-                  ? `Last action: ${statusLabel(resolvedAction.status)}`
-                  : "Waiting for a reviewer proposal"}
+                  ? `Last action: ${prReviewStatusLabel(resolvedAction.status)}`
+                  : presentation.consistencyMessage ??
+                    "Waiting for a reviewer proposal"}
               </div>
               <div
                 className="truncate text-[0.72rem]"
                 style={{ color: "var(--text-muted)" }}
               >
                 {context.monitor?.lastError ??
-                  (context.monitor?.monitorEnabled
+                  (presentation.isTerminal
+                    ? "The remote pull request is merged or closed. Review history remains available."
+                    : context.monitor?.monitorEnabled
                     ? "New PR commits can be reviewed again by the Review PR agent."
                     : "The Review PR agent will propose an action after it finishes reviewing.")}
               </div>

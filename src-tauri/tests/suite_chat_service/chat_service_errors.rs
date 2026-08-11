@@ -1,7 +1,7 @@
 use ralphx_lib::application::chat_service::{
     classify_agent_error, classify_codex_stream_failure, classify_provider_error,
-    parse_retry_after_from_message, PauseReason, ProviderErrorCategory, ProviderErrorMetadata,
-    StreamError, truncate_error_message,
+    parse_retry_after_from_message, truncate_error_message, PauseReason, ProviderErrorCategory,
+    ProviderErrorMetadata, StreamError,
 };
 use ralphx_lib::domain::entities::{
     ChatContextType, ChatConversationId, ExecutionFailureSource, InternalStatus,
@@ -125,6 +125,9 @@ fn test_stream_error_is_retryable() {
         },
         StreamError::NoOutput {
             context_type: ChatContextType::TaskExecution,
+            exit_code: None,
+            exit_signal: None,
+            stderr: String::new(),
         },
         StreamError::Cancelled {
             turns_finalized: 0,
@@ -174,6 +177,9 @@ fn test_stream_error_requires_session_clear() {
         },
         StreamError::NoOutput {
             context_type: ChatContextType::TaskExecution,
+            exit_code: None,
+            exit_signal: None,
+            stderr: String::new(),
         },
         StreamError::Cancelled {
             turns_finalized: 0,
@@ -197,7 +203,8 @@ fn test_stream_error_suggested_task_status() {
         StreamError::Cancelled {
             turns_finalized: 0,
             completion_tool_called: false,
-        }.suggested_task_status(),
+        }
+        .suggested_task_status(),
         Some(InternalStatus::Cancelled)
     );
 
@@ -237,6 +244,9 @@ fn test_stream_error_suggested_task_status() {
         },
         StreamError::NoOutput {
             context_type: ChatContextType::TaskExecution,
+            exit_code: None,
+            exit_signal: None,
+            stderr: String::new(),
         },
     ];
 
@@ -421,7 +431,7 @@ fn test_classify_empty_string() {
 }
 
 #[test]
-fn test_codex_local_command_failure_with_rate_limit_text_is_agent_exit() {
+fn test_codex_local_command_failure_with_rate_limit_text_is_local_tool_failure() {
     let runtime_errors = Vec::<String>::new();
     let local_tool_errors = vec![
         "rg: src-tauri/src/domain/entities/agent_run.rs: No such file or directory\n\
@@ -429,34 +439,83 @@ fn test_codex_local_command_failure_with_rate_limit_text_is_agent_exit() {
             .to_string(),
     ];
 
-    let result = classify_codex_stream_failure(&runtime_errors, &local_tool_errors, Some(1))
-        .expect("local command failure should surface as an agent error");
+    let result = classify_codex_stream_failure(&runtime_errors, &local_tool_errors, Some(1), false)
+        .expect("local command failure should surface as a local tool error");
 
     match result {
-        StreamError::AgentExit { exit_code, stderr } => {
-            assert_eq!(exit_code, Some(1));
-            assert!(stderr.contains("No such file or directory"));
-            assert!(stderr.contains("rate_limit"));
+        StreamError::LocalToolFailed { message } => {
+            assert!(message.contains("No such file or directory"));
+            assert!(message.contains("rate_limit"));
         }
-        other => panic!("expected local Codex failure to remain AgentExit, got {other:?}"),
+        other => panic!("expected local Codex failure to become LocalToolFailed, got {other:?}"),
     }
 }
 
 #[test]
-fn test_codex_mcp_tool_failure_with_rate_limit_text_is_agent_exit() {
+fn test_codex_mcp_tool_failure_with_rate_limit_text_is_local_tool_failure() {
     let runtime_errors = Vec::<String>::new();
     let local_tool_errors = vec![
         "delegate_start failed after reading provider_error category rate_limit from local metadata"
             .to_string(),
     ];
 
-    let result = classify_codex_stream_failure(&runtime_errors, &local_tool_errors, Some(1))
-        .expect("local MCP failure should surface as an agent error");
+    let result = classify_codex_stream_failure(&runtime_errors, &local_tool_errors, Some(1), false)
+        .expect("local MCP failure should surface as a local tool error");
 
     assert!(
-        matches!(result, StreamError::AgentExit { .. }),
+        matches!(result, StreamError::LocalToolFailed { .. }),
         "local MCP failures must not become provider backpressure"
     );
+}
+
+#[test]
+fn test_codex_validation_failure_code_is_validation_failed() {
+    let runtime_errors = Vec::<String>::new();
+    let local_tool_errors =
+        vec!["execute_run_task_validation rejected completion: validation_failed".to_string()];
+
+    let result = classify_codex_stream_failure(&runtime_errors, &local_tool_errors, Some(1), false)
+        .expect("validation rejection should classify");
+
+    match result {
+        StreamError::ValidationFailed { message } => {
+            assert!(message.contains("execute_run_task_validation"));
+            assert!(message.contains("validation_failed"));
+        }
+        other => panic!("expected validation failure, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_codex_completed_turn_ignores_prior_validation_diagnostics() {
+    let runtime_errors = Vec::<String>::new();
+    let local_tool_errors =
+        vec!["first validation attempt failed with validation_failed before repair".to_string()];
+
+    let result = classify_codex_stream_failure(&runtime_errors, &local_tool_errors, Some(0), true);
+
+    assert!(
+        result.is_none(),
+        "successful completion must not be reclassified from earlier validation diagnostics"
+    );
+}
+
+#[test]
+fn test_codex_runtime_error_with_local_diagnostics_is_agent_exit() {
+    let runtime_errors = vec!["codex runtime process exited".to_string()];
+    let local_tool_errors = vec!["latest local tool stderr".to_string()];
+
+    let result = classify_codex_stream_failure(&runtime_errors, &local_tool_errors, Some(1), false)
+        .expect("runtime process failure should classify");
+
+    match result {
+        StreamError::AgentExit { exit_code, stderr } => {
+            assert_eq!(exit_code, Some(1));
+            assert!(stderr.contains("codex runtime process exited"));
+            assert!(stderr.contains("latest local tool stderr"));
+        }
+        other => panic!("expected agent exit, got {other:?}"),
+    }
 }
 
 #[test]
@@ -464,7 +523,7 @@ fn test_codex_runtime_rate_limit_error_still_classifies_as_provider_error() {
     let runtime_errors = vec!["Error: rate_limit_exceeded".to_string()];
     let local_tool_errors = Vec::<String>::new();
 
-    let result = classify_codex_stream_failure(&runtime_errors, &local_tool_errors, Some(1))
+    let result = classify_codex_stream_failure(&runtime_errors, &local_tool_errors, Some(1), false)
         .expect("runtime provider failure should classify");
 
     match result {
@@ -908,8 +967,7 @@ fn test_classify_rate_limit_underscore_format() {
 
 #[test]
 fn test_classify_claude_limit_banner_as_rate_limit() {
-    let result =
-        classify_provider_error("You've hit your limit · resets 11pm (Europe/Bucharest)");
+    let result = classify_provider_error("You've hit your limit · resets 11pm (Europe/Bucharest)");
     assert!(result.is_some());
     if let Some(StreamError::ProviderError {
         category,
@@ -921,7 +979,10 @@ fn test_classify_claude_limit_banner_as_rate_limit() {
         let parsed = retry_after
             .as_deref()
             .and_then(|ts| chrono::DateTime::parse_from_rfc3339(ts).ok());
-        assert!(parsed.is_some(), "Claude limit banner should produce retry_after");
+        assert!(
+            parsed.is_some(),
+            "Claude limit banner should produce retry_after"
+        );
     }
 }
 
@@ -941,9 +1002,8 @@ fn test_classify_claude_session_limit_banner_as_rate_limit() {
     // ("You've hit your session limit"), which did not match the fixed
     // "you've hit your limit" prefix. It fell through to AgentExit and the
     // task was hard-failed instead of paused + auto-resumed.
-    let result = classify_provider_error(
-        "You've hit your session limit · resets 1:20pm (Europe/Bucharest)",
-    );
+    let result =
+        classify_provider_error("You've hit your session limit · resets 1:20pm (Europe/Bucharest)");
     assert!(
         result.is_some(),
         "session-limit banner must classify as a provider error, got {result:?}"
@@ -969,12 +1029,11 @@ fn test_classify_claude_session_limit_banner_as_rate_limit() {
 
 #[test]
 fn test_parse_retry_after_from_claude_reset_banner_returns_future_timestamp() {
-    let retry_after = parse_retry_after_from_message(
-        "You've hit your limit · resets 11pm (Europe/Bucharest)",
-    )
-    .expect("Claude reset banner should parse");
-    let parsed = chrono::DateTime::parse_from_rfc3339(&retry_after)
-        .expect("retry_after should be RFC3339");
+    let retry_after =
+        parse_retry_after_from_message("You've hit your limit · resets 11pm (Europe/Bucharest)")
+            .expect("Claude reset banner should parse");
+    let parsed =
+        chrono::DateTime::parse_from_rfc3339(&retry_after).expect("retry_after should be RFC3339");
     let now = chrono::Utc::now();
     assert!(
         parsed.with_timezone(&chrono::Utc) > now,
@@ -1683,7 +1742,10 @@ fn to_execution_failure_source_timeout_maps_to_transient_timeout() {
         context_type: ChatContextType::TaskExecution,
         elapsed_secs: 600,
     };
-    assert_eq!(err.to_execution_failure_source(), ExecutionFailureSource::TransientTimeout);
+    assert_eq!(
+        err.to_execution_failure_source(),
+        ExecutionFailureSource::TransientTimeout
+    );
 }
 
 #[test]
@@ -1694,7 +1756,10 @@ fn to_execution_failure_source_parse_stall_maps_to_parse_stall() {
         lines_seen: 10,
         lines_parsed: 0,
     };
-    assert_eq!(err.to_execution_failure_source(), ExecutionFailureSource::ParseStall);
+    assert_eq!(
+        err.to_execution_failure_source(),
+        ExecutionFailureSource::ParseStall
+    );
 }
 
 #[test]
@@ -1703,7 +1768,37 @@ fn to_execution_failure_source_agent_exit_maps_to_agent_crash() {
         exit_code: Some(1),
         stderr: "SIGKILL".into(),
     };
-    assert_eq!(err.to_execution_failure_source(), ExecutionFailureSource::AgentCrash);
+    assert_eq!(
+        err.to_execution_failure_source(),
+        ExecutionFailureSource::AgentCrash
+    );
+}
+
+#[test]
+fn to_execution_failure_source_local_tool_failed_maps_to_local_tool_failed() {
+    let err = StreamError::LocalToolFailed {
+        message: "local command failed".into(),
+    };
+    assert_eq!(
+        err.to_execution_failure_source(),
+        ExecutionFailureSource::LocalToolFailed
+    );
+    assert_eq!(err.to_string(), "Local tool failed: local command failed");
+}
+
+#[test]
+fn to_execution_failure_source_validation_failed_maps_to_validation_failed() {
+    let err = StreamError::ValidationFailed {
+        message: "validation rejected completion".into(),
+    };
+    assert_eq!(
+        err.to_execution_failure_source(),
+        ExecutionFailureSource::ValidationFailed
+    );
+    assert_eq!(
+        err.to_string(),
+        "Validation failed: validation rejected completion"
+    );
 }
 
 #[test]
@@ -1714,7 +1809,10 @@ fn to_execution_failure_source_provider_error_maps_to_unknown() {
         retry_after: None,
     };
     // Provider errors are handled via Paused state, not execution recovery
-    assert_eq!(err.to_execution_failure_source(), ExecutionFailureSource::Unknown);
+    assert_eq!(
+        err.to_execution_failure_source(),
+        ExecutionFailureSource::Unknown
+    );
 }
 
 #[test]

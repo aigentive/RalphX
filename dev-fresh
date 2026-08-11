@@ -13,6 +13,7 @@ SEEDED_DB_MARKER="$SRC_TAURI_DIR/.ralphx-dev-fresh-db-snapshot"
 DEV_FRESH_DB_BACKUP_DIR="$PROJECT_ROOT/.artifacts/dev-fresh-db-backups"
 SEEDED_DB_CLEANUP_ENABLED=0
 FROM_PROD_DB=0
+PROD_DB_AGENT_CONVERSATION_LIMIT="${RALPHX_DEV_FRESH_PROD_DB_AGENT_CONVERSATION_LIMIT:-200}"
 VITE_PORT=1420
 # Playwright (npm run test:visual) auto-spawns Vite on 5173. Agents commonly
 # run visual tests in worktrees; surfacing leaks there too prevents cross-
@@ -27,7 +28,7 @@ Usage: ./dev-fresh [--from-prod-db]
 
 From repo root:
 1. verifies Tauri JS/Rust packages are on the same major/minor release
-2. repairs missing or invalid frontend/MCP runtime installs with `npm ci` when safe
+2. repairs missing or invalid installs and materializes symlinked MCP dependencies with `npm ci`
 3. when run from a linked git worktree, refreshes src-tauri/ralphx.db from the primary checkout
 4. sanitizes copied runtime process ownership and disables startup recovery for the seeded snapshot
 5. rebuilds MCP runtime TypeScript outputs
@@ -38,15 +39,19 @@ From repo root:
 
 Options:
   --from-prod-db
-      Replace src-tauri/ralphx.db with a sanitized snapshot copied from
-      ~/Library/Application Support/com.ralphx.app/ralphx.db before launch.
+      Replace src-tauri/ralphx.db with a compact sanitized snapshot copied
+      from ~/Library/Application Support/com.ralphx.app/ralphx.db before launch.
+      All non-chat tables are copied intact. Chat tables are reduced to the
+      latest 200 agent chat conversations and associated messages/payloads.
+      Override with:
+        RALPHX_DEV_FRESH_PROD_DB_AGENT_CONVERSATION_LIMIT=500 ./dev-fresh --from-prod-db
       The existing dev DB is backed up under .artifacts/dev-fresh-db-backups/.
 
 Equivalent to:
   verify frontend/package-lock.json vs src-tauri/Cargo.lock Tauri major/minor versions
   cd frontend && npm ci   # only when node_modules is missing or invalid
-  cd plugins/app/ralphx-mcp-server && npm ci   # only when node_modules is missing or invalid
-  cd plugins/app/ralphx-external-mcp && npm ci # only when node_modules is missing or invalid
+  cd plugins/app/ralphx-mcp-server && npm ci   # when node_modules is missing, invalid, or symlinked
+  cd plugins/app/ralphx-external-mcp && npm ci # when node_modules is missing, invalid, or symlinked
   copy the primary checkout's src-tauri/ralphx.db into this worktree when applicable
   clear copied running-agent/process ownership from the worktree snapshot
   rebuild both MCP runtime packages
@@ -134,6 +139,13 @@ EOF
 ensure_package_install() {
   local package_dir="$1"
   local label="$2"
+
+  if [[ -L "$package_dir/node_modules" ]]; then
+    echo "dev-fresh: $label/node_modules is a symlink and cannot be packaged as a Tauri resource."
+    rm "$package_dir/node_modules"
+    repair_package_install "$package_dir" "$label" "$label/node_modules must be materialized in this checkout."
+    return
+  fi
 
   if [[ ! -d "$package_dir" ]]; then
     echo "dev-fresh: $label runtime dir not found: $package_dir" >&2
@@ -372,15 +384,6 @@ sanitize_seeded_worktree_db() {
        WHERE status = 'running';"
   fi
 
-  if sqlite_table_exists "$db_path" "team_sessions"; then
-    sqlite3 "$db_path" \
-      "UPDATE team_sessions
-       SET phase = 'disbanded',
-           disbanded_at = COALESCE(disbanded_at, CURRENT_TIMESTAMP),
-           updated_at = CURRENT_TIMESTAMP
-       WHERE disbanded_at IS NULL;"
-  fi
-
   if sqlite_table_exists "$db_path" "processes"; then
     sqlite3 "$db_path" \
       "UPDATE processes
@@ -423,6 +426,164 @@ copy_sqlite_snapshot() {
   rm -f "$target_db" "$target_db-wal" "$target_db-shm"
   mv "$tmp_db" "$target_db"
   rm -f "$tmp_db-wal" "$tmp_db-shm"
+}
+
+copy_prod_db_subset_snapshot() {
+  local source_db="$1"
+  local target_db="$2"
+  local limit="$3"
+  local tmp_db="$target_db.tmp.$$"
+
+  if [[ -z "$limit" || "$limit" == *[!0-9]* || "$limit" -lt 1 ]]; then
+    echo "dev-fresh: invalid RALPHX_DEV_FRESH_PROD_DB_AGENT_CONVERSATION_LIMIT: $limit" >&2
+    exit 1
+  fi
+
+  rm -f "$tmp_db" "$tmp_db-wal" "$tmp_db-shm" "$tmp_db-journal"
+
+  local table_schema_sql
+  table_schema_sql="$(
+    sqlite3 "$source_db" \
+      "SELECT sql || ';'
+       FROM sqlite_master
+       WHERE sql IS NOT NULL
+         AND type = 'table'
+         AND name NOT LIKE 'sqlite_%'
+       ORDER BY rowid;"
+  )"
+
+  if ! printf '%s\n' "$table_schema_sql" | sqlite3 "$tmp_db"; then
+    rm -f "$tmp_db" "$tmp_db-wal" "$tmp_db-shm" "$tmp_db-journal"
+    echo "dev-fresh: failed to create compact production DB schema." >&2
+    exit 1
+  fi
+
+  local generic_copy_sql
+  generic_copy_sql="$(
+    sqlite3 "$source_db" \
+      "SELECT 'INSERT INTO main.\"' || replace(name, '\"', '\"\"') || '\" SELECT * FROM prod.\"' || replace(name, '\"', '\"\"') || '\";'
+       FROM sqlite_master
+       WHERE type = 'table'
+         AND name NOT LIKE 'sqlite_%'
+         AND name NOT IN (
+           'chat_attachments',
+           'chat_conversations',
+           'chat_message_block_payloads',
+           'chat_message_blocks',
+           'chat_messages'
+         )
+       ORDER BY rowid;"
+  )"
+
+  local source_db_sql
+  source_db_sql="$(sqlite_single_quote_path "$source_db")"
+
+  if ! sqlite3 "$tmp_db" <<SQL
+.output /dev/null
+PRAGMA journal_mode = OFF;
+.output stdout
+PRAGMA synchronous = OFF;
+PRAGMA foreign_keys = OFF;
+ATTACH DATABASE '$source_db_sql' AS prod;
+
+CREATE TEMP TABLE rx_keep_conversations(id TEXT PRIMARY KEY);
+INSERT INTO rx_keep_conversations(id)
+SELECT id
+FROM prod.chat_conversations
+WHERE context_type IN ('task_execution', 'review', 'ideation', 'delegation', 'merge', 'task')
+   OR provider_harness IS NOT NULL
+   OR agent_mode IS NOT NULL
+   OR id IN (SELECT conversation_id FROM prod.agent_conversation_workspaces)
+ORDER BY COALESCE(last_message_at, updated_at, created_at) DESC, updated_at DESC, id DESC
+LIMIT $limit;
+
+CREATE TEMP TABLE rx_keep_messages(id TEXT PRIMARY KEY);
+INSERT INTO rx_keep_messages(id)
+SELECT id
+FROM prod.chat_messages
+WHERE conversation_id IN (SELECT id FROM rx_keep_conversations);
+
+CREATE TEMP TABLE rx_keep_blocks(id TEXT PRIMARY KEY);
+INSERT INTO rx_keep_blocks(id)
+SELECT id
+FROM prod.chat_message_blocks
+WHERE conversation_id IN (SELECT id FROM rx_keep_conversations);
+
+$generic_copy_sql
+
+INSERT INTO main.chat_conversations
+SELECT *
+FROM prod.chat_conversations
+WHERE id IN (SELECT id FROM rx_keep_conversations);
+
+INSERT INTO main.chat_messages
+SELECT *
+FROM prod.chat_messages
+WHERE id IN (SELECT id FROM rx_keep_messages);
+
+INSERT INTO main.chat_message_blocks
+SELECT *
+FROM prod.chat_message_blocks
+WHERE id IN (SELECT id FROM rx_keep_blocks);
+
+INSERT INTO main.chat_message_block_payloads
+SELECT *
+FROM prod.chat_message_block_payloads
+WHERE block_id IN (SELECT id FROM rx_keep_blocks);
+
+INSERT INTO main.chat_attachments
+SELECT *
+FROM prod.chat_attachments
+WHERE conversation_id IN (SELECT id FROM rx_keep_conversations);
+
+UPDATE chat_conversations
+SET parent_conversation_id = NULL
+WHERE parent_conversation_id IS NOT NULL
+  AND parent_conversation_id NOT IN (SELECT id FROM chat_conversations);
+
+DETACH DATABASE prod;
+VACUUM;
+SQL
+  then
+    rm -f "$tmp_db" "$tmp_db-wal" "$tmp_db-shm" "$tmp_db-journal"
+    echo "dev-fresh: failed to copy compact production DB snapshot." >&2
+    exit 1
+  fi
+
+  local post_schema_sql
+  post_schema_sql="$(
+    sqlite3 "$source_db" \
+      "SELECT sql || ';'
+       FROM sqlite_master
+       WHERE sql IS NOT NULL
+         AND type IN ('index', 'trigger', 'view')
+         AND name NOT LIKE 'sqlite_%'
+       ORDER BY CASE type WHEN 'index' THEN 1 WHEN 'view' THEN 2 ELSE 3 END, rowid;"
+  )"
+
+  if ! printf '%s\n' "$post_schema_sql" | sqlite3 "$tmp_db"; then
+    rm -f "$tmp_db" "$tmp_db-wal" "$tmp_db-shm" "$tmp_db-journal"
+    echo "dev-fresh: failed to create compact production DB indexes/triggers." >&2
+    exit 1
+  fi
+
+  if ! sqlite3 "$tmp_db" "PRAGMA quick_check;" | grep -qx "ok"; then
+    rm -f "$tmp_db" "$tmp_db-wal" "$tmp_db-shm" "$tmp_db-journal"
+    echo "dev-fresh: compact production DB snapshot failed PRAGMA quick_check." >&2
+    exit 1
+  fi
+
+  echo "dev-fresh: compact production DB snapshot rows:"
+  sqlite3 "$tmp_db" \
+    "SELECT '  chat_conversations: ' || COUNT(*) FROM chat_conversations;
+     SELECT '  chat_messages: ' || COUNT(*) FROM chat_messages;
+     SELECT '  chat_message_blocks: ' || COUNT(*) FROM chat_message_blocks;
+     SELECT '  chat_message_block_payloads: ' || COUNT(*) FROM chat_message_block_payloads;
+     SELECT '  activity_events: ' || COUNT(*) FROM activity_events;"
+
+  rm -f "$target_db" "$target_db-wal" "$target_db-shm"
+  mv "$tmp_db" "$target_db"
+  rm -f "$tmp_db-wal" "$tmp_db-shm" "$tmp_db-journal"
 }
 
 backup_existing_dev_db() {
@@ -478,11 +639,15 @@ EOF
 
   backup_existing_dev_db "$target_db"
 
-  echo "dev-fresh: refreshing dev DB from production app-data snapshot:"
+  echo "dev-fresh: refreshing dev DB from compact production app-data snapshot:"
   echo "  source: $source_db"
   echo "  target: $target_db"
+  echo "  agent conversation limit: $PROD_DB_AGENT_CONVERSATION_LIMIT"
 
-  copy_sqlite_snapshot "$source_db" "$target_db" "production DB"
+  copy_prod_db_subset_snapshot \
+    "$source_db" \
+    "$target_db" \
+    "$PROD_DB_AGENT_CONVERSATION_LIMIT"
 
   if ! sanitize_seeded_worktree_db "$target_db"; then
     rm -f "$target_db" "$target_db-wal" "$target_db-shm"
@@ -576,6 +741,10 @@ start_tauri_dev() {
   rm -f "$launch_log"
   return "$dev_status"
 }
+
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+  return 0
+fi
 
 while [[ $# -gt 0 ]]; do
   case "$1" in

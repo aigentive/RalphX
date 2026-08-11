@@ -33,6 +33,16 @@ describe("parseComposerReferencesFromMetadata", () => {
           status: "approved",
         },
       ],
+      composer_selection_snapshot: {
+        sourceType: "artifact",
+        sourceKind: "plan",
+        sourceId: "artifact-version-2",
+        sourceTitle: "Implementation Plan",
+        artifactVersion: 2,
+        startLine: 10,
+        endLine: 11,
+        content: "first selected line\nsecond selected line",
+      },
     });
 
     expect(parsed).toEqual({
@@ -57,11 +67,28 @@ describe("parseComposerReferencesFromMetadata", () => {
           status: "approved",
         },
       ],
+      selectionSnapshot: {
+        sourceType: "artifact",
+        sourceKind: "plan",
+        sourceId: "artifact-version-2",
+        sourceTitle: "Implementation Plan",
+        artifactVersion: 2,
+        startLine: 10,
+        endLine: 11,
+        content: "first selected line\nsecond selected line",
+      },
     });
   });
 
   it("serializes selected composer references for optimistic messages", () => {
     const metadata = serializeComposerReferencesMetadata({
+      folderReferences: [
+        {
+          id: "folder-1",
+          folderPath: "/work/brand-kit",
+          displayName: "brand-kit",
+        },
+      ],
       projectReferences: [{ path: "src/main.ts", kind: "file" }],
       integrationReferences: [
         {
@@ -82,10 +109,29 @@ describe("parseComposerReferencesFromMetadata", () => {
           status: "approved",
         },
       ],
+      selectionSnapshot: {
+        sourceType: "ticket",
+        sourceKind: "jira",
+        sourceId: "10042",
+        sourceTitle: "Queue recovery",
+        sourceKey: "RX-42",
+        provider: "atlassian",
+        sourceRevision: "2026-07-16T09:00:00Z",
+        startLine: 4,
+        endLine: 5,
+        content: "saved first line\nsaved second line",
+      },
     });
 
     expect(metadata).toBeTruthy();
     expect(parseComposerReferencesFromMetadata(JSON.parse(metadata ?? "{}"))).toEqual({
+      folderReferences: [
+        {
+          id: "folder-1",
+          folderPath: "/work/brand-kit",
+          displayName: "brand-kit",
+        },
+      ],
       projectReferences: [{ path: "src/main.ts", kind: "file" }],
       integrationReferences: [
         {
@@ -106,6 +152,18 @@ describe("parseComposerReferencesFromMetadata", () => {
           status: "approved",
         },
       ],
+      selectionSnapshot: {
+        sourceType: "ticket",
+        sourceKind: "jira",
+        sourceId: "10042",
+        sourceTitle: "Queue recovery",
+        sourceKey: "RX-42",
+        provider: "atlassian",
+        sourceRevision: "2026-07-16T09:00:00Z",
+        startLine: 4,
+        endLine: 5,
+        content: "saved first line\nsaved second line",
+      },
     });
   });
 
@@ -123,9 +181,160 @@ describe("parseComposerReferencesFromMetadata", () => {
       }),
     ).toBeNull();
   });
+
+  it("rejects a selection whose explicit provider conflicts with its source", () => {
+    expect(
+      parseComposerReferencesFromMetadata({
+        composer_selection_snapshot: {
+          sourceType: "ticket",
+          sourceKind: "jira",
+          sourceId: "10042",
+          provider: "clickup",
+          startLine: 1,
+          endLine: 1,
+          content: "mismatched provider",
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it("parses a Granola note selection with its frozen revision", () => {
+    expect(
+      parseComposerReferencesFromMetadata({
+        composer_selection_snapshot: {
+          source_type: "note",
+          source_kind: "granola",
+          source_id: "not_1234567890ABCD",
+          provider: "granola",
+          source_revision: "2026-07-16T10:00:00Z",
+          start_line: 7,
+          end_line: 7,
+          content: "Alex: Ship it",
+        },
+      }),
+    ).toEqual({
+      projectReferences: [],
+      integrationReferences: [],
+      artifactReferences: [],
+      selectionSnapshot: {
+        sourceType: "note",
+        sourceKind: "granola",
+        sourceId: "not_1234567890ABCD",
+        provider: "granola",
+        sourceRevision: "2026-07-16T10:00:00Z",
+        startLine: 7,
+        endLine: 7,
+        content: "Alex: Ship it",
+      },
+    });
+  });
+
+  it("round-trips generic artifact excerpts independently from whole-source references", () => {
+    const metadata = serializeComposerReferencesMetadata({
+      excerptReferences: [
+        {
+          sourceKind: "workspace_diff",
+          sourceId: "conversation-1",
+          sourceLabel: "Diff",
+          title: "Workspace changes",
+          excerpt: "const answer = 42;",
+          filePath: "src/app.ts",
+          revision: "abc123",
+        },
+      ],
+    });
+
+    expect(parseComposerReferencesFromMetadata(JSON.parse(metadata ?? "{}"))).toEqual({
+      projectReferences: [],
+      integrationReferences: [],
+      artifactReferences: [],
+      excerptReferences: [
+        {
+          sourceKind: "workspace_diff",
+          sourceId: "conversation-1",
+          sourceLabel: "Diff",
+          title: "Workspace changes",
+          excerpt: "const answer = 42;",
+          filePath: "src/app.ts",
+          revision: "abc123",
+        },
+      ],
+    });
+  });
 });
 
 describe("MessageReferences", () => {
+  it("renders an immutable folder snapshot with its full path", () => {
+    render(
+      <MessageReferences
+        folderReferences={[
+          {
+            id: "folder-1",
+            folderPath: "/work/brand-kit",
+            displayName: "brand-kit",
+          },
+        ]}
+        projectReferences={[]}
+        integrationReferences={[]}
+        artifactReferences={[]}
+      />,
+    );
+
+    const chip = screen.getByTestId("message-reference-folder:folder-1");
+    expect(chip).toHaveTextContent("Folder");
+    expect(chip).toHaveTextContent("brand-kit");
+    expect(chip).toHaveTextContent("/work/brand-kit");
+  });
+
+  it("renders a compact frozen selection and views its saved content without fetching", () => {
+    render(
+      <MessageReferences
+        projectReferences={[]}
+        integrationReferences={[]}
+        artifactReferences={[]}
+        selectionSnapshot={{
+          sourceType: "ticket",
+          sourceKind: "clickup",
+          sourceId: "task-1",
+          sourceTitle: "Release task",
+          sourceKey: "CU-17",
+          provider: "clickup",
+          startLine: 10,
+          endLine: 45,
+          content: "frozen line one\nfrozen line two",
+        }}
+      />,
+    );
+
+    expect(screen.getByText("Selection · CU-17 · L10–45")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "View selection snapshot" }));
+
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(screen.getByText("frozen line one")).toBeTruthy();
+    expect(screen.getByText("frozen line two")).toBeTruthy();
+  });
+
+  it("renders the Granola fallback label for a frozen note selection", () => {
+    render(
+      <MessageReferences
+        projectReferences={[]}
+        integrationReferences={[]}
+        artifactReferences={[]}
+        selectionSnapshot={{
+          sourceType: "note",
+          sourceKind: "granola",
+          sourceId: "not_1234567890ABCD",
+          provider: "granola",
+          startLine: 9,
+          endLine: 9,
+          content: "Alex: Ship it",
+        }}
+      />,
+    );
+
+    expect(screen.getByText("Selection · Granola · L9")).toBeTruthy();
+  });
+
   it("renders artifact reference status, version, and fallback labels", () => {
     render(
       <MessageReferences
@@ -210,7 +419,7 @@ describe("MessageReferences", () => {
   it("opens a linear ticket chip into the ticketing view", () => {
     useTicketingStore.getState().setProvider(null);
     useTicketingStore.getState().setSelectedTicketRef(null);
-    useUiStore.getState().setCurrentView("kanban");
+    useUiStore.getState().setCurrentView("agents");
 
     render(
       <MessageReferences
@@ -265,6 +474,43 @@ describe("MessageReferences", () => {
     // Even though a url is present, the ticket chip prefers the button branch.
     expect(chip.tagName).toBe("BUTTON");
     expect(chip.getAttribute("type")).toBe("button");
+  });
+
+  it("renders distinct same-text excerpts from one source as separate chips", () => {
+    // Regression: keying excerpt chips only by sourceKind:sourceId:excerpt let
+    // two references with identical text but different revision/version/locator
+    // collide in React rendering, hiding one chip after reload.
+    render(
+      <MessageReferences
+        projectReferences={[]}
+        integrationReferences={[]}
+        artifactReferences={[]}
+        excerptReferences={[
+          {
+            sourceKind: "workspace_diff",
+            sourceId: "conversation-1",
+            sourceLabel: "Diff",
+            excerpt: "const answer = 42;",
+            filePath: "src/app.ts",
+            revision: "abc123",
+          },
+          {
+            sourceKind: "workspace_diff",
+            sourceId: "conversation-1",
+            sourceLabel: "Diff",
+            excerpt: "const answer = 42;",
+            filePath: "src/app.ts",
+            revision: "def456",
+          },
+        ]}
+      />,
+    );
+
+    expect(
+      screen.getAllByTestId(
+        "message-reference-excerpt:workspace_diff:conversation-1",
+      ),
+    ).toHaveLength(2);
   });
 
   it("renders non-ticket integrations (confluence) as links without onOpenTicket", () => {

@@ -4,17 +4,436 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::application::chat_service::MockChatService;
+use crate::application::interactive_process_registry::{
+    InteractiveProcessKey, InteractiveProcessMetadata,
+};
 use crate::application::{AppState, TaskTransitionService};
 use crate::commands::execution_commands::{ActiveProjectState, ExecutionState};
 use crate::domain::entities::app_state::ExecutionHaltMode;
-use crate::domain::entities::ideation::IdeationSessionStatus;
+use crate::domain::entities::ideation::{IdeationSessionFlow, IdeationSessionStatus};
 use crate::domain::entities::{
-    AgentRun, AgentRunStatus, ChatConversationId, IdeationSession, InternalStatus, Project,
-    ProjectId, SessionOrigin, Task,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunStatus,
+    ChatContextType, ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind,
+    IdeationSession, InternalStatus, Project, ProjectId, SessionOrigin, Task,
 };
-use crate::domain::services::RunningAgentKey;
+use crate::domain::services::{QueueKey, QueuedMessage, RunningAgentKey};
+use crate::infrastructure::agents::claude::StreamTimeoutsConfig;
+use crate::infrastructure::sqlite::sqlite_chat_payload_retention_repo::SqliteChatPayloadRetentionRepository;
+use crate::testing::SqliteTestDb;
+use tokio::process::ChildStdin;
+
+async fn create_test_stdin() -> (ChildStdin, tokio::process::Child) {
+    let mut child = tokio::process::Command::new("cat")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn stdin fixture");
+    (child.stdin.take().expect("fixture stdin"), child)
+}
 
 // ======= Unit tests for should_auto_recover() =======
+
+#[test]
+fn notification_retention_prune_uses_runtime_config_values() {
+    let config = StreamTimeoutsConfig {
+        notification_retention_read_days: 7,
+        notification_retention_max_rows: 42,
+        ..StreamTimeoutsConfig::default()
+    };
+    let now = chrono::DateTime::parse_from_rfc3339("2026-07-11T12:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+
+    let (read_before, max_rows) = notification_retention_prune_args(&config, now);
+
+    assert_eq!(read_before, now - chrono::Duration::days(7));
+    assert_eq!(max_rows, 42);
+}
+
+#[test]
+fn chat_payload_retention_prune_uses_runtime_config_values() {
+    let config = StreamTimeoutsConfig {
+        chat_payload_retention_days: 90,
+        chat_payload_retention_archived_days: 7,
+        chat_payload_retention_batch_rows: 42,
+        ..StreamTimeoutsConfig::default()
+    };
+    let now = chrono::DateTime::parse_from_rfc3339("2026-07-11T12:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+
+    let (before, archived_before, batch_rows) = chat_payload_retention_prune_args(&config, now);
+
+    assert_eq!(before, now - chrono::Duration::days(90));
+    assert_eq!(archived_before, now - chrono::Duration::days(7));
+    assert_eq!(batch_rows, 42);
+}
+
+#[test]
+fn chat_payload_retention_zero_batch_rows_clamps_to_one() {
+    let config = StreamTimeoutsConfig {
+        chat_payload_retention_batch_rows: 0,
+        ..StreamTimeoutsConfig::default()
+    };
+    let now = chrono::Utc::now();
+
+    let (_, _, batch_rows) = chat_payload_retention_prune_args(&config, now);
+
+    // LIMIT 0 would delete nothing while the job still reports success.
+    assert_eq!(batch_rows, 1);
+}
+
+#[tokio::test]
+async fn disabled_chat_payload_retention_prunes_nothing() {
+    let db = SqliteTestDb::new("disabled-chat-payload-retention");
+    let repo = SqliteChatPayloadRetentionRepository::from_shared(db.shared_conn());
+    let now = chrono::Utc::now() - chrono::Duration::days(100);
+    db.with_connection(|conn| {
+        conn.execute(
+            "INSERT INTO chat_conversations (id, context_type, context_id, created_at, updated_at) VALUES ('conversation-1', 'project', 'project-1', ?1, ?1)",
+            [now.to_rfc3339()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO chat_message_blocks (id, conversation_id, sequence, block_index, role, kind, status, created_at, updated_at) VALUES ('block-1', 'conversation-1', 1, 0, 'assistant', 'tool_use', 'finalized', ?1, ?1)",
+            [now.to_rfc3339()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO chat_message_block_payloads (block_id, input_json, updated_at) VALUES ('block-1', '{\"retained\":true}', ?1)",
+            [now.to_rfc3339()],
+        )
+        .unwrap();
+    });
+    let config = StreamTimeoutsConfig {
+        chat_payload_retention_enabled: false,
+        ..StreamTimeoutsConfig::default()
+    };
+
+    assert_eq!(
+        prune_chat_payload_retention(&repo, &config, chrono::Utc::now())
+            .await
+            .unwrap(),
+        0
+    );
+    db.with_connection(|conn| {
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM chat_message_block_payloads",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+    });
+}
+
+#[test]
+fn accepted_plan_mode_handoff_recovery_accepts_only_exact_metadata_and_id() {
+    let key = QueueKey::new(ChatContextType::Project, "conversation-1");
+    let mut message = QueuedMessage::with_id(
+        "plan-mode-handoff:request-1".to_string(),
+        "continue in Plan mode".to_string(),
+    );
+    message.metadata_override = Some(
+        serde_json::json!({
+            "source": "accepted_plan_mode_proposal",
+            "source_request_id": "request-1",
+            "required_workspace_mode": "plan",
+            "resume_in_place": true,
+            "persist_hidden_marker": true,
+        })
+        .to_string(),
+    );
+
+    assert!(is_accepted_plan_mode_handoff_row(&key, &message));
+
+    message.id = "unrelated-id".to_string();
+    assert!(
+        !is_accepted_plan_mode_handoff_row(&key, &message),
+        "metadata alone must not authorize recovery without the stable handoff ID"
+    );
+}
+
+#[test]
+fn accepted_plan_mode_handoff_recovery_rejects_wrong_mode_and_malformed_metadata() {
+    let key = QueueKey::new(ChatContextType::Project, "conversation-1");
+    let mut wrong_mode = QueuedMessage::with_id(
+        "plan-mode-handoff:request-1".to_string(),
+        "continue in Plan mode".to_string(),
+    );
+    wrong_mode.metadata_override = Some(
+        serde_json::json!({
+            "source": "accepted_plan_mode_proposal",
+            "source_request_id": "request-1",
+            "required_workspace_mode": "edit",
+            "resume_in_place": true,
+            "persist_hidden_marker": true,
+        })
+        .to_string(),
+    );
+    assert!(!is_accepted_plan_mode_handoff_row(&key, &wrong_mode));
+
+    let mut malformed = wrong_mode;
+    malformed.metadata_override = Some("{not-json".to_string());
+    assert!(!is_accepted_plan_mode_handoff_row(&key, &malformed));
+}
+
+fn startup_handoff_message(request_id: &str) -> QueuedMessage {
+    let mut message = QueuedMessage::with_id(
+        format!("plan-mode-handoff:{request_id}"),
+        "Continue in Plan mode".to_string(),
+    );
+    message.metadata_override = Some(
+        serde_json::json!({
+            "source": "accepted_plan_mode_proposal",
+            "source_request_id": request_id,
+            "required_workspace_mode": "plan",
+            "resume_in_place": true,
+            "persist_hidden_marker": true,
+        })
+        .to_string(),
+    );
+    message
+}
+
+async fn setup_accepted_plan_mode_recovery_fixture(
+    workspace_mode: AgentConversationWorkspaceMode,
+    linked_session: Option<(IdeationSessionFlow, IdeationSessionStatus)>,
+) -> (AppState, ChatConversationId) {
+    let state = AppState::new_test();
+    let project = state
+        .project_repo
+        .create(Project::new(
+            "Plan handoff recovery".to_string(),
+            "/tmp/plan-handoff-recovery".to_string(),
+        ))
+        .await
+        .expect("project should persist");
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.agent_mode = Some(AgentConversationWorkspaceMode::Plan);
+    let conversation = state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("conversation should persist");
+    let conversation_id = conversation.id;
+
+    let mut workspace = AgentConversationWorkspace::new(
+        conversation_id.clone(),
+        project.id.clone(),
+        workspace_mode,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        None,
+        None,
+        "plan-handoff-recovery".to_string(),
+        "/tmp/plan-handoff-recovery-worktree".to_string(),
+    );
+    if let Some((flow, status)) = linked_session {
+        let mut session = IdeationSession::new(project.id);
+        session.session_flow = flow;
+        session.status = status;
+        let session = state
+            .ideation_session_repo
+            .create(session)
+            .await
+            .expect("linked session should persist");
+        workspace.linked_ideation_session_id = Some(session.id);
+    }
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+
+    let message = startup_handoff_message("recover-1");
+    let key = QueueKey::new(ChatContextType::Project, conversation_id.as_str());
+    state
+        .queued_message_repo
+        .enqueue_back(&key, &message)
+        .await
+        .expect("durable handoff should persist");
+    state.message_queue.queue_back_existing(
+        ChatContextType::Project,
+        conversation_id.as_str(),
+        message,
+    );
+
+    (state, conversation_id)
+}
+
+#[tokio::test]
+async fn accepted_plan_mode_handoff_recovery_kicks_exact_valid_row_once() {
+    let (state, conversation_id) = setup_accepted_plan_mode_recovery_fixture(
+        AgentConversationWorkspaceMode::Plan,
+        Some((IdeationSessionFlow::Planning, IdeationSessionStatus::Active)),
+    )
+    .await;
+    let chat_service = Arc::new(MockChatService::with_queue(Arc::clone(
+        &state.message_queue,
+    )));
+    let runner = build_runner_for_tests(&state).with_chat_service(chat_service.clone());
+
+    runner
+        .recover_accepted_plan_mode_handoffs_for_state(&state)
+        .await;
+    runner
+        .recover_accepted_plan_mode_handoffs_for_state(&state)
+        .await;
+
+    assert_eq!(chat_service.get_sent_messages().await.len(), 1);
+    assert!(state
+        .message_queue
+        .get_queued(ChatContextType::Project, &conversation_id.as_str())
+        .is_empty());
+}
+
+#[tokio::test]
+async fn accepted_plan_mode_handoff_recovery_rejects_invalid_workspace_and_session_links() {
+    let cases = [
+        (
+            AgentConversationWorkspaceMode::Edit,
+            Some((IdeationSessionFlow::Planning, IdeationSessionStatus::Active)),
+        ),
+        (AgentConversationWorkspaceMode::Plan, None),
+        (
+            AgentConversationWorkspaceMode::Plan,
+            Some((IdeationSessionFlow::Ideation, IdeationSessionStatus::Active)),
+        ),
+        (
+            AgentConversationWorkspaceMode::Plan,
+            Some((
+                IdeationSessionFlow::Planning,
+                IdeationSessionStatus::Accepted,
+            )),
+        ),
+    ];
+
+    for (workspace_mode, linked_session) in cases {
+        let (state, conversation_id) =
+            setup_accepted_plan_mode_recovery_fixture(workspace_mode, linked_session).await;
+        let chat_service = Arc::new(MockChatService::with_queue(Arc::clone(
+            &state.message_queue,
+        )));
+        let runner = build_runner_for_tests(&state).with_chat_service(chat_service.clone());
+
+        runner
+            .recover_accepted_plan_mode_handoffs_for_state(&state)
+            .await;
+
+        assert!(chat_service.get_sent_messages().await.is_empty());
+        assert_eq!(
+            state
+                .message_queue
+                .get_queued(ChatContextType::Project, &conversation_id.as_str())
+                .len(),
+            1,
+            "rejected rows must stay durable for explicit remediation"
+        );
+    }
+}
+
+#[tokio::test]
+async fn accepted_plan_mode_handoff_recovery_skips_exact_live_conversation_owner() {
+    let (state, conversation_id) = setup_accepted_plan_mode_recovery_fixture(
+        AgentConversationWorkspaceMode::Plan,
+        Some((IdeationSessionFlow::Planning, IdeationSessionStatus::Active)),
+    )
+    .await;
+    state
+        .running_agent_registry
+        .register(
+            RunningAgentKey::new(
+                ChatContextType::Project.to_string(),
+                conversation_id.as_str(),
+            ),
+            0,
+            conversation_id.as_str().to_string(),
+            "live-conversation-run".to_string(),
+            None,
+            None,
+        )
+        .await;
+    let chat_service = Arc::new(MockChatService::with_queue(Arc::clone(
+        &state.message_queue,
+    )));
+    let runner = build_runner_for_tests(&state).with_chat_service(chat_service.clone());
+
+    runner
+        .recover_accepted_plan_mode_handoffs_for_state(&state)
+        .await;
+
+    assert!(chat_service.get_sent_messages().await.is_empty());
+    assert_eq!(
+        state
+            .message_queue
+            .get_queued(ChatContextType::Project, &conversation_id.as_str())
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn accepted_plan_mode_handoff_recovery_skips_exact_interactive_process_owner() {
+    let (state, conversation_id) = setup_accepted_plan_mode_recovery_fixture(
+        AgentConversationWorkspaceMode::Plan,
+        Some((IdeationSessionFlow::Planning, IdeationSessionStatus::Active)),
+    )
+    .await;
+    let key = InteractiveProcessKey::new("project", conversation_id.as_str());
+    let (stdin, mut child) = create_test_stdin().await;
+    state
+        .interactive_process_registry
+        .register_with_metadata(
+            key.clone(),
+            stdin,
+            InteractiveProcessMetadata {
+                agent_run_id: Some("live-interactive-run".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+    let chat_service = Arc::new(MockChatService::with_queue(Arc::clone(
+        &state.message_queue,
+    )));
+    let runner = build_runner_for_tests(&state).with_chat_service(chat_service.clone());
+
+    runner
+        .recover_accepted_plan_mode_handoffs_for_state(&state)
+        .await;
+
+    assert!(chat_service.get_sent_messages().await.is_empty());
+    assert_eq!(
+        state
+            .message_queue
+            .get_queued(ChatContextType::Project, &conversation_id.as_str())
+            .len(),
+        1,
+        "interactive ownership must preserve the in-memory handoff row"
+    );
+    assert_eq!(
+        state
+            .queued_message_repo
+            .list(&QueueKey::new(
+                ChatContextType::Project,
+                conversation_id.as_str(),
+            ))
+            .await
+            .expect("durable handoff should load")
+            .len(),
+        1,
+        "interactive ownership must preserve the durable handoff row"
+    );
+
+    drop(state.interactive_process_registry.remove(&key).await);
+    if child.try_wait().expect("inspect stdin fixture").is_none() {
+        child.kill().await.expect("stop stdin fixture");
+        child.wait().await.expect("reap stdin fixture");
+    }
+}
 
 #[test]
 fn test_auto_recover_with_shutdown_flag() {
@@ -139,7 +558,7 @@ fn test_no_auto_recover_shutdown_false() {
 
 // ======= Integration tests for recover_crash_escalated_tasks() =======
 
-fn build_runner_for_tests(app_state: &AppState) -> StartupJobRunner<tauri::Wry> {
+fn build_runner_for_tests(app_state: &AppState) -> StartupJobRunner {
     let execution_state = Arc::new(ExecutionState::new());
     let transition_service = Arc::new(TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
@@ -235,7 +654,7 @@ async fn startup_unblock_marks_blocked_task_ready_when_blockers_are_complete() {
         .await
         .unwrap();
 
-    StartupJobRunner::<tauri::Wry>::unblock_ready_tasks_for(
+    StartupJobRunner::unblock_ready_tasks_for(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),
@@ -279,7 +698,7 @@ async fn dependency_reconciliation_reblocks_ready_task_with_failed_blocker() {
         .await
         .unwrap();
 
-    StartupJobRunner::<tauri::Wry>::reconcile_dependency_violations_for(
+    StartupJobRunner::reconcile_dependency_violations_for(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),
@@ -987,7 +1406,7 @@ async fn test_no_recovery_archived_task_skipped() {
 fn build_runner_with_chat_service(
     app_state: &AppState,
     chat_service: Arc<dyn ChatService>,
-) -> StartupJobRunner<tauri::Wry> {
+) -> StartupJobRunner {
     let execution_state = Arc::new(ExecutionState::new());
     let transition_service = Arc::new(TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
@@ -1071,7 +1490,7 @@ async fn test_recover_ideation_session_active_calls_send_message() {
         started_at: chrono::Utc::now(),
     };
 
-    let result = StartupJobRunner::<tauri::Wry>::recover_ideation_session(
+    let result = StartupJobRunner::recover_ideation_session(
         item,
         mock.as_ref(),
         app_state.ideation_session_repo.as_ref(),
@@ -1097,7 +1516,7 @@ async fn test_recover_ideation_session_skips_when_not_found() {
         started_at: chrono::Utc::now(),
     };
 
-    let result = StartupJobRunner::<tauri::Wry>::recover_ideation_session(
+    let result = StartupJobRunner::recover_ideation_session(
         item,
         mock.as_ref(),
         app_state.ideation_session_repo.as_ref(),
@@ -1136,7 +1555,7 @@ async fn test_recover_ideation_session_skips_when_archived() {
         started_at: chrono::Utc::now(),
     };
 
-    let result = StartupJobRunner::<tauri::Wry>::recover_ideation_session(
+    let result = StartupJobRunner::recover_ideation_session(
         item,
         mock.as_ref(),
         app_state.ideation_session_repo.as_ref(),
@@ -1177,7 +1596,7 @@ async fn test_recover_ideation_session_skips_when_accepted() {
         started_at: chrono::Utc::now(),
     };
 
-    let result = StartupJobRunner::<tauri::Wry>::recover_ideation_session(
+    let result = StartupJobRunner::recover_ideation_session(
         item,
         mock.as_ref(),
         app_state.ideation_session_repo.as_ref(),

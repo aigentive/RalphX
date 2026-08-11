@@ -18,7 +18,7 @@ use axum::extract::{Path, Query, State};
 use axum::Json;
 use dashmap::DashMap;
 use ralphx_domain::entities::EventType;
-use ralphx_lib::application::{AppState, TeamService, TeamStateTracker};
+use ralphx_lib::application::AppState;
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
     IdeationSessionBuilder, IdeationSessionId, InternalStatus, Project, ProjectId, Task,
@@ -27,14 +27,12 @@ use ralphx_lib::domain::entities::{
 use ralphx_lib::domain::repositories::{
     ExternalEventsRepository, IdeationSessionRepository, ProjectRepository, TaskRepository,
 };
+use ralphx_lib::domain::state_machine::services::WebhookPublisher as WebhookPublisherTrait;
+use ralphx_lib::domain::state_machine::transition_handler::complete_merge_internal;
 use ralphx_lib::domain::state_machine::{
     State as MachineState, TaskContext, TaskServices, TaskStateMachine, TransitionHandler,
 };
-use ralphx_lib::domain::state_machine::services::WebhookPublisher as WebhookPublisherTrait;
-use ralphx_lib::domain::state_machine::transition_handler::complete_merge_internal;
-use ralphx_lib::http_server::handlers::{
-    get_session_tasks_http, GetSessionTasksParams,
-};
+use ralphx_lib::http_server::handlers::{get_session_tasks_http, GetSessionTasksParams};
 use ralphx_lib::http_server::project_scope::ProjectScope;
 use ralphx_lib::http_server::types::HttpServerState;
 use ralphx_lib::infrastructure::memory::{
@@ -80,12 +78,7 @@ impl RecordingWebhookPublisher {
 
 #[async_trait]
 impl WebhookPublisherTrait for RecordingWebhookPublisher {
-    async fn publish(
-        &self,
-        event_type: EventType,
-        _project_id: &str,
-        _payload: serde_json::Value,
-    ) {
+    async fn publish(&self, event_type: EventType, _project_id: &str, _payload: serde_json::Value) {
         self.calls.lock().unwrap().push(event_type);
     }
 }
@@ -141,8 +134,7 @@ impl TestSetup {
             ProjectId::from_string(project_id.clone()),
             "Worker task 1".to_string(),
         );
-        worker1.ideation_session_id =
-            Some(IdeationSessionId::from_string(session_id.clone()));
+        worker1.ideation_session_id = Some(IdeationSessionId::from_string(session_id.clone()));
         worker1.internal_status = worker_status;
         task_repo.create(worker1).await.expect("create worker1");
 
@@ -151,8 +143,7 @@ impl TestSetup {
             ProjectId::from_string(project_id.clone()),
             "Worker task 2".to_string(),
         );
-        worker2.ideation_session_id =
-            Some(IdeationSessionId::from_string(session_id.clone()));
+        worker2.ideation_session_id = Some(IdeationSessionId::from_string(session_id.clone()));
         worker2.internal_status = worker_status;
         task_repo.create(worker2).await.expect("create worker2");
 
@@ -161,12 +152,14 @@ impl TestSetup {
             ProjectId::from_string(project_id.clone()),
             "Plan merge task".to_string(),
         );
-        plan_merge.ideation_session_id =
-            Some(IdeationSessionId::from_string(session_id.clone()));
+        plan_merge.ideation_session_id = Some(IdeationSessionId::from_string(session_id.clone()));
         plan_merge.category = TaskCategory::PlanMerge;
         plan_merge.internal_status = InternalStatus::Merged;
         let plan_merge_task_id = plan_merge.id.as_str().to_string();
-        task_repo.create(plan_merge).await.expect("create plan_merge");
+        task_repo
+            .create(plan_merge)
+            .await
+            .expect("create plan_merge");
 
         Self {
             project_id,
@@ -184,17 +177,13 @@ impl TestSetup {
     /// Build TaskServices wired with this test's repos.
     fn build_task_services(&self) -> TaskServices {
         TaskServices::new_mock()
-            .with_task_repo(
-                Arc::clone(&self.task_repo) as Arc<dyn TaskRepository>,
-            )
-            .with_project_repo(
-                Arc::clone(&self.project_repo) as Arc<dyn ProjectRepository>,
-            )
+            .with_task_repo(Arc::clone(&self.task_repo) as Arc<dyn TaskRepository>)
+            .with_project_repo(Arc::clone(&self.project_repo) as Arc<dyn ProjectRepository>)
             .with_external_events_repo(
-                Arc::clone(&self.events_repo) as Arc<dyn ExternalEventsRepository>,
+                Arc::clone(&self.events_repo) as Arc<dyn ExternalEventsRepository>
             )
             .with_webhook_publisher(
-                Arc::clone(&self.webhook_publisher) as Arc<dyn WebhookPublisherTrait>,
+                Arc::clone(&self.webhook_publisher) as Arc<dyn WebhookPublisherTrait>
             )
             .with_session_merge_locks(Arc::clone(&self.session_merge_locks))
     }
@@ -236,13 +225,9 @@ fn build_http_state(setup: &TestSetup) -> HttpServerState {
         Arc::clone(&setup.session_repo) as Arc<dyn IdeationSessionRepository>;
     let app_state = Arc::new(app_state);
     let execution_state = Arc::new(ExecutionState::new());
-    let tracker = TeamStateTracker::new();
-    let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
     HttpServerState {
         app_state,
         execution_state,
-        team_tracker: tracker,
-        team_service,
         delegation_service: Default::default(),
     }
 }
@@ -296,7 +281,9 @@ async fn test_plan_delivered_fires_after_all_tasks_merged() {
         State(http_state),
         ProjectScope(None),
         Path(setup.session_id.clone()),
-        Query(GetSessionTasksParams { changed_since: None }),
+        Query(GetSessionTasksParams {
+            changed_since: None,
+        }),
     )
     .await
     .expect("get_session_tasks_http should succeed");
@@ -392,7 +379,11 @@ fn setup_repo_with_merged_plan_branch() -> (tempfile::TempDir, String) {
 
     // Initial commit on main
     fs::write(repo.join("README.md"), "# Test\n").expect("write README.md");
-    Command::new("git").args(["add", "."]).current_dir(repo).output().expect("git add");
+    Command::new("git")
+        .args(["add", "."])
+        .current_dir(repo)
+        .output()
+        .expect("git add");
     Command::new("git")
         .args(["commit", "-m", "Initial commit"])
         .current_dir(repo)
@@ -411,7 +402,11 @@ fn setup_repo_with_merged_plan_branch() -> (tempfile::TempDir, String) {
         .output()
         .expect("git checkout -b plan/test-plan");
     fs::write(repo.join("plan.md"), "Plan content\n").expect("write plan.md");
-    Command::new("git").args(["add", "."]).current_dir(repo).output().expect("git add plan");
+    Command::new("git")
+        .args(["add", "."])
+        .current_dir(repo)
+        .output()
+        .expect("git add plan");
     Command::new("git")
         .args(["commit", "-m", "Add plan"])
         .current_dir(repo)
@@ -425,7 +420,13 @@ fn setup_repo_with_merged_plan_branch() -> (tempfile::TempDir, String) {
         .output()
         .expect("git checkout main");
     Command::new("git")
-        .args(["merge", "--no-ff", "plan/test-plan", "-m", "Merge plan/test-plan into main"])
+        .args([
+            "merge",
+            "--no-ff",
+            "plan/test-plan",
+            "-m",
+            "Merge plan/test-plan into main",
+        ])
         .current_dir(repo)
         .output()
         .expect("git merge plan branch");
@@ -479,7 +480,7 @@ async fn test_plan_delivered_fires_from_complete_merge_internal() {
         Arc::clone(&raw_publisher) as Arc<dyn WebhookPublisherTrait>;
 
     // Call complete_merge_internal directly — the primary fix path from PDM-307
-    let result = complete_merge_internal::<tauri::test::MockRuntime>(
+    let result = complete_merge_internal(
         &mut task,
         &project,
         &commit_sha,
@@ -493,7 +494,11 @@ async fn test_plan_delivered_fires_from_complete_merge_internal() {
     )
     .await;
 
-    assert!(result.is_ok(), "complete_merge_internal failed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "complete_merge_internal failed: {:?}",
+        result
+    );
     assert_eq!(task.internal_status, InternalStatus::Merged);
     assert_eq!(task.merge_commit_sha.as_deref(), Some(commit_sha.as_str()));
 
@@ -502,7 +507,10 @@ async fn test_plan_delivered_fires_from_complete_merge_internal() {
         .get_events_after_cursor(std::slice::from_ref(&project_id), 0, 1000)
         .await
         .expect("get_events_after_cursor");
-    let delivered: Vec<_> = events.iter().filter(|e| e.event_type == "plan:delivered").collect();
+    let delivered: Vec<_> = events
+        .iter()
+        .filter(|e| e.event_type == "plan:delivered")
+        .collect();
     assert_eq!(
         delivered.len(),
         1,
@@ -568,9 +576,18 @@ async fn test_plan_delivered_fires_from_complete_merge_internal() {
     );
     let hc = payload_json["human_context"].as_str().unwrap();
     assert!(!hc.is_empty(), "human_context must not be empty");
-    assert!(hc.contains("cmi-test-project"), "human_context must contain project_name");
-    assert!(hc.contains("Test Delivery Session"), "human_context must contain session_title");
-    assert!(hc.contains("PlanMerge task"), "human_context must contain task_title");
+    assert!(
+        hc.contains("cmi-test-project"),
+        "human_context must contain project_name"
+    );
+    assert!(
+        hc.contains("Test Delivery Session"),
+        "human_context must contain session_title"
+    );
+    assert!(
+        hc.contains("PlanMerge task"),
+        "human_context must contain task_title"
+    );
 
     // Assert: webhook publisher called once with PlanDelivered
     assert!(
@@ -617,7 +634,7 @@ async fn test_plan_delivered_idempotent_from_complete_merge_internal() {
         Arc::clone(&raw_publisher) as Arc<dyn WebhookPublisherTrait>;
 
     // First call: inserts plan:delivered
-    let result1 = complete_merge_internal::<tauri::test::MockRuntime>(
+    let result1 = complete_merge_internal(
         &mut task,
         &project,
         &commit_sha,
@@ -635,10 +652,13 @@ async fn test_plan_delivered_idempotent_from_complete_merge_internal() {
     // Simulate a concurrent duplicate: reset task to PendingMerge so the state
     // freshness guard doesn't abort the second call before reaching event_exists.
     task.internal_status = InternalStatus::PendingMerge;
-    task_repo.update(&task).await.expect("reset task to PendingMerge");
+    task_repo
+        .update(&task)
+        .await
+        .expect("reset task to PendingMerge");
 
     // Second call: event_exists returns true → idempotency guard prevents duplicate
-    let result2 = complete_merge_internal::<tauri::test::MockRuntime>(
+    let result2 = complete_merge_internal(
         &mut task,
         &project,
         &commit_sha,
@@ -658,10 +678,12 @@ async fn test_plan_delivered_idempotent_from_complete_merge_internal() {
         .get_events_after_cursor(std::slice::from_ref(&project_id), 0, 1000)
         .await
         .expect("get_events_after_cursor");
-    let delivered_count = events.iter().filter(|e| e.event_type == "plan:delivered").count();
+    let delivered_count = events
+        .iter()
+        .filter(|e| e.event_type == "plan:delivered")
+        .count();
     assert_eq!(
-        delivered_count,
-        1,
+        delivered_count, 1,
         "plan:delivered must fire only once even when complete_merge_internal is called twice"
     );
 
@@ -708,7 +730,7 @@ async fn test_merge_completed_includes_presentation_fields() {
     let publisher_dyn: Arc<dyn WebhookPublisherTrait> =
         Arc::clone(&raw_publisher) as Arc<dyn WebhookPublisherTrait>;
 
-    let result = complete_merge_internal::<tauri::test::MockRuntime>(
+    let result = complete_merge_internal(
         &mut task,
         &project,
         &commit_sha,
@@ -722,7 +744,11 @@ async fn test_merge_completed_includes_presentation_fields() {
     )
     .await;
 
-    assert!(result.is_ok(), "complete_merge_internal failed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "complete_merge_internal failed: {:?}",
+        result
+    );
     assert_eq!(task.internal_status, InternalStatus::Merged);
 
     let events = raw_events
@@ -731,8 +757,15 @@ async fn test_merge_completed_includes_presentation_fields() {
         .expect("get_events_after_cursor");
 
     // Assert: exactly one merge:completed event
-    let mc_events: Vec<_> = events.iter().filter(|e| e.event_type == "merge:completed").collect();
-    assert_eq!(mc_events.len(), 1, "Expected exactly one merge:completed event");
+    let mc_events: Vec<_> = events
+        .iter()
+        .filter(|e| e.event_type == "merge:completed")
+        .collect();
+    assert_eq!(
+        mc_events.len(),
+        1,
+        "Expected exactly one merge:completed event"
+    );
 
     let payload_json: serde_json::Value = serde_json::from_str(&mc_events[0].payload)
         .expect("merge:completed payload must be valid JSON");
@@ -763,7 +796,10 @@ async fn test_merge_completed_includes_presentation_fields() {
         "main",
         "target_branch must be present"
     );
-    assert!(payload_json.get("timestamp").is_some(), "timestamp must be present");
+    assert!(
+        payload_json.get("timestamp").is_some(),
+        "timestamp must be present"
+    );
 
     // Enrichment fields
     assert_eq!(
@@ -802,10 +838,12 @@ async fn test_merge_completed_includes_presentation_fields() {
     );
 
     // No plan:delivered must fire for a regular (non-PlanMerge) task
-    let pd_count = events.iter().filter(|e| e.event_type == "plan:delivered").count();
+    let pd_count = events
+        .iter()
+        .filter(|e| e.event_type == "plan:delivered")
+        .count();
     assert_eq!(
-        pd_count,
-        0,
+        pd_count, 0,
         "plan:delivered must not fire for a non-PlanMerge task"
     );
 

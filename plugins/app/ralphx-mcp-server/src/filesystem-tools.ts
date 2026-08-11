@@ -1,13 +1,34 @@
-import type { Dirent } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
-import ignore, { type Ignore } from "ignore";
 import picomatch from "picomatch";
 import { Tool } from "@modelcontextprotocol/sdk/types.js";
 import {
+  createExclusionCounters,
+  formatExclusionNotes,
+  recordExclusion,
+} from "./filesystem/exclusions.js";
+import {
+  collectFileMatches,
+  type GrepOutputMode,
+  MAX_GREP_CONTEXT_LINES,
+} from "./filesystem/grep-matching.js";
+import {
+  DEFAULT_MAX_READ_LINES,
+  formatReadHeader,
+  MAX_READ_LINES_CAP,
+  readLineWindow,
+} from "./filesystem/read-window.js";
+import {
+  buildDirectoryScan,
+  type TraversalOptions,
+  walkFiles,
+} from "./filesystem/traversal.js";
+import {
   getPrimaryFilesystemRoot,
   normalizePathLike,
+  resolveEnforcedFilesystemPath,
 } from "./path-policy.js";
+import type { RuntimeContext } from "./runtime-context.js";
 
 const DEFAULT_MAX_READ_BYTES = 64 * 1024;
 const MAX_READ_BYTES_CAP = 256 * 1024;
@@ -35,7 +56,7 @@ export const FILESYSTEM_TOOLS: Tool[] = [
   {
     name: "fs_read_file",
     description:
-      "Read a local text file. Use this for direct source inspection without shell access. Absolute paths are accepted; relative paths resolve from the current MCP working directory.",
+      "Read a local text file, optionally a bounded line window at any offset. Absolute paths are accepted; relative paths resolve from the current MCP working directory.",
     inputSchema: {
       type: "object",
       properties: {
@@ -51,9 +72,13 @@ export const FILESYSTEM_TOOLS: Tool[] = [
           type: "integer",
           description: "Optional 1-based inclusive end line. Defaults to EOF.",
         },
+        max_lines: {
+          type: "integer",
+          description: `Maximum number of lines to return (default ${DEFAULT_MAX_READ_LINES}, hard cap ${MAX_READ_LINES_CAP}). Use with start_line for a bounded window anywhere in a large file.`,
+        },
         max_bytes: {
           type: "integer",
-          description: `Optional byte cap for the read (default ${DEFAULT_MAX_READ_BYTES}, hard cap ${MAX_READ_BYTES_CAP}).`,
+          description: `Byte cap on the returned window, not on how far into the file the read may start (default ${DEFAULT_MAX_READ_BYTES}, hard cap ${MAX_READ_BYTES_CAP}).`,
         },
       },
       required: ["path"],
@@ -62,6 +87,11 @@ export const FILESYSTEM_TOOLS: Tool[] = [
           path: "src-tauri/src/http_server/handlers/coordination/mod.rs",
           start_line: 1,
           end_line: 80,
+        },
+        {
+          path: "frontend/src/components/AgentsSidebar.tsx",
+          start_line: 2699,
+          max_lines: 60,
         },
       ],
     },
@@ -139,7 +169,7 @@ export const FILESYSTEM_TOOLS: Tool[] = [
         },
         max_results: {
           type: "integer",
-          description: `Maximum number of matching lines to return (default ${DEFAULT_MAX_GREP_RESULTS}, hard cap ${MAX_GREP_RESULTS_CAP}).`,
+          description: `Maximum matching lines in content mode, or matching files in other output modes (default ${DEFAULT_MAX_GREP_RESULTS}, hard cap ${MAX_GREP_RESULTS_CAP}). Context lines do not count toward this cap.`,
         },
         max_file_bytes: {
           type: "integer",
@@ -148,6 +178,16 @@ export const FILESYSTEM_TOOLS: Tool[] = [
         max_depth: {
           type: "integer",
           description: `Maximum directory traversal depth (default ${DEFAULT_MAX_DEPTH}).`,
+        },
+        context_lines: {
+          type: "integer",
+          description: `Lines of context before and after each match (default 0, hard cap ${MAX_GREP_CONTEXT_LINES}). Context lines use "path-N- text"; matches use "path:N: text".`,
+        },
+        output_mode: {
+          type: "string",
+          enum: ["content", "files_with_matches", "count"],
+          description:
+            "content (default) returns matching lines; files_with_matches returns one path per matching file; count returns path:count per file.",
         },
       },
       required: ["pattern"],
@@ -209,38 +249,6 @@ type ToolResult = {
   isError?: boolean;
 };
 
-type TraversalOptions = {
-  includeHidden: boolean;
-  respectGitignore: boolean;
-  maxWalkEntries: number;
-  maxDepth: number;
-};
-
-type WalkContext = {
-  root: string;
-  options: TraversalOptions;
-  visitedEntries: number;
-};
-
-type QueueItem = {
-  absoluteDir: string;
-  relativeDir: string;
-  inheritedIgnorePatterns: string[];
-  depth: number;
-};
-
-type FileEntry = {
-  absolutePath: string;
-  relativePath: string;
-  dirent: Dirent;
-};
-
-type DirectoryScan = {
-  ignoreMatcher: Ignore;
-  effectiveIgnorePatterns: string[];
-  entries: FileEntry[];
-};
-
 type ResolvedExistingPath = {
   displayPath: string;
   safePath: string;
@@ -283,6 +291,7 @@ function clampNonNegative(value: number, fallback: number): number {
 
 async function resolveReadOnlyExistingPath(
   inputPath: string,
+  filesystemEnforced: boolean,
   basePath?: string
 ): Promise<ResolvedExistingPath> {
   const baseRoot = normalizePathLike(basePath ?? getPrimaryFilesystemRoot());
@@ -290,210 +299,14 @@ async function resolveReadOnlyExistingPath(
     path.isAbsolute(inputPath) || inputPath.startsWith("~")
       ? normalizePathLike(inputPath)
       : path.resolve(baseRoot, inputPath);
-  const safePath = await fs.realpath(displayPath);
+  const safePath = filesystemEnforced
+    ? await resolveEnforcedFilesystemPath(inputPath, displayPath)
+    : await fs.realpath(displayPath);
 
   return {
     displayPath,
     safePath,
   };
-}
-
-function formatPathForIgnore(relativePath: string, isDirectory: boolean): string {
-  if (relativePath === ".") {
-    return isDirectory ? "./" : ".";
-  }
-  return isDirectory ? `${relativePath}/` : relativePath;
-}
-
-function hasHiddenSegment(relativePath: string): boolean {
-  return relativePath
-    .split("/")
-    .filter((segment) => segment.length > 0 && segment !== "." && segment !== "..")
-    .some((segment) => segment.startsWith("."));
-}
-
-function stripTrailingWhitespace(line: string): string {
-  return line.replace(/\s+$/, "");
-}
-
-function convertIgnoreLineToRootPatterns(line: string, relativeDir: string): string[] {
-  let raw = stripTrailingWhitespace(line);
-  if (raw.length === 0) {
-    return [];
-  }
-  if (raw.startsWith("\\#")) {
-    raw = raw.slice(1);
-  } else if (raw.startsWith("#")) {
-    return [];
-  }
-
-  let negated = false;
-  if (raw.startsWith("\\!")) {
-    raw = raw.slice(1);
-  } else if (raw.startsWith("!")) {
-    negated = true;
-    raw = raw.slice(1);
-  }
-
-  raw = raw.trim();
-  if (raw.length === 0) {
-    return [];
-  }
-
-  const directoryOnly = raw.endsWith("/");
-  raw = raw.replace(/^\/+/, "").replace(/\/+$/, "").replace(/\\/g, "/");
-  if (raw.length === 0) {
-    return [];
-  }
-
-  const prefix = relativeDir === "." ? "" : `${relativeDir}/`;
-  const rootedPattern = raw.includes("/") ? `${prefix}${raw}` : `${prefix}**/${raw}`;
-  const patterns = directoryOnly ? [rootedPattern, `${rootedPattern}/**`] : [rootedPattern];
-
-  return patterns.map((pattern) => (negated ? `!${pattern}` : pattern));
-}
-
-async function loadDirectoryIgnorePatterns(
-  absoluteDir: string,
-  relativeDir: string
-): Promise<string[]> {
-  const ignoreFiles = [".gitignore", ".ignore"];
-  const patterns: string[] = [];
-
-  for (const ignoreFile of ignoreFiles) {
-    const absolutePath = path.resolve(absoluteDir, ignoreFile);
-    try {
-      const content = await fs.readFile(absolutePath, "utf8");
-      for (const line of content.split(/\r?\n/)) {
-        patterns.push(...convertIgnoreLineToRootPatterns(line, relativeDir));
-      }
-    } catch (error) {
-      const code =
-        typeof error === "object" &&
-        error !== null &&
-        "code" in error &&
-        typeof (error as { code?: unknown }).code === "string"
-          ? (error as { code: string }).code
-          : undefined;
-      if (code !== "ENOENT") {
-        throw error;
-      }
-    }
-  }
-
-  return patterns;
-}
-
-async function buildDirectoryScan(
-  absoluteDir: string,
-  relativeDir: string,
-  inheritedIgnorePatterns: string[],
-  options: TraversalOptions
-): Promise<DirectoryScan> {
-  const effectiveIgnorePatterns = options.respectGitignore
-    ? [
-        ...inheritedIgnorePatterns,
-        ...(await loadDirectoryIgnorePatterns(absoluteDir, relativeDir)),
-      ]
-    : inheritedIgnorePatterns;
-  const ignoreMatcher = ignore().add(effectiveIgnorePatterns);
-
-  const dirEntries = await fs.readdir(absoluteDir, { withFileTypes: true });
-  dirEntries.sort((a, b) => a.name.localeCompare(b.name));
-
-  const entries: FileEntry[] = [];
-  for (const dirent of dirEntries) {
-    const absolutePath = path.resolve(absoluteDir, dirent.name);
-    const relativePath =
-      relativeDir === "."
-        ? dirent.name
-        : `${relativeDir}/${dirent.name}`;
-
-    if (!options.includeHidden && hasHiddenSegment(relativePath)) {
-      continue;
-    }
-
-    if (
-      options.respectGitignore &&
-      ignoreMatcher.ignores(formatPathForIgnore(relativePath, dirent.isDirectory()))
-    ) {
-      continue;
-    }
-
-    entries.push({ absolutePath, relativePath, dirent });
-  }
-
-  return { ignoreMatcher, effectiveIgnorePatterns, entries };
-}
-
-function ensureWalkBudget(context: WalkContext): void {
-  if (context.visitedEntries > context.options.maxWalkEntries) {
-    throw new Error(
-      `Traversal budget exceeded (${context.options.maxWalkEntries} entries). Narrow base_path or file_pattern.`
-    );
-  }
-}
-
-async function walkFiles(
-  root: string,
-  options: TraversalOptions,
-  onFile: (entry: FileEntry, context: WalkContext) => boolean | Promise<boolean>
-): Promise<void> {
-  const context: WalkContext = {
-    root,
-    options,
-    visitedEntries: 0,
-  };
-  const queue: QueueItem[] = [
-    {
-      absoluteDir: root,
-      relativeDir: ".",
-      inheritedIgnorePatterns: [],
-      depth: 0,
-    },
-  ];
-  let queueIndex = 0;
-
-  while (queueIndex < queue.length) {
-    const current = queue[queueIndex]!;
-    queueIndex += 1;
-    const scan = await buildDirectoryScan(
-      current.absoluteDir,
-      current.relativeDir,
-      current.inheritedIgnorePatterns,
-      options
-    );
-
-    for (const entry of scan.entries) {
-      context.visitedEntries += 1;
-      ensureWalkBudget(context);
-
-      if (entry.dirent.isSymbolicLink()) {
-        continue;
-      }
-
-      if (entry.dirent.isDirectory()) {
-        if (current.depth < options.maxDepth) {
-          queue.push({
-            absoluteDir: entry.absolutePath,
-            relativeDir: entry.relativePath,
-            inheritedIgnorePatterns: scan.effectiveIgnorePatterns,
-            depth: current.depth + 1,
-          });
-        }
-        continue;
-      }
-
-      if (!entry.dirent.isFile()) {
-        continue;
-      }
-
-      const shouldContinue = await onFile(entry, context);
-      if (!shouldContinue) {
-        return;
-      }
-    }
-  }
 }
 
 function readOnlyTraversalOptions(args: Record<string, unknown>): TraversalOptions {
@@ -543,7 +356,10 @@ function formatByteSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-async function handleReadFile(args: Record<string, unknown>): Promise<ToolResult> {
+async function handleReadFile(
+  args: Record<string, unknown>,
+  filesystemEnforced: boolean
+): Promise<ToolResult> {
   const requestedPath = getStringArg(args, "path");
   if (!requestedPath) {
     throw new Error("fs_read_file requires a non-empty path.");
@@ -554,27 +370,41 @@ async function handleReadFile(args: Record<string, unknown>): Promise<ToolResult
     DEFAULT_MAX_READ_BYTES,
     MAX_READ_BYTES_CAP
   );
-  const { displayPath, safePath } = await resolveReadOnlyExistingPath(requestedPath);
+  const { displayPath, safePath } = await resolveReadOnlyExistingPath(
+    requestedPath,
+    filesystemEnforced
+  );
   const stat = await fs.stat(safePath);
   if (!stat.isFile()) {
     throw new Error(`Path "${requestedPath}" is not a file.`);
   }
 
-  const { content, truncated } = await readTextFile(safePath, maxBytes);
-  const lines = content.split("\n");
-  const totalLines = lines.length;
   const startLine = clampPositive(getIntegerArg(args, "start_line", 1), 1);
-  const requestedEndLine = getIntegerArg(args, "end_line", totalLines);
-  const endLine = Math.min(Math.max(requestedEndLine, startLine), totalLines);
-  const slice = lines.slice(startLine - 1, endLine);
-  const numbered = slice
-    .map((line, index) => `${startLine + index}| ${line}`)
+  const rawEndLine = getIntegerArg(args, "end_line", 0);
+  const endLine = rawEndLine > 0 ? Math.max(rawEndLine, startLine) : undefined;
+  const maxLines = clampPositive(
+    getIntegerArg(args, "max_lines", DEFAULT_MAX_READ_LINES),
+    DEFAULT_MAX_READ_LINES,
+    MAX_READ_LINES_CAP
+  );
+  const window = await readLineWindow(safePath, {
+    startLine,
+    ...(endLine !== undefined && { endLine }),
+    maxLines,
+    maxBytes,
+  });
+  const numbered = window.lines
+    .map((line, index) => `${window.windowStart + index}| ${line}`)
     .join("\n");
 
   const response = [
-    `FILE: ${displayPath}`,
-    `LINES: ${startLine}-${endLine}/${totalLines}`,
-    truncated ? `TRUNCATED: true (max_bytes=${maxBytes})` : "TRUNCATED: false",
+    ...formatReadHeader(window, {
+      displayPath,
+      startLine,
+      ...(endLine !== undefined && { endLine }),
+      maxLines,
+      maxBytes,
+    }),
     "",
     numbered,
   ].join("\n");
@@ -584,9 +414,15 @@ async function handleReadFile(args: Record<string, unknown>): Promise<ToolResult
   };
 }
 
-async function handleListDir(args: Record<string, unknown>): Promise<ToolResult> {
+async function handleListDir(
+  args: Record<string, unknown>,
+  filesystemEnforced: boolean
+): Promise<ToolResult> {
   const requestedPath = getStringArg(args, "path") ?? ".";
-  const { displayPath, safePath } = await resolveReadOnlyExistingPath(requestedPath);
+  const { displayPath, safePath } = await resolveReadOnlyExistingPath(
+    requestedPath,
+    filesystemEnforced
+  );
   const stat = await fs.stat(safePath);
   if (!stat.isDirectory()) {
     throw new Error(`Path "${requestedPath}" is not a directory.`);
@@ -601,20 +437,31 @@ async function handleListDir(args: Record<string, unknown>): Promise<ToolResult>
   );
 
   const relativeRoot = ".";
+  const counters = createExclusionCounters();
   const scan = await buildDirectoryScan(
     safePath,
     relativeRoot,
     [],
-    { ...options, maxWalkEntries: maxEntries }
+    { ...options, maxWalkEntries: maxEntries },
+    counters
   );
 
   const lines: string[] = [];
   for (const entry of scan.entries) {
     if (entry.dirent.isSymbolicLink()) {
+      recordExclusion(counters, "symlink");
       continue;
     }
     if (directoriesOnly && !entry.dirent.isDirectory()) {
       continue;
+    }
+    if (!entry.dirent.isDirectory() && !entry.dirent.isFile()) {
+      continue;
+    }
+
+    if (lines.length >= maxEntries) {
+      counters.entryCapReached = true;
+      break;
     }
 
     if (entry.dirent.isDirectory()) {
@@ -626,9 +473,6 @@ async function handleListDir(args: Record<string, unknown>): Promise<ToolResult>
       );
     }
 
-    if (lines.length >= maxEntries) {
-      break;
-    }
   }
 
   const response = [
@@ -637,6 +481,7 @@ async function handleListDir(args: Record<string, unknown>): Promise<ToolResult>
     `DIRECTORIES_ONLY: ${directoriesOnly}`,
     `INCLUDE_HIDDEN: ${options.includeHidden}`,
     `RESPECT_GITIGNORE: ${options.respectGitignore}`,
+    ...formatExclusionNotes(counters, { maxEntries }),
     "",
     ...lines,
   ].join("\n");
@@ -646,7 +491,10 @@ async function handleListDir(args: Record<string, unknown>): Promise<ToolResult>
   };
 }
 
-async function handleGlob(args: Record<string, unknown>): Promise<ToolResult> {
+async function handleGlob(
+  args: Record<string, unknown>,
+  filesystemEnforced: boolean
+): Promise<ToolResult> {
   const pattern = getStringArg(args, "pattern");
   if (!pattern) {
     throw new Error("fs_glob requires a non-empty pattern.");
@@ -654,7 +502,7 @@ async function handleGlob(args: Record<string, unknown>): Promise<ToolResult> {
 
   const basePath = getStringArg(args, "base_path") ?? ".";
   const { displayPath: displayRoot, safePath: safeRoot } =
-    await resolveReadOnlyExistingPath(basePath);
+    await resolveReadOnlyExistingPath(basePath, filesystemEnforced);
   const rootStat = await fs.stat(safeRoot);
   if (!rootStat.isDirectory()) {
     throw new Error(`Base path "${basePath}" is not a directory.`);
@@ -671,12 +519,14 @@ async function handleGlob(args: Record<string, unknown>): Promise<ToolResult> {
   });
 
   const matches: string[] = [];
-  await walkFiles(safeRoot, options, async ({ relativePath }) => {
+  const counters = createExclusionCounters();
+  await walkFiles(safeRoot, options, counters, async ({ relativePath }) => {
     if (matcher(relativePath)) {
-      matches.push(relativePath);
       if (matches.length >= maxResults) {
+        counters.resultCapReached = true;
         return false;
       }
+      matches.push(relativePath);
     }
     return true;
   });
@@ -687,6 +537,10 @@ async function handleGlob(args: Record<string, unknown>): Promise<ToolResult> {
     `MATCHES: ${matches.length}`,
     `INCLUDE_HIDDEN: ${options.includeHidden}`,
     `RESPECT_GITIGNORE: ${options.respectGitignore}`,
+    ...formatExclusionNotes(counters, {
+      maxResults,
+      maxDepth: options.maxDepth,
+    }),
     "",
     ...matches,
   ].join("\n");
@@ -696,7 +550,10 @@ async function handleGlob(args: Record<string, unknown>): Promise<ToolResult> {
   };
 }
 
-async function handleGrep(args: Record<string, unknown>): Promise<ToolResult> {
+async function handleGrep(
+  args: Record<string, unknown>,
+  filesystemEnforced: boolean
+): Promise<ToolResult> {
   const pattern = getStringArg(args, "pattern");
   if (!pattern) {
     throw new Error("fs_grep requires a non-empty pattern.");
@@ -717,9 +574,21 @@ async function handleGrep(args: Record<string, unknown>): Promise<ToolResult> {
     DEFAULT_MAX_FILE_BYTES_FOR_SEARCH,
     MAX_FILE_BYTES_FOR_SEARCH_CAP
   );
+  const contextLines = Math.min(
+    clampNonNegative(getIntegerArg(args, "context_lines", 0), 0),
+    MAX_GREP_CONTEXT_LINES
+  );
+  const rawOutputMode = getStringArg(args, "output_mode") ?? "content";
+  const outputMode: GrepOutputMode = [
+    "content",
+    "files_with_matches",
+    "count",
+  ].includes(rawOutputMode)
+    ? (rawOutputMode as GrepOutputMode)
+    : "content";
 
   const { displayPath: displayRoot, safePath: safeRoot } =
-    await resolveReadOnlyExistingPath(basePath);
+    await resolveReadOnlyExistingPath(basePath, filesystemEnforced);
   const rootStat = await fs.stat(safeRoot);
   if (!rootStat.isDirectory()) {
     throw new Error(`Base path "${basePath}" is not a directory.`);
@@ -733,42 +602,44 @@ async function handleGrep(args: Record<string, unknown>): Promise<ToolResult> {
     : null;
   const literalNeedle = caseSensitive ? pattern : pattern.toLowerCase();
   const matches: string[] = [];
+  const counters = createExclusionCounters();
+  let emittedMatches = 0;
+  const isMatch = (line: string): boolean => {
+    if (regex) {
+      regex.lastIndex = 0;
+      const matched = regex.test(line);
+      regex.lastIndex = 0;
+      return matched;
+    }
+    return (caseSensitive ? line : line.toLowerCase()).includes(literalNeedle);
+  };
 
-  await walkFiles(safeRoot, options, async ({ absolutePath, relativePath }) => {
+  await walkFiles(safeRoot, options, counters, async ({ absolutePath, relativePath }) => {
     if (!fileMatcher(relativePath)) {
       return true;
     }
 
     const stat = await fs.stat(absolutePath);
     if (stat.size > maxFileBytes) {
+      recordExclusion(counters, "oversize", relativePath);
       return true;
     }
 
     const { content } = await readTextFile(absolutePath, maxFileBytes);
-    const lines = content.split("\n");
-    for (let index = 0; index < lines.length; index += 1) {
-      const line = lines[index] ?? "";
-      const matched = regex
-        ? regex.test(line)
-        : (caseSensitive ? line : line.toLowerCase()).includes(literalNeedle);
-
-      if (!matched) {
-        if (regex) {
-          regex.lastIndex = 0;
-        }
-        continue;
-      }
-
-      matches.push(`${relativePath}:${index + 1}: ${line}`);
-      if (regex) {
-        regex.lastIndex = 0;
-      }
-
-      if (matches.length >= maxResults) {
-        return false;
-      }
+    const collected = collectFileMatches({
+      relativePath,
+      lines: content.split("\n"),
+      isMatch,
+      contextLines,
+      outputMode,
+      remainingMatches: maxResults - emittedMatches,
+    });
+    matches.push(...collected.output);
+    emittedMatches += collected.matchCount;
+    if (collected.capReached) {
+      counters.resultCapReached = true;
+      return false;
     }
-
     return true;
   });
 
@@ -776,9 +647,15 @@ async function handleGrep(args: Record<string, unknown>): Promise<ToolResult> {
     `ROOT: ${displayRoot}`,
     `PATTERN: ${pattern}`,
     `FILE_PATTERN: ${filePattern}`,
-    `MATCHES: ${matches.length}`,
+    `OUTPUT_MODE: ${outputMode}`,
+    `MATCHES: ${emittedMatches}`,
     `INCLUDE_HIDDEN: ${options.includeHidden}`,
     `RESPECT_GITIGNORE: ${options.respectGitignore}`,
+    ...formatExclusionNotes(counters, {
+      maxResults,
+      maxFileBytes,
+      maxDepth: options.maxDepth,
+    }),
     "",
     ...matches,
   ].join("\n");
@@ -790,7 +667,8 @@ async function handleGrep(args: Record<string, unknown>): Promise<ToolResult> {
 
 export async function handleFilesystemToolCall(
   name: string,
-  rawArgs: unknown
+  rawArgs: unknown,
+  runtimeContext: Pick<RuntimeContext, "filesystemEnforced">
 ): Promise<ToolResult> {
   if (!isFilesystemToolName(name)) {
     throw new Error(`Unknown filesystem tool "${name}".`);
@@ -803,13 +681,13 @@ export async function handleFilesystemToolCall(
 
   switch (name) {
     case "fs_read_file":
-      return handleReadFile(args);
+      return handleReadFile(args, runtimeContext.filesystemEnforced);
     case "fs_list_dir":
-      return handleListDir(args);
+      return handleListDir(args, runtimeContext.filesystemEnforced);
     case "fs_grep":
-      return handleGrep(args);
+      return handleGrep(args, runtimeContext.filesystemEnforced);
     case "fs_glob":
-      return handleGlob(args);
+      return handleGlob(args, runtimeContext.filesystemEnforced);
   }
 }
 

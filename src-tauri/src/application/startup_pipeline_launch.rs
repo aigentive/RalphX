@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::application;
 use crate::application::startup_pipeline::{StartupPipelineDeps, StartupPipelineMode};
+use crate::application::startup_status::{StartupCoordinator, StartupStage};
 use crate::commands::{ActiveProjectState, ExecutionState};
 use crate::AppState;
 
@@ -11,6 +12,12 @@ fn build_startup_pipeline_deps(
     startup_active_project_state: Arc<ActiveProjectState>,
     startup_app_handle: tauri::AppHandle,
     mode: StartupPipelineMode,
+    startup_boundary: Option<(Arc<StartupCoordinator>, u64)>,
+    pr_fix_review_publish_resumer: Option<
+        Arc<
+            dyn crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrFixReviewPublishResumer,
+        >,
+    >,
 ) -> StartupPipelineDeps {
     // Spawn startup job runner to resume tasks in agent-active states
     // Clone references needed for the async task
@@ -34,6 +41,8 @@ fn build_startup_pipeline_deps(
         Arc::clone(&app_state.agent_conversation_granola_note_repo);
     let startup_orphan_worktree_cleanup_marker_repo =
         Arc::clone(&app_state.orphan_worktree_cleanup_marker_repo);
+    let startup_automation_repo = Arc::clone(&app_state.automation_repo);
+    let startup_automation_run_repo = Arc::clone(&app_state.automation_run_repo);
     let startup_agent_run_repo = Arc::clone(&app_state.agent_run_repo);
     let startup_ideation_session_repo = Arc::clone(&app_state.ideation_session_repo);
     let startup_activity_event_repo = Arc::clone(&app_state.activity_event_repo);
@@ -59,7 +68,12 @@ fn build_startup_pipeline_deps(
     let startup_session_merge_locks = Arc::clone(&app_state.session_merge_locks);
     let startup_git_auth_recovery_state = Arc::clone(&app_state.startup_git_auth_recovery_state);
 
+    let (startup_coordinator, startup_attempt_id) = startup_boundary
+        .map(|(coordinator, attempt_id)| (Some(coordinator), Some(attempt_id)))
+        .unwrap_or((None, None));
+
     StartupPipelineDeps {
+        app_state: app_state.clone(),
         execution_state: Arc::clone(&startup_execution_state),
         active_project_state: Arc::clone(&startup_active_project_state),
         task_repo: startup_task_repo,
@@ -77,6 +91,8 @@ fn build_startup_pipeline_deps(
         agent_conversation_linear_issue_repo: startup_agent_conversation_linear_issue_repo,
         agent_conversation_granola_note_repo: startup_agent_conversation_granola_note_repo,
         orphan_worktree_cleanup_marker_repo: startup_orphan_worktree_cleanup_marker_repo,
+        automation_repo: startup_automation_repo,
+        automation_run_repo: startup_automation_run_repo,
         agent_run_repo: startup_agent_run_repo,
         ideation_session_repo: startup_ideation_session_repo,
         activity_event_repo: startup_activity_event_repo,
@@ -102,37 +118,53 @@ fn build_startup_pipeline_deps(
         app_handle: startup_app_handle,
         git_auth_recovery_state: startup_git_auth_recovery_state,
         mode,
+        startup_coordinator,
+        startup_attempt_id,
+        pr_fix_review_publish_resumer,
     }
 }
 
-pub(crate) fn launch_startup_pipeline(
-    app: &tauri::App<tauri::Wry>,
+/// Starts existing recovery only after dynamic AppState registration and a
+/// listener-backed runtime-ready handshake.
+pub(crate) fn launch_startup_pipeline_from_handle(
+    startup_app_handle: tauri::AppHandle,
     app_state: &AppState,
     startup_execution_state: Arc<ExecutionState>,
     startup_active_project_state: Arc<ActiveProjectState>,
+    pr_fix_review_publish_resumer: Option<
+        Arc<
+            dyn crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrFixReviewPublishResumer,
+        >,
+    >,
+    startup_coordinator: Arc<StartupCoordinator>,
+    attempt_id: u64,
 ) {
-    // Clone app handle to enable event emission in startup tasks
-    let startup_app_handle = app.handle().clone();
-    let external_mcp_app_handle = startup_app_handle.clone();
-    tracing::info!("Scheduling external MCP startup independently of startup recovery pipeline");
-    tauri::async_runtime::spawn(async move {
-        application::startup_background::maybe_start_external_mcp(
-            external_mcp_app_handle,
-            |port, timeout| Box::pin(crate::wait_for_backend_ready(port, timeout)),
-        )
-        .await;
-    });
-
     let deps = build_startup_pipeline_deps(
         app_state,
         startup_execution_state,
         startup_active_project_state,
         startup_app_handle,
         StartupPipelineMode::Full,
+        Some((Arc::clone(&startup_coordinator), attempt_id)),
+        pr_fix_review_publish_resumer,
     );
     tauri::async_runtime::spawn(async move {
-        if let Err(error) = application::startup_pipeline::run_startup_pipeline(deps).await {
-            tracing::error!(error = %error, "Startup recovery pipeline failed");
+        match application::startup_pipeline::run_startup_pipeline(deps).await {
+            Ok(()) => {
+                let _ = startup_coordinator.advance(attempt_id, StartupStage::Ready);
+            }
+            Err(error) => {
+                tracing::error!(error = %error, "Startup recovery pipeline failed");
+                if startup_coordinator.snapshot().runtime_ready {
+                    let _ = startup_coordinator.advance(attempt_id, StartupStage::Degraded);
+                } else {
+                    startup_coordinator.fail(
+                        attempt_id,
+                        crate::application::startup_status::StartupFailureCode::SafetyRecovery,
+                        "RalphX could not safely restore interrupted work.",
+                    );
+                }
+            }
         }
     });
 }
@@ -141,6 +173,11 @@ pub(crate) async fn resume_deferred_git_startup_pipeline(
     app_state: &AppState,
     startup_execution_state: Arc<ExecutionState>,
     startup_active_project_state: Arc<ActiveProjectState>,
+    pr_fix_review_publish_resumer: Option<
+        Arc<
+            dyn crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrFixReviewPublishResumer,
+        >,
+    >,
 ) -> Result<bool, String> {
     let recovery_state = Arc::clone(&app_state.startup_git_auth_recovery_state);
     if !recovery_state.try_begin_resume() {
@@ -157,6 +194,8 @@ pub(crate) async fn resume_deferred_git_startup_pipeline(
             startup_active_project_state,
             app_handle,
             StartupPipelineMode::DeferredGitResume,
+            None,
+            pr_fix_review_publish_resumer,
         );
         application::startup_pipeline::run_startup_pipeline(deps)
             .await

@@ -5,11 +5,136 @@ use crate::entities::{
     AgentConversationWorkspace, AgentConversationWorkspacePublicationEvent,
     AgentConversationWorkspaceStatus, AgentWorkspaceFollowupProvenance,
     AgentWorkspacePrCommentEvidence, AgentWorkspacePrCommentEvidenceUpsert,
-    AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionStatus,
-    AgentWorkspacePrReviewMonitor, AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
-    ChatConversationId, IdeationSessionId, PlanBranchId, ProjectId,
+    AgentWorkspacePrDescription, AgentWorkspacePrMetadataDecision, AgentWorkspacePrReviewAction,
+    AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
+    AgentWorkspacePublicationMetadataPhase, AgentWorkspacePublicationMetadataReceipt,
+    AgentWorkspacePublicationMetadataState, AgentWorkspaceReviewApprovalSnapshot,
+    AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewFixerSnapshot,
+    AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor, ChatConversationId,
+    IdeationSessionId, PlanBranchId, ProjectId,
 };
 use crate::error::AppResult;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentWorkspaceLocalCleanupClaim {
+    Claimed,
+    AlreadyInProgress,
+    AlreadyCleaned,
+}
+
+/// Result of atomically acquiring the workspace-scoped publication lease.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentWorkspacePublishLeaseClaim {
+    Claimed,
+    HeldByLiveOwner,
+    Reclaimed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentWorkspacePrTerminalSettlement {
+    pub superseded_action_ids: Vec<String>,
+    pub event_inserted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentWorkspacePrReviewActionMutation {
+    UpsertPending(AgentWorkspacePrReviewAction),
+    CompareAndSet {
+        action_id: String,
+        expected: AgentWorkspacePrReviewActionStatus,
+        status: AgentWorkspacePrReviewActionStatus,
+        submitted_review_id: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentWorkspacePrReviewStateTransition {
+    pub monitor: AgentWorkspacePrReviewMonitor,
+    pub action: Option<AgentWorkspacePrReviewAction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentWorkspaceRepairStateGuard {
+    pub publication_push_status: Option<String>,
+    pub pr_supervision_status: Option<String>,
+    pub pr_supervision_updated_at: Option<DateTime<Utc>>,
+}
+
+impl AgentWorkspaceRepairStateGuard {
+    pub fn from_workspace(workspace: &AgentConversationWorkspace) -> Self {
+        Self {
+            publication_push_status: workspace.publication_push_status.clone(),
+            pr_supervision_status: workspace.pr_supervision_status.clone(),
+            pr_supervision_updated_at: workspace.pr_supervision_updated_at,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentWorkspaceRepairStateTransition {
+    pub publication_push_status: Option<String>,
+    pub pr_supervision_status: Option<String>,
+    pub pr_supervision_summary: Option<String>,
+    pub pr_supervision_updated_at: DateTime<Utc>,
+    pub pr_auto_merge_current: Option<bool>,
+    pub base_commit: Option<String>,
+}
+
+/// Publication fields settled together with a metadata receipt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentWorkspacePublicationUpdate {
+    pub pr_number: Option<i64>,
+    pub pr_url: Option<String>,
+    pub pr_status: Option<String>,
+    pub push_status: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentWorkspacePublicationGuard {
+    pub pr_number: Option<i64>,
+    pub pr_url: Option<String>,
+    pub pr_status: Option<String>,
+    pub push_status: Option<String>,
+    pub metadata_attempt_id: Option<String>,
+    pub metadata_phase: Option<AgentWorkspacePublicationMetadataPhase>,
+    pub metadata_state: Option<AgentWorkspacePublicationMetadataState>,
+}
+
+impl AgentWorkspacePublicationGuard {
+    pub fn from_workspace(workspace: &AgentConversationWorkspace) -> Self {
+        Self {
+            pr_number: workspace.publication_pr_number,
+            pr_url: workspace.publication_pr_url.clone(),
+            pr_status: workspace.publication_pr_status.clone(),
+            push_status: workspace.publication_push_status.clone(),
+            metadata_attempt_id: workspace.publication_metadata_attempt_id.clone(),
+            metadata_phase: workspace.publication_metadata_phase,
+            metadata_state: workspace.publication_metadata_state,
+        }
+    }
+}
+
+/// Claims a receipt together with the exact normalized metadata decision it authorizes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentWorkspacePublicationMetadataReceiptClaim {
+    pub receipt: AgentWorkspacePublicationMetadataReceipt,
+    pub decision: AgentWorkspacePrMetadataDecision,
+    pub event: AgentConversationWorkspacePublicationEvent,
+}
+
+/// One attempt-scoped redraft. The CAS guard prevents a stale retry from replacing authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentWorkspacePublicationMetadataReceiptRefresh {
+    pub decision: AgentWorkspacePrMetadataDecision,
+    pub target_pr_number: i64,
+    pub before_authority_sha256: String,
+    pub before_title_sha256: String,
+    pub before_editable_body_sha256: String,
+    pub before_managed_suffix_sha256: Option<String>,
+    pub intended_title_sha256: Option<String>,
+    pub intended_editable_body_sha256: Option<String>,
+    pub updated_at: DateTime<Utc>,
+}
 
 #[async_trait]
 pub trait AgentConversationWorkspaceRepository: Send + Sync {
@@ -24,6 +149,13 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
     ) -> AppResult<Option<AgentConversationWorkspace>>;
 
     async fn get_by_linked_ideation_session_id(
+        &self,
+        _ideation_session_id: &IdeationSessionId,
+    ) -> AppResult<Option<AgentConversationWorkspace>> {
+        Ok(None)
+    }
+
+    async fn get_by_task_pipeline_session_id(
         &self,
         _ideation_session_id: &IdeationSessionId,
     ) -> AppResult<Option<AgentConversationWorkspace>> {
@@ -116,6 +248,44 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         Ok(())
     }
 
+    async fn claim_local_cleanup(
+        &self,
+        conversation_id: &ChatConversationId,
+        claimed_at: DateTime<Utc>,
+        _stale_before: DateTime<Utc>,
+    ) -> AppResult<AgentWorkspaceLocalCleanupClaim> {
+        self.mark_local_cleanup_status(conversation_id, "cleaning", claimed_at)
+            .await?;
+        Ok(AgentWorkspaceLocalCleanupClaim::Claimed)
+    }
+
+    async fn finalize_local_cleanup(
+        &self,
+        conversation_id: &ChatConversationId,
+        claimed_at: DateTime<Utc>,
+        status: &str,
+        checked_at: DateTime<Utc>,
+    ) -> AppResult<bool> {
+        let _ = claimed_at;
+        self.mark_local_cleanup_status(conversation_id, status, checked_at)
+            .await?;
+        Ok(true)
+    }
+
+    async fn get_local_cleanup_status(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<String>> {
+        Ok(None)
+    }
+
+    async fn clear_local_cleanup_status(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
     async fn list_active_direct_published_workspaces(
         &self,
     ) -> AppResult<Vec<AgentConversationWorkspace>>;
@@ -162,12 +332,42 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Lists active workspaces whose current PR metadata receipt still requires recovery.
+    ///
+    /// This is intentionally separate from generic transient publish-status recovery because a
+    /// durable metadata receipt needs effect reconciliation before the normal publish re-drive.
+    /// The age cutoff prevents periodic recovery from preempting an in-flight metadata mutation.
+    async fn list_active_pending_publication_metadata_receipt_workspaces(
+        &self,
+        stale_older_than_secs: u64,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        let _ = stale_older_than_secs;
+        Ok(Vec::new())
+    }
+
     async fn update_links(
         &self,
         conversation_id: &ChatConversationId,
         ideation_session_id: Option<&IdeationSessionId>,
         plan_branch_id: Option<&PlanBranchId>,
     ) -> AppResult<()>;
+
+    async fn restore_after_restart(
+        &self,
+        conversation_id: &ChatConversationId,
+        ideation_session_id: &IdeationSessionId,
+        plan_branch_id: &PlanBranchId,
+    ) -> AppResult<()> {
+        self.update_links(
+            conversation_id,
+            Some(ideation_session_id),
+            Some(plan_branch_id),
+        )
+        .await?;
+        self.update_status(conversation_id, AgentConversationWorkspaceStatus::Active)
+            .await?;
+        self.clear_local_cleanup_status(conversation_id).await
+    }
 
     async fn update_publication(
         &self,
@@ -178,12 +378,164 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         push_status: Option<&str>,
     ) -> AppResult<()>;
 
+    /// Claims a lease, or reclaims it only after the caller has proved the previous owner dead.
+    /// Legacy rows without an owner are reclaimable only after their timestamp fallback expires.
+    async fn claim_publish_lease(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _owner_run_id: &str,
+        _token: &str,
+        _now: DateTime<Utc>,
+        _expected_previous_token: Option<&str>,
+        _previous_owner_is_dead: bool,
+    ) -> AppResult<AgentWorkspacePublishLeaseClaim> {
+        Err(crate::error::AppError::Infrastructure(
+            "publish leases are unsupported by this workspace repository".to_string(),
+        ))
+    }
+
+    /// Extends a lease only for its exact fencing token.
+    async fn heartbeat_publish_lease(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _token: &str,
+        _now: DateTime<Utc>,
+    ) -> AppResult<bool> {
+        Err(crate::error::AppError::Infrastructure(
+            "publish lease heartbeats are unsupported by this workspace repository".to_string(),
+        ))
+    }
+
+    /// Clears a lease only for its exact fencing token and optionally settles a terminal status.
+    async fn release_publish_lease(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _token: &str,
+        _terminal_status: Option<&str>,
+        _now: DateTime<Utc>,
+    ) -> AppResult<bool> {
+        Err(crate::error::AppError::Infrastructure(
+            "publish lease release is unsupported by this workspace repository".to_string(),
+        ))
+    }
+
+    /// Exclusively starts an existing-PR metadata receipt and its first audit event.
+    /// Terminal prior receipts may be replaced; pending receipts remain authoritative.
+    async fn claim_publication_metadata_receipt(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _claim: AgentWorkspacePublicationMetadataReceiptClaim,
+    ) -> AppResult<bool> {
+        Ok(false)
+    }
+
+    /// Changes receipt state and appends its audit events only while the exact attempt and
+    /// expected receipt phase/state still own the workspace.
+    async fn compare_and_set_publication_metadata_receipt_with_events(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _expected_attempt_id: &str,
+        _expected_phase: AgentWorkspacePublicationMetadataPhase,
+        _expected_state: AgentWorkspacePublicationMetadataState,
+        _next_phase: AgentWorkspacePublicationMetadataPhase,
+        _next_state: AgentWorkspacePublicationMetadataState,
+        _refresh: Option<AgentWorkspacePublicationMetadataReceiptRefresh>,
+        _events: Vec<AgentConversationWorkspacePublicationEvent>,
+    ) -> AppResult<bool> {
+        Ok(false)
+    }
+
+    /// Atomically settles general publication fields, the receipt, and receipt-scoped events
+    /// while the exact attempt and expected receipt phase/state remain current.
+    async fn settle_publication_metadata_receipt_with_events(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _expected_attempt_id: &str,
+        _expected_phase: AgentWorkspacePublicationMetadataPhase,
+        _expected_state: AgentWorkspacePublicationMetadataState,
+        _next_phase: AgentWorkspacePublicationMetadataPhase,
+        _next_state: AgentWorkspacePublicationMetadataState,
+        _publication: AgentWorkspacePublicationUpdate,
+        _events: Vec<AgentConversationWorkspacePublicationEvent>,
+    ) -> AppResult<bool> {
+        Ok(false)
+    }
+
+    /// Atomically updates general publication state and appends events for paths with no
+    /// existing-PR metadata receipt (for example Preserve and initial PR creation).
+    async fn update_publication_with_events(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _expected: &AgentWorkspacePublicationGuard,
+        _publication: AgentWorkspacePublicationUpdate,
+        _events: Vec<AgentConversationWorkspacePublicationEvent>,
+    ) -> AppResult<bool> {
+        Ok(false)
+    }
+
+    /// Returns no receipt for legacy rows. Partial receipt columns are invalid and fail closed.
+    async fn get_publication_metadata_receipt(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentWorkspacePublicationMetadataReceipt>> {
+        Ok(None)
+    }
+
+    async fn compare_and_set_repair_state(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _expected: &AgentWorkspaceRepairStateGuard,
+        _transition: &AgentWorkspaceRepairStateTransition,
+    ) -> AppResult<bool> {
+        Ok(false)
+    }
+
+    async fn compare_and_set_repair_state_with_events(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _expected: &AgentWorkspaceRepairStateGuard,
+        _transition: &AgentWorkspaceRepairStateTransition,
+        _events: Vec<AgentConversationWorkspacePublicationEvent>,
+    ) -> AppResult<bool> {
+        Ok(false)
+    }
+
     async fn update_pr_supervision_preferences(
         &self,
         conversation_id: &ChatConversationId,
         autofix_enabled: bool,
         auto_merge_desired: bool,
         auto_merge_method: &str,
+    ) -> AppResult<()>;
+
+    /// Updates automation preferences without touching the repair-owned supervision projection.
+    async fn update_pr_supervision_preferences_preserving_status(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _autofix_enabled: bool,
+        _auto_merge_desired: bool,
+        _auto_merge_method: &str,
+    ) -> AppResult<()> {
+        Err(crate::error::AppError::Infrastructure(
+            "workspace repository cannot preserve repair-owned supervision status".to_string(),
+        ))
+    }
+
+    /// Remembers the failure identity a PR autofix streak exhausted itself against, so a fresh
+    /// streak can recognise it instead of re-spending agents on the same evidence. Passing `None`
+    /// clears the memory once GitHub reports something different.
+    async fn set_last_blocked_pr_health_fingerprint(
+        &self,
+        conversation_id: &ChatConversationId,
+        fingerprint: Option<&str>,
+    ) -> AppResult<()>;
+
+    /// Sets the per-workspace Auto Review & Fix override. Enabling re-arms only a capped fixer
+    /// cycle, leaving any active routing/queued/running reservation untouched.
+    async fn set_review_automation_override(
+        &self,
+        conversation_id: &ChatConversationId,
+        value: Option<bool>,
     ) -> AppResult<()>;
 
     async fn update_auto_publish_preferences(
@@ -236,6 +588,54 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
     ) -> AppResult<Option<AgentWorkspacePrDescription>>;
 
     async fn clear_pr_description(&self, conversation_id: &ChatConversationId) -> AppResult<()>;
+
+    async fn save_pr_metadata_decision(
+        &self,
+        conversation_id: &ChatConversationId,
+        decision: crate::entities::AgentWorkspacePrMetadataDecision,
+    ) -> AppResult<()> {
+        let crate::entities::AgentWorkspacePrMetadataDecision::Patch {
+            title,
+            body_markdown,
+        } = decision
+        else {
+            return Err(crate::error::AppError::Validation(
+                "preserve metadata decisions require a repository implementation".to_string(),
+            ));
+        };
+        let Some(body_markdown) = body_markdown else {
+            return Err(crate::error::AppError::Validation(
+                "legacy PR description storage requires a body".to_string(),
+            ));
+        };
+        self.save_pr_description(
+            conversation_id,
+            AgentWorkspacePrDescription::new(title, body_markdown),
+        )
+        .await
+    }
+
+    async fn get_pr_metadata_decision(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<crate::entities::AgentWorkspacePrMetadataDecision>> {
+        Ok(self
+            .get_pr_description(conversation_id)
+            .await?
+            .map(
+                |description| crate::entities::AgentWorkspacePrMetadataDecision::Patch {
+                    title: description.title,
+                    body_markdown: Some(description.body_markdown),
+                },
+            ))
+    }
+
+    async fn clear_pr_metadata_decision(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<()> {
+        self.clear_pr_description(conversation_id).await
+    }
 
     async fn append_publication_event(
         &self,
@@ -305,10 +705,91 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         Ok(None)
     }
 
+    async fn set_pr_review_auto_approve_enabled(
+        &self,
+        conversation_id: &ChatConversationId,
+        enabled: bool,
+    ) -> AppResult<AgentWorkspacePrReviewMonitor>;
+
+    async fn set_pr_review_monitor_enabled(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _enabled: bool,
+    ) -> AppResult<AgentWorkspacePrReviewMonitor> {
+        Err(crate::error::AppError::Infrastructure(
+            "PR review monitor settings are unsupported by this repository".to_string(),
+        ))
+    }
+
+    async fn supersede_pending_pr_review_actions_except_head(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _pr_number: i64,
+        _head_sha: &str,
+    ) -> AppResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+
+    async fn mark_pr_review_first_action_resolved(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<AgentWorkspacePrReviewMonitor>;
+
     async fn list_active_pr_review_monitors(
         &self,
     ) -> AppResult<Vec<AgentWorkspacePrReviewMonitor>> {
         Ok(Vec::new())
+    }
+
+    /// Review PR lifecycle candidates, including monitors whose new-head dispatch is paused.
+    async fn list_pr_review_lifecycle_monitors(
+        &self,
+    ) -> AppResult<Vec<AgentWorkspacePrReviewMonitor>> {
+        self.list_active_pr_review_monitors().await
+    }
+
+    /// Startup repair candidates include both nonterminal lifecycle monitors and legacy rows whose
+    /// workspace or monitor already carries terminal authority.
+    async fn list_pr_review_lifecycle_recovery_workspaces(
+        &self,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        Ok(Vec::new())
+    }
+
+    /// Rearms only a legacy terminal-monitor/nonterminal-workspace split after a live GitHub Open
+    /// observation. Normal paused monitors never use this repair transition.
+    async fn rearm_terminal_pr_review_monitor_after_live_open(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _pr_number: i64,
+    ) -> AppResult<Option<AgentWorkspacePrReviewMonitor>> {
+        Ok(None)
+    }
+
+    /// Atomically settles every durable Review PR projection after GitHub reports a terminal PR.
+    async fn settle_pr_review_terminal(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _pr_number: i64,
+        _status: &str,
+        _summary: &str,
+    ) -> AppResult<AgentWorkspacePrTerminalSettlement> {
+        Err(crate::error::AppError::Infrastructure(
+            "Review PR terminal settlement is unsupported by this repository".to_string(),
+        ))
+    }
+
+    /// Atomically settles one Review PR monitor transition and optional action mutation while the
+    /// exact workspace/PR and monitor remain nonterminal. `None` means stale or terminal authority
+    /// rejected the transition without changing either row.
+    async fn transition_pr_review_state_if_nonterminal(
+        &self,
+        _monitor: AgentWorkspacePrReviewMonitor,
+        _action: Option<AgentWorkspacePrReviewActionMutation>,
+    ) -> AppResult<Option<AgentWorkspacePrReviewStateTransition>> {
+        Err(crate::error::AppError::Infrastructure(
+            "Guarded Review PR state transitions are unsupported by this repository".to_string(),
+        ))
     }
 
     async fn upsert_workspace_review_monitor(
@@ -325,7 +806,96 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         Ok(None)
     }
 
+    /// Atomically reserves the exact current blocking Review for one repair attempt.
+    async fn claim_workspace_review_fixer(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _snapshot: &AgentWorkspaceReviewFixerSnapshot,
+        _attempt_id: &str,
+        _claimed_at: DateTime<Utc>,
+    ) -> AppResult<Option<AgentWorkspaceReviewMonitor>> {
+        Ok(None)
+    }
+
+    /// Writes a repair routing result only while the same backend attempt owns the claim.
+    async fn settle_workspace_review_fixer_attempt(
+        &self,
+        _monitor: AgentWorkspaceReviewMonitor,
+        _expected_attempt_id: &str,
+        _expected_snapshot: &AgentWorkspaceReviewFixerSnapshot,
+    ) -> AppResult<Option<AgentWorkspaceReviewMonitor>> {
+        Ok(None)
+    }
+
+    /// Fails a malformed active repair attempt only while the same attempt still owns the row.
+    async fn fail_invalid_workspace_review_fixer_attempt(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _expected_attempt_id: Option<&str>,
+        _error: &str,
+    ) -> AppResult<Option<AgentWorkspaceReviewMonitor>> {
+        Ok(None)
+    }
+
+    /// Atomically records a reviewer launch failure only while the exact reserved launch still
+    /// owns the monitor. Returns `false` when a newer launch or target has superseded it.
+    async fn fail_reserved_workspace_review_start(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _expected_target_scope: crate::entities::AgentWorkspaceReviewTargetScope,
+        _expected_diff_fingerprint: &str,
+        _expected_review_conversation_id: &ChatConversationId,
+        _expected_run_id: &str,
+        _error: &str,
+    ) -> AppResult<bool> {
+        Ok(false)
+    }
+
+    async fn approve_workspace_review_anyway(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _snapshot: &AgentWorkspaceReviewApprovalSnapshot,
+        _approved_at: DateTime<Utc>,
+    ) -> AppResult<Option<AgentWorkspaceReviewMonitor>> {
+        Err(crate::error::AppError::Infrastructure(
+            "Workspace Review approval is unsupported by this repository".to_string(),
+        ))
+    }
+
     async fn list_reviewing_workspace_review_monitors(
+        &self,
+    ) -> AppResult<Vec<AgentWorkspaceReviewMonitor>> {
+        Ok(Vec::new())
+    }
+
+    /// Lists active fixer attempts that require startup reconciliation.
+    async fn list_active_workspace_review_fixers(
+        &self,
+    ) -> AppResult<Vec<AgentWorkspaceReviewMonitor>> {
+        Ok(Vec::new())
+    }
+
+    /// Atomically changes the guard only when the expected guard still owns the monitor.
+    async fn compare_and_set_workspace_review_auto_merge_guard(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _expected: Option<AgentWorkspaceReviewAutoMergeGuard>,
+        _next: Option<AgentWorkspaceReviewAutoMergeGuard>,
+    ) -> AppResult<bool> {
+        Ok(false)
+    }
+
+    /// Atomically records a confirmed restoration only while the captured guard still owns the
+    /// monitor and the user still wants GitHub auto-merge enabled.
+    async fn complete_workspace_review_auto_merge_restore(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _expected: AgentWorkspaceReviewAutoMergeGuard,
+    ) -> AppResult<bool> {
+        Ok(false)
+    }
+
+    async fn list_active_workspace_review_auto_merge_guards(
         &self,
     ) -> AppResult<Vec<AgentWorkspaceReviewMonitor>> {
         Ok(Vec::new())
@@ -355,6 +925,13 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         Ok(action)
     }
 
+    async fn create_or_update_pr_review_action_if_nonterminal(
+        &self,
+        action: AgentWorkspacePrReviewAction,
+    ) -> AppResult<AgentWorkspacePrReviewAction> {
+        self.create_or_update_pr_review_action(action).await
+    }
+
     async fn get_pr_review_action(
         &self,
         _action_id: &str,
@@ -367,6 +944,14 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         _conversation_id: &ChatConversationId,
         _pr_number: i64,
         _head_sha: &str,
+    ) -> AppResult<Option<AgentWorkspacePrReviewAction>> {
+        Ok(None)
+    }
+
+    async fn get_latest_pending_pr_review_action(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _pr_number: i64,
     ) -> AppResult<Option<AgentWorkspacePrReviewAction>> {
         Ok(None)
     }
@@ -386,6 +971,35 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         _submitted_review_id: Option<&str>,
     ) -> AppResult<()> {
         Ok(())
+    }
+
+    async fn claim_pending_pr_review_action(&self, action_id: &str) -> AppResult<bool>;
+
+    async fn claim_pending_pr_review_action_if_nonterminal(
+        &self,
+        action_id: &str,
+        _conversation_id: &ChatConversationId,
+        _pr_number: i64,
+    ) -> AppResult<bool> {
+        self.claim_pending_pr_review_action(action_id).await
+    }
+
+    async fn compare_and_set_pr_review_action_status(
+        &self,
+        action_id: &str,
+        expected: AgentWorkspacePrReviewActionStatus,
+        status: AgentWorkspacePrReviewActionStatus,
+        submitted_review_id: Option<&str>,
+    ) -> AppResult<bool> {
+        let Some(action) = self.get_pr_review_action(action_id).await? else {
+            return Ok(false);
+        };
+        if action.status != expected {
+            return Ok(false);
+        }
+        self.update_pr_review_action_status(action_id, status, submitted_review_id)
+            .await?;
+        Ok(true)
     }
 
     async fn delete(&self, conversation_id: &ChatConversationId) -> AppResult<()>;

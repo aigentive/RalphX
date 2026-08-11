@@ -129,23 +129,22 @@ async fn test_exiting_without_execution_state_does_not_panic() {
 #[tokio::test]
 async fn test_on_exit_with_execution_state_no_app_handle_does_not_panic() {
     // Verifies that on_exit() handles the case where execution_state is Some
-    // but app_handle is None (the emit_status_changed call is skipped gracefully).
-    // Note: Actual event emission with app_handle requires a real Wry runtime,
-    // which is tested via integration tests and execution_commands.rs emit tests.
+    // but event_sink is None (the emit_status_changed call is skipped gracefully).
+    // Actual event emission is covered by EventSink-backed regression tests.
     let execution_state = Arc::new(ExecutionState::new());
     execution_state.increment_running();
     assert_eq!(execution_state.running_count(), 1);
 
-    // Services with execution_state but no app_handle
+    // Services with execution_state but no event_sink
     let services = TaskServices::new_mock().with_execution_state(Arc::clone(&execution_state));
-    // Note: app_handle is None by default in new_mock()
-    assert!(services.app_handle.is_none());
+    // Note: event_sink is None by default in new_mock()
+    assert!(services.event_sink.is_none());
 
     let context = create_context_with_services("task-1", "proj-1", services);
     let mut machine = TaskStateMachine::new(context);
 
     let handler = TransitionHandler::new(&mut machine);
-    // Should not panic - emit_status_changed is skipped when app_handle is None
+    // Should not panic - emit_status_changed is skipped when event_sink is None
     handler
         .on_exit(&State::Executing, &State::PendingReview)
         .await;
@@ -175,7 +174,7 @@ async fn test_on_exit_emits_for_all_agent_active_states() {
         let mut machine = TaskStateMachine::new(context);
 
         let handler = TransitionHandler::new(&mut machine);
-        // Each agent-active state should trigger decrement (and emit if app_handle present)
+        // Each agent-active state should trigger decrement (and emit if event_sink present)
         let to_state = State::Failed(FailedData::default());
         handler.on_exit(from_state, &to_state).await;
 

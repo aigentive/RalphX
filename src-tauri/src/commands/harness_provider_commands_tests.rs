@@ -1,19 +1,37 @@
+use crate::application::harness_runtime_registry::{
+    clear_harness_runtime_caches_for_tests, refresh_harness_runtime_probe_with_force,
+    HarnessRuntimeProbe,
+};
+use crate::application::harness_runtime_test_support::HARNESS_RUNTIME_TEST_MUTEX;
 use crate::application::managed_provider_cli::override_managed_codex_binary_path_for_tests;
-use crate::application::{harness_runtime_registry::HarnessRuntimeProbe, AppState, AGENT_LANES};
+use crate::application::{AppState, AGENT_LANES};
 use crate::domain::agents::{
     AgentHarnessKind, AgentLane, AgentProviderCliManagementMode, AgentProviderSettings,
     LogicalEffort, CODEX_DEFAULT_APPROVAL_POLICY, CODEX_DEFAULT_SANDBOX_MODE,
 };
 use crate::infrastructure::memory::MemoryAgentProviderSettingsRepository;
 use std::collections::HashMap;
+use std::ffi::{OsStr, OsString};
 use std::sync::Arc;
+use tauri::Manager;
 
 use super::{
     apply_provider_to_global_lanes, merge_input, parse_effort, parse_provider,
     provider_settings_snapshot_probe, provider_status, read_provider_settings,
     read_provider_settings_with_probes, snapshot_probes_from_provider_settings, to_lane_settings,
-    to_response, update_provider_settings_with_probes, UpdateAgentProviderSettingsInput,
+    to_response, update_agent_provider_settings, update_provider_settings_with_probes,
+    GetAgentProviderSettingsInput, UpdateAgentProviderSettingsInput,
 };
+
+#[test]
+fn provider_settings_refresh_input_defaults_force_runtime_to_false() {
+    let input: GetAgentProviderSettingsInput =
+        serde_json::from_value(serde_json::json!({ "refreshRuntime": true }))
+            .expect("deserialize refresh input");
+
+    assert!(input.refresh_runtime);
+    assert!(!input.force_runtime);
+}
 
 fn input(provider: &str) -> UpdateAgentProviderSettingsInput {
     UpdateAgentProviderSettingsInput {
@@ -49,6 +67,7 @@ fn ready_probe(path: &str) -> HarnessRuntimeProbe {
         cli_version: None,
         supported_model_aliases: None,
         supported_efforts: None,
+        ultra_supported_models: Vec::new(),
         supports_fast_mode: false,
         fast_mode_supported_models: Vec::new(),
         error: None,
@@ -509,6 +528,7 @@ fn response_maps_settings_and_probe_fields() {
             cli_version: Some("2.1.170".to_string()),
             supported_model_aliases: Some(vec!["sonnet".to_string(), "fable".to_string()]),
             supported_efforts: Some(vec!["low".to_string(), "medium".to_string()]),
+            ultra_supported_models: vec!["gpt-5.6-sol".to_string()],
             supports_fast_mode: true,
             fast_mode_supported_models: vec!["gpt-5.4".to_string(), "gpt-5.5".to_string()],
             error: None,
@@ -557,6 +577,10 @@ fn response_maps_settings_and_probe_fields() {
     assert_eq!(
         response.supported_efforts,
         Some(vec!["low".to_string(), "medium".to_string()])
+    );
+    assert_eq!(
+        response.ultra_supported_models,
+        vec!["gpt-5.6-sol".to_string()]
     );
     assert!(response.supports_fast_mode);
     assert_eq!(
@@ -623,7 +647,7 @@ fn lane_settings_inherit_provider_defaults() {
 #[tokio::test]
 async fn read_settings_returns_ordered_provider_defaults() {
     let state = AppState::new_test();
-    let response = read_provider_settings(&state, false)
+    let response = read_provider_settings(&state, false, false)
         .await
         .expect("read provider settings");
 
@@ -650,6 +674,67 @@ async fn read_settings_uses_fallback_probe_when_provider_probe_is_missing() {
         .expect("claude response");
     assert!(!claude.available);
     assert_eq!(claude.error.as_deref(), Some("claude probe unavailable"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn enabling_user_managed_provider_forces_a_fresh_runtime_probe() {
+    let _runtime_lock = HARNESS_RUNTIME_TEST_MUTEX
+        .lock()
+        .expect("harness runtime mutex");
+    let _env_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("test env mutex");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let bin_dir = temp_dir.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).expect("create bin dir");
+    let claude_cli = bin_dir.join("claude");
+    write_claude_cli(&claude_cli, "2.1.110");
+
+    let _path = EnvGuard::set_os("PATH", &bin_dir);
+    let _home = EnvGuard::set_os("HOME", temp_dir.path());
+    let _zdotdir = EnvGuard::set_os("ZDOTDIR", temp_dir.path());
+    let _nvm = EnvGuard::set_os("NVM_BIN", "");
+    let _volta = EnvGuard::set_os("VOLTA_HOME", "");
+    let _login_shell =
+        EnvGuard::set_os(crate::infrastructure::login_shell_env::DISABLE_ENV_VAR, "1");
+
+    clear_harness_runtime_caches_for_tests(AgentHarnessKind::Claude);
+    let cached_probe = refresh_harness_runtime_probe_with_force(AgentHarnessKind::Claude, false);
+    assert_eq!(cached_probe.cli_version.as_deref(), Some("2.1.110"));
+
+    let original_modified = std::fs::metadata(&claude_cli)
+        .expect("fake Claude metadata")
+        .modified()
+        .expect("fake Claude modification time");
+    write_claude_cli(&claude_cli, "2.1.219");
+    let file = std::fs::File::open(&claude_cli).expect("open fake Claude");
+    file.set_times(std::fs::FileTimes::new().set_modified(original_modified))
+        .expect("restore fake Claude modification time");
+
+    let app = tauri::test::mock_builder()
+        .manage(AppState::new_test())
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app");
+    let response = update_agent_provider_settings(
+        UpdateAgentProviderSettingsInput {
+            enabled: Some(true),
+            ..input("claude")
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("enable Claude provider");
+
+    let claude = response
+        .providers
+        .iter()
+        .find(|provider| provider.provider == "claude")
+        .expect("Claude provider response");
+    assert_eq!(claude.cli_version.as_deref(), Some("2.1.219"));
+
+    clear_harness_runtime_caches_for_tests(AgentHarnessKind::Claude);
 }
 
 #[tokio::test]
@@ -771,6 +856,7 @@ async fn update_settings_saves_custom_binary_after_candidate_probe() {
                 cli_version: None,
                 supported_model_aliases: None,
                 supported_efforts: None,
+                ultra_supported_models: Vec::new(),
                 supports_fast_mode: false,
                 fast_mode_supported_models: Vec::new(),
                 error: Some("PATH Codex unavailable".to_string()),
@@ -812,6 +898,67 @@ async fn update_settings_saves_custom_binary_after_candidate_probe() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn update_settings_expands_home_relative_custom_binary_before_save() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("test env mutex");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let home_dir = temp_dir.path().join("home");
+    let bin_dir = home_dir.join("bin");
+    std::fs::create_dir_all(&bin_dir).expect("create bin dir");
+    let _home = EnvGuard::set_os("HOME", &home_dir);
+    let codex_path = bin_dir.join("codex-wrapper");
+    write_modern_codex_cli(&codex_path);
+    let state = AppState::new_test();
+    let probes = HashMap::from([
+        (
+            AgentHarnessKind::Codex,
+            HarnessRuntimeProbe {
+                available: false,
+                binary_found: false,
+                probe_succeeded: false,
+                binary_path: None,
+                missing_core_exec_features: Vec::new(),
+                cli_version: None,
+                supported_model_aliases: None,
+                supported_efforts: None,
+                ultra_supported_models: Vec::new(),
+                supports_fast_mode: false,
+                fast_mode_supported_models: Vec::new(),
+                error: Some("PATH Codex unavailable".to_string()),
+            },
+        ),
+        (AgentHarnessKind::Claude, ready_probe("/usr/bin/claude")),
+    ]);
+    let next = UpdateAgentProviderSettingsInput {
+        enabled: Some(true),
+        custom_binary_enabled: Some(true),
+        custom_binary_path: Some(Some("~/bin/codex-wrapper".to_string())),
+        ..input("codex")
+    };
+
+    let response = update_provider_settings_with_probes(next, &state, &probes)
+        .await
+        .expect("update provider settings");
+
+    let codex = response
+        .providers
+        .iter()
+        .find(|provider| provider.provider == "codex")
+        .expect("codex provider");
+    assert!(codex.custom_binary_enabled);
+    assert_eq!(
+        codex.custom_binary_path.as_deref(),
+        Some(codex_path.to_string_lossy().as_ref())
+    );
+    assert_eq!(
+        codex.binary_path.as_deref(),
+        Some(codex_path.to_string_lossy().as_ref())
+    );
+}
+
+#[tokio::test]
 async fn update_settings_rejects_invalid_custom_binary_candidate_before_save() {
     let state = AppState::new_test();
     let probes = HashMap::from([(AgentHarnessKind::Codex, ready_probe("/usr/bin/codex"))]);
@@ -837,6 +984,31 @@ async fn update_settings_rejects_invalid_custom_binary_candidate_before_save() {
 }
 
 #[tokio::test]
+async fn update_settings_rejects_unsupported_tilde_custom_binary_before_save() {
+    let state = AppState::new_test();
+    let probes = HashMap::from([(AgentHarnessKind::Codex, ready_probe("/usr/bin/codex"))]);
+    let next = UpdateAgentProviderSettingsInput {
+        custom_binary_enabled: Some(true),
+        custom_binary_path: Some(Some("~other/bin/codex".to_string())),
+        ..input("codex")
+    };
+
+    let error = update_provider_settings_with_probes(next, &state, &probes)
+        .await
+        .expect_err("tilde-user custom path should fail");
+    let stored = state
+        .agent_provider_settings_repo
+        .get(AgentHarnessKind::Codex)
+        .await
+        .expect("read provider settings")
+        .expect("seeded provider settings");
+
+    assert!(error.contains("only ~/"));
+    assert!(!stored.custom_binary_enabled);
+    assert_eq!(stored.custom_binary_path, None);
+}
+
+#[tokio::test]
 async fn update_settings_validates_custom_env_file_candidate_before_save() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let env_path = temp_dir.path().join("codex.env");
@@ -846,6 +1018,42 @@ async fn update_settings_validates_custom_env_file_candidate_before_save() {
     let next = UpdateAgentProviderSettingsInput {
         custom_env_file_enabled: Some(true),
         custom_env_file_path: Some(Some(env_path.to_string_lossy().into_owned())),
+        ..input("codex")
+    };
+
+    let response = update_provider_settings_with_probes(next, &state, &probes)
+        .await
+        .expect("update provider settings");
+
+    let codex = response
+        .providers
+        .iter()
+        .find(|provider| provider.provider == "codex")
+        .expect("codex provider");
+    assert!(codex.custom_env_file_enabled);
+    assert_eq!(
+        codex.custom_env_file_path.as_deref(),
+        Some(env_path.to_string_lossy().as_ref())
+    );
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn update_settings_expands_home_relative_custom_env_file_before_save() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("test env mutex");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let home_dir = temp_dir.path().join("home");
+    std::fs::create_dir_all(&home_dir).expect("create home dir");
+    let _home = EnvGuard::set_os("HOME", &home_dir);
+    let env_path = home_dir.join(".codex.env");
+    std::fs::write(&env_path, "ANTHROPIC_AUTH_TOKEN=secret\n").expect("write env file");
+    let state = AppState::new_test();
+    let probes = HashMap::from([(AgentHarnessKind::Codex, ready_probe("/usr/bin/codex"))]);
+    let next = UpdateAgentProviderSettingsInput {
+        custom_env_file_enabled: Some(true),
+        custom_env_file_path: Some(Some("~/.codex.env".to_string())),
         ..input("codex")
     };
 
@@ -886,6 +1094,39 @@ async fn update_settings_rejects_invalid_custom_env_file_candidate_before_save()
         .expect("seeded provider settings");
 
     assert!(error.contains("absolute"));
+    assert!(!stored.custom_env_file_enabled);
+    assert_eq!(stored.custom_env_file_path, None);
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn update_settings_rejects_home_relative_env_path_with_parent_component_before_save() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("test env mutex");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let home_dir = temp_dir.path().join("home");
+    std::fs::create_dir_all(&home_dir).expect("create home dir");
+    let _home = EnvGuard::set_os("HOME", &home_dir);
+    let state = AppState::new_test();
+    let probes = HashMap::from([(AgentHarnessKind::Codex, ready_probe("/usr/bin/codex"))]);
+    let next = UpdateAgentProviderSettingsInput {
+        custom_env_file_enabled: Some(true),
+        custom_env_file_path: Some(Some("~/../codex.env".to_string())),
+        ..input("codex")
+    };
+
+    let error = update_provider_settings_with_probes(next, &state, &probes)
+        .await
+        .expect_err("home-relative traversal should fail");
+    let stored = state
+        .agent_provider_settings_repo
+        .get(AgentHarnessKind::Codex)
+        .await
+        .expect("read provider settings")
+        .expect("seeded provider settings");
+
+    assert!(error.contains("unsafe components"));
     assert!(!stored.custom_env_file_enabled);
     assert_eq!(stored.custom_env_file_path, None);
 }
@@ -1072,5 +1313,57 @@ fi
             .permissions();
         permissions.set_mode(0o755);
         std::fs::set_permissions(path, permissions).expect("chmod fake codex");
+    }
+}
+
+#[cfg(unix)]
+fn write_claude_cli(path: &std::path::Path, version: &str) {
+    std::fs::write(
+        path,
+        format!(
+            r#"#!/bin/sh
+case "$1" in
+  --version)
+    echo "{version} (Claude Code)"
+    ;;
+  --help)
+    echo "Options:"
+    echo "  --effort <level>  Effort level (low, medium, high, xhigh, max)"
+    ;;
+  *)
+    exit 2
+    ;;
+esac
+"#
+        ),
+    )
+    .expect("write fake Claude");
+    use std::os::unix::fs::PermissionsExt;
+    let mut permissions = std::fs::metadata(path)
+        .expect("fake Claude metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(path, permissions).expect("chmod fake Claude");
+}
+
+struct EnvGuard {
+    key: &'static str,
+    original: Option<OsString>,
+}
+
+impl EnvGuard {
+    fn set_os(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+        let original = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self { key, original }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        match &self.original {
+            Some(value) => std::env::set_var(self.key, value),
+            None => std::env::remove_var(self.key),
+        }
     }
 }

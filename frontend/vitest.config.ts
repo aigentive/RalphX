@@ -22,6 +22,10 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
+      "@tauri-apps/plugin-notification": path.resolve(
+        __dirname,
+        "./src/mocks/tauri-plugin-notification.ts"
+      ),
     },
   },
   test: {

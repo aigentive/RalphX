@@ -34,20 +34,28 @@ export function useAgentsAttachedIdeation({
     activeConversation?.contextType === "ideation" ||
     (activeConversation?.contextType === "project" &&
       (activeConversationMode === "ideation" ||
+        activeConversationMode === "tasks" ||
         activeConversationMode === "plan" ||
-        Boolean(activeWorkspace?.linkedIdeationSessionId || activeWorkspace?.linkedPlanBranchId)));
+        Boolean(
+          activeWorkspace?.taskPipelineSessionId ||
+            activeWorkspace?.linkedIdeationSessionId ||
+            activeWorkspace?.linkedPlanBranchId,
+        )));
   const attachedIdeationSessionId = useMemo(
     () =>
       shouldHydrateAttachedIdeation
         ? resolveAttachedIdeationSessionId(
             activeConversation,
             selectedConversationMessages,
-            activeWorkspace?.linkedIdeationSessionId ?? null,
+            activeWorkspace?.taskPipelineSessionId ??
+              activeWorkspace?.linkedIdeationSessionId ??
+              null,
           )
         : null,
     [
       activeConversation,
       activeWorkspace?.linkedIdeationSessionId,
+      activeWorkspace?.taskPipelineSessionId,
       selectedConversationMessages,
       shouldHydrateAttachedIdeation,
     ],
@@ -65,11 +73,6 @@ export function useAgentsAttachedIdeation({
       ? attachedIdeationSessionQuery.data
       : null;
   const attachedIdeationSession = attachedIdeationSessionData?.session ?? null;
-  const attachedArtifactMode =
-    activeConversationMode ??
-    activeWorkspace?.mode ??
-    activeConversation?.agentMode ??
-    (activeConversation?.contextType === "ideation" ? "ideation" : null);
   const hasAutoOpenArtifacts = useMemo(() => {
     if (!attachedIdeationSession) {
       return false;
@@ -83,11 +86,11 @@ export function useAgentsAttachedIdeation({
         attachedIdeationSession.verificationStatus !== "unverified"
     );
   }, [attachedIdeationSession]);
+  const hasAttachedPlanArtifact = Boolean(
+    attachedIdeationSession?.planArtifactId ||
+      attachedIdeationSession?.inheritedPlanArtifactId,
+  );
   const availableArtifactTabs = useMemo(() => {
-    const hasPlanArtifact = Boolean(
-      attachedIdeationSession?.planArtifactId ||
-        attachedIdeationSession?.inheritedPlanArtifactId,
-    );
     const hasExecutionTasks = Boolean(
       activeWorkspace?.linkedPlanBranchId ||
         attachedIdeationSession?.acceptanceStatus === "accepted" ||
@@ -99,20 +102,28 @@ export function useAgentsAttachedIdeation({
           "unverified" ||
         attachedIdeationSession?.gapScore != null,
     );
+    const canStartPlan = Boolean(
+      activeConversation?.contextType === "project" &&
+        (activeWorkspace?.mode
+          ? activeWorkspace.mode === "edit" || activeWorkspace.mode === "plan"
+          : !activeConversationMode ||
+            activeConversationMode === "edit" ||
+            activeConversationMode === "plan"),
+    );
 
     return getVisibleIdeationArtifactTabs({
       hasAttachedIdeationSession: Boolean(attachedIdeationSession),
-      hasPlanArtifact,
-      hasProposals: Boolean(attachedIdeationSessionData?.proposals.length),
+      hasPlanArtifact: hasAttachedPlanArtifact,
+      canStartPlan,
       hasVerificationEvidence,
       hasExecutionTasks,
-      artifactMode: attachedArtifactMode,
     });
   }, [
-    activeWorkspace?.linkedPlanBranchId,
+    activeConversation?.contextType,
+    activeConversationMode,
+    activeWorkspace,
     attachedIdeationSession,
-    attachedIdeationSessionData?.proposals.length,
-    attachedArtifactMode,
+    hasAttachedPlanArtifact,
   ]);
   useEffect(() => {
     if (
@@ -130,8 +141,13 @@ export function useAgentsAttachedIdeation({
       return;
     }
     childArchiveSyncRef.current.add(activeConversation.id);
-    void chatApi.archiveConversation(activeConversation.id)
-      .then(() => invalidateProjectConversations(activeConversation.projectId))
+    void chatApi.archiveConversation(activeConversation.id, { closePullRequest: false })
+      .then(() => {
+        if (activeConversation.projectId) {
+          return invalidateProjectConversations(activeConversation.projectId);
+        }
+        return undefined;
+      })
       .catch(() => {
         childArchiveSyncRef.current.delete(activeConversation.id);
         // Status sync is best-effort; manual archive remains available.
@@ -145,6 +161,7 @@ export function useAgentsAttachedIdeation({
     attachedIdeationSessionData: attachedIdeationSession,
     attachedIdeationSessionId,
     availableArtifactTabs,
+    hasAttachedPlanArtifact,
     hasAutoOpenArtifacts,
   };
 }

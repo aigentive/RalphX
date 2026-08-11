@@ -54,6 +54,10 @@ impl<'a> TransitionHandler<'a> {
                 .as_ref()
                 .and_then(|v| v.get("pr_branch_update_conflict")?.as_bool())
                 .unwrap_or(false),
+            is_pr_branch_publication_conflict: meta
+                .as_ref()
+                .and_then(|v| v.get("pr_branch_publication_conflict")?.as_bool())
+                .unwrap_or(false),
             freshness_conflict_count: meta
                 .as_ref()
                 .and_then(|v| v.get("freshness_conflict_count")?.as_u64())
@@ -85,26 +89,50 @@ impl<'a> TransitionHandler<'a> {
                 .clone()
                 .unwrap_or_else(|| "origin/main".to_string());
             let plan_branch = context.target_branch.clone().unwrap_or_default();
-            format!(
-                "Resolve the GitHub PR branch update conflict for task {task_id}.\n\n\
-                 The plan branch ({plan_branch}) needs to incorporate {base_branch} \
-                 before PR review can continue, but there are merge conflicts.\n\n\
-                 Your working directory is the merge worktree where the plan branch is \
-                 already checked out. DO NOT merge this PR into the base branch — GitHub \
-                 remains the final merge authority.\n\n\
-                 Steps:\n\
-                 1. Run `git status` to confirm you are on the plan branch ({plan_branch})\n\
-                 2. Run `git merge {base_branch}` to trigger the merge and expose conflicts\n\
-                 3. Resolve all conflict markers in the conflicted files\n\
-                 4. Stage resolved files: `git add <files>`\n\
-                 5. Commit: `git commit --no-edit`\n\
-                 6. Run `git rev-parse HEAD` and call `complete_merge` with that full commit SHA\n\
-                 7. Do not exit silently — `complete_merge` returns the task to PR waiting\n\n\
-                 If the conflict is too complex, call report_incomplete with a description.",
-                task_id = task_id,
-                base_branch = base_branch,
-                plan_branch = plan_branch,
-            )
+            if context.is_pr_branch_publication_conflict {
+                format!(
+                    "Resolve the PR branch publication conflict for task {task_id}.\n\n\
+                     The regular task merge is already on the local plan branch ({plan_branch}), \
+                     but the remote PR branch ({base_branch}) has commits that must be \
+                     incorporated before the branch can be pushed.\n\n\
+                     Your working directory is the merge worktree where the plan branch is \
+                     already checked out. DO NOT merge this PR into the base branch — GitHub \
+                     remains the final merge authority.\n\n\
+                     Steps:\n\
+                     1. Run `git status` to confirm you are on the plan branch ({plan_branch})\n\
+                     2. Run `git merge {base_branch}` to trigger the merge and expose conflicts\n\
+                     3. Resolve all conflict markers in the conflicted files\n\
+                     4. Stage resolved files: `git add <files>`\n\
+                     5. Commit: `git commit --no-edit`\n\
+                     6. Run `git rev-parse HEAD` and call `complete_merge` with that full commit SHA\n\
+                     7. Do not exit silently — `complete_merge` publishes the PR branch and finalizes the task\n\n\
+                     If the conflict is too complex, call report_incomplete with a description.",
+                    task_id = task_id,
+                    base_branch = base_branch,
+                    plan_branch = plan_branch,
+                )
+            } else {
+                format!(
+                    "Resolve the GitHub PR branch update conflict for task {task_id}.\n\n\
+                     The plan branch ({plan_branch}) needs to incorporate {base_branch} \
+                     before PR review can continue, but there are merge conflicts.\n\n\
+                     Your working directory is the merge worktree where the plan branch is \
+                     already checked out. DO NOT merge this PR into the base branch — GitHub \
+                     remains the final merge authority.\n\n\
+                     Steps:\n\
+                     1. Run `git status` to confirm you are on the plan branch ({plan_branch})\n\
+                     2. Run `git merge {base_branch}` to trigger the merge and expose conflicts\n\
+                     3. Resolve all conflict markers in the conflicted files\n\
+                     4. Stage resolved files: `git add <files>`\n\
+                     5. Commit: `git commit --no-edit`\n\
+                     6. Run `git rev-parse HEAD` and call `complete_merge` with that full commit SHA\n\
+                     7. Do not exit silently — `complete_merge` returns the task to PR waiting\n\n\
+                     If the conflict is too complex, call report_incomplete with a description.",
+                    task_id = task_id,
+                    base_branch = base_branch,
+                    plan_branch = plan_branch,
+                )
+            }
         } else if context.is_plan_update_conflict {
             let base_branch = context
                 .base_branch

@@ -1,14 +1,4 @@
-import {
-  lazy,
-  memo,
-  Suspense,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
-import { ArrowUpCircle, FileText, Loader2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 
 import {
@@ -18,15 +8,17 @@ import {
   listReleaseNotesVersions,
   mergeVersionLists,
 } from "@/api/release-notes";
-import type { ReleaseMetadata } from "@/api/release-notes";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { markdownComponents } from "@/components/Chat/MessageItem.markdown";
+import type {
+  ReleaseMetadata,
+  ReleaseMetadataAvailability,
+} from "@/api/release-notes";
+import type { UpdateChannel } from "@/api/update-channel";
+import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { useUpdateChannel } from "@/hooks/useUpdateChannel";
+import { ReleaseNotesChannels } from "./ReleaseNotesDialog.channels";
+import { VersionContent } from "./ReleaseNotesDialog.content";
+import { buildSidebarItems } from "./ReleaseNotesDialog.sidebar-items";
+import { VersionSidebar } from "./ReleaseNotesDialog.sidebar";
 
 const GITHUB_RELEASE_METADATA_MARKERS =
   /^[ \t]*<!--\s*github-release-metadata:(?:start|end)\s*-->[ \t]*\n?/gm;
@@ -37,27 +29,9 @@ interface ReleaseNotesDialogProps {
   initialVersion?: string | undefined;
   initialBody?: string | null | undefined;
   initialContext?: "current" | "update" | undefined;
-  onRequestUpdate?: () => void;
+  initialChannel?: UpdateChannel | undefined;
+  onCheckForUpdates?: (channel: UpdateChannel) => void;
 }
-
-const LazyMarkdown = lazy(async () => {
-  const [{ default: ReactMarkdown }, { default: remarkGfm }] =
-    await Promise.all([import("react-markdown"), import("remark-gfm")]);
-
-  return {
-    default: memo(function ReleaseMarkdown({ body }: { body: string }) {
-      return (
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm]}
-          components={markdownComponents}
-          skipHtml
-        >
-          {body}
-        </ReactMarkdown>
-      );
-    }),
-  };
-});
 
 function sanitize(body: string | null): string | null {
   if (!body) return null;
@@ -66,52 +40,6 @@ function sanitize(body: string | null): string | null {
     .replace(/\n{3,}/g, "\n\n")
     .trim();
   return result.length > 0 ? result : null;
-}
-
-function formatMonthYear(dateStr: string): string {
-  const d = new Date(dateStr);
-  return d.toLocaleDateString("en-US", { month: "long", year: "numeric" });
-}
-
-function formatDay(dateStr: string): string {
-  const d = new Date(dateStr);
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-}
-
-function isNewerThan(version: string, current: string): boolean {
-  return compareSemverDesc(version, current) < 0;
-}
-
-type SidebarItem =
-  | { kind: "header"; label: string }
-  | { kind: "version"; version: string; date: string | null; isCurrent: boolean };
-
-function buildSidebarItems(
-  versions: string[],
-  metadata: Map<string, ReleaseMetadata>,
-  currentAppVersion: string | null,
-): SidebarItem[] {
-  const items: SidebarItem[] = [];
-  let currentMonth = "";
-
-  for (const version of versions) {
-    const meta = metadata.get(version);
-    const monthYear = meta ? formatMonthYear(meta.publishedAt) : null;
-
-    if (monthYear && monthYear !== currentMonth) {
-      currentMonth = monthYear;
-      items.push({ kind: "header", label: monthYear });
-    }
-
-    items.push({
-      kind: "version",
-      version,
-      date: meta ? formatDay(meta.publishedAt) : null,
-      isCurrent: version === currentAppVersion,
-    });
-  }
-
-  return items;
 }
 
 function includeSeededVersion(
@@ -136,9 +64,20 @@ export function ReleaseNotesDialog({
   initialVersion,
   initialBody,
   initialContext,
-  onRequestUpdate,
+  initialChannel,
+  onCheckForUpdates,
 }: ReleaseNotesDialogProps) {
-  const [versions, setVersions] = useState<string[]>([]);
+  const {
+    updateChannel,
+    isSettled: isUpdateChannelSettled,
+    isLoading: isUpdateChannelLoading,
+    isError: isUpdateChannelError,
+    setUpdateChannel,
+    isSaving: isUpdateChannelSaving,
+    saveError: updateChannelSaveError,
+  } = useUpdateChannel();
+  const [browseChannel, setBrowseChannel] = useState<UpdateChannel | null>(null);
+  const hasUserBrowsed = useRef(false);
   const [loadedNotes, setLoadedNotes] = useState<
     Record<string, string | null>
   >({});
@@ -148,12 +87,21 @@ export function ReleaseNotesDialog({
   const [metadata, setMetadata] = useState<Map<string, ReleaseMetadata>>(
     new Map(),
   );
-  const [bundledVersions, setBundledVersions] = useState<Set<string>>(
-    new Set(),
-  );
+  const [metadataAvailability, setMetadataAvailability] =
+    useState<ReleaseMetadataAvailability | null>(null);
+  const [bundledVersionList, setBundledVersionList] = useState<string[]>([]);
   const [currentAppVersion, setCurrentAppVersion] = useState<string | null>(
     null,
   );
+
+  useEffect(() => {
+    if (!open) return;
+    setBrowseChannel((current) => {
+      if (current !== null) return current;
+      if (initialChannel !== undefined) return initialChannel;
+      return isUpdateChannelSettled ? updateChannel : null;
+    });
+  }, [initialChannel, isUpdateChannelSettled, open, updateChannel]);
 
   useEffect(() => {
     if (!open) return;
@@ -161,75 +109,17 @@ export function ReleaseNotesDialog({
     setListLoading(true);
 
     void Promise.all([
-      listReleaseNotesVersions(),
+      listReleaseNotesVersions().catch(() => []),
       fetchReleaseMetadata(),
       getVersion().catch(() => null),
     ])
       .then(([bundled, meta, appVersion]) => {
         if (cancelled) return;
-        const bundledSet = new Set(bundled);
-        setBundledVersions(bundledSet);
+        setBundledVersionList(bundled);
         setMetadata(meta);
+        setMetadataAvailability(meta.availability ?? "available");
         if (appVersion) setCurrentAppVersion(appVersion);
-
-        const merged = includeSeededVersion(
-          mergeVersionLists(bundled, meta),
-          initialVersion,
-          initialBody,
-        );
-        setVersions(merged);
         setListLoading(false);
-
-        const first = merged[0];
-        if (first === undefined) return;
-
-        const target = initialVersion
-          ? (merged.find((v) => v === initialVersion) ?? first)
-          : first;
-        setActiveVersion(target);
-
-        const seededBody =
-          target === initialVersion && initialBody !== undefined
-            ? sanitize(initialBody)
-            : undefined;
-        if (seededBody !== undefined) {
-          setLoadedNotes((prev) => ({
-            ...prev,
-            [target]: seededBody,
-          }));
-          return;
-        }
-
-        if (bundledSet.has(target)) {
-          setActiveLoading(true);
-          void getReleaseNotesForVersion(target)
-            .then((resp) => {
-              if (!cancelled) {
-                setLoadedNotes((prev) => ({
-                  ...prev,
-                  [target]: sanitize(resp.body),
-                }));
-              }
-            })
-            .catch(() => {
-              if (!cancelled) {
-                const ghBody = meta.get(target)?.body ?? null;
-                setLoadedNotes((prev) => ({
-                  ...prev,
-                  [target]: sanitize(ghBody),
-                }));
-              }
-            })
-            .finally(() => {
-              if (!cancelled) setActiveLoading(false);
-            });
-        } else {
-          const ghBody = meta.get(target)?.body ?? null;
-          setLoadedNotes((prev) => ({
-            ...prev,
-            [target]: sanitize(ghBody),
-          }));
-        }
       })
       .catch(() => {
         if (!cancelled) setListLoading(false);
@@ -237,20 +127,79 @@ export function ReleaseNotesDialog({
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   useEffect(() => {
     if (!open) {
-      setVersions([]);
       setLoadedNotes({});
       setActiveVersion(null);
       setActiveLoading(false);
       setMetadata(new Map());
-      setBundledVersions(new Set());
+      setMetadataAvailability(null);
+      setBundledVersionList([]);
       setCurrentAppVersion(null);
+      setBrowseChannel(null);
+      hasUserBrowsed.current = false;
     }
   }, [open]);
+
+  const bundledVersions = useMemo(
+    () => new Set(bundledVersionList),
+    [bundledVersionList],
+  );
+
+  const versionsByChannel = useMemo(() => {
+    if (
+      metadataAvailability === null ||
+      metadataAvailability === "unavailable"
+    ) {
+      return { stable: [], nightly: [] };
+    }
+    return {
+      stable: mergeVersionLists(bundledVersionList, metadata, "stable"),
+      nightly: mergeVersionLists(bundledVersionList, metadata, "nightly"),
+    };
+  }, [bundledVersionList, metadata, metadataAvailability]);
+
+  const seededChannel = useMemo(() => {
+    if (initialVersion !== undefined) {
+      const classifiedRelease = metadata.get(initialVersion);
+      if (classifiedRelease !== undefined) {
+        return classifiedRelease.prerelease ? "nightly" : "stable";
+      }
+    }
+    return initialChannel ?? updateChannel;
+  }, [initialChannel, initialVersion, metadata, updateChannel]);
+
+  useEffect(() => {
+    if (
+      !open ||
+      metadataAvailability === null ||
+      initialVersion === undefined ||
+      hasUserBrowsed.current
+    ) {
+      return;
+    }
+    setBrowseChannel(seededChannel);
+  }, [initialVersion, metadataAvailability, open, seededChannel]);
+
+  const versions = useMemo(() => {
+    if (browseChannel === null) return [];
+    if (browseChannel !== seededChannel) {
+      return versionsByChannel[browseChannel];
+    }
+    return includeSeededVersion(
+      versionsByChannel[browseChannel],
+      initialVersion,
+      initialBody,
+    );
+  }, [
+    browseChannel,
+    initialBody,
+    initialVersion,
+    seededChannel,
+    versionsByChannel,
+  ]);
 
   const handleVersionClick = useCallback(
     (version: string) => {
@@ -285,6 +234,77 @@ export function ReleaseNotesDialog({
     [loadedNotes, bundledVersions, metadata],
   );
 
+  useEffect(() => {
+    if (listLoading || browseChannel === null) return;
+    const first = versions[0];
+    if (first === undefined) {
+      setActiveVersion(null);
+      setActiveLoading(false);
+      return;
+    }
+    const target =
+      browseChannel === seededChannel &&
+      initialVersion !== undefined &&
+      versions.includes(initialVersion)
+        ? initialVersion
+        : first;
+    handleVersionClick(target);
+    // Selection is reset only when the browsed channel/version list changes.
+    // Note-loading state must not jump the user's explicit sidebar selection.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    browseChannel,
+    initialVersion,
+    listLoading,
+    seededChannel,
+    versions,
+  ]);
+
+  useEffect(() => {
+    if (
+      !open ||
+      initialVersion === undefined ||
+      initialBody === undefined ||
+      browseChannel !== seededChannel
+    ) {
+      return;
+    }
+    setLoadedNotes((current) => ({
+      ...current,
+      [initialVersion]: sanitize(initialBody),
+    }));
+  }, [
+    browseChannel,
+    initialBody,
+    initialVersion,
+    open,
+    seededChannel,
+  ]);
+
+  const handleBrowseChannel = useCallback((channel: UpdateChannel) => {
+    hasUserBrowsed.current = true;
+    setActiveVersion(null);
+    setActiveLoading(false);
+    setBrowseChannel(channel);
+  }, []);
+
+  const handleUseBrowseChannel = useCallback(() => {
+    if (
+      browseChannel === null ||
+      browseChannel === updateChannel ||
+      isUpdateChannelSaving
+    ) {
+      return;
+    }
+    setUpdateChannel(browseChannel, { onSuccess: onClose });
+  }, [
+    browseChannel,
+    isUpdateChannelSaving,
+    onClose,
+    setUpdateChannel,
+    updateChannel,
+  ]);
+
   const contextLabel = useMemo(() => {
     if (initialContext === "update") return "Available update";
     return "Release History";
@@ -295,58 +315,46 @@ export function ReleaseNotesDialog({
     [versions, metadata, currentAppVersion],
   );
 
-  const updateAvailable = useMemo(() => {
-    if (!currentAppVersion || versions.length === 0) return false;
-    const first = versions[0];
-    return first !== undefined && isNewerThan(first, currentAppVersion);
-  }, [currentAppVersion, versions]);
-
   const activeBody = activeVersion ? loadedNotes[activeVersion] : undefined;
   const activeMeta = activeVersion ? metadata.get(activeVersion) : undefined;
+  const isBrowsingPersistedChannel =
+    browseChannel !== null && browseChannel === updateChannel;
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent
+        aria-labelledby="release-notes-dialog-title"
+        aria-describedby="release-notes-dialog-description"
         className="flex max-h-[85vh] min-h-[60vh] max-w-4xl flex-col overflow-hidden p-0"
         style={{
           backgroundColor: "var(--dialog-bg, var(--bg-elevated))",
           borderColor: "var(--border-subtle)",
         }}
       >
-        <DialogHeader
-          className="shrink-0 border-b px-6 py-4"
-          style={{ borderColor: "var(--border-subtle)" }}
-        >
-          <div className="flex min-w-0 items-center justify-between gap-3">
-            <div className="flex min-w-0 items-center gap-2">
-              <FileText
-                className="h-4 w-4 shrink-0"
-                style={{ color: "var(--accent-primary)" }}
-              />
-              <div className="min-w-0">
-                <DialogTitle className="truncate">Release Notes</DialogTitle>
-                <DialogDescription>{contextLabel}</DialogDescription>
-              </div>
-            </div>
-            {updateAvailable && onRequestUpdate && (
-              <button
-                type="button"
-                data-testid="release-notes-update-button"
-                className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-opacity hover:opacity-90"
-                style={{
-                  backgroundColor: "var(--accent-primary)",
-                  color: "white",
-                }}
-                onClick={onRequestUpdate}
-              >
-                <ArrowUpCircle className="h-3.5 w-3.5" />
-                Update to v{versions[0]}
-              </button>
-            )}
-          </div>
-        </DialogHeader>
+        <ReleaseNotesChannels
+          browseChannel={browseChannel}
+          contextLabel={contextLabel}
+          initialChannel={initialChannel}
+          isBrowsingPersistedChannel={isBrowsingPersistedChannel}
+          isUpdateChannelError={isUpdateChannelError}
+          isUpdateChannelLoading={isUpdateChannelLoading}
+          isUpdateChannelSaving={isUpdateChannelSaving}
+          isUpdateChannelSettled={isUpdateChannelSettled}
+          metadataAvailability={metadataAvailability}
+          onBrowseChannel={handleBrowseChannel}
+          onCheckForUpdates={onCheckForUpdates}
+          onUseBrowseChannel={handleUseBrowseChannel}
+          updateChannel={updateChannel}
+          updateChannelSaveError={updateChannelSaveError}
+          versionsByChannel={versionsByChannel}
+        />
 
-        <div className="flex min-h-0 flex-1">
+        <div
+          className="flex min-h-0 flex-1"
+          role="tabpanel"
+          id="release-notes-panel"
+          aria-labelledby={`release-notes-tab-${browseChannel ?? "stable"}`}
+        >
           <div
             className="flex-1 overflow-y-auto"
             data-testid="release-notes-dialog-body"
@@ -372,170 +380,3 @@ export function ReleaseNotesDialog({
     </Dialog>
   );
 }
-
-const VersionSidebar = memo(function VersionSidebar({
-  items,
-  activeVersion,
-  loading,
-  onClick,
-}: {
-  items: SidebarItem[];
-  activeVersion: string | null;
-  loading: boolean;
-  onClick: (version: string) => void;
-}) {
-  const activeRef = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => {
-    activeRef.current?.scrollIntoView?.({ block: "nearest" });
-  }, [activeVersion]);
-
-  if (loading) {
-    return (
-      <div
-        className="flex w-52 shrink-0 items-center justify-center border-l"
-        style={{
-          borderColor: "var(--border-subtle)",
-          backgroundColor: "var(--bg-surface)",
-        }}
-      >
-        <Loader2
-          className="h-4 w-4 animate-spin"
-          style={{ color: "var(--text-muted)" }}
-        />
-      </div>
-    );
-  }
-
-  return (
-    <div
-      className="w-52 shrink-0 overflow-y-auto border-l"
-      style={{
-        borderColor: "var(--border-subtle)",
-        backgroundColor: "var(--bg-surface)",
-      }}
-    >
-      <div className="py-2">
-        {items.map((item, i) => {
-          if (item.kind === "header") {
-            return (
-              <div
-                key={`h-${item.label}`}
-                className="px-4 pb-1 text-[0.6875rem] font-semibold uppercase tracking-wider"
-                style={{
-                  color: "var(--text-muted)",
-                  paddingTop: i === 0 ? "4px" : "12px",
-                }}
-              >
-                {item.label}
-              </div>
-            );
-          }
-
-          const isActive = item.version === activeVersion;
-          return (
-            <button
-              key={item.version}
-              ref={isActive ? activeRef : undefined}
-              type="button"
-              className="flex w-full items-center justify-between gap-2 rounded-none px-4 py-1.5 text-left transition-colors"
-              style={{
-                color: isActive
-                  ? "var(--accent-primary)"
-                  : "var(--text-secondary)",
-                backgroundColor: isActive
-                  ? "var(--bg-elevated)"
-                  : "transparent",
-                borderLeft: isActive
-                  ? "2px solid var(--accent-primary)"
-                  : "2px solid transparent",
-              }}
-              onClick={() => onClick(item.version)}
-            >
-              <span className="truncate text-[0.8125rem] font-medium">
-                v{item.version}
-              </span>
-              {item.isCurrent ? (
-                <span
-                  className="shrink-0 text-[0.6875rem] font-semibold"
-                  style={{ color: "var(--accent-primary)" }}
-                >
-                  current
-                </span>
-              ) : item.date ? (
-                <span
-                  className="shrink-0 text-[0.6875rem]"
-                  style={{ color: "var(--text-muted)" }}
-                >
-                  {item.date}
-                </span>
-              ) : null}
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-});
-
-const VersionContent = memo(function VersionContent({
-  version,
-  body,
-  loading,
-  date,
-}: {
-  version: string;
-  body: string | null | undefined;
-  loading: boolean;
-  date: string | null;
-}) {
-  return (
-    <div className="px-8 py-6">
-      <div className="mb-4 flex items-baseline gap-3">
-        <h2
-          className="text-lg font-semibold"
-          style={{ color: "var(--text-primary)" }}
-        >
-          v{version}
-        </h2>
-        {date && (
-          <span
-            className="text-[0.75rem]"
-            style={{ color: "var(--text-muted)" }}
-          >
-            {formatDay(date)}
-          </span>
-        )}
-      </div>
-
-      {loading || body === undefined ? (
-        <div className="flex items-center gap-2 py-8">
-          <Loader2
-            className="h-4 w-4 animate-spin"
-            style={{ color: "var(--text-muted)" }}
-          />
-          <span className="text-sm" style={{ color: "var(--text-muted)" }}>
-            Loading...
-          </span>
-        </div>
-      ) : body ? (
-        <div
-          className="text-[0.8125rem] leading-relaxed"
-          style={{ color: "var(--text-primary)" }}
-        >
-          <Suspense
-            fallback={
-              <pre className="whitespace-pre-wrap font-sans">{body}</pre>
-            }
-          >
-            <LazyMarkdown body={body} />
-          </Suspense>
-        </div>
-      ) : (
-        <p className="py-4 text-sm" style={{ color: "var(--text-muted)" }}>
-          Release notes not available for this version.
-        </p>
-      )}
-    </div>
-  );
-});

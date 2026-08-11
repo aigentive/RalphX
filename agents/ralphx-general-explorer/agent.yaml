@@ -8,15 +8,26 @@ capabilities:
     - fs_grep
     - fs_glob
     - get_artifact
+    - get_parent_context
     - propose_plan_mode
     - delegate_start
     - delegate_wait
     - delegate_cancel
+    - delegate_park
+    - create_agent_task
     - get_agent_task
     - list_agent_tasks
+    - update_agent_task
+    - claim_agent_task
+    - complete_agent_task
+    - get_delegate_assignment
+    - complete_delegate_assignment
+    - release_delegate_assignment
     - search_memories
     - get_memory
     - get_memories_for_paths
+    - team_send_message
+    - team_roster
 harnesses:
   claude:
     model: sonnet

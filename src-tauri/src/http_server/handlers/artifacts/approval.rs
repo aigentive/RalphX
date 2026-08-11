@@ -6,50 +6,21 @@ pub async fn approve_plan_artifact(
 ) -> Result<Json<ArtifactResponse>, HttpError> {
     let session_id_str = req.session_id.clone();
     let requested_artifact_id = req.artifact_id.clone();
+    let requested_blueprint_artifact_id = req.blueprint_artifact_id.clone();
+    let requested_blueprint_artifact_version = req.blueprint_artifact_version;
 
-    let (session_id, artifact, approved_at) = state
+    let approved = state
         .app_state
         .db
         .run_transaction(move |conn| {
-            let sid = IdeationSessionId::from_string(session_id_str);
-            let session = SessionRepo::get_by_id_sync(conn, sid.as_str())?
-                .ok_or_else(|| AppError::NotFound(format!("Session {} not found", sid)))?;
-
-            crate::http_server::helpers::assert_session_mutable(&session)?;
-
-            if session.session_flow != IdeationSessionFlow::Planning {
-                return Err(AppError::Validation(
-                    "Plan approval is only available for planning sessions".to_string(),
-                ));
-            }
-
-            let plan_artifact_id = session.plan_artifact_id.as_ref().ok_or_else(|| {
-                AppError::Validation(
-                    "Cannot approve plan: planning session does not have an owned plan artifact"
-                        .to_string(),
-                )
-            })?;
-
-            if let Some(requested) = requested_artifact_id.as_deref() {
-                if requested != plan_artifact_id.as_str() {
-                    return Err(AppError::Conflict(
-                        "Plan changed before approval. Refresh the current plan and approve again."
-                            .to_string(),
-                    ));
-                }
-            }
-
-            let artifact = ArtifactRepo::get_by_id_sync(conn, plan_artifact_id.as_str())?
-                .ok_or_else(|| {
-                    AppError::NotFound(format!(
-                        "Plan artifact {} not found",
-                        plan_artifact_id.as_str()
-                    ))
-                })?;
-            let approved_at = chrono::Utc::now().to_rfc3339();
-            upsert_plan_approval_sync(conn, sid.as_str(), &artifact, &approved_at)?;
-
-            Ok((sid, artifact, approved_at))
+            crate::application::plan_artifact_approval::approve_current_plan_artifact_for_displayed_bundle_sync(
+                conn,
+                IdeationSessionId::from_string(session_id_str),
+                requested_artifact_id.as_deref(),
+                requested_blueprint_artifact_id.as_deref(),
+                requested_blueprint_artifact_version,
+                crate::domain::repositories::PlanApprovalActor::User,
+            )
         })
         .await
         .map_err(|e| {
@@ -57,33 +28,82 @@ pub async fn approve_plan_artifact(
             map_app_err(e)
         })?;
 
-    let mut response = ArtifactResponse::from(artifact);
-    response.session_id = Some(session_id.as_str().to_string());
+    let blueprint_id = approved
+        .blueprint_artifact
+        .as_ref()
+        .map(|artifact| artifact.id.to_string());
+    let blueprint_version = approved
+        .blueprint_artifact
+        .as_ref()
+        .map(|artifact| artifact.metadata.version);
+    let plan_bundle = PlanArtifactBundle {
+        overview_id: approved.artifact.id.clone(),
+        blueprint_id: approved
+            .blueprint_artifact
+            .as_ref()
+            .map(|artifact| artifact.id.clone()),
+        contract_version: if approved.blueprint_artifact.is_some() {
+            2
+        } else {
+            1
+        },
+        is_inherited: false,
+    };
+    let mut response = ArtifactResponse::from(approved.artifact);
+    if let Some(blueprint) = approved.blueprint_artifact {
+        let mut blueprint_response = ArtifactResponse::from(blueprint);
+        blueprint_response.artifact_role = Some("blueprint".to_string());
+        response.blueprint_artifact = Some(Box::new(blueprint_response));
+        response.plan_contract_version = Some(2);
+    }
+    response.session_id = Some(approved.session_id.as_str().to_string());
     let response_id = response.id.clone();
     let response_version = response.version;
     attach_plan_approval(
         &mut response,
-        PlanApprovalView::approved(response_id.clone(), response_version, approved_at.clone()),
+        PlanApprovalView::approved(
+            response_id.clone(),
+            response_version,
+            blueprint_id.clone(),
+            blueprint_version,
+            approved.approved_at.clone(),
+        ),
     );
 
-    if let Some(app_handle) = &state.app_state.app_handle {
-        let _ = app_handle.emit(
-            "plan_artifact:approved",
-            serde_json::json!({
-                "sessionId": session_id.as_str(),
-                "artifactId": response_id.clone(),
-                "version": response_version,
-                "approvedAt": approved_at,
-            }),
+    crate::http_server::emit_http_event(
+        &state,
+        "plan_artifact:approved",
+        serde_json::json!({
+            "sessionId": approved.session_id.as_str(),
+            "artifactId": response_id.clone(),
+            "version": response_version,
+            "blueprintArtifactId": blueprint_id,
+            "blueprintVersion": blueprint_version,
+            "approvedAt": approved.approved_at,
+        }),
+    );
+    crate::application::plan_approval_notification_service::resolve_plan_approval_notifications(
+        &state.app_state,
+        &approved.session_id,
+        &plan_bundle,
+    )
+    .await;
+
+    let tasks_enabled = state
+        .app_state
+        .ideation_settings_repo
+        .get_settings()
+        .await
+        .map(|settings| settings.tasks_enabled)
+        .unwrap_or(false);
+    if tasks_enabled {
+        crate::application::plan_complexity_assessment::spawn_plan_complexity_assessor_after_approval(
+            std::sync::Arc::clone(&state.app_state),
+            approved.session_id.as_str().to_string(),
+            response_id,
+            response_version,
         );
     }
-
-    crate::application::plan_complexity_assessment::spawn_plan_complexity_assessor_after_approval(
-        std::sync::Arc::clone(&state.app_state),
-        session_id.as_str().to_string(),
-        response_id,
-        response_version,
-    );
 
     Ok(Json(response))
 }

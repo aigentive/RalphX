@@ -54,7 +54,9 @@ function monitor(
     prNumber: 411,
     status: "awaiting_user",
     monitorEnabled: true,
+    autoApproveEnabled: true,
     firstReviewCompleted: false,
+    firstActionResolved: false,
     lastSeenHeadSha: "abcdef1234567890",
     lastReviewedHeadSha: null,
     lastReviewRunId: null,
@@ -107,6 +109,7 @@ function reviewContext(
     prNumber: 411,
     prUrl: "https://github.com/aigentive/ralphx.app/pull/411",
     currentHeadSha: "abcdef1234567890",
+    pendingActionHeadStatus: "current",
     health: null,
     reviewFeedback: null,
     monitor: monitor(),
@@ -197,7 +200,9 @@ describe("AgentWorkspacePrReviewCard", () => {
     const openPrButton = screen.getByRole("button", {
       name: "Open PR #411 in GitHub",
     });
-    expect(screen.getByText(/PR #411 · head abcdef12/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/PR #411 · Reviewed head abcdef12/i),
+    ).toBeInTheDocument();
 
     await user.click(openPrButton);
 
@@ -300,6 +305,96 @@ describe("AgentWorkspacePrReviewCard", () => {
     expect(screen.getByRole("button", { name: "Skip" })).toBeEnabled();
   });
 
+  it("keeps a stale proposal visible and skippable but disables submission", () => {
+    renderCard({
+      context: reviewContext({
+        currentHeadSha: "current-head-b",
+        pendingActionHeadStatus: "stale",
+      }),
+    });
+
+    expect(screen.getByText("Found a blocking regression in the PR.")).toBeInTheDocument();
+    expect(screen.getByText(/Reviewed head abcdef12/i)).toBeInTheDocument();
+    expect(screen.getByText(/Verified current head current-/i)).toBeInTheDocument();
+    expect(
+      screen.getByText("PR head changed; a fresh review is required."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Request Changes/i }),
+    ).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Skip" })).toBeEnabled();
+  });
+
+  it("keeps an unverified proposal visible and skippable without calling the snapshot current", () => {
+    renderCard({
+      context: reviewContext({
+        currentHeadSha: "source-snapshot-head",
+        pendingActionHeadStatus: "unverified",
+      }),
+    });
+
+    expect(screen.getByText("Found a blocking regression in the PR.")).toBeInTheDocument();
+    expect(
+      screen.getByText("The remote PR head cannot currently be verified."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Verified current head/i)).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Request Changes/i }),
+    ).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Skip" })).toBeEnabled();
+  });
+
+  it("shows a recoverable consistency state when awaiting user has no pending action", () => {
+    renderCard({
+      context: reviewContext({
+        pendingAction: null,
+        pendingActionHeadStatus: null,
+        recentActions: [],
+      }),
+    });
+
+    expect(
+      screen.getByText(
+        "The reviewer proposal is temporarily unavailable. RalphX will keep trying to restore it.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("Waiting for a reviewer proposal"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("suppresses stale proposal controls when terminal workspace authority is present", () => {
+    renderCard({
+      context: reviewContext({
+        workspace: conversationWorkspaceFixture({
+          conversationId: "conversation-1",
+          mode: "review_pr",
+          publicationPrNumber: 411,
+          publicationPrStatus: "merged",
+        }),
+        monitor: monitor({
+          status: "awaiting_user",
+          monitorEnabled: true,
+          lastReviewOutcome: "approve",
+        }),
+        recentActions: [
+          reviewAction({
+            status: "superseded",
+            resolvedAt: now,
+          }),
+        ],
+      }),
+    });
+
+    expect(screen.getByText("Complete")).toBeInTheDocument();
+    expect(screen.getByText("Last action: Superseded")).toBeInTheDocument();
+    expect(screen.queryByText("Needs approval")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Skip" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Request Changes/i }),
+    ).not.toBeInTheDocument();
+  });
+
   it("shows retry guidance when a pending action has a saved submit failure", () => {
     renderCard({
       context: reviewContext({
@@ -383,6 +478,33 @@ describe("AgentWorkspacePrReviewCard", () => {
     expect(screen.getByText("Last action: Skipped")).toBeInTheDocument();
     expect(screen.getByText("GitHub review submission failed")).toBeInTheDocument();
   });
+
+  it.each([
+    ["approved", "Approved"],
+    ["superseded", "Superseded"],
+  ] as const)(
+    "shows %s actions as the last resolved action",
+    (status, label) => {
+      renderCard({
+        context: reviewContext({
+          monitor: monitor({ status: "watching" }),
+          pendingAction: null,
+          recentActions: [
+            reviewAction({
+              id: `${status}-action`,
+              status,
+              resolvedAt: now,
+            }),
+          ],
+        }),
+      });
+
+      expect(screen.getByText(`Last action: ${label}`)).toBeInTheDocument();
+      expect(
+        screen.queryByText("Waiting for a reviewer proposal"),
+      ).not.toBeInTheDocument();
+    },
+  );
 
   it("shows mutation errors from review action submission", async () => {
     const user = userEvent.setup();

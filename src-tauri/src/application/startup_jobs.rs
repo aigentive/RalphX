@@ -18,7 +18,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter, Runtime};
+use tauri::{AppHandle, Emitter, Manager};
 use tracing::{debug, info};
 
 use crate::application::chat_service::uses_execution_slot;
@@ -30,24 +30,81 @@ use crate::commands::execution_commands::{
     context_matches_running_status_for_gc, ActiveProjectState, ExecutionState,
     AGENT_ACTIVE_STATUSES, AUTO_TRANSITION_STATES,
 };
-use crate::domain::entities::ideation::IdeationSessionStatus;
+use crate::domain::entities::ideation::{IdeationSessionFlow, IdeationSessionStatus};
 use crate::domain::entities::{
-    app_state::ExecutionHaltMode, AgentRunStatus, ChatContextType, IdeationSessionId,
-    InternalStatus, ProjectId, ReviewNote, ReviewOutcome, ReviewerType,
+    app_state::ExecutionHaltMode, AgentConversationWorkspaceMode, AgentRunStatus, ChatContextType,
+    ChatConversationId, IdeationSessionId, InternalStatus, ProjectId, ReviewNote, ReviewOutcome,
+    ReviewerType,
 };
 use crate::domain::repositories::{
     AgentRunRepository, AppStateRepository, ChatConversationRepository,
-    ExecutionSettingsRepository, IdeationSessionRepository, ProjectRepository, ReviewRepository,
-    TaskDependencyRepository, TaskRepository, ORPHANED_AGENT_RUN_ON_APP_RESTART,
+    ExecutionSettingsRepository, IdeationSessionRepository, NotificationRepository,
+    ProjectRepository, ReviewRepository, TaskDependencyRepository, TaskRepository,
+    ORPHANED_AGENT_RUN_ON_APP_RESTART,
 };
-use crate::domain::services::RunningAgentKey;
+use crate::domain::services::{QueueKey, QueuedMessage, RunningAgentKey};
 use crate::domain::state_machine::services::TaskScheduler;
 use crate::error::AppResult;
 
 use super::TaskTransitionService;
+use crate::infrastructure::agents::claude::{stream_timeouts, StreamTimeoutsConfig};
+use crate::infrastructure::sqlite::sqlite_chat_payload_retention_repo::SqliteChatPayloadRetentionRepository;
+use crate::infrastructure::sqlite::DbConnection;
 
 /// Environment variable that disables startup recovery mechanisms when present.
 pub const RALPHX_DISABLE_STARTUP_RECOVERY_ENV: &str = "RALPHX_DISABLE_STARTUP_RECOVERY";
+
+fn notification_retention_prune_args(
+    config: &StreamTimeoutsConfig,
+    now: chrono::DateTime<chrono::Utc>,
+) -> (chrono::DateTime<chrono::Utc>, u32) {
+    (
+        now - chrono::Duration::days(config.notification_retention_read_days as i64),
+        u32::try_from(config.notification_retention_max_rows).unwrap_or(u32::MAX),
+    )
+}
+
+fn chat_payload_retention_prune_args(
+    config: &StreamTimeoutsConfig,
+    now: chrono::DateTime<chrono::Utc>,
+) -> (
+    chrono::DateTime<chrono::Utc>,
+    chrono::DateTime<chrono::Utc>,
+    u32,
+) {
+    (
+        now - chrono::Duration::days(config.chat_payload_retention_days as i64),
+        now - chrono::Duration::days(config.chat_payload_retention_archived_days as i64),
+        // A zero batch size would make every DELETE a silent no-op while the
+        // job still reports success; clamp to at least one row per batch.
+        u32::try_from(config.chat_payload_retention_batch_rows)
+            .unwrap_or(u32::MAX)
+            .max(1),
+    )
+}
+
+async fn prune_chat_payload_retention(
+    payload_repo: &SqliteChatPayloadRetentionRepository,
+    config: &StreamTimeoutsConfig,
+    now: chrono::DateTime<chrono::Utc>,
+) -> AppResult<usize> {
+    if !config.chat_payload_retention_enabled {
+        return Ok(0);
+    }
+
+    let (before, archived_before, batch_rows) = chat_payload_retention_prune_args(config, now);
+    let mut pruned = 0;
+    loop {
+        let pruned_in_batch = payload_repo
+            .prune_batch(before, archived_before, batch_rows)
+            .await?;
+        pruned += pruned_in_batch;
+        if pruned_in_batch == 0 {
+            return Ok(pruned);
+        }
+        tokio::task::yield_now().await;
+    }
+}
 
 #[doc(hidden)]
 pub fn is_startup_recovery_disabled_var(value: Option<&std::ffi::OsStr>) -> bool {
@@ -80,6 +137,44 @@ fn startup_job_step_completed(step: &'static str, started_at: Instant) {
         elapsed_ms = started_at.elapsed().as_millis(),
         "Startup job runner step completed"
     );
+}
+
+const ACCEPTED_PLAN_MODE_HANDOFF_SOURCE: &str = "accepted_plan_mode_proposal";
+
+fn is_accepted_plan_mode_handoff_row(key: &QueueKey, message: &QueuedMessage) -> bool {
+    if key.context_type != ChatContextType::Project {
+        return false;
+    }
+    let Some(metadata) = message.metadata_override.as_deref() else {
+        return false;
+    };
+    let Ok(metadata) = serde_json::from_str::<serde_json::Value>(metadata) else {
+        return false;
+    };
+    let Some(request_id) = metadata
+        .get("source_request_id")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return false;
+    };
+
+    message.id == format!("plan-mode-handoff:{request_id}")
+        && metadata.get("source").and_then(|value| value.as_str())
+            == Some(ACCEPTED_PLAN_MODE_HANDOFF_SOURCE)
+        && metadata
+            .get("required_workspace_mode")
+            .and_then(|value| value.as_str())
+            == Some("plan")
+        && metadata
+            .get("resume_in_place")
+            .and_then(|value| value.as_bool())
+            == Some(true)
+        && metadata
+            .get("persist_hidden_marker")
+            .and_then(|value| value.as_bool())
+            == Some(true)
 }
 
 /// Returns true if a task's metadata indicates it should be auto-recovered on startup.
@@ -138,13 +233,13 @@ fn startup_resume_chat_context_for_status(status: InternalStatus) -> Option<Chat
 /// Phase 82: Supports optional project scoping via `active_project_state`.
 /// When active project is set, only tasks from that project will be resumed.
 /// When no active project is set, resumption is skipped entirely.
-pub struct StartupJobRunner<R: Runtime = tauri::Wry> {
+pub struct StartupJobRunner {
     task_repo: Arc<dyn TaskRepository>,
     task_dep_repo: Arc<dyn TaskDependencyRepository>,
     project_repo: Arc<dyn ProjectRepository>,
     chat_conversation_repo: Arc<dyn ChatConversationRepository>,
     agent_run_repo: Arc<dyn AgentRunRepository>,
-    transition_service: Arc<TaskTransitionService<R>>,
+    transition_service: Arc<TaskTransitionService>,
     execution_state: Arc<ExecutionState>,
     /// Phase 82: Active project state for per-project scoping
     active_project_state: Arc<ActiveProjectState>,
@@ -159,12 +254,12 @@ pub struct StartupJobRunner<R: Runtime = tauri::Wry> {
     previous_session_cutoff: chrono::DateTime<chrono::Utc>,
     /// Plan branch repository for resolving plan branch during deferred cleanup
     plan_branch_repo: Option<Arc<dyn crate::domain::repositories::PlanBranchRepository>>,
-    reconciler: ReconciliationRunner<R>,
+    reconciler: ReconciliationRunner,
     /// Optional task scheduler for auto-starting Ready tasks on startup.
     /// When provided, Ready tasks will be scheduled after resuming agent-active tasks.
     task_scheduler: Option<Arc<dyn TaskScheduler>>,
     /// Optional app handle for event emission
-    app_handle: Option<AppHandle<R>>,
+    app_handle: Option<AppHandle>,
     /// Optional review repository for adding audit-trail ReviewNotes on crash recovery
     review_repo: Option<Arc<dyn ReviewRepository>>,
     /// Optional chat service for Phase N+1 ideation recovery.
@@ -175,19 +270,23 @@ pub struct StartupJobRunner<R: Runtime = tauri::Wry> {
     /// Projects whose startup Git/GitHub preflight failed. Startup recovery for
     /// these projects is deferred so recovery does not immediately hit known-bad auth.
     git_startup_blocked_project_ids: Arc<HashSet<ProjectId>>,
+    notification_repo: Option<Arc<dyn NotificationRepository>>,
+    chat_payload_retention_repo: Option<Arc<SqliteChatPayloadRetentionRepository>>,
+    delegation_park_service:
+        Option<Arc<crate::application::delegation_park::DelegationParkService>>,
 }
 
-struct StartupSafetyNet<R: Runtime = tauri::Wry> {
+struct StartupSafetyNet {
     task_repo: Arc<dyn TaskRepository>,
     task_dep_repo: Arc<dyn TaskDependencyRepository>,
     project_repo: Arc<dyn ProjectRepository>,
-    app_handle: Option<AppHandle<R>>,
+    app_handle: Option<AppHandle>,
 }
 
-impl<R: Runtime> StartupSafetyNet<R> {
+impl StartupSafetyNet {
     async fn run(self) {
         let step_started_at = startup_job_step_started("ready_task_unblock");
-        StartupJobRunner::<R>::unblock_ready_tasks_for(
+        StartupJobRunner::unblock_ready_tasks_for(
             Arc::clone(&self.task_repo),
             Arc::clone(&self.task_dep_repo),
             Arc::clone(&self.project_repo),
@@ -197,7 +296,7 @@ impl<R: Runtime> StartupSafetyNet<R> {
         startup_job_step_completed("ready_task_unblock", step_started_at);
 
         let step_started_at = startup_job_step_started("dependency_violation_reconcile");
-        StartupJobRunner::<R>::reconcile_dependency_violations_for(
+        StartupJobRunner::reconcile_dependency_violations_for(
             self.task_repo,
             self.task_dep_repo,
             self.project_repo,
@@ -208,7 +307,7 @@ impl<R: Runtime> StartupSafetyNet<R> {
     }
 }
 
-impl<R: Runtime> StartupJobRunner<R> {
+impl StartupJobRunner {
     async fn persist_startup_status_change(
         &self,
         task: &crate::domain::entities::Task,
@@ -255,7 +354,7 @@ impl<R: Runtime> StartupJobRunner<R> {
         running_agent_registry: Arc<dyn crate::domain::services::RunningAgentRegistry>,
         memory_event_repo: Arc<dyn crate::domain::repositories::MemoryEventRepository>,
         agent_run_repo: Arc<dyn AgentRunRepository>,
-        transition_service: Arc<TaskTransitionService<R>>,
+        transition_service: Arc<TaskTransitionService>,
         execution_state: Arc<ExecutionState>,
         active_project_state: Arc<ActiveProjectState>,
         app_state_repo: Arc<dyn AppStateRepository>,
@@ -306,6 +405,9 @@ impl<R: Runtime> StartupJobRunner<R> {
             chat_service: None,
             ideation_session_repo,
             git_startup_blocked_project_ids: Arc::new(HashSet::new()),
+            notification_repo: None,
+            chat_payload_retention_repo: None,
+            delegation_park_service: None,
         }
     }
 
@@ -550,7 +652,7 @@ impl<R: Runtime> StartupJobRunner<R> {
     }
 
     /// Set the app handle for event emission (builder pattern).
-    pub fn with_app_handle(mut self, app_handle: AppHandle<R>) -> Self {
+    pub fn with_app_handle(mut self, app_handle: AppHandle) -> Self {
         self.app_handle = Some(app_handle.clone());
         self.reconciler = self.reconciler.with_app_handle(app_handle);
         self
@@ -586,10 +688,32 @@ impl<R: Runtime> StartupJobRunner<R> {
         self
     }
 
-    pub fn spawn_post_ready_safety_net(&self, delay: Duration)
-    where
-        R: 'static,
-    {
+    pub fn with_notification_repo(
+        mut self,
+        notification_repo: Arc<dyn NotificationRepository>,
+    ) -> Self {
+        self.notification_repo = Some(notification_repo);
+        self
+    }
+
+    /// Sets the raw-SQL retention repository used only by the startup payload-prune job.
+    pub fn with_chat_payload_retention_db(mut self, db: DbConnection) -> Self {
+        self.chat_payload_retention_repo =
+            Some(Arc::new(SqliteChatPayloadRetentionRepository::from_db(db)));
+        self
+    }
+
+    /// Provide the durable delegation-park reconciler so coordinators parked across a restart
+    /// are woken from durable state rather than stranded.
+    pub fn with_delegation_park_service(
+        mut self,
+        service: Arc<crate::application::delegation_park::DelegationParkService>,
+    ) -> Self {
+        self.delegation_park_service = Some(service);
+        self
+    }
+
+    pub fn spawn_post_ready_safety_net(&self, delay: Duration) {
         let runner = self.clone_for_safety_net();
         tauri::async_runtime::spawn(async move {
             if delay > Duration::ZERO {
@@ -600,7 +724,7 @@ impl<R: Runtime> StartupJobRunner<R> {
         });
     }
 
-    fn clone_for_safety_net(&self) -> StartupSafetyNet<R> {
+    fn clone_for_safety_net(&self) -> StartupSafetyNet {
         StartupSafetyNet {
             task_repo: Arc::clone(&self.task_repo),
             task_dep_repo: Arc::clone(&self.task_dep_repo),
@@ -618,8 +742,63 @@ impl<R: Runtime> StartupJobRunner<R> {
     /// Skips if execution is paused. Stops early if max_concurrent is reached.
     /// For each task in an agent-active state, re-executes entry actions to
     /// respawn the appropriate agent.
-    pub async fn run(&self) -> HashSet<String> {
+    pub fn run(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HashSet<String>> + Send + '_>> {
+        Box::pin(self.run_inner())
+    }
+
+    async fn run_inner(&self) -> HashSet<String> {
         debug!("StartupJobRunner::run() called");
+
+        if let Some(notification_repo) = &self.notification_repo {
+            let step_started_at = startup_job_step_started("notification_retention_prune");
+            let (read_before, max_rows) =
+                notification_retention_prune_args(stream_timeouts(), chrono::Utc::now());
+            if let Err(error) = notification_repo.prune(read_before, max_rows).await {
+                tracing::warn!(error = %error, "Failed to prune durable notifications at startup");
+            }
+            startup_job_step_completed("notification_retention_prune", step_started_at);
+        }
+
+        if let Some(park_service) = &self.delegation_park_service {
+            let step_started_at = startup_job_step_started("delegation_park_reconcile");
+            match park_service
+                .reconcile_all(self.agent_run_repo.as_ref())
+                .await
+            {
+                Ok(summary) => {
+                    if summary.parks_examined > 0 {
+                        info!(
+                            parks_examined = summary.parks_examined,
+                            "Reconciled durable delegation parks at startup"
+                        );
+                    }
+                }
+                Err(error) => tracing::warn!(
+                    error = %error,
+                    "Failed to reconcile delegation parks at startup; parked coordinators may wait until their deadline"
+                ),
+            }
+            startup_job_step_completed("delegation_park_reconcile", step_started_at);
+        }
+
+        if let Some(payload_repo) = &self.chat_payload_retention_repo {
+            let config = stream_timeouts().clone();
+            if config.chat_payload_retention_enabled {
+                let payload_repo = Arc::clone(payload_repo);
+                tauri::async_runtime::spawn(async move {
+                    let step_started_at = startup_job_step_started("chat_payload_retention_prune");
+                    if let Err(error) =
+                        prune_chat_payload_retention(&payload_repo, &config, chrono::Utc::now())
+                            .await
+                    {
+                        tracing::warn!(error = %error, "Failed to prune chat payloads at startup");
+                    }
+                    startup_job_step_completed("chat_payload_retention_prune", step_started_at);
+                });
+            }
+        }
 
         if is_startup_recovery_disabled() {
             info!(
@@ -707,6 +886,33 @@ impl<R: Runtime> StartupJobRunner<R> {
         }
         startup_job_step_completed("orphan_agent_run_cleanup", step_started_at);
 
+        // Phase 4a.2: Sweep crash-orphaned Standalone workspace directories — the only
+        // reclamation path for `standalone_workspaces/*` (archive never deletes them).
+        // Fail-safe by construction: requires an app-owned data dir, and any entry the
+        // sweep cannot positively prove is orphaned is left untouched.
+        if let Some(app_data_dir) = self.app_handle.as_ref().and_then(|handle| {
+            handle
+                .try_state::<crate::application::AppState>()
+                .map(|state| state.app_paths.app_data_dir().to_path_buf())
+        }) {
+            let step_started_at = startup_job_step_started("standalone_workspace_orphan_sweep");
+            let sweep_summary =
+                crate::application::standalone_workspace::sweep_orphaned_standalone_workspaces(
+                    &app_data_dir,
+                    Arc::clone(&self.chat_conversation_repo),
+                )
+                .await;
+            if sweep_summary.removed > 0 || sweep_summary.skipped > 0 {
+                info!(
+                    removed = sweep_summary.removed,
+                    retained = sweep_summary.retained,
+                    skipped = sweep_summary.skipped,
+                    "Standalone workspace crash-orphan sweep completed"
+                );
+            }
+            startup_job_step_completed("standalone_workspace_orphan_sweep", step_started_at);
+        }
+
         // Phase 90+: Read persisted app state (active project + halt mode) from DB.
         // No waiting needed — DB has the value from the previous session.
         debug!("Reading persisted app_state from DB...");
@@ -775,6 +981,13 @@ impl<R: Runtime> StartupJobRunner<R> {
             return HashSet::new();
         }
         debug!("Execution NOT paused, continuing...");
+
+        // Recover exact durable Plan-mode handoffs after previous-session cleanup.
+        // This runs before task/ideation recovery so it cannot compete with a
+        // replacement Plan turn for the same project conversation.
+        let step_started_at = startup_job_step_started("accepted_plan_mode_handoff_recovery");
+        self.recover_accepted_plan_mode_handoffs().await;
+        startup_job_step_completed("accepted_plan_mode_handoff_recovery", step_started_at);
 
         if active_project_id.is_none() {
             info!("No active project in DB, skipping task resumption");
@@ -1377,7 +1590,7 @@ impl<R: Runtime> StartupJobRunner<R> {
         item: crate::application::recovery_queue::RecoveryItem,
         chat_service: &dyn ChatService,
         session_repo: &dyn IdeationSessionRepository,
-        app_handle: Option<&AppHandle<R>>,
+        app_handle: Option<&AppHandle>,
     ) -> Result<(), String> {
         let session_id = IdeationSessionId::from_string(item.context_id.clone());
 
@@ -1615,7 +1828,7 @@ impl<R: Runtime> StartupJobRunner<R> {
         task_repo: Arc<dyn TaskRepository>,
         task_dep_repo: Arc<dyn TaskDependencyRepository>,
         project_repo: Arc<dyn ProjectRepository>,
-        app_handle: Option<AppHandle<R>>,
+        app_handle: Option<AppHandle>,
     ) {
         // Get all projects to scan for blocked tasks
         let projects = match project_repo.get_all().await {
@@ -1797,7 +2010,7 @@ impl<R: Runtime> StartupJobRunner<R> {
         task_repo: Arc<dyn TaskRepository>,
         task_dep_repo: Arc<dyn TaskDependencyRepository>,
         project_repo: Arc<dyn ProjectRepository>,
-        app_handle: Option<AppHandle<R>>,
+        app_handle: Option<AppHandle>,
     ) {
         let projects = match project_repo.get_all().await {
             Ok(p) => p,
@@ -2424,6 +2637,144 @@ impl<R: Runtime> StartupJobRunner<R> {
             count = project_ids.len(),
             "Startup pending drain: drain complete"
         );
+    }
+
+    /// Restart only exact accepted Plan-mode continuations through ChatService's
+    /// canonical queued-send seam. Malformed durable rows and uncertain ownership
+    /// are intentionally ignored so startup cannot launch arbitrary messages.
+    async fn recover_accepted_plan_mode_handoffs(&self) {
+        let Some(app_handle) = self.app_handle.as_ref() else {
+            debug!("Startup Plan-mode handoff recovery: no app handle configured");
+            return;
+        };
+        let Some(state) = app_handle.try_state::<crate::application::AppState>() else {
+            tracing::warn!("Startup Plan-mode handoff recovery: AppState is unavailable");
+            return;
+        };
+        self.recover_accepted_plan_mode_handoffs_for_state(state.inner())
+            .await;
+    }
+
+    async fn recover_accepted_plan_mode_handoffs_for_state(
+        &self,
+        state: &crate::application::AppState,
+    ) {
+        let Some(chat_service) = self.chat_service.as_ref().cloned() else {
+            debug!("Startup Plan-mode handoff recovery: no chat service configured");
+            return;
+        };
+        let queued_message_repo = Arc::clone(&state.queued_message_repo);
+        let chat_conversation_repo = Arc::clone(&state.chat_conversation_repo);
+        let workspace_repo = Arc::clone(&state.agent_conversation_workspace_repo);
+        let ideation_session_repo = Arc::clone(&state.ideation_session_repo);
+        let running_agent_registry = Arc::clone(&state.running_agent_registry);
+        let interactive_process_registry = Arc::clone(&state.interactive_process_registry);
+
+        let running_project_owners = match running_agent_registry
+            .list_by_context_type(&ChatContextType::Project.to_string())
+            .await
+        {
+            Ok(owners) => owners,
+            Err(error) => {
+                tracing::warn!(error = %error, "Startup Plan-mode handoff recovery: running-registry read failed; recovery skipped");
+                return;
+            }
+        };
+
+        let keys = match queued_message_repo.list_keys().await {
+            Ok(keys) => keys,
+            Err(error) => {
+                tracing::warn!(error = %error, "Startup Plan-mode handoff recovery: queue-key read failed");
+                return;
+            }
+        };
+
+        for key in keys
+            .into_iter()
+            .filter(|key| key.context_type == ChatContextType::Project)
+        {
+            let messages = match queued_message_repo.list(&key).await {
+                Ok(messages) => messages,
+                Err(error) => {
+                    tracing::warn!(context_id = %key.context_id, error = %error, "Startup Plan-mode handoff recovery: queue-row read failed");
+                    continue;
+                }
+            };
+            let conversation_id = ChatConversationId::from_string(key.context_id.clone());
+
+            for message in messages
+                .iter()
+                .filter(|message| is_accepted_plan_mode_handoff_row(&key, message))
+            {
+                match chat_conversation_repo.get_by_id(&conversation_id).await {
+                    Ok(Some(conversation))
+                        if conversation.context_type == ChatContextType::Project
+                            && conversation.agent_mode
+                                == Some(AgentConversationWorkspaceMode::Plan) => {}
+                    Ok(_) => continue,
+                    Err(error) => {
+                        tracing::warn!(conversation_id = %conversation_id, error = %error, "Startup Plan-mode handoff recovery: conversation read failed");
+                        continue;
+                    }
+                }
+                let workspace = match workspace_repo
+                    .get_by_conversation_id(&conversation_id)
+                    .await
+                {
+                    Ok(Some(workspace))
+                        if workspace.mode == AgentConversationWorkspaceMode::Plan =>
+                    {
+                        workspace
+                    }
+                    Ok(_) => continue,
+                    Err(error) => {
+                        tracing::warn!(conversation_id = %conversation_id, error = %error, "Startup Plan-mode handoff recovery: workspace read failed");
+                        continue;
+                    }
+                };
+                let Some(session_id) = workspace.linked_ideation_session_id else {
+                    continue;
+                };
+                match ideation_session_repo.get_by_id(&session_id).await {
+                    Ok(Some(session))
+                        if session.session_flow == IdeationSessionFlow::Planning
+                            && session.status == IdeationSessionStatus::Active => {}
+                    Ok(_) => continue,
+                    Err(error) => {
+                        tracing::warn!(conversation_id = %conversation_id, error = %error, "Startup Plan-mode handoff recovery: linked session read failed");
+                        continue;
+                    }
+                }
+
+                let running_key = RunningAgentKey::new(
+                    ChatContextType::Project.to_string(),
+                    conversation_id.as_str(),
+                );
+                if running_project_owners
+                    .iter()
+                    .any(|(key, _)| key == &running_key)
+                    || interactive_process_registry
+                        .capture_owner(&crate::application::interactive_process_registry::InteractiveProcessKey::new(
+                            ChatContextType::Project.to_string(),
+                            conversation_id.as_str(),
+                        ))
+                        .await
+                        .is_some()
+                {
+                    continue;
+                }
+
+                let outcome = chat_service
+                    .kick_runtime_handoff(&conversation_id, &message.id)
+                    .await;
+                tracing::info!(
+                    conversation_id = %conversation_id,
+                    queued_message_id = %message.id,
+                    outcome = ?outcome,
+                    "Startup Plan-mode handoff recovery attempted canonical queue kick"
+                );
+            }
+        }
     }
 }
 

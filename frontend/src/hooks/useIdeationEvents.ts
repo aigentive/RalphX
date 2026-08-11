@@ -106,7 +106,7 @@ const FinalizePendingConfirmationEventSchema = z.object({
  * ```tsx
  * function App() {
  *   useIdeationEvents(); // Sets up listener automatically
- *   return <IdeationView />;
+ *   return <AgentsView />;
  * }
  * ```
  */
@@ -309,7 +309,7 @@ export function useIdeationEvents() {
         }
 
         // Emit a local event for UI components to handle
-        // This allows the PlanningView to show a "View Follow-up" link
+        // This allows the Agents Ideation artifact to show a "View Follow-up" link.
         bus.emit("ideation:child_session_created:local", parsed.data);
 
         // Invalidate sessions query to refresh the session list

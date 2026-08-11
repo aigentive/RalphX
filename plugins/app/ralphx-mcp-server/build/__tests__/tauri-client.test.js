@@ -2,7 +2,7 @@
  * Unit tests for tauri-client retry logic with exponential backoff.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { TauriClientError, buildTauriApiUrl, callTauri, callTauriGet } from "../tauri-client.js";
+import { __setTauriHttpTransportForTests, TauriClientError, buildTauriApiUrl, callTauri, callTauriGet, } from "../tauri-client.js";
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -12,6 +12,12 @@ function makeNetworkError() {
 function makeStatusError(status) {
     return new TauriClientError(`Tauri API error: status ${status}`, status);
 }
+function useMockTransport(mockTransport) {
+    __setTauriHttpTransportForTests(mockTransport);
+}
+function resetMockTransport() {
+    __setTauriHttpTransportForTests(undefined);
+}
 // ---------------------------------------------------------------------------
 // TauriClientError — isRetryable semantics (tested indirectly via callTauri)
 // ---------------------------------------------------------------------------
@@ -20,12 +26,13 @@ describe("callTauri — retry on network errors", () => {
         vi.useFakeTimers();
     });
     afterEach(() => {
+        resetMockTransport();
         vi.restoreAllMocks();
         vi.useRealTimers();
     });
     it("succeeds on first attempt when no error", async () => {
         const mockFetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
-        vi.stubGlobal("fetch", mockFetch);
+        useMockTransport(mockFetch);
         const result = callTauri("test_endpoint", { foo: "bar" });
         await vi.runAllTimersAsync();
         expect(await result).toEqual({ ok: true });
@@ -33,7 +40,7 @@ describe("callTauri — retry on network errors", () => {
     });
     it("passes custom transport headers through artifact mutation requests", async () => {
         const mockFetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
-        vi.stubGlobal("fetch", mockFetch);
+        useMockTransport(mockFetch);
         const result = callTauri("update_plan_artifact", { artifact_id: "artifact-1", content: "updated" }, { headers: { "X-RalphX-Caller-Session-Id": "child-session" } });
         await vi.runAllTimersAsync();
         expect(await result).toEqual({ ok: true });
@@ -53,7 +60,7 @@ describe("callTauri — retry on network errors", () => {
             .fn()
             .mockRejectedValueOnce(new Error("ECONNREFUSED"))
             .mockResolvedValueOnce(successResponse);
-        vi.stubGlobal("fetch", mockFetch);
+        useMockTransport(mockFetch);
         const result = callTauri("test_endpoint", {});
         await vi.runAllTimersAsync();
         expect(await result).toEqual({ ok: true });
@@ -72,7 +79,7 @@ describe("callTauri — retry on network errors", () => {
             .mockResolvedValueOnce(errorResponse)
             .mockResolvedValueOnce(errorResponse)
             .mockResolvedValueOnce(successResponse);
-        vi.stubGlobal("fetch", mockFetch);
+        useMockTransport(mockFetch);
         const result = callTauri("test_endpoint", {});
         await vi.runAllTimersAsync();
         expect(await result).toEqual({ ok: true });
@@ -82,7 +89,7 @@ describe("callTauri — retry on network errors", () => {
         const mockFetch = vi
             .fn()
             .mockRejectedValue(new Error("ECONNREFUSED"));
-        vi.stubGlobal("fetch", mockFetch);
+        useMockTransport(mockFetch);
         const resultPromise = callTauri("test_endpoint", {});
         // Attach rejects handler BEFORE advancing timers to avoid unhandled rejection
         const assertion = expect(resultPromise).rejects.toThrow(TauriClientError);
@@ -100,7 +107,7 @@ describe("callTauri — retry on network errors", () => {
             .fn()
             .mockResolvedValueOnce(errorResponse)
             .mockResolvedValueOnce(successResponse);
-        vi.stubGlobal("fetch", mockFetch);
+        useMockTransport(mockFetch);
         const result = callTauri("test_endpoint", {});
         await vi.runAllTimersAsync();
         expect(await result).toEqual({ ok: true });
@@ -115,7 +122,7 @@ describe("callTauri — retry on network errors", () => {
             .fn()
             .mockResolvedValueOnce(errorResponse)
             .mockResolvedValueOnce(successResponse);
-        vi.stubGlobal("fetch", mockFetch);
+        useMockTransport(mockFetch);
         const result = callTauri("test_endpoint", {});
         await vi.runAllTimersAsync();
         expect(await result).toEqual({ ok: true });
@@ -143,6 +150,7 @@ describe("buildTauriApiUrl", () => {
 });
 describe("callTauri — no retry on client errors", () => {
     afterEach(() => {
+        resetMockTransport();
         vi.restoreAllMocks();
     });
     it("does NOT retry on 400 (bad request)", async () => {
@@ -151,7 +159,7 @@ describe("callTauri — no retry on client errors", () => {
             statusText: "Bad Request",
         });
         const mockFetch = vi.fn().mockResolvedValue(errorResponse);
-        vi.stubGlobal("fetch", mockFetch);
+        useMockTransport(mockFetch);
         await expect(callTauri("test_endpoint", {})).rejects.toThrow(TauriClientError);
         // No retry — only 1 attempt
         expect(mockFetch).toHaveBeenCalledTimes(1);
@@ -162,27 +170,28 @@ describe("callTauri — no retry on client errors", () => {
             statusText: "Not Found",
         });
         const mockFetch = vi.fn().mockResolvedValue(errorResponse);
-        vi.stubGlobal("fetch", mockFetch);
+        useMockTransport(mockFetch);
         await expect(callTauri("test_endpoint", {})).rejects.toThrow(TauriClientError);
         expect(mockFetch).toHaveBeenCalledTimes(1);
     });
     it("does NOT retry on 408 (permission await timeout — stale = reject by design)", async () => {
         const errorResponse = new Response(JSON.stringify({ error: "permission request timed out" }), { status: 408, statusText: "Request Timeout" });
         const mockFetch = vi.fn().mockResolvedValue(errorResponse);
-        vi.stubGlobal("fetch", mockFetch);
+        useMockTransport(mockFetch);
         await expect(callTauri("permission/await/some-id", {})).rejects.toThrow(TauriClientError);
         expect(mockFetch).toHaveBeenCalledTimes(1);
     });
     it("does NOT retry on 422 (unprocessable entity)", async () => {
         const errorResponse = new Response(JSON.stringify({ error: "validation failed" }), { status: 422, statusText: "Unprocessable Entity" });
         const mockFetch = vi.fn().mockResolvedValue(errorResponse);
-        vi.stubGlobal("fetch", mockFetch);
+        useMockTransport(mockFetch);
         await expect(callTauri("test_endpoint", {})).rejects.toThrow(TauriClientError);
         expect(mockFetch).toHaveBeenCalledTimes(1);
     });
 });
 describe("callTauriGet — retry on network errors", () => {
     afterEach(() => {
+        resetMockTransport();
         vi.restoreAllMocks();
         vi.useRealTimers();
     });
@@ -195,7 +204,7 @@ describe("callTauriGet — retry on network errors", () => {
             .fn()
             .mockRejectedValueOnce(new Error("ECONNRESET"))
             .mockResolvedValueOnce(successResponse);
-        vi.stubGlobal("fetch", mockFetch);
+        useMockTransport(mockFetch);
         const result = callTauriGet("some/endpoint");
         await vi.runAllTimersAsync();
         expect(await result).toEqual({ data: "value" });
@@ -207,7 +216,7 @@ describe("callTauriGet — retry on network errors", () => {
             statusText: "Not Found",
         });
         const mockFetch = vi.fn().mockResolvedValue(errorResponse);
-        vi.stubGlobal("fetch", mockFetch);
+        useMockTransport(mockFetch);
         await expect(callTauriGet("missing/endpoint")).rejects.toThrow(TauriClientError);
         expect(mockFetch).toHaveBeenCalledTimes(1);
     });
@@ -217,23 +226,24 @@ describe("callTauriGet — retry on network errors", () => {
 // ---------------------------------------------------------------------------
 describe("callTauri — safeJsonParse resilience", () => {
     afterEach(() => {
+        resetMockTransport();
         vi.restoreAllMocks();
     });
     it("2xx valid JSON → returns parsed object", async () => {
         const mockFetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: "abc" }), { status: 200 }));
-        vi.stubGlobal("fetch", mockFetch);
+        useMockTransport(mockFetch);
         const result = await callTauri("test_endpoint", {});
         expect(result).toEqual({ id: "abc" });
     });
     it("2xx empty body → returns null instead of throwing", async () => {
         const mockFetch = vi.fn().mockResolvedValue(new Response("", { status: 200 }));
-        vi.stubGlobal("fetch", mockFetch);
+        useMockTransport(mockFetch);
         const result = await callTauri("set_cross_project_checked", {});
         expect(result).toBeNull();
     });
     it("2xx non-JSON text → returns null instead of throwing", async () => {
         const mockFetch = vi.fn().mockResolvedValue(new Response("OK", { status: 200 }));
-        vi.stubGlobal("fetch", mockFetch);
+        useMockTransport(mockFetch);
         const result = await callTauri("test_endpoint", {});
         expect(result).toBeNull();
     });
@@ -242,7 +252,7 @@ describe("callTauri — safeJsonParse resilience", () => {
             status: 403,
             statusText: "Forbidden",
         }));
-        vi.stubGlobal("fetch", mockFetch);
+        useMockTransport(mockFetch);
         await expect(callTauri("test_endpoint", {})).rejects.toThrow(TauriClientError);
     });
     it("5xx → throws TauriClientError (after retries)", async () => {
@@ -250,23 +260,24 @@ describe("callTauri — safeJsonParse resilience", () => {
             status: 500,
             statusText: "Internal Server Error",
         }));
-        vi.stubGlobal("fetch", mockFetch);
+        useMockTransport(mockFetch);
         await expect(callTauri("test_endpoint", {})).rejects.toThrow(TauriClientError);
     });
 });
 describe("callTauriGet — safeJsonParse resilience", () => {
     afterEach(() => {
+        resetMockTransport();
         vi.restoreAllMocks();
     });
     it("2xx empty body → returns null", async () => {
         const mockFetch = vi.fn().mockResolvedValue(new Response("", { status: 200 }));
-        vi.stubGlobal("fetch", mockFetch);
+        useMockTransport(mockFetch);
         const result = await callTauriGet("some/endpoint");
         expect(result).toBeNull();
     });
     it("2xx non-JSON text → returns null", async () => {
         const mockFetch = vi.fn().mockResolvedValue(new Response("plain text", { status: 200 }));
-        vi.stubGlobal("fetch", mockFetch);
+        useMockTransport(mockFetch);
         const result = await callTauriGet("some/endpoint");
         expect(result).toBeNull();
     });
@@ -276,6 +287,7 @@ describe("callTauriGet — safeJsonParse resilience", () => {
 // ---------------------------------------------------------------------------
 describe("parseErrorResponse — error body surfacing", () => {
     afterEach(() => {
+        resetMockTransport();
         vi.restoreAllMocks();
     });
     it("plain-text 400 body → surfaces the actual error text (not statusText)", async () => {
@@ -283,7 +295,7 @@ describe("parseErrorResponse — error body surfacing", () => {
             status: 400,
             statusText: "Bad Request",
         }));
-        vi.stubGlobal("fetch", mockFetch);
+        useMockTransport(mockFetch);
         const err = (await callTauri("complete_review", {}).catch((e) => e));
         expect(err).toBeInstanceOf(TauriClientError);
         expect(err.message).toBe("review notes are missing required fields");
@@ -294,7 +306,7 @@ describe("parseErrorResponse — error body surfacing", () => {
             status: 400,
             statusText: "Bad Request",
         }));
-        vi.stubGlobal("fetch", mockFetch);
+        useMockTransport(mockFetch);
         const err = (await callTauri("complete_review", {}).catch((e) => e));
         expect(err).toBeInstanceOf(TauriClientError);
         expect(err.message).toBe("task is not in reviewable state");
@@ -302,7 +314,7 @@ describe("parseErrorResponse — error body surfacing", () => {
     });
     it("JSON body with details field → surfaces both error and details", async () => {
         const mockFetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: "validation failed", details: "field 'name' is required" }), { status: 422, statusText: "Unprocessable Entity" }));
-        vi.stubGlobal("fetch", mockFetch);
+        useMockTransport(mockFetch);
         const err = (await callTauri("test_endpoint", {}).catch((e) => e));
         expect(err).toBeInstanceOf(TauriClientError);
         expect(err.message).toBe("validation failed");
@@ -313,7 +325,7 @@ describe("parseErrorResponse — error body surfacing", () => {
             status: 400,
             statusText: "Bad Request",
         }));
-        vi.stubGlobal("fetch", mockFetch);
+        useMockTransport(mockFetch);
         const err = (await callTauri("test_endpoint", {}).catch((e) => e));
         expect(err).toBeInstanceOf(TauriClientError);
         expect(err.message).toBe("Tauri API error: Bad Request");
@@ -324,7 +336,7 @@ describe("parseErrorResponse — error body surfacing", () => {
             status: 404,
             statusText: "Not Found",
         }));
-        vi.stubGlobal("fetch", mockFetch);
+        useMockTransport(mockFetch);
         const err = (await callTauriGet("missing/endpoint").catch((e) => e));
         expect(err).toBeInstanceOf(TauriClientError);
         expect(err.message).toBe("endpoint not found");

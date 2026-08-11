@@ -2,52 +2,41 @@ import { useCallback } from "react";
 
 import type { AgentArtifactTab } from "@/stores/agentSessionStore";
 
-import { getAgentArtifactStateSnapshot } from "./agentArtifactState";
+import type { AgentPublishSubTab } from "./agentPublishSubTab";
 
 interface UseAgentArtifactActionsArgs {
-  hasAutoOpenArtifacts: boolean;
   openArtifactTab: (conversationId: string, tab: AgentArtifactTab) => void;
+  onPublishSubTabRequest: (
+    conversationId: string,
+    tab: AgentPublishSubTab,
+  ) => void;
   scheduleArtifactPanePreload: () => void;
   selectedConversationId: string | null;
-  setArtifactPaneVisibility: (conversationId: string, isOpen: boolean) => void;
 }
 
 export function useAgentArtifactActions({
-  hasAutoOpenArtifacts,
   openArtifactTab,
+  onPublishSubTabRequest,
   scheduleArtifactPanePreload,
   selectedConversationId,
-  setArtifactPaneVisibility,
 }: UseAgentArtifactActionsArgs) {
   const handleSelectArtifact = useCallback(
     (tab: AgentArtifactTab) => {
       if (!selectedConversationId) {
         return;
       }
-      const currentArtifactState = getAgentArtifactStateSnapshot(
-        selectedConversationId,
-        hasAutoOpenArtifacts,
-      );
-      if (currentArtifactState.isOpen && currentArtifactState.activeTab === tab) {
-        setArtifactPaneVisibility(selectedConversationId, false);
-        return;
-      }
       openArtifactTab(selectedConversationId, tab);
     },
-    [
-      hasAutoOpenArtifacts,
-      openArtifactTab,
-      selectedConversationId,
-      setArtifactPaneVisibility,
-    ]
+    [openArtifactTab, selectedConversationId]
   );
 
-  const handleOpenPublishPane = useCallback(() => {
+  const handleOpenPublishPane = useCallback((tab: AgentPublishSubTab = "changes") => {
     if (!selectedConversationId) {
       return;
     }
+    onPublishSubTabRequest(selectedConversationId, tab);
     openArtifactTab(selectedConversationId, "publish");
-  }, [openArtifactTab, selectedConversationId]);
+  }, [onPublishSubTabRequest, openArtifactTab, selectedConversationId]);
 
   const handlePreloadArtifacts = useCallback(() => {
     scheduleArtifactPanePreload();

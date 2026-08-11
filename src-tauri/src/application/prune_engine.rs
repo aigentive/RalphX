@@ -16,6 +16,7 @@
 //! - GC: removes interactive idle slot tracking, updates running count only when pruned
 //! - Reconciler: always recalculates running count from remaining entries, emits event
 
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -27,7 +28,9 @@ use crate::application::interactive_process_registry::{
 use crate::domain::entities::{
     AgentRun, AgentRunId, AgentRunStatus, ChatContextType, InternalStatus, TaskId,
 };
-use crate::domain::repositories::{AgentRunRepository, TaskRepository};
+use crate::domain::repositories::{
+    AgentRunRepository, ProjectRepository, TaskRepository, PRUNED_STALE_AGENT_RUN,
+};
 use crate::domain::services::{RunningAgentInfo, RunningAgentKey, RunningAgentRegistry};
 use crate::infrastructure::agents::claude::stream_timeouts;
 
@@ -46,7 +49,7 @@ fn context_matches_running_status(context_type: ChatContextType, status: Interna
     }
 }
 
-fn should_defer_terminal_settlement_prune(
+pub(super) fn should_defer_terminal_settlement_prune(
     context_type: Option<ChatContextType>,
     reasons: &[&'static str],
     info: &RunningAgentInfo,
@@ -74,6 +77,24 @@ fn should_defer_terminal_settlement_prune(
     age.num_seconds() <= grace_secs
 }
 
+pub(super) fn should_defer_pid_missing_prune(
+    reasons: &[&'static str],
+    info: &RunningAgentInfo,
+    run: Option<&AgentRun>,
+) -> bool {
+    if reasons != ["pid_missing"] {
+        return false;
+    }
+    if !matches!(run, Some(agent_run) if agent_run.status == AgentRunStatus::Running) {
+        return false;
+    }
+
+    let grace_secs = i64::try_from(stream_timeouts().completion_grace_secs).unwrap_or(i64::MAX);
+    let last_activity = info.last_active_at.unwrap_or(info.started_at);
+    let age = chrono::Utc::now().signed_duration_since(last_activity);
+    age.num_seconds() <= grace_secs
+}
+
 /// Shared per-entry prune logic for the GC pruner and the reconciliation pruner.
 ///
 /// Construct one `PruneEngine` per pruning pass and call [`PruneEngine::check_ipr_skip`]
@@ -82,6 +103,7 @@ pub struct PruneEngine {
     running_agent_registry: Arc<dyn RunningAgentRegistry>,
     agent_run_repo: Arc<dyn AgentRunRepository>,
     task_repo: Arc<dyn TaskRepository>,
+    project_repo: Arc<dyn ProjectRepository>,
     interactive_process_registry: Option<Arc<InteractiveProcessRegistry>>,
 }
 
@@ -90,12 +112,14 @@ impl PruneEngine {
         running_agent_registry: Arc<dyn RunningAgentRegistry>,
         agent_run_repo: Arc<dyn AgentRunRepository>,
         task_repo: Arc<dyn TaskRepository>,
+        project_repo: Arc<dyn ProjectRepository>,
         interactive_process_registry: Option<Arc<InteractiveProcessRegistry>>,
     ) -> Self {
         Self {
             running_agent_registry,
             agent_run_repo,
             task_repo,
+            project_repo,
             interactive_process_registry,
         }
     }
@@ -159,18 +183,6 @@ impl PruneEngine {
         info: &RunningAgentInfo,
         pid_alive: bool,
     ) -> bool {
-        // Skip in-flight registrations: try_register writes pid=0/empty agent_run_id as a
-        // placeholder; update_agent_process fills real values ~40ms later. Pruning here
-        // would incorrectly discard a valid in-progress registration.
-        if info.agent_run_id.is_empty() {
-            tracing::debug!(
-                context_type = key.context_type,
-                context_id = key.context_id,
-                "Skipping in-flight registry entry (no agent_run_id yet)"
-            );
-            return false;
-        }
-
         let run = match self
             .agent_run_repo
             .get_by_id(&AgentRunId::from_string(&info.agent_run_id))
@@ -189,6 +201,56 @@ impl PruneEngine {
             }
         };
 
+        if info.pid == 0 {
+            let lease_secs =
+                i64::try_from(stream_timeouts().launch_reservation_lease_secs).unwrap_or(i64::MAX);
+            let renewed_at = info.last_active_at.unwrap_or(info.started_at);
+            let lease_fresh = chrono::Utc::now().signed_duration_since(renewed_at)
+                <= chrono::Duration::seconds(lease_secs);
+            let owned_run_terminal = matches!(
+                run.as_ref(),
+                Some(agent_run) if agent_run.status != AgentRunStatus::Running
+            );
+
+            if lease_fresh && !owned_run_terminal {
+                tracing::debug!(
+                    context_type = key.context_type,
+                    context_id = key.context_id,
+                    run_id = info.agent_run_id,
+                    "Keeping fresh launch reservation"
+                );
+                return false;
+            }
+
+            let removed = self
+                .running_agent_registry
+                .unregister(key, &info.agent_run_id)
+                .await;
+            if removed.is_none() {
+                return false;
+            }
+            if let Some(agent_run) = run {
+                if agent_run.status == AgentRunStatus::Running {
+                    let _ = self
+                        .agent_run_repo
+                        .cancel_with_reason(
+                            &AgentRunId::from_string(&info.agent_run_id),
+                            PRUNED_STALE_AGENT_RUN,
+                        )
+                        .await;
+                }
+            }
+            warn!(
+                context_type = key.context_type,
+                context_id = key.context_id,
+                run_id = info.agent_run_id,
+                lease_fresh,
+                owned_run_terminal,
+                "Pruned expired or terminal launch reservation"
+            );
+            return true;
+        }
+
         let mut reasons: Vec<&'static str> = Vec::new();
 
         if !pid_alive {
@@ -204,6 +266,7 @@ impl PruneEngine {
         // Ideation uses session IDs (not task IDs) — skip the task lookup to avoid
         // mis-routing a session ID through the task repository.
         let context_type = ChatContextType::from_str(&key.context_type).ok();
+        let mut merge_cleanup_path: Option<PathBuf> = None;
         if let Some(ctx) = context_type {
             if matches!(
                 ctx,
@@ -214,6 +277,11 @@ impl PruneEngine {
                     Ok(Some(task)) => {
                         if !context_matches_running_status(ctx, task.internal_status) {
                             reasons.push("task_status_mismatch");
+                        }
+                        if ctx == ChatContextType::Merge {
+                            merge_cleanup_path = self
+                                .validated_merge_cleanup_path(&task, info.worktree_path.as_deref())
+                                .await;
                         }
                     }
                     Ok(None) => reasons.push("task_missing"),
@@ -250,22 +318,51 @@ impl PruneEngine {
             return false;
         }
 
-        // Execute prune: stop (if pid alive) or unregister, then cancel the agent_run.
-        if pid_alive {
-            let _ = self.running_agent_registry.stop(key).await;
+        if should_defer_pid_missing_prune(&reasons, info, run.as_ref()) {
+            tracing::debug!(
+                context_type = key.context_type,
+                context_id = key.context_id,
+                run_id = info.agent_run_id,
+                "Deferring pid_missing prune within completion grace"
+            );
+            return false;
+        }
+
+        // Merge cleanup retains the exact owner reservation until the worktree side
+        // effect is complete, so a replacement cannot claim and reuse the path.
+        let merge_cleanup = context_type == Some(ChatContextType::Merge);
+        let removed = if merge_cleanup {
+            self.running_agent_registry
+                .quiesce_if_owned(key, &info.agent_run_id)
+                .await
+                .ok()
+                .flatten()
+        } else if pid_alive {
+            self.running_agent_registry
+                .stop_if_owned(key, &info.agent_run_id)
+                .await
+                .ok()
+                .flatten()
         } else {
-            let _ = self
-                .running_agent_registry
+            self.running_agent_registry
                 .unregister(key, &info.agent_run_id)
-                .await;
+                .await
+        };
+        if removed.is_none() {
+            return false;
         }
 
         if let Some(agent_run) = run {
             if agent_run.status == AgentRunStatus::Running {
-                let _ = self
-                    .agent_run_repo
-                    .cancel(&AgentRunId::from_string(&info.agent_run_id))
-                    .await;
+                let run_id = AgentRunId::from_string(&info.agent_run_id);
+                if !merge_cleanup && !pid_alive {
+                    let _ = self
+                        .agent_run_repo
+                        .cancel_with_reason(&run_id, PRUNED_STALE_AGENT_RUN)
+                        .await;
+                } else {
+                    let _ = self.agent_run_repo.cancel(&run_id).await;
+                }
             }
         }
 
@@ -278,100 +375,72 @@ impl PruneEngine {
             "Pruned stale running agent registry entry"
         );
 
-        // Best-effort worktree cleanup for Merging contexts (Bug 5).
-        // Merge worktrees should not persist on disk when the merger agent is pruned.
-        if let Some(ChatContextType::Merge) = context_type {
-            if let Some(path) = &info.worktree_path {
-                if let Err(e) = tokio::fs::remove_dir_all(path).await {
-                    warn!(
-                        path = %path,
-                        error = %e,
-                        "Failed to remove merge worktree after prune"
-                    );
+        if merge_cleanup {
+            if let Some(path) = merge_cleanup_path {
+                if let Err(error) = crate::utils::path_safety::checked_remove_dir_all(
+                    &path,
+                    "pruned merge worktree",
+                )
+                .await
+                {
+                    warn!(path = %path.display(), %error, "Failed to remove merge worktree after prune");
                 }
             }
+            self.running_agent_registry
+                .unregister(key, &info.agent_run_id)
+                .await;
         }
 
         true
     }
-}
 
-#[cfg(test)]
-mod terminal_settlement_prune_tests {
-    use super::*;
-    use crate::domain::entities::ChatConversationId;
-
-    fn running_info(last_active_at: Option<chrono::DateTime<chrono::Utc>>) -> RunningAgentInfo {
-        RunningAgentInfo {
-            pid: 12_345,
-            conversation_id: "conversation-test".to_string(),
-            agent_run_id: "run-test".to_string(),
-            started_at: chrono::Utc::now(),
-            worktree_path: None,
-            cancellation_token: None,
-            last_active_at,
-            model: None,
+    async fn validated_merge_cleanup_path(
+        &self,
+        task: &crate::domain::entities::Task,
+        candidate: Option<&str>,
+    ) -> Option<PathBuf> {
+        let candidate = Path::new(candidate?);
+        let candidate = match crate::utils::path_safety::validate_absolute_non_root_path(
+            candidate,
+            "pruned merge worktree",
+        ) {
+            Ok(path) => path,
+            Err(error) => {
+                warn!(path = %candidate.display(), %error, "Refusing unsafe merge worktree cleanup path");
+                return None;
+            }
+        };
+        let project = match self.project_repo.get_by_id(&task.project_id).await {
+            Ok(Some(project)) => project,
+            Ok(None) => {
+                warn!(task_id = %task.id, "Skipping merge worktree cleanup because project is missing");
+                return None;
+            }
+            Err(error) => {
+                warn!(task_id = %task.id, %error, "Skipping merge worktree cleanup because project lookup failed");
+                return None;
+            }
+        };
+        let expected = project.task_worktree_path(task.id.as_str());
+        let expected = match crate::utils::path_safety::validate_absolute_non_root_path(
+            &expected,
+            "expected merge worktree",
+        ) {
+            Ok(path) => path,
+            Err(error) => {
+                warn!(task_id = %task.id, %error, "Skipping merge worktree cleanup because the canonical path is unsafe");
+                return None;
+            }
+        };
+        if candidate != expected {
+            warn!(
+                task_id = %task.id,
+                candidate = %candidate.display(),
+                expected = %expected.display(),
+                "Skipping merge worktree cleanup outside the canonical task path"
+            );
+            return None;
         }
-    }
-
-    fn running_run() -> AgentRun {
-        AgentRun::new(ChatConversationId::new())
-    }
-
-    #[test]
-    fn terminal_settlement_prune_defers_recent_live_merge_status_mismatch() {
-        let info = running_info(Some(chrono::Utc::now()));
-        let run = running_run();
-
-        assert!(should_defer_terminal_settlement_prune(
-            Some(ChatContextType::Merge),
-            &["task_status_mismatch"],
-            &info,
-            Some(&run),
-            true,
-        ));
-    }
-
-    #[test]
-    fn terminal_settlement_prune_rejects_non_settlement_shapes() {
-        let info = running_info(Some(chrono::Utc::now()));
-        let missing_heartbeat = running_info(None);
-        let run = running_run();
-
-        assert!(!should_defer_terminal_settlement_prune(
-            Some(ChatContextType::Merge),
-            &["task_status_mismatch"],
-            &info,
-            Some(&run),
-            false,
-        ));
-        assert!(!should_defer_terminal_settlement_prune(
-            Some(ChatContextType::Merge),
-            &["task_status_mismatch", "pid_missing"],
-            &info,
-            Some(&run),
-            true,
-        ));
-        assert!(!should_defer_terminal_settlement_prune(
-            Some(ChatContextType::TaskExecution),
-            &["task_status_mismatch"],
-            &info,
-            Some(&run),
-            true,
-        ));
-        assert!(!should_defer_terminal_settlement_prune(
-            Some(ChatContextType::Review),
-            &["task_status_mismatch"],
-            &info,
-            None,
-            true,
-        ));
-        assert!(!should_defer_terminal_settlement_prune(
-            Some(ChatContextType::Review),
-            &["task_status_mismatch"],
-            &missing_heartbeat,
-            Some(&run),
-            true,
-        ));
+        Some(candidate)
     }
 }

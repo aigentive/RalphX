@@ -7,24 +7,95 @@
 /// - Graceful shutdown via SIGTERM → SIGKILL
 /// - Orphan cleanup via PID file
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use nix::sys::signal::{killpg, Signal};
 use nix::unistd::Pid;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use tokio::process::{Child, Command};
-use tokio::sync::Mutex;
+use tokio::sync::{watch, Mutex};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing;
 
-use crate::infrastructure::agents::claude::ExternalMcpConfig;
+use crate::infrastructure::agents::claude::{
+    bounded_external_mcp_shutdown_grace_ms, ExternalMcpConfig, MAX_EXTERNAL_MCP_SHUTDOWN_GRACE_MS,
+};
 use crate::infrastructure::tool_paths::{resolve_lsof_cli_path, resolve_ps_cli_path};
 use crate::utils::backend_endpoint::backend_http_base_url;
 
 pub const TAURI_MCP_BYPASS_TOKEN_ENV: &str = "RALPHX_TAURI_MCP_BYPASS_TOKEN";
+const PROCESS_EXIT_POLL_INTERVAL: Duration = Duration::from_millis(25);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TerminateOutcome {
+    NoProcess,
+    ExitedAfterTerm,
+    Killed,
+}
+
+pub(crate) fn register_child_pid(slot: &StdMutex<Option<u32>>, pid: u32) {
+    *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(pid);
+}
+
+pub(crate) fn clear_child_pid(slot: &StdMutex<Option<u32>>) {
+    *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+}
+
+pub(crate) fn current_child_pid(slot: &StdMutex<Option<u32>>) -> Option<u32> {
+    *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+pub(crate) fn terminate_process_group_with(
+    pid: Option<u32>,
+    grace: Duration,
+    poll_interval: Duration,
+    send_term: impl Fn(i32),
+    send_kill: impl Fn(i32),
+    is_alive: impl Fn(i32) -> bool,
+) -> TerminateOutcome {
+    let Some(pid) = pid
+        .filter(|pid| *pid > 1)
+        .and_then(|pid| i32::try_from(pid).ok())
+    else {
+        return TerminateOutcome::NoProcess;
+    };
+
+    send_term(pid);
+    let grace = grace.min(Duration::from_millis(MAX_EXTERNAL_MCP_SHUTDOWN_GRACE_MS));
+    let deadline = Instant::now() + grace;
+    loop {
+        if !is_alive(pid) {
+            return TerminateOutcome::ExitedAfterTerm;
+        }
+
+        let now = Instant::now();
+        if now >= deadline {
+            break;
+        }
+        std::thread::sleep(poll_interval.min(deadline.saturating_duration_since(now)));
+    }
+
+    send_kill(pid);
+    TerminateOutcome::Killed
+}
+
+pub(crate) fn terminate_process_group(pid: Option<u32>, grace: Duration) -> TerminateOutcome {
+    terminate_process_group_with(
+        pid,
+        grace,
+        PROCESS_EXIT_POLL_INTERVAL,
+        |pid| {
+            let _ = killpg(Pid::from_raw(pid), Signal::SIGTERM);
+        },
+        |pid| {
+            let _ = killpg(Pid::from_raw(pid), Signal::SIGKILL);
+        },
+        process_group_exists,
+    )
+}
 
 pub fn ensure_tauri_mcp_bypass_token() -> String {
     if let Ok(token) = std::env::var(TAURI_MCP_BYPASS_TOKEN_ENV) {
@@ -68,6 +139,16 @@ enum HealthCheckResult {
     Failed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalMcpReadinessState {
+    Disabled,
+    Starting,
+    Ready,
+    Degraded,
+    Failed,
+}
+
 pub(crate) fn stderr_indicates_address_in_use(lines: &[String]) -> bool {
     lines.iter().any(|line| {
         line.contains("EADDRINUSE") || line.to_ascii_lowercase().contains("address already in use")
@@ -106,6 +187,19 @@ impl ExternalMcpHandle {
     pub fn get(&self) -> Option<&Arc<ExternalMcpSupervisor>> {
         self.inner.get()
     }
+
+    pub fn readiness(&self) -> ExternalMcpReadinessState {
+        self.get()
+            .map(|supervisor| supervisor.readiness())
+            .unwrap_or(ExternalMcpReadinessState::Disabled)
+    }
+
+    pub async fn await_ready(&self, timeout: Duration) -> Result<(), String> {
+        let supervisor = self
+            .get()
+            .ok_or_else(|| "External MCP transport is disabled".to_string())?;
+        supervisor.await_ready(timeout).await
+    }
 }
 
 impl Default for ExternalMcpHandle {
@@ -118,22 +212,27 @@ impl Default for ExternalMcpHandle {
 
 pub struct ExternalMcpSupervisor {
     child: Arc<Mutex<Option<Child>>>,
+    child_pid: Arc<StdMutex<Option<u32>>>,
     io_handles: Mutex<Vec<JoinHandle<()>>>,
     cancel: CancellationToken,
     config: ExternalMcpConfig,
     app_handle: AppHandle,
     app_data_dir: PathBuf,
+    readiness_tx: watch::Sender<ExternalMcpReadinessState>,
 }
 
 impl ExternalMcpSupervisor {
     pub fn new(config: ExternalMcpConfig, app_handle: AppHandle, app_data_dir: PathBuf) -> Self {
+        let (readiness_tx, _) = watch::channel(ExternalMcpReadinessState::Starting);
         Self {
             child: Arc::new(Mutex::new(None)),
+            child_pid: Arc::new(StdMutex::new(None)),
             io_handles: Mutex::new(Vec::new()),
             cancel: CancellationToken::new(),
             config,
             app_handle,
             app_data_dir,
+            readiness_tx,
         }
     }
 
@@ -144,8 +243,10 @@ impl ExternalMcpSupervisor {
         node_path: PathBuf,
         entry_path: PathBuf,
     ) -> Result<(), String> {
+        self.set_readiness(ExternalMcpReadinessState::Starting);
         if is_test_environment() {
             tracing::info!("Skipping external MCP supervisor start (test environment)");
+            self.set_readiness(ExternalMcpReadinessState::Ready);
             return Ok(());
         }
 
@@ -160,34 +261,57 @@ impl ExternalMcpSupervisor {
         Ok(())
     }
 
-    pub async fn shutdown(&self) {
+    /// Fully synchronous, bounded teardown for `RunEvent::Exit`.
+    ///
+    /// INCIDENT GUARD: this must remain a non-async fn and must not acquire
+    /// `self.child` or `self.io_handles`; Tauri's runtime may no longer poll
+    /// tasks while exit cleanup is running.
+    pub fn shutdown_blocking(&self) {
         self.cancel.cancel();
 
-        let mut child_guard = self.child.lock().await;
-        if let Some(ref mut child) = *child_guard {
-            if let Some(pid) = child.id() {
-                let pgid = Pid::from_raw(pid as i32);
-                let _ = killpg(pgid, Signal::SIGTERM);
-                match tokio::time::timeout(Duration::from_secs(2), child.wait()).await {
-                    Ok(_) => {}
-                    Err(_) => {
-                        let _ = killpg(pgid, Signal::SIGKILL);
-                        let _ = child.wait().await;
-                    }
-                }
-            }
-        }
-        *child_guard = None;
-        drop(child_guard);
+        // Only signal the PID registered by this process. A PID-file fallback can
+        // be stale or corrupted and would make killpg target an unrelated group.
+        let pid = self.current_child_pid();
+        let grace = Duration::from_millis(bounded_external_mcp_shutdown_grace_ms(
+            self.config.shutdown_grace_ms,
+        ));
+        let _ = terminate_process_group(pid, grace);
 
-        let mut handles = self.io_handles.lock().await;
-        for h in handles.drain(..) {
-            h.abort();
-        }
-        drop(handles);
-
+        self.clear_child_pid();
         self.remove_pid_file();
+        self.set_readiness(ExternalMcpReadinessState::Disabled);
         self.emit_event("stopped", None);
+    }
+
+    pub fn readiness(&self) -> ExternalMcpReadinessState {
+        *self.readiness_tx.borrow()
+    }
+
+    pub async fn await_ready(&self, timeout: Duration) -> Result<(), String> {
+        let mut readiness = self.readiness_tx.subscribe();
+        tokio::time::timeout(timeout, async {
+            loop {
+                match *readiness.borrow() {
+                    ExternalMcpReadinessState::Ready => return Ok(()),
+                    ExternalMcpReadinessState::Degraded => {
+                        return Err("External MCP transport is degraded".to_string())
+                    }
+                    ExternalMcpReadinessState::Failed => {
+                        return Err("External MCP transport failed to start".to_string())
+                    }
+                    ExternalMcpReadinessState::Disabled => {
+                        return Err("External MCP transport is disabled".to_string())
+                    }
+                    ExternalMcpReadinessState::Starting => {}
+                }
+                readiness
+                    .changed()
+                    .await
+                    .map_err(|_| "External MCP readiness monitor stopped".to_string())?;
+            }
+        })
+        .await
+        .map_err(|_| "Timed out waiting for external MCP transport readiness".to_string())?
     }
 
     // ── Internal — supervisor lifecycle ──────────────────────────────────
@@ -236,6 +360,7 @@ impl ExternalMcpSupervisor {
                 tracing::error!("Failed to spawn external MCP process: {}", e);
                 *attempts += 1;
                 if *attempts >= self.config.max_restart_attempts {
+                    self.set_readiness(ExternalMcpReadinessState::Failed);
                     self.emit_event("failed", Some(format!("Failed to spawn: {}", e)));
                     self.cancel.cancel();
                     return;
@@ -244,6 +369,7 @@ impl ExternalMcpSupervisor {
                     "restarting",
                     Some(format!("Spawn failed, attempt {}", attempts)),
                 );
+                self.set_readiness(ExternalMcpReadinessState::Starting);
                 tokio::time::sleep(Duration::from_millis(self.config.restart_delay_ms)).await;
                 return;
             }
@@ -251,6 +377,7 @@ impl ExternalMcpSupervisor {
 
         let pid = child.id();
         if let Some(pid_val) = pid {
+            self.register_child_pid(pid_val);
             self.write_pid_file(pid_val);
         }
 
@@ -280,6 +407,7 @@ impl ExternalMcpSupervisor {
             HealthCheckResult::Ready => {
                 tracing::info!("External MCP server is ready on port {}", self.config.port);
                 self.emit_event("started", None);
+                self.set_readiness(ExternalMcpReadinessState::Ready);
                 *attempts = 0; // reset counter on successful start
             }
             HealthCheckResult::Degraded => {
@@ -288,6 +416,7 @@ impl ExternalMcpSupervisor {
                     "degraded",
                     Some("Server responding but not fully ready".to_string()),
                 );
+                self.set_readiness(ExternalMcpReadinessState::Degraded);
                 *attempts = 0;
             }
             HealthCheckResult::Failed => {
@@ -300,6 +429,7 @@ impl ExternalMcpSupervisor {
                 tracing::warn!("External MCP health check failed");
                 *attempts += 1;
                 if *attempts >= self.config.max_restart_attempts {
+                    self.set_readiness(ExternalMcpReadinessState::Failed);
                     self.emit_event(
                         "failed",
                         Some("Health check failed after max attempts".to_string()),
@@ -311,22 +441,23 @@ impl ExternalMcpSupervisor {
                     "restarting",
                     Some(format!("Health check failed, attempt {}", attempts)),
                 );
+                self.set_readiness(ExternalMcpReadinessState::Starting);
                 self.kill_current().await;
                 tokio::time::sleep(Duration::from_millis(self.config.restart_delay_ms)).await;
                 return;
             }
         }
 
-        // Wait for process to exit
-        let exit_status = {
-            let mut guard = self.child.lock().await;
-            if let Some(ref mut child) = *guard {
-                child.wait().await.ok()
-            } else {
-                None
-            }
+        // Take ownership before the lifetime wait so the tokio mutex is never
+        // held across an unbounded await. If cancellation drops this future,
+        // exit cleanup terminates the process through the independent PID slot.
+        let taken = self.child.lock().await.take();
+        let exit_status = match taken {
+            Some(mut child) => child.wait().await.ok(),
+            None => None,
         };
 
+        self.clear_child_pid();
         self.remove_pid_file();
 
         if self.cancel.is_cancelled() {
@@ -370,6 +501,7 @@ impl ExternalMcpSupervisor {
         };
 
         if let Some(status) = exit_status {
+            self.clear_child_pid();
             self.remove_pid_file();
             if self.stderr_has_address_in_use(stderr_lines).await {
                 self.fail_port_in_use().await;
@@ -400,6 +532,7 @@ impl ExternalMcpSupervisor {
                 self.config.port
             )),
         );
+        self.set_readiness(ExternalMcpReadinessState::Failed);
         self.kill_current().await;
         self.cancel.cancel();
     }
@@ -423,6 +556,7 @@ impl ExternalMcpSupervisor {
 
         *attempts += 1;
         if *attempts >= self.config.max_restart_attempts {
+            self.set_readiness(ExternalMcpReadinessState::Failed);
             self.emit_event("failed", Some("Max restart attempts reached".to_string()));
             self.cancel.cancel();
             return;
@@ -432,6 +566,7 @@ impl ExternalMcpSupervisor {
             "restarting",
             Some(format!("Restarting, attempt {}", attempts)),
         );
+        self.set_readiness(ExternalMcpReadinessState::Starting);
         tokio::time::sleep(Duration::from_millis(self.config.restart_delay_ms)).await;
     }
 
@@ -452,6 +587,8 @@ impl ExternalMcpSupervisor {
         if let Some(token) = &self.config.auth_token {
             cmd.env("EXTERNAL_MCP_AUTH_TOKEN", token);
         }
+        crate::infrastructure::subprocess_env_policy::github_cli_env_policy()
+            .apply_to_tokio_command(&mut cmd);
 
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
@@ -525,6 +662,7 @@ impl ExternalMcpSupervisor {
             }
         }
         *guard = None;
+        self.clear_child_pid();
     }
 
     // ── Health check ──────────────────────────────────────────────────────
@@ -587,6 +725,10 @@ impl ExternalMcpSupervisor {
         }
     }
 
+    fn set_readiness(&self, state: ExternalMcpReadinessState) {
+        self.readiness_tx.send_replace(state);
+    }
+
     // ── PID file ──────────────────────────────────────────────────────────
 
     fn pid_file_path(&self) -> PathBuf {
@@ -601,6 +743,18 @@ impl ExternalMcpSupervisor {
 
     fn remove_pid_file(&self) {
         let _ = std::fs::remove_file(self.pid_file_path());
+    }
+
+    fn register_child_pid(&self, pid: u32) {
+        register_child_pid(&self.child_pid, pid);
+    }
+
+    fn clear_child_pid(&self) {
+        clear_child_pid(&self.child_pid);
+    }
+
+    fn current_child_pid(&self) -> Option<u32> {
+        current_child_pid(&self.child_pid)
     }
 
     pub(crate) async fn cleanup_orphan(&self) {
@@ -744,4 +898,15 @@ fn process_exists(pid: i32) -> bool {
     // POSIX: kill(pid, 0) → Ok if process exists
     use nix::sys::signal::kill;
     kill(Pid::from_raw(pid), None).is_ok()
+}
+
+pub(crate) fn process_group_exists(pgid: i32) -> bool {
+    use nix::errno::Errno;
+    use nix::sys::signal::kill;
+
+    match kill(Pid::from_raw(-pgid), None) {
+        Ok(()) => true,
+        Err(Errno::ESRCH) => false,
+        Err(_) => true,
+    }
 }

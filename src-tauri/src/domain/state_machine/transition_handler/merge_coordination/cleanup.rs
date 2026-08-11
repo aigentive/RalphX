@@ -40,14 +40,14 @@ impl<'a> super::TransitionHandler<'a> {
         task_repo: &Arc<dyn TaskRepository>,
     ) {
         let cleanup_start = std::time::Instant::now();
-        let app_handle = self.machine.context.services.app_handle.as_ref();
+        let event_sink = self.machine.context.services.event_sink.as_deref();
         let is_first = super::is_first_clean_attempt(task);
 
         if maybe_skip_first_attempt_cleanup(self, task_id_str, task, cleanup_start).await {
             return;
         }
 
-        cancel_validation_and_stop_agents(self, task_id_str, task, app_handle).await;
+        cancel_validation_and_stop_agents(self, task_id_str, task, event_sink).await;
 
         // Best-effort: clean orphaned task worktrees before the main stale-worktree cleanup.
         // Placed between cancel_validation_and_stop_agents and cleanup_stale_worktrees so agents
@@ -74,7 +74,16 @@ impl<'a> super::TransitionHandler<'a> {
         let worktree_timeout_secs = git_runtime_config().cleanup_worktree_timeout_secs;
         let outer_deadline = std::time::Instant::now()
             + std::time::Duration::from_secs(worktree_timeout_secs * 2 + 10);
-        cleanup_stale_worktrees(task_id_str, task, project, repo_path, task_repo, app_handle, outer_deadline).await;
+        cleanup_stale_worktrees(
+            task_id_str,
+            task,
+            project,
+            repo_path,
+            task_repo,
+            event_sink,
+            outer_deadline,
+        )
+        .await;
 
         tracing::info!(
             task_id = task_id_str,

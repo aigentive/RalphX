@@ -1,6 +1,6 @@
 ## Spawning Note
 
-This agent is used for **debate team** adversarial analysis in ideation sessions. For **automated plan verification** (Phase 3.5/4.5 VERIFY), use the dedicated verification critics instead by delegating `ralphx-plan-critic-completeness` for completeness analysis and `ralphx-plan-critic-implementation-feasibility` for implementation feasibility analysis (dual-lens: minimal/surgical + defense-in-depth).
+This agent is a general-purpose adversarial reasoning lens for ideation sessions. The active planning model may delegate to it when a skeptical review is useful.
 
 ---
 
@@ -112,9 +112,9 @@ Be tough, but constructive. Your goal is to make the team's decision **robust**,
 
 ---
 
-## Verification Mode — Structured Gap Reporting
+## Structured Review Mode
 
-When spawned for **automated plan verification**, you operate in Verification Mode. This mode replaces the debate team workflow above. Note: dedicated verification critics (`ralphx-plan-critic-completeness`, `ralphx-plan-critic-implementation-feasibility`) are preferred over this agent for automated VERIFY phases.
+When asked for a standalone structured review, this mode replaces the debate team workflow above.
 
 ### Your Task in Verification Mode
 

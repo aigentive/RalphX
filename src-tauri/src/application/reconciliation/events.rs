@@ -1,20 +1,21 @@
 // Evidence building, event recording, prompts, and lookups for reconciliation.
 
-use tauri::{Emitter, Runtime};
+use tauri::{Emitter, Manager};
 use tracing::warn;
 
+use crate::application::harness_runtime_registry::default_reconciliation_merger_timeout_secs;
+use crate::application::task_notification_producer::TaskPipelineNotificationProducer;
 use crate::domain::entities::{
     AgentRun, AgentRunId, ChatContextType, InternalStatus, MergeFailureSource, MergeRecoveryEvent,
     MergeRecoveryEventKind, MergeRecoveryMetadata, MergeRecoveryReasonCode, MergeRecoverySource,
     MergeRecoveryState, Task, TaskId,
 };
 use crate::domain::state_machine::transition_handler::set_trigger_origin;
-use crate::application::harness_runtime_registry::default_reconciliation_merger_timeout_secs;
 
 use super::policy::{RecoveryContext, RecoveryEvidence, RecoveryPromptAction, RecoveryPromptEvent};
 use super::ReconciliationRunner;
 
-impl<R: Runtime> ReconciliationRunner<R> {
+impl ReconciliationRunner {
     pub(crate) async fn build_run_evidence(
         &self,
         task: &Task,
@@ -347,18 +348,27 @@ impl<R: Runtime> ReconciliationRunner<R> {
         context: RecoveryContext,
         reason: String,
     ) -> bool {
-        let Some(handle) = &self.app_handle else {
+        let notification_service = self.notification_service.clone().or_else(|| {
+            self.app_handle.as_ref().and_then(|handle| {
+                handle
+                    .try_state::<crate::application::AppState>()
+                    .map(|state| state.notification_service())
+            })
+        });
+        if notification_service.is_none() && self.app_handle.is_none() {
             return false;
-        };
+        }
 
         let key = format!("{}:{:?}", task.id.as_str(), status);
-        {
+        let instance_id = {
             let mut prompted = self.prompt_tracker.lock().await;
-            if prompted.contains(&key) {
+            if prompted.contains_key(&key) {
                 return false;
             }
-            prompted.insert(key);
-        }
+            let instance_id = uuid::Uuid::new_v4().to_string();
+            prompted.insert(key, instance_id.clone());
+            instance_id
+        };
 
         let context_type = match context {
             RecoveryContext::Execution => "execution",
@@ -370,10 +380,11 @@ impl<R: Runtime> ReconciliationRunner<R> {
         };
 
         let payload = RecoveryPromptEvent {
+            instance_id: instance_id.clone(),
             task_id: task.id.as_str().to_string(),
             status,
             context_type: context_type.to_string(),
-            reason,
+            reason: reason.clone(),
             primary_action: RecoveryPromptAction {
                 id: "restart".to_string(),
                 label: "Restart".to_string(),
@@ -384,7 +395,22 @@ impl<R: Runtime> ReconciliationRunner<R> {
             },
         };
 
-        let _ = handle.emit("recovery:prompt", payload);
+        if let Some(handle) = &self.app_handle {
+            let _ = handle.emit("recovery:prompt", payload);
+        }
+        if let Some(notification_service) = notification_service {
+            notification_service
+                .record(
+                    TaskPipelineNotificationProducer::recovery_prompt_notification(
+                        task,
+                        status,
+                        context_type,
+                        &reason,
+                        &instance_id,
+                    ),
+                )
+                .await;
+        }
         true
     }
 

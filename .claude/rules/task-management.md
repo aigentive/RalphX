@@ -1,6 +1,6 @@
 ---
 paths:
-  - "src/**/*.{ts,tsx,js,jsx}"
+  - "frontend/src/**/*.{ts,tsx,js,jsx}"
   - "src-tauri/src/**/*.rs"
   - "plugins/app/**/*.{ts,js}"
 ---

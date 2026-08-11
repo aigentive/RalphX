@@ -4,12 +4,35 @@ use crate::commands::execution_commands::lifecycle::{
     determine_paused_restore_status, prepare_resumed_task_for_entry_actions,
 };
 use crate::domain::entities::{
-    AgentRun, ChatConversation, ChatConversationId, GitMode, IdeationSession,
+    artifact::ArtifactId, AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun,
+    AgentRunStatus, ChatContextType, ChatConversation, ChatConversationId, GitMode,
+    IdeationAnalysisBaseRefKind, IdeationSession, PlanBranch, PlanBranchId, PlanBranchStatus,
+    TaskStep, TaskStepStatus, ValidationCacheDecision, ValidationCommandCategory,
+    ValidationCommandResult, ValidationCommandSource, ValidationCommandStatus,
+    ValidationContextType, ValidationPurpose, ValidationRun, ValidationRunMode,
+    ValidationRunStatus,
 };
 use crate::domain::services::{QueueKey, QueuedMessage, RunningAgentKey};
+use crate::utils::path_safety::validate_absolute_non_root_path;
+use std::path::Path;
 use std::sync::Arc;
 use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
+
+async fn enable_tasks_for_progress(state: &AppState) {
+    let current = state.ideation_settings_repo.get_settings().await.unwrap();
+    if current.tasks_feature_state == crate::domain::ideation::TasksFeatureState::Enabled {
+        return;
+    }
+    assert!(state
+        .ideation_settings_repo
+        .compare_and_set_tasks_feature_state(
+            current.tasks_feature_state,
+            crate::domain::ideation::TasksFeatureState::Enabled,
+        )
+        .await
+        .unwrap());
+}
 
 // ========================================
 // ExecutionState Unit Tests
@@ -102,6 +125,8 @@ fn test_queued_message_to_send_options_preserves_references_and_attachments() {
         Some(crate::domain::agents::AgentHarnessKind::Codex),
         vec![project_reference.clone()],
         vec![integration_reference.clone()],
+        Vec::new(),
+        None,
         Vec::new(),
         vec![attachment_id],
     );
@@ -1186,7 +1211,7 @@ async fn test_stop_cancels_multiple_agent_active_tasks() {
     app_state.task_repo.create(task4.clone()).await.unwrap();
 
     // Build transition service (same as stop_execution does)
-    let transition_service: TaskTransitionService<tauri::Wry> = TaskTransitionService::new(
+    let transition_service: TaskTransitionService = TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),
@@ -1368,7 +1393,7 @@ async fn test_pause_transitions_agent_active_tasks_to_paused() {
     app_state.task_repo.create(task4.clone()).await.unwrap();
 
     // Build transition service (same as pause_execution does)
-    let transition_service: TaskTransitionService<tauri::Wry> = TaskTransitionService::new(
+    let transition_service: TaskTransitionService = TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),
@@ -1460,7 +1485,7 @@ async fn test_resume_relaunches_one_queued_message_for_active_ideation_session()
 
     let mock = Arc::new(MockChatService::new());
     let resumed =
-        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, |_| {
+        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, || {
             Arc::clone(&mock) as Arc<dyn ChatService>
         })
         .await
@@ -1514,7 +1539,7 @@ async fn test_resume_relaunches_durable_queued_ideation_message() {
 
     let mock = Arc::new(MockChatService::new());
     let resumed =
-        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, |_| {
+        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, || {
             Arc::clone(&mock) as Arc<dyn ChatService>
         })
         .await
@@ -1567,7 +1592,7 @@ async fn test_resume_clears_durable_queue_for_inactive_ideation_session() {
 
     let mock = Arc::new(MockChatService::new());
     let resumed =
-        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, |_| {
+        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, || {
             Arc::clone(&mock) as Arc<dyn ChatService>
         })
         .await
@@ -1630,6 +1655,163 @@ async fn test_resume_relaunches_queued_task_chat_message() {
     assert!(app_state
         .message_queue
         .get_queued(ChatContextType::Task, task.id.as_str())
+        .is_empty());
+}
+
+#[tokio::test]
+async fn test_resume_relaunches_queued_standalone_chat_message() {
+    // Pause-drain parity (Phase 4a.3, blocking carry-forward from the 4a.1
+    // review): Standalone is pause-managed at the admission layers
+    // (claude_launches_paused / should_requeue_after_provider_pause /
+    // is_pause_managed_chat_context) but, before this fix,
+    // resume_paused_non_slot_chat_queues_with_chat_service only matched
+    // ChatContextType::Task, so a paused standalone send would durably queue
+    // but NEVER be drained/delivered on resume. This asserts delivery
+    // (send_message actually invoked with the queued content), not merely
+    // that resume ran without error.
+    let app_state = AppState::new_test();
+    let conversation = app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_standalone())
+        .await
+        .unwrap();
+
+    // Simulates a paused send: the message lands in the live in-memory queue
+    // under the standalone conversation's self-key exactly as
+    // should_requeue_after_provider_pause / claude_launches_paused would have
+    // routed it.
+    app_state.message_queue.queue_with_overrides(
+        ChatContextType::Standalone,
+        conversation.id.as_str().as_str(),
+        "resume standalone chat".to_string(),
+        None,
+        None,
+        None,
+    );
+
+    let mock = Arc::new(MockChatService::new());
+    // MockChatService keeps its own isolated conversation store (independent
+    // of app_state.chat_conversation_repo); standalone conversations are
+    // never lazily auto-vivified from a bare context_id (by design, matching
+    // production get_or_create_conversation), so the mock's send_message
+    // would otherwise fail to resolve a conversation for this context_id.
+    mock.add_conversation(conversation.clone()).await;
+    let resumed = resume_paused_non_slot_chat_queues_with_chat_service(None, &app_state, || {
+        Arc::clone(&mock) as Arc<dyn ChatService>
+    })
+    .await
+    .expect("resume paused standalone chat queue");
+
+    assert_eq!(
+        resumed, 1,
+        "the standalone queued message must be resumed, not silently skipped"
+    );
+    assert_eq!(mock.call_count(), 1);
+    assert_eq!(
+        mock.get_sent_messages().await,
+        vec!["resume standalone chat".to_string()],
+        "resume must actually deliver the queued content, not just drain the queue"
+    );
+    assert!(app_state
+        .message_queue
+        .get_queued(
+            ChatContextType::Standalone,
+            conversation.id.as_str().as_str()
+        )
+        .is_empty());
+}
+
+#[tokio::test]
+async fn test_resume_relaunches_durable_queued_standalone_chat_message() {
+    // Durable-queue counterpart of the in-memory test above: a paused
+    // standalone send that persisted to the durable queued_message_repo
+    // (surviving a restart) must also be drained and delivered on resume.
+    let app_state = AppState::new_test();
+    let conversation = app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_standalone())
+        .await
+        .unwrap();
+    let key = QueueKey::new(
+        ChatContextType::Standalone,
+        conversation.id.as_str().as_str(),
+    );
+    let queued = QueuedMessage::with_id(
+        "durable-standalone-chat".to_string(),
+        "durable standalone chat".to_string(),
+    );
+    app_state
+        .queued_message_repo
+        .enqueue_back(&key, &queued)
+        .await
+        .unwrap();
+
+    let mock = Arc::new(MockChatService::new());
+    mock.add_conversation(conversation.clone()).await;
+    let resumed = resume_paused_non_slot_chat_queues_with_chat_service(None, &app_state, || {
+        Arc::clone(&mock) as Arc<dyn ChatService>
+    })
+    .await
+    .expect("resume durable standalone chat queue");
+
+    assert_eq!(resumed, 1);
+    assert_eq!(
+        mock.get_sent_messages().await,
+        vec!["durable standalone chat".to_string()],
+        "resume must actually deliver the durably queued content"
+    );
+    assert!(app_state
+        .queued_message_repo
+        .list(&key)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn test_resume_standalone_chat_queue_is_project_filter_scoped_out() {
+    // Regression guard for the OTHER direction: when a resume is
+    // project-scoped (project_filter: Some(...)), a Standalone queue key must
+    // NOT match — queue_key_matches_project already returns Ok(false) for
+    // Standalone whenever a project filter is supplied (Standalone has no
+    // project to match). This is the resume-time reflection of D3's "never
+    // matches a project filter" rule; a Project-scoped resume must not
+    // accidentally drain a projectless conversation's queue.
+    let app_state = AppState::new_test();
+    let conversation = app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_standalone())
+        .await
+        .unwrap();
+    app_state.message_queue.queue_with_overrides(
+        ChatContextType::Standalone,
+        conversation.id.as_str().as_str(),
+        "should not resume under a project filter".to_string(),
+        None,
+        None,
+        None,
+    );
+
+    let project_id = ProjectId::from_string("resume-standalone-project-filter".to_string());
+    let mock = Arc::new(MockChatService::new());
+    let resumed =
+        resume_paused_non_slot_chat_queues_with_chat_service(Some(&project_id), &app_state, || {
+            Arc::clone(&mock) as Arc<dyn ChatService>
+        })
+        .await
+        .expect("resume should not error even when nothing matches the project filter");
+
+    assert_eq!(
+        resumed, 0,
+        "a project-scoped resume must not drain a standalone queue"
+    );
+    assert_eq!(mock.call_count(), 0);
+    assert!(!app_state
+        .message_queue
+        .get_queued(
+            ChatContextType::Standalone,
+            conversation.id.as_str().as_str()
+        )
         .is_empty());
 }
 
@@ -1732,6 +1914,56 @@ async fn test_resume_restores_durable_non_slot_message_when_send_fails() {
         app_state.queued_message_repo.list(&key).await.unwrap(),
         vec![queued]
     );
+}
+
+#[tokio::test]
+async fn test_resume_does_not_requeue_a_turn_the_agent_already_received() {
+    let app_state = AppState::new_test();
+    let project = Project::new(
+        "Delivered Durable Task Chat".to_string(),
+        "/test/delivered-durable-task-chat".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+    let task = app_state
+        .task_repo
+        .create(Task::new(
+            project.id.clone(),
+            "Delivered task chat".to_string(),
+        ))
+        .await
+        .unwrap();
+    let key = QueueKey::new(ChatContextType::Task, task.id.as_str());
+    let queued = QueuedMessage::with_id(
+        "delivered-task-chat".to_string(),
+        "delivered task chat".to_string(),
+    );
+    app_state
+        .queued_message_repo
+        .enqueue_back(&key, &queued)
+        .await
+        .unwrap();
+
+    let mock = Arc::new(MockChatService::new());
+    mock.fail_next_send_as_delivered_not_persisted().await;
+    let resumed = resume_paused_non_slot_chat_queues_with_chat_service(None, &app_state, || {
+        Arc::clone(&mock) as Arc<dyn ChatService>
+    })
+    .await
+    .expect("resume durable task chat queue");
+
+    // The live process accepted this turn: restoring it would deliver it twice.
+    assert_eq!(resumed, 0);
+    assert!(app_state.message_queue.get_queued_with_key(&key).is_empty());
+    assert!(app_state
+        .queued_message_repo
+        .list(&key)
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test]
@@ -2145,22 +2377,19 @@ async fn test_get_running_processes_reports_scoped_lanes_and_capacity() {
     let workspace_key = RunningAgentKey::new("project", conversation.id.as_str());
     app_state
         .running_agent_registry
-        .register(
+        .try_register(
             workspace_key.clone(),
-            pid,
             conversation.id.as_str().to_string(),
             "workspace-run".to_string(),
-            None,
-            None,
         )
-        .await;
+        .await
+        .unwrap();
     app_state
         .running_agent_registry
-        .update_agent_process(
+        .attach_process(
             &workspace_key,
-            pid,
-            &conversation.id.as_str(),
             "workspace-run",
+            pid,
             None,
             None,
             Some("gpt-5.5".to_string()),
@@ -2256,7 +2485,10 @@ async fn test_get_running_processes_reports_scoped_lanes_and_capacity() {
         response.workspace_sessions[0].conversation_id,
         conversation.id.as_str()
     );
-    assert_eq!(response.workspace_sessions[0].project_id, project.id.as_str());
+    assert_eq!(
+        response.workspace_sessions[0].project_id,
+        project.id.as_str()
+    );
     assert_eq!(response.workspace_sessions[0].title, "Feature workspace");
     assert_eq!(
         response.workspace_sessions[0].model.as_deref(),
@@ -2345,23 +2577,163 @@ async fn test_get_running_processes_reports_scoped_lanes_and_capacity() {
     assert_eq!(aggregate_response.capacity.total_active, 6);
 }
 
+#[tokio::test]
+async fn test_get_running_processes_includes_agent_workspace_target_for_task() {
+    let active_project_state = Arc::new(ActiveProjectState::new());
+    let execution_state = Arc::new(ExecutionState::new());
+    let app_state = AppState::new_test();
+
+    let project = app_state
+        .project_repo
+        .create(Project::new(
+            "Workspace Target Project".to_string(),
+            "/test/workspace-target-project".to_string(),
+        ))
+        .await
+        .unwrap();
+    active_project_state.set(Some(project.id.clone())).await;
+
+    let session_id = IdeationSessionId::from_string("workspace-target-session");
+    let mut running_task = Task::new(project.id.clone(), "Running linked task".to_string());
+    running_task.internal_status = InternalStatus::Executing;
+    running_task.ideation_session_id = Some(session_id.clone());
+    let running_task = app_state.task_repo.create(running_task).await.unwrap();
+
+    let branch_id = PlanBranchId::from_string("workspace-target-plan-branch");
+    app_state
+        .plan_branch_repo
+        .create(PlanBranch {
+            id: branch_id.clone(),
+            plan_artifact_id: ArtifactId::from_string("workspace-target-artifact"),
+            session_id: session_id.clone(),
+            project_id: project.id.clone(),
+            branch_name: "feature/workspace-target".to_string(),
+            source_branch: "main".to_string(),
+            status: PlanBranchStatus::Active,
+            execution_plan_id: None,
+            merge_task_id: None,
+            created_at: chrono::Utc::now(),
+            merged_at: None,
+            pr_number: None,
+            pr_url: None,
+            pr_status: None,
+            pr_polling_active: false,
+            pr_eligible: false,
+            last_polled_at: None,
+            pr_push_status: Default::default(),
+            merge_commit_sha: None,
+            pr_draft: None,
+            base_branch_override: None,
+        })
+        .await
+        .unwrap();
+
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.title = Some("Linked Agent Workspace".to_string());
+    let conversation = app_state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .unwrap();
+
+    let mut workspace = AgentConversationWorkspace::new(
+        conversation.id,
+        project.id.clone(),
+        AgentConversationWorkspaceMode::Ideation,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("main".to_string()),
+        Some("base-sha".to_string()),
+        "ralphx/workspace-target".to_string(),
+        "/tmp/ralphx-workspace-target".to_string(),
+    );
+    workspace.linked_plan_branch_id = Some(branch_id);
+    workspace.linked_ideation_session_id = Some(session_id);
+    app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap();
+
+    let task_run = app_state
+        .agent_run_repo
+        .create(AgentRun::new(ChatConversationId::new()))
+        .await
+        .unwrap();
+    let mut live_process = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .expect("spawn disposable process for live registry row");
+    app_state
+        .running_agent_registry
+        .register(
+            RunningAgentKey::new("task_execution", running_task.id.as_str()),
+            live_process.id(),
+            "task-conversation".to_string(),
+            task_run.id.as_str(),
+            None,
+            None,
+        )
+        .await;
+
+    let app = mock_builder()
+        .manage(Arc::clone(&active_project_state))
+        .manage(Arc::clone(&execution_state))
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app should build");
+
+    let response = get_running_processes(
+        None,
+        app.state::<Arc<ActiveProjectState>>(),
+        app.state::<Arc<ExecutionState>>(),
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("running processes should load");
+
+    let _ = live_process.kill();
+    let _ = live_process.wait();
+
+    assert_eq!(response.processes.len(), 1);
+    let process = &response.processes[0];
+    assert_eq!(process.task_id, running_task.id.as_str());
+    let agent_workspace = process
+        .agent_workspace
+        .as_ref()
+        .expect("agent workspace target should be present");
+    assert_eq!(agent_workspace.conversation_id, conversation.id.as_str());
+    assert_eq!(agent_workspace.project_id, project.id.as_str());
+    assert_eq!(agent_workspace.title, "Linked Agent Workspace");
+}
+
 #[test]
 fn test_workspace_capacity_available_respects_all_global_guards() {
-    assert!(crate::application::workspace_capacity::workspace_capacity_available(
-        1, 3, 1, 5, false, false
-    ));
-    assert!(!crate::application::workspace_capacity::workspace_capacity_available(
-        1, 3, 1, 5, true, false
-    ));
-    assert!(!crate::application::workspace_capacity::workspace_capacity_available(
-        1, 3, 1, 5, false, true
-    ));
-    assert!(!crate::application::workspace_capacity::workspace_capacity_available(
-        3, 3, 0, 10, false, false
-    ));
-    assert!(!crate::application::workspace_capacity::workspace_capacity_available(
-        2, 3, 3, 5, false, false
-    ));
+    assert!(
+        crate::application::workspace_capacity::workspace_capacity_available(
+            1, 3, 1, 5, false, false
+        )
+    );
+    assert!(
+        !crate::application::workspace_capacity::workspace_capacity_available(
+            1, 3, 1, 5, true, false
+        )
+    );
+    assert!(
+        !crate::application::workspace_capacity::workspace_capacity_available(
+            1, 3, 1, 5, false, true
+        )
+    );
+    assert!(
+        !crate::application::workspace_capacity::workspace_capacity_available(
+            3, 3, 0, 10, false, false
+        )
+    );
+    assert!(
+        !crate::application::workspace_capacity::workspace_capacity_available(
+            2, 3, 3, 5, false, false
+        )
+    );
 }
 
 #[tokio::test]
@@ -2395,7 +2767,10 @@ async fn test_workspace_capacity_resolves_conversation_backed_queues_and_session
         .unwrap();
     let task = app_state
         .task_repo
-        .create(Task::new(project.id.clone(), "Non-workspace chat".to_string()))
+        .create(Task::new(
+            project.id.clone(),
+            "Non-workspace chat".to_string(),
+        ))
         .await
         .unwrap();
     let task_conversation = app_state
@@ -3074,7 +3449,7 @@ async fn test_resume_respects_project_ideation_cap_for_same_project() {
         Some(&project.id),
         &app_state,
         &execution_state,
-        |_| Arc::clone(&mock) as Arc<dyn ChatService>,
+        || Arc::clone(&mock) as Arc<dyn ChatService>,
     )
     .await
     .expect("resume paused ideation queue with project cap");
@@ -3175,7 +3550,7 @@ async fn test_resume_skips_project_capped_ideation_queue_and_relaunches_other_pr
 
     let mock = Arc::new(MockChatService::new());
     let resumed =
-        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, |_| {
+        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, || {
             Arc::clone(&mock) as Arc<dyn ChatService>
         })
         .await
@@ -3264,7 +3639,7 @@ async fn test_resume_borrowing_stays_blocked_when_ready_execution_waits() {
         Some(&project.id),
         &app_state,
         &execution_state,
-        |_| Arc::clone(&mock) as Arc<dyn ChatService>,
+        || Arc::clone(&mock) as Arc<dyn ChatService>,
     )
     .await
     .expect("resume paused ideation queue with ready execution");
@@ -3338,7 +3713,7 @@ async fn test_resume_borrowing_stays_blocked_when_workspace_queue_waits() {
         Some(&project.id),
         &app_state,
         &execution_state,
-        |_| Arc::clone(&mock) as Arc<dyn ChatService>,
+        || Arc::clone(&mock) as Arc<dyn ChatService>,
     )
     .await
     .expect("resume queued ideation with workspace pressure");
@@ -3871,7 +4246,7 @@ async fn test_resume_priority_relaunches_slot_work_before_ideation_when_only_one
 
     let ideation_mock = Arc::new(MockChatService::new());
     let ideation_resumed =
-        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, |_| {
+        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, || {
             Arc::clone(&ideation_mock) as Arc<dyn ChatService>
         })
         .await
@@ -4015,7 +4390,7 @@ async fn test_resume_mixed_load_relaunches_execution_then_ideation_while_blocked
 
     let ideation_mock = Arc::new(MockChatService::new());
     let ideation_resumed =
-        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, |_| {
+        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, || {
             Arc::clone(&ideation_mock) as Arc<dyn ChatService>
         })
         .await
@@ -4139,7 +4514,7 @@ async fn test_resume_mixed_context_relaunches_workspace_execution_ideation_and_t
 
     let ideation_mock = Arc::new(MockChatService::new());
     let ideation_resumed =
-        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, |_| {
+        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, || {
             Arc::clone(&ideation_mock) as Arc<dyn ChatService>
         })
         .await
@@ -4277,7 +4652,7 @@ async fn test_pause_resets_running_count() {
     assert_eq!(execution_state.running_count(), 3);
 
     // Build transition service
-    let transition_service: TaskTransitionService<tauri::Wry> = TaskTransitionService::new(
+    let transition_service: TaskTransitionService = TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),
@@ -4435,7 +4810,7 @@ async fn test_stop_resets_running_count() {
     assert_eq!(execution_state.running_count(), 3);
 
     // Build transition service
-    let transition_service: TaskTransitionService<tauri::Wry> = TaskTransitionService::new(
+    let transition_service: TaskTransitionService = TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),
@@ -4504,7 +4879,7 @@ async fn test_running_count_decrements_on_task_completion() {
     assert_eq!(execution_state.running_count(), 1);
 
     // Build transition service with execution state
-    let transition_service: TaskTransitionService<tauri::Wry> = TaskTransitionService::new(
+    let transition_service: TaskTransitionService = TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),
@@ -4593,7 +4968,7 @@ async fn test_running_count_decrements_for_all_agent_active_states() {
     assert_eq!(execution_state.running_count(), 5);
 
     // Build transition service
-    let transition_service: TaskTransitionService<tauri::Wry> = TaskTransitionService::new(
+    let transition_service: TaskTransitionService = TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),
@@ -4795,7 +5170,7 @@ async fn test_resume_restores_paused_tasks_to_previous_status() {
     app_state.task_repo.create(task.clone()).await.unwrap();
 
     // Build transition service
-    let transition_service: TaskTransitionService<tauri::Wry> = TaskTransitionService::new(
+    let transition_service: TaskTransitionService = TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),
@@ -4875,7 +5250,7 @@ async fn test_determine_paused_restore_status_falls_back_to_history_when_metadat
     let task_id = task.id.clone();
     app_state.task_repo.create(task).await.unwrap();
 
-    let transition_service: TaskTransitionService<tauri::Wry> = TaskTransitionService::new(
+    let transition_service: TaskTransitionService = TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),
@@ -5022,7 +5397,7 @@ async fn test_resume_does_not_restore_stopped_tasks() {
     app_state.task_repo.create(task.clone()).await.unwrap();
 
     // Build transition service
-    let transition_service: TaskTransitionService<tauri::Wry> = TaskTransitionService::new(
+    let transition_service: TaskTransitionService = TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),
@@ -5087,7 +5462,7 @@ async fn test_resume_restores_multiple_paused_tasks() {
         .unwrap();
 
     // Build transition service
-    let transition_service: TaskTransitionService<tauri::Wry> = TaskTransitionService::new(
+    let transition_service: TaskTransitionService = TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),
@@ -5201,7 +5576,7 @@ async fn test_resume_with_mixed_paused_and_stopped_tasks() {
         .unwrap();
 
     // Build transition service
-    let transition_service: TaskTransitionService<tauri::Wry> = TaskTransitionService::new(
+    let transition_service: TaskTransitionService = TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),
@@ -5572,7 +5947,10 @@ async fn test_stop_execution_persists_stopped_and_clears_project_queues() {
 
     let task = app_state
         .task_repo
-        .create(Task::new(project.id.clone(), "Queued task chat".to_string()))
+        .create(Task::new(
+            project.id.clone(),
+            "Queued task chat".to_string(),
+        ))
         .await
         .unwrap();
     let other_task = app_state
@@ -5818,7 +6196,7 @@ async fn test_project_switch_prevents_other_projects_from_scheduling() {
     active_project_state.set(Some(project1.id.clone())).await;
 
     // Build scheduler with active project 1
-    let scheduler = Arc::new(TaskSchedulerService::<tauri::Wry>::new(
+    let scheduler = Arc::new(TaskSchedulerService::new(
         Arc::clone(&execution_state),
         Arc::clone(&app_state.project_repo),
         Arc::clone(&app_state.task_repo),
@@ -5873,7 +6251,7 @@ async fn test_project_switch_prevents_other_projects_from_scheduling() {
     active_project_state.set(Some(project2.id.clone())).await;
 
     // Create new scheduler instance for project 2
-    let scheduler2 = Arc::new(TaskSchedulerService::<tauri::Wry>::new(
+    let scheduler2 = Arc::new(TaskSchedulerService::new(
         Arc::clone(&execution_state),
         Arc::clone(&app_state.project_repo),
         Arc::clone(&app_state.task_repo),
@@ -5932,6 +6310,613 @@ fn test_categorize_direct_resume_states() {
         assert_eq!(result.category, ResumeCategory::Direct);
         assert_eq!(result.target_status, status);
     }
+}
+
+#[test]
+fn test_restart_transition_routes_execution_states_through_ready() {
+    assert_eq!(
+        restart_transition_target(InternalStatus::Executing),
+        InternalStatus::Ready
+    );
+    assert_eq!(
+        restart_transition_target(InternalStatus::ReExecuting),
+        InternalStatus::Ready
+    );
+}
+
+#[test]
+fn test_restart_transition_preserves_non_execution_categorized_target() {
+    assert_eq!(
+        restart_transition_target(InternalStatus::QaPassed),
+        InternalStatus::PendingReview
+    );
+    assert_eq!(
+        restart_transition_target(InternalStatus::Merging),
+        InternalStatus::Merging
+    );
+}
+
+#[test]
+fn test_restart_transition_only_ready_route_is_legal_from_stopped() {
+    assert!(InternalStatus::Stopped
+        .can_transition_to(restart_transition_target(InternalStatus::Executing)));
+    assert!(!InternalStatus::Stopped
+        .can_transition_to(restart_transition_target(InternalStatus::Merging)));
+}
+
+fn stopped_task_metadata(from_status: InternalStatus) -> String {
+    crate::domain::state_machine::transition_handler::metadata_builder::build_stop_metadata(
+        from_status,
+        Some("stopped for restart".to_string()),
+    )
+    .merge_into(None)
+}
+
+fn create_restart_test_dir(path: &Path) {
+    let safe_path =
+        validate_absolute_non_root_path(path, "execution restart test directory").unwrap();
+    // codeql[rust/path-injection]
+    std::fs::create_dir_all(&safe_path).unwrap();
+}
+
+fn write_restart_test_file(path: &Path, contents: &str) {
+    let safe_path = validate_absolute_non_root_path(path, "execution restart test file").unwrap();
+    // codeql[rust/path-injection]
+    std::fs::write(&safe_path, contents).unwrap();
+}
+
+fn restart_test_git(path: &Path, args: &[&str]) {
+    let safe_path =
+        validate_absolute_non_root_path(path, "execution restart test git repository").unwrap();
+    let output = std::process::Command::new("git")
+        .args(args)
+        // codeql[rust/path-injection]
+        .current_dir(&safe_path)
+        .output()
+        .expect("git command should run");
+    assert!(
+        output.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+async fn seed_completed_failed_attempt(
+    app_state: &AppState,
+    root: &tempfile::TempDir,
+) -> (TaskId, String) {
+    let mut project = Project::new(
+        "Recovered Failed Restart Project".to_string(),
+        root.path().join("project").to_string_lossy().into_owned(),
+    );
+    project.worktree_parent_directory = Some(root.path().to_string_lossy().into_owned());
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    let mut task = Task::new(project.id.clone(), "Recover failed execution".to_string());
+    task.internal_status = InternalStatus::Failed;
+    task.task_branch = Some("task/recover-command".to_string());
+    task.blocked_reason = Some("provider exited after validation".to_string());
+    let worktree = project.task_worktree_path(task.id.as_str());
+    create_restart_test_dir(&worktree);
+    restart_test_git(&worktree, &["init", "-b", "task/recover-command"]);
+    restart_test_git(&worktree, &["config", "user.email", "test@example.com"]);
+    restart_test_git(&worktree, &["config", "user.name", "RalphX Test"]);
+    write_restart_test_file(&worktree.join("tracked.txt"), "base\n");
+    restart_test_git(&worktree, &["add", "tracked.txt"]);
+    restart_test_git(&worktree, &["commit", "-m", "base"]);
+    let base_sha = crate::application::git_service::GitService::get_head_sha(&worktree)
+        .await
+        .unwrap();
+    write_restart_test_file(&worktree.join("tracked.txt"), "completed work\n");
+    restart_test_git(&worktree, &["add", "tracked.txt"]);
+    restart_test_git(&worktree, &["commit", "-m", "completed work"]);
+    let promoted_sha = crate::application::git_service::GitService::get_head_sha(&worktree)
+        .await
+        .unwrap();
+    task.worktree_path = Some(worktree.to_string_lossy().into_owned());
+    task.task_branch_base_ref = Some("base".to_string());
+    task.task_branch_base_sha = Some(base_sha);
+    let task_id = task.id.clone();
+    app_state.task_repo.create(task.clone()).await.unwrap();
+    app_state
+        .task_repo
+        .persist_status_change(
+            &task_id,
+            InternalStatus::Ready,
+            InternalStatus::Executing,
+            "test",
+        )
+        .await
+        .unwrap();
+    app_state.task_repo.update(&task).await.unwrap();
+    let episode_entered_at = app_state
+        .task_repo
+        .get_status_last_entered_at(&task_id, InternalStatus::Executing)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let mut step = TaskStep::new(task_id.clone(), "done".to_string(), 0, "test".to_string());
+    step.status = TaskStepStatus::Completed;
+    app_state.task_step_repo.create(step).await.unwrap();
+    let mut conversation = ChatConversation::new_task(task_id.clone());
+    conversation.context_type = ChatContextType::TaskExecution;
+    let conversation = app_state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .unwrap();
+    let mut agent_run = AgentRun::new(conversation.id);
+    agent_run.status = AgentRunStatus::Completed;
+    agent_run.completed_at = Some(chrono::Utc::now());
+    app_state.agent_run_repo.create(agent_run).await.unwrap();
+
+    let validation_run = ValidationRun {
+        id: "restart-validation-current".to_string(),
+        task_id: task_id.clone(),
+        project_id: project.id.clone(),
+        purpose: ValidationPurpose::Final,
+        context_type: ValidationContextType::Execution,
+        requested_by_agent: Some("test".to_string()),
+        status: ValidationRunStatus::Passed,
+        mode: ValidationRunMode::ReuseOrRun,
+        policy_enabled: true,
+        head_sha: Some(promoted_sha.clone()),
+        start_content_fingerprint: None,
+        validated_content_fingerprint: None,
+        promoted_commit_sha: Some(promoted_sha.clone()),
+        base_ref: Some("base".to_string()),
+        analysis_fingerprint: None,
+        status_episode_entered_at: Some(episode_entered_at),
+        started_at: chrono::Utc::now(),
+        completed_at: Some(chrono::Utc::now()),
+    };
+    app_state
+        .validation_run_repo
+        .create_run(&validation_run)
+        .await
+        .unwrap();
+    app_state
+        .validation_run_repo
+        .add_command_result(&ValidationCommandResult {
+            id: "restart-validation-command".to_string(),
+            validation_run_id: validation_run.id,
+            task_id: task_id.clone(),
+            project_id: project.id,
+            command_source: ValidationCommandSource::ProjectAnalysisRef,
+            command_ref: Some("tests".to_string()),
+            command: "cargo test".to_string(),
+            cwd: worktree.to_string_lossy().into_owned(),
+            label: Some("Tests".to_string()),
+            category: ValidationCommandCategory::Test,
+            reason: None,
+            related_files: Vec::new(),
+            cache_key: "validation-cache".to_string(),
+            cache_decision: ValidationCacheDecision::Ran,
+            status: ValidationCommandStatus::Passed,
+            exit_code: Some(0),
+            duration_ms: Some(1),
+            stdout_snippet: None,
+            stderr_snippet: None,
+            stdout_log_path: None,
+            stderr_log_path: None,
+            launcher_kind: None,
+            resolved_shell_path: None,
+            head_sha: Some(promoted_sha.clone()),
+            analysis_fingerprint: None,
+            status_episode_entered_at: Some(episode_entered_at),
+            created_at: chrono::Utc::now(),
+        })
+        .await
+        .unwrap();
+
+    (task_id, promoted_sha)
+}
+
+#[tokio::test]
+async fn restart_task_from_stopped_execution_routes_through_ready_and_clears_stale_refs() {
+    let execution_state = Arc::new(ExecutionState::with_max_concurrent(5));
+    execution_state.pause();
+    let app_state = AppState::new_test();
+    enable_tasks_for_progress(&app_state).await;
+    let project = Project::new(
+        "Restart Command Project".to_string(),
+        "/tmp/restart-command-project".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    let missing_worktree_parent = tempfile::tempdir().expect("temp dir");
+    let missing_worktree = missing_worktree_parent.path().join("missing-worktree");
+    let mut task = Task::new(project.id.clone(), "Stopped execution".to_string());
+    task.internal_status = InternalStatus::Stopped;
+    task.task_branch = Some("task/stale-execution".to_string());
+    task.worktree_path = Some(missing_worktree.to_string_lossy().into_owned());
+    task.merge_commit_sha = Some("deadbeef".to_string());
+    task.metadata = Some(stopped_task_metadata(InternalStatus::Executing));
+    let task_id = task.id.clone();
+    app_state.task_repo.create(task).await.unwrap();
+
+    let app = mock_builder()
+        .manage(Arc::clone(&execution_state))
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app should build");
+
+    let result = restart_task(
+        task_id.as_str().to_string(),
+        false,
+        None,
+        app.state::<AppState>(),
+        app.state::<Arc<ExecutionState>>(),
+    )
+    .await
+    .expect("restart command should complete");
+
+    match result {
+        RestartResult::Success {
+            category,
+            resumed_to_status,
+            ..
+        } => {
+            assert_eq!(category, ResumeCategory::Direct);
+            assert_eq!(resumed_to_status, InternalStatus::Ready.as_str());
+        }
+        other => panic!("expected successful ready restart, got {other:?}"),
+    }
+
+    let stored = app
+        .state::<AppState>()
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("task should exist");
+    assert_eq!(stored.internal_status, InternalStatus::Ready);
+    assert!(stored.task_branch.is_none());
+    assert!(stored.worktree_path.is_none());
+    assert!(stored.merge_commit_sha.is_none());
+    let metadata: serde_json::Value =
+        serde_json::from_str(stored.metadata.as_deref().unwrap()).unwrap();
+    assert!(metadata.get("stop_metadata").is_none());
+}
+
+#[tokio::test]
+async fn restart_task_while_tasks_are_off_rejects_without_mutating_the_task() {
+    let execution_state = Arc::new(ExecutionState::with_max_concurrent(5));
+    let app_state = AppState::new_test();
+    enable_tasks_for_progress(&app_state).await;
+    let project = app_state
+        .project_repo
+        .create(Project::new(
+            "Disabled Restart Project".to_string(),
+            "/tmp/disabled-restart-project".to_string(),
+        ))
+        .await
+        .unwrap();
+    let mut task = Task::new(project.id, "Preserve stopped task".to_string());
+    task.internal_status = InternalStatus::Stopped;
+    task.task_branch = Some("task/preserved-while-off".to_string());
+    task.metadata = Some(stopped_task_metadata(InternalStatus::Executing));
+    let task = app_state.task_repo.create(task).await.unwrap();
+    assert!(app_state
+        .ideation_settings_repo
+        .compare_and_set_tasks_feature_state(
+            crate::domain::ideation::TasksFeatureState::Enabled,
+            crate::domain::ideation::TasksFeatureState::Disabled,
+        )
+        .await
+        .unwrap());
+
+    let app = mock_builder()
+        .manage(Arc::clone(&execution_state))
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app should build");
+
+    let error = restart_task(
+        task.id.as_str().to_string(),
+        false,
+        None,
+        app.state::<AppState>(),
+        app.state::<Arc<ExecutionState>>(),
+    )
+    .await
+    .expect_err("Tasks-off restart must fail closed");
+
+    assert!(error.starts_with("ralphx:tasks_disabled"));
+    let unchanged = app
+        .state::<AppState>()
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(unchanged.internal_status, InternalStatus::Stopped);
+    assert_eq!(unchanged.task_branch, task.task_branch);
+    assert_eq!(unchanged.metadata, task.metadata);
+}
+
+#[tokio::test]
+async fn restart_task_from_failed_without_recovery_proof_starts_fresh_ready_attempt() {
+    let execution_state = Arc::new(ExecutionState::with_max_concurrent(5));
+    execution_state.pause();
+    let app_state = AppState::new_test();
+    enable_tasks_for_progress(&app_state).await;
+    let project = Project::new(
+        "Failed Restart Project".to_string(),
+        "/tmp/failed-restart-project".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    let missing_worktree_parent = tempfile::tempdir().expect("temp dir");
+    let mut task = Task::new(project.id, "Failed execution".to_string());
+    task.internal_status = InternalStatus::Failed;
+    task.task_branch = Some("task/stale-failed".to_string());
+    task.worktree_path = Some(
+        missing_worktree_parent
+            .path()
+            .join("missing-worktree")
+            .to_string_lossy()
+            .into_owned(),
+    );
+    task.merge_commit_sha = Some("deadbeef".to_string());
+    let task_id = task.id.clone();
+    app_state.task_repo.create(task.clone()).await.unwrap();
+    app_state
+        .task_repo
+        .persist_status_change(
+            &task_id,
+            InternalStatus::Ready,
+            InternalStatus::Executing,
+            "test",
+        )
+        .await
+        .unwrap();
+    app_state.task_repo.update(&task).await.unwrap();
+    let pending_step = TaskStep::new(
+        task_id.clone(),
+        "authoritatively incomplete".to_string(),
+        0,
+        "test".to_string(),
+    );
+    app_state.task_step_repo.create(pending_step).await.unwrap();
+
+    let app = mock_builder()
+        .manage(Arc::clone(&execution_state))
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app should build");
+
+    let result = restart_task(
+        task_id.as_str().to_string(),
+        true,
+        Some("retry failed task".to_string()),
+        app.state::<AppState>(),
+        app.state::<Arc<ExecutionState>>(),
+    )
+    .await
+    .expect("failed restart should complete");
+
+    match result {
+        RestartResult::Success {
+            disposition,
+            resumed_to_status,
+            ..
+        } => {
+            assert_eq!(disposition, Some(RestartDisposition::RestartedToReady));
+            assert_eq!(resumed_to_status, InternalStatus::Ready.as_str());
+        }
+        other => panic!("expected fresh failed-task restart, got {other:?}"),
+    }
+
+    let stored = app
+        .state::<AppState>()
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.internal_status, InternalStatus::Ready);
+    assert!(stored.task_branch.is_none());
+    assert!(stored.worktree_path.is_none());
+    assert!(stored.merge_commit_sha.is_none());
+}
+
+#[tokio::test]
+async fn restart_task_from_failed_with_current_completion_proof_recovers_to_review() {
+    let execution_state = Arc::new(ExecutionState::with_max_concurrent(5));
+    let app_state = AppState::new_test();
+    enable_tasks_for_progress(&app_state).await;
+    let root = tempfile::tempdir().expect("temp dir");
+    let (task_id, promoted_sha) = seed_completed_failed_attempt(&app_state, &root).await;
+
+    let app = mock_builder()
+        .manage(Arc::clone(&execution_state))
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app should build");
+
+    let result = restart_task(
+        task_id.as_str().to_string(),
+        false,
+        None,
+        app.state::<AppState>(),
+        app.state::<Arc<ExecutionState>>(),
+    )
+    .await
+    .expect("failed restart should recover completed work");
+
+    match result {
+        RestartResult::Success {
+            disposition,
+            category,
+            resumed_to_status,
+            ..
+        } => {
+            assert_eq!(disposition, Some(RestartDisposition::RecoveredToReview));
+            assert_eq!(category, ResumeCategory::Redirect);
+            assert_eq!(resumed_to_status, InternalStatus::PendingReview.as_str());
+        }
+        other => panic!("expected recovered failed-task restart, got {other:?}"),
+    }
+
+    let stored = app
+        .state::<AppState>()
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(stored.internal_status, InternalStatus::Failed);
+    assert!(stored.blocked_reason.is_none());
+    let metadata: serde_json::Value =
+        serde_json::from_str(stored.metadata.as_deref().unwrap()).unwrap();
+    assert_eq!(
+        metadata["failed_completion_recovery"]["promoted_commit_sha"],
+        promoted_sha
+    );
+    assert_eq!(
+        metadata["failed_completion_recovery"]["reason_code"],
+        "validated_completed_work"
+    );
+}
+
+#[tokio::test]
+async fn restart_task_from_failed_blocks_when_recovery_authority_is_absent() {
+    let execution_state = Arc::new(ExecutionState::with_max_concurrent(5));
+    let app_state = AppState::new_test();
+    enable_tasks_for_progress(&app_state).await;
+    let project = Project::new(
+        "Blocked Failed Restart Project".to_string(),
+        "/tmp/blocked-failed-restart-project".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    let mut task = Task::new(project.id, "Blocked failed execution".to_string());
+    task.internal_status = InternalStatus::Failed;
+    task.task_branch = Some("task/preserved".to_string());
+    task.worktree_path = Some("/tmp/preserved-failed-worktree".to_string());
+    task.merge_commit_sha = Some("preserved-sha".to_string());
+    let task_id = task.id.clone();
+    app_state.task_repo.create(task.clone()).await.unwrap();
+
+    let app = mock_builder()
+        .manage(Arc::clone(&execution_state))
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app should build");
+
+    let result = restart_task(
+        task_id.as_str().to_string(),
+        false,
+        None,
+        app.state::<AppState>(),
+        app.state::<Arc<ExecutionState>>(),
+    )
+    .await
+    .expect("failed restart should return blocked result");
+
+    match result {
+        RestartResult::Blocked { warnings } => {
+            assert_eq!(warnings.len(), 1);
+            assert_eq!(warnings[0].code, "missing_execution_episode");
+        }
+        other => panic!("expected blocked failed-task restart, got {other:?}"),
+    }
+
+    let stored = app
+        .state::<AppState>()
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.internal_status, InternalStatus::Failed);
+    assert_eq!(stored.task_branch, task.task_branch);
+    assert_eq!(stored.worktree_path, task.worktree_path);
+    assert_eq!(stored.merge_commit_sha, task.merge_commit_sha);
+}
+
+#[tokio::test]
+async fn restart_task_from_stopped_merge_returns_validation_warning_before_transition() {
+    let execution_state = Arc::new(ExecutionState::with_max_concurrent(5));
+    let app_state = AppState::new_test();
+    enable_tasks_for_progress(&app_state).await;
+    let project = Project::new(
+        "Unsupported Restart Project".to_string(),
+        "/tmp/unsupported-restart-project".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    let mut task = Task::new(project.id.clone(), "Stopped merge".to_string());
+    task.internal_status = InternalStatus::Stopped;
+    task.metadata = Some(stopped_task_metadata(InternalStatus::Merging));
+    let task_id = task.id.clone();
+    app_state.task_repo.create(task).await.unwrap();
+
+    let app = mock_builder()
+        .manage(Arc::clone(&execution_state))
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app should build");
+
+    let result = restart_task(
+        task_id.as_str().to_string(),
+        true,
+        None,
+        app.state::<AppState>(),
+        app.state::<Arc<ExecutionState>>(),
+    )
+    .await
+    .expect("restart command should return validation result");
+
+    match result {
+        RestartResult::ValidationFailed {
+            warnings,
+            stopped_from_status,
+        } => {
+            assert_eq!(stopped_from_status, InternalStatus::Merging.as_str());
+            assert_eq!(warnings.len(), 1);
+            assert_eq!(warnings[0].code, "unsupported_restart_target");
+            assert!(warnings[0].message.contains("cannot safely restart"));
+        }
+        other => panic!("expected unsupported restart validation, got {other:?}"),
+    }
+
+    let stored = app
+        .state::<AppState>()
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("task should exist");
+    assert_eq!(stored.internal_status, InternalStatus::Stopped);
+    assert!(stored
+        .metadata
+        .as_deref()
+        .unwrap()
+        .contains("stop_metadata"));
 }
 
 #[test]
@@ -6000,9 +6985,9 @@ fn test_resume_category_serialization() {
     let validated_json = serde_json::to_string(&validated).unwrap();
     let redirect_json = serde_json::to_string(&redirect).unwrap();
 
-    assert!(direct_json.contains("Direct"));
-    assert!(validated_json.contains("Validated"));
-    assert!(redirect_json.contains("Redirect"));
+    assert_eq!(direct_json, "\"direct\"");
+    assert_eq!(validated_json, "\"validated\"");
+    assert_eq!(redirect_json, "\"redirect\"");
 }
 
 // ========================================
@@ -6100,7 +7085,7 @@ async fn test_resume_restores_paused_before_scheduling_ordering() {
         .await
         .unwrap();
 
-    let transition_service: TaskTransitionService<tauri::Wry> = TaskTransitionService::new(
+    let transition_service: TaskTransitionService = TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),

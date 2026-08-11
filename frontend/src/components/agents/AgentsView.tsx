@@ -9,12 +9,14 @@ interface AgentsViewProps {
   footer?: ReactNode;
   projectId: string;
   onCreateProject: () => void;
+  onOpenAutomation?: (automationId: string) => void;
 }
 
 export function AgentsView({
   footer,
   projectId,
   onCreateProject,
+  onOpenAutomation,
 }: AgentsViewProps) {
   const {
     mainRegionProps,
@@ -23,6 +25,7 @@ export function AgentsView({
   } = useAgentsViewController({
     projectId,
     onCreateProject,
+    ...(onOpenAutomation ? { onOpenAutomation } : {}),
   });
 
   return (

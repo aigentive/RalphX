@@ -13,9 +13,6 @@ import { Virtuoso, type ListRange, type ScrollerProps, type VirtuosoHandle } fro
 import { MessageItem, MessageMeta } from "./MessageItem";
 import { parseComposerReferencesFromMetadata } from "./MessageReferences.parse";
 import { HookEventMessage } from "./HookEventMessage";
-import { AutoVerificationCard } from "./AutoVerificationCard";
-import { VerificationResultCard } from "./VerificationResultCard";
-import { AUTO_VERIFICATION_KEY, VERIFICATION_RESULT_KEY } from "@/types/ideation";
 import {
   ConversationTranscriptPlaceholders,
   TypingIndicator,
@@ -27,105 +24,66 @@ import type { ToolCall } from "./ToolCallIndicator";
 import type { StreamingTask, StreamingContentBlock } from "@/types/streaming-task";
 import type { ContentBlockItem } from "./MessageItem";
 import type { HookEvent, HookStartedEvent } from "@/types/hook-event";
-import { isDiffToolCall } from "./DiffToolCallView.utils";
+import { isDiffToolCall, isTaskToolCall } from "./DiffToolCallView.utils";
 import { DiffToolCallView } from "./DiffToolCallView";
 import { TaskSubagentCard } from "./TaskSubagentCard";
-import { useChatAutoScroll } from "@/hooks/useChatAutoScroll";
 import { shouldUseWebkitSafeScrollBehavior } from "@/lib/platform-quirks";
 import { logger } from "@/lib/logger";
 import { useMessageAttachments } from "@/hooks/useMessageAttachments";
+import { useRunAttributions } from "@/hooks/useRunAttributions";
+import type { AgentRunAttribution } from "@/api/agent-runs";
 import { ChevronDown } from "lucide-react";
 import type { MessageAttachment } from "./MessageAttachments";
-import { useTeamStore, selectTeammateByName, selectTeamMessages, EMPTY_TEAM_MESSAGES } from "@/stores/teamStore";
 import { ToolCallStoreKeyContext } from "./tool-widgets/ToolCallStoreKeyContext";
 import { shouldHideCompletedProjectOrchestrationToolCall } from "./tool-widgets/ProjectOrchestrationWidget.utils";
-import type { TeamMessage } from "@/stores/teamStore";
-import { TeamMessageBubble } from "./TeamMessageBubble";
 import { isProviderRole } from "@/lib/chat/provider-role";
-import { normalizeStreamingVerificationContentBlocks } from "./verification-tool-calls";
+import { selectActiveAgentRunId, useChatStore } from "@/stores/chatStore";
 import { cn } from "@/lib/utils";
 import { isTranscriptRootReadyForReveal } from "./ChatMessageList.readiness";
+import { VISUAL_BOTTOM_EPSILON_PX } from "./ChatMessageList.scroll";
 import {
-  getManualWheelScrollIntent,
-  getScrollBottomDelta,
-  isScrollElementVisuallyAtBottom,
-  scrollElementToTrueBottom,
-  shouldRecoverScrollDriftToBottom as shouldRecoverScrollDriftToBottomState,
-  shouldRunScheduledBottomPin,
-  shouldShowScrollToBottomControl,
-  shouldStickToBottom,
-  shouldTreatScrollTopDecreaseAsUserAway,
-  VISUAL_BOTTOM_EPSILON_PX,
-} from "./ChatMessageList.scroll";
+  createChatScrollController,
+  type ChatScrollController,
+  type ChatScrollControllerDeps,
+} from "./scroll/controller";
+import {
+  recordChatScrollTrace,
+} from "./scroll/diagnostics";
 import {
   buildLiveTranscriptRows,
+  isLiveThinkingGroupKey,
   liveToolGroupKey,
   type LiveTranscriptRow,
   type StreamingToolUseBlock,
 } from "./ChatMessageList.liveRows";
+import type { AgentRun } from "@/types/chat-conversation";
+import { ToolActivityGroupToggle } from "./ToolActivityGroupToggle";
+import { ThinkingGroupToggle } from "./ThinkingGroupToggle";
+import { RunAttributionWidget } from "./RunAttributionWidget";
+import { ThinkingWidget } from "./tool-widgets/ThinkingWidget";
+import {
+  aggregateThinkingSegments,
+  joinThinkingSegmentTexts,
+} from "./thinking-group";
+import {
+  collectPersistedThinkingRun,
+  samePersistedGroupSurface,
+} from "./persisted-thinking-group";
+import {
+  summarizeToolActivity,
+  type ToolActivitySummary,
+  type ToolActivityTask,
+} from "./tool-activity-summary";
+import {
+  delegationJobIdForToolCall,
+  projectDelegationTimelineMessages,
+  persistedDelegationJobIds,
+  persistedTimelineToolCall,
+} from "./delegation-timeline";
 
 // ============================================================================
 // Constants
 // ============================================================================
-
-/** Delay for markdown content to render and expand before scroll correction */
-const MARKDOWN_RENDER_DELAY_MS = 300;
-
-/** Shared bottom-detection threshold — used by both Virtuoso atBottomThreshold prop and rAF DOM reconciliation.
- *  Must match exactly so both agree on what "at bottom" means. */
-export const AT_BOTTOM_THRESHOLD = 150;
-
-/** Final-pixel settle guard for native wheel/scrollbar bottom attempts. */
-const TRUE_BOTTOM_SETTLE_THRESHOLD_PX = 32;
-const BOTTOM_SCROLL_INTENT_WINDOW_MS = 3_000;
-const TRUE_BOTTOM_FOLLOW_OUTPUT_SUPPRESSION_MS = 800;
-const TOOL_GROUP_SCROLL_ADJUSTMENT_WINDOW_MS = 800;
-const MAX_TRUE_BOTTOM_SETTLE_ATTEMPTS = 2;
-
-type ChatScrollBottomPinReason =
-  | "new-user-message"
-  | "streaming-started"
-  | "streaming-footer-growth"
-  | "scroller-resized"
-  | "external-layout-changed"
-  | "total-list-height-changed"
-  | "footer-resized"
-  | "last-row-resized"
-  | "active-live-row-resized"
-  | "transcript-root-resized"
-  | "finalized-provider-message-revealed"
-  | "manual-scroll-to-bottom"
-  | "initial-conversation-load"
-  | "new-timeline-item-appended"
-  | "latest-item-range-rendered"
-  | "virtuoso-at-bottom-settle"
-  | "scroll-drift-recovery"
-  | "fallback-no-scroller";
-
-type ChatScrollIntentSource =
-  | "conversation-reset"
-  | "manual-wheel"
-  | "nested-wheel-parent-scroll"
-  | "scroll-to-bottom-button"
-  | "scrollbar-pointer"
-  | "tool-group-anchor"
-  | "visual-bottom-reconcile";
-
-type ChatScrollPinOptions = {
-  immediate?: boolean;
-  requireLastItemVisible?: boolean;
-};
-
-interface ActiveLiveGrowthRowObserverRecord {
-  observer: ResizeObserver;
-  mounted: boolean;
-  prevHeight: number;
-  rafRef: { current: number | null };
-}
-
-/** Bucket size for text length change detection during streaming.
- *  ~2 visible lines per trigger (average line ~80 chars at standard chat width → 2 lines × 80 = 160, rounded to 150). */
-export const TEXT_LENGTH_BUCKET_SIZE = 150;
 
 const INITIAL_TRANSCRIPT_PAINT_MAX_FRAMES = 240;
 const INITIAL_TRANSCRIPT_PAINT_MAX_MS = 2_500;
@@ -139,16 +97,22 @@ const contentContainerStyle: React.CSSProperties = {
 };
 
 type ChatVirtuosoScrollerProps = ScrollerProps & {
+  className?: string;
   context?: unknown;
 };
 
 const ChatVirtuosoScroller = forwardRef<HTMLDivElement, ChatVirtuosoScrollerProps>(
-  function ChatVirtuosoScroller({ context: _context, style, ...props }, ref) {
+  function ChatVirtuosoScroller({ context: _context, style, className, ...props }, ref) {
     return (
       <div
         {...props}
         ref={ref}
+        tabIndex={0}
         data-chat-virtuoso-scroller="true"
+        className={cn(
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-primary)]",
+          className,
+        )}
         style={{
           ...style,
           overflowAnchor: "none",
@@ -186,6 +150,12 @@ function isNestedScrollableWheelTarget(
   return false;
 }
 
+function isEditableOrInteractiveTarget(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement && target.closest(
+    'input, textarea, select, [contenteditable], [role="textbox"]',
+  ) !== null;
+}
+
 function ContentShell({
   children,
   className,
@@ -217,10 +187,11 @@ function ScrollToBottomControl({
       data-testid="chat-scroll-to-bottom-control"
       aria-hidden={!visible}
       className={cn(
-        "absolute bottom-4 left-0 right-0 z-10 flex justify-center pointer-events-none",
+        "absolute left-0 right-0 z-10 flex justify-center pointer-events-none",
         visible ? "opacity-100" : "opacity-0",
       )}
       style={{
+        bottom: "calc(var(--chat-bottom-inset, 0px) + 1rem)",
         contain: "layout paint style",
       }}
     >
@@ -245,20 +216,6 @@ function ScrollToBottomControl({
       </button>
     </div>
   );
-}
-
-function scrollElementByDelta(element: HTMLElement, deltaX: number, deltaY: number) {
-  if (typeof element.scrollBy === "function") {
-    element.scrollBy({
-      left: deltaX,
-      top: deltaY,
-      behavior: "auto",
-    });
-    return;
-  }
-
-  element.scrollLeft += deltaX;
-  element.scrollTop += deltaY;
 }
 
 /** Stable empty arrays — avoids new refs on each render when props are omitted */
@@ -294,34 +251,37 @@ export interface ChatMessageData {
   cacheReadTokens?: number | null;
   estimatedUsd?: number | null;
   timelineSequence?: number | null;
+  runId?: string | null;
+  finalizedAt?: string | null;
 }
 
 type ToolCallGroupMarker = {
   key: string;
   count: number;
+  summary: ToolActivitySummary;
+  promoted: boolean;
   position: "toggle" | "covered";
 };
 
-type ToolCallGroupScrollAnchor = {
-  groupKey: string;
-  anchorTop: number | null;
-  scrollTop: number;
-  bottomDelta: number;
-  wasVisuallyAtBottom: boolean;
+type PersistedThinkingGroupMarker = {
+  key: string;
+  blocks: ContentBlockItem[];
+  position: "toggle" | "covered";
 };
+
 
 type TimelineMessageItem = {
   kind: "message";
   data: ChatMessageData;
   sortTime: number;
   toolCallGroup?: ToolCallGroupMarker;
+  thinkingGroup?: PersistedThinkingGroupMarker;
 };
 
 /** Discriminated union for timeline items when hook events are interleaved */
 type TimelineItem =
   | TimelineMessageItem
   | { kind: "hook"; data: HookEvent | HookStartedEvent; sortTime: number }
-  | { kind: "team_event"; data: TeamMessage; sortTime: number }
   | { kind: "streaming_row"; data: LiveTranscriptRow; sortTime: number }
   | { kind: "streaming"; sortTime: number };
 
@@ -334,54 +294,6 @@ function parseMessageMetadata(metadata: string | null | undefined): Record<strin
   }
 }
 
-function renderSystemCard(
-  metadata: Record<string, unknown> | null,
-  content: string,
-  createdAt: string,
-) {
-  if (!metadata) return null;
-
-  if (metadata[AUTO_VERIFICATION_KEY]) {
-    return <AutoVerificationCard content={content} createdAt={createdAt} />;
-  }
-
-  if (metadata[VERIFICATION_RESULT_KEY]) {
-    const blockers = Array.isArray(metadata.top_blockers)
-      ? metadata.top_blockers
-          .filter((item): item is { severity?: unknown; description?: unknown } => (
-            item != null && typeof item === "object"
-          ))
-          .map((item) => ({
-            severity: typeof item.severity === "string" ? item.severity : "unknown",
-            description: typeof item.description === "string" ? item.description : "",
-          }))
-          .filter((item) => item.description.length > 0)
-      : [];
-
-    return (
-      <VerificationResultCard
-        summary={typeof metadata.summary === "string" ? metadata.summary : content}
-        convergenceReason={typeof metadata.convergence_reason === "string" ? metadata.convergence_reason : null}
-        currentRound={typeof metadata.current_round === "number" ? metadata.current_round : null}
-        maxRounds={typeof metadata.max_rounds === "number" ? metadata.max_rounds : null}
-        recommendedNextAction={
-          typeof metadata.recommended_next_action === "string"
-            ? metadata.recommended_next_action
-            : null
-        }
-        blockers={blockers}
-        actionableForParent={metadata.actionable_for_parent === true}
-      />
-    );
-  }
-
-  return null;
-}
-
-function hasSystemCardMetadata(metadata: Record<string, unknown> | null) {
-  return Boolean(metadata?.[AUTO_VERIFICATION_KEY] || metadata?.[VERIFICATION_RESULT_KEY]);
-}
-
 function isPersistedTimelineToolCallMessage(message: ChatMessageData): boolean {
   if (!isProviderRole(message.role) || message.timelineSequence == null) {
     return false;
@@ -390,21 +302,12 @@ function isPersistedTimelineToolCallMessage(message: ChatMessageData): boolean {
   return blocks?.length === 1 && blocks[0]?.type === "tool_use";
 }
 
-function sameToolGroupSurface(left: ChatMessageData, right: ChatMessageData): boolean {
-  return left.role === right.role
-    && (left.sender ?? null) === (right.sender ?? null)
-    && (left.providerHarness ?? null) === (right.providerHarness ?? null)
-    && (left.providerSessionId ?? null) === (right.providerSessionId ?? null)
-    && (left.upstreamProvider ?? null) === (right.upstreamProvider ?? null)
-    && (left.providerProfile ?? null) === (right.providerProfile ?? null);
-}
-
 function canContinueToolCallGroup(
   first: ChatMessageData,
   previous: ChatMessageData,
   next: ChatMessageData,
 ): boolean {
-  if (!isPersistedTimelineToolCallMessage(next) || !sameToolGroupSurface(first, next)) {
+  if (!isPersistedTimelineToolCallMessage(next) || !samePersistedGroupSurface(first, next)) {
     return false;
   }
   if (first.parentMessageId || next.parentMessageId) {
@@ -423,13 +326,10 @@ function canContinueToolCallGroup(
 }
 
 function liveTranscriptRowSortTime(
-  row: LiveTranscriptRow,
+  _row: LiveTranscriptRow,
   rowIndex: number,
   rowCount: number,
 ): number {
-  if (row.receivedAt != null) {
-    return row.receivedAt;
-  }
   return Number.MAX_SAFE_INTEGER - rowCount + rowIndex - 1;
 }
 
@@ -479,60 +379,95 @@ function isCollapsedToolCallGroupCoveredItem(
 ): boolean {
   return item.kind === "message"
     && item.toolCallGroup?.position === "covered"
+    && !item.toolCallGroup.promoted
     && !expandedToolGroupKeys.has(item.toolCallGroup.key);
+}
+
+function isPersistedThinkingGroupCoveredItem(item: TimelineItem): boolean {
+  return item.kind === "message" && item.thinkingGroup?.position === "covered";
 }
 
 function isVisibleTimelineItem(
   item: TimelineItem,
   expandedToolGroupKeys: Set<string>,
 ): boolean {
-  return !isCollapsedToolCallGroupCoveredItem(item, expandedToolGroupKeys);
+  return !isCollapsedToolCallGroupCoveredItem(item, expandedToolGroupKeys)
+    && !isPersistedThinkingGroupCoveredItem(item);
 }
 
-function findToolCallGroupToggleElement(root: ParentNode, groupKey: string): HTMLElement | null {
-  const candidates = root.querySelectorAll<HTMLElement>("[data-chat-tool-call-group-key]");
-  for (const candidate of candidates) {
-    if (candidate.dataset.chatToolCallGroupKey === groupKey) {
-      return candidate;
+function persistedThinkingGroupKey(messages: ChatMessageData[]): string {
+  const first = messages[0];
+  const last = messages[messages.length - 1];
+  return `thinking-msg-group:${first?.parentMessageId ?? first?.id ?? "empty"}:${first?.timelineSequence ?? "start"}:${last?.timelineSequence ?? "end"}:${messages.length}`;
+}
+
+function isThinkingGroupKey(groupKey: string): boolean {
+  return isLiveThinkingGroupKey(groupKey)
+    || groupKey.startsWith("thinking-msg-group:")
+    || groupKey.startsWith("content-thinking-message:");
+}
+
+type ThinkingGroupIntent = "expanded" | "collapsed";
+
+interface RunAttributionTiming {
+  runId: string;
+  startedAt: string;
+  completedAt: string | null;
+  launchRole: string | null;
+}
+
+interface ResolvedRunAttributionTiming extends RunAttributionTiming {
+  attribution: AgentRunAttribution | null;
+}
+
+/**
+ * One pass over the transcript: for every settled run, compute its timing span
+ * and anchor the worked-widget on the run's last provider message. The active
+ * run is excluded so a live run never shows a premature "worked" widget.
+ */
+function buildRunAttributionTimingByMessageId(
+  messages: readonly ChatMessageData[],
+  activeRunId: string | null | undefined,
+): Map<string, RunAttributionTiming> {
+  const timingByRun = new Map<
+    string,
+    { startedAt: number; completedAt: number; lastMessageId: string }
+  >();
+  for (const message of messages) {
+    if (!message.runId || !isProviderRole(message.role)) continue;
+    if (activeRunId != null && message.runId === activeRunId) continue;
+    const created = Date.parse(message.createdAt);
+    const finalized = Date.parse(message.finalizedAt ?? message.createdAt);
+    const existing = timingByRun.get(message.runId);
+    if (!existing) {
+      timingByRun.set(message.runId, {
+        startedAt: created,
+        completedAt: finalized,
+        lastMessageId: message.id,
+      });
+      continue;
     }
+    if (Number.isFinite(created) && !(created >= existing.startedAt)) {
+      existing.startedAt = created;
+    }
+    if (Number.isFinite(finalized) && !(finalized <= existing.completedAt)) {
+      existing.completedAt = finalized;
+    }
+    existing.lastMessageId = message.id;
   }
-  return null;
-}
-
-function clampScrollTop(element: HTMLElement, scrollTop: number): number {
-  const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
-  return Math.max(0, Math.min(maxScrollTop, scrollTop));
-}
-
-function ToolCallGroupToggle({
-  groupKey,
-  count,
-  isExpanded,
-  onToggle,
-}: {
-  groupKey: string;
-  count: number;
-  isExpanded: boolean;
-  onToggle: React.MouseEventHandler<HTMLButtonElement>;
-}) {
-  const label = isExpanded ? `Hide ${count} tool call${count === 1 ? "" : "s"}` : `Agent called ${count} tool${count === 1 ? "" : "s"}`;
-  return (
-    <button
-      type="button"
-      data-testid="tool-call-group-toggle"
-      data-chat-tool-call-group-key={groupKey}
-      aria-expanded={isExpanded}
-      aria-label={label}
-      onClick={onToggle}
-      className="inline-flex max-w-full items-center rounded-md px-2 py-1 text-[0.6875rem] font-medium transition-opacity hover:opacity-80"
-      style={{
-        backgroundColor: "var(--bg-elevated)",
-        color: "var(--text-secondary)",
-      }}
-    >
-      {label}
-    </button>
-  );
+  const byMessageId = new Map<string, RunAttributionTiming>();
+  for (const [runId, timing] of timingByRun) {
+    if (!Number.isFinite(timing.startedAt)) continue;
+    byMessageId.set(timing.lastMessageId, {
+      runId,
+      startedAt: new Date(timing.startedAt).toISOString(),
+      completedAt: Number.isFinite(timing.completedAt)
+        ? new Date(timing.completedAt).toISOString()
+        : null,
+      launchRole: null,
+    });
+  }
+  return byMessageId;
 }
 
 function senderGroupPart(value: string | null | undefined) {
@@ -540,12 +475,47 @@ function senderGroupPart(value: string | null | undefined) {
   return trimmed && trimmed.length > 0 ? trimmed : "";
 }
 
+export type PersonaAttributedRun = Pick<
+  AgentRun,
+  | "id"
+  | "personaId"
+  | "personaSlug"
+  | "personaVersion"
+  | "personaInjected"
+  | "personaSkippedReason"
+>;
+
+function personaRunBadgeProps(
+  agentRun: PersonaAttributedRun | null | undefined,
+  enabled: boolean,
+  runId: string | null | undefined,
+) {
+  if (!enabled || !agentRun || runId !== agentRun.id) {
+    return {};
+  }
+  return {
+    agentPersonasEnabled: true,
+    personaId: agentRun.personaId ?? null,
+    personaSlug: agentRun.personaSlug ?? null,
+    personaVersion: agentRun.personaVersion ?? null,
+    personaInjected: agentRun.personaInjected ?? null,
+    personaSkippedReason: agentRun.personaSkippedReason ?? null,
+  };
+}
+
+function attributedRunForId(
+  activeRun: PersonaAttributedRun | null | undefined,
+  historicalRuns: readonly PersonaAttributedRun[],
+  runId: string | null | undefined,
+) {
+  if (!runId) return null;
+  return activeRun?.id === runId
+    ? activeRun
+    : (historicalRuns.find((run) => run.id === runId) ?? null);
+}
+
 function assistantSenderGroupKeyForMessage(message: ChatMessageData): string | null {
   if (!isProviderRole(message.role)) {
-    return null;
-  }
-  const metadata = parseMessageMetadata(message.metadata);
-  if (hasSystemCardMetadata(metadata)) {
     return null;
   }
   return [
@@ -555,6 +525,7 @@ function assistantSenderGroupKeyForMessage(message: ChatMessageData): string | n
     senderGroupPart(message.providerSessionId),
     senderGroupPart(message.upstreamProvider),
     senderGroupPart(message.providerProfile),
+    senderGroupPart(message.runId),
   ].join("\u0000");
 }
 
@@ -591,22 +562,24 @@ function ToolCallGroupToggleRow({
   senderGroupState,
   isLastInList,
   isExpanded,
-  teammateName,
-  teammateColor,
   onToggle,
   contentWidthClassName,
   rowRef,
+  agentRun,
+  personaRuns,
+  agentPersonasEnabled,
 }: {
   msg: ChatMessageData;
   marker: ToolCallGroupMarker;
   senderGroupState: typeof DEFAULT_ASSISTANT_GROUP_STATE;
   isLastInList: boolean;
   isExpanded: boolean;
-  teammateName: string | null;
-  teammateColor: string | null;
   onToggle: React.MouseEventHandler<HTMLButtonElement>;
   contentWidthClassName?: string | undefined;
   rowRef?: React.Ref<HTMLDivElement> | undefined;
+  agentRun?: PersonaAttributedRun | null | undefined;
+  personaRuns: readonly PersonaAttributedRun[];
+  agentPersonasEnabled: boolean;
 }) {
   return (
     <div
@@ -623,8 +596,6 @@ function ToolCallGroupToggleRow({
           isLastInList={isLastInList}
           toolCalls={null}
           contentBlocks={null}
-          teammateName={teammateName}
-          teammateColor={teammateColor}
           providerHarness={msg.providerHarness}
           providerSessionId={msg.providerSessionId}
           upstreamProvider={msg.upstreamProvider}
@@ -638,17 +609,83 @@ function ToolCallGroupToggleRow({
           cacheCreationTokens={msg.cacheCreationTokens}
           cacheReadTokens={msg.cacheReadTokens}
           estimatedUsd={msg.estimatedUsd}
+          {...personaRunBadgeProps(
+            attributedRunForId(agentRun, personaRuns, msg.runId),
+            agentPersonasEnabled && senderGroupState.showSenderHeader,
+            msg.runId,
+          )}
           showAssistantIcon={senderGroupState.showSenderHeader}
           reserveAssistantIconSpace={senderGroupState.reserveAssistantGutter}
           showProviderMeta={senderGroupState.showSenderHeader}
           hideMeta
         >
-          <ToolCallGroupToggle
+          <ToolActivityGroupToggle
             groupKey={marker.key}
-            count={marker.count}
+            summary={marker.summary}
             isExpanded={isExpanded}
             onToggle={onToggle}
           />
+        </MessageItem>
+      </ContentShell>
+    </div>
+  );
+}
+
+function PersistedThinkingGroupToggleRow({
+  msg,
+  marker,
+  senderGroupState,
+  isLastInList,
+  isExpanded,
+  onToggle,
+  contentWidthClassName,
+  rowRef,
+}: {
+  msg: ChatMessageData;
+  marker: PersistedThinkingGroupMarker;
+  senderGroupState: AssistantSenderGroupState;
+  isLastInList: boolean;
+  isExpanded: boolean;
+  onToggle: React.MouseEventHandler<HTMLButtonElement>;
+  contentWidthClassName?: string | undefined;
+  rowRef?: React.Ref<HTMLDivElement> | undefined;
+}) {
+  const aggregate = aggregateThinkingSegments(marker.blocks, true);
+  const text = joinThinkingSegmentTexts(marker.blocks.map((block) => block.text));
+  return (
+    <div
+      ref={rowRef}
+      className="px-3 w-full"
+      data-chat-last-rendered-row={isLastInList ? "true" : undefined}
+      style={contentContainerStyle}
+    >
+      <ContentShell className={contentWidthClassName}>
+        <MessageItem
+          role={msg.role}
+          content=""
+          createdAt={msg.createdAt}
+          isLastInList={isLastInList}
+          toolCalls={null}
+          contentBlocks={null}
+          providerHarness={msg.providerHarness}
+          providerSessionId={msg.providerSessionId}
+          showAssistantIcon={senderGroupState.showSenderHeader}
+          reserveAssistantIconSpace={senderGroupState.reserveAssistantGutter}
+          showProviderMeta={senderGroupState.showSenderHeader}
+          hideMeta
+        >
+          <div className="space-y-1.5 overflow-hidden">
+            <ThinkingGroupToggle
+              groupKey={marker.key}
+              isExpanded={isExpanded}
+              isSettled={aggregate.isSettled}
+              segmentCount={aggregate.segmentCount}
+              {...(aggregate.totalDurationMs != null ? { durationMs: aggregate.totalDurationMs } : {})}
+              {...(aggregate.reasoningTokens != null ? { reasoningTokens: aggregate.reasoningTokens } : {})}
+              onToggle={onToggle}
+            />
+            {isExpanded && text ? <ThinkingWidget text={text} /> : null}
+          </div>
         </MessageItem>
       </ContentShell>
     </div>
@@ -664,6 +701,7 @@ function LiveTranscriptRowItem({
   providerHarness,
   providerSessionId,
   expandedToolGroupKeys,
+  isThinkingGroupExpanded,
   contentWidthClassName,
   rowRef,
   onToggleToolCallGroup,
@@ -677,6 +715,7 @@ function LiveTranscriptRowItem({
   providerHarness: string | null | undefined;
   providerSessionId: string | null | undefined;
   expandedToolGroupKeys: Set<string>;
+  isThinkingGroupExpanded: (groupKey: string) => boolean;
   contentWidthClassName?: string | undefined;
   rowRef?: React.Ref<HTMLDivElement> | undefined;
   onToggleToolCallGroup: (groupKey: string, anchor: HTMLElement | null) => void;
@@ -689,6 +728,7 @@ function LiveTranscriptRowItem({
           <TextBubble
             text={row.text}
             isUser={false}
+            isStreaming
           />
           <MessageMeta
             createdAt={streamingMessageCreatedAt}
@@ -704,22 +744,62 @@ function LiveTranscriptRowItem({
     if (row.kind === "tool_call") {
       return renderStreamingToolCallBlock(row.block, row.index);
     }
+    if (row.kind === "thinking_group") {
+      const groupKey = row.key;
+      const isExpanded = isThinkingGroupExpanded(groupKey);
+      const aggregate = aggregateThinkingSegments(row.blocks.map(({ block }) => block), false);
+      const text = joinThinkingSegmentTexts(row.blocks.map(({ block }) => block.text));
+      return (
+        <div className="space-y-1.5 overflow-hidden">
+          <ThinkingGroupToggle groupKey={groupKey} isExpanded={isExpanded}
+            isSettled={aggregate.isSettled} segmentCount={aggregate.segmentCount}
+            {...(aggregate.totalDurationMs != null ? { durationMs: aggregate.totalDurationMs } : {})}
+            {...(aggregate.estimatedTokens != null ? { estimatedTokens: aggregate.estimatedTokens } : {})}
+            {...(aggregate.reasoningTokens != null ? { reasoningTokens: aggregate.reasoningTokens } : {})}
+            onToggle={(event) => onToggleToolCallGroup(groupKey, event.currentTarget)} />
+          {isExpanded && text ? <ThinkingWidget text={text} /> : null}
+        </div>
+      );
+    }
 
-    const groupKey = liveToolGroupKey(row.entries);
+    const groupKey = liveToolGroupKey(row.entries, row.taskEntries);
     const isExpanded = expandedToolGroupKeys.has(groupKey);
+    const tasks = row.taskEntries
+      .map((entry) => ({ entry, task: streamingTasks?.get(entry.toolUseId) }))
+      .filter((item): item is { entry: typeof row.taskEntries[number]; task: StreamingTask } => (
+        item.task != null
+      ));
+    const activityTasks: ToolActivityTask[] = tasks.map(({ task }) => ({
+      toolUseId: task.toolUseId,
+      toolName: task.toolName,
+      ...(task.delegatedJobId ? { delegatedJobId: task.delegatedJobId } : {}),
+    }));
+    const summary = summarizeToolActivity({
+      toolCalls: row.entries.map((entry) => entry.block.toolCall),
+      tasks: activityTasks,
+    });
+    const activityEntries = [
+      ...row.entries.map((entry) => ({ kind: "tool" as const, index: entry.index, entry })),
+      ...tasks.map(({ entry, task }) => ({ kind: "task" as const, index: entry.index, task })),
+    ].sort((left, right) => left.index - right.index);
     return (
       <>
         <div className="mb-2">
-          <ToolCallGroupToggle
+          <ToolActivityGroupToggle
             groupKey={groupKey}
-            count={row.count}
+            summary={summary}
             isExpanded={isExpanded}
             onToggle={(event) => onToggleToolCallGroup(groupKey, event.currentTarget)}
           />
         </div>
-        {isExpanded
-          ? row.entries.map((entry) => renderStreamingToolCallBlock(entry.block, entry.index))
-          : null}
+        {activityEntries.map((activity) => {
+          if (activity.kind === "task") {
+            return <TaskSubagentCard key={`task-${activity.task.toolUseId}`} task={activity.task} />;
+          }
+          return isExpanded
+            ? renderStreamingToolCallBlock(activity.entry.block, activity.entry.index)
+            : null;
+        })}
       </>
     );
   })();
@@ -799,37 +879,6 @@ function hasRenderablePersistedContent(message: ChatMessageData) {
   return (message.contentBlocks?.length ?? 0) > 0;
 }
 
-function countCompletedToolCalls(toolCalls: Iterable<ToolCall>): number {
-  let count = 0;
-  for (const toolCall of toolCalls) {
-    if (toolCall.result != null || toolCall.error != null) {
-      count += 1;
-    }
-  }
-  return count;
-}
-
-function buildStreamingTaskResultSignature(
-  streamingTasks: Map<string, StreamingTask> | undefined
-): string {
-  if (!streamingTasks || streamingTasks.size === 0) {
-    return "";
-  }
-
-  return Array.from(streamingTasks.values())
-    .map((task) => [
-      task.toolUseId,
-      task.status,
-      task.completedAt ?? "",
-      task.totalDurationMs ?? "",
-      task.totalTokens ?? "",
-      task.totalToolUseCount ?? "",
-      task.childToolCalls.length,
-      countCompletedToolCalls(task.childToolCalls),
-    ].join(":"))
-    .join("|");
-}
-
 function getCurrentTurnProviderMessageId(
   messages: ChatMessageData[],
   {
@@ -855,7 +904,11 @@ function getCurrentTurnProviderMessageId(
   const latestProviderMessage = latestMessageByCreatedAt(
     messages,
     (message) => {
-      if (!isProviderRole(message.role)) {
+      if (
+        !isProviderRole(message.role)
+        || message.timelineSequence != null
+        || isPersistedTimelineToolCallMessage(message)
+      ) {
         return false;
       }
       if (!latestUserMessage) {
@@ -914,24 +967,22 @@ interface ChatMessageListProps {
   activeHooks?: HookStartedEvent[];
   /** Whether the conversation is finalizing (between message_created and query refetch) */
   isFinalizing?: boolean;
-  /** Team filter for message filtering (team mode) */
-  teamFilter?: "lead" | string | undefined;
-  /** Context key for team store lookup (team mode) */
+  /** Context key for tool-call widget state. */
   contextKey?: string | undefined;
   /** Provider metadata for the active conversation */
   providerHarness?: string | null | undefined;
   providerSessionId?: string | null | undefined;
+  agentRun?: PersonaAttributedRun | null | undefined;
+  personaRuns?: readonly PersonaAttributedRun[];
+  agentPersonasEnabled?: boolean;
   contentWidthClassName?: string | undefined;
   topInsetClassName?: string | undefined;
   hasOlderMessages?: boolean;
   isFetchingOlderMessages?: boolean;
   onLoadOlderMessages?: (() => void | Promise<void>) | undefined;
-  /** Incremented by the host when sibling chrome below the transcript changes size. */
-  externalLayoutVersion?: number | undefined;
-  /** Whether the latest external layout tick belongs to the visible runtime/composer. */
-  externalLayoutOwnedByVisibleRuntime?: boolean | undefined;
   initialPaintCoverKey?: string | null | undefined;
   onInitialPaintReady?: ((key: string) => void) | undefined;
+  registerBottomSpacer?: ((element: HTMLElement | null) => void) | undefined;
 }
 
 // ============================================================================
@@ -956,19 +1007,20 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       hookEvents = EMPTY_HOOK_EVENTS,
       activeHooks = EMPTY_ACTIVE_HOOKS,
       isFinalizing = false,
-      teamFilter,
       contextKey,
       providerHarness,
       providerSessionId,
+      agentRun,
+      personaRuns = [],
+      agentPersonasEnabled = false,
       contentWidthClassName,
       topInsetClassName,
       hasOlderMessages = false,
       isFetchingOlderMessages = false,
       onLoadOlderMessages,
-      externalLayoutVersion = 0,
-      externalLayoutOwnedByVisibleRuntime = true,
       initialPaintCoverKey = null,
       onInitialPaintReady,
+      registerBottomSpacer,
     },
     ref
   ) {
@@ -980,125 +1032,53 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
 
     // Internal ref for scroll operations
     const virtuosoRef = useRef<VirtuosoHandle>(null);
-    const hasScrolledRef = useRef<string | null>(null);
     const previousLastItemIndexRef = useRef<number | null>(null);
     // Track previous shouldFilterLastAssistant to detect false→true→false transition
     const prevShouldFilterRef = useRef(false);
-    const bottomPinRafIdsRef = useRef<number[]>([]);
-    const bottomPinTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const lastUserMessageIdRef = useRef<string | null>(lastUserMessageId);
     const agentRunningRef = useRef(isAgentRunning);
     const conversationLastUserMessageIdRef = useRef<string | null>(lastUserMessageId);
     const conversationAgentRunningRef = useRef(isAgentRunning);
-    const scrollToTimestampRef = useRef(scrollToTimestamp);
-    // rAF reconciliation refs — used to keep isAtBottom accurate when footer grows
     const scrollerElRef = useRef<HTMLElement | null>(null);
-    const lastObservedScrollTopRef = useRef<number | null>(null);
-    const reconcileRafRef = useRef<number | null>(null);
+    const conversationIdRef = useRef(conversationId ?? null);
     const scrollerResizeObserverRef = useRef<ResizeObserver | null>(null);
-    const scrollerResizeRafRef = useRef<number | null>(null);
-    const bottomScrollIntentUntilRef = useRef<number | null>(null);
-    const suppressVirtuosoFollowOutputUntilRef = useRef<number | null>(null);
-    const isUserScrollingAwayFromBottomRef = useRef(false);
-    const hasUserScrollInputRef = useRef(false);
-    const lastManualWheelDeltaYRef = useRef(0);
-    const pendingNestedWheelDeltaYRef = useRef(0);
-    const pendingNestedWheelClearRafRef = useRef<number | null>(null);
-    const nestedWheelParentScrollRef = useRef(false);
-    const userScrollAwayVersionRef = useRef(0);
-    const virtuosoAtBottomSettleRafRef = useRef<number | null>(null);
-    const bottomSettleAttemptCountRef = useRef(0);
-    const transcriptRootResizeObserverRef = useRef<ResizeObserver | null>(null);
-    const transcriptRootResizeRafRef = useRef<number | null>(null);
-    const totalListHeightRafRef = useRef<number | null>(null);
+    const bottomSpacerResizeObserverRef = useRef<ResizeObserver | null>(null);
+    const bottomSpacerHeightRef = useRef<number | null>(null);
+    const lastRenderedRowResizeObserverRef = useRef<ResizeObserver | null>(null);
+    const lastRenderedRowHeightRef = useRef<number | null>(null);
     const previousTotalListHeightRef = useRef<number>(-1);
-    const pendingToolGroupScrollAnchorRef = useRef<ToolCallGroupScrollAnchor | null>(null);
-    const toolGroupScrollAdjustmentUntilRef = useRef<number | null>(null);
-    const transcriptRootPrevHeightRef = useRef<number>(-1);
-    const transcriptRootMountedRef = useRef(false);
+    const previousFirstItemIndexRef = useRef({ conversationId, index: firstItemIndex });
+    const timestampJumpKeyRef = useRef<string | null>(null);
+    const lastItemIndexRef = useRef(firstItemIndex);
     const isTestEnv = import.meta.env.VITEST;
     const [isVisuallyAtBottom, setIsVisuallyAtBottomState] = useState(true);
     const isVisuallyAtBottomRef = useRef(true);
     const [hasScrollerElement, setHasScrollerElement] = useState(false);
     const [hasScrollableOverflow, setHasScrollableOverflow] = useState(false);
-    const [isLastItemVisible, setIsLastItemVisible] = useState<boolean | null>(true);
     const [expandedToolGroupKeys, setExpandedToolGroupKeys] = useState<Set<string>>(
       () => new Set(),
     );
     const expandedToolGroupConversationRef = useRef<string | undefined>(conversationId);
-    const isLastItemVisibleRef = useRef<boolean | null>(true);
-
-    // Footer ResizeObserver refs — for height-driven auto-scroll (G2 fix)
-    const footerElRef = useRef<HTMLDivElement | null>(null);
-    const footerResizeRafRef = useRef<number | null>(null);
-    const footerObserverRef = useRef<ResizeObserver | null>(null);
-    const footerPrevHeightRef = useRef<number>(-1); // -1 = uninitialized sentinel
-    const footerMountedRef = useRef(false); // H2 fix: skip initial mount observation
-    const hasFooterStreamingContentRef = useRef(false);
-    const lastRenderedRowElRef = useRef<HTMLDivElement | null>(null);
-    const lastRenderedRowObserverRef = useRef<ResizeObserver | null>(null);
-    const lastRenderedRowResizeRafRef = useRef<number | null>(null);
-    const lastRenderedRowPrevHeightRef = useRef<number>(-1);
-    const lastRenderedRowMountedRef = useRef(false);
-    const activeLiveGrowthRowObserversRef = useRef<Map<string, ActiveLiveGrowthRowObserverRecord>>(new Map());
-    const activeLiveGrowthRowElementsRef = useRef<Map<string, HTMLDivElement>>(new Map());
+    const [thinkingIntentByGroupKey, setThinkingIntentByGroupKey] = useState<Map<string, ThinkingGroupIntent>>(
+      () => new Map(),
+    );
     const transcriptRootRef = useRef<HTMLDivElement | null>(null);
     const initialPaintReadyFrameRef = useRef<number | null>(null);
     const initialPaintReadyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    useLayoutEffect(() => {
+      conversationIdRef.current = conversationId ?? null;
+    }, [conversationId]);
 
     useEffect(() => {
       if (expandedToolGroupConversationRef.current === conversationId) {
         return;
       }
       expandedToolGroupConversationRef.current = conversationId;
+      setThinkingIntentByGroupKey(new Map());
       setExpandedToolGroupKeys(new Set());
     }, [conversationId]);
 
-    const getToolGroupScrollContainer = useCallback((): HTMLElement | null => {
-      return scrollerElRef.current ?? (isTestEnv ? transcriptRootRef.current : null);
-    }, [isTestEnv]);
-
-    const captureToolGroupScrollAnchor = useCallback(
-      (groupKey: string, toggleElement: HTMLElement | null): ToolCallGroupScrollAnchor | null => {
-        const scroller = getToolGroupScrollContainer();
-        /* c8 ignore next 3 -- the scroller can detach between click capture and state commit. */
-        if (!scroller) {
-          return null;
-        }
-        const anchorElement =
-          toggleElement ?? findToolCallGroupToggleElement(scroller, groupKey);
-        return {
-          groupKey,
-          anchorTop: anchorElement ? anchorElement.getBoundingClientRect().top : null,
-          scrollTop: scroller.scrollTop,
-          bottomDelta: getScrollBottomDelta(scroller),
-          wasVisuallyAtBottom: isScrollElementVisuallyAtBottom(scroller),
-        };
-      },
-      [getToolGroupScrollContainer],
-    );
-
-    const toggleToolCallGroup = useCallback((groupKey: string, toggleElement?: HTMLElement | null) => {
-      const anchor = captureToolGroupScrollAnchor(groupKey, toggleElement ?? null);
-      if (anchor) {
-        pendingToolGroupScrollAnchorRef.current = anchor;
-        toolGroupScrollAdjustmentUntilRef.current =
-          performance.now() + TOOL_GROUP_SCROLL_ADJUSTMENT_WINDOW_MS;
-        if (!anchor.wasVisuallyAtBottom) {
-          isUserScrollingAwayFromBottomRef.current = true;
-          userScrollAwayVersionRef.current += 1;
-        }
-      }
-      setExpandedToolGroupKeys((current) => {
-        const next = new Set(current);
-        if (next.has(groupKey)) {
-          next.delete(groupKey);
-        } else {
-          next.add(groupKey);
-        }
-        return next;
-      });
-    }, [captureToolGroupScrollAnchor]);
     const initialPaintReadyFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const initialPaintReadyAttemptRef = useRef(0);
     const initialPendingPaintCoverKey =
@@ -1122,6 +1102,153 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       isVisuallyAtBottomRef.current = nextValue;
       setIsVisuallyAtBottomState(nextValue);
     }, []);
+
+    const getScrollElement = useCallback(() => scrollerElRef.current, []);
+    const scrollToTimelineIndex = useCallback(
+      (options: { index: number; align: "start" | "end"; behavior: "auto" | "smooth" }) => {
+        virtuosoRef.current?.scrollToIndex(options);
+      },
+      [],
+    );
+    const getLastTimelineIndex = useCallback(() => lastItemIndexRef.current, []);
+    const [scrollControllerDeps] = useState<ChatScrollControllerDeps>(() => ({
+      getScrollElement,
+      scrollToIndex: scrollToTimelineIndex,
+      getLastIndex: getLastTimelineIndex,
+      requestFrame: (callback) => requestAnimationFrame(callback),
+      cancelFrame: (frame) => cancelAnimationFrame(frame),
+      onVisualBottomChange: setIsVisuallyAtBottom,
+      debugLog: (event, detail) => {
+        logger.debug(`[ChatScroll] ${event}`, detail);
+        recordChatScrollTrace({
+          conversationId: conversationIdRef.current,
+          source: "controller",
+          event,
+          state: typeof detail.state === "string" ? detail.state : null,
+          element: scrollerElRef.current,
+          detail,
+        });
+      },
+    }));
+    const [scrollController] = useState<ChatScrollController>(() =>
+      createChatScrollController({
+        ...scrollControllerDeps,
+      }),
+    );
+
+    const disconnectBottomSpacerResizeObserver = useCallback(() => {
+      bottomSpacerResizeObserverRef.current?.disconnect();
+      bottomSpacerResizeObserverRef.current = null;
+      bottomSpacerHeightRef.current = null;
+    }, []);
+
+    const handleBottomSpacerRef = useCallback((element: HTMLElement | null) => {
+      disconnectBottomSpacerResizeObserver();
+      registerBottomSpacer?.(element);
+      if (!element || typeof ResizeObserver === "undefined") {
+        return;
+      }
+
+      const observer = new ResizeObserver((entries) => {
+        const entry = entries.find(({ target }) => target === element);
+        if (!entry) {
+          return;
+        }
+
+        const previousHeight = bottomSpacerHeightRef.current;
+        const nextHeight = entry.contentRect.height;
+        bottomSpacerHeightRef.current = nextHeight;
+        recordChatScrollTrace({
+          conversationId: conversationIdRef.current,
+          source: "layout",
+          event: "bottom-spacer-resize",
+          element: scrollerElRef.current,
+          detail: { previousHeight, nextHeight },
+        });
+        if (
+          previousHeight !== null
+          && Math.abs(nextHeight - previousHeight) > VISUAL_BOTTOM_EPSILON_PX
+        ) {
+          scrollController.notifyContentGrowth();
+        }
+      });
+      observer.observe(element);
+      bottomSpacerResizeObserverRef.current = observer;
+    }, [disconnectBottomSpacerResizeObserver, registerBottomSpacer, scrollController]);
+
+    const disconnectLastRenderedRowResizeObserver = useCallback(() => {
+      lastRenderedRowResizeObserverRef.current?.disconnect();
+      lastRenderedRowResizeObserverRef.current = null;
+      lastRenderedRowHeightRef.current = null;
+    }, []);
+
+    const handleLastRenderedRowRef = useCallback((element: HTMLDivElement | null) => {
+      disconnectLastRenderedRowResizeObserver();
+      if (!element || typeof ResizeObserver === "undefined") {
+        return;
+      }
+
+      const observer = new ResizeObserver((entries) => {
+        const entry = entries.find(({ target }) => target === element);
+        if (!entry) {
+          return;
+        }
+
+        const previousHeight = lastRenderedRowHeightRef.current;
+        const nextHeight = entry.contentRect.height;
+        lastRenderedRowHeightRef.current = nextHeight;
+        recordChatScrollTrace({
+          conversationId: conversationIdRef.current,
+          source: "layout",
+          event: "last-row-resize",
+          element: scrollerElRef.current,
+          detail: { previousHeight, nextHeight },
+        });
+        if (
+          previousHeight === null
+          || nextHeight > previousHeight + VISUAL_BOTTOM_EPSILON_PX
+        ) {
+          scrollController.notifyContentGrowth();
+        }
+      });
+      observer.observe(element);
+      lastRenderedRowResizeObserverRef.current = observer;
+    }, [disconnectLastRenderedRowResizeObserver, scrollController]);
+
+    const toggleThinkingGroup = useCallback((
+      groupKey: string,
+      toggleElement?: HTMLElement | null,
+    ) => {
+      scrollController.captureAnchor(toggleElement ?? undefined);
+      setThinkingIntentByGroupKey((current) => {
+        const next = new Map(current);
+        const isExpanded = current.get(groupKey) !== "collapsed";
+        next.set(groupKey, isExpanded ? "collapsed" : "expanded");
+        return next;
+      });
+    }, [scrollController]);
+
+    const toggleToolCallGroup = useCallback((groupKey: string, toggleElement?: HTMLElement | null) => {
+      if (isThinkingGroupKey(groupKey)) {
+        toggleThinkingGroup(groupKey, toggleElement);
+        return;
+      }
+      scrollController.captureAnchor(toggleElement ?? undefined);
+      setExpandedToolGroupKeys((current) => {
+        const next = new Set(current);
+        if (next.has(groupKey)) {
+          next.delete(groupKey);
+        } else {
+          next.add(groupKey);
+        }
+        return next;
+      });
+    }, [scrollController, toggleThinkingGroup]);
+
+    const isThinkingGroupExpanded = useCallback(
+      (groupKey: string) => thinkingIntentByGroupKey.get(groupKey) !== "collapsed",
+      [thinkingIntentByGroupKey],
+    );
 
     const cancelInitialPaintReadyJob = useCallback(() => {
       if (initialPaintReadyFrameRef.current !== null) {
@@ -1234,71 +1361,109 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     // Forward the ref to parent
     useImperativeHandle(ref, () => virtuosoRef.current!, []);
 
-    // Team system messages for inline display
-    const teamMsgSelector = useMemo(
-      () => contextKey ? selectTeamMessages(contextKey) : () => EMPTY_TEAM_MESSAGES,
-      [contextKey],
-    );
-    const teamMessages = useTeamStore(teamMsgSelector);
-
     const { data: attachmentsMap } = useMessageAttachments(messages, conversationId, {
       enabled: !shouldShowInitialPaintCover,
     });
     const normalizedStreamingContentBlocks = useMemo(
-      () => normalizeStreamingVerificationContentBlocks(streamingContentBlocks),
+      () => streamingContentBlocks ?? [],
       [streamingContentBlocks],
+    );
+    const activeRunIdSelector = useMemo(
+      () => selectActiveAgentRunId(contextKey ?? ""),
+      [contextKey],
+    );
+    const activeAgentRunId = useChatStore(activeRunIdSelector);
+    const runAttributionTimingByMessageId = useMemo(
+      () => buildRunAttributionTimingByMessageId(messages, activeAgentRunId),
+      [messages, activeAgentRunId],
+    );
+    const runAttributionRunIds = useMemo(
+      () => [...new Set([...runAttributionTimingByMessageId.values()].map(({ runId }) => runId))],
+      [runAttributionTimingByMessageId],
+    );
+    const {
+      data: runAttributions,
+      isError: isRunAttributionsError,
+      isPending: isRunAttributionsPending,
+      refetch: refetchRunAttributions,
+    } = useRunAttributions(runAttributionRunIds, {
+      enabled: !shouldShowInitialPaintCover,
+    });
+    const resolvedRunAttributionTimingByMessageId = useMemo(() => {
+      const resolved = new Map<string, ResolvedRunAttributionTiming>();
+      for (const [messageId, timing] of runAttributionTimingByMessageId) {
+        const attribution = runAttributions?.get(timing.runId) ?? null;
+        resolved.set(messageId, {
+          ...timing,
+          startedAt: attribution?.startedAt ?? timing.startedAt,
+          completedAt: attribution?.completedAt ?? timing.completedAt,
+          launchRole: attribution?.launchRole ?? timing.launchRole,
+          attribution,
+        });
+      }
+      return resolved;
+    }, [runAttributionTimingByMessageId, runAttributions]);
+    const retryRunAttributions = useCallback(() => {
+      void refetchRunAttributions();
+    }, [refetchRunAttributions]);
+    const renderRunAttribution = useCallback((messageId: string) => {
+      const timing = resolvedRunAttributionTimingByMessageId.get(messageId);
+      if (!timing) return null;
+      return (
+        <RunAttributionWidget
+          {...timing}
+          isAttributionPending={isRunAttributionsPending}
+          isAttributionError={isRunAttributionsError}
+          retryAttribution={retryRunAttributions}
+        />
+      );
+    }, [resolvedRunAttributionTimingByMessageId, isRunAttributionsPending, isRunAttributionsError, retryRunAttributions]);
+    const renderRunAttributionRow = useCallback((messageId: string, key?: string) => {
+      const widget = renderRunAttribution(messageId);
+      if (!widget) return null;
+      return (
+        <div key={key} className="px-3 w-full" style={contentContainerStyle}>
+          <ContentShell className={contentWidthClassName}>{widget}</ContentShell>
+        </div>
+      );
+    }, [renderRunAttribution, contentWidthClassName]);
+    const delegationProjection = useMemo(
+      () => projectDelegationTimelineMessages(messages, streamingTasks),
+      [messages, streamingTasks],
+    );
+    const persistedDelegateJobIds = useMemo(
+      () => persistedDelegationJobIds(delegationProjection.messages),
+      [delegationProjection.messages],
+    );
+    const shouldHidePersistedDelegationToolCall = useCallback(
+      (toolCall: ToolCall) => {
+        const jobId = delegationJobIdForToolCall(toolCall);
+        return shouldHideCompletedProjectOrchestrationToolCall(toolCall)
+          || (jobId != null && persistedDelegateJobIds.has(jobId))
+          || delegationProjection.liveAliases.has(toolCall.id);
+      },
+      [delegationProjection.liveAliases, persistedDelegateJobIds],
+    );
+    const shouldHidePersistedDelegationTask = useCallback(
+      (task: StreamingTask) =>
+        (task.delegatedJobId != null && persistedDelegateJobIds.has(task.delegatedJobId))
+        || delegationProjection.liveAliases.has(task.toolUseId),
+      [delegationProjection.liveAliases, persistedDelegateJobIds],
     );
     const liveTranscriptRows = useMemo(
       () => buildLiveTranscriptRows(
         normalizedStreamingContentBlocks,
         streamingTasks,
-        shouldHideCompletedProjectOrchestrationToolCall,
+        shouldHidePersistedDelegationToolCall,
+        shouldHidePersistedDelegationTask,
       ),
-      [normalizedStreamingContentBlocks, streamingTasks],
+      [
+        normalizedStreamingContentBlocks,
+        shouldHidePersistedDelegationTask,
+        shouldHidePersistedDelegationToolCall,
+        streamingTasks,
+      ],
     );
-
-    // Footer content hash — drives the streaming auto-scroll useEffect below.
-    // NOTE: Virtuoso's followOutput does NOT react to context/Footer changes,
-    // only to totalCount changes. We use autoscrollToBottom() imperatively instead.
-    const totalChildCalls = useMemo(() => {
-      if (!streamingTasks || streamingTasks.size === 0) return 0;
-      let count = 0;
-      for (const task of streamingTasks.values()) {
-        count += task.childToolCalls.length;
-      }
-      return count;
-    }, [streamingTasks]);
-    const totalChildToolResults = useMemo(() => {
-      if (!streamingTasks || streamingTasks.size === 0) return 0;
-      let count = 0;
-      for (const task of streamingTasks.values()) {
-        count += countCompletedToolCalls(task.childToolCalls);
-      }
-      return count;
-    }, [streamingTasks]);
-    const streamingTaskResultSignature = useMemo(
-      () => buildStreamingTaskResultSignature(streamingTasks),
-      [streamingTasks],
-    );
-
-    // Tracks running max of text length across all streaming blocks.
-    // State (not a ref) so changes propagate to footerContentHash and trigger autoscroll.
-    // Math.max(prev, total) ensures the bucket never decreases mid-stream — prevents
-    // bucket regression when tool_use blocks are inserted between text blocks.
-    const [cumulativeTextLength, setCumulativeTextLength] = useState(0);
-
-    // Recompute cumulative text length whenever streaming blocks change.
-    // Resets to 0 when streaming ends (no blocks) so the next stream starts fresh.
-    useEffect(() => {
-      if (!liveTranscriptRows.length) {
-        setCumulativeTextLength(0);
-        return;
-      }
-      const total = liveTranscriptRows.reduce(
-        (sum, row) => row.kind === "text" ? sum + row.text.length : sum, 0
-      );
-      setCumulativeTextLength(prev => Math.max(prev, total));
-    }, [liveTranscriptRows]);
 
     const hasRenderableStreamingBlocks = useMemo(
       () => liveTranscriptRows.length > 0,
@@ -1323,30 +1488,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       () => hasLiveTranscriptContent ? new Date().toISOString() : "",
       [hasLiveTranscriptContent],
     );
-
-    useEffect(() => {
-      hasFooterStreamingContentRef.current = hasFooterStreamingContent;
-    }, [hasFooterStreamingContent]);
-
-    const footerContentHash = useMemo(() => ({
-      toolCallCount: streamingToolCalls.length,
-      // G1 fix: results update existing blocks (count unchanged) — track result arrivals separately
-      toolResultCount: streamingToolCalls.filter(tc => tc.result != null || tc.error != null).length,
-      childCallCount: totalChildCalls,
-      childResultCount: totalChildToolResults,
-      taskCount: streamingTasks?.size ?? 0,
-      taskResultSignature: streamingTaskResultSignature,
-      liveRowCount: liveTranscriptRows.length,
-      textLengthBucket: Math.floor(cumulativeTextLength / TEXT_LENGTH_BUCKET_SIZE),
-    }), [
-      streamingToolCalls,
-      totalChildCalls,
-      totalChildToolResults,
-      streamingTasks?.size,
-      streamingTaskResultSignature,
-      liveTranscriptRows.length,
-      cumulativeTextLength,
-    ]);
 
     // Build timeline data for Virtuoso. Always wraps messages as TimelineItem
     // for consistent typing. When hook events exist, they're interleaved and sorted.
@@ -1379,34 +1520,18 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     const timeline = useMemo((): TimelineItem[] => {
       const items: TimelineItem[] = [];
 
-      const suppressedProviderMessage = suppressedProviderMessageId
-        ? messages.find((msg) => msg.id === suppressedProviderMessageId)
-        : null;
-      const suppressedTimelineParentId =
-        suppressedProviderMessage?.timelineSequence != null
-          ? suppressedProviderMessage.parentMessageId
-          : null;
       const filteredMessages = suppressedProviderMessageId
-        ? messages.filter((msg) => {
-          if (msg.id === suppressedProviderMessageId) {
-            return false;
-          }
-          return !(
-            suppressedTimelineParentId &&
-            msg.timelineSequence != null &&
-            msg.parentMessageId === suppressedTimelineParentId
-          );
-        })
+        ? messages.filter((msg) => msg.id !== suppressedProviderMessageId)
         : messages;
-
-      // Team filter: each tab (lead/teammate) loads its own conversation's messages via
-      // useConversation, so all messages in the data set belong to that conversation.
-      // No per-message filtering needed — the conversation switch handles the scoping.
-      const teamFilteredMessages = filteredMessages;
+      const filteredMessageIds = new Set(filteredMessages.map((message) => message.id));
+      const teamFilteredMessages = delegationProjection.messages.filter((message) =>
+        filteredMessageIds.has(message.id),
+      );
 
       const pushMessageItem = (
         msg: ChatMessageData,
         toolCallGroup?: ToolCallGroupMarker,
+        thinkingGroup?: PersistedThinkingGroupMarker,
       ) => {
         // Enrich message with attachments if available
         const attachments = attachmentsMap?.get(msg.id);
@@ -1419,17 +1544,43 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
           data: enrichedMsg,
           sortTime: new Date(msg.createdAt).getTime(),
           ...(toolCallGroup ? { toolCallGroup } : {}),
+          ...(thinkingGroup ? { thinkingGroup } : {}),
         });
       };
 
       for (let index = 0; index < teamFilteredMessages.length; index += 1) {
+        const thinkingGroup = collectPersistedThinkingRun(teamFilteredMessages, index);
+        const thinkingBlocks = thinkingGroup?.flatMap((message) =>
+          (message.contentBlocks ?? []).filter((block) => block.text?.trim()),
+        ) ?? [];
+        if (thinkingGroup && thinkingBlocks.length > 1) {
+          const key = persistedThinkingGroupKey(thinkingGroup);
+          thinkingGroup.forEach((msg, groupIndex) => {
+            pushMessageItem(msg, undefined, {
+              key,
+              blocks: thinkingBlocks,
+              position: groupIndex === 0 ? "toggle" : "covered",
+            });
+          });
+          index += thinkingGroup.length - 1;
+          continue;
+        }
         const toolCallGroup = collectToolCallGroupRun(teamFilteredMessages, index);
         if (toolCallGroup) {
           const key = toolCallGroupKey(toolCallGroup);
+          const groupedToolCalls = toolCallGroup.map(persistedTimelineToolCall);
+          const summary = summarizeToolActivity({
+            toolCalls: groupedToolCalls.filter(
+              (toolCall): toolCall is ToolCall => toolCall != null,
+            ),
+          });
           toolCallGroup.forEach((msg, groupIndex) => {
+            const toolCall = groupedToolCalls[groupIndex];
             pushMessageItem(msg, {
               key,
               count: toolCallGroup.length,
+              summary,
+              promoted: toolCall != null && isTaskToolCall(toolCall.name),
               position: groupIndex === 0 ? "toggle" : "covered",
             });
           });
@@ -1449,27 +1600,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         }
         for (const ev of activeHooks) {
           items.push({ kind: "hook", data: ev, sortTime: ev.timestamp });
-        }
-      }
-
-      // Interleave team system messages (filtered by teammate tab)
-      if (teamMessages.length > 0) {
-        const filteredTeamMsgs = teamFilter
-          ? teamMessages.filter((msg) => {
-              if (teamFilter === "lead") {
-                // Lead sees ALL team messages (lead is the orchestrator)
-                return true;
-              }
-              return msg.from === teamFilter || msg.to === teamFilter || msg.to === "*";
-            })
-          : teamMessages;
-
-        for (const msg of filteredTeamMsgs) {
-          items.push({
-            kind: "team_event",
-            data: msg,
-            sortTime: new Date(msg.timestamp).getTime(),
-          });
         }
       }
 
@@ -1493,12 +1623,12 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       }
 
       // Sort if we interleaved any non-message items
-      if (hasHookEvents || teamMessages.length > 0 || liveTranscriptRows.length > 0 || hasFooterStreamingContent) {
+      if (hasHookEvents || liveTranscriptRows.length > 0 || hasFooterStreamingContent) {
         items.sort((a, b) => a.sortTime - b.sortTime);
       }
 
       return items;
-    }, [messages, suppressedProviderMessageId, hookEvents, activeHooks, hasHookEvents, attachmentsMap, teamFilter, teamMessages, liveTranscriptRows, hasFooterStreamingContent]);
+    }, [messages, suppressedProviderMessageId, hookEvents, activeHooks, hasHookEvents, attachmentsMap, delegationProjection.messages, liveTranscriptRows, hasFooterStreamingContent]);
 
     const timelineSenderGroups = useMemo(() => {
       let previousGroupKey: string | null = null;
@@ -1527,30 +1657,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       return -1;
     }, [expandedToolGroupKeys, timeline]);
 
-    const activeLiveGrowthRowKeys = useMemo(() => {
-      const keys = new Set<string>();
-
-      for (let index = 0; index < timeline.length; index += 1) {
-        const item = timeline[index];
-        if (item?.kind === "streaming_row" && item.data.kind === "task") {
-          keys.add(item.data.key);
-        }
-      }
-
-      for (let index = timeline.length - 1; index >= 0; index -= 1) {
-        const item = timeline[index];
-        if (item?.kind !== "streaming_row" || !isVisibleTimelineItem(item, expandedToolGroupKeys)) {
-          continue;
-        }
-        if (index !== lastVisibleTimelineIndex || hasFooterStreamingContent) {
-          keys.add(item.data.key);
-        }
-        break;
-      }
-
-      return Array.from(keys);
-    }, [expandedToolGroupKeys, hasFooterStreamingContent, lastVisibleTimelineIndex, timeline]);
-
     const lastStreamingTimelineIndex = (() => {
       for (let index = timeline.length - 1; index >= 0; index -= 1) {
         const item = timeline[index];
@@ -1566,423 +1672,171 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         : DEFAULT_ASSISTANT_GROUP_STATE;
 
     const lastItemIndex = firstItemIndex + timeline.length - 1;
-
-    // Shared auto-scroll primitives. Virtuoso materializes/follows rows; the
-    // typed true-bottom pinning paths below own final DOM bottom alignment.
-    const {
-      messagesEndRef,
-      isAtBottom,
-      isAtBottomRef,
-      scrollToBottom,
-      handleAtBottomStateChange,
-      handleFollowOutput,
-    } = useChatAutoScroll({
-      messageCount: timeline.length,
-      disabled: !!scrollToTimestamp, // Disable auto-scroll in history mode
-      virtuosoRef, // Route scrollToBottom through Virtuoso scrollToIndex
-      indexOffset: firstItemIndex,
-      conversationId, // Reset isAtBottom when conversation changes
-    });
-
     useLayoutEffect(() => {
-      const anchor = pendingToolGroupScrollAnchorRef.current;
-      if (!anchor) {
-        return;
-      }
-      pendingToolGroupScrollAnchorRef.current = null;
-
-      const scroller = getToolGroupScrollContainer();
-      /* c8 ignore next 3 -- the scroller can detach before the layout adjustment runs. */
-      if (!scroller) {
-        return;
-      }
-
-      const nextAnchorElement = findToolCallGroupToggleElement(scroller, anchor.groupKey);
-      const nextAnchorTop = nextAnchorElement?.getBoundingClientRect().top ?? null;
-      let nextScrollTop = scroller.scrollTop;
-
-      if (anchor.wasVisuallyAtBottom) {
-        nextScrollTop = scroller.scrollHeight - scroller.clientHeight;
-      } else if (anchor.anchorTop !== null && nextAnchorTop !== null) {
-        nextScrollTop = anchor.scrollTop + (nextAnchorTop - anchor.anchorTop);
-      } else {
-        nextScrollTop = scroller.scrollHeight - scroller.clientHeight - anchor.bottomDelta;
-      }
-
-      const clampedScrollTop = clampScrollTop(scroller, nextScrollTop);
-      if (Math.abs(scroller.scrollTop - clampedScrollTop) > VISUAL_BOTTOM_EPSILON_PX) {
-        scroller.scrollTop = clampedScrollTop;
-      }
-
-      const visuallyAtBottom = isScrollElementVisuallyAtBottom(scroller);
-      if (visuallyAtBottom) {
-        isUserScrollingAwayFromBottomRef.current = false;
-      }
-      lastObservedScrollTopRef.current = scroller.scrollTop;
-      setIsVisuallyAtBottom(visuallyAtBottom);
-
-      const atBottom = getScrollBottomDelta(scroller) < AT_BOTTOM_THRESHOLD;
-      if (atBottom !== isAtBottomRef.current) {
-        handleAtBottomStateChange(atBottom);
-      }
-    }, [
-      expandedToolGroupKeys,
-      getToolGroupScrollContainer,
-      handleAtBottomStateChange,
-      isAtBottomRef,
-      setIsVisuallyAtBottom,
-    ]);
-
-    useEffect(() => {
-      scrollToTimestampRef.current = scrollToTimestamp;
-    }, [scrollToTimestamp]);
-
-    const isLastItemActuallyVisible = useCallback(() => {
-      if (isLastItemVisibleRef.current === false) {
-        return false;
-      }
-
-      const row = lastRenderedRowElRef.current;
-      const scroller = scrollerElRef.current;
-      if (!row || !scroller) {
-        return true;
-      }
-
-      const rowRect = row.getBoundingClientRect();
-      const scrollerRect = scroller.getBoundingClientRect();
-      const hasUsableRowRect =
-        rowRect.height > 0 || rowRect.top !== 0 || rowRect.bottom !== 0;
-      const hasUsableScrollerRect =
-        scrollerRect.height > 0 || scrollerRect.top !== 0 || scrollerRect.bottom !== 0;
-      if (!hasUsableRowRect || !hasUsableScrollerRect) {
-        return true;
-      }
-
-      return (
-        rowRect.bottom > scrollerRect.top + VISUAL_BOTTOM_EPSILON_PX &&
-        rowRect.top < scrollerRect.bottom - VISUAL_BOTTOM_EPSILON_PX
-      );
-    }, []);
-
-    const shouldKeepBottomPinned = useCallback(
-      (
-        activeScrollToTimestamp: string | null | undefined = scrollToTimestampRef.current,
-        { requireLastItemVisible = true }: { requireLastItemVisible?: boolean } = {},
-      ) => {
-        if (isUserScrollingAwayFromBottomRef.current) {
-          return false;
-        }
-        if (requireLastItemVisible && !isLastItemActuallyVisible()) {
-          return false;
-        }
-        if (!hasUserScrollInputRef.current) {
-          return !activeScrollToTimestamp;
-        }
-
-        return shouldStickToBottom({
-          scrollToTimestamp: activeScrollToTimestamp,
-          isAtBottom: isAtBottomRef.current,
-          isVisuallyAtBottom: isVisuallyAtBottomRef.current,
-        });
-      },
-      [isAtBottomRef, isLastItemActuallyVisible],
-    );
-
-    const handleGuardedFollowOutput = useCallback(
-      (atBottom: boolean) => {
-        if (!atBottom) {
-          return false as const;
-        }
-        if (
-          scrollToTimestampRef.current ||
-          isUserScrollingAwayFromBottomRef.current ||
-          !isLastItemActuallyVisible()
-        ) {
-          return false as const;
-        }
-        const suppressUntil = suppressVirtuosoFollowOutputUntilRef.current;
-        if (suppressUntil !== null) {
-          if (performance.now() <= suppressUntil) {
-            return false as const;
-          }
-          suppressVirtuosoFollowOutputUntilRef.current = null;
-        }
-        return handleFollowOutput(atBottom);
-      },
-      [handleFollowOutput, isLastItemActuallyVisible],
-    );
-
-    /**
-     * Chat transcript scroll ownership map:
-     * - `pinTrueBottom` is the only bottom writer that owns final visual position.
-     * - `scheduleBottomPin` retries that writer across virtualizer/layout settling.
-     * - tool-group expansion preserves an anchor and suppresses sticky resize pins.
-     * - history targeting is the only non-bottom transcript jump.
-     * - manual intent refs are changed only by the intent helpers below.
-     */
-    const markLastItemVisibleAtTrueBottom = useCallback(() => {
-      isLastItemVisibleRef.current = true;
-      setIsLastItemVisible(true);
-    }, []);
-
-    const materializeLatestItemForBottomPin = useCallback((behavior: ScrollBehavior) => {
-      if (timeline.length === 0) {
-        return;
-      }
-
-      const virtuosoBehavior = behavior === "smooth" ? "smooth" : "auto";
-      virtuosoRef.current?.scrollToIndex({
-        index: lastItemIndex,
-        align: "end",
-        behavior: virtuosoBehavior,
-      });
-    }, [lastItemIndex, timeline.length]);
-
-    const pinTrueBottom = useCallback(
-      (reason: ChatScrollBottomPinReason, behavior: ScrollBehavior = "auto") => {
-        materializeLatestItemForBottomPin(behavior);
-        const el = scrollerElRef.current;
-        if (!el) {
-          logger.debug("[ChatScroll] pinTrueBottom: no scroller ref yet, falling back to scrollToBottom hook", {
-            reason,
-          });
-          scrollToBottom();
-          isUserScrollingAwayFromBottomRef.current = false;
-          markLastItemVisibleAtTrueBottom();
-          setIsVisuallyAtBottom(true);
-          return;
-        }
-        const target = scrollElementToTrueBottom(el, behavior);
-        suppressVirtuosoFollowOutputUntilRef.current =
-          performance.now() + TRUE_BOTTOM_FOLLOW_OUTPUT_SUPPRESSION_MS;
-        isUserScrollingAwayFromBottomRef.current = false;
-        markLastItemVisibleAtTrueBottom();
-        logger.debug("[ChatScroll] pinTrueBottom", {
-          reason,
-          scrollHeight: el.scrollHeight,
-          clientHeight: el.clientHeight,
-          currentTop: el.scrollTop,
-          target,
-          behavior,
-        });
-        setIsVisuallyAtBottom(true);
-        // Eagerly mark atBottom=true so followOutput re-engages without waiting
-        // for scrollend.
-        if (!isAtBottomRef.current) {
-          handleAtBottomStateChange(true);
-        }
-      },
-      [
-        scrollToBottom,
-        markLastItemVisibleAtTrueBottom,
-        setIsVisuallyAtBottom,
-        handleAtBottomStateChange,
-        isAtBottomRef,
-        materializeLatestItemForBottomPin,
-      ]
-    );
-
-    const canRunScheduledBottomPin = useCallback(
-      (
-        scheduledAwayVersion: number,
-        { requireLastItemVisible = true }: { requireLastItemVisible?: boolean } = {},
-      ) => {
-        return shouldRunScheduledBottomPin({
-          currentAwayVersion: userScrollAwayVersionRef.current,
-          isLastItemVisible: isLastItemActuallyVisible(),
-          requireLastItemVisible,
-          scheduledAwayVersion,
-        });
-      },
-      [isLastItemActuallyVisible],
-    );
-
-    // After any layout-changing event that should land at bottom, run two
-    // passes — first on next frame (catches most cases), second after a short
-    // delay (catches late-arriving streaming footer height growth).
-    const scheduleBottomPin = useCallback(
-      (
-        reason: ChatScrollBottomPinReason,
-        behavior: ScrollBehavior = "auto",
-        {
-          immediate = false,
-          requireLastItemVisible = true,
-        }: ChatScrollPinOptions = {},
-      ) => {
-        logger.debug(`[ChatScroll] scheduleBottomPin: ${reason}`);
-        const scheduledAwayVersion = userScrollAwayVersionRef.current;
-        for (const rafId of bottomPinRafIdsRef.current) {
-          cancelAnimationFrame(rafId);
-        }
-        bottomPinRafIdsRef.current = [];
-        if (bottomPinTimeoutRef.current) {
-          clearTimeout(bottomPinTimeoutRef.current);
-          bottomPinTimeoutRef.current = null;
-        }
-
-        if (immediate && canRunScheduledBottomPin(scheduledAwayVersion, { requireLastItemVisible })) {
-          pinTrueBottom(reason, behavior);
-        }
-
-        const outerRafId = requestAnimationFrame(() => {
-          bottomPinRafIdsRef.current = bottomPinRafIdsRef.current.filter((id) => id !== outerRafId);
-
-          const innerRafId = requestAnimationFrame(() => {
-            bottomPinRafIdsRef.current = bottomPinRafIdsRef.current.filter((id) => id !== innerRafId);
-            if (!canRunScheduledBottomPin(scheduledAwayVersion, { requireLastItemVisible })) {
-              return;
-            }
-            pinTrueBottom(reason, behavior);
-            // Second pass catches footer that grows in the same tick.
-            bottomPinTimeoutRef.current = setTimeout(() => {
-              bottomPinTimeoutRef.current = null;
-              if (!canRunScheduledBottomPin(scheduledAwayVersion, { requireLastItemVisible })) {
-                return;
-              }
-              pinTrueBottom(reason, behavior);
-            }, 120);
-          });
-
-          bottomPinRafIdsRef.current.push(innerRafId);
-        });
-
-        bottomPinRafIdsRef.current.push(outerRafId);
-      },
-      [canRunScheduledBottomPin, pinTrueBottom]
-    );
-
-    const isToolGroupScrollAdjustmentActive = useCallback(() => {
-      const until = toolGroupScrollAdjustmentUntilRef.current;
-      if (until === null) {
-        return false;
-      }
-      if (performance.now() <= until) {
-        return true;
-      }
-      toolGroupScrollAdjustmentUntilRef.current = null;
-      return false;
-    }, []);
-
-    const scheduleStickyResizeBottomPin = useCallback(
-      (
-        reason: ChatScrollBottomPinReason,
-        rafRef: React.MutableRefObject<number | null>,
-        shouldRun?: () => boolean,
-      ) => {
-        if (isToolGroupScrollAdjustmentActive()) {
-          return;
-        }
-        if (rafRef.current !== null) {
-          cancelAnimationFrame(rafRef.current);
-        }
-        rafRef.current = requestAnimationFrame(() => {
-          rafRef.current = null;
-          if (
-            (shouldRun?.() ?? true) &&
-            shouldKeepBottomPinned(scrollToTimestampRef.current, {
-              requireLastItemVisible: false,
-            })
-          ) {
-            pinTrueBottom(reason, "auto");
-          }
-        });
-      },
-      [isToolGroupScrollAdjustmentActive, pinTrueBottom, shouldKeepBottomPinned],
-    );
-
-    const didTimelineAppendSinceLastEffect = useCallback(() => {
-      const previousLastItemIndex = previousLastItemIndexRef.current;
-      return previousLastItemIndex !== null && lastItemIndex > previousLastItemIndex;
+      lastItemIndexRef.current = lastItemIndex;
     }, [lastItemIndex]);
 
-    // Streaming auto-scroll — followOutput only fires on totalCount changes,
-    // NOT on Footer height growth. Pin to the true DOM bottom while the user is
-    // still inside the sticky bottom zone so footer/meta growth is included.
-    useEffect(() => {
-      if (scrollToTimestamp || !hasFooterStreamingContent) return;
-      // The initial streaming footer mount is a timeline count change; let
-      // Virtuoso/followOutput and the timeline-append bottom pin own it so we do
-      // not write a stale DOM scroll position before the virtualizer settles.
-      if (didTimelineAppendSinceLastEffect()) return;
-      if (
-        shouldKeepBottomPinned(scrollToTimestamp, {
-          requireLastItemVisible: false,
-        })
-      ) {
-        pinTrueBottom("streaming-footer-growth", "auto");
+    useLayoutEffect(() => {
+      scrollController.restoreAnchor();
+    }, [expandedToolGroupKeys, scrollController, thinkingIntentByGroupKey]);
+
+    const updateScrollableOverflow = useCallback((element: HTMLElement) => {
+      setHasScrollableOverflow(
+        element.scrollHeight > element.clientHeight + VISUAL_BOTTOM_EPSILON_PX,
+      );
+    }, [setHasScrollableOverflow]);
+
+    const handleTotalListHeightChanged = useCallback((height: number) => {
+      const previousHeight = previousTotalListHeightRef.current;
+      previousTotalListHeightRef.current = height;
+      const scroller = scrollerElRef.current;
+      recordChatScrollTrace({
+        conversationId: conversationIdRef.current,
+        source: "layout",
+        event: "virtuoso-total-height",
+        element: scroller,
+        detail: { previousHeight, height },
+      });
+      if (scroller) {
+        updateScrollableOverflow(scroller);
+      }
+      if (height > 0 && (previousHeight < 0 || height > previousHeight)) {
+        scrollController?.notifyContentGrowth();
+      } else {
+        scrollController?.isVisuallyAtBottom();
+      }
+    }, [scrollController, updateScrollableOverflow]);
+
+    const handleScrollerWheel = useCallback((event: WheelEvent) => {
+      const scroller = scrollerElRef.current;
+      scrollController?.notifyWheel(
+        event.deltaY,
+        Boolean(scroller && isNestedScrollableWheelTarget(event.target, scroller)),
+      );
+    }, [scrollController]);
+
+    const handleScrollerKeyDown = useCallback((event: KeyboardEvent) => {
+      if (isEditableOrInteractiveTarget(event.target)) return;
+      if (["PageUp", "Home", "ArrowUp"].includes(event.key)) {
+        scrollController?.notifyKeyScroll("up");
+      } else if (["PageDown", "End", "ArrowDown"].includes(event.key)) {
+        scrollController?.notifyKeyScroll("down");
+      }
+    }, [scrollController]);
+
+    const handleScrollerPointerDown = useCallback(() => {
+      scrollController?.notifyPointerDown();
+    }, [scrollController]);
+
+    const handleScrollerPointerUp = useCallback(() => {
+      scrollController?.notifyPointerUp();
+    }, [scrollController]);
+
+    const handleScrollReconcile = useCallback(() => {
+      const scroller = scrollerElRef.current;
+      if (scroller) {
+        updateScrollableOverflow(scroller);
+      }
+      scrollController?.notifyScroll();
+    }, [scrollController, updateScrollableOverflow]);
+
+    const disconnectScrollerResizeObserver = useCallback(() => {
+      scrollerResizeObserverRef.current?.disconnect();
+      scrollerResizeObserverRef.current = null;
+    }, []);
+
+    const handleScrollerRef = useCallback((el: Window | HTMLElement | null) => {
+      const previous = scrollerElRef.current;
+      if (previous && previous !== el) {
+        previous.removeEventListener("scroll", handleScrollReconcile);
+        previous.removeEventListener("wheel", handleScrollerWheel);
+        previous.removeEventListener("pointerdown", handleScrollerPointerDown);
+        previous.removeEventListener("pointerup", handleScrollerPointerUp);
+        previous.removeEventListener("pointercancel", handleScrollerPointerUp);
+        window.removeEventListener("pointerup", handleScrollerPointerUp);
+        window.removeEventListener("pointercancel", handleScrollerPointerUp);
+        previous.removeEventListener("keydown", handleScrollerKeyDown);
+        disconnectScrollerResizeObserver();
+        scrollController?.detach();
+      }
+      if (!(el instanceof HTMLElement)) {
+        scrollerElRef.current = null;
+        setHasScrollerElement(false);
+        setHasScrollableOverflow(false);
+        return;
+      }
+      if (previous === el) {
+        scrollController?.attach(el);
+        scrollController?.notifyScroll();
+        return;
+      }
+      scrollerElRef.current = el;
+      setHasScrollerElement(true);
+      updateScrollableOverflow(el);
+      el.addEventListener("scroll", handleScrollReconcile, { passive: true });
+      el.addEventListener("wheel", handleScrollerWheel, { passive: true });
+      el.addEventListener("pointerdown", handleScrollerPointerDown, { passive: true });
+      el.addEventListener("pointerup", handleScrollerPointerUp, { passive: true });
+      el.addEventListener("pointercancel", handleScrollerPointerUp, { passive: true });
+      window.addEventListener("pointerup", handleScrollerPointerUp, { passive: true });
+      window.addEventListener("pointercancel", handleScrollerPointerUp, { passive: true });
+      el.addEventListener("keydown", handleScrollerKeyDown);
+      scrollController?.attach(el);
+      if (typeof ResizeObserver !== "undefined") {
+        const observer = new ResizeObserver(() => {
+          updateScrollableOverflow(el);
+          recordChatScrollTrace({
+            conversationId: conversationIdRef.current,
+            source: "layout",
+            event: "scroller-resize",
+            element: el,
+          });
+          scrollController?.notifyContainerResize();
+        });
+        observer.observe(el);
+        scrollerResizeObserverRef.current = observer;
       }
     }, [
-      didTimelineAppendSinceLastEffect,
-      footerContentHash,
-      hasFooterStreamingContent,
-      scrollToTimestamp,
-      pinTrueBottom,
-      shouldKeepBottomPinned,
+      disconnectScrollerResizeObserver,
+      handleScrollerKeyDown,
+      handleScrollerPointerDown,
+      handleScrollerPointerUp,
+      handleScrollerWheel,
+      handleScrollReconcile,
+      scrollController,
+      setHasScrollerElement,
+      setHasScrollableOverflow,
+      updateScrollableOverflow,
+    ]);
+
+    useEffect(() => () => {
+      scrollController.detach();
+      disconnectBottomSpacerResizeObserver();
+      disconnectScrollerResizeObserver();
+      disconnectLastRenderedRowResizeObserver();
+    }, [
+      disconnectBottomSpacerResizeObserver,
+      disconnectLastRenderedRowResizeObserver,
+      disconnectScrollerResizeObserver,
+      scrollController,
     ]);
 
     useEffect(() => {
-      return () => {
-        for (const rafId of bottomPinRafIdsRef.current) {
-          cancelAnimationFrame(rafId);
-        }
-        bottomPinRafIdsRef.current = [];
-        if (bottomPinTimeoutRef.current) {
-          clearTimeout(bottomPinTimeoutRef.current);
-          bottomPinTimeoutRef.current = null;
-        }
-        if (totalListHeightRafRef.current !== null) {
-          cancelAnimationFrame(totalListHeightRafRef.current);
-          totalListHeightRafRef.current = null;
-        }
-        if (virtuosoAtBottomSettleRafRef.current !== null) {
-          cancelAnimationFrame(virtuosoAtBottomSettleRafRef.current);
-          virtuosoAtBottomSettleRafRef.current = null;
-        }
-        if (pendingNestedWheelClearRafRef.current !== null) {
-          cancelAnimationFrame(pendingNestedWheelClearRafRef.current);
-          pendingNestedWheelClearRafRef.current = null;
-        }
-      };
-    }, []);
-
-    useEffect(() => {
-      for (const rafId of bottomPinRafIdsRef.current) {
-        cancelAnimationFrame(rafId);
-      }
-      bottomPinRafIdsRef.current = [];
-      if (bottomPinTimeoutRef.current) {
-        clearTimeout(bottomPinTimeoutRef.current);
-        bottomPinTimeoutRef.current = null;
-      }
-      if (virtuosoAtBottomSettleRafRef.current !== null) {
-        cancelAnimationFrame(virtuosoAtBottomSettleRafRef.current);
-        virtuosoAtBottomSettleRafRef.current = null;
-      }
-      if (pendingNestedWheelClearRafRef.current !== null) {
-        cancelAnimationFrame(pendingNestedWheelClearRafRef.current);
-        pendingNestedWheelClearRafRef.current = null;
-      }
-      setIsVisuallyAtBottom(true);
-      setHasScrollableOverflow(false);
-      isLastItemVisibleRef.current = true;
-      setIsLastItemVisible(true);
-      lastObservedScrollTopRef.current = null;
-      bottomScrollIntentUntilRef.current = null;
-      suppressVirtuosoFollowOutputUntilRef.current = null;
-      isUserScrollingAwayFromBottomRef.current = false;
-      hasUserScrollInputRef.current = false;
-      lastManualWheelDeltaYRef.current = 0;
-      pendingNestedWheelDeltaYRef.current = 0;
-      nestedWheelParentScrollRef.current = false;
-      userScrollAwayVersionRef.current = 0;
-      bottomSettleAttemptCountRef.current = 0;
       previousTotalListHeightRef.current = -1;
       previousLastItemIndexRef.current = null;
-      lastUserMessageIdRef.current = conversationLastUserMessageIdRef.current;
-      agentRunningRef.current = conversationAgentRunningRef.current;
-    }, [conversationId, setIsVisuallyAtBottom]);
+      timestampJumpKeyRef.current = null;
+      setHasScrollableOverflow(false);
+      scrollController?.reset();
+    }, [conversationId, scrollController]);
 
-    // Trigger 1: new user message appended → always jump to true bottom.
+    useEffect(() => {
+      const previous = previousFirstItemIndexRef.current;
+      previousFirstItemIndexRef.current = { conversationId, index: firstItemIndex };
+      if (conversationId === previous.conversationId && firstItemIndex < previous.index) {
+        scrollController.notifyPrepend();
+      }
+    }, [conversationId, firstItemIndex, scrollController]);
+
     useEffect(() => {
       if (!lastUserMessageId) {
         lastUserMessageIdRef.current = null;
@@ -1990,765 +1844,27 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       }
       if (lastUserMessageIdRef.current === lastUserMessageId) return;
       lastUserMessageIdRef.current = lastUserMessageId;
-      scheduleBottomPin("new-user-message", "auto", {
-        immediate: true,
-        requireLastItemVisible: false,
-      });
-    }, [lastUserMessageId, scheduleBottomPin]);
+      scrollController.pinForUserIntent("new-user-message", "auto");
+    }, [lastUserMessageId, scrollController]);
 
-    // Trigger 2: streaming starts (transition false → true). User just-sent a
-    // message expects the agent's first tokens to appear at bottom of viewport.
     useEffect(() => {
       if (isAgentRunning && !agentRunningRef.current) {
-        scheduleBottomPin("streaming-started", "auto", {
-          immediate: true,
-          requireLastItemVisible: false,
-        });
+        scrollController?.requestPin("streaming-started", preferredScrollBehavior);
       }
       agentRunningRef.current = isAgentRunning;
-    }, [isAgentRunning, scheduleBottomPin]);
-
-    const hasRecentBottomScrollIntent = useCallback(
-      () =>
-        bottomScrollIntentUntilRef.current !== null &&
-        performance.now() <= bottomScrollIntentUntilRef.current,
-      [],
-    );
-
-    const canAttemptTrueBottomSettle = useCallback(
-      () =>
-        !scrollToTimestampRef.current &&
-        !isUserScrollingAwayFromBottomRef.current &&
-        isLastItemActuallyVisible() &&
-        hasRecentBottomScrollIntent() &&
-        bottomSettleAttemptCountRef.current < MAX_TRUE_BOTTOM_SETTLE_ATTEMPTS,
-      [hasRecentBottomScrollIntent, isLastItemActuallyVisible],
-    );
-
-    const recordTrueBottomSettleAttempt = useCallback(() => {
-      bottomSettleAttemptCountRef.current += 1;
-    }, []);
-
-    const markUserScrollingAwayFromBottom = useCallback((source: ChatScrollIntentSource) => {
-      isUserScrollingAwayFromBottomRef.current = true;
-      userScrollAwayVersionRef.current += 1;
-      logger.debug("[ChatScroll] user scroll-away intent", { source });
-    }, []);
-
-    const markBottomScrollIntent = useCallback((source: ChatScrollIntentSource) => {
-      bottomScrollIntentUntilRef.current =
-        performance.now() + BOTTOM_SCROLL_INTENT_WINDOW_MS;
-      isUserScrollingAwayFromBottomRef.current = false;
-      bottomSettleAttemptCountRef.current = 0;
-      logger.debug("[ChatScroll] bottom scroll intent", { source });
-    }, []);
-
-    const shouldRecoverScrollDriftToBottom = useCallback(
-      (bottomDelta: number, visuallyAtBottom: boolean) => {
-        return shouldRecoverScrollDriftToBottomState({
-          bottomDelta,
-          hasRecentBottomScrollIntent: hasRecentBottomScrollIntent(),
-          hasUserScrollInput: hasUserScrollInputRef.current,
-          isAtBottom: isAtBottomRef.current,
-          isUserScrollingAwayFromBottom: isUserScrollingAwayFromBottomRef.current,
-          isVisuallyAtBottom: visuallyAtBottom,
-          scrollToTimestamp: scrollToTimestampRef.current,
-          stickyBottomThresholdPx: AT_BOTTOM_THRESHOLD,
-          wasVisuallyAtBottom: isVisuallyAtBottomRef.current,
-        });
-      },
-      [hasRecentBottomScrollIntent, isAtBottomRef],
-    );
-
-    // rAF-throttled DOM reconciliation — keeps isAtBottom accurate when Virtuoso doesn't detect footer growth.
-    // Runs outside React render cycle (DOM event handler, not useEffect) — no render loop risk.
-    // rAF fires post-paint, so scrollHeight reads don't force layout recalc during React commit phase.
-    const reconcileScrollerBottomState = useCallback(() => {
-      const el = scrollerElRef.current;
-      if (!el) return;
-
-      const bottomDelta = getScrollBottomDelta(el);
-      const atBottom = bottomDelta < AT_BOTTOM_THRESHOLD;
-      const visuallyAtBottom = bottomDelta <= VISUAL_BOTTOM_EPSILON_PX;
-      const previousScrollTop = lastObservedScrollTopRef.current;
-      let manualWheelDeltaY = lastManualWheelDeltaYRef.current;
-      lastManualWheelDeltaYRef.current = 0;
-      const nestedWheelDroveParentScroll = nestedWheelParentScrollRef.current;
-      nestedWheelParentScrollRef.current = false;
-      const parentScrollChanged =
-        previousScrollTop !== null &&
-        Math.abs(el.scrollTop - previousScrollTop) > VISUAL_BOTTOM_EPSILON_PX;
-      if (nestedWheelDroveParentScroll && parentScrollChanged) {
-        hasUserScrollInputRef.current = true;
-      } else if (nestedWheelDroveParentScroll) {
-        manualWheelDeltaY = 0;
-      }
-      const isScrollingTowardBottom =
-        previousScrollTop === null || el.scrollTop >= previousScrollTop;
-      if (visuallyAtBottom) {
-        isUserScrollingAwayFromBottomRef.current = false;
-        markLastItemVisibleAtTrueBottom();
-      } else if (
-        shouldTreatScrollTopDecreaseAsUserAway({
-          hasUserScrollInput: hasUserScrollInputRef.current,
-          previousScrollTop,
-          currentScrollTop: el.scrollTop,
-          isVisuallyAtBottom: visuallyAtBottom,
-        })
-      ) {
-        markUserScrollingAwayFromBottom(
-          nestedWheelDroveParentScroll ? "nested-wheel-parent-scroll" : "manual-wheel",
-        );
-      }
-      lastObservedScrollTopRef.current = el.scrollTop;
-      setHasScrollableOverflow(
-        el.scrollHeight > el.clientHeight + VISUAL_BOTTOM_EPSILON_PX
-      );
-      if (
-        nestedWheelDroveParentScroll &&
-        getManualWheelScrollIntent({
-          bottomDelta,
-          deltaY: manualWheelDeltaY,
-          trueBottomSettleThresholdPx: TRUE_BOTTOM_SETTLE_THRESHOLD_PX,
-        }) === "away"
-      ) {
-        markUserScrollingAwayFromBottom("nested-wheel-parent-scroll");
-      }
-      if (
-        manualWheelDeltaY > 0 &&
-        atBottom &&
-        isScrollingTowardBottom
-      ) {
-        markBottomScrollIntent(
-          nestedWheelDroveParentScroll ? "nested-wheel-parent-scroll" : "manual-wheel",
-        );
-      }
-      if (manualWheelDeltaY > 0 && !atBottom && isScrollingTowardBottom) {
-        markUserScrollingAwayFromBottom(
-          nestedWheelDroveParentScroll ? "nested-wheel-parent-scroll" : "manual-wheel",
-        );
-      }
-      if (shouldRecoverScrollDriftToBottom(bottomDelta, visuallyAtBottom)) {
-        pinTrueBottom("scroll-drift-recovery", "auto");
-        return;
-      }
-      if (
-        canAttemptTrueBottomSettle() &&
-        atBottom &&
-        isScrollingTowardBottom &&
-        bottomDelta > VISUAL_BOTTOM_EPSILON_PX &&
-        bottomDelta <= TRUE_BOTTOM_SETTLE_THRESHOLD_PX
-      ) {
-        recordTrueBottomSettleAttempt();
-        pinTrueBottom("virtuoso-at-bottom-settle", "auto");
-        return;
-      }
-      setIsVisuallyAtBottom(visuallyAtBottom);
-
-      // Only reconcile if state disagrees — avoids unnecessary setState
-      if (atBottom !== isAtBottomRef.current) {
-        handleAtBottomStateChange(atBottom);
-      }
-    }, [
-      canAttemptTrueBottomSettle,
-      handleAtBottomStateChange,
-      isAtBottomRef,
-      markBottomScrollIntent,
-      markLastItemVisibleAtTrueBottom,
-      markUserScrollingAwayFromBottom,
-      recordTrueBottomSettleAttempt,
-      shouldRecoverScrollDriftToBottom,
-      pinTrueBottom,
-      setIsVisuallyAtBottom,
-    ]);
-
-    const markScrollerDirectionFromCurrentPosition = useCallback(() => {
-      const el = scrollerElRef.current;
-      if (!el) {
-        return;
-      }
-
-      const previousScrollTop = lastObservedScrollTopRef.current;
-      const visuallyAtBottom = isScrollElementVisuallyAtBottom(el);
-      if (visuallyAtBottom) {
-        isUserScrollingAwayFromBottomRef.current = false;
-        markLastItemVisibleAtTrueBottom();
-        setIsVisuallyAtBottom(true);
-        if (!isAtBottomRef.current) {
-          handleAtBottomStateChange(true);
-        }
-        return;
-      }
-      if (
-        shouldTreatScrollTopDecreaseAsUserAway({
-          hasUserScrollInput: hasUserScrollInputRef.current,
-          previousScrollTop,
-          currentScrollTop: el.scrollTop,
-          isVisuallyAtBottom: visuallyAtBottom,
-        })
-      ) {
-        markUserScrollingAwayFromBottom("manual-wheel");
-        return;
-      }
-    }, [
-      handleAtBottomStateChange,
-      isAtBottomRef,
-      markLastItemVisibleAtTrueBottom,
-      markUserScrollingAwayFromBottom,
-      setIsVisuallyAtBottom,
-    ]);
-
-    const markManualWheelScroll = useCallback(
-      (deltaY: number, el: HTMLElement | null) => {
-        hasUserScrollInputRef.current = true;
-        lastManualWheelDeltaYRef.current = deltaY;
-        const intent = getManualWheelScrollIntent({
-          bottomDelta: el ? getScrollBottomDelta(el) : null,
-          deltaY,
-          trueBottomSettleThresholdPx: TRUE_BOTTOM_SETTLE_THRESHOLD_PX,
-        });
-        if (intent === "bottom") {
-          markBottomScrollIntent("manual-wheel");
-          return;
-        }
-        if (intent === "away") {
-          markUserScrollingAwayFromBottom("manual-wheel");
-        }
-      },
-      [markBottomScrollIntent, markUserScrollingAwayFromBottom],
-    );
-
-    const handleScrollerWheel = useCallback(
-      (event: WheelEvent) => {
-        const scroller = scrollerElRef.current;
-        if (scroller && isNestedScrollableWheelTarget(event.target, scroller)) {
-          pendingNestedWheelDeltaYRef.current = event.deltaY;
-          if (pendingNestedWheelClearRafRef.current !== null) {
-            cancelAnimationFrame(pendingNestedWheelClearRafRef.current);
-          }
-          pendingNestedWheelClearRafRef.current = requestAnimationFrame(() => {
-            pendingNestedWheelClearRafRef.current = null;
-            pendingNestedWheelDeltaYRef.current = 0;
-          });
-          return;
-        }
-        markManualWheelScroll(event.deltaY, scroller);
-      },
-      [markManualWheelScroll],
-    );
-
-    const handleScrollerPointerDown = useCallback(
-      (event: PointerEvent) => {
-        hasUserScrollInputRef.current = true;
-        const target = event.currentTarget;
-        if (!(target instanceof HTMLElement)) {
-          return;
-        }
-
-        const rect = target.getBoundingClientRect();
-        if (event.clientX >= rect.right - 20) {
-          markBottomScrollIntent("scrollbar-pointer");
-        }
-      },
-      [markBottomScrollIntent],
-    );
-
-    const handleScrollReconcile = useCallback(() => {
-      if (pendingNestedWheelDeltaYRef.current !== 0) {
-        lastManualWheelDeltaYRef.current = pendingNestedWheelDeltaYRef.current;
-        pendingNestedWheelDeltaYRef.current = 0;
-        nestedWheelParentScrollRef.current = true;
-        if (pendingNestedWheelClearRafRef.current !== null) {
-          cancelAnimationFrame(pendingNestedWheelClearRafRef.current);
-          pendingNestedWheelClearRafRef.current = null;
-        }
-      }
-      markScrollerDirectionFromCurrentPosition();
-      if (reconcileRafRef.current) return; // Already scheduled — skip
-      reconcileRafRef.current = requestAnimationFrame(() => {
-        reconcileRafRef.current = null;
-        reconcileScrollerBottomState();
-      });
-    }, [markScrollerDirectionFromCurrentPosition, reconcileScrollerBottomState]);
-
-    const scheduleVirtuosoAtBottomSettle = useCallback(() => {
-      if (virtuosoAtBottomSettleRafRef.current !== null) {
-        cancelAnimationFrame(virtuosoAtBottomSettleRafRef.current);
-      }
-
-      virtuosoAtBottomSettleRafRef.current = requestAnimationFrame(() => {
-        virtuosoAtBottomSettleRafRef.current = null;
-        const el = scrollerElRef.current;
-        if (!el || !canAttemptTrueBottomSettle()) {
-          return;
-        }
-
-        if (getScrollBottomDelta(el) > VISUAL_BOTTOM_EPSILON_PX) {
-          recordTrueBottomSettleAttempt();
-          pinTrueBottom("virtuoso-at-bottom-settle", "auto");
-        }
-      });
-    }, [canAttemptTrueBottomSettle, recordTrueBottomSettleAttempt, pinTrueBottom]);
-
-    const handleVirtuosoAtBottomStateChange = useCallback(
-      (atBottom: boolean) => {
-        const el = scrollerElRef.current;
-        const visuallyAtBottom =
-          atBottom && el ? isScrollElementVisuallyAtBottom(el) : atBottom;
-        if (
-          !atBottom &&
-          el &&
-          shouldRecoverScrollDriftToBottom(getScrollBottomDelta(el), false)
-        ) {
-          pinTrueBottom("scroll-drift-recovery", "auto");
-          return;
-        }
-        if (visuallyAtBottom) {
-          markLastItemVisibleAtTrueBottom();
-        }
-        setIsVisuallyAtBottom(visuallyAtBottom);
-        handleAtBottomStateChange(atBottom);
-        if (!atBottom) {
-          return;
-        }
-        if (el && !visuallyAtBottom && canAttemptTrueBottomSettle()) {
-          scheduleVirtuosoAtBottomSettle();
-        }
-      },
-      [
-        canAttemptTrueBottomSettle,
-        handleAtBottomStateChange,
-        markLastItemVisibleAtTrueBottom,
-        scheduleVirtuosoAtBottomSettle,
-        pinTrueBottom,
-        shouldRecoverScrollDriftToBottom,
-        setIsVisuallyAtBottom,
-      ],
-    );
-
-    useEffect(() => {
-      if (scrollToTimestamp || !isAtBottom) {
-        return;
-      }
-      if (isVisuallyAtBottom) {
-        return;
-      }
-      if (virtuosoAtBottomSettleRafRef.current !== null) {
-        return;
-      }
-      if (!canAttemptTrueBottomSettle()) {
-        return;
-      }
-
-      scheduleVirtuosoAtBottomSettle();
-    }, [
-      canAttemptTrueBottomSettle,
-      isAtBottom,
-      isVisuallyAtBottom,
-      scheduleVirtuosoAtBottomSettle,
-      scrollToTimestamp,
-    ]);
-
-    const handleScrollerResize = useCallback(() => {
-      if (scrollerResizeRafRef.current !== null) {
-        cancelAnimationFrame(scrollerResizeRafRef.current);
-      }
-      scrollerResizeRafRef.current = requestAnimationFrame(() => {
-        scrollerResizeRafRef.current = null;
-        const el = scrollerElRef.current;
-        if (!el) {
-          return;
-        }
-        const bottomDelta = getScrollBottomDelta(el);
-        const visuallyAtBottom = bottomDelta <= VISUAL_BOTTOM_EPSILON_PX;
-        setHasScrollableOverflow(
-          el.scrollHeight > el.clientHeight + VISUAL_BOTTOM_EPSILON_PX
-        );
-        if (visuallyAtBottom) {
-          setIsVisuallyAtBottom(true);
-          if (!isAtBottomRef.current) {
-            handleAtBottomStateChange(true);
-          }
-          return;
-        }
-        if (
-          shouldKeepBottomPinned(scrollToTimestampRef.current, {
-            requireLastItemVisible: false,
-          })
-        ) {
-          scheduleBottomPin("scroller-resized", "auto", {
-            requireLastItemVisible: false,
-          });
-          return;
-        }
-        reconcileScrollerBottomState();
-      });
-    }, [
-      handleAtBottomStateChange,
-      isAtBottomRef,
-      reconcileScrollerBottomState,
-      scheduleBottomPin,
-      setIsVisuallyAtBottom,
-      shouldKeepBottomPinned,
-    ]);
-
-    useEffect(() => {
-      if (externalLayoutVersion <= 0) {
-        return;
-      }
-      if (!externalLayoutOwnedByVisibleRuntime) {
-        return;
-      }
-      if (
-        shouldKeepBottomPinned(scrollToTimestampRef.current, {
-          requireLastItemVisible: false,
-        })
-      ) {
-        scheduleBottomPin("external-layout-changed", "auto", {
-          requireLastItemVisible: false,
-        });
-        return;
-      }
-      handleScrollerResize();
-    }, [
-      externalLayoutOwnedByVisibleRuntime,
-      externalLayoutVersion,
-      handleScrollerResize,
-      scheduleBottomPin,
-      shouldKeepBottomPinned,
-    ]);
-
-    const handleTotalListHeightChanged = useCallback(
-      (height: number) => {
-        const previousHeight = previousTotalListHeightRef.current;
-        previousTotalListHeightRef.current = height;
-
-        if (previousHeight < 0) {
-          const el = scrollerElRef.current;
-          if (el && getScrollBottomDelta(el) > VISUAL_BOTTOM_EPSILON_PX) {
-            scheduleStickyResizeBottomPin("total-list-height-changed", totalListHeightRafRef);
-          }
-          return;
-        }
-
-        if (height <= previousHeight + VISUAL_BOTTOM_EPSILON_PX) {
-          return;
-        }
-
-        scheduleStickyResizeBottomPin("total-list-height-changed", totalListHeightRafRef);
-      },
-      [scheduleStickyResizeBottomPin],
-    );
-
-    const disconnectScrollerResizeObserver = useCallback(() => {
-      scrollerResizeObserverRef.current?.disconnect();
-      scrollerResizeObserverRef.current = null;
-      if (scrollerResizeRafRef.current !== null) {
-        cancelAnimationFrame(scrollerResizeRafRef.current);
-        scrollerResizeRafRef.current = null;
-      }
-    }, []);
-
-    // Attach passive scroll listener to Virtuoso's scroller element.
-    // Passed to Virtuoso's scrollerRef prop so we capture the actual scroll container.
-    const handleScrollerRef = useCallback((el: Window | HTMLElement | null) => {
-      if (!(el instanceof HTMLElement)) {
-        if (scrollerElRef.current) {
-          scrollerElRef.current.removeEventListener("scroll", handleScrollReconcile);
-          scrollerElRef.current.removeEventListener("wheel", handleScrollerWheel);
-          scrollerElRef.current.removeEventListener("pointerdown", handleScrollerPointerDown);
-          scrollerElRef.current = null;
-        }
-        lastObservedScrollTopRef.current = null;
-        setHasScrollerElement(false);
-        setHasScrollableOverflow(false);
-        disconnectScrollerResizeObserver();
-        return;
-      }
-      if (scrollerElRef.current && scrollerElRef.current !== el) {
-        scrollerElRef.current.removeEventListener("scroll", handleScrollReconcile);
-        scrollerElRef.current.removeEventListener("wheel", handleScrollerWheel);
-        scrollerElRef.current.removeEventListener("pointerdown", handleScrollerPointerDown);
-        disconnectScrollerResizeObserver();
-      }
-      if (scrollerElRef.current === el) {
-        reconcileScrollerBottomState();
-        return;
-      }
-      scrollerElRef.current = el;
-      lastObservedScrollTopRef.current = el.scrollTop;
-      setHasScrollerElement(true);
-      el.addEventListener("scroll", handleScrollReconcile, { passive: true });
-      el.addEventListener("wheel", handleScrollerWheel, { passive: true });
-      el.addEventListener("pointerdown", handleScrollerPointerDown, { passive: true });
-      reconcileScrollerBottomState();
-      if (typeof ResizeObserver !== "undefined") {
-        const observer = new ResizeObserver(handleScrollerResize);
-        observer.observe(el);
-        scrollerResizeObserverRef.current = observer;
-      }
-    }, [
-      disconnectScrollerResizeObserver,
-      handleScrollerPointerDown,
-      handleScrollerWheel,
-      handleScrollReconcile,
-      handleScrollerResize,
-      reconcileScrollerBottomState,
-    ]);
-
-    // Cleanup rAF and scroll listener on unmount
-    useEffect(() => {
-      return () => {
-        if (reconcileRafRef.current) cancelAnimationFrame(reconcileRafRef.current);
-        scrollerElRef.current?.removeEventListener("scroll", handleScrollReconcile);
-        disconnectScrollerResizeObserver();
-      };
-    }, [disconnectScrollerResizeObserver, handleScrollReconcile]);
-
-    // Stable callback ref for Footer element — creates ResizeObserver that detects footer height
-    // changes (G2 fix: card expansion during streaming). Empty deps ensures observer is never
-    // torn down due to prop changes.
-    //
-    // H1 analysis: Late tool results (after turn_completed) update finalized messages in the
-    // timeline, not the footer. Virtuoso's followOutput handles timeline height changes natively.
-    // The footer ResizeObserver only needs to cover the active streaming window, not post-stream updates.
-    const handleFooterRef = useCallback((el: HTMLDivElement | null) => {
-      // Cleanup old observer
-      if (footerObserverRef.current) {
-        footerObserverRef.current.disconnect();
-        footerObserverRef.current = null;
-      }
-      footerElRef.current = el;
-      footerMountedRef.current = false; // Reset mount flag on new element
-      if (!el) return;
-
-      footerObserverRef.current = new ResizeObserver((entries) => {
-        const newHeight = entries[0]?.contentRect.height ?? 0;
-
-        // H2 fix: Skip the very first observation after mount.
-        // The first observation captures baseline height without triggering scroll.
-        // Prevents jarring scroll jump when switching chat tabs or loading history.
-        if (!footerMountedRef.current) {
-          footerMountedRef.current = true;
-          footerPrevHeightRef.current = newHeight;
-          return;
-        }
-
-        // Only react to height increases, not width changes or shrinking
-        if (newHeight <= footerPrevHeightRef.current) {
-          footerPrevHeightRef.current = newHeight;
-          return;
-        }
-        footerPrevHeightRef.current = newHeight;
-
-        scheduleStickyResizeBottomPin(
-          "footer-resized",
-          footerResizeRafRef,
-          () => hasFooterStreamingContentRef.current,
-        );
-      });
-      footerObserverRef.current.observe(el);
-    }, [scheduleStickyResizeBottomPin]);
-
-    // Cleanup Footer ResizeObserver and rAF on unmount
-    useEffect(() => {
-      return () => {
-        footerObserverRef.current?.disconnect();
-        footerObserverRef.current = null;
-        if (footerResizeRafRef.current) {
-          cancelAnimationFrame(footerResizeRafRef.current);
-          footerResizeRafRef.current = null;
-        }
-      };
-    }, []);
-
-    const handleLastRenderedRowRef = useCallback((el: HTMLDivElement | null) => {
-      if (lastRenderedRowObserverRef.current) {
-        lastRenderedRowObserverRef.current.disconnect();
-        lastRenderedRowObserverRef.current = null;
-      }
-      lastRenderedRowElRef.current = el;
-      if (lastRenderedRowResizeRafRef.current !== null) {
-        cancelAnimationFrame(lastRenderedRowResizeRafRef.current);
-        lastRenderedRowResizeRafRef.current = null;
-      }
-      lastRenderedRowMountedRef.current = false;
-      lastRenderedRowPrevHeightRef.current = -1;
-
-      if (!el || typeof ResizeObserver === "undefined") {
-        return;
-      }
-
-      lastRenderedRowObserverRef.current = new ResizeObserver((entries) => {
-        const newHeight = entries[0]?.contentRect.height ?? 0;
-
-        if (!lastRenderedRowMountedRef.current) {
-          lastRenderedRowMountedRef.current = true;
-          lastRenderedRowPrevHeightRef.current = newHeight;
-          return;
-        }
-
-        if (newHeight <= lastRenderedRowPrevHeightRef.current) {
-          lastRenderedRowPrevHeightRef.current = newHeight;
-          return;
-        }
-        lastRenderedRowPrevHeightRef.current = newHeight;
-
-        scheduleStickyResizeBottomPin("last-row-resized", lastRenderedRowResizeRafRef);
-      });
-      lastRenderedRowObserverRef.current.observe(el);
-    }, [scheduleStickyResizeBottomPin]);
-
-    const disconnectActiveLiveGrowthRowObserver = useCallback((rowKey: string) => {
-      const record = activeLiveGrowthRowObserversRef.current.get(rowKey);
-      if (!record) {
-        activeLiveGrowthRowElementsRef.current.delete(rowKey);
-        return;
-      }
-      record.observer.disconnect();
-      if (record.rafRef.current !== null) {
-        cancelAnimationFrame(record.rafRef.current);
-      }
-      activeLiveGrowthRowObserversRef.current.delete(rowKey);
-      activeLiveGrowthRowElementsRef.current.delete(rowKey);
-    }, []);
-
-    const observeActiveLiveGrowthRow = useCallback((rowKey: string, el: HTMLDivElement) => {
-      if (activeLiveGrowthRowElementsRef.current.get(rowKey) === el) {
-        return;
-      }
-
-      disconnectActiveLiveGrowthRowObserver(rowKey);
-
-      if (typeof ResizeObserver === "undefined") {
-        activeLiveGrowthRowElementsRef.current.set(rowKey, el);
-        return;
-      }
-
-      const record: ActiveLiveGrowthRowObserverRecord = {
-        observer: null as unknown as ResizeObserver,
-        mounted: false,
-        prevHeight: -1,
-        rafRef: { current: null },
-      };
-      const observer = new ResizeObserver((entries) => {
-        const newHeight = entries[0]?.contentRect.height ?? 0;
-
-        if (!record.mounted) {
-          record.mounted = true;
-          record.prevHeight = newHeight;
-          return;
-        }
-
-        if (newHeight <= record.prevHeight) {
-          record.prevHeight = newHeight;
-          return;
-        }
-        record.prevHeight = newHeight;
-
-        scheduleStickyResizeBottomPin("active-live-row-resized", record.rafRef);
-      });
-
-      record.observer = observer;
-      activeLiveGrowthRowElementsRef.current.set(rowKey, el);
-      activeLiveGrowthRowObserversRef.current.set(rowKey, record);
-      observer.observe(el);
-    }, [disconnectActiveLiveGrowthRowObserver, scheduleStickyResizeBottomPin]);
-
-    useLayoutEffect(() => {
-      const activeKeys = new Set(activeLiveGrowthRowKeys);
-      for (const rowKey of Array.from(activeLiveGrowthRowObserversRef.current.keys())) {
-        if (!activeKeys.has(rowKey)) {
-          disconnectActiveLiveGrowthRowObserver(rowKey);
-        }
-      }
-
-      const root = transcriptRootRef.current;
-      if (!root || activeKeys.size === 0 || typeof ResizeObserver === "undefined") {
-        for (const rowKey of activeKeys) {
-          disconnectActiveLiveGrowthRowObserver(rowKey);
-        }
-        return;
-      }
-
-      const mountedKeys = new Set<string>();
-      root.querySelectorAll<HTMLDivElement>("[data-chat-live-row-key]").forEach((rowEl) => {
-        const rowKey = rowEl.dataset.chatLiveRowKey;
-        if (!rowKey || !activeKeys.has(rowKey)) {
-          return;
-        }
-        mountedKeys.add(rowKey);
-        observeActiveLiveGrowthRow(rowKey, rowEl);
-      });
-
-      for (const rowKey of activeKeys) {
-        if (!mountedKeys.has(rowKey)) {
-          disconnectActiveLiveGrowthRowObserver(rowKey);
-        }
-      }
-    }, [activeLiveGrowthRowKeys, disconnectActiveLiveGrowthRowObserver, observeActiveLiveGrowthRow]);
-
-    useEffect(() => {
-      const observerRecords = activeLiveGrowthRowObserversRef.current;
-      const observedElements = activeLiveGrowthRowElementsRef.current;
-      return () => {
-        for (const [rowKey, record] of Array.from(observerRecords.entries())) {
-          record.observer.disconnect();
-          if (record.rafRef.current !== null) {
-            cancelAnimationFrame(record.rafRef.current);
-          }
-          observerRecords.delete(rowKey);
-          observedElements.delete(rowKey);
-        }
-      };
-    }, []);
-
-    useEffect(() => {
-      const root = transcriptRootRef.current;
-      if (!root || typeof ResizeObserver === "undefined") {
-        return undefined;
-      }
-
-      transcriptRootMountedRef.current = false;
-      transcriptRootPrevHeightRef.current = -1;
-
-      const observer = new ResizeObserver((entries) => {
-        const newHeight = entries[0]?.contentRect.height ?? 0;
-
-        if (!transcriptRootMountedRef.current) {
-          transcriptRootMountedRef.current = true;
-          transcriptRootPrevHeightRef.current = newHeight;
-          return;
-        }
-
-        if (newHeight === transcriptRootPrevHeightRef.current) {
-          return;
-        }
-        transcriptRootPrevHeightRef.current = newHeight;
-
-        scheduleStickyResizeBottomPin("transcript-root-resized", transcriptRootResizeRafRef);
-      });
-      observer.observe(root);
-      transcriptRootResizeObserverRef.current = observer;
-
-      return () => {
-        observer.disconnect();
-        if (transcriptRootResizeObserverRef.current === observer) {
-          transcriptRootResizeObserverRef.current = null;
-        }
-        if (transcriptRootResizeRafRef.current !== null) {
-          cancelAnimationFrame(transcriptRootResizeRafRef.current);
-          transcriptRootResizeRafRef.current = null;
-        }
-        transcriptRootMountedRef.current = false;
-        transcriptRootPrevHeightRef.current = -1;
-      };
-    }, [scheduleStickyResizeBottomPin]);
+    }, [isAgentRunning, preferredScrollBehavior, scrollController]);
 
     // Scroll to specific timestamp for history mode (time-travel feature)
     // Finds the first message at or after the given timestamp and scrolls to it
     useEffect(() => {
-      if (!scrollToTimestamp || messages.length === 0) return;
+      if (!scrollToTimestamp) {
+        timestampJumpKeyRef.current = null;
+        return;
+      }
+      if (messages.length === 0) return;
+
+      const timestampJumpKey = `${conversationId}:${scrollToTimestamp}`;
+      if (timestampJumpKeyRef.current === timestampJumpKey) return;
 
       const targetTime = new Date(scrollToTimestamp).getTime();
       const targetIndex = messages.findIndex(
@@ -2756,114 +1872,57 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       );
 
       if (targetIndex >= 0) {
-        // Add a small delay to ensure Virtuoso is ready
-        const timeoutId = setTimeout(() => {
-          virtuosoRef.current?.scrollToIndex({
-            index: firstItemIndex + targetIndex,
-            align: "start",
-            behavior: preferredScrollBehavior,
-          });
-        }, MARKDOWN_RENDER_DELAY_MS);
-        return () => clearTimeout(timeoutId);
+        timestampJumpKeyRef.current = timestampJumpKey;
+        scrollController?.jumpToIndex(firstItemIndex + targetIndex);
       }
       return undefined;
-    }, [scrollToTimestamp, messages, firstItemIndex, preferredScrollBehavior]);
+    }, [conversationId, scrollController, scrollToTimestamp, messages, firstItemIndex]);
 
     // When filter clears (streaming/finalizing ends), keep sticky users pinned
     // through the finalized assistant reveal without pulling manual-away users.
     useEffect(() => {
-      if (scrollToTimestamp) return; // Don't auto-scroll in history mode
+      if (scrollToTimestamp) return;
       if (prevShouldFilterRef.current && !shouldFilterCurrentProviderMessage) {
-        if (
-          shouldKeepBottomPinned(scrollToTimestamp, {
-            requireLastItemVisible: false,
-          })
-        ) {
-          scheduleBottomPin("finalized-provider-message-revealed", "auto", {
-            requireLastItemVisible: false,
-          });
-        }
+        scrollController?.requestPin("finalized-provider-message-revealed", "auto");
       }
       prevShouldFilterRef.current = shouldFilterCurrentProviderMessage;
-    }, [
-      scheduleBottomPin,
-      shouldFilterCurrentProviderMessage,
-      shouldKeepBottomPinned,
-      scrollToTimestamp,
-    ]);
+    }, [scrollController, shouldFilterCurrentProviderMessage, scrollToTimestamp]);
 
     const startReachedHandler =
       hasOlderMessages && onLoadOlderMessages
         ? (_index: number) => {
+            scrollController?.notifyPrepend();
             void onLoadOlderMessages();
           }
         : null;
-    const shouldShowScrollToBottom = shouldShowScrollToBottomControl({
-      hasScrollerElement,
-      hasScrollableOverflow,
-      isAtBottom,
-      isLastItemVisible,
-      isVisuallyAtBottom,
-      scrollToTimestamp,
-      timelineLength: timeline.length,
-    });
+    const virtuosoStartReachedProps = startReachedHandler === null
+      ? {}
+      : { startReached: startReachedHandler };
+    const shouldShowScrollToBottom =
+      hasScrollerElement && hasScrollableOverflow && !isVisuallyAtBottom;
     const handleScrollToBottomClick = useCallback(() => {
-      markBottomScrollIntent("scroll-to-bottom-button");
-      pinTrueBottom("manual-scroll-to-bottom", preferredScrollBehavior);
-      scheduleBottomPin("manual-scroll-to-bottom", preferredScrollBehavior);
-    }, [markBottomScrollIntent, preferredScrollBehavior, scheduleBottomPin, pinTrueBottom]);
+      scrollController?.scrollToBottomClicked();
+    }, [scrollController]);
     const handleScrollToBottomWheel = useCallback(
       (event: React.WheelEvent<HTMLButtonElement>) => {
         if (!shouldShowScrollToBottom) {
           return;
         }
-        const el = scrollerElRef.current ?? (isTestEnv ? transcriptRootRef.current : null);
-        if (!el) {
-          return;
-        }
-
         event.preventDefault();
-        markManualWheelScroll(event.deltaY, el);
-        scrollElementByDelta(el, event.deltaX, event.deltaY);
-        if (
-          event.deltaY > 0 &&
-          getScrollBottomDelta(el) <= TRUE_BOTTOM_SETTLE_THRESHOLD_PX
-        ) {
-          markBottomScrollIntent("manual-wheel");
-        }
-        handleScrollReconcile();
+        scrollController?.notifyWheel(event.deltaY, false);
+        scrollController?.forwardWheel(event.deltaX, event.deltaY);
+        scrollController?.notifyScroll();
       },
-      [
-        handleScrollReconcile,
-        isTestEnv,
-        markBottomScrollIntent,
-        markManualWheelScroll,
-        shouldShowScrollToBottom,
-      ],
+      [scrollController, shouldShowScrollToBottom],
     );
 
     const handleRangeChanged = useCallback(
       (range: ListRange) => {
         if (timeline.length > 0 && range.endIndex >= range.startIndex) {
-          const wasLastItemVisible = isLastItemVisibleRef.current;
-          const nextIsLastItemVisible = range.endIndex >= lastItemIndex;
-          isLastItemVisibleRef.current = nextIsLastItemVisible;
-          setIsLastItemVisible(nextIsLastItemVisible);
           scheduleInitialPaintReadyCheck();
-          if (
-            nextIsLastItemVisible &&
-            wasLastItemVisible === false &&
-            !scrollToTimestampRef.current &&
-            !isUserScrollingAwayFromBottomRef.current
-          ) {
-            scheduleBottomPin("latest-item-range-rendered", "auto", {
-              immediate: true,
-              requireLastItemVisible: false,
-            });
-          }
         }
       },
-      [lastItemIndex, scheduleBottomPin, scheduleInitialPaintReadyCheck, timeline.length],
+      [scheduleInitialPaintReadyCheck, timeline.length],
     );
 
     useEffect(() => {
@@ -2872,113 +1931,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       }
       scheduleInitialPaintReadyCheck();
     }, [scheduleInitialPaintReadyCheck, shouldShowInitialPaintCover]);
-
-    // Initial load scroll — fires when conversation changes and timeline populates.
-    // Uses one-shot ResizeObserver on the scroller element to detect when virtual
-    // content has actually rendered, rather than a fixed-duration setTimeout guess.
-    // Falls back to MARKDOWN_RENDER_DELAY_MS if scrollerElRef not yet available.
-    useEffect(() => {
-      const targetScrollKey =
-        conversationId != null && timeline.length > 0
-          ? conversationId
-          : null;
-
-      if (!conversationId || !targetScrollKey || hasScrolledRef.current === targetScrollKey) {
-        return;
-      }
-
-      const verifyTimers: ReturnType<typeof setTimeout>[] = [];
-      const scheduledAwayVersion = userScrollAwayVersionRef.current;
-
-      const doScroll = () => {
-        if (hasScrolledRef.current === targetScrollKey) return;
-        if (
-          !canRunScheduledBottomPin(scheduledAwayVersion, {
-            requireLastItemVisible: false,
-          })
-        ) {
-          return;
-        }
-        virtuosoRef.current?.scrollToIndex({
-          index: lastItemIndex,
-          align: "end",
-          behavior: "auto",
-        });
-        scheduleBottomPin("initial-conversation-load", "auto", {
-          requireLastItemVisible: false,
-        });
-        hasScrolledRef.current = targetScrollKey;
-
-        // Content (markdown, code blocks, tool results) can keep rendering after
-        // the initial scroll. Verify we're actually at bottom and retry if not.
-        const verifyAtBottom = () => {
-          if (
-            !canRunScheduledBottomPin(scheduledAwayVersion, {
-              requireLastItemVisible: false,
-            })
-          ) {
-            return;
-          }
-          const el = scrollerElRef.current;
-          if (!el) return;
-          const delta = el.scrollHeight - el.clientHeight - el.scrollTop;
-          if (delta > VISUAL_BOTTOM_EPSILON_PX) {
-            pinTrueBottom("initial-conversation-load", "auto");
-          }
-        };
-        verifyTimers.push(
-          setTimeout(verifyAtBottom, 500),
-          setTimeout(verifyAtBottom, 1000),
-        );
-      };
-
-      const scroller = scrollerElRef.current;
-      if (!scroller) {
-        // Fallback: scroller not yet mounted, use fixed delay
-        const timer = setTimeout(doScroll, MARKDOWN_RENDER_DELAY_MS);
-        return () => {
-          clearTimeout(timer);
-          verifyTimers.forEach(clearTimeout);
-        };
-      }
-
-      let debounceTimer: ReturnType<typeof setTimeout>;
-      const observer = new ResizeObserver(() => {
-        clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(() => {
-          doScroll();
-          observer.disconnect();
-        }, 200);
-      });
-
-      observer.observe(scroller);
-
-      // ResizeObserver can miss the initial virtual-list settlement when the
-      // scroller element itself does not resize. Keep the old settled-resize
-      // path, but also run the first bottom pin on the normal markdown delay.
-      const fallbackTimer = setTimeout(doScroll, MARKDOWN_RENDER_DELAY_MS);
-
-      // Safety timeout: 3s max — disconnect + force scroll if debounce never settles
-      const safetyTimer = setTimeout(() => {
-        observer.disconnect();
-        doScroll();
-      }, 3000);
-
-      return () => {
-        observer.disconnect();
-        clearTimeout(debounceTimer);
-        clearTimeout(fallbackTimer);
-        clearTimeout(safetyTimer);
-        verifyTimers.forEach(clearTimeout);
-      };
-    }, [
-      canRunScheduledBottomPin,
-      conversationId,
-      lastItemIndex,
-      scheduleBottomPin,
-      pinTrueBottom,
-      timeline.length,
-    ]);
 
     useEffect(() => {
       const previousLastItemIndex = previousLastItemIndexRef.current;
@@ -2993,17 +1945,8 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         return;
       }
 
-      if (
-        shouldKeepBottomPinned(scrollToTimestamp, {
-          requireLastItemVisible: false,
-        })
-      ) {
-        scheduleBottomPin("new-timeline-item-appended", "auto", {
-          immediate: true,
-          requireLastItemVisible: false,
-        });
-      }
-    }, [lastItemIndex, scheduleBottomPin, scrollToTimestamp, shouldKeepBottomPinned, timeline.length]);
+      scrollController?.requestPin("new-timeline-item-appended", preferredScrollBehavior);
+    }, [lastItemIndex, preferredScrollBehavior, scrollController, scrollToTimestamp, timeline.length]);
 
     const renderStreamingToolCallBlock = useCallback(
       (
@@ -3052,6 +1995,9 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         : null;
       const isFallbackToolGroupExpanded =
         fallbackToolGroupKey != null && expandedToolGroupKeys.has(fallbackToolGroupKey);
+      const fallbackSummary = summarizeToolActivity({
+        toolCalls: visibleFallbackToolCalls.map(({ toolCall }) => toolCall),
+      });
       return (
         <>
           {shouldRenderStreamingContentGroup && (
@@ -3074,9 +2020,9 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
               {fallbackToolGroupKey != null && (
                 <>
                   <div className="mb-2">
-                    <ToolCallGroupToggle
+                    <ToolActivityGroupToggle
                       groupKey={fallbackToolGroupKey}
-                      count={visibleFallbackToolCalls.length}
+                      summary={fallbackSummary}
                       isExpanded={isFallbackToolGroupExpanded}
                       onToggle={(event) => toggleToolCallGroup(fallbackToolGroupKey, event.currentTarget)}
                     />
@@ -3096,7 +2042,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
             </MessageItem>
           )}
           {shouldShowActiveTypingIndicator && (
-            <TypingIndicator label={activeTypingIndicatorLabel} />
+            <TypingIndicator label={activeTypingIndicatorLabel} storeKey={contextKey} />
           )}
         </>
       );
@@ -3108,6 +2054,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       providerSessionId,
       streamingSenderGroupState,
       activeTypingIndicatorLabel,
+      contextKey,
       shouldShowActiveTypingIndicator,
       shouldShowFooterFallback,
       streamingMessageCreatedAt,
@@ -3136,32 +2083,22 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
           </ContentShell>
         </div>
       ),
+      Footer: () => (
+        <div
+          ref={handleBottomSpacerRef}
+          data-testid="chat-transcript-bottom-spacer"
+          aria-hidden
+          style={{ height: 0, flexShrink: 0 }}
+        />
+      ),
     }), [
       contentWidthClassName,
       failedRun, onDismissFailedRun,
+      handleBottomSpacerRef,
       topInsetClassName,
     ]);
 
-    // Detect when a teammate tab filter produces zero timeline items but messages exist.
-    const isFilteredTabEmpty = teamFilter && teamFilter !== "lead" && timeline.length === 0 && messages.length > 0;
-    const emptyTabLabel = isFilteredTabEmpty
-      ? (teamFilter === "lead" ? "Lead" : teamFilter)
-      : null;
-
-    // Helper to look up teammate info from team store
-    const getTeammateInfo = useCallback((sender: string | null | undefined) => {
-      if (!sender || !contextKey) {
-        return { teammateName: null, teammateColor: null };
-      }
-      const selector = selectTeammateByName(contextKey, sender);
-      const teammate = selector(useTeamStore.getState());
-      return {
-        teammateName: teammate?.name ?? null,
-        teammateColor: teammate?.color ?? null,
-      };
-    }, [contextKey]);
-
-    // Memoize itemContent — lookup teammate info for team mode messages
+    // Memoize itemContent for virtualized rendering.
     const renderItem = useCallback((index: number, item: TimelineItem) => {
       const timelineIndex = index - firstItemIndex;
       const isLastVisibleTimelineItem = timelineIndex === lastVisibleTimelineIndex;
@@ -3170,21 +2107,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
           <div className="px-3 w-full" style={contentContainerStyle}>
             <ContentShell className={contentWidthClassName}>
               <HookEventMessage event={item.data} />
-            </ContentShell>
-          </div>
-        );
-      }
-      if (item.kind === "team_event") {
-        const teamMsg = item.data;
-        return (
-          <div className="px-3 w-full" style={contentContainerStyle}>
-            <ContentShell className={contentWidthClassName}>
-              <TeamMessageBubble
-                from={teamMsg.from}
-                to={teamMsg.to}
-                content={teamMsg.content}
-                timestamp={teamMsg.timestamp}
-              />
             </ContentShell>
           </div>
         );
@@ -3200,6 +2122,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
             providerHarness={providerHarness}
             providerSessionId={providerSessionId}
             expandedToolGroupKeys={expandedToolGroupKeys}
+            isThinkingGroupExpanded={isThinkingGroupExpanded}
             contentWidthClassName={contentWidthClassName}
             rowRef={isLastVisibleTimelineItem ? handleLastRenderedRowRef : undefined}
             onToggleToolCallGroup={toggleToolCallGroup}
@@ -3212,25 +2135,50 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
           return null;
         }
         return (
-          <div ref={handleFooterRef} className="px-3 pb-3 w-full relative" style={contentContainerStyle}>
+          <div
+            ref={isLastVisibleTimelineItem ? handleLastRenderedRowRef : undefined}
+            className="px-3 pb-3 w-full relative"
+            data-chat-last-rendered-row={isLastVisibleTimelineItem ? "true" : undefined}
+            style={contentContainerStyle}
+          >
             <ContentShell className={contentWidthClassName}>
               {footerContent}
             </ContentShell>
           </div>
         );
       }
-      if (isCollapsedToolCallGroupCoveredItem(item, expandedToolGroupKeys)) {
-        return null;
+      if (
+        isCollapsedToolCallGroupCoveredItem(item, expandedToolGroupKeys)
+        || isPersistedThinkingGroupCoveredItem(item)
+      ) {
+        return renderRunAttributionRow(item.data.id);
       }
       const msg = item.data;
       const senderGroupState =
         timelineSenderGroups[timelineIndex] ?? DEFAULT_ASSISTANT_GROUP_STATE;
       const toolCallGroup = item.toolCallGroup;
+      const thinkingGroup = item.thinkingGroup;
       const isExpandedToolCallGroup =
         toolCallGroup != null && expandedToolGroupKeys.has(toolCallGroup.key);
-      const { teammateName, teammateColor } = isProviderRole(msg.role)
-        ? getTeammateInfo(msg.sender)
-        : { teammateName: null, teammateColor: null };
+      const isExpandedThinkingGroup =
+        thinkingGroup != null && isThinkingGroupExpanded(thinkingGroup.key);
+      if (thinkingGroup?.position === "toggle") {
+        return (
+          <>
+            <PersistedThinkingGroupToggleRow
+              msg={msg}
+              marker={thinkingGroup}
+              senderGroupState={senderGroupState}
+              isLastInList={isLastVisibleTimelineItem}
+              isExpanded={isExpandedThinkingGroup}
+              onToggle={(event) => toggleToolCallGroup(thinkingGroup.key, event.currentTarget)}
+              contentWidthClassName={contentWidthClassName}
+              rowRef={isLastVisibleTimelineItem ? handleLastRenderedRowRef : undefined}
+            />
+            {renderRunAttributionRow(msg.id)}
+          </>
+        );
+      }
       const groupToggleRow = toolCallGroup?.position === "toggle"
         ? (
           <ToolCallGroupToggleRow
@@ -3239,10 +2187,11 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
             senderGroupState={senderGroupState}
             isLastInList={isLastVisibleTimelineItem && !isExpandedToolCallGroup}
             isExpanded={isExpandedToolCallGroup}
-            teammateName={teammateName}
-            teammateColor={teammateColor}
             onToggle={(event) => toggleToolCallGroup(toolCallGroup.key, event.currentTarget)}
             contentWidthClassName={contentWidthClassName}
+            agentRun={agentRun}
+            personaRuns={personaRuns}
+            agentPersonasEnabled={agentPersonasEnabled}
             rowRef={
               isLastVisibleTimelineItem && !isExpandedToolCallGroup
                 ? handleLastRenderedRowRef
@@ -3252,24 +2201,16 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         )
         : null;
 
-      if (groupToggleRow && !isExpandedToolCallGroup) {
-        return groupToggleRow;
-      }
-
-      const messageMetadata = parseMessageMetadata(msg.metadata);
-      const systemCard = renderSystemCard(
-        messageMetadata,
-        msg.content,
-        msg.createdAt,
-      );
-      if (systemCard) {
+      if (groupToggleRow && !isExpandedToolCallGroup && !toolCallGroup?.promoted) {
         return (
-          <div className="px-3 w-full" style={contentContainerStyle}>
-            <ContentShell className={contentWidthClassName}>{systemCard}</ContentShell>
-          </div>
+          <>
+            {groupToggleRow}
+            {renderRunAttributionRow(msg.id)}
+          </>
         );
       }
 
+      const messageMetadata = parseMessageMetadata(msg.metadata);
       const composerReferences = parseComposerReferencesFromMetadata(messageMetadata);
       const effectiveSenderGroupState =
         toolCallGroup?.position === "toggle" && isExpandedToolCallGroup
@@ -3292,10 +2233,11 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
               toolCalls={msg.toolCalls ?? null}
               contentBlocks={msg.contentBlocks ?? null}
               groupContentBlockToolCalls={toolCallGroup == null}
+              contentThinkingGroupKeyPrefix={`content-thinking-message:${msg.id}`}
+              isContentThinkingGroupExpanded={isThinkingGroupExpanded}
+              onToggleContentThinkingGroup={toggleThinkingGroup}
               {...(msg.attachments && { attachments: msg.attachments })}
               {...(composerReferences ? { composerReferences } : {})}
-              teammateName={teammateName}
-              teammateColor={teammateColor}
               providerHarness={msg.providerHarness}
               providerSessionId={msg.providerSessionId}
               upstreamProvider={msg.upstreamProvider}
@@ -3309,10 +2251,17 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
               cacheCreationTokens={msg.cacheCreationTokens}
               cacheReadTokens={msg.cacheReadTokens}
               estimatedUsd={msg.estimatedUsd}
+              {...personaRunBadgeProps(
+                attributedRunForId(agentRun, personaRuns, msg.runId),
+                agentPersonasEnabled &&
+                  effectiveSenderGroupState.showSenderHeader,
+                msg.runId,
+              )}
               showAssistantIcon={effectiveSenderGroupState.showSenderHeader}
               reserveAssistantIconSpace={effectiveSenderGroupState.reserveAssistantGutter}
               showProviderMeta={effectiveSenderGroupState.showSenderHeader}
             />
+            {renderRunAttribution(msg.id)}
           </ContentShell>
         </div>
       );
@@ -3324,20 +2273,25 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       ) : messageRow;
     }, [
       contentWidthClassName,
+      agentPersonasEnabled,
+      agentRun,
+      personaRuns,
       expandedToolGroupKeys,
+      isThinkingGroupExpanded,
       firstItemIndex,
       footerContent,
-      getTeammateInfo,
-      handleFooterRef,
       handleLastRenderedRowRef,
       lastVisibleTimelineIndex,
       providerHarness,
       providerSessionId,
+      renderRunAttribution,
+      renderRunAttributionRow,
       renderStreamingToolCallBlock,
       streamingMessageCreatedAt,
       streamingTasks,
       timelineSenderGroups,
       toggleToolCallGroup,
+      toggleThinkingGroup,
     ]);
 
     if (isTestEnv) {
@@ -3354,13 +2308,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
               testId="chat-transcript-settling-placeholders"
               ariaHidden
             />
-          )}
-          {isFilteredTabEmpty && (
-            <div className="flex-1 flex items-center justify-center h-full" data-testid="teammate-tab-empty">
-              <span className="text-sm" style={{ color: "var(--text-muted)" }}>
-                No messages from {emptyTabLabel} yet
-              </span>
-            </div>
           )}
           <div
             className={cn("px-3 w-full", topInsetClassName ?? "pt-3")}
@@ -3386,21 +2333,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
                 </div>
               );
             }
-            if (item.kind === "team_event") {
-              const teamMsg = item.data;
-              return (
-                <div key={`team-${teamMsg.id}`} className="px-3 w-full" style={contentContainerStyle}>
-                  <ContentShell className={contentWidthClassName}>
-                    <TeamMessageBubble
-                      from={teamMsg.from}
-                      to={teamMsg.to}
-                      content={teamMsg.content}
-                      timestamp={teamMsg.timestamp}
-                    />
-                  </ContentShell>
-                </div>
-              );
-            }
             if (item.kind === "streaming_row") {
               return (
                 <LiveTranscriptRowItem
@@ -3413,6 +2345,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
                   providerHarness={providerHarness}
                   providerSessionId={providerSessionId}
                   expandedToolGroupKeys={expandedToolGroupKeys}
+                  isThinkingGroupExpanded={isThinkingGroupExpanded}
                   contentWidthClassName={contentWidthClassName}
                   rowRef={index === lastVisibleTimelineIndex ? handleLastRenderedRowRef : undefined}
                   onToggleToolCallGroup={toggleToolCallGroup}
@@ -3425,67 +2358,78 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
                 return null;
               }
               return (
-                <div key="streaming-live" ref={handleFooterRef} className="px-3 pb-3 w-full relative" style={contentContainerStyle}>
+                <div
+                  key="streaming-live"
+                  ref={index === lastVisibleTimelineIndex ? handleLastRenderedRowRef : undefined}
+                  className="px-3 pb-3 w-full relative"
+                  data-chat-last-rendered-row={index === lastVisibleTimelineIndex ? "true" : undefined}
+                  style={contentContainerStyle}
+                >
                   <ContentShell className={contentWidthClassName}>
                     {footerContent}
-                    <div ref={messagesEndRef} />
                   </ContentShell>
                 </div>
               );
             }
-            if (isCollapsedToolCallGroupCoveredItem(item, expandedToolGroupKeys)) {
-              return null;
+            if (
+              isCollapsedToolCallGroupCoveredItem(item, expandedToolGroupKeys)
+              || isPersistedThinkingGroupCoveredItem(item)
+            ) {
+              return renderRunAttributionRow(item.data.id, `run-attribution-${item.data.id}`);
             }
             const msg = item.data;
             const senderGroupState =
               timelineSenderGroups[index] ?? DEFAULT_ASSISTANT_GROUP_STATE;
             const toolCallGroup = item.toolCallGroup;
+            const thinkingGroup = item.thinkingGroup;
             const isExpandedToolCallGroup =
               toolCallGroup != null && expandedToolGroupKeys.has(toolCallGroup.key);
             const isLastVisibleTimelineItem = index === lastVisibleTimelineIndex;
-            const { teammateName, teammateColor } = isProviderRole(msg.role)
-              ? getTeammateInfo(msg.sender)
-              : { teammateName: null, teammateColor: null };
+            const isExpandedThinkingGroup =
+              thinkingGroup != null && isThinkingGroupExpanded(thinkingGroup.key);
+            if (thinkingGroup?.position === "toggle") {
+              return (
+                <React.Fragment key={`persisted-thinking-group-${thinkingGroup.key}`}>
+                  <PersistedThinkingGroupToggleRow
+                    msg={msg}
+                    marker={thinkingGroup}
+                    senderGroupState={senderGroupState}
+                    isLastInList={isLastVisibleTimelineItem}
+                    isExpanded={isExpandedThinkingGroup}
+                    onToggle={(event) => toggleToolCallGroup(thinkingGroup.key, event.currentTarget)}
+                    contentWidthClassName={contentWidthClassName}
+                  />
+                  {renderRunAttributionRow(msg.id)}
+                </React.Fragment>
+              );
+            }
             const groupToggleRow = toolCallGroup?.position === "toggle"
               ? (
                 <ToolCallGroupToggleRow
-                  key={`tool-call-group-${toolCallGroup.key}`}
                   msg={msg}
                   marker={toolCallGroup}
                   senderGroupState={senderGroupState}
                   isLastInList={isLastVisibleTimelineItem && !isExpandedToolCallGroup}
                   isExpanded={isExpandedToolCallGroup}
-                  teammateName={teammateName}
-                  teammateColor={teammateColor}
                   onToggle={(event) => toggleToolCallGroup(toolCallGroup.key, event.currentTarget)}
                   contentWidthClassName={contentWidthClassName}
-                  rowRef={
-                    isLastVisibleTimelineItem && !isExpandedToolCallGroup
-                      ? handleLastRenderedRowRef
-                      : undefined
-                  }
+                  agentRun={agentRun}
+                  personaRuns={personaRuns}
+                  agentPersonasEnabled={agentPersonasEnabled}
                 />
               )
               : null;
 
-            if (groupToggleRow && !isExpandedToolCallGroup) {
-              return groupToggleRow;
-            }
-
-            const messageMetadata = parseMessageMetadata(msg.metadata);
-            const systemCard = renderSystemCard(
-              messageMetadata,
-              msg.content,
-              msg.createdAt,
-            );
-            if (systemCard) {
+            if (groupToggleRow && !isExpandedToolCallGroup && !toolCallGroup?.promoted) {
               return (
-                <div key={`message-${msg.id}`} className="px-3 w-full" style={contentContainerStyle}>
-                  <ContentShell className={contentWidthClassName}>{systemCard}</ContentShell>
-                </div>
+                <React.Fragment key={`tool-call-group-${toolCallGroup?.key ?? msg.id}`}>
+                  {groupToggleRow}
+                  {renderRunAttributionRow(msg.id)}
+                </React.Fragment>
               );
             }
 
+            const messageMetadata = parseMessageMetadata(msg.metadata);
             const composerReferences = parseComposerReferencesFromMetadata(messageMetadata);
             const effectiveSenderGroupState =
               toolCallGroup?.position === "toggle" && isExpandedToolCallGroup
@@ -3495,7 +2439,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
             const messageRow = (
               <div
                 key={`message-${msg.id}`}
-                ref={isLastVisibleTimelineItem ? handleLastRenderedRowRef : undefined}
                 className="px-3 w-full"
                 data-chat-last-rendered-row={isLastVisibleTimelineItem ? "true" : undefined}
                 style={contentContainerStyle}
@@ -3509,10 +2452,11 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
                     toolCalls={msg.toolCalls ?? null}
                     contentBlocks={msg.contentBlocks ?? null}
                     groupContentBlockToolCalls={toolCallGroup == null}
+                    contentThinkingGroupKeyPrefix={`content-thinking-message:${msg.id}`}
+                    isContentThinkingGroupExpanded={isThinkingGroupExpanded}
+                    onToggleContentThinkingGroup={toggleThinkingGroup}
                     {...(msg.attachments && { attachments: msg.attachments })}
                     {...(composerReferences ? { composerReferences } : {})}
-                    teammateName={teammateName}
-                    teammateColor={teammateColor}
                     providerHarness={msg.providerHarness}
                     providerSessionId={msg.providerSessionId}
                     upstreamProvider={msg.upstreamProvider}
@@ -3526,10 +2470,17 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
                     cacheCreationTokens={msg.cacheCreationTokens}
                     cacheReadTokens={msg.cacheReadTokens}
                     estimatedUsd={msg.estimatedUsd}
+                    {...personaRunBadgeProps(
+                      attributedRunForId(agentRun, personaRuns, msg.runId),
+                      agentPersonasEnabled &&
+                        effectiveSenderGroupState.showSenderHeader,
+                      msg.runId,
+                    )}
                     showAssistantIcon={effectiveSenderGroupState.showSenderHeader}
                     reserveAssistantIconSpace={effectiveSenderGroupState.reserveAssistantGutter}
                     showProviderMeta={effectiveSenderGroupState.showSenderHeader}
                   />
+                  {renderRunAttribution(msg.id)}
                 </ContentShell>
               </div>
             );
@@ -3545,6 +2496,12 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
             visible={shouldShowScrollToBottom}
             onClick={handleScrollToBottomClick}
             onWheel={handleScrollToBottomWheel}
+          />
+          <div
+            ref={handleBottomSpacerRef}
+            data-testid="chat-transcript-bottom-spacer"
+            aria-hidden
+            style={{ height: 0, flexShrink: 0 }}
           />
         </div>
       );
@@ -3565,13 +2522,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
             ariaHidden
           />
         )}
-        {isFilteredTabEmpty && (
-          <div className="absolute inset-0 flex items-center justify-center" data-testid="teammate-tab-empty">
-            <span className="text-sm" style={{ color: "var(--text-muted)" }}>
-              No messages from {emptyTabLabel} yet
-            </span>
-          </div>
-        )}
         <Virtuoso
           // Key forces complete remount when conversation changes - prevents scroll animation conflicts
           key={conversationId ?? "empty"}
@@ -3579,17 +2529,12 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
           scrollerRef={handleScrollerRef}
           data={timeline}
           firstItemIndex={firstItemIndex}
-          context={footerContentHash}
           // Start at the last item on mount
           initialTopMostItemIndex={timeline.length > 0 ? lastItemIndex : 0}
-          followOutput={handleGuardedFollowOutput}
-          atBottomStateChange={handleVirtuosoAtBottomStateChange}
-          atBottomThreshold={AT_BOTTOM_THRESHOLD}
+          followOutput={false}
           rangeChanged={handleRangeChanged}
           totalListHeightChanged={handleTotalListHeightChanged}
-          {...(startReachedHandler
-            ? { startReached: startReachedHandler }
-            : {})}
+          {...virtuosoStartReachedProps}
           alignToBottom
           className="h-full"
           components={virtuosoComponents}

@@ -11,6 +11,7 @@
  * in the frontend, allowing the user to approve or deny the tool call.
  */
 import { Tool } from "@modelcontextprotocol/sdk/types.js";
+import { type RuntimeContext } from "./runtime-context.js";
 /**
  * MCP tool definition for permission handling
  * This tool is NOT scoped by agent type - it's always available
@@ -30,7 +31,7 @@ export declare function normalizePermissionToolInput(toolName: string, toolInput
  * @param args - Tool call details from Claude CLI (shape may vary)
  * @returns MCP tool result with decision (behavior + updatedInput / message)
  */
-export declare function handlePermissionRequest(args: Record<string, unknown>): Promise<{
+export declare function handlePermissionRequest(args: Record<string, unknown>, runtimeContext?: Pick<RuntimeContext, "conversationId">): Promise<{
     content: Array<{
         type: "text";
         text: string;

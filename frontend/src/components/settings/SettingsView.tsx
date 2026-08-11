@@ -6,12 +6,9 @@
  */
 
 import { useState, useCallback, useEffect } from "react";
-import type {
-  ProjectSettings,
-  ExecutionSettings,
-} from "@/types/settings";
+import { useIdeationSettings } from "@/hooks/useIdeationSettings";
+import type { ProjectSettings } from "@/types/settings";
 import { DEFAULT_PROJECT_SETTINGS } from "@/types/settings";
-import { IdeationSettingsPanel } from "./IdeationSettingsPanel";
 import { IdeationEffortSection } from "./IdeationEffortSection";
 import { IdeationModelSection } from "./IdeationModelSection";
 import { RepositorySettingsSection } from "./RepositorySettingsSection";
@@ -21,10 +18,10 @@ import {
   SettingsSkeleton,
   ErrorBanner,
 } from "./SettingsView.shared";
-import ExecutionSection from "./sections/ExecutionSection";
-import ReviewPolicySection from "./sections/ReviewPolicySection";
-import GlobalExecutionSection from "./sections/GlobalExecutionSection";
-import WorkspaceReviewSection from "./sections/WorkspaceReviewSection";
+import CapacitySettingsSection from "./sections/CapacitySettingsSection";
+import PlanningSettingsSection from "./sections/PlanningSettingsSection";
+import TasksSettingsSection from "./sections/TasksSettingsSection";
+import WorkspaceSettingsSection from "./sections/WorkspaceSettingsSection";
 
 // ============================================================================
 // Main Component
@@ -54,6 +51,7 @@ export function SettingsView({
     initialSettings ?? DEFAULT_PROJECT_SETTINGS
   );
   const [dismissedError, setDismissedError] = useState(false);
+  const ideationController = useIdeationSettings(!isLoading);
 
   // Sync internal state when initialSettings prop changes (e.g., project switch)
   useEffect(() => {
@@ -62,16 +60,10 @@ export function SettingsView({
     }
   }, [initialSettings]);
 
-  const handleExecutionChange = useCallback(
-    (changes: Partial<ExecutionSettings>) => {
-      setSettings((prev) => {
-        const updated = {
-          ...prev,
-          execution: { ...prev.execution, ...changes },
-        };
-        onSettingsChange?.(updated);
-        return updated;
-      });
+  const handleSettingsChange = useCallback(
+    (updated: ProjectSettings) => {
+      setSettings(updated);
+      onSettingsChange?.(updated);
     },
     [onSettingsChange]
   );
@@ -95,17 +87,12 @@ export function SettingsView({
       {showError && (
         <ErrorBanner error={error} onDismiss={handleDismissError} />
       )}
-      <ExecutionSection
-        settings={settings.execution}
-        onChange={handleExecutionChange}
-        disabled={isSaving}
-      />
-      <WorkspaceReviewSection />
-      <ReviewPolicySection />
-      <GlobalExecutionSection />
+      <TasksSettingsSection controller={ideationController} />
+      <PlanningSettingsSection controller={ideationController} />
+      <WorkspaceSettingsSection settings={settings} disabled={isSaving} onSettingsChange={handleSettingsChange} />
+      <CapacitySettingsSection settings={settings} disabled={isSaving} onSettingsChange={handleSettingsChange} />
       <RepositorySettingsSection />
       <ProjectAnalysisSection />
-      <IdeationSettingsPanel />
       <IdeationEffortSection />
       <IdeationModelSection />
       <ApiKeysSection />

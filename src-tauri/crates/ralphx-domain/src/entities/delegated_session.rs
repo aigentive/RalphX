@@ -42,6 +42,12 @@ pub struct DelegatedSession {
     pub parent_context_id: String,
     pub parent_turn_id: Option<String>,
     pub parent_message_id: Option<String>,
+    pub delegate_context_authorized: bool,
+    pub caller_conversation_id: Option<String>,
+    /// Native delegation job identity; absent for sessions created before this field existed.
+    pub job_id: Option<String>,
+    /// Trusted caller run identity; absent for legacy or externally created sessions.
+    pub parent_agent_run_id: Option<String>,
     pub agent_name: String,
     pub title: Option<String>,
     pub harness: AgentHarnessKind,
@@ -69,6 +75,10 @@ impl DelegatedSession {
             parent_context_id: parent_context_id.into(),
             parent_turn_id: None,
             parent_message_id: None,
+            delegate_context_authorized: true,
+            caller_conversation_id: None,
+            job_id: None,
+            parent_agent_run_id: None,
             agent_name: agent_name.into(),
             title: None,
             harness,

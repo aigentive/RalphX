@@ -2,28 +2,34 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tokio::sync::RwLock;
 
 use crate::domain::agents::ProviderSessionRef;
 use crate::domain::entities::{
-    AgentConversationWorkspaceMode, AttributionBackfillStatus, ChatContextType, ChatConversation,
-    ChatConversationId, ConversationAttributionBackfillState,
-    ConversationAttributionBackfillSummary,
+    AgentConversationWorkspaceMode, AttributionBackfillStatus, AutomationId, ChatContextType,
+    ChatConversation, ChatConversationId, ConversationAttributionBackfillState,
+    ConversationAttributionBackfillSummary, CoordinationMode,
 };
 use crate::domain::repositories::{ChatConversationPage, ChatConversationRepository};
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 
 /// In-memory implementation of ChatConversationRepository for testing
 pub struct MemoryChatConversationRepository {
     conversations: RwLock<HashMap<ChatConversationId, ChatConversation>>,
+    failed_get_by_ids: RwLock<HashSet<ChatConversationId>>,
 }
 
 impl MemoryChatConversationRepository {
     pub fn new() -> Self {
         Self {
             conversations: RwLock::new(HashMap::new()),
+            failed_get_by_ids: RwLock::new(HashSet::new()),
         }
+    }
+
+    pub async fn fail_get_by_id(&self, id: ChatConversationId) {
+        self.failed_get_by_ids.write().await.insert(id);
     }
 }
 
@@ -36,14 +42,47 @@ impl Default for MemoryChatConversationRepository {
 #[async_trait]
 impl ChatConversationRepository for MemoryChatConversationRepository {
     async fn create(&self, conversation: ChatConversation) -> AppResult<ChatConversation> {
+        if conversation.context_type == ChatContextType::Standalone
+            && !conversation.is_valid_standalone_self_key()
+        {
+            return Err(AppError::Validation(
+                "Standalone conversation context_id must equal its conversation id".to_string(),
+            ));
+        }
         let mut convos = self.conversations.write().await;
         convos.insert(conversation.id, conversation.clone());
         Ok(conversation)
     }
 
     async fn get_by_id(&self, id: &ChatConversationId) -> AppResult<Option<ChatConversation>> {
+        if self.failed_get_by_ids.read().await.contains(id) {
+            return Err(AppError::Infrastructure(format!(
+                "injected conversation lookup failure for {id}"
+            )));
+        }
         let convos = self.conversations.read().await;
         Ok(convos.get(id).cloned())
+    }
+
+    async fn get_by_builder_draft_id(
+        &self,
+        builder_draft_id: &str,
+    ) -> AppResult<Option<ChatConversation>> {
+        Ok(self
+            .conversations
+            .read()
+            .await
+            .values()
+            .filter(|conversation| {
+                !conversation.is_archived()
+                    && conversation.builder_draft_id.as_deref() == Some(builder_draft_id)
+            })
+            .max_by(|left, right| {
+                left.created_at
+                    .cmp(&right.created_at)
+                    .then_with(|| left.id.as_str().cmp(&right.id.as_str()))
+            })
+            .cloned())
     }
 
     async fn get_by_context(
@@ -59,6 +98,20 @@ impl ChatConversationRepository for MemoryChatConversationRepository {
             })
             .cloned()
             .collect();
+        Ok(filtered)
+    }
+
+    async fn list_by_automation_id(
+        &self,
+        automation_id: &AutomationId,
+    ) -> AppResult<Vec<ChatConversation>> {
+        let convos = self.conversations.read().await;
+        let mut filtered: Vec<ChatConversation> = convos
+            .values()
+            .filter(|c| c.automation_id.as_ref() == Some(automation_id))
+            .cloned()
+            .collect();
+        filtered.sort_by(|a, b| b.created_at.cmp(&a.created_at));
         Ok(filtered)
     }
 
@@ -177,6 +230,31 @@ impl ChatConversationRepository for MemoryChatConversationRepository {
         Ok(filtered)
     }
 
+    async fn list_by_context_type(
+        &self,
+        context_type: ChatContextType,
+        include_archived: bool,
+        limit: u32,
+    ) -> AppResult<Vec<ChatConversation>> {
+        let convos = self.conversations.read().await;
+        let mut filtered: Vec<ChatConversation> = convos
+            .values()
+            .filter(|conversation| {
+                conversation.context_type == context_type
+                    && (include_archived || !conversation.is_archived())
+            })
+            .cloned()
+            .collect();
+        filtered.sort_by(|left, right| {
+            right
+                .last_message_at
+                .unwrap_or(right.updated_at)
+                .cmp(&left.last_message_at.unwrap_or(left.updated_at))
+        });
+        filtered.truncate(limit as usize);
+        Ok(filtered)
+    }
+
     async fn update_provider_session_ref(
         &self,
         id: &ChatConversationId,
@@ -222,6 +300,103 @@ impl ChatConversationRepository for MemoryChatConversationRepository {
         if let Some(conversation) = convos.get_mut(id) {
             conversation.set_agent_mode(mode);
         }
+        Ok(())
+    }
+
+    async fn update_bound_agent_name(
+        &self,
+        id: &ChatConversationId,
+        bound_agent_name: Option<&str>,
+    ) -> AppResult<()> {
+        let mut conversations = self.conversations.write().await;
+        let conversation = conversations.get_mut(id).ok_or_else(|| {
+            crate::error::AppError::NotFound("Chat conversation not found".to_string())
+        })?;
+        conversation.bound_agent_name = bound_agent_name.map(str::to_string);
+        conversation.updated_at = Utc::now();
+        Ok(())
+    }
+
+    async fn update_persona_binding(
+        &self,
+        id: &ChatConversationId,
+        persona_id: Option<&str>,
+    ) -> AppResult<()> {
+        let mut convos = self.conversations.write().await;
+        if let Some(conversation) = convos.get_mut(id) {
+            conversation.persona_id = persona_id.map(str::to_string);
+            conversation.updated_at = Utc::now();
+        }
+        Ok(())
+    }
+
+    async fn update_builder_draft_binding(
+        &self,
+        id: &ChatConversationId,
+        builder_draft_id: Option<&str>,
+    ) -> AppResult<()> {
+        let mut convos = self.conversations.write().await;
+        if let Some(conversation) = convos.get_mut(id) {
+            conversation.builder_draft_id = builder_draft_id.map(str::to_string);
+            conversation.updated_at = Utc::now();
+        }
+        Ok(())
+    }
+
+    async fn update_coordination_mode(
+        &self,
+        id: &ChatConversationId,
+        mode: CoordinationMode,
+    ) -> AppResult<()> {
+        let mut convos = self.conversations.write().await;
+        if let Some(conversation) = convos.get_mut(id) {
+            conversation.set_coordination_mode(mode);
+        }
+        Ok(())
+    }
+
+    async fn update_role_default_bindings(
+        &self,
+        id: &ChatConversationId,
+        mode: CoordinationMode,
+        persona_id: Option<&str>,
+        clear_provider_session: bool,
+    ) -> AppResult<()> {
+        let mut convos = self.conversations.write().await;
+        if let Some(conversation) = convos.get_mut(id) {
+            conversation.coordination_mode = mode;
+            conversation.persona_id = persona_id.map(str::to_string);
+            if clear_provider_session {
+                conversation.claude_session_id = None;
+                conversation.provider_session_id = None;
+                conversation.provider_harness = None;
+            }
+            conversation.updated_at = Utc::now();
+        }
+        Ok(())
+    }
+
+    async fn update_agent_mode_and_role_default_bindings(
+        &self,
+        id: &ChatConversationId,
+        agent_mode: AgentConversationWorkspaceMode,
+        coordination_mode: CoordinationMode,
+        persona_id: Option<&str>,
+        clear_provider_session: bool,
+    ) -> AppResult<()> {
+        let mut conversations = self.conversations.write().await;
+        let conversation = conversations.get_mut(id).ok_or_else(|| {
+            crate::error::AppError::NotFound("Chat conversation not found".to_string())
+        })?;
+        conversation.agent_mode = Some(agent_mode);
+        conversation.coordination_mode = coordination_mode;
+        conversation.persona_id = persona_id.map(str::to_string);
+        if clear_provider_session {
+            conversation.claude_session_id = None;
+            conversation.provider_session_id = None;
+            conversation.provider_harness = None;
+        }
+        conversation.updated_at = Utc::now();
         Ok(())
     }
 

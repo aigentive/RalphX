@@ -177,7 +177,7 @@ describe("TicketDetailSheet assignee control", () => {
 });
 
 describe("TicketDetailSheet ticket git metadata", () => {
-  it("shows the ticket branch prompt when there are no RalphX links yet", () => {
+  it("shows the empty RalphX links prompt without a synthetic ticket branch", () => {
     const onStartWork = vi.fn();
     renderSheet({
       onStartWork,
@@ -194,8 +194,8 @@ describe("TicketDetailSheet ticket git metadata", () => {
       },
     });
 
-    expect(screen.getByText("Ticket Git")).toBeInTheDocument();
-    expect(screen.getByText("ralphx/ticket/linear-abc-1")).toBeInTheDocument();
+    expect(screen.queryByText("Ticket Git")).not.toBeInTheDocument();
+    expect(screen.queryByText("ralphx/ticket/linear-abc-1")).not.toBeInTheDocument();
     expect(
       screen.getByText("No RalphX links yet. Start a conversation with this ticket attached."),
     ).toBeInTheDocument();

@@ -13,7 +13,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MergeIncompleteTaskDetail } from "./MergeIncompleteTaskDetail";
-import { TASK_DETAIL_VIEWS } from "../TaskDetailPanel";
+import { TASK_DETAIL_VIEWS } from "../../agents/task-details/AgentsTaskDetailPanel";
 import type { Task } from "@/types/task";
 
 // Stable mock references
@@ -143,7 +143,7 @@ describe("Retry merge visual transition", () => {
   it("view registry maps merge_incomplete to MergeIncompleteTaskDetail and pending_merge to MergingTaskDetail", () => {
     // This verifies the view transition mechanism:
     // When task status changes from merge_incomplete to pending_merge,
-    // the TaskDetailPanel would render MergingTaskDetail instead
+    // the Agents task detail panel renders MergingTaskDetail instead
     expect(TASK_DETAIL_VIEWS.merge_incomplete).toBeDefined();
     expect(TASK_DETAIL_VIEWS.pending_merge).toBeDefined();
 

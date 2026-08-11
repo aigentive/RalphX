@@ -41,9 +41,9 @@ RalphX is an autonomous software development platform. You are an engineer-agent
 
 3. **Plan** — Review and verify the plan
    - \`v1_list_proposals\` → see proposed tasks
-   - \`v1_get_plan\` → read full plan artifact
-   - \`v1_trigger_plan_verification\` → start adversarial review
-   - \`v1_get_plan_verification\` → check verification status
+   - \`v1_get_plan\` → read both the Plan Overview and Implementation Blueprint
+   - \`v1_trigger_plan_verification\` → queue a visible review turn in the planning conversation
+   - \`v1_get_plan_verification\` → check exact-artifact proof status
 
 4. **Accept** — Commit the plan and start execution
    - \`v1_accept_plan_and_schedule\` → creates tasks + starts pipeline (idempotent — returns existing task IDs if already accepted)
@@ -89,11 +89,11 @@ RalphX is an autonomous software development platform. You are an engineer-agent
 | v1_append_task_to_plan | Append one-off task to accepted active plan | session_id, title, steps, acceptance_criteria | Session accepted; plan still open, including open PR wait | v1_get_session_tasks |
 | v1_list_proposals | Proposals in session | session_id | Session has proposals | v1_get_proposal_detail |
 | v1_get_proposal_detail | Full proposal + steps + acceptance criteria | proposal_id | — | v1_modify_proposal |
-| v1_get_plan | Plan artifact content | session_id | Session has plan | v1_trigger_plan_verification |
+| v1_get_plan | Overview + Implementation Blueprint bundle | session_id | Session has complete plan bundle | v1_trigger_plan_verification |
 | v1_modify_proposal | Update proposal before acceptance | proposal_id, changes | Session active | — |
 | v1_analyze_dependencies | Proposal dependency graph | session_id | Has proposals | v1_accept_plan_and_schedule |
-| v1_trigger_plan_verification | Start adversarial review loop | session_id | Session has plan | v1_get_plan_verification |
-| v1_get_plan_verification | Verification status + gap counts | session_id | Verification triggered | v1_accept_plan_and_schedule |
+| v1_trigger_plan_verification | Queue model-native review of the current plan | session_id | Session has plan | v1_get_plan_verification |
+| v1_get_plan_verification | Exact-artifact proof + action status | session_id | Session exists | v1_accept_plan_and_schedule |
 | v1_accept_plan_and_schedule | Apply proposals → tasks → schedule (saga) | session_id | Plan + proposals ready | v1_get_task_detail |
 | v1_get_session_tasks | Tasks created from a session + delivery_status | session_id | Session exists | v1_get_task_detail |
 
@@ -103,8 +103,8 @@ RalphX is an autonomous software development platform. You are an engineer-agent
 v1_start_ideation → poll v1_get_ideation_status (5-10s interval)
   → agent_status: "waiting_for_input" → v1_get_ideation_messages
   → v1_send_ideation_message to iterate
-  → when satisfied → v1_trigger_plan_verification
-  → poll v1_get_plan_verification → verified / converged
+  → when policy or risk warrants → v1_trigger_plan_verification
+  → poll v1_get_plan_verification → verified
   → v1_accept_plan_and_schedule
 \`\`\`
 
@@ -160,7 +160,7 @@ Calling \`v1_accept_plan_and_schedule\` on an already-accepted session is safe �
 
 ### Appending one-off tasks after acceptance
 
-Use \`v1_append_task_to_plan\` only for small follow-up work after a plan has been accepted while the plan branch is still active. Open PR / waiting-on-PR plans are still open and can receive appended tasks. The backend links the new task to the existing session/execution plan and blocks the plan merge on it. Once the PR/plan is closed, merged, terminal, or actively merging/repairing, start a new ideation continuation instead of appending.
+Use \`v1_append_task_to_plan\` only for small follow-up work after a plan has been accepted while the plan branch is still active. Open PR / waiting-on-PR plans are still open and can receive appended tasks. The backend links the new task to the existing session/execution plan, infers its default graph placement, and blocks the plan merge on it. Once the PR/plan is closed, merged, terminal, or actively merging/repairing, start a new ideation continuation instead of appending.
 `,
     tasks: `## Flow 2b: Task Operations (2 tools)
 
@@ -327,7 +327,7 @@ The \`external_activity_phase\` field in \`v1_get_ideation_status\` tracks sessi
 | \`created\` | Session started, no messages yet | Send initial prompt |
 | \`planning\` | First message sent; agent working on plan | Poll status |
 | \`proposing\` | Agent auto-generating task proposals | Poll status |
-| \`verifying\` | Plan verification in progress | Poll \`v1_get_plan_verification\` |
+| \`verifying\` | A visible Verify Plan turn is queued or running | Poll \`v1_get_plan_verification\` |
 | \`ready\` | Plan verified; ready to accept | Call \`v1_accept_plan_and_schedule\` |
 | \`error\` | Session encountered an error | Check messages; consider retry |
 | \`stalled\` | No activity for extended period | Re-send message or start new session |
@@ -343,7 +343,7 @@ The \`external_activity_phase\` field in \`v1_get_ideation_status\` tracks sessi
 3. Poll v1_get_ideation_status until agent_status: "waiting_for_input"
 4. v1_get_ideation_messages → read orchestrator plan
 5. v1_send_ideation_message to iterate (or proceed)
-6. v1_trigger_plan_verification → poll v1_get_plan_verification → "converged"
+6. When policy or plan risk warrants: v1_trigger_plan_verification → poll v1_get_plan_verification → "verified"
 7. v1_accept_plan_and_schedule
 8. Monitor via v1_get_recent_events or v1_get_attention_items
 \`\`\`
@@ -395,10 +395,10 @@ The \`external_activity_phase\` field in \`v1_get_ideation_status\` tracks sessi
 |------------|----------------|
 | Create loose project tasks directly | Start with v1_start_ideation; after acceptance, use v1_append_task_to_plan only for small follow-ups while the plan is still open |
 | Poll status in tight loop | Use v1_get_recent_events with cursor-based pagination (30s interval) |
-| Skip plan verification | Call v1_trigger_plan_verification before accepting |
+| Ignore a required verification policy | Call v1_trigger_plan_verification and wait for exact-artifact proof |
 | Hardcode project_id | Always call v1_list_projects first |
 | Send messages without waiting | Check agent_status = "waiting_for_input" before v1_send_ideation_message |
-| Accept immediately | Verify plan with v1_trigger_plan_verification first |
+| Assume an older proof covers an edited plan | Check v1_get_plan_verification for the current artifact id |
 | Surface bare task UUIDs | Always include title: \`task-{id} ({Title})\` — resolve via v1_get_task_detail or v1_batch_task_status |
 
 ### Sequencing Rules

@@ -15,6 +15,7 @@ const conversation: ChatConversation = {
   providerSessionId: "provider-session-1",
   providerHarness: "codex",
   upstreamProvider: "openai",
+  coordinationMode: "solo",
   providerProfile: null,
   title: null,
   messageCount: 3,
@@ -80,6 +81,7 @@ describe("buildFallbackConversationStats", () => {
       outputTokens: 25,
       cacheCreationTokens: 10,
       cacheReadTokens: 50,
+      processedTokens: 150,
       estimatedUsd: null,
     });
     expect(stats?.usageCoverage).toEqual({
@@ -87,6 +89,11 @@ describe("buildFallbackConversationStats", () => {
       providerMessagesWithUsage: 2,
       runCount: 0,
       runsWithUsage: 0,
+      effectiveRunConversationCount: 0,
+      effectiveMessageConversationCount: 1,
+      legacyEstimatedSampleCount: 2,
+      fallbackEstimatedSampleCount: 0,
+      uncountedSampleCount: 0,
       effectiveTotalsSource: "messages",
     });
     expect(stats?.attributionCoverage).toEqual({
@@ -112,6 +119,7 @@ describe("buildFallbackConversationStats", () => {
       outputTokens: 0,
       cacheCreationTokens: 0,
       cacheReadTokens: 0,
+      processedTokens: null,
       estimatedUsd: null,
     });
     expect(stats?.usageCoverage.effectiveTotalsSource).toBe("none");
@@ -135,6 +143,7 @@ describe("selectConversationStats", () => {
         outputTokens: 0,
         cacheCreationTokens: 0,
         cacheReadTokens: 0,
+        processedTokens: null,
         estimatedUsd: null,
       },
       runUsageTotals: {
@@ -142,6 +151,7 @@ describe("selectConversationStats", () => {
         outputTokens: 0,
         cacheCreationTokens: 0,
         cacheReadTokens: 0,
+        processedTokens: null,
         estimatedUsd: null,
       },
       effectiveUsageTotals: {
@@ -149,6 +159,7 @@ describe("selectConversationStats", () => {
         outputTokens: 0,
         cacheCreationTokens: 0,
         cacheReadTokens: 0,
+        processedTokens: null,
         estimatedUsd: null,
       },
       usageCoverage: {
@@ -156,6 +167,11 @@ describe("selectConversationStats", () => {
         providerMessagesWithUsage: 0,
         runCount: 0,
         runsWithUsage: 0,
+        effectiveRunConversationCount: 0,
+        effectiveMessageConversationCount: 0,
+        legacyEstimatedSampleCount: 0,
+        fallbackEstimatedSampleCount: 0,
+        uncountedSampleCount: 0,
         effectiveTotalsSource: "none",
       },
       attributionCoverage: {
@@ -202,6 +218,7 @@ describe("selectConversationStats", () => {
         outputTokens: 30,
         cacheCreationTokens: 0,
         cacheReadTokens: 0,
+        processedTokens: 230,
         estimatedUsd: null,
       },
       usageCoverage: {
@@ -209,6 +226,11 @@ describe("selectConversationStats", () => {
         providerMessagesWithUsage: 1,
         runCount: 0,
         runsWithUsage: 0,
+        effectiveRunConversationCount: 0,
+        effectiveMessageConversationCount: 1,
+        legacyEstimatedSampleCount: 0,
+        fallbackEstimatedSampleCount: 0,
+        uncountedSampleCount: 0,
         effectiveTotalsSource: "messages",
       },
     });

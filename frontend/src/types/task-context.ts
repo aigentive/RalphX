@@ -59,6 +59,8 @@ export const TaskContextSchema = z.object({
   sourceProposal: TaskProposalSummarySchema.nullable(),
   /** Implementation plan artifact (summary, not full content) */
   planArtifact: ArtifactSummarySchema.nullable(),
+  /** Exact implementation blueprint used for execution/review. */
+  blueprintArtifact: ArtifactSummarySchema.nullable(),
   /** Other artifacts related to the plan */
   relatedArtifacts: z.array(ArtifactSummarySchema),
   /** Hints for worker about what context might be useful */

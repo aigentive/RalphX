@@ -498,7 +498,7 @@ describe("AgentsView performance", () => {
     });
     expect(getWorkspaceReviewMock).not.toHaveBeenCalled();
     expect(
-      screen.queryByTestId("agents-composer-workspace-changes")
+      screen.queryByTestId("diff-filter-trigger")
     ).not.toBeInTheDocument();
 
     await waitFor(
@@ -506,8 +506,7 @@ describe("AgentsView performance", () => {
       { timeout: 5_000 },
     );
     expect(getWorkspaceReviewMock).not.toHaveBeenCalled();
-    await screen.findByTestId("agents-composer-workspace-changes");
-    expect(screen.getByTestId("diff-filter-trigger")).toHaveTextContent("Unstaged");
+    expect(await screen.findByTestId("diff-filter-trigger")).toHaveTextContent("Unstaged");
     expect(screen.getByTestId("agents-composer-workspace-changes-count")).toHaveTextContent(
       "1 file",
     );

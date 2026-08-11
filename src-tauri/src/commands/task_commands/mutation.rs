@@ -6,17 +6,22 @@ use super::types::{
     InjectTaskResponse, TaskResponse, UnblockTaskResponse, UpdateTaskInput,
 };
 use crate::application::chat_service::PauseReason;
-use crate::application::task_restart::prepare_terminal_task_for_ready_restart;
+use crate::application::task_restart::build_terminal_ready_restart_plan;
 use crate::application::{AppState, TaskTransitionService};
 use crate::commands::execution_commands::prepare_resumed_task_for_entry_actions;
 use crate::commands::execution_commands::project_has_execution_capacity_for_state;
 use crate::commands::ExecutionState;
 use crate::domain::entities::{
+    BranchUpdateContinuation, BranchUpdateDirection, BranchUpdatePhase, ChatContextType,
     ExecutionPlanId, IdeationSessionId, InternalStatus, ProjectId, Task, TaskCategory, TaskId,
 };
+use crate::domain::repositories::{
+    BranchUpdateCasOutcome, PauseBranchUpdate, ResumeBranchUpdate, RetryBranchUpdate,
+    StopBranchUpdate,
+};
+use crate::domain::services::{QueueKey, RunningAgentKey};
 use crate::domain::state_machine::services::TaskScheduler;
 use crate::domain::state_machine::transition_handler::metadata_builder::build_restart_metadata;
-use crate::domain::state_machine::transition_handler::parse_metadata;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -36,6 +41,33 @@ fn non_empty_input(value: &Option<String>) -> Option<&str> {
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
+}
+
+fn branch_update_status(direction: BranchUpdateDirection) -> InternalStatus {
+    match direction {
+        BranchUpdateDirection::PlanBranch => InternalStatus::UpdatingPlanBranch,
+        BranchUpdateDirection::TaskBranch => InternalStatus::UpdatingTaskBranch,
+    }
+}
+
+async fn stop_branch_update_runtime(state: &AppState, task_id: &TaskId) {
+    let context = ChatContextType::BranchUpdate;
+    let ipr_key = crate::application::interactive_process_registry::InteractiveProcessKey::new(
+        context.to_string(),
+        task_id.as_str(),
+    );
+    state.interactive_process_registry.remove(&ipr_key).await;
+    let running_key = RunningAgentKey::new(context.to_string(), task_id.as_str());
+    let _ = state.running_agent_registry.stop(&running_key).await;
+    let queue_key = QueueKey::new(context, task_id.as_str());
+    state.message_queue.clear_with_key(&queue_key);
+    if let Err(error) = state.queued_message_repo.clear(&queue_key).await {
+        tracing::warn!(
+            task_id = task_id.as_str(),
+            error = %error,
+            "Failed to clear durable branch-update queue after control transition"
+        );
+    }
 }
 
 async fn attach_create_task_plan_scope(
@@ -145,6 +177,16 @@ fn build_task_scheduler(
     scheduler_concrete as Arc<dyn TaskScheduler>
 }
 
+async fn authorize_task_mutation(state: &AppState, task: &Task) -> Result<(), String> {
+    crate::application::tasks_feature_policy::TasksFeaturePolicy::from_state(state)
+        .authorize_session(
+            task.ideation_session_id.as_ref(),
+            crate::domain::ideation::TasksFeatureAction::HistoryMutation,
+        )
+        .await
+        .map_err(|error| error.to_string())
+}
+
 /// Create a new task
 #[tauri::command]
 pub async fn create_task(
@@ -168,6 +210,7 @@ pub async fn create_task(
         task.priority = priority;
     }
     attach_create_task_plan_scope(&mut task, &input, &state).await?;
+    authorize_task_mutation(&state, &task).await?;
 
     // Create the task first
     let created_task = state
@@ -224,6 +267,7 @@ pub async fn update_task(
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Task not found: {}", task_id.as_str()))?;
+    authorize_task_mutation(&state, &task).await?;
 
     // Apply updates
     if let Some(title) = input.title {
@@ -253,6 +297,13 @@ pub async fn update_task(
 #[tauri::command]
 pub async fn delete_task(id: String, state: State<'_, AppState>) -> Result<(), String> {
     let task_id = TaskId::from_string(id);
+    let task = state
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("Task not found: {}", task_id.as_str()))?;
+    authorize_task_mutation(&state, &task).await?;
     state
         .task_repo
         .delete(&task_id)
@@ -275,7 +326,6 @@ pub async fn delete_task(id: String, state: State<'_, AppState>) -> Result<(), S
 pub async fn move_task(
     task_id: String,
     to_status: String,
-    agent_variant: Option<String>,
     note: Option<String>,
     state: State<'_, AppState>,
     execution_state: State<'_, Arc<ExecutionState>>,
@@ -297,96 +347,49 @@ pub async fn move_task(
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Task not found: {}", task_id.as_str()))?;
+    let feature_action = if matches!(
+        new_status,
+        InternalStatus::Paused | InternalStatus::Stopped | InternalStatus::Cancelled
+    ) {
+        crate::domain::ideation::TasksFeatureAction::Quiesce
+    } else {
+        crate::domain::ideation::TasksFeatureAction::Progress
+    };
+    crate::application::tasks_feature_policy::TasksFeaturePolicy::from_state(&state)
+        .authorize_session(old_task.ideation_session_id.as_ref(), feature_action)
+        .await
+        .map_err(|error| error.to_string())?;
 
     let old_status = old_task.internal_status;
     let project_id = old_task.project_id.clone();
 
-    // Terminal→Ready restart: clear stale git refs, reset execution_recovery, set trigger_origin,
-    // and update agent_variant — all in a single atomic task_repo.update().
-    //
-    // IMPORTANT: This write MUST happen before transition_task_with_metadata / transition_task
-    // below, because both paths re-fetch the task from DB before running on_enter. The cleared
-    // git refs must be visible to on_enter so it creates a fresh branch instead of failing with
-    // ExecutionBlocked on a deleted branch.
-    if old_status.is_terminal() && new_status == InternalStatus::Ready {
-        match prepare_terminal_task_for_ready_restart(
-            &state.task_repo,
-            &state.task_step_repo,
-            &old_task,
-            agent_variant.as_deref(),
-        )
-        .await
-        {
-            Ok(preparation) => {
-                if old_status == InternalStatus::Failed && preparation.cleared_failed_steps > 0 {
-                    tracing::info!(
-                        task_id = task_id.as_str(),
-                        cleared = preparation.cleared_failed_steps,
-                        "Cleared failed steps while preserving completed progress for failed-task restart"
-                    );
-                }
-            }
-            Err(e) => {
-                tracing::error!(
-                    task_id = task_id.as_str(),
-                    error = %e,
-                    "Failed to clear git refs and reset execution_recovery on task restart"
-                );
-                return Err(format!("Failed to prepare task restart: {e}"));
-            }
-        }
-    }
-
-    // Always update agent_variant in metadata for ready/executing transitions
-    // so that switching from team→solo properly clears the stale "team" value.
-    // SKIP for terminal→Ready: agent_variant is already handled in the block above
-    // to prevent it from clobbering the execution_recovery reset via update_metadata().
-    if matches!(
-        new_status,
-        InternalStatus::Ready | InternalStatus::Executing
-    ) && !(old_status.is_terminal() && new_status == InternalStatus::Ready)
-    {
-        let mut meta = parse_metadata(&old_task).unwrap_or_else(|| serde_json::json!({}));
-        if let Some(obj) = meta.as_object_mut() {
-            match agent_variant.as_deref() {
-                Some(variant) if !variant.is_empty() => {
-                    obj.insert("agent_variant".to_string(), serde_json::json!(variant));
-                }
-                _ => {
-                    obj.remove("agent_variant");
-                }
-            }
-        }
-        if let Err(e) = state
-            .task_repo
-            .update_metadata(&task_id, Some(meta.to_string()))
+    // Terminal→Ready restarts are planned without writes, then committed below with
+    // cleanup, failed-step resets, Ready status, and history in one repository transaction.
+    let terminal_restart_plan = if old_status.is_terminal() && new_status == InternalStatus::Ready {
+        build_terminal_ready_restart_plan(&state.task_step_repo, &old_task)
             .await
-        {
-            tracing::error!(
-                task_id = task_id.as_str(),
-                error = %e,
-                "Failed to update agent_variant in metadata"
-            );
-        }
-    }
+            .map_err(|error| format!("Failed to prepare task restart: {error}"))?
+    } else {
+        None
+    };
 
     // Create the task scheduler for auto-scheduling Ready tasks
     let task_scheduler = build_task_scheduler(&state, &execution_state, &app);
 
     // Create the transition service with all required dependencies
-    let is_team_mode = agent_variant.as_deref() == Some("team");
     let mut transition_service = build_transition_service(&state, &execution_state, Some(&app))
         .with_task_scheduler(Arc::clone(&task_scheduler));
-
-    // ALWAYS set team_mode based on explicit UI selection so it overrides
-    // env var defaults and stale metadata. Some(true) = team, Some(false) = solo.
-    transition_service = transition_service.with_team_mode(is_team_mode);
     transition_service = transition_service.with_step_repo(Arc::clone(&state.task_step_repo));
 
     // Transition the task - this triggers entry actions like spawning workers!
     // When a note is provided and the task is moving to Ready (restart/reopen flow),
     // store it as restart_note in metadata so the re-executing agent can read it.
-    let task = if note.is_some() && new_status == InternalStatus::Ready {
+    let task = if let Some(plan) = terminal_restart_plan {
+        transition_service
+            .restart_terminal_task_to_ready(plan, Some(build_restart_metadata(note.as_deref())))
+            .await
+            .map_err(|e| e.to_string())?
+    } else if note.is_some() && new_status == InternalStatus::Ready {
         let restart_metadata = build_restart_metadata(note.as_deref());
         transition_service
             .transition_task_with_metadata(&task_id, new_status, Some(restart_metadata))
@@ -439,6 +442,10 @@ pub async fn inject_task(
     state: State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<InjectTaskResponse, String> {
+    crate::application::tasks_feature_policy::TasksFeaturePolicy::from_state(&state)
+        .authorize_session(None, crate::domain::ideation::TasksFeatureAction::Progress)
+        .await
+        .map_err(|error| error.to_string())?;
     let project_id = ProjectId::from_string(input.project_id.clone());
     let category: TaskCategory = input
         .category
@@ -604,6 +611,13 @@ pub async fn archive_task(
     app: tauri::AppHandle,
 ) -> Result<TaskResponse, String> {
     let task_id_obj = TaskId::from_string(task_id.clone());
+    let task = state
+        .task_repo
+        .get_by_id(&task_id_obj)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("Task not found: {}", task_id_obj.as_str()))?;
+    authorize_task_mutation(&state, &task).await?;
 
     // Archive the task via repository
     let archived_task = state
@@ -643,6 +657,13 @@ pub async fn restore_task(
     app: tauri::AppHandle,
 ) -> Result<TaskResponse, String> {
     let task_id_obj = TaskId::from_string(task_id.clone());
+    let task = state
+        .task_repo
+        .get_by_id(&task_id_obj)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("Task not found: {}", task_id_obj.as_str()))?;
+    authorize_task_mutation(&state, &task).await?;
 
     // Restore the task via repository
     let restored_task = state
@@ -1227,6 +1248,61 @@ pub async fn pause_task(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Task not found: {}", task_id.as_str()))?;
 
+    if matches!(
+        task.internal_status,
+        InternalStatus::UpdatingPlanBranch | InternalStatus::UpdatingTaskBranch
+    ) {
+        let operation = state
+            .branch_update_repo
+            .get_active_operation(&task.id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Branch-update task has no active operation".to_string())?;
+        let expected_status = branch_update_status(operation.direction);
+        if task.internal_status != expected_status {
+            return Err("Branch-update direction/status authority mismatch".to_string());
+        }
+        let lease = state
+            .branch_update_repo
+            .get_target_lease(&operation.target_identity)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Branch-update target authority is missing".to_string())?;
+        let outcome = state
+            .branch_update_repo
+            .pause_operation(PauseBranchUpdate {
+                operation_id: operation.id,
+                task_id: task.id.clone(),
+                originating_history_id: operation.originating_history_id,
+                update_status: expected_status,
+                owner: lease.owner().clone(),
+                fencing_epoch: lease.fencing_epoch(),
+                history_id: uuid::Uuid::new_v4().to_string(),
+                task_metadata: None,
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+        if outcome != BranchUpdateCasOutcome::Applied {
+            return Err(format!("Branch-update pause lost authority: {outcome:?}"));
+        }
+        stop_branch_update_runtime(&state, &task.id).await;
+        let paused = state
+            .task_repo
+            .get_by_id(&task.id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Paused branch-update task disappeared".to_string())?;
+        if let Some(ref app) = state.app_handle {
+            emit_task_lifecycle_event(
+                app,
+                "task:paused",
+                paused.id.as_str(),
+                paused.project_id.as_str(),
+            );
+        }
+        return Ok(TaskResponse::from(paused));
+    }
+
     // Store PauseReason::UserInitiated metadata before transitioning
     let pause_reason = crate::application::chat_service::PauseReason::UserInitiated {
         previous_status: task.internal_status.to_string(),
@@ -1288,6 +1364,66 @@ pub async fn stop_task(
         .ok_or_else(|| format!("Task not found: {}", task_id.as_str()))?;
 
     let from_status = task.internal_status;
+
+    if matches!(
+        from_status,
+        InternalStatus::UpdatingPlanBranch | InternalStatus::UpdatingTaskBranch
+    ) {
+        let operation = state
+            .branch_update_repo
+            .get_active_operation(&task.id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Branch-update task has no active operation".to_string())?;
+        let expected_status = branch_update_status(operation.direction);
+        if from_status != expected_status {
+            return Err("Branch-update direction/status authority mismatch".to_string());
+        }
+        let lease = state
+            .branch_update_repo
+            .get_target_lease(&operation.target_identity)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Branch-update target authority is missing".to_string())?;
+        let outcome = state
+            .branch_update_repo
+            .stop_operation(StopBranchUpdate {
+                operation_id: operation.id,
+                task_id: task.id.clone(),
+                originating_history_id: operation.originating_history_id,
+                update_status: expected_status,
+                owner: lease.owner().clone(),
+                fencing_epoch: lease.fencing_epoch(),
+                history_id: uuid::Uuid::new_v4().to_string(),
+                reason: reason.clone(),
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+        if outcome != BranchUpdateCasOutcome::Applied {
+            return Err(format!("Branch-update stop lost authority: {outcome:?}"));
+        }
+        stop_branch_update_runtime(&state, &task.id).await;
+        let stopped = state
+            .task_repo
+            .get_by_id(&task.id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Stopped branch-update task disappeared".to_string())?;
+        if let Some(ref app) = state.app_handle {
+            app.emit(
+                "task:stopped",
+                serde_json::json!({
+                    "taskId": stopped.id.as_str(),
+                    "projectId": stopped.project_id.as_str(),
+                    "stoppedFromStatus": from_status.as_str(),
+                    "stopReason": reason,
+                    "timestamp": chrono::Utc::now().to_rfc3339(),
+                }),
+            )
+            .map_err(|error| format!("Failed to emit task:stopped event: {error}"))?;
+        }
+        return Ok(TaskResponse::from(stopped));
+    }
 
     // Build transition service
     let transition_service = build_transition_service(&state, &execution_state, None);
@@ -1453,6 +1589,112 @@ pub async fn resume_task(
         ));
     }
 
+    if let Some(operation) = state
+        .branch_update_repo
+        .get_active_operation(&task.id)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        let update_status = branch_update_status(operation.direction);
+        if !execution_state.can_start_any_execution_context() {
+            return Err("Cannot resume: max concurrent task limit reached".to_string());
+        }
+        if !project_has_execution_capacity_for_state(&state, &execution_state, &task.project_id)
+            .await?
+        {
+            return Err("Cannot resume: project execution capacity reached".to_string());
+        }
+        let lease = state
+            .branch_update_repo
+            .get_target_lease(&operation.target_identity)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Branch-update target authority is missing".to_string())?;
+        let outcome = state
+            .branch_update_repo
+            .resume_operation(ResumeBranchUpdate {
+                operation_id: operation.id.clone(),
+                task_id: task.id.clone(),
+                originating_history_id: operation.originating_history_id.clone(),
+                update_status,
+                owner: lease.owner().clone(),
+                fencing_epoch: lease.fencing_epoch(),
+                history_id: uuid::Uuid::new_v4().to_string(),
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+        if outcome != BranchUpdateCasOutcome::Applied {
+            return Err(format!("Branch-update resume lost authority: {outcome:?}"));
+        }
+
+        let transition_service = build_transition_service(&state, &execution_state, Some(&app));
+        if matches!(
+            operation.phase,
+            BranchUpdatePhase::ContinuationPending | BranchUpdatePhase::ContinuationInProgress
+        ) {
+            let next_status = if operation.continuation
+                == BranchUpdateContinuation::FinalizePostMergePrPublication
+            {
+                let project = state
+                    .project_repo
+                    .get_by_id(&task.project_id)
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| "Project not found for publication resume".to_string())?;
+                crate::application::branch_update_executor::publish_post_merge_branch_update(
+                    Arc::clone(&state.branch_update_repo),
+                    std::path::Path::new(&project.working_directory),
+                    &operation,
+                    update_status,
+                )
+                .await
+                .map_err(|error| error.to_string())?
+            } else {
+                crate::application::branch_update_executor::resume_branch_update_continuation(
+                    Arc::clone(&state.branch_update_repo),
+                    &operation,
+                    update_status,
+                )
+                .await
+                .map_err(|error| error.to_string())?
+            };
+            if next_status != InternalStatus::Merged {
+                let continued = state
+                    .task_repo
+                    .get_by_id(&task.id)
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| "Resumed branch-update task disappeared".to_string())?;
+                transition_service
+                    .execute_entry_actions(&continued.id, &continued, next_status)
+                    .await;
+            }
+        } else {
+            let resumed = state
+                .task_repo
+                .get_by_id(&task.id)
+                .await
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| "Resumed branch-update task disappeared".to_string())?;
+            transition_service
+                .execute_entry_actions(&resumed.id, &resumed, update_status)
+                .await;
+        }
+        let resumed = state
+            .task_repo
+            .get_by_id(&task.id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Resumed branch-update task disappeared".to_string())?;
+        emit_task_lifecycle_event(
+            &app,
+            "task:resumed",
+            resumed.id.as_str(),
+            resumed.project_id.as_str(),
+        );
+        return Ok(TaskResponse::from(resumed));
+    }
+
     // Determine restore status: prefer pause_reason metadata, fall back to status_history
     let restore_status =
         if let Some(reason) = PauseReason::from_task_metadata(task.metadata.as_deref()) {
@@ -1530,6 +1772,161 @@ pub async fn resume_task(
     );
 
     Ok(TaskResponse::from(restored_task))
+}
+
+#[tauri::command]
+pub async fn retry_branch_update(
+    task_id: String,
+    state: State<'_, AppState>,
+    execution_state: State<'_, Arc<ExecutionState>>,
+    app: tauri::AppHandle,
+) -> Result<TaskResponse, String> {
+    let task_id = TaskId::from_string(task_id);
+    let task = state
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("Task not found: {}", task_id.as_str()))?;
+    if task.internal_status != InternalStatus::BranchUpdateBlocked {
+        return Err(format!(
+            "Task {} is not blocked on a branch update",
+            task_id.as_str()
+        ));
+    }
+    crate::application::tasks_feature_policy::TasksFeaturePolicy::from_state(&state)
+        .authorize_session(
+            task.ideation_session_id.as_ref(),
+            crate::domain::ideation::TasksFeatureAction::Progress,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    if !execution_state.can_start_any_execution_context() {
+        return Err("Cannot retry: max concurrent task limit reached".to_string());
+    }
+    if !project_has_execution_capacity_for_state(&state, &execution_state, &task.project_id).await?
+    {
+        return Err("Cannot retry: project execution capacity reached".to_string());
+    }
+    let operation = state
+        .branch_update_repo
+        .get_active_operation(&task.id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Blocked task has no active branch-update operation".to_string())?;
+    if operation.phase != BranchUpdatePhase::Blocked {
+        return Err("Branch-update operation is not blocked".to_string());
+    }
+    let lease = state
+        .branch_update_repo
+        .get_target_lease(&operation.target_identity)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Branch-update target authority is missing".to_string())?;
+    let update_status = branch_update_status(operation.direction);
+    let new_operation_id = crate::domain::entities::BranchUpdateOperationId::new();
+    let outcome = state
+        .branch_update_repo
+        .retry_operation(RetryBranchUpdate {
+            operation_id: operation.id,
+            new_operation_id: new_operation_id.clone(),
+            task_id: task.id.clone(),
+            originating_history_id: operation.originating_history_id,
+            update_status,
+            owner: lease.owner().clone(),
+            fencing_epoch: lease.fencing_epoch(),
+            history_id: uuid::Uuid::new_v4().to_string(),
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+    if outcome != BranchUpdateCasOutcome::Applied {
+        return Err(format!("Branch-update retry lost authority: {outcome:?}"));
+    }
+    let retry = state
+        .branch_update_repo
+        .get_operation(&new_operation_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Branch-update retry operation disappeared".to_string())?;
+    let transition_service = build_transition_service(&state, &execution_state, Some(&app));
+    if retry.phase == BranchUpdatePhase::Programmatic {
+        let project = state
+            .project_repo
+            .get_by_id(&task.project_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Project not found for branch-update retry".to_string())?;
+        match crate::application::branch_update_executor::execute_programmatic_branch_update(
+            Arc::clone(&state.branch_update_repo),
+            Arc::clone(&state.task_repo),
+            std::path::Path::new(&project.working_directory),
+            &retry,
+            update_status,
+            retry.target_lease_epoch,
+        )
+        .await
+        .map_err(|error| error.to_string())?
+        {
+            crate::application::branch_update_executor::BranchUpdateExecutionOutcome::Completed {
+                destination,
+            } => {
+                let continued = state
+                    .task_repo
+                    .get_by_id(&task.id)
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| "Retried branch-update task disappeared".to_string())?;
+                transition_service
+                    .execute_entry_actions(&continued.id, &continued, destination)
+                    .await;
+            }
+            crate::application::branch_update_executor::BranchUpdateExecutionOutcome::ContinuationPending => {
+                let pending = state
+                    .branch_update_repo
+                    .get_operation(&new_operation_id)
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| "Publication retry operation disappeared".to_string())?;
+                crate::application::branch_update_executor::publish_post_merge_branch_update(
+                    Arc::clone(&state.branch_update_repo),
+                    std::path::Path::new(&project.working_directory),
+                    &pending,
+                    update_status,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            }
+            crate::application::branch_update_executor::BranchUpdateExecutionOutcome::NeedsAgent => {
+                let resolving = state
+                    .task_repo
+                    .get_by_id(&task.id)
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| "Resolving branch-update task disappeared".to_string())?;
+                transition_service
+                    .execute_entry_actions(&resolving.id, &resolving, update_status)
+                    .await;
+            }
+            crate::application::branch_update_executor::BranchUpdateExecutionOutcome::Blocked => {}
+        }
+    } else {
+        let resolving = state
+            .task_repo
+            .get_by_id(&task.id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Resolving branch-update task disappeared".to_string())?;
+        transition_service
+            .execute_entry_actions(&resolving.id, &resolving, update_status)
+            .await;
+    }
+    let updated = state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Retried branch-update task disappeared".to_string())?;
+    Ok(TaskResponse::from(updated))
 }
 
 /// Pause all tasks in a group (group_kind: "status" | "session" | "uncategorized")

@@ -66,6 +66,12 @@ pub async fn fork_agent_conversation(
         .map(|workspace| workspace.mode)
         .or(parent_conversation.agent_mode)
         .unwrap_or(AgentConversationWorkspaceMode::Edit);
+    if mode == AgentConversationWorkspaceMode::Tasks {
+        return Err(AppError::Validation(
+            "Tasks conversations cannot be forked because their pipeline attachment belongs to the owning conversation"
+                .to_string(),
+        ));
+    }
 
     let mut child_conversation = ChatConversation::new_project(project_id.clone());
     child_conversation.parent_conversation_id = Some(parent_conversation.id.as_str().to_string());
@@ -91,6 +97,7 @@ pub async fn fork_agent_conversation(
                 selection,
                 AgentConversationWorkspaceSetupMode::Deferred,
                 AgentConversationWorkspacePrAutomationDefaults::from(&settings),
+                false,
             )
             .await?,
         )
@@ -181,7 +188,9 @@ async fn validate_forkable_parent(
 fn agent_mode_requires_workspace(mode: AgentConversationWorkspaceMode) -> bool {
     matches!(
         mode,
-        AgentConversationWorkspaceMode::Edit | AgentConversationWorkspaceMode::Ideation
+        AgentConversationWorkspaceMode::Edit
+            | AgentConversationWorkspaceMode::Autopilot
+            | AgentConversationWorkspaceMode::Ideation
     )
 }
 

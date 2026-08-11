@@ -8,21 +8,21 @@
  * Mounted in GlobalEventListeners (EventProvider) — not per-panel.
  *
  * Does NOT manage:
- * - General query cache (per-panel hook's responsibility — requires activeConversationId)
+ * - Per-panel query cache (requires activeConversationId)
  * - setActiveConversation (requires per-panel storeKey context)
  * - Queue processing (backend-managed, per-panel hook handles UI)
  *
- * EXCEPTION: verification query cache invalidation IS included in handleChildTerminationReverseLink
- * because it uses session ID from event payload, not activeConversationId.
+ * Global query invalidation is limited to event-owned identities: Agent sidebar conversation
+ * grouping for project/standalone contexts, plus verification child termination reverse links.
  */
 
 import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
+import { agentSidebarConversationKeys } from "@/hooks/agentSidebarConversationKeys";
 import { useEventBus } from "@/providers/EventProvider";
 import { useChatStore } from "@/stores/chatStore";
 import { useIdeationStore } from "@/stores/ideationStore";
-import { useTeamStore } from "@/stores/teamStore";
 import { buildStoreKey, parseStoreKey } from "@/lib/chat-context-registry";
 import { buildAgentEventStoreKey } from "@/lib/agent-store-key";
 import { findStoreKeyForContextId } from "@/lib/agent-event-utils";
@@ -33,6 +33,7 @@ import type {
   AgentRunStartedPayload,
 } from "@/types/events";
 import { logger } from "@/lib/logger";
+import { roleVerb } from "@/components/Chat/run-attribution";
 
 type TerminalLifecyclePayload = {
   run_id?: string | null;
@@ -105,6 +106,12 @@ export function useGlobalAgentLifecycle() {
       return payload.run_id ?? payload.agent_run_id ?? null;
     }
 
+    function invalidateAgentSidebarConversations(contextType: string) {
+      if (contextType !== "project" && contextType !== "standalone") return;
+
+      void queryClient.invalidateQueries({ queryKey: agentSidebarConversationKeys.all });
+    }
+
     function shouldIgnoreLifecycleEvent(
       storeKey: string,
       conversationId: string,
@@ -146,6 +153,14 @@ export function useGlobalAgentLifecycle() {
         return false;
       }
 
+      const activeRunId = useChatStore.getState().activeAgentRunIds[storeKey];
+      if (eventRunId == null && activeRunId != null) {
+        logger.warn(
+          `[GlobalAgentLifecycle] Ignoring ${eventName} without a run id while active=${activeRunId} for key=${storeKey}`
+        );
+        return false;
+      }
+
       const parsed = parseStoreKey(storeKey);
       if (parsed?.contextType === "ideation") {
         const activeChildId =
@@ -159,21 +174,12 @@ export function useGlobalAgentLifecycle() {
       useChatStore.getState().clearActiveAgentRun(storeKey, eventRunId);
       useChatStore.getState().setAgentStatus(storeKey, "idle");
 
-      // Scope guard for cleanup calls:
-      // clearPendingPlan: team mode active only (no ghost approval banners)
-      const chatState = useChatStore.getState();
-      if (chatState.isTeamActive?.[storeKey]) {
-        useTeamStore.getState().clearPendingPlan(storeKey);
-      }
-
       return true;
     }
 
     // agent:run_started → setAgentStatus generating
-    // Skip teammate events (handled by useTeamEvents)
     unsubscribes.push(
       bus.subscribe<AgentRunStartedPayload>("agent:run_started", (payload) => {
-        if (payload.teammate_name) return;
         const { context_type, context_id: eventContextId } = payload;
 
         const eventContextKey = buildAgentEventStoreKey(
@@ -191,8 +197,18 @@ export function useGlobalAgentLifecycle() {
         }
 
         useChatStore.getState().setAgentStatus(eventContextKey, "generating");
-        useChatStore.getState().setAgentActivityLabel(eventContextKey, "Agent working");
-        useChatStore.getState().setActiveAgentRun(eventContextKey, payload.run_id);
+        const launchRole = payload.launch_role ?? payload.launchRole ?? null;
+        useChatStore.getState().setAgentActivityLabel(eventContextKey, `${roleVerb(launchRole)} working`);
+        useChatStore.getState().setActiveAgentRun(
+          eventContextKey,
+          payload.run_id,
+          payload.provider_harness ?? payload.providerHarness ?? null,
+          {
+            startedAt: Date.parse(payload.started_at ?? payload.startedAt ?? "") || Date.now(),
+            agentName: payload.agent_name ?? payload.agentName ?? null,
+            launchRole,
+          },
+        );
         // Track the active conversation for this context so the stale guard can function
         // for ALL sessions, not just those with mounted per-panel hooks.
         useChatStore.getState().setActiveConversation(eventContextKey, payload.conversation_id);
@@ -208,14 +224,14 @@ export function useGlobalAgentLifecycle() {
           };
           useChatStore.getState().setEffectiveModel(eventContextKey, model);
         }
+
+        invalidateAgentSidebarConversations(context_type);
       })
     );
 
     // agent:run_completed → guarded termination
-    // Skip teammate events
     unsubscribes.push(
       bus.subscribe<AgentRunCompletedPayload>("agent:run_completed", (payload) => {
-        if (payload.teammate_name) return;
         const { context_type, context_id: eventContextId } = payload;
 
         const eventContextKey = buildAgentEventStoreKey(
@@ -235,15 +251,14 @@ export function useGlobalAgentLifecycle() {
           // Final heartbeat for accepted terminal events.
           useChatStore.getState().updateLastAgentEvent(eventContextKey);
           handleChildTerminationReverseLink(eventContextId);
+          invalidateAgentSidebarConversations(context_type);
         }
       })
     );
 
     // agent:turn_completed → waiting_for_input (with verification child guard)
-    // Skip teammate events
     unsubscribes.push(
       bus.subscribe<AgentRunCompletedPayload>("agent:turn_completed", (payload) => {
-        if (payload.teammate_name) return;
         const { context_type, context_id: eventContextId } = payload;
 
         const eventContextKey = buildAgentEventStoreKey(
@@ -280,20 +295,19 @@ export function useGlobalAgentLifecycle() {
         } else {
           useChatStore.getState().setAgentStatus(eventContextKey, "waiting_for_input");
         }
+
+        invalidateAgentSidebarConversations(context_type);
       })
     );
 
     // agent:stopped → guarded termination
-    // Skip teammate events
     unsubscribes.push(
       bus.subscribe<{
         context_type: string;
         context_id: string;
         conversation_id: string;
         agent_run_id: string;
-        teammate_name?: string | null;
       }>("agent:stopped", (payload) => {
-        if (payload.teammate_name) return;
         const { context_type, context_id: eventContextId } = payload;
 
         const eventContextKey = buildAgentEventStoreKey(
@@ -311,12 +325,12 @@ export function useGlobalAgentLifecycle() {
           )
         ) {
           handleChildTerminationReverseLink(eventContextId);
+          invalidateAgentSidebarConversations(context_type);
         }
       })
     );
 
     // agent:error → guarded termination + error toast for execution contexts
-    // Skip teammate events
     unsubscribes.push(
       bus.subscribe<{
         context_type: string;
@@ -324,9 +338,7 @@ export function useGlobalAgentLifecycle() {
         conversation_id: string;
         agent_run_id?: string | null;
         error: string;
-        teammate_name?: string | null;
       }>("agent:error", (payload) => {
-        if (payload.teammate_name) return;
         const { context_type, context_id: eventContextId } = payload;
 
         const eventContextKey = buildAgentEventStoreKey(
@@ -346,6 +358,7 @@ export function useGlobalAgentLifecycle() {
           return;
         }
         handleChildTerminationReverseLink(eventContextId);
+        invalidateAgentSidebarConversations(context_type);
 
         // Error toast for execution contexts with deterministic id for deduplication.
         // Sonner does NOT auto-deduplicate — explicit id prevents duplicate toasts
@@ -393,8 +406,6 @@ export function useGlobalAgentLifecycle() {
     // agent:conversation_created → track new conversations for the stale guard
     // Only sets activeConversationIds when no entry exists — avoids poisoning the guard
     // if conversation_created fires but run_started never follows (e.g., spawn failure).
-    // NOTE: AgentConversationCreatedPayload does not include teammate_name (it's only emitted
-    // for primary agent conversations), so no teammate filter is needed here.
     unsubscribes.push(
       bus.subscribe<{
         conversation_id: string;

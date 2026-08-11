@@ -11,3 +11,4 @@ export * as fs from "./tauri-plugin-fs";
 export * as process from "./tauri-plugin-process";
 export * as updater from "./tauri-plugin-updater";
 export * as globalShortcut from "./tauri-plugin-global-shortcut";
+export * as notification from "./tauri-plugin-notification";

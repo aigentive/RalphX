@@ -2,20 +2,27 @@ use super::*;
 use crate::agents::{AgentHarnessKind, LogicalEffort};
 use crate::domain::entities::{AgentRun, AgentRunAttribution, AgentRunUsage, ChatConversationId};
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 // Mock implementation for testing trait object usage
 struct MockAgentRunRepository {
     runs: Vec<AgentRun>,
+    completed: Mutex<Vec<AgentRunId>>,
 }
 
 impl MockAgentRunRepository {
     fn new() -> Self {
-        Self { runs: vec![] }
+        Self {
+            runs: vec![],
+            completed: Mutex::new(Vec::new()),
+        }
     }
 
     fn with_runs(runs: Vec<AgentRun>) -> Self {
-        Self { runs }
+        Self {
+            runs,
+            completed: Mutex::new(Vec::new()),
+        }
     }
 }
 
@@ -80,8 +87,13 @@ impl AgentRunRepository for MockAgentRunRepository {
         Ok(())
     }
 
-    async fn complete(&self, _id: &AgentRunId) -> AppResult<()> {
+    async fn complete(&self, id: &AgentRunId) -> AppResult<()> {
+        self.completed.lock().unwrap().push(*id);
         Ok(())
+    }
+
+    async fn complete_if_prune_cancelled(&self, _id: &AgentRunId) -> AppResult<bool> {
+        Ok(false)
     }
 
     async fn fail(&self, _id: &AgentRunId, _error_message: &str) -> AppResult<()> {
@@ -89,6 +101,10 @@ impl AgentRunRepository for MockAgentRunRepository {
     }
 
     async fn cancel(&self, _id: &AgentRunId) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn cancel_with_reason(&self, _id: &AgentRunId, _reason: &str) -> AppResult<()> {
         Ok(())
     }
 
@@ -168,4 +184,74 @@ async fn test_default_get_by_ids_returns_matching_runs() {
     assert_eq!(runs.len(), 2);
     assert!(ids.contains(&run1_id));
     assert!(ids.contains(&run2_id));
+}
+
+#[tokio::test]
+async fn default_action_queries_scope_by_owner_tuple_and_lifecycle() {
+    let conversation_id = ChatConversationId::new();
+    let mut older = AgentRun::new(conversation_id);
+    older.action_kind = Some(AgentRunActionKind::VerifyPlan);
+    older.action_context_id = Some("session-1".to_string());
+    older.action_target_id = Some("plan-1".to_string());
+
+    let mut newer = older.clone();
+    newer.id = AgentRunId::new();
+    newer.started_at = older.started_at + chrono::Duration::seconds(1);
+    newer.status = AgentRunStatus::Completed;
+
+    let mut wrong_target = AgentRun::new(conversation_id);
+    wrong_target.action_kind = Some(AgentRunActionKind::VerifyPlan);
+    wrong_target.action_context_id = Some("session-1".to_string());
+    wrong_target.action_target_id = Some("plan-2".to_string());
+    wrong_target.started_at = newer.started_at + chrono::Duration::seconds(1);
+
+    let repo = MockAgentRunRepository::with_runs(vec![older.clone(), newer.clone(), wrong_target]);
+
+    let latest = repo
+        .get_latest_action(
+            &conversation_id,
+            AgentRunActionKind::VerifyPlan,
+            "session-1",
+            "plan-1",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.id, newer.id);
+
+    let active = repo
+        .get_active_action(
+            &conversation_id,
+            AgentRunActionKind::VerifyPlan,
+            "session-1",
+            "plan-1",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(active.id, older.id);
+    assert!(repo
+        .get_active_action(
+            &ChatConversationId::new(),
+            AgentRunActionKind::VerifyPlan,
+            "session-1",
+            "plan-1",
+        )
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn default_conditional_completion_applies_only_to_running_runs() {
+    let conversation_id = ChatConversationId::new();
+    let running = AgentRun::new(conversation_id);
+    let mut completed = AgentRun::new(conversation_id);
+    completed.status = AgentRunStatus::Completed;
+    let repo = MockAgentRunRepository::with_runs(vec![running.clone(), completed.clone()]);
+
+    assert!(!repo.complete_if_running(&AgentRunId::new()).await.unwrap());
+    assert!(!repo.complete_if_running(&completed.id).await.unwrap());
+    assert!(repo.complete_if_running(&running.id).await.unwrap());
+    assert_eq!(*repo.completed.lock().unwrap(), vec![running.id]);
 }

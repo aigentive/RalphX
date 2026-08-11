@@ -16,10 +16,10 @@ use crate::domain::entities::{
     ProjectId, Task, TaskId, TaskStep, TaskStepStatus,
 };
 use crate::domain::repositories::{PlanBranchRepository, TaskRepository, TaskStepRepository};
+use crate::domain::state_machine::context::TaskContext;
 use crate::domain::state_machine::mocks::MockTaskScheduler;
 use crate::domain::state_machine::services::TaskScheduler;
 use crate::domain::state_machine::{State, TaskStateMachine, TransitionHandler};
-use crate::domain::state_machine::context::TaskContext;
 use crate::infrastructure::memory::{MemoryPlanBranchRepository, MemoryTaskStepRepository};
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -85,7 +85,8 @@ async fn setup_for_step_reset(
         Arc::new(MockNotifier::new()) as Arc<dyn Notifier>,
         Arc::new(MockDependencyManager::new()) as Arc<dyn DependencyManager>,
         Arc::new(MockReviewStarter::new()) as Arc<dyn ReviewStarter>,
-        Arc::new(crate::application::MockChatService::new()) as Arc<dyn crate::application::ChatService>,
+        Arc::new(crate::application::MockChatService::new())
+            as Arc<dyn crate::application::ChatService>,
     )
     .with_task_scheduler(Arc::new(MockTaskScheduler::new()) as Arc<dyn TaskScheduler>)
     .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
@@ -239,12 +240,8 @@ async fn on_enter_reexecuting_resets_completed_steps_to_pending() {
 #[tokio::test]
 async fn on_enter_reexecuting_noop_when_steps_already_pending() {
     let task_id = "task-reexec-noop-1";
-    let (mut machine, _, event_emitter) = setup_for_step_reset(
-        task_id,
-        "ep-reexec-noop",
-        vec![TaskStepStatus::Pending],
-    )
-    .await;
+    let (mut machine, _, event_emitter) =
+        setup_for_step_reset(task_id, "ep-reexec-noop", vec![TaskStepStatus::Pending]).await;
 
     let handler = TransitionHandler::new(&mut machine);
     let _ = handler.on_enter(&State::ReExecuting).await;
@@ -318,7 +315,8 @@ async fn setup_with_metadata(
         Arc::new(MockNotifier::new()) as Arc<dyn Notifier>,
         Arc::new(MockDependencyManager::new()) as Arc<dyn DependencyManager>,
         Arc::new(MockReviewStarter::new()) as Arc<dyn ReviewStarter>,
-        Arc::new(crate::application::MockChatService::new()) as Arc<dyn crate::application::ChatService>,
+        Arc::new(crate::application::MockChatService::new())
+            as Arc<dyn crate::application::ChatService>,
     )
     .with_task_scheduler(Arc::new(MockTaskScheduler::new()) as Arc<dyn TaskScheduler>)
     .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
@@ -483,7 +481,10 @@ async fn task_not_found_fallback_resets_steps() {
 
     // Steps belong to missing_task_id (machine's context task_id)
     let missing_tid = TaskId::from_string(missing_task_id.to_string());
-    for (i, status) in [TaskStepStatus::Completed, TaskStepStatus::Failed].into_iter().enumerate() {
+    for (i, status) in [TaskStepStatus::Completed, TaskStepStatus::Failed]
+        .into_iter()
+        .enumerate()
+    {
         let mut step = TaskStep::new(
             missing_tid.clone(),
             format!("Step {}", i),
@@ -500,7 +501,8 @@ async fn task_not_found_fallback_resets_steps() {
         Arc::new(MockNotifier::new()) as Arc<dyn Notifier>,
         Arc::new(MockDependencyManager::new()) as Arc<dyn DependencyManager>,
         Arc::new(MockReviewStarter::new()) as Arc<dyn ReviewStarter>,
-        Arc::new(crate::application::MockChatService::new()) as Arc<dyn crate::application::ChatService>,
+        Arc::new(crate::application::MockChatService::new())
+            as Arc<dyn crate::application::ChatService>,
     )
     .with_task_scheduler(Arc::new(MockTaskScheduler::new()) as Arc<dyn TaskScheduler>)
     .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)

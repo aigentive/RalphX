@@ -31,7 +31,21 @@ const mockInvalidateQueries = vi.fn();
 const mockUpsertFinalizedMessageIntoConversationCache = vi.fn();
 const mockUpsertRenderReadyMessageIntoConversationCache = vi.fn();
 let mockQueryData: { messages: Array<{ id: string }> } | undefined = undefined;
-const mockGetQueryData = vi.fn(() => mockQueryData);
+const managedTeamCache = new Map<string, unknown>();
+const cacheKey = (key: unknown) => JSON.stringify(key);
+const mockGetQueryData = vi.fn((key?: unknown) =>
+  Array.isArray(key) && key[0] === "managed-team"
+    ? managedTeamCache.get(cacheKey(key))
+    : mockQueryData,
+);
+const mockSetQueryData = vi.fn((key: unknown, value: unknown) => {
+  const previous = managedTeamCache.get(cacheKey(key));
+  const next = typeof value === "function"
+    ? (value as (current: unknown) => unknown)(previous)
+    : value;
+  managedTeamCache.set(cacheKey(key), next);
+  return next;
+});
 const cacheSubscribers: Array<(event: { type: string; query: { queryKey: unknown[] } }) => void> = [];
 function fireCacheEvent(event: { type: string; query: { queryKey: unknown[] } }) {
   for (const fn of cacheSubscribers) fn(event);
@@ -60,6 +74,7 @@ vi.mock("@tanstack/react-query", () => ({
     invalidateQueries: mockInvalidateQueries,
     cancelQueries: mockCancelQueries,
     getQueryData: mockGetQueryData,
+    setQueryData: mockSetQueryData,
     getQueryCache: () => ({
       subscribe: (fn: (event: { type: string; query: { queryKey: unknown[] } }) => void) => {
         cacheSubscribers.push(fn);
@@ -106,7 +121,10 @@ vi.mock("@/lib/chat-context-registry", () => ({
 // ============================================================================
 
 import { useChatEvents } from "./useChatEvents";
+import { managedTeamKeys } from "./useManagedTeam";
 import { useChatStore } from "@/stores/chatStore";
+import settledThinkingPayload from "../../../src-tauri/tests/fixtures/agent_thinking_payload.settled.json";
+import codexSettledThinkingPayload from "../../../src-tauri/tests/fixtures/agent_thinking_payload.codex_settled.json";
 
 // ============================================================================
 // Helpers
@@ -117,10 +135,12 @@ const CTX_ID = "ctx-123";
 
 interface DefaultProps {
   activeConversationId: string | null;
+  activeAgentRunId?: string | null;
   contextId: string | null;
   contextType: ContextType | null;
   streamingToolCalls?: ToolCall[];
   streamingContentBlocks?: StreamingContentBlock[];
+  streamingTasks?: Map<string, StreamingTask>;
   setStreamingToolCalls: ReturnType<typeof vi.fn>;
   setStreamingContentBlocks: ReturnType<typeof vi.fn>;
   setStreamingTasks: ReturnType<typeof vi.fn>;
@@ -131,6 +151,7 @@ interface DefaultProps {
 function makeProps(overrides?: Partial<DefaultProps>): DefaultProps {
   return {
     activeConversationId: CONV_ID,
+    activeAgentRunId: null,
     contextId: CTX_ID,
     contextType: "task_execution" as ContextType,
     setStreamingToolCalls: vi.fn(),
@@ -185,6 +206,8 @@ describe("useChatEvents", () => {
     mockUpsertRenderReadyMessageIntoConversationCache.mockReturnValue(false);
     mockCancelQueries.mockClear();
     mockGetQueryData.mockClear();
+    mockSetQueryData.mockClear();
+    managedTeamCache.clear();
     mockQueryData = undefined;
     cacheSubscribers.length = 0;
     useChatStore.setState({
@@ -203,6 +226,122 @@ describe("useChatEvents", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("patches only current Team member events and rejects stale sequence updates", () => {
+    const statusKey = managedTeamKeys.status(CONV_ID);
+    mockSetQueryData(statusKey, {
+      session: { id: "team-1" },
+      members: [
+        {
+          id: "member-1",
+          teamId: "team-1",
+          name: "Scout",
+          normalizedName: "scout",
+          canonicalAgentName: "ralphx-general-explorer",
+          roleSummary: "Investigates focused questions.",
+          status: "idle",
+          generation: 2,
+        },
+      ],
+    });
+    renderAndClear(makeProps({ activeAgentRunId: "run-current" }));
+
+    act(() => {
+      fireEvent("team:member_updated", {
+        conversation_id: CONV_ID,
+        parent_run_id: "run-current",
+        sequence: 7,
+        member: {
+          id: "member-1",
+          teamId: "team-1",
+          name: "Scout",
+          normalizedName: "scout",
+          canonicalAgentName: "ralphx-general-explorer",
+          roleSummary: "Investigates focused questions.",
+          status: "working",
+          generation: 3,
+        },
+      });
+      fireEvent("team:member_updated", {
+        conversation_id: CONV_ID,
+        parent_run_id: "run-current",
+        sequence: 6,
+        member: {
+          id: "member-1",
+          teamId: "team-1",
+          name: "Scout",
+          normalizedName: "scout",
+          canonicalAgentName: "ralphx-general-explorer",
+          roleSummary: "Investigates focused questions.",
+          status: "failed",
+          generation: 4,
+        },
+      });
+      fireEvent("team:member_updated", {
+        conversation_id: "another-conversation",
+        parent_run_id: "run-current",
+        sequence: 8,
+        member: {
+          id: "member-1",
+          teamId: "team-1",
+          name: "Scout",
+          normalizedName: "scout",
+          canonicalAgentName: "ralphx-general-explorer",
+          roleSummary: "Investigates focused questions.",
+          status: "failed",
+          generation: 4,
+        },
+      });
+    });
+
+    expect(
+      (managedTeamCache.get(cacheKey(statusKey)) as { members: Array<{ status: string }> })
+        .members[0]?.status,
+    ).toBe("working");
+  });
+
+  it("rejects delegated lifecycle events from a stale parent run", () => {
+    const props = makeProps({ activeAgentRunId: "parent-run-current" });
+    renderAndClear(props);
+
+    act(() => {
+      fireEvent("agent:task_started", {
+        tool_use_id: "delegate-old",
+        tool_name: "delegate_start",
+        run_id: "parent-run-stale",
+        conversation_id: CONV_ID,
+        context_id: CTX_ID,
+        delegated_job_id: "job-old",
+      });
+    });
+
+    expect(props.setStreamingTasks).not.toHaveBeenCalled();
+
+    act(() => {
+      fireEvent("agent:task_started", {
+        tool_use_id: "delegate-missing-run",
+        tool_name: "delegate_start",
+        conversation_id: CONV_ID,
+        context_id: CTX_ID,
+        delegated_job_id: "job-missing-run",
+      });
+    });
+
+    expect(props.setStreamingTasks).not.toHaveBeenCalled();
+
+    act(() => {
+      fireEvent("agent:task_started", {
+        tool_use_id: "delegate-current",
+        tool_name: "delegate_start",
+        run_id: "parent-run-current",
+        conversation_id: CONV_ID,
+        context_id: CTX_ID,
+        delegated_job_id: "job-current",
+      });
+    });
+
+    expect(props.setStreamingTasks).toHaveBeenCalledTimes(1);
   });
 
   // --------------------------------------------------------------------------
@@ -943,6 +1082,323 @@ describe("useChatEvents", () => {
       expect(result[0]).toEqual({ type: "text", text: "First block" });
       expect(result[1]).toMatchObject({ type: "text", text: "Second block" });
     });
+
+    it("creates a distinct text block for a new block_index even when the chunk is a continuation", () => {
+      const props = makeProps();
+      renderAndClear(props);
+      act(() => fireEvent("agent:chunk", {
+        text: "Second segment", conversation_id: CONV_ID, context_id: CTX_ID,
+        append_to_previous: true, block_index: 2, seq: 4,
+      }));
+
+      const result = executeUpdater<StreamingContentBlock[]>(props.setStreamingContentBlocks, [
+        { type: "text", text: "First segment", blockIndex: 0 },
+      ] as StreamingContentBlock[]);
+      expect(result[0]).toEqual({ type: "text", text: "First segment", blockIndex: 0 });
+      // New indexed blocks carry display-only receivedAt per the payload contract.
+      expect(result[1]).toMatchObject({ type: "text", text: "Second segment", blockIndex: 2, seq: 4 });
+      expect(result).toHaveLength(2);
+    });
+
+    it("appends chunks with the same block_index and retains the greatest sequence", () => {
+      const props = makeProps();
+      renderAndClear(props);
+      act(() => fireEvent("agent:chunk", {
+        text: " tail", conversation_id: CONV_ID, context_id: CTX_ID,
+        append_to_previous: true, block_index: 2, seq: 9,
+      }));
+      const result = executeUpdater<StreamingContentBlock[]>(props.setStreamingContentBlocks, [
+        { type: "text", text: "Head", blockIndex: 2, seq: 7 },
+      ] as StreamingContentBlock[]);
+      expect(result).toEqual([{ type: "text", text: "Head tail", blockIndex: 2, seq: 9 }]);
+    });
+
+    it("drops a chunk whose sequence is not newer than the last seen chunk sequence", () => {
+      const props = makeProps();
+      renderAndClear(props);
+      act(() => fireEvent("agent:chunk", {
+        text: "Fresh", conversation_id: CONV_ID, context_id: CTX_ID,
+        append_to_previous: true, block_index: 0, seq: 5,
+      }));
+      act(() => fireEvent("agent:chunk", {
+        text: " stale", conversation_id: CONV_ID, context_id: CTX_ID,
+        append_to_previous: true, block_index: 0, seq: 4,
+      }));
+      // The stale/duplicate chunk must not produce a state update at all.
+      // Block seq values are not the guard: recovered anchors carry
+      // timelineSequence, which is not comparable to chunk seq.
+      expect(props.setStreamingContentBlocks).toHaveBeenCalledTimes(1);
+      expect(executeUpdater<StreamingContentBlock[]>(props.setStreamingContentBlocks, [])).toEqual([
+        { type: "text", text: "Fresh", blockIndex: 0, seq: 5, receivedAt: expect.any(Number) },
+      ]);
+    });
+
+    it("appends a fresh chunk to a recovered anchor whose timelineSequence exceeds the chunk seq", () => {
+      const props = makeProps();
+      renderAndClear(props);
+      act(() => fireEvent("agent:chunk", {
+        text: " tail", conversation_id: CONV_ID, context_id: CTX_ID,
+        append_to_previous: true, block_index: 1, seq: 3,
+      }));
+      const result = executeUpdater<StreamingContentBlock[]>(props.setStreamingContentBlocks, [
+        { type: "text", text: "Recovered", blockIndex: 1, seq: 41 },
+      ] as StreamingContentBlock[]);
+      expect(result).toEqual([{ type: "text", text: "Recovered tail", blockIndex: 1, seq: 41 }]);
+    });
+
+    it("keeps the last-text-block heuristic for chunks without block_index", () => {
+      const props = makeProps();
+      renderAndClear(props);
+      act(() => fireEvent("agent:chunk", {
+        text: " legacy", conversation_id: CONV_ID, context_id: CTX_ID, append_to_previous: true,
+      }));
+      expect(executeUpdater<StreamingContentBlock[]>(props.setStreamingContentBlocks, [
+        { type: "text", text: "Legacy" },
+      ])).toEqual([{ type: "text", text: "Legacy legacy" }]);
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // 3b. Streaming thinking (via agent:thinking events)
+  // --------------------------------------------------------------------------
+  describe("streaming thinking", () => {
+    it("creates a new thinking block from an agent:thinking event", () => {
+      const props = makeProps();
+      renderAndClear(props);
+
+      act(() => {
+        fireEvent("agent:thinking", {
+          text: "Let me consider",
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+          block_index: 0,
+          append_to_previous: false,
+        });
+      });
+
+      expect(props.setStreamingContentBlocks).toHaveBeenCalledTimes(1);
+      const result = executeUpdater<StreamingContentBlock[]>(
+        props.setStreamingContentBlocks,
+        [],
+      );
+      expect(result).toHaveLength(1);
+      expect(result[0]).toMatchObject({ type: "thinking", text: "Let me consider", blockIndex: 0 });
+    });
+
+    it("appends text to an existing thinking block with the same block_index", () => {
+      const props = makeProps();
+      renderAndClear(props);
+
+      act(() => {
+        fireEvent("agent:thinking", {
+          text: " more",
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+          block_index: 0,
+          append_to_previous: true,
+        });
+      });
+
+      const result = executeUpdater<StreamingContentBlock[]>(
+        props.setStreamingContentBlocks,
+        [{ type: "thinking", text: "Initial", blockIndex: 0 } as StreamingContentBlock],
+      );
+      expect(result).toHaveLength(1);
+      expect(result[0]).toMatchObject({ type: "thinking", text: "Initial more" });
+    });
+
+    it("preserves accumulated reasoning from the committed settled payload contract", () => {
+      const props = makeProps();
+      renderAndClear(props);
+
+      act(() => {
+        fireEvent("agent:thinking", {
+          ...settledThinkingPayload,
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+        });
+      });
+
+      const result = executeUpdater<StreamingContentBlock[]>(
+        props.setStreamingContentBlocks,
+        [{ type: "thinking", text: "Done thinking", blockIndex: 0 }],
+      );
+      expect(result[0]).toMatchObject({
+        type: "thinking",
+        text: "Done thinking",
+        durationMs: 1500,
+        isSettled: true,
+      });
+    });
+
+    it("merges optional settled reasoning tokens without dropping a known duration", () => {
+      const props = makeProps();
+      renderAndClear(props);
+
+      act(() => fireEvent("agent:thinking", {
+        ...codexSettledThinkingPayload,
+        conversation_id: CONV_ID,
+        context_id: CTX_ID,
+        reasoning_tokens: 321,
+        duration_ms: 1_500,
+        estimated_tokens: 400,
+      }));
+
+      expect(executeUpdater<StreamingContentBlock[]>(props.setStreamingContentBlocks, [
+        { type: "thinking", text: "Done thinking", blockIndex: 0 },
+      ])).toMatchObject([{
+        type: "thinking", text: "Done thinking", durationMs: 1_500,
+        reasoningTokens: 321, estimatedTokens: 400, isSettled: true,
+      }]);
+    });
+
+    it("does not create an empty thinking block from an unmatched settle event", () => {
+      const props = makeProps();
+      renderAndClear(props);
+
+      act(() => fireEvent("agent:thinking", {
+        text: "", conversation_id: CONV_ID, context_id: CTX_ID,
+        block_index: 8, duration_ms: 1_500, is_settled: true, append_to_previous: true,
+      }));
+
+      const existing: StreamingContentBlock[] = [{ type: "text", text: "Already visible" }];
+      expect(executeUpdater<StreamingContentBlock[]>(props.setStreamingContentBlocks, existing)).toBe(existing);
+    });
+
+    it("rejects a thinking event from a stale run", () => {
+      const props = makeProps({ activeAgentRunId: "current-run" });
+      renderAndClear(props);
+
+      act(() => {
+        fireEvent("agent:thinking", {
+          text: "Stale thought",
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+          block_index: 0,
+          run_id: "old-run",
+        });
+      });
+
+      expect(props.setStreamingContentBlocks).not.toHaveBeenCalled();
+    });
+
+    it("creates one empty synthetic thinking block for token-only progress and updates it", () => {
+      const props = makeProps({ activeAgentRunId: "current-run" });
+      renderAndClear(props);
+
+      act(() => fireEvent("agent:thinking_progress", {
+        estimated_tokens: 1_200, conversation_id: CONV_ID, context_id: CTX_ID,
+        context_type: "task_execution", run_id: "current-run",
+      }));
+      const synthetic = executeUpdater<StreamingContentBlock[]>(props.setStreamingContentBlocks, []);
+      expect(synthetic).toMatchObject([{ type: "thinking", text: "", estimatedTokens: 1_200 }]);
+
+      act(() => fireEvent("agent:thinking_progress", {
+        estimated_tokens: 2_000, conversation_id: CONV_ID, context_id: CTX_ID,
+        context_type: "task_execution", run_id: "current-run",
+      }));
+      const updated = executeUpdater<StreamingContentBlock[]>(props.setStreamingContentBlocks, synthetic, 1);
+      expect(updated).toEqual([{ ...synthetic[0], estimatedTokens: 2_000, receivedAt: expect.any(Number) }]);
+    });
+
+    it("attaches token progress to an existing thinking block and rejects stale runs", () => {
+      const props = makeProps({ activeAgentRunId: "current-run" });
+      renderAndClear(props);
+
+      act(() => fireEvent("agent:thinking_progress", {
+        estimated_tokens: 700, conversation_id: CONV_ID, context_id: CTX_ID,
+        context_type: "task_execution", run_id: "old-run",
+      }));
+      expect(props.setStreamingContentBlocks).not.toHaveBeenCalled();
+
+      act(() => fireEvent("agent:thinking_progress", {
+        estimated_tokens: 700, conversation_id: CONV_ID, context_id: CTX_ID,
+        context_type: "task_execution", run_id: "current-run",
+      }));
+      const updated = executeUpdater<StreamingContentBlock[]>(props.setStreamingContentBlocks, [
+        { type: "thinking", text: "visible", blockIndex: 4 },
+      ]);
+      expect(updated).toMatchObject([{ type: "thinking", text: "visible", blockIndex: 4, estimatedTokens: 700 }]);
+    });
+
+    it("attaches token progress to the unsettled thinking block, not the last settled one", () => {
+      const props = makeProps({ activeAgentRunId: "current-run" });
+      renderAndClear(props);
+
+      act(() => fireEvent("agent:thinking_progress", {
+        estimated_tokens: 700, conversation_id: CONV_ID, context_id: CTX_ID,
+        context_type: "task_execution", run_id: "current-run",
+      }));
+
+      const updated = executeUpdater<StreamingContentBlock[]>(props.setStreamingContentBlocks, [
+        { type: "thinking", text: "Finished", blockIndex: 0, isSettled: true, estimatedTokens: 50 },
+        { type: "tool_use", toolCall: { id: "tool-1", name: "Read", arguments: {} } },
+        { type: "thinking", text: "Still working", blockIndex: 2, isSettled: false },
+        { type: "thinking", text: "Earlier settled", blockIndex: 3, isSettled: true },
+      ]);
+
+      expect(updated[0]).toMatchObject({ estimatedTokens: 50 });
+      expect(updated[2]).toMatchObject({ estimatedTokens: 700 });
+      expect(updated[3]).not.toHaveProperty("estimatedTokens");
+    });
+
+    it("creates a fresh synthetic block when every thinking block is settled", () => {
+      const props = makeProps({ activeAgentRunId: "current-run" });
+      renderAndClear(props);
+
+      act(() => fireEvent("agent:thinking_progress", {
+        estimated_tokens: 700, conversation_id: CONV_ID, context_id: CTX_ID,
+        context_type: "task_execution", run_id: "current-run",
+      }));
+
+      const updated = executeUpdater<StreamingContentBlock[]>(props.setStreamingContentBlocks, [
+        { type: "thinking", text: "Finished", blockIndex: 0, isSettled: true },
+      ]);
+
+      expect(updated).toMatchObject([
+        { type: "thinking", text: "Finished", blockIndex: 0, isSettled: true },
+        { type: "thinking", text: "", blockIndex: Number.MIN_SAFE_INTEGER, estimatedTokens: 700 },
+      ]);
+    });
+
+    it("replaces synthetic progress with text while retaining its token estimate", () => {
+      const props = makeProps();
+      renderAndClear(props);
+
+      act(() => fireEvent("agent:thinking", {
+        text: "Visible thought", conversation_id: CONV_ID, context_id: CTX_ID,
+        block_index: 4, append_to_previous: false,
+      }));
+      const result = executeUpdater<StreamingContentBlock[]>(props.setStreamingContentBlocks, [{
+        type: "thinking", text: "", blockIndex: Number.MIN_SAFE_INTEGER, estimatedTokens: 1_200,
+      }]);
+
+      expect(result).toEqual([{
+        type: "thinking", text: "Visible thought", blockIndex: 4, estimatedTokens: 1_200,
+        receivedAt: expect.any(Number),
+      }]);
+    });
+
+    it("adopts the last unsettled synthetic thinking block when real text arrives", () => {
+      const props = makeProps();
+      renderAndClear(props);
+
+      act(() => fireEvent("agent:thinking", {
+        text: "Second thought", conversation_id: CONV_ID, context_id: CTX_ID,
+        block_index: 4, append_to_previous: false,
+      }));
+      const result = executeUpdater<StreamingContentBlock[]>(props.setStreamingContentBlocks, [
+        { type: "thinking", text: "First thought", blockIndex: Number.MIN_SAFE_INTEGER, isSettled: true },
+        { type: "tool_use", toolCall: { id: "tool-1", name: "Read", arguments: {} } },
+        { type: "thinking", text: "", blockIndex: Number.MIN_SAFE_INTEGER, estimatedTokens: 1_200 },
+      ]);
+
+      expect(result).toMatchObject([
+        { type: "thinking", text: "First thought", blockIndex: Number.MIN_SAFE_INTEGER, isSettled: true },
+        { type: "tool_use", toolCall: { id: "tool-1", name: "Read", arguments: {} } },
+        { type: "thinking", text: "Second thought", blockIndex: 4, estimatedTokens: 1_200 },
+      ]);
+    });
   });
 
   // --------------------------------------------------------------------------
@@ -1660,30 +2116,6 @@ describe("useChatEvents", () => {
     });
   });
 
-  describe("agent:usage_updated", () => {
-    it("invalidates conversation stats without refetching the transcript during a live turn", () => {
-      const props = makeProps();
-      renderAndClear(props);
-
-      act(() => {
-        fireEvent("agent:usage_updated", {
-          conversation_id: CONV_ID,
-          context_id: CTX_ID,
-        });
-      });
-
-      expect(mockInvalidateQueries).toHaveBeenCalledWith({
-        queryKey: ["chat", "conversation-stats", CONV_ID],
-      });
-      expect(mockInvalidateQueries).not.toHaveBeenCalledWith({
-        queryKey: ["chat", "conversations", CONV_ID],
-      });
-      expect(mockInvalidateQueries).not.toHaveBeenCalledWith({
-        queryKey: ["chat", "conversations", CONV_ID, "history"],
-      });
-    });
-  });
-
   // --------------------------------------------------------------------------
   // 6. Error clears streaming tool calls
   // --------------------------------------------------------------------------
@@ -1822,7 +2254,20 @@ describe("useChatEvents", () => {
     });
 
     it("should enrich delegated streaming tasks from backend-native agent:task_started payloads", () => {
-      const props = makeProps();
+      const prevMap = new Map<string, StreamingTask>([
+        ["toolu_delegate_live_001", {
+          toolUseId: "toolu_delegate_live_001",
+          toolName: "delegate_start",
+          description: "Delegated specialist",
+          subagentType: "delegated",
+          model: "unknown",
+          status: "running",
+          startedAt: 12345,
+          delegatedJobId: "job-live-123",
+          childToolCalls: [],
+        }],
+      ]);
+      const props = makeProps({ streamingTasks: prevMap });
       renderAndClear(props);
 
       act(() => {
@@ -1848,19 +2293,6 @@ describe("useChatEvents", () => {
 
       expect(props.setStreamingTasks).toHaveBeenCalledTimes(1);
 
-      const prevMap = new Map<string, StreamingTask>([
-        ["toolu_delegate_live_001", {
-          toolUseId: "toolu_delegate_live_001",
-          toolName: "delegate_start",
-          description: "Delegated specialist",
-          subagentType: "delegated",
-          model: "unknown",
-          status: "running",
-          startedAt: 12345,
-          delegatedJobId: "job-live-123",
-          childToolCalls: [],
-        }],
-      ]);
       const nextMap = executeUpdater<Map<string, StreamingTask>>(
         props.setStreamingTasks,
         prevMap,
@@ -1869,7 +2301,7 @@ describe("useChatEvents", () => {
       const delegated = nextMap.get("toolu_delegate_live_001");
       expect(delegated).toBeDefined();
       expect(delegated!.startedAt).toBe(12345);
-      expect(delegated!.description).toBe("ralphx-execution-reviewer");
+      expect(delegated!.description).toBe("Delegated specialist");
       expect(delegated!.model).toBe("gpt-5.4");
       expect(delegated!.providerHarness).toBe("codex");
       expect(delegated!.logicalModel).toBe("gpt-5.4");
@@ -1959,7 +2391,6 @@ describe("useChatEvents", () => {
           cache_creation_tokens: 6,
           cache_read_tokens: 2,
           estimated_usd: 0.12,
-          text_output: "Delegated reviewer found a blocking issue",
           error: "Delegated reviewer failed validation",
           conversation_id: CONV_ID,
           context_id: CTX_ID,
@@ -2007,14 +2438,14 @@ describe("useChatEvents", () => {
       expect(delegated!.cacheCreationTokens).toBe(6);
       expect(delegated!.cacheReadTokens).toBe(2);
       expect(delegated!.estimatedUsd).toBe(0.12);
-      expect(delegated!.textOutput).toBe("Delegated reviewer found a blocking issue");
+      expect(delegated!.textOutput).toBe("Delegated reviewer failed validation");
       expect(delegated!.delegatedSessionId).toBe("delegated-session-456");
       expect(delegated!.delegatedConversationId).toBe("delegated-conv-456");
       expect(delegated!.delegatedAgentRunId).toBe("run-xyz");
       expect(delegated!.completedAt).toBeDefined();
     });
 
-    it("should NOT subscribe to task events when supportsSubagentTasks is false", () => {
+    it("subscribes universally but ignores non-delegated task events when supportsSubagentTasks is false", () => {
       mockContextConfig = {
         supportsStreamingText: false,
         supportsSubagentTasks: false,
@@ -2022,12 +2453,149 @@ describe("useChatEvents", () => {
       };
 
       const props = makeProps({ contextType: "task" as ContextType });
-      renderHook(() => useChatEvents(props));
+      renderAndClear(props);
 
       const startedHandlers = subscriptions.get("agent:task_started") ?? [];
       const completedHandlers = subscriptions.get("agent:task_completed") ?? [];
-      expect(startedHandlers).toHaveLength(0);
-      expect(completedHandlers).toHaveLength(0);
+      expect(startedHandlers.length).toBeGreaterThan(0);
+      expect(completedHandlers.length).toBeGreaterThan(0);
+
+      act(() => {
+        fireEvent("agent:task_started", {
+          tool_use_id: "legacy-task",
+          tool_name: "Task",
+          subagent_type: "Explore",
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+        });
+      });
+      expect(props.setStreamingTasks).not.toHaveBeenCalled();
+      expect(props.setStreamingContentBlocks).not.toHaveBeenCalled();
+    });
+
+    const nativeDelegationContextMatrix = (
+      [
+        ["ideation", true],
+        ["task", false],
+        ["project", false],
+        ["task_execution", true],
+        ["review", true],
+        ["merge", true],
+        ["branch_update", false],
+        ["delegation", true],
+      ] as const
+    ).flatMap(([contextType, supportsSubagentTasks]) => [
+      [contextType, "Claude", "mcp__ralphx__delegate_start", supportsSubagentTasks] as const,
+      [contextType, "Codex", "ralphx::delegate_start", supportsSubagentTasks] as const,
+    ]);
+
+    it.each(nativeDelegationContextMatrix)(
+      "%s context promotes native delegation from %s provider events",
+      (contextType, _provider, toolName, supportsSubagentTasks) => {
+      mockContextConfig = {
+        supportsStreamingText: true,
+        supportsSubagentTasks,
+        supportsDiffViews: true,
+      };
+      const props = makeProps({ contextType: contextType as ContextType });
+      renderAndClear(props);
+
+      act(() => {
+        fireEvent("agent:tool_call", {
+          tool_name: toolName,
+          tool_id: "delegate-any-context",
+          arguments: { agent_name: "ralphx-general-explorer", prompt: "Inspect chat" },
+          result: { job_id: "job-any-context", status: "running" },
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+        });
+      });
+
+      expect(props.setStreamingToolCalls).not.toHaveBeenCalled();
+      const tasks = executeUpdater<Map<string, StreamingTask>>(
+        props.setStreamingTasks,
+        new Map(),
+      );
+      expect(tasks.get("delegate-any-context")).toMatchObject({
+        toolName,
+        delegatedJobId: "job-any-context",
+        subagentType: "delegated",
+      });
+      },
+    );
+
+    it("accepts backend-native delegated lifecycle events in contexts without legacy task support", () => {
+      mockContextConfig = {
+        supportsStreamingText: true,
+        supportsSubagentTasks: false,
+        supportsDiffViews: true,
+      };
+      const props = makeProps({ contextType: "project" as ContextType });
+      renderAndClear(props);
+
+      act(() => {
+        fireEvent("agent:task_started", {
+          tool_use_id: "delegated-lifecycle",
+          tool_name: "delegate_start",
+          subagent_type: "delegated",
+          delegated_job_id: "job-lifecycle",
+          delegated_conversation_id: "child-conversation",
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+        });
+      });
+
+      const tasks = executeUpdater<Map<string, StreamingTask>>(
+        props.setStreamingTasks,
+        new Map(),
+      );
+      expect(tasks.get("delegated-lifecycle")).toMatchObject({
+        delegatedJobId: "job-lifecycle",
+        delegatedConversationId: "child-conversation",
+      });
+    });
+
+    it("creates one settled task and marker from a completion-only delegated event", () => {
+      const props = makeProps({ activeAgentRunId: "parent-run-current" });
+      renderAndClear(props);
+
+      act(() => {
+        fireEvent("agent:task_completed", {
+          tool_use_id: "delegate-job:job-completion-only",
+          tool_name: "delegate_start",
+          subagent_type: "delegated",
+          delegated_job_id: "job-completion-only",
+          status: "completed",
+          text_output: "completion-only output",
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+          run_id: "parent-run-current",
+          seq: 9,
+        });
+      });
+
+      const tasks = executeUpdater<Map<string, StreamingTask>>(
+        props.setStreamingTasks,
+        new Map(),
+      );
+      const blocks = executeUpdater<StreamingContentBlock[]>(
+        props.setStreamingContentBlocks,
+        [],
+      );
+
+      expect([...tasks.keys()]).toEqual(["delegate-job:job-completion-only"]);
+      expect(tasks.get("delegate-job:job-completion-only")).toMatchObject({
+        status: "completed",
+        delegatedJobId: "job-completion-only",
+        textOutput: "completion-only output",
+      });
+      expect(blocks).toEqual([
+        expect.objectContaining({
+          type: "task",
+          toolUseId: "delegate-job:job-completion-only",
+          seq: 9,
+        }),
+      ]);
     });
 
     it("should create a delegated placeholder task immediately on delegate_start tool calls", () => {
@@ -2072,6 +2640,92 @@ describe("useChatEvents", () => {
         subagentType: "delegated",
         logicalModel: "gpt-5.4",
       });
+    });
+
+    it("coalesces the observed provider placeholder and synthetic lifecycle sequence", () => {
+      const props = makeProps({
+        activeAgentRunId: "parent-run-1",
+        streamingTasks: new Map(),
+        streamingContentBlocks: [],
+      });
+      renderAndClear(props);
+      let tasks = new Map<string, StreamingTask>();
+      let blocks: StreamingContentBlock[] = [];
+      let taskCallIndex = 0;
+      let blockCallIndex = 0;
+      const replay = () => {
+        while (taskCallIndex < props.setStreamingTasks.mock.calls.length) {
+          tasks = executeUpdater(props.setStreamingTasks, tasks, taskCallIndex);
+          taskCallIndex += 1;
+        }
+        while (blockCallIndex < props.setStreamingContentBlocks.mock.calls.length) {
+          blocks = executeUpdater(props.setStreamingContentBlocks, blocks, blockCallIndex);
+          blockCallIndex += 1;
+        }
+        props.streamingTasks = tasks;
+        props.streamingContentBlocks = blocks;
+      };
+
+      act(() => {
+        fireEvent("agent:tool_call", {
+          tool_name: "delegate_start",
+          tool_id: "provider-tool",
+          arguments: {
+            agent_name: "ralphx-general-explorer",
+            title: "Trace stale Claude MCP collision handling",
+            prompt: "Trace the collision",
+          },
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+          run_id: "parent-run-1",
+        });
+      });
+      replay();
+
+      act(() => {
+        fireEvent("agent:task_started", {
+          tool_use_id: "delegate-job:job-1",
+          tool_name: "delegate_start",
+          description: "ralphx-general-explorer",
+          subagent_type: "delegated",
+          delegated_job_id: "job-1",
+          delegated_session_id: "child-session-1",
+          delegated_agent_run_id: "child-run-1",
+          provider_harness: "codex",
+          model: "gpt-5.4",
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+          run_id: "parent-run-1",
+          seq: 5,
+        });
+      });
+      replay();
+
+      act(() => {
+        fireEvent("agent:tool_call", {
+          tool_name: "result:provider-tool",
+          arguments: {},
+          result: { job_id: "job-1", status: "running" },
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+          run_id: "parent-run-1",
+          seq: 6,
+        });
+      });
+      replay();
+
+      expect([...tasks.keys()]).toEqual(["provider-tool"]);
+      expect(tasks.get("provider-tool")).toMatchObject({
+        description: "Trace stale Claude MCP collision handling",
+        delegatedJobId: "job-1",
+        delegatedSessionId: "child-session-1",
+        delegatedAgentRunId: "child-run-1",
+        providerHarness: "codex",
+        model: "gpt-5.4",
+      });
+      expect(blocks.filter((block) => block.type === "task")).toEqual([
+        expect.objectContaining({ type: "task", toolUseId: "provider-tool" }),
+      ]);
     });
 
     it("should create a delegated placeholder task for namespaced delegate_start tool calls", () => {
@@ -2157,9 +2811,20 @@ describe("useChatEvents", () => {
       });
     });
 
-    it("should ignore delegate_wait tool calls for delegated task state", () => {
+    it("should settle the original delegated task from delegate_wait by job id", () => {
       const props = makeProps();
       renderAndClear(props);
+
+      act(() => {
+        fireEvent("agent:tool_call", {
+          tool_name: "delegate_start",
+          tool_id: "call_delegate_start_001",
+          arguments: { agent_name: "ralphx-general-explorer", prompt: "Inspect" },
+          result: [{ type: "text", text: JSON.stringify({ job_id: "job-123", status: "running" }) }],
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+        });
+      });
 
       act(() => {
         fireEvent("agent:tool_call", {
@@ -2195,8 +2860,71 @@ describe("useChatEvents", () => {
       });
 
       expect(props.setStreamingToolCalls).not.toHaveBeenCalled();
-      expect(props.setStreamingTasks).not.toHaveBeenCalled();
-      expect(props.setStreamingContentBlocks).not.toHaveBeenCalled();
+      let tasks = new Map<string, StreamingTask>();
+      for (const call of props.setStreamingTasks.mock.calls) {
+        const updater = call[0];
+        tasks = typeof updater === "function" ? updater(tasks) : updater;
+      }
+      expect(tasks).toHaveLength(1);
+      expect(tasks.get("call_delegate_start_001")).toMatchObject({
+        delegatedJobId: "job-123",
+        status: "completed",
+        providerHarness: "codex",
+        upstreamProvider: "openai",
+        logicalModel: "gpt-5.4",
+        logicalEffort: "high",
+        totalTokens: 140,
+        textOutput: "Delegated review finished",
+      });
+    });
+
+    it("should enrich a Codex-shaped delegate start from result:call_*", () => {
+      const props = makeProps();
+      renderAndClear(props);
+
+      act(() => {
+        fireEvent("agent:tool_call", {
+          tool_name: "delegate_start",
+          tool_id: "call_delegate_002",
+          arguments: { agent_name: "ralphx-general-explorer", prompt: "Inspect" },
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+        });
+      });
+      act(() => {
+        fireEvent("agent:tool_call", {
+          tool_name: "result:call_delegate_002",
+          arguments: {},
+          result: [{
+            type: "text",
+            text: JSON.stringify({
+              job_id: "job-call-shape",
+              status: "running",
+              delegated_conversation_id: "delegated-conversation",
+              delegated_agent_run_id: "delegated-run",
+              harness: "codex",
+              logical_model: "gpt-5.4",
+              logical_effort: "medium",
+            }),
+          }],
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+        });
+      });
+
+      let tasks = new Map<string, StreamingTask>();
+      for (const call of props.setStreamingTasks.mock.calls) {
+        const updater = call[0];
+        tasks = typeof updater === "function" ? updater(tasks) : updater;
+      }
+      expect(tasks.get("call_delegate_002")).toMatchObject({
+        delegatedJobId: "job-call-shape",
+        delegatedConversationId: "delegated-conversation",
+        delegatedAgentRunId: "delegated-run",
+        providerHarness: "codex",
+        logicalModel: "gpt-5.4",
+        logicalEffort: "medium",
+      });
     });
   });
 

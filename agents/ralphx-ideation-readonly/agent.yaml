@@ -12,6 +12,7 @@ capabilities:
     - delegate_start
     - delegate_wait
     - delegate_cancel
+    - delegate_park
     - get_plan_verification
     - search_memories
     - get_memory
@@ -35,10 +36,4 @@ delegation:
     - ralphx-ideation-specialist-backend
     - ralphx-ideation-specialist-frontend
     - ralphx-ideation-specialist-infra
-    - ralphx-ideation-specialist-ux
-    - ralphx-ideation-specialist-code-quality
-    - ralphx-ideation-specialist-prompt-quality
-    - ralphx-ideation-specialist-intent
-    - ralphx-ideation-specialist-pipeline-safety
-    - ralphx-ideation-specialist-state-machine
     - ralphx-general-explorer

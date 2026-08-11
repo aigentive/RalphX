@@ -198,6 +198,49 @@ impl ProjectRepository for SqliteProjectRepository {
             .await
     }
 
+    async fn delete_with_dependent_sweep(&self, id: &ProjectId) -> AppResult<()> {
+        let project_id = id.as_str().to_string();
+        self.db
+            .run_transaction(move |conn| {
+                conn.execute(
+                    "UPDATE chat_conversations
+                     SET persona_id = NULL, builder_draft_id = NULL,
+                         builder_result_persona_id = NULL
+                     WHERE (context_type = 'project' AND context_id = ?1)
+                        OR persona_id IN (SELECT id FROM personas WHERE project_id = ?1)
+                        OR builder_draft_id IN (SELECT id FROM personas WHERE project_id = ?1)
+                        OR builder_result_persona_id IN (
+                            SELECT id FROM personas WHERE project_id = ?1
+                        )",
+                    [&project_id],
+                )?;
+                conn.execute(
+                    "WITH RECURSIVE draft_chains(id) AS (
+                         SELECT artifact_id FROM personas
+                         WHERE project_id = ?1 AND status = 'draft' AND artifact_id IS NOT NULL
+                         UNION
+                         SELECT artifacts.previous_version_id
+                         FROM artifacts JOIN draft_chains ON artifacts.id = draft_chains.id
+                         WHERE artifacts.previous_version_id IS NOT NULL
+                     )
+                     DELETE FROM artifacts WHERE id IN (SELECT id FROM draft_chains)",
+                    [&project_id],
+                )?;
+                conn.execute(
+                    "DELETE FROM personas WHERE project_id = ?1 AND status = 'draft'",
+                    [&project_id],
+                )?;
+                conn.execute(
+                    "UPDATE personas SET status = 'archived', updated_at = ?2
+                     WHERE project_id = ?1 AND status = 'active'",
+                    rusqlite::params![project_id, Utc::now().to_rfc3339()],
+                )?;
+                conn.execute("DELETE FROM projects WHERE id = ?1", [&project_id])?;
+                Ok(())
+            })
+            .await
+    }
+
     async fn get_by_working_directory(&self, path: &str) -> AppResult<Option<Project>> {
         let path = path.to_string();
         self.db

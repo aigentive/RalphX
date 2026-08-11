@@ -18,14 +18,9 @@ function fireKeyDown(key: string, metaKey = true) {
   window.dispatchEvent(event);
 }
 
-function fireKeyDownWithShift(key: string) {
-  const event = new KeyboardEvent("keydown", { key, metaKey: true, shiftKey: true, bubbles: true });
-  window.dispatchEvent(event);
-}
-
 function makeProps(overrides: Partial<Parameters<typeof useAppKeyboardShortcuts>[0]> = {}) {
   return {
-    currentView: "kanban" as const,
+    currentView: "agents" as const,
     setCurrentView: vi.fn(),
     ...overrides,
   };
@@ -42,10 +37,8 @@ describe("useAppKeyboardShortcuts", () => {
 
   it.each([
     ["1", "agents"],
-    ["2", "ideation"],
-    ["3", "graph"],
-    ["4", "kanban"],
-    ["5", "insights"],
+    ["2", "automations"],
+    ["3", "insights"],
   ] as const)("⌘%s navigates to %s", (key, view) => {
     const setCurrentView = vi.fn();
 
@@ -64,13 +57,13 @@ describe("useAppKeyboardShortcuts", () => {
       useAppKeyboardShortcuts(makeProps({ currentView: "agents", setCurrentView }))
     );
 
-    fireKeyDown("2");
-    expect(setCurrentView).toHaveBeenCalledWith("ideation");
+    fireKeyDown("3");
+    expect(setCurrentView).toHaveBeenCalledWith("insights");
   });
 
-  it("⌘2 is a no-op when featureFlags.ideationPage is false", () => {
+  it("⌘2 is a no-op when the Automations page is disabled", () => {
     const setCurrentView = vi.fn();
-    const flags: FeatureFlags = { activityPage: true, extensibilityPage: true, ideationPage: false, battleMode: true, teamMode: false, atlassianOauth: false };
+    const flags: FeatureFlags = { activityPage: true, extensibilityPage: true, automationsPage: false, atlassianOauth: false };
 
     renderHook(() =>
       useAppKeyboardShortcuts(makeProps({ currentView: "agents", setCurrentView, featureFlags: flags }))
@@ -84,48 +77,11 @@ describe("useAppKeyboardShortcuts", () => {
     const setCurrentView = vi.fn();
 
     renderHook(() =>
-      useAppKeyboardShortcuts(makeProps({ currentView: "graph", setCurrentView }))
+      useAppKeyboardShortcuts(makeProps({ currentView: "agents", setCurrentView }))
     );
 
     fireKeyDown("k");
     expect(setCurrentView).not.toHaveBeenCalled();
   });
 
-  // ── CMD+SHIFT+B battle mode shortcut ──────────────────────────────────────
-
-  it("⌘⇧B is a no-op when featureFlags.battleMode is false", () => {
-    const onBattleModeToggle = vi.fn();
-    const flags: FeatureFlags = { activityPage: true, extensibilityPage: true, ideationPage: true, battleMode: false, teamMode: false, atlassianOauth: false };
-
-    renderHook(() =>
-      useAppKeyboardShortcuts(makeProps({ currentView: "graph", onBattleModeToggle, featureFlags: flags }))
-    );
-
-    fireKeyDownWithShift("b");
-    expect(onBattleModeToggle).not.toHaveBeenCalled();
-  });
-
-  it("⌘⇧B calls onBattleModeToggle when flag is enabled and currentView is graph", () => {
-    const onBattleModeToggle = vi.fn();
-    const flags: FeatureFlags = { activityPage: true, extensibilityPage: true, ideationPage: true, battleMode: true, teamMode: false, atlassianOauth: false };
-
-    renderHook(() =>
-      useAppKeyboardShortcuts(makeProps({ currentView: "graph", onBattleModeToggle, featureFlags: flags }))
-    );
-
-    fireKeyDownWithShift("b");
-    expect(onBattleModeToggle).toHaveBeenCalledOnce();
-  });
-
-  it("⌘⇧B is a no-op when flag is enabled but currentView is not graph", () => {
-    const onBattleModeToggle = vi.fn();
-    const flags: FeatureFlags = { activityPage: true, extensibilityPage: true, ideationPage: true, battleMode: true, teamMode: false, atlassianOauth: false };
-
-    renderHook(() =>
-      useAppKeyboardShortcuts(makeProps({ currentView: "kanban", onBattleModeToggle, featureFlags: flags }))
-    );
-
-    fireKeyDownWithShift("b");
-    expect(onBattleModeToggle).not.toHaveBeenCalled();
-  });
 });

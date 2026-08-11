@@ -15,6 +15,7 @@ import {
   Copy,
   FolderOpen,
   Loader2,
+  Terminal as TerminalIcon,
 } from "lucide-react";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { logger } from "@/lib/logger";
@@ -36,7 +37,11 @@ import {
 } from "@/lib/workspace-open-targets";
 import { useMessageFileLinkContext } from "./MessageFileLinkContext";
 
-const PROSE_MAX_WIDTH = "min(85%, 620px)";
+// Percentage max-widths resolve against the nearest block container. Inside the
+// shrink-to-fit user bubble (w-fit) that container is the bubble itself, which
+// collapses short messages into mid-word wraps — so the bubble overrides this
+// cap via --chat-prose-max-width (see TextBubble).
+const PROSE_MAX_WIDTH = "var(--chat-prose-max-width, min(85%, 620px))";
 
 const BOX_DRAWING_RE = /[┌┐└┘├┤┬┴┼─│╔╗╚╝╠╣╦╩╬═║░▓█▒╮╰╯╭]/g;
 const ASCII_DRAWING_SEQUENCE_RE = /[+\-|=]{3,}/;
@@ -281,7 +286,12 @@ function WorkspaceMarkdownFileLink({
         </Tooltip>
         <DropdownMenuContent align="start" className="min-w-[180px]">
           {fileLinkContext.targets.map((target) => {
-            const Icon = target.kind === "fileManager" ? FolderOpen : Code2;
+            const Icon =
+              target.kind === "fileManager"
+                ? FolderOpen
+                : target.kind === "terminal"
+                  ? TerminalIcon
+                  : Code2;
             const selected = target.id === preferredTarget.id;
             const label =
               target.kind === "fileManager"

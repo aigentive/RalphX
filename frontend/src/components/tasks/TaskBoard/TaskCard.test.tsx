@@ -427,5 +427,12 @@ describe("TaskCard", () => {
       const handle = screen.getByTestId("drag-handle");
       expect(handle).toHaveClass("cursor-grab");
     });
+
+    it("does not advertise dragging in read-only mode", () => {
+      const task = createMockTask();
+      render(<TaskCard task={task} readOnly />, { wrapper: DndWrapper });
+
+      expect(screen.queryByTestId("drag-handle")).not.toBeInTheDocument();
+    });
   });
 });

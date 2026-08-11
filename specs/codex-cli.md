@@ -1,6 +1,6 @@
 # Codex CLI Multi-Harness Spec
 
-Status: discovery/spec phase. This is not the implementation plan yet; it is the exhaustive parity map and design target for making Codex CLI a first-class RalphX harness alongside Claude.
+Status: implemented baseline; retained as the original parity map. Current runtime contracts live in `.claude/rules/multi-harness.md`, `.claude/rules/delegation-topology.md`, and `docs/user-guides/agent-harnesses.md`.
 
 ## 1. Goal
 
@@ -9,12 +9,12 @@ Add Codex CLI with the highest practical feature parity to the current Claude-ba
 - Codex-backed ideation
 - Codex-backed ideation verification
 - Codex-backed subagent/delegation support
-- Claude may remain the execution harness for worker/reviewer/merger lanes in phase 1
+- provider-neutral worker/reviewer/merger routing
 
 Initial operator expectation:
 
 - Codex is selectable as a harness wherever RalphX currently selects agent/model behavior
-- no team-mode parity is required in Codex; Codex runs operate in solo mode plus Codex-native subagents
+- RX-native Team and delegation operate across supported Claude and Codex runtimes
 - all raw events from Claude and Codex are preserved
 - higher-level RalphX consumers use a unified provider-neutral event contract
 
@@ -59,7 +59,7 @@ Initial operator expectation:
 
 ## 3. Non-goals for phase 1
 
-- exact Claude team-mode parity on Codex
+- reintroducing removed vendor-specific Team persistence or process semantics
 - forcing Codex into Claude plugin-dir semantics
 - moving all execution lanes to Codex immediately
 - replacing raw vendor logs with only normalized logs
@@ -107,7 +107,7 @@ Must audit and either abstract or replace every place that assumes:
 - Claude plugin-dir resolution
 - Claude-specific CLI flags
 - Claude-specific resume/session behavior
-- Claude-only team process topology
+- provider-specific subagent process topology leaking into RalphX orchestration
 - Claude-only availability checks
 
 Concrete RalphX files already confirmed:
@@ -115,8 +115,7 @@ Concrete RalphX files already confirmed:
 - `src-tauri/src/infrastructure/agents/claude/mod.rs`
 - `src-tauri/src/infrastructure/agents/claude/claude_code_client.rs`
 - `src-tauri/src/application/chat_service/chat_service_context.rs`
-- `src-tauri/src/http_server/handlers/teams/spawn.rs`
-- `src-tauri/src/http_server/handlers/teams/spawn_execution.rs`
+- `src-tauri/src/http_server/handlers/coordination/**`
 - `src-tauri/src/application/memory_orchestration.rs`
 - `src-tauri/src/lib.rs`
 
@@ -248,15 +247,9 @@ Need:
 
 ### 5.7 Subagents
 
-Claude today:
-
-- in-process `Task(...)`
-- team mode / teammate process layer
-
-Codex target:
-
-- Codex-native subagents
-- no team-mode parity required initially
+Provider runtimes expose different native subagent mechanisms. RalphX normalizes them
+behind RX-native delegation and Team surfaces rather than retaining a vendor-specific
+team process layer.
 
 Need provider-neutral delegation abstraction:
 
@@ -336,7 +329,7 @@ Target logical definition should include:
 - effort defaults by harness
 - sandbox / approval defaults by harness
 - subagent policy
-- team-mode capability
+- RX-native Team capability
 
 Possible output targets:
 
@@ -361,7 +354,7 @@ This is the implementation-prep checklist. Every item needs either abstraction, 
 - `src-tauri/src/commands/unified_chat_commands.rs`
 - `src-tauri/src/commands/ideation_commands/**`
 - `src-tauri/src/http_server/handlers/ideation/**`
-- `src-tauri/src/http_server/handlers/teams/**`
+- `src-tauri/src/http_server/handlers/coordination/**`
 - `src-tauri/src/http_server/handlers/session_linking/**`
 - `src-tauri/src/infrastructure/agents/claude/**`
 
@@ -516,15 +509,12 @@ Replay-based testing should be added:
 
 ## 12. Known hard problems
 
-### 12.1 Claude team mode vs Codex solo/subagents
+### 12.1 RX-native Team and provider subagents
 
-Decision already accepted:
+Decision implemented:
 
-- no team-mode parity required on Codex
-
-Design consequence:
-
-- team-mode UI and backend flows must explicitly disable or bypass Codex for those cases
+- RX-native Team uses the provider-neutral delegation contract for supported Claude and Codex runtimes.
+- Provider-native differences remain behind harness adapters and normalized events.
 
 ### 12.2 Plugin-dir vs config-driven MCP
 
@@ -580,10 +570,10 @@ Design consequence:
 - `claudeCode` profile/config surface -> harness-neutral client config surface
 - Claude-only model aliases in frontend settings
 
-### Update last
+### Final convergence
 
-- team-mode execution flows
-- worker/reviewer/merger Codex rollout
+- RX-native Team execution flows
+- worker/reviewer/merger harness parity
 - residual docs/example cleanup after runtime parity exists
 
 ## 14. Current recommended sequence after discovery is complete
@@ -942,7 +932,7 @@ Current answer status:
 - MCP translation direction: identified
 - normalized event boundary: identified
 - recovery/resume seam inventory: identified
-- phase-1 limitation on team mode: identified
+- RX-native Team provider contract: implemented
 
 Remaining implementation-planning work after this document:
 

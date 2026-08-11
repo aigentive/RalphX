@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PROMPT_FILE="${SCRIPT_DIR}/prompts/release-proposal-codex-prompt.md"
 COMMON_FILE="${SCRIPT_DIR}/release-analysis-common.sh"
-DEFAULT_MODEL="${RELEASE_PROPOSAL_MODEL:-${RELEASE_NOTES_MODEL:-gpt-5.5}}"
+DEFAULT_MODEL="${RELEASE_PROPOSAL_MODEL:-${RELEASE_NOTES_MODEL:-gpt-5.6-terra}}"
 DEFAULT_REASONING_EFFORT="${RELEASE_PROPOSAL_REASONING_EFFORT:-${RELEASE_NOTES_REASONING_EFFORT:-xhigh}}"
 
 usage() {
@@ -21,7 +21,7 @@ Options:
                         Current released version when it cannot be inferred from --from
   --from <ref>          Explicit start ref/tag/commit for the compare range (default: previous tag)
   --to <ref>            End ref/tag/commit for the compare range (default: HEAD)
-  --model <model>       Codex model to use (default: RELEASE_PROPOSAL_MODEL, RELEASE_NOTES_MODEL, or gpt-5.5)
+  --model <model>       Codex model to use (default: RELEASE_PROPOSAL_MODEL, RELEASE_NOTES_MODEL, or gpt-5.6-terra)
   --reasoning-effort <level>
                         Codex reasoning effort to use (default: RELEASE_PROPOSAL_REASONING_EFFORT, RELEASE_NOTES_REASONING_EFFORT, or xhigh)
   --output <file>       Output markdown path (default: .artifacts/release-notes/proposal-from-v<current-version>.md)
@@ -39,6 +39,8 @@ Notes:
 EOF
 }
 
+# shellcheck source=scripts/release-analysis-common.sh
+# shellcheck disable=SC1091
 source "${COMMON_FILE}"
 
 current_version=""

@@ -1,6 +1,6 @@
 // GitHub commands — read-only visibility surface over the locally-authenticated
-// `gh` CLI. RalphX stores no GitHub token (Decision 1): connection status is a
-// live reflection of `gh auth status` only.
+// `gh` CLI. RalphX stores no GitHub token: connection status is a typed
+// observation of local credential presence plus live GitHub validation.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -18,7 +18,8 @@ use crate::application::pull_request_detail::{
 use crate::application::{AppState, GitService};
 use crate::domain::entities::{AgentConversationWorkspace, ChatContextType, ProjectId};
 use crate::domain::services::github_service::{
-    GithubConnectionStatus, PrBranchMatch, PrSearchResult, PrStatus,
+    GithubConnectionDiagnostic, GithubConnectionState, GithubConnectionStatus, PrBranchMatch,
+    PrSearchResult, PrStatus,
 };
 use crate::utils::path_safety::validate_absolute_non_root_path;
 
@@ -26,6 +27,8 @@ use crate::utils::path_safety::validate_absolute_non_root_path;
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GithubConnectionStatusResponse {
+    pub state: GithubConnectionState,
+    pub diagnostic: Option<GithubConnectionDiagnostic>,
     pub gh_installed: bool,
     pub authenticated: bool,
     pub host: Option<String>,
@@ -110,6 +113,8 @@ struct BranchPrSummary {
 impl From<GithubConnectionStatus> for GithubConnectionStatusResponse {
     fn from(status: GithubConnectionStatus) -> Self {
         Self {
+            state: status.state,
+            diagnostic: status.diagnostic,
             gh_installed: status.gh_installed,
             authenticated: status.authenticated,
             host: status.host,
@@ -120,9 +125,8 @@ impl From<GithubConnectionStatus> for GithubConnectionStatusResponse {
 
 /// Report whether `gh` is installed and authenticated, plus the active host/account.
 ///
-/// Never panics or returns an `Err`: a missing GitHub service, an absent/unauthenticated
-/// `gh`, or any underlying failure all collapse to a typed "unavailable" status so the
-/// UI can render distinct not-installed / not-authenticated / connected states.
+/// Never panics or returns an `Err`: every observation is represented by a typed
+/// state, including missing service and probe failures.
 #[tauri::command]
 pub async fn get_github_connection_status(
     state: State<'_, AppState>,
@@ -134,7 +138,9 @@ pub async fn get_github_connection_status(
     let status = service
         .fetch_github_connection_status()
         .await
-        .unwrap_or_else(|_| GithubConnectionStatus::unavailable());
+        .unwrap_or_else(|_| {
+            GithubConnectionStatus::probe_failed(GithubConnectionDiagnostic::ServiceFailure)
+        });
 
     Ok(status.into())
 }
@@ -173,7 +179,10 @@ pub async fn get_github_branch_overview(
                 .search_pull_requests(&working_dir, None, 50)
                 .await
             {
-                Ok(results) => results,
+                Ok(results) => results
+                    .into_iter()
+                    .filter(PrSearchResult::is_open)
+                    .collect(),
                 Err(_) => {
                     sources_unavailable.push("githubPullRequests".to_string());
                     Vec::new()
@@ -621,6 +630,11 @@ fn merge_ticket_links_with_branch_fallback(
 }
 
 fn infer_ticket_link_from_branch_name(branch_name: &str) -> Option<GithubBranchTicketLink> {
+    infer_legacy_ticket_link_from_branch_name(branch_name)
+        .or_else(|| infer_agent_ticket_link_from_branch_name(branch_name))
+}
+
+fn infer_legacy_ticket_link_from_branch_name(branch_name: &str) -> Option<GithubBranchTicketLink> {
     let suffix = branch_name.strip_prefix("ralphx/ticket/")?;
     let (provider, label) = suffix.split_once('-')?;
     if !matches!(provider, "jira" | "linear" | "clickup") || label.trim().is_empty() {
@@ -632,4 +646,52 @@ fn infer_ticket_link_from_branch_name(branch_name: &str) -> Option<GithubBranchT
         title: None,
         url: None,
     })
+}
+
+fn infer_agent_ticket_link_from_branch_name(branch_name: &str) -> Option<GithubBranchTicketLink> {
+    let mut parts = branch_name.split('/');
+    if parts.next()? != "ralphx" {
+        return None;
+    }
+    let project_slug = parts.next()?;
+    if project_slug.is_empty() {
+        return None;
+    }
+    let branch_leaf = parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+
+    let branch_leaf = strip_numeric_branch_continuation(branch_leaf);
+    let suffix = branch_leaf.strip_prefix("agent-")?;
+    let (provider, ticket_and_conversation) = suffix.split_once('-')?;
+    if !matches!(provider, "jira" | "linear" | "clickup") {
+        return None;
+    }
+
+    let mut label_parts = ticket_and_conversation
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    label_parts.pop()?;
+    if label_parts.is_empty() {
+        return None;
+    }
+    let label = label_parts.join("-");
+
+    Some(GithubBranchTicketLink {
+        provider: provider.to_string(),
+        label,
+        title: None,
+        url: None,
+    })
+}
+
+fn strip_numeric_branch_continuation(branch_leaf: &str) -> &str {
+    branch_leaf
+        .rsplit_once('-')
+        .and_then(|(base, suffix)| {
+            (!suffix.is_empty() && suffix.chars().all(|ch| ch.is_ascii_digit())).then_some(base)
+        })
+        .unwrap_or(branch_leaf)
 }

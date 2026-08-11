@@ -3,6 +3,7 @@ import { useCallback, type Dispatch, type SetStateAction } from "react";
 import { useChatStore } from "@/stores/chatStore";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { useProjectStore } from "@/stores/projectStore";
+import { useUiStore } from "@/stores/uiStore";
 
 interface UseAgentsSessionBindingsArgs {
   setOptimisticSelectedConversationId: Dispatch<SetStateAction<string | null>>;
@@ -17,35 +18,58 @@ export function useAgentsSessionBindings({
   const selectedProjectId = useAgentSessionStore((s) => s.selectedProjectId);
   const storedSelectedConversationId = useAgentSessionStore((s) => s.selectedConversationId);
   const runtimeByConversationId = useAgentSessionStore((s) => s.runtimeByConversationId);
+  const composerRuntimeOverridesByConversationId = useAgentSessionStore(
+    (s) => s.composerRuntimeOverridesByConversationId,
+  );
   const lastRuntimeByProjectId = useAgentSessionStore((s) => s.lastRuntimeByProjectId);
   const setFocusedProject = useAgentSessionStore((s) => s.setFocusedProject);
   const selectAgentConversation = useAgentSessionStore((s) => s.selectConversation);
   const clearSelection = useAgentSessionStore((s) => s.clearSelection);
   const setRuntimeForConversation = useAgentSessionStore((s) => s.setRuntimeForConversation);
-  const setLastRuntimeForProject = useAgentSessionStore((s) => s.setLastRuntimeForProject);
+  const setComposerRuntimeForConversation = useAgentSessionStore(
+    (s) => s.setComposerRuntimeForConversation,
+  );
+  const setLastRuntimeForProjectMode = useAgentSessionStore(
+    (s) => s.setLastRuntimeForProjectMode,
+  );
+  const setTaskHistoryState = useUiStore((s) => s.setTaskHistoryState);
   const selectProject = useProjectStore((s) => s.selectProject);
   const selectConversation = useCallback(
-    (projectId: string, conversationId: string) => {
-      selectProject(projectId);
+    (projectId: string | null, conversationId: string) => {
+      if (selectedProjectId !== projectId || storedSelectedConversationId !== conversationId) {
+        setTaskHistoryState(null);
+      }
+      if (projectId) {
+        selectProject(projectId);
+      }
       selectAgentConversation(projectId, conversationId);
     },
-    [selectAgentConversation, selectProject]
+    [
+      selectAgentConversation,
+      selectProject,
+      selectedProjectId,
+      setTaskHistoryState,
+      storedSelectedConversationId,
+    ]
   );
   const clearAgentConversationSelection = useCallback(() => {
+    setTaskHistoryState(null);
     setOptimisticSelectedConversationId(null);
     clearSelection();
-  }, [clearSelection, setOptimisticSelectedConversationId]);
+  }, [clearSelection, setOptimisticSelectedConversationId, setTaskHistoryState]);
 
   return {
     clearAgentConversationSelection,
+    composerRuntimeOverridesByConversationId,
     focusedProjectId,
     lastRuntimeByProjectId,
     runtimeByConversationId,
     selectConversation,
     selectedProjectId,
     setActiveConversation,
+    setComposerRuntimeForConversation,
     setFocusedProject,
-    setLastRuntimeForProject,
+    setLastRuntimeForProjectMode,
     setRuntimeForConversation,
     storedSelectedConversationId,
   };

@@ -1,14 +1,34 @@
 # Ideation Pipeline Architecture
 
+## Native supervised pipeline
+
+Native Agent conversations use the explicit progression
+`Plan → Approve Plan → Create Proposals → Tasks → Start Tasks → execution`.
+`Create Proposals` records a durable conversation/session attachment and asks
+for decomposition only; it creates no Kanban tasks or scheduler work. `Start
+Tasks` revalidates the exact current approval and proposal graph before using
+the canonical apply and scheduling path.
+
+`Tasks` is contextual and returnable only for the owning conversation. Its
+agent may append one explicit user-requested follow-up to the same accepted,
+still-open plan and PR through the scoped append path. External MCP ideation
+remains autonomous and is not gated by the native Autopilot flag.
+
+`Autopilot` is a separate, default-off native capability. It does not rename
+Automation mode or change external MCP authorization.
+
 > **Source:** Derived from code audit of `src-tauri/src/commands/ideation_commands/`,
 > `src-tauri/src/http_server/handlers/ideation.rs`, `artifacts.rs`, `external.rs`.
 > Do not update from docs — re-audit the code if this becomes stale.
 
 ## Overview
 
-The ideation pipeline converts a conversation with an orchestrator agent into a set of scheduled
-tasks. It spans 7 stages from session creation through acceptance cascade. Most stages are
-autonomous (agent-driven); only proposal finalization requires an explicit agent or user action.
+The external MCP and Ideation Studio pipeline converts a conversation with an
+orchestrator agent into scheduled tasks. It spans 7 stages from session
+creation through acceptance cascade. Most stages are autonomous
+(agent-driven); only proposal finalization requires an explicit agent or user
+action. Native Agent conversations use the supervised progression above and
+cannot use `finalize_proposals` while attached in Tasks mode.
 
 ```
 Session Created
@@ -18,17 +38,18 @@ Session Created
       ▼
 Plan Created (artifacts.rs)
       │
-      ├─ (optional) Auto-Verification ─────────────── [spawns child verification session]
-      │
-      ▼
-Plan Verification Loop (ideation.rs:1164-1680)
-      │    Unverified → Verifying → Verified | Skipped | ImportedVerified
-      │
-      ├─ [External sessions only] Auto-Propose ────── [fire-and-forget, retry 3×]
+      ├─ Ordinary Plan turn persists + completes ──── [default-on auto admission]
+      │                                      │
+      │                                      └─ queue fresh visible Verify Plan turn
+      │                                             └─ exact proof or terminal failure
       │
       ▼
 ◉ BREAKPOINT — finalize_proposals() (ideation.rs:134)
       │    Requires explicit agent call to advance
+      │
+      ├─ [required + unverified + auto] Queue visible Verify Plan turn
+      │                                      │
+      │                                      └─ record exact proof, retry acceptance
       │
       ▼
 Proposals Applied → Tasks Created
@@ -77,7 +98,7 @@ Four independent creation paths, all emitting the same 3-layer event.
 
 - **Handler:** `create_plan_artifact()` — `artifacts.rs:200`
 - **HTTP:** POST `/api/ideation/artifacts` (MCP tool: `create_plan_artifact`)
-- **Agent:** `ralphx-ideation` (calls MCP tool; ralphx-plan-verifier if auto-verify triggered)
+- **Agent:** the active Plan-mode conversation model
 
 **Events emitted:**
 1. `plan_artifact:created` — Layer 1 (Tauri) only; carries full artifact object for frontend UI
@@ -94,8 +115,16 @@ Four independent creation paths, all emitting the same 3-layer event.
 }
 ```
 
-**Auto-verify cascade:** If `auto_verify=true`, creates a child verification session and spawns
-ralphx-plan-verifier agent. Failure emits `ideation:verification_status_changed` with `reason: "spawn_failed"`.
+**Automatic draft verification:** With the default-on draft policy, the latest successful ordinary
+Plan turn queues a typed `verify_plan` turn in the same conversation after assistant persistence and
+guarded run completion. Admission rejects stale or failed turns and is idempotent. The verifier gets
+a fresh process even when an interactive Claude process is idle, while provider session continuity
+may be retained. The separate default-off acceptance policy remains a compatibility fallback when
+acceptance requires exact proof. Capacity-deferred turns retain their action metadata.
+
+The Plan Approval notification is deferred at publication while automatic review is pending. A
+durable exact-artifact marker suppresses toast, Attention, history, and desktop presentations until
+the verifier settles; terminal and startup reconciliation then record the current notification once.
 
 **Autonomous:** Yes.
 
@@ -103,20 +132,20 @@ ralphx-plan-verifier agent. Failure emits `ideation:verification_status_changed`
 
 ## Stage 4: Plan Verification
 
-- **Handler family:** verification round/report/finalize endpoints under `src-tauri/src/http_server/handlers/ideation/verification/`
-- **HTTP:** backend-owned verification APIs (`/api/ideation/sessions/{id}/verification`, `/infra-failure`, plus verifier helper surfaces in the MCP server)
-- **Agent:** `ralphx-plan-verifier` (multi-round adversarial loop using Layer 1 and Layer 2 critics)
+- **Service:** `application/plan_verification_service.rs`
+- **HTTP:** request/status endpoints plus the run-scoped `/api/plan-verification/complete` proof endpoint
+- **Agent:** the active Plan-mode model in the existing conversation; it chooses any useful reasoning lenses or allowed general-purpose delegates
 
 **State machine:**
 ```
-Unverified → Verifying → Verified
-                      → Skipped        (internal sessions only)
-                      → ImportedVerified
+Unverified → Queued → Verifying → Verified
+                                → Failed
+                                → Cancelled
 ```
 
-**Events emitted:**
-1. `ideation:verification_status_changed` — Layer 1 (Tauri) only; fires on every status update
-2. `IdeationVerified` — 3-layer — **guard:** only when `new_status == Verified`
+Verification proof is exact-artifact scoped. `complete_plan_verification` succeeds only for the
+currently running typed action whose session, conversation, and target artifact all match. A plan
+edit changes the current artifact id and therefore invalidates the previous proof automatically.
 
 **Payload for `IdeationVerified`:**
 ```json
@@ -164,6 +193,9 @@ triggers Stage 5 (Auto-Propose) automatically.
 ---
 
 ## Stage 6: Proposal Finalization ◉ BREAKPOINT
+
+This stage describes external MCP and Ideation Studio orchestration. A native
+Tasks conversation must use the typed **Start Tasks** command instead.
 
 - **Handler:** `finalize_proposals()` — `ideation.rs:134`
 - **Implementation:** `finalize_proposals_impl()` — `helpers.rs:753`
@@ -241,17 +273,15 @@ Once `finalize_proposals` completes and session transitions to Accepted:
 
 ```
                     ┌─────────────────────────┐
-                    │   ralphx-ideation  │
-                    │   (or ralphx-ideation-team-lead │
-                    │    in team mode)         │
+                    │   ralphx-ideation        │
                     └───────────┬─────────────┘
                                 │ creates session, proposes plan
                                 ▼
                     ┌─────────────────────────┐
-                    │      ralphx-plan-verifier       │  ← spawned as child session
-                    │  (adversarial loop)      │
-                    │  Layer 1 + Layer 2       │
-                    │  critics per round       │
+                    │   same Plan conversation │
+                    │   typed verify_plan turn │
+                    │   optional model-chosen  │
+                    │   general delegates      │
                     └───────────┬─────────────┘
                                 │ complete_plan_verification(Verified)
                                 ▼
@@ -272,11 +302,9 @@ Once `finalize_proposals` completes and session transitions to Accepted:
 | Agent | Context Type | Role in Pipeline |
 |-------|-------------|-----------------|
 | `ralphx-ideation` | `ideation` | Creates session, drives plan creation, calls finalize_proposals |
-| `ralphx-ideation-team-lead` | `ideation` | Team mode variant of orchestrator |
 | `ralphx-utility-session-namer` | `ideation` | Names session title via `update_session_title` MCP tool |
-| `ralphx-plan-verifier` | child session | Owns adversarial verification loop; spawns critics |
-| `ralphx-plan-critic-completeness` | — | Completeness critic (JSON gap analysis) |
-| `ralphx-plan-critic-implementation-feasibility` | — | Dual-lens implementation critic |
+| Active Plan-mode model | existing conversation | Reviews and, when needed, revises the current linked plan |
+| Model-selected general delegates | delegated conversations | Optional context-specific evidence or adversarial lenses |
 
 ---
 
@@ -295,15 +323,16 @@ Tools available to external agents (e.g., ReefBot) via `ralphx-external-mcp` (`:
 | Resume scheduling (idempotent) | `v1_resume_scheduling` | POST `/api/ideation/sessions/{id}/resume` |
 | Poll recent events | `v1_get_recent_events` | GET `/api/external/events` |
 
-**Polling alternative for verification progress:** Use `v1_get_plan_verification` to check
-verification rounds and gaps without waiting for `ideation:verified` webhook.
+**Polling alternative for verification progress:** Use `v1_get_plan_verification` to read the
+typed action state and exact-artifact proof (`unverified`, `queued`, `verifying`, `verified`,
+`failed`, or `cancelled`).
 
 **Polling alternative for agent state:** Use `v1_get_ideation_status` to check
 `agent_status` (idle/generating/waiting_for_input).
 
 ---
 
-## Autonomy Summary
+## External and Ideation Studio Autonomy Summary
 
 | Stage | User/Agent Action Required | Notes |
 |-------|---------------------------|-------|

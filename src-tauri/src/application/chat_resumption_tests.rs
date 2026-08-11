@@ -4,12 +4,15 @@ use crate::application::AppState;
 use crate::domain::agents::{AgentHarnessKind, ProviderSessionRef};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
-    AgentRun, AgentRunAttribution, AgentRunId, AgentRunStatus, AgentRunUsage, ChatConversation,
-    ChatConversationId, IdeationAnalysisBaseRefKind, InternalStatus, Project, Task,
+    AgentRun, AgentRunAttribution, AgentRunId, AgentRunStatus, AgentRunUsage, AutomationId,
+    AutomationJudgeState, AutomationPlanJudgeState, AutomationPromptAuthor, AutomationRun,
+    AutomationRunId, AutomationRunStatus, ChatConversation, ChatConversationId, CoordinationMode,
+    IdeationAnalysisBaseRefKind, InternalStatus, Project, ProjectId, Task, TeamIntent,
 };
-use crate::domain::repositories::AgentRunRepository;
+use crate::domain::repositories::{AgentRunRepository, AutomationRunRepository};
 use crate::domain::services::{QueuedMessage, RunningAgentKey};
 use crate::error::AppResult;
+use crate::infrastructure::memory::{MemoryAutomationRepository, MemoryAutomationRunRepository};
 
 /// Helper to create test state
 async fn setup_test_state() -> (Arc<ExecutionState>, AppState) {
@@ -33,11 +36,12 @@ async fn spawn_test_stdin() -> (tokio::process::ChildStdin, tokio::process::Chil
 fn build_runner(
     app_state: &AppState,
     execution_state: &Arc<ExecutionState>,
-) -> ChatResumptionRunner<tauri::Wry> {
+) -> ChatResumptionRunner {
     build_runner_with_agent_run_repo(
         app_state,
         execution_state,
         Arc::clone(&app_state.agent_run_repo),
+        Arc::clone(&app_state.automation_run_repo),
     )
 }
 
@@ -45,9 +49,11 @@ fn build_runner_with_agent_run_repo(
     app_state: &AppState,
     execution_state: &Arc<ExecutionState>,
     agent_run_repo: Arc<dyn AgentRunRepository>,
-) -> ChatResumptionRunner<tauri::Wry> {
+    automation_run_repo: Arc<dyn AutomationRunRepository>,
+) -> ChatResumptionRunner {
     ChatResumptionRunner::new(
         agent_run_repo,
+        Arc::clone(&automation_run_repo),
         Arc::clone(&app_state.task_repo),
         Arc::clone(execution_state),
         crate::application::runtime_factory::ChatRuntimeFactoryDeps::from_core(
@@ -56,6 +62,7 @@ fn build_runner_with_agent_run_repo(
             Arc::clone(&app_state.artifact_repo),
             Arc::clone(&app_state.chat_conversation_repo),
             Arc::clone(&app_state.agent_run_repo),
+            Arc::clone(&automation_run_repo),
             Arc::clone(&app_state.project_repo),
             Arc::clone(&app_state.task_repo),
             Arc::clone(&app_state.task_dependency_repo),
@@ -69,6 +76,35 @@ fn build_runner_with_agent_run_repo(
             &app_state.agent_conversation_workspace_repo,
         ))),
     )
+}
+
+#[test]
+fn startup_resumption_send_options_carries_persisted_team_intent() {
+    let mut conversation = ChatConversation::new_project(ProjectId::from_string(
+        "project-team-resumption".to_string(),
+    ));
+    conversation.set_coordination_mode(CoordinationMode::RxNativeTeam);
+    let options = startup_resumption_send_options(&conversation);
+
+    assert_eq!(options.conversation_id_override, Some(conversation.id));
+    assert_eq!(options.team_intent, Some(TeamIntent::rx_native(None)));
+    assert_eq!(options.caller_context, SendCallerContext::StartupResumption);
+}
+
+#[test]
+fn durable_silent_completion_recovery_send_options_carries_persisted_team_intent() {
+    let mut conversation = ChatConversation::new_project(ProjectId::from_string(
+        "project-team-durable-recovery".to_string(),
+    ));
+    conversation.set_coordination_mode(CoordinationMode::RxNativeTeam);
+    let options = durable_silent_completion_recovery_send_options(
+        &conversation,
+        "{\"source\":\"test\"}".to_string(),
+    );
+
+    assert_eq!(options.conversation_id_override, Some(conversation.id));
+    assert_eq!(options.team_intent, Some(TeamIntent::rx_native(None)));
+    assert_eq!(options.caller_context, SendCallerContext::StartupResumption);
 }
 
 #[tokio::test]
@@ -161,11 +197,19 @@ impl AgentRunRepository for InterruptedAgentRunRepo {
         Ok(())
     }
 
+    async fn complete_if_prune_cancelled(&self, _id: &AgentRunId) -> AppResult<bool> {
+        Ok(false)
+    }
+
     async fn fail(&self, _id: &AgentRunId, _error_message: &str) -> AppResult<()> {
         Ok(())
     }
 
     async fn cancel(&self, _id: &AgentRunId) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn cancel_with_reason(&self, _id: &AgentRunId, _reason: &str) -> AppResult<()> {
         Ok(())
     }
 
@@ -212,6 +256,110 @@ impl AgentRunRepository for InterruptedAgentRunRepo {
     }
 }
 
+fn automation_run_for_conversation(conversation_id: ChatConversationId) -> AutomationRun {
+    let now = chrono::Utc::now();
+    AutomationRun {
+        id: AutomationRunId::new(),
+        automation_id: AutomationId::new(),
+        run_index: 1,
+        status: AutomationRunStatus::Running,
+        judge_state: AutomationJudgeState::None,
+        judge_lease_expires_at: None,
+        plan_judge_state: AutomationPlanJudgeState::None,
+        plan_judge_lease_expires_at: None,
+        plan_judge_verdict_json: None,
+        plan_revision_round: 0,
+        plan_reminder_count: 0,
+        plan_pending_instructions: None,
+        plan_last_parked_artifact_id: None,
+        plan_last_parked_blueprint_artifact_id: None,
+        agent_phase_started_at: None,
+        conversation_id: Some(conversation_id),
+        run_prompt: "automation run".to_string(),
+        prompt_author: AutomationPromptAuthor::SetupAgent,
+        base_ref_kind: "project_default".to_string(),
+        base_ref_used: "main".to_string(),
+        base_from_run_id: None,
+        goal_item_id: None,
+        branch_name: None,
+        pr_number: None,
+        pr_url: None,
+        pr_title: None,
+        pr_head_ref_name: None,
+        pr_base_ref_name: None,
+        pr_merged_at: None,
+        merge_commit_sha: None,
+        diff_stats_json: None,
+        agent_summary: None,
+        judge_verdict_json: None,
+        judge_model_id: None,
+        error_code: None,
+        error_detail: None,
+        signal_check_failures: 0,
+        started_at: Some(now),
+        finished_at: None,
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+fn memory_automation_run_repo() -> Arc<MemoryAutomationRunRepository> {
+    Arc::new(MemoryAutomationRunRepository::new(
+        MemoryAutomationRepository::new_shared_state(),
+    ))
+}
+
+async fn create_interrupted_project_conversation(
+    app_state: &AppState,
+    project_id: ProjectId,
+    automation_id: Option<AutomationId>,
+    automation_run_id: Option<AutomationRunId>,
+) -> (ChatConversation, AgentRun) {
+    let mut conversation = ChatConversation::new_project(project_id);
+    conversation.set_provider_session_ref(ProviderSessionRef {
+        harness: AgentHarnessKind::Codex,
+        provider_session_id: format!("codex-{}", conversation.id.as_str()),
+    });
+    conversation.automation_id = automation_id;
+    conversation.automation_run_id = automation_run_id;
+    app_state
+        .chat_conversation_repo
+        .create(conversation.clone())
+        .await
+        .expect("conversation should persist");
+    let run = AgentRun::new(conversation.id);
+    (conversation, run)
+}
+
+async fn assert_not_resumed(app_state: &AppState, conversation: &ChatConversation) {
+    assert!(
+        app_state
+            .message_queue
+            .get_queued(ChatContextType::Project, &conversation.context_id)
+            .is_empty(),
+        "automation conversation must not receive a queued generic recovery message"
+    );
+    assert!(
+        !app_state
+            .running_agent_registry
+            .is_running(&RunningAgentKey::new(
+                ChatContextType::Project.to_string(),
+                conversation.context_id.clone(),
+            ))
+            .await,
+        "automation conversation must not spawn a generic resumption runtime"
+    );
+    assert!(
+        app_state
+            .chat_message_repo
+            .get_by_conversation(&conversation.id)
+            .await
+            .expect("messages should load")
+            .is_empty(),
+        "automation conversation must not persist a generic recovery message"
+    );
+}
+
 #[test]
 fn test_context_type_priority_ordering() {
     // TaskExecution should have highest priority (lowest number)
@@ -238,6 +386,12 @@ fn test_context_type_priority_ordering() {
     assert!(
         context_type_priority(ChatContextType::Delegation)
             < context_type_priority(ChatContextType::Project)
+    );
+    // Standalone conversations are projectless chats and share Project's
+    // (lowest) resumption priority.
+    assert_eq!(
+        context_type_priority(ChatContextType::Standalone),
+        context_type_priority(ChatContextType::Project)
     );
 }
 
@@ -309,6 +463,7 @@ fn startup_resumption_send_options_preserves_interrupted_agent_conversation_for_
         AgentConversationWorkspaceMode::Plan,
         AgentConversationWorkspaceMode::Ideation,
         AgentConversationWorkspaceMode::ReviewPr,
+        AgentConversationWorkspaceMode::Automation,
     ] {
         let mut conversation = ChatConversation::new_project(project_id.clone());
         conversation.set_agent_mode(Some(mode));
@@ -388,7 +543,6 @@ async fn blocked_agent_workspace_resume_reason_blocks_cleaned_terminal_workspace
         .create(project.clone())
         .await
         .unwrap();
-
     let mut conversation = ChatConversation::new_project(project.id.clone());
     conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::Plan));
     let workspace = workspace_for_conversation(
@@ -498,7 +652,12 @@ async fn run_skips_interrupted_non_resumable_agent_workspace() {
             last_run: run,
         }],
     ));
-    let runner = build_runner_with_agent_run_repo(&app_state, &execution_state, agent_run_repo);
+    let runner = build_runner_with_agent_run_repo(
+        &app_state,
+        &execution_state,
+        agent_run_repo,
+        Arc::clone(&app_state.automation_run_repo),
+    );
 
     runner.run().await;
 
@@ -648,6 +807,235 @@ async fn test_resumption_skipped_when_paused() {
 }
 
 #[tokio::test]
+async fn chat_resumption_skips_automation_owned_interrupted_conversation_and_resumes_sibling() {
+    let (execution_state, app_state) = setup_test_state().await;
+    let project = Project::new(
+        "Automation resumption".to_string(),
+        "/test/path".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+    let sibling_project = Project::new(
+        "Non-automation resumption".to_string(),
+        "/test/sibling-path".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(sibling_project.clone())
+        .await
+        .unwrap();
+
+    let automation_id = AutomationId::new();
+    let automation_run_id = AutomationRunId::new();
+    let (automation_conversation, automation_agent_run) = create_interrupted_project_conversation(
+        &app_state,
+        project.id.clone(),
+        Some(automation_id),
+        Some(automation_run_id),
+    )
+    .await;
+    let (sibling_conversation, sibling_agent_run) =
+        create_interrupted_project_conversation(&app_state, sibling_project.id, None, None).await;
+    let agent_run_repo: Arc<dyn AgentRunRepository> = Arc::new(InterruptedAgentRunRepo::new(
+        vec![automation_agent_run.clone(), sibling_agent_run.clone()],
+        vec![
+            InterruptedConversation {
+                conversation: automation_conversation.clone(),
+                last_run: automation_agent_run,
+            },
+            InterruptedConversation {
+                conversation: sibling_conversation.clone(),
+                last_run: sibling_agent_run,
+            },
+        ],
+    ));
+    let automation_run_repo = memory_automation_run_repo();
+    let runner = build_runner_with_agent_run_repo(
+        &app_state,
+        &execution_state,
+        agent_run_repo,
+        automation_run_repo,
+    );
+
+    runner.run().await;
+
+    assert_not_resumed(&app_state, &automation_conversation).await;
+    assert!(
+        !app_state
+            .chat_message_repo
+            .get_by_conversation(&sibling_conversation.id)
+            .await
+            .expect("sibling messages should load")
+            .is_empty(),
+        "non-automation sibling must still be resumed in the same run"
+    );
+}
+
+#[tokio::test]
+async fn durable_silent_completion_recovery_skips_automation_owned_conversation_and_recovers_sibling(
+) {
+    let (execution_state, app_state) = setup_test_state().await;
+    // Pause launches so the sibling recovery takes the queue path; the spawn path
+    // resolves the real Codex CLI, which is absent on CI runners.
+    execution_state.pause();
+    let project_id = ProjectId::from_string("durable-automation-project".to_string());
+    let (automation_conversation, _) = create_interrupted_project_conversation(
+        &app_state,
+        project_id.clone(),
+        Some(AutomationId::new()),
+        Some(AutomationRunId::new()),
+    )
+    .await;
+    let (sibling_conversation, _) =
+        create_interrupted_project_conversation(&app_state, project_id, None, None).await;
+    for conversation in [&automation_conversation, &sibling_conversation] {
+        let mut run = AgentRun::new(conversation.id);
+        run.complete();
+        app_state.agent_run_repo.create(run).await.unwrap();
+        let mut message = silent_tool_message();
+        message.conversation_id = Some(conversation.id);
+        app_state.chat_message_repo.create(message).await.unwrap();
+    }
+    let automation_run_repo = memory_automation_run_repo();
+    let runner = build_runner_with_agent_run_repo(
+        &app_state,
+        &execution_state,
+        Arc::clone(&app_state.agent_run_repo),
+        automation_run_repo,
+    );
+
+    assert_eq!(runner.recover_durable_silent_completions().await, 1);
+    assert!(
+        app_state
+            .message_queue
+            .get_queued(
+                ChatContextType::Project,
+                &automation_conversation.id.as_str()
+            )
+            .is_empty(),
+        "automation conversation must not queue durable silent-completion recovery"
+    );
+    assert_eq!(
+        app_state
+            .chat_message_repo
+            .get_by_conversation(&automation_conversation.id)
+            .await
+            .expect("automation messages should load")
+            .len(),
+        1,
+        "automation conversation must not persist a durable recovery message"
+    );
+    assert!(
+        !app_state
+            .running_agent_registry
+            .is_running(&RunningAgentKey::new(
+                ChatContextType::Project.to_string(),
+                automation_conversation.id.as_str(),
+            ))
+            .await,
+        "automation conversation must not spawn a durable recovery runtime"
+    );
+    let sibling_queued = app_state
+        .message_queue
+        .get_queued(ChatContextType::Project, &sibling_conversation.id.as_str());
+    assert_eq!(
+        sibling_queued.len(),
+        1,
+        "non-automation sibling must queue exactly one durable recovery message"
+    );
+}
+
+#[tokio::test]
+async fn chat_resumption_fails_closed_when_automation_lookup_errors_without_starving_siblings() {
+    let (execution_state, app_state) = setup_test_state().await;
+    let project = Project::new(
+        "Lookup error resumption".to_string(),
+        "/test/path".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+    let (failed_conversation, failed_agent_run) =
+        create_interrupted_project_conversation(&app_state, project.id.clone(), None, None).await;
+    let (sibling_conversation, sibling_agent_run) =
+        create_interrupted_project_conversation(&app_state, project.id, None, None).await;
+    let agent_run_repo: Arc<dyn AgentRunRepository> = Arc::new(InterruptedAgentRunRepo::new(
+        vec![failed_agent_run.clone(), sibling_agent_run.clone()],
+        vec![
+            InterruptedConversation {
+                conversation: failed_conversation.clone(),
+                last_run: failed_agent_run,
+            },
+            InterruptedConversation {
+                conversation: sibling_conversation.clone(),
+                last_run: sibling_agent_run,
+            },
+        ],
+    ));
+    let automation_run_repo = memory_automation_run_repo();
+    automation_run_repo.fail_find_run_for_conversation(&failed_conversation.id);
+    let runner = build_runner_with_agent_run_repo(
+        &app_state,
+        &execution_state,
+        agent_run_repo,
+        automation_run_repo,
+    );
+
+    runner.run().await;
+
+    assert_not_resumed(&app_state, &failed_conversation).await;
+    assert!(
+        !app_state
+            .chat_message_repo
+            .get_by_conversation(&sibling_conversation.id)
+            .await
+            .expect("sibling messages should load")
+            .is_empty(),
+        "a lookup error must skip only its candidate"
+    );
+}
+
+#[tokio::test]
+async fn chat_resumption_skips_marker_divergence_when_automation_run_owns_conversation() {
+    let (execution_state, app_state) = setup_test_state().await;
+    let project = Project::new("Marker divergence".to_string(), "/test/path".to_string());
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+    let (conversation, agent_run) =
+        create_interrupted_project_conversation(&app_state, project.id, None, None).await;
+    let agent_run_repo: Arc<dyn AgentRunRepository> = Arc::new(InterruptedAgentRunRepo::new(
+        vec![agent_run.clone()],
+        vec![InterruptedConversation {
+            conversation: conversation.clone(),
+            last_run: agent_run,
+        }],
+    ));
+    let automation_run_repo = memory_automation_run_repo();
+    automation_run_repo
+        .create_run(automation_run_for_conversation(conversation.id))
+        .await
+        .unwrap();
+    let runner = build_runner_with_agent_run_repo(
+        &app_state,
+        &execution_state,
+        agent_run_repo,
+        automation_run_repo,
+    );
+
+    runner.run().await;
+
+    assert_not_resumed(&app_state, &conversation).await;
+}
+
+#[tokio::test]
 async fn test_resumption_run_skips_interrupted_conversations_owned_by_other_recovery_paths() {
     let (execution_state, app_state) = setup_test_state().await;
 
@@ -684,7 +1072,12 @@ async fn test_resumption_run_skips_interrupted_conversations_owned_by_other_reco
             },
         ],
     ));
-    let runner = build_runner_with_agent_run_repo(&app_state, &execution_state, agent_run_repo);
+    let runner = build_runner_with_agent_run_repo(
+        &app_state,
+        &execution_state,
+        agent_run_repo,
+        Arc::clone(&app_state.automation_run_repo),
+    );
 
     runner.run().await;
 }
@@ -868,6 +1261,34 @@ async fn test_is_handled_by_task_resumption_for_project() {
     );
 }
 
+#[tokio::test]
+async fn test_is_handled_by_task_resumption_for_standalone() {
+    let (execution_state, app_state) = setup_test_state().await;
+
+    // Create an interrupted conversation for a self-keyed Standalone conversation.
+    let mut conv = ChatConversation::new_project(crate::domain::entities::ProjectId::new());
+    conv.context_type = ChatContextType::Standalone;
+    conv.context_id = conv.id.as_str();
+    conv.claude_session_id = Some("test-session".to_string());
+
+    let run = AgentRun::new(conv.id);
+
+    let interrupted = InterruptedConversation {
+        conversation: conv,
+        last_run: run,
+    };
+
+    let runner = build_runner(&app_state, &execution_state);
+
+    // Standalone must be enumerated for restart recovery the same way Project is
+    // (not silently excluded by the StartupJobRunner-owned gate).
+    let is_handled = runner.is_handled_by_task_resumption(&interrupted).await;
+    assert!(
+        !is_handled,
+        "Standalone should NOT be handled by StartupJobRunner"
+    );
+}
+
 async fn create_terminal_state_test(status: InternalStatus) -> bool {
     let (execution_state, app_state) = setup_test_state().await;
 
@@ -993,6 +1414,110 @@ async fn create_durable_recovery_candidate_with_status(
     app_state.chat_message_repo.create(message).await.unwrap();
 
     conversation_id
+}
+
+/// Standalone equivalent of `create_durable_recovery_candidate`: self-keyed
+/// (`context_id == conversation.id`), no project affiliation.
+async fn create_durable_recovery_candidate_standalone(
+    app_state: &AppState,
+) -> crate::domain::entities::ChatConversationId {
+    let mut conversation = ChatConversation::new_project(crate::domain::entities::ProjectId::new());
+    conversation.context_type = ChatContextType::Standalone;
+    conversation.set_provider_session_ref(ProviderSessionRef {
+        harness: AgentHarnessKind::Codex,
+        provider_session_id: "codex-standalone-session-1".to_string(),
+    });
+    let conversation_id = conversation.id;
+    conversation.context_id = conversation_id.as_str();
+    app_state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .unwrap();
+
+    let mut run = AgentRun::new(conversation_id);
+    run.complete();
+    app_state.agent_run_repo.create(run).await.unwrap();
+
+    let mut message = silent_tool_message();
+    message.conversation_id = Some(conversation_id);
+    app_state.chat_message_repo.create(message).await.unwrap();
+
+    conversation_id
+}
+
+#[tokio::test]
+async fn durable_silent_completion_recovery_scans_both_project_and_standalone() {
+    let (execution_state, app_state) = setup_test_state().await;
+    // Keep this scan/recovery test on the established deterministic queue path.
+    // An active launch would resolve a real provider CLI, making this repository
+    // and recovery-policy test depend on machine-specific harness availability.
+    execution_state.pause();
+    let runner = build_runner(&app_state, &execution_state);
+
+    let project_conversation_id = create_durable_recovery_candidate(&app_state).await;
+    let standalone_conversation_id = create_durable_recovery_candidate_standalone(&app_state).await;
+
+    // Prove the restart-recovery *scan* itself finds a candidate in both
+    // directions: the Project-context and Standalone-context durable recovery
+    // scans are two separate `list_recent_resumable_by_context_type` calls
+    // (see `recover_durable_silent_completions`), and both must return their
+    // seeded conversation.
+    let project_candidates = app_state
+        .chat_conversation_repo
+        .list_recent_resumable_by_context_type(
+            ChatContextType::Project,
+            DURABLE_SILENT_COMPLETION_RECOVERY_SCAN_LIMIT,
+        )
+        .await
+        .expect("project scan succeeds");
+    let standalone_candidates = app_state
+        .chat_conversation_repo
+        .list_recent_resumable_by_context_type(
+            ChatContextType::Standalone,
+            DURABLE_SILENT_COMPLETION_RECOVERY_SCAN_LIMIT,
+        )
+        .await
+        .expect("standalone scan succeeds");
+    assert_eq!(
+        project_candidates.len(),
+        1,
+        "Project candidate must be enumerated"
+    );
+    assert_eq!(
+        standalone_candidates.len(),
+        1,
+        "Standalone candidate must be enumerated"
+    );
+
+    assert_eq!(runner.recover_durable_silent_completions().await, 2);
+    for (context_type, conversation_id) in [
+        (ChatContextType::Project, project_conversation_id),
+        (ChatContextType::Standalone, standalone_conversation_id),
+    ] {
+        let queued = app_state
+            .message_queue
+            .get_queued(context_type, &conversation_id.as_str());
+        assert_eq!(
+            queued.len(),
+            1,
+            "{context_type} recovery must queue exactly one message"
+        );
+        assert!(
+            silent_completion_recovery_attempt(queued[0].metadata_override.as_deref()) > 0,
+            "{context_type} recovery queue entry must retain its durable attempt marker"
+        );
+        assert!(
+            !app_state
+                .running_agent_registry
+                .is_running(&RunningAgentKey::new(
+                    context_type.to_string(),
+                    conversation_id.as_str(),
+                ))
+                .await,
+            "{context_type} recovery must not dispatch while execution is paused"
+        );
+    }
 }
 
 #[tokio::test]

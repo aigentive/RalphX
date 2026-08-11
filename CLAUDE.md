@@ -15,7 +15,7 @@ If one is missing, skip it and continue; do not fail work or run bare `sed`/`cat
 
 ## Project: RalphX
 Native Mac GUI for autonomous AI dev: Kanban, multi-agent orchestration, ideation chat.
-Code quality: `.claude/rules/code-quality-standards.md` | State machine: `.claude/rules/task-state-machine.md` | Stateful workflow review: `.claude/rules/stateful-workflow-review.md` | Git/merge: `.claude/rules/task-git-branching.md` | Merge recovery consistency: `.claude/rules/merge-recovery-consistency.md` | Agents: `.claude/rules/task-execution-agents.md` | Delegation topology: `.claude/rules/delegation-topology.md` | Runtime roots: `.claude/rules/runtime-root-vs-target-project.md` | Production CLI resolution: `.claude/rules/production-cli-resolution.md` | CodeQL path safety: `.claude/rules/codeql-path-safety.md` | Ideation verification architecture: `.claude/rules/ideation-verification-architecture.md` | Follow-up blocker dedupe: `.claude/rules/followup-blocker-dedupe.md` | Agent type map: `.claude/rules/agent-type-map.md` | Task detail views: `.claude/rules/task-detail-views.md` | Frontend interaction performance: `.claude/rules/frontend-interaction-performance.md` | Icon-only buttons: `.claude/rules/icon-only-buttons.md` | Rust API safety: `.claude/rules/rust-stable-apis.md` | Rust test execution: `.claude/rules/rust-test-execution.md` | WKWebView CSS vars: `.claude/rules/wkwebview-css-vars.md` | Release script validation: `.claude/rules/release-script-validation.md` | PR descriptions: `.claude/rules/pr-descriptions.md`
+Code quality: `.claude/rules/code-quality-standards.md` | State machine: `.claude/rules/task-state-machine.md` | Stateful review: `.claude/rules/stateful-workflow-review.md` | Big-PR checks: `.claude/rules/big-pr-review-checklist.md` | Git/merge: `.claude/rules/task-git-branching.md` | Merge recovery: `.claude/rules/merge-recovery-consistency.md` | Review modes: `.claude/rules/agent-workspace-review-modes.md` | Agents: `.claude/rules/task-execution-agents.md` | Delegation: `.claude/rules/delegation-topology.md` | Thinking: `.claude/rules/agent-thinking-capture.md` | Runtime roots: `.claude/rules/runtime-root-vs-target-project.md` | Prod CLI: `.claude/rules/production-cli-resolution.md` | CodeQL paths: `.claude/rules/codeql-path-safety.md` | Ideation verification: `.claude/rules/ideation-verification-architecture.md` | Blocker dedupe: `.claude/rules/followup-blocker-dedupe.md` | Agent types: `.claude/rules/agent-type-map.md` | Detail views: `.claude/rules/task-detail-views.md` | Frontend perf: `.claude/rules/frontend-interaction-performance.md` | Icons: `.claude/rules/icon-only-buttons.md` | Rust API: `.claude/rules/rust-stable-apis.md` | Rust tests: `.claude/rules/rust-test-execution.md` | WKWebView CSS: `.claude/rules/wkwebview-css-vars.md` | Release scripts: `.claude/rules/release-script-validation.md` | Assets: `.claude/rules/assets.md` | Tauri invoke: `.claude/rules/tauri-invoke-conventions.md` | PR body (READ): `.claude/rules/pr-descriptions.md`
 CodeQL path safety applies to production and tests; use process-owned runtime roots, fixed entry lists, pure test builders, and suppress `rust/path-injection` only after containment validation.
 Production CLI resolution applies to installed app launches; all runtime subprocess binaries must go through the shared resolver surface.
 
@@ -25,101 +25,41 @@ ralphx/
 ├─ frontend/              # Frontend project root (Vite/React) → frontend/CLAUDE.md → frontend/src/CLAUDE.md
 │  ├─ src/                # Frontend app code
 │  └─ tests/              # Frontend/Vitest/Playwright tests
-├─ plugins/
-│  └─ shared/             # Shared Claude Code plugin for external RalphX agents
 ├─ src-tauri/             # Backend (Rust/Tauri) → src-tauri/CLAUDE.md
+│  ├─ src/http_server/    # Axum backend for MCP adapters (prod :3847 | dev :3857 | RALPHX_BACKEND_PORT)
 │  └─ ralphx.db           # SQLite (dev)
-├─ plugins/app/         # Claude plugin (agents/skills/hooks)
+├─ agents/                # Canonical agent metadata + harness-specific prompts
+├─ config/harnesses/      # Harness-global settings and lane defaults
+├─ plugins/app/           # Claude plugin plus MCP adapters
 │  ├─ ralphx-mcp-server/  # Internal agent MCP (stdio → :3847)
 │  └─ ralphx-external-mcp/# External API MCP (HTTP :3848 → :3847)
 ```
 
-## Context Window Preservation (NON-NEGOTIABLE)
-
-This is a **large codebase** (~100k+ lines across Rust backend + React frontend). Every agent — lead, teammate, or standalone — MUST protect its context window.
+## Context And Delegation
 
 | Rule | Detail |
-|------|--------|
-| **Never explore manually** | ❌ Reading file after file yourself. ✅ Delegate bounded exploration to a read-only specialist or managed teammate and have it summarize findings. |
-| **Leads only delegate** | Team leads coordinate and review. ❌ Leads doing research, running tests, or reading code directly. ✅ Spawn teammates/subagents for ALL work. |
-| **Parallel exploration** | Need info from 3+ files? Spawn 3 subagents in parallel. ❌ Sequential file reads bloating context. |
-| **Direct reads only for confirmation** | Read a specific file:line only when you already know exactly what you need to confirm. ❌ Browsing/scanning files to "understand." |
-| **Subagents for search** | Any `Grep`/`Glob` that might need >2 rounds → use a read-only delegate or managed teammate instead of doing it yourself. |
-| **Teammates are disposable, context is not** | Spawn cheap subagents liberally. Your context window is expensive — don't fill it with raw code. Have subagents summarize findings. |
-| **Research via agents, not yourself** | Before ANY implementation: spawn a research agent to gather context. Don't read the code yourself — get a summary back. |
-| **Memory files exist — use them** | Check your auto-memory `MEMORY.md` (at `~/.claude/projects/<project-slug>/memory/`) before exploring. Past findings are already there. |
-| **Always-on memory stays minimal** | Only universal invariants belong in always-loaded `CLAUDE.md` / unconditional `.claude/rules/*.md`. Specialized guidance → path-scoped rules, skills, or on-demand file reads. |
-
-## Team Management
-> Apply whenever TeamCreate is available (includes delegate/team mode).
-
-**Model selection:** Default → `sonnet`. Escalate to `opus` ONLY for: deep multi-file investigation, complex architecture across modules, subtle race conditions, or when Sonnet produced insufficient results. ❌ `"inherit"` model — breaks Plan agents (they go idle without responding). Always specify explicit model.
-**Verification rule:** When lower-tier models (Sonnet/Haiku) implement, verify with max-tier (Opus) before committing. ❌ Committing Sonnet work without Opus review.
-
-| Rule | Detail |
-|------|--------|
-| **Always managed teams** | Every task → TeamCreate first. No standalone Task spawns. Even single-agent tasks use a team. |
-| **Parallelization** | Multiple independent streams → separate teammates per stream. ❌ Serialize on one agent. |
-| **Convergent investigation** | Bug investigation → ≥2 parallel agents (logs + code). Compare hypotheses before implementing. |
-| **Incremental reporting (CRITICAL)** | Teammates MUST send progress updates to the lead via `SendMessage` after each significant finding or milestone — ❌ one big report at the end. Context windows expire; if a teammate dies mid-work, the lead loses everything unless incremental updates were sent. Rule of thumb: any finding worth remembering → send it to the lead immediately. |
-| **Teammate reporting cadence** | At minimum: (1) after initial exploration/research, (2) after each root cause or key finding, (3) after implementation, (4) after tests pass. ❌ Silent for 10+ minutes then one final dump. |
-| **Leads must request updates** | If a teammate has been idle or silent for >5 minutes, send a message asking for a progress update. Don't wait for the final report. |
-| **Message timing** | Confirm all messages answered before shutdown. ❌ Send questions + shutdown in quick succession. |
-| **TDD by default** | Tests FIRST. No "done" without pass/fail counts reported. |
-| **Lead reviews coverage** | Review test gaps before approving commits. Every code change = tests. |
-| **Report test results** | Teammates report pass/fail counts in completion messages. No "done" without test evidence. |
-| **Every change = tests** | Code changes without corresponding test coverage are incomplete. |
-| **Audit ALL code paths** | When fixing a guard, search ALL paths to same destination. ❌ Fix one, miss another. |
-| **Shared safety helpers** | Extract guard logic to shared fn — ❌ duplicate across paths. |
-| **False-success review** | Completion/cache/retry/recovery/state-machine fixes → adversarial pass for stale attempts, stale cache, fail-open reads, side-effect order, prompt/schema drift, and path sinks. See `.claude/rules/stateful-workflow-review.md`. |
-| **Adversarial plan convergence (NON-NEGOTIABLE)** | See "Adversarial Plan Convergence" section below. Non-trivial plans MUST pass multi-round adversarial debate before implementation. |
-| **Verify end-to-end** | After fix, verify user-visible behavior changed. Stale logs/UI can make working fixes look broken. |
-| **Dual-spawn architecture** | Agent teams need BOTH in-process Task subagents (do actual work, write to sidechain JSONL) AND external CLI processes (registry workers, `approve_team_plan`). ❌ Remove either — both are required by design. See `src-tauri/manual_agent_teams_process.txt`. |
-| **Sidechain output capture** | In-process Task subagents write to `~/.claude/projects/<slug>/<session>/subagents/agent-*.jsonl`, NOT to parent stdout. The lead's stream reader only sees parent stdout. If lead timeout (`team_line_read_secs`) kills the team, subagent work is lost even though the JSONL shows full conversations. |
-
-## Agent Teams Architecture (CRITICAL — READ THIS)
-
-RalphX agent teams use a **dual-spawn model**. Both components are required:
-
-| Component | Purpose | Spawned By | Output |
-|-----------|---------|------------|--------|
-| In-process Task subagents | Do actual work (research, code, etc.) | Lead agent's `Task` tool | Sidechain JSONL (`~/.claude/projects/.../subagents/agent-*.jsonl`) |
-| External CLI processes | Registry workers, `approve_team_plan`, message delivery | `tokio::process::Command` in backend | Stdout stream read by backend |
-
-**Why both?** The Task tool creates in-process subagents that can use all Claude Code tools but write output to sidechain JSONL files (not parent stdout). The external CLI processes join the team registry and handle coordination tasks that need to be visible to the backend's stream reader.
-
-**Known issue:** The lead's stream reader (`process_stream_background`) only monitors parent stdout. Sidechain subagent activity doesn't count as "activity" for the `team_line_read_secs` timeout (default 3600s). If subagents work for >1 hour without the lead producing stdout output, the lead gets killed, losing the ability to capture subagent results.
-
-❌ NEVER remove the external CLI process spawning — it's not redundant, it's BY DESIGN
-❌ NEVER treat "0 tokens" on external CLI processes as a bug — they may be registry workers
-✅ Reference: `src-tauri/manual_agent_teams_process.txt` shows the manual equivalent
-✅ Debug logs: `scripts/find-debug-logs.sh -s "session title"` to find agent debug files + conversation JSONLs
+|---|---|
+| Load narrowly | Read project instructions plus files relevant to the current scope; use bounded delegation when the live harness exposes it and parallel work is genuinely independent. |
+| Follow the live profile | Agent conversation Plan profile is read-only; implementation profiles may edit. Do not infer Claude Team/Task behavior on Codex or native delegation paths. |
+| Canonical delegation topology | `agents/<agent>/agent.yaml` `delegation.allowed_targets` owns RalphX-native delegation; see `.claude/rules/delegation-topology.md`. |
+| Preserve context | Keep durable global invariants here; volatile status belongs in trackers and specialized behavior belongs in path-scoped rules or agent prompts. |
 
 ## MCP Architecture
 Two MCP servers — different audiences. Full disambiguation: `.claude/rules/mcp-servers.md`
 ```
-Internal: Claude Agent → stdio → ralphx-mcp-server → HTTP :3847 → Tauri Backend
+Internal: RalphX harness → internal MCP adapter → HTTP :3847 → Tauri Backend
 External: Third-party bot → Bearer token → ralphx-external-mcp (:3848) → HTTP :3847 → Tauri Backend
 ```
-Plugin: `claude --plugin-dir ./plugins/app --agent worker -p "Execute"` | Tool config: `.claude/rules/agent-mcp-tools.md`
+Claude plugin: `plugins/app/` | Canonical agent capabilities: `agents/<agent>/agent.yaml` | Tool rules: `.claude/rules/agent-mcp-tools.md`
 **MCP server build (NON-NEGOTIABLE):** After modifying ANY source in `plugins/app/ralphx-mcp-server/src/` or `plugins/app/ralphx-external-mcp/src/`, rebuild the respective server. ❌ Committing without rebuilding.
-**mcp_tools override semantics (NON-NEGOTIABLE):** `extends` in `config/ralphx.yaml`: specifying `mcp_tools` fully replaces parent (no merge) — child must list ALL tools. Omitting `mcp_tools` inherits parent's list. ❌ Assuming partial inheritance when you specify the key.
+**MCP capability ownership (NON-NEGOTIABLE):** canonical per-agent grants live in `agents/<agent>/agent.yaml` `capabilities.mcp_tools`; `config/ralphx.yaml` holds only explicitly documented compatibility rows.
 **Agent frontmatter tool fields (NON-NEGOTIABLE):** Only `tools` and `disallowedTools` are valid in agent `.md` frontmatter. ❌ `allowedTools` — silently ignored by Claude Code. Add MCP tools (e.g., `"mcp__ralphx__*"`) to the `tools` list. Note: `--allowedTools` IS valid as a CLI flag at spawn time — only invalid as frontmatter.
-
-| Agent | MCP Tools |
-|-------|-----------|
-| ralphx-ideation | *_task_proposal, *_plan_artifact |
-| ralphx-chat-task | update_task, add_task_note, get_task_details |
-| ralphx-chat-project | suggest_task, list_tasks |
-| worker | get_task_context, get_artifact*, *_step, execution_complete |
-| coder | get_task_context, get_artifact*, *_step (❌ no execution_complete) |
-| reviewer | complete_review, get_task_context |
-| merger | report_conflict, report_incomplete, get_merge_target, get_task_context, complete_merge |
 
 ## Key Principles
 
 | # | Rule |
 |---|------|
+| 0 | **Pattern alignment first (NON-NEGOTIABLE):** Before ANY bug fix or feature, locate the owning service/component and its established pattern (subtree CLAUDE.md pattern tables, `.claude/rules/*`, `docs/architecture/`) and extend that seam. ❌ Parallel services/managers/stores when an existing seam owns the domain. A genuinely new pattern requires explicit justification in the PR body + a one-liner added to the relevant CLAUDE.md (rule 11) |
 | 1 | TDD mandatory — tests FIRST |
 | 1.5 | **Orchestration chain tests** — see `src-tauri/CLAUDE.md` Integration Tests section |
 | 2 | Anti-AI-slop — see Design System section |
@@ -128,47 +68,33 @@ Plugin: `claude --plugin-dir ./plugins/app --agent worker -p "Execute"` | Tool c
 | 5 | ❌ Fragile string comparisons — use enum variants (`matches!(err, MyError::Variant)`), error codes, or named constants for external strings |
 | 6 | Full timestamps in activity log |
 | 7 | Live workflow status changes → validated `TaskTransitionService::transition_task*` or canonical state-machine/merge-engine writes only. ❌ Direct repo/DB `internal_status` mutation. Nonstandard repair jumps → explicit `transition_task_corrective()` / `apply_corrective_transition()` only |
-| 8 | **Zero lint/test warnings (NON-NEGOTIABLE):** Fix ALL lint warnings and test failures before completing work — including pre-existing ones. ❌ "It's pre-existing" is not an excuse. Stale warnings delay future work and compound. `src-tauri/` → dual cargo clippy gates \| fast local Rust CI parity (worktree-safe) → `scripts/test-rust-fast.sh pr` / `main` (includes layering; `main` adds workspace doctests + full integration) \| broad root-lib runs during PR 0.x decoupling → `cargo nextest run --manifest-path src-tauri/Cargo.toml --lib --profile ci --features test-utils` \| doctests → `cargo test --manifest-path src-tauri/Cargo.toml --workspace --doc` \| layering → `python3 scripts/check-layering.py` \| pinpoint Rust runs → see `.claude/rules/rust-test-execution.md`. ❌ `cargo check` \| ❌ full `cargo test` (hang) |
-| 9 | ❌ Start/stop dev server — user manages manually |
+| 8 | **Focused local validation (NON-NEGOTIABLE):** Run the narrowest tests/checks covering changed behavior and fix current-scope failures. Never use a full suite as fallback when targeted discovery is uncertain; use the nearest module/suite/crate check or report no applicable local test. Broad Rust suites, dual clippy, doctests, coverage, and PR/main parity belong to RalphX workspace CI/autofix unless explicitly requested or reproducing a named CI failure. Report unrelated pre-existing failures without expanding scope. Details: `.claude/rules/rust-test-execution.md` |
+| 8.5 | **Post-Rust-test cleanup (NON-NEGOTIABLE):** If any Rust test command starts (`cargo test`, `cargo nextest run`, Rust coverage, or a wrapper that executes Rust tests), run `cd src-tauri && cargo clean` separately in the active workspace once after the final or aborted test attempt and before handoff, whether it succeeds, fails, times out, is cancelled, or is interrupted; no Rust test means no cleanup. Report cleanup failure and never manually delete target directories as a fallback. Details: `.claude/rules/rust-test-execution.md` |
+| 9 | **Visual QA default (NON-NEGOTIABLE):** Prefer automated Playwright visual tests; agents may start/stop only the scoped dev servers those tests require. Native Tauri QA through Computer Use is prohibited unless the user explicitly requests it in the current request; never infer permission from UI/theme scope or other repository guidance. Details: `.claude/rules/visual-testing.md` |
 | 10 | Implementation playbook: `DEVELOPMENT.md` — read alongside CLAUDE.md files for placement, naming, recipes, and debugging. |
 | 11 | New pattern → add one-liner to relevant CLAUDE.md. Pattern name + rule only. |
-| 12 | Complex work → TaskCreate/TaskUpdate/TaskList (MANDATORY) → `.claude/rules/task-management.md` |
+| 12 | Complex work → use the task/ledger surface exposed by the active harness; Claude Task management details → `.claude/rules/task-management.md` |
 | 13 | Parallel commits → coordinate via normal git hygiene and verify `git status` / `git diff` before committing; no lock-file protocol |
 | 14 | Tauri invoke: camelCase fields. ✅ `contextId` ❌ `context_id` |
-| 15 | New `.claude/rules/*.md` \| `**/CLAUDE.md` → include this maintainer note at top |
+| 15 | New `.claude/rules/*` / `CLAUDE.md` → frontmatter line 1; maintainer note next |
 | 16 | **DbConnection (NON-NEGOTIABLE):** All SQLite repo methods MUST use `db.run(\|conn\| { ... })` via `DbConnection` for non-blocking access. ❌ Direct `conn.lock().await` / `conn.query_row()` in async methods. See `db_connection.rs`. |
 | 17 | **Tokio spawn safety (NON-NEGOTIABLE):** `tokio::spawn` / `tokio::task::spawn` / `spawn_blocking` → async context ONLY. Sync constructors & Tauri setup → `std::thread::spawn` or `tauri::async_runtime::spawn`. Details: `.claude/rules/tokio-runtime-safety.md` |
 | 18 | **Rust std API stability (NON-NEGOTIABLE):** Avoid unstable std APIs in production code (e.g., `is_multiple_of`). Use stable equivalents (e.g., `%`). Details: `.claude/rules/rust-stable-apis.md` |
-| 19 | **UI design native parity (NON-NEGOTIABLE):** Theme/layout changes → verify native Tauri/WKWebView, not Chromium only; themed surfaces use explicit bg/border longhands. Details: `.claude/rules/wkwebview-css-vars.md` |
+| 19 | **UI design parity (NON-NEGOTIABLE):** Theme/layout changes → use explicit WebKit-safe bg/border longhands and prefer Playwright visual coverage. Native Tauri/WKWebView QA through Computer Use requires an explicit user request per rule 9. Details: `.claude/rules/wkwebview-css-vars.md` |
 | 20 | **Constraint bundle planning** — Ideation plans should derive repo-specific `Constraints`, `Avoid`, and `Proof Obligations` from explored architecture before verification. |
 | 21 | **Mechanical extractions only (NON-NEGOTIABLE):** For large refactors/splits, move existing code with real extraction commands/scripts first (`mv`, `sed`, `awk`, scripted extraction). `apply_patch` is only for the small post-move fix-up layer, never for hand-recreating large existing bodies. Details: `.claude/rules/code-quality-standards.md` |
-| 22 | **WKWebView CSS vars (NON-NEGOTIABLE):** Theme tokens for bg/text/border MUST use literal color values (`#rrggbb`, `hsl()`, `hsla()`) — ❌ chained `var(--primitive)`. WKWebView drops chained var() on inheritance. Every new `[data-theme="X"]` block needs a defensive `html[data-theme="X"]` canvas paint rule. Verify in `npm run tauri dev`, not just `dev:web`. Details: `.claude/rules/wkwebview-css-vars.md` |
+| 22 | **WKWebView CSS vars (NON-NEGOTIABLE):** Theme tokens for bg/text/border MUST use literal color values (`#rrggbb`, `hsl()`, `hsla()`) — ❌ chained `var(--primitive)`. WKWebView drops chained var() on inheritance. Every new `[data-theme="X"]` block needs a defensive `html[data-theme="X"]` canvas paint rule. Prefer Playwright visual coverage; only perform Native Tauri QA through Computer Use when the user explicitly requests it. Details: `.claude/rules/wkwebview-css-vars.md` |
 | 23 | **Icon-only buttons:** Must have an accessible name and the app tooltip component; native `title` alone is not enough. Details: `.claude/rules/icon-only-buttons.md` |
 | 24 | **Frontend interaction performance (NON-NEGOTIABLE):** User-triggered panes/drawers/widgets must paint a lightweight shell before lazy imports, fetches, persistence, process startup, or heavy mount/unmount work; warm up likely heavy paths on safe intent/idle; fix safe current-scope opportunities with TDD. Details: `.claude/rules/frontend-interaction-performance.md` |
 | 25 | **Stateful workflow review (NON-NEGOTIABLE):** For completion/cache/retry/recovery/state-machine changes, prove current-attempt authority, fail-closed reads, event ordering, prompt/schema alignment, path containment, and production-path tests. Details: `.claude/rules/stateful-workflow-review.md` |
+| 26 | **Big-PR review checklist:** Before merging any large feature/refactor PR, run the 12 falsifiable checks in `.claude/rules/big-pr-review-checklist.md` — they target the 11 failure classes big PRs here actually ship (scope leaks, stale-metadata trust, competing UI writers, UI-inferred state, recovery-path divergence, …) |
 
 ## Adversarial Plan Convergence (NON-NEGOTIABLE)
 
-> Applies to: team leads, ideation team leads (`ralphx-ideation-team-lead`), solo ideation orchestrators (`ralphx-ideation`), and any agent planning non-trivial changes.
-
-Agent limitations mean no single plan can be trusted in full. Plans proposing code changes MUST pass adversarial debate as part of the VERIFY phase before implementation begins.
-
-**How it works:** The existing VERIFY phase (Phase 3.5/4.5) now has two layers — plan completeness (Layer 1 critic) AND implementation feasibility (Layer 2 dual-lens critic). The agent decides which layers apply: plans proposing specific code changes, file modifications, or architectural modifications → both layers. High-level plans without implementation specifics → completeness only.
-
-| Step | What |
-|------|------|
-| **Layer 2 (dual-lens critic)** | Single agent with both minimal/surgical AND comprehensive/defense-in-depth lenses. Reads actual code, finds functional gaps, rates CRITICAL/HIGH/MEDIUM/LOW, attributes gap source |
-| **Synthesize** | Merge findings into revised plan addressing all CRITICAL and HIGH gaps |
-| **Repeat** | New critic attacks revised plan each round until convergence |
-| **Converge** | `zero_blocking`: ALL CRITICAL, HIGH, and MEDIUM gaps resolved. LOW may be deferred |
-| **User confirmation gate** | ❌ Implement before user confirms converged plan |
-
-**Adversarial agent rules:** Read actual code (not summaries). Concrete scenarios only ("if X then Y breaks at line Z"). ❌ Style/preference debates. Each gap: scenario + severity + blocks implementation?
-
-Full process details: `agents/ralphx-ideation-team-lead/claude/prompt.md` (Phase 4.5) | `agents/ralphx-ideation/claude/prompt.md` (Phase 3.5)
+Plan-verification run/round/gap lineage and terminal classification are backend-owned; the active model may choose permitted lenses/delegates but must not replay orchestration bookkeeping. Follow `.claude/rules/ideation-verification-architecture.md` and the live profile prompt; implementation still requires the product's user-confirmation gate.
 
 ## Design System
-`specs/design/styleguide.md` (tokens, components, layout rules — initial spec, grows with app) | `specs/DESIGN.md` | Accent: `#ff6b35` (warm orange) ❌ purple/blue | Font: SF Pro ❌ Inter | **INVOKE `/tailwind-v4-shadcn` before UI work**
+`specs/design/styleguide.md` (tokens, components, layout rules — initial spec, grows with app) | `specs/DESIGN.md` | Accent: `#ff6b35` (warm orange) ❌ purple/blue | Font: SF Pro ❌ Inter
 
 Input outline removal:
 ```tsx
@@ -180,6 +106,7 @@ style={{ boxShadow: "none", outline: "none" }}
 - **Active Plan** — Project-scoped plan filtering for Graph/Kanban. Docs: `docs/features/active-plan.md` | `docs/architecture/active-plan-api.md`
 - **Session Recovery** — Expired Claude session recovery with history preservation. Docs: `docs/features/session-recovery.md`
 - **Plan Verification** — Automated adversarial review loop for ideation plans. Docs: `docs/features/plan-verification.md` | Architecture: `.claude/rules/ideation-verification-architecture.md`
+- **Agent Personas** — Conversation-bound prompt-only behavior profiles for Project Agent conversations. Docs: `docs/features/agent-personas.md`
 
 ## Git Conventions
 ❌ git init/push/remotes | Prefixes: `docs:` | `feat:` | `fix:` | `chore:`
@@ -188,6 +115,5 @@ style={{ boxShadow: "none", outline: "none" }}
 - DB: `sqlite3 src-tauri/ralphx.db "SELECT * FROM table_name;"`
 - App logs: per-launch file — dev: `.artifacts/logs/ralphx_YYYY-MM-DD_HH-MM-SS.log` | prod: `~/Library/Application Support/com.ralphx.app/logs/` | latest: `ls -t .artifacts/logs/*.log | head -1` | config: `file_logging` in `config/ralphx.yaml` / `RALPHX_FILE_LOGGING` env (default: true)
 - Debug logs: `scripts/find-debug-logs.sh -a "<agent-name>" -d "YYYY-MM-DD" -v` — find Claude debug logs by agent name/date/keywords
-- Slash commands: `/activate-prd <path>` — switch PRD | `/create-prd` — PRD wizard
 - Claude integration docs: `docs/ai-docs/claude-code/README.md` — lightweight local index plus official-doc stubs; fetch official Claude Code docs when current vendor behavior matters
-- OpenAI / GPT-5.4 prompting notes: `docs/ai-docs/openai/README.md` — local reference for GPT-5.4 prompt best practices, instruction layering, and official-source links
+- OpenAI GPT-5 prompting notes: `docs/ai-docs/openai/README.md` — route by configured target model; do not apply one model's guide wholesale to another family

@@ -258,7 +258,7 @@ async fn test_get_team_artifacts_by_session_filters_correctly() {
         "Research Finding",
         ArtifactType::TeamResearch,
         "Some research content here",
-        "team-lead",
+        "system",
     )
     .with_bucket(bucket_id.clone());
     matching.metadata = matching.metadata.with_team_metadata(TeamArtifactMetadata {
@@ -266,7 +266,6 @@ async fn test_get_team_artifacts_by_session_filters_correctly() {
         author_teammate: "researcher".into(),
         session_id: Some("session-abc".into()),
         team_phase: None,
-        verification_finding: None,
     });
 
     // Create artifact with DIFFERENT session_id
@@ -274,7 +273,7 @@ async fn test_get_team_artifacts_by_session_filters_correctly() {
         "Other Finding",
         ArtifactType::TeamAnalysis,
         "Different session content",
-        "team-lead",
+        "system",
     )
     .with_bucket(bucket_id.clone());
     other.metadata = other.metadata.with_team_metadata(TeamArtifactMetadata {
@@ -282,7 +281,6 @@ async fn test_get_team_artifacts_by_session_filters_correctly() {
         author_teammate: "analyst".into(),
         session_id: Some("session-xyz".into()),
         team_phase: None,
-        verification_finding: None,
     });
 
     // Create artifact with NO team_metadata

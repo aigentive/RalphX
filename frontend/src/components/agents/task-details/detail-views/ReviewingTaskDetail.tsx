@@ -24,6 +24,7 @@ import {
   StatusBanner,
   StatusPill,
   TwoColumnLayout,
+  TaskValidationSection,
 } from "./shared";
 import { ValidationProgress } from "./shared/ValidationProgress";
 import { DurationDisplay } from "./shared/DurationDisplay";
@@ -302,145 +303,153 @@ export function ReviewingTaskDetail({
 
   return (
     <>
-    <TwoColumnLayout
-      description={task.description}
-      testId="reviewing-task-detail"
-    >
-      {/* Status Banner */}
-      <StatusBanner
-        icon={isHistorical ? outcomeConfig?.icon ?? Bot : Bot}
-        title={isHistorical ? outcomeConfig?.title ?? "AI Review in Progress" : "AI Review in Progress"}
-        subtitle={
-          isHistorical
-            ? outcomeConfig?.subtitle ?? "Analyzing changes and running checks"
-            : "Analyzing changes and running checks"
-        }
-        variant={isHistorical ? outcomeConfig?.variant ?? "info" : "info"}
-        animated={!isHistorical}
-        badge={
-          <StatusPill
-            icon={isHistorical ? outcomeConfig?.pillIcon ?? Sparkles : Sparkles}
-            label={isHistorical ? outcomeConfig?.label ?? "In Progress" : "Analyzing"}
-            variant={isHistorical ? outcomeConfig?.variant ?? "info" : "info"}
-            animated={!isHistorical}
-            size="md"
-          />
-        }
-      />
-
-      {/* Duration — live while reviewing, static in historical mode */}
-      {task.startedAt && (
-        <div data-testid="reviewing-task-duration">
-          <DurationDisplay
-            mode={isHistorical ? "static" : "live"}
-            startedAt={task.startedAt}
-            completedAt={isHistorical ? task.completedAt : null}
-          />
-        </div>
-      )}
-
-      {/* Setup/Install Progress (live validation events) */}
-      <ValidationProgress
-        taskId={task.id}
-        metadata={task.metadata}
-        liveSteps={liveValidationSteps}
-        title="Environment Setup"
-        metadataLogKey="review_setup_log"
-      />
-
-      {/* Review Steps */}
-      <section data-testid="reviewing-steps-section">
-        <SectionTitle>Review Progress</SectionTitle>
-        <ReviewStepsCard
-          isHistorical={isHistorical === true}
-          mode={isHistorical ? outcomeConfig?.mode ?? "in_progress" : "in_progress"}
-          variant={isHistorical ? outcomeConfig?.variant ?? "info" : "info"}
-        />
-      </section>
-
-      {/* Actions — only for active (non-historical) reviews */}
-      {!isHistorical && (
-        <section data-testid="reviewing-actions-section">
-          <SectionTitle>Actions</SectionTitle>
-          <DetailCard>
-            {showFeedback && (
-              <div className="mb-4 space-y-3">
-                <Textarea
-                  data-testid="feedback-input"
-                  value={feedback}
-                  onChange={(e) => setFeedback(e.target.value)}
-                  placeholder="Describe the changes needed..."
-                  disabled={requestChangesMutation.isPending}
-                  className="min-h-[100px] text-[0.8125rem] resize-none rounded-xl"
-                  style={{
-                    backgroundColor: "var(--overlay-scrim)",
-                    border: "1px solid var(--overlay-moderate)",
-                  }}
-                />
-              </div>
-            )}
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                data-testid="stop-review-action"
-                onClick={handleStop}
-                disabled={isActionLoading}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[0.75rem] font-medium transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                style={{
-                  backgroundColor: statusTint("error", 15),
-                  color: "var(--status-error)",
-                }}
-              >
-                <Square className="w-3.5 h-3.5" />
-                Stop Review
-              </button>
-              <button
-                type="button"
-                data-testid="request-changes-action"
-                onClick={handleRequestChanges}
-                disabled={requestChangesMutation.isPending || (showFeedback && feedback.trim().length === 0)}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[0.75rem] font-medium transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                style={{
-                  backgroundColor: "var(--status-warning-muted)",
-                  color: "var(--status-warning)",
-                }}
-              >
-                {requestChangesMutation.isPending ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : (
-                  <RotateCcw className="w-3.5 h-3.5" />
+      <TwoColumnLayout
+        description={task.description}
+        testId="reviewing-task-detail"
+        actions={
+          !isHistorical ? (
+            <section data-testid="reviewing-actions-section">
+              <SectionTitle>Actions</SectionTitle>
+              <DetailCard>
+                {showFeedback && (
+                  <div className="mb-4 space-y-3">
+                    <Textarea
+                      data-testid="feedback-input"
+                      value={feedback}
+                      onChange={(e) => setFeedback(e.target.value)}
+                      placeholder="Describe the changes needed..."
+                      disabled={requestChangesMutation.isPending}
+                      className="min-h-[100px] text-[0.8125rem] resize-none rounded-xl"
+                      style={{
+                        backgroundColor: "var(--overlay-scrim)",
+                        borderColor: "var(--overlay-moderate)",
+                        borderStyle: "solid",
+                        borderWidth: "1px",
+                      }}
+                    />
+                  </div>
                 )}
-                {requestChangesMutation.isPending
-                  ? "Submitting..."
-                  : showFeedback
-                  ? "Submit"
-                  : "Request Changes"}
-              </button>
-              {showFeedback && !requestChangesMutation.isPending && (
-                <button
-                  type="button"
-                  data-testid="cancel-request-changes"
-                  onClick={() => {
-                    setShowFeedback(false);
-                    setFeedback("");
-                    setActionError(null);
-                  }}
-                  className="text-[0.75rem] text-text-primary/40 hover:text-text-primary/60 transition-colors cursor-pointer"
-                >
-                  Cancel
-                </button>
-              )}
-            </div>
-            {actionError && (
-              <p className="mt-1 text-[0.75rem]" style={{ color: "var(--status-error)" }}>
-                {actionError}
-              </p>
-            )}
-          </DetailCard>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    data-testid="stop-review-action"
+                    onClick={handleStop}
+                    disabled={isActionLoading}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[0.75rem] font-medium transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                    style={{
+                      backgroundColor: statusTint("error", 15),
+                      color: "var(--status-error)",
+                    }}
+                  >
+                    <Square className="w-3.5 h-3.5" />
+                    Stop Review
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="request-changes-action"
+                    onClick={handleRequestChanges}
+                    disabled={requestChangesMutation.isPending || (showFeedback && feedback.trim().length === 0)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[0.75rem] font-medium transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                    style={{
+                      backgroundColor: "var(--status-warning-muted)",
+                      color: "var(--status-warning)",
+                    }}
+                  >
+                    {requestChangesMutation.isPending ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <RotateCcw className="w-3.5 h-3.5" />
+                    )}
+                    {requestChangesMutation.isPending
+                      ? "Submitting..."
+                      : showFeedback
+                      ? "Submit"
+                      : "Request Changes"}
+                  </button>
+                  {showFeedback && !requestChangesMutation.isPending && (
+                    <button
+                      type="button"
+                      data-testid="cancel-request-changes"
+                      onClick={() => {
+                        setShowFeedback(false);
+                        setFeedback("");
+                        setActionError(null);
+                      }}
+                      className="text-[0.75rem] text-text-primary/40 hover:text-text-primary/60 transition-colors cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                  )}
+                </div>
+                {actionError && (
+                  <p className="mt-1 text-[0.75rem]" style={{ color: "var(--status-error)" }}>
+                    {actionError}
+                  </p>
+                )}
+              </DetailCard>
+            </section>
+          ) : null
+        }
+      >
+        {/* Status Banner */}
+        <StatusBanner
+          icon={isHistorical ? outcomeConfig?.icon ?? Bot : Bot}
+          title={isHistorical ? outcomeConfig?.title ?? "AI Review in Progress" : "AI Review in Progress"}
+          subtitle={
+            isHistorical
+              ? outcomeConfig?.subtitle ?? "Analyzing changes and running checks"
+              : "Analyzing changes and running checks"
+          }
+          variant={isHistorical ? outcomeConfig?.variant ?? "info" : "info"}
+          animated={!isHistorical}
+          badge={
+            <StatusPill
+              icon={isHistorical ? outcomeConfig?.pillIcon ?? Sparkles : Sparkles}
+              label={isHistorical ? outcomeConfig?.label ?? "In Progress" : "Analyzing"}
+              variant={isHistorical ? outcomeConfig?.variant ?? "info" : "info"}
+              animated={!isHistorical}
+              size="md"
+            />
+          }
+        />
+
+        {/* Duration — live while reviewing, static in historical mode */}
+        {task.startedAt && (
+          <div data-testid="reviewing-task-duration">
+            <DurationDisplay
+              mode={isHistorical ? "static" : "live"}
+              startedAt={task.startedAt}
+              completedAt={isHistorical ? task.completedAt : null}
+            />
+          </div>
+        )}
+
+        {/* Setup/Install Progress (live validation events) */}
+        <ValidationProgress
+          taskId={task.id}
+          metadata={task.metadata}
+          liveSteps={liveValidationSteps}
+          title="Environment Setup"
+          metadataLogKey="review_setup_log"
+        />
+
+        <TaskValidationSection
+          taskId={task.id}
+          isHistorical={isHistorical === true}
+        />
+
+        {/* Review Steps */}
+        <section data-testid="reviewing-steps-section">
+          <SectionTitle>Review Progress</SectionTitle>
+          <ReviewStepsCard
+            isHistorical={isHistorical === true}
+            mode={isHistorical ? outcomeConfig?.mode ?? "in_progress" : "in_progress"}
+            variant={isHistorical ? outcomeConfig?.variant ?? "info" : "info"}
+          />
         </section>
-      )}
-    </TwoColumnLayout>
-    {!isHistorical && <ConfirmationDialog {...confirmationDialogProps} />}
+
+      </TwoColumnLayout>
+      {!isHistorical && <ConfirmationDialog {...confirmationDialogProps} />}
     </>
   );
 }

@@ -82,7 +82,7 @@ describe("useSessionExportImport", () => {
 
   describe("exportSession", () => {
     it("exports successfully and shows success toast", async () => {
-      const jsonContent = '{"schema_version":1}';
+      const jsonContent = '{"schema_version":2}';
       vi.mocked(invoke).mockResolvedValueOnce(jsonContent);
       mockSave.mockResolvedValueOnce("/tmp/test.ralphx-session");
 
@@ -107,7 +107,7 @@ describe("useSessionExportImport", () => {
     });
 
     it("does not write file when save dialog is cancelled", async () => {
-      vi.mocked(invoke).mockResolvedValueOnce('{"schema_version":1}');
+      vi.mocked(invoke).mockResolvedValueOnce('{"schema_version":2}');
       mockSave.mockResolvedValueOnce(null);
 
       const { result } = renderHook(() => useSessionExportImport(), {
@@ -189,9 +189,9 @@ describe("useSessionExportImport", () => {
     it("shows version unsupported message on IMPORT_VERSION_UNSUPPORTED error", async () => {
       mockOpen.mockResolvedValueOnce("/tmp/import.ralphx-session");
       mockStat.mockResolvedValueOnce({ size: 512 });
-      mockReadTextFile.mockResolvedValueOnce('{"schema_version":2}');
+      mockReadTextFile.mockResolvedValueOnce('{"schema_version":1}');
       vi.mocked(invoke).mockRejectedValueOnce(
-        new Error("IMPORT_VERSION_UNSUPPORTED: Schema version 2 is not supported")
+        new Error("IMPORT_VERSION_UNSUPPORTED: Schema version 1 is not supported")
       );
 
       const { result } = renderHook(() => useSessionExportImport(), {

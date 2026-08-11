@@ -3,12 +3,11 @@ paths:
   - "src-tauri/src/domain/state_machine/transition_handler/side_effects/**"
   - "src-tauri/src/domain/state_machine/transition_handler/merge_helpers.rs"
   - "src-tauri/src/application/chat_service/chat_service_merge.rs"
-  - "src-tauri/src/application/git_service.rs"
+  - "src-tauri/src/application/git_service/**"
   - "src-tauri/src/application/task_transition_service.rs"
   - "src-tauri/src/commands/plan_branch_commands.rs"
   - "src-tauri/src/http_server/handlers/git.rs"
-  - "src/api/plan-branch.ts"
-  - "src/components/settings/GitSettingsSection.tsx"
+  - "frontend/src/api/plan-branch.ts"
 ---
 
 > **Maintainer note:** This file optimizes for LLM context efficiency. Rules: (1) Tables > prose (2) One example max per concept (3) No redundant explanations (4) Use symbols: → = leads to, | = or, ❌/✅ = wrong/right (5) Before adding content, ask: "Can this be a single line?" If yes, make it one line.

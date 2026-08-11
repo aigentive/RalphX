@@ -1,10 +1,11 @@
 use super::*;
+use std::str::FromStr;
 
-// ===== All 25 Variants Exist Tests =====
+// ===== All 28 Variants Exist Tests =====
 
 #[test]
-fn internal_status_has_25_variants() {
-    assert_eq!(InternalStatus::all_variants().len(), 25);
+fn internal_status_has_28_variants() {
+    assert_eq!(InternalStatus::all_variants().len(), 28);
 }
 
 #[test]
@@ -29,6 +30,9 @@ fn all_variants_returns_correct_statuses() {
         PendingMerge,
         Merging,
         WaitingOnPr,
+        UpdatingPlanBranch,
+        UpdatingTaskBranch,
+        BranchUpdateBlocked,
         MergeIncomplete,
         MergeConflict,
         Merged,
@@ -93,6 +97,9 @@ fn all_variants_serialize_correctly() {
         ("pending_merge", InternalStatus::PendingMerge),
         ("merging", InternalStatus::Merging),
         ("waiting_on_pr", InternalStatus::WaitingOnPr),
+        ("updating_plan_branch", InternalStatus::UpdatingPlanBranch),
+        ("updating_task_branch", InternalStatus::UpdatingTaskBranch),
+        ("branch_update_blocked", InternalStatus::BranchUpdateBlocked),
         ("merge_incomplete", InternalStatus::MergeIncomplete),
         ("merge_conflict", InternalStatus::MergeConflict),
         ("merged", InternalStatus::Merged),
@@ -200,7 +207,16 @@ fn executing_transitions() {
     let transitions = Executing.valid_transitions();
     assert_eq!(
         transitions,
-        &[QaRefining, PendingReview, Failed, Blocked, Stopped, Paused]
+        &[
+            QaRefining,
+            PendingReview,
+            UpdatingPlanBranch,
+            UpdatingTaskBranch,
+            Failed,
+            Blocked,
+            Stopped,
+            Paused
+        ]
     );
 }
 
@@ -503,6 +519,8 @@ fn pending_merge_transitions() {
             Merged,
             Merging,
             WaitingOnPr,
+            UpdatingPlanBranch,
+            UpdatingTaskBranch,
             MergeIncomplete,
             Stopped,
             Paused,
@@ -534,6 +552,7 @@ fn merging_transitions() {
         &[
             Merged,
             WaitingOnPr,
+            UpdatingPlanBranch,
             MergeConflict,
             MergeIncomplete,
             Stopped,
@@ -574,6 +593,7 @@ fn waiting_on_pr_transitions() {
             Merged,
             MergeIncomplete,
             PendingMerge,
+            UpdatingPlanBranch,
             Stopped,
             Paused,
             Cancelled
@@ -637,6 +657,73 @@ fn waiting_on_pr_parses_correctly() {
     use InternalStatus::*;
     let parsed = InternalStatus::from_str("waiting_on_pr").unwrap();
     assert_eq!(parsed, WaitingOnPr);
+}
+
+#[test]
+fn branch_update_statuses_serialize_and_parse() {
+    use InternalStatus::*;
+
+    for (wire, status) in [
+        ("updating_plan_branch", UpdatingPlanBranch),
+        ("updating_task_branch", UpdatingTaskBranch),
+        ("branch_update_blocked", BranchUpdateBlocked),
+    ] {
+        assert_eq!(
+            serde_json::to_string(&status).unwrap(),
+            format!("\"{wire}\"")
+        );
+        assert_eq!(InternalStatus::from_str(wire).unwrap(), status);
+    }
+}
+
+#[test]
+fn freshness_origins_can_enter_directional_update_states() {
+    use InternalStatus::*;
+
+    for origin in [Executing, ReExecuting, Reviewing, PendingMerge] {
+        assert!(origin.can_transition_to(UpdatingPlanBranch));
+        assert!(origin.can_transition_to(UpdatingTaskBranch));
+    }
+    assert!(WaitingOnPr.can_transition_to(UpdatingPlanBranch));
+    assert!(Merging.can_transition_to(UpdatingPlanBranch));
+}
+
+#[test]
+fn branch_update_transitions_preserve_truthful_state_family() {
+    use InternalStatus::*;
+
+    assert!(UpdatingPlanBranch.can_transition_to(UpdatingTaskBranch));
+    assert!(UpdatingPlanBranch.can_transition_to(BranchUpdateBlocked));
+    assert!(UpdatingTaskBranch.can_transition_to(BranchUpdateBlocked));
+    assert!(BranchUpdateBlocked.can_transition_to(UpdatingPlanBranch));
+    assert!(BranchUpdateBlocked.can_transition_to(UpdatingTaskBranch));
+
+    assert!(!UpdatingPlanBranch.can_transition_to(Merging));
+    assert!(!UpdatingTaskBranch.can_transition_to(Merging));
+}
+
+#[test]
+fn branch_update_continuations_return_to_closed_targets() {
+    use InternalStatus::*;
+
+    for update in [UpdatingPlanBranch, UpdatingTaskBranch] {
+        for target in [Executing, ReExecuting, Reviewing, PendingMerge, WaitingOnPr] {
+            assert!(update.can_transition_to(target), "{update:?} -> {target:?}");
+        }
+    }
+
+    assert!(UpdatingPlanBranch.can_transition_to(Merged));
+    assert!(!UpdatingTaskBranch.can_transition_to(Merged));
+}
+
+#[test]
+fn pause_resume_supports_active_branch_updates() {
+    use InternalStatus::*;
+
+    assert!(UpdatingPlanBranch.can_transition_to(Paused));
+    assert!(UpdatingTaskBranch.can_transition_to(Paused));
+    assert!(Paused.can_transition_to(UpdatingPlanBranch));
+    assert!(Paused.can_transition_to(UpdatingTaskBranch));
 }
 
 #[test]
@@ -804,7 +891,9 @@ fn paused_can_resume_to_agent_active_states() {
             QaTesting,
             Reviewing,
             Merging,
-            WaitingOnPr
+            WaitingOnPr,
+            UpdatingPlanBranch,
+            UpdatingTaskBranch
         ]
     );
 }
@@ -881,6 +970,9 @@ fn test_is_terminal_covers_all_variants() {
         PendingMerge,
         Merging,
         WaitingOnPr,
+        UpdatingPlanBranch,
+        UpdatingTaskBranch,
+        BranchUpdateBlocked,
         MergeConflict,
         Paused,
     ];
@@ -978,6 +1070,9 @@ fn test_is_dependency_satisfied_covers_all_variants() {
         PendingMerge,
         Merging,
         WaitingOnPr,
+        UpdatingPlanBranch,
+        UpdatingTaskBranch,
+        BranchUpdateBlocked,
         MergeConflict,
         MergeIncomplete,
         Paused,

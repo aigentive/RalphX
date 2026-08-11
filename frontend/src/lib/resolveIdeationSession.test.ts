@@ -17,8 +17,6 @@ function makeSession(overrides: Partial<IdeationSession> = {}): IdeationSession 
     updatedAt: "2026-04-18T10:00:00.000Z",
     archivedAt: null,
     convertedAt: null,
-    teamMode: null,
-    teamConfig: null,
     verificationStatus: "unverified",
     verificationInProgress: false,
     gapScore: null,

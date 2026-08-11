@@ -1,13 +1,12 @@
 /**
  * IdeationModelSection — Settings section for configuring ideation agent model selection.
  *
- * Uses SectionCard (frosted glass pattern) from SettingsView.shared.tsx.
+ * Uses the chrome-free SettingsSection container from SettingsView.shared.tsx.
  * Shows global dropdowns and per-project override dropdowns.
  * Effective value hint shown only when value is `inherit`.
  */
 
 import { useState } from "react";
-import { Cpu } from "lucide-react";
 import { Separator } from "@/components/ui/separator";
 import {
   Select,
@@ -16,16 +15,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { SectionCard, ErrorBanner } from "./SettingsView.shared";
+import { SettingsSection, ErrorBanner } from "./SettingsView.shared";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { useIdeationModelSettings } from "@/hooks/useIdeationModelSettings";
 import { useProjectStore, selectActiveProject } from "@/stores/projectStore";
+import { isAgentModelSelectableForProvider } from "@/lib/agent-models";
 
 // ============================================================================
 // Constants
 // ============================================================================
-
-const CLAUDE_FABLE_MIN_VERSION = "2.1.170";
 
 interface ModelOption {
   value: string;
@@ -41,9 +39,24 @@ const MODEL_OPTIONS = [
     description: "Use default from configuration",
   },
   {
-    value: "sonnet",
-    label: "Sonnet",
-    description: "Fast and capable",
+    value: "fable",
+    label: "Fable",
+    description: "Claude Fable 5, requires Claude Code 2.1.170+",
+  },
+  {
+    value: "claude-opus-5",
+    label: "Claude Opus 5",
+    description: "Claude Opus 5, requires Claude Code 2.1.219+",
+  },
+  {
+    value: "claude-opus-4-8",
+    label: "Claude Opus 4.8",
+    description: "Claude Opus 4.8, requires Claude Code 2.1.154+",
+  },
+  {
+    value: "claude-opus-4-7",
+    label: "Claude Opus 4.7",
+    description: "Claude Opus 4.7, requires Claude Code 2.1.111+",
   },
   {
     value: "opus",
@@ -51,14 +64,14 @@ const MODEL_OPTIONS = [
     description: "Most capable, highest cost",
   },
   {
+    value: "sonnet",
+    label: "Sonnet",
+    description: "Fast and capable",
+  },
+  {
     value: "haiku",
     label: "Haiku",
     description: "Fastest, lowest cost",
-  },
-  {
-    value: "fable",
-    label: "Fable",
-    description: `Claude Fable 5, requires Claude Code ${CLAUDE_FABLE_MIN_VERSION}+`,
   },
 ] as const satisfies readonly ModelOption[];
 
@@ -83,28 +96,18 @@ function formatSource(source: string): string {
   }
 }
 
-function claudeSupportsFable(
+function modelOptionsForClaudeCapabilities(
   providers: readonly {
     provider: string;
     supportedModelAliases?: readonly string[] | null | undefined;
   }[],
-): boolean {
+): readonly ModelOption[] {
   const aliases =
     providers.find((provider) => provider.provider === "claude")
       ?.supportedModelAliases ?? null;
-  return (
-    aliases?.some((alias) => {
-      const normalized = alias.trim().toLowerCase();
-      return normalized === "fable" || normalized === "claude-fable-5";
-    }) ?? false
-  );
-}
-
-function modelOptionsForFableAvailability(
-  isFableAvailable: boolean,
-): readonly ModelOption[] {
   return MODEL_OPTIONS.map((option) =>
-    option.value !== "fable" || isFableAvailable
+    option.value === "inherit" ||
+    isAgentModelSelectableForProvider("claude", option.value, aliases)
       ? option
       : { ...option, disabled: true },
   );
@@ -225,22 +228,6 @@ function GlobalModelSubsection({
     );
   };
 
-  const handleVerifierChange = (value: string) => {
-    setShowError(false);
-    updateSettings(
-      { verifierModel: value },
-      { onError: () => setShowError(true) }
-    );
-  };
-
-  const handleVerifierSubagentChange = (value: string) => {
-    setShowError(false);
-    updateSettings(
-      { verifierSubagentModel: value },
-      { onError: () => setShowError(true) }
-    );
-  };
-
   const handleIdeationSubagentChange = (value: string) => {
     setShowError(false);
     updateSettings(
@@ -261,7 +248,7 @@ function GlobalModelSubsection({
         <ModelRow
           id="global-primary-model"
           label="Primary Ideation Model"
-          description="Model for ralphx-ideation and team-lead agents"
+          description="Model for the primary ideation agent"
           value={settings.primaryModel}
           disabled={false}
           onChange={handlePrimaryChange}
@@ -271,33 +258,9 @@ function GlobalModelSubsection({
           modelOptions={modelOptions}
         />
         <ModelRow
-          id="global-verifier-model"
-          label="Verification Model"
-          description="Model for ralphx-plan-verifier agent"
-          value={settings.verifierModel}
-          disabled={false}
-          onChange={handleVerifierChange}
-          effectiveValue={settings.effectiveVerifierModel}
-          effectiveSource={settings.verifierModelSource}
-          isPlaceholderData={isPlaceholderData}
-          modelOptions={modelOptions}
-        />
-        <ModelRow
-          id="verifier-subagent-model"
-          label="Verification Subagent Model"
-          description="Model used by critics/specialists spawned by the plan verifier"
-          value={settings.verifierSubagentModel}
-          disabled={false}
-          onChange={handleVerifierSubagentChange}
-          effectiveValue={settings.effectiveVerifierSubagentModel}
-          effectiveSource={settings.verifierSubagentModelSource}
-          isPlaceholderData={isPlaceholderData}
-          modelOptions={modelOptions}
-        />
-        <ModelRow
           id="ideation-subagent-model"
           label="Ideation Subagent Model"
-          description="Model used by subagents spawned by ralphx-ideation and team-lead"
+          description="Model used by subagents spawned by ralphx-ideation"
           value={settings.ideationSubagentModel ?? "inherit"}
           disabled={false}
           onChange={handleIdeationSubagentChange}
@@ -336,24 +299,6 @@ function ProjectModelSubsection({
     setShowError(false);
     updateSettings(
       { primaryModel: value },
-      { onError: () => setShowError(true) }
-    );
-  };
-
-  const handleVerifierChange = (value: string) => {
-    if (isDisabled) return;
-    setShowError(false);
-    updateSettings(
-      { verifierModel: value },
-      { onError: () => setShowError(true) }
-    );
-  };
-
-  const handleVerifierSubagentChange = (value: string) => {
-    if (isDisabled) return;
-    setShowError(false);
-    updateSettings(
-      { verifierSubagentModel: value },
       { onError: () => setShowError(true) }
     );
   };
@@ -399,30 +344,6 @@ function ProjectModelSubsection({
           modelOptions={modelOptions}
         />
         <ModelRow
-          id="project-verifier-model"
-          label="Verification Model"
-          description="Override for this project's ralphx-plan-verifier agent"
-          value={settings.verifierModel}
-          disabled={isDisabled}
-          onChange={handleVerifierChange}
-          effectiveValue={settings.effectiveVerifierModel}
-          effectiveSource={settings.verifierModelSource}
-          isPlaceholderData={isPlaceholderData}
-          modelOptions={modelOptions}
-        />
-        <ModelRow
-          id="project-verifier-subagent-model"
-          label="Verification Subagent Model"
-          description="Override verification subagent model for this project"
-          value={settings.verifierSubagentModel}
-          disabled={isDisabled}
-          onChange={handleVerifierSubagentChange}
-          effectiveValue={settings.effectiveVerifierSubagentModel}
-          effectiveSource={settings.verifierSubagentModelSource}
-          isPlaceholderData={isPlaceholderData}
-          modelOptions={modelOptions}
-        />
-        <ModelRow
           id="project-ideation-subagent-model"
           label="Ideation Subagent Model"
           description="Override ideation subagent model for this project"
@@ -447,18 +368,10 @@ function ProjectModelSubsection({
 export function IdeationModelSection() {
   const activeProject = useProjectStore(selectActiveProject);
   const { providers } = useHarnessProviders({ refreshRuntime: true });
-  const modelOptions = modelOptionsForFableAvailability(
-    claudeSupportsFable(providers),
-  );
+  const modelOptions = modelOptionsForClaudeCapabilities(providers);
 
   return (
-    <SectionCard
-      icon={
-        <Cpu className="w-[18px] h-[18px] text-[var(--accent-primary)]" />
-      }
-      title="Ideation Model"
-      description="Configure AI model for ideation and verification agents"
-    >
+    <SettingsSection>
       <GlobalModelSubsection modelOptions={modelOptions} />
       <Separator className="my-4 bg-[var(--border-subtle)]" />
       <ProjectModelSubsection
@@ -466,6 +379,6 @@ export function IdeationModelSection() {
         projectName={activeProject?.name ?? null}
         modelOptions={modelOptions}
       />
-    </SectionCard>
+    </SettingsSection>
   );
 }

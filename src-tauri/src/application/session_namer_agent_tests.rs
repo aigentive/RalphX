@@ -12,6 +12,7 @@ use super::session_namer_agent::{
     SessionNamerTarget,
 };
 use super::AppState;
+use crate::application::app_paths::AppPaths;
 use crate::application::harness_runtime_registry::default_repo_root_working_directory;
 use crate::domain::agents::{
     AgentConfig, AgentError, AgentHandle, AgentHarnessKind, AgentLane, AgentLaneSettings,
@@ -321,7 +322,6 @@ async fn session_namer_conversation_spawn_uses_active_project_cwd_and_conversati
         .create(conversation)
         .await
         .unwrap();
-
     let spawn = build_session_namer_agent_spawn(
         &state,
         conversation_initial(conversation.id.as_str(), "Name this Codex conversation"),
@@ -1315,6 +1315,60 @@ async fn session_namer_conversation_without_project_uses_runtime_root_fallback()
         default_repo_root_working_directory()
     );
     assert_eq!(spawn.project_id, None);
+}
+
+#[tokio::test]
+async fn session_namer_standalone_conversation_resolves_with_project_id_none() {
+    let default_client: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let app_data_dir = tempfile::tempdir().unwrap();
+    let mut state = AppState::new_test().with_agent_client(default_client);
+    state.app_paths = AppPaths::new(app_data_dir.path(), None);
+    let conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_standalone())
+        .await
+        .unwrap();
+    let expected = crate::application::standalone_workspace::create_workspace(
+        app_data_dir.path(),
+        &conversation.id.as_str(),
+    )
+    .unwrap();
+
+    let spawn = build_session_namer_agent_spawn(
+        &state,
+        conversation_initial(conversation.id.as_str(), "Name this standalone chat"),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(spawn.config.working_directory, expected);
+    assert_eq!(spawn.project_id, None);
+}
+
+#[tokio::test]
+async fn session_namer_standalone_workspace_failure_skips_spawn() {
+    let concrete_client = Arc::new(MockAgenticClient::new());
+    let agent_client: Arc<dyn AgenticClient> = concrete_client.clone();
+    let temp = tempfile::tempdir().unwrap();
+    let blocked_app_data_dir = temp.path().join("blocked-app-data");
+    std::fs::write(&blocked_app_data_dir, b"not a directory").unwrap();
+    let mut state = AppState::new_test().with_agent_client(agent_client);
+    state.app_paths = AppPaths::new(blocked_app_data_dir, None);
+    let conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_standalone())
+        .await
+        .unwrap();
+
+    spawn_session_namer_agent(
+        &state,
+        conversation_initial(conversation.id.as_str(), "Do not spawn from process CWD"),
+    )
+    .await
+    .expect("unavailable standalone workspace should be a logged skip");
+
+    tokio::task::yield_now().await;
+    assert!(concrete_client.get_calls().await.is_empty());
 }
 
 #[test]

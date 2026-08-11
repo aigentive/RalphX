@@ -1,33 +1,44 @@
-
-use axum::{extract::{Path, State}, Json};
-use ralphx_lib::application::{
-    AppState, InteractiveProcessKey, TeamService, TeamStateTracker,
+use crate::support::real_git_repo::setup_real_git_repo;
+use axum::{
+    extract::{Path, State},
+    Json,
 };
+use ralphx_lib::application::{AppState, InteractiveProcessKey};
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
     IdeationSession, InternalStatus, Priority, Project, ProjectId, ProposalCategory,
-    ScopeDriftStatus, Task, TaskProposal, TaskStep, ValidationCacheMetadata,
+    ScopeDriftStatus, Task, TaskProposal, TaskStep,
 };
 use ralphx_lib::http_server::handlers::*;
 use ralphx_lib::http_server::helpers::get_task_context_impl;
 use ralphx_lib::http_server::project_scope::ProjectScope;
 use ralphx_lib::http_server::types::{ExecutionCompleteRequest, HttpServerState, TestResultInput};
 use std::sync::Arc;
-use crate::support::real_git_repo::setup_real_git_repo;
 
 async fn setup_test_state() -> HttpServerState {
     let app_state = Arc::new(AppState::new_test());
     let execution_state = Arc::new(ExecutionState::new());
-    let tracker = TeamStateTracker::new();
-    let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
 
     HttpServerState {
         app_state,
         execution_state,
-        team_tracker: tracker,
-        team_service,
         delegation_service: Default::default(),
     }
+}
+
+async fn create_test_project(state: &HttpServerState, name: &str, path: &str) -> Project {
+    let project = Project::new(name.to_string(), path.to_string());
+    state
+        .app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+    project
+}
+
+fn mark_no_code_changes(task: &mut Task) {
+    task.metadata = Some(serde_json::json!({ "no_code_changes": true }).to_string());
 }
 
 #[tokio::test]
@@ -183,9 +194,8 @@ async fn test_get_task_context_reports_scope_expansion_against_proposal_scope() 
         ProposalCategory::Feature,
         Priority::Medium,
     );
-    proposal.affected_paths = Some(serde_json::to_string(&vec![
-        "src-tauri/src/http_server".to_string(),
-    ]).unwrap());
+    proposal.affected_paths =
+        Some(serde_json::to_string(&vec!["src-tauri/src/http_server".to_string()]).unwrap());
     let proposal_id = proposal.id.clone();
     state.task_proposal_repo.create(proposal).await.unwrap();
 
@@ -200,7 +210,10 @@ async fn test_get_task_context_reports_scope_expansion_against_proposal_scope() 
         .current_dir(repo.path())
         .status()
         .expect("checkout task branch");
-    assert!(checkout_status.success(), "task branch checkout must succeed");
+    assert!(
+        checkout_status.success(),
+        "task branch checkout must succeed"
+    );
 
     let context = get_task_context_impl(&state, &task.id).await.unwrap();
 
@@ -242,8 +255,9 @@ async fn spawn_test_stdin() -> (tokio::process::Child, tokio::process::ChildStdi
 async fn test_execution_complete_removes_ipr_entry() {
     let state = setup_test_state().await;
 
-    let project_id = ProjectId::new();
-    let task = Task::new(project_id, "Exec complete test".to_string());
+    let project = create_test_project(&state, "Exec complete project", "/tmp/exec-complete").await;
+    let mut task = Task::new(project.id, "Exec complete test".to_string());
+    mark_no_code_changes(&mut task);
     let task_id = task.id.clone();
     state.app_state.task_repo.create(task).await.unwrap();
 
@@ -277,7 +291,10 @@ async fn test_execution_complete_removes_ipr_entry() {
     .await;
 
     assert!(result.is_ok(), "handler should succeed: {:?}", result.err());
-    assert!(result.unwrap().0.success, "response success flag must be true");
+    assert!(
+        result.unwrap().0.success,
+        "response success flag must be true"
+    );
 
     assert!(
         !state
@@ -299,13 +316,16 @@ async fn test_execution_complete_task_not_found_returns_404() {
     let result = execution_complete_http(
         State(state.clone()),
         Path("non-existent-task-id".to_string()),
-        Json(ExecutionCompleteRequest { summary: None, test_result: None }),
+        Json(ExecutionCompleteRequest {
+            summary: None,
+            test_result: None,
+        }),
     )
     .await;
 
     match result {
-        Err(status) => assert_eq!(
-            status,
+        Err(error) => assert_eq!(
+            error.status,
             axum::http::StatusCode::NOT_FOUND,
             "expected 404 for non-existent task"
         ),
@@ -318,8 +338,9 @@ async fn test_execution_complete_task_not_found_returns_404() {
 async fn test_execution_complete_no_ipr_entry_is_idempotent() {
     let state = setup_test_state().await;
 
-    let project_id = ProjectId::new();
-    let task = Task::new(project_id, "No IPR test".to_string());
+    let project = create_test_project(&state, "No IPR project", "/tmp/no-ipr").await;
+    let mut task = Task::new(project.id, "No IPR test".to_string());
+    mark_no_code_changes(&mut task);
     let task_id = task.id.clone();
     state.app_state.task_repo.create(task).await.unwrap();
 
@@ -327,7 +348,10 @@ async fn test_execution_complete_no_ipr_entry_is_idempotent() {
     let result = execution_complete_http(
         State(state.clone()),
         Path(task_id.as_str().to_string()),
-        Json(ExecutionCompleteRequest { summary: None, test_result: None }),
+        Json(ExecutionCompleteRequest {
+            summary: None,
+            test_result: None,
+        }),
     )
     .await;
 
@@ -343,8 +367,9 @@ async fn test_execution_complete_no_ipr_entry_is_idempotent() {
 async fn test_execution_complete_double_call_idempotent() {
     let state = setup_test_state().await;
 
-    let project_id = ProjectId::new();
-    let task = Task::new(project_id, "Double call test".to_string());
+    let project = create_test_project(&state, "Double call project", "/tmp/double-call").await;
+    let mut task = Task::new(project.id, "Double call test".to_string());
+    mark_no_code_changes(&mut task);
     let task_id = task.id.clone();
     state.app_state.task_repo.create(task).await.unwrap();
 
@@ -360,7 +385,10 @@ async fn test_execution_complete_double_call_idempotent() {
     let result1 = execution_complete_http(
         State(state.clone()),
         Path(task_id.as_str().to_string()),
-        Json(ExecutionCompleteRequest { summary: None, test_result: None }),
+        Json(ExecutionCompleteRequest {
+            summary: None,
+            test_result: None,
+        }),
     )
     .await;
     assert!(result1.is_ok(), "first call should succeed");
@@ -369,10 +397,16 @@ async fn test_execution_complete_double_call_idempotent() {
     let result2 = execution_complete_http(
         State(state.clone()),
         Path(task_id.as_str().to_string()),
-        Json(ExecutionCompleteRequest { summary: None, test_result: None }),
+        Json(ExecutionCompleteRequest {
+            summary: None,
+            test_result: None,
+        }),
     )
     .await;
-    assert!(result2.is_ok(), "second call should also succeed (idempotent)");
+    assert!(
+        result2.is_ok(),
+        "second call should also succeed (idempotent)"
+    );
 
     let _ = child.kill().await;
 }
@@ -666,7 +700,10 @@ async fn test_get_task_steps_empty_returns_empty_list() {
     .await
     .unwrap();
 
-    assert!(result.0.is_empty(), "expected empty list when no steps exist");
+    assert!(
+        result.0.is_empty(),
+        "expected empty list when no steps exist"
+    );
 }
 
 /// get_task_steps_http — scope header present with matching project ID returns steps.
@@ -864,15 +901,16 @@ fn create_temp_git_repo() -> (tempfile::TempDir, String) {
 }
 
 #[tokio::test]
-async fn test_execution_complete_stores_validation_cache_tests_passed() {
-    let (tmp_dir, expected_sha) = create_temp_git_repo();
+async fn test_execution_complete_does_not_cache_agent_reported_tests_passed() {
+    let (tmp_dir, _) = create_temp_git_repo();
     let repo_path = tmp_dir.path().to_str().unwrap().to_string();
 
     let state = setup_test_state().await;
 
     // Create a task with worktree_path pointing to the git repo
-    let project_id = ProjectId::new();
-    let mut task = Task::new(project_id, "Validation Cache Test Task".to_string());
+    let project = create_test_project(&state, "Validation Cache Project", &repo_path).await;
+    let mut task = Task::new(project.id, "Validation Cache Test Task".to_string());
+    mark_no_code_changes(&mut task);
     let task_id = task.id.clone();
     task.worktree_path = Some(repo_path.clone());
     state.app_state.task_repo.create(task).await.unwrap();
@@ -906,7 +944,6 @@ async fn test_execution_complete_stores_validation_cache_tests_passed() {
     .unwrap();
     assert!(response.0.success, "execution_complete should succeed");
 
-    // Verify metadata stored in DB
     let updated_task = state
         .app_state
         .task_repo
@@ -914,51 +951,29 @@ async fn test_execution_complete_stores_validation_cache_tests_passed() {
         .await
         .unwrap()
         .expect("task should exist");
-    assert!(
-        updated_task.metadata.is_some(),
-        "task metadata should have been written"
-    );
+    let metadata: serde_json::Value =
+        serde_json::from_str(updated_task.metadata.as_deref().unwrap()).unwrap();
+    assert_eq!(metadata["no_code_changes"], true);
 
-    let cache =
-        ValidationCacheMetadata::from_task_metadata(updated_task.metadata.as_deref())
-            .unwrap()
-            .expect("validation_cache key should be in metadata");
-    assert!(cache.tests_ran);
-    assert!(cache.tests_passed);
-    assert_eq!(cache.test_summary.as_deref(), Some("42 passed, 0 failed"));
-    assert_eq!(cache.captured_by, "execution_complete");
-    assert_eq!(cache.commit_sha, expected_sha, "stored SHA should match HEAD");
-
-    // Call get_task_context_impl and verify validation_cache returned with skip_tests hint
     let context = get_task_context_impl(&state.app_state, &task_id)
         .await
         .expect("get_task_context_impl should succeed");
-    let vc = context
-        .validation_cache
-        .expect("validation_cache should be present in task context");
-    assert_eq!(
-        vc.validation_hint, "skip_tests",
-        "hint should be skip_tests when tests passed on same SHA"
-    );
     assert!(
-        vc.hint_message.contains("Tests passed"),
-        "hint_message should mention 'Tests passed', got: {}",
-        vc.hint_message
+        context.validation_cache.is_none(),
+        "agent-reported successful tests must not become validation cache evidence"
     );
-    assert!(vc.tests_ran);
-    assert!(vc.tests_passed);
-    assert_eq!(vc.test_summary.as_deref(), Some("42 passed, 0 failed"));
 }
 
 #[tokio::test]
-async fn test_execution_complete_stores_validation_cache_no_tests_ran() {
+async fn test_execution_complete_does_not_cache_agent_reported_no_tests_ran() {
     let (tmp_dir, _) = create_temp_git_repo();
     let repo_path = tmp_dir.path().to_str().unwrap().to_string();
 
     let state = setup_test_state().await;
 
-    let project_id = ProjectId::new();
-    let mut task = Task::new(project_id, "No Tests Task".to_string());
+    let project = create_test_project(&state, "No Tests Project", &repo_path).await;
+    let mut task = Task::new(project.id, "No Tests Task".to_string());
+    mark_no_code_changes(&mut task);
     let task_id = task.id.clone();
     task.worktree_path = Some(repo_path.clone());
     state.app_state.task_repo.create(task).await.unwrap();
@@ -995,14 +1010,10 @@ async fn test_execution_complete_stores_validation_cache_no_tests_ran() {
     let context = get_task_context_impl(&state.app_state, &task_id)
         .await
         .expect("get_task_context_impl should succeed");
-    let vc = context
-        .validation_cache
-        .expect("validation_cache should be present");
-    assert_eq!(
-        vc.validation_hint, "skip_test_validation",
-        "hint should be skip_test_validation when no tests ran"
+    assert!(
+        context.validation_cache.is_none(),
+        "agent-reported no-tests result must not become validation cache evidence"
     );
-    assert!(!vc.tests_ran);
 }
 
 #[tokio::test]
@@ -1012,8 +1023,9 @@ async fn test_execution_complete_without_test_result_leaves_no_cache() {
 
     let state = setup_test_state().await;
 
-    let project_id = ProjectId::new();
-    let mut task = Task::new(project_id, "No Cache Task".to_string());
+    let project = create_test_project(&state, "No Cache Project", &repo_path).await;
+    let mut task = Task::new(project.id, "No Cache Task".to_string());
+    mark_no_code_changes(&mut task);
     let task_id = task.id.clone();
     task.worktree_path = Some(repo_path.clone());
     state.app_state.task_repo.create(task).await.unwrap();
@@ -1042,13 +1054,15 @@ async fn test_execution_complete_without_test_result_leaves_no_cache() {
     );
 }
 
-/// execution_complete emits task:execution_completed to external_events_repo.
+/// execution_complete only accepts the worker signal; stream completion owns the event.
 #[tokio::test]
-async fn test_execution_complete_emits_external_event() {
+async fn test_execution_complete_does_not_emit_external_event_before_stream_success() {
     let state = setup_test_state().await;
 
-    let project_id = ProjectId::new();
-    let task = Task::new(project_id.clone(), "Webhook emission test".to_string());
+    let project = create_test_project(&state, "Webhook Project", "/tmp/webhook-project").await;
+    let project_id = project.id.clone();
+    let mut task = Task::new(project_id.clone(), "Webhook emission test".to_string());
+    mark_no_code_changes(&mut task);
     let task_id = task.id.clone();
     state.app_state.task_repo.create(task).await.unwrap();
 
@@ -1065,7 +1079,8 @@ async fn test_execution_complete_emits_external_event() {
     .unwrap();
     assert!(response.0.success);
 
-    // Verify task:execution_completed was persisted to external_events
+    // The accepted tool signal is not final transition authority. Emitting here would
+    // falsely report completion before the worker stream settles successfully.
     let events = state
         .app_state
         .external_events_repo
@@ -1073,34 +1088,10 @@ async fn test_execution_complete_emits_external_event() {
         .await
         .expect("get_events_after_cursor should succeed");
 
-    let exec_completed = events
-        .iter()
-        .find(|e| e.event_type == "task:execution_completed");
     assert!(
-        exec_completed.is_some(),
-        "task:execution_completed event must be persisted to external_events_repo"
-    );
-
-    let event = exec_completed.unwrap();
-    let payload: serde_json::Value =
-        serde_json::from_str(&event.payload).expect("payload must be valid JSON");
-    assert_eq!(
-        payload["task_id"].as_str(),
-        Some(task_id.as_str()),
-        "event payload must include task_id"
-    );
-    assert_eq!(
-        payload["project_id"].as_str(),
-        Some(project_id.as_str()),
-        "event payload must include project_id"
-    );
-    assert_eq!(
-        payload["outcome"].as_str(),
-        Some("completed"),
-        "event payload must include outcome=completed"
-    );
-    assert!(
-        payload["timestamp"].is_string(),
-        "event payload must include timestamp"
+        events
+            .iter()
+            .all(|event| event.event_type != "task:execution_completed"),
+        "task:execution_completed must wait for authoritative stream success"
     );
 }

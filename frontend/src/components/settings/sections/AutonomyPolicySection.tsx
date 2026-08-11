@@ -1,9 +1,8 @@
-import { Workflow } from "lucide-react";
 
 import { useReviewSettings, useUpdateReviewSettings } from "@/hooks/useReviewSettings";
 
 import {
-  SectionCard,
+  SettingsSection,
   ToggleSettingRow,
 } from "../SettingsView.shared";
 
@@ -14,7 +13,7 @@ const ISSUE_RULES = [
   "When auto-create is disabled, Issues stay open until the user creates a follow-up, resolves, or dismisses them.",
 ];
 
-export default function AutonomyPolicySection() {
+export default function AutonomyPolicySection({ embedded = false }: { embedded?: boolean }) {
   const { data: settings, isLoading } = useReviewSettings();
   const { mutate: updateSettings, isPending } = useUpdateReviewSettings();
 
@@ -24,14 +23,8 @@ export default function AutonomyPolicySection() {
     return null;
   }
 
-  return (
-    <SectionCard
-      icon={
-        <Workflow className="w-[18px] h-[18px] text-[var(--card-icon-color)]" />
-      }
-      title="Autonomy Policy"
-      description="Configure when agents can turn registered issues into follow-up work"
-    >
+  const rows = (
+    <>
       <ToggleSettingRow
         id="auto-create-followup-agent-conversation"
         label="Auto-create follow-up Agent conversations"
@@ -55,14 +48,17 @@ export default function AutonomyPolicySection() {
         <ul className="mt-2 space-y-1.5 text-xs leading-relaxed">
           {ISSUE_RULES.map((rule) => (
             <li key={rule} className="flex gap-2">
-              <span aria-hidden="true" style={{ color: "var(--accent-primary)" }}>
-                -
-              </span>
+              <span aria-hidden="true" style={{ color: "var(--accent-primary)" }}>-</span>
               <span style={{ color: "var(--text-secondary)" }}>{rule}</span>
             </li>
           ))}
         </ul>
       </div>
-    </SectionCard>
+    </>
+  );
+  return embedded ? rows : (
+    <SettingsSection>
+      {rows}
+    </SettingsSection>
   );
 }

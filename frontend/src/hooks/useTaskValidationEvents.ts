@@ -73,6 +73,18 @@ function runFromEvent(
     base_ref: event.base_ref ?? null,
     started_at: event.run_started_at,
     completed_at: event.run_completed_at ?? null,
+    ...(event.current_for_head !== undefined && {
+      current_for_head: event.current_for_head,
+    }),
+    ...(event.current_for_execution_episode !== undefined && {
+      current_for_execution_episode: event.current_for_execution_episode,
+    }),
+    ...(event.review_evidence_eligible !== undefined && {
+      review_evidence_eligible: event.review_evidence_eligible,
+    }),
+    ...(event.ineligible_reason !== undefined && {
+      ineligible_reason: event.ineligible_reason,
+    }),
   };
 }
 

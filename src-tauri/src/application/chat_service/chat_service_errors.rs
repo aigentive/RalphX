@@ -4,9 +4,11 @@
 // enabling specific error handling strategies. Also defines StreamError for typed
 // stream processing failures, replacing String-based error returns.
 
+use crate::application::persona_resolver::PersonaError;
+use crate::application::personas::PERSONA_UNAVAILABLE_PREFIX;
 use crate::domain::entities::{ChatContextType, ChatConversationId, InternalStatus};
 use crate::error::AppError;
-use crate::infrastructure::agents::claude::limits_config;
+use crate::infrastructure::agents::limits_config;
 use crate::utils::truncate_str;
 use chrono::{Datelike, Duration, LocalResult, TimeZone, Utc};
 use chrono_tz::Tz;
@@ -22,6 +24,12 @@ pub const STALE_SESSION_ERROR: &str = "No conversation found with session ID";
 /// a missed banner is hard-failed as `AgentExit` instead of paused/auto-resumed.
 const CLAUDE_USAGE_LIMIT_STEM: &str = "you've hit your";
 const CLAUDE_EXTRA_USAGE_PREFIX: &str = "you're out of extra usage";
+
+impl From<PersonaError> for super::ChatServiceError {
+    fn from(error: PersonaError) -> Self {
+        Self::PersonaUnavailable(format!("{PERSONA_UNAVAILABLE_PREFIX} {error}]"))
+    }
+}
 
 /// True when `lower` (already lowercased) is a Claude usage/session limit banner.
 fn is_claude_usage_limit_banner(lower: &str) -> bool {
@@ -267,12 +275,23 @@ pub enum StreamError {
         exit_code: Option<i32>,
         stderr: String,
     },
+    /// A local command or MCP tool failed without proving the agent process crashed.
+    LocalToolFailed { message: String },
+    /// Backend-owned validation rejected completion or a terminal local tool
+    /// failure represents validation evidence rather than an agent crash.
+    ValidationFailed { message: String },
     /// Session ID referenced in conversation not found on the Claude side.
     SessionNotFound { session_id: String },
     /// Failed to spawn the agent CLI process.
     ProcessSpawnFailed { command: String, error: String },
-    /// Agent completed but produced no meaningful output (no text, no tool calls).
-    NoOutput { context_type: ChatContextType },
+    /// Codex exited without a meaningful response. Terminal details are retained
+    /// so progress notices cannot mask the actual empty completion.
+    NoOutput {
+        context_type: ChatContextType,
+        exit_code: Option<i32>,
+        exit_signal: Option<i32>,
+        stderr: String,
+    },
     /// Agent run was cancelled (e.g., user-initiated stop or prune engine).
     /// `turns_finalized` tracks how many interactive turns completed before cancellation.
     /// When > 0, the agent completed normally and the cancellation path should still
@@ -326,18 +345,28 @@ impl std::fmt::Display for StreamError {
                     write!(f, "Agent failed: {}", summarize_agent_exit_stderr(stderr))
                 }
             }
+            Self::LocalToolFailed { message } => write!(f, "Local tool failed: {}", message),
+            Self::ValidationFailed { message } => write!(f, "Validation failed: {}", message),
             Self::SessionNotFound { session_id } => {
                 write!(f, "No conversation found with session ID {}", session_id)
             }
             Self::ProcessSpawnFailed { command, error } => {
                 write!(f, "Failed to spawn agent ({}): {}", command, error)
             }
-            Self::NoOutput { context_type } => {
+            Self::NoOutput {
+                context_type,
+                exit_code,
+                exit_signal,
+                stderr,
+            } => {
                 write!(
                     f,
-                    "Agent completed with no output (context={})",
-                    context_type
-                )
+                    "Codex exited without a response (context={context_type}, code={exit_code:?}, signal={exit_signal:?})"
+                )?;
+                if !stderr.trim().is_empty() {
+                    write!(f, "; diagnostics: {}", truncate_agent_error(stderr.trim()))?;
+                }
+                Ok(())
             }
             Self::Cancelled {
                 completion_tool_called,
@@ -399,6 +428,8 @@ impl StreamError {
             Self::Timeout { .. }
             | Self::ParseStall { .. }
             | Self::AgentExit { .. }
+            | Self::LocalToolFailed { .. }
+            | Self::ValidationFailed { .. }
             | Self::SessionNotFound { .. }
             | Self::ProcessSpawnFailed { .. }
             | Self::NoOutput { .. } => Some(InternalStatus::Failed),
@@ -438,18 +469,20 @@ impl StreamError {
     ///
     /// Used by `handle_stream_error()` to populate `ExecutionRecoveryMetadata` alongside
     /// the existing flat metadata writes.
-    pub fn to_execution_failure_source(
-        &self,
-    ) -> crate::domain::entities::ExecutionFailureSource {
+    pub fn to_execution_failure_source(&self) -> crate::domain::entities::ExecutionFailureSource {
         use crate::domain::entities::ExecutionFailureSource;
         match self {
             Self::Timeout { .. } => ExecutionFailureSource::TransientTimeout,
             Self::ParseStall { .. } => ExecutionFailureSource::ParseStall,
             Self::AgentExit { .. } => ExecutionFailureSource::AgentCrash,
+            Self::LocalToolFailed { .. } => ExecutionFailureSource::LocalToolFailed,
+            Self::ValidationFailed { .. } => ExecutionFailureSource::ValidationFailed,
             _ => ExecutionFailureSource::Unknown,
         }
     }
 }
+
+pub const VALIDATION_FAILED_ERROR_CODE: &str = "validation_failed";
 
 /// Classify an error string from agent stderr/result as a provider error if applicable.
 ///
@@ -577,8 +610,15 @@ pub fn classify_codex_stream_failure(
     runtime_errors: &[String],
     local_tool_errors: &[String],
     exit_code: Option<i32>,
+    completed_successfully: bool,
 ) -> Option<StreamError> {
-    for message in runtime_errors {
+    let runtime_errors = runtime_errors
+        .iter()
+        .map(String::as_str)
+        .filter(|message| !message.trim().is_empty())
+        .filter(|message| !is_agent_progress_noise(message))
+        .collect::<Vec<_>>();
+    for message in &runtime_errors {
         if let Some(provider_error) = classify_provider_error(message) {
             return Some(provider_error);
         }
@@ -591,22 +631,82 @@ pub fn classify_codex_stream_failure(
         }
     }
 
-    let error_message = runtime_errors
+    // A command or MCP call can fail while the agent is still actively repairing
+    // the task. Once Codex completed the turn (or RalphX accepted a completion
+    // signal), those earlier failures are diagnostics, not a failed agent run.
+    if completed_successfully {
+        return None;
+    }
+
+    let local_error_message = local_tool_errors
         .iter()
-        .chain(local_tool_errors.iter())
         .map(String::as_str)
         .filter(|message| !message.trim().is_empty())
         .collect::<Vec<_>>()
         .join("; ");
-
-    if error_message.is_empty() {
-        None
-    } else {
-        Some(StreamError::AgentExit {
-            exit_code,
-            stderr: error_message,
-        })
+    if local_tool_errors.iter().any(|message| {
+        message
+            .to_lowercase()
+            .contains(VALIDATION_FAILED_ERROR_CODE)
+    }) {
+        return Some(StreamError::ValidationFailed {
+            message: bounded_diagnostic(&local_error_message),
+        });
     }
+
+    if !runtime_errors.is_empty() {
+        let error_message = runtime_errors
+            .iter()
+            .copied()
+            .chain((!local_error_message.is_empty()).then_some(local_error_message.as_str()))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Some(StreamError::AgentExit {
+            exit_code,
+            stderr: bounded_diagnostic(&error_message),
+        });
+    }
+
+    if local_error_message.is_empty() {
+        return None;
+    }
+
+    // No runtime error, no completion signal: the stream itself ended before the
+    // turn finished. Local tool diagnostics collected earlier in the turn are
+    // supporting evidence, not the terminal cause — a mid-turn `rg` exit code must
+    // not be reported as the reason the run failed. State the terminal fact first
+    // and keep only a bounded excerpt of the diagnostics.
+    Some(StreamError::LocalToolFailed {
+        message: format!(
+            "{STREAM_ENDED_WITHOUT_COMPLETION}; local tool diagnostics from this turn: {}",
+            bounded_diagnostic(&local_error_message)
+        ),
+    })
+}
+
+/// Terminal fact reported when a Codex stream stops without a completion signal
+/// and without a runtime error of its own.
+pub(super) const STREAM_ENDED_WITHOUT_COMPLETION: &str =
+    "Codex stream ended without a completion signal";
+
+/// Bound an accumulated diagnostic blob so terminal error records stay readable.
+/// Keeps head and tail because the terminal detail is usually last, and tool
+/// transcripts can reach six figures of bytes.
+fn bounded_diagnostic(message: &str) -> String {
+    const MAX_DIAGNOSTIC_BYTES: usize = 4_000;
+    if message.len() <= MAX_DIAGNOSTIC_BYTES {
+        return message.to_string();
+    }
+
+    let half = MAX_DIAGNOSTIC_BYTES / 2;
+    let head = truncate_str(message, half);
+    let mut tail_start = message.len().saturating_sub(half);
+    while tail_start < message.len() && !message.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+    let tail = &message[tail_start..];
+    let elided = message.len() - head.len() - tail.len();
+    format!("{head}\n... {elided} bytes elided ...\n{tail}")
 }
 
 fn summarize_agent_exit_stderr(stderr: &str) -> String {
@@ -666,9 +766,14 @@ fn normalized_error_lines(stderr: &str) -> Vec<String> {
         .collect()
 }
 
+pub(super) fn meaningful_agent_exit_stderr(stderr: &str) -> String {
+    normalized_error_lines(stderr).join("; ")
+}
+
 fn is_agent_progress_noise(line: &str) -> bool {
     let lower = line.to_lowercase();
-    lower.starts_with("compiling ")
+    lower.contains("reading additional input from stdin")
+        || lower.starts_with("compiling ")
         || lower.starts_with("building [")
         || lower.starts_with("finished `")
         || lower.starts_with("running ")
@@ -805,8 +910,7 @@ fn parse_claude_reset_banner(error_text: &str) -> Option<String> {
 
     let now = Utc::now().with_timezone(&timezone);
     let today = now.date_naive();
-    let candidate_today =
-        resolve_tz_local_datetime(timezone, today, hour_24, minute)?;
+    let candidate_today = resolve_tz_local_datetime(timezone, today, hour_24, minute)?;
     let candidate = if candidate_today <= now {
         let tomorrow = today.checked_add_signed(Duration::days(1))?;
         resolve_tz_local_datetime(timezone, tomorrow, hour_24, minute)?
@@ -871,123 +975,5 @@ pub fn classify_agent_error(
 mod summary_tests;
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        classify_codex_stream_failure, classify_provider_error_from_assistant_content,
-        is_nonfatal_mcp_tool_cancellation, ProviderErrorCategory, StreamError,
-    };
-
-    #[test]
-    fn detects_user_cancelled_mcp_tool_call_variants() {
-        assert!(is_nonfatal_mcp_tool_cancellation(
-            "user cancelled MCP tool call"
-        ));
-        assert!(is_nonfatal_mcp_tool_cancellation(
-            "Agent failed: user canceled mcp tool call"
-        ));
-        assert!(!is_nonfatal_mcp_tool_cancellation(
-            "tool call failed: provider timeout"
-        ));
-    }
-
-    #[test]
-    fn codex_local_command_failure_with_rate_limit_text_is_agent_exit() {
-        let runtime_errors = Vec::<String>::new();
-        let local_tool_errors = vec![
-            "rg: src-tauri/src/domain/entities/agent_run.rs: No such file or directory\n\
-             src-tauri/src/application/chat_service/chat_service_errors.rs: RateLimit => write!(f, \"rate_limit\")"
-                .to_string(),
-        ];
-
-        let result = classify_codex_stream_failure(&runtime_errors, &local_tool_errors, Some(1))
-            .expect("local command failure should surface as an agent error");
-
-        match result {
-            StreamError::AgentExit { exit_code, stderr } => {
-                assert_eq!(exit_code, Some(1));
-                assert!(stderr.contains("No such file or directory"));
-                assert!(stderr.contains("rate_limit"));
-            }
-            other => panic!("expected local Codex failure to remain AgentExit, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn codex_mcp_tool_failure_with_rate_limit_text_is_agent_exit() {
-        let runtime_errors = Vec::<String>::new();
-        let local_tool_errors = vec![
-            "delegate_start failed after reading provider_error category rate_limit from local metadata"
-                .to_string(),
-        ];
-
-        let result = classify_codex_stream_failure(&runtime_errors, &local_tool_errors, Some(1))
-            .expect("local MCP failure should surface as an agent error");
-
-        assert!(
-            matches!(result, StreamError::AgentExit { .. }),
-            "local MCP failures must not become provider backpressure"
-        );
-    }
-
-    #[test]
-    fn codex_runtime_rate_limit_error_still_classifies_as_provider_error() {
-        let runtime_errors = vec!["Error: rate_limit_exceeded".to_string()];
-        let local_tool_errors = Vec::<String>::new();
-
-        let result = classify_codex_stream_failure(&runtime_errors, &local_tool_errors, Some(1))
-            .expect("runtime provider failure should classify");
-
-        match result {
-            StreamError::ProviderError { category, .. } => {
-                assert_eq!(category, ProviderErrorCategory::RateLimit);
-            }
-            other => panic!("expected provider error, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn codex_split_runtime_provider_error_joins_runtime_messages() {
-        let runtime_errors = vec!["429".to_string(), "Usage limit exceeded".to_string()];
-        let local_tool_errors = Vec::<String>::new();
-
-        let result = classify_codex_stream_failure(&runtime_errors, &local_tool_errors, Some(1))
-            .expect("split runtime provider failure should classify");
-
-        match result {
-            StreamError::ProviderError { category, .. } => {
-                assert_eq!(category, ProviderErrorCategory::RateLimit);
-            }
-            other => panic!("expected provider error, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn codex_stream_failure_without_error_text_returns_none() {
-        assert!(classify_codex_stream_failure(&[], &[], Some(0)).is_none());
-    }
-
-    #[test]
-    fn assistant_content_rate_limit_literal_is_not_provider_error() {
-        assert!(
-            classify_provider_error_from_assistant_content(
-                "The local metadata file contains the literal rate_limit string."
-            )
-            .is_none()
-        );
-    }
-
-    #[test]
-    fn assistant_content_claude_usage_limit_banner_stays_provider_error() {
-        let result = classify_provider_error_from_assistant_content(
-            "You've hit your limit. Your limit will reset at 2026-05-09 18:00:00",
-        )
-        .expect("Claude usage-limit banner should classify");
-
-        match result {
-            StreamError::ProviderError { category, .. } => {
-                assert_eq!(category, ProviderErrorCategory::RateLimit);
-            }
-            other => panic!("expected provider rate limit, got {other:?}"),
-        }
-    }
-}
+#[path = "chat_service_errors_tests.rs"]
+mod tests;

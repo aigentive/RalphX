@@ -3,17 +3,19 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use tauri::Emitter;
 use tracing::error;
 
 use super::*;
 use crate::application::git_service::GitService;
 use crate::application::interactive_process_registry::InteractiveProcessKey;
+use crate::application::task_diff_base::ensure_task_has_non_empty_captured_diff;
+use crate::application::validation_service::TaskValidationService;
 use crate::domain::entities::{
-    StepProgressSummary, Task, TaskId, TaskStep, TaskStepId, TaskStepStatus,
-    ValidationCacheMetadata,
+    ExecutionFailureSource, StepProgressSummary, Task, TaskId, TaskStep, TaskStepId, TaskStepStatus,
 };
+use crate::error::AppError;
 use crate::http_server::project_scope::{ProjectScope, ProjectScopeGuard};
+use crate::http_server::types::HttpError;
 use crate::utils::path_safety::validate_absolute_non_root_path;
 
 pub async fn get_task_steps_http(
@@ -55,7 +57,7 @@ pub async fn get_task_steps_http(
 pub async fn start_step_http(
     State(state): State<HttpServerState>,
     Json(req): Json<StartStepRequest>,
-) -> Result<Json<StepResponse>, StatusCode> {
+) -> Result<Json<StepResponse>, HttpError> {
     let step_id = TaskStepId::from_string(req.step_id);
 
     // Get existing step
@@ -70,9 +72,11 @@ pub async fn start_step_http(
         })?
         .ok_or(StatusCode::NOT_FOUND)?;
 
+    authorize_step_mutation(&state, &step.task_id).await?;
+
     // Validate step is Pending
     if step.status != TaskStepStatus::Pending {
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(StatusCode::BAD_REQUEST.into());
     }
 
     // Update status
@@ -86,23 +90,18 @@ pub async fn start_step_http(
         .task_step_repo
         .update(&step)
         .await
-        .map_err(|e| {
-            error!("Failed to update step {}: {}", step.id.as_str(), e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+        .map_err(|error| step_mutation_http_error(error, "update"))?;
 
     let response = StepResponse::from(step);
 
-    // Emit event to frontend
-    if let Some(app_handle) = &state.app_state.app_handle {
-        let _ = app_handle.emit(
-            "step:updated",
-            serde_json::json!({
-                "step": &response,
-                "task_id": &response.task_id
-            }),
-        );
-    }
+    crate::http_server::emit_http_event(
+        &state,
+        "step:updated",
+        serde_json::json!({
+            "step": &response,
+            "task_id": &response.task_id
+        }),
+    );
 
     Ok(Json(response))
 }
@@ -110,7 +109,7 @@ pub async fn start_step_http(
 pub async fn complete_step_http(
     State(state): State<HttpServerState>,
     Json(req): Json<CompleteStepRequest>,
-) -> Result<Json<StepResponse>, StatusCode> {
+) -> Result<Json<StepResponse>, HttpError> {
     let step_id = TaskStepId::from_string(req.step_id);
 
     // Get existing step
@@ -125,9 +124,11 @@ pub async fn complete_step_http(
         })?
         .ok_or(StatusCode::NOT_FOUND)?;
 
+    authorize_step_mutation(&state, &step.task_id).await?;
+
     // Validate step is InProgress
     if step.status != TaskStepStatus::InProgress {
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(StatusCode::BAD_REQUEST.into());
     }
 
     // Update status
@@ -142,23 +143,18 @@ pub async fn complete_step_http(
         .task_step_repo
         .update(&step)
         .await
-        .map_err(|e| {
-            error!("Failed to update step {}: {}", step.id.as_str(), e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+        .map_err(|error| step_mutation_http_error(error, "update"))?;
 
     let response = StepResponse::from(step);
 
-    // Emit event to frontend
-    if let Some(app_handle) = &state.app_state.app_handle {
-        let _ = app_handle.emit(
-            "step:updated",
-            serde_json::json!({
-                "step": &response,
-                "task_id": &response.task_id
-            }),
-        );
-    }
+    crate::http_server::emit_http_event(
+        &state,
+        "step:updated",
+        serde_json::json!({
+            "step": &response,
+            "task_id": &response.task_id
+        }),
+    );
 
     // Fallback: if all steps for this task are now done, close the worker's IPR to signal EOF
     {
@@ -193,15 +189,6 @@ pub async fn complete_step_http(
                         tracing::info!(
                             "IPR removed for worker on task {} (all-steps-done fallback)",
                             response.task_id
-                        );
-                    }
-                    if let Some(app_handle) = &state.app_state.app_handle {
-                        let _ = app_handle.emit(
-                            "execution:completed",
-                            serde_json::json!({
-                                "task_id": &response.task_id,
-                                "trigger": "all_steps_done_fallback",
-                            }),
                         );
                     }
                 }
@@ -223,7 +210,7 @@ pub async fn complete_step_http(
 pub async fn skip_step_http(
     State(state): State<HttpServerState>,
     Json(req): Json<SkipStepRequest>,
-) -> Result<Json<StepResponse>, StatusCode> {
+) -> Result<Json<StepResponse>, HttpError> {
     let step_id = TaskStepId::from_string(req.step_id);
 
     // Get existing step
@@ -238,9 +225,11 @@ pub async fn skip_step_http(
         })?
         .ok_or(StatusCode::NOT_FOUND)?;
 
+    authorize_step_mutation(&state, &step.task_id).await?;
+
     // Validate step is Pending or InProgress
     if step.status != TaskStepStatus::Pending && step.status != TaskStepStatus::InProgress {
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(StatusCode::BAD_REQUEST.into());
     }
 
     // Update status
@@ -255,23 +244,18 @@ pub async fn skip_step_http(
         .task_step_repo
         .update(&step)
         .await
-        .map_err(|e| {
-            error!("Failed to update step {}: {}", step.id.as_str(), e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+        .map_err(|error| step_mutation_http_error(error, "update"))?;
 
     let response = StepResponse::from(step);
 
-    // Emit event to frontend
-    if let Some(app_handle) = &state.app_state.app_handle {
-        let _ = app_handle.emit(
-            "step:updated",
-            serde_json::json!({
-                "step": &response,
-                "task_id": &response.task_id
-            }),
-        );
-    }
+    crate::http_server::emit_http_event(
+        &state,
+        "step:updated",
+        serde_json::json!({
+            "step": &response,
+            "task_id": &response.task_id
+        }),
+    );
 
     // Fallback: if all steps for this task are now done, close the worker's IPR to signal EOF
     {
@@ -308,15 +292,6 @@ pub async fn skip_step_http(
                             response.task_id
                         );
                     }
-                    if let Some(app_handle) = &state.app_state.app_handle {
-                        let _ = app_handle.emit(
-                            "execution:completed",
-                            serde_json::json!({
-                                "task_id": &response.task_id,
-                                "trigger": "all_steps_done_fallback",
-                            }),
-                        );
-                    }
                 }
             }
             Err(e) => {
@@ -336,7 +311,7 @@ pub async fn skip_step_http(
 pub async fn fail_step_http(
     State(state): State<HttpServerState>,
     Json(req): Json<FailStepRequest>,
-) -> Result<Json<StepResponse>, StatusCode> {
+) -> Result<Json<StepResponse>, HttpError> {
     let step_id = TaskStepId::from_string(req.step_id);
 
     // Get existing step
@@ -351,9 +326,11 @@ pub async fn fail_step_http(
         })?
         .ok_or(StatusCode::NOT_FOUND)?;
 
+    authorize_step_mutation(&state, &step.task_id).await?;
+
     // Validate step is InProgress
     if step.status != TaskStepStatus::InProgress {
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(StatusCode::BAD_REQUEST.into());
     }
 
     // Update status
@@ -368,23 +345,18 @@ pub async fn fail_step_http(
         .task_step_repo
         .update(&step)
         .await
-        .map_err(|e| {
-            error!("Failed to update step {}: {}", step.id.as_str(), e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+        .map_err(|error| step_mutation_http_error(error, "update"))?;
 
     let response = StepResponse::from(step);
 
-    // Emit event to frontend
-    if let Some(app_handle) = &state.app_state.app_handle {
-        let _ = app_handle.emit(
-            "step:updated",
-            serde_json::json!({
-                "step": &response,
-                "task_id": &response.task_id
-            }),
-        );
-    }
+    crate::http_server::emit_http_event(
+        &state,
+        "step:updated",
+        serde_json::json!({
+            "step": &response,
+            "task_id": &response.task_id
+        }),
+    );
 
     Ok(Json(response))
 }
@@ -392,8 +364,10 @@ pub async fn fail_step_http(
 pub async fn add_step_http(
     State(state): State<HttpServerState>,
     Json(req): Json<AddStepRequest>,
-) -> Result<Json<StepResponse>, StatusCode> {
+) -> Result<Json<StepResponse>, HttpError> {
     let task_id = TaskId::from_string(req.task_id);
+
+    authorize_step_mutation(&state, &task_id).await?;
 
     // Determine sort_order
     let sort_order = if let Some(after_step_id_str) = req.after_step_id {
@@ -436,25 +410,52 @@ pub async fn add_step_http(
         .task_step_repo
         .create(step)
         .await
-        .map_err(|e| {
-            error!("Failed to create step for task {}: {}", task_id.as_str(), e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+        .map_err(|error| step_mutation_http_error(error, "create"))?;
 
     let response = StepResponse::from(step);
 
-    // Emit event to frontend
-    if let Some(app_handle) = &state.app_state.app_handle {
-        let _ = app_handle.emit(
-            "step:created",
-            serde_json::json!({
-                "step": &response,
-                "task_id": &response.task_id
-            }),
-        );
-    }
+    crate::http_server::emit_http_event(
+        &state,
+        "step:created",
+        serde_json::json!({
+            "step": &response,
+            "task_id": &response.task_id
+        }),
+    );
 
     Ok(Json(response))
+}
+
+fn step_mutation_http_error(error: AppError, operation: &str) -> HttpError {
+    error!("Failed to {operation} task step: {error}");
+    match error {
+        AppError::FeatureDisabled(message) => HttpError {
+            status: StatusCode::CONFLICT,
+            message: Some(message),
+        },
+        _ => HttpError::from(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+async fn authorize_step_mutation(
+    state: &HttpServerState,
+    task_id: &TaskId,
+) -> Result<(), HttpError> {
+    let task = state
+        .app_state
+        .task_repo
+        .get_by_id(task_id)
+        .await
+        .map_err(|error| step_mutation_http_error(error, "load task"))?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    crate::application::tasks_feature_policy::TasksFeaturePolicy::from_state(&state.app_state)
+        .authorize_session(
+            task.ideation_session_id.as_ref(),
+            crate::domain::ideation::TasksFeatureAction::Progress,
+        )
+        .await
+        .map_err(|error| step_mutation_http_error(error, "authorize"))
 }
 
 pub async fn get_step_progress_http(
@@ -647,7 +648,7 @@ pub async fn execution_complete_http(
     State(state): State<HttpServerState>,
     Path(task_id_str): Path<String>,
     Json(req): Json<ExecutionCompleteRequest>,
-) -> Result<Json<ExecutionCompleteResponse>, StatusCode> {
+) -> Result<Json<ExecutionCompleteResponse>, HttpError> {
     let task_id = TaskId::from_string(task_id_str.clone());
 
     // Fetch task (needed for worktree_path and metadata update)
@@ -658,6 +659,25 @@ pub async fn execution_complete_http(
         .await
         .map_err(|e| {
             error!("Failed to get task {}: {}", task_id_str, e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    crate::application::tasks_feature_policy::TasksFeaturePolicy::from_state(&state.app_state)
+        .authorize_session(
+            task.ideation_session_id.as_ref(),
+            crate::domain::ideation::TasksFeatureAction::Progress,
+        )
+        .await
+        .map_err(|error| step_mutation_http_error(error, "authorize execution completion"))?;
+
+    let project = state
+        .app_state
+        .project_repo
+        .get_by_id(&task.project_id)
+        .await
+        .map_err(|e| {
+            error!("Failed to get project for task {}: {}", task_id_str, e);
             StatusCode::INTERNAL_SERVER_ERROR
         })?
         .ok_or(StatusCode::NOT_FOUND)?;
@@ -700,81 +720,71 @@ pub async fn execution_complete_http(
                 dirty_files = ?dirty_summary,
                 "Rejecting execution_complete because task worktree has uncommitted changes"
             );
-            return Err(StatusCode::CONFLICT);
+            return Err(HttpError::from(StatusCode::CONFLICT));
         }
     }
 
-    // If test_result provided, capture HEAD SHA and store validation cache in metadata
-    if let Some(ref test_result) = req.test_result {
-        if let Some(ref worktree_path) = task.worktree_path {
-            let path = validate_absolute_non_root_path(
-                std::path::Path::new(worktree_path),
-                "execution complete worktree",
-            )
-            .map_err(|e| {
-                tracing::error!(
-                    task_id = %task_id_str,
-                    worktree_path = %worktree_path,
-                    error = %e,
-                    "Skipping validation cache because worktree path failed validation"
-                );
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
-            match GitService::get_head_sha(&path).await {
-                Ok(commit_sha) => {
-                    let cache = ValidationCacheMetadata {
-                        version: 1,
-                        commit_sha,
-                        tests_ran: test_result.tests_ran,
-                        tests_passed: test_result.tests_passed,
-                        test_summary: test_result.test_summary.clone(),
-                        captured_at: chrono::Utc::now(),
-                        captured_by: "execution_complete".to_string(),
-                    };
-                    match cache.update_task_metadata(task.metadata.as_deref()) {
-                        Ok(new_metadata) => {
-                            if let Err(e) = state
-                                .app_state
-                                .task_repo
-                                .update_metadata(&task_id, Some(new_metadata))
-                                .await
-                            {
-                                tracing::warn!(
-                                    "Failed to store validation cache for task {}: {}",
-                                    task_id_str,
-                                    e
-                                );
-                            } else {
-                                tracing::info!(
-                                    "Validation cache stored for task {} (tests_ran={}, tests_passed={})",
-                                    task_id_str,
-                                    test_result.tests_ran,
-                                    test_result.tests_passed
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                "Failed to serialize validation cache for task {}: {}",
-                                task_id_str,
-                                e
-                            );
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to get HEAD SHA for task {} (validation cache not stored): {}",
-                        task_id_str,
-                        e
-                    );
-                }
-            }
-        } else {
+    ensure_task_has_non_empty_captured_diff(&task, &project, "execution_complete")
+        .await
+        .map_err(|e| {
             tracing::warn!(
-                "No worktree_path for task {} — validation cache not stored",
-                task_id_str
+                task_id = %task_id_str,
+                error = %e,
+                "Rejecting execution_complete because task-owned diff is empty or unavailable"
             );
+            StatusCode::CONFLICT
+        })?;
+
+    // Agent-reported failed tests are terminal, but successful reports are not review evidence.
+    if let Some(ref test_result) = req.test_result {
+        if test_result.tests_ran && !test_result.tests_passed {
+            let summary = test_result
+                .test_summary
+                .as_deref()
+                .unwrap_or("reported tests failed")
+                .trim();
+            let message = if summary.is_empty() {
+                "Validation failed: reported tests failed".to_string()
+            } else {
+                format!("Validation failed: {summary}")
+            };
+            persist_execution_complete_validation_rejection(&state, &task, &message).await?;
+            tracing::warn!(
+                task_id = %task_id_str,
+                summary = %message,
+                "Rejecting execution_complete because reported validation failed"
+            );
+            return Err(HttpError {
+                status: StatusCode::CONFLICT,
+                message: Some(
+                    serde_json::json!({
+                        "error": crate::application::chat_service::VALIDATION_FAILED_ERROR_CODE,
+                        "details": message,
+                    })
+                    .to_string(),
+                ),
+            });
+        }
+    }
+
+    if let Some(worktree_path) = task.worktree_path.as_deref() {
+        let path = validate_absolute_non_root_path(
+            std::path::Path::new(worktree_path),
+            "execution complete validation promotion worktree",
+        )
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let commit_sha = GitService::get_head_sha(&path)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        if let Err(error) = TaskValidationService::promote_matching_validation_to_commit(
+            &state.app_state,
+            &task_id,
+            &path,
+            &commit_sha,
+        )
+        .await
+        {
+            tracing::warn!(task_id = %task_id_str, %error, "Could not promote validation evidence");
         }
     }
 
@@ -799,51 +809,50 @@ pub async fn execution_complete_http(
         );
     }
 
-    // Notify frontend
-    if let Some(app_handle) = &state.app_state.app_handle {
-        let _ = app_handle.emit(
-            "execution:completed",
-            serde_json::json!({
-                "task_id": task_id_str,
-                "summary": req.summary,
-            }),
-        );
-    }
-
-    // Dual-channel emission of task:execution_completed
-    let project_id_str = task.project_id.as_str().to_string();
-    let completed_payload = serde_json::json!({
-        "task_id": task_id_str,
-        "project_id": project_id_str,
-        "outcome": "completed",
-        "timestamp": chrono::Utc::now().to_rfc3339(),
-    });
-    if let Err(e) = state
-        .app_state
-        .external_events_repo
-        .insert_event(
-            "task:execution_completed",
-            &project_id_str,
-            &completed_payload.to_string(),
-        )
-        .await
-    {
-        tracing::warn!(error = %e, "Failed to persist task:execution_completed event");
-    }
-    if let Some(ref publisher) = state.app_state.webhook_publisher {
-        publisher
-            .publish(
-                ralphx_domain::entities::EventType::TaskExecutionCompleted,
-                &project_id_str,
-                completed_payload,
-            )
-            .await;
-    }
-
     Ok(Json(ExecutionCompleteResponse {
         success: true,
         message: format!("Execution complete for task {}", task_id_str),
     }))
+}
+
+async fn persist_execution_complete_validation_rejection(
+    state: &HttpServerState,
+    task: &Task,
+    message: &str,
+) -> Result<(), HttpError> {
+    let mut metadata = task
+        .metadata
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    if let Some(obj) = metadata.as_object_mut() {
+        obj.insert(
+            "failure_error".to_string(),
+            serde_json::Value::String(message.to_string()),
+        );
+        obj.insert(
+            "failure_source".to_string(),
+            serde_json::to_value(ExecutionFailureSource::ValidationFailed)
+                .unwrap_or_else(|_| serde_json::json!("validation_failed")),
+        );
+        obj.insert(
+            "failed_at".to_string(),
+            serde_json::Value::String(chrono::Utc::now().to_rfc3339()),
+        );
+    }
+    state
+        .app_state
+        .task_repo
+        .update_metadata(&task.id, Some(metadata.to_string()))
+        .await
+        .map_err(|error| {
+            tracing::error!(
+                task_id = %task.id.as_str(),
+                error = %error,
+                "Failed to persist validation rejection metadata"
+            );
+            HttpError::from(StatusCode::INTERNAL_SERVER_ERROR)
+        })
 }
 
 #[cfg(test)]

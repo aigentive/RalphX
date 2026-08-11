@@ -1,25 +1,141 @@
 use super::*;
-use crate::application::{AppState, TeamService, TeamStateTracker};
-use crate::commands::ExecutionState;
+use crate::application::AppState;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentWorkspaceFollowupProvenance,
-    ChatConversation, IdeationAnalysisBaseRefKind, IdeationSessionId, ProjectId, Review,
-    ReviewerType, ScopeDriftStatus, Task, TaskContext,
+    ChatConversation, IdeationAnalysisBaseRefKind, IdeationSessionId, InternalStatus, Project,
+    ProjectId, Review, ReviewerType, ScopeDriftStatus, Task, TaskContext,
 };
 use crate::domain::review::{build_unrelated_drift_followup_draft, ReviewSettings};
+use crate::http_server::project_scope::ProjectScope;
+use crate::http_server::types::CompleteReviewRequest;
 use crate::http_server::types::HttpServerState;
+use crate::utils::path_safety::validate_absolute_non_root_path;
+use axum::{extract::State, Json};
 use std::sync::Arc;
 
+fn create_temp_git_repo() -> tempfile::TempDir {
+    let tmp_dir = tempfile::tempdir().expect("tempdir");
+    let repo_path = validate_absolute_non_root_path(tmp_dir.path(), "review completion test repo")
+        .expect("safe test repo");
+    let run_git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&repo_path)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .output()
+            .expect("git command failed");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+
+    run_git(&["init", "-b", "main"]);
+    run_git(&["config", "user.email", "test@test.com"]);
+    run_git(&["config", "user.name", "Test"]);
+    let readme_path =
+        validate_absolute_non_root_path(&repo_path.join("README.md"), "review test README")
+            .expect("safe README path");
+    std::fs::write(readme_path, "test").expect("write README");
+    run_git(&["add", "."]);
+    run_git(&["commit", "-m", "init"]);
+
+    tmp_dir
+}
+
+fn git_stdout(repo_path: &std::path::Path, args: &[&str]) -> String {
+    let repo_path = validate_absolute_non_root_path(repo_path, "review completion test repo")
+        .expect("safe test repo");
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(&repo_path)
+        .env("GIT_AUTHOR_NAME", "Test")
+        .env("GIT_AUTHOR_EMAIL", "test@test.com")
+        .env("GIT_COMMITTER_NAME", "Test")
+        .env("GIT_COMMITTER_EMAIL", "test@test.com")
+        .output()
+        .expect("git command failed");
+    assert!(
+        output.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
 fn test_http_state(app_state: Arc<AppState>) -> HttpServerState {
-    let tracker = TeamStateTracker::new();
-    let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
-    HttpServerState {
-        app_state,
-        execution_state: Arc::new(ExecutionState::new()),
-        team_tracker: tracker,
-        team_service,
-        delegation_service: Default::default(),
-    }
+    HttpServerState::new_test(app_state)
+}
+
+#[tokio::test]
+async fn approved_no_changes_rejects_empty_diff_without_explicit_no_code_metadata() {
+    let tmp_dir = create_temp_git_repo();
+    let base_sha = git_stdout(tmp_dir.path(), &["rev-parse", "HEAD"]);
+
+    let app_state = Arc::new(AppState::new_test());
+    let state = test_http_state(Arc::clone(&app_state));
+
+    let mut project = Project::new(
+        "Review empty diff".to_string(),
+        tmp_dir.path().to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    let project_id = project.id.clone();
+    app_state.project_repo.create(project).await.unwrap();
+
+    let mut task = Task::new(project_id, "Empty review diff".to_string());
+    task.internal_status = InternalStatus::Reviewing;
+    task.task_branch = Some("main".to_string());
+    task.task_branch_base_ref = Some("main".to_string());
+    task.task_branch_base_sha = Some(base_sha);
+    task.worktree_path = Some(tmp_dir.path().to_string_lossy().to_string());
+    let task_id = task.id.clone();
+    app_state.task_repo.create(task).await.unwrap();
+
+    let response = complete_review(
+        State(state),
+        ProjectScope(None),
+        Json(CompleteReviewRequest {
+            task_id: task_id.as_str().to_string(),
+            decision: "approved_no_changes".to_string(),
+            summary: Some("No changes needed".to_string()),
+            feedback: None,
+            issues: None,
+            escalation_reason: None,
+            scope_drift_classification: None,
+            scope_drift_notes: None,
+        }),
+    )
+    .await;
+
+    let (status, body) = response.expect_err("empty code-change review must be rejected");
+    assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+    assert!(
+        body.contains("not explicitly classified as no-code/no-change"),
+        "error should explain the no-code classification requirement: {body}"
+    );
+
+    let persisted = app_state
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(persisted.internal_status, InternalStatus::Reviewing);
+    assert!(
+        !persisted
+            .metadata
+            .as_deref()
+            .unwrap_or_default()
+            .contains("no_code_changes"),
+        "rejected approved_no_changes must not stamp no-code metadata"
+    );
 }
 
 fn task_context_for(task: Task) -> TaskContext {
@@ -27,6 +143,7 @@ fn task_context_for(task: Task) -> TaskContext {
         task,
         source_proposal: None,
         plan_artifact: None,
+        blueprint_artifact: None,
         related_artifacts: Vec::new(),
         steps: Vec::new(),
         step_progress: None,

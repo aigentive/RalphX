@@ -64,6 +64,10 @@ fn map_plan_complexity_error(error: AppError) -> HttpError {
             status: axum::http::StatusCode::CONFLICT,
             message: Some(message),
         },
+        AppError::FeatureDisabled(message) => HttpError {
+            status: axum::http::StatusCode::CONFLICT,
+            message: Some(message),
+        },
         AppError::NotFound(_) => axum::http::StatusCode::NOT_FOUND.into(),
         _ => axum::http::StatusCode::INTERNAL_SERVER_ERROR.into(),
     }

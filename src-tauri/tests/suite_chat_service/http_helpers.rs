@@ -2,8 +2,11 @@ use ralphx_lib::application::{
     AppState, CreateProposalOptions, UpdateProposalOptions, UpdateSource,
 };
 use ralphx_lib::domain::entities::{
-    Artifact, ArtifactId, ArtifactType, IdeationSession, IdeationSessionId,
-    IdeationSessionStatus, Priority, ProjectId, ProposalCategory, TaskProposalId,
+    Artifact, ArtifactId, ArtifactType, IdeationSession, IdeationSessionId, IdeationSessionStatus,
+    InternalStatus, Priority, Project, ProjectId, ProposalCategory, Task, TaskId, TaskProposalId,
+    ValidationCacheDecision, ValidationCommandCategory, ValidationCommandResult,
+    ValidationCommandSource, ValidationCommandStatus, ValidationContextType, ValidationPurpose,
+    ValidationRun, ValidationRunMode, ValidationRunStatus,
 };
 use ralphx_lib::error::AppError;
 use ralphx_lib::http_server::helpers::*;
@@ -107,16 +110,27 @@ async fn test_create_proposal_with_plan_artifact_succeeds_and_auto_links() {
     );
     let artifact_id = artifact.id.clone();
     state.artifact_repo.create(artifact).await.unwrap();
+    let blueprint = Artifact::new_inline(
+        "Test Blueprint",
+        ArtifactType::Specification,
+        "# Implementation blueprint",
+        "test",
+    );
+    let blueprint_id = blueprint.id.clone();
+    state.artifact_repo.create(blueprint).await.unwrap();
 
     // Create a session WITH a plan artifact
-    let session = IdeationSession::builder()
+    let mut session = IdeationSession::builder()
         .project_id(project_id.clone())
         .title("Test Session")
         .plan_artifact_id(artifact_id.clone())
+        .blueprint_version_last_read(1)
         .cross_project_checked(true)
         .build();
+    session.plan_blueprint_artifact_id = Some(blueprint_id);
     let session_id = session.id.clone();
     state.ideation_session_repo.create(session).await.unwrap();
+    mark_plan_bundle_read(&state, &session_id).await;
 
     let options = CreateProposalOptions {
         title: "Test Proposal".to_string(),
@@ -157,16 +171,27 @@ async fn test_create_proposal_sets_plan_version_at_creation() {
     );
     let artifact_id = artifact.id.clone();
     state.artifact_repo.create(artifact).await.unwrap();
+    let blueprint = Artifact::new_inline(
+        "Test Blueprint",
+        ArtifactType::Specification,
+        "# Implementation blueprint",
+        "test",
+    );
+    let blueprint_id = blueprint.id.clone();
+    state.artifact_repo.create(blueprint).await.unwrap();
 
     // Create session with plan artifact
-    let session = IdeationSession::builder()
+    let mut session = IdeationSession::builder()
         .project_id(project_id.clone())
         .title("Test Session")
         .plan_artifact_id(artifact_id.clone())
+        .blueprint_version_last_read(1)
         .cross_project_checked(true)
         .build();
+    session.plan_blueprint_artifact_id = Some(blueprint_id);
     let session_id = session.id.clone();
     state.ideation_session_repo.create(session).await.unwrap();
+    mark_plan_bundle_read(&state, &session_id).await;
 
     let options = CreateProposalOptions {
         title: "Versioned Proposal".to_string(),
@@ -197,8 +222,8 @@ async fn test_create_proposal_sets_plan_version_at_creation() {
 // Verification Gate Integration Tests — Scenarios 10-25
 // ============================================================================
 
-/// Shared setup: create artifact + session with plan, optionally set verification_status
-/// and enable the proposal gate in the DB.
+/// Shared setup: create artifact + session with a plan and optionally seed the legacy
+/// verification-status/proposal-gate fields retained for database compatibility.
 async fn setup_session_with_gate(
     state: &AppState,
     verification_status: &str,
@@ -217,16 +242,31 @@ async fn setup_session_with_gate(
     let artifact_id = artifact.id.clone();
     state.artifact_repo.create(artifact).await.unwrap();
 
-    let session = IdeationSession::builder()
+    let blueprint = Artifact::new_inline(
+        "Blueprint",
+        ArtifactType::Specification,
+        "# Implementation blueprint",
+        "test",
+    );
+    let blueprint_id = blueprint.id.clone();
+    state.artifact_repo.create(blueprint).await.unwrap();
+
+    let mut session = IdeationSession::builder()
         .project_id(project_id)
         .title("Gate Test Session")
         .plan_artifact_id(artifact_id.clone())
         .cross_project_checked(true)
         .build();
-    state.ideation_session_repo.create(session.clone()).await.unwrap();
+    session.plan_blueprint_artifact_id = Some(blueprint_id);
+    state
+        .ideation_session_repo
+        .create(session.clone())
+        .await
+        .unwrap();
 
-    // Apply verification_status and gate setting via raw SQL (both share the same SQLite conn)
+    // Model the read receipt written by get_session_plan before proposal creation.
     let sid = session.id.as_str().to_string();
+    let session_id_for_read = session.id.as_str().to_string();
     let status = verification_status.to_string();
     let gate: i64 = if gate_enabled { 1 } else { 0 };
     state
@@ -235,6 +275,13 @@ async fn setup_session_with_gate(
             conn.execute(
                 "UPDATE ideation_sessions SET verification_status = ?1 WHERE id = ?2",
                 rusqlite::params![status, sid],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+            conn.execute(
+                "UPDATE ideation_sessions
+                 SET plan_version_last_read = 1, blueprint_version_last_read = 1
+                 WHERE id = ?1",
+                rusqlite::params![session_id_for_read],
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
             conn.execute(
@@ -272,11 +319,30 @@ async fn create_test_proposal(state: &AppState, session_id: &IdeationSessionId) 
         .id
 }
 
-// Scenario 10: HTTP create on unverified session + gate on → 400 (AppError::Validation with ProposalNotVerified message)
+/// Model the paired read receipts written by `get_session_plan` for a v2 plan bundle.
+async fn mark_plan_bundle_read(state: &AppState, session_id: &IdeationSessionId) {
+    let session_id = session_id.as_str().to_string();
+    state
+        .db
+        .run(move |conn| {
+            conn.execute(
+                "UPDATE ideation_sessions
+                 SET plan_version_last_read = 1, blueprint_version_last_read = 1
+                 WHERE id = ?1",
+                rusqlite::params![session_id],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+}
+
+// Scenario 10: The retired proposal gate cannot block draft proposal creation.
 #[tokio::test]
-async fn test_create_gate_blocks_unverified_when_enabled() {
+async fn test_create_ignores_legacy_proposal_gate_when_unverified() {
     let state = AppState::new_sqlite_test();
-    let (session, _artifact_id) = setup_session_with_gate(&state, "unverified", true).await;
+    let (session, artifact_id) = setup_session_with_gate(&state, "unverified", true).await;
 
     let options = CreateProposalOptions {
         title: "Blocked Proposal".to_string(),
@@ -292,24 +358,21 @@ async fn test_create_gate_blocks_unverified_when_enabled() {
         expected_proposal_count: None,
     };
 
-    let result = create_proposal_impl(&state, session.id.clone(), options).await;
-    assert!(result.is_err(), "Create on Unverified+gate=on must fail");
-    match result.unwrap_err() {
-        AppError::Validation(msg) => {
-            assert!(
-                msg.contains("Cannot create proposals"),
-                "Error must mention 'Cannot create proposals', got: {}",
-                msg
-            );
-        }
-        other => panic!("Expected AppError::Validation, got: {:?}", other),
-    }
+    let (created, dependency_errors, ready_to_finalize) =
+        create_proposal_impl(&state, session.id.clone(), options)
+            .await
+            .expect("legacy proposal-gate fields must not block draft creation");
+    assert_eq!(created.title, "Blocked Proposal");
+    assert_eq!(created.session_id, session.id);
+    assert_eq!(created.plan_artifact_id, Some(artifact_id));
+    assert!(dependency_errors.is_empty());
+    assert!(!ready_to_finalize);
 }
 
-// Scenario 11: Tauri IPC parity — IPC and HTTP use the same create_proposal_impl,
-// so the verification gate blocks with identical semantics (validates the refactor).
+// Scenario 11: Tauri IPC and HTTP retain the same ungated draft-creation semantics
+// because both use create_proposal_impl.
 #[tokio::test]
-async fn test_create_gate_ipc_parity_same_error_as_http() {
+async fn test_create_ipc_http_parity_when_legacy_gate_is_enabled() {
     let state = AppState::new_sqlite_test();
     let (session, _) = setup_session_with_gate(&state, "unverified", true).await;
 
@@ -344,22 +407,24 @@ async fn test_create_gate_ipc_parity_same_error_as_http() {
     let ipc_result = create_proposal_impl(&state, session.id.clone(), ipc_options).await;
     let http_result = create_proposal_impl(&state, session.id.clone(), http_options).await;
 
-    // Both must fail with the same error type (single enforcement point)
-    assert!(ipc_result.is_err(), "IPC create on Unverified must fail");
-    assert!(http_result.is_err(), "HTTP create on Unverified must fail");
-    assert!(
-        matches!(ipc_result.unwrap_err(), AppError::Validation(_)),
-        "IPC must return Validation error"
-    );
-    assert!(
-        matches!(http_result.unwrap_err(), AppError::Validation(_)),
-        "HTTP must return Validation error"
-    );
+    let (ipc_created, ipc_dependency_errors, ipc_ready) =
+        ipc_result.expect("IPC-backed draft creation must ignore the legacy gate");
+    let (http_created, http_dependency_errors, http_ready) =
+        http_result.expect("HTTP-backed draft creation must ignore the legacy gate");
+    assert_eq!(ipc_created.title, "IPC Proposal");
+    assert_eq!(http_created.title, "HTTP Proposal");
+    assert_eq!(ipc_created.session_id, session.id);
+    assert_eq!(http_created.session_id, session.id);
+    assert_ne!(ipc_created.id, http_created.id);
+    assert!(ipc_dependency_errors.is_empty());
+    assert!(http_dependency_errors.is_empty());
+    assert!(!ipc_ready);
+    assert!(!http_ready);
 }
 
-// Scenario 12: HTTP update during Reviewing + gate on → 400
+// Scenario 12: Legacy Reviewing state cannot block proposal draft updates.
 #[tokio::test]
-async fn test_update_gate_blocks_when_reviewing() {
+async fn test_update_ignores_legacy_reviewing_gate() {
     let state = AppState::new_sqlite_test();
     // First create with gate off to get a proposal
     let (session, _) = setup_session_with_gate(&state, "verified", false).await;
@@ -390,23 +455,24 @@ async fn test_update_gate_blocks_when_reviewing() {
         source: UpdateSource::Api,
         ..Default::default()
     };
-    let result = update_proposal_impl(&state, &proposal_id, options).await;
-    assert!(result.is_err(), "Update on Reviewing+gate=on must fail");
-    match result.unwrap_err() {
-        AppError::Validation(msg) => {
-            assert!(
-                msg.contains("Cannot update proposals"),
-                "Error must mention 'Cannot update proposals', got: {}",
-                msg
-            );
-        }
-        other => panic!("Expected AppError::Validation, got: {:?}", other),
-    }
+    let (updated, dependency_errors) = update_proposal_impl(&state, &proposal_id, options)
+        .await
+        .expect("legacy Reviewing state must not block draft updates");
+    assert_eq!(updated.title, "Updated");
+    assert_eq!(updated.id, proposal_id);
+    assert!(dependency_errors.is_empty());
+    let persisted = state
+        .task_proposal_repo
+        .get_by_id(&proposal_id)
+        .await
+        .unwrap()
+        .expect("updated proposal must remain persisted");
+    assert_eq!(persisted.title, "Updated");
 }
 
-// Scenario 13: HTTP delete during NeedsRevision + gate on → 400
+// Scenario 13: Legacy NeedsRevision state cannot block proposal draft archival.
 #[tokio::test]
-async fn test_archive_gate_blocks_when_needs_revision() {
+async fn test_archive_ignores_legacy_needs_revision_gate() {
     let state = AppState::new_sqlite_test();
     let (session, _) = setup_session_with_gate(&state, "verified", false).await;
     let proposal_id = create_test_proposal(&state, &session.id).await;
@@ -431,18 +497,17 @@ async fn test_archive_gate_blocks_when_needs_revision() {
         .await
         .unwrap();
 
-    let result = archive_proposal_impl(&state, proposal_id).await;
-    assert!(result.is_err(), "Archive on NeedsRevision+gate=on must fail");
-    match result.unwrap_err() {
-        AppError::Validation(msg) => {
-            assert!(
-                msg.contains("Cannot delete proposals"),
-                "Error must mention 'Cannot delete proposals', got: {}",
-                msg
-            );
-        }
-        other => panic!("Expected AppError::Validation, got: {:?}", other),
-    }
+    let archived_session_id = archive_proposal_impl(&state, proposal_id.clone())
+        .await
+        .expect("legacy NeedsRevision state must not block draft archival");
+    assert_eq!(archived_session_id, session.id);
+    let archived = state
+        .task_proposal_repo
+        .get_by_id(&proposal_id)
+        .await
+        .unwrap()
+        .expect("archived proposal must remain queryable");
+    assert!(archived.archived_at.is_some());
 }
 
 // Scenario 14: Single event per operation — verify proposal appears exactly once in DB
@@ -559,7 +624,10 @@ async fn test_update_api_does_not_set_user_modified() {
         .await
         .unwrap()
         .unwrap();
-    assert!(!initial.user_modified, "Proposal should start with user_modified=false");
+    assert!(
+        !initial.user_modified,
+        "Proposal should start with user_modified=false"
+    );
 
     let options = UpdateProposalOptions {
         title: Some("API Updated Title".to_string()),
@@ -653,14 +721,25 @@ async fn test_update_proposal_on_archived_session_blocked() {
     state.artifact_repo.create(artifact).await.unwrap();
 
     // Create as Active, create proposal, then Archive the session
-    let session = IdeationSession::builder()
+    let blueprint = Artifact::new_inline(
+        "Plan Blueprint",
+        ArtifactType::Specification,
+        "# Implementation blueprint",
+        "test",
+    );
+    let blueprint_id = blueprint.id.clone();
+    state.artifact_repo.create(blueprint).await.unwrap();
+    let mut session = IdeationSession::builder()
         .project_id(project_id)
         .title("Archived Session")
         .plan_artifact_id(artifact_id)
+        .blueprint_version_last_read(1)
         .cross_project_checked(true)
         .build();
+    session.plan_blueprint_artifact_id = Some(blueprint_id);
     let session_id = session.id.clone();
     state.ideation_session_repo.create(session).await.unwrap();
+    mark_plan_bundle_read(&state, &session_id).await;
     let proposal_id = create_test_proposal(&state, &session_id).await;
 
     // Archive the session via SQL
@@ -702,14 +781,25 @@ async fn test_archive_proposal_on_accepted_session_blocked() {
     let artifact_id = artifact.id.clone();
     state.artifact_repo.create(artifact).await.unwrap();
 
-    let session = IdeationSession::builder()
+    let blueprint = Artifact::new_inline(
+        "Plan Blueprint",
+        ArtifactType::Specification,
+        "# Implementation blueprint",
+        "test",
+    );
+    let blueprint_id = blueprint.id.clone();
+    state.artifact_repo.create(blueprint).await.unwrap();
+    let mut session = IdeationSession::builder()
         .project_id(project_id)
         .title("Accepted Session")
         .plan_artifact_id(artifact_id)
+        .blueprint_version_last_read(1)
         .cross_project_checked(true)
         .build();
+    session.plan_blueprint_artifact_id = Some(blueprint_id);
     let session_id = session.id.clone();
     state.ideation_session_repo.create(session).await.unwrap();
+    mark_plan_bundle_read(&state, &session_id).await;
     let proposal_id = create_test_proposal(&state, &session_id).await;
 
     // Accept the session via SQL
@@ -778,7 +868,10 @@ async fn test_archive_proposal_clears_dependency_rows() {
         .await
         .unwrap();
 
-    assert_eq!(stale_count, 0, "archiving must remove related dependency rows");
+    assert_eq!(
+        stale_count, 0,
+        "archiving must remove related dependency rows"
+    );
 }
 
 // Scenario 20: Settings — require_verification_for_proposals roundtrip.
@@ -812,7 +905,10 @@ async fn test_settings_require_proposals_roundtrip_via_db() {
         .await
         .unwrap();
 
-    assert!(proposals_enabled, "require_verification_for_proposals must persist as true");
+    assert!(
+        proposals_enabled,
+        "require_verification_for_proposals must persist as true"
+    );
 
     // Disable and re-verify
     state
@@ -874,7 +970,10 @@ async fn test_settings_both_verification_fields_independent() {
         .unwrap();
 
     assert!(accept, "require_verification_for_accept must be true");
-    assert!(!proposals, "require_verification_for_proposals must be false");
+    assert!(
+        !proposals,
+        "require_verification_for_proposals must be false"
+    );
 
     // Flip: accept=false, proposals=true
     state
@@ -901,7 +1000,10 @@ async fn test_settings_both_verification_fields_independent() {
         .unwrap();
 
     assert!(!accept2, "require_verification_for_accept must be false");
-    assert!(proposals2, "require_verification_for_proposals must be true");
+    assert!(
+        proposals2,
+        "require_verification_for_proposals must be true"
+    );
 }
 
 // Scenario 22: require_verification_for_accept roundtrip — validates the hardcoded-false bug fix.
@@ -1008,7 +1110,12 @@ async fn test_concurrent_creates_produce_unique_sort_orders() {
         .iter()
         .cloned()
         .collect();
-    assert_eq!(orders.len(), 3, "All 3 sort_orders must be unique, got: {:?}", orders);
+    assert_eq!(
+        orders.len(),
+        3,
+        "All 3 sort_orders must be unique, got: {:?}",
+        orders
+    );
 
     // Verify all 3 proposals exist in DB
     let all_proposals = state
@@ -1050,7 +1157,11 @@ async fn test_create_with_valid_depends_on_inserts_dependency() {
         .await
         .expect("create with valid dep should succeed");
 
-    assert!(dep_errors.is_empty(), "Expected no dep errors, got: {:?}", dep_errors);
+    assert!(
+        dep_errors.is_empty(),
+        "Expected no dep errors, got: {:?}",
+        dep_errors
+    );
 
     // Verify dep was inserted: B should have 1 dependency (A)
     let dep_count = state
@@ -1085,11 +1196,23 @@ async fn test_create_with_nonexistent_dep_partial_failure() {
         .expect("proposal itself should be created despite bad dep");
 
     // Proposal was created
-    let in_db = state.task_proposal_repo.get_by_id(&proposal.id).await.unwrap();
-    assert!(in_db.is_some(), "Proposal should be in DB despite dep error");
+    let in_db = state
+        .task_proposal_repo
+        .get_by_id(&proposal.id)
+        .await
+        .unwrap();
+    assert!(
+        in_db.is_some(),
+        "Proposal should be in DB despite dep error"
+    );
 
     // dep_errors has one entry for the nonexistent dep
-    assert_eq!(dep_errors.len(), 1, "Expected one dep error, got: {:?}", dep_errors);
+    assert_eq!(
+        dep_errors.len(),
+        1,
+        "Expected one dep error, got: {:?}",
+        dep_errors
+    );
     assert!(
         dep_errors[0].contains("not found"),
         "Error should mention not found, got: {}",
@@ -1178,7 +1301,11 @@ async fn test_update_add_depends_on_cycle_rejected() {
     )
     .await
     .unwrap();
-    assert!(errs.is_empty(), "First dep (A→B) should succeed: {:?}", errs);
+    assert!(
+        errs.is_empty(),
+        "First dep (A→B) should succeed: {:?}",
+        errs
+    );
 
     // Now try B depends on A (B→A) — would create cycle A→B→A
     let (_, dep_errors) = update_proposal_impl(
@@ -1223,7 +1350,11 @@ async fn test_update_add_blocks_cycle_rejected() {
     )
     .await
     .unwrap();
-    assert!(errs.is_empty(), "First dep (A→B) should succeed: {:?}", errs);
+    assert!(
+        errs.is_empty(),
+        "First dep (A→B) should succeed: {:?}",
+        errs
+    );
 
     // Update A with add_blocks=[B] → would insert B depends_on A (B→A)
     // Cycle check: would_create_cycle(B, A) → true since A→B exists → rejected
@@ -1285,10 +1416,7 @@ async fn test_update_add_depends_on_partial_failure() {
         &state,
         &b_id,
         UpdateProposalOptions {
-            add_depends_on: vec![
-                a_id.as_str().to_string(),
-                "nonexistent-id".to_string(),
-            ],
+            add_depends_on: vec![a_id.as_str().to_string(), "nonexistent-id".to_string()],
             source: UpdateSource::Api,
             ..Default::default()
         },
@@ -1297,7 +1425,12 @@ async fn test_update_add_depends_on_partial_failure() {
     .unwrap();
 
     // Exactly one error (for nonexistent), valid dep was inserted
-    assert_eq!(dep_errors.len(), 1, "Expected one dep error, got: {:?}", dep_errors);
+    assert_eq!(
+        dep_errors.len(),
+        1,
+        "Expected one dep error, got: {:?}",
+        dep_errors
+    );
     assert!(
         dep_errors[0].contains("not found"),
         "Error should mention not found, got: {}",
@@ -1310,15 +1443,18 @@ async fn test_update_add_depends_on_partial_failure() {
         .count_dependencies(&b_id)
         .await
         .expect("count_dependencies should succeed");
-    assert_eq!(dep_count, 1, "B→A dep should have been inserted successfully (1 dep)");
+    assert_eq!(
+        dep_count, 1,
+        "B→A dep should have been inserted successfully (1 dep)"
+    );
 }
 
 // ============================================================================
 // Stale Plan Guard Tests — Version Gate for Proposal Creation
 // ============================================================================
 
-// Proof obligation 1: NULL plan_version_last_read → passthrough (backward compat).
-// Legacy sessions (field = NULL) must create proposals without any error.
+// Proof obligation 1: a NULL overview receipt remains a backwards-compatible passthrough.
+// A v2 bundle still requires the paired blueprint receipt.
 #[tokio::test]
 async fn test_stale_plan_guard_null_passthrough() {
     let state = AppState::new_sqlite_test();
@@ -1328,15 +1464,39 @@ async fn test_stale_plan_guard_null_passthrough() {
     let artifact_id = artifact.id.clone();
     state.artifact_repo.create(artifact).await.unwrap();
 
+    let blueprint = Artifact::new_inline(
+        "Plan Blueprint",
+        ArtifactType::Specification,
+        "# Implementation blueprint",
+        "test",
+    );
+    let blueprint_id = blueprint.id.clone();
+    state.artifact_repo.create(blueprint).await.unwrap();
+
     // Builder default: plan_version_last_read = None (no .plan_version_last_read() call)
-    let session = IdeationSession::builder()
+    let mut session = IdeationSession::builder()
         .project_id(project_id)
         .title("Legacy Session")
         .plan_artifact_id(artifact_id)
+        .blueprint_version_last_read(1)
         .cross_project_checked(true)
         .build();
+    session.plan_blueprint_artifact_id = Some(blueprint_id);
     let session_id = session.id.clone();
     state.ideation_session_repo.create(session).await.unwrap();
+    let blueprint_read_session_id = session_id.as_str().to_string();
+    state
+        .db
+        .run(move |conn| {
+            conn.execute(
+                "UPDATE ideation_sessions SET blueprint_version_last_read = 1 WHERE id = ?1",
+                rusqlite::params![blueprint_read_session_id],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+            Ok(())
+        })
+        .await
+        .unwrap();
 
     let options = CreateProposalOptions {
         title: "Legacy Proposal".to_string(),
@@ -1370,29 +1530,28 @@ async fn test_stale_plan_guard_fresh_version_ok() {
     let artifact_id = artifact.id.clone();
     state.artifact_repo.create(artifact).await.unwrap();
 
-    let session = IdeationSession::builder()
+    let blueprint = Artifact::new_inline(
+        "Plan Blueprint",
+        ArtifactType::Specification,
+        "# Implementation blueprint",
+        "test",
+    );
+    let blueprint_id = blueprint.id.clone();
+    state.artifact_repo.create(blueprint).await.unwrap();
+
+    let mut session = IdeationSession::builder()
         .project_id(project_id)
         .title("Fresh Read Session")
         .plan_artifact_id(artifact_id)
+        .blueprint_version_last_read(1)
         .cross_project_checked(true)
         .build();
+    session.plan_blueprint_artifact_id = Some(blueprint_id);
     let session_id = session.id.clone();
     state.ideation_session_repo.create(session).await.unwrap();
 
-    // Simulate get_session_plan acknowledgment: set plan_version_last_read = 1 (matches artifact v1)
-    let sid = session_id.as_str().to_string();
-    state
-        .db
-        .run(move |conn| {
-            conn.execute(
-                "UPDATE ideation_sessions SET plan_version_last_read = 1 WHERE id = ?1",
-                rusqlite::params![sid],
-            )
-            .map_err(|e| AppError::Database(e.to_string()))?;
-            Ok(())
-        })
-        .await
-        .unwrap();
+    // Simulate get_session_plan acknowledgment for both v2 plan-bundle artifacts.
+    mark_plan_bundle_read(&state, &session_id).await;
 
     let options = CreateProposalOptions {
         title: "Fresh Proposal".to_string(),
@@ -1426,29 +1585,28 @@ async fn test_stale_plan_guard_stale_version_blocked_with_actionable_error() {
     let artifact_id = artifact.id.clone();
     state.artifact_repo.create(artifact).await.unwrap();
 
-    let session = IdeationSession::builder()
+    let blueprint = Artifact::new_inline(
+        "Plan Blueprint",
+        ArtifactType::Specification,
+        "# Implementation blueprint",
+        "test",
+    );
+    let blueprint_id = blueprint.id.clone();
+    state.artifact_repo.create(blueprint).await.unwrap();
+
+    let mut session = IdeationSession::builder()
         .project_id(project_id)
         .title("Stale Read Session")
         .plan_artifact_id(artifact_id.clone())
+        .blueprint_version_last_read(1)
         .cross_project_checked(true)
         .build();
+    session.plan_blueprint_artifact_id = Some(blueprint_id);
     let session_id = session.id.clone();
     state.ideation_session_repo.create(session).await.unwrap();
 
-    // Agent reads plan at v1: set plan_version_last_read = 1
-    let sid = session_id.as_str().to_string();
-    state
-        .db
-        .run(move |conn| {
-            conn.execute(
-                "UPDATE ideation_sessions SET plan_version_last_read = 1 WHERE id = ?1",
-                rusqlite::params![sid],
-            )
-            .map_err(|e| AppError::Database(e.to_string()))?;
-            Ok(())
-        })
-        .await
-        .unwrap();
+    // Agent reads the full v2 bundle at v1.
+    mark_plan_bundle_read(&state, &session_id).await;
 
     // Simulate child bumping plan to v2 (plan_version_last_read is now stale)
     let aid = artifact_id.as_str().to_string();
@@ -1601,9 +1759,13 @@ async fn test_expected_count_set_on_first_proposal() {
     let state = AppState::new_sqlite_test();
     let (session, _) = setup_session_with_gate(&state, "verified", false).await;
 
-    create_proposal_impl(&state, session.id.clone(), make_proposal_options("First", Some(3)))
-        .await
-        .expect("first proposal should succeed");
+    create_proposal_impl(
+        &state,
+        session.id.clone(),
+        make_proposal_options("First", Some(3)),
+    )
+    .await
+    .expect("first proposal should succeed");
 
     let updated = state
         .ideation_session_repo
@@ -1626,9 +1788,13 @@ async fn test_expected_count_mismatch_rejected() {
     let (session, _) = setup_session_with_gate(&state, "verified", false).await;
 
     // First proposal: locks expected=3
-    create_proposal_impl(&state, session.id.clone(), make_proposal_options("First", Some(3)))
-        .await
-        .expect("first proposal should succeed");
+    create_proposal_impl(
+        &state,
+        session.id.clone(),
+        make_proposal_options("First", Some(3)),
+    )
+    .await
+    .expect("first proposal should succeed");
 
     // Second proposal: claims expected=5 — must be rejected
     let result = create_proposal_impl(
@@ -1638,7 +1804,10 @@ async fn test_expected_count_mismatch_rejected() {
     )
     .await;
 
-    assert!(result.is_err(), "Mismatched expected_proposal_count must be rejected");
+    assert!(
+        result.is_err(),
+        "Mismatched expected_proposal_count must be rejected"
+    );
     match result.unwrap_err() {
         AppError::Validation(msg) => {
             assert!(
@@ -1670,7 +1839,10 @@ async fn test_ready_to_finalize_on_count_match() {
         )
         .await
         .expect("proposal should succeed");
-        assert!(!ready, "ready_to_finalize must be false for proposal {i} of 3");
+        assert!(
+            !ready,
+            "ready_to_finalize must be false for proposal {i} of 3"
+        );
     }
 
     // Proposal 3: count == expected → ready_to_finalize=true
@@ -1682,7 +1854,10 @@ async fn test_ready_to_finalize_on_count_match() {
     .await
     .expect("third proposal should succeed");
 
-    assert!(ready, "ready_to_finalize must be true when active count == expected");
+    assert!(
+        ready,
+        "ready_to_finalize must be true when active count == expected"
+    );
 
     // Session must remain Active — agent drives finalize_proposals explicitly
     let updated = state
@@ -1775,7 +1950,10 @@ async fn test_finalize_blocked_by_verification_gate() {
     // Explicitly call finalize_proposals — must fail with validation error
     let result = finalize_proposals_impl(&state, session.id.as_str(), false).await;
 
-    assert!(result.is_err(), "finalize_proposals must fail when verification gate blocks acceptance");
+    assert!(
+        result.is_err(),
+        "finalize_proposals must fail when verification gate blocks acceptance"
+    );
     let err = result.unwrap_err();
     assert!(
         matches!(err, AppError::Validation(_)),
@@ -1798,6 +1976,55 @@ async fn test_finalize_blocked_by_verification_gate() {
 }
 
 #[tokio::test]
+async fn test_finalize_confirmation_does_not_auto_verify_before_user_accepts() {
+    use ralphx_lib::application::plan_verification_service::{
+        get_plan_verification_status, PlanVerificationStatusKind,
+    };
+
+    let state = AppState::new_sqlite_test();
+    let (session, _) = setup_session_with_gate(&state, "unverified", false).await;
+
+    let mut settings = state
+        .ideation_settings_repo
+        .get_settings()
+        .await
+        .expect("get settings should succeed");
+    settings.require_accept_for_finalize = true;
+    settings.require_verification_for_accept = true;
+    settings.auto_verify_plans = true;
+    state
+        .ideation_settings_repo
+        .update_settings(&settings)
+        .await
+        .expect("update settings should succeed");
+
+    create_proposal_impl(
+        &state,
+        session.id.clone(),
+        make_proposal_options("Proposal", Some(1)),
+    )
+    .await
+    .expect("proposal creation should succeed");
+
+    let response = finalize_proposals_impl(&state, session.id.as_str(), false)
+        .await
+        .expect("finalize should pause for user acceptance before verification admission");
+    assert_eq!(response.status, "pending_acceptance");
+
+    let status = get_plan_verification_status(&state, &session.id)
+        .await
+        .expect("verification status should load");
+    assert_eq!(status.status, PlanVerificationStatusKind::Unverified);
+    let persisted = state
+        .ideation_session_repo
+        .get_by_id(&session.id)
+        .await
+        .expect("session read should succeed")
+        .expect("session should exist");
+    assert!(persisted.pending_initial_prompt.is_none());
+}
+
+#[tokio::test]
 async fn test_finalize_rejects_feature_without_affected_paths() {
     let state = AppState::new_sqlite_test();
     let (session, _) = setup_session_with_gate(&state, "verified", false).await;
@@ -1811,7 +2038,10 @@ async fn test_finalize_rejects_feature_without_affected_paths() {
 
     let result = finalize_proposals_impl(&state, session.id.as_str(), false).await;
 
-    assert!(result.is_err(), "finalize must reject feature proposals without scope");
+    assert!(
+        result.is_err(),
+        "finalize must reject feature proposals without scope"
+    );
     match result.unwrap_err() {
         AppError::Validation(msg) => {
             assert!(
@@ -1888,15 +2118,27 @@ async fn test_finalize_ignores_foreign_feature_without_affected_paths() {
     let artifact_id = artifact.id.clone();
     state.artifact_repo.create(artifact).await.unwrap();
 
-    let session = IdeationSession::builder()
+    let blueprint = Artifact::new_inline(
+        "Cross-project blueprint",
+        ArtifactType::Specification,
+        "# Implementation blueprint",
+        "test",
+    );
+    let blueprint_id = blueprint.id.clone();
+    state.artifact_repo.create(blueprint).await.unwrap();
+
+    let mut session = IdeationSession::builder()
         .project_id(project_id)
         .title("Cross-project source session")
         .plan_artifact_id(artifact_id)
+        .blueprint_version_last_read(1)
         .cross_project_checked(true)
         .expected_proposal_count(1)
         .build();
+    session.plan_blueprint_artifact_id = Some(blueprint_id);
     let session_id = session.id.clone();
     state.ideation_session_repo.create(session).await.unwrap();
+    mark_plan_bundle_read(&state, &session_id).await;
 
     let options = CreateProposalOptions {
         title: "Foreign feature without local scope".to_string(),
@@ -1939,7 +2181,10 @@ async fn test_no_gating_when_count_omitted() {
     .await
     .expect("proposal without expected count should succeed");
 
-    assert!(!triggered, "No trigger when expected_proposal_count is omitted");
+    assert!(
+        !triggered,
+        "No trigger when expected_proposal_count is omitted"
+    );
 
     let updated = state
         .ideation_session_repo
@@ -2036,24 +2281,343 @@ fn make_validation_cache(
     }
 }
 
+fn git(repo: &std::path::Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .expect("git should run");
+    assert!(
+        output.status.success(),
+        "git {:?} failed\nstdout:\n{}\nstderr:\n{}",
+        args,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn setup_validation_context_git_repo() -> (tempfile::TempDir, String) {
+    let repo = tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
+        .expect("temp git repo should be created");
+    git(repo.path(), &["init", "-b", "main"]);
+    git(repo.path(), &["config", "user.email", "test@example.com"]);
+    git(repo.path(), &["config", "user.name", "Test User"]);
+    std::fs::write(repo.path().join("README.md"), "base\n").expect("README should be written");
+    git(repo.path(), &["add", "README.md"]);
+    git(repo.path(), &["commit", "-m", "base"]);
+    let head_sha = git(repo.path(), &["rev-parse", "HEAD"]);
+    (repo, head_sha)
+}
+
+async fn seeded_validation_context_state(
+    purpose: ValidationPurpose,
+) -> (AppState, tempfile::TempDir, TaskId) {
+    seeded_validation_context_state_with_command_status(purpose, ValidationCommandStatus::Passed)
+        .await
+}
+
+async fn seeded_validation_context_state_with_command_status(
+    purpose: ValidationPurpose,
+    command_status: ValidationCommandStatus,
+) -> (AppState, tempfile::TempDir, TaskId) {
+    let state = AppState::new_test();
+    let (repo, head_sha) = setup_validation_context_git_repo();
+    let project = Project::new(
+        "Validation Context".to_string(),
+        repo.path().to_string_lossy().to_string(),
+    );
+    let project = state
+        .project_repo
+        .create(project)
+        .await
+        .expect("project should be created");
+    let mut task = Task::new(project.id.clone(), "Validation context task".to_string());
+    task.internal_status = InternalStatus::Executing;
+    task.task_branch = Some("main".to_string());
+    task.worktree_path = Some(repo.path().to_string_lossy().to_string());
+    let task_id = task.id.clone();
+    state
+        .task_repo
+        .create(task)
+        .await
+        .expect("task should be created");
+    state
+        .task_repo
+        .persist_status_change(
+            &task_id,
+            InternalStatus::Ready,
+            InternalStatus::Executing,
+            "agent-started",
+        )
+        .await
+        .expect("execution episode should be recorded");
+    let episode_entered_at = state
+        .task_repo
+        .get_status_last_entered_at(&task_id, InternalStatus::Executing)
+        .await
+        .expect("status history lookup should succeed")
+        .expect("execution episode should exist");
+    let run = ValidationRun {
+        id: format!("run-{}", purpose.as_str()),
+        task_id: task_id.clone(),
+        project_id: project.id,
+        purpose,
+        context_type: ValidationContextType::Execution,
+        requested_by_agent: Some("ralphx-execution-worker".to_string()),
+        status: ValidationRunStatus::Passed,
+        mode: ValidationRunMode::Force,
+        policy_enabled: true,
+        head_sha: Some(head_sha.clone()),
+        start_content_fingerprint: None,
+        validated_content_fingerprint: None,
+        promoted_commit_sha: None,
+        base_ref: Some("main".to_string()),
+        analysis_fingerprint: None,
+        status_episode_entered_at: Some(episode_entered_at),
+        started_at: episode_entered_at,
+        completed_at: Some(episode_entered_at + Duration::seconds(1)),
+    };
+    state
+        .validation_run_repo
+        .create_run(&run)
+        .await
+        .expect("validation run should persist");
+    state
+        .validation_run_repo
+        .add_command_result(&ValidationCommandResult {
+            id: format!("command-{}", purpose.as_str()),
+            validation_run_id: run.id,
+            task_id: task_id.clone(),
+            project_id: run.project_id,
+            command_source: ValidationCommandSource::AgentSelected,
+            command_ref: None,
+            command: "cargo test validation".to_string(),
+            cwd: repo.path().to_string_lossy().to_string(),
+            label: Some("Validation tests".to_string()),
+            category: ValidationCommandCategory::Test,
+            reason: None,
+            related_files: Vec::new(),
+            cache_key: format!("cache-{}", purpose.as_str()),
+            cache_decision: if command_status == ValidationCommandStatus::Cached {
+                ValidationCacheDecision::Cached
+            } else {
+                ValidationCacheDecision::Forced
+            },
+            status: command_status,
+            exit_code: Some(0),
+            duration_ms: Some(1),
+            stdout_snippet: None,
+            stderr_snippet: None,
+            stdout_log_path: None,
+            stderr_log_path: None,
+            launcher_kind: Some("production_shell_resolver".to_string()),
+            resolved_shell_path: Some("/bin/sh".to_string()),
+            head_sha: Some(head_sha),
+            analysis_fingerprint: None,
+            status_episode_entered_at: Some(episode_entered_at),
+            created_at: episode_entered_at + Duration::seconds(1),
+        })
+        .await
+        .expect("validation command should persist");
+
+    (state, repo, task_id)
+}
+
+#[tokio::test]
+async fn task_context_ignores_baseline_first_class_validation_for_skip_tests_hint() {
+    let (state, _repo, task_id) =
+        seeded_validation_context_state(ValidationPurpose::Baseline).await;
+
+    let context = get_task_context_impl(&state, &task_id)
+        .await
+        .expect("task context should load");
+
+    assert!(
+        context.validation_cache.is_none(),
+        "baseline validation must remain informational instead of reusable cache proof"
+    );
+    assert!(
+        !context
+            .context_hints
+            .iter()
+            .any(|hint| hint.contains("VALIDATION SUMMARY: skip_tests")),
+        "baseline validation must not produce skip_tests context hints"
+    );
+}
+
+#[tokio::test]
+async fn task_context_keeps_current_final_validation_skip_tests_hint() {
+    let (state, _repo, task_id) = seeded_validation_context_state(ValidationPurpose::Final).await;
+
+    let context = get_task_context_impl(&state, &task_id)
+        .await
+        .expect("task context should load");
+    let cache = context
+        .validation_cache
+        .expect("current final validation should produce reusable cache data");
+
+    assert_eq!(cache.validation_hint, "skip_tests");
+    assert!(
+        context
+            .context_hints
+            .iter()
+            .any(|hint| hint.contains("VALIDATION SUMMARY: skip_tests")),
+        "current final validation should still produce skip_tests context hints"
+    );
+}
+
+#[tokio::test]
+async fn task_context_reuses_current_final_validation_with_cached_test_command() {
+    let (state, _repo, task_id) = seeded_validation_context_state_with_command_status(
+        ValidationPurpose::Final,
+        ValidationCommandStatus::Cached,
+    )
+    .await;
+
+    let context = get_task_context_impl(&state, &task_id)
+        .await
+        .expect("task context should load");
+    let cache = context
+        .validation_cache
+        .expect("cached current final validation should produce reusable cache data");
+
+    assert_eq!(cache.validation_hint, "skip_tests");
+    assert!(cache.tests_passed);
+    assert!(
+        cache
+            .test_summary
+            .as_deref()
+            .is_some_and(|summary| summary.contains("passed or reused")),
+        "cached command summary should mention reused validation evidence"
+    );
+}
+
+#[tokio::test]
+async fn task_context_skips_newer_baseline_and_reuses_current_final_validation_hint() {
+    let (state, repo, task_id) = seeded_validation_context_state(ValidationPurpose::Final).await;
+    let task = state
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .expect("task lookup should succeed")
+        .expect("task should exist");
+    let episode_entered_at = state
+        .task_repo
+        .get_status_last_entered_at(&task_id, InternalStatus::Executing)
+        .await
+        .expect("status history lookup should succeed")
+        .expect("execution episode should exist");
+    let head_sha = git(repo.path(), &["rev-parse", "HEAD"]);
+    let baseline_started_at = episode_entered_at + Duration::seconds(2);
+    let baseline_run = ValidationRun {
+        id: "run-newer-baseline".to_string(),
+        task_id: task_id.clone(),
+        project_id: task.project_id.clone(),
+        purpose: ValidationPurpose::Baseline,
+        context_type: ValidationContextType::Execution,
+        requested_by_agent: Some("ralphx-execution-worker".to_string()),
+        status: ValidationRunStatus::Passed,
+        mode: ValidationRunMode::Force,
+        policy_enabled: true,
+        head_sha: Some(head_sha.clone()),
+        start_content_fingerprint: None,
+        validated_content_fingerprint: None,
+        promoted_commit_sha: None,
+        base_ref: Some("main".to_string()),
+        analysis_fingerprint: None,
+        status_episode_entered_at: Some(episode_entered_at),
+        started_at: baseline_started_at,
+        completed_at: Some(baseline_started_at + Duration::seconds(1)),
+    };
+    state
+        .validation_run_repo
+        .create_run(&baseline_run)
+        .await
+        .expect("newer baseline run should persist");
+    state
+        .validation_run_repo
+        .add_command_result(&ValidationCommandResult {
+            id: "command-newer-baseline".to_string(),
+            validation_run_id: baseline_run.id,
+            task_id: task_id.clone(),
+            project_id: task.project_id,
+            command_source: ValidationCommandSource::AgentSelected,
+            command_ref: None,
+            command: "cargo test validation".to_string(),
+            cwd: repo.path().to_string_lossy().to_string(),
+            label: Some("Baseline tests".to_string()),
+            category: ValidationCommandCategory::Test,
+            reason: None,
+            related_files: Vec::new(),
+            cache_key: "cache-newer-baseline".to_string(),
+            cache_decision: ValidationCacheDecision::Forced,
+            status: ValidationCommandStatus::Passed,
+            exit_code: Some(0),
+            duration_ms: Some(1),
+            stdout_snippet: None,
+            stderr_snippet: None,
+            stdout_log_path: None,
+            stderr_log_path: None,
+            launcher_kind: Some("production_shell_resolver".to_string()),
+            resolved_shell_path: Some("/bin/sh".to_string()),
+            head_sha: Some(head_sha),
+            analysis_fingerprint: None,
+            status_episode_entered_at: Some(episode_entered_at),
+            created_at: baseline_started_at + Duration::seconds(1),
+        })
+        .await
+        .expect("baseline command should persist");
+
+    let context = get_task_context_impl(&state, &task_id)
+        .await
+        .expect("task context should load");
+    let cache = context
+        .validation_cache
+        .expect("current final validation should be reused after skipping newer baseline");
+
+    assert_eq!(cache.validation_hint, "skip_tests");
+    assert!(
+        context
+            .context_hints
+            .iter()
+            .any(|hint| hint.contains("VALIDATION SUMMARY: skip_tests")),
+        "newer baseline should not mask current final validation evidence"
+    );
+}
+
 #[test]
 fn compute_validation_hint_sha_match_tests_passed_returns_skip_tests() {
     let cache = make_validation_cache("abc12345def67890", true, true);
-    let (hint, msg) =
-        compute_validation_hint(&cache, "abc12345def67890", Some(cache.captured_at));
+    let (hint, msg) = compute_validation_hint(&cache, "abc12345def67890", Some(cache.captured_at));
     assert_eq!(hint, "skip_tests");
-    assert!(msg.contains("Tests passed"), "hint_message should mention 'Tests passed', got: {}", msg);
-    assert!(msg.contains("abc12345"), "hint_message should contain truncated SHA, got: {}", msg);
+    assert!(
+        msg.contains("Tests passed"),
+        "hint_message should mention 'Tests passed', got: {}",
+        msg
+    );
+    assert!(
+        msg.contains("abc12345"),
+        "hint_message should contain truncated SHA, got: {}",
+        msg
+    );
 }
 
 #[test]
 fn compute_validation_hint_sha_match_tests_ran_false_returns_skip_test_validation() {
     let cache = make_validation_cache("abc12345def67890", false, false);
-    let (hint, msg) =
-        compute_validation_hint(&cache, "abc12345def67890", Some(cache.captured_at));
+    let (hint, msg) = compute_validation_hint(&cache, "abc12345def67890", Some(cache.captured_at));
     assert_eq!(hint, "skip_test_validation");
-    assert!(msg.contains("No tests were run"), "hint_message should mention 'No tests were run', got: {}", msg);
-    assert!(msg.contains("abc12345"), "hint_message should contain truncated SHA, got: {}", msg);
+    assert!(
+        msg.contains("No tests were run"),
+        "hint_message should mention 'No tests were run', got: {}",
+        msg
+    );
+    assert!(
+        msg.contains("abc12345"),
+        "hint_message should contain truncated SHA, got: {}",
+        msg
+    );
 }
 
 #[test]
@@ -2071,11 +2635,18 @@ fn compute_validation_hint_sha_mismatch_returns_run_tests() {
 #[test]
 fn compute_validation_hint_tests_failed_same_sha_returns_run_tests() {
     let cache = make_validation_cache("abc12345def67890", true, false);
-    let (hint, msg) =
-        compute_validation_hint(&cache, "abc12345def67890", Some(cache.captured_at));
+    let (hint, msg) = compute_validation_hint(&cache, "abc12345def67890", Some(cache.captured_at));
     assert_eq!(hint, "run_tests");
-    assert!(msg.contains("Tests failed"), "hint_message should mention 'Tests failed', got: {}", msg);
-    assert!(msg.contains("abc12345"), "hint_message should contain truncated SHA, got: {}", msg);
+    assert!(
+        msg.contains("Tests failed"),
+        "hint_message should mention 'Tests failed', got: {}",
+        msg
+    );
+    assert!(
+        msg.contains("abc12345"),
+        "hint_message should contain truncated SHA, got: {}",
+        msg
+    );
 }
 
 #[test]
@@ -2107,5 +2678,9 @@ fn compute_validation_hint_sha_mismatch_with_short_sha() {
     let cache = make_validation_cache("abc", true, true);
     let (hint, msg) = compute_validation_hint(&cache, "def", Some(cache.captured_at));
     assert_eq!(hint, "run_tests");
-    assert!(msg.contains("Cache stale") || msg.contains("SHA changed"), "got: {}", msg);
+    assert!(
+        msg.contains("Cache stale") || msg.contains("SHA changed"),
+        "got: {}",
+        msg
+    );
 }

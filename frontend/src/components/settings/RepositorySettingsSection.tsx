@@ -1,23 +1,24 @@
 import { useState, useCallback, useEffect } from "react";
-import { GitBranch, Loader2, RefreshCw, CheckCircle2, XCircle } from "lucide-react";
+import { Loader2, RefreshCw, CheckCircle2, XCircle } from "lucide-react";
 import { toast } from "sonner";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { api, getGitDefaultBranch } from "@/lib/tauri";
 import { GitAuthRepairPanel } from "@/components/git/GitAuthRepairPanel";
+import { useGitHubConnectionStatus } from "@/hooks/useGitHubConnectionStatus";
 import { useProjectStore, selectActiveProject } from "@/stores/projectStore";
-import type { MergeValidationMode } from "@/types/project";
 import {
-  SectionCard,
+  getProjectRepositoryCapability,
+  type MergeValidationMode,
+} from "@/types/project";
+import { RepositoryEnvironmentSettings } from "./RepositoryEnvironmentSettings";
+import {
+  SettingsSection,
   SelectSettingRow,
   SettingRow,
   ToggleSettingRow,
 } from "./SettingsView.shared";
-import {
-  useGitRemoteUrl,
-  useGhAuthStatus,
-  useUpdateGithubPrEnabled,
-} from "@/hooks/useGithubSettings";
+import { useUpdateGithubPrEnabled } from "@/hooks/useGithubSettings";
 
 const VALIDATION_MODE_OPTIONS: {
   value: MergeValidationMode;
@@ -65,25 +66,6 @@ function SubsectionLabel({
       )}
     </div>
   );
-}
-
-function isGithubRemoteUrl(remoteUrl: string | null | undefined): boolean {
-  if (!remoteUrl) return false;
-
-  const trimmed = remoteUrl.trim();
-  if (trimmed.startsWith("git@github.com:")) {
-    return true;
-  }
-
-  try {
-    const parsed = new URL(trimmed);
-    return (
-      parsed.hostname === "github.com" &&
-      (parsed.protocol === "https:" || parsed.protocol === "ssh:")
-    );
-  } catch {
-    return false;
-  }
 }
 
 function TextSettingRow({
@@ -157,10 +139,7 @@ export function RepositorySettingsSection() {
   const [pendingBaseBranch, setPendingBaseBranch] = useState<string | null>(null);
   const [pendingWorktreeDir, setPendingWorktreeDir] = useState<string | null>(null);
 
-  const { data: remoteUrl, isLoading: isLoadingRemote } = useGitRemoteUrl(
-    project?.id ?? null
-  );
-  const { data: isGhAuthed, isLoading: isLoadingAuth } = useGhAuthStatus();
+  const { data: ghStatus, isLoading: isLoadingAuth } = useGitHubConnectionStatus();
   const updatePrEnabled = useUpdateGithubPrEnabled();
 
   useEffect(() => {
@@ -283,16 +262,23 @@ export function RepositorySettingsSection() {
   const worktreeParentDirectory =
     pendingWorktreeDir ?? project.worktreeParentDirectory ?? "~/ralphx-worktrees";
 
-  const isGithubRemote = isGithubRemoteUrl(remoteUrl);
+  const repositoryCapability = getProjectRepositoryCapability(project);
+  const isGithubRemote = repositoryCapability.kind === "github";
+  const remoteUrl =
+    repositoryCapability.kind === "github" ||
+    repositoryCapability.kind === "otherRemote"
+      ? repositoryCapability.pushUrl
+      : null;
+  const ghState = ghStatus?.state;
+  const ghNeedsCredentialRepair =
+    ghState === "unauthenticated" || ghState === "credential_rejected";
+  const ghTransientUnavailable =
+    ghState === "provider_unavailable" || ghState === "probe_failed";
   const isToggleDisabled = !isGithubRemote || updatePrEnabled.isPending;
   const isSaving = isUpdating || updatePrEnabled.isPending;
 
   return (
-    <SectionCard
-      icon={<GitBranch className="w-[18px] h-[18px] text-[var(--card-icon-color)]" />}
-      title="Repository"
-      description="Version control and GitHub integration"
-    >
+    <SettingsSection>
       <SubsectionLabel>Branching</SubsectionLabel>
       <TextSettingRow
         id="base-branch"
@@ -318,6 +304,7 @@ export function RepositorySettingsSection() {
         onChange={handleWorktreeDirChange}
         onBlur={handleWorktreeDirBlur}
       />
+      <RepositoryEnvironmentSettings />
 
       <SubsectionLabel>Merge Behavior</SubsectionLabel>
       <SelectSettingRow
@@ -333,10 +320,16 @@ export function RepositorySettingsSection() {
         id="github-pr-enabled"
         label="GitHub PR Mode"
         description={
-          !isGithubRemote
-            ? "Remote is not GitHub — PR mode unavailable"
-            : !isGhAuthed
+          repositoryCapability.kind === "localOnly"
+            ? "No GitHub remote is configured. Local workflows remain available."
+            : repositoryCapability.kind === "otherRemote"
+              ? "This remote is not supported by GitHub PR workflows."
+              : repositoryCapability.kind === "inspectionFailed"
+                ? "Repository configuration could not be inspected. Refresh before enabling PR mode."
+            : ghNeedsCredentialRepair
             ? "Enable to create draft PRs when plans execute (gh auth required for PR operations)"
+            : ghTransientUnavailable
+            ? "GitHub access could not be verified right now; PR operations will recheck before running"
             : "Create draft PRs when plans execute instead of merging directly"
         }
         checked={isGithubRemote && (project.githubPrEnabled ?? false)}
@@ -347,29 +340,55 @@ export function RepositorySettingsSection() {
       <SubsectionLabel hint="read-only">Diagnostics</SubsectionLabel>
       <div className="settings-diagnostics">
         <SettingRow
+          id="repository-capability"
+          label="Repository capability"
+          description="Local Git workflows remain available without a remote"
+        >
+          <span className="settings-readonly-value">
+            {repositoryCapability.kind === "localOnly"
+              ? "Local workflows available"
+              : repositoryCapability.kind === "otherRemote"
+                ? "GitHub PR mode unavailable"
+                : repositoryCapability.kind === "inspectionFailed"
+                  ? "Could not inspect repository"
+                  : "GitHub PR capable"}
+          </span>
+        </SettingRow>
+        <SettingRow
           id="github-remote-url"
           label="Remote URL"
           description="Git remote origin for this project"
         >
-          {isLoadingRemote ? (
-            <Loader2 className="w-4 h-4 animate-spin text-[var(--text-muted)]" />
-          ) : (
-            <span className="settings-readonly-value max-w-[240px] truncate">
-              {remoteUrl ?? "Not configured"}
-            </span>
-          )}
+          <span className="settings-readonly-value max-w-[240px] truncate">
+            {remoteUrl ?? "Not configured"}
+          </span>
         </SettingRow>
         <SettingRow
           id="gh-auth-status"
           label="GitHub CLI"
-          description="gh auth status — required for PR operations"
+          description="Connection status required for PR operations"
         >
           {isLoadingAuth ? (
             <Loader2 className="w-4 h-4 animate-spin text-[var(--text-muted)]" />
-          ) : isGhAuthed ? (
+          ) : ghState === "authenticated" ? (
             <div className="settings-status-badge settings-status-badge--ok">
               <CheckCircle2 className="w-3.5 h-3.5" />
               <span>Authenticated</span>
+            </div>
+          ) : ghState === "provider_unavailable" ? (
+            <div className="settings-status-badge">
+              <XCircle className="w-3.5 h-3.5" />
+              <span>Temporarily unavailable</span>
+            </div>
+          ) : ghState === "probe_failed" ? (
+            <div className="settings-status-badge">
+              <XCircle className="w-3.5 h-3.5" />
+              <span>Could not verify</span>
+            </div>
+          ) : ghState === "cli_unavailable" ? (
+            <div className="settings-status-badge">
+              <XCircle className="w-3.5 h-3.5" />
+              <span>gh unavailable</span>
             </div>
           ) : (
             <div className="settings-status-badge">
@@ -393,6 +412,6 @@ export function RepositorySettingsSection() {
           <span>Saving...</span>
         </div>
       )}
-    </SectionCard>
+    </SettingsSection>
   );
 }

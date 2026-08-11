@@ -7,8 +7,14 @@ fn parse_env_dump_basic_key_value_pairs() {
     let dump = "ANTHROPIC_API_KEY=sk-ant-foo\nOPENAI_API_KEY=sk-openai-bar\nHOME=/Users/test\n";
     let map = login_shell_env::parse_env_dump(dump);
 
-    assert_eq!(map.get("ANTHROPIC_API_KEY").map(String::as_str), Some("sk-ant-foo"));
-    assert_eq!(map.get("OPENAI_API_KEY").map(String::as_str), Some("sk-openai-bar"));
+    assert_eq!(
+        map.get("ANTHROPIC_API_KEY").map(String::as_str),
+        Some("sk-ant-foo")
+    );
+    assert_eq!(
+        map.get("OPENAI_API_KEY").map(String::as_str),
+        Some("sk-openai-bar")
+    );
     assert_eq!(map.get("HOME").map(String::as_str), Some("/Users/test"));
 }
 
@@ -20,7 +26,10 @@ fn parse_env_dump_preserves_equals_in_value() {
     let map = login_shell_env::parse_env_dump(dump);
 
     assert_eq!(map.get("TOKEN").map(String::as_str), Some("abc=def=ghi"));
-    assert_eq!(map.get("AWS_SESSION_TOKEN").map(String::as_str), Some("AAAAB3NzaC1=="));
+    assert_eq!(
+        map.get("AWS_SESSION_TOKEN").map(String::as_str),
+        Some("AAAAB3NzaC1==")
+    );
 }
 
 #[test]
@@ -62,11 +71,28 @@ fn should_forward_blocks_ralphx_managed_path() {
 }
 
 #[test]
+fn captured_path_from_map_returns_path_without_forwarding_it() {
+    let mut shell_env = HashMap::new();
+    shell_env.insert(
+        "PATH".to_string(),
+        "/Users/example/.cargo/bin:/opt/homebrew/bin".to_string(),
+    );
+
+    assert_eq!(
+        login_shell_env::captured_path_from_map_for_test(&shell_env).as_deref(),
+        Some(OsStr::new("/Users/example/.cargo/bin:/opt/homebrew/bin"))
+    );
+    assert!(!login_shell_env::should_forward_for_test("PATH"));
+}
+
+#[test]
 fn should_forward_blocks_ralphx_internal_namespaces() {
     // Anything prefixed with RALPHX_ is RalphX's own runtime signaling and must
     // not be re-injected from the user shell.
     assert!(!login_shell_env::should_forward_for_test("RALPHX_TASK_ID"));
-    assert!(!login_shell_env::should_forward_for_test("RALPHX_PROJECT_ID"));
+    assert!(!login_shell_env::should_forward_for_test(
+        "RALPHX_PROJECT_ID"
+    ));
 }
 
 #[test]
@@ -79,9 +105,19 @@ fn should_forward_blocks_claude_runtime_overrides() {
     assert!(!login_shell_env::should_forward_for_test(
         "CLAUDE_CODE_ENABLE_TASKS"
     ));
-    assert!(!login_shell_env::should_forward_for_test("CLAUDE_PLUGIN_ROOT"));
+    assert!(!login_shell_env::should_forward_for_test(
+        "CLAUDE_PLUGIN_ROOT"
+    ));
     assert!(!login_shell_env::should_forward_for_test("TAURI_API_URL"));
     assert!(!login_shell_env::should_forward_for_test("DEBUG"));
+}
+
+#[test]
+fn should_forward_blocks_toolchain_override_vars() {
+    assert!(!login_shell_env::should_forward_for_test("RUSTC"));
+    assert!(!login_shell_env::should_forward_for_test(
+        "RUSTUP_TOOLCHAIN"
+    ));
 }
 
 #[test]
@@ -115,17 +151,60 @@ fn should_forward_allows_auth_env_vars() {
 }
 
 #[test]
+fn should_forward_blocks_github_cli_token_vars_but_not_other_provider_auth() {
+    for key in [
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "GH_ENTERPRISE_TOKEN",
+        "GITHUB_ENTERPRISE_TOKEN",
+    ] {
+        assert!(
+            !login_shell_env::should_forward_for_test(key),
+            "GitHub CLI token key {key:?} must not be forwarded"
+        );
+    }
+    assert!(login_shell_env::should_forward_for_test("OPENAI_API_KEY"));
+    assert!(login_shell_env::should_forward_for_test(
+        "ANTHROPIC_API_KEY"
+    ));
+}
+
+#[test]
+fn should_forward_allows_github_cli_tokens_after_explicit_opt_out() {
+    for key in [
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "GH_ENTERPRISE_TOKEN",
+        "GITHUB_ENTERPRISE_TOKEN",
+    ] {
+        assert!(
+            login_shell_env::should_forward_with_github_token_removal_for_test(key, false),
+            "GitHub CLI token key {key:?} must be forwarded after opt-out"
+        );
+    }
+}
+
+#[test]
 fn apply_to_std_forwards_auth_vars_and_skips_managed_keys() {
     // Use the test override so we don't shell out. The override is process-wide
     // (OnceLock); other tests in this module avoid `captured()`, so installing
     // the override here is safe.
     let mut shell_env = HashMap::new();
-    shell_env.insert("ANTHROPIC_API_KEY".to_string(), "sk-ant-from-shell".to_string());
-    shell_env.insert("OPENAI_API_KEY".to_string(), "sk-openai-from-shell".to_string());
+    shell_env.insert(
+        "ANTHROPIC_API_KEY".to_string(),
+        "sk-ant-from-shell".to_string(),
+    );
+    shell_env.insert(
+        "OPENAI_API_KEY".to_string(),
+        "sk-openai-from-shell".to_string(),
+    );
     shell_env.insert("MY_CUSTOM_VAR".to_string(), "user-defined".to_string());
+    shell_env.insert("GITHUB_TOKEN".to_string(), "stale-secret".to_string());
     // These MUST NOT leak through — they would clobber RalphX-managed values
     // applied AFTER apply_to_std in claude/codex spawn helpers.
     shell_env.insert("PATH".to_string(), "/should/not/win".to_string());
+    shell_env.insert("RUSTC".to_string(), "/opt/homebrew/bin/rustc".to_string());
+    shell_env.insert("RUSTUP_TOOLCHAIN".to_string(), "1.85.1".to_string());
     shell_env.insert("CLAUDE_CODE_ENABLE_TASKS".to_string(), "0".to_string());
     shell_env.insert("RALPHX_TASK_ID".to_string(), "spoofed".to_string());
     shell_env.insert("SHLVL".to_string(), "2".to_string());
@@ -171,12 +250,25 @@ fn apply_to_std_forwards_auth_vars_and_skips_managed_keys() {
         "shell CLAUDE_CODE_ENABLE_TASKS must NOT be forwarded — RalphX sets it to 1 explicitly"
     );
     assert!(
+        envs.iter().all(|(k, _)| k.as_str() != "RUSTC"),
+        "shell RUSTC must not force provider descendants away from project rust-toolchain.toml"
+    );
+    assert!(
+        envs.iter().all(|(k, _)| k.as_str() != "RUSTUP_TOOLCHAIN"),
+        "shell RUSTUP_TOOLCHAIN must not force provider descendants away from project rust-toolchain.toml"
+    );
+    assert!(
         envs.iter().all(|(k, _)| k.as_str() != "RALPHX_TASK_ID"),
         "RALPHX_-prefixed vars must NOT be re-injected from the user shell"
     );
     assert!(
         envs.iter().all(|(k, _)| k.as_str() != "SHLVL"),
         "shell-state keys (SHLVL, _, PWD, OLDPWD) must NOT be forwarded"
+    );
+    assert!(
+        envs.iter()
+            .all(|(key, value)| key != "GITHUB_TOKEN" || value.is_none()),
+        "GitHub CLI token vars must be explicitly removed from the child"
     );
 }
 
@@ -312,6 +404,8 @@ fn managed_keys_includes_path_and_claude_code_overrides() {
     // list, the user's shell PATH could clobber the augmented PATH at spawn.
     let managed = login_shell_env::managed_keys_for_test();
     assert!(managed.contains(&"PATH"));
+    assert!(managed.contains(&"RUSTC"));
+    assert!(managed.contains(&"RUSTUP_TOOLCHAIN"));
     assert!(managed.contains(&"CLAUDE_CODE_ENABLE_TASKS"));
     assert!(managed.contains(&"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"));
     assert!(managed.contains(&"CLAUDE_PLUGIN_ROOT"));

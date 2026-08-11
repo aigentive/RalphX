@@ -50,6 +50,8 @@ pub const DISABLE_ENV_VAR: &str = "RALPHX_DISABLE_LOGIN_SHELL_ENV";
 /// the captured map so the spawn helpers' overrides remain authoritative.
 const MANAGED_KEYS: &[&str] = &[
     "PATH",
+    "RUSTC",
+    "RUSTUP_TOOLCHAIN",
     "TAURI_API_URL",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
     "CLAUDE_CODE_ENABLE_TASKS",
@@ -74,6 +76,16 @@ pub fn captured() -> Arc<HashMap<String, String>> {
     Arc::clone(CACHE.get_or_init(|| Arc::new(probe_shell_env())))
 }
 
+/// Return the captured login-shell PATH without forwarding it wholesale through
+/// [`apply_to_std`]. The shared subprocess PATH builder consumes this ordering.
+pub(crate) fn captured_path() -> Option<OsString> {
+    captured_path_from_map(&captured())
+}
+
+fn captured_path_from_map(env: &HashMap<String, String>) -> Option<OsString> {
+    env.get("PATH").map(OsString::from)
+}
+
 /// Apply the captured login-shell env to the supplied tokio [`Command`] in a
 /// way that does not clobber RalphX-managed keys. Call this BEFORE adding
 /// the RalphX-specific overrides (e.g., `PATH`, `CLAUDE_CODE_*`) so those
@@ -90,11 +102,25 @@ pub fn apply_to_std(cmd: &mut std::process::Command) {
             cmd.env(key, value);
         }
     }
+    crate::infrastructure::subprocess_env_policy::github_cli_env_policy().apply_to_std_command(cmd);
 }
 
 /// Decide whether a captured env key should land on the spawned child.
 fn should_forward(key: &str) -> bool {
+    should_forward_with_policy(
+        key,
+        crate::infrastructure::subprocess_env_policy::github_cli_env_policy(),
+    )
+}
+
+fn should_forward_with_policy(
+    key: &str,
+    policy: crate::infrastructure::subprocess_env_policy::ProviderCredentialEnvPolicy,
+) -> bool {
     if key.is_empty() {
+        return false;
+    }
+    if policy.blocks_env_key(key) {
         return false;
     }
     if MANAGED_KEYS.contains(&key) {
@@ -103,7 +129,10 @@ fn should_forward(key: &str) -> bool {
     if SHELL_STATE_KEYS.contains(&key) {
         return false;
     }
-    if MANAGED_PREFIXES.iter().any(|prefix| key.starts_with(prefix)) {
+    if MANAGED_PREFIXES
+        .iter()
+        .any(|prefix| key.starts_with(prefix))
+    {
         return false;
     }
     true
@@ -186,8 +215,21 @@ pub(crate) fn managed_keys_for_test() -> &'static [&'static str] {
 }
 
 #[cfg(test)]
+pub(crate) fn captured_path_from_map_for_test(env: &HashMap<String, String>) -> Option<OsString> {
+    captured_path_from_map(env)
+}
+
+#[cfg(test)]
 pub(crate) fn should_forward_for_test(key: &str) -> bool {
     should_forward(key)
+}
+
+#[cfg(test)]
+pub(crate) fn should_forward_with_github_token_removal_for_test(key: &str, enabled: bool) -> bool {
+    should_forward_with_policy(
+        key,
+        crate::infrastructure::subprocess_env_policy::ProviderCredentialEnvPolicy::github_cli_with_token_removal(enabled),
+    )
 }
 
 #[cfg(test)]

@@ -83,7 +83,7 @@ Source: `.artifacts/theme-audit/{dark,light,high-contrast}/*.png` captured by `f
 - **Light:** MEDIUM — "No steps defined yet" placeholder is light gray on near-white, borderline unreadable. "Ask about this task..." placeholder reads a bit faintly. Send button in composer is a dark peach tile with orange icon — low contrast vs white bg.
 - **High-Contrast:** Clean — all text reads white-on-black. "No steps defined yet" placeholder correctly appears as dim gray, still legible. Send composer button flips to white icon on black — good.
 - **Recommended fixes:**
-  - "No steps defined yet" — should use `var(--text-muted)` not a fixed gray. Likely in the component that renders the empty steps list (`TaskDetailPanel` or `StepList` subcomponent).
+  - "No steps defined yet" — should use `var(--text-muted)` not a fixed gray. Likely in the component that renders the empty steps list (`AgentsTaskDetailPanel` or `StepList` subcomponent).
   - Send button background: same fix as Kanban composer above.
 
 ## Cross-View Patterns
@@ -104,7 +104,7 @@ Source: `.artifacts/theme-audit/{dark,light,high-contrast}/*.png` captured by `f
    - `tasks/TaskFormFields.constants.ts`
    - `tasks/TaskCreationForm.tsx`
    - `tasks/TaskCreationOverlay.tsx`
-   - `tasks/TaskDetailOverlay.tsx`
+   - `agents/task-details/AgentsTaskDetailOverlay.tsx`
    - `Chat/ConversationStatsPopover.tsx`
    - `ui/ResizeHandle.tsx`
    - `Team/TeammatePane.test.tsx`
@@ -257,6 +257,5 @@ Deferred / lower priority (for next pass):
 - New: Light Kanban Stop vs Pause button weight mismatch
 - New: HC Kanban card yellow perimeter readable-as-focus-ring ambiguity
 - New: Light Kanban right rail "Start a conversation" empty state contrast
-
 
 

@@ -81,6 +81,17 @@ pub trait IdeationSessionRepository: Send + Sync {
         plan_artifact_id: Option<String>,
     ) -> AppResult<()>;
 
+    /// Atomically record exact-version plan verification proof from a live typed action run.
+    /// Returns false when the run/session/artifact authority tuple is stale or mismatched.
+    async fn complete_plan_verification(
+        &self,
+        _id: &IdeationSessionId,
+        _agent_run_id: &str,
+        _artifact_id: &str,
+    ) -> AppResult<bool> {
+        Ok(false)
+    }
+
     /// Delete session (cascades to proposals and messages)
     async fn delete(&self, id: &IdeationSessionId) -> AppResult<()>;
 

@@ -57,6 +57,40 @@ impl GitService {
         Ok(())
     }
 
+    /// Fetch a base branch from origin and prove the resulting remote-tracking ref exists.
+    ///
+    /// Restart flows need a stronger contract than [`Self::fetch_origin`]: a skipped or
+    /// best-effort failed fetch must not be treated as a fresh base revision.
+    pub async fn fetch_origin_branch_strict(repo: &Path, branch: &str) -> AppResult<String> {
+        let branch = branch
+            .trim()
+            .strip_prefix("refs/remotes/origin/")
+            .or_else(|| branch.trim().strip_prefix("origin/"))
+            .unwrap_or(branch.trim());
+        if !Self::check_ref_format(repo, branch).await? {
+            return Err(AppError::Validation(format!(
+                "Restart base branch '{}' is not a valid local branch name",
+                branch
+            )));
+        }
+
+        let remote_ref = format!("origin/{branch}");
+        let outcome = Self::fetch_origin_with_lock(
+            repo,
+            &["fetch", "--prune", "origin", branch],
+            FetchLockMode::Wait,
+        )
+        .await?;
+        if outcome != FetchOriginOutcome::Fetched || !Self::ref_exists(repo, &remote_ref).await? {
+            return Err(AppError::GitOperation(format!(
+                "Restart requires the latest origin base branch '{}', but it could not be fetched and resolved",
+                branch
+            )));
+        }
+
+        Ok(remote_ref)
+    }
+
     pub(crate) async fn try_fetch_origin_ref_for_maintenance(
         repo: &Path,
         ref_name: &str,

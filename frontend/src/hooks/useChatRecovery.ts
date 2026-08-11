@@ -19,10 +19,15 @@ import type { ToolCall } from "@/components/Chat/ToolCallIndicator";
 import type { StreamingContentBlock, StreamingTask } from "@/types/streaming-task";
 import { MERGE_STATUSES } from "@/types/status";
 import { chatApi } from "@/api/chat";
+import { useChatStore } from "@/stores/chatStore";
 import {
   mergeActiveStreamingContentBlocks,
   mergeActiveStreamingTasks,
   mergeActiveStreamingToolCalls,
+  applyTranscriptInput,
+  createLiveTranscriptState,
+  preserveBlocksIfUnchanged,
+  renderTranscriptSlots,
 } from "./chat-active-state";
 
 // ============================================================================
@@ -44,8 +49,14 @@ interface UseChatRecoveryProps {
   isConversationInCurrentContext: boolean;
   /** Backend agent run status */
   agentRunStatus: string | undefined;
+  /** Current parent run; active-state snapshots from any other run are non-authoritative. */
+  activeAgentRunId?: string;
   /** Whether the containing panel is currently visible. */
   isVisible: boolean;
+  /** Canonical streaming timeline anchors loaded before active-state hydration. */
+  persistedStreamingContentBlocks?: readonly StreamingContentBlock[];
+  /** Prevent active-state recovery from racing the initial timeline response. */
+  isTimelineHydrated?: boolean;
   setStreamingTasks?: (
     updater: (prev: Map<string, StreamingTask>) => Map<string, StreamingTask>,
   ) => void;
@@ -58,7 +69,7 @@ interface UseChatRecoveryProps {
   setAgentRunning: (contextKey: string, isRunning: boolean) => void;
   selectedTaskId: string | undefined;
   ideationSessionId: string | undefined;
-  projectId: string;
+  projectId: string | null;
   /** Effective status for merge watchdog */
   effectiveStatus: string | undefined;
 }
@@ -78,7 +89,10 @@ export function useChatRecovery({
   isGenerating,
   isConversationInCurrentContext,
   agentRunStatus,
+  activeAgentRunId,
   isVisible,
+  persistedStreamingContentBlocks = [],
+  isTimelineHydrated = true,
   setStreamingTasks,
   setStreamingToolCalls,
   setStreamingContentBlocks,
@@ -89,19 +103,51 @@ export function useChatRecovery({
   effectiveStatus,
 }: UseChatRecoveryProps) {
   const queryClient = useQueryClient();
-  const hydratedConversationIdRef = useRef<string | null>(null);
+  const hydratedConversationKeyRef = useRef<string | null>(null);
+  const hydrationGenerationRef = useRef(0);
+  const hydrationWithoutAnchorsRef = useRef<{ key: string; runId: string } | null>(null);
+  const refreshedTimelineKeyRef = useRef<string | null>(null);
 
   const [hydrationKeyId, setHydrationKeyId] = useState(activeConversationId);
   const [isStreamingHydrated, setIsStreamingHydrated] = useState(false);
+  const [timelineRefreshGeneration, setTimelineRefreshGeneration] = useState(0);
 
   if (hydrationKeyId !== activeConversationId) {
     setHydrationKeyId(activeConversationId);
     setIsStreamingHydrated(false);
   }
 
+  // A timeline fetch can settle after the first active-state merge. Re-run
+  // once with its durable anchors so live blocks are reconciled against the
+  // canonical timeline instead of an empty pre-switch cache.
+  useEffect(() => {
+    const stillStreaming = isAgentRunning || agentRunStatus === "running" || isGenerating;
+    const previousHydration = hydrationWithoutAnchorsRef.current;
+    if (
+      !activeConversationId
+      || !stillStreaming
+      || persistedStreamingContentBlocks.length === 0
+      || previousHydration == null
+      || previousHydration.key !== `${activeConversationId}:${activeAgentRunId ?? "unknown"}`
+      || (activeAgentRunId != null && previousHydration.runId !== activeAgentRunId)
+    ) {
+      return;
+    }
+
+    hydratedConversationKeyRef.current = null;
+    hydrationWithoutAnchorsRef.current = null;
+  }, [
+    activeAgentRunId,
+    activeConversationId,
+    agentRunStatus,
+    isAgentRunning,
+    isGenerating,
+    persistedStreamingContentBlocks.length,
+  ]);
+
   useEffect(() => {
     if (!activeConversationId) {
-      hydratedConversationIdRef.current = null;
+      hydratedConversationKeyRef.current = null;
       setIsStreamingHydrated(true);
       return;
     }
@@ -109,39 +155,113 @@ export function useChatRecovery({
       Boolean(setStreamingTasks) ||
       Boolean(setStreamingToolCalls) ||
       Boolean(setStreamingContentBlocks);
-    if (isHistoryMode || !isConversationInCurrentContext || !canHydrateStreamingState) {
+    if (
+      isHistoryMode
+      || !isConversationInCurrentContext
+      || !canHydrateStreamingState
+      || !isTimelineHydrated
+    ) {
       setIsStreamingHydrated(true);
       return;
     }
-    if (hydratedConversationIdRef.current === activeConversationId) {
+    const hydrationKey = `${activeConversationId}:${activeAgentRunId ?? "unknown"}:${isVisible ? "visible" : "hidden"}`;
+    if (hydratedConversationKeyRef.current === hydrationKey) {
       setIsStreamingHydrated(true);
       return;
     }
 
-    hydratedConversationIdRef.current = activeConversationId;
+    const generation = ++hydrationGenerationRef.current;
     let cancelled = false;
 
-    void chatApi
-      .getConversationActiveState(activeConversationId)
+    void (async () => {
+      if (isAgentRunning || agentRunStatus === "running") {
+        if (refreshedTimelineKeyRef.current !== hydrationKey) {
+          await queryClient.refetchQueries({
+            queryKey: chatKeys.conversationTimeline(activeConversationId),
+            exact: true,
+          });
+          if (cancelled || !isVisible || generation !== hydrationGenerationRef.current) return;
+          refreshedTimelineKeyRef.current = hydrationKey;
+          setTimelineRefreshGeneration((previous) => previous + 1);
+          return;
+        }
+      }
+      if (cancelled || !isVisible || generation !== hydrationGenerationRef.current) return;
+
+      hydratedConversationKeyRef.current = hydrationKey;
+      return chatApi.getConversationActiveState(activeConversationId);
+    })()
       .then((activeState) => {
-        if (cancelled) return;
+        if (activeState == null) return;
+        if (cancelled || !isVisible || generation !== hydrationGenerationRef.current) return;
+        if (activeAgentRunId && activeState.runId !== activeAgentRunId) return;
+        if (!activeAgentRunId && (isAgentRunning || agentRunStatus === "running")) {
+          const storedRunId = useChatStore.getState().activeAgentRunIds[storeContextKey];
+          if (activeState.runId == null || (storedRunId != null && storedRunId !== activeState.runId)) {
+            return;
+          }
+        }
         const hasStreamingTasks = activeState.streaming_tasks.length > 0;
         const hasToolCalls = activeState.tool_calls.length > 0;
         const hasPartialText = activeState.partial_text.trim().length > 0;
-        if (!hasStreamingTasks && !hasToolCalls && !hasPartialText) return;
+        const hasPartialThinking = activeState.partial_thinking_segments?.some((segment) => segment.trim().length > 0) ?? false;
+        if (!hasStreamingTasks && !hasToolCalls && !hasPartialText && !hasPartialThinking) return;
+
+        if (persistedStreamingContentBlocks.length === 0 && activeState.runId != null) {
+          hydrationWithoutAnchorsRef.current = {
+            key: `${activeConversationId}:${activeAgentRunId ?? "unknown"}`,
+            runId: activeState.runId,
+          };
+        }
 
         if (setStreamingTasks && hasStreamingTasks) {
-          setStreamingTasks((prev) => mergeActiveStreamingTasks(prev, activeState.streaming_tasks));
+          setStreamingTasks((prev) => mergeActiveStreamingTasks(
+            prev,
+            activeState.streaming_tasks,
+            activeState.tool_calls,
+          ));
         }
         if (setStreamingToolCalls && hasToolCalls) {
           setStreamingToolCalls((prev) =>
-            mergeActiveStreamingToolCalls(prev, activeState.tool_calls)
+            mergeActiveStreamingToolCalls(
+              prev,
+              activeState.tool_calls,
+              activeState.streaming_tasks,
+            )
           );
         }
         if (setStreamingContentBlocks) {
-          setStreamingContentBlocks((prev) =>
-            mergeActiveStreamingContentBlocks(prev, activeState)
-          );
+          setStreamingContentBlocks((prev) => {
+            const runId = activeState.runId ?? null;
+            // Durable rows are the anchors: seeding them as slots gives the
+            // identity-less cache values something indexed to reconcile onto.
+            let transcript = applyTranscriptInput(createLiveTranscriptState(runId), {
+              kind: "persisted", runId, blocks: persistedStreamingContentBlocks,
+            });
+            transcript = applyTranscriptInput(transcript, {
+              kind: "live", runId, blocks: persistedStreamingContentBlocks,
+            });
+            transcript = applyTranscriptInput(transcript, { kind: "live", runId, blocks: prev });
+            transcript = activeState.partial_text_segments?.length
+              ? applyTranscriptInput(transcript, {
+                  kind: "segments", runId, segments: activeState.partial_text_segments,
+                })
+              : applyTranscriptInput(transcript, {
+                  kind: "partialText", runId, text: activeState.partial_text,
+                });
+            transcript = applyTranscriptInput(transcript, {
+              kind: "thinkingSegments", runId, segments: activeState.partial_thinking_segments ?? [],
+            });
+            return preserveBlocksIfUnchanged(prev, mergeActiveStreamingContentBlocks(
+              renderTranscriptSlots(transcript),
+              {
+                ...activeState,
+                partial_text: "",
+                partial_text_segments: [],
+                partial_thinking_segments: [],
+              },
+            ));
+          });
         }
       })
       .catch(() => {
@@ -158,11 +278,44 @@ export function useChatRecovery({
     };
   }, [
     activeConversationId,
+    activeAgentRunId,
+    agentRunStatus,
     isHistoryMode,
     isConversationInCurrentContext,
     setStreamingTasks,
     setStreamingToolCalls,
     setStreamingContentBlocks,
+    persistedStreamingContentBlocks,
+    isTimelineHydrated,
+    isVisible,
+    isAgentRunning,
+    queryClient,
+    storeContextKey,
+    timelineRefreshGeneration,
+  ]);
+
+  // Switching away and back to a live conversation must hydrate from persisted
+  // timeline blocks first; active-state only supplements not-yet-persisted chunks.
+  useEffect(() => {
+    if (!activeConversationId || isHistoryMode || !isVisible || !isConversationInCurrentContext) {
+      return;
+    }
+    if (!isAgentRunning && agentRunStatus !== "running" && !isGenerating) {
+      return;
+    }
+
+    void queryClient.invalidateQueries({
+      queryKey: chatKeys.conversationTimeline(activeConversationId),
+    });
+  }, [
+    activeConversationId,
+    agentRunStatus,
+    isAgentRunning,
+    isConversationInCurrentContext,
+    isGenerating,
+    isHistoryMode,
+    isVisible,
+    queryClient,
   ]);
 
   // Recovery fallback: if agent is running but events were missed, reflect it in UI
@@ -341,7 +494,9 @@ export function useChatRecovery({
     if (!effectiveStatus || (effectiveStatus !== "approved" && !(MERGE_STATUSES as readonly string[]).includes(effectiveStatus))) return undefined;
 
     const intervalId = setInterval(() => {
-      queryClient.invalidateQueries({ queryKey: taskKeys.list(projectId) });
+      if (projectId) {
+        queryClient.invalidateQueries({ queryKey: taskKeys.list(projectId) });
+      }
       queryClient.invalidateQueries({ queryKey: taskKeys.detail(selectedTaskId) });
     }, 2000);
 
@@ -354,7 +509,9 @@ export function useChatRecovery({
     if (!selectedTaskId || !isAgentContext) return undefined;
 
     const intervalId = setInterval(() => {
-      queryClient.invalidateQueries({ queryKey: taskKeys.list(projectId) });
+      if (projectId) {
+        queryClient.invalidateQueries({ queryKey: taskKeys.list(projectId) });
+      }
       if (selectedTaskId) {
         queryClient.invalidateQueries({ queryKey: taskKeys.detail(selectedTaskId) });
       }

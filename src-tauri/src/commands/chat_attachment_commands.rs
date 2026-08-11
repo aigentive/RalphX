@@ -4,14 +4,17 @@
 // attachments associated with chat conversations.
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::sync::Arc;
 use tauri::State;
 
-use crate::application::chat_attachment_storage::build_chat_attachment_file_path;
-use crate::application::AppState;
-use crate::domain::entities::{
-    ChatAttachment, ChatAttachmentId, ChatConversationId, ChatMessageId,
+use crate::application::builder_attachment_materializer::{
+    materialize_builder_attachment, remove_materialized_builder_attachment_if_present,
+    validate_builder_attachment_text,
 };
+use crate::application::chat_attachment_service::ChatAttachmentService;
+use crate::application::AppState;
+use crate::domain::entities::{ChatAttachmentId, ChatConversationId, ChatMessageId};
+use crate::error::AppError;
 
 // ============================================================================
 // Request/Response types
@@ -77,43 +80,54 @@ pub struct LinkAttachmentsInput {
 pub async fn upload_chat_attachment(
     input: UploadChatAttachmentInput,
     state: State<'_, AppState>,
-) -> Result<ChatAttachmentResponse, String> {
+) -> Result<ChatAttachmentResponse, AppError> {
+    upload_chat_attachment_for_state(input, state.inner()).await
+}
+
+#[doc(hidden)]
+pub async fn upload_chat_attachment_for_state(
+    input: UploadChatAttachmentInput,
+    state: &AppState,
+) -> Result<ChatAttachmentResponse, AppError> {
     let conversation_id = ChatConversationId::from_string(&input.conversation_id);
-    let file_size = input.file_data.len() as i64;
-
-    // Generate attachment ID and determine storage path
-    let attachment_id = ChatAttachmentId::new();
-    let file_path = build_chat_attachment_file_path(
-        &state.attachment_storage_path,
-        &conversation_id,
-        &attachment_id,
-        &input.file_name,
-    )?;
-
-    // Create parent directories
-    if let Some(parent) = file_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create directory: {}", e))?;
+    let conversation = state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Conversation {conversation_id} not found")))?;
+    let is_builder = conversation.is_persona_builder();
+    if is_builder {
+        validate_builder_attachment_text(&input.file_data)?;
     }
 
-    // Write file to disk
-    std::fs::write(&file_path, &input.file_data)
-        .map_err(|e| format!("Failed to write file: {}", e))?;
-
-    // Create database record
-    let attachment = ChatAttachment::new(
-        conversation_id,
-        input.file_name,
-        file_path.to_string_lossy().to_string(),
-        file_size,
-        input.mime_type,
+    let service = ChatAttachmentService::new(
+        Arc::clone(&state.chat_attachment_repo),
+        state.attachment_storage_path.clone(),
     );
-
-    let created = state
-        .chat_attachment_repo
-        .create(attachment)
-        .await
-        .map_err(|e| e.to_string())?;
+    let created = service
+        .upload(
+            &conversation_id,
+            input.file_name,
+            &input.file_data,
+            input.mime_type,
+        )
+        .await?;
+    if is_builder {
+        if let Err(error) = materialize_builder_attachment(
+            state.app_paths.app_data_dir(),
+            &state.attachment_storage_path,
+            &created,
+        ) {
+            if let Err(cleanup_error) = service.delete(&created.id).await {
+                tracing::warn!(
+                    attachment_id = %created.id,
+                    %cleanup_error,
+                    "Failed to remove attachment after builder materialization failed"
+                );
+            }
+            return Err(error);
+        }
+    }
 
     Ok(ChatAttachmentResponse::from(created))
 }
@@ -189,38 +203,42 @@ pub async fn delete_chat_attachment(
     attachment_id: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let attachment_id = ChatAttachmentId::from_string(&attachment_id);
+    delete_chat_attachment_for_state(attachment_id, state.inner()).await
+}
 
-    // Get attachment to find file path
+#[doc(hidden)]
+pub async fn delete_chat_attachment_for_state(
+    attachment_id: String,
+    state: &AppState,
+) -> Result<(), String> {
+    let attachment_id = ChatAttachmentId::from_string(&attachment_id);
     let attachment = state
         .chat_attachment_repo
         .get_by_id(&attachment_id)
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Attachment {} not found", attachment_id))?;
-
-    // Delete file from disk (ignore errors if file doesn't exist)
-    let file_path = PathBuf::from(&attachment.file_path);
-    if file_path.exists() {
-        std::fs::remove_file(&file_path).map_err(|e| format!("Failed to delete file: {}", e))?;
-
-        // Try to clean up empty parent directories
-        if let Some(parent) = file_path.parent() {
-            let _ = std::fs::remove_dir(parent); // Ignore errors - dir may not be empty
-            if let Some(grandparent) = parent.parent() {
-                let _ = std::fs::remove_dir(grandparent); // Clean up conversation dir if empty
-            }
-        }
+    let conversation = state
+        .chat_conversation_repo
+        .get_by_id(&attachment.conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("Conversation {} not found", attachment.conversation_id))?;
+    if conversation.is_persona_builder() {
+        remove_materialized_builder_attachment_if_present(
+            state.app_paths.app_data_dir(),
+            &attachment,
+        )
+        .map_err(|error| error.to_string())?;
     }
 
-    // Delete database record
-    state
-        .chat_attachment_repo
-        .delete(&attachment_id)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    Ok(())
+    ChatAttachmentService::new(
+        Arc::clone(&state.chat_attachment_repo),
+        state.attachment_storage_path.clone(),
+    )
+    .delete(&attachment_id)
+    .await
+    .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]

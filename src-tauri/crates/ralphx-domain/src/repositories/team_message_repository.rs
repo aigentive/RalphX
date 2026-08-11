@@ -1,36 +1,47 @@
-// Team message repository trait — domain layer abstraction
-//
-// Defines the contract for team message persistence.
-// Messages belong to a team session and track inter-agent communication.
-
+use crate::{
+    entities::{
+        TeamMessage, TeamMessageDelivery, TeamMessageDeliveryId, TeamMessageDeliveryStatus,
+        TeamMessageId, TeamSessionId,
+    },
+    error::AppResult,
+};
 use async_trait::async_trait;
-
-use crate::domain::entities::team::{TeamMessageId, TeamMessageRecord, TeamSessionId};
-use crate::error::AppResult;
-
-/// Repository trait for TeamMessageRecord persistence
 #[async_trait]
 pub trait TeamMessageRepository: Send + Sync {
-    /// Create a new team message
-    async fn create(&self, message: TeamMessageRecord) -> AppResult<TeamMessageRecord>;
-
-    /// Get all messages for a session, ordered by created_at ASC
-    async fn get_by_session(&self, session_id: &TeamSessionId)
-        -> AppResult<Vec<TeamMessageRecord>>;
-
-    /// Get recent messages for a session (with limit), ordered oldest→newest
-    async fn get_recent_by_session(
+    /// Persists one immutable envelope and all resolved recipient deliveries atomically.
+    async fn create_envelope_with_deliveries(
         &self,
-        session_id: &TeamSessionId,
+        message: TeamMessage,
+        deliveries: Vec<TeamMessageDelivery>,
+    ) -> AppResult<(TeamMessage, Vec<TeamMessageDelivery>)>;
+    async fn get_message(&self, id: &TeamMessageId) -> AppResult<Option<TeamMessage>>;
+    /// Looks up a previously accepted request before a caller retries its
+    /// transport-owned idempotency key.
+    async fn get_envelope_by_idempotency_key(
+        &self,
+        team_id: &TeamSessionId,
+        idempotency_key: &str,
+    ) -> AppResult<Option<(TeamMessage, Vec<TeamMessageDelivery>)>>;
+    /// Returns the next candidate sequence. Implementations still enforce the
+    /// unique Team sequence at insert time, so callers must retry a typed
+    /// conflict instead of treating this read as a lease.
+    async fn next_message_sequence(&self, team_id: &TeamSessionId) -> AppResult<i64>;
+    async fn list_messages_after(
+        &self,
+        team_id: &TeamSessionId,
+        sequence: i64,
         limit: u32,
-    ) -> AppResult<Vec<TeamMessageRecord>>;
-
-    /// Count messages in a session
-    async fn count_by_session(&self, session_id: &TeamSessionId) -> AppResult<u32>;
-
-    /// Delete all messages for a session
-    async fn delete_by_session(&self, session_id: &TeamSessionId) -> AppResult<()>;
-
-    /// Delete a single message
-    async fn delete(&self, id: &TeamMessageId) -> AppResult<()>;
+    ) -> AppResult<Vec<TeamMessage>>;
+    async fn list_actionable_deliveries(
+        &self,
+        team_id: &TeamSessionId,
+        limit: u32,
+    ) -> AppResult<Vec<TeamMessageDelivery>>;
+    async fn transition_delivery(
+        &self,
+        id: &TeamMessageDeliveryId,
+        expected: TeamMessageDeliveryStatus,
+        next: TeamMessageDeliveryStatus,
+        delivery: TeamMessageDelivery,
+    ) -> AppResult<bool>;
 }

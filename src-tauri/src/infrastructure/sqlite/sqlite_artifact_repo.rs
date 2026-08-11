@@ -25,6 +25,18 @@ pub struct SqliteArtifactRepository {
 }
 
 impl SqliteArtifactRepository {
+    // custom_metadata mirrors the shared metadata_json column and takes precedence over
+    // team_metadata; future load-mutate-update flows must not rely on team_metadata alone.
+    fn metadata_json(metadata: &ArtifactMetadata) -> AppResult<Option<String>> {
+        metadata
+            .custom_metadata
+            .as_ref()
+            .map(serde_json::to_string)
+            .or_else(|| metadata.team_metadata.as_ref().map(serde_json::to_string))
+            .transpose()
+            .map_err(|error| crate::error::AppError::Validation(error.to_string()))
+    }
+
     /// Create a new SQLite artifact repository with the given connection
     pub fn new(conn: Connection) -> Self {
         Self {
@@ -86,6 +98,9 @@ impl SqliteArtifactRepository {
         let team_metadata: Option<TeamArtifactMetadata> = metadata_json
             .as_deref()
             .and_then(|json| serde_json::from_str(json).ok());
+        let custom_metadata = metadata_json
+            .as_deref()
+            .and_then(|json| serde_json::from_str(json).ok());
 
         // Build metadata
         let metadata = ArtifactMetadata {
@@ -95,6 +110,7 @@ impl SqliteArtifactRepository {
             process_id: process_id.map(ProcessId::from_string),
             version: version as u32,
             team_metadata,
+            custom_metadata,
         };
 
         // Parse archived_at
@@ -162,11 +178,7 @@ impl SqliteArtifactRepository {
             ArtifactContent::File { path } => ("file", None, Some(path.clone())),
         };
         let created_at = artifact.metadata.created_at.to_rfc3339();
-        let metadata_json = artifact
-            .metadata
-            .team_metadata
-            .as_ref()
-            .and_then(|tm| serde_json::to_string(tm).ok());
+        let metadata_json = Self::metadata_json(&artifact.metadata)?;
 
         conn.execute(
             "INSERT INTO artifacts (id, type, name, content_type, content_text, content_path,
@@ -202,11 +214,7 @@ impl SqliteArtifactRepository {
             ArtifactContent::File { path } => ("file", None, Some(path.clone())),
         };
         let created_at = artifact.metadata.created_at.to_rfc3339();
-        let metadata_json = artifact
-            .metadata
-            .team_metadata
-            .as_ref()
-            .and_then(|tm| serde_json::to_string(tm).ok());
+        let metadata_json = Self::metadata_json(&artifact.metadata)?;
 
         conn.execute(
             "INSERT INTO artifacts (id, type, name, content_type, content_text, content_path,
@@ -230,6 +238,23 @@ impl SqliteArtifactRepository {
             ],
         )?;
         Ok(artifact)
+    }
+
+    pub(crate) fn add_relation_sync(
+        conn: &Connection,
+        relation: ArtifactRelation,
+    ) -> AppResult<ArtifactRelation> {
+        conn.execute(
+            "INSERT INTO artifact_relations (id, from_artifact_id, to_artifact_id, relation_type)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![
+                relation.id.as_str(),
+                relation.from_artifact_id.as_str(),
+                relation.to_artifact_id.as_str(),
+                relation.relation_type.as_str(),
+            ],
+        )?;
+        Ok(relation)
     }
 
     /// Archive an artifact by setting its archived_at timestamp.
@@ -282,11 +307,7 @@ impl ArtifactRepository for SqliteArtifactRepository {
                 };
 
                 let created_at = artifact.metadata.created_at.to_rfc3339();
-                let metadata_json = artifact
-                    .metadata
-                    .team_metadata
-                    .as_ref()
-                    .and_then(|tm| serde_json::to_string(tm).ok());
+                let metadata_json = Self::metadata_json(&artifact.metadata)?;
 
                 conn.execute(
                     "INSERT INTO artifacts (id, type, name, content_type, content_text, content_path,
@@ -336,38 +357,36 @@ impl ArtifactRepository for SqliteArtifactRepository {
     ) -> AppResult<Option<Artifact>> {
         let mut current_id = id.clone();
         self.db
-            .run(move |conn| {
-                loop {
-                    let result = conn.query_row(
-                        "SELECT id, type, name, content_type, content_text, content_path,
+            .run(move |conn| loop {
+                let result = conn.query_row(
+                    "SELECT id, type, name, content_type, content_text, content_path,
                                 bucket_id, task_id, process_id, created_by, version,
                                 previous_version_id, created_at, metadata_json, archived_at
                          FROM artifacts WHERE id = ?1",
-                        [current_id.as_str()],
-                        |row| {
-                            let version: u32 = row.get(10)?;
-                            let previous_version_id: Option<String> = row.get(11)?;
-                            Ok((version, previous_version_id, Self::artifact_from_row(row)?))
-                        },
-                    );
+                    [current_id.as_str()],
+                    |row| {
+                        let version: u32 = row.get(10)?;
+                        let previous_version_id: Option<String> = row.get(11)?;
+                        Ok((version, previous_version_id, Self::artifact_from_row(row)?))
+                    },
+                );
 
-                    match result {
-                        Ok((version, previous_version_id, artifact)) => {
-                            if version == target_version {
-                                return Ok(Some(artifact));
-                            }
-                            if version < target_version {
-                                return Ok(None);
-                            }
-                            if let Some(prev_id) = previous_version_id {
-                                current_id = ArtifactId::from_string(prev_id);
-                            } else {
-                                return Ok(None);
-                            }
+                match result {
+                    Ok((version, previous_version_id, artifact)) => {
+                        if version == target_version {
+                            return Ok(Some(artifact));
                         }
-                        Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
-                        Err(e) => return Err(e.into()),
+                        if version < target_version {
+                            return Ok(None);
+                        }
+                        if let Some(prev_id) = previous_version_id {
+                            current_id = ArtifactId::from_string(prev_id);
+                        } else {
+                            return Ok(None);
+                        }
                     }
+                    Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+                    Err(e) => return Err(e.into()),
                 }
             })
             .await
@@ -458,11 +477,7 @@ impl ArtifactRepository for SqliteArtifactRepository {
                     ArtifactContent::File { path } => ("file", None, Some(path.clone())),
                 };
 
-                let metadata_json = artifact
-                    .metadata
-                    .team_metadata
-                    .as_ref()
-                    .and_then(|tm| serde_json::to_string(tm).ok());
+                let metadata_json = Self::metadata_json(&artifact.metadata)?;
 
                 conn.execute(
                     "UPDATE artifacts SET type = ?2, name = ?3, content_type = ?4,
@@ -545,19 +560,7 @@ impl ArtifactRepository for SqliteArtifactRepository {
 
     async fn add_relation(&self, relation: ArtifactRelation) -> AppResult<ArtifactRelation> {
         self.db
-            .run(move |conn| {
-                conn.execute(
-                    "INSERT INTO artifact_relations (id, from_artifact_id, to_artifact_id, relation_type)
-                     VALUES (?1, ?2, ?3, ?4)",
-                    rusqlite::params![
-                        relation.id.as_str(),
-                        relation.from_artifact_id.as_str(),
-                        relation.to_artifact_id.as_str(),
-                        relation.relation_type.as_str(),
-                    ],
-                )?;
-                Ok(relation)
-            })
+            .run(move |conn| Self::add_relation_sync(conn, relation))
             .await
     }
 
@@ -634,11 +637,7 @@ impl ArtifactRepository for SqliteArtifactRepository {
                 };
 
                 let created_at = artifact.metadata.created_at.to_rfc3339();
-                let metadata_json = artifact
-                    .metadata
-                    .team_metadata
-                    .as_ref()
-                    .and_then(|tm| serde_json::to_string(tm).ok());
+                let metadata_json = Self::metadata_json(&artifact.metadata)?;
 
                 conn.execute(
                     "INSERT INTO artifacts (id, type, name, content_type, content_text, content_path,
@@ -676,7 +675,8 @@ impl ArtifactRepository for SqliteArtifactRepository {
                 let mut history = Vec::new();
                 loop {
                     let result = conn.query_row(
-                        "SELECT id, version, name, previous_version_id, created_at
+                        "SELECT id, version, name, previous_version_id, created_at,
+                                created_by, metadata_json
                          FROM artifacts WHERE id = ?1",
                         [current_id.as_str()],
                         |row| {
@@ -685,6 +685,8 @@ impl ArtifactRepository for SqliteArtifactRepository {
                             let name: String = row.get(2)?;
                             let previous_version_id: Option<String> = row.get(3)?;
                             let created_at_str: String = row.get(4)?;
+                            let created_by: String = row.get(5)?;
+                            let metadata_json: Option<String> = row.get(6)?;
 
                             let created_at = DateTime::parse_from_rfc3339(&created_at_str)
                                 .map(|dt| dt.with_timezone(&Utc))
@@ -696,6 +698,9 @@ impl ArtifactRepository for SqliteArtifactRepository {
                                     version: version as u32,
                                     name,
                                     created_at,
+                                    created_by,
+                                    metadata: metadata_json
+                                        .and_then(|value| serde_json::from_str(&value).ok()),
                                 },
                                 previous_version_id,
                             ))
@@ -723,26 +728,24 @@ impl ArtifactRepository for SqliteArtifactRepository {
     async fn resolve_latest_artifact_id(&self, id: &ArtifactId) -> AppResult<ArtifactId> {
         let mut current_id = id.clone();
         self.db
-            .run(move |conn| {
-                loop {
-                    let result = conn.query_row(
-                        "SELECT id FROM artifacts WHERE previous_version_id = ?1",
-                        [current_id.as_str()],
-                        |row| {
-                            let next_id: String = row.get(0)?;
-                            Ok(next_id)
-                        },
-                    );
+            .run(move |conn| loop {
+                let result = conn.query_row(
+                    "SELECT id FROM artifacts WHERE previous_version_id = ?1",
+                    [current_id.as_str()],
+                    |row| {
+                        let next_id: String = row.get(0)?;
+                        Ok(next_id)
+                    },
+                );
 
-                    match result {
-                        Ok(next_id) => {
-                            current_id = ArtifactId::from_string(next_id);
-                        }
-                        Err(rusqlite::Error::QueryReturnedNoRows) => {
-                            return Ok(current_id);
-                        }
-                        Err(e) => return Err(e.into()),
+                match result {
+                    Ok(next_id) => {
+                        current_id = ArtifactId::from_string(next_id);
                     }
+                    Err(rusqlite::Error::QueryReturnedNoRows) => {
+                        return Ok(current_id);
+                    }
+                    Err(e) => return Err(e.into()),
                 }
             })
             .await

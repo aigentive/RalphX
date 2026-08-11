@@ -9,17 +9,17 @@ export type ScheduledJob = {
 
 export const sectionModuleLoaders: Record<SettingsSectionId, () => Promise<unknown>> = {
   providers: () => import("./HarnessProvidersSection"),
-  execution: () => import("./sections/ExecutionSection"),
-  "execution-harnesses": () => import("./IdeationHarnessSection"),
+  agents: () => import("./AgentsSettingsSection"),
   models: () => import("./AgentModelsSection"),
-  "global-execution": () => import("./sections/GlobalExecutionSection"),
-  "workspace-review": () => import("./sections/WorkspaceReviewSection"),
-  review: () => import("./sections/ReviewPolicySection"),
-  autonomy: () => import("./sections/AutonomyPolicySection"),
+  personas: () => import("./PersonasSection"),
+  capabilities: () => import("./CapabilitiesSection"),
+  tasks: () => import("./sections/TasksSettingsSection"),
+  planning: () => import("./sections/PlanningSettingsSection"),
+  workspace: () => import("./sections/WorkspaceSettingsSection"),
+  capacity: () => import("./sections/CapacitySettingsSection"),
   repository: () => import("./RepositorySettingsSection"),
   "project-analysis": () => import("./ProjectAnalysisSection"),
-  "ideation-workflow": () => import("./IdeationSettingsPanel"),
-  "ideation-harnesses": () => import("./IdeationHarnessSection"),
+  "integrations-hub": () => import("./IntegrationsHubSection"),
   integrations: () => import("./AtlassianIntegrationSettingsPanel"),
   github: () => import("./GitHubIntegrationSettingsPanel"),
   linear: () => import("./LinearIntegrationSettingsPanel"),
@@ -27,7 +27,11 @@ export const sectionModuleLoaders: Record<SettingsSectionId, () => Promise<unkno
   granola: () => import("./GranolaIntegrationSettingsPanel"),
   "api-keys": () => import("./ApiKeysSection"),
   "external-mcp": () => import("./ExternalMcpSettingsPanel"),
+  mcp: () => import("./McpSettingsSection"),
+  updates: () => import("./UpdatesSettingsSection"),
+  database: () => import("./DatabaseMaintenanceSection"),
   accessibility: () => import("./AccessibilitySection"),
+  notifications: () => import("./NotificationSettingsPanel"),
 };
 
 export function scheduleAfterPaint(callback: () => void): ScheduledJob {

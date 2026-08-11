@@ -1,5 +1,5 @@
 use super::DbConnection;
-use crate::domain::entities::app_state::{AppSettings, ExecutionHaltMode};
+use crate::domain::entities::app_state::{AppSettings, ExecutionHaltMode, UpdateChannel};
 use crate::domain::entities::ProjectId;
 use crate::domain::repositories::AppStateRepository;
 use crate::error::AppError;
@@ -44,22 +44,42 @@ fn halt_mode_to_db(mode: ExecutionHaltMode) -> &'static str {
     }
 }
 
+fn parse_update_channel(raw: Option<String>) -> UpdateChannel {
+    match raw.as_deref() {
+        Some("nightly") => UpdateChannel::Nightly,
+        _ => UpdateChannel::Stable,
+    }
+}
+
+fn update_channel_to_db(update_channel: UpdateChannel) -> &'static str {
+    match update_channel {
+        UpdateChannel::Stable => "stable",
+        UpdateChannel::Nightly => "nightly",
+    }
+}
+
 #[async_trait]
 impl AppStateRepository for SqliteAppStateRepository {
     async fn get(&self) -> Result<AppSettings, Box<dyn std::error::Error>> {
         self.db
             .run(move |conn| {
                 let result = conn.query_row(
-                    "SELECT active_project_id, execution_halt_mode, last_seen_release_notes_version FROM app_state WHERE id = 1",
+                    "SELECT active_project_id, execution_halt_mode, update_channel,
+                            last_seen_release_notes_version, remove_inherited_github_cli_tokens
+                     FROM app_state WHERE id = 1",
                     [],
                     |row| {
                         let active_project_id: Option<String> = row.get(0)?;
                         let execution_halt_mode: Option<String> = row.get(1)?;
-                        let last_seen_release_notes_version: Option<String> = row.get(2)?;
+                        let update_channel: Option<String> = row.get(2)?;
+                        let last_seen_release_notes_version: Option<String> = row.get(3)?;
+                        let remove_inherited_github_cli_tokens: bool = row.get(4)?;
                         Ok(AppSettings {
                             active_project_id: active_project_id.map(ProjectId::from_string),
                             execution_halt_mode: parse_halt_mode(execution_halt_mode),
+                            update_channel: parse_update_channel(update_channel),
                             last_seen_release_notes_version,
+                            remove_inherited_github_cli_tokens,
                         })
                     },
                 );
@@ -110,6 +130,24 @@ impl AppStateRepository for SqliteAppStateRepository {
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
     }
 
+    async fn set_update_channel(
+        &self,
+        update_channel: UpdateChannel,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let update_channel = update_channel_to_db(update_channel).to_string();
+
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "UPDATE app_state SET update_channel = ?1, updated_at = strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now') WHERE id = 1",
+                    rusqlite::params![update_channel],
+                )?;
+                Ok(())
+            })
+            .await
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+    }
+
     async fn set_last_seen_release_notes_version(
         &self,
         version: Option<&str>,
@@ -127,8 +165,23 @@ impl AppStateRepository for SqliteAppStateRepository {
             .await
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
     }
-}
 
-#[cfg(test)]
-#[path = "sqlite_app_state_repo_tests.rs"]
-mod tests;
+    async fn set_remove_inherited_github_cli_tokens(
+        &self,
+        enabled: bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "UPDATE app_state
+                     SET remove_inherited_github_cli_tokens = ?1,
+                         updated_at = strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now')
+                     WHERE id = 1",
+                    [enabled],
+                )?;
+                Ok(())
+            })
+            .await
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+    }
+}

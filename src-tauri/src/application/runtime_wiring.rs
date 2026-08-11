@@ -2,8 +2,10 @@ use std::sync::Arc;
 
 use tauri::Manager;
 
+use crate::application::notification_service::WindowFocusState;
+use crate::application::startup_status::StartupCoordinator;
 use crate::infrastructure::ExternalMcpHandle;
-use crate::AppState;
+use crate::{AppError, AppResult, AppState};
 
 /// Visual height of the app's top navbar in points. Must match the frontend
 /// header (`h-12` → 48 in `frontend/src/App.tsx`). Traffic-light centering
@@ -19,6 +21,7 @@ const TRAFFIC_LIGHT_TITLEBAR_INSET_Y_PT: f64 = 20.0;
 
 pub fn create_main_window<R: tauri::Runtime + 'static, M: tauri::Manager<R>>(
     app: &M,
+    focus_state: Arc<WindowFocusState>,
 ) -> tauri::Result<()> {
     use tauri::{WebviewUrl, WebviewWindowBuilder};
 
@@ -47,6 +50,8 @@ pub fn create_main_window<R: tauri::Runtime + 'static, M: tauri::Manager<R>>(
 
     let webview_window = builder.build()?;
 
+    install_window_focus_tracking(&webview_window, focus_state);
+
     let _ = webview_window.show();
 
     #[cfg(target_os = "macos")]
@@ -56,6 +61,17 @@ pub fn create_main_window<R: tauri::Runtime + 'static, M: tauri::Manager<R>>(
     let _ = webview_window.set_focus();
 
     Ok(())
+}
+
+fn install_window_focus_tracking<R: tauri::Runtime + 'static>(
+    window: &tauri::WebviewWindow<R>,
+    focus_state: Arc<WindowFocusState>,
+) {
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::Focused(focused) = event {
+            focus_state.set_focused(*focused);
+        }
+    });
 }
 
 #[cfg(target_os = "macos")]
@@ -186,7 +202,20 @@ pub fn build_http_app_state(
     let shared_interactive_process_registry = Arc::clone(&app_state.interactive_process_registry);
     let shared_github_service = app_state.github_service.clone();
     let shared_pr_poller_registry = Arc::clone(&app_state.pr_poller_registry);
-    let mut http_app_state_inner = AppState::new_production_shared(app_handle, shared_db_conn)?;
+    let shared_events = Arc::clone(&app_state.events);
+    let shared_internal_event_bus = app_state.internal_event_bus.clone();
+    let shared_app_paths = app_state.app_paths.clone();
+    let shared_window_focus_state = Arc::clone(&app_state.window_focus_state);
+    let shared_notification_service_cache = Arc::clone(&app_state.notification_service_cache);
+    let shared_agent_capability_gate = Arc::clone(&app_state.agent_capability_gate);
+    let shared_delegation_park_repo = Arc::clone(&app_state.delegation_park_repo);
+    let mut http_app_state_inner = AppState::new_production_shared_with_paths_and_events(
+        app_handle,
+        shared_db_conn,
+        shared_app_paths,
+        shared_events,
+        shared_internal_event_bus,
+    )?;
     http_app_state_inner.question_state = shared_question_state;
     http_app_state_inner.permission_state = shared_permission_state;
     http_app_state_inner.message_queue = shared_message_queue;
@@ -198,27 +227,102 @@ pub fn build_http_app_state(
     http_app_state_inner.streaming_state_cache = app_state.streaming_state_cache.clone();
     http_app_state_inner.webhook_publisher = app_state.webhook_publisher.clone();
     http_app_state_inner.session_merge_locks = Arc::clone(&app_state.session_merge_locks);
+    // INVARIANT: both AppStates share native focus transitions and notification coalescing.
+    http_app_state_inner.window_focus_state = shared_window_focus_state;
+    http_app_state_inner.notification_service_cache = shared_notification_service_cache;
+    // INVARIANT: Tauri commands and HTTP/MCP handlers enforce the same live capability state.
+    http_app_state_inner.agent_capability_gate = shared_agent_capability_gate;
+    // INVARIANT: delegate settlement (HTTP graph) and user-send supersession (Tauri graph) must
+    // read and write ONE set of delegation parks. Sharing the Arc keeps them aligned even when
+    // the graphs are backed by memory repositories in tests.
+    http_app_state_inner.delegation_park_repo = shared_delegation_park_repo;
+    // INVARIANT: both graphs share one managed-Team authority (sessions, roster,
+    // run bindings, startup barrier); separate instances would split barrier state.
+    http_app_state_inner.managed_team = Arc::clone(&app_state.managed_team);
+    // INVARIANT: command-composed repair continuations and review resumers must remain available
+    // to both Tauri and HTTP entry paths without an application-to-command import.
+    share_agent_workspace_repair_publish_continuation(app_state, &mut http_app_state_inner);
+    share_agent_workspace_pr_fix_review_publish_resumer(app_state, &mut http_app_state_inner);
+    share_startup_coordinator(app_state, &mut http_app_state_inner);
+    share_plan_verification_runtime(app_state, &mut http_app_state_inner);
+    // INVARIANT: notification_repo and notification_settings_repo must stay on this shared
+    // connection; a per-connection refactor would silently split notification storage.
     Ok(Arc::new(http_app_state_inner))
 }
 
-pub fn register_managed_state(
-    app: &mut tauri::App<tauri::Wry>,
-    app_state: AppState,
-    service_team_tracker: crate::application::TeamStateTracker,
+pub(crate) fn share_plan_verification_runtime(source: &AppState, target: &mut AppState) {
+    // INVARIANT: automatic stream finalization and manual HTTP admission serialize together.
+    target.plan_verification_locks = Arc::clone(&source.plan_verification_locks);
+    target.plan_verification_admissions = Arc::clone(&source.plan_verification_admissions);
+}
+
+pub(crate) fn share_agent_workspace_repair_publish_continuation(
+    source: &AppState,
+    target: &mut AppState,
 ) {
-    let team_session_repo = Arc::clone(&app_state.team_session_repo);
-    let team_message_repo = Arc::clone(&app_state.team_message_repo);
+    target.agent_workspace_repair_publish_continuation =
+        Arc::clone(&source.agent_workspace_repair_publish_continuation);
+}
 
-    let throttled_emitter = crate::application::ThrottledEmitter::new(app.handle().clone());
-    app.manage(throttled_emitter);
-    app.manage(app_state);
+pub(crate) fn share_agent_workspace_pr_fix_review_publish_resumer(
+    source: &AppState,
+    target: &mut AppState,
+) {
+    target.agent_workspace_pr_fix_review_publish_resumer =
+        Arc::clone(&source.agent_workspace_pr_fix_review_publish_resumer);
+}
 
-    let team_service = Arc::new(crate::application::TeamService::new_with_repos(
-        Arc::new(service_team_tracker),
-        app.handle().clone(),
-        team_session_repo,
-        team_message_repo,
-    ));
-    app.manage(team_service);
-    app.manage(ExternalMcpHandle::new());
+pub(crate) fn share_startup_coordinator(source: &AppState, target: &mut AppState) {
+    // INVARIANT: both managed AppState graphs consult the same startup attempt.
+    target.startup_coordinator = Arc::clone(&source.startup_coordinator);
+}
+
+/// Registers the dynamically constructed AppState exactly once after the
+/// blocking bootstrap worker succeeds.
+pub fn register_managed_state<R: tauri::Runtime>(
+    app_handle: &tauri::AppHandle<R>,
+    app_state: AppState,
+    coordinator: &StartupCoordinator,
+    attempt_id: u64,
+) -> AppResult<()> {
+    let throttled_emitter =
+        crate::application::ThrottledEmitter::new(Arc::clone(&app_state.events));
+    let window_focus_state = Arc::clone(&app_state.window_focus_state);
+    let mut registration_error = None;
+    coordinator
+        .register_app_state(attempt_id, |effects| {
+            if !app_handle.manage(throttled_emitter) {
+                registration_error =
+                    Some("ThrottledEmitter was already registered during startup".to_string());
+                return false;
+            }
+            effects.record_side_effect();
+
+            if !app_handle.manage(window_focus_state) {
+                registration_error =
+                    Some("WindowFocusState was already registered during startup".to_string());
+                return false;
+            }
+            effects.record_side_effect();
+
+            if !app_handle.manage(ExternalMcpHandle::new()) {
+                registration_error =
+                    Some("ExternalMcpHandle was already registered during startup".to_string());
+                return false;
+            }
+            effects.record_side_effect();
+
+            if !app_handle.manage(app_state) {
+                registration_error =
+                    Some("AppState was already registered during startup".to_string());
+                return false;
+            }
+            effects.record_side_effect();
+            true
+        })
+        .map_err(|error| {
+            AppError::Infrastructure(registration_error.unwrap_or_else(|| error.to_string()))
+        })?;
+
+    Ok(())
 }

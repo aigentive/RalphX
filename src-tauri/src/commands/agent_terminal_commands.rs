@@ -156,6 +156,7 @@ fn terminal_deps<'a>(state: &'a AppState) -> AgentTerminalWorkspaceDeps<'a> {
     AgentTerminalWorkspaceDeps {
         chat_conversation_repo: &state.chat_conversation_repo,
         workspace_repo: &state.agent_conversation_workspace_repo,
+        plan_branch_repo: &state.plan_branch_repo,
         project_repo: &state.project_repo,
     }
 }

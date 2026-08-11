@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   Check,
@@ -10,11 +10,11 @@ import {
   FolderOpen,
   RefreshCw,
   RotateCcw,
-  ShieldCheck,
 } from "lucide-react";
 import { toast } from "sonner";
 
 import type {
+  AgentProvidersSettingsResponse,
   AgentProviderSettingsResponse,
   UpdateAgentProviderSettingsInput,
 } from "@/api/harness-providers";
@@ -50,7 +50,7 @@ import {
   providerCliUpdateToastMatchesInstalledStatus,
 } from "@/lib/provider-cli-update-toast";
 
-import { ErrorBanner, SectionCard } from "./SettingsView.shared";
+import { ErrorBanner, SettingsSection } from "./SettingsView.shared";
 
 const PROVIDER_LABELS: Record<string, string> = {
   claude: "Claude",
@@ -90,6 +90,12 @@ function effortLabel(effort: string): string {
 
 function isAgentProvider(value: string): value is AgentProvider {
   return value === "claude" || value === "codex";
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error
+    ? error.message
+    : "Provider settings update failed.";
 }
 
 function ProviderBadge({ provider }: { provider: AgentProviderSettingsResponse }) {
@@ -292,12 +298,20 @@ export function HarnessProvidersSection() {
   const [customBinaryEditors, setCustomBinaryEditors] = useState<
     Record<string, boolean>
   >({});
+  const [customBinaryPathErrors, setCustomBinaryPathErrors] = useState<
+    Record<string, string>
+  >({});
   const [customEnvFileDrafts, setCustomEnvFileDrafts] = useState<
     Record<string, string>
   >({});
   const [customEnvFileEditors, setCustomEnvFileEditors] = useState<
     Record<string, boolean>
   >({});
+  const [customEnvFilePathErrors, setCustomEnvFilePathErrors] = useState<
+    Record<string, string>
+  >({});
+  const customBinarySaveInFlight = useRef<Record<string, string>>({});
+  const customEnvFileSaveInFlight = useRef<Record<string, string>>({});
 
   const displayedError =
     (isError && error instanceof Error ? error.message : null) ??
@@ -310,7 +324,7 @@ export function HarnessProvidersSection() {
       resetToDefaults?: boolean;
       applyToAllLanes?: boolean;
     },
-  ) => {
+  ): Promise<AgentProvidersSettingsResponse> => {
     const input: UpdateAgentProviderSettingsInput = {
       provider: provider.provider,
     };
@@ -360,7 +374,7 @@ export function HarnessProvidersSection() {
     if (changes.applyToAllLanes !== undefined) {
       input.applyToAllLanes = changes.applyToAllLanes;
     }
-    await updateProviderAsync(input);
+    const response = await updateProviderAsync(input);
     if (
       changes.cliManagementMode !== undefined ||
       changes.autoUpdateEnabled !== undefined ||
@@ -369,6 +383,7 @@ export function HarnessProvidersSection() {
     ) {
       await refetchStatus();
     }
+    return response;
   };
 
   const applyProviderToAgents = async (
@@ -447,6 +462,18 @@ export function HarnessProvidersSection() {
     setCustomBinaryDrafts((current) => ({ ...current, [provider]: value }));
   };
 
+  const setCustomBinaryPathError = (provider: string, error: string | null) => {
+    setCustomBinaryPathErrors((current) => {
+      const next = { ...current };
+      if (error) {
+        next[provider] = error;
+      } else {
+        delete next[provider];
+      }
+      return next;
+    });
+  };
+
   const setCustomBinaryEditor = (provider: string, visible: boolean) => {
     setCustomBinaryEditors((current) => ({ ...current, [provider]: visible }));
   };
@@ -458,15 +485,46 @@ export function HarnessProvidersSection() {
     const trimmedPath = path.trim();
     if (!trimmedPath) {
       setCustomBinaryEditor(provider.provider, true);
+      setCustomBinaryPathError(provider.provider, "Binary path is required.");
       return;
     }
+    if (
+      provider.customBinaryEnabled &&
+      provider.customBinaryPath?.trim() === trimmedPath
+    ) {
+      setCustomBinaryDraft(provider.provider, trimmedPath);
+      setCustomBinaryPathError(provider.provider, null);
+      return;
+    }
+    if (customBinarySaveInFlight.current[provider.provider] === trimmedPath) {
+      return;
+    }
+    customBinarySaveInFlight.current[provider.provider] = trimmedPath;
     setCustomBinaryDraft(provider.provider, trimmedPath);
-    await updateProvider(provider, {
-      customBinaryEnabled: true,
-      customBinaryPath: trimmedPath,
-      cliManagementMode: USER_MANAGED_CLI_MODE,
-      autoUpdateEnabled: false,
-    });
+    setCustomBinaryPathError(provider.provider, null);
+    try {
+      const response = await updateProvider(provider, {
+        customBinaryEnabled: true,
+        customBinaryPath: trimmedPath,
+        cliManagementMode: USER_MANAGED_CLI_MODE,
+        autoUpdateEnabled: false,
+      });
+      const savedProvider = response.providers.find(
+        (item) => item.provider === provider.provider,
+      );
+      setCustomBinaryDraft(
+        provider.provider,
+        savedProvider?.customBinaryPath ?? trimmedPath,
+      );
+    } catch (error) {
+      setCustomBinaryEditor(provider.provider, true);
+      setCustomBinaryDraft(provider.provider, trimmedPath);
+      setCustomBinaryPathError(provider.provider, errorMessage(error));
+    } finally {
+      if (customBinarySaveInFlight.current[provider.provider] === trimmedPath) {
+        delete customBinarySaveInFlight.current[provider.provider];
+      }
+    }
   };
 
   const toggleCustomBinary = async (
@@ -509,6 +567,18 @@ export function HarnessProvidersSection() {
     setCustomEnvFileDrafts((current) => ({ ...current, [provider]: value }));
   };
 
+  const setCustomEnvFilePathError = (provider: string, error: string | null) => {
+    setCustomEnvFilePathErrors((current) => {
+      const next = { ...current };
+      if (error) {
+        next[provider] = error;
+      } else {
+        delete next[provider];
+      }
+      return next;
+    });
+  };
+
   const setCustomEnvFileEditor = (provider: string, visible: boolean) => {
     setCustomEnvFileEditors((current) => ({ ...current, [provider]: visible }));
   };
@@ -520,13 +590,44 @@ export function HarnessProvidersSection() {
     const trimmedPath = path.trim();
     if (!trimmedPath) {
       setCustomEnvFileEditor(provider.provider, true);
+      setCustomEnvFilePathError(provider.provider, "Env file path is required.");
       return;
     }
+    if (
+      provider.customEnvFileEnabled &&
+      provider.customEnvFilePath?.trim() === trimmedPath
+    ) {
+      setCustomEnvFileDraft(provider.provider, trimmedPath);
+      setCustomEnvFilePathError(provider.provider, null);
+      return;
+    }
+    if (customEnvFileSaveInFlight.current[provider.provider] === trimmedPath) {
+      return;
+    }
+    customEnvFileSaveInFlight.current[provider.provider] = trimmedPath;
     setCustomEnvFileDraft(provider.provider, trimmedPath);
-    await updateProvider(provider, {
-      customEnvFileEnabled: true,
-      customEnvFilePath: trimmedPath,
-    });
+    setCustomEnvFilePathError(provider.provider, null);
+    try {
+      const response = await updateProvider(provider, {
+        customEnvFileEnabled: true,
+        customEnvFilePath: trimmedPath,
+      });
+      const savedProvider = response.providers.find(
+        (item) => item.provider === provider.provider,
+      );
+      setCustomEnvFileDraft(
+        provider.provider,
+        savedProvider?.customEnvFilePath ?? trimmedPath,
+      );
+    } catch (error) {
+      setCustomEnvFileEditor(provider.provider, true);
+      setCustomEnvFileDraft(provider.provider, trimmedPath);
+      setCustomEnvFilePathError(provider.provider, errorMessage(error));
+    } finally {
+      if (customEnvFileSaveInFlight.current[provider.provider] === trimmedPath) {
+        delete customEnvFileSaveInFlight.current[provider.provider];
+      }
+    }
   };
 
   const toggleCustomEnvFile = async (
@@ -558,11 +659,7 @@ export function HarnessProvidersSection() {
   };
 
   return (
-    <SectionCard
-      icon={<ShieldCheck className="h-5 w-5" />}
-      title="Providers"
-      description="Validate CLI harnesses, enable agent providers, and choose the default used by new agent lanes."
-    >
+    <SettingsSection>
       {displayedError && (
         <ErrorBanner error={displayedError} onDismiss={() => undefined} />
       )}
@@ -586,7 +683,7 @@ export function HarnessProvidersSection() {
               type="button"
               variant="outline"
               size="sm"
-              onClick={() => void refetchProviders()}
+              onClick={() => void refetchProviders({ forceRuntime: true })}
             >
               <RefreshCw className="mr-2 h-4 w-4" />
               Re-check
@@ -614,7 +711,12 @@ export function HarnessProvidersSection() {
                 (model) => model.modelId === selectedModel,
               );
               const selectedModelId =
-                provider.model ?? defaultModelForProvider(agentProvider);
+                provider.model ??
+                defaultModelForProvider(
+                  agentProvider,
+                  undefined,
+                  provider.supportedModelAliases,
+                );
               const effortOptions = agentEffortOptionsForModel(
                 agentProvider,
                 selectedModelId,
@@ -649,8 +751,12 @@ export function HarnessProvidersSection() {
               const managedCliStatus = statusByProvider.get(provider.provider);
               const showCustomEditor = showCustomBinaryEditor(provider);
               const customPath = customBinaryDraft(provider);
+              const customPathError =
+                customBinaryPathErrors[provider.provider];
               const showEnvFileEditor = showCustomEnvFileEditor(provider);
               const customEnvFilePath = customEnvFileDraft(provider);
+              const customEnvFilePathError =
+                customEnvFilePathErrors[provider.provider];
 
               return (
                 <div
@@ -699,7 +805,7 @@ export function HarnessProvidersSection() {
                   </div>
 
                   <div
-                    className={`grid gap-3 border-t border-[var(--border-subtle)] px-4 py-3 md:grid-cols-4 ${
+                    className={`grid gap-3 border-t border-[var(--border-subtle)] px-4 py-3 md:grid-cols-2 ${
                       provider.enabled
                         ? "border-b border-[var(--border-subtle)]"
                         : ""
@@ -814,7 +920,7 @@ export function HarnessProvidersSection() {
                     </div>
 
                     {showCustomEditor && (
-                      <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 py-2 md:col-span-4">
+                      <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 py-2 md:col-span-2">
                         <div className="flex flex-col gap-2 md:flex-row md:items-end">
                           <div className="min-w-0 flex-1 space-y-1">
                             <Label
@@ -828,13 +934,39 @@ export function HarnessProvidersSection() {
                               value={customPath}
                               disabled={isUpdating}
                               placeholder={`/path/to/${provider.provider}-wrapper`}
-                              onChange={(event) =>
+                              onChange={(event) => {
                                 setCustomBinaryDraft(
                                   provider.provider,
                                   event.target.value,
+                                );
+                                setCustomBinaryPathError(
+                                  provider.provider,
+                                  null,
+                                );
+                              }}
+                              onBlur={(event) =>
+                                void saveCustomBinaryPath(
+                                  provider,
+                                  event.currentTarget.value,
                                 )
                               }
+                              onKeyDown={(event) => {
+                                if (event.key !== "Enter") return;
+                                event.preventDefault();
+                                void saveCustomBinaryPath(
+                                  provider,
+                                  event.currentTarget.value,
+                                );
+                              }}
                             />
+                            {customPathError && (
+                              <p
+                                role="alert"
+                                className="text-[0.6875rem] leading-relaxed text-[var(--status-error)]"
+                              >
+                                {customPathError}
+                              </p>
+                            )}
                           </div>
                           <div className="flex flex-wrap gap-2">
                             <Button
@@ -865,7 +997,7 @@ export function HarnessProvidersSection() {
                     )}
 
                     {showEnvFileEditor && (
-                      <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 py-2 md:col-span-4">
+                      <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 py-2 md:col-span-2">
                         <div className="flex flex-col gap-2 md:flex-row md:items-end">
                           <div className="min-w-0 flex-1 space-y-1">
                             <Label
@@ -879,13 +1011,39 @@ export function HarnessProvidersSection() {
                               value={customEnvFilePath}
                               disabled={isUpdating}
                               placeholder="/path/to/.env"
-                              onChange={(event) =>
+                              onChange={(event) => {
                                 setCustomEnvFileDraft(
                                   provider.provider,
                                   event.target.value,
+                                );
+                                setCustomEnvFilePathError(
+                                  provider.provider,
+                                  null,
+                                );
+                              }}
+                              onBlur={(event) =>
+                                void saveCustomEnvFilePath(
+                                  provider,
+                                  event.currentTarget.value,
                                 )
                               }
+                              onKeyDown={(event) => {
+                                if (event.key !== "Enter") return;
+                                event.preventDefault();
+                                void saveCustomEnvFilePath(
+                                  provider,
+                                  event.currentTarget.value,
+                                );
+                              }}
                             />
+                            {customEnvFilePathError && (
+                              <p
+                                role="alert"
+                                className="text-[0.6875rem] leading-relaxed text-[var(--status-error)]"
+                              >
+                                {customEnvFilePathError}
+                              </p>
+                            )}
                           </div>
                           <div className="flex flex-wrap gap-2">
                             <Button
@@ -1270,7 +1428,7 @@ export function HarnessProvidersSection() {
         </>
       )}
       <ConfirmationDialog {...confirmationDialogProps} />
-    </SectionCard>
+    </SettingsSection>
   );
 }
 

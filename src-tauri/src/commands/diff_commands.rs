@@ -9,6 +9,7 @@ use crate::application::{
         resolve_valid_agent_conversation_workspace_path,
     },
     agent_workspace_review::load_agent_workspace_review_context,
+    agent_workspace_review_base::resolve_agent_workspace_review_base,
     AppState, ConflictDiff, DiffRefKind, DiffService, DiffSide, FileChange, FileDiff, FileDiffPage,
     GitService, RangeLine,
 };
@@ -395,6 +396,65 @@ fn agent_workspace_context_cache() -> &'static DashMap<String, AgentWorkspaceCon
     CACHE.get_or_init(DashMap::new)
 }
 
+fn agent_workspace_diff_cache_versions() -> &'static DashMap<String, String> {
+    static VERSIONS: OnceLock<DashMap<String, String>> = OnceLock::new();
+    VERSIONS.get_or_init(DashMap::new)
+}
+
+fn agent_workspace_diff_cache_version(workspace: &AgentConversationWorkspace) -> String {
+    format!(
+        "{}\0{}\0{}\0{}\0{}\0{}\0{}",
+        workspace.updated_at.to_rfc3339(),
+        workspace
+            .publication_pr_number
+            .map(|number| number.to_string())
+            .unwrap_or_default(),
+        workspace
+            .publication_pr_status
+            .as_deref()
+            .unwrap_or_default(),
+        workspace
+            .publication_push_status
+            .as_deref()
+            .unwrap_or_default(),
+        workspace.base_ref,
+        workspace.base_commit.as_deref().unwrap_or_default(),
+        workspace.branch_name,
+    )
+}
+
+async fn ensure_agent_workspace_diff_cache_current(
+    app_state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> AppResult<()> {
+    let version = app_state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await?
+        .as_ref()
+        .map(agent_workspace_diff_cache_version)
+        .unwrap_or_default();
+    ensure_agent_workspace_diff_cache_matches(conversation_id, version);
+    Ok(())
+}
+
+fn ensure_agent_workspace_diff_cache_matches(
+    conversation_id: &ChatConversationId,
+    version: String,
+) {
+    let Some(key) = agent_workspace_diff_cache_key(conversation_id) else {
+        return;
+    };
+    if agent_workspace_diff_cache_versions()
+        .get(&key)
+        .is_some_and(|cached| cached.as_str() == version)
+    {
+        return;
+    }
+    invalidate_agent_workspace_diff_caches(conversation_id);
+    agent_workspace_diff_cache_versions().insert(key, version);
+}
+
 fn agent_workspace_context_locks() -> &'static DashMap<String, Arc<tokio::sync::Mutex<()>>> {
     static LOCKS: OnceLock<DashMap<String, Arc<tokio::sync::Mutex<()>>>> = OnceLock::new();
     LOCKS.get_or_init(DashMap::new)
@@ -585,9 +645,24 @@ async fn get_agent_workspace_context(
         .get_by_id(&workspace.project_id)
         .await?
         .ok_or_else(|| AppError::ProjectNotFound(workspace.project_id.as_str().to_string()))?;
-
-    if let Some(context) = get_terminal_agent_workspace_pr_context(&project, &workspace).await? {
-        return Ok(context);
+    match get_terminal_agent_workspace_pr_context(&project, &workspace).await {
+        Ok(Some(context)) => return Ok(context),
+        Ok(None) => {}
+        Err(terminal_head_error) => {
+            if let Some(base_commit) = workspace.base_commit.as_deref() {
+                if let Some(context) = resolve_agent_workspace_github_patch_context(
+                    app_state,
+                    &project,
+                    &workspace,
+                    base_commit,
+                )
+                .await?
+                {
+                    return Ok(context);
+                }
+            }
+            return Err(terminal_head_error);
+        }
     }
 
     // For ideation workspaces linked to a plan branch, the commits live on the
@@ -619,14 +694,23 @@ async fn get_agent_workspace_context(
         ))
     })?;
     match resolve_valid_agent_conversation_workspace_path(&project, &workspace).await {
-        Ok(worktree_path) => Ok(AgentWorkspaceContext {
-            working_path: worktree_path,
-            base_ref: base_commit,
-            diff_target: None,
-            patch_diff: None,
-            supports_worktree_modes: true,
-            repair_state: None,
-        }),
+        Ok(worktree_path) => {
+            let review_base = resolve_agent_workspace_review_base(
+                &worktree_path,
+                &workspace,
+                "HEAD",
+                &base_commit,
+            )
+            .await?;
+            Ok(AgentWorkspaceContext {
+                working_path: worktree_path,
+                base_ref: review_base,
+                diff_target: None,
+                patch_diff: None,
+                supports_worktree_modes: true,
+                repair_state: None,
+            })
+        }
         Err(worktree_error) => {
             if let Some(context) =
                 resolve_agent_workspace_local_branch_context(&project, &workspace, &base_commit)
@@ -670,10 +754,17 @@ async fn resolve_agent_workspace_local_branch_context(
     if !GitService::branch_exists(&project_path, &workspace.branch_name).await? {
         return Ok(None);
     }
+    let review_base = resolve_agent_workspace_review_base(
+        &project_path,
+        workspace,
+        &workspace.branch_name,
+        base_commit,
+    )
+    .await?;
 
     Ok(Some(AgentWorkspaceContext {
         working_path: project_path,
-        base_ref: base_commit.to_string(),
+        base_ref: review_base,
         diff_target: Some(workspace.branch_name.clone()),
         patch_diff: None,
         supports_worktree_modes: false,
@@ -702,10 +793,13 @@ async fn resolve_agent_workspace_pr_head_context(
     else {
         return Ok(None);
     };
+    let review_base =
+        resolve_agent_workspace_review_base(&project_path, workspace, &pr_head_ref, base_commit)
+            .await?;
 
     Ok(Some(AgentWorkspaceContext {
         working_path: project_path,
-        base_ref: base_commit.to_string(),
+        base_ref: review_base,
         diff_target: Some(pr_head_ref),
         patch_diff: None,
         supports_worktree_modes: false,
@@ -767,13 +861,16 @@ async fn get_terminal_agent_workspace_pr_context(
 
     let repo_path = PathBuf::from(&project.working_directory);
     let pr_head_ref = agent_workspace_pr_head_ref(pr_number);
-    let head_ref = if GitService::ref_exists(&repo_path, &pr_head_ref).await? {
-        pr_head_ref
-    } else if GitService::ref_exists(&repo_path, &workspace.branch_name).await? {
-        workspace.branch_name.clone()
-    } else {
-        return Ok(None);
-    };
+    if !GitService::ref_exists(&repo_path, &pr_head_ref).await?
+        && GitService::fetch_pull_request_head_for_review(&repo_path, pr_number)
+            .await?
+            .is_none()
+    {
+        return Err(AppError::GitOperation(format!(
+            "Terminal agent workspace PR head ref is unavailable: {pr_head_ref}"
+        )));
+    }
+    let head_ref = pr_head_ref;
     let base_ref_source = if workspace.base_ref.trim().is_empty() {
         project.base_branch.as_deref().unwrap_or("main").to_string()
     } else {
@@ -878,6 +975,7 @@ async fn get_agent_workspace_context_cached_for_mode(
     conversation_id: &ChatConversationId,
     mode: AgentWorkspaceContextMode,
 ) -> AppResult<(AgentWorkspaceContext, AgentWorkspaceDiffCacheStatus)> {
+    ensure_agent_workspace_diff_cache_current(app_state, conversation_id).await?;
     if let Some(context) = cached_agent_workspace_context(conversation_id, mode) {
         return Ok((context, AgentWorkspaceDiffCacheStatus::Hit));
     }
@@ -1294,6 +1392,10 @@ async fn get_agent_conversation_workspace_pr_annotations_cached(
                 conversation_id
             ))
         })?;
+    ensure_agent_workspace_diff_cache_matches(
+        conversation_id,
+        agent_workspace_diff_cache_version(&workspace),
+    );
     let Some(pr_number) = workspace.publication_pr_number else {
         return Ok((
             PrDiffAnnotations::empty(0),
@@ -1363,6 +1465,7 @@ async fn get_agent_conversation_workspace_review_cached(
     app_state: &AppState,
     conversation_id: &ChatConversationId,
 ) -> AppResult<(AgentWorkspaceReviewSnapshot, AgentWorkspaceDiffCacheStatus)> {
+    ensure_agent_workspace_diff_cache_current(app_state, conversation_id).await?;
     if let Some(snapshot) = cached_agent_workspace_review(conversation_id) {
         return Ok((snapshot, AgentWorkspaceDiffCacheStatus::Hit));
     }
@@ -2039,16 +2142,10 @@ pub async fn get_agent_conversation_workspace_cumulative_file_changes_for_state(
         .diff_target
         .clone()
         .unwrap_or_else(|| "HEAD".to_string());
-    let supports_worktree_modes = ctx.supports_worktree_modes;
     tokio::task::spawn_blocking(move || {
         let diff_service = DiffService::new();
-        let mut changes = get_workspace_file_changes_for_context(
-            &diff_service,
-            &working_path,
-            &base_ref,
-            Some(&head_ref),
-            supports_worktree_modes,
-        )?;
+        let mut changes =
+            diff_service.get_file_changes_between_refs(&working_path, &base_ref, &head_ref)?;
         let flags = {
             let path_strs: Vec<&str> = changes.iter().map(|c| c.path.as_str()).collect();
             diff_service.compute_generated_flags(Path::new(&working_path), &path_strs)?
@@ -2080,17 +2177,9 @@ pub async fn get_agent_conversation_workspace_cumulative_file_diff_for_state(
         .diff_target
         .clone()
         .unwrap_or_else(|| "HEAD".to_string());
-    let supports_worktree_modes = ctx.supports_worktree_modes;
     tokio::task::spawn_blocking(move || {
         let diff_service = DiffService::new();
-        get_workspace_file_diff_for_context(
-            &diff_service,
-            &file_path,
-            &working_path,
-            &base_ref,
-            Some(&head_ref),
-            supports_worktree_modes,
-        )
+        diff_service.get_file_diff_between_refs(&file_path, &working_path, &base_ref, &head_ref)
     })
     .await
     .map_err(|e| AppError::Infrastructure(format!("cumulative file diff task failed: {e}")))?
@@ -2175,13 +2264,11 @@ pub async fn get_agent_conversation_workspace_file_diff_page_for_state(
                     diff_service.get_file_diff_from_unified_diff(patch, &file_path)
                 } else {
                     let head_ref = diff_target.unwrap_or_else(|| "HEAD".to_string());
-                    get_workspace_file_diff_for_context(
-                        &diff_service,
+                    diff_service.get_file_diff_between_refs(
                         &file_path,
                         &working_path,
                         &base_ref,
-                        Some(&head_ref),
-                        supports_worktree_modes,
+                        &head_ref,
                     )
                 }
             }
@@ -2769,7 +2856,6 @@ pub async fn get_agent_conversation_workspace_file_content_range_for_state(
         DiffRefKind::CumulativeBase => DiffRefKind::Commit {
             sha: ctx.base_ref.clone(),
         },
-        DiffRefKind::CumulativeHead if live_worktree_head_range => DiffRefKind::Unstaged,
         DiffRefKind::CumulativeHead => {
             let head = ctx
                 .diff_target
@@ -3152,7 +3238,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cached_context_loader_returns_hit_without_repository_lookup() {
+    async fn cached_context_loader_returns_hit_for_current_workspace_version() {
         let conversation_id = test_conversation_id();
         let state = AppState::new_test();
         let context = AgentWorkspaceContext {
@@ -3164,6 +3250,7 @@ mod tests {
             repair_state: None,
         };
         invalidate_agent_workspace_diff_caches(&conversation_id);
+        ensure_agent_workspace_diff_cache_matches(&conversation_id, String::new());
         store_agent_workspace_context(
             &conversation_id,
             AgentWorkspaceContextMode::Strict,
@@ -3172,7 +3259,7 @@ mod tests {
 
         let (cached, status) = get_agent_workspace_context_cached(&state, &conversation_id)
             .await
-            .expect("cached context should be returned before repository lookup");
+            .expect("current-version cached context should be returned");
 
         assert_eq!(status.as_str(), "hit");
         assert_eq!(cached.working_path, context.working_path);
@@ -3182,17 +3269,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cached_review_loader_returns_hit_without_repository_lookup() {
+    async fn cached_review_loader_returns_hit_for_current_workspace_version() {
         let conversation_id = test_conversation_id();
         let state = AppState::new_test();
         let snapshot = sample_review_snapshot("abcdef0123456789abcdef0123456789abcdef01");
         invalidate_agent_workspace_diff_caches(&conversation_id);
+        ensure_agent_workspace_diff_cache_matches(&conversation_id, String::new());
         store_agent_workspace_review(&conversation_id, &snapshot);
 
         let (cached, status) =
             get_agent_conversation_workspace_review_cached(&state, &conversation_id)
                 .await
-                .expect("cached review should be returned before repository lookup");
+                .expect("current-version cached review should be returned");
 
         assert_eq!(status.as_str(), "hit");
         assert_eq!(cached.response.commits.len(), 1);
@@ -3521,18 +3609,6 @@ mod tests {
         .expect("diff-target untracked file diff page should load");
         assert!(diff_page_contains_line(&file_diff_page, "draft"));
 
-        let cumulative_page = get_agent_conversation_workspace_file_diff_page(
-            app.state(),
-            conversation_id.as_str(),
-            "docs/untracked.md".to_string(),
-            DiffRefKind::CumulativeHead,
-            0,
-            20,
-        )
-        .await
-        .expect("diff-target cumulative untracked file diff page should load");
-        assert!(diff_page_contains_line(&cumulative_page, "draft"));
-
         let content_range = get_agent_conversation_workspace_file_content_range(
             app.state(),
             conversation_id.as_str(),
@@ -3661,6 +3737,9 @@ mod tests {
     async fn file_diff_page_command_rejects_staged_refs_for_read_only_context() {
         let (_tmp, state, conversation_id, worktree_path) =
             create_staged_unstaged_workspace_state().await;
+        ensure_agent_workspace_diff_cache_current(&state, &conversation_id)
+            .await
+            .expect("workspace cache version should load");
         store_agent_workspace_context(
             &conversation_id,
             AgentWorkspaceContextMode::Strict,
@@ -4464,6 +4543,9 @@ new file mode 100644
     async fn change_summary_command_returns_empty_for_branch_backed_context() {
         let (_tmp, state, conversation_id, worktree_path) =
             create_staged_unstaged_workspace_state().await;
+        ensure_agent_workspace_diff_cache_current(&state, &conversation_id)
+            .await
+            .expect("workspace cache version should load");
         store_agent_workspace_context(
             &conversation_id,
             AgentWorkspaceContextMode::Strict,

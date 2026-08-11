@@ -4,9 +4,10 @@ use std::time::Instant;
 use crate::application::runtime_factory::{
     build_transition_service_with_fallback, RuntimeFactoryDeps,
 };
+use crate::application::task_notification_producer::TaskPipelineNotificationProducer;
 use crate::application::task_transition_service::TaskTransitionService;
-use crate::application::AgentClientBundle;
 use crate::application::InteractiveProcessRegistry;
+use crate::application::{AgentClientBundle, NotificationService};
 use crate::commands::ExecutionState;
 use crate::domain::repositories::{
     AgentLaneSettingsRepository, AgentProviderSettingsRepository, ExecutionSettingsRepository,
@@ -27,6 +28,7 @@ pub struct StartupTransitionFactory {
     pub external_events_repo: Arc<dyn ExternalEventsRepository>,
     pub webhook_publisher: Option<Arc<dyn WebhookPublisher>>,
     pub session_merge_locks: Arc<dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    pub notification_service: Arc<NotificationService>,
 }
 
 impl StartupTransitionFactory {
@@ -58,6 +60,9 @@ impl StartupTransitionFactory {
             Arc::clone(&self.execution_state),
             &deps,
         );
+        service = service.with_notifier(Arc::new(TaskPipelineNotificationProducer::new(
+            Arc::clone(&self.notification_service),
+        )));
         Self::log_build_step("startup_transition_base_service", started_at);
 
         let started_at = Instant::now();

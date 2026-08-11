@@ -6,7 +6,6 @@ import type { MergePipelineTask } from "@/api/merge-pipeline";
 
 const retryMergeMock = vi.hoisted(() => vi.fn());
 const moveTaskMock = vi.hoisted(() => vi.fn());
-const navigateToTaskMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/tauri", () => ({
   api: {
@@ -15,11 +14,6 @@ vi.mock("@/lib/tauri", () => ({
       move: moveTaskMock,
     },
   },
-}));
-
-vi.mock("@/stores/uiStore", () => ({
-  useUiStore: (selector: (state: { navigateToTask: typeof navigateToTaskMock }) => unknown) =>
-    selector({ navigateToTask: navigateToTaskMock }),
 }));
 
 vi.mock("@/components/ui/popover", () => ({
@@ -67,5 +61,41 @@ describe("MergePipelinePopover", () => {
       expect(retryMergeMock).toHaveBeenCalledWith("task-1");
     });
     expect(moveTaskMock).not.toHaveBeenCalled();
+  });
+
+  it("shows the Agent workspace title and emits an Agent task target", () => {
+    const onNavigateToTask = vi.fn();
+    const agentWorkspace = {
+      conversationId: "conversation-1",
+      projectId: "project-1",
+      title: "Agent Conversation Workspace",
+    };
+    render(
+      <MergePipelinePopover
+        active={[
+          makeTask({
+            taskId: "task-merge-1",
+            title: "Merge plan into main",
+            displayTitle: "Agent Conversation Workspace",
+            agentWorkspace,
+          }),
+        ]}
+        waiting={[]}
+        needsAttention={[]}
+        onNavigateToTask={onNavigateToTask}
+      >
+        <button>Open merges</button>
+      </MergePipelinePopover>,
+    );
+
+    fireEvent.click(screen.getByText("Agent Conversation Workspace"));
+
+    expect(screen.queryByText("Merge plan into main")).not.toBeInTheDocument();
+    expect(onNavigateToTask).toHaveBeenCalledWith({
+      taskId: "task-merge-1",
+      source: "merge",
+      projectId: "project-1",
+      agentWorkspace,
+    });
   });
 });

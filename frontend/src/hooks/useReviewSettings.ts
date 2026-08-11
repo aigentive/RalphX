@@ -17,6 +17,8 @@ export interface ReviewSettings {
   /** Stored-only; follow-up decision pending */
   require_fix_approval: boolean;
   auto_create_followup_agent_conversation: boolean;
+  autofix_workspace_review_blocking_findings: boolean;
+  workspace_review_fixer_cycle_cap: number;
   run_task_validations: boolean;
 }
 
@@ -27,6 +29,8 @@ export interface UpdateReviewSettingsInput {
   maxFixAttempts?: number;
   maxRevisionCycles?: number;
   autoCreateFollowupAgentConversation?: boolean;
+  autofixWorkspaceReviewBlockingFindings?: boolean;
+  workspaceReviewFixerCycleCap?: number;
   runTaskValidations?: boolean;
 }
 

@@ -2,8 +2,6 @@ import { render, screen } from "@testing-library/react";
 import type { ComponentProps, ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { AgentConversationRuntimeStatus } from "@/api/chat";
-
 import { AgentsConversationMainRegion } from "./AgentsConversationMainRegion";
 import {
   agentProjectFixture,
@@ -27,33 +25,6 @@ vi.mock("./AgentsStartConversationPanel", () => ({
     startPanelMock(props),
 }));
 
-function workspaceReviewRuntimeStatus(): AgentConversationRuntimeStatus {
-  return {
-    conversationId: "conversation-1",
-    isRunning: true,
-    agentStatus: "generating",
-    primarySource: "workspace_review",
-    summaryLabel: "Reviewing",
-    items: [
-      {
-        source: "workspace_review",
-        contextType: "project",
-        contextId: "review-conversation-1",
-        label: "Reviewing",
-        title: "Review workspace changes",
-        agentStatus: "generating",
-        taskId: null,
-        internalStatus: "reviewing",
-        runningProcess: null,
-        ideationSession: null,
-        parentSessionId: null,
-        childSessionId: null,
-        conversationId: "review-conversation-1",
-      },
-    ],
-  };
-}
-
 function mainRegionProps(
   overrides: Partial<ComponentProps<typeof AgentsConversationMainRegion>> = {},
 ): ComponentProps<typeof AgentsConversationMainRegion> {
@@ -71,23 +42,26 @@ function mainRegionProps(
     chatFocusOptions: [],
     defaultProjectId: "project-1",
     defaultRuntime: agentRuntimeFixture,
+    hasAttachedPlanArtifact: false,
     hasAutoOpenArtifacts: false,
+    focusedWorkspaceReviewServiceTier: null,
     isLoadingProjects: false,
     modelRegistry: null,
     normalizedActiveRuntime: agentRuntimeFixture,
-    workspaceReviewRuntimeStatus: null,
     onActiveConversationModeChange: vi.fn(),
     onActiveConversationModeMenuOpen: vi.fn(),
+    onActiveTeamEnabledChange: vi.fn(),
     onActiveEffortChange: vi.fn(),
     onActiveModelChange: vi.fn(),
     onActiveProviderChange: vi.fn(),
     onAgentUserMessageSent: vi.fn(),
     onConversationModeSwitched: vi.fn(),
-    onCreateProject: vi.fn(),
     onFocusIdeationSession: vi.fn(),
+    onFocusIdeationSessionForConversation: vi.fn(),
     onFocusWorkspaceReview: vi.fn(),
     onFocusVerificationSession: vi.fn(),
     onFocusTaskRuntime: vi.fn(),
+    onFocusAutomationRun: vi.fn(),
     onOpenTaskArtifact: vi.fn(),
     onForkConversation: vi.fn(),
     onOpenPlanArtifact: vi.fn(),
@@ -99,11 +73,12 @@ function mainRegionProps(
     onRuntimePreferenceChange: vi.fn(),
     onSelectArtifact: vi.fn(),
     onStartAgentConversation: vi.fn(),
+    onStartPersonaBuilder: vi.fn(),
     onToggleArtifacts: vi.fn(),
     onSelectChatFocus: vi.fn(),
     projects: [agentProjectFixture],
     publishShortcutLabel: "P",
-    publishingConversationId: null,
+    publishAttemptsByConversationId: {},
     selectedConversationId: "conversation-1",
     selectedTaskArtifactId: null,
     setTerminalChatDockElement: vi.fn((_: ReactNode) => undefined),
@@ -119,20 +94,35 @@ describe("AgentsConversationMainRegion", () => {
     vi.clearAllMocks();
   });
 
-  it("forwards workspace Review runtime fallback status to the active conversation panel", () => {
-    const runtimeStatus = workspaceReviewRuntimeStatus();
-
-    render(
-      <AgentsConversationMainRegion
-        {...mainRegionProps({ workspaceReviewRuntimeStatus: runtimeStatus })}
-      />,
-    );
+  it("renders the active conversation panel for a selected workspace conversation", () => {
+    render(<AgentsConversationMainRegion {...mainRegionProps()} />);
 
     expect(screen.getByTestId("active-panel")).toBeInTheDocument();
     expect(activePanelMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        workspaceReviewRuntimeStatus: runtimeStatus,
+        selectedConversationId: "conversation-1",
       }),
     );
+  });
+
+  it("renders a selected standalone conversation without an active project", () => {
+    render(
+      <AgentsConversationMainRegion
+        {...mainRegionProps({
+          activeConversation: conversationFixture({
+            id: "standalone-1",
+            contextType: "standalone",
+            contextId: "standalone-1",
+            projectId: null,
+          }),
+          activeProjectId: null,
+          activeWorkspace: null,
+          selectedConversationId: "standalone-1",
+        })}
+      />,
+    );
+
+    expect(screen.getByTestId("active-panel")).toBeInTheDocument();
+    expect(screen.queryByTestId("start-panel")).not.toBeInTheDocument();
   });
 });

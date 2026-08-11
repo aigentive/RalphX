@@ -62,6 +62,47 @@ describe("PullRequestDetailShell", () => {
     expect(pullRequestShellFromWorkspace(null)).toBeNull();
   });
 
+  it("selects URL-only published workspaces by their workspace branch", () => {
+    const published = workspace({
+      publicationPrUrl: "https://github.com/acme/app/pull/7",
+    });
+
+    expect(pullRequestShellFromWorkspace(published)).toMatchObject({
+      projectId: "project-1",
+      url: "https://github.com/acme/app/pull/7",
+      branch: "feature/x",
+      conversationId: "conversation-1",
+    });
+    expect(
+      pullRequestSelectorFromShell(pullRequestShellFromWorkspace(published)),
+    ).toEqual({
+      projectId: "project-1",
+      branch: "feature/x",
+    });
+  });
+
+  it("keeps publication PR numbers ahead of source pull requests", () => {
+    const published = workspace({
+      publicationPrNumber: 7,
+      publicationPrUrl: "https://github.com/acme/app/pull/7",
+      sourcePullRequest: {
+        number: 99,
+        url: "https://github.com/acme/app/pull/99",
+        title: "Source PR",
+        headRefName: "review/source",
+        baseRefName: "main",
+        headRefOid: null,
+      },
+    });
+
+    expect(
+      pullRequestSelectorFromShell(pullRequestShellFromWorkspace(published)),
+    ).toEqual({
+      projectId: "project-1",
+      prNumber: 7,
+    });
+  });
+
   it("rejects incomplete shells and selects by branch when no PR number exists", () => {
     expect(hasPullRequestShell({ projectId: "project-1" })).toBe(false);
     expect(pullRequestSelectorFromShell(null)).toBeNull();

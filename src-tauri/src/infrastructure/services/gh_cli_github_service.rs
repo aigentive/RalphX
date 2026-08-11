@@ -19,16 +19,18 @@ use tokio::time::{timeout, Duration};
 use tracing::{debug, warn};
 
 use crate::domain::services::github_service::{
-    GithubConnectionStatus, GithubServiceTrait, PrAnnotationSourceUnavailable, PrAutoMergeRequest,
-    PrBranchMatch, PrDetail, PrDiffAnnotation, PrDiffAnnotations, PrHealth, PrHealthCheck,
-    PrIssueCommentSummary, PrMergeStateStatus, PrMergeableState, PrReviewCommentFeedback,
-    PrReviewFeedback, PrReviewSubmissionEvent, PrReviewThread, PrReviewThreadComment,
-    PrSearchResult, PrStatus, PrSubmittedReview, PrSyncState,
+    validate_pr_metadata_patch, GithubConnectionStatus, GithubServiceTrait,
+    PrAnnotationSourceUnavailable, PrAutoMergeRequest, PrBranchMatch, PrDetail, PrDiffAnnotation,
+    PrDiffAnnotations, PrHealth, PrHealthCheck, PrIssueCommentSummary, PrMergeStateStatus,
+    PrMergeableState, PrReviewCommentFeedback, PrReviewFeedback, PrReviewSubmissionEvent,
+    PrReviewThread, PrReviewThreadComment, PrSearchResult, PrStatus, PrSubmittedReview,
+    PrSyncState,
 };
 use crate::error::AppError;
 use crate::infrastructure::agents::claude::git_runtime_config;
 use crate::infrastructure::git_auth::{
-    apply_git_subprocess_env, git_auth_error_from_failure, GitNetworkOperation,
+    apply_git_subprocess_env, git_auth_error_from_failure, probe_github_connection_status,
+    GitNetworkOperation,
 };
 use crate::infrastructure::tool_paths::{resolve_gh_cli_path, resolve_git_cli_path};
 use crate::utils::secret_redactor::redact;
@@ -55,24 +57,11 @@ pub(crate) const DUPLICATE_PR_FRAGMENTS: [&str; 3] = [
     "already a pull request",
 ];
 
-/// Raw outcome of invoking `gh auth status`, before parsing into a typed status.
-///
-/// Captures whether the binary spawned (installed) and the combined output lines
-/// (stdout + sanitized stderr) used to parse host/account. A non-zero exit is
-/// expected when unauthenticated and is NOT an error here.
-#[derive(Debug, Clone, Default)]
-pub(crate) struct GhAuthStatusRaw {
-    pub gh_installed: bool,
-    pub output_lines: Vec<String>,
-}
-
 #[async_trait]
 pub(crate) trait GhCliCommandRunner: Send + Sync {
     async fn run_gh(&self, working_dir: &Path, args: &[String]) -> AppResult<Vec<String>>;
     async fn run_git(&self, working_dir: &Path, args: &[String]) -> AppResult<()>;
-    /// Invoke `gh auth status`, capturing installed-state + combined output.
-    /// Never errors on a non-zero exit (unauthenticated `gh` exits non-zero).
-    async fn run_gh_auth_status(&self) -> GhAuthStatusRaw;
+    async fn run_gh_connection_probe(&self) -> GithubConnectionStatus;
 }
 
 struct RealGhCliCommandRunner;
@@ -87,8 +76,8 @@ impl GhCliCommandRunner for RealGhCliCommandRunner {
         GhCliGithubService::run_git_process(working_dir, args).await
     }
 
-    async fn run_gh_auth_status(&self) -> GhAuthStatusRaw {
-        GhCliGithubService::run_gh_auth_status_process().await
+    async fn run_gh_connection_probe(&self) -> GithubConnectionStatus {
+        probe_github_connection_status().await
     }
 }
 
@@ -156,7 +145,9 @@ impl GhCliGithubService {
         I: IntoIterator<Item = S>,
         S: AsRef<std::ffi::OsStr>,
     {
-        let mut child = tokio::process::Command::new(resolve_gh_cli_path())
+        let mut command = tokio::process::Command::new(resolve_gh_cli_path());
+        apply_git_subprocess_env(&mut command);
+        let mut child = command
             .args(args)
             .current_dir(working_dir)
             .stdout(Stdio::piped())
@@ -261,58 +252,55 @@ impl GhCliGithubService {
 
         Ok(())
     }
-
-    /// Invoke `gh auth status`, capturing installed-state + combined output.
-    ///
-    /// `gh auth status` exits non-zero when unauthenticated, so a non-zero exit
-    /// is NOT treated as an error here — only a spawn failure (binary missing/not
-    /// executable) marks `gh` as not-installed. Output is gathered from both
-    /// stdout and stderr because `gh` has historically emitted the status block
-    /// on either stream. No `current_dir` override is set: `gh auth status` is
-    /// global and we avoid feeding any caller-derived path into the launch sink.
-    async fn run_gh_auth_status_process() -> GhAuthStatusRaw {
-        let spawn_result = tokio::process::Command::new(resolve_gh_cli_path())
-            .args(["auth", "status"])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn();
-
-        let mut child = match spawn_result {
-            Ok(child) => child,
-            // Binary missing / not executable → gh not installed.
-            Err(_) => return GhAuthStatusRaw::default(),
-        };
-
-        let collected = timeout(SUBPROCESS_TIMEOUT, async {
-            let (stdout, stderr) = Self::collect_output(&mut child).await?;
-            let _ = child.wait().await;
-            Ok::<_, AppError>((stdout, stderr))
-        })
-        .await;
-
-        match collected {
-            Ok(Ok((mut stdout, mut stderr))) => {
-                stdout.append(&mut stderr);
-                GhAuthStatusRaw {
-                    gh_installed: true,
-                    output_lines: stdout,
-                }
-            }
-            // Timed out or pipe error: the binary spawned (installed) but no
-            // parseable output is available.
-            _ => GhAuthStatusRaw {
-                gh_installed: true,
-                output_lines: Vec::new(),
-            },
-        }
-    }
 }
 
 impl Default for GhCliGithubService {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn build_exact_force_with_lease_push_args(
+    local_ref: &str,
+    expected_remote_oid: &str,
+) -> AppResult<Vec<String>> {
+    let Some(branch) = local_ref.strip_prefix("refs/heads/") else {
+        return Err(AppError::Validation(
+            "exact force-with-lease requires a fully-qualified local branch ref".to_string(),
+        ));
+    };
+    let invalid_branch = branch.is_empty()
+        || branch.starts_with('/')
+        || branch.ends_with('/')
+        || branch.ends_with('.')
+        || branch.ends_with(".lock")
+        || branch.contains("..")
+        || branch.contains("@{")
+        || branch.contains("//")
+        || branch
+            .chars()
+            .any(|ch| ch.is_control() || ch.is_whitespace() || "~^:?*[\\".contains(ch));
+    if invalid_branch {
+        return Err(AppError::Validation(
+            "exact force-with-lease requires a valid fully-qualified local branch ref".to_string(),
+        ));
+    }
+    if expected_remote_oid.len() != 40
+        || !expected_remote_oid
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
+    {
+        return Err(AppError::Validation(
+            "exact force-with-lease requires a full expected remote OID".to_string(),
+        ));
+    }
+
+    Ok(vec![
+        "push".to_string(),
+        "origin".to_string(),
+        format!("--force-with-lease={local_ref}:{expected_remote_oid}"),
+        format!("{local_ref}:{local_ref}"),
+    ])
 }
 
 fn build_create_pr_args(
@@ -355,16 +343,20 @@ fn build_create_issue_args(repository: &str, title: &str, body_file: &str) -> Ve
     ]
 }
 
-fn build_update_pr_args(pr_number: i64, title: &str, body_file: &str) -> Vec<String> {
-    vec![
-        "pr".to_string(),
-        "edit".to_string(),
-        pr_number.to_string(),
-        "--title".to_string(),
-        title.to_string(),
-        "--body-file".to_string(),
-        body_file.to_string(),
-    ]
+fn build_update_pr_args(
+    pr_number: i64,
+    title: Option<&str>,
+    body_file: Option<&str>,
+) -> AppResult<Vec<String>> {
+    validate_pr_metadata_patch(title, body_file.map(Path::new))?;
+    let mut args = vec!["pr".to_string(), "edit".to_string(), pr_number.to_string()];
+    if let Some(title) = title {
+        args.extend(["--title".to_string(), title.to_string()]);
+    }
+    if let Some(body_file) = body_file {
+        args.extend(["--body-file".to_string(), body_file.to_string()]);
+    }
+    Ok(args)
 }
 
 fn build_update_pr_base_args(pr_number: i64, base: &str) -> Vec<String> {
@@ -404,6 +396,16 @@ fn build_pr_health_view_args(pr_number: i64) -> Vec<String> {
         pr_number.to_string(),
         "--json".to_string(),
         "state,mergeStateStatus,mergeable,isDraft,headRefName,baseRefName,headRefOid,baseRefOid,mergedAt,mergeCommit,reviewDecision,statusCheckRollup,autoMergeRequest".to_string(),
+    ]
+}
+
+fn build_pr_auto_merge_state_view_args(pr_number: i64) -> Vec<String> {
+    vec![
+        "pr".to_string(),
+        "view".to_string(),
+        pr_number.to_string(),
+        "--json".to_string(),
+        "autoMergeRequest".to_string(),
     ]
 }
 
@@ -692,9 +694,54 @@ impl GithubServiceTrait for GhCliGithubService {
                 AppError::Infrastructure("body_file path is not valid UTF-8".to_string())
             })?
             .to_string();
-        let args = build_update_pr_args(pr_number, title, &body_file_str);
+        let args = build_update_pr_args(pr_number, Some(title), Some(&body_file_str))?;
         self.runner.run_gh(working_dir, &args).await?;
         Ok(())
+    }
+
+    async fn patch_pr_metadata(
+        &self,
+        working_dir: &Path,
+        pr_number: i64,
+        title: Option<&str>,
+        body_file: Option<&Path>,
+    ) -> AppResult<()> {
+        let has_title = title.is_some();
+        let has_body_file = body_file.is_some();
+        let body_file = body_file
+            .map(|path| {
+                path.to_str().ok_or_else(|| {
+                    AppError::Infrastructure("body_file path is not valid UTF-8".to_string())
+                })
+            })
+            .transpose()?;
+        let args = build_update_pr_args(pr_number, title, body_file)?;
+        debug!(
+            pr_number,
+            has_title,
+            has_body_file,
+            result_class = "attempt",
+            "Patching pull-request metadata"
+        );
+        let result = self.runner.run_gh(working_dir, &args).await;
+        if result.is_ok() {
+            debug!(
+                pr_number,
+                has_title,
+                has_body_file,
+                result_class = "success",
+                "Patching pull-request metadata"
+            );
+        } else {
+            warn!(
+                pr_number,
+                has_title,
+                has_body_file,
+                result_class = "error",
+                "Patching pull-request metadata"
+            );
+        }
+        result.map(|_| ())
     }
 
     async fn update_pr_base(
@@ -957,6 +1004,70 @@ impl GithubServiceTrait for GhCliGithubService {
         parse_pr_health_output(&view_stdout.join("\n"), &comments_stdout.join("\n"))
     }
 
+    async fn fetch_pr_auto_merge_state(
+        &self,
+        working_dir: &Path,
+        pr_number: i64,
+    ) -> AppResult<Option<PrAutoMergeRequest>> {
+        let stdout = self
+            .runner
+            .run_gh(working_dir, &build_pr_auto_merge_state_view_args(pr_number))
+            .await?;
+        parse_pr_auto_merge_state_output(&stdout.join("\n"))
+    }
+
+    async fn list_branch_check_conclusions(
+        &self,
+        working_dir: &Path,
+        branch_ref: &str,
+    ) -> AppResult<Option<Vec<PrHealthCheck>>> {
+        let branch_ref = branch_ref.trim();
+        if branch_ref.is_empty() {
+            return Ok(None);
+        }
+        // The latest completed workflow runs on the branch tip. `gh run list` is the only surface
+        // that reports checks for a branch with no pull request of its own, which is exactly the
+        // base-branch case this exists for.
+        let stdout = self
+            .runner
+            .run_gh(
+                working_dir,
+                &[
+                    "run".to_string(),
+                    "list".to_string(),
+                    "--branch".to_string(),
+                    branch_ref.to_string(),
+                    "--limit".to_string(),
+                    "40".to_string(),
+                    "--json".to_string(),
+                    "name,workflowName,status,conclusion,url,headSha".to_string(),
+                ],
+            )
+            .await?;
+
+        Ok(Some(parse_branch_check_conclusions(&stdout.join("\n"))))
+    }
+
+    async fn rerun_failed_workflow(&self, working_dir: &Path, run_id: i64) -> AppResult<()> {
+        if run_id <= 0 {
+            return Err(AppError::Validation(
+                "GitHub Actions run id must be positive".to_string(),
+            ));
+        }
+        self.runner
+            .run_gh(
+                working_dir,
+                &[
+                    "run".to_string(),
+                    "rerun".to_string(),
+                    run_id.to_string(),
+                    "--failed".to_string(),
+                ],
+            )
+            .await
+            .map(|_| ())
+    }
+
     async fn enable_pr_auto_merge(
         &self,
         working_dir: &Path,
@@ -982,6 +1093,16 @@ impl GithubServiceTrait for GhCliGithubService {
     async fn push_branch(&self, working_dir: &Path, branch: &str) -> AppResult<()> {
         // git push origin <branch> — fire-and-forget style (stdout null, stderr piped for safety)
         let args = vec!["push".to_string(), "origin".to_string(), branch.to_string()];
+        self.runner.run_git(working_dir, &args).await
+    }
+
+    async fn push_branch_with_expected_remote_oid_lease(
+        &self,
+        working_dir: &Path,
+        local_ref: &str,
+        expected_remote_oid: &str,
+    ) -> AppResult<()> {
+        let args = build_exact_force_with_lease_push_args(local_ref, expected_remote_oid)?;
         self.runner.run_git(working_dir, &args).await
     }
 
@@ -1120,11 +1241,11 @@ impl GithubServiceTrait for GhCliGithubService {
             "pr".to_string(),
             "list".to_string(),
             "--state".to_string(),
-            "open".to_string(),
+            "all".to_string(),
             "--limit".to_string(),
             limit.to_string(),
             "--json".to_string(),
-            "number,title,url,headRefName,headRefOid,baseRefName,isDraft,updatedAt,author,assignees,reviewDecision,latestReviews,reviewRequests,isCrossRepository".to_string(),
+            "number,title,url,headRefName,headRefOid,baseRefName,isDraft,state,mergedAt,updatedAt,author,assignees,reviewDecision,latestReviews,reviewRequests,isCrossRepository".to_string(),
         ];
         if let Some(query) = query.map(str::trim).filter(|value| !value.is_empty()) {
             args.push("--search".to_string());
@@ -1183,17 +1304,7 @@ impl GithubServiceTrait for GhCliGithubService {
     }
 
     async fn fetch_github_connection_status(&self) -> AppResult<GithubConnectionStatus> {
-        let raw = self.runner.run_gh_auth_status().await;
-        if !raw.gh_installed {
-            return Ok(GithubConnectionStatus::unavailable());
-        }
-        let (authenticated, host, account) = parse_gh_auth_status_lines(&raw.output_lines);
-        Ok(GithubConnectionStatus {
-            gh_installed: true,
-            authenticated,
-            host,
-            account,
-        })
+        Ok(self.runner.run_gh_connection_probe().await)
     }
 }
 
@@ -1205,6 +1316,7 @@ impl GithubServiceTrait for GhCliGithubService {
 /// first authenticated block (older `gh` has no active-account marker). Token
 /// lines are ignored — only the `Logged in to <host> account <account>` lines
 /// carry the host/account we surface.
+#[cfg(test)]
 pub(crate) fn parse_gh_auth_status_lines(
     lines: &[String],
 ) -> (bool, Option<String>, Option<String>) {
@@ -1232,6 +1344,7 @@ pub(crate) fn parse_gh_auth_status_lines(
 }
 
 /// Extract `(host, account)` from a `✓ Logged in to <host> account <account> (...)` line.
+#[cfg(test)]
 fn parse_logged_in_line(line: &str) -> Option<(String, String)> {
     const LOGGED_IN: &str = "Logged in to ";
     const ACCOUNT: &str = " account ";
@@ -1248,6 +1361,7 @@ fn parse_logged_in_line(line: &str) -> Option<(String, String)> {
 }
 
 /// True for the `- Active account: true` marker line.
+#[cfg(test)]
 fn is_active_account_true(line: &str) -> bool {
     let lower = line.to_ascii_lowercase();
     lower.contains("active account:") && lower.contains("true")
@@ -1443,6 +1557,14 @@ fn parse_pr_search_item(item: &Value) -> AppResult<PrSearchResult> {
             .get("isDraft")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        state: item
+            .get("state")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        merged_at: item
+            .get("mergedAt")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         updated_at: item
             .get("updatedAt")
             .and_then(Value::as_str)
@@ -1583,8 +1705,10 @@ pub(crate) fn parse_pr_status_output(json_str: &str) -> AppResult<PrStatus> {
         "MERGED" => {
             // mergeCommit is an object with "oid" when merged, null otherwise
             let sha = v["mergeCommit"]["oid"].as_str().map(str::to_string);
+            let merged_at = v["mergedAt"].as_str().map(str::to_string);
             Ok(PrStatus::Merged {
                 merge_commit_sha: sha,
+                merged_at,
             })
         }
         other => Err(AppError::Infrastructure(format!(
@@ -1698,6 +1822,18 @@ pub(crate) fn parse_pr_health_output(view_json: &str, comments_json: &str) -> Ap
     })
 }
 
+pub(crate) fn parse_pr_auto_merge_state_output(
+    view_json: &str,
+) -> AppResult<Option<PrAutoMergeRequest>> {
+    let view_value: Value = serde_json::from_str(view_json).map_err(|e| {
+        AppError::Infrastructure(format!(
+            "Failed to parse gh pr auto-merge state JSON: {e}\nRaw: {view_json}"
+        ))
+    })?;
+
+    Ok(parse_auto_merge_request(&view_value))
+}
+
 fn parse_status_check_rollup(view_value: &Value) -> Vec<PrHealthCheck> {
     view_value
         .get("statusCheckRollup")
@@ -1736,6 +1872,50 @@ fn parse_status_check_rollup(view_value: &Value) -> Vec<PrHealthCheck> {
             })
         })
         .collect()
+}
+
+/// Reduces `gh run list --json ...` output to the newest completed conclusion per check name.
+/// Older runs for the same check are historical noise; only the current state of the branch tip
+/// can tell us whether a failure already exists on the base.
+pub(crate) fn parse_branch_check_conclusions(json_str: &str) -> Vec<PrHealthCheck> {
+    let Ok(runs) = serde_json::from_str::<Value>(json_str) else {
+        return Vec::new();
+    };
+    let mut newest_by_name: std::collections::BTreeMap<String, PrHealthCheck> =
+        std::collections::BTreeMap::new();
+    for run in runs.as_array().into_iter().flatten() {
+        let name = run
+            .get("name")
+            .or_else(|| run.get("workflowName"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if name.is_empty() {
+            continue;
+        }
+        let status = run
+            .get("status")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        // An in-progress run proves nothing about the base yet.
+        if !status
+            .as_deref()
+            .is_some_and(|value| value.eq_ignore_ascii_case("completed"))
+        {
+            continue;
+        }
+        newest_by_name.entry(name.clone()).or_insert(PrHealthCheck {
+            name,
+            status,
+            conclusion: run
+                .get("conclusion")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            details_url: run.get("url").and_then(Value::as_str).map(str::to_string),
+        });
+    }
+    newest_by_name.into_values().collect()
 }
 
 fn parse_auto_merge_request(view_value: &Value) -> Option<PrAutoMergeRequest> {
@@ -1821,8 +2001,10 @@ fn parse_pr_status_value(v: &Value) -> AppResult<PrStatus> {
         "CLOSED" => Ok(PrStatus::Closed),
         "MERGED" => {
             let sha = v["mergeCommit"]["oid"].as_str().map(str::to_string);
+            let merged_at = v["mergedAt"].as_str().map(str::to_string);
             Ok(PrStatus::Merged {
                 merge_commit_sha: sha,
+                merged_at,
             })
         }
         other => Err(AppError::Infrastructure(format!(

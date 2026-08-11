@@ -131,6 +131,7 @@ async fn test_create_and_get_pending() {
         batch_index: None,
         batch_total: None,
         metadata: None,
+        created_at: "2026-07-10T00:00:00+00:00".to_string(),
     };
 
     repo.create_pending(&info).await.unwrap();
@@ -154,6 +155,7 @@ async fn test_get_by_request_id() {
         batch_index: None,
         batch_total: None,
         metadata: None,
+        created_at: "2026-07-10T00:00:00+00:00".to_string(),
     };
 
     repo.create_pending(&info).await.unwrap();
@@ -180,6 +182,7 @@ async fn test_resolve() {
         batch_index: None,
         batch_total: None,
         metadata: None,
+        created_at: "2026-07-10T00:00:00+00:00".to_string(),
     };
 
     repo.create_pending(&info).await.unwrap();
@@ -229,6 +232,7 @@ async fn test_expire_all_pending() {
             batch_index: None,
             batch_total: None,
             metadata: None,
+            created_at: "2026-07-10T00:00:00+00:00".to_string(),
         };
         repo.create_pending(&info).await.unwrap();
     }
@@ -263,6 +267,7 @@ async fn test_remove() {
         batch_index: None,
         batch_total: None,
         metadata: None,
+        created_at: "2026-07-10T00:00:00+00:00".to_string(),
     };
 
     repo.create_pending(&info).await.unwrap();

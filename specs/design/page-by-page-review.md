@@ -383,7 +383,7 @@ The app uses **five** distinct layout archetypes, applied consistently per view 
 | Archetype | Where | Shape |
 |---|---|---|
 | A. Right-dock floating panel | Chat (`App.tsx:1163`), Reviews (`App.tsx:1134`), Graph timeline/chat (`GraphSplitLayout.tsx`) | Fixed or resizable right column; wraps contents in a `rounded-[10px]` inner panel with `margin:8px`, `--bg-elevated` bg, `--border-subtle` 1 px border, `--shadow-md`. Shares the exact same wrapper across the three components → good. |
-| B. Sidebar + main | Ideation (`PlanBrowser` 220 px + `PlanningView` flex), Settings (280 px rail + scrollable pane) | Left nav, flex-1 content. Both use the same eyebrow (`uppercase tracking-wider`) + active-row treatment. |
+| B. Sidebar + main | Agents conversation/artifact split, Settings (280 px rail + scrollable pane) | Left nav, flex-1 content. Both use the same eyebrow (`uppercase tracking-wider`) + active-row treatment. |
 | C. Centered empty state | Ideation (no session), Graph (no plan), Kanban (no plan), Reviews (0 pending) | Shared `<EmptyState variant="neutral">` in Reviews; Ideation/Kanban have bespoke versions. |
 | D. Full-width horizontal bar | Execution control bar at bottom of Kanban/Graph/Ideation | Flush, not elevated. `h-14` (~56 px) with a top hairline `--border-subtle`. |
 | E. Modal dialog | Settings (`95vw × 95vh`), proposal/review detail modals | Full-bleed modal; header `px-4 py-3`, main body split sidebar + pane. |
@@ -396,18 +396,14 @@ The app uses **five** distinct layout archetypes, applied consistently per view 
 
 #### Ideation
 
-- **Layout split** — Archetype B: `PlanBrowser` sidebar (220 px, resizable) + main empty-state column + bottom `ExecutionControlBar` full-bar + right chat (opened on demand from within the view).
-- **Padding** — Sidebar card header `px-4 pt-4 pb-3`. Empty-state stack uses 16 px gaps (icon → title → description → mode selector → CTA → ghost actions → kbd hints). Executioner bar uses `px-4 py-3`.
-- **Borders** — Sidebar is a floating island with `border: 1px solid var(--overlay-weak)` + `boxShadow: var(--shadow-lg)` — distinct edge treatment vs every other sidebar in the app.
-- **Shadows** — Sidebar is the **only** view using `--shadow-lg` at rest (normally reserved for dialogs per §5). Not wrong, but inconsistent with Settings left rail (which has no shadow). Feels correct on Dark but slightly over-lifted on Light.
-- **Assessment** — Most bespoke section; every element is carefully placed. "IDEATION MODE" eyebrow + mode pill group is a strong pattern.
-- **Recommendations** —
-  - Consider aligning PlanBrowser shadow to `--shadow-md` to match the right-dock panel tier (currently `--shadow-lg`), `PlanBrowser.tsx:287`.
-  - The `px-4 pt-4 pb-3` asymmetric padding is fine but a comment explaining the intentional optical balance (title vs search) would help preserve it.
+- **Layout split** — Ideation is conversation-scoped inside Agents. The main conversation remains visible beside the Plan/Ideation artifact pane.
+- **Padding** — Artifact content follows the shared Agents pane spacing and empty-state rhythm.
+- **Borders and shadows** — Use the Agents artifact surface hierarchy; there is no standalone planning sidebar or root-level execution bar.
+- **Assessment** — Planning now shares navigation, conversation context, and artifact ownership with the rest of Agents.
 
 #### Graph
 
-- **Layout split** — Archetype A + centered empty state. Floating filter panel (~140 px wide, rounded-lg, absolute positioned) + open canvas + right dock (timeline 320 px or chat resizable), with overlay variant for compact width.
+- **Layout split** — Archetype A + centered empty state. Floating filter panel (~140 px wide, rounded-lg, absolute positioned) + open canvas + a fixed 320 px timeline, with an overlay variant for compact width. Task detail is an Agents-owned artifact overlay.
 - **Padding** — Filter panel items ~8 px vertical/8 px horizontal. Empty-state block has strong ~220 px top padding (the floating filters push content down).
 - **Borders** — Filter panel uses `--border-subtle`; the divider between Status and Vertical rows is invisible on Light because the panel bg and the surface bg are both near-white.
 - **Shadows** — Filter panel: `--shadow-xs`. On Light this is barely perceptible — the floating affordance is carried by border alone.
@@ -418,14 +414,13 @@ The app uses **five** distinct layout archetypes, applied consistently per view 
 
 #### Kanban
 
-- **Layout split** — Archetype B+A: `KanbanSplitLayout` (kanban left + integrated chat right, resizable 360–600 px) with `ExecutionControlBar` as footer.
-- **Padding** — Search row `py-2 px-4`, empty-state tile 96×96, Project chat panel header `h-11 px-3`.
-- **Borders** — No vertical divider between kanban area and chat — relies on the chat panel's own border + subtle shift in `--bg-elevated`. Works on Dark/HC; Light is subtle but intentional.
+- **Layout split** — The Kanban board fills the Agents Tasks artifact; task selection opens the Agents-owned detail overlay.
+- **Padding** — Search row `py-2 px-4`, empty-state tile 96×96.
+- **Borders** — The board and detail overlay follow the Agents artifact surface hierarchy.
 - **Shadows** — Empty-state tile has an accent-muted fill + 1 px accent border + the `--shadow-glow-accent-soft` ambient glow (visible as orange halo on Dark). On HC it renders as yellow tint on black box with a solid border.
 - **Assessment** — The **most polished empty state** in the app. Tile dimensions (96 px) + sparkle icon + doc glyph + single-line title + CTA is a strong pattern worth promoting.
 - **Recommendations** —
   - Promote Kanban's empty-state tile (`EmptyStates.tsx`) to shared `ui/EmptyState` with an optional `illustration` slot (Reviews already uses shared; Ideation and Graph still rebuild).
-  - The resize handle (`ResizeHandle.tsx`) between kanban and chat has no visible hairline on Light — consider a 1 px `--border-subtle` track so the dragger is discoverable.
 
 #### Activity
 
@@ -484,7 +479,7 @@ The app uses **five** distinct layout archetypes, applied consistently per view 
 
 #### Task Detail (inferred — no direct screenshot)
 
-Task detail views are overlays within Kanban/Graph (`TaskDetailOverlay.tsx:628`). The screenshots above don't capture an open task detail, so recommendations stay high-level. Per `.claude/rules/task-detail-views.md`, the registry maps 12 status-specific view components. Each should consume the same card tier (`--bg-elevated` + `p-5` + `--shadow-xs` + `--border-subtle`). A follow-up capture run with a selected task would be worth doing.
+Task detail views are owned by the Agents Tasks artifact (`AgentsTaskDetailOverlay.tsx` → `AgentsTaskDetailPanel.tsx`). The screenshots above don't capture an open task detail, so recommendations stay high-level. Per `.claude/rules/task-detail-views.md`, the registry maps 12 status-specific view components. Each should consume the same card tier (`--bg-elevated` + `p-5` + `--shadow-xs` + `--border-subtle`). A follow-up capture run with the Agents-owned `selectedTaskArtifactId` would be worth doing.
 
 ---
 
@@ -524,8 +519,7 @@ Ranked by user-visible impact × effort. Each item: **what**, where, why.
 |---|---|
 | Hover states not captured | Screenshots are static; hover elevation / border color changes on Reviews cards, Chat toggle, and filter pills cannot be evaluated visually. |
 | Focus rings not captured | No keyboard-focused element visible; AAA 3 px yellow ring in HC + 2 px blue in Default/Light unconfirmed by screenshot (code inspection shows `--focus-ring` + `:focus-visible` rules are wired, and `high-contrast.css:159–162` enforces the 3 px HC outline globally). |
-| Task detail view not captured | No task selected in any screenshot, so `TaskDetailOverlay` + 12 state-specific detail views (`BasicTaskDetail` / `ExecutionTaskDetail` / etc.) were not visible. Recommend a follow-up capture with `selectedTaskId`. |
+| Task detail view not captured | No task selected in any screenshot, so `AgentsTaskDetailOverlay` + 12 state-specific detail views (`BasicTaskDetail` / `ExecutionTaskDetail` / etc.) were not visible. Recommend a follow-up capture with the Agents-owned `selectedTaskArtifactId`. |
 | Dialog / modal stacks not captured | Proposal edit modal, finalize confirmation, verification confirm, permission dialog — all are spawned from `App.tsx` but not exercised by the theme-switch spec. |
 | Live motion / animations | Pulsing accent glow, drop-zone edges, status pulse — static screenshots can't verify the animation tokens (`--shadow-pulse-*`, keyframes). |
 | Settings dialog `lg` collapse | Mobile collapse (to a native `<select>`) was not captured — spec only fires at viewports below `lg` (1024 px); audit was at desktop widths. |
-

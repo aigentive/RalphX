@@ -32,6 +32,7 @@ const mockConversations: ChatConversation[] = [
     providerSessionId: "claude-session-1",
     providerHarness: "claude",
     claudeSessionId: "claude-session-1",
+    coordinationMode: "solo",
     title: "Dark mode implementation",
     messageCount: 12,
     lastMessageAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(), // 2 hours ago
@@ -45,6 +46,7 @@ const mockConversations: ChatConversation[] = [
     providerSessionId: "thread-codex-2",
     providerHarness: "codex",
     claudeSessionId: null,
+    coordinationMode: "solo",
     title: "API refactoring discussion",
     messageCount: 8,
     lastMessageAt: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(), // 1 day ago
@@ -58,6 +60,7 @@ const mockConversations: ChatConversation[] = [
     providerSessionId: null,
     providerHarness: null,
     claudeSessionId: null,
+    coordinationMode: "solo",
     title: null,
     messageCount: 0,
     lastMessageAt: null,
@@ -71,6 +74,7 @@ const mockConversations: ChatConversation[] = [
     providerSessionId: "thread-openai-4",
     providerHarness: "openai",
     claudeSessionId: null,
+    coordinationMode: "solo",
     title: "Cross-provider exploration",
     messageCount: 5,
     lastMessageAt: new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString(),

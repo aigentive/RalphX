@@ -8,10 +8,10 @@
 
 use super::helpers::*;
 use crate::application::git_service::GitService;
+use crate::domain::entities::{Project, ProjectId};
 use crate::domain::state_machine::transition_handler::merge_helpers::{
     compute_merge_worktree_path, pre_delete_worktree,
 };
-use crate::domain::entities::{Project, ProjectId};
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -55,7 +55,10 @@ async fn test_pre_delete_worktree_removes_registered_worktree() {
         .await
         .expect("create worktree for cleanup test");
 
-    assert!(merge_wt_path.exists(), "Precondition: worktree should exist");
+    assert!(
+        merge_wt_path.exists(),
+        "Precondition: worktree should exist"
+    );
 
     // Act: pre_delete_worktree should remove it via first attempt
     pre_delete_worktree(path, &merge_wt_path, "cleanup-test").await;

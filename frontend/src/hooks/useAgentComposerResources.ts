@@ -16,9 +16,25 @@ import { clickupApi, type ClickUpTaskSummary } from "@/api/clickup";
 import { granolaApi, type GranolaNoteSummary } from "@/api/granola";
 import { linearApi, type LinearIssueSummary } from "@/api/linear";
 import type { AgentComposerIntegrationKind } from "@/components/agents/composer/agentComposerCore";
+import {
+  atlassianIntegrationKeys,
+  isConfluenceConnected,
+} from "@/hooks/useAtlassianIntegration";
+import {
+  granolaIntegrationKeys,
+  isGranolaConnected,
+} from "@/hooks/useGranolaIntegration";
+import { useTicketingProviders } from "@/hooks/useTicketing";
+import { getValidTicketingProviders } from "@/lib/ticketing-provider-state";
 
 const CLICKUP_TASK_SEARCH_LIMIT = 10;
 const CLICKUP_TASK_SEARCH_DEBOUNCE_MS = 1_000;
+const INTEGRATION_SETTINGS_STALE_TIME_MS = 15_000;
+
+export type AgentComposerIntegrationAvailability = Record<
+  AgentComposerIntegrationKind,
+  boolean
+>;
 
 export const agentComposerKeys = {
   all: ["agent-composer"] as const,
@@ -160,6 +176,43 @@ export function useAgentComposerSkills({
     gcTime: 120_000,
     placeholderData: { skills: [] satisfies AgentComposerSkill[] },
   });
+}
+
+export function useAgentComposerIntegrationAvailability({
+  projectId,
+  enabled,
+}: {
+  projectId?: string | null;
+  enabled: boolean;
+}): AgentComposerIntegrationAvailability {
+  const ticketingProviders = useTicketingProviders(projectId ?? undefined, {
+    enabled,
+  });
+  const atlassianSettings = useQuery({
+    queryKey: atlassianIntegrationKeys.settings(),
+    queryFn: () => atlassianApi.getSettings(),
+    enabled,
+    staleTime: INTEGRATION_SETTINGS_STALE_TIME_MS,
+  });
+  const granolaSettings = useQuery({
+    queryKey: granolaIntegrationKeys.settings(),
+    queryFn: () => granolaApi.getSettings(),
+    enabled,
+    staleTime: INTEGRATION_SETTINGS_STALE_TIME_MS,
+  });
+  const validTicketingProviders = new Set(
+    getValidTicketingProviders(ticketingProviders.data).map(
+      ({ provider }) => provider,
+    ),
+  );
+
+  return {
+    jira: validTicketingProviders.has("jira"),
+    confluence: isConfluenceConnected(atlassianSettings.data),
+    linear: validTicketingProviders.has("linear"),
+    clickup: validTicketingProviders.has("clickup"),
+    granola: isGranolaConnected(granolaSettings.data),
+  };
 }
 
 export function useAgentComposerIntegrationResources({

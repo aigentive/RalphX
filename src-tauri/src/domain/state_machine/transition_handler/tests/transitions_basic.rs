@@ -1,4 +1,6 @@
 use super::helpers::{create_context_with_services, create_test_services};
+use crate::domain::entities::{ProjectId, Task, TaskId};
+use crate::domain::state_machine::services::{NotificationContext, TaskNotification};
 use crate::domain::state_machine::types::QaFailedData;
 use crate::domain::state_machine::{
     State, TaskEvent, TaskStateMachine, TransitionHandler, TransitionResult,
@@ -199,7 +201,19 @@ async fn test_qa_testing_passed() {
 async fn test_qa_testing_failed_notifies_user() {
     let (_spawner, emitter, notifier, _dep_manager, _review_starter, services) =
         create_test_services();
-    let context = create_context_with_services("task-1", "proj-1", services).with_qa_enabled();
+    let project_id = ProjectId::from_string("proj-1".to_string());
+    let mut task = Task::new(project_id.clone(), "QA notification task".to_string());
+    task.id = TaskId::from_string("task-1".to_string());
+    let context = create_context_with_services(
+        "task-1",
+        "proj-1",
+        services.with_notification_context(NotificationContext {
+            task,
+            history_entry_id: "committed-history-qa-failed".to_string(),
+            project_id,
+        }),
+    )
+    .with_qa_enabled();
     let mut machine = TaskStateMachine::new(context);
     let mut handler = TransitionHandler::new(&mut machine);
 
@@ -216,8 +230,18 @@ async fn test_qa_testing_failed_notifies_user() {
     // Should emit qa_failed event
     assert!(emitter.has_event("qa_failed"));
 
-    // Should notify user
-    assert!(notifier.has_notification("qa_failed"));
+    // The notification must retain the exact history entry committed by the transition owner.
+    let notifications = notifier.notification_records();
+    assert_eq!(notifications.len(), 1);
+    assert!(matches!(
+        notifications[0].notification,
+        TaskNotification::StateEntered(crate::domain::entities::InternalStatus::QaFailed)
+    ));
+    assert_eq!(notifications[0].context.task.id.as_str(), "task-1");
+    assert_eq!(
+        notifications[0].context.history_entry_id,
+        "committed-history-qa-failed"
+    );
 }
 
 #[tokio::test]

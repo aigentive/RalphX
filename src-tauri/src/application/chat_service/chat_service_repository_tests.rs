@@ -13,14 +13,16 @@ async fn task_execution_creates_new_conversation_even_when_prior_exists() {
     let task_id = "task-abc-123";
 
     // First call creates a conversation
-    let (first, _) = get_or_create_conversation(repo.clone(), ChatContextType::TaskExecution, task_id)
-        .await
-        .unwrap();
+    let (first, _) =
+        get_or_create_conversation(repo.clone(), ChatContextType::TaskExecution, task_id)
+            .await
+            .unwrap();
 
     // Second call must create a NEW row, not return the existing one
-    let (second, _) = get_or_create_conversation(repo.clone(), ChatContextType::TaskExecution, task_id)
-        .await
-        .unwrap();
+    let (second, _) =
+        get_or_create_conversation(repo.clone(), ChatContextType::TaskExecution, task_id)
+            .await
+            .unwrap();
 
     assert_ne!(
         first.id, second.id,
@@ -38,18 +40,20 @@ async fn task_execution_second_run_has_parent_conversation_id() {
     let task_id = "task-xyz-456";
 
     // First run — no parent yet
-    let (first, _) = get_or_create_conversation(repo.clone(), ChatContextType::TaskExecution, task_id)
-        .await
-        .unwrap();
+    let (first, _) =
+        get_or_create_conversation(repo.clone(), ChatContextType::TaskExecution, task_id)
+            .await
+            .unwrap();
     assert!(
         first.parent_conversation_id.is_none(),
         "First run must have no parent"
     );
 
     // Second run — should point to first run
-    let (second, _) = get_or_create_conversation(repo.clone(), ChatContextType::TaskExecution, task_id)
-        .await
-        .unwrap();
+    let (second, _) =
+        get_or_create_conversation(repo.clone(), ChatContextType::TaskExecution, task_id)
+            .await
+            .unwrap();
     assert_eq!(
         second.parent_conversation_id.as_deref(),
         Some(first.id.as_str().as_str()),
@@ -108,16 +112,21 @@ async fn is_new_true_on_first_call_false_on_second_for_reuse_context() {
     let task_id = "task-isnew-222";
 
     // First call: conversation is created → is_new must be true
-    let (_, is_new_first) = get_or_create_conversation(repo.clone(), ChatContextType::Task, task_id)
-        .await
-        .unwrap();
+    let (_, is_new_first) =
+        get_or_create_conversation(repo.clone(), ChatContextType::Task, task_id)
+            .await
+            .unwrap();
     assert!(is_new_first, "First call must return is_new=true");
 
     // Second call: conversation is reused → is_new must be false
-    let (_, is_new_second) = get_or_create_conversation(repo.clone(), ChatContextType::Task, task_id)
-        .await
-        .unwrap();
-    assert!(!is_new_second, "Second call must return is_new=false for reused conversation");
+    let (_, is_new_second) =
+        get_or_create_conversation(repo.clone(), ChatContextType::Task, task_id)
+            .await
+            .unwrap();
+    assert!(
+        !is_new_second,
+        "Second call must return is_new=false for reused conversation"
+    );
 }
 
 #[tokio::test]
@@ -126,13 +135,21 @@ async fn task_execution_always_returns_is_new_true() {
     let task_id = "task-exec-isnew-333";
 
     // TaskExecution always creates fresh conversations — both calls must return is_new=true
-    let (_, is_new_first) = get_or_create_conversation(repo.clone(), ChatContextType::TaskExecution, task_id)
-        .await
-        .unwrap();
-    assert!(is_new_first, "First TaskExecution call must return is_new=true");
+    let (_, is_new_first) =
+        get_or_create_conversation(repo.clone(), ChatContextType::TaskExecution, task_id)
+            .await
+            .unwrap();
+    assert!(
+        is_new_first,
+        "First TaskExecution call must return is_new=true"
+    );
 
-    let (_, is_new_second) = get_or_create_conversation(repo.clone(), ChatContextType::TaskExecution, task_id)
-        .await
-        .unwrap();
-    assert!(is_new_second, "Second TaskExecution call must also return is_new=true (force_fresh)");
+    let (_, is_new_second) =
+        get_or_create_conversation(repo.clone(), ChatContextType::TaskExecution, task_id)
+            .await
+            .unwrap();
+    assert!(
+        is_new_second,
+        "Second TaskExecution call must also return is_new=true (force_fresh)"
+    );
 }

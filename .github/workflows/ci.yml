@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  merge_group:
 
 permissions:
   contents: read
@@ -13,6 +14,13 @@ permissions:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
+
+env:
+  NEXTEST_VERSION: "0.9.133"
+  # Deep async poll chains (repair -> workspace-review -> chat send) exceed the
+  # 2 MiB std default test-thread stack in unoptimized builds; give libtest/nextest
+  # worker threads real headroom instead of sitting at the overflow boundary.
+  RUST_MIN_STACK: "8388608"
 
 jobs:
   changes:
@@ -24,6 +32,7 @@ jobs:
       run_rust: ${{ steps.decide.outputs.run_rust }}
       run_frontend: ${{ steps.decide.outputs.run_frontend }}
       run_visual: ${{ steps.decide.outputs.run_visual }}
+      run_tauri_alignment: ${{ steps.decide.outputs.run_tauri_alignment }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -31,44 +40,97 @@ jobs:
 
       - name: Detect changed paths
         id: filter
+        if: github.event_name != 'merge_group'
         uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
         with:
+          predicate-quantifier: every
           filters: |
             automation:
-              - '.github/workflows/**'
-              - '.github/codeql/**'
-              - '.github/dependabot.yml'
-              - 'scripts/build-prod-release.sh'
-              - 'scripts/render-homebrew-cask.sh'
+              - added|modified|deleted:
+                  - '.github/workflows/**'
+                  - '.github/actions/**'
+                  - '.github/codeql/**'
+                  - '.github/dependabot.yml'
+                  - 'CLAUDE.md'
+                  - '**/CLAUDE.md'
+                  - '.claude/rules/**'
+                  - 'scripts/test-rust-fast.sh'
+                  - 'scripts/claude_rule_utils.py'
+                  - 'scripts/validate-claude-rules.py'
+                  - 'scripts/tests/test-ci-rust-full-integration-targets.sh'
+                  - 'scripts/tests/test-coverage-rust-shards.sh'
+                  - 'scripts/tests/test-ci-path-filters.py'
+                  - 'scripts/tests/test-claude-rule-utils.py'
+                  - 'scripts/tests/test-claude-rules-activation.py'
+                  - 'scripts/build-prod-release.sh'
+                  - 'scripts/render-homebrew-cask.sh'
+                  - 'scripts/reconcile-homebrew-cask.sh'
+                  - 'scripts/render-updater-channel-manifests.sh'
+                  - 'scripts/validate-release-promotion.sh'
+                  - 'scripts/reconcile-stable-release-state.sh'
+                  - 'scripts/reconcile-nightly-updater-pointers.sh'
+                  - 'scripts/verify-public-updater-pointers.sh'
+                  - 'scripts/tests/test-daily-release-notes-from-override.sh'
+                  - 'scripts/tests/test-updater-channel-manifests.sh'
+                  - 'scripts/tests/test-release-promotion.sh'
+                  - 'scripts/tests/test-reconcile-homebrew-cask.sh'
+                  - 'scripts/tests/test-stable-release-state.sh'
             plugins:
-              - 'plugins/app/ralphx-external-mcp/**'
-              - 'plugins/app/ralphx-mcp-server/**'
-              - 'scripts/prepare-release-runtime.sh'
+              - added|modified|deleted:
+                  - 'plugins/app/ralphx-external-mcp/**'
+                  - 'plugins/app/ralphx-mcp-server/**'
+                  - 'scripts/prepare-release-runtime.sh'
+              - '!**/CLAUDE.md'
             rust:
-              - '.cargo/**'
-              - 'src-tauri/**'
-              - 'rust-toolchain.toml'
-              - 'scripts/bench-rust-build.sh'
-              - 'scripts/baselines/layering.json'
-              - 'scripts/ci-install-linux-deps.sh'
-              - 'scripts/check-layering.py'
-              - 'scripts/check-rust-test-features.py'
-              - 'scripts/test-rust-fast.sh'
-              - 'scripts/validate_sqlite_migrations.py'
+              - added|modified|deleted:
+                  - '.cargo/**'
+                  - '.github/actions/**'
+                  - 'src-tauri/**'
+                  - 'rust-toolchain.toml'
+                  - 'scripts/bench-rust-build.sh'
+                  - 'scripts/baselines/layering.json'
+                  - 'scripts/ci-install-linux-deps.sh'
+                  - 'scripts/check-layering.py'
+                  - 'scripts/check-rust-test-features.py'
+                  - 'scripts/test-rust-fast.sh'
+                  - 'scripts/validate_sqlite_migrations.py'
+              - '!**/CLAUDE.md'
             frontend:
               - 'frontend/**'
+              - '!**/CLAUDE.md'
             visual:
-              - 'frontend/**'
-              - 'src-tauri/Cargo.lock'
-              - 'src-tauri/Cargo.toml'
-              - 'src-tauri/src/application/runtime_wiring.rs'
-              - 'src-tauri/tauri.conf.json'
+              - added|modified|deleted:
+                  - 'frontend/**'
+                  - 'src-tauri/Cargo.lock'
+                  - 'src-tauri/Cargo.toml'
+                  - 'src-tauri/src/application/runtime_wiring.rs'
+                  - 'src-tauri/tauri.conf.json'
+              - '!**/CLAUDE.md'
+            tauri_alignment:
+              - added|modified|deleted:
+                  - 'scripts/check-tauri-package-alignment.mjs'
+                  - 'frontend/package.json'
+                  - 'frontend/package-lock.json'
+                  - 'src-tauri/Cargo.toml'
+                  - 'src-tauri/Cargo.lock'
 
       - name: Decide CI scope
         id: decide
         shell: bash
         run: |
           set -euo pipefail
+
+          if [[ "${GITHUB_EVENT_NAME}" == "merge_group" ]]; then
+            {
+              echo "run_automation=true"
+              echo "run_plugins=true"
+              echo "run_rust=true"
+              echo "run_frontend=true"
+              echo "run_visual=true"
+              echo "run_tauri_alignment=true"
+            } >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
 
           if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
             {
@@ -77,6 +139,7 @@ jobs:
               echo "run_rust=true"
               echo "run_frontend=true"
               echo "run_visual=true"
+              echo "run_tauri_alignment=true"
             } >> "${GITHUB_OUTPUT}"
             exit 0
           fi
@@ -87,6 +150,7 @@ jobs:
             echo "run_rust=${{ steps.filter.outputs.rust }}"
             echo "run_frontend=${{ steps.filter.outputs.frontend }}"
             echo "run_visual=${{ steps.filter.outputs.visual }}"
+            echo "run_tauri_alignment=${{ steps.filter.outputs.tauri_alignment }}"
           } >> "${GITHUB_OUTPUT}"
 
   automation-config:
@@ -106,6 +170,7 @@ jobs:
             git ls-files \
               '.github/workflows/*.yml' \
               '.github/workflows/*.yaml' \
+              '.github/actions/*/action.yml' \
               '.github/codeql/*.yml' \
               '.github/codeql/*.yaml' \
               '.github/dependabot.yml' \
@@ -117,6 +182,41 @@ jobs:
           fi
 
           ruby -e 'require "yaml"; ARGV.each { |path| YAML.load_file(path) }' "${yaml_files[@]}"
+          ACTIONLINT_VERSION="1.7.8"
+          ACTIONLINT_SHA256="be92c2652ab7b6d08425428797ceabeb16e31a781c07bc388456b4e592f3e36a"
+          actionlint_archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          actionlint_dir="$(mktemp -d)"
+          trap 'rm -rf "${actionlint_dir}"' EXIT
+          curl --fail --location --silent --show-error \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${actionlint_archive}" \
+            --output "${actionlint_dir}/${actionlint_archive}"
+          printf '%s  %s\n' "${ACTIONLINT_SHA256}" "${actionlint_dir}/${actionlint_archive}" | sha256sum --check --
+          tar -xzf "${actionlint_dir}/${actionlint_archive}" -C "${actionlint_dir}" actionlint
+          "${actionlint_dir}/actionlint"
+
+      - name: Validate Rust full integration target scope
+        shell: bash
+        run: bash scripts/tests/test-ci-rust-full-integration-targets.sh
+
+      - name: Validate Rust full integration progress reporting
+        shell: bash
+        run: bash scripts/tests/test-ci-rust-full-integration-heartbeat.sh
+
+      - name: Validate Rust coverage shard topology
+        shell: bash
+        run: bash scripts/tests/test-coverage-rust-shards.sh
+
+      - name: Validate CI path filters
+        shell: bash
+        run: python3 scripts/tests/test-ci-path-filters.py
+
+      - name: Validate Claude rule loading
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/tests/test-claude-rule-utils.py
+          python3 scripts/validate-claude-rules.py
+          python3 scripts/tests/test-claude-rules-activation.py
 
       - name: Validate release scripts
         shell: bash
@@ -124,9 +224,22 @@ jobs:
           set -euo pipefail
           bash -n scripts/build-prod-release.sh
           bash -n scripts/render-homebrew-cask.sh
+          bash -n scripts/reconcile-homebrew-cask.sh
+          bash -n scripts/render-updater-channel-manifests.sh
+          bash -n scripts/validate-release-promotion.sh
+          bash -n scripts/reconcile-stable-release-state.sh
+          bash -n scripts/reconcile-nightly-updater-pointers.sh
+          bash -n scripts/verify-public-updater-pointers.sh
+          bash scripts/tests/test-daily-release-notes-from-override.sh
+          bash scripts/tests/test-updater-channel-manifests.sh
+          bash scripts/tests/test-release-promotion.sh
+          bash scripts/tests/test-reconcile-homebrew-cask.sh
+          bash scripts/tests/test-stable-release-state.sh
 
   tauri-package-alignment:
     name: Tauri Package Alignment
+    needs: changes
+    if: needs.changes.outputs.run_tauri_alignment == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -146,13 +259,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
+      CARGO_PROFILE_TEST_DEBUG: "1"
       RALPHX_TEST_MODE: "1"
     steps:
       - uses: actions/checkout@v6
 
       - name: Install Linux system dependencies
-        shell: bash
-        run: bash scripts/ci-install-linux-deps.sh
+        uses: ./.github/actions/linux-deps
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
@@ -161,11 +274,15 @@ jobs:
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@e537394e10461340f56469a03c3e73f1705074a9
+        with:
+          tool: nextest@${{ env.NEXTEST_VERSION }}
 
       - name: Rust cache
         uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
           workspaces: './src-tauri -> target'
+          shared-key: rust-test-deps
+          save-if: "false"
 
       - name: Validate SQLite migrations
         run: |
@@ -195,13 +312,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
+      CARGO_PROFILE_TEST_DEBUG: "1"
       RALPHX_TEST_MODE: "1"
     steps:
       - uses: actions/checkout@v6
 
       - name: Install Linux system dependencies
-        shell: bash
-        run: bash scripts/ci-install-linux-deps.sh
+        uses: ./.github/actions/linux-deps
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
@@ -210,11 +327,15 @@ jobs:
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@e537394e10461340f56469a03c3e73f1705074a9
+        with:
+          tool: nextest@${{ env.NEXTEST_VERSION }}
 
       - name: Rust cache
         uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
           workspaces: './src-tauri -> target'
+          shared-key: rust-test-deps
+          save-if: "false"
 
       - name: Build Rust lib tests archive
         run: |
@@ -234,7 +355,7 @@ jobs:
           retention-days: 1
 
   rust-lib-tests:
-    name: Rust Lib Tests (Shard ${{ matrix.partition }})
+    name: Rust Lib Tests (Shard ${{ matrix.shard }}/2)
     needs:
       - changes
       - rust-lib-nextest-archive
@@ -244,15 +365,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        partition: ["1/2", "2/2"]
+        shard: [1, 2]
     env:
       RALPHX_TEST_MODE: "1"
     steps:
       - uses: actions/checkout@v6
 
       - name: Install Linux system dependencies
-        shell: bash
-        run: bash scripts/ci-install-linux-deps.sh
+        uses: ./.github/actions/linux-deps
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
@@ -261,6 +381,8 @@ jobs:
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@e537394e10461340f56469a03c3e73f1705074a9
+        with:
+          tool: nextest@${{ env.NEXTEST_VERSION }}
 
       - name: Download Rust lib tests archive
         uses: actions/download-artifact@v8
@@ -268,28 +390,36 @@ jobs:
           name: rust-lib-tests-nextest-archive
           path: .
 
-      - name: Run Rust lib tests shard ${{ matrix.partition }}
+      - name: Run Rust lib tests shard ${{ matrix.shard }}/2
         run: |
           cargo nextest run \
             --archive-file rust-lib-tests.tar.zst \
             --workspace-remap "${GITHUB_WORKSPACE}/src-tauri" \
             --profile ci \
-            --partition hash:${{ matrix.partition }}
+            --partition hash:${{ matrix.shard }}/2
 
-  rust-clippy:
-    name: Rust Clippy
+      - name: Upload Rust lib test timings
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust-lib-tests-junit-${{ matrix.shard }}-of-2
+          path: src-tauri/target/nextest/ci/junit.xml
+          if-no-files-found: warn
+          retention-days: 7
+
+  rust-clippy-min:
+    name: Rust Clippy (no default features)
     needs: changes
     if: needs.changes.outputs.run_rust == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     env:
       RALPHX_TEST_MODE: "1"
     steps:
       - uses: actions/checkout@v6
 
       - name: Install Linux system dependencies
-        shell: bash
-        run: bash scripts/ci-install-linux-deps.sh
+        uses: ./.github/actions/linux-deps
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
@@ -301,6 +431,7 @@ jobs:
         uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
           workspaces: './src-tauri -> target'
+          shared-key: rust-clippy-min
 
       - name: Run clippy without default features
         run: |
@@ -310,6 +441,32 @@ jobs:
             --bins \
             --no-default-features \
             -- -D warnings
+
+  rust-clippy-full:
+    name: Rust Clippy (all features)
+    needs: changes
+    if: needs.changes.outputs.run_rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RALPHX_TEST_MODE: "1"
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Linux system dependencies
+        uses: ./.github/actions/linux-deps
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: 1.91.0
+          components: clippy
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          workspaces: './src-tauri -> target'
+          shared-key: rust-clippy-full
 
       - name: Run clippy with all targets and all features
         run: |
@@ -322,7 +479,7 @@ jobs:
   rust-doctests:
     name: Rust Doctests
     needs: changes
-    if: needs.changes.outputs.run_rust == 'true' && github.event_name == 'push'
+    if: needs.changes.outputs.run_rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
@@ -331,8 +488,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install Linux system dependencies
-        shell: bash
-        run: bash scripts/ci-install-linux-deps.sh
+        uses: ./.github/actions/linux-deps
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
@@ -348,20 +504,20 @@ jobs:
         run: |
           cargo test --manifest-path src-tauri/Cargo.toml --workspace --doc
 
-  rust-full-integration:
-    name: Rust Full Integration
+  rust-integration-nextest-archive:
+    name: Rust Integration Tests Archive
     needs: changes
-    if: needs.changes.outputs.run_rust == 'true' && github.event_name == 'push'
+    if: needs.changes.outputs.run_rust == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 40
     env:
+      CARGO_PROFILE_TEST_DEBUG: "1"
       RALPHX_TEST_MODE: "1"
     steps:
       - uses: actions/checkout@v6
 
       - name: Install Linux system dependencies
-        shell: bash
-        run: bash scripts/ci-install-linux-deps.sh
+        uses: ./.github/actions/linux-deps
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
@@ -370,18 +526,98 @@ jobs:
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@e537394e10461340f56469a03c3e73f1705074a9
+        with:
+          tool: nextest@${{ env.NEXTEST_VERSION }}
 
       - name: Rust cache
         uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
           workspaces: './src-tauri -> target'
+          shared-key: rust-test-deps
+          cache-on-failure: true
+          save-if: "true"
 
-      - name: Run full Rust integration suite
+      - name: Build Rust integration tests archive
         run: |
+          bash scripts/test-rust-fast.sh full-integration-archive rust-integration-tests.tar.zst
+
+      - name: Upload Rust integration tests archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust-integration-tests-nextest-archive
+          path: rust-integration-tests.tar.zst
+          if-no-files-found: error
+          retention-days: 1
+
+  rust-full-integration:
+    name: Rust Full Integration (Shard ${{ matrix.shard }}/2)
+    needs:
+      - changes
+      - rust-integration-nextest-archive
+    if: needs.changes.outputs.run_rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    env:
+      RALPHX_TEST_MODE: "1"
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Linux system dependencies
+        uses: ./.github/actions/linux-deps
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: 1.91.0
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@e537394e10461340f56469a03c3e73f1705074a9
+        with:
+          tool: nextest@${{ env.NEXTEST_VERSION }}
+
+      - name: Download Rust integration tests archive
+        uses: actions/download-artifact@v8
+        with:
+          name: rust-integration-tests-nextest-archive
+          path: .
+
+      - name: Run Rust integration tests shard ${{ matrix.shard }}/2
+        run: |
+          heartbeat() {
+            while true; do
+              printf '[rust-full-integration] %s still running\n' \
+                "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+              sleep 60
+            done
+          }
+
+          heartbeat &
+          heartbeat_pid=$!
+
+          cleanup() {
+            kill "${heartbeat_pid}" 2>/dev/null || true
+            wait "${heartbeat_pid}" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
           cargo nextest run \
-            --manifest-path src-tauri/Cargo.toml \
+            --archive-file rust-integration-tests.tar.zst \
+            --workspace-remap "${GITHUB_WORKSPACE}/src-tauri" \
             --profile ci \
-            --features test-utils
+            --partition slice:${{ matrix.shard }}/2
+
+      - name: Upload Rust integration test timings
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust-integration-tests-junit-${{ matrix.shard }}-of-2
+          path: src-tauri/target/nextest/ci/junit.xml
+          if-no-files-found: warn
+          retention-days: 7
 
   rust-macos-build:
     name: Rust macOS Build
@@ -429,8 +665,10 @@ jobs:
       - rust-ipc-contracts
       - rust-lib-nextest-archive
       - rust-lib-tests
-      - rust-clippy
+      - rust-clippy-min
+      - rust-clippy-full
       - rust-doctests
+      - rust-integration-nextest-archive
       - rust-full-integration
       - rust-macos-build
     if: always()
@@ -455,8 +693,10 @@ jobs:
             "${{ needs.rust-ipc-contracts.result }}" \
             "${{ needs.rust-lib-nextest-archive.result }}" \
             "${{ needs.rust-lib-tests.result }}" \
-            "${{ needs.rust-clippy.result }}" \
+            "${{ needs.rust-clippy-min.result }}" \
+            "${{ needs.rust-clippy-full.result }}" \
             "${{ needs.rust-doctests.result }}" \
+            "${{ needs.rust-integration-nextest-archive.result }}" \
             "${{ needs.rust-full-integration.result }}" \
             "${{ needs.rust-macos-build.result }}"; do
             if [[ "${job_result}" != "success" && "${job_result}" != "skipped" ]]; then
@@ -508,6 +748,14 @@ jobs:
 
       - name: Build plugin package
         run: npm run build
+        working-directory: ${{ matrix.package_dir }}
+
+      - name: Verify generated plugin output is committed
+        run: |
+          if [[ -n "$(git status --short -- build)" ]]; then
+            git status --short -- build
+            exit 1
+          fi
         working-directory: ${{ matrix.package_dir }}
 
       - name: Run plugin tests
@@ -622,6 +870,43 @@ jobs:
         run: npm run test:run -- --shard=2/2
         working-directory: frontend
 
+  frontend-chat-scroll-integration:
+    name: Frontend Chat Scroll Integration
+    needs: changes
+    if: needs.changes.outputs.run_frontend == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+        working-directory: frontend
+
+      - name: Run chat scroll lifecycle integration test
+        run: npm run test:integration:chat-scroll
+        working-directory: frontend
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-integration-report
+          path: frontend/playwright-report/
+          if-no-files-found: ignore
+          retention-days: 7
+
   frontend-tests:
     name: Frontend Tests
     needs:
@@ -629,6 +914,7 @@ jobs:
       - frontend-quality
       - frontend-tests-shard-1
       - frontend-tests-shard-2
+      - frontend-chat-scroll-integration
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -650,7 +936,8 @@ jobs:
           for job_result in \
             "${{ needs.frontend-quality.result }}" \
             "${{ needs.frontend-tests-shard-1.result }}" \
-            "${{ needs.frontend-tests-shard-2.result }}"; do
+            "${{ needs.frontend-tests-shard-2.result }}" \
+            "${{ needs.frontend-chat-scroll-integration.result }}"; do
             if [[ "${job_result}" != "success" ]]; then
               echo "Frontend suite result: ${job_result}" >&2
               exit 1

@@ -1,12 +1,12 @@
 // Tests for merge progress event emission in the merge pipeline.
 //
-// The actual event emission goes through `app_handle.emit()` which requires a real
-// Tauri runtime. In tests, `app_handle` is None, so events are silently dropped.
+// The actual event emission goes through `EventSink`.
 // These tests verify:
 // 1. Phase constants match frontend expectations (consistency across Rust ↔ TS)
-// 2. emit_merge_progress is a safe no-op with None app_handle
-// 3. The merge pipeline doesn't crash when event emission calls run with None
-// 4. Phase ordering in derive_phases_from_analysis matches pipeline execution order
+// 2. emit_merge_progress is a safe no-op with None event_sink
+// 3. emit_merge_progress records the expected EventSink event and payload shape
+// 4. The merge pipeline doesn't crash when event emission calls run with None
+// 5. Phase ordering in derive_phases_from_analysis matches pipeline execution order
 
 use crate::domain::entities::merge_progress_event::{
     derive_phases_from_analysis, MergePhase, MergePhaseStatus, PhaseAnalysisEntry,
@@ -177,14 +177,14 @@ fn structural_phase_labels_are_human_readable() {
 }
 
 // ==================
-// emit_merge_progress with None app_handle is safe no-op
+// emit_merge_progress with None event_sink is safe no-op
 // ==================
 
 #[test]
 fn emit_merge_progress_with_none_does_not_panic() {
     use super::super::merge_validation::emit_merge_progress;
 
-    // All phase/status combinations should be safe with None app_handle
+    // All phase/status combinations should be safe with None event_sink
     let phases = [
         MergePhase::new(MergePhase::MERGE_PREPARATION),
         MergePhase::new(MergePhase::PRECONDITION_CHECK),
@@ -204,8 +204,8 @@ fn emit_merge_progress_with_none_does_not_panic() {
 
     for phase in &phases {
         for status in &statuses {
-            // This must not panic — None app_handle should be a silent no-op
-            emit_merge_progress::<tauri::Wry>(
+            // This must not panic — None event_sink should be a silent no-op
+            emit_merge_progress(
                 None,
                 "task-test",
                 phase.clone(),
@@ -214,6 +214,30 @@ fn emit_merge_progress_with_none_does_not_panic() {
             );
         }
     }
+}
+
+#[test]
+fn emit_merge_progress_records_event_sink_payload() {
+    use super::super::merge_validation::emit_merge_progress;
+    use ralphx_events::RecordingEventSink;
+
+    let sink = RecordingEventSink::new();
+
+    emit_merge_progress(
+        Some(&sink),
+        "task-test",
+        MergePhase::finalize(),
+        MergePhaseStatus::Started,
+        "Finalizing merge".to_string(),
+    );
+
+    let events = sink.events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event, "task:merge_progress");
+    assert_eq!(events[0].payload["task_id"], "task-test");
+    assert_eq!(events[0].payload["phase"], MergePhase::FINALIZE);
+    assert_eq!(events[0].payload["status"], "started");
+    assert_eq!(events[0].payload["message"], "Finalizing merge");
 }
 
 // ==================

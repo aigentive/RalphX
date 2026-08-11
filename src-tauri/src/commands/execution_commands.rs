@@ -14,7 +14,9 @@ use crate::application::chat_service::{
     uses_execution_slot, ChatService, SendCallerContext, SendMessageOptions,
 };
 use crate::application::reconciliation::UserRecoveryAction;
-use crate::application::team_state_tracker::TeamStateTracker;
+use crate::application::task_restart::{
+    build_terminal_ready_restart_plan, classify_failed_restart, FailedRestartClassification,
+};
 use crate::application::{AppState, ReconciliationRunner, TaskTransitionService};
 use crate::domain::entities::{
     app_state::ExecutionHaltMode, task_step::StepProgressSummary, types::IdeationSessionId,
@@ -23,8 +25,9 @@ use crate::domain::entities::{
 };
 use crate::domain::execution::ExecutionSettings;
 use crate::domain::execution::{
-    build_execution_status_response, build_running_ideation_session, build_running_process,
-    build_running_workspace_session, elapsed_seconds_for_status, ExecutionStatusInput,
+    build_execution_status_response, build_running_ideation_session,
+    build_running_process_with_agent_workspace, build_running_workspace_session,
+    elapsed_seconds_for_status, ExecutionStatusInput,
 };
 use crate::domain::execution::{count_execution_status, ScopedExecutionSubject};
 use crate::domain::state_machine::services::TaskScheduler;
@@ -50,10 +53,11 @@ use control_helpers::*;
 mod recovery;
 
 use recovery::{
-    build_reconciler_for_recovery, build_transition_service_for_recovery, validate_resume,
+    build_reconciler_for_recovery, build_transition_service_for_recovery,
+    restart_transition_target, validate_resume,
 };
 pub use recovery::{
-    categorize_resume_state, CategorizedResume, RestartResult, ResumeCategory,
+    categorize_resume_state, CategorizedResume, RestartDisposition, RestartResult, ResumeCategory,
     ResumeValidationResult, ResumeValidationWarning,
 };
 
@@ -71,11 +75,13 @@ use scheduling::schedule_ready_tasks_for_project;
 
 mod lifecycle;
 
-pub(crate) use lifecycle::prepare_resumed_task_for_entry_actions;
 pub use lifecycle::{
     __cmd__pause_execution, __cmd__resume_execution, __cmd__stop_execution,
     __tauri_command_name_pause_execution, __tauri_command_name_resume_execution,
     __tauri_command_name_stop_execution, pause_execution, resume_execution, stop_execution,
+};
+pub(crate) use lifecycle::{
+    determine_paused_restore_status, prepare_resumed_task_for_entry_actions,
 };
 
 mod settings;
@@ -114,6 +120,18 @@ pub async fn recover_task_execution(
     app: tauri::AppHandle,
 ) -> Result<bool, String> {
     let task_id = crate::domain::entities::TaskId::from_string(task_id);
+    let task = match app_state.task_repo.get_by_id(&task_id).await {
+        Ok(Some(task)) => task,
+        Ok(None) => return Ok(false),
+        Err(error) => return Err(error.to_string()),
+    };
+    crate::application::tasks_feature_policy::TasksFeaturePolicy::from_state(&app_state)
+        .authorize_session(
+            task.ideation_session_id.as_ref(),
+            crate::domain::ideation::TasksFeatureAction::Progress,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
     let reconciler = build_reconciler_for_recovery(&app_state, Arc::clone(&execution_state), app);
 
     Ok(reconciler.recover_execution_stop(&task_id).await)
@@ -182,6 +200,91 @@ pub async fn restart_task(
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Task not found: {}", task_id.as_str()))?;
+    crate::application::tasks_feature_policy::TasksFeaturePolicy::from_state(&state)
+        .authorize_session(
+            task.ideation_session_id.as_ref(),
+            crate::domain::ideation::TasksFeatureAction::Progress,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+
+    if task.internal_status == InternalStatus::Failed {
+        let classification = classify_failed_restart(&state, &task).await;
+        match classification {
+            FailedRestartClassification::RecoverToReview(_) => {
+                // Repeat the complete proof immediately before the corrective CAS so a
+                // worktree/validation change during the first preflight cannot advance review.
+                let current_task = state
+                    .task_repo
+                    .get_by_id(&task_id)
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| format!("Task not found: {}", task_id.as_str()))?;
+                let FailedRestartClassification::RecoverToReview(evidence) =
+                    classify_failed_restart(&state, &current_task).await
+                else {
+                    return Ok(RestartResult::Blocked {
+                        warnings: vec![ResumeValidationWarning {
+                            code: "recovery_authority_changed".to_string(),
+                            message: "Recovery evidence changed during preflight; no task state was mutated".to_string(),
+                        }],
+                    });
+                };
+                let transition_service =
+                    build_transition_service_for_recovery(&state, Arc::clone(&execution_state));
+                let updated_task = transition_service
+                    .recover_failed_completed_task_to_review(&task_id, &evidence)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                return Ok(RestartResult::Success {
+                    task: serde_json::to_value(&updated_task).map_err(|error| error.to_string())?,
+                    category: ResumeCategory::Redirect,
+                    resumed_to_status: InternalStatus::PendingReview.as_str().to_string(),
+                    disposition: Some(RestartDisposition::RecoveredToReview),
+                });
+            }
+            FailedRestartClassification::RestartRequired(_) => {
+                let plan = build_terminal_ready_restart_plan(&state.task_step_repo, &task)
+                    .await
+                    .map_err(|error| format!("Failed to prepare task restart: {error}"))?
+                    .ok_or_else(|| {
+                        "Failed task restart did not produce a terminal plan".to_string()
+                    })?;
+                let transition_service =
+                    build_transition_service_for_recovery(&state, Arc::clone(&execution_state));
+                let updated_task = transition_service
+                    .restart_terminal_task_to_ready(
+                        plan,
+                        Some(build_restart_metadata(note.as_deref())),
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+                schedule_ready_tasks_for_project(
+                    &state,
+                    Arc::clone(&execution_state),
+                    Some(updated_task.project_id.clone()),
+                )
+                .await;
+                return Ok(RestartResult::Success {
+                    task: serde_json::to_value(&updated_task).map_err(|error| error.to_string())?,
+                    category: ResumeCategory::Direct,
+                    resumed_to_status: InternalStatus::Ready.as_str().to_string(),
+                    disposition: Some(RestartDisposition::RestartedToReady),
+                });
+            }
+            FailedRestartClassification::Blocked(warnings) => {
+                return Ok(RestartResult::Blocked {
+                    warnings: warnings
+                        .into_iter()
+                        .map(|warning| ResumeValidationWarning {
+                            code: warning.code,
+                            message: warning.message,
+                        })
+                        .collect(),
+                });
+            }
+        }
+    }
 
     // 2. Verify task is in Stopped status
     if task.internal_status != InternalStatus::Stopped {
@@ -227,17 +330,57 @@ pub async fn restart_task(
     let transition_service =
         build_transition_service_for_recovery(&state, Arc::clone(&execution_state));
 
+    let transition_target = restart_transition_target(stopped_from_status);
+    if !task.internal_status.can_transition_to(transition_target) {
+        return Ok(RestartResult::ValidationFailed {
+            warnings: vec![ResumeValidationWarning {
+                code: "unsupported_restart_target".to_string(),
+                message: format!(
+                    "Stopped task from '{}' cannot safely restart directly to '{}'",
+                    stopped_from_status.as_str(),
+                    transition_target.as_str()
+                ),
+            }],
+            stopped_from_status: stopped_from_status.as_str().to_string(),
+        });
+    }
+    let terminal_restart_plan =
+        if transition_target == InternalStatus::Ready && task.internal_status.is_terminal() {
+            build_terminal_ready_restart_plan(&state.task_step_repo, &task)
+                .await
+                .map_err(|e| format!("Failed to prepare task restart: {e}"))?
+        } else {
+            None
+        };
+
     // 7. Transition to target status: clear stop metadata and optionally store restart_note
     let restart_metadata = build_restart_metadata(note.as_deref());
-    let updated_task = transition_service
-        .transition_task_with_metadata(&task_id, categorized.target_status, Some(restart_metadata))
-        .await
-        .map_err(|e| e.to_string())?;
+    let updated_task = if let Some(plan) = terminal_restart_plan {
+        transition_service
+            .restart_terminal_task_to_ready(plan, Some(restart_metadata))
+            .await
+            .map_err(|e| e.to_string())?
+    } else {
+        transition_service
+            .transition_task_with_metadata(&task_id, transition_target, Some(restart_metadata))
+            .await
+            .map_err(|e| e.to_string())?
+    };
+
+    if transition_target == InternalStatus::Ready {
+        schedule_ready_tasks_for_project(
+            &state,
+            Arc::clone(&execution_state),
+            Some(updated_task.project_id.clone()),
+        )
+        .await;
+    }
 
     tracing::info!(
         task_id = task_id.as_str(),
         category = ?categorized.category,
-        target = categorized.target_status.as_str(),
+        target = transition_target.as_str(),
+        stopped_from = stopped_from_status.as_str(),
         "Task restarted successfully"
     );
 
@@ -248,7 +391,7 @@ pub async fn restart_task(
             serde_json::json!({
                 "taskId": updated_task.id.as_str(),
                 "projectId": updated_task.project_id.as_str(),
-                "resumedToStatus": categorized.target_status.as_str(),
+                "resumedToStatus": transition_target.as_str(),
                 "stoppedFromStatus": stopped_from_status.as_str(),
                 "category": categorized.category,
                 "stopReason": stop_metadata.stop_reason,
@@ -264,7 +407,8 @@ pub async fn restart_task(
     Ok(RestartResult::Success {
         task: task_json,
         category: categorized.category,
-        resumed_to_status: categorized.target_status.as_str().to_string(),
+        resumed_to_status: transition_target.as_str().to_string(),
+        disposition: None,
     })
 }
 

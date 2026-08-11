@@ -40,7 +40,7 @@ fn init_git_repo(path: &std::path::Path) {
 fn build_service(
     app_state: &AppState,
     execution_state: &Arc<ExecutionState>,
-) -> TaskTransitionService<tauri::Wry> {
+) -> TaskTransitionService {
     TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
@@ -90,18 +90,18 @@ async fn seed_reviewing_task(
 
 // ============================================================================
 // Test 1: BranchFreshnessConflict with conflict-marker evidence in initial
-// on_enter path → Merging
+// on_enter path → Escalated
 //
 // Reproduces the startup-recovery bug: when execute_entry_actions is called
 // directly (not through transition_task), a BranchFreshnessConflict returned
 // from on_enter(Reviewing) previously had no handler and was silently dropped,
 // leaving the task stuck in Reviewing forever. Current semantics route review-
-// origin freshness conflicts with merge-conflict evidence into Merging so the
-// merger path resolves the conflict instead of looping back into Reviewing.
+// origin marker-only evidence has no trustworthy branch-update direction, so
+// recovery escalates rather than guessing that merge authority owns it.
 // ============================================================================
 
 #[tokio::test]
-async fn test_branch_freshness_conflict_initial_on_enter_routes_to_merging() {
+async fn test_branch_freshness_conflict_initial_on_enter_routes_to_escalated() {
     // Clean project git repo — freshness check (run_reviewing_freshness_check)
     // runs against this path and must pass without raising BranchFreshnessConflict.
     let project_temp = tempfile::TempDir::new().unwrap();
@@ -132,10 +132,11 @@ async fn test_branch_freshness_conflict_initial_on_enter_routes_to_merging() {
     .unwrap();
 
     // Precondition: verify conflict markers are actually detectable.
-    let has_markers =
-        ralphx_lib::application::git_service::GitService::has_conflict_markers(worktree_temp.path())
-            .await
-            .expect("has_conflict_markers should succeed");
+    let has_markers = ralphx_lib::application::git_service::GitService::has_conflict_markers(
+        worktree_temp.path(),
+    )
+    .await
+    .expect("has_conflict_markers should succeed");
     assert!(
         has_markers,
         "Precondition: has_conflict_markers must detect markers in task worktree"
@@ -147,8 +148,7 @@ async fn test_branch_freshness_conflict_initial_on_enter_routes_to_merging() {
 
     let project_dir = project_temp.path().to_string_lossy().to_string();
     let worktree_dir = worktree_temp.path().to_string_lossy().to_string();
-    let (task_id, task) =
-        seed_reviewing_task(&app_state, &project_dir, Some(&worktree_dir)).await;
+    let (task_id, task) = seed_reviewing_task(&app_state, &project_dir, Some(&worktree_dir)).await;
 
     // Act: call execute_entry_actions directly — simulates the StartupJobRunner
     // recovery path (NOT the auto-transition path triggered by transition_task).
@@ -156,8 +156,7 @@ async fn test_branch_freshness_conflict_initial_on_enter_routes_to_merging() {
         .execute_entry_actions(&task_id, &task, InternalStatus::Reviewing)
         .await;
 
-    // Assert: task must have been routed to Merging because the worktree
-    // contained actual conflict markers.
+    // Assert: marker-only evidence cannot safely select a branch-update direction.
     let updated = app_state
         .task_repo
         .get_by_id(&task_id)
@@ -167,8 +166,8 @@ async fn test_branch_freshness_conflict_initial_on_enter_routes_to_merging() {
 
     assert_eq!(
         updated.internal_status,
-        InternalStatus::Merging,
-        "BranchFreshnessConflict with conflict-marker evidence during initial on_enter(Reviewing) must route to Merging; got: {:?}",
+        InternalStatus::Escalated,
+        "Marker-only BranchFreshnessConflict during initial on_enter(Reviewing) must escalate; got: {:?}",
         updated.internal_status
     );
 }

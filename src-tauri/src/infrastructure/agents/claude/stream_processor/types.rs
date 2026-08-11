@@ -3,7 +3,35 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::entities::AgentRunUsage;
+use crate::domain::entities::{AgentRunUsage, UsageProvenance};
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClaudeResultUsage {
+    #[serde(default)]
+    pub input_tokens: Option<u64>,
+    #[serde(default)]
+    pub output_tokens: Option<u64>,
+    #[serde(default, alias = "cache_creation_input_tokens")]
+    pub cache_creation_tokens: Option<u64>,
+    #[serde(
+        default,
+        alias = "cache_read_input_tokens",
+        alias = "cached_input_tokens"
+    )]
+    pub cache_read_tokens: Option<u64>,
+}
+
+impl ClaudeResultUsage {
+    pub fn into_agent_run_usage(self, estimated_usd: Option<f64>) -> AgentRunUsage {
+        AgentRunUsage {
+            input_tokens: self.input_tokens,
+            output_tokens: self.output_tokens,
+            cache_creation_tokens: self.cache_creation_tokens,
+            cache_read_tokens: self.cache_read_tokens,
+            estimated_usd,
+        }
+    }
+}
 
 // ============================================================================
 // Stream Message Types (from Claude CLI stream-json output)
@@ -53,6 +81,8 @@ pub enum StreamMessage {
         subtype: Option<String>,
         #[serde(default)]
         cost_usd: f64,
+        #[serde(default)]
+        usage: Option<ClaudeResultUsage>,
     },
     /// System event (e.g., init messages, hook events)
     #[serde(rename = "system")]
@@ -73,6 +103,10 @@ pub enum StreamMessage {
         exit_code: Option<i32>,
         #[serde(default)]
         outcome: Option<String>,
+        #[serde(default)]
+        estimated_tokens: Option<u64>,
+        #[serde(default)]
+        estimated_tokens_delta: Option<u64>,
     },
     /// User message (contains tool results when using MCP)
     #[serde(rename = "user")]
@@ -146,6 +180,7 @@ pub struct ContentBlock {
 pub struct ContentDelta {
     #[serde(rename = "type")]
     pub delta_type: String,
+    #[serde(alias = "thinking")]
     pub text: Option<String>,
     pub partial_json: Option<String>,
 }
@@ -202,6 +237,15 @@ pub struct ToolCall {
 pub enum ContentBlockItem {
     #[serde(rename = "text")]
     Text { text: String },
+    #[serde(rename = "thinking")]
+    Thinking {
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
+        /// Provider-reported reasoning-token total when a harness exposes it.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reasoning_tokens: Option<u64>,
+    },
     #[serde(rename = "tool_use")]
     ToolUse {
         id: Option<String>,
@@ -224,8 +268,20 @@ pub enum ContentBlockItem {
 pub enum StreamEvent {
     /// Text chunk received
     TextChunk(String),
-    /// Thinking block from Claude's extended reasoning
-    Thinking(String),
+    /// Thinking block from Claude's extended reasoning.
+    /// `block_index` is authoritative, so consumers do not infer it from
+    /// mutable processor state.
+    Thinking { text: String, block_index: u64 },
+    /// A thinking block was sealed with its final duration.
+    ThinkingSettled {
+        block_index: u64,
+        duration_ms: Option<u64>,
+    },
+    /// Estimated tokens consumed while Claude is thinking.
+    ThinkingProgress {
+        estimated_tokens: u64,
+        estimated_tokens_delta: Option<u64>,
+    },
     /// Tool call started (name and id available)
     ToolCallStarted {
         name: String,
@@ -241,6 +297,7 @@ pub enum StreamEvent {
     ToolResultReceived {
         tool_use_id: String,
         result: serde_json::Value,
+        is_error: bool,
         parent_tool_use_id: Option<String>,
     },
     /// Session ID received (from Result or Assistant message)
@@ -253,10 +310,6 @@ pub enum StreamEvent {
         description: Option<String>,
         subagent_type: Option<String>,
         model: Option<String>,
-        /// Teammate name if this Task spawns a team member (from args.name)
-        teammate_name: Option<String>,
-        /// Team name if this Task spawns a team member (from args.team_name)
-        team_name: Option<String>,
     },
     /// Task subagent completed (detected from Task tool_result)
     TaskCompleted {
@@ -283,32 +336,6 @@ pub enum StreamEvent {
     },
     /// Hook block (from synthetic user message with text content)
     HookBlock { reason: String },
-    /// Team created by lead (from TeamCreate tool result)
-    TeamCreated {
-        team_name: String,
-        config_path: String,
-    },
-    /// In-process teammate spawned by lead (from Task tool result with teammate_spawned status)
-    TeammateSpawned {
-        teammate_name: String,
-        team_name: String,
-        agent_id: String,
-        model: String,
-        color: String,
-        /// The teammate's initial task prompt (from Task tool's `prompt` field)
-        prompt: String,
-        /// Claude Code agent type controlling built-in tool set (e.g. "general-purpose")
-        agent_type: String,
-    },
-    /// Team message sent (from SendMessage tool result)
-    TeamMessageSent {
-        sender: String,
-        recipient: Option<String>,
-        content: String,
-        message_type: String,
-    },
-    /// Team deleted (from TeamDelete tool result)
-    TeamDeleted { team_name: String },
     /// Turn completed — the lead's result event signals the end of one
     /// agentic turn in interactive (multi-turn) mode. The CLI process stays
     /// alive for subsequent turns.
@@ -339,6 +366,7 @@ pub struct StreamResult {
     pub content_blocks: Vec<ContentBlockItem>,
     pub session_id: Option<String>,
     pub usage: AgentRunUsage,
+    pub usage_provenance: Option<UsageProvenance>,
     pub is_error: bool,
     pub errors: Vec<String>,
     pub error_subtype: Option<String>,

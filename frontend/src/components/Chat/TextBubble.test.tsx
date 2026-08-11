@@ -7,11 +7,26 @@
  * - Copy button functionality
  */
 
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ComponentProps } from "react";
 import { describe, it, expect, vi } from "vitest";
 import { TextBubble } from "./TextBubble";
 import { openPath } from "@tauri-apps/plugin-opener";
+
+const markdownRenderProbe = vi.hoisted(() => vi.fn());
+
+vi.mock("react-markdown", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("react-markdown")>();
+
+  return {
+    ...actual,
+    default: function CountedReactMarkdown(props: ComponentProps<typeof actual.default>) {
+      markdownRenderProbe();
+      return <actual.default {...props} />;
+    },
+  };
+});
 
 vi.mock("@tauri-apps/plugin-opener", () => ({
   openPath: vi.fn().mockResolvedValue(undefined),
@@ -107,6 +122,107 @@ describe("TextBubble", () => {
       expect(await screen.findByText("bold")).toBeInTheDocument();
     });
 
+    it("hydrates the markdown renderer only once", async () => {
+      const { rerender } = render(
+        <TextBubble text="# First heading" isUser={false} isStreaming />,
+      );
+
+      const markdown = await screen.findByRole("heading", { level: 1 });
+      rerender(<TextBubble text="# Second heading" isUser={false} isStreaming />);
+
+      expect(screen.getByRole("heading", { level: 1 })).toBe(markdown);
+      expect(screen.queryByText("# Second heading")).not.toBeInTheDocument();
+    });
+
+    it("keeps the markdown subtree mounted across rapid streaming chunks", async () => {
+      const { rerender } = render(
+        <TextBubble text="**first**" isUser={false} isStreaming />,
+      );
+      const markdown = (await screen.findByText("first")).closest("p");
+      expect(markdown).not.toBeNull();
+
+      rerender(<TextBubble text="**second**" isUser={false} isStreaming />);
+      rerender(<TextBubble text="**third**" isUser={false} isStreaming />);
+
+      expect(screen.getByText("first").closest("p")).toBe(markdown);
+      expect(screen.queryByText("third")).not.toBeInTheDocument();
+    });
+
+    it("does not re-render markdown during rapid updates inside a throttle window", async () => {
+      markdownRenderProbe.mockClear();
+      const { rerender } = render(
+        <TextBubble text="**first**" isUser={false} isStreaming />,
+      );
+      await screen.findByText("first");
+
+      rerender(<TextBubble text="**second**" isUser={false} isStreaming />);
+      rerender(<TextBubble text="**third**" isUser={false} isStreaming />);
+
+      expect(markdownRenderProbe).toHaveBeenCalledTimes(1);
+    });
+
+    it("flushes only the latest streaming markdown update after the throttle window", async () => {
+      const { rerender } = render(
+        <TextBubble text="**first**" isUser={false} isStreaming />,
+      );
+      const markdown = (await screen.findByText("first")).closest("p");
+      expect(markdown).not.toBeNull();
+      vi.useFakeTimers();
+
+      rerender(<TextBubble text="**intermediate**" isUser={false} isStreaming />);
+      rerender(<TextBubble text="**latest**" isUser={false} isStreaming />);
+
+      expect(screen.queryByText("intermediate")).not.toBeInTheDocument();
+      expect(screen.getByText("first")).toBeInTheDocument();
+      act(() => {
+        vi.advanceTimersByTime(200);
+      });
+
+      expect(screen.getByText("latest")).toBeInTheDocument();
+      expect(screen.queryByText("intermediate")).not.toBeInTheDocument();
+      expect(screen.getByText("latest").closest("p")).toBe(markdown);
+      vi.useRealTimers();
+    });
+
+    it("flushes the latest throttled streaming text immediately when finalizing", async () => {
+      const { rerender } = render(
+        <TextBubble text="**first**" isUser={false} isStreaming />,
+      );
+      await screen.findByText("first");
+
+      rerender(<TextBubble text="latest streamed text" isUser={false} isStreaming />);
+      rerender(<TextBubble text="latest streamed text" isUser={false} isStreaming={false} />);
+
+      expect(screen.getByText("latest streamed text")).toBeInTheDocument();
+    });
+
+    it("renders a fenced code block streamed one character at a time after the flush window", async () => {
+      vi.useFakeTimers();
+      try {
+        const fencedCode = `\`\`\`ts
+const answer = 42;
+\`\`\``;
+        const { rerender } = render(
+          <TextBubble text="" isUser={false} isStreaming />,
+        );
+
+        for (let index = 1; index <= fencedCode.length; index += 1) {
+          rerender(<TextBubble text={fencedCode.slice(0, index)} isUser={false} isStreaming />);
+        }
+
+        expect(() => {
+          act(() => {
+            vi.advanceTimersByTime(200);
+          });
+        }).not.toThrow();
+        const bubble = screen.getByTestId("text-bubble-assistant");
+        expect(bubble).not.toHaveTextContent("```");
+        expect(bubble).toHaveTextContent("const answer = 42;");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("opens absolute local file links with the system opener instead of navigating the webview", async () => {
       const user = userEvent.setup();
       render(
@@ -178,6 +294,28 @@ describe("TextBubble", () => {
       const { container } = render(<TextBubble text="Hello" isUser={true} />);
       const bubble = container.firstChild as HTMLElement;
       expect(bubble).toHaveStyle({ maxWidth: "min(85%, 620px)" });
+    });
+
+    it("disables the inner prose max-width inside user bubbles so short messages don't wrap mid-word", () => {
+      // Regression: markdown <p> re-applied maxWidth 85% against the shrink-to-fit
+      // bubble width, collapsing "I switched" into "I / switche / d".
+      const { container } = render(<TextBubble text="I switched" isUser={true} />);
+      const bubble = container.firstChild as HTMLElement;
+      expect(bubble.getAttribute("style")).toContain("--chat-prose-max-width: none");
+    });
+
+    it("keeps the prose max-width fallback active for assistant text", () => {
+      const { container } = render(<TextBubble text="Hello" isUser={false} />);
+      const bubble = container.firstChild as HTMLElement;
+      expect(bubble.getAttribute("style")).not.toContain("--chat-prose-max-width");
+    });
+
+    it("caps markdown blocks through the overridable prose max-width variable", async () => {
+      render(<TextBubble text="# Prose heading" isUser={false} />);
+      const heading = await screen.findByRole("heading", { name: "Prose heading" });
+      expect(heading.getAttribute("style")).toContain(
+        "max-width: var(--chat-prose-max-width, min(85%, 620px))",
+      );
     });
   });
 

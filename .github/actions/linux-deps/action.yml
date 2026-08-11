@@ -1,0 +1,31 @@
+name: Linux system dependencies (cached)
+description: Installs the Tauri build/runtime deb set with a package cache.
+runs:
+  using: composite
+  steps:
+    # The cache action pins package versions from the runner's current apt
+    # indexes; stale indexes make cache-miss installs 404 on the mirrors.
+    - name: Refresh apt indexes
+      shell: bash
+      run: |
+        sudo apt-get -o Acquire::Retries=3 update \
+          || echo "::warning::apt-get update failed; continuing with existing indexes"
+    - uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9 # v1.6.3
+      with:
+        packages: build-essential curl file lsof libayatana-appindicator3-dev libgtk-3-dev librsvg2-dev libssl-dev libwebkit2gtk-4.1-dev libxdo-dev lld pkg-config wget
+        version: "1.0"
+    # The cache action does not propagate install failures, so verify the
+    # Tauri build libraries and fall back to the direct installer if missing.
+    - name: Verify Tauri build libraries
+      shell: bash
+      run: |
+        verify() {
+          command -v pkg-config >/dev/null 2>&1 \
+            && pkg-config --exists 'glib-2.0 >= 2.70' gtk+-3.0 webkit2gtk-4.1 librsvg-2.0 openssl
+        }
+        if verify; then
+          exit 0
+        fi
+        echo "::warning::Cached apt install left required libraries missing; falling back to direct install"
+        bash "${GITHUB_WORKSPACE}/scripts/ci-install-linux-deps.sh"
+        verify

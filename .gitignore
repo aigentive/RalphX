@@ -64,6 +64,7 @@ screenshots/
 src-tauri/target
 src-tauri/target/
 src-tauri/target-*/
+src-tauri/binaries/
 src-tauri/gen/schemas
 src-tauri/.ralphx-dev-fresh-db-snapshot
 

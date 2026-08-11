@@ -1,6 +1,7 @@
 // Zod schemas for merge pipeline API responses (snake_case from Rust backend)
 
 import { z } from "zod";
+import { ExecutionTaskAgentWorkspaceSchema } from "./execution-task-agent-workspace";
 
 /**
  * Merge pipeline task schema from Rust (snake_case)
@@ -8,6 +9,7 @@ import { z } from "zod";
 export const MergePipelineTaskSchema = z.object({
   task_id: z.string(),
   title: z.string(),
+  display_title: z.string().optional(),
   internal_status: z.string(),
   source_branch: z.string(),
   target_branch: z.string(),
@@ -16,6 +18,7 @@ export const MergePipelineTaskSchema = z.object({
   blocking_branch: z.string().nullable(),
   conflict_files: z.array(z.string()).nullable(),
   error_context: z.string().nullable(),
+  agent_workspace: ExecutionTaskAgentWorkspaceSchema.nullable().optional(),
 });
 
 /**

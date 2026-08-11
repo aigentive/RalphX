@@ -81,15 +81,6 @@ describe("ProjectAnalysisSection", () => {
   });
 
   describe("rendering", () => {
-    it("renders section with title and description", () => {
-      render(<ProjectAnalysisSection />);
-
-      expect(screen.getByText("Setup & Validation")).toBeInTheDocument();
-      expect(
-        screen.getByText("Build system detection and validation commands")
-      ).toBeInTheDocument();
-    });
-
     it("shows last analyzed timestamp", () => {
       render(<ProjectAnalysisSection />);
 
@@ -108,8 +99,6 @@ describe("ProjectAnalysisSection", () => {
     it("renders detected analysis entries section", () => {
       render(<ProjectAnalysisSection />);
 
-      // Section header and entry container should be present
-      expect(screen.getByText("Setup & Validation")).toBeInTheDocument();
       // Check for an expandable entry button
       const buttons = screen.getAllByRole("button");
       expect(buttons.length).toBeGreaterThan(0);

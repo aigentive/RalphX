@@ -72,9 +72,10 @@ fn process_id_from_string_preserves_value() {
 // ===== ArtifactType Tests =====
 
 #[test]
-fn artifact_type_all_returns_23_types() {
+fn artifact_type_all_includes_persona() {
     let all = ArtifactType::all();
     assert_eq!(all.len(), 23);
+    assert!(all.contains(&ArtifactType::Persona));
 }
 
 #[test]
@@ -99,6 +100,10 @@ fn artifact_type_serializes_snake_case() {
         serde_json::to_string(&ArtifactType::PrReview).unwrap(),
         "\"pr_review\""
     );
+    assert_eq!(
+        serde_json::to_string(&ArtifactType::Persona).unwrap(),
+        "\"persona\""
+    );
 }
 
 #[test]
@@ -107,10 +112,11 @@ fn artifact_type_deserializes() {
     assert_eq!(t, ArtifactType::Prd);
     let t: ArtifactType = serde_json::from_str("\"research_document\"").unwrap();
     assert_eq!(t, ArtifactType::ResearchDocument);
-    let t: ArtifactType = serde_json::from_str("\"verification_finding\"").unwrap();
-    assert_eq!(t, ArtifactType::VerificationFinding);
+    assert!(serde_json::from_str::<ArtifactType>("\"verification_finding\"").is_err());
     let t: ArtifactType = serde_json::from_str("\"pr_review\"").unwrap();
     assert_eq!(t, ArtifactType::PrReview);
+    let t: ArtifactType = serde_json::from_str("\"persona\"").unwrap();
+    assert_eq!(t, ArtifactType::Persona);
 }
 
 #[test]
@@ -387,13 +393,16 @@ fn artifact_bucket_research_outputs_has_correct_types() {
 }
 
 #[test]
-fn artifact_bucket_team_findings_accepts_verification_findings() {
+fn artifact_bucket_team_findings_accepts_only_current_team_artifacts() {
     let buckets = ArtifactBucket::system_buckets();
     let team = buckets
         .iter()
         .find(|b| b.id.as_str() == "team-findings")
         .unwrap();
-    assert!(team.accepts_type(ArtifactType::VerificationFinding));
+    assert!(team.accepts_type(ArtifactType::TeamResearch));
+    assert!(team.accepts_type(ArtifactType::TeamAnalysis));
+    assert!(team.accepts_type(ArtifactType::TeamSummary));
+    assert!(!team.accepts_type(ArtifactType::Findings));
 }
 
 #[test]

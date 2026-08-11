@@ -108,15 +108,18 @@ pub fn make_session_no_title(session_id: &str) -> IdeationSession {
         title: None,
         status: IdeationSessionStatus::default(),
         plan_artifact_id: None,
+        plan_blueprint_artifact_id: None,
         inherited_plan_artifact_id: None,
+        inherited_plan_blueprint_artifact_id: None,
+        verified_plan_artifact_id: None,
+        verified_plan_blueprint_artifact_id: None,
+        verified_plan_agent_run_id: None,
         seed_task_id: None,
         parent_session_id: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         archived_at: None,
         converted_at: None,
-        team_mode: None,
-        team_config_json: None,
         title_source: None,
         verification_status: Default::default(),
         verification_in_progress: false,
@@ -137,6 +140,8 @@ pub fn make_session_no_title(session_id: &str) -> IdeationSession {
         session_flow: Default::default(),
         cross_project_checked: true,
         plan_version_last_read: None,
+        blueprint_version_last_read: None,
+        plan_contract_version: 1,
         origin: Default::default(),
         expected_proposal_count: None,
         auto_accept_status: None,
@@ -162,15 +167,18 @@ pub fn make_session_with_title_for_test(session_id: &str, title: &str) -> Ideati
         title: Some(title.to_string()),
         status: IdeationSessionStatus::default(),
         plan_artifact_id: None,
+        plan_blueprint_artifact_id: None,
         inherited_plan_artifact_id: None,
+        inherited_plan_blueprint_artifact_id: None,
+        verified_plan_artifact_id: None,
+        verified_plan_blueprint_artifact_id: None,
+        verified_plan_agent_run_id: None,
         seed_task_id: None,
         parent_session_id: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         archived_at: None,
         converted_at: None,
-        team_mode: None,
-        team_config_json: None,
         title_source: None,
         verification_status: Default::default(),
         verification_in_progress: false,
@@ -191,6 +199,8 @@ pub fn make_session_with_title_for_test(session_id: &str, title: &str) -> Ideati
         session_flow: Default::default(),
         cross_project_checked: true,
         plan_version_last_read: None,
+        blueprint_version_last_read: None,
+        plan_contract_version: 1,
         origin: Default::default(),
         expected_proposal_count: None,
         auto_accept_status: None,
@@ -243,7 +253,11 @@ pub fn create_test_services() -> (
         Arc::clone(&dep_manager) as Arc<dyn DependencyManager>,
         Arc::clone(&review_starter) as Arc<dyn ReviewStarter>,
         Arc::clone(&chat_service) as Arc<dyn ChatService>,
-    );
+    )
+    .with_branch_update_repo(crate::testing::memory_branch_update_repository())
+    .with_branch_update_workflow(crate::testing::branch_update_workflow(
+        Arc::clone(&chat_service) as Arc<dyn ChatService>,
+    ));
 
     (
         spawner,
@@ -263,6 +277,27 @@ pub fn create_context_with_services(
     TaskContext::new(task_id, project_id, services)
 }
 
+/// Attach the same durable branch-update authority required by production
+/// transition factories to a bespoke test service graph.
+pub fn with_test_branch_update_authority(
+    services: TaskServices,
+    task_repo: Arc<dyn TaskRepository>,
+    chat_service: Arc<dyn ChatService>,
+) -> TaskServices {
+    services
+        .with_branch_update_repo(
+            crate::testing::memory_branch_update_repository_with_task_repository(task_repo),
+        )
+        .with_branch_update_workflow(crate::testing::branch_update_workflow(chat_service))
+}
+
+pub fn with_default_test_branch_update_authority(
+    services: TaskServices,
+    task_repo: Arc<dyn TaskRepository>,
+) -> TaskServices {
+    with_test_branch_update_authority(services, task_repo, Arc::new(MockChatService::new()))
+}
+
 pub use crate::domain::state_machine::mocks::MockTaskScheduler;
 pub use crate::domain::state_machine::TaskStateMachine;
 
@@ -276,6 +311,10 @@ pub fn new_machine_with_scheduler(
 ) -> (TaskStateMachine, Arc<MockTaskScheduler>) {
     let scheduler = Arc::new(MockTaskScheduler::new());
     let services = TaskServices::new_mock()
+        .with_branch_update_repo(crate::testing::memory_branch_update_repository())
+        .with_branch_update_workflow(crate::testing::branch_update_workflow(Arc::new(
+            MockChatService::new(),
+        )))
         .with_task_scheduler(Arc::clone(&scheduler)
             as Arc<dyn crate::domain::state_machine::services::TaskScheduler>);
     let context = create_context_with_services(task_id, project_id, services);
@@ -297,6 +336,15 @@ impl PendingMergeSetup {
     pub fn into_machine(self) -> (TaskStateMachine, Arc<MemoryTaskRepository>, TaskId) {
         let task_id = self.task_id.clone();
         let services = TaskServices::new_mock()
+            .with_branch_update_repo(
+                crate::testing::memory_branch_update_repository_with_task_repository(Arc::clone(
+                    &self.task_repo,
+                )
+                    as Arc<dyn TaskRepository>),
+            )
+            .with_branch_update_workflow(crate::testing::branch_update_workflow(Arc::new(
+                MockChatService::new(),
+            )))
             .with_task_repo(Arc::clone(&self.task_repo) as Arc<dyn TaskRepository>)
             .with_project_repo(Arc::clone(&self.project_repo) as Arc<dyn ProjectRepository>);
         let context = TaskContext::new(self.task_id.as_str(), "proj-1", services);

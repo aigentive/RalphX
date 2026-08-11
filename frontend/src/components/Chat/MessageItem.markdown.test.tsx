@@ -32,6 +32,7 @@ beforeEach(() => {
 
 const workspaceTargets: WorkspaceOpenTarget[] = [
   { id: "cursor", label: "Cursor", kind: "editor" },
+  { id: "terminal", label: "Terminal", kind: "terminal" },
   { id: "finder", label: "Finder", kind: "fileManager" },
 ];
 
@@ -190,6 +191,26 @@ describe("MessageItem.markdown", () => {
     expect(onOpenPath).toHaveBeenCalledWith(
       "/tmp/ralphx-worktree/src/lib.rs",
       "finder",
+    );
+  });
+
+  it("MarkdownLink forwards external terminal targets without a built-in action", async () => {
+    const user = userEvent.setup();
+    const onOpenPath = vi.fn();
+    renderWithFileLinkContext(
+      <MarkdownLink href="file:///tmp/ralphx-worktree/src/lib.rs">lib.rs</MarkdownLink>,
+      { onOpenPath },
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Open options for lib.rs" }),
+    );
+    expect(screen.queryByText("Built-in Terminal")).not.toBeInTheDocument();
+    await user.click(await screen.findByText("Open in Terminal"));
+
+    expect(onOpenPath).toHaveBeenCalledWith(
+      "/tmp/ralphx-worktree/src/lib.rs",
+      "terminal",
     );
   });
 

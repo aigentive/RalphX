@@ -2,17 +2,15 @@
 paths:
   - "src-tauri/src/domain/state_machine/**"
   - "src-tauri/src/application/task_transition_service.rs"
-  - "src-tauri/src/application/task_scheduler_service.rs"
+  - "src-tauri/src/application/task_scheduler_service/**"
   - "src-tauri/src/application/chat_service/**"
   - "src-tauri/src/commands/**"
   - "src-tauri/src/http_server/**"
   - "frontend/src/hooks/useAgentEvents.ts"
   - "frontend/src/components/Chat/**"
-  - "agents/ralphx-plan-verifier/**"
-  - "agents/plan-critic-*/**"
-  - "agents/ralphx-ideation-team-lead/**"
   - "agents/ralphx-ideation/**"
-  - "agents/ideation-specialist-*/**"
+  - "agents/ralphx-ideation-specialist-*/**"
+  - "agents/ralphx-general-explorer/**"
 ---
 
 > **Maintainer note:** This file optimizes for LLM context efficiency. Rules: (1) Tables > prose (2) One example max per concept (3) No redundant explanations (4) Use symbols: → = leads to, | = or, ❌/✅ = wrong/right (5) Before adding content, ask: "Can this be a single line?" If yes, make it one line.
@@ -84,7 +82,7 @@ Evaluation specialists and plan critics MUST check proposed changes against thes
 | Field | Detail |
 |-------|--------|
 | **Trigger** | New session or agent type added without wiring UI store key, event handlers, or status transitions |
-| **Affected Files** | `src/components/Chat/IntegratedChatPanel.tsx`, `src/hooks/useAgentEvents.ts`, `src-tauri/src/commands/execution_commands.rs` |
+| **Affected Files** | `frontend/src/components/Chat/IntegratedChatPanel.tsx`, `src/hooks/useAgentEvents.ts`, `src-tauri/src/commands/execution_commands.rs` |
 | **Evidence** | Prior agent-status / UI-state mismatches and silent-exit cleanup bugs |
 | **Still Active?** | Periodic — flares up with each new agent type |
 | **Check** | Does this add a new agent/session type? → `.claude/rules/event-coverage-checklist.md` |

@@ -202,12 +202,96 @@ async fn test_merge_missing_source_branch_with_real_repo() {
     );
 }
 
-/// Verify that merge with conflict (diverged branches) transitions to Merging
-/// and spawns a merger agent.
+/// Verify the dedicated update workspace is isolated from an unrelated dirty checkout.
+///
+/// The source branch and target branch exist, but the source branch is checked out
+/// in a dirty worktree. The old implementation reused that checkout and failed.
+/// The dedicated workflow must update through its operation-owned worktree, merge
+/// successfully, and leave the unrelated dirty checkout untouched.
+#[tokio::test]
+async fn test_isolated_source_update_ignores_unrelated_dirty_checkout() {
+    let git_repo = setup_real_git_repo();
+    let path = git_repo.path();
+
+    std::fs::write(path.join("README.md"), "# test repo\nmain update\n").unwrap();
+    let _ = std::process::Command::new("git")
+        .args(["add", "README.md"])
+        .current_dir(path)
+        .output();
+    let _ = std::process::Command::new("git")
+        .args(["commit", "-m", "update readme on main"])
+        .current_dir(path)
+        .output();
+
+    let source_wt_dir = tempfile::tempdir().unwrap();
+    let source_wt = source_wt_dir.path().join("dirty-source-worktree");
+    let add_wt = std::process::Command::new("git")
+        .args([
+            "worktree",
+            "add",
+            &source_wt.to_string_lossy(),
+            &git_repo.task_branch,
+        ])
+        .current_dir(path)
+        .output()
+        .expect("git worktree add source branch");
+    assert!(
+        add_wt.status.success(),
+        "source branch worktree should be created: {}",
+        String::from_utf8_lossy(&add_wt.stderr)
+    );
+    std::fs::write(
+        source_wt.join("README.md"),
+        "# test repo\nlocal dirty source edit\n",
+    )
+    .unwrap();
+
+    let setup = setup_pending_merge_with_real_repo(
+        "Source update error test",
+        &git_repo.task_branch,
+        &git_repo.path_string(),
+        MergeStrategy::Merge,
+    )
+    .await;
+
+    let task_id = setup.task_id.clone();
+    let task_repo = Arc::clone(&setup.task_repo);
+    let (mut machine, _task_repo, _task_id) = setup.into_machine();
+    let handler = TransitionHandler::new(&mut machine);
+
+    let _ = handler.on_enter(&State::PendingMerge).await;
+
+    let updated_task = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
+    assert_eq!(
+        updated_task.internal_status,
+        InternalStatus::Merged,
+        "Operation-owned source update should merge despite an unrelated dirty checkout. Got {:?}. Metadata: {:?}",
+        updated_task.internal_status,
+        updated_task.metadata,
+    );
+    assert_eq!(
+        std::fs::read_to_string(source_wt.join("README.md")).unwrap(),
+        "# test repo\nlocal dirty source edit\n",
+        "Dedicated update must not modify the unrelated dirty checkout"
+    );
+
+    let _ = std::process::Command::new("git")
+        .args([
+            "worktree",
+            "remove",
+            "--force",
+            &source_wt.to_string_lossy(),
+        ])
+        .current_dir(path)
+        .output();
+}
+
+/// Verify that a conflict discovered while refreshing a stale source branch
+/// routes to the dedicated branch-update workflow before merge dispatch.
 ///
 /// Setup: main and task branch both modify the same file (creating a conflict).
 #[tokio::test]
-async fn test_merge_with_conflict_transitions_to_merging() {
+async fn test_stale_source_conflict_transitions_to_task_branch_update() {
     let git_repo = setup_real_git_repo();
 
     // Create a conflicting commit on main (modify feature.rs on main too)
@@ -237,10 +321,10 @@ async fn test_merge_with_conflict_transitions_to_merging() {
     let _ = handler.on_enter(&State::PendingMerge).await;
 
     let updated_task = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
-    assert!(
-        updated_task.internal_status == InternalStatus::Merging
-            || updated_task.internal_status == InternalStatus::MergeIncomplete,
-        "Conflicting merge should transition to Merging (for agent) or MergeIncomplete, got {:?}. Metadata: {:?}",
+    assert_eq!(
+        updated_task.internal_status,
+        InternalStatus::UpdatingTaskBranch,
+        "Stale source conflict should transition to UpdatingTaskBranch, got {:?}. Metadata: {:?}",
         updated_task.internal_status,
         updated_task.metadata,
     );

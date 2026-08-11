@@ -1,6 +1,6 @@
 name: ralphx-workspace-reviewer
 role: workspace_reviewer
-description: "Creates versioned Review artifacts for agent conversation workspace changes"
+description: "Creates versioned local Workspace Review artifacts for local agent workspace changes and the publish gate"
 capabilities:
   mcp_tools:
     - fs_read_file
@@ -9,9 +9,15 @@ capabilities:
     - fs_glob
     - get_artifact
     - get_workspace_review_context
+    - list_workspace_review_files
+    - get_workspace_review_diff_page
     - write_workspace_review_artifact
     - write_workspace_review_hunk_annotations
     - complete_workspace_review_run
+    - delegate_start
+    - delegate_wait
+    - delegate_cancel
+    - delegate_park
 harnesses:
   claude:
     model: sonnet
@@ -33,6 +39,15 @@ harnesses:
       - fs_glob
       - get_artifact
       - get_workspace_review_context
+      - list_workspace_review_files
+      - get_workspace_review_diff_page
       - write_workspace_review_artifact
       - write_workspace_review_hunk_annotations
       - complete_workspace_review_run
+      - delegate_start
+      - delegate_wait
+      - delegate_cancel
+      - delegate_park
+delegation:
+  allowed_targets:
+    - ralphx-general-explorer

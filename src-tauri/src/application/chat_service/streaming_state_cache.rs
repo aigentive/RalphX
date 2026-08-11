@@ -21,6 +21,9 @@ pub struct CachedToolCall {
     pub id: String,
     /// Tool name (e.g., "bash", "read", "edit")
     pub name: String,
+    /// Authoritative logical content-block position for recovered active-state ordering.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub block_index: Option<u64>,
     /// Current arguments (may be partial during streaming)
     pub arguments: serde_json::Value,
     /// Result if completed
@@ -53,9 +56,6 @@ pub struct CachedStreamingTask {
     /// Agent ID if available
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
-    /// Teammate name if this is a team member task
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub teammate_name: Option<String>,
     /// RalphX native delegation job id
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delegated_job_id: Option<String>,
@@ -125,17 +125,36 @@ pub struct CachedStreamingTask {
     /// Final delegated output when available
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text_output: Option<String>,
+    /// Backend-owned lifecycle start timestamp (RFC3339).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    /// Backend-owned lifecycle completion timestamp (RFC3339).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<String>,
+    /// Origin of the lifecycle timestamp pair (delegated run or job snapshot).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp_provenance: Option<String>,
+    /// Lifecycle-event freshness evidence. This never owns timeline placement.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seq: Option<u64>,
 }
 
 /// Complete streaming state for a single conversation.
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct ConversationStreamingState {
+    /// Owning run for this transient projection.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
     /// Tool calls currently in progress or recently completed
     pub tool_calls: Vec<CachedToolCall>,
     /// Streaming tasks (subagents) currently running or completed
     pub streaming_tasks: Vec<CachedStreamingTask>,
     /// Partial text content accumulated from agent:chunk events
     pub partial_text: String,
+    /// Partial text content accumulated per text block in stream order.
+    pub partial_text_segments: Vec<String>,
+    /// Partial reasoning content accumulated per thinking block in stream order.
+    pub partial_thinking_segments: Vec<String>,
     /// When this state was last updated
     pub updated_at: DateTime<Utc>,
 }
@@ -144,9 +163,12 @@ impl ConversationStreamingState {
     /// Create a new empty state
     pub fn new() -> Self {
         Self {
+            run_id: None,
             tool_calls: Vec::new(),
             streaming_tasks: Vec::new(),
             partial_text: String::new(),
+            partial_text_segments: Vec::new(),
+            partial_thinking_segments: Vec::new(),
             updated_at: Utc::now(),
         }
     }
@@ -172,11 +194,28 @@ impl StreamingStateCache {
         }
     }
 
+    /// Bind subsequent cached state to the current run for stale-attempt rejection.
+    pub async fn set_run_id(&self, conversation_id: &str, run_id: Option<String>) {
+        let mut states = self.states.lock().await;
+        let state = states
+            .entry(conversation_id.to_string())
+            .or_insert_with(ConversationStreamingState::new);
+        if state.run_id != run_id {
+            state.tool_calls.clear();
+            state.streaming_tasks.clear();
+            state.partial_text.clear();
+            state.partial_text_segments.clear();
+            state.partial_thinking_segments.clear();
+        }
+        state.run_id = run_id;
+        state.updated_at = Utc::now();
+    }
+
     /// Upsert a tool call into the cache.
     ///
     /// If a tool call with the same ID exists, it's updated.
     /// Otherwise, a new entry is added.
-    pub async fn upsert_tool_call(&self, conversation_id: &str, tool_call: CachedToolCall) {
+    pub async fn upsert_tool_call(&self, conversation_id: &str, mut tool_call: CachedToolCall) {
         let mut states = self.states.lock().await;
         let state = states
             .entry(conversation_id.to_string())
@@ -191,6 +230,9 @@ impl StreamingStateCache {
 
         // Find existing tool call with same ID and update, or add new
         if let Some(existing) = state.tool_calls.iter_mut().find(|tc| tc.id == tool_call.id) {
+            if tool_call.block_index.is_none() {
+                tool_call.block_index = existing.block_index;
+            }
             *existing = tool_call;
             tracing::trace!(
                 conversation_id,
@@ -223,18 +265,46 @@ impl StreamingStateCache {
                 ConversationStreamingState::new()
             });
 
-        if let Some(existing) = state
-            .streaming_tasks
-            .iter_mut()
-            .find(|existing| existing.tool_use_id == task.tool_use_id)
-        {
+        Self::upsert_task_state(state, conversation_id, task);
+    }
+
+    /// Add a streaming task only when the conversation cache still belongs to `run_id`.
+    pub async fn add_task_for_run(
+        &self,
+        conversation_id: &str,
+        run_id: &str,
+        task: CachedStreamingTask,
+    ) -> bool {
+        let mut states = self.states.lock().await;
+        let Some(state) = states.get_mut(conversation_id) else {
+            return false;
+        };
+        if state.run_id.as_deref() != Some(run_id) {
+            return false;
+        }
+        Self::upsert_task_state(state, conversation_id, task);
+        true
+    }
+
+    fn upsert_task_state(
+        state: &mut ConversationStreamingState,
+        conversation_id: &str,
+        task: CachedStreamingTask,
+    ) {
+        if let Some(existing) = state.streaming_tasks.iter_mut().find(|existing| {
+            existing.tool_use_id == task.tool_use_id
+                || matches!(
+                    (&existing.delegated_job_id, &task.delegated_job_id),
+                    (Some(existing_job_id), Some(task_job_id)) if existing_job_id == task_job_id
+                )
+        }) {
             tracing::debug!(
                 conversation_id,
                 tool_use_id = %existing.tool_use_id,
                 subagent_type = ?task.subagent_type,
                 "StreamingStateCache: updated existing streaming task"
             );
-            *existing = task;
+            Self::merge_task(existing, task);
         } else {
             tracing::debug!(
                 conversation_id,
@@ -245,6 +315,111 @@ impl StreamingStateCache {
             state.streaming_tasks.push(task);
         }
         state.updated_at = Utc::now();
+    }
+
+    fn merge_task(existing: &mut CachedStreamingTask, incoming: CachedStreamingTask) {
+        if Self::has_conflicting_delegated_identity(existing, &incoming)
+            || Self::incoming_is_stale(existing, &incoming)
+            || (existing.status != "running"
+                && incoming.status == "running"
+                && existing.seq == incoming.seq)
+        {
+            return;
+        }
+
+        let mut merged = incoming;
+        macro_rules! preserve_non_null {
+            ($($field:ident),+ $(,)?) => {
+                $(if merged.$field.is_none() { merged.$field = existing.$field.clone(); })+
+            };
+        }
+        preserve_non_null!(
+            description,
+            subagent_type,
+            model,
+            agent_id,
+            delegated_job_id,
+            delegated_session_id,
+            delegated_conversation_id,
+            delegated_agent_run_id,
+            provider_harness,
+            provider_session_id,
+            upstream_provider,
+            provider_profile,
+            logical_model,
+            effective_model_id,
+            logical_effort,
+            effective_effort,
+            approval_policy,
+            sandbox_mode,
+            total_tokens,
+            total_tool_uses,
+            duration_ms,
+            input_tokens,
+            output_tokens,
+            cache_creation_tokens,
+            cache_read_tokens,
+            estimated_usd,
+            text_output,
+            timestamp_provenance
+        );
+        merged.tool_use_id = existing.tool_use_id.clone();
+        merged.started_at = Self::earliest_started_at(&existing.started_at, &merged.started_at);
+        if merged.completed_at.is_none() {
+            merged.completed_at = existing.completed_at.clone();
+        }
+        merged.seq = match (existing.seq, merged.seq) {
+            (Some(existing), Some(incoming)) => Some(existing.max(incoming)),
+            (Some(existing), None) => Some(existing),
+            (None, Some(incoming)) => Some(incoming),
+            (None, None) => None,
+        };
+        *existing = merged;
+    }
+
+    fn has_conflicting_delegated_identity(
+        existing: &CachedStreamingTask,
+        incoming: &CachedStreamingTask,
+    ) -> bool {
+        matches!(
+            (&existing.delegated_job_id, &incoming.delegated_job_id),
+            (Some(existing), Some(incoming)) if existing != incoming
+        ) || matches!(
+            (&existing.delegated_agent_run_id, &incoming.delegated_agent_run_id),
+            (Some(existing), Some(incoming)) if existing != incoming
+        )
+    }
+
+    fn incoming_is_stale(existing: &CachedStreamingTask, incoming: &CachedStreamingTask) -> bool {
+        match (existing.seq, incoming.seq) {
+            (Some(existing), Some(incoming)) => incoming < existing,
+            (Some(_), None) => true,
+            _ => false,
+        }
+    }
+
+    fn earliest_started_at(existing: &Option<String>, incoming: &Option<String>) -> Option<String> {
+        match (existing, incoming) {
+            (Some(existing), Some(incoming)) => {
+                let existing_timestamp = DateTime::parse_from_rfc3339(existing).ok();
+                let incoming_timestamp = DateTime::parse_from_rfc3339(incoming).ok();
+                match (existing_timestamp, incoming_timestamp) {
+                    (Some(existing_timestamp), Some(incoming_timestamp)) => {
+                        if existing_timestamp <= incoming_timestamp {
+                            Some(existing.clone())
+                        } else {
+                            Some(incoming.clone())
+                        }
+                    }
+                    (Some(_), None) => Some(existing.clone()),
+                    (None, Some(_)) => Some(incoming.clone()),
+                    (None, None) => Some(std::cmp::min(existing, incoming).clone()),
+                }
+            }
+            (Some(existing), None) => Some(existing.clone()),
+            (None, Some(incoming)) => Some(incoming.clone()),
+            (None, None) => None,
+        }
     }
 
     /// Mark a streaming task as completed.
@@ -278,7 +453,7 @@ impl StreamingStateCache {
     }
 
     /// Append text to the partial content buffer.
-    pub async fn append_text(&self, conversation_id: &str, text: &str) {
+    pub async fn append_text(&self, conversation_id: &str, segment_index: usize, text: &str) {
         let mut states = self.states.lock().await;
         let state = states
             .entry(conversation_id.to_string())
@@ -291,14 +466,37 @@ impl StreamingStateCache {
                 ConversationStreamingState::new()
             });
 
-        state.partial_text.push_str(text);
+        if state.partial_text_segments.len() <= segment_index {
+            state
+                .partial_text_segments
+                .resize(segment_index + 1, String::new());
+        }
+        state.partial_text_segments[segment_index].push_str(text);
+        state.partial_text = state.partial_text_segments.concat();
         state.updated_at = Utc::now();
         tracing::trace!(
             conversation_id,
             text_len = text.len(),
+            segment_index,
             total_len = state.partial_text.len(),
             "StreamingStateCache: appended text"
         );
+    }
+
+    /// Append reasoning without leaking it into the assistant's copyable text.
+    pub async fn append_thinking(&self, conversation_id: &str, segment_index: usize, text: &str) {
+        let mut states = self.states.lock().await;
+        let state = states
+            .entry(conversation_id.to_string())
+            .or_insert_with(ConversationStreamingState::new);
+
+        if state.partial_thinking_segments.len() <= segment_index {
+            state
+                .partial_thinking_segments
+                .resize(segment_index + 1, String::new());
+        }
+        state.partial_thinking_segments[segment_index].push_str(text);
+        state.updated_at = Utc::now();
     }
 
     /// Clear all streaming state for a conversation.

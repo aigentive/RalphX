@@ -1,6 +1,6 @@
 use super::*;
-use crate::domain::state_machine::TransitionHandler;
 use crate::domain::state_machine::transition_handler::{merge_helpers, TaskCore};
+use crate::domain::state_machine::TransitionHandler;
 
 impl<'a> TransitionHandler<'a> {
     /// Persist a merge status transition: touch -> update -> persist_status_change -> emit.
@@ -14,7 +14,8 @@ impl<'a> TransitionHandler<'a> {
         to_status: InternalStatus,
         persist_label: &str,
     ) -> bool {
-        let (task, task_id, task_id_str, task_repo) = (tc.task, tc.task_id, tc.task_id_str, tc.task_repo);
+        let (task, task_id, task_id_str, task_repo) =
+            (tc.task, tc.task_id, tc.task_id_str, tc.task_repo);
         task.touch();
 
         if let Err(e) = task_repo.update(task).await {
@@ -31,12 +32,30 @@ impl<'a> TransitionHandler<'a> {
             .and_then(|v| v.as_str().map(String::from))
             .unwrap_or_else(|| format!("{:?}", to_status));
 
-        if let Err(e) = task_repo
+        let history_entry_id = match task_repo
             .persist_status_change(task_id, from_status, to_status, persist_label)
             .await
         {
-            tracing::warn!(error = %e, "Failed to record {} transition (non-fatal)", persist_label);
-        }
+            Ok(history_entry_id) => history_entry_id,
+            Err(error) => {
+                tracing::warn!(error = %error, "Failed to record {persist_label} transition; skipping notification effect");
+                return true;
+            }
+        };
+
+        self.machine
+            .context
+            .services
+            .notifier
+            .notify(
+                crate::domain::state_machine::services::NotificationContext {
+                    task: task.clone(),
+                    history_entry_id,
+                    project_id: task.project_id.clone(),
+                },
+                crate::domain::state_machine::services::TaskNotification::StateEntered(to_status),
+            )
+            .await;
 
         self.machine
             .context
@@ -62,16 +81,26 @@ impl<'a> TransitionHandler<'a> {
         metadata: serde_json::Value,
         trigger_on_exit: bool,
     ) {
-        let (task, task_id, task_id_str, task_repo) = (tc.task, tc.task_id, tc.task_id_str, tc.task_repo);
+        let (task, task_id, task_id_str, task_repo) =
+            (tc.task, tc.task_id, tc.task_id_str, tc.task_repo);
         // Merge new metadata INTO existing metadata to preserve recovery history
         merge_helpers::merge_metadata_into(task, &metadata);
         task.internal_status = InternalStatus::MergeIncomplete;
 
-        if !self.persist_merge_transition(
-            TaskCore { task: &mut *task, task_id, task_id_str, task_repo },
-            InternalStatus::PendingMerge, InternalStatus::MergeIncomplete,
-            "merge_incomplete",
-        ).await {
+        if !self
+            .persist_merge_transition(
+                TaskCore {
+                    task: &mut *task,
+                    task_id,
+                    task_id_str,
+                    task_repo,
+                },
+                InternalStatus::PendingMerge,
+                InternalStatus::MergeIncomplete,
+                "merge_incomplete",
+            )
+            .await
+        {
             return;
         }
 
@@ -91,7 +120,7 @@ impl<'a> TransitionHandler<'a> {
         repo_path: &Path,
         plan_branch_repo: &Option<Arc<dyn PlanBranchRepository>>,
     ) {
-        let app_handle = self.machine.context.services.app_handle.as_ref();
+        let event_sink = self.machine.context.services.event_sink.as_deref();
 
         if let Some(ref plan_branch_repo) = plan_branch_repo {
             if let Ok(Some(pb)) = plan_branch_repo.get_by_merge_task_id(task_id).await {
@@ -120,7 +149,10 @@ impl<'a> TransitionHandler<'a> {
 
                 if pr_mode {
                     if let Some(ref github) = self.machine.context.services.github_service {
-                        if let Err(e) = github.delete_remote_branch(repo_path, &pb.branch_name).await {
+                        if let Err(e) = github
+                            .delete_remote_branch(repo_path, &pb.branch_name)
+                            .await
+                        {
                             tracing::warn!(
                                 error = %e,
                                 task_id = task_id_str,
@@ -166,7 +198,9 @@ impl<'a> TransitionHandler<'a> {
                             }
                         }
                     }
-                } else if let Err(e) = GitService::delete_feature_branch(repo_path, &pb.branch_name).await {
+                } else if let Err(e) =
+                    GitService::delete_feature_branch(repo_path, &pb.branch_name).await
+                {
                     tracing::warn!(
                         error = %e,
                         task_id = task_id_str,
@@ -181,8 +215,8 @@ impl<'a> TransitionHandler<'a> {
                     );
                 }
 
-                if let Some(handle) = app_handle {
-                    let _ = handle.emit(
+                if let Some(sink) = event_sink {
+                    sink.emit(
                         "plan:merge_complete",
                         serde_json::json!({
                             "plan_artifact_id": pb.plan_artifact_id.as_str(),
@@ -260,13 +294,13 @@ impl<'a> TransitionHandler<'a> {
             match task_repo
                 .list_paginated(
                     &plan_branch.project_id,
-                    None,  // all statuses
+                    None, // all statuses
                     0,
                     10_000, // large limit to get all
                     false,  // exclude archived
                     None,   // no session filter
                     Some(ep_id.as_str()),
-                    None,   // no category filter
+                    None, // no category filter
                 )
                 .await
             {
@@ -360,12 +394,7 @@ impl<'a> TransitionHandler<'a> {
             }
 
             if let Err(e) = task_repo
-                .persist_status_change(
-                    &sibling.id,
-                    from,
-                    to,
-                    "post_merge_cascade_stop",
-                )
+                .persist_status_change(&sibling.id, from, to, "post_merge_cascade_stop")
                 .await
             {
                 tracing::warn!(
@@ -435,7 +464,10 @@ impl<'a> TransitionHandler<'a> {
                 }
             }
         } else {
-            match task_repo.get_by_ideation_session(&plan_branch.session_id).await {
+            match task_repo
+                .get_by_ideation_session(&plan_branch.session_id)
+                .await
+            {
                 Ok(tasks) => tasks,
                 Err(e) => {
                     tracing::warn!(

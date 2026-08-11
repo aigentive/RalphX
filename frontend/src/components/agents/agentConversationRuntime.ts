@@ -1,4 +1,6 @@
 import type { AgentConversationWorkspace } from "@/api/chat";
+import type { ManualRoleDefault } from "@/api/manual-role-defaults.types";
+import type { AgentModelRegistry } from "@/lib/agent-models";
 import type {
   AgentEffort,
   AgentProvider,
@@ -6,7 +8,11 @@ import type {
 } from "@/stores/agentSessionStore";
 
 import type { AgentConversation } from "./agentConversations";
-import { DEFAULT_AGENT_RUNTIME } from "./agentOptions";
+import {
+  DEFAULT_AGENT_RUNTIME,
+  defaultEffortForModel,
+  defaultModelForProvider,
+} from "./agentOptions";
 import { getAgentWorkspaceTerminalPublicationStatus } from "./agentWorkspacePublishState";
 
 const AGENT_EFFORTS = new Set<AgentEffort>([
@@ -15,12 +21,8 @@ const AGENT_EFFORTS = new Set<AgentEffort>([
   "high",
   "xhigh",
   "max",
+  "ultra",
 ]);
-
-const WORKSPACE_REVIEW_UTILITY_MODEL_BY_PROVIDER: Record<AgentProvider, string> = {
-  claude: "haiku",
-  codex: "gpt-5.4-mini",
-};
 
 export function getAgentTerminalUnavailableReason(
   conversation: AgentConversation | null,
@@ -35,9 +37,6 @@ export function getAgentTerminalUnavailableReason(
   if (!workspace) {
     return "Terminal requires a workspace-backed conversation";
   }
-  if (workspaceHasExternalOwner(workspace)) {
-    return "Terminal disabled while ideation or execution owns this workspace";
-  }
   return null;
 }
 
@@ -46,9 +45,6 @@ export function getAgentTerminalArchivedReason(
   workspace: AgentConversationWorkspace | null,
 ): string | null {
   if (!conversation || conversation.contextType !== "project" || !workspace) {
-    return null;
-  }
-  if (workspaceHasExternalOwner(workspace)) {
     return null;
   }
 
@@ -64,19 +60,6 @@ export function getAgentTerminalArchivedReason(
     return "Workspace missing. Send a follow-up to continue in a fresh workspace.";
   }
   return null;
-}
-
-function workspaceHasExternalOwner(workspace: AgentConversationWorkspace): boolean {
-  return (
-    Boolean(workspace.linkedPlanBranchId) ||
-    workspaceIsLinkedNonEditWorkspace(workspace)
-  );
-}
-
-function workspaceIsLinkedNonEditWorkspace(
-  workspace: AgentConversationWorkspace
-): boolean {
-  return Boolean(workspace.linkedIdeationSessionId && workspace.mode !== "edit");
 }
 
 export function runtimeFromConversation(
@@ -111,27 +94,44 @@ export function runtimeFromConversation(
   return null;
 }
 
-export function workspaceReviewUtilityRuntimeForProvider(
-  provider: AgentProvider
-): AgentRuntimeSelection {
+export function runtimeFromManualRoleDefault(
+  roleDefault: ManualRoleDefault | null,
+  modelRegistry: AgentModelRegistry,
+): AgentRuntimeSelection | null {
+  if (
+    !roleDefault ||
+    (roleDefault.provider !== "claude" && roleDefault.provider !== "codex")
+  ) {
+    return null;
+  }
+  const provider: AgentProvider = roleDefault.provider;
+  const modelId =
+    roleDefault.model?.trim() || defaultModelForProvider(provider, modelRegistry);
+  const effort = roleDefault.effort?.trim();
+
   return {
     provider,
-    modelId: WORKSPACE_REVIEW_UTILITY_MODEL_BY_PROVIDER[provider],
-    effort: "medium",
+    modelId,
+    effort: AGENT_EFFORTS.has(effort as AgentEffort)
+      ? (effort as AgentEffort)
+      : defaultEffortForModel(provider, modelId, modelRegistry),
   };
 }
 
 export function runtimeForWorkspaceReviewFocus(
   workspaceRuntime: AgentRuntimeSelection | null,
-  reviewRuntime: AgentRuntimeSelection | null
+  reviewRuntime: AgentRuntimeSelection | null,
+  reviewerRoleRuntime: AgentRuntimeSelection | null,
+  reviewRuntimeHint: AgentRuntimeSelection | null = null,
+  explicitComposerRuntime: AgentRuntimeSelection | null = null,
 ): AgentRuntimeSelection | null {
-  if (reviewRuntime) {
-    return reviewRuntime;
-  }
-  if (!workspaceRuntime) {
-    return null;
-  }
-  return workspaceReviewUtilityRuntimeForProvider(workspaceRuntime.provider);
+  return (
+    explicitComposerRuntime ??
+    reviewRuntime ??
+    reviewRuntimeHint ??
+    reviewerRoleRuntime ??
+    workspaceRuntime
+  );
 }
 
 function effortFromConversation(

@@ -12,12 +12,16 @@ import { enableMapSet } from "immer";
 import { invoke } from "@tauri-apps/api/core";
 import { featureFlagsSchema } from "@/types/feature-flags";
 import type { FeatureFlags } from "@/types/feature-flags";
-import { applyFeatureFlagOverrides, isViewEnabled } from "@/hooks/useFeatureFlags";
+import { applyFeatureFlagOverrides, isViewEnabled } from "@/lib/featureFlags";
 import type { AskUserQuestionPayload } from "@/types/ask-user-question";
 import type { ExecutionStatusResponse } from "@/lib/tauri";
 import type { RecoveryPromptEvent } from "@/types/events";
-import { DEFAULT_PROJECT_VIEW, type ViewType } from "@/types/chat";
-import type { InternalStatus } from "@/types/status";
+import {
+  DEFAULT_APP_VIEW,
+  parsePersistedViewByProject,
+  type AppView,
+} from "@/types/app-view";
+import type { TaskHistoryState } from "@/types/task-history";
 import {
   loadCollapsedColumns,
   saveCollapsedColumns,
@@ -71,7 +75,6 @@ function saveKanbanCardDisplayMode(mode: KanbanCardDisplayMode): void {
     /* ignore write errors */
   }
 }
-import { useIdeationStore } from "@/stores/ideationStore";
 import { useProjectStore } from "@/stores/projectStore";
 
 enableMapSet();
@@ -89,71 +92,44 @@ export interface TaskCreationContext {
   executionPlanId?: string;
 }
 
-function applyTaskSelection(
-  state: { selectedTaskId: string | null; taskHistoryState: UiState["taskHistoryState"] },
-  taskId: string | null
-): void {
-  state.selectedTaskId = taskId;
-  // Clear history state when task is deselected
-  if (taskId === null) {
-    state.taskHistoryState = null;
-  }
-}
-
 // ============================================================================
 // Per-Project Route Persistence
 // ============================================================================
 
 const VIEW_BY_PROJECT_KEY = "ralphx-views-by-project";
-const SESSION_BY_PROJECT_KEY = "ralphx-sessions-by-project";
-const SELECTED_TASK_BY_PROJECT_KEY = "ralphx-selected-task-by-project";
+const RETIRED_ROUTE_KEYS = [
+  "ralphx-sessions-by-project",
+  "ralphx-selected-task-by-project",
+] as const;
 
-function loadViewByProject(): Record<string, ViewType> {
+function clearRetiredRouteStorage(): void {
+  try {
+    for (const key of RETIRED_ROUTE_KEYS) {
+      localStorage.removeItem(key);
+    }
+  } catch {
+    /* ignore storage errors */
+  }
+}
+
+function loadViewByProject(): Record<string, AppView> {
   try {
     const stored = localStorage.getItem(VIEW_BY_PROJECT_KEY);
-    return stored ? (JSON.parse(stored) as Record<string, ViewType>) : {};
+    if (!stored) return {};
+    const parsed = parsePersistedViewByProject(JSON.parse(stored) as unknown);
+    if (parsed.changed) {
+      saveViewByProject(parsed.map);
+    }
+    return parsed.map;
   } catch {
+    saveViewByProject({});
     return {};
   }
 }
 
-function saveViewByProject(map: Record<string, ViewType>): void {
+function saveViewByProject(map: Record<string, AppView>): void {
   try {
     localStorage.setItem(VIEW_BY_PROJECT_KEY, JSON.stringify(map));
-  } catch {
-    /* ignore write errors */
-  }
-}
-
-function loadSessionByProject(): Record<string, string | null> {
-  try {
-    const stored = localStorage.getItem(SESSION_BY_PROJECT_KEY);
-    return stored ? (JSON.parse(stored) as Record<string, string | null>) : {};
-  } catch {
-    return {};
-  }
-}
-
-function saveSessionByProject(map: Record<string, string | null>): void {
-  try {
-    localStorage.setItem(SESSION_BY_PROJECT_KEY, JSON.stringify(map));
-  } catch {
-    /* ignore write errors */
-  }
-}
-
-function loadSelectedTaskByProject(): Record<string, string | null> {
-  try {
-    const stored = localStorage.getItem(SELECTED_TASK_BY_PROJECT_KEY);
-    return stored ? (JSON.parse(stored) as Record<string, string | null>) : {};
-  } catch {
-    return {};
-  }
-}
-
-function saveSelectedTaskByProject(map: Record<string, string | null>): void {
-  try {
-    localStorage.setItem(SELECTED_TASK_BY_PROJECT_KEY, JSON.stringify(map));
   } catch {
     /* ignore write errors */
   }
@@ -166,11 +142,10 @@ function saveSelectedTaskByProject(map: Record<string, string | null>): void {
 const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   activityPage: true,
   extensibilityPage: true,
-  ideationPage: false,
-  battleMode: true,
-  teamMode: false,
+  automationsPage: true,
   atlassianOauth: false,
   ticketingDashboard: false,
+  agentConversationAutopilot: false,
 };
 
 // ============================================================================
@@ -229,10 +204,10 @@ export interface ConfirmationConfig {
 interface UiState {
   /** Whether the sidebar is open */
   sidebarOpen: boolean;
-  /** Whether the reviews panel is open */
-  reviewsPanelOpen: boolean;
-  /** Current main view (kanban, ideation, etc.) */
-  currentView: ViewType;
+  /** Whether the notification center is open */
+  notificationsPanelOpen: boolean;
+  /** Current live application root view. */
+  currentView: AppView;
   /** Currently active modal type, or null if none */
   activeModal: ModalType;
   /** Context data for the active modal */
@@ -267,35 +242,22 @@ interface UiState {
   kanbanCardDisplayMode: KanbanCardDisplayMode;
   /** Whether a search request is in flight */
   isSearching: boolean;
-  /** ID of selected task for split-screen overlay (kanban view only) */
-  selectedTaskId: string | null;
   /** Active selection in the task graph (single selection across types) */
   graphSelection: GraphSelection | null;
   /** User toggle for graph right panel visibility */
   graphRightPanelUserOpen: boolean;
   /** Compact-mode toggle for graph right panel visibility */
   graphRightPanelCompactOpen: boolean;
-  /** Whether Battle Mode is active in Graph view */
-  battleModeActive: boolean;
-  /** Snapshot of graph panel visibility before entering battle mode */
-  battleModePanelRestoreState: { userOpen: boolean; compactOpen: boolean } | null;
-  /** History state for time-travel feature - shared between TaskDetailOverlay and IntegratedChatPanel */
-  taskHistoryState: {
-    status: InternalStatus;
-    timestamp: string;
-    /** Conversation ID from the state transition metadata (for states that spawn conversations) */
-    conversationId?: string | undefined;
-    /** Agent run ID from the state transition metadata */
-    agentRunId?: string | undefined;
-  } | null;
+  /** History state for time-travel feature - shared between Agents task detail and chat */
+  taskHistoryState: TaskHistoryState | null;
   /** Task creation overlay context, or null if closed */
   taskCreationContext: TaskCreationContext | null;
   /** Whether the welcome screen is manually shown (vs. empty state) */
   showWelcomeOverlay: boolean;
   /** View to return to when closing manually-opened welcome screen */
-  welcomeOverlayReturnView: ViewType | null;
+  welcomeOverlayReturnView: AppView | null;
   /** View to return to when leaving team split view */
-  previousView: ViewType | null;
+  previousView: AppView | null;
   /** One-shot flag for top-bar project switches that should keep the visible section. */
   preserveCurrentViewOnProjectSwitch: boolean;
   /** Filter for activity view navigation (set by StatusActivityBadge) */
@@ -303,11 +265,7 @@ interface UiState {
   /** Set of collapsed column IDs (persisted to localStorage) */
   collapsedColumns: Set<string>;
   /** Per-project last view (persisted to localStorage) */
-  viewByProject: Record<string, ViewType>;
-  /** Per-project last ideation session ID (persisted to localStorage) */
-  sessionByProject: Record<string, string | null>;
-  /** Per-project selected task detail ID (persisted to localStorage) */
-  selectedTaskByProject: Record<string, string | null>;
+  viewByProject: Record<string, AppView>;
   /** Cached UI feature flags (fetched once at startup, defaults to all-enabled) */
   featureFlags: FeatureFlags;
   /** Queue of session IDs awaiting finalization confirmation (first = active dialog) */
@@ -316,10 +274,6 @@ interface UiState {
   autoAcceptPlans: boolean;
   /** Per-session auto-accept: bypass confirmation for specific sessions (in-memory, resets on restart) */
   autoAcceptSessions: Set<string>;
-  /** Queue of session IDs awaiting verification confirmation (first = active dialog) */
-  pendingVerificationQueue: string[];
-  /** Per-session auto-accept verification: bypass confirmation for specific sessions (in-memory, resets on restart) */
-  autoAcceptVerificationSessions: Set<string>;
 }
 
 // ============================================================================
@@ -331,12 +285,12 @@ interface UiActions {
   toggleSidebar: () => void;
   /** Set sidebar visibility directly */
   setSidebarOpen: (open: boolean) => void;
-  /** Toggle reviews panel visibility */
-  toggleReviewsPanel: () => void;
-  /** Set reviews panel visibility directly */
-  setReviewsPanelOpen: (open: boolean) => void;
+  /** Toggle notification center visibility */
+  toggleNotificationsPanel: () => void;
+  /** Set notification center visibility directly */
+  setNotificationsPanelOpen: (open: boolean) => void;
   /** Set the current main view */
-  setCurrentView: (view: ViewType) => void;
+  setCurrentView: (view: AppView) => void;
   /** Open a modal with optional context */
   openModal: (type: ModalType, context?: Record<string, unknown>) => void;
   /** Close the current modal */
@@ -391,8 +345,6 @@ interface UiActions {
   setKanbanCardDisplayMode: (mode: KanbanCardDisplayMode) => void;
   /** Set whether a search is in progress */
   setIsSearching: (searching: boolean) => void;
-  /** Set selected task ID for split-screen overlay */
-  setSelectedTaskId: (taskId: string | null) => void;
   /** Set active graph selection */
   setGraphSelection: (selection: GraphSelection | null) => void;
   /** Clear active graph selection */
@@ -405,17 +357,8 @@ interface UiActions {
   toggleGraphRightPanelCompactOpen: () => void;
   /** Set compact-mode graph right panel visibility */
   setGraphRightPanelCompactOpen: (open: boolean) => void;
-  /** Enter battle mode and capture graph panel visibility state */
-  enterBattleMode: () => void;
-  /** Exit battle mode and restore graph panel visibility state */
-  exitBattleMode: () => void;
   /** Set task history state for time-travel feature */
-  setTaskHistoryState: (state: {
-    status: InternalStatus;
-    timestamp: string;
-    conversationId?: string | undefined;
-    agentRunId?: string | undefined;
-  } | null) => void;
+  setTaskHistoryState: (state: TaskHistoryState | null) => void;
   /** Open task creation overlay */
   openTaskCreation: (
     projectId: string,
@@ -441,7 +384,7 @@ interface UiActions {
   /** Replace the entire collapsed columns set */
   setCollapsedColumns: (columns: Set<string>) => void;
   /** Set the view to return to when leaving team split view */
-  setPreviousView: (view: ViewType | null) => void;
+  setPreviousView: (view: AppView | null) => void;
   /** Preserve the current section for the next project switch. */
   preserveCurrentViewOnNextProjectSwitch: () => void;
   /** Atomically save old project state, restore new project state, clear ephemeral state */
@@ -450,8 +393,6 @@ interface UiActions {
   cleanupProjectRoute: (projectId: string) => void;
   /** Update cached feature flags (called once on startup after Tauri command resolves) */
   setFeatureFlags: (flags: FeatureFlags) => void;
-  /** Atomically navigate to kanban view and select the given task */
-  navigateToTask: (taskId: string) => void;
   /** Enqueue a session ID for finalization confirmation (deduplicates) */
   enqueuePendingConfirmation: (sessionId: string) => void;
   /** Remove the first item from the confirmation queue (after dialog resolves) */
@@ -464,30 +405,20 @@ interface UiActions {
   addAutoAcceptSession: (sessionId: string) => void;
   /** Remove a session from per-session auto-accept set */
   removeAutoAcceptSession: (sessionId: string) => void;
-  /** Enqueue a session ID for verification confirmation (deduplicates) */
-  enqueuePendingVerification: (sessionId: string) => void;
-  /** Remove the first item from the verification queue (after dialog resolves) */
-  dequeueVerification: () => void;
-  /** Remove a specific session from the verification queue */
-  removeFromVerificationQueue: (sessionId: string) => void;
-  /** Add session to auto-accept verification set */
-  addAutoAcceptVerificationSession: (sessionId: string) => void;
-  /** Remove session from auto-accept verification set */
-  removeAutoAcceptVerificationSession: (sessionId: string) => void;
-  /** Hydrate verification queue from bootstrap API response (merge-dedup, NOT replace) */
-  hydrateVerificationQueue: (sessionIds: string[]) => void;
 }
 
 // ============================================================================
 // Store Implementation
 // ============================================================================
 
+clearRetiredRouteStorage();
+
 export const useUiStore = create<UiState & UiActions>()(
-  immer((set, get) => ({
+  immer((set) => ({
     // Initial state
     sidebarOpen: true,
-    reviewsPanelOpen: false,
-    currentView: DEFAULT_PROJECT_VIEW,
+    notificationsPanelOpen: false,
+    currentView: DEFAULT_APP_VIEW,
     activeModal: null,
     modalContext: undefined,
     notifications: [],
@@ -519,12 +450,9 @@ export const useUiStore = create<UiState & UiActions>()(
     boardSearchQuery: null,
     kanbanCardDisplayMode: loadKanbanCardDisplayMode(),
     isSearching: false,
-    selectedTaskId: null,
     graphSelection: null,
     graphRightPanelUserOpen: true,
     graphRightPanelCompactOpen: false,
-    battleModeActive: false,
-    battleModePanelRestoreState: null,
     taskHistoryState: null,
     taskCreationContext: null,
     showWelcomeOverlay: false,
@@ -534,14 +462,10 @@ export const useUiStore = create<UiState & UiActions>()(
     activityFilter: { taskId: null, sessionId: null },
     collapsedColumns: loadCollapsedColumns(),
     viewByProject: loadViewByProject(),
-    sessionByProject: loadSessionByProject(),
-    selectedTaskByProject: loadSelectedTaskByProject(),
     featureFlags: DEFAULT_FEATURE_FLAGS,
     pendingConfirmationQueue: [],
     autoAcceptPlans: false,
     autoAcceptSessions: new Set<string>(),
-    pendingVerificationQueue: [],
-    autoAcceptVerificationSessions: new Set<string>(),
 
     // Actions
     toggleSidebar: () =>
@@ -554,14 +478,14 @@ export const useUiStore = create<UiState & UiActions>()(
         state.sidebarOpen = open;
       }),
 
-    toggleReviewsPanel: () =>
+    toggleNotificationsPanel: () =>
       set((state) => {
-        state.reviewsPanelOpen = !state.reviewsPanelOpen;
+        state.notificationsPanelOpen = !state.notificationsPanelOpen;
       }),
 
-    setReviewsPanelOpen: (open) =>
+    setNotificationsPanelOpen: (open) =>
       set((state) => {
-        state.reviewsPanelOpen = open;
+        state.notificationsPanelOpen = open;
       }),
 
     setCurrentView: (view) =>
@@ -569,7 +493,7 @@ export const useUiStore = create<UiState & UiActions>()(
         const safeView =
           view === "ticketing" || isViewEnabled(view, state.featureFlags)
             ? view
-            : DEFAULT_PROJECT_VIEW;
+            : DEFAULT_APP_VIEW;
         const projectId = useProjectStore.getState().activeProjectId;
         state.currentView = safeView;
         if (projectId) {
@@ -724,21 +648,6 @@ export const useUiStore = create<UiState & UiActions>()(
         state.isSearching = searching;
       }),
 
-    setSelectedTaskId: (taskId) =>
-      set((state) => {
-        applyTaskSelection(state, taskId);
-        if (taskId !== null) {
-          state.graphSelection = { kind: "task", id: taskId };
-        } else if (state.graphSelection?.kind === "task") {
-          state.graphSelection = null;
-        }
-        const projectId = useProjectStore.getState().activeProjectId;
-        if (projectId) {
-          state.selectedTaskByProject[projectId] = taskId;
-          saveSelectedTaskByProject(state.selectedTaskByProject);
-        }
-      }),
-
     setGraphSelection: (selection) =>
       set((state) => {
         state.graphSelection = selection;
@@ -767,29 +676,6 @@ export const useUiStore = create<UiState & UiActions>()(
     setGraphRightPanelCompactOpen: (open) =>
       set((state) => {
         state.graphRightPanelCompactOpen = open;
-      }),
-
-    enterBattleMode: () =>
-      set((state) => {
-        if (state.battleModeActive) return;
-        state.battleModePanelRestoreState = {
-          userOpen: state.graphRightPanelUserOpen,
-          compactOpen: state.graphRightPanelCompactOpen,
-        };
-        state.battleModeActive = true;
-        state.graphRightPanelUserOpen = false;
-        state.graphRightPanelCompactOpen = false;
-      }),
-
-    exitBattleMode: () =>
-      set((state) => {
-        if (!state.battleModeActive) return;
-        state.battleModeActive = false;
-        if (state.battleModePanelRestoreState) {
-          state.graphRightPanelUserOpen = state.battleModePanelRestoreState.userOpen;
-          state.graphRightPanelCompactOpen = state.battleModePanelRestoreState.compactOpen;
-        }
-        state.battleModePanelRestoreState = null;
       }),
 
     setTaskHistoryState: (historyState) =>
@@ -885,31 +771,18 @@ export const useUiStore = create<UiState & UiActions>()(
         // SAVE phase — skip if oldProjectId is null (first load)
         if (oldProjectId) {
           state.viewByProject[oldProjectId] = state.currentView;
-          state.sessionByProject[oldProjectId] = useIdeationStore.getState().activeSessionId;
-          state.selectedTaskByProject[oldProjectId] = state.selectedTaskId;
         }
 
         const preserveCurrentView = state.preserveCurrentViewOnProjectSwitch;
         state.preserveCurrentViewOnProjectSwitch = false;
 
         // RESTORE phase — resolve view, fallback ephemeral views to the default project view
-        let restoredView: ViewType = preserveCurrentView
+        let restoredView: AppView = preserveCurrentView
           ? state.currentView
-          : state.viewByProject[newProjectId] ?? DEFAULT_PROJECT_VIEW;
-        let restoredSelectedTaskId = state.selectedTaskByProject[newProjectId] ?? null;
-        // Guard against stale localStorage values ("settings" was removed from ViewType)
-        if ((restoredView as string) === "settings" || restoredView === "team") {
-          restoredView = DEFAULT_PROJECT_VIEW;
-        }
-        if (restoredView === "task_detail") {
-          restoredView = restoredSelectedTaskId ? "kanban" : DEFAULT_PROJECT_VIEW;
-        }
+          : state.viewByProject[newProjectId] ?? DEFAULT_APP_VIEW;
         // Feature flag guard: redirect disabled views to the default project view
         if (!isViewEnabled(restoredView, state.featureFlags)) {
-          restoredView = DEFAULT_PROJECT_VIEW;
-        }
-        if (restoredView !== "kanban" && restoredView !== "graph") {
-          restoredSelectedTaskId = null;
+          restoredView = DEFAULT_APP_VIEW;
         }
         if (preserveCurrentView) {
           state.viewByProject[newProjectId] = restoredView;
@@ -917,61 +790,35 @@ export const useUiStore = create<UiState & UiActions>()(
 
         // Persist updated maps
         saveViewByProject(state.viewByProject);
-        saveSessionByProject(state.sessionByProject);
-        saveSelectedTaskByProject(state.selectedTaskByProject);
 
         // CLEAN + RESTORE (atomic)
         state.currentView = restoredView;
-        state.selectedTaskId = restoredSelectedTaskId;
-        state.graphSelection = restoredSelectedTaskId
-          ? { kind: "task", id: restoredSelectedTaskId }
-          : null;
+        state.graphSelection = null;
         state.taskHistoryState = null;
         state.boardSearchQuery = null;
-        state.battleModeActive = false;
-        state.battleModePanelRestoreState = null;
         state.activityFilter = { taskId: null, sessionId: null };
         state.graphRightPanelUserOpen = false;
         state.graphRightPanelCompactOpen = false;
-        // Clear stale verification queue entries — bootstrap will re-hydrate for new project
-        state.pendingVerificationQueue = [];
       }),
 
     cleanupProjectRoute: (projectId) =>
       set((state) => {
         delete state.viewByProject[projectId];
-        delete state.sessionByProject[projectId];
-        delete state.selectedTaskByProject[projectId];
         saveViewByProject(state.viewByProject);
-        saveSessionByProject(state.sessionByProject);
-        saveSelectedTaskByProject(state.selectedTaskByProject);
       }),
 
     setFeatureFlags: (flags) =>
       set((state) => {
         state.featureFlags = flags;
         if (!isViewEnabled(state.currentView, flags)) {
-          state.currentView = DEFAULT_PROJECT_VIEW;
+          state.currentView = DEFAULT_APP_VIEW;
           const projectId = useProjectStore.getState().activeProjectId;
           if (projectId) {
-            state.viewByProject[projectId] = DEFAULT_PROJECT_VIEW;
+            state.viewByProject[projectId] = DEFAULT_APP_VIEW;
             saveViewByProject(state.viewByProject);
           }
         }
       }),
-
-    navigateToTask: (taskId) => {
-      get().setCurrentView("kanban");
-      set((state) => {
-        applyTaskSelection(state, taskId);
-        state.graphSelection = { kind: "task", id: taskId };
-        const projectId = useProjectStore.getState().activeProjectId;
-        if (projectId) {
-          state.selectedTaskByProject[projectId] = taskId;
-          saveSelectedTaskByProject(state.selectedTaskByProject);
-        }
-      });
-    },
 
     enqueuePendingConfirmation: (sessionId) =>
       set((state) => {
@@ -1007,43 +854,6 @@ export const useUiStore = create<UiState & UiActions>()(
         state.autoAcceptSessions.delete(sessionId);
       }),
 
-    enqueuePendingVerification: (sessionId) =>
-      set((state) => {
-        if (!state.pendingVerificationQueue.includes(sessionId)) {
-          state.pendingVerificationQueue.push(sessionId);
-        }
-      }),
-
-    dequeueVerification: () =>
-      set((state) => {
-        state.pendingVerificationQueue.shift();
-      }),
-
-    removeFromVerificationQueue: (sessionId) =>
-      set((state) => {
-        state.pendingVerificationQueue = state.pendingVerificationQueue.filter(
-          (id) => id !== sessionId
-        );
-      }),
-
-    addAutoAcceptVerificationSession: (sessionId) =>
-      set((state) => {
-        state.autoAcceptVerificationSessions.add(sessionId);
-      }),
-
-    removeAutoAcceptVerificationSession: (sessionId) =>
-      set((state) => {
-        state.autoAcceptVerificationSessions.delete(sessionId);
-      }),
-
-    hydrateVerificationQueue: (sessionIds) =>
-      set((state) => {
-        for (const sessionId of sessionIds) {
-          if (!state.pendingVerificationQueue.includes(sessionId)) {
-            state.pendingVerificationQueue.push(sessionId);
-          }
-        }
-      }),
   }))
 );
 

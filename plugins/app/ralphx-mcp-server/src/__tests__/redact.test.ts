@@ -8,7 +8,10 @@ import path from "node:path";
 
 import { afterEach, describe, it, expect, vi } from "vitest";
 import {
+  ARG_REDACTED_TOOLS,
   getTraceLogPath,
+  redactToolArgsForLog,
+  redactToolResultForLog,
   redactSecrets,
   resetTraceLogPathForTests,
   safeError,
@@ -24,6 +27,32 @@ afterEach(() => {
   delete process.env.RALPHX_PROJECT_ID;
   delete process.env.RALPHX_WORKING_DIRECTORY;
   resetTraceLogPathForTests();
+});
+
+describe("persona tool argument redaction", () => {
+  it.each(["save_persona_draft", "get_persona_draft", "persona_future_tool"])(
+    "redacts %s arguments before logging",
+    (toolName) => {
+      expect(ARG_REDACTED_TOOLS.has(toolName) || toolName.startsWith("persona_")).toBe(true);
+      expect(
+        redactToolArgsForLog(toolName, { content: "private persona body" })
+      ).toBe("***PERSONA_ARGS_REDACTED***");
+    }
+  );
+
+  it("leaves non-persona tool arguments unchanged", () => {
+    const args = { task_id: "task-1", note: "safe" };
+
+    expect(redactToolArgsForLog("update_task", args)).toBe(args);
+  });
+
+  it("redacts persona tool results before logging", () => {
+    expect(
+      redactToolResultForLog("get_persona_draft", {
+        content: "private persona body",
+      })
+    ).toBe("***PERSONA_ARGS_REDACTED***");
+  });
 });
 
 describe("redactSecrets — pattern matching", () => {

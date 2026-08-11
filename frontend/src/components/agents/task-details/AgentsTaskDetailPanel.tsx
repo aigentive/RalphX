@@ -49,6 +49,7 @@ import {
   MergeConflictTaskDetail,
   MergeIncompleteTaskDetail,
   MergedTaskDetail,
+  BranchUpdateTaskDetail,
 } from "./detail-views";
 
 interface AgentsTaskDetailPanelProps {
@@ -66,6 +67,7 @@ interface AgentsTaskDetailPanelProps {
   viewConversationId?: string | undefined;
   /** Agent run ID for historical state context */
   viewAgentRunId?: string | undefined;
+  readOnly?: boolean;
 }
 
 /**
@@ -121,6 +123,9 @@ const TASK_DETAIL_VIEWS: Record<
   waiting_on_pr: MergingTaskDetail,
   merge_incomplete: MergeIncompleteTaskDetail,
   merge_conflict: MergeConflictTaskDetail,
+  updating_plan_branch: BranchUpdateTaskDetail,
+  updating_task_branch: BranchUpdateTaskDetail,
+  branch_update_blocked: BranchUpdateTaskDetail,
   // Terminal states
   merged: MergedTaskDetail,
   failed: BasicTaskDetail,
@@ -253,6 +258,21 @@ const STATUS_CONFIG: Record<
     bg: "var(--status-warning-muted)",
     text: "var(--status-warning)",
   },
+  updating_plan_branch: {
+    label: "Updating Plan Branch",
+    bg: "var(--status-info-muted)",
+    text: "var(--status-info)",
+  },
+  updating_task_branch: {
+    label: "Updating Task Branch",
+    bg: "var(--status-info-muted)",
+    text: "var(--status-info)",
+  },
+  branch_update_blocked: {
+    label: "Branch Update Blocked",
+    bg: "var(--status-warning-muted)",
+    text: "var(--status-warning)",
+  },
   merged: {
     label: "Merged",
     bg: "var(--status-success-muted)",
@@ -368,6 +388,7 @@ export function AgentsTaskDetailPanel({
   viewTimestamp,
   viewConversationId,
   viewAgentRunId,
+  readOnly = false,
 }: AgentsTaskDetailPanelProps) {
   const [showContext, setShowContext] = useState(showContextProp);
 
@@ -386,8 +407,9 @@ export function AgentsTaskDetailPanel({
     const ViewComponent =
       TASK_DETAIL_VIEWS[statusForView] ?? BasicTaskDetail;
     // Pass isHistorical when viewing a historical state (viewAsStatus is set)
-    const isHistorical = viewAsStatus !== undefined;
-    const viewMode: TaskDetailViewMode = isHistorical
+    const isHistoricalView = viewAsStatus !== undefined;
+    const actionsReadOnly = isHistoricalView || readOnly;
+    const viewMode: TaskDetailViewMode = isHistoricalView
       ? {
           kind: "historical",
           status: statusForView,
@@ -400,9 +422,9 @@ export function AgentsTaskDetailPanel({
       return (
         <TaskDetailContextProvider task={task} viewMode={viewMode}>
           <ReviewingTaskDetail
-            key={`reviewing-${isHistorical ? "hist" : "curr"}`}
+            key={`reviewing-${actionsReadOnly ? "readonly" : "current"}`}
             task={task}
-            isHistorical={isHistorical}
+            isHistorical={actionsReadOnly}
             viewTimestamp={viewMode.kind === "historical" ? viewMode.timestamp : undefined}
           />
         </TaskDetailContextProvider>
@@ -411,9 +433,9 @@ export function AgentsTaskDetailPanel({
     return (
       <TaskDetailContextProvider task={task} viewMode={viewMode}>
         <ViewComponent
-          key={`${statusForView}-${isHistorical ? "hist" : "curr"}`}
+          key={`${statusForView}-${actionsReadOnly ? "readonly" : "current"}`}
           task={task}
-          isHistorical={isHistorical}
+          isHistorical={actionsReadOnly}
           viewStatus={statusForView}
         />
       </TaskDetailContextProvider>

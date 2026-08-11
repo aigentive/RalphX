@@ -1,7 +1,7 @@
 //! Branch freshness checks for execution and review entry points.
 //!
 //! Ensures both plan←source and task←feature branches are fresh before
-//! an agent is spawned. On conflict, routes to Merging state for resolution.
+//! an agent is spawned. Stale branches activate a dedicated update operation.
 
 // Callers in on_enter_states.rs and side_effects.rs are added in subsequent steps.
 
@@ -21,9 +21,64 @@ use crate::domain::entities::{
 use crate::domain::repositories::ActivityEventRepository;
 use crate::infrastructure::agents::claude::ReconciliationConfig;
 
-use super::merge_coordination::{
-    update_plan_from_main, update_source_from_target, PlanUpdateResult, SourceUpdateResult,
-};
+use super::merge_coordination::{PlanUpdateResult, SourceUpdateResult};
+
+pub(super) async fn observe_plan_freshness(
+    repo_path: &Path,
+    plan_branch_name: &str,
+    base_branch: &str,
+    _project: &Project,
+    _task_id_str: &str,
+    _event_sink: Option<&dyn ralphx_events::EventSink>,
+) -> PlanUpdateResult {
+    if let Err(error) = GitService::resolve_ref_sha(repo_path, base_branch).await {
+        return PlanUpdateResult::Error(format!(
+            "failed to resolve plan update source {base_branch}: {error}"
+        ));
+    }
+    if let Err(error) = GitService::resolve_ref_sha(repo_path, plan_branch_name).await {
+        return PlanUpdateResult::Error(format!(
+            "failed to resolve plan update target {plan_branch_name}: {error}"
+        ));
+    }
+    match GitService::is_ancestor(repo_path, base_branch, plan_branch_name).await {
+        Ok(true) => PlanUpdateResult::AlreadyUpToDate,
+        Ok(false) => PlanUpdateResult::Conflicts {
+            conflict_files: Vec::new(),
+        },
+        Err(error) => PlanUpdateResult::Error(error.to_string()),
+    }
+}
+
+async fn observe_source_freshness(
+    repo_path: &Path,
+    source_branch: &str,
+    target_branch: &str,
+) -> SourceUpdateResult {
+    if GitService::resolve_ref_sha(repo_path, target_branch)
+        .await
+        .is_err()
+    {
+        return SourceUpdateResult::BranchMissing {
+            branch: target_branch.to_string(),
+        };
+    }
+    if GitService::resolve_ref_sha(repo_path, source_branch)
+        .await
+        .is_err()
+    {
+        return SourceUpdateResult::BranchMissing {
+            branch: source_branch.to_string(),
+        };
+    }
+    match GitService::is_ancestor(repo_path, target_branch, source_branch).await {
+        Ok(true) => SourceUpdateResult::AlreadyUpToDate,
+        Ok(false) => SourceUpdateResult::Conflicts {
+            conflict_files: Vec::new(),
+        },
+        Err(error) => SourceUpdateResult::Error(error.to_string()),
+    }
+}
 
 /// Typed metadata for branch freshness conflict tracking.
 ///
@@ -32,12 +87,12 @@ use super::merge_coordination::{
 ///
 /// Lifecycle:
 /// - Initialized: defaults (absent from metadata)
-/// - Incremented: once per `ensure_branches_fresh()` call that routes to Merging
+/// - Incremented: once per `ensure_branches_fresh()` call that activates an update
 /// - Reset: when freshness check passes without conflicts (via `reset_conflict_state()`)
 /// - Cap: 5 (auto-reset once with extended cooldown; second cap → ExecutionBlocked)
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct FreshnessMetadata {
-    /// True when task was routed to Merging due to stale branches.
+    /// True when a dedicated update was activated due to stale branches.
     #[serde(default)]
     pub branch_freshness_conflict: bool,
 
@@ -64,6 +119,14 @@ pub struct FreshnessMetadata {
     /// Used for skip-if-recently-checked optimization (default window: 30s).
     #[serde(default)]
     pub last_freshness_check_at: Option<String>,
+
+    /// Last durable plan-branch update receipt time.
+    #[serde(default)]
+    pub last_plan_freshness_check_at: Option<String>,
+
+    /// Last durable task-branch update receipt time.
+    #[serde(default)]
+    pub last_task_freshness_check_at: Option<String>,
 
     /// Files involved in the freshness conflict (from git conflict output).
     #[serde(default)]
@@ -118,6 +181,8 @@ impl FreshnessMetadata {
         "plan_update_conflict",
         "source_update_conflict",
         "last_freshness_check_at",
+        "last_plan_freshness_check_at",
+        "last_task_freshness_check_at",
         "conflict_files",
         "source_branch",
         "target_branch",
@@ -219,6 +284,20 @@ impl FreshnessMetadata {
             ),
             None => obj.remove("last_freshness_check_at"),
         };
+        match &self.last_plan_freshness_check_at {
+            Some(value) => obj.insert(
+                "last_plan_freshness_check_at".to_owned(),
+                Value::String(value.clone()),
+            ),
+            None => obj.remove("last_plan_freshness_check_at"),
+        };
+        match &self.last_task_freshness_check_at {
+            Some(value) => obj.insert(
+                "last_task_freshness_check_at".to_owned(),
+                Value::String(value.clone()),
+            ),
+            None => obj.remove("last_task_freshness_check_at"),
+        };
         obj.insert(
             "conflict_files".to_owned(),
             Value::Array(
@@ -291,14 +370,50 @@ impl FreshnessMetadata {
 /// Action returned by `ensure_branches_fresh()` when branches are not clean.
 #[derive(Debug)]
 pub enum FreshnessAction {
-    /// Branch conflict detected — route to Merging with freshness metadata.
-    RouteToMerging {
+    /// Stale branch detected — activate a dedicated update with freshness metadata.
+    RouteToBranchUpdate {
         conflict_files: Vec<String>,
         conflict_type: &'static str, // "plan_update" | "source_update"
-        freshness_metadata: FreshnessMetadata,
+        freshness_metadata: Box<FreshnessMetadata>,
     },
     /// Fatal error or retry cap exceeded — task should fail.
-    ExecutionBlocked { reason: String },
+    ExecutionBlocked {
+        reason: String,
+        branch_missing: Option<String>,
+    },
+}
+
+fn record_freshness_conflict(
+    mut freshness: FreshnessMetadata,
+    config: &ReconciliationConfig,
+) -> Result<FreshnessMetadata, String> {
+    freshness.freshness_conflict_count = freshness.freshness_conflict_count.saturating_add(1);
+
+    if freshness.freshness_conflict_count > config.freshness_max_conflict_retries {
+        if freshness.freshness_auto_reset_count == 0 {
+            freshness.freshness_conflict_count = 0;
+            freshness.freshness_auto_reset_count = 1;
+            freshness.freshness_backoff_until = Some(
+                Utc::now()
+                    + chrono::Duration::seconds(config.freshness_auto_reset_cooldown_secs as i64),
+            );
+            return Ok(freshness);
+        }
+
+        return Err(format!(
+            "Branch freshness conflict retry cap exceeded after {} attempts",
+            config.freshness_max_conflict_retries
+        ));
+    }
+
+    freshness.freshness_backoff_until = FreshnessMetadata::compute_backoff(
+        freshness.freshness_conflict_count,
+        config.freshness_backoff_base_secs,
+        config.freshness_backoff_max_secs,
+    )
+    .map(|duration| Utc::now() + duration);
+
+    Ok(freshness)
 }
 
 /// Ensures both plan←source and task←feature branches are fresh.
@@ -307,7 +422,7 @@ pub enum FreshnessAction {
 ///
 /// # Returns
 /// - `Ok(updated_meta)` — both checks passed; caller should merge updated_meta into task metadata
-/// - `Err(FreshnessAction::RouteToMerging)` — conflict; caller sets metadata + transitions to Merging
+/// - `Err(FreshnessAction::RouteToBranchUpdate)` — conflict; caller creates a dedicated update operation
 /// - `Err(FreshnessAction::ExecutionBlocked)` — timeout or retry cap exceeded
 ///
 /// # Errors
@@ -319,7 +434,7 @@ pub async fn ensure_branches_fresh(
     task_id_str: &str,
     plan_branch: Option<&str>,
     plan_source_branch: Option<&str>,
-    app_handle: Option<&tauri::AppHandle>,
+    event_sink: Option<&dyn ralphx_events::EventSink>,
     activity_event_repo: Option<&Arc<dyn ActivityEventRepository>>,
     origin_state: &str,
     config: &ReconciliationConfig,
@@ -394,35 +509,92 @@ pub async fn ensure_branches_fresh(
     }
 
     // 5. Dirty worktree guard
-    if is_worktree_dirty(repo_path).await {
-        warn!(
-            task_id = task_id_str,
-            "Dirty worktree detected before freshness check — attempting emergency auto-commit"
-        );
-        match GitService::commit_all_including_deletions(
-            repo_path,
-            "chore: auto-commit before freshness check",
-        )
-        .await
+    match is_worktree_dirty(repo_path).await {
+        Ok(true)
+            if super::automatic_commit_policy::protects_primary_checkout(project, repo_path) =>
         {
-            Ok(Some(sha)) => {
-                info!(
-                    task_id = task_id_str,
-                    sha = %sha,
-                    "Emergency auto-commit succeeded"
-                );
+            info!(
+                task_id = task_id_str,
+                reason = "pr_mode_primary_checkout_protected",
+                "Skipping emergency auto-commit for the PR-mode primary checkout"
+            );
+        }
+        Ok(true) => {
+            warn!(
+                task_id = task_id_str,
+                "Dirty worktree detected before freshness check — attempting emergency auto-commit"
+            );
+            match GitService::commit_all_including_deletions(
+                repo_path,
+                "chore: auto-commit before freshness check",
+            )
+            .await
+            {
+                Ok(Some(sha)) => {
+                    info!(
+                        task_id = task_id_str,
+                        sha = %sha,
+                        "Emergency auto-commit succeeded"
+                    );
+                }
+                Ok(None) => {
+                    info!(
+                        task_id = task_id_str,
+                        "Emergency auto-commit: nothing to commit (race condition)"
+                    );
+                }
+                Err(e) => {
+                    let error = e.to_string();
+                    if let FreshnessWorktreeGuardDecision::Block {
+                        reason_code,
+                        check,
+                        reason,
+                    } = dirty_worktree_autocommit_error_decision(origin_state, &error)
+                    {
+                        return Err(block_freshness_git_error(
+                            activity_event_repo,
+                            task_id_str,
+                            reason_code,
+                            check,
+                            reason,
+                            None,
+                        )
+                        .await);
+                    } else {
+                        warn!(
+                            task_id = task_id_str,
+                            origin_state,
+                            error = %error,
+                            "Emergency auto-commit failed outside execution spawn path — skipping freshness check"
+                        );
+                        return Ok(freshness);
+                    }
+                }
             }
-            Ok(None) => {
-                info!(
-                    task_id = task_id_str,
-                    "Emergency auto-commit: nothing to commit (race condition)"
-                );
-            }
-            Err(e) => {
+        }
+        Ok(false) => {}
+        Err(e) => {
+            if let FreshnessWorktreeGuardDecision::Block {
+                reason_code,
+                check,
+                reason,
+            } = worktree_status_error_decision(origin_state, &e)
+            {
+                return Err(block_freshness_git_error(
+                    activity_event_repo,
+                    task_id_str,
+                    reason_code,
+                    check,
+                    reason,
+                    None,
+                )
+                .await);
+            } else {
                 warn!(
                     task_id = task_id_str,
+                    origin_state,
                     error = %e,
-                    "Emergency auto-commit failed — skipping freshness check to unblock execution"
+                    "Failed to check worktree status outside execution spawn path — skipping freshness check"
                 );
                 return Ok(freshness);
             }
@@ -435,18 +607,23 @@ pub async fn ensure_branches_fresh(
         plan_source_branch.unwrap_or_else(|| project.base_branch.as_deref().unwrap_or("main"));
 
     // 6. Plan freshness check (plan←source branch)
-    if let Some(plan_branch_name) = plan_branch {
+    if let Some(plan_branch_name) = plan_branch.filter(|_| {
+        !freshness_timestamp_is_recent(
+            freshness.last_plan_freshness_check_at.as_deref(),
+            config.freshness_skip_window_secs,
+        )
+    }) {
         // Heap-allocate the large update future to avoid overflowing tokio worker stacks
         // when startup reconciliation inlines deep async chains.
         let plan_result = tokio::time::timeout(
             freshness_timeout,
-            Box::pin(update_plan_from_main(
+            Box::pin(observe_plan_freshness(
                 repo_path,
                 plan_branch_name,
                 base_branch,
                 project,
                 task_id_str,
-                app_handle,
+                event_sink,
             )),
         )
         .await;
@@ -469,40 +646,36 @@ pub async fn ensure_branches_fresh(
                         "update_plan_from_main timed out after {}s",
                         config.branch_freshness_timeout_secs
                     ),
+                    branch_missing: None,
                 });
             }
             Ok(PlanUpdateResult::Conflicts { conflict_files }) => {
-                // Single-increment per ensure_branches_fresh() call
-                freshness.freshness_conflict_count += 1;
-
                 let conflict_files_str: Vec<String> = conflict_files
                     .iter()
                     .map(|p| p.to_string_lossy().into_owned())
                     .collect();
-
-                // Auto-recovery at cap (or block on second cap)
-                if let Some(action) = handle_cap_if_needed(
-                    &mut freshness,
-                    &conflict_files_str,
-                    task_id_str,
-                    activity_event_repo,
-                    config,
-                )
-                .await
-                {
-                    return Err(action);
-                }
-
-                // Set exponential backoff for next attempt
-                set_backoff(&mut freshness, config);
 
                 freshness.branch_freshness_conflict = true;
                 freshness.freshness_origin_state = Some(origin_state.to_string());
                 freshness.plan_update_conflict = true;
                 freshness.source_update_conflict = false;
                 freshness.conflict_files = conflict_files_str.clone();
-                freshness.source_branch = task.task_branch.clone();
+                freshness.source_branch = Some(base_branch.to_string());
                 freshness.target_branch = Some(plan_branch_name.to_string());
+
+                freshness = match record_freshness_conflict(freshness, config) {
+                    Ok(freshness) => freshness,
+                    Err(reason) => {
+                        return Err(block_freshness_update_error(
+                            activity_event_repo,
+                            task_id_str,
+                            "plan_update",
+                            reason,
+                            None,
+                        )
+                        .await);
+                    }
+                };
 
                 emit_freshness_activity(
                     activity_event_repo,
@@ -517,18 +690,43 @@ pub async fn ensure_branches_fresh(
                 )
                 .await;
 
-                return Err(FreshnessAction::RouteToMerging {
+                return Err(FreshnessAction::RouteToBranchUpdate {
                     conflict_files: conflict_files_str,
                     conflict_type: "plan_update",
-                    freshness_metadata: freshness,
+                    freshness_metadata: Box::new(freshness),
                 });
             }
             Ok(PlanUpdateResult::Error(e)) => {
                 warn!(
                     task_id = task_id_str,
                     error = %e,
-                    "update_plan_from_main failed (non-fatal) — continuing to source check"
+                    "update_plan_from_main failed — retrying once before blocking execution"
                 );
+                let retry_result = tokio::time::timeout(
+                    freshness_timeout,
+                    Box::pin(observe_plan_freshness(
+                        repo_path,
+                        plan_branch_name,
+                        base_branch,
+                        project,
+                        task_id_str,
+                        event_sink,
+                    )),
+                )
+                .await;
+                if let FreshnessRetryDecision::Block { reason } = plan_retry_decision_after_error(
+                    retry_result.ok(),
+                    config.branch_freshness_timeout_secs,
+                ) {
+                    return Err(block_freshness_update_error(
+                        activity_event_repo,
+                        task_id_str,
+                        "plan_update",
+                        reason,
+                        None,
+                    )
+                    .await);
+                }
             }
             Ok(
                 PlanUpdateResult::AlreadyUpToDate
@@ -550,18 +748,23 @@ pub async fn ensure_branches_fresh(
             task_id = task_id_str,
             "No task branch set — skipping source freshness check"
         );
+    } else if freshness_timestamp_is_recent(
+        freshness.last_task_freshness_check_at.as_deref(),
+        config.freshness_skip_window_secs,
+    ) {
+        info!(
+            task_id = task_id_str,
+            "Task branch update receipt is still fresh"
+        );
     } else {
         // Heap-allocate the large update future to avoid overflowing tokio worker stacks
         // when startup reconciliation inlines deep async chains.
         let source_result = tokio::time::timeout(
             freshness_timeout,
-            Box::pin(update_source_from_target(
+            Box::pin(observe_source_freshness(
                 repo_path,
                 source_branch,
                 target_branch,
-                project,
-                task_id_str,
-                app_handle,
             )),
         )
         .await;
@@ -584,32 +787,14 @@ pub async fn ensure_branches_fresh(
                         "update_source_from_target timed out after {}s",
                         config.branch_freshness_timeout_secs
                     ),
+                    branch_missing: None,
                 });
             }
             Ok(SourceUpdateResult::Conflicts { conflict_files }) => {
-                // Single-increment per ensure_branches_fresh() call
-                freshness.freshness_conflict_count += 1;
-
                 let conflict_files_str: Vec<String> = conflict_files
                     .iter()
                     .map(|p| p.to_string_lossy().into_owned())
                     .collect();
-
-                // Auto-recovery at cap (or block on second cap)
-                if let Some(action) = handle_cap_if_needed(
-                    &mut freshness,
-                    &conflict_files_str,
-                    task_id_str,
-                    activity_event_repo,
-                    config,
-                )
-                .await
-                {
-                    return Err(action);
-                }
-
-                // Set exponential backoff for next attempt
-                set_backoff(&mut freshness, config);
 
                 freshness.branch_freshness_conflict = true;
                 freshness.freshness_origin_state = Some(origin_state.to_string());
@@ -618,6 +803,20 @@ pub async fn ensure_branches_fresh(
                 freshness.conflict_files = conflict_files_str.clone();
                 freshness.source_branch = Some(source_branch.to_string());
                 freshness.target_branch = Some(target_branch.to_string());
+
+                freshness = match record_freshness_conflict(freshness, config) {
+                    Ok(freshness) => freshness,
+                    Err(reason) => {
+                        return Err(block_freshness_update_error(
+                            activity_event_repo,
+                            task_id_str,
+                            "source_update",
+                            reason,
+                            None,
+                        )
+                        .await);
+                    }
+                };
 
                 emit_freshness_activity(
                     activity_event_repo,
@@ -632,18 +831,50 @@ pub async fn ensure_branches_fresh(
                 )
                 .await;
 
-                return Err(FreshnessAction::RouteToMerging {
+                return Err(FreshnessAction::RouteToBranchUpdate {
                     conflict_files: conflict_files_str,
                     conflict_type: "source_update",
-                    freshness_metadata: freshness,
+                    freshness_metadata: Box::new(freshness),
                 });
+            }
+            Ok(SourceUpdateResult::BranchMissing { branch }) => {
+                return Err(block_freshness_update_error(
+                    activity_event_repo,
+                    task_id_str,
+                    "source_update",
+                    format!("branch missing before source update: {}", branch),
+                    Some(branch),
+                )
+                .await);
             }
             Ok(SourceUpdateResult::Error(e)) => {
                 warn!(
                     task_id = task_id_str,
                     error = %e,
-                    "update_source_from_target failed (non-fatal) — continuing"
+                    "update_source_from_target failed — retrying once before blocking execution"
                 );
+                let retry_result = tokio::time::timeout(
+                    freshness_timeout,
+                    Box::pin(observe_source_freshness(
+                        repo_path,
+                        source_branch,
+                        target_branch,
+                    )),
+                )
+                .await;
+                if let FreshnessRetryDecision::Block { reason } = source_retry_decision_after_error(
+                    retry_result.ok(),
+                    config.branch_freshness_timeout_secs,
+                ) {
+                    return Err(block_freshness_update_error(
+                        activity_event_repo,
+                        task_id_str,
+                        "source_update",
+                        reason,
+                        None,
+                    )
+                    .await);
+                }
             }
             Ok(SourceUpdateResult::AlreadyUpToDate | SourceUpdateResult::Updated) => {
                 // Source is fresh — continue
@@ -673,108 +904,176 @@ pub async fn ensure_branches_fresh(
     Ok(freshness)
 }
 
-/// Set exponential backoff on the freshness metadata after a conflict.
-/// backoff = min(base * 2^(count-1), max)
-fn set_backoff(freshness: &mut FreshnessMetadata, config: &ReconciliationConfig) {
-    if let Some(duration) = FreshnessMetadata::compute_backoff(
-        freshness.freshness_conflict_count,
-        config.freshness_backoff_base_secs,
-        config.freshness_backoff_max_secs,
-    ) {
-        freshness.freshness_backoff_until = Some(Utc::now() + duration);
+fn freshness_timestamp_is_recent(value: Option<&str>, window_secs: u64) -> bool {
+    value
+        .and_then(|value| value.parse::<DateTime<Utc>>().ok())
+        .is_some_and(|checked_at| {
+            let elapsed = Utc::now() - checked_at;
+            elapsed.num_seconds() >= 0 && elapsed.num_seconds() < window_secs as i64
+        })
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum FreshnessRetryDecision {
+    Continue,
+    Block { reason: String },
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum FreshnessWorktreeGuardDecision {
+    Skip,
+    Block {
+        reason_code: &'static str,
+        check: &'static str,
+        reason: String,
+    },
+}
+
+fn should_fail_closed_on_worktree_status(origin_state: &str) -> bool {
+    matches!(origin_state, "executing" | "re_executing")
+}
+
+fn dirty_worktree_autocommit_error_decision(
+    origin_state: &str,
+    error: &str,
+) -> FreshnessWorktreeGuardDecision {
+    if should_fail_closed_on_worktree_status(origin_state) {
+        FreshnessWorktreeGuardDecision::Block {
+            reason_code: "dirty_worktree_autocommit_failed",
+            check: "dirty_worktree_autocommit",
+            reason: format!("Emergency auto-commit failed before freshness check: {error}"),
+        }
+    } else {
+        FreshnessWorktreeGuardDecision::Skip
     }
 }
 
-/// Handle auto-recovery or block when retry cap is exceeded.
-///
-/// Returns `Some(FreshnessAction::ExecutionBlocked)` if the task should be blocked,
-/// or `None` if the call should continue (auto-reset occurred or cap not reached).
-async fn handle_cap_if_needed(
-    freshness: &mut FreshnessMetadata,
-    conflict_files: &[String],
-    task_id_str: &str,
-    activity_event_repo: Option<&Arc<dyn ActivityEventRepository>>,
-    config: &ReconciliationConfig,
-) -> Option<FreshnessAction> {
-    if freshness.freshness_conflict_count <= config.freshness_max_conflict_retries {
-        return None;
-    }
-
-    let total = freshness.freshness_conflict_count;
-    let files = conflict_files.join(", ");
-
-    if freshness.freshness_auto_reset_count == 0 {
-        // First cap: auto-reset with extended cooldown
-        let cooldown_secs = config.freshness_auto_reset_cooldown_secs;
-        let cooldown_minutes = cooldown_secs / 60;
-        freshness.freshness_conflict_count = 0;
-        freshness.freshness_backoff_until =
-            Some(Utc::now() + chrono::Duration::seconds(cooldown_secs as i64));
-        freshness.freshness_auto_reset_count = 1;
-
-        warn!(
-            task_id = task_id_str,
-            total_conflicts = total,
-            cooldown_minutes = cooldown_minutes,
-            conflict_files = %files,
-            "Freshness conflict cap reached — auto-resetting with extended cooldown"
-        );
-
-        emit_freshness_activity(
-            activity_event_repo,
-            task_id_str,
-            "branch_freshness_auto_reset",
-            serde_json::json!({
-                "total_conflicts": total,
-                "cooldown_minutes": cooldown_minutes,
-                "conflict_files": conflict_files,
-                "auto_reset_count": 1,
-            }),
-        )
-        .await;
-
-        // Return None: after auto-reset, caller proceeds to RouteToMerging with reset state
-        // The backoff_until we set above will prevent immediate re-queuing
-        None
+fn worktree_status_error_decision(
+    origin_state: &str,
+    error: &str,
+) -> FreshnessWorktreeGuardDecision {
+    if should_fail_closed_on_worktree_status(origin_state) {
+        FreshnessWorktreeGuardDecision::Block {
+            reason_code: "worktree_status_unreadable",
+            check: "worktree_status",
+            reason: format!("Failed to check worktree status before freshness check: {error}"),
+        }
     } else {
-        // Second cap: ExecutionBlocked
-        let minutes = config.freshness_auto_reset_cooldown_secs / 60;
-        let msg = format!(
-            "FRESHNESS_BLOCKED|{}|{}|{}|Persistent freshness conflicts after auto-reset",
-            total, minutes, files
-        );
+        FreshnessWorktreeGuardDecision::Skip
+    }
+}
 
-        warn!(
-            task_id = task_id_str,
-            total_conflicts = total,
-            conflict_files = %files,
-            "Freshness conflict cap exceeded after auto-reset — blocking execution"
-        );
+fn plan_retry_decision_after_error(
+    retry_result: Option<PlanUpdateResult>,
+    timeout_secs: u64,
+) -> FreshnessRetryDecision {
+    match retry_result {
+        Some(
+            PlanUpdateResult::AlreadyUpToDate
+            | PlanUpdateResult::Updated
+            | PlanUpdateResult::NotPlanBranch,
+        ) => FreshnessRetryDecision::Continue,
+        Some(PlanUpdateResult::Conflicts { conflict_files }) => FreshnessRetryDecision::Block {
+            reason: format!(
+                "update_plan_from_main returned conflicts after retry following error: {:?}",
+                conflict_files
+            ),
+        },
+        Some(PlanUpdateResult::Error(retry_error)) => FreshnessRetryDecision::Block {
+            reason: format!("update_plan_from_main failed after retry: {}", retry_error),
+        },
+        None => FreshnessRetryDecision::Block {
+            reason: format!("update_plan_from_main retry timed out after {timeout_secs}s"),
+        },
+    }
+}
 
-        emit_freshness_activity(
-            activity_event_repo,
-            task_id_str,
-            "branch_freshness_blocked",
-            serde_json::json!({
-                "reason": "retry_cap_exceeded_after_auto_reset",
-                "conflict_count": total,
-                "max_retries": config.freshness_max_conflict_retries,
-                "conflict_files": conflict_files,
-            }),
-        )
-        .await;
+fn source_retry_decision_after_error(
+    retry_result: Option<SourceUpdateResult>,
+    timeout_secs: u64,
+) -> FreshnessRetryDecision {
+    match retry_result {
+        Some(SourceUpdateResult::AlreadyUpToDate | SourceUpdateResult::Updated) => {
+            FreshnessRetryDecision::Continue
+        }
+        Some(SourceUpdateResult::Conflicts { conflict_files }) => FreshnessRetryDecision::Block {
+            reason: format!(
+                "update_source_from_target returned conflicts after retry following error: {:?}",
+                conflict_files
+            ),
+        },
+        Some(SourceUpdateResult::BranchMissing { branch }) => FreshnessRetryDecision::Block {
+            reason: format!("branch missing before source update retry: {}", branch),
+        },
+        Some(SourceUpdateResult::Error(retry_error)) => FreshnessRetryDecision::Block {
+            reason: format!(
+                "update_source_from_target failed after retry: {}",
+                retry_error
+            ),
+        },
+        None => FreshnessRetryDecision::Block {
+            reason: format!("update_source_from_target retry timed out after {timeout_secs}s"),
+        },
+    }
+}
 
-        Some(FreshnessAction::ExecutionBlocked { reason: msg })
+async fn block_freshness_update_error(
+    activity_event_repo: Option<&Arc<dyn ActivityEventRepository>>,
+    task_id_str: &str,
+    check: &'static str,
+    reason: String,
+    branch_missing: Option<String>,
+) -> FreshnessAction {
+    block_freshness_git_error(
+        activity_event_repo,
+        task_id_str,
+        "update_error_after_retry",
+        check,
+        reason,
+        branch_missing,
+    )
+    .await
+}
+
+async fn block_freshness_git_error(
+    activity_event_repo: Option<&Arc<dyn ActivityEventRepository>>,
+    task_id_str: &str,
+    reason_code: &'static str,
+    check: &'static str,
+    reason: String,
+    branch_missing: Option<String>,
+) -> FreshnessAction {
+    warn!(
+        task_id = task_id_str,
+        check,
+        reason = %reason,
+        reason_code,
+        "Freshness git error blocks execution"
+    );
+    emit_freshness_activity(
+        activity_event_repo,
+        task_id_str,
+        "branch_freshness_blocked",
+        serde_json::json!({
+            "reason": reason_code,
+            "check": check,
+            "message": reason,
+        }),
+    )
+    .await;
+    FreshnessAction::ExecutionBlocked {
+        reason,
+        branch_missing,
     }
 }
 
 /// Returns true if the git worktree has uncommitted changes.
-async fn is_worktree_dirty(path: &Path) -> bool {
+async fn is_worktree_dirty(path: &Path) -> Result<bool, String> {
     match git_cmd::run(&["status", "--porcelain", "-z"], path).await {
-        Ok(output) => !output.stdout.is_empty(),
+        Ok(output) => Ok(!output.stdout.is_empty()),
         Err(e) => {
-            warn!(path = %path.display(), error = %e, "Failed to check worktree status — assuming clean");
-            false
+            warn!(path = %path.display(), error = %e, "Failed to check worktree status");
+            Err(e.to_string())
         }
     }
 }
@@ -831,117 +1130,5 @@ async fn emit_freshness_activity(
 }
 
 #[cfg(test)]
-mod field_sync_tests {
-    use super::*;
-
-    /// Verify that KEYS contains exactly the fields in FreshnessMetadata.
-    /// If this test fails, KEYS is out of sync with the struct fields.
-    #[test]
-    fn keys_matches_struct_fields() {
-        // Use a fully-populated instance (all Options set to Some) to ensure all keys appear.
-        let meta = FreshnessMetadata {
-            branch_freshness_conflict: true,
-            freshness_origin_state: Some("executing".to_string()),
-            freshness_conflict_count: 1,
-            plan_update_conflict: true,
-            source_update_conflict: false,
-            last_freshness_check_at: Some("2026-01-01T00:00:00Z".to_string()),
-            conflict_files: vec!["foo.rs".to_string()],
-            source_branch: Some("task/foo".to_string()),
-            target_branch: Some("plan/foo".to_string()),
-            freshness_backoff_until: Some(Utc::now()),
-            freshness_auto_reset_count: 0,
-            freshness_count_incremented_by: Some("ensure_branches_fresh".to_string()),
-        };
-        let mut json = serde_json::json!({});
-        meta.merge_into(&mut json);
-        let obj = json.as_object().unwrap();
-
-        // Every KEYS entry should appear in merge_into() output (with Some values)
-        for key in FreshnessMetadata::KEYS {
-            assert!(
-                obj.contains_key(*key),
-                "KEYS entry '{key}' not found in merge_into() output — KEYS is out of sync"
-            );
-        }
-
-        // Field count: update this when adding fields to FreshnessMetadata
-        assert_eq!(
-            FreshnessMetadata::KEYS.len(),
-            12,
-            "KEYS length mismatch — update this assertion when adding fields"
-        );
-    }
-
-    #[test]
-    fn compute_backoff_exponential() {
-        // count=1: base * 2^0 = base = 60
-        let d = FreshnessMetadata::compute_backoff(1, 60, 600).unwrap();
-        assert_eq!(d.num_seconds(), 60);
-
-        // count=2: base * 2^1 = 120
-        let d = FreshnessMetadata::compute_backoff(2, 60, 600).unwrap();
-        assert_eq!(d.num_seconds(), 120);
-
-        // count=4: base * 2^3 = 480
-        let d = FreshnessMetadata::compute_backoff(4, 60, 600).unwrap();
-        assert_eq!(d.num_seconds(), 480);
-
-        // count=5: base * 2^4 = 960 → capped at 600
-        let d = FreshnessMetadata::compute_backoff(5, 60, 600).unwrap();
-        assert_eq!(d.num_seconds(), 600);
-
-        // count=0: None
-        assert!(FreshnessMetadata::compute_backoff(0, 60, 600).is_none());
-    }
-
-    #[test]
-    fn clear_routing_flags_preserves_conflict_state() {
-        let mut meta = FreshnessMetadata {
-            branch_freshness_conflict: true,
-            freshness_origin_state: Some("executing".to_string()),
-            freshness_conflict_count: 3,
-            plan_update_conflict: true,
-            source_update_conflict: false,
-            conflict_files: vec!["foo.rs".to_string()],
-            source_branch: Some("task/foo".to_string()),
-            target_branch: Some("plan/foo".to_string()),
-            freshness_backoff_until: Some(Utc::now() + chrono::Duration::seconds(60)),
-            freshness_auto_reset_count: 1,
-            last_freshness_check_at: None,
-            freshness_count_incremented_by: Some("ensure_branches_fresh".to_string()),
-        };
-        meta.clear_routing_flags();
-
-        assert!(!meta.branch_freshness_conflict);
-        assert!(meta.freshness_origin_state.is_none());
-        assert!(!meta.plan_update_conflict);
-        assert!(!meta.source_update_conflict);
-        assert!(meta.conflict_files.is_empty());
-        assert!(meta.source_branch.is_none());
-        assert!(meta.target_branch.is_none());
-        assert!(meta.freshness_count_incremented_by.is_none());
-        // Preserved:
-        assert_eq!(meta.freshness_conflict_count, 3);
-        assert!(meta.freshness_backoff_until.is_some());
-        assert_eq!(meta.freshness_auto_reset_count, 1);
-    }
-
-    #[test]
-    fn reset_conflict_state_clears_count_and_backoff() {
-        let mut meta = FreshnessMetadata {
-            freshness_conflict_count: 5,
-            freshness_backoff_until: Some(Utc::now() + chrono::Duration::seconds(60)),
-            freshness_auto_reset_count: 1,
-            branch_freshness_conflict: true,
-            ..Default::default()
-        };
-        meta.reset_conflict_state();
-
-        assert_eq!(meta.freshness_conflict_count, 0);
-        assert!(meta.freshness_backoff_until.is_none());
-        assert_eq!(meta.freshness_auto_reset_count, 0);
-        // Routing flags NOT cleared:
-        assert!(meta.branch_freshness_conflict);
-    }
-}
+#[path = "freshness_tests.rs"]
+mod field_sync_tests;

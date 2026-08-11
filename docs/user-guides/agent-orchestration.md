@@ -32,14 +32,12 @@ RalphX doesn't execute your tasks directly — it orchestrates a team of special
    - [Merger Agent](#merger-agent)
 5. [Ideation Agents](#ideation-agents)
    - [Solo Orchestrator](#solo-orchestrator)
-   - [Team Mode: Research Teams and Debate Teams](#team-mode-research-teams-and-debate-teams)
-   - [Specialist Agents](#specialist-agents)
+   - [Exploration Delegates](#exploration-delegates)
 6. [QA Agents](#qa-agents)
 7. [Communicating with Agents](#communicating-with-agents)
 8. [Permission Requests](#permission-requests)
 9. [User Questions](#user-questions)
-10. [Team View](#team-view)
-11. [Session Recovery](#session-recovery)
+10. [Session Recovery](#session-recovery)
 12. [MCP Architecture](#mcp-architecture)
 13. [Agent Tool Scopes](#agent-tool-scopes)
 14. [Troubleshooting](#troubleshooting)
@@ -99,13 +97,12 @@ RalphX uses specialized agents across execution, review, merge, ideation, QA, an
 | **ralphx-qa-prep** | Generates acceptance criteria and test steps from the task spec | Sonnet | Task enters Ready (background) |
 | **ralphx-qa-refiner** | Adapts test criteria to match the actual implementation | Sonnet | Task enters QaRefining |
 | **ralphx-qa-executor** | Runs browser-based acceptance tests | Sonnet | Task enters QaTesting |
-| **ralphx-ideation** | Runs solo ideation sessions: research → plan → propose | Sonnet | Ideation session starts (Solo mode) |
-| **ralphx-ideation-team-lead** | Coordinates research/debate teams during ideation | Opus | Ideation session starts (Team mode) |
-| **ralphx-ideation-advocate** | Argues for a specific approach in Debate Team mode | Sonnet | Spawned by team lead |
-| **ralphx-ideation-critic** | Stress-tests all proposals in Debate Team mode | Sonnet | Spawned by team lead |
-| **ralphx-ideation-specialist-backend** | Researches Rust/Tauri backend patterns | Sonnet | Spawned by team lead |
-| **ralphx-ideation-specialist-frontend** | Researches React/TS frontend patterns | Sonnet | Spawned by team lead |
-| **ralphx-ideation-specialist-infra** | Researches infrastructure and configuration | Sonnet | Spawned by team lead |
+| **ralphx-ideation** | Runs ideation sessions: research → plan → propose | Sonnet | Ideation session starts |
+| **ralphx-ideation-advocate** | Argues for a specific architectural approach | Sonnet | Optionally delegated by the ideation orchestrator |
+| **ralphx-ideation-critic** | Stress-tests proposed approaches | Sonnet | Optionally delegated by the ideation orchestrator |
+| **ralphx-ideation-specialist-backend** | Researches Rust/Tauri backend patterns | Sonnet | Optionally delegated by the ideation orchestrator |
+| **ralphx-ideation-specialist-frontend** | Researches React/TS frontend patterns | Sonnet | Optionally delegated by the ideation orchestrator |
+| **ralphx-ideation-specialist-infra** | Researches infrastructure and configuration | Sonnet | Optionally delegated by the ideation orchestrator |
 | **deep-researcher** | In-depth codebase or web research | Sonnet | Invoked in research contexts |
 | **ralphx-project-analyzer** | Analyzes project structure for setup/validation commands | Haiku | Project added or re-analyzed |
 | **ralphx-memory-capture** | Saves agent learnings to project memory after execution | Sonnet | After task completes |
@@ -237,45 +234,9 @@ In **Solo mode**, a single `ralphx-ideation` agent handles the entire ideation s
 
 The orchestrator cannot modify code — it only reads and creates plan artifacts and proposals.
 
-### Team Mode: Research Teams and Debate Teams
+### Exploration Delegates
 
-For complex features, RalphX switches to **team mode**. The `ralphx-ideation-team-lead` (Opus) coordinates a group of specialist agents.
-
-Team mode is currently a Claude-only capability. If the effective ideation harness is Codex, RalphX keeps the session in solo mode instead of attempting a partial team-mode emulation.
-
-**Research Team** — used when a feature touches multiple layers (frontend + backend, UI + database):
-
-```
-Team Lead (Opus)
-    │
-    ├── Frontend Researcher (Sonnet) — explores React/TS patterns
-    ├── Backend Researcher (Sonnet) — explores Rust/Tauri service layer
-    └── Infrastructure Specialist (Sonnet) — explores config, DB schema
-```
-
-**Debate Team** — used for architectural decisions (e.g., "Should we use WebSockets or SSE?"):
-
-```
-Team Lead (Opus)
-    │
-    ├── Approach A Advocate — builds the strongest case for option A
-    ├── Approach B Advocate — builds the strongest case for option B
-    └── Devil's Advocate — stress-tests all approaches, finds weaknesses
-```
-
-**Team approval gate:** Before any team is spawned, the lead presents the proposed team composition to you for approval. You see each teammate's role, model, and what they'll research. You approve before any API calls are made.
-
-After all research is complete, the lead synthesizes findings into a master plan — then follows the same Confirm → Propose → Finalize flow as Solo mode.
-
-### Specialist Agents
-
-During team ideation, the team lead spawns specialists with custom prompts tailored to the session. Specialists:
-- Are read-only — they can't modify code, only research it.
-- Post findings to shared team artifacts via MCP tools.
-- Receive context from the team lead if one specialist's discovery affects another's scope.
-- Are gracefully shut down by the team lead after their work is done.
-
----
+The ideation orchestrator can use bounded, read-only exploration delegates when parallel evidence gathering is useful. The model selects the relevant lenses; RalphX owns dispatch, settlement, and parent-session state. Findings return through the normal delegation flow and are synthesized into the same plan artifact.
 
 ## QA Agents
 
@@ -299,10 +260,6 @@ Use this to:
 - Give the agent clarifying information mid-execution ("The API uses snake_case, not camelCase")
 - Point out something specific ("Focus on the `src/auth/` directory first")
 - Override a direction ("Don't refactor the test setup — just fix the failing test")
-
-### @-Mentions
-
-In the chat panel, you can @-mention specific agents in a multi-agent context (e.g., ideation team mode) to direct your message to a particular participant.
 
 ### Queued Messages
 
@@ -352,28 +309,6 @@ Agents can ask you questions when they need clarification to proceed. This appea
 **If you don't respond:** The agent will wait. The task stays in its current state until you answer. There is no timeout — the agent waits indefinitely for your input.
 
 > Unlike permission requests (which are about safety), user questions are about **intent clarification**. The agent knows what it *can* do — it's asking what you *want* it to do.
-
----
-
-## Team View
-
-The `/team` route (accessible from the sidebar) shows all active agent teams and their activity.
-
-### What you see
-
-| Element | Description |
-|---------|-------------|
-| **TeammateCard** | One card per active agent — shows name, model, current status, and recent activity |
-| **TeamFilterTabs** | Filter by team, project, or agent type |
-| **TeamActivityPanel** | Live stream of agent messages and tool calls across all active agents |
-
-### What "idle" means
-
-Agents go idle between turns — this is normal. An idle agent is waiting for input (a message, a task assignment, or a user question response). Idle does not mean stopped or crashed.
-
-### Sending messages from Team View
-
-You can send messages to any active agent directly from the Team Activity Panel. Click the agent's card and use the message input at the bottom.
 
 ---
 
@@ -449,7 +384,6 @@ Each agent type has a restricted set of actions. This is enforced at three layer
 | **reviewer** | `get_task_context`, `get_review_notes`, `get_task_steps`, `get_task_issues`, `complete_review`, `get_project_analysis` |
 | **merger** | `get_merge_target`, `get_task_context`, `report_conflict`, `report_incomplete`, `get_project_analysis` |
 | **ralphx-ideation** | `create_plan_artifact`, `update_plan_artifact`, `create_task_proposal`, `list_session_proposals`, `analyze_session_dependencies` |
-| **ralphx-ideation-team-lead** | All orchestrator tools + `request_team_plan`, `create_team_artifact`, `get_team_artifacts`, `save_team_session_state` |
 | **ralphx-chat-task** | `update_task`, `add_task_note`, `get_task_details` |
 | **ralphx-chat-project** | `suggest_task`, `list_tasks` |
 
@@ -493,15 +427,6 @@ Reviewers are read-only — they examine the worktree but don't commit changes.
 1. Read the merger's conflict report — it explains exactly which files have conflicts and why.
 2. Resolve the conflicts manually in the task worktree (`~/ralphx-worktrees/{project}/task-{id}`).
 3. After resolving, commit the changes and use the **Mark Resolved** action in the task detail view.
-
-### Ideation team not spawning
-
-**What it means:** The team composition request may have been denied, or the backend couldn't create the team.
-
-**What to do:**
-1. Check if the Team Approval dialog appeared and was dismissed without approving.
-2. Re-start the ideation session — the orchestrator will re-request team approval.
-3. If the issue persists, try Solo mode for the session.
 
 ### Agent spawned but immediately failed
 

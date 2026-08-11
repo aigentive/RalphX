@@ -220,6 +220,50 @@ export {
   type SubmitAgentIssueReportInput,
 } from "@/api/agent-issue-report";
 
+// Automations API
+export {
+  automationsApi,
+  type Automation,
+  type AutomationBaseRefKind,
+  type AutomationChainMode,
+  type AutomationCompletionSignal,
+  type AutomationDetail,
+  type AutomationJudgeState,
+  type AutomationPromptAuthor,
+  type AutomationRun,
+  type AutomationRunMode,
+  type AutomationRunScopedInput,
+  type AutomationRunStatus,
+  type AutomationScheduleResponse,
+  type AutomationStatus,
+  type CreateAutomationDraftInput,
+  type CreateAutomationDraftResponse,
+  type ListAutomationsInput,
+  type PauseAutomationInput,
+  type UpdateAutomationSettingsInput,
+  type UpdateAutomationSetupInput,
+  AutomationBaseRefKindSchema,
+  AutomationChainModeSchema,
+  AutomationCompletionSignalSchema,
+  AutomationDetailSchema,
+  AutomationJudgeStateSchema,
+  AutomationListSchema,
+  AutomationPromptAuthorSchema,
+  AutomationScheduleResponseSchema,
+  AutomationRunModeSchema,
+  AutomationRunSchema,
+  AutomationRunStatusSchema,
+  AutomationSchema,
+  AutomationStatusSchema,
+  CreateAutomationDraftResponseSchema,
+  transformAutomation,
+  transformAutomationDetail,
+  transformAutomationRun,
+  transformAutomationRunScopedInput,
+  transformAutomationScheduleResponse,
+  transformCreateAutomationDraftResponse,
+} from "@/api/automations";
+
 // ============================================================================
 // Aggregate API Object
 // ============================================================================
@@ -237,6 +281,7 @@ import { reviewsApi, fixTasksApi } from "@/api/reviews-api";
 import { tasksApi, stepsApi } from "@/api/tasks";
 import { planBranchApi } from "@/api/plan-branch";
 import { agentIssueReportApi } from "@/api/agent-issue-report";
+import { automationsApi } from "@/api/automations";
 
 // Mock API imports for web mode
 import { mockApi } from "@/api-mock";
@@ -269,6 +314,7 @@ const realApi = {
   testData: testDataApi,
   planBranches: planBranchApi,
   agentIssueReport: agentIssueReportApi,
+  automations: automationsApi,
 } as const;
 
 /**

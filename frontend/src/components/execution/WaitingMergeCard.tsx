@@ -61,7 +61,7 @@ export function WaitingMergeCard({ task, runningCount, onViewDetails }: WaitingM
         style={{ color: task.isMainMergeDeferred ? "var(--text-secondary)" : "var(--text-secondary)" }}
         onClick={() => onViewDetails(task.taskId)}
       >
-        {task.title}
+        {task.displayTitle ?? task.title}
       </button>
       {task.isMainMergeDeferred && (
         <span

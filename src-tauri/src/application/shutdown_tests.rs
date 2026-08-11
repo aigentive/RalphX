@@ -14,11 +14,17 @@
 //! Also covers the Ready (no-op) arm via `handle_run_event` to prove benign
 //! events don't accidentally fire shutdown.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::timeout;
 
-use crate::application::shutdown::{handle_run_event, trigger_http_shutdown};
+use crate::application::shutdown::{
+    handle_run_event, trigger_http_shutdown, trigger_startup_cancellation, ExitWatchdog,
+};
+use crate::application::startup_status::StartupCoordinator;
 use crate::application::HttpShutdownHandle;
+use crate::AppState;
 
 fn build_mock_app_with_shutdown() -> (tauri::App<tauri::test::MockRuntime>, HttpShutdownHandle) {
     let handle = HttpShutdownHandle::new();
@@ -79,4 +85,79 @@ async fn unrelated_run_event_is_a_no_op() {
         result.is_err(),
         "shutdown waiter should still be pending after Ready event"
     );
+}
+
+#[tokio::test]
+async fn exit_event_cancels_startup_and_triggers_http_without_app_state() {
+    let shutdown = HttpShutdownHandle::new();
+    let coordinator = Arc::new(StartupCoordinator::new());
+    let app = tauri::test::mock_builder()
+        .manage(shutdown.clone())
+        .manage(Arc::clone(&coordinator))
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app");
+    let waiter = tokio::spawn(shutdown.wait_for_shutdown());
+    tokio::time::sleep(Duration::from_millis(10)).await;
+
+    handle_run_event(app.handle(), &tauri::RunEvent::Exit);
+
+    assert!(coordinator.is_cancelled());
+    timeout(Duration::from_millis(100), waiter)
+        .await
+        .expect("HTTP shutdown should trigger during exit")
+        .expect("shutdown waiter task panicked");
+}
+
+#[test]
+fn exit_event_runs_full_cleanup_with_test_app_state() {
+    let coordinator = Arc::new(StartupCoordinator::new());
+    let app = tauri::test::mock_builder()
+        .manage(Arc::clone(&coordinator))
+        .manage(AppState::new_test())
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app");
+
+    handle_run_event(app.handle(), &tauri::RunEvent::Exit);
+
+    assert!(coordinator.is_cancelled());
+}
+
+#[test]
+fn early_shutdown_cancels_startup_before_app_state_registration() {
+    let coordinator = Arc::new(StartupCoordinator::new());
+    let app = tauri::test::mock_builder()
+        .manage(Arc::clone(&coordinator))
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app");
+
+    trigger_startup_cancellation(app.handle());
+
+    assert!(coordinator.is_cancelled());
+}
+
+#[test]
+fn exit_watchdog_fires_after_deadline() {
+    let fired = Arc::new(AtomicBool::new(false));
+    let fired_on_timeout = Arc::clone(&fired);
+    let _watchdog = ExitWatchdog::arm_with(Duration::from_millis(50), move || {
+        fired_on_timeout.store(true, Ordering::SeqCst);
+    });
+
+    std::thread::sleep(Duration::from_millis(200));
+
+    assert!(fired.load(Ordering::SeqCst));
+}
+
+#[test]
+fn exit_watchdog_disarm_prevents_fire() {
+    let fired = Arc::new(AtomicBool::new(false));
+    let fired_on_timeout = Arc::clone(&fired);
+    let watchdog = ExitWatchdog::arm_with(Duration::from_millis(50), move || {
+        fired_on_timeout.store(true, Ordering::SeqCst);
+    });
+
+    watchdog.disarm();
+    std::thread::sleep(Duration::from_millis(200));
+
+    assert!(!fired.load(Ordering::SeqCst));
 }

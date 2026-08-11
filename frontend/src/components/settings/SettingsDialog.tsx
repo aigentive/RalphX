@@ -13,17 +13,29 @@ import {
   DialogDescription,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { useUiStore } from "@/stores/uiStore";
 import type { ProjectSettings } from "@/types/settings";
 
 import {
   DEFAULT_SETTINGS_SECTION,
-  SETTINGS_GROUPS,
-  SETTINGS_SECTIONS,
-  isSettingsSectionId,
+  SETTINGS_NAV,
+  navForSection,
+  resolveSettingsDestination,
+  sectionMeta,
+  type SettingsDestination,
   type SettingsSectionId,
 } from "./settings-registry";
-import { loadActiveSection, saveActiveSection } from "./settings-ui-state";
+import {
+  loadActiveDestination,
+  migrateSettingsUiState,
+  saveActiveSection,
+} from "./settings-ui-state";
 import {
   cancelScheduledJob,
   scheduleAfterPaint,
@@ -33,6 +45,9 @@ import {
   type ScheduledJob,
 } from "./SettingsDialog.performance";
 import { SettingsSectionContent } from "./SettingsSectionContent";
+import { SettingsNavPage } from "./SettingsNavPage";
+import { SettingsNavRail } from "./SettingsNavRail";
+import { SettingsSearch } from "./SettingsSearch";
 
 export interface SettingsDialogProps {
   executionSettings: ProjectSettings | null;
@@ -52,14 +67,16 @@ export default function SettingsDialog({
   const activeModal = useUiStore((s) => s.activeModal);
   const modalContext = useUiStore((s) => s.modalContext);
   const closeModal = useUiStore((s) => s.closeModal);
-
   const isOpen = activeModal === "settings";
-
-  const [activeSection, setActiveSectionState] = useState<SettingsSectionId>(
-    () => loadActiveSection() ?? DEFAULT_SETTINGS_SECTION,
+  const [activeDestination, setActiveDestination] = useState<SettingsDestination>(
+    () => loadActiveDestination() ?? { section: DEFAULT_SETTINGS_SECTION },
   );
+  const activeSection = activeDestination.section;
   const shouldRenderFrame = useDeferredDialogFrame(isOpen);
-  const isSectionHydrated = useDeferredHydratedSection(isOpen, activeSection);
+  const isSectionHydrated = useDeferredHydratedSection(
+    isOpen,
+    activeSection,
+  );
   const persistJobRef = useRef<ScheduledJob | null>(null);
   const closeJobRef = useRef<ScheduledJob | null>(null);
   const warmedSectionsRef = useRef<Partial<Record<SettingsSectionId, true>>>({});
@@ -75,8 +92,16 @@ export default function SettingsDialog({
 
   const setActiveSection = useCallback(
     (section: SettingsSectionId) => {
-      setActiveSectionState(section);
+      setActiveDestination({ section });
       persistActiveSection(section);
+    },
+    [persistActiveSection],
+  );
+
+  const goToDestination = useCallback(
+    (destination: SettingsDestination) => {
+      setActiveDestination(destination);
+      persistActiveSection(destination.section);
     },
     [persistActiveSection],
   );
@@ -117,15 +142,30 @@ export default function SettingsDialog({
   }, [isOpen]);
 
   useEffect(() => {
+    migrateSettingsUiState();
+  }, []);
+
+  useEffect(() => {
     if (isOpen) {
       const section = modalContext?.["section"];
-      if (isSettingsSectionId(section)) {
-        setActiveSection(section);
+      const destination = resolveSettingsDestination(section);
+      if (destination) {
+        const requestedTab = modalContext?.["tab"];
+        const tab =
+          requestedTab === "general" ||
+          requestedTab === "review-policy" ||
+          requestedTab === "autonomy-policy" ||
+          requestedTab === "review"
+            ? requestedTab
+            : destination.tab;
+        setActiveDestination(tab ? { ...destination, tab } : destination);
+        persistActiveSection(destination.section);
       }
     }
-  }, [isOpen, modalContext, setActiveSection]);
+  }, [isOpen, modalContext, persistActiveSection]);
 
-  const activeSectionMeta = SETTINGS_SECTIONS.find((s) => s.id === activeSection);
+  const activeNav = navForSection(activeSection);
+  const activeSectionMeta = sectionMeta(activeSection);
 
   const disabled = isLoadingSettings || isSavingSettings;
 
@@ -156,7 +196,9 @@ export default function SettingsDialog({
             <span className="lbl">
               Settings
             </span>
-            {activeSectionMeta && (
+            <span className="sep">/</span>
+            <span className="cur">{activeNav.label}</span>
+            {activeSectionMeta && activeSectionMeta.label !== activeNav.label && (
               <>
                 <span className="sep">/</span>
                 <span className="cur">
@@ -165,81 +207,50 @@ export default function SettingsDialog({
               </>
             )}
           </div>
-          <button
-            type="button"
-            onClick={requestClose}
-            className="settings-modal__close focus:outline-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]"
-            aria-label="Close settings"
-          >
-            <X className="h-4 w-4" />
-          </button>
+          <SettingsSearch isOpen={isOpen} onNavigate={goToDestination} />
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={requestClose}
+                  className="settings-modal__close focus:outline-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]"
+                  aria-label="Close settings"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>Close settings</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
         </div>
 
         {/* Body */}
         <div className="settings-modal__body flex-1 overflow-hidden">
           {/* Left rail — hidden below lg breakpoint */}
-          <nav className="settings-nav hidden lg:flex flex-shrink-0 flex-col overflow-y-auto">
-            {SETTINGS_GROUPS.map((group) => {
-              const groupSections = SETTINGS_SECTIONS.filter(
-                (s) => s.groupId === group.id
-              );
-              return (
-                <div key={group.id} className="settings-nav__group">
-                  <p className="settings-nav__label">
-                    {group.label}
-                  </p>
-                  {groupSections.map((section) => {
-                    const isActive = section.id === activeSection;
-                    return (
-                      <div
-                        key={section.id}
-                        role="button"
-                        tabIndex={0}
-                        data-section={section.id}
-                        data-testid={`settings-section-${section.id}`}
-                        aria-label={section.label}
-                        onPointerEnter={() => warmSection(section.id)}
-                        onFocus={() => warmSection(section.id)}
-                        onClick={() => setActiveSection(section.id)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" || e.key === " ") {
-                            e.preventDefault();
-                            setActiveSection(section.id);
-                          }
-                        }}
-                        aria-current={isActive ? "page" : undefined}
-                        className="settings-nav__item"
-                      >
-                        <span className="block truncate">{section.label}</span>
-                      </div>
-                    );
-                  })}
-                </div>
-              );
-            })}
-          </nav>
+          <SettingsNavRail
+            activeSection={activeSection}
+            onSelect={setActiveSection}
+            onWarm={warmSection}
+          />
 
           {/* Mobile section selector — visible below lg breakpoint */}
           <div className="block lg:hidden w-full px-4 py-2 border-b border-[var(--border-subtle)] shrink-0">
             <select
+              aria-label="Settings section"
               value={activeSection}
               onChange={(e) => setActiveSection(e.target.value as SettingsSectionId)}
               className="settings-input w-full focus:outline-none"
             >
-              {SETTINGS_GROUPS.map((group) => {
-                const groupSections = SETTINGS_SECTIONS.filter(
-                  (s) => s.groupId === group.id
-                );
-                return (
-                  <optgroup key={group.id} label={group.label}>
-                    {groupSections.map((section) => (
-                      <option key={section.id} value={section.id}>
-                        {section.label}
-                      </option>
-                    ))}
-                  </optgroup>
-                );
-              })}
+              {SETTINGS_NAV.map((nav) => (
+                <optgroup key={nav.id} label={nav.label}>
+                  {nav.leaves.map((leafId) => (
+                    <option key={leafId} value={leafId}>
+                      {sectionMeta(leafId)?.label ?? leafId}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
             </select>
           </div>
 
@@ -247,13 +258,24 @@ export default function SettingsDialog({
           <div className="settings-pane min-w-0 flex-1 overflow-hidden flex flex-col">
             <ScrollArea className="flex-1">
               <div className="settings-pane__inner">
-                <SettingsSectionContent
-                  section={activeSection}
-                  executionSettings={executionSettings}
-                  disabled={disabled}
-                  isHydrated={isSectionHydrated}
-                  onSettingsChange={onSettingsChange}
-                />
+                <SettingsNavPage
+                  activeSection={activeSection}
+                  onSelectSection={setActiveSection}
+                  onWarmSection={warmSection}
+                >
+                  <SettingsSectionContent
+                    section={activeSection}
+                    {...(activeDestination.tab
+                      ? { destinationTab: activeDestination.tab }
+                      : {})}
+                    executionSettings={executionSettings}
+                    disabled={disabled}
+                    isHydrated={isSectionHydrated}
+                    onSettingsChange={onSettingsChange}
+                    onNavigate={setActiveSection}
+                    onWarmSection={warmSection}
+                  />
+                </SettingsNavPage>
               </div>
             </ScrollArea>
           </div>

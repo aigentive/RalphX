@@ -23,6 +23,7 @@ type CanonicalAgentDefinition = {
 
 const canonicalAgentDefinitionCache = new Map<string, CanonicalAgentDefinition | null>();
 const SAFE_CANONICAL_AGENT_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+export const SAFE_CANONICAL_PROFILE_NAME = /^[a-z0-9]+(?:[_-][a-z0-9]+)*$/;
 
 export function resolveRepoRoot(): string {
   let current = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../");
@@ -43,46 +44,20 @@ export function canonicalAgentName(agentType: string): string {
       return "ralphx-ideation";
     case "orchestrator-ideation-readonly":
       return "ralphx-ideation-readonly";
-    case "ideation-team-lead":
-      return "ralphx-ideation-team-lead";
-    case "ideation-team-member":
-      return "ralphx-ideation-team-member";
     case "ideation-advocate":
       return "ralphx-ideation-advocate";
     case "ideation-critic":
       return "ralphx-ideation-critic";
     case "ideation-specialist-backend":
       return "ralphx-ideation-specialist-backend";
-    case "ideation-specialist-code-quality":
-      return "ralphx-ideation-specialist-code-quality";
     case "ideation-specialist-frontend":
       return "ralphx-ideation-specialist-frontend";
     case "ideation-specialist-infra":
       return "ralphx-ideation-specialist-infra";
-    case "ideation-specialist-intent":
-      return "ralphx-ideation-specialist-intent";
-    case "ideation-specialist-pipeline-safety":
-      return "ralphx-ideation-specialist-pipeline-safety";
-    case "ideation-specialist-prompt-quality":
-      return "ralphx-ideation-specialist-prompt-quality";
-    case "ideation-specialist-state-machine":
-      return "ralphx-ideation-specialist-state-machine";
-    case "ideation-specialist-ux":
-      return "ralphx-ideation-specialist-ux";
-    case "plan-verifier":
-      return "ralphx-plan-verifier";
-    case "plan-critic-completeness":
-      return "ralphx-plan-critic-completeness";
-    case "plan-critic-implementation-feasibility":
-      return "ralphx-plan-critic-implementation-feasibility";
     case "chat-task":
       return "ralphx-chat-task";
     case "chat-project":
       return "ralphx-chat-project";
-    case "ralphx-worker-team":
-      return "ralphx-execution-team-lead";
-    case "worker-team-member":
-      return "ralphx-execution-team-member";
     case "ralphx-worker":
       return "ralphx-execution-worker";
     case "ralphx-coder":
@@ -167,7 +142,7 @@ export function loadCanonicalAgentDefinitionForProfile(
   if (!definition || !agentProfile) {
     return definition;
   }
-  if (!SAFE_CANONICAL_AGENT_NAME.test(agentProfile)) {
+  if (!SAFE_CANONICAL_PROFILE_NAME.test(agentProfile)) {
     return null;
   }
   const profile = definition.profiles?.[agentProfile];

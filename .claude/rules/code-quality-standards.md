@@ -1,6 +1,6 @@
 ---
 paths:
-  - "src/**/*.{ts,tsx,js,jsx}"
+  - "frontend/src/**/*.{ts,tsx,js,jsx}"
   - "src-tauri/src/**/*.rs"
   - "plugins/app/**/*.{ts,js}"
 ---
@@ -36,13 +36,31 @@ paths:
 | No manual body recreation (NON-NEGOTIABLE) | If an existing function/impl/block is being moved, do not recreate that body by hand in a new file; move it mechanically, then patch around it |
 | Abort bad splits fast (NON-NEGOTIABLE) | If a split becomes half-moved, accumulates visibility churn, or stops being a mechanical move, restore the module to `HEAD`, remove parked WIP from the repo tree, and redo the extraction mechanically |
 | Serial validation during splits | Never overlap Cargo validation jobs while a large extraction is in flight; run one targeted command at a time so build-lock noise does not mask real errors |
-| Validate | `cargo clippy --all-targets --all-features -- -D warnings` / `npm run typecheck` before commit |
+| Validate | Local agents run focused tests/checks for touched behavior plus touched-leaf Rust formatting / `npm run typecheck` when frontend types change; broad Rust clippy/test matrices belong to CI per rust-test-execution.md |
 | Hook for logic | Complex state→hook, component only renders |
 | Re-export on extract | `export { New as Old }` — don't break imports |
 | Extract = delete original | When moving functions to new modules, fully remove original code (not just copy) |
 | Reference upkeep | If a refactor moves/splits cited files or modules, update concrete file/path references in rules, prompts, and docs in the same change; remove or rewrite triggers that became impossible or stale |
 | Named constants | Magic numbers → `TIMEOUT_MS = 300` |
 | DRY | 2+ times → helper |
+
+## Large Module Extractions
+
+| Trigger | Split target |
+|---|---|
+| Module >500 lines | Domain modules of 350–450 lines |
+| >5 impl blocks / >30 impl functions | Domain groups / 8–15 functions per module |
+| >50 tests in one file | `tests/` subdir; 5–10 files of 100–300 lines |
+
+| Step | Requirement |
+|---|---|
+| Plan | Read the source once; group functions by domain, identify test/helper boundaries, and map exact target files and line ranges. Analysis may parallelize; moves run as one serial scripted pass. |
+| Move | Follow the Core Rules' mechanical-move requirements; after every move, delete the original body. Keep parent `mod.rs`/`index.ts` as the type, declaration, and re-export hub; preserve callers with re-exports. |
+| TypeScript | Extract one domain per file; re-export renamed symbols from `index.ts`, then run `npm run typecheck`. |
+| Visibility | Same module → private; cross-module or `tests/` subdir caller → `pub(super)`; external crate → `pub`. Run the narrowest compile/test, then grep callers before widening visibility. |
+| Test helpers | Move helpers shared by test files to `tests/mod.rs` as `pub fn`; declare submodules there and import with `use super::helper`. Keep one-user helpers private. |
+| Repair | Check parent/extracted `fn` signatures for duplicates, stray `#[cfg(test)]` between `impl` blocks, and unmatched braces. Verify the full extracted block exists, then delete the orphaned parent range. |
+| Verify | Check module declarations, re-exports, helper imports, no duplicate/orphaned code, touched-leaf formatting, no new warnings, and the focused module check. Commit new files and deletions atomically. |
 
 ## Tauri API Layer
 See api-layer.md for complete API patterns.

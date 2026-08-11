@@ -1,11 +1,13 @@
-import { renderHook } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AGENT_MODEL_CATALOG } from "@/lib/agent-models";
+import type { Project } from "@/types/project";
 
 import type { AgentConversation } from "./agentConversations";
+import { conversationWorkspaceFixture } from "./agentsTestFixtures";
 import { useAgentsWorkspaceModel } from "./useAgentsWorkspaceModel";
 
 const {
@@ -72,6 +74,27 @@ function wrapper() {
   };
 }
 
+function project(overrides: Partial<Project> = {}): Project {
+  return {
+    id: "project-1",
+    name: "Project",
+    workingDirectory: "/repo/project",
+    gitMode: "worktree",
+    baseBranch: "main",
+    worktreeParentDirectory: null,
+    useFeatureBranches: true,
+    mergeValidationMode: "block",
+    detectedAnalysis: null,
+    customAnalysis: null,
+    analyzedAt: null,
+    githubPrEnabled: false,
+    repositoryCapability: { kind: "localOnly" },
+    createdAt: "2026-05-22T00:00:00.000Z",
+    updatedAt: "2026-05-22T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
 describe("useAgentsWorkspaceModel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -79,7 +102,7 @@ describe("useAgentsWorkspaceModel", () => {
     getAgentConversationWorkspaceFreshnessMock.mockResolvedValue(null);
   });
 
-  it("uses workspace review utility model while inheriting the workspace provider", () => {
+  it("uses the backend-resolved Reviewer role runtime before the child runtime loads", () => {
     const { result } = renderHook(
       () =>
         useAgentsWorkspaceModel({
@@ -93,14 +116,19 @@ describe("useAgentsWorkspaceModel", () => {
           optimisticWorkspacesByConversationId: {},
           runtimeByConversationId: {},
           selectedConversationId: "conversation-1",
+          workspaceReviewerRuntime: {
+            provider: "codex",
+            modelId: "gpt-5.6-terra",
+            effort: "ultra",
+          },
         }),
       { wrapper: wrapper() },
     );
 
     expect(result.current.normalizedActiveRuntime).toEqual({
       provider: "codex",
-      modelId: "gpt-5.4-mini",
-      effort: "medium",
+      modelId: "gpt-5.6-terra",
+      effort: "max",
     });
   });
 
@@ -124,6 +152,11 @@ describe("useAgentsWorkspaceModel", () => {
             },
           },
           selectedConversationId: "conversation-1",
+          workspaceReviewerRuntime: {
+            provider: "codex",
+            modelId: "gpt-5.6-terra",
+            effort: "ultra",
+          },
         }),
       { wrapper: wrapper() },
     );
@@ -133,5 +166,274 @@ describe("useAgentsWorkspaceModel", () => {
       modelId: "sonnet",
       effort: "high",
     });
+  });
+
+  it("uses the committed review focus hint before child summary hydration", () => {
+    const { result } = renderHook(
+      () =>
+        useAgentsWorkspaceModel({
+          activeConversation: projectConversation(),
+          focusedWorkspaceReviewConversationId: "review-conversation-1",
+          focusedWorkspaceReviewRuntimeHint: {
+            provider: "codex",
+            modelId: "gpt-5.6-terra",
+            effort: "high",
+          },
+          modelRegistry: AGENT_MODEL_CATALOG,
+          optimisticWorkspacesByConversationId: {},
+          runtimeByConversationId: {},
+          selectedConversationId: "conversation-1",
+          workspaceReviewerRuntime: {
+            provider: "codex",
+            modelId: "gpt-5.6-terra",
+            effort: "medium",
+          },
+        }),
+      { wrapper: wrapper() },
+    );
+
+    expect(result.current.normalizedActiveRuntime).toEqual({
+      provider: "codex",
+      modelId: "gpt-5.6-terra",
+      effort: "high",
+    });
+  });
+
+  it("uses directly hydrated child metadata ahead of stale client runtime and the next-launch Reviewer default", () => {
+    const { result } = renderHook(
+      () =>
+        useAgentsWorkspaceModel({
+          activeConversation: projectConversation(),
+          focusedWorkspaceReviewConversation: projectConversation({
+            id: "review-conversation-1",
+            parentConversationId: "conversation-1",
+            providerHarness: "codex",
+            logicalModel: "gpt-5.5",
+            logicalEffort: "high",
+            serviceTier: "fast",
+          }),
+          focusedWorkspaceReviewConversationId: "review-conversation-1",
+          focusedWorkspaceReviewRuntimeHint: {
+            provider: "codex",
+            modelId: "gpt-5.6-terra",
+            effort: "medium",
+          },
+          modelRegistry: AGENT_MODEL_CATALOG,
+          optimisticWorkspacesByConversationId: {},
+          runtimeByConversationId: {
+            "review-conversation-1": {
+              provider: "claude",
+              modelId: "sonnet",
+              effort: "medium",
+            },
+          },
+          selectedConversationId: "conversation-1",
+          workspaceReviewerRuntime: {
+            provider: "codex",
+            modelId: "gpt-5.6-terra",
+            effort: "max",
+          },
+        }),
+      { wrapper: wrapper() },
+    );
+
+    expect(result.current.normalizedActiveRuntime).toEqual({
+      provider: "codex",
+      modelId: "gpt-5.5",
+      effort: "high",
+    });
+    expect(result.current.focusedWorkspaceReviewServiceTier).toBe("fast");
+  });
+
+  it("uses only transient explicit composer intent ahead of hydrated review metadata", () => {
+    const { result } = renderHook(
+      () =>
+        useAgentsWorkspaceModel({
+          activeConversation: projectConversation(),
+          composerRuntimeOverridesByConversationId: {
+            "review-conversation-1": {
+              provider: "claude",
+              modelId: "sonnet",
+              effort: "high",
+            },
+          },
+          focusedWorkspaceReviewConversation: projectConversation({
+            id: "review-conversation-1",
+            providerHarness: "codex",
+            logicalModel: "gpt-5.5",
+            logicalEffort: "high",
+          }),
+          focusedWorkspaceReviewConversationId: "review-conversation-1",
+          modelRegistry: AGENT_MODEL_CATALOG,
+          optimisticWorkspacesByConversationId: {},
+          runtimeByConversationId: {
+            "review-conversation-1": {
+              provider: "claude",
+              modelId: "sonnet",
+              effort: "high",
+            },
+          },
+          selectedConversationId: "conversation-1",
+          workspaceReviewerRuntime: null,
+        }),
+      { wrapper: wrapper() },
+    );
+
+    expect(result.current.normalizedActiveRuntime).toEqual({
+      provider: "claude",
+      modelId: "sonnet",
+      effort: "high",
+    });
+  });
+
+  it("normalizes remembered Codex Ultra effort before alias-aware send checks", () => {
+    const { result } = renderHook(
+      () =>
+        useAgentsWorkspaceModel({
+          activeConversation: projectConversation({
+            providerHarness: "codex",
+            logicalModel: "gpt-5.5",
+            logicalEffort: "xhigh",
+          }),
+          modelRegistry: AGENT_MODEL_CATALOG,
+          optimisticWorkspacesByConversationId: {},
+          runtimeByConversationId: {
+            "conversation-1": {
+              provider: "codex",
+              modelId: "gpt-5.6-terra",
+              effort: "ultra",
+            },
+          },
+          selectedConversationId: "conversation-1",
+          workspaceReviewerRuntime: null,
+        }),
+      { wrapper: wrapper() },
+    );
+
+    expect(result.current.normalizedActiveRuntime).toEqual({
+      provider: "codex",
+      modelId: "gpt-5.6-terra",
+      effort: "max",
+    });
+  });
+
+  it("uses the shared publish mode for local, unavailable, and persisted-PR shortcuts", async () => {
+    getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspaceFixture());
+    const { result, rerender, unmount } = renderHook(
+      ({ activeProject }) =>
+        useAgentsWorkspaceModel({
+          activeConversation: projectConversation(),
+          activeProject,
+          modelRegistry: AGENT_MODEL_CATALOG,
+          optimisticWorkspacesByConversationId: {},
+          runtimeByConversationId: {},
+          selectedConversationId: "conversation-1",
+          workspaceReviewerRuntime: null,
+        }),
+      { initialProps: { activeProject: project() }, wrapper: wrapper() },
+    );
+
+    await waitFor(() => expect(result.current.publishShortcutLabel).toBe("Commit locally"));
+
+    rerender({
+      activeProject: project({
+        repositoryCapability: {
+          kind: "inspectionFailed",
+          message: "Unable to inspect",
+        },
+      }),
+    });
+    expect(result.current.publishShortcutLabel).toBe("Repository setup required");
+
+    unmount();
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspaceFixture({ publicationPrNumber: 42 }),
+    );
+    const { result: persistedResult } = renderHook(
+      () =>
+        useAgentsWorkspaceModel({
+          activeConversation: projectConversation(),
+          activeProject: project({
+            repositoryCapability: {
+              kind: "inspectionFailed",
+              message: "Unable to inspect",
+            },
+          }),
+          modelRegistry: AGENT_MODEL_CATALOG,
+          optimisticWorkspacesByConversationId: {},
+          runtimeByConversationId: {},
+          selectedConversationId: "conversation-1",
+          workspaceReviewerRuntime: null,
+        }),
+      { wrapper: wrapper() },
+    );
+    await waitFor(() =>
+      expect(persistedResult.current.publishShortcutLabel).toBe("Commit & Publish"),
+    );
+  });
+
+  it("exposes the current failure fingerprint spend from the polled workspace", async () => {
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspaceFixture({
+        prAutofixFingerprintSpend: {
+          generations: 3,
+          minutes: 92,
+          budgetMinutes: 45,
+          isExhausted: true,
+        },
+      }),
+    );
+    const { result } = renderHook(
+      () =>
+        useAgentsWorkspaceModel({
+          activeConversation: projectConversation(),
+          modelRegistry: AGENT_MODEL_CATALOG,
+          optimisticWorkspacesByConversationId: {},
+          runtimeByConversationId: {},
+          selectedConversationId: "conversation-1",
+          workspaceReviewerRuntime: null,
+        }),
+      { wrapper: wrapper() },
+    );
+
+    await waitFor(() =>
+      expect(result.current.activeWorkspaceFingerprintSpend).toEqual({
+        summary: "3 generations · 92 min on this failure",
+        exhausted: true,
+      }),
+    );
+  });
+
+  it("exposes workspace load failures and retries through the owning query", async () => {
+    const error = new Error("workspace response failed validation");
+    getAgentConversationWorkspaceMock.mockRejectedValueOnce(error);
+    const hydratedWorkspace = conversationWorkspaceFixture({ mode: "edit" });
+    const { result } = renderHook(
+      () =>
+        useAgentsWorkspaceModel({
+          activeConversation: projectConversation(),
+          modelRegistry: AGENT_MODEL_CATALOG,
+          optimisticWorkspacesByConversationId: {},
+          runtimeByConversationId: {},
+          selectedConversationId: "conversation-1",
+          workspaceReviewerRuntime: null,
+        }),
+      { wrapper: wrapper() },
+    );
+
+    await waitFor(() =>
+      expect(result.current.activeWorkspaceError).toBe(error),
+    );
+    expect(result.current.activeWorkspace).toBeNull();
+
+    getAgentConversationWorkspaceMock.mockResolvedValueOnce(hydratedWorkspace);
+    await act(async () => {
+      await result.current.retryActiveWorkspace();
+    });
+
+    await waitFor(() =>
+      expect(result.current.activeWorkspace).toBe(hydratedWorkspace),
+    );
+    expect(result.current.activeWorkspaceError).toBeNull();
   });
 });

@@ -13,6 +13,7 @@ import {
   mockGetGitDefaultBranch,
 } from "@/api-mock/projects";
 import { mockTasksApi } from "@/api-mock/tasks";
+import { getStore } from "@/api-mock/store";
 import { mockTaskGraphApi } from "@/api-mock/task-graph";
 import {
   mockCreateConversation,
@@ -26,8 +27,11 @@ import {
   mockListConversationsPage,
   mockPublishAgentConversationWorkspace,
   mockReconcileAgentConversationWorkspacePublication,
+  mockSendAgentMessage,
+  mockSetAgentConversationMuted,
   mockStartAgentConversation,
   mockSwitchAgentConversationMode,
+  mockUpdateAgentConversationCoordinationMode,
 } from "@/api-mock/chat";
 import { mockReviewsApi } from "@/api-mock/reviews";
 import { mockIdeationApi } from "@/api-mock/ideation";
@@ -37,6 +41,7 @@ import {
   toSnakeCasePlanBranch,
 } from "@/api-mock/plan-branch";
 import { mockPlanApi } from "@/api-mock/plan";
+import { mockArtifactApi } from "@/api-mock/artifact";
 import type { IdeationSessionResponse } from "@/api/ideation.types";
 import type { ContextType } from "@/types/chat-conversation";
 import type { ChatConversation } from "@/types/chat-conversation";
@@ -47,6 +52,8 @@ import type {
   ChatTimelineItemResponse,
 } from "@/api/chat";
 import type { GitAuthDiagnostics } from "@/hooks/useGithubSettings";
+import type { NotificationCategory } from "@/types/notifications";
+import type { InternalStatus, Task } from "@/types/task";
 
 const mockReviewSettings = {
   require_human_review: false,
@@ -56,9 +63,21 @@ const mockReviewSettings = {
   ai_review_enabled: true,
   ai_review_auto_fix: true,
   require_fix_approval: false,
-  auto_create_followup_agent_conversation: true,
+  auto_create_followup_agent_conversation: false,
+  autofix_workspace_review_blocking_findings: true,
+  workspace_review_fixer_cycle_cap: 3,
   run_task_validations: true,
 };
+
+let mockUpdateChannel: "stable" | "nightly" = "stable";
+
+type MockUpdateChannelError = "read" | "write";
+
+function getMockUpdateChannelError(): MockUpdateChannelError | undefined {
+  return (
+    window as Window & { __mockUpdateChannelError?: MockUpdateChannelError }
+  ).__mockUpdateChannelError;
+}
 
 const mockExternalMcpConfig = {
   enabled: true,
@@ -107,7 +126,9 @@ function mockJiraIssue(input: {
     provider: "atlassian",
     issueKey: input.issueKey,
     issueId: input.issueId ?? input.issueKey,
-    issueUrl: input.issueUrl ?? `https://example.atlassian.net/browse/${input.issueKey}`,
+    issueUrl:
+      input.issueUrl ??
+      `https://example.atlassian.net/browse/${input.issueKey}`,
     title: input.title ?? `Mock issue ${input.issueKey}`,
     status: "To Do",
     assignee: null,
@@ -287,7 +308,13 @@ const mockAgentProviderSettings = {
       status: "ready",
       error: null,
       missingCoreExecFeatures: [],
-      supportedEfforts: null,
+      supportedModelAliases: [
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.5",
+      ],
+      supportedEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
       updatedAt: "2026-05-08T00:00:00Z",
     },
     {
@@ -315,12 +342,15 @@ const mockAgentProviderSettings = {
       error: null,
       missingCoreExecFeatures: [],
       supportedModelAliases: [
-        "sonnet",
-        "claude-sonnet-4-6",
-        "opus",
-        "haiku",
         "fable",
+        "claude-opus-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7",
+        "opus",
         "claude-sonnet-5",
+        "claude-sonnet-4-6",
+        "sonnet",
+        "haiku",
       ],
       supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
       updatedAt: "2026-05-08T00:00:00Z",
@@ -362,9 +392,74 @@ const mockManagedProviderCliStatuses = {
       latestVersion: "2.1.197",
       updateAvailable: false,
       action: "none",
-      status:
-        "claude CLI 2.1.197 is user-managed and current.",
+      status: "claude CLI 2.1.197 is user-managed and current.",
       error: null,
+    },
+  ],
+};
+
+// Matches RawMcpCatalogSchema (snake_case serialization from the backend).
+const mockMcpCatalog = {
+  eligible_providers: ["codex"],
+  eligible_default_provider: "codex",
+  probed_at: "2026-05-08T00:00:00Z",
+  probe_stale: false,
+  provider_diagnostics: {},
+  policy_diagnostics: [],
+  servers: [
+    {
+      provider: "codex",
+      server_id: "ralphx",
+      native_scope: "user",
+      native_state: "enabled",
+      effective_enabled: true,
+      configured_state: "follow",
+      effective_state: "follow",
+      effective_source: "required_internal",
+      known_tools: [
+        {
+          tool_name: "list_agent_tasks",
+          configured_state: "follow",
+          effective_state: "follow",
+          effective_source: "required_internal",
+        },
+        {
+          tool_name: "create_agent_task",
+          configured_state: "follow",
+          effective_state: "follow",
+          effective_source: "required_internal",
+        },
+      ],
+      disabled_tools: [],
+      locked: true,
+      locked_reason: "Required internal RalphX server.",
+      diagnostic: null,
+      conflict_kind: null,
+      repair_status: null,
+    },
+    {
+      provider: "codex",
+      server_id: "github",
+      native_scope: "user",
+      native_state: "enabled",
+      effective_enabled: true,
+      configured_state: "follow",
+      effective_state: "follow",
+      effective_source: "provider_native",
+      known_tools: [
+        {
+          tool_name: "search_issues",
+          configured_state: "follow",
+          effective_state: "follow",
+          effective_source: "provider_native",
+        },
+      ],
+      disabled_tools: [],
+      locked: false,
+      locked_reason: null,
+      diagnostic: null,
+      conflict_kind: null,
+      repair_status: null,
     },
   ],
 };
@@ -372,12 +467,51 @@ const mockManagedProviderCliStatuses = {
 const mockAgentModels = [
   {
     provider: "codex",
+    modelId: "gpt-5.6-sol",
+    label: "GPT-5.6 Sol",
+    menuLabel: "GPT-5.6 Sol",
+    description: "Flagship GPT-5.6 model for complex coding and agentic work.",
+    supportedEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
+    defaultEffort: "medium",
+    source: "built_in",
+    enabled: true,
+    createdAt: null,
+    updatedAt: null,
+  },
+  {
+    provider: "codex",
+    modelId: "gpt-5.6-terra",
+    label: "GPT-5.6 Terra",
+    menuLabel: "GPT-5.6 Terra",
+    description: "High-intelligence GPT-5.6 model for substantial coding tasks.",
+    supportedEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
+    defaultEffort: "medium",
+    source: "built_in",
+    enabled: true,
+    createdAt: null,
+    updatedAt: null,
+  },
+  {
+    provider: "codex",
+    modelId: "gpt-5.6-luna",
+    label: "GPT-5.6 Luna",
+    menuLabel: "GPT-5.6 Luna",
+    description: "Efficient GPT-5.6 model for capable everyday coding work.",
+    supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
+    defaultEffort: "medium",
+    source: "built_in",
+    enabled: true,
+    createdAt: null,
+    updatedAt: null,
+  },
+  {
+    provider: "codex",
     modelId: "gpt-5.5",
     label: "GPT-5.5",
     menuLabel: "GPT-5.5",
     description: "Frontier Codex model for complex agent work.",
     supportedEfforts: ["low", "medium", "high", "xhigh"],
-    defaultEffort: "medium",
+    defaultEffort: "xhigh",
     source: "built_in",
     enabled: true,
     createdAt: null,
@@ -398,11 +532,37 @@ const mockAgentModels = [
   },
   {
     provider: "claude",
-    modelId: "claude-sonnet-4-6",
-    label: "Claude Sonnet 4.6",
-    menuLabel: "Claude Sonnet 4.6",
-    description: "Pinned Claude Sonnet 4.6 model for stable agent work.",
-    supportedEfforts: ["low", "medium", "high", "max"],
+    modelId: "claude-opus-5",
+    label: "Claude Opus 5",
+    menuLabel: "Claude Opus 5",
+    description: "Exact Claude Opus 5 model id; requires Claude Code 2.1.219 or newer.",
+    supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
+    defaultEffort: "high",
+    source: "built_in",
+    enabled: true,
+    createdAt: null,
+    updatedAt: null,
+  },
+  {
+    provider: "claude",
+    modelId: "claude-opus-4-8",
+    label: "Claude Opus 4.8",
+    menuLabel: "Claude Opus 4.8",
+    description: "Exact Claude Opus 4.8 model id; requires Claude Code 2.1.154 or newer.",
+    supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
+    defaultEffort: "high",
+    source: "built_in",
+    enabled: true,
+    createdAt: null,
+    updatedAt: null,
+  },
+  {
+    provider: "claude",
+    modelId: "claude-opus-4-7",
+    label: "Claude Opus 4.7",
+    menuLabel: "Claude Opus 4.7",
+    description: "Exact Claude Opus 4.7 model id; requires Claude Code 2.1.111 or newer.",
+    supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
     defaultEffort: "high",
     source: "built_in",
     enabled: true,
@@ -422,6 +582,19 @@ const mockAgentModels = [
     createdAt: null,
     updatedAt: null,
   },
+  {
+    provider: "claude",
+    modelId: "claude-sonnet-4-6",
+    label: "Claude Sonnet 4.6",
+    menuLabel: "Claude Sonnet 4.6",
+    description: "Pinned Claude Sonnet 4.6 model for stable agent work.",
+    supportedEfforts: ["low", "medium", "high", "max"],
+    defaultEffort: "high",
+    source: "built_in",
+    enabled: true,
+    createdAt: null,
+    updatedAt: null,
+  },
 ];
 
 const mockAgentLanes = [
@@ -433,6 +606,7 @@ const mockAgentLanes = [
   "execution_reviewer",
   "execution_reexecutor",
   "execution_merger",
+  "execution_branch_updater",
 ] as const;
 
 function mockAgentLaneSettings(projectId: string | null) {
@@ -463,6 +637,135 @@ function mockAgentHarnessAvailability(projectId: string | null) {
   }));
 }
 
+const mockManualRoleFamilies = [
+  ["workspace", "Workspace", "workspace_chat", "Chat", "General project conversation and workspace assistance."],
+  ["workspace", "Workspace", "workspace_edit", "Edit", "Implements requested changes in the project workspace."],
+  ["workspace", "Workspace", "workspace_plan", "Plan", "Develops implementation plans for project changes."],
+  ["workspace", "Workspace", "workspace_ideation", "Ideation", "Explores product and technical ideas into actionable plans."],
+  ["workspace", "Workspace", "workspace_review_pr", "Review PR", "Reviews pull request changes and reports actionable findings."],
+  ["workspace", "Workspace", "workspace_automation", "Automation", "Runs configured project automation conversations."],
+  ["automation", "Automation", "automation_plan_judge", "Plan Judge", "Evaluates whether an automation plan is ready to execute."],
+  ["automation", "Automation", "automation_result_judge", "Result Judge", "Evaluates automation results and required follow-up."],
+  ["feedback_loops", "Feedback Loops", "workspace_reviewer", "Reviewer", "Reviews workspace changes and identifies issues."],
+  ["feedback_loops", "Feedback Loops", "workspace_repair", "Repair", "Repairs workspace setup, branch, or execution problems."],
+  ["feedback_loops", "Feedback Loops", "workspace_merge_repair", "Merge Repair", "Resolves merge conflicts and incomplete merge states."],
+  ["feedback_loops", "Feedback Loops", "workspace_pr_fixer", "PR Fixer", "Addresses pull request feedback and failing checks."],
+  ["ideation", "Ideation", "ideation_primary", "Primary", "Leads ideation and produces the working plan."],
+  ["ideation", "Ideation", "ideation_verifier", "Verifier", "Challenges an ideation plan before implementation."],
+  ["ideation", "Ideation", "ideation_subagent", "Subagent", "Explores a focused question for the ideation lead."],
+  ["ideation", "Ideation", "ideation_verifier_subagent", "Verifier Subagent", "Investigates a focused verification concern."],
+  ["delegation", "Delegation", "delegated_subagent", "Delegated Subagent", "Handles a bounded task delegated by another agent."],
+  ["execution", "Execution", "execution_worker", "Worker", "Implements an execution-plan task in its isolated workspace."],
+  ["execution", "Execution", "execution_qa_prep", "QA Prep", "Prepares changed code for quality validation."],
+  ["execution", "Execution", "execution_qa_refiner", "QA Refiner", "Refines changes in response to quality findings."],
+  ["execution", "Execution", "execution_qa_tester", "QA Tester", "Runs targeted tests and reports behavioral evidence."],
+  ["execution", "Execution", "execution_reviewer", "Reviewer", "Reviews completed execution work for correctness and scope."],
+  ["execution", "Execution", "execution_reexecutor", "Re-executor", "Implements follow-up changes requested by review."],
+  ["execution", "Execution", "execution_merger", "Merger", "Completes approved branch integration and merge cleanup."],
+  ["utility", "Utility", "utility_lightweight", "Lightweight", "Handles small utility tasks with minimal runtime overhead."],
+  ["utility", "Utility", "utility_pr_describer", "PR Describer", "Summarizes a completed change for pull request publication."],
+  ["utility", "Utility", "utility_project_analyzer", "Project Analyzer", "Inspects a project and reports relevant implementation context."],
+  ["utility", "Utility", "memory_capture", "Memory Capture", "Extracts durable project knowledge from completed work."],
+  ["utility", "Utility", "memory_maintainer", "Memory Maintainer", "Curates and updates stored project knowledge."],
+] as const;
+
+const mockManualRoleDefault = {
+  provider: "codex",
+  model: "gpt-5.5",
+  effort: "xhigh",
+  service_tier: "provider_default",
+  coordination_mode: "solo",
+  persona_id: null,
+  approval_policy: "never",
+  sandbox_mode: "danger-full-access",
+};
+
+const mockManualRoleDefaultStore = new Map<string, Record<string, unknown>>();
+
+function mockManualRoleScopeKey(projectId: string | null, role: string) {
+  return `${projectId ?? "__global__"}:${role}`;
+}
+
+function mockManualRoleControls(family: string) {
+  const workspaceRole = family === "workspace";
+  return {
+    capabilities: [
+      { value: "solo", enabled: true, disabled_reason: null },
+      {
+        value: "rx_native_team",
+        enabled: workspaceRole,
+        disabled_reason: workspaceRole
+          ? null
+          : "Team is available only for Workspace root roles",
+      },
+      {
+        value: "rx_native_workflow",
+        enabled: workspaceRole,
+        disabled_reason: workspaceRole
+          ? null
+          : "Workflow is available only for Workspace root roles",
+      },
+      {
+        value: "codex_native_ultra",
+        enabled: workspaceRole,
+        disabled_reason: workspaceRole
+          ? null
+          : "Codex Ultra is available only for Workspace root roles",
+      },
+    ],
+    speeds: [
+      { value: "provider_default", enabled: true, disabled_reason: null },
+      { value: "standard", enabled: true, disabled_reason: null },
+      {
+        value: "fast",
+        enabled: true,
+        disabled_reason: null,
+      },
+    ],
+    persona: {
+      enabled: workspaceRole,
+      disabled_reason: workspaceRole
+        ? null
+        : "Persona is limited to Workspace Project conversations in V1",
+    },
+  };
+}
+
+function mockManualRoleDefaults(projectId: string | null) {
+  return {
+    project_id: projectId,
+    roles: mockManualRoleFamilies.map(
+      ([family, familyDisplayName, role, displayName, description]) => {
+        const scopedConfigured = projectId === null
+          ? null
+          : mockManualRoleDefaultStore.get(
+            mockManualRoleScopeKey(projectId, role),
+          ) ?? null;
+        const globalConfigured =
+          mockManualRoleDefaultStore.get(mockManualRoleScopeKey(null, role)) ??
+          (role === "workspace_edit" ? mockManualRoleDefault : null);
+        const configured = projectId === null
+          ? globalConfigured
+          : scopedConfigured;
+        return {
+          role,
+          display_name: displayName,
+          description,
+          family,
+          family_display_name: familyDisplayName,
+          configured,
+          effective: configured ?? globalConfigured ?? mockManualRoleDefault,
+          source: configured
+            ? (projectId === null ? "global_ui" : "project_ui")
+            : (globalConfigured ? "global_ui" : "provider_default"),
+          diagnostics: [],
+          controls: mockManualRoleControls(family),
+        };
+      },
+    ),
+  };
+}
+
 const mockWorkspaceReviewRuntimeSettings: Record<
   string,
   Array<{
@@ -489,6 +792,7 @@ function toSnakeConversation(conversation: ChatConversation) {
     upstream_provider: conversation.upstreamProvider,
     provider_profile: conversation.providerProfile,
     agent_mode: conversation.agentMode,
+    coordination_mode: conversation.coordinationMode,
     title: conversation.title,
     message_count: conversation.messageCount,
     last_message_at: conversation.lastMessageAt,
@@ -519,7 +823,8 @@ function toSnakeAgentWorkspace(workspace: AgentConversationWorkspace | null) {
     publication_pr_status: workspace.publicationPrStatus,
     publication_push_status: workspace.publicationPushStatus,
     auto_publish_enabled: workspace.autoPublishEnabled ?? true,
-    auto_publish_initial_pr_enabled: workspace.autoPublishInitialPrEnabled ?? false,
+    auto_publish_initial_pr_enabled:
+      workspace.autoPublishInitialPrEnabled ?? false,
     auto_publish_paused_pr_autofix_enabled:
       workspace.autoPublishPausedPrAutofixEnabled ?? null,
     auto_publish_paused_pr_auto_merge_desired:
@@ -601,15 +906,6 @@ function toSnakeIdeationSession(session: IdeationSessionResponse) {
     plan_artifact_id: session.planArtifactId,
     seed_task_id: session.seedTaskId,
     parent_session_id: session.parentSessionId,
-    team_mode: session.teamMode,
-    team_config: session.teamConfig
-      ? {
-          max_teammates: session.teamConfig.maxTeammates,
-          model_ceiling: session.teamConfig.modelCeiling,
-          budget_limit: session.teamConfig.budgetLimit ?? null,
-          composition_mode: session.teamConfig.compositionMode ?? null,
-        }
-      : null,
     created_at: session.createdAt,
     updated_at: session.updatedAt,
     archived_at: session.archivedAt,
@@ -738,8 +1034,20 @@ const mockTicketingCapabilities = {
 
 const mockTicketingColumns = [
   { id: "todo", name: "To Do", category: "todo", order: 0, color: null },
-  { id: "in_progress", name: "In Progress", category: "in_progress", order: 1, color: null },
-  { id: "review", name: "In Review", category: "in_progress", order: 2, color: null },
+  {
+    id: "in_progress",
+    name: "In Progress",
+    category: "in_progress",
+    order: 1,
+    color: null,
+  },
+  {
+    id: "review",
+    name: "In Review",
+    category: "in_progress",
+    order: 2,
+    color: null,
+  },
   { id: "done", name: "Done", category: "done", order: 3, color: null },
 ];
 
@@ -752,14 +1060,19 @@ const mockTicketingTickets = [
     reporter: { id: "user-2", name: "Platform", email: null, avatarUrl: null },
     labels: ["backend", "race-condition"],
     priority: "High",
-    updatedAt: "2026-06-19T22:00:00.000Z",
+    updatedAt: "2026-06-20T12:00:00.000Z",
     url: "https://example.atlassian.net/browse/RX-1",
     associationCount: 2,
   },
   {
     ref: { provider: "jira", id: "10002", key: "RX-2" },
     title: "Add Linear webhook backfill",
-    state: { id: "in_progress", name: "In Progress", category: "in_progress", color: null },
+    state: {
+      id: "in_progress",
+      name: "In Progress",
+      category: "in_progress",
+      color: null,
+    },
     assignee: null,
     reporter: { id: "user-2", name: "Platform", email: null, avatarUrl: null },
     labels: ["integrations"],
@@ -771,7 +1084,12 @@ const mockTicketingTickets = [
   {
     ref: { provider: "jira", id: "10003", key: "RX-3" },
     title: "Ticketing dashboard shell",
-    state: { id: "review", name: "In Review", category: "in_progress", color: null },
+    state: {
+      id: "review",
+      name: "In Review",
+      category: "in_progress",
+      color: null,
+    },
     assignee: { id: "user-1", name: "A. Dev", email: null, avatarUrl: null },
     reporter: { id: "user-2", name: "Platform", email: null, avatarUrl: null },
     labels: ["frontend"],
@@ -783,9 +1101,19 @@ const mockTicketingTickets = [
   {
     ref: { provider: "clickup", id: "cu-1001", key: "CU-1001" },
     title: "Demo ClickUp dashboard task",
-    state: { id: "in_progress", name: "In Progress", category: "in_progress", color: null },
+    state: {
+      id: "in_progress",
+      name: "In Progress",
+      category: "in_progress",
+      color: null,
+    },
     assignee: { id: "cu-user-1", name: "A. Dev", email: null, avatarUrl: null },
-    reporter: { id: "cu-user-2", name: "Platform", email: null, avatarUrl: null },
+    reporter: {
+      id: "cu-user-2",
+      name: "Platform",
+      email: null,
+      avatarUrl: null,
+    },
     labels: ["integrations", "frontend"],
     priority: "High",
     updatedAt: "2026-06-20T15:00:00.000Z",
@@ -797,7 +1125,12 @@ const mockTicketingTickets = [
     title: "Validate ClickUp personal API token",
     state: { id: "todo", name: "To Do", category: "todo", color: null },
     assignee: null,
-    reporter: { id: "cu-user-2", name: "Platform", email: null, avatarUrl: null },
+    reporter: {
+      id: "cu-user-2",
+      name: "Platform",
+      email: null,
+      avatarUrl: null,
+    },
     labels: ["backend"],
     priority: "Medium",
     updatedAt: "2026-06-20T12:30:00.000Z",
@@ -809,7 +1142,12 @@ const mockTicketingTickets = [
     title: "List ClickUp Spaces as dashboard containers",
     state: { id: "done", name: "Done", category: "done", color: null },
     assignee: { id: "cu-user-1", name: "A. Dev", email: null, avatarUrl: null },
-    reporter: { id: "cu-user-2", name: "Platform", email: null, avatarUrl: null },
+    reporter: {
+      id: "cu-user-2",
+      name: "Platform",
+      email: null,
+      avatarUrl: null,
+    },
     labels: ["frontend"],
     priority: "Low",
     updatedAt: "2026-06-19T09:00:00.000Z",
@@ -848,6 +1186,69 @@ const mockTicketingAssociations = {
   fetchedAt: "2026-06-19T22:00:00.000Z",
 };
 
+const mockNotificationSettings = {
+  desktop_enabled: true,
+  desktop_only_when_unfocused: true,
+  focused_toasts_enabled: true,
+  desktop_agent_requests_enabled: true,
+  desktop_agent_waiting_enabled: true,
+  desktop_reviews_enabled: true,
+  desktop_task_failures_enabled: true,
+  desktop_automation_approvals_enabled: true,
+  desktop_automation_run_completions_enabled: false,
+  desktop_git_github_enabled: true,
+  muted_project_ids: [],
+};
+
+const TASK_ATTENTION_CATEGORIES: Partial<Record<InternalStatus, NotificationCategory>> = {
+  review_passed: "review_needed",
+  escalated: "review_escalated",
+  qa_failed: "qa_failed",
+  merge_conflict: "merge_conflict",
+  merge_incomplete: "merge_incomplete",
+  failed: "task_failed",
+};
+
+function taskAttentionCategory(task: Task): NotificationCategory | undefined {
+  if (task.internalStatus === "blocked") {
+    return task.blockedReason?.startsWith("human:") ? "task_blocked" : undefined;
+  }
+  return TASK_ATTENTION_CATEGORIES[task.internalStatus];
+}
+
+function mockAttentionItems() {
+  return Array.from(getStore().tasks.values()).flatMap((task) => {
+    const category = taskAttentionCategory(task);
+    return category === undefined ? [] : [{
+      id: `task:${task.id}:${category}`,
+      category,
+      title: task.title,
+      detail: task.description,
+      projectId: task.projectId,
+      createdAt: task.updatedAt,
+      target: { kind: "task" as const, projectId: task.projectId, taskId: task.id },
+    }];
+  });
+}
+
+function mockNotificationPage(args: Record<string, unknown>) {
+  const projectId = args.projectId as string | undefined;
+  const offset = typeof args.cursor === "string" ? Number.parseInt(args.cursor, 10) : 0;
+  const limit = typeof args.limit === "number" ? args.limit : 50;
+  const notifications = Array.from(getStore().notifications.values())
+    .filter((notification) => projectId === undefined || notification.projectId === projectId)
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  const start = Number.isFinite(offset) && offset >= 0 ? offset : 0;
+  const page = notifications.slice(start, start + limit);
+  const nextOffset = start + page.length;
+
+  return {
+    notifications: page,
+    cursor: nextOffset < notifications.length ? String(nextOffset) : null,
+    hasMore: nextOffset < notifications.length,
+  };
+}
+
 /**
  * Command handlers map - routes Tauri commands to mock implementations
  */
@@ -877,6 +1278,8 @@ const commandHandlers: Record<
     }));
   },
   list_workflows: async () => mockWorkflowsApi.list(),
+  get_artifact_version_history: async (args) =>
+    mockArtifactApi.getVersionHistory(args.id as string),
 
   // Project commands
   list_projects: async () => mockProjectsApi.list(),
@@ -970,6 +1373,8 @@ const commandHandlers: Record<
   }),
   get_agent_provider_settings: async () => mockAgentProviderSettings,
   get_managed_provider_cli_status: async () => mockManagedProviderCliStatuses,
+  get_mcp_catalog: async () => mockMcpCatalog,
+  refresh_mcp_catalog: async () => mockMcpCatalog,
   install_or_update_managed_provider_cli: async (args) => {
     const input = args.input as { provider?: string };
     const status = mockManagedProviderCliStatuses.providers.find(
@@ -1002,12 +1407,12 @@ const commandHandlers: Record<
     skipped: mockManagedProviderCliStatuses.providers,
   }),
   get_ui_feature_flags: async () => {
-    const overrides = typeof window !== "undefined" ? window.__mockUiFeatureFlags : undefined;
+    const overrides =
+      typeof window !== "undefined" ? window.__mockUiFeatureFlags : undefined;
     return {
       activityPage: true,
       extensibilityPage: true,
-      battleMode: true,
-      teamMode: false,
+      automationsPage: true,
       atlassianOauth: false,
       ticketingDashboard: false,
       ...overrides,
@@ -1304,7 +1709,9 @@ const commandHandlers: Record<
   },
   refresh_agent_conversation_granola_note: async (args) => {
     const input = args.input as { conversationId: string };
-    const existing = mockAgentConversationGranolaNotes.get(input.conversationId);
+    const existing = mockAgentConversationGranolaNotes.get(
+      input.conversationId,
+    );
     if (!existing) {
       return { note: null };
     }
@@ -1318,7 +1725,8 @@ const commandHandlers: Record<
   get_agent_conversation_linear_issue: async (args) => {
     const input = args.input as { conversationId: string };
     return {
-      issue: mockAgentConversationLinearIssues.get(input.conversationId) ?? null,
+      issue:
+        mockAgentConversationLinearIssues.get(input.conversationId) ?? null,
     };
   },
   assign_agent_conversation_linear_issue: async (args) => {
@@ -1336,7 +1744,9 @@ const commandHandlers: Record<
   },
   refresh_agent_conversation_linear_issue: async (args) => {
     const input = args.input as { conversationId: string };
-    const existing = mockAgentConversationLinearIssues.get(input.conversationId);
+    const existing = mockAgentConversationLinearIssues.get(
+      input.conversationId,
+    );
     if (!existing || typeof existing !== "object") {
       return { issue: null };
     }
@@ -1424,7 +1834,8 @@ const commandHandlers: Record<
   },
   list_ticketing_columns: async () => mockTicketingColumns,
   list_tickets: async (args) => {
-    const query = args.query as { provider?: string; filters?: { text?: string } } | undefined;
+    const query = args.query as
+      { provider?: string; filters?: { text?: string } } | undefined;
     const provider = query?.provider ?? "jira";
     const text = query?.filters?.text?.toLowerCase().trim() ?? "";
     const items = mockTicketingTickets
@@ -1442,6 +1853,34 @@ const commandHandlers: Record<
       fetchedAt: "2026-06-19T22:00:00.000Z",
     };
   },
+  list_ticket_filter_options: async (args) => {
+    const query = args.query as { provider?: string } | undefined;
+    const provider = query?.provider ?? "jira";
+    const assignees = Array.from(
+      new Set(
+        mockTicketingTickets
+          .filter((ticket) => ticket.ref.provider === provider)
+          .flatMap((ticket) => {
+            const assignees =
+              "assignees" in ticket && Array.isArray(ticket.assignees)
+                ? ticket.assignees
+                : [];
+            const assignee =
+              "assignee" in ticket && ticket.assignee ? [ticket.assignee] : [];
+            return [...assignees, ...assignee] as Array<{ name?: string | null }>;
+          })
+          .map((assignee) => assignee.name)
+          .filter((name): name is string => Boolean(name)),
+      ),
+    ).sort((left, right) => left.localeCompare(right));
+
+    return {
+      assignees,
+      sprints: [],
+      complete: true,
+      truncated: false,
+    };
+  },
   get_ticket_detail: async (args) => {
     const ticketRef = args.ticketRef as { id?: string } | undefined;
     const ticket =
@@ -1453,11 +1892,17 @@ const commandHandlers: Record<
         "When two agents transition the same task, the workflow should stay consistent and preserve review history.",
       descriptionText:
         "When two agents transition the same task, the workflow should stay consistent and preserve review history.",
-      acceptanceCriteriaMarkdown: "- No double-transition under contention\n- Activity timeline remains ordered",
+      acceptanceCriteriaMarkdown:
+        "- No double-transition under contention\n- Activity timeline remains ordered",
       comments: [
         {
           id: "comment-1",
-          author: { id: "user-2", name: "Platform", email: null, avatarUrl: null },
+          author: {
+            id: "user-2",
+            name: "Platform",
+            email: null,
+            avatarUrl: null,
+          },
           bodyMarkdown: "Reproduced on the transition hardening branch.",
           bodyText: "Reproduced on the transition hardening branch.",
           createdAt: "2026-06-19T20:00:00.000Z",
@@ -1481,15 +1926,20 @@ const commandHandlers: Record<
     return [];
   },
   set_ticket_labels: async (args) => {
-    const input = args.input as {
-      provider?: string;
-      ticketRef?: { provider?: string; id?: string; key?: string | null };
-      labels?: string[];
-      clientOperationId?: string;
-    } | undefined;
+    const input = args.input as
+      | {
+          provider?: string;
+          ticketRef?: { provider?: string; id?: string; key?: string | null };
+          labels?: string[];
+          clientOperationId?: string;
+        }
+      | undefined;
     const labels = input?.labels ?? [];
     return {
-      ticketRef: input?.ticketRef ?? { provider: input?.provider ?? "jira", id: "10001" },
+      ticketRef: input?.ticketRef ?? {
+        provider: input?.provider ?? "jira",
+        id: "10001",
+      },
       operation: {
         id: "op-labels-1",
         operation: "set_labels",
@@ -1583,6 +2033,41 @@ const commandHandlers: Record<
     return mockAgentProviderSettings;
   },
   list_agent_models: async () => mockAgentModels,
+  get_manual_role_defaults: async (args) =>
+    mockManualRoleDefaults((args.projectId as string | null | undefined) ?? null),
+  update_manual_role_default: async (args) => {
+    const input = args.input as {
+      projectId?: string | null;
+      role: string;
+      value: Record<string, unknown>;
+    };
+    mockManualRoleDefaultStore.set(
+      mockManualRoleScopeKey(input.projectId ?? null, input.role),
+      input.value,
+    );
+    return input.value;
+  },
+  clear_manual_role_default: async (args) => {
+    const input = args.input as { projectId?: string | null; role: string };
+    return mockManualRoleDefaultStore.delete(
+      mockManualRoleScopeKey(input.projectId ?? null, input.role),
+    );
+  },
+  get_start_composer_role_default: async () => ({
+    role: "workspace_edit",
+    source: "global_ui",
+    value: mockManualRoleDefault,
+  }),
+  get_agent_conversation_role_default: async () => ({
+    role: "workspace_edit",
+    source: "global_ui",
+    value: mockManualRoleDefault,
+  }),
+  reset_agent_conversation_role_default: async () => ({
+    role: "workspace_edit",
+    source: "global_ui",
+    value: mockManualRoleDefault,
+  }),
   get_agent_lane_settings: async (args) =>
     mockAgentLaneSettings(
       (args.projectId as string | null | undefined) ?? null,
@@ -1674,6 +2159,8 @@ const commandHandlers: Record<
   },
   check_gh_auth: async () => window.__mockGhAuthStatus ?? true,
   get_github_connection_status: async () => ({
+    state: (window.__mockGhAuthStatus ?? true) ? "authenticated" : "unauthenticated",
+    diagnostic: (window.__mockGhAuthStatus ?? true) ? null : "missing_credentials",
     ghInstalled: true,
     authenticated: window.__mockGhAuthStatus ?? true,
     host: "github.com",
@@ -1695,7 +2182,9 @@ const commandHandlers: Record<
         prAuthorLogin: "mock-octocat",
         prBaseRefName: "main",
         rxConversationCount: 1,
-        rxConversations: [{ conversationId: "mock-conversation", title: "Mock agent" }],
+        rxConversations: [
+          { conversationId: "mock-conversation", title: "Mock agent" },
+        ],
         ticketCount: 1,
         ticketLinks: [
           {
@@ -1785,7 +2274,18 @@ const commandHandlers: Record<
     return true;
   },
   resume_deferred_git_startup: async () => true,
-  update_github_pr_enabled: async () => null,
+  update_github_pr_enabled: async (args) => {
+    const projectId = args.projectId as string;
+    const project = getStore().projects.get(projectId);
+    if (!project) {
+      throw new Error(`Project not found: ${projectId}`);
+    }
+    getStore().projects.set(projectId, {
+      ...project,
+      githubPrEnabled: args.enabled === true,
+    });
+    return null;
+  },
 
   // Plan commands
   get_active_plan: async (args) =>
@@ -1807,7 +2307,52 @@ const commandHandlers: Record<
     // In web-mode mocks, execution-plan filtering reuses the active plan id as the stable filter key.
     mockPlanApi.getActivePlan(args.projectId as string),
 
+  // Notification commands
+  list_attention_items: async (args) => {
+    const projectId = args.projectId as string | undefined;
+    return mockAttentionItems().filter(
+      (item) => projectId === undefined || item.projectId === projectId,
+    );
+  },
+  get_unread_notification_count: async (args) => {
+    const projectId = args.projectId as string | undefined;
+    return Array.from(getStore().notifications.values()).filter(
+      (notification) => notification.readAt === null && (projectId === undefined || notification.projectId === projectId),
+    ).length;
+  },
+  list_notifications: async (args) => mockNotificationPage(args),
+  mark_notification_read: async (args) => {
+    const notification = getStore().notifications.get(args.id as string);
+    if (notification) {
+      getStore().notifications.set(notification.id, { ...notification, readAt: new Date().toISOString() });
+    }
+    return null;
+  },
+  mark_all_notifications_read: async (args) => {
+    const projectId = args.projectId as string | undefined;
+    const store = getStore();
+    Array.from(store.notifications.values()).forEach((notification) => {
+      if (notification.readAt === null && (projectId === undefined || notification.projectId === projectId)) {
+        store.notifications.set(notification.id, { ...notification, readAt: new Date().toISOString() });
+      }
+    });
+    return null;
+  },
+  set_dock_badge_count: async () => null,
+  get_notification_settings: async () => mockNotificationSettings,
+  update_notification_settings: async () => mockNotificationSettings,
+
   // Task commands
+  get_session_task_history_availability: async (args) => {
+    const availability = await mockTasksApi.getSessionHistoryAvailability(
+      args.projectId as string,
+      args.ideationSessionId as string,
+    );
+    return {
+      has_history: availability.hasHistory,
+      task_count: availability.taskCount,
+    };
+  },
   list_tasks: async (args) => {
     // Build params object, only including defined properties
     const params: {
@@ -1877,6 +2422,27 @@ const commandHandlers: Record<
       blocked_reason: task.blockedReason,
     }));
   },
+  retry_branch_update: async (args) => {
+    const task = await mockTasksApi.retryBranchUpdate(args.taskId as string);
+    return {
+      id: task.id,
+      project_id: task.projectId,
+      category: task.category,
+      title: task.title,
+      description: task.description,
+      internal_status: task.internalStatus,
+      priority: task.priority,
+      needs_review_point: task.needsReviewPoint,
+      created_at: task.createdAt,
+      updated_at: task.updatedAt,
+      started_at: task.startedAt,
+      completed_at: task.completedAt,
+      archived_at: task.archivedAt,
+      blocked_reason: task.blockedReason,
+      task_branch: task.taskBranch ?? null,
+      metadata: task.metadata ?? null,
+    };
+  },
 
   // Chat commands
   list_agent_conversations: async (args) => {
@@ -1902,6 +2468,7 @@ const commandHandlers: Record<
       upstream_provider: conversation.upstreamProvider,
       provider_profile: conversation.providerProfile,
       agent_mode: conversation.agentMode,
+      coordination_mode: conversation.coordinationMode,
       title: conversation.title,
       message_count: conversation.messageCount,
       last_message_at: conversation.lastMessageAt,
@@ -1944,6 +2511,7 @@ const commandHandlers: Record<
         upstream_provider: conversation.upstreamProvider,
         provider_profile: conversation.providerProfile,
         agent_mode: conversation.agentMode,
+        coordination_mode: conversation.coordinationMode,
         title: conversation.title,
         message_count: conversation.messageCount,
         last_message_at: conversation.lastMessageAt,
@@ -1980,9 +2548,30 @@ const commandHandlers: Record<
           ref_label: row.refLabel,
           publication_state: row.publicationState,
           publication_label: row.publicationLabel,
+          attention_lane: row.attentionLane ?? "needs",
+          parked_delegate_count: row.parkedDelegateCount ?? 0,
+          action_verb: row.actionVerb ?? "",
+          is_muted: row.isMuted ?? false,
         })),
       })),
     };
+  },
+  set_agent_conversation_muted: async (args) => {
+    const controller =
+      typeof window !== "undefined" ? window.__mockChatApi : undefined;
+    const input = args.input as {
+      conversationId: string;
+      muted: boolean;
+    };
+    if (controller?.setAgentConversationMuted) {
+      await controller.setAgentConversationMuted(
+        input.conversationId,
+        input.muted,
+      );
+    } else {
+      await mockSetAgentConversationMuted(input.conversationId, input.muted);
+    }
+    return null;
   },
   get_conversation: async (args) => {
     const controller =
@@ -2073,7 +2662,8 @@ const commandHandlers: Record<
       publication_pr_status: workspace.publicationPrStatus,
       publication_push_status: workspace.publicationPushStatus,
       auto_publish_enabled: workspace.autoPublishEnabled ?? true,
-      auto_publish_initial_pr_enabled: workspace.autoPublishInitialPrEnabled ?? false,
+      auto_publish_initial_pr_enabled:
+        workspace.autoPublishInitialPrEnabled ?? false,
       auto_publish_paused_pr_autofix_enabled:
         workspace.autoPublishPausedPrAutofixEnabled ?? null,
       auto_publish_paused_pr_auto_merge_desired:
@@ -2129,7 +2719,8 @@ const commandHandlers: Record<
             publication_pr_status: workspace.publicationPrStatus,
             publication_push_status: workspace.publicationPushStatus,
             auto_publish_enabled: workspace.autoPublishEnabled ?? true,
-            auto_publish_initial_pr_enabled: workspace.autoPublishInitialPrEnabled ?? false,
+            auto_publish_initial_pr_enabled:
+              workspace.autoPublishInitialPrEnabled ?? false,
             auto_publish_paused_pr_autofix_enabled:
               workspace.autoPublishPausedPrAutofixEnabled ?? null,
             auto_publish_paused_pr_auto_merge_desired:
@@ -2148,12 +2739,46 @@ const commandHandlers: Record<
   },
   get_agent_conversation_workspace_file_changes: async () =>
     mockWorkspaceFileChanges.map((change) => ({ ...change })),
-  get_agent_conversation_workspace_review: async () => ({
-    changes: mockWorkspaceFileChanges.map((change) => ({ ...change })),
-    commits: mockWorkspaceCommits.map((commit) => ({ ...commit })),
-    base_ref: "main",
-    head_ref: "HEAD",
+  get_agent_conversation_workspace_staged_file_changes: async () => [],
+  get_agent_conversation_workspace_unstaged_file_changes: async () => [],
+  get_agent_conversation_workspace_cumulative_file_changes: async () =>
+    mockWorkspaceFileChanges.map((change) => ({ ...change })),
+  get_agent_conversation_workspace_pr_annotations: async (args) => {
+    const workspace = await mockGetAgentConversationWorkspace(
+      args.conversationId as string,
+    );
+    return {
+      pr_number: workspace?.publicationPrNumber ?? 0,
+      head_sha: null,
+      annotations: [],
+      sources_unavailable: [],
+    };
+  },
+  get_agent_conversation_workspace_review_hunk_annotations: async () => ({
+    artifact_id: null,
+    artifact_version: null,
+    target_scope: null,
+    head_sha: null,
+    diff_fingerprint: null,
+    annotations: [],
   }),
+  get_agent_conversation_workspace_review: async (args) => {
+    const workspace = await mockGetAgentConversationWorkspace(
+      args.conversationId as string,
+    );
+    const publicationStatus = workspace?.publicationPrStatus
+      ?.trim()
+      .toLowerCase();
+    const supportsWorktreeModes =
+      publicationStatus !== "merged" && publicationStatus !== "closed";
+    return {
+      changes: mockWorkspaceFileChanges.map((change) => ({ ...change })),
+      commits: mockWorkspaceCommits.map((commit) => ({ ...commit })),
+      base_ref: "main",
+      head_ref: "HEAD",
+      supports_worktree_modes: supportsWorktreeModes,
+    };
+  },
   get_agent_conversation_workspace_file_diff: async (args) =>
     mockWorkspaceFileDiff(args.filePath as string),
   get_agent_conversation_workspace_commits: async () => ({
@@ -2184,6 +2809,7 @@ const commandHandlers: Record<
       upstream_provider: conversation.upstreamProvider,
       provider_profile: conversation.providerProfile,
       agent_mode: conversation.agentMode,
+      coordination_mode: conversation.coordinationMode,
       title: conversation.title,
       message_count: conversation.messageCount,
       last_message_at: conversation.lastMessageAt,
@@ -2210,6 +2836,7 @@ const commandHandlers: Record<
         upstream_provider: conversation.upstreamProvider,
         provider_profile: conversation.providerProfile,
         agent_mode: conversation.agentMode,
+        coordination_mode: conversation.coordinationMode,
         title: conversation.title,
         message_count: conversation.messageCount,
         last_message_at: conversation.lastMessageAt,
@@ -2237,7 +2864,8 @@ const commandHandlers: Record<
             publication_pr_status: workspace.publicationPrStatus,
             publication_push_status: workspace.publicationPushStatus,
             auto_publish_enabled: workspace.autoPublishEnabled ?? true,
-            auto_publish_initial_pr_enabled: workspace.autoPublishInitialPrEnabled ?? false,
+            auto_publish_initial_pr_enabled:
+              workspace.autoPublishInitialPrEnabled ?? false,
             auto_publish_paused_pr_autofix_enabled:
               workspace.autoPublishPausedPrAutofixEnabled ?? null,
             auto_publish_paused_pr_auto_merge_desired:
@@ -2255,6 +2883,39 @@ const commandHandlers: Record<
         queued_as_pending: result.sendResult.queuedAsPending,
         queued_message_id: result.sendResult.queuedMessageId,
       },
+    };
+  },
+  send_agent_message: async (args) => {
+    const input = args.input as {
+      contextType: ContextType;
+      contextId: string;
+      content: string;
+      attachmentIds?: string[];
+      conversationId?: string;
+      providerHarness?: string;
+      modelOverride?: string;
+      logicalEffort?: string;
+    };
+    const result = await mockSendAgentMessage(
+      input.contextType,
+      input.contextId,
+      input.content,
+      input.attachmentIds,
+      undefined,
+      {
+        ...(input.conversationId ? { conversationId: input.conversationId } : {}),
+        ...(input.providerHarness ? { providerHarness: input.providerHarness } : {}),
+        ...(input.modelOverride ? { modelId: input.modelOverride } : {}),
+        ...(input.logicalEffort ? { logicalEffort: input.logicalEffort } : {}),
+      },
+    );
+    return {
+      conversation_id: result.conversationId,
+      agent_run_id: result.agentRunId,
+      is_new_conversation: result.isNewConversation,
+      was_queued: result.wasQueued,
+      queued_as_pending: result.queuedAsPending,
+      queued_message_id: result.queuedMessageId,
     };
   },
   switch_agent_conversation_mode: async (args) => {
@@ -2275,6 +2936,7 @@ const commandHandlers: Record<
         upstream_provider: conversation.upstreamProvider,
         provider_profile: conversation.providerProfile,
         agent_mode: conversation.agentMode,
+        coordination_mode: conversation.coordinationMode,
         title: conversation.title,
         message_count: conversation.messageCount,
         last_message_at: conversation.lastMessageAt,
@@ -2302,7 +2964,8 @@ const commandHandlers: Record<
             publication_pr_status: workspace.publicationPrStatus,
             publication_push_status: workspace.publicationPushStatus,
             auto_publish_enabled: workspace.autoPublishEnabled ?? true,
-            auto_publish_initial_pr_enabled: workspace.autoPublishInitialPrEnabled ?? false,
+            auto_publish_initial_pr_enabled:
+              workspace.autoPublishInitialPrEnabled ?? false,
             auto_publish_paused_pr_autofix_enabled:
               workspace.autoPublishPausedPrAutofixEnabled ?? null,
             auto_publish_paused_pr_auto_merge_desired:
@@ -2313,6 +2976,13 @@ const commandHandlers: Record<
           }
         : null,
     };
+  },
+  update_agent_conversation_coordination_mode: async (args) => {
+    const input = args.input as Parameters<
+      typeof mockUpdateAgentConversationCoordinationMode
+    >[0];
+    const conversation = await mockUpdateAgentConversationCoordinationMode(input);
+    return toSnakeConversation(conversation);
   },
   get_agent_conversation_stats: async (args) => {
     const stats = await mockGetConversationStats(args.conversationId as string);
@@ -2325,12 +2995,14 @@ const commandHandlers: Record<
       outputTokens: number;
       cacheCreationTokens: number;
       cacheReadTokens: number;
+      processedTokens: number | null;
       estimatedUsd: number | null;
     }) => ({
       input_tokens: usage.inputTokens,
       output_tokens: usage.outputTokens,
       cache_creation_tokens: usage.cacheCreationTokens,
       cache_read_tokens: usage.cacheReadTokens,
+      processed_tokens: usage.processedTokens,
       estimated_usd: usage.estimatedUsd,
     });
 
@@ -2350,6 +3022,15 @@ const commandHandlers: Record<
           stats.usageCoverage.providerMessagesWithUsage,
         run_count: stats.usageCoverage.runCount,
         runs_with_usage: stats.usageCoverage.runsWithUsage,
+        effective_run_conversation_count:
+          stats.usageCoverage.effectiveRunConversationCount,
+        effective_message_conversation_count:
+          stats.usageCoverage.effectiveMessageConversationCount,
+        legacy_estimated_sample_count:
+          stats.usageCoverage.legacyEstimatedSampleCount,
+        fallback_estimated_sample_count:
+          stats.usageCoverage.fallbackEstimatedSampleCount,
+        uncounted_sample_count: stats.usageCoverage.uncountedSampleCount,
         effective_totals_source: stats.usageCoverage.effectiveTotalsSource,
       },
       attribution_coverage: {
@@ -2662,6 +3343,35 @@ const commandHandlers: Record<
     };
   },
   get_review_settings: async () => ({ ...mockReviewSettings }),
+  get_update_channel: async () => {
+    if (getMockUpdateChannelError() === "read") {
+      throw new Error("Mock update channel read failure");
+    }
+    return mockUpdateChannel;
+  },
+  set_update_channel: async (args) => {
+    if (getMockUpdateChannelError() === "write") {
+      throw new Error("Mock update channel write failure");
+    }
+    const updateChannel = args.updateChannel;
+    if (updateChannel === "stable" || updateChannel === "nightly") {
+      mockUpdateChannel = updateChannel;
+    }
+    return mockUpdateChannel;
+  },
+  list_release_notes_versions: async () => ["0.76.0", "0.75.0", "0.74.0"],
+  get_release_notes_for_version: async (args) => ({
+    version: String(args.version),
+    body: `## RalphX ${String(args.version)}\n\n- Release history improvements\n- Faster agent workflows`,
+    source: "development_checkout",
+  }),
+  get_current_release_notes: async () => ({
+    version: "0.76.0",
+    body: null,
+    source: "development_checkout",
+  }),
+  get_last_seen_release_notes_version: async () => "0.76.0",
+  mark_release_notes_seen: async () => undefined,
   update_review_settings: async (args) => {
     const input = args.input as {
       requireHumanReview?: boolean;
@@ -2669,13 +3379,16 @@ const commandHandlers: Record<
       maxFixAttempts?: number;
       maxRevisionCycles?: number;
       autoCreateFollowupAgentConversation?: boolean;
+      autofixWorkspaceReviewBlockingFindings?: boolean;
+      workspaceReviewFixerCycleCap?: number;
       runTaskValidations?: boolean;
     };
     if (input.requireHumanReview !== undefined) {
       mockReviewSettings.require_human_review = input.requireHumanReview;
     }
     if (input.requireWorkspaceReview !== undefined) {
-      mockReviewSettings.require_workspace_review = input.requireWorkspaceReview;
+      mockReviewSettings.require_workspace_review =
+        input.requireWorkspaceReview;
     }
     if (input.maxFixAttempts !== undefined) {
       mockReviewSettings.max_fix_attempts = input.maxFixAttempts;
@@ -2686,6 +3399,16 @@ const commandHandlers: Record<
     if (input.autoCreateFollowupAgentConversation !== undefined) {
       mockReviewSettings.auto_create_followup_agent_conversation =
         input.autoCreateFollowupAgentConversation;
+    }
+    if (input.autofixWorkspaceReviewBlockingFindings !== undefined) {
+      mockReviewSettings.autofix_workspace_review_blocking_findings =
+        input.autofixWorkspaceReviewBlockingFindings;
+    }
+    if (input.workspaceReviewFixerCycleCap !== undefined) {
+      mockReviewSettings.workspace_review_fixer_cycle_cap = Math.max(
+        0,
+        input.workspaceReviewFixerCycleCap,
+      );
     }
     if (input.runTaskValidations !== undefined) {
       mockReviewSettings.run_task_validations = input.runTaskValidations;
@@ -2762,6 +3485,47 @@ const commandHandlers: Record<
   },
   // Health check
   health_check: async () => ({ status: "ok" }),
+  get_startup_status: async () => ({
+    boot_id: "web-mode-boot",
+    attempt_id: 1,
+    stage: "ready",
+    started_at: new Date().toISOString(),
+    stage_started_at: new Date().toISOString(),
+    completed_at: new Date().toISOString(),
+    app_state_ready: true,
+    runtime_ready: true,
+    background_complete: true,
+    retry_allowed: false,
+    progress: null,
+    message_code: "ready",
+    failure_code: null,
+    diagnostic_summary: null,
+  }),
+  retry_startup: async () => ({
+    boot_id: "web-mode-boot",
+    attempt_id: 2,
+    stage: "ready",
+    started_at: new Date().toISOString(),
+    stage_started_at: new Date().toISOString(),
+    completed_at: new Date().toISOString(),
+    app_state_ready: true,
+    runtime_ready: true,
+    background_complete: true,
+    retry_allowed: false,
+    progress: null,
+    message_code: "ready",
+    failure_code: null,
+    diagnostic_summary: null,
+  }),
+  report_startup_frontend_milestone: async () => null,
+  open_startup_logs: async () => null,
+  get_startup_diagnostics: async () => ({
+    attempt_id: 1,
+    stage: "ready",
+    message_code: "ready",
+    failure_code: null,
+    can_retry: false,
+  }),
 };
 
 function mockAgentTerminalSnapshot(

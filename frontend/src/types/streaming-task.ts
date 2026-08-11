@@ -28,7 +28,8 @@ export type StreamingTaskProviderStatus = StreamingTaskStatus | "cancelled";
  * order for interleaving live rows with user messages sent during streaming.
  */
 export type StreamingContentBlock =
-  | { type: "text"; text: string; seq?: number; receivedAt?: number }
+  | { type: "text"; text: string; blockIndex?: number; seq?: number; receivedAt?: number }
+  | { type: "thinking"; text: string; blockIndex?: number; durationMs?: number; isSettled?: boolean; estimatedTokens?: number; reasoningTokens?: number; seq?: number; receivedAt?: number }
   | { type: "tool_use"; toolCall: ToolCall; seq?: number; receivedAt?: number }
   | { type: "task"; toolUseId: string; seq?: number; receivedAt?: number };
 
@@ -45,10 +46,12 @@ export interface StreamingTask {
   model: string;
   /** Current status */
   status: StreamingTaskProviderStatus;
-  /** Timestamp when the task started (Date.now()) */
+  /** Backend-owned start timestamp when available; otherwise an explicit local fallback. */
   startedAt: number;
   /** Timestamp when the task completed */
   completedAt?: number;
+  /** Source of the timestamps, so recovered cards never imply a local mount clock is backend time. */
+  clockSource?: "delegated-run" | "delegation-job" | "local-fallback";
   /** Total duration in milliseconds (from task result) */
   totalDurationMs?: number;
   /** Total tokens used (from task result) */
@@ -101,4 +104,6 @@ export interface StreamingTask {
   childToolCalls: ToolCall[];
   /** Monotonically increasing sequence number for cross-event-type ordering */
   seq?: number;
+  /** Authority that supplied the current terminal delegation state. */
+  delegationTerminalSource?: "provider" | "lifecycle-complete" | "active-state";
 }

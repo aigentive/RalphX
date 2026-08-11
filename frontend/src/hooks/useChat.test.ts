@@ -92,6 +92,7 @@ const mockConversation1: ChatConversation = {
   providerSessionId: "claude-session-1",
   providerHarness: "claude",
   claudeSessionId: "claude-session-1",
+  coordinationMode: "solo",
   title: "First conversation",
   messageCount: 2,
   lastMessageAt: "2026-01-24T10:00:00Z",
@@ -106,6 +107,7 @@ const mockConversation2: ChatConversation = {
   providerSessionId: null,
   providerHarness: null,
   claudeSessionId: null,
+  coordinationMode: "solo",
   title: "Second conversation",
   messageCount: 1,
   lastMessageAt: "2026-01-24T11:00:00Z",
@@ -699,6 +701,66 @@ describe("useConversationTimelineWindow", () => {
     );
   });
 
+  it("omits hidden bootstrap rows from timeline window data", async () => {
+    const hiddenBootstrap: ChatMessageResponse = {
+      ...mockMessage1,
+      id: "block:bootstrap:0",
+      parentMessageId: "bootstrap",
+      content: "Execute task: task-hidden",
+      metadata: JSON.stringify({
+        hidden_from_ui: true,
+        source: "task_runtime_bootstrap",
+      }),
+      timelineSequence: 1,
+      timelineKind: "text",
+      timelineStatus: "finalized",
+    };
+    const visibleUser: ChatMessageResponse = {
+      ...mockMessage1,
+      id: "block:user-visible:0",
+      parentMessageId: "user-visible",
+      content: "Visible user request",
+      timelineSequence: 2,
+      timelineKind: "text",
+      timelineStatus: "finalized",
+    };
+    const visibleAssistant: ChatMessageResponse = {
+      ...mockMessage2,
+      id: "block:assistant-visible:0",
+      parentMessageId: "assistant-visible",
+      content: "Visible assistant response",
+      timelineSequence: 3,
+      timelineKind: "text",
+      timelineStatus: "finalized",
+    };
+
+    vi.mocked(chatApi.getConversationTimelinePage).mockResolvedValueOnce(
+      timelinePage([hiddenBootstrap, visibleUser, visibleAssistant], {
+        limit: 3,
+        totalItemCount: 3,
+        hasOlder: false,
+        oldestLoadedSequence: 1,
+        newestLoadedSequence: 3,
+      })
+    );
+
+    const { result } = renderHook(
+      () => useConversationTimelineWindow("conv-1", { pageSize: 3 }),
+      {
+        wrapper: createWrapper(),
+      }
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(result.current.data?.messages.map((message) => message.content)).toEqual([
+      "Visible user request",
+      "Visible assistant response",
+    ]);
+    expect(result.current.data?.totalMessageCount).toBe(2);
+    expect(result.current.loadedStartIndex).toBe(0);
+  });
+
   it("continues default timeline pagination past three pages until the first item is reachable", async () => {
     const timelineBlocks = [1, 2, 3, 4].map((sequence) => ({
       ...mockMessage1,
@@ -949,6 +1011,108 @@ describe("useConversationTimelineWindow", () => {
     expect(queryClient.getQueryData(chatKeys.conversationTimeline("conv-1"))).toBeUndefined();
   });
 
+  it("does not upsert hidden finalized bootstrap messages into conversation caches", () => {
+    const { queryClient } = createWrapperWithClient();
+    queryClient.setQueryData(chatKeys.conversation("conv-1"), {
+      conversation: mockConversation1,
+      messages: [mockMessage1],
+    });
+    queryClient.setQueryData<InfiniteData<ConversationMessagesPageResponse>>(
+      chatKeys.conversationHistory("conv-1"),
+      {
+        pages: [
+          {
+            conversation: mockConversation1,
+            messages: [mockMessage1],
+            limit: 40,
+            offset: 0,
+            totalMessageCount: 1,
+            hasOlder: false,
+          },
+        ],
+        pageParams: [0],
+      },
+    );
+    queryClient.setQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+      chatKeys.conversationTimeline("conv-1"),
+      {
+        pages: [
+          timelinePage([
+            {
+              ...mockMessage1,
+              id: "block:message-1:0",
+              parentMessageId: "message-1",
+              timelineSequence: 7,
+            },
+          ], {
+            totalItemCount: 7,
+            oldestLoadedSequence: 7,
+            newestLoadedSequence: 7,
+          }),
+        ],
+        pageParams: [null],
+      },
+    );
+
+    const hiddenFinalized: ChatMessageResponse = {
+      ...mockMessage1,
+      id: "bootstrap-hidden",
+      role: "user",
+      conversationId: "conv-1",
+      content: "Execute task: task-hidden",
+      metadata: JSON.stringify({
+        hidden_from_ui: true,
+        source: "task_runtime_bootstrap",
+      }),
+      contentBlocks: [{ type: "text", text: "Execute task: task-hidden" }],
+    };
+
+    expect(
+      upsertFinalizedMessageIntoConversationCache(
+        queryClient,
+        "conv-1",
+        hiddenFinalized,
+      ),
+    ).toBe(false);
+    const cachedContents = getCachedConversationMessages(queryClient, "conv-1").map(
+      (message) => message.content,
+    );
+    expect(cachedContents).toContain("Hello");
+    expect(cachedContents).not.toContain("Execute task: task-hidden");
+    const timelineContents =
+      queryClient
+        .getQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+          chatKeys.conversationTimeline("conv-1"),
+        )
+        ?.pages[0]?.messages.map((message) => message.content) ?? [];
+    expect(timelineContents).toEqual(["Hello"]);
+  });
+
+  it("filters hidden full conversation messages from merged cache reads", () => {
+    const { queryClient } = createWrapperWithClient();
+    queryClient.setQueryData(chatKeys.conversation("conv-1"), {
+      conversation: mockConversation1,
+      messages: [
+        {
+          ...mockMessage1,
+          id: "bootstrap-hidden",
+          content: "Execute task: task-hidden",
+          metadata: JSON.stringify({
+            hidden_from_ui: true,
+            source: "task_runtime_bootstrap",
+          }),
+        },
+        mockMessage1,
+      ],
+    });
+
+    expect(
+      getCachedConversationMessages(queryClient, "conv-1").map(
+        (message) => message.content,
+      ),
+    ).toEqual(["Hello"]);
+  });
+
   it("upserts backend render-ready timeline items without synthesizing sequences", () => {
     const { queryClient } = createWrapperWithClient();
     queryClient.setQueryData(chatKeys.conversation("conv-1"), {
@@ -1062,6 +1226,101 @@ describe("useConversationTimelineWindow", () => {
     expect(timelineData?.pages[0]?.newestLoadedSequence).toBe(12);
     expect(timelineData?.pages[0]?.messages[1]?.providerHarness).toBe("codex");
     expect(timelineData?.pages[0]?.messages[1]?.toolCalls?.[0]?.result).toBe("preview");
+  });
+
+  it("does not upsert hidden render-ready bootstrap rows into conversation caches", () => {
+    const { queryClient } = createWrapperWithClient();
+    queryClient.setQueryData(chatKeys.conversation("conv-1"), {
+      conversation: mockConversation1,
+      messages: [mockMessage1],
+    });
+    queryClient.setQueryData<InfiniteData<ConversationMessagesPageResponse>>(
+      chatKeys.conversationHistory("conv-1"),
+      {
+        pages: [
+          {
+            conversation: mockConversation1,
+            messages: [mockMessage1],
+            limit: 40,
+            offset: 0,
+            totalMessageCount: 1,
+            hasOlder: false,
+          },
+        ],
+        pageParams: [0],
+      },
+    );
+    queryClient.setQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+      chatKeys.conversationTimeline("conv-1"),
+      {
+        pages: [
+          timelinePage([
+            {
+              ...mockMessage1,
+              id: "block:message-1:0",
+              parentMessageId: "message-1",
+              timelineSequence: 7,
+            },
+          ], {
+            totalItemCount: 7,
+            oldestLoadedSequence: 7,
+            newestLoadedSequence: 7,
+          }),
+        ],
+        pageParams: [null],
+      },
+    );
+
+    const didUpsert = upsertRenderReadyMessageIntoConversationCache(queryClient, "conv-1", {
+      message: {
+        id: "bootstrap-hidden",
+        conversation_id: "conv-1",
+        role: "user",
+        content: "Execute task: task-hidden",
+        metadata: JSON.stringify({
+          hidden_from_ui: true,
+          source: "task_runtime_bootstrap",
+        }),
+        created_at: "2026-01-24T10:01:00Z",
+      },
+      timeline_items: [{
+        id: "block:bootstrap-hidden:0",
+        conversation_id: "conv-1",
+        message_id: "bootstrap-hidden",
+        run_id: null,
+        sequence: 12,
+        block_index: 0,
+        role: "user",
+        kind: "text",
+        status: "finalized",
+        content: "Execute task: task-hidden",
+        content_blocks: [{ type: "text", text: "Execute task: task-hidden" }],
+        metadata: JSON.stringify({
+          hidden_from_ui: true,
+          source: "task_runtime_bootstrap",
+        }),
+        provider_harness: "codex",
+        provider_session_id: "thread-1",
+        created_at: "2026-01-24T10:01:00Z",
+        updated_at: "2026-01-24T10:01:01Z",
+        finalized_at: "2026-01-24T10:01:01Z",
+      }],
+    });
+
+    expect(didUpsert).toBe(false);
+    const cachedContents = getCachedConversationMessages(queryClient, "conv-1").map(
+      (message) => message.content
+    );
+    expect(cachedContents).toContain("Hello");
+    expect(cachedContents).not.toContain("Execute task: task-hidden");
+    const timelineData =
+      queryClient.getQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+        chatKeys.conversationTimeline("conv-1")
+      );
+    const timelineContents =
+      timelineData?.pages[0]?.messages.map((message) => message.content) ?? [];
+    expect(timelineContents).toContain("Hello");
+    expect(timelineContents).not.toContain("Execute task: task-hidden");
   });
 
   it("replaces existing render-ready rows and sorts by backend sequence", () => {
@@ -1539,8 +1798,38 @@ describe("useChat", () => {
       "session-1",
       "New message content",
       undefined,
-      undefined,
       undefined
+    );
+  });
+
+  it("passes Team intent through send message options", async () => {
+    const mockResult = {
+      responseText: "AI response",
+      toolCalls: [],
+      claudeSessionId: "claude-session-123",
+      conversationId: "conv-1",
+    };
+    vi.mocked(chatApi.sendAgentMessage).mockResolvedValueOnce(mockResult);
+    vi.mocked(chatApi.listConversations).mockResolvedValueOnce([]);
+    vi.mocked(chatApi.getAgentRunStatus).mockResolvedValueOnce(null);
+
+    const { result } = renderHook(() => useChat(ideationContext), {
+      wrapper: createWrapper(),
+    });
+
+    await act(async () => {
+      await result.current.sendMessage.mutateAsync({
+        content: "New Team message",
+        teamIntent: { coordinationMode: "rx_native_team" },
+      });
+    });
+
+    expect(chatApi.sendAgentMessage).toHaveBeenCalledWith(
+      "ideation",
+      "session-1",
+      "New Team message",
+      undefined,
+      { teamIntent: { coordinationMode: "rx_native_team" } },
     );
   });
 
@@ -1737,35 +2026,6 @@ describe("useChat", () => {
     expect(mockStoreState.setAgentRunning).toHaveBeenCalledWith("session:session-1", false);
   });
 
-  it("invalidates the active conversation when target sends skip the optimistic echo", async () => {
-    vi.mocked(chatApi.sendAgentMessage).mockResolvedValueOnce({
-      responseText: "AI response",
-      toolCalls: [],
-      claudeSessionId: "claude-session-123",
-      conversationId: "conv-1",
-    });
-    mockStoreState.activeConversationIds = { "session:session-1": "conv-1" };
-    const { queryClient, wrapper } = createWrapperWithClient();
-    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
-
-    const { result } = renderHook(() => useChat(ideationContext), { wrapper });
-
-    await act(async () => {
-      await result.current.sendMessage.mutateAsync({
-        content: "Send to one agent",
-        target: "reviewer",
-      });
-    });
-
-    expect(
-      invalidateSpy.mock.calls.some(
-        ([filters]) =>
-          Array.isArray(filters?.queryKey) &&
-          filters.queryKey.join("|") === chatKeys.conversation("conv-1").join("|")
-      )
-    ).toBe(true);
-  });
-
   it("should send message in task context", async () => {
     // sendAgentMessage now returns SendContextMessageResult
     const mockResult = {
@@ -1790,7 +2050,6 @@ describe("useChat", () => {
       "task",
       "task-1",
       "Task message",
-      undefined,
       undefined,
       undefined
     );

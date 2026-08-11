@@ -12,7 +12,10 @@ async fn upsert_and_get_global_row() {
     assert!(before.is_none());
 
     // Upsert global row
-    let result = repo.upsert_global("sonnet", "opus", "inherit", "inherit").await.unwrap();
+    let result = repo
+        .upsert_global("sonnet", "opus", "inherit", "inherit")
+        .await
+        .unwrap();
     assert_eq!(result.primary_model, ModelLevel::Sonnet);
     assert_eq!(result.verifier_model, ModelLevel::Opus);
     assert!(result.project_id.is_none());
@@ -25,7 +28,10 @@ async fn upsert_and_get_global_row() {
     assert!(fetched.project_id.is_none());
 
     // Update it
-    let updated = repo.upsert_global("haiku", "inherit", "inherit", "inherit").await.unwrap();
+    let updated = repo
+        .upsert_global("haiku", "inherit", "inherit", "inherit")
+        .await
+        .unwrap();
     assert_eq!(updated.primary_model, ModelLevel::Haiku);
     assert_eq!(updated.verifier_model, ModelLevel::Inherit);
 }
@@ -61,14 +67,29 @@ async fn upsert_and_get_project_row() {
 }
 
 #[tokio::test]
+async fn exact_opus_ids_round_trip_for_global_and_project_rows() {
+    let db = SqliteTestDb::new("sqlite_ideation_model_settings_repo_tests-exact-opus");
+    let repo = SqliteIdeationModelSettingsRepository::from_shared(db.shared_conn());
+    repo.upsert_global("claude-opus-4-7", "claude-opus-4-8", "inherit", "inherit")
+        .await
+        .unwrap();
+    repo.upsert_for_project("proj-abc", "claude-opus-5", "inherit", "inherit", "inherit")
+        .await
+        .unwrap();
+
+    let global = repo.get_global().await.unwrap().unwrap();
+    let project = repo.get_for_project("proj-abc").await.unwrap().unwrap();
+    assert_eq!(global.primary_model.to_string(), "claude-opus-4-7");
+    assert_eq!(global.verifier_model.to_string(), "claude-opus-4-8");
+    assert_eq!(project.primary_model.to_string(), "claude-opus-5");
+}
+
+#[tokio::test]
 async fn get_missing_returns_none() {
     let db = SqliteTestDb::new("sqlite_ideation_model_settings_repo_tests-missing");
     let repo = SqliteIdeationModelSettingsRepository::from_shared(db.shared_conn());
 
-    let result = repo
-        .get_for_project("nonexistent-project")
-        .await
-        .unwrap();
+    let result = repo.get_for_project("nonexistent-project").await.unwrap();
     assert!(result.is_none());
 
     let global = repo.get_global().await.unwrap();
@@ -81,8 +102,14 @@ async fn upsert_is_idempotent() {
     let repo = SqliteIdeationModelSettingsRepository::from_shared(db.shared_conn());
 
     // Upsert global twice with same values
-    let first = repo.upsert_global("sonnet", "opus", "inherit", "inherit").await.unwrap();
-    let second = repo.upsert_global("sonnet", "opus", "inherit", "inherit").await.unwrap();
+    let first = repo
+        .upsert_global("sonnet", "opus", "inherit", "inherit")
+        .await
+        .unwrap();
+    let second = repo
+        .upsert_global("sonnet", "opus", "inherit", "inherit")
+        .await
+        .unwrap();
     assert_eq!(first.id, second.id);
     assert_eq!(second.primary_model, ModelLevel::Sonnet);
     assert_eq!(second.verifier_model, ModelLevel::Opus);
@@ -106,9 +133,14 @@ async fn upsert_updates_existing_row() {
     let repo = SqliteIdeationModelSettingsRepository::from_shared(db.shared_conn());
 
     // Insert global
-    repo.upsert_global("sonnet", "sonnet", "inherit", "inherit").await.unwrap();
+    repo.upsert_global("sonnet", "sonnet", "inherit", "inherit")
+        .await
+        .unwrap();
     // Update global
-    let updated = repo.upsert_global("opus", "haiku", "inherit", "inherit").await.unwrap();
+    let updated = repo
+        .upsert_global("opus", "haiku", "inherit", "inherit")
+        .await
+        .unwrap();
     assert_eq!(updated.primary_model, ModelLevel::Opus);
     assert_eq!(updated.verifier_model, ModelLevel::Haiku);
 
@@ -123,7 +155,9 @@ async fn global_and_project_rows_are_independent() {
     let db = SqliteTestDb::new("sqlite_ideation_model_settings_repo_tests-independent");
     let repo = SqliteIdeationModelSettingsRepository::from_shared(db.shared_conn());
 
-    repo.upsert_global("sonnet", "opus", "inherit", "inherit").await.unwrap();
+    repo.upsert_global("sonnet", "opus", "inherit", "inherit")
+        .await
+        .unwrap();
     repo.upsert_for_project("proj-1", "haiku", "inherit", "inherit", "inherit")
         .await
         .unwrap();

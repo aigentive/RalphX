@@ -4,21 +4,22 @@
  */
 
 import { useState, useCallback, useEffect, useRef } from "react";
-import { Globe } from "lucide-react";
 import { executionApi } from "@/api/execution";
+import { toast } from "sonner";
 import type { GlobalExecutionSettingsResponse } from "@/api/execution";
 import {
   NumberSettingRow,
-  SectionCard,
+  SettingsSection,
   ToggleSettingRow,
 } from "../SettingsView.shared";
 
-export default function GlobalExecutionSection() {
+export default function GlobalExecutionSection({ embedded = false }: { embedded?: boolean }) {
   const [globalSettings, setGlobalSettings] = useState<GlobalExecutionSettingsResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingSettingsRef = useRef<GlobalExecutionSettingsResponse | null>(null);
 
   // Load global settings on mount
   useEffect(() => {
@@ -44,14 +45,31 @@ export default function GlobalExecutionSection() {
     loadGlobalSettings();
   }, []);
 
-  // Cleanup timeout on unmount
+  const flushPendingSave = useCallback(async () => {
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = null;
+    }
+    const pending = pendingSettingsRef.current;
+    if (!pending) return;
+    pendingSettingsRef.current = null;
+    try {
+      setIsSaving(true);
+      await executionApi.updateGlobalSettings(pending);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to save global settings";
+      setError(message);
+      toast.error("Could not save global capacity", { description: message });
+    } finally {
+      setIsSaving(false);
+    }
+  }, []);
+
   useEffect(() => {
     return () => {
-      if (saveTimeoutRef.current) {
-        clearTimeout(saveTimeoutRef.current);
-      }
+      void flushPendingSave();
     };
-  }, []);
+  }, [flushPendingSave]);
 
   const scheduleSave = useCallback((nextSettings: GlobalExecutionSettingsResponse) => {
     setError(null);
@@ -59,19 +77,9 @@ export default function GlobalExecutionSection() {
     if (saveTimeoutRef.current) {
       clearTimeout(saveTimeoutRef.current);
     }
-
-    saveTimeoutRef.current = setTimeout(async () => {
-      try {
-        setIsSaving(true);
-        await executionApi.updateGlobalSettings(nextSettings);
-      } catch (err) {
-        console.error("Failed to save global execution settings:", err);
-        setError(err instanceof Error ? err.message : "Failed to save global settings");
-      } finally {
-        setIsSaving(false);
-      }
-    }, 300);
-  }, []);
+    pendingSettingsRef.current = nextSettings;
+    saveTimeoutRef.current = setTimeout(() => void flushPendingSave(), 300);
+  }, [flushPendingSave]);
 
   const handleGlobalMaxChange = useCallback((value: number) => {
     setGlobalSettings((prev) => {
@@ -130,74 +138,35 @@ export default function GlobalExecutionSection() {
   }, [scheduleSave]);
 
   if (isLoading) {
+    const loading = (
+      <div className="py-4 flex items-center justify-center">
+        <div className="w-4 h-4 border-2 border-[var(--accent-primary)] border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+    if (embedded) return loading;
     return (
-      <SectionCard
-        icon={<Globe className="w-[18px] h-[18px] text-[var(--card-icon-color)]" />}
-        title="Global Capacity"
-        description="Cross-project concurrency limits"
-      >
-        <div className="py-4 flex items-center justify-center">
-          <div className="w-4 h-4 border-2 border-[var(--accent-primary)] border-t-transparent rounded-full animate-spin" />
-        </div>
-      </SectionCard>
+      <SettingsSection>
+        {loading}
+      </SettingsSection>
     );
   }
 
-  return (
-    <SectionCard
-      icon={<Globe className="w-[18px] h-[18px] text-[var(--card-icon-color)]" />}
-      title="Global Capacity"
-      description="Cross-project concurrency limits"
-    >
+  const rows = (
+    <>
       {error && (
         <div className="mb-3 px-3 py-2 rounded-md bg-status-error/10 border border-status-error/20 text-status-error text-sm">
           {error}
         </div>
       )}
-      <NumberSettingRow
-        id="global-max-concurrent"
-        label={isSaving ? "Global Max Concurrent (Saving...)" : "Global Max Concurrent"}
-        description="Maximum total tasks running across ALL projects (1-50). This cap applies system-wide regardless of per-project settings."
-        value={globalSettings?.globalMaxConcurrent ?? 20}
-        min={1}
-        max={50}
-        step={1}
-        unit=""
-        disabled={isSaving}
-        onChange={handleGlobalMaxChange}
-      />
-      <NumberSettingRow
-        id="workspace-max-concurrent"
-        label="Workspace Main Agent Cap"
-        description="Maximum concurrent workspace conversations across all projects (1-50)"
-        value={globalSettings?.workspaceMaxConcurrent ?? 10}
-        min={1}
-        max={50}
-        step={1}
-        unit=""
-        disabled={isSaving}
-        onChange={handleWorkspaceMaxChange}
-      />
-      <NumberSettingRow
-        id="global-ideation-max"
-        label="Global Ideation Cap"
-        description="Maximum concurrent ideation and verification sessions across all projects (1-50)"
-        value={globalSettings?.globalIdeationMax ?? 10}
-        min={1}
-        max={50}
-        step={1}
-        unit=""
-        disabled={isSaving}
-        onChange={handleGlobalIdeationMaxChange}
-      />
-      <ToggleSettingRow
-        id="allow-ideation-borrow-idle-execution"
-        label="Allow Ideation Borrowing"
-        description="Let lower-priority ideation use idle capacity when no Workspaces or Tasks are waiting"
-        checked={globalSettings?.allowIdeationBorrowIdleExecution ?? false}
-        disabled={isSaving}
-        onChange={handleBorrowToggle}
-      />
-    </SectionCard>
+      <NumberSettingRow id="global-max-concurrent" label={isSaving ? "Global Max Concurrent (Saving...)" : "Global Max Concurrent"} description="Maximum total tasks running across ALL projects (1-50). This cap applies system-wide regardless of per-project settings." value={globalSettings?.globalMaxConcurrent ?? 20} min={1} max={50} step={1} unit="" disabled={isSaving} onChange={handleGlobalMaxChange} />
+      <NumberSettingRow id="workspace-max-concurrent" label="Workspace Main Agent Cap" description="Maximum concurrent workspace conversations across all projects (1-50)" value={globalSettings?.workspaceMaxConcurrent ?? 10} min={1} max={50} step={1} unit="" disabled={isSaving} onChange={handleWorkspaceMaxChange} />
+      <NumberSettingRow id="global-ideation-max" label="Global Ideation Cap" description="Maximum concurrent ideation and verification sessions across all projects (1-50)" value={globalSettings?.globalIdeationMax ?? 10} min={1} max={50} step={1} unit="" disabled={isSaving} onChange={handleGlobalIdeationMaxChange} />
+      <ToggleSettingRow id="allow-ideation-borrow-idle-execution" label="Allow Ideation Borrowing" description="Let lower-priority ideation use idle capacity when no Workspaces or Tasks are waiting" checked={globalSettings?.allowIdeationBorrowIdleExecution ?? false} disabled={isSaving} onChange={handleBorrowToggle} />
+    </>
+  );
+  return embedded ? rows : (
+    <SettingsSection>
+      {rows}
+    </SettingsSection>
   );
 }

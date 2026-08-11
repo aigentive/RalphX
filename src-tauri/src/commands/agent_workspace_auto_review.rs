@@ -8,16 +8,19 @@ use serde::Deserialize;
 use tauri::{Emitter, Listener, Manager, Runtime};
 
 use crate::application::agent_workspace_review::{
-    load_agent_workspace_review_context, start_agent_workspace_review,
+    load_agent_workspace_review_context, workspace_review_mode_is_eligible,
+};
+use crate::application::agent_workspace_review_auto_merge::{
+    start_guarded_agent_workspace_review, WorkspaceReviewStartOrigin,
 };
 use crate::application::chat_service::events::{AGENT_RUN_COMPLETED, AGENT_TURN_COMPLETED};
 use crate::application::git_service::git_cmd;
 use crate::application::AppState;
 use crate::commands::ExecutionState;
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
-    AgentRunId, AgentRunStatus, AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor,
-    ChatContextType, ChatConversationId,
+    AgentConversationWorkspace, AgentConversationWorkspaceStatus, AgentRunId, AgentRunStatus,
+    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, ChatContextType,
+    ChatConversationId,
 };
 use crate::domain::services::running_agent_registry::RunningAgentKey;
 
@@ -77,6 +80,7 @@ pub(crate) enum AutoReviewSkipReason {
     ManualOnlyTerminalPr,
     NoReviewableChanges,
     GateNotRequired,
+    WorkspaceAutomationOff,
     AlreadyReviewing,
     BlockingFindings,
     ReviewFailed,
@@ -94,6 +98,7 @@ impl AutoReviewSkipReason {
             Self::ManualOnlyTerminalPr => "manual_only_terminal_pr",
             Self::NoReviewableChanges => "no_reviewable_changes",
             Self::GateNotRequired => "gate_not_required",
+            Self::WorkspaceAutomationOff => "workspace_automation_off",
             Self::AlreadyReviewing => "already_reviewing",
             Self::BlockingFindings => "blocking_findings",
             Self::ReviewFailed => "review_failed",
@@ -103,12 +108,12 @@ impl AutoReviewSkipReason {
     }
 }
 
-pub(crate) fn install_agent_workspace_auto_review_listeners<R>(app: &tauri::App<R>)
+pub(crate) fn install_agent_workspace_auto_review_listeners<R>(app_handle: tauri::AppHandle<R>)
 where
     R: Runtime,
 {
-    let run_completed_handle = app.handle().clone();
-    app.listen_any(AGENT_RUN_COMPLETED, move |event| {
+    let run_completed_handle = app_handle.clone();
+    app_handle.listen_any(AGENT_RUN_COMPLETED, move |event| {
         spawn_auto_review_from_completion_event(
             run_completed_handle.clone(),
             AGENT_RUN_COMPLETED,
@@ -116,8 +121,8 @@ where
         );
     });
 
-    let turn_completed_handle = app.handle().clone();
-    app.listen_any(AGENT_TURN_COMPLETED, move |event| {
+    let turn_completed_handle = app_handle.clone();
+    app_handle.listen_any(AGENT_TURN_COMPLETED, move |event| {
         spawn_auto_review_from_completion_event(
             turn_completed_handle.clone(),
             AGENT_TURN_COMPLETED,
@@ -380,6 +385,13 @@ pub(crate) async fn resolve_auto_review_start_action(
     execution_state: &ExecutionState,
     workspace: &AgentConversationWorkspace,
 ) -> Result<AutoReviewStartAction, String> {
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&workspace.conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .unwrap_or_else(|| workspace.clone());
+    let workspace = &workspace;
     if workspace.status == AgentConversationWorkspaceStatus::Archived {
         return Ok(AutoReviewStartAction::Skip(
             AutoReviewSkipReason::ManualOnlyArchived,
@@ -390,12 +402,7 @@ pub(crate) async fn resolve_auto_review_start_action(
             AutoReviewSkipReason::InactiveWorkspace,
         ));
     }
-    if !matches!(
-        workspace.mode,
-        AgentConversationWorkspaceMode::Edit
-            | AgentConversationWorkspaceMode::Ideation
-            | AgentConversationWorkspaceMode::Plan
-    ) {
+    if !workspace_review_mode_is_eligible(workspace.mode) {
         return Ok(AutoReviewStartAction::Skip(
             AutoReviewSkipReason::NotReviewableMode,
         ));
@@ -410,9 +417,18 @@ pub(crate) async fn resolve_auto_review_start_action(
         .get_settings()
         .await
         .map_err(|error| error.to_string())?;
-    if !review_settings.require_workspace_review {
+    if !review_settings
+        .effective_workspace_review_automation(workspace.review_automation_override)
+        .auto_review
+    {
         return Ok(AutoReviewStartAction::Skip(
-            AutoReviewSkipReason::GateNotRequired,
+            if workspace.review_automation_override == Some(false)
+                && review_settings.require_workspace_review
+            {
+                AutoReviewSkipReason::WorkspaceAutomationOff
+            } else {
+                AutoReviewSkipReason::GateNotRequired
+            },
         ));
     }
 
@@ -465,14 +481,26 @@ pub(crate) async fn maybe_start_auto_review(
     execution_state: &ExecutionState,
     workspace: &AgentConversationWorkspace,
 ) -> Result<AutoReviewDecision, String> {
-    match resolve_auto_review_start_action(state, execution_state, workspace).await? {
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&workspace.conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .unwrap_or_else(|| workspace.clone());
+    match resolve_auto_review_start_action(state, execution_state, &workspace).await? {
         AutoReviewStartAction::Start => {}
         AutoReviewStartAction::Skip(reason) => return Ok(AutoReviewDecision::Skipped(reason)),
     }
 
-    let started = start_agent_workspace_review(Arc::new(state.clone()), workspace, false)
-        .await
-        .map_err(|error| error.to_string())?;
+    let started = start_guarded_agent_workspace_review(
+        Arc::new(state.clone()),
+        &workspace,
+        false,
+        WorkspaceReviewStartOrigin::Automated,
+        None,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
     if started.started {
         Ok(AutoReviewDecision::Started)
     } else {

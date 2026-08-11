@@ -51,6 +51,19 @@ export const SearchAtlassianResourcesResponseSchema = z.object({
   resources: z.array(AtlassianResourceSummarySchema),
 });
 
+export const AtlassianResourceUrlResolutionSchema = z.object({
+  inputUrl: z.string(),
+  resource: AtlassianResourceSummarySchema.nullable().optional(),
+});
+
+export type AtlassianResourceUrlResolution = z.infer<
+  typeof AtlassianResourceUrlResolutionSchema
+>;
+
+export const ResolveAtlassianResourceUrlsResponseSchema = z.object({
+  results: z.array(AtlassianResourceUrlResolutionSchema),
+});
+
 export const AtlassianJiraCommentSchema = z.object({
   id: z.string().nullable().optional(),
   author: z.string().nullable().optional(),
@@ -144,6 +157,10 @@ export interface SearchAtlassianResourcesInput {
   kind: AtlassianResourceKind;
   query: string;
   limit?: number;
+}
+
+export interface ResolveAtlassianResourceUrlsInput {
+  urls: string[];
 }
 
 export interface AgentConversationJiraIssueConversationInput {
@@ -240,6 +257,17 @@ export const atlassianApi = {
       SearchAtlassianResourcesResponseSchema,
     );
     return response.resources;
+  },
+
+  async resolveResourceUrls(
+    input: ResolveAtlassianResourceUrlsInput,
+  ): Promise<AtlassianResourceUrlResolution[]> {
+    const response = await typedInvoke(
+      "resolve_atlassian_resource_urls",
+      { input },
+      ResolveAtlassianResourceUrlsResponseSchema,
+    );
+    return response.results;
   },
 
   async getAgentConversationJiraIssue(

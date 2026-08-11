@@ -1,16 +1,16 @@
 ---
 paths:
-  - "src-tauri/src/application/git_service.rs"
-  - "src-tauri/src/domain/entities/project.rs"
-  - "src-tauri/src/domain/entities/plan_branch.rs"
-  - "src-tauri/src/domain/repositories/plan_branch_repository.rs"
+  - "src-tauri/src/application/git_service/**"
+  - "src-tauri/crates/ralphx-domain/src/entities/project.rs"
+  - "src-tauri/crates/ralphx-domain/src/entities/plan_branch.rs"
+  - "src-tauri/crates/ralphx-domain/src/repositories/plan_branch_repository.rs"
   - "src-tauri/src/domain/state_machine/transition_handler/merge_helpers.rs"
   - "src-tauri/src/http_server/handlers/git.rs"
   - "src-tauri/src/commands/plan_branch_commands.rs"
   - "src-tauri/src/commands/ideation_commands/**"
-  - "src/api/plan-branch.ts"
-  - "src/components/settings/GitSettingsSection.tsx"
-  - "src/types/project.ts"
+  - "frontend/src/api/plan-branch.ts"
+  - "frontend/src/components/projects/ProjectCreationWizard/**"
+  - "frontend/src/types/project.ts"
 ---
 
 # Task Git Branching & Merge
@@ -21,29 +21,18 @@ paths:
 
 ---
 
-## Two Git Modes
+## Git Mode: Worktree (only mode)
 
-| | Local | Worktree |
-|---|---|---|
-| **Enum** | `GitMode::Local` | `GitMode::Worktree` |
-| **Isolation** | Shared working directory | Separate directory per task |
-| **Parallelism** | One task at a time (enforced) | Unlimited parallel tasks |
-| **Branch switch** | `git checkout` on state entry | N/A (each worktree has own branch) |
-| **Dirty tree guard** | Blocks Executing if uncommitted changes | N/A (isolated) |
-| **Agent CWD** | `project.working_directory` | `task.worktree_path` |
-| **Cleanup** | Delete branch on merge | Delete worktree + branch on merge |
-| **Default** | YES (fallback) | — |
-| **DB fields** | `task.task_branch` | `task.task_branch` + `task.worktree_path` |
+`GitMode::Worktree` is the sole variant (`crates/ralphx-domain/src/entities/project.rs` — serde alias `"local"` accepted for legacy rows; migration `v44_remove_local_git_mode.rs` converted all legacy local projects).
 
-**Config:** `project.git_mode` + `project.base_branch` (default: `"main"`) + `project.worktree_parent_directory` (default: `~/ralphx-worktrees`)
+| Aspect | Behavior |
+|---|---|
+| **Isolation** | Separate worktree directory per task; unlimited parallel tasks |
+| **Agent CWD** | `task.worktree_path` |
+| **Cleanup** | Delete worktree + branch on merge |
+| **DB fields** | `task.task_branch` + `task.worktree_path` |
 
-### Local Mode Single-Task Enforcement
-
-**File:** `src-tauri/src/application/task_scheduler_service.rs`
-
-Running states that block scheduling: `Executing`, `ReExecuting`, `Reviewing`, `Merging`
-
-If any task in the same project is in a running state → no new task can enter `Executing`.
+**Config:** `project.base_branch` (default: `"main"`) + `project.worktree_parent_directory` (default: `~/ralphx-worktrees`)
 
 ---
 
@@ -144,32 +133,20 @@ IdeationSession (has plan proposals)
 
 **Triggered on:** `pending_merge` entry via `attempt_programmatic_merge()`
 
+Merge strategies run in **temporary isolated worktrees** (`compute_rebase_worktree_path` / `compute_merge_worktree_path` in `merge_strategies.rs`) or via checkout-free plumbing (`checkout_free_*` in `git_service/checkout_free.rs`) — never by checking out branches in the primary repo.
+
 | Step | Action |
 |------|--------|
 | 1 | Resolve source/target via `resolve_merge_branches()` |
-| 2 | Worktree mode: delete worktree first (unlock branch) |
-| 3 | Local: `GitService::try_rebase_and_merge()` / Worktree: `GitService::try_merge()` |
+| 2 | Delete task worktree first (unlock branch) |
+| 3 | `GitService::try_rebase_and_merge_in_worktree()` (`git_service/merge.rs`) — rebase+merge inside a temp worktree; fallback `try_merge_in_worktree()` — plain merge inside a temp worktree |
 | 4a | **Success** → `complete_merge_internal()` → `Merged` |
 | 4b | **Conflict** → transition to `Merging` → spawn merger agent |
 | 4c | **Error** → transition to `MergeIncomplete` (human-waiting) |
 
-**`try_rebase_and_merge()` (Local mode):**
-1. Fetch origin (non-fatal)
-2. If base has <=1 commit (empty repo): skip rebase, merge directly
-3. Checkout task branch → `git rebase {base}`
-4. Success: checkout base → `git merge {task_branch}` (fast-forward)
-5. Conflict: `git rebase --abort`, checkout base → return `NeedsAgent`
-
-**`try_merge()` (Worktree mode):**
-1. Fetch origin (non-fatal)
-2. Checkout base branch
-3. `git merge {task_branch} --no-edit`
-4. Success/FastForward: return `Success { commit_sha }`
-5. Conflict: `git merge --abort` → return `NeedsAgent { conflict_files }`
-
 **`complete_merge_internal()` cleanup:**
 - Persist `task.merge_commit_sha`
-- Delete worktree (if Worktree mode)
+- Delete worktree
 - Delete task branch
 - For plan merge tasks: mark `plan_branch.status = Merged`, delete feature branch
 - Emit `merge:completed` + `task:status_changed`
@@ -190,14 +167,15 @@ IdeationSession (has plan proposals)
 | From | Event | → To |
 |------|-------|------|
 | `merge_conflict` | `ConflictResolved` | `merged` |
-| `merge_incomplete` | `Retry` | `merging` (re-spawn agent) |
+| `merge_incomplete` | `Retry` | `pending_merge` (re-attempt programmatic merge) |
+| `merge_incomplete` | `MergeConflict` | `merging` (spawn agent) |
 | `merge_incomplete` | `ConflictResolved` | `merged` |
 
 ---
 
 ## Git Operations (GitService)
 
-**File:** `src-tauri/src/application/git_service.rs` — stateless, all methods static.
+**Module:** `src-tauri/src/application/git_service/` (`branch.rs`, `merge.rs`, `worktree.rs`, `commit.rs`, `rebase.rs`, `state_query.rs`, `checkout_free.rs`) — stateless, all methods static.
 
 ### Branch Ops
 
@@ -260,11 +238,11 @@ IdeationSession (has plan proposals)
 4. Run `python3 scripts/validate_sqlite_migrations.py` before continuing the rebase or merge
 5. Adapt task-branch-specific entity/repo methods to the plan branch's type definitions (don't change types mid-rebase)
 
-**File:** `src-tauri/src/domain/repositories/migrations_impl.rs`
+**Files:** `src-tauri/src/infrastructure/sqlite/migrations/`
 
 ### Type Definition Conflicts (IDs, Entities)
 
-**Pattern:** Task branch uses String-based ID (e.g., `ChatAttachmentId(String)` in types.rs) but plan branch uses Uuid-based newtype in entities/.
+**Pattern:** Task branch uses String-based ID newtype but plan branch uses Uuid-based newtype in the domain crate.
 
 **Root cause:** Competing approaches to type safety. Plan branch integrates domain types first, task branch adds surface-layer types.
 
@@ -272,11 +250,10 @@ IdeationSession (has plan proposals)
 1. Keep plan branch's type definition (it's already deployed)
 2. Adapt task branch's new methods to use the plan branch's type
 3. Never change types during rebase — preserve both approaches:
-   - Domain layer: Uuid newtypes in `entities/`
-   - User-facing: String newtypes in `types.rs`
-4. Conversion happens only at API boundaries (HTTP handlers)
+   - Domain layer: newtypes in `crates/ralphx-domain/src/entities/`
+   - Conversion happens only at API boundaries (HTTP handlers)
 
-**Files:** `src-tauri/src/domain/entities/`, `src-tauri/src/domain/types.rs`, `src-tauri/src/domain/repositories/`
+**Files:** `src-tauri/crates/ralphx-domain/src/entities/`, `src-tauri/crates/ralphx-domain/src/repositories/`
 
 ### Multi-Commit Rebase Strategy
 

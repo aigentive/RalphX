@@ -1,9 +1,8 @@
 /**
  * LeftNavRail — narrow vertical app navigation.
  *
- * Hosts the same primary views as the legacy top-bar Navigation
- * (Agents, Ideation, Graph, Kanban, Insights, plus feature-flagged items)
- * and the Settings entry, in a compact icon-and-label rail.
+ * Hosts the primary app views and the Settings entry in a compact
+ * icon-and-label rail.
  */
 
 import { Bug, Settings } from "lucide-react";
@@ -14,21 +13,20 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
-import { useProjectStats } from "@/hooks/useProjectStats";
 import { useTicketingProviders } from "@/hooks/useTicketing";
 import { useGranolaIntegration } from "@/hooks/useGranolaIntegration";
 import { hasValidTicketingProvider } from "@/lib/ticketing-provider-state";
 import { useProjectStore } from "@/stores/projectStore";
 import { ALL_NAV_ITEMS } from "./nav-items";
 import { BrandMark } from "./BrandMark";
-import type { ViewType } from "@/types/chat";
+import type { AppView } from "@/types/app-view";
 
 export const LEFT_NAV_RAIL_WIDTH = 72;
 
 interface LeftNavRailProps {
-  currentView: ViewType;
-  onViewChange: (view: ViewType) => void;
-  onViewWarmUp?: (view: ViewType) => void;
+  currentView: AppView;
+  onViewChange: (view: AppView) => void;
+  onViewWarmUp?: (view: AppView) => void;
   onOpenSettings?: () => void;
   onOpenIssueReport?: () => void;
   /** Hide primary view items (e.g. during welcome screen). Settings stays. */
@@ -36,7 +34,7 @@ interface LeftNavRailProps {
 }
 
 interface RailItemProps {
-  view?: ViewType;
+  view?: AppView;
   label: string;
   icon: React.ElementType;
   shortcut?: string | undefined;
@@ -109,7 +107,6 @@ export function LeftNavRail({
   hideViews = false,
 }: LeftNavRailProps) {
   const activeProjectId = useProjectStore((s) => s.activeProjectId);
-  const { data: stats } = useProjectStats(activeProjectId ?? undefined);
   const { data: featureFlags } = useFeatureFlags();
   const { data: ticketingProviders } = useTicketingProviders(
     activeProjectId ?? undefined,
@@ -118,11 +115,10 @@ export function LeftNavRail({
   const { connected: hasGranolaDashboardProvider } = useGranolaIntegration();
   const hasTicketingDashboardProvider = hasValidTicketingProvider(ticketingProviders);
 
-  const taskCount = stats?.taskCount ?? 0;
   const visibleItems = hideViews
     ? []
-    : ALL_NAV_ITEMS.filter((item) => item.visible(featureFlags, taskCount));
-  const dashboardViews = new Set<ViewType>(["ticketing", "github", "granola"]);
+    : ALL_NAV_ITEMS.filter((item) => item.visible(featureFlags));
+  const dashboardViews = new Set<AppView>(["ticketing", "github", "granola"]);
   const primaryItems = visibleItems.filter((item) => !dashboardViews.has(item.view));
   const dashboardItems = visibleItems.filter((item) => {
     if (item.view === "github") {

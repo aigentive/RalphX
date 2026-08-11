@@ -2,6 +2,7 @@
 // Used by the question bridge system to coordinate between MCP tools and frontend
 // Mirrors the permission_state.rs pattern exactly
 
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -10,6 +11,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{watch, Mutex};
 use tracing::{error, info};
 
+use crate::application::permission_state::is_within_permission_request_ttl;
 use crate::domain::repositories::QuestionRepository;
 
 /// Answer provided by the user in the UI
@@ -36,10 +38,16 @@ pub struct PendingQuestionInfo {
     pub batch_total: Option<u32>,
     #[serde(default)]
     pub metadata: Option<Value>,
+    #[serde(default = "default_created_at")]
+    pub created_at: String,
 }
 
 fn default_allow_skip() -> bool {
     true
+}
+
+fn default_created_at() -> String {
+    Utc::now().to_rfc3339()
 }
 
 /// A single option in a question
@@ -64,6 +72,27 @@ pub struct QuestionResolveResult {
     pub delivered_to_waiting_agent: bool,
 }
 
+/// An exclusive, non-waking reservation to resolve a question.
+///
+/// A claim is intentionally consumed by either [`QuestionState::commit_claim`]
+/// or [`QuestionState::release_claim`], so callers cannot reuse it after the
+/// durable decision has been made.
+pub struct QuestionClaim {
+    request_id: String,
+    info: PendingQuestionInfo,
+    has_live_waiter: bool,
+}
+
+impl QuestionClaim {
+    /// Returns the immutable metadata captured by this exclusive claim.
+    ///
+    /// Command handlers must validate this exact record before committing the
+    /// claim instead of issuing a second, non-reserved question lookup.
+    pub fn pending_question(&self) -> &PendingQuestionInfo {
+        &self.info
+    }
+}
+
 /// Shared state for managing pending questions from agents
 ///
 /// Uses tokio::sync::watch channels to allow long-polling:
@@ -74,6 +103,7 @@ pub struct QuestionResolveResult {
 /// Repo calls are fire-and-forget: errors are logged but never block channel ops.
 pub struct QuestionState {
     pub pending: Mutex<HashMap<String, PendingQuestion>>,
+    claims: Mutex<HashSet<String>>,
     repo: Option<Arc<dyn QuestionRepository>>,
 }
 
@@ -81,6 +111,7 @@ impl QuestionState {
     pub fn new() -> Self {
         Self {
             pending: Mutex::new(HashMap::new()),
+            claims: Mutex::new(HashSet::new()),
             repo: None,
         }
     }
@@ -88,6 +119,7 @@ impl QuestionState {
     pub fn with_repo(repo: Arc<dyn QuestionRepository>) -> Self {
         Self {
             pending: Mutex::new(HashMap::new()),
+            claims: Mutex::new(HashSet::new()),
             repo: Some(repo),
         }
     }
@@ -120,6 +152,43 @@ impl QuestionState {
 
         let pending = self.pending.lock().await;
         pending.values().map(|p| p.info.clone()).collect()
+    }
+
+    /// Load pending questions without turning a durable repository failure into an empty result.
+    pub async fn get_pending_info_strict(
+        &self,
+    ) -> crate::error::AppResult<Vec<PendingQuestionInfo>> {
+        if let Some(repo) = &self.repo {
+            let mut pending: Vec<_> = repo
+                .get_pending()
+                .await?
+                .into_iter()
+                .filter(|question| is_within_permission_request_ttl(&question.created_at))
+                .collect();
+            let durable_request_ids: HashSet<_> = pending
+                .iter()
+                .map(|question| question.request_id.clone())
+                .collect();
+            let live_pending = self.pending.lock().await;
+            pending.extend(
+                live_pending
+                    .values()
+                    .filter(|question| {
+                        is_within_permission_request_ttl(&question.info.created_at)
+                            && !durable_request_ids.contains(&question.info.request_id)
+                    })
+                    .map(|question| question.info.clone()),
+            );
+            return Ok(pending);
+        }
+        Ok(self
+            .pending
+            .lock()
+            .await
+            .values()
+            .filter(|question| is_within_permission_request_ttl(&question.info.created_at))
+            .map(|question| question.info.clone())
+            .collect())
     }
 
     /// Register a new pending question
@@ -173,114 +242,162 @@ impl QuestionState {
             batch_index,
             batch_total,
             metadata,
+            created_at: Utc::now().to_rfc3339(),
         };
 
-        // Fire-and-forget persist to repo
+        let request = PendingQuestion {
+            info: info.clone(),
+            sender: tx,
+            created_at: Instant::now(),
+        };
+        self.pending
+            .lock()
+            .await
+            .insert(request_id.clone(), request);
+
+        // Publish the live waiter before awaiting persistence so a concurrent
+        // resolver claims the live question instead of racing an absent record.
         if let Some(repo) = &self.repo {
             if let Err(e) = repo.create_pending(&info).await {
                 error!("Failed to persist pending question {}: {}", request_id, e);
             }
         }
-
-        let request = PendingQuestion {
-            info,
-            sender: tx,
-            created_at: Instant::now(),
-        };
-        self.pending.lock().await.insert(request_id, request);
         rx
+    }
+
+    /// Claim a question exclusively without sending an answer to its live waiter.
+    ///
+    /// A durable lookup failure is returned to callers instead of being treated
+    /// as an absent question, preventing a stale or failed read from advancing
+    /// resolution.
+    pub async fn claim_pending(
+        &self,
+        request_id: &str,
+    ) -> crate::error::AppResult<Option<QuestionClaim>> {
+        if !self.claims.lock().await.insert(request_id.to_string()) {
+            return Ok(None);
+        }
+
+        let live_question = self
+            .pending
+            .lock()
+            .await
+            .get(request_id)
+            .map(|question| question.info.clone());
+        if let Some(info) = live_question {
+            return Ok(Some(QuestionClaim {
+                request_id: request_id.to_string(),
+                info,
+                has_live_waiter: true,
+            }));
+        }
+
+        let durable_question = match &self.repo {
+            Some(repo) => match repo.get_by_request_id(request_id).await {
+                Ok(question) => question,
+                Err(error) => {
+                    self.claims.lock().await.remove(request_id);
+                    return Err(error);
+                }
+            },
+            None => None,
+        };
+        let Some(question) = durable_question else {
+            self.claims.lock().await.remove(request_id);
+            return Ok(None);
+        };
+
+        Ok(Some(QuestionClaim {
+            request_id: request_id.to_string(),
+            info: question,
+            has_live_waiter: false,
+        }))
+    }
+
+    /// Release a previously acquired claim without sending an answer.
+    pub async fn release_claim(&self, claim: QuestionClaim) -> bool {
+        self.claims.lock().await.remove(&claim.request_id)
+    }
+
+    /// Persist a claimed answer before notifying any live waiter.
+    ///
+    /// A durable write failure releases the claim and leaves the live question
+    /// untouched, allowing a later retry instead of waking an agent with an
+    /// answer that cannot be recovered after restart.
+    pub async fn commit_claim(
+        &self,
+        claim: QuestionClaim,
+        answer: QuestionAnswer,
+    ) -> QuestionResolveResult {
+        if let Some(repo) = &self.repo {
+            match repo.resolve(&claim.request_id, &answer).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    self.release_claim(claim).await;
+                    return QuestionResolveResult {
+                        resolved: false,
+                        session_id: None,
+                        delivered_to_waiting_agent: false,
+                    };
+                }
+                Err(error) => {
+                    error!(
+                        "Failed to durably resolve question {} before live delivery: {}",
+                        claim.request_id, error
+                    );
+                    self.release_claim(claim).await;
+                    return QuestionResolveResult {
+                        resolved: false,
+                        session_id: None,
+                        delivered_to_waiting_agent: false,
+                    };
+                }
+            }
+        }
+
+        let delivered_to_waiting_agent = if claim.has_live_waiter {
+            let mut pending = self.pending.lock().await;
+            if let Some(question) = pending.get(&claim.request_id) {
+                let _ = question.sender.send(Some(answer));
+                pending.remove(&claim.request_id);
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        let session_id = claim.info.session_id.clone();
+        self.release_claim(claim).await;
+
+        QuestionResolveResult {
+            resolved: true,
+            session_id: Some(session_id),
+            delivered_to_waiting_agent,
+        }
     }
 
     /// Resolve a pending question with an answer.
     ///
-    /// Returns a result indicating whether the answer was delivered to a live
-    /// waiter or only persisted for a later conversation resume.
-    ///
-    /// Phase 1 (lock held): send answer via watch channel, then remove from HashMap.
-    /// Phase 2 (lock free): persist resolution to repo.
-    ///
-    /// IMPORTANT: send() happens BEFORE HashMap::remove() so any subscriber that
-    /// holds a Receiver sees the value change before the Sender is dropped.
-    /// HashMap removal is unconditional — if repo.resolve() fails, the entry stays
-    /// removed (no re-insert) to avoid inconsistent in-memory state.
+    /// The claim/commit protocol excludes concurrent resolvers and commits the
+    /// durable answer before the live watch channel is notified.
     pub async fn resolve(&self, request_id: &str, answer: QuestionAnswer) -> QuestionResolveResult {
-        // Phase 1: lock held — signal channel and remove from HashMap atomically
-        let session_id = {
-            let mut pending = self.pending.lock().await;
-            if let Some(question) = pending.get(request_id) {
-                let session_id = question.info.session_id.clone();
-                // send() BEFORE remove() so Receiver sees the value before Sender drops
-                let _ = question.sender.send(Some(answer.clone()));
-                pending.remove(request_id);
-                Some(session_id)
-            } else {
-                None
-            }
-        };
-
-        if let Some(ref sid) = session_id {
-            // Phase 2: lock free — persist to repo (best-effort)
-            if let Some(repo) = &self.repo {
-                if let Err(e) = repo.resolve(request_id, &answer).await {
-                    error!(
-                        "Failed to persist question resolution {}: {}",
-                        request_id, e
-                    );
-                }
-            }
-            QuestionResolveResult {
-                resolved: true,
-                session_id: Some(sid.clone()),
-                delivered_to_waiting_agent: true,
-            }
-        } else {
-            let Some(repo) = &self.repo else {
-                return QuestionResolveResult {
+        match self.claim_pending(request_id).await {
+            Ok(Some(claim)) => self.commit_claim(claim, answer).await,
+            Ok(None) => QuestionResolveResult {
+                resolved: false,
+                session_id: None,
+                delivered_to_waiting_agent: false,
+            },
+            Err(error) => {
+                error!(
+                    "Failed to load question {} before durable resolution: {}",
+                    request_id, error
+                );
+                QuestionResolveResult {
                     resolved: false,
                     session_id: None,
                     delivered_to_waiting_agent: false,
-                };
-            };
-
-            let question_info = match repo.get_by_request_id(request_id).await {
-                Ok(info) => info,
-                Err(e) => {
-                    error!(
-                        "Failed to load question {} before durable resolution: {}",
-                        request_id, e
-                    );
-                    None
-                }
-            };
-            let Some(question_info) = question_info else {
-                return QuestionResolveResult {
-                    resolved: false,
-                    session_id: None,
-                    delivered_to_waiting_agent: false,
-                };
-            };
-
-            match repo.resolve(request_id, &answer).await {
-                Ok(true) => QuestionResolveResult {
-                    resolved: true,
-                    session_id: Some(question_info.session_id),
-                    delivered_to_waiting_agent: false,
-                },
-                Ok(false) => QuestionResolveResult {
-                    resolved: false,
-                    session_id: None,
-                    delivered_to_waiting_agent: false,
-                },
-                Err(e) => {
-                    error!(
-                        "Failed to persist durable question resolution {}: {}",
-                        request_id, e
-                    );
-                    QuestionResolveResult {
-                        resolved: false,
-                        session_id: None,
-                        delivered_to_waiting_agent: false,
-                    }
                 }
             }
         }

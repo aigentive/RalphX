@@ -19,8 +19,6 @@ export async function loadMockIdeationSession(page: Page) {
       sourceContextType: null,
       sourceContextId: null,
       parentSessionId: null,
-      teamMode: null,
-      teamConfig: null,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       archivedAt: null,

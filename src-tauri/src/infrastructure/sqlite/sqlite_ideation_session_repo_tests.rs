@@ -1,5 +1,8 @@
 use super::*;
+use crate::domain::entities::{AgentRun, AgentRunActionKind, ChatConversationId};
 use crate::domain::entities::{VerificationGap, VerificationRoundSnapshot};
+use crate::domain::repositories::AgentRunRepository;
+use crate::infrastructure::sqlite::SqliteAgentRunRepository;
 use crate::testing::SqliteTestDb;
 
 fn verification_gap(severity: &str, description: &str) -> VerificationGap {
@@ -71,5 +74,93 @@ async fn save_verification_run_snapshot_updates_snapshot_rows_and_session_summar
     assert_eq!(
         updated.verification_convergence_reason.as_deref(),
         Some("max_rounds")
+    );
+}
+
+#[tokio::test]
+async fn complete_plan_verification_requires_live_exact_action_authority() {
+    let db = SqliteTestDb::new("sqlite-ideation-session-model-native-verification");
+    let project = db.seed_project("Model-native verification proof");
+    let session = db.seed_ideation_session(project.id);
+    let conversation_id = ChatConversationId::new();
+    db.with_connection(|conn| {
+        conn.execute(
+            "INSERT INTO artifacts (
+                id, type, name, content_type, content_text, created_by, version, created_at
+             ) VALUES (
+                'artifact-current', 'specification', 'Plan', 'inline', '# Plan',
+                'orchestrator', 1, '2026-07-15T00:00:00Z'
+             )",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE ideation_sessions
+             SET plan_artifact_id = 'artifact-current', plan_contract_version = 1
+             WHERE id = ?1",
+            [session.id.as_str()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO chat_conversations (
+                id, context_type, context_id, title, message_count, created_at, updated_at
+             ) VALUES (?1, 'ideation', ?2, 'Plan', 0, ?3, ?3)",
+            rusqlite::params![
+                conversation_id.as_str(),
+                session.id.as_str(),
+                "2026-07-15T00:00:00Z"
+            ],
+        )
+        .unwrap();
+    });
+
+    let run_repo = SqliteAgentRunRepository::from_shared(db.shared_conn());
+    let session_repo = SqliteIdeationSessionRepository::from_shared(db.shared_conn());
+
+    let ordinary = run_repo
+        .create(AgentRun::new(conversation_id))
+        .await
+        .unwrap();
+    assert!(!session_repo
+        .complete_plan_verification(&session.id, &ordinary.id.as_str(), "artifact-current")
+        .await
+        .unwrap());
+
+    let mut wrong_target = AgentRun::new(conversation_id);
+    wrong_target.action_kind = Some(AgentRunActionKind::VerifyPlan);
+    wrong_target.action_context_id = Some(session.id.as_str().to_string());
+    wrong_target.action_target_id = Some("artifact-stale".to_string());
+    let wrong_target = run_repo.create(wrong_target).await.unwrap();
+    assert!(!session_repo
+        .complete_plan_verification(&session.id, &wrong_target.id.as_str(), "artifact-current",)
+        .await
+        .unwrap());
+
+    let mut valid = AgentRun::new(conversation_id);
+    valid.action_kind = Some(AgentRunActionKind::VerifyPlan);
+    valid.action_context_id = Some(session.id.as_str().to_string());
+    valid.action_target_id = Some("artifact-current".to_string());
+    let valid = run_repo.create(valid).await.unwrap();
+    assert!(session_repo
+        .complete_plan_verification(&session.id, &valid.id.as_str(), "artifact-current")
+        .await
+        .unwrap());
+    assert!(!session_repo
+        .complete_plan_verification(&session.id, &valid.id.as_str(), "artifact-current")
+        .await
+        .unwrap());
+
+    let verified = session_repo.get_by_id(&session.id).await.unwrap().unwrap();
+    assert_eq!(
+        verified
+            .verified_plan_artifact_id
+            .as_ref()
+            .map(|id| id.as_str()),
+        Some("artifact-current")
+    );
+    let valid_run_id = valid.id.as_str();
+    assert_eq!(
+        verified.verified_plan_agent_run_id.as_deref(),
+        Some(valid_run_id.as_str())
     );
 }

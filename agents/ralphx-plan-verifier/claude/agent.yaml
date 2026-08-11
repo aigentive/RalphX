@@ -1,6 +1,0 @@
----
-disallowed_tools:
-- Write
-- Edit
-- NotebookEdit
-max_turns: 80

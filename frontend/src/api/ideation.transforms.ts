@@ -21,6 +21,7 @@ import type {
   PriorityAssessmentResponse,
   DependencyGraphResponse,
   ApplyProposalsResultResponse,
+  RestartImplementationResultResponse,
   CreateChildSessionResponse,
   ParentSessionContextResponse,
 } from "./ideation.types";
@@ -32,6 +33,7 @@ import {
   PriorityAssessmentResponseSchema,
   DependencyGraphResponseSchema,
   ApplyProposalsResultResponseSchema,
+  RestartImplementationResultResponseSchema,
   CreateChildSessionResponseSchema,
   ParentSessionContextResponseSchema,
   SessionListResponseSchema,
@@ -48,13 +50,6 @@ export function transformSession(raw: z.infer<typeof IdeationSessionResponseSche
     inheritedPlanArtifactId: raw.inherited_plan_artifact_id ?? null,
     seedTaskId: raw.seed_task_id ?? null,
     parentSessionId: raw.parent_session_id,
-    teamMode: raw.team_mode ?? null,
-    teamConfig: raw.team_config ? {
-      maxTeammates: raw.team_config.max_teammates,
-      modelCeiling: raw.team_config.model_ceiling,
-      ...(raw.team_config.budget_limit != null && { budgetLimit: raw.team_config.budget_limit }),
-      compositionMode: (raw.team_config.composition_mode ?? "dynamic") as "dynamic" | "constrained",
-    } : null,
     createdAt: raw.created_at,
     updatedAt: raw.updated_at,
     archivedAt: raw.archived_at,
@@ -126,6 +121,8 @@ export function transformProposal(raw: z.infer<typeof TaskProposalResponseSchema
     createdTaskId: raw.created_task_id,
     planArtifactId: raw.plan_artifact_id,
     planVersionAtCreation: raw.plan_version_at_creation,
+    blueprintArtifactId: raw.blueprint_artifact_id ?? null,
+    blueprintVersionAtCreation: raw.blueprint_version_at_creation ?? null,
     sortOrder: raw.sort_order,
     createdAt: raw.created_at,
     updatedAt: raw.updated_at,
@@ -237,6 +234,18 @@ export function transformApplyResult(raw: z.infer<typeof ApplyProposalsResultRes
   };
 }
 
+export function transformRestartImplementationResult(
+  raw: z.infer<typeof RestartImplementationResultResponseSchema>,
+): RestartImplementationResultResponse {
+  return {
+    sessionId: raw.session_id,
+    oldExecutionPlanId: raw.old_execution_plan_id,
+    executionPlanId: raw.execution_plan_id,
+    archivedTaskCount: raw.archived_task_count,
+    createdTaskIds: raw.created_task_ids,
+  };
+}
+
 export function transformNullableBool(value: number | null | undefined): boolean | null {
   if (value === null || value === undefined) return null;
   return value !== 0;
@@ -244,13 +253,16 @@ export function transformNullableBool(value: number | null | undefined): boolean
 
 export function transformIdeationSettings(raw: IdeationSettingsResponse): IdeationSettings {
   return {
+    tasksEnabled: raw.tasks_enabled,
+    autoVerifyDraftPlans: raw.auto_verify_draft_plans,
+    tasksFeatureState: raw.tasks_feature_state,
+    autoVerifyPlans: raw.auto_verify_plans,
     requireAcceptForFinalize: raw.require_accept_for_finalize,
     requireVerificationForAccept: raw.require_verification_for_accept,
-    requireVerificationForProposals: raw.require_verification_for_proposals,
     externalOverrides: {
-      requireVerificationForAccept: transformNullableBool(raw.ext_require_verification_for_accept),
-      requireVerificationForProposals: transformNullableBool(raw.ext_require_verification_for_proposals),
-      requireAcceptForFinalize: transformNullableBool(raw.ext_require_accept_for_finalize),
+      autoVerifyPlans: raw.external_overrides.auto_verify_plans,
+      requireVerificationForAccept: raw.external_overrides.require_verification_for_accept,
+      requireAcceptForFinalize: raw.external_overrides.require_accept_for_finalize,
     },
   };
 }

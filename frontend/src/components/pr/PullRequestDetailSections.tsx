@@ -1,5 +1,12 @@
-import { lazy, Suspense, useState } from "react";
-import { CheckCircle2, ChevronDown, ChevronRight, Clock, XCircle } from "lucide-react";
+import { Suspense, useState } from "react";
+import {
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  Clock,
+  ExternalLink,
+  XCircle,
+} from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 
 import type {
@@ -9,7 +16,14 @@ import type {
 } from "@/api/github";
 import type { PrDiffAnnotation } from "@/api/diff";
 import { diffApi } from "@/api/diff";
+import { lazyWithRetry } from "@/lib/lazy-with-retry";
+import { openExternalTicketUrl } from "@/components/ticketing/ticketing-open-external";
 import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 import {
   DetailSkeleton,
@@ -18,7 +32,7 @@ import {
 } from "./PullRequestDetailPrimitives";
 import { bucketCheck, summarizeChecks } from "./pullRequestChecksSummary";
 
-const LazyIntegratedChatPanel = lazy(() =>
+const LazyIntegratedChatPanel = lazyWithRetry(() =>
   import("@/components/Chat/IntegratedChatPanel").then((module) => ({
     default: module.IntegratedChatPanel,
   })),
@@ -74,7 +88,7 @@ function annotationSummary(annotations: PrDiffAnnotation[]): string {
   return `${annotations.length} annotation${annotations.length === 1 ? "" : "s"}`;
 }
 
-function CheckRow({ check }: { check: PullRequestCheck }) {
+export function CheckRow({ check }: { check: PullRequestCheck }) {
   const bucket = bucketCheck(check);
   const { color, Icon } =
     bucket === "passed"
@@ -96,8 +110,27 @@ function CheckRow({ check }: { check: PullRequestCheck }) {
         <Icon className="h-4 w-4 shrink-0" aria-hidden="true" style={{ color }} />
         <span className="truncate text-[var(--text-primary)]">{check.name}</span>
       </span>
-      <span className="shrink-0 text-xs text-[var(--text-muted)]">
-        {check.conclusion ?? check.status ?? "pending"}
+      <span className="flex shrink-0 items-center gap-1.5">
+        <span className="text-xs text-[var(--text-muted)]">
+          {check.conclusion ?? check.status ?? "pending"}
+        </span>
+        {check.detailsUrl ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                aria-label={`Open ${check.name} check details`}
+                onClick={() => void openExternalTicketUrl(check.detailsUrl!)}
+              >
+                <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{`Open ${check.name} check details`}</TooltipContent>
+          </Tooltip>
+        ) : null}
       </span>
     </div>
   );

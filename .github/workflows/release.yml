@@ -9,16 +9,6 @@ on:
       version:
         description: "Version to release (for example 0.2.0 or v0.2.0)"
         required: true
-      draft:
-        description: "Create the public release as a draft"
-        required: true
-        type: boolean
-        default: false
-      prerelease:
-        description: "Mark the public release as a prerelease"
-        required: true
-        type: boolean
-        default: false
       linux_runner:
         description: "Runner to use for release metadata jobs"
         required: true
@@ -81,20 +71,26 @@ jobs:
       - name: Resolve release metadata
         id: meta
         shell: bash
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_ARM_RUNNER: ${{ inputs.arm_runner }}
+          INPUT_INTEL_RUNNER: ${{ inputs.intel_runner }}
+          INPUT_MACOS_RUNNER_SIZE: ${{ inputs.macos_runner_size }}
         run: |
           set -euo pipefail
 
-          raw_ref="${{ github.event.inputs.ref }}"
-          raw_version="${{ github.event.inputs.version }}"
-          raw_draft="${{ github.event.inputs.draft }}"
-          raw_prerelease="${{ github.event.inputs.prerelease }}"
-          raw_arm_runner="${{ github.event.inputs.arm_runner }}"
-          raw_intel_runner="${{ github.event.inputs.intel_runner }}"
-          raw_macos_runner_size="${{ github.event.inputs.macos_runner_size }}"
+          raw_ref="${INPUT_REF}"
+          raw_version="${INPUT_VERSION}"
+          raw_draft="false"
+          raw_prerelease="true"
+          raw_arm_runner="${INPUT_ARM_RUNNER}"
+          raw_intel_runner="${INPUT_INTEL_RUNNER}"
+          raw_macos_runner_size="${INPUT_MACOS_RUNNER_SIZE}"
 
           version="${raw_version#v}"
-          if [[ -z "${version}" ]]; then
-            echo "Release version cannot be empty" >&2
+          if [[ ! "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release version must be an exact X.Y.Z version" >&2
             exit 1
           fi
 
@@ -199,19 +195,20 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.meta.outputs.tag }}
         run: |
           set -euo pipefail
 
           mkdir -p release-metadata
-          notes_file="release-notes/${{ steps.meta.outputs.tag }}.md"
+          notes_file="release-notes/${RELEASE_TAG}.md"
           if notes_content="$(gh api \
             -H 'Accept: application/vnd.github+json' \
-            "repos/${GITHUB_REPOSITORY}/contents/${notes_file}?ref=${{ steps.meta.outputs.tag }}" \
+            "repos/${GITHUB_REPOSITORY}/contents/${notes_file}?ref=${RELEASE_TAG}" \
             --jq '.content' 2>/dev/null)"; then
             printf '%s' "${notes_content}" | tr -d '\n' | base64 --decode > release-metadata/github-release-notes.md
           else
             {
-              printf 'Release artifacts for %s.\n\n' "${{ steps.meta.outputs.tag }}"
+              printf 'Release artifacts for %s.\n\n' "${RELEASE_TAG}"
               printf 'Included:\n'
               printf '%s\n' \
                 '- macOS Apple Silicon DMG' \
@@ -242,15 +239,22 @@ jobs:
 
       - name: Write release metadata artifact
         shell: bash
+        env:
+          RELEASE_VERSION: ${{ steps.meta.outputs.version }}
+          RELEASE_TAG: ${{ steps.meta.outputs.tag }}
+          RELEASE_NAME: ${{ steps.meta.outputs.release_name }}
+          RELEASE_DRAFT: ${{ steps.meta.outputs.draft }}
+          RELEASE_PRERELEASE: ${{ steps.meta.outputs.prerelease }}
+          RELEASE_SOURCE_REF: ${{ steps.meta.outputs.source_ref }}
         run: |
           set -euo pipefail
           jq -n \
-            --arg version "${{ steps.meta.outputs.version }}" \
-            --arg tag "${{ steps.meta.outputs.tag }}" \
-            --arg release_name "${{ steps.meta.outputs.release_name }}" \
-            --arg draft "${{ steps.meta.outputs.draft }}" \
-            --arg prerelease "${{ steps.meta.outputs.prerelease }}" \
-            --arg source_ref "${{ steps.meta.outputs.source_ref }}" \
+            --arg version "${RELEASE_VERSION}" \
+            --arg tag "${RELEASE_TAG}" \
+            --arg release_name "${RELEASE_NAME}" \
+            --arg draft "${RELEASE_DRAFT}" \
+            --arg prerelease "${RELEASE_PRERELEASE}" \
+            --arg source_ref "${RELEASE_SOURCE_REF}" \
             '{
               version: $version,
               tag: $tag,
@@ -383,6 +387,7 @@ jobs:
           set -euo pipefail
           install -m 0755 workflow-support/scripts/build-prod-release.sh scripts/build-prod-release.sh
           install -m 0755 workflow-support/scripts/prepare-release-runtime.sh scripts/prepare-release-runtime.sh
+          install -m 0755 workflow-support/scripts/validate-macos-release-artifacts.sh scripts/validate-macos-release-artifacts.sh
 
       - name: Import Apple certificate
         shell: bash
@@ -467,8 +472,8 @@ jobs:
                 "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
                 "${{ matrix.arch }}" | tee -a "${heartbeat_log}"
               # shellcheck disable=SC2009
-              ps -axo pid,ppid,etime,stat,command \
-                | grep -E 'codesign|notarytool|xcrun|cargo-tauri|cargo tauri|cargo build|node .*tauri|ralphx' \
+              ps -axo pid,ppid,etime,stat,comm \
+                | grep -E 'codesign$|notarytool$|xcrun$|cargo-tauri$|cargo$|node$|ralphx$' \
                 | grep -v 'grep -E' \
                 | sed 's/^/[release-heartbeat] process /' \
                 | tee -a "${heartbeat_log}" || true
@@ -493,7 +498,10 @@ jobs:
           }} using pre-imported build.keychain; clearing APPLE_CERTIFICATE env to avoid duplicate Tauri keychain import" | tee -a "${heartbeat_log}"
           unset APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD
 
-          ./scripts/build-prod-release.sh --target "${{ matrix.rust_target }}" 2>&1 | tee -a "${build_log}"
+          ./scripts/build-prod-release.sh \
+            --target "${{ matrix.rust_target }}" \
+            --expected-arch "${{ matrix.arch }}" \
+            2>&1 | tee -a "${build_log}"
 
           printf '[release-heartbeat] %s build script completed for %s\n' \
             "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
@@ -509,27 +517,37 @@ jobs:
 
       - name: Collect release artifacts
         shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+          MATRIX_ARCH: ${{ matrix.arch }}
+          MATRIX_RUST_TARGET: ${{ matrix.rust_target }}
         run: |
           set -euo pipefail
 
-          version="${{ needs.metadata.outputs.version }}"
-          arch="${{ matrix.arch }}"
+          version="${RELEASE_VERSION}"
+          arch="${MATRIX_ARCH}"
           dist_dir="release-dist/${arch}"
           mkdir -p "${dist_dir}"
 
-          release_target_dir="src-tauri/target/${{ matrix.rust_target }}/release"
-          dmg_path="$(find "${release_target_dir}/bundle/dmg" -maxdepth 1 -type f -name '*.dmg' | head -n 1)"
-          updater_path="$(find "${release_target_dir}/bundle/macos" -maxdepth 1 -type f -name '*.app.tar.gz' | head -n 1)"
+          release_target_dir="src-tauri/target/${MATRIX_RUST_TARGET}/release"
+          select_single_artifact() {
+            local directory="$1"
+            local pattern="$2"
+            local label="$3"
+            local matches=()
+            local path
+            while IFS= read -r -d '' path; do
+              matches+=("${path}")
+            done < <(find "${directory}" -maxdepth 1 -type f -name "${pattern}" -print0)
+            if [[ "${#matches[@]}" -ne 1 ]]; then
+              echo "Expected exactly one ${label} under ${directory}; found ${#matches[@]}" >&2
+              return 1
+            fi
+            printf '%s\n' "${matches[0]}"
+          }
 
-          if [[ -z "${dmg_path}" ]]; then
-            echo "No DMG artifact found under ${release_target_dir}/bundle/dmg" >&2
-            exit 1
-          fi
-
-          if [[ -z "${updater_path}" ]]; then
-            echo "No updater artifact found under ${release_target_dir}/bundle/macos" >&2
-            exit 1
-          fi
+          dmg_path="$(select_single_artifact "${release_target_dir}/bundle/dmg" '*.dmg' 'DMG artifact')"
+          updater_path="$(select_single_artifact "${release_target_dir}/bundle/macos" '*.app.tar.gz' 'updater artifact')"
 
           sig_path="${updater_path}.sig"
           if [[ ! -f "${sig_path}" ]]; then

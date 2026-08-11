@@ -84,6 +84,33 @@ describe("useQuestionInput", () => {
     expect(handleSend).not.toHaveBeenCalled();
   });
 
+  it("submits a single option directly for inline action buttons", async () => {
+    const submitAnswer = vi.fn().mockResolvedValue({
+      success: true,
+      deliveredToWaitingAgent: true,
+    });
+    const handleSend = vi.fn().mockResolvedValue(undefined);
+
+    const { result } = renderHook(() =>
+      useQuestionInput({
+        activeQuestion: question,
+        submitAnswer,
+        handleSend,
+      })
+    );
+
+    await act(async () => {
+      await result.current.handleQuestionOptionSubmit(0);
+    });
+
+    expect(submitAnswer).toHaveBeenCalledWith({
+      requestId: "req-1",
+      taskId: undefined,
+      selectedOptions: ["pg"],
+    });
+    expect(handleSend).not.toHaveBeenCalled();
+  });
+
   it("submits a skipped response", async () => {
     const submitAnswer = vi.fn().mockResolvedValue({
       success: true,

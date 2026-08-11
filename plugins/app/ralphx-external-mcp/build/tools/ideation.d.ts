@@ -31,7 +31,7 @@ export declare function handleListProposals(args: Record<string, unknown>, conte
  */
 export declare function handleGetProposalDetail(args: Record<string, unknown>, context: ApiKeyContext): Promise<string>;
 /**
- * v1_get_plan — get plan artifact content for an ideation session.
+ * v1_get_plan — get the overview/implementation-blueprint bundle for an ideation session.
  * GET /api/get_session_plan/:session_id
  */
 export declare function handleGetPlan(args: Record<string, unknown>, context: ApiKeyContext): Promise<string>;
@@ -71,12 +71,12 @@ export declare function handleAppendTaskToPlan(args: Record<string, unknown>, co
  */
 export declare function handleAnalyzeDependencies(args: Record<string, unknown>, context: ApiKeyContext): Promise<string>;
 /**
- * v1_trigger_plan_verification — trigger auto-verification for a session's plan.
+ * v1_trigger_plan_verification — queue a model-native review of the current plan.
  * POST /api/external/trigger_verification
  */
 export declare function handleTriggerPlanVerification(args: Record<string, unknown>, context: ApiKeyContext): Promise<string>;
 /**
- * v1_get_plan_verification — get plan verification status for a session.
+ * v1_get_plan_verification — get exact-artifact verification status for a session.
  * GET /api/external/plan_verification/:session_id
  */
 export declare function handleGetPlanVerification(args: Record<string, unknown>, context: ApiKeyContext): Promise<string>;

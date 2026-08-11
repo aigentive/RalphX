@@ -11,13 +11,6 @@ import type { MergePipelineTask } from "@/api/merge-pipeline";
 import { useProjectStore } from "@/stores/projectStore";
 import { useUiStore } from "@/stores/uiStore";
 
-vi.mock("@/hooks/useTeamModeAvailability", () => ({
-  useTeamModeAvailability: () => ({
-    ideationTeamModeAvailable: true,
-    executionTeamModeAvailable: true,
-  }),
-}));
-
 vi.mock("./RunningProcessPopover", () => ({
   RunningProcessPopover: ({
     children,
@@ -523,6 +516,8 @@ describe("ExecutionControlBar", () => {
           {
             conversationId: "conversation-1",
             projectId: "project-1",
+            automationId: null,
+            automationRunId: null,
             title: "Workspace",
             elapsedSeconds: 30,
             model: "gpt-5.5",

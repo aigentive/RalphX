@@ -6,6 +6,29 @@ impl GitService {
     // Query Operations
     // =========================================================================
 
+    /// Resolve the common ancestor used to review changes introduced by `head`.
+    pub async fn get_merge_base(repo: &Path, base: &str, head: &str) -> AppResult<String> {
+        let output = git_cmd::run(&["merge-base", base, head], repo).await?;
+        if !output.status.success() {
+            return Err(AppError::GitOperation(format!(
+                "Failed to resolve merge base between '{}' and '{}': {}",
+                base,
+                head,
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+
+        let merge_base = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if merge_base.is_empty() {
+            return Err(AppError::GitOperation(format!(
+                "Git returned an empty merge base between '{}' and '{}'",
+                base, head
+            )));
+        }
+
+        Ok(merge_base)
+    }
+
     /// Get the number of commits on a branch
     ///
     /// # Arguments
@@ -111,8 +134,56 @@ impl GitService {
             )));
         }
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let commits: Vec<CommitInfo> = stdout
+        Ok(Self::parse_pretty_commit_lines(&String::from_utf8_lossy(
+            &output.stdout,
+        )))
+    }
+
+    /// Get commits authored on the current branch itself, excluding commits
+    /// imported from the base by base-update merges.
+    ///
+    /// `base..HEAD` is wrong for this: when the local base ref is stale, a
+    /// merge of `origin/<base>` into the branch makes the base's commits
+    /// reachable from `HEAD` but not from the local base ref, so they show up
+    /// as "branch commits". Walking only the first-parent line and excluding
+    /// both the local and remote base refs keeps the result scoped to what the
+    /// branch actually authored. `--ignore-missing` tolerates repos without a
+    /// remote tracking ref for the base.
+    pub async fn get_branch_authored_commits(
+        path: &Path,
+        base: &str,
+    ) -> AppResult<Vec<CommitInfo>> {
+        let origin_base = format!("origin/{base}");
+        let output = git_cmd::run(
+            &[
+                "log",
+                "--first-parent",
+                "--ignore-missing",
+                "HEAD",
+                "--not",
+                base,
+                &origin_base,
+                "--pretty=format:%H|%h|%s|%an|%aI",
+            ],
+            path,
+        )
+        .await?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(AppError::GitOperation(format!(
+                "Failed to get branch-authored commits: {}",
+                stderr
+            )));
+        }
+
+        Ok(Self::parse_pretty_commit_lines(&String::from_utf8_lossy(
+            &output.stdout,
+        )))
+    }
+
+    fn parse_pretty_commit_lines(stdout: &str) -> Vec<CommitInfo> {
+        stdout
             .lines()
             .filter_map(|line| {
                 let parts: Vec<&str> = line.split('|').collect();
@@ -128,9 +199,7 @@ impl GitService {
                     None
                 }
             })
-            .collect();
-
-        Ok(commits)
+            .collect()
     }
 
     /// Get commits that were part of a merged task

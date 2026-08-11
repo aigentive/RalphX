@@ -1,8 +1,8 @@
 use super::*;
-use crate::domain::state_machine::TransitionHandler;
 use crate::domain::state_machine::transition_handler::{
     merge_helpers, BranchPair, ProjectCtx, TaskCore,
 };
+use crate::domain::state_machine::TransitionHandler;
 
 impl<'a> TransitionHandler<'a> {
     /// Handle post-merge validation failure: revert the merge commit, then transition
@@ -22,7 +22,8 @@ impl<'a> TransitionHandler<'a> {
         mode_label: &str,
         validation_mode: &MergeValidationMode,
     ) {
-        let (task, task_id, task_id_str, task_repo) = (tc.task, tc.task_id, tc.task_id_str, tc.task_repo);
+        let (task, task_id, task_id_str, task_repo) =
+            (tc.task, tc.task_id, tc.task_id_str, tc.task_repo);
         let (source_branch, target_branch) = (bp.source_branch, bp.target_branch);
         let (project, repo_path) = (pc.project, pc.repo_path);
         if *validation_mode == MergeValidationMode::AutoFix {
@@ -49,15 +50,22 @@ impl<'a> TransitionHandler<'a> {
             // If merge was checkout-free (merge_path == repo_path), create a dedicated
             // worktree so the fixer agent doesn't run in the user's main checkout.
             let fixer_worktree_path: PathBuf = if merge_path == repo_path {
-                let wt_path = PathBuf::from(
-                    merge_helpers::compute_merge_worktree_path(project, task_id_str),
-                );
+                let wt_path = PathBuf::from(merge_helpers::compute_merge_worktree_path(
+                    project,
+                    task_id_str,
+                ));
 
                 // Pre-delete stale worktree if it exists from a previous attempt
                 merge_helpers::pre_delete_worktree(repo_path, &wt_path, task_id_str).await;
 
                 // Create worktree on the target branch (which has the merged+failing code)
-                match GitService::checkout_existing_branch_worktree(repo_path, &wt_path, target_branch).await {
+                match GitService::checkout_existing_branch_worktree(
+                    repo_path,
+                    &wt_path,
+                    target_branch,
+                )
+                .await
+                {
                     Ok(()) => {
                         tracing::info!(
                             task_id = task_id_str,
@@ -86,9 +94,16 @@ impl<'a> TransitionHandler<'a> {
                             "target_branch": target_branch,
                         });
                         self.transition_to_merge_incomplete(
-                            TaskCore { task: &mut *task, task_id, task_id_str, task_repo },
-                            metadata, true,
-                        ).await;
+                            TaskCore {
+                                task: &mut *task,
+                                task_id,
+                                task_id_str,
+                                task_repo,
+                            },
+                            metadata,
+                            true,
+                        )
+                        .await;
                         return;
                     }
                 }
@@ -99,21 +114,31 @@ impl<'a> TransitionHandler<'a> {
 
             // Merge new validation recovery metadata into existing metadata
             // to preserve merge_recovery history and validation_revert_count
-            merge_helpers::merge_metadata_into(task, &serde_json::json!({
-                "validation_recovery": true,
-                "validation_failures": failure_details,
-                "validation_log": log,
-                "source_branch": source_branch,
-                "target_branch": target_branch,
-            }));
+            merge_helpers::merge_metadata_into(
+                task,
+                &serde_json::json!({
+                    "validation_recovery": true,
+                    "validation_failures": failure_details,
+                    "validation_log": log,
+                    "source_branch": source_branch,
+                    "target_branch": target_branch,
+                }),
+            );
             task.worktree_path = Some(fixer_worktree_path.to_string_lossy().to_string());
             task.internal_status = InternalStatus::Merging;
 
             self.persist_merge_transition(
-                TaskCore { task: &mut *task, task_id, task_id_str, task_repo },
-                InternalStatus::PendingMerge, InternalStatus::Merging,
+                TaskCore {
+                    task: &mut *task,
+                    task_id,
+                    task_id_str,
+                    task_repo,
+                },
+                InternalStatus::PendingMerge,
+                InternalStatus::Merging,
                 "validation_auto_fix",
-            ).await;
+            )
+            .await;
 
             // Delegate to on_enter(Merging) which handles symlink cleanup, stale
             // rebase/merge abort, and spawns the merger agent with the correct prompt
@@ -141,9 +166,7 @@ impl<'a> TransitionHandler<'a> {
 
             // Capture the merge commit SHA before attempting revert (needed for
             // unrevertable flag if reset_hard fails).
-            let merge_head_sha = GitService::get_branch_sha(merge_path, "HEAD")
-                .await
-                .ok();
+            let merge_head_sha = GitService::get_branch_sha(merge_path, "HEAD").await.ok();
 
             let revert_failed = match GitService::reset_hard(merge_path, "HEAD~1").await {
                 Ok(_) => {
@@ -171,7 +194,8 @@ impl<'a> TransitionHandler<'a> {
                 .unwrap_or(0) as u32;
             let revert_count = prev_revert_count + 1;
 
-            let error_metadata_str = format_validation_error_metadata(failures, log, source_branch, target_branch);
+            let error_metadata_str =
+                format_validation_error_metadata(failures, log, source_branch, target_branch);
             if let Ok(error_obj) = serde_json::from_str::<serde_json::Value>(&error_metadata_str) {
                 merge_helpers::merge_metadata_into(task, &error_obj);
             }
@@ -192,10 +216,17 @@ impl<'a> TransitionHandler<'a> {
             task.internal_status = InternalStatus::MergeIncomplete;
 
             self.persist_merge_transition(
-                TaskCore { task: &mut *task, task_id, task_id_str, task_repo },
-                InternalStatus::PendingMerge, InternalStatus::MergeIncomplete,
+                TaskCore {
+                    task: &mut *task,
+                    task_id,
+                    task_id_str,
+                    task_repo,
+                },
+                InternalStatus::PendingMerge,
+                InternalStatus::MergeIncomplete,
                 "validation_failed",
-            ).await;
+            )
+            .await;
         }
     }
 }

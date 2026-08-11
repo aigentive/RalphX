@@ -46,8 +46,9 @@ import type {
   ConflictDiffState,
   DiffPageSummary,
   DiffState,
-  FileDiffContentMode,
 } from "./AgentsPublishFileDiff";
+import { ReviewWalkthrough } from "./ReviewWalkthrough";
+import { buildReviewWalkthroughFindings } from "./reviewWalkthroughFindings";
 import {
   canUsePagedInlineDiff,
   requiresExplicitDiffHydration,
@@ -69,6 +70,11 @@ const ANNOTATION_SCROLL_RETRY_DELAY_MS = 50;
 const ANNOTATION_SCROLL_RETRY_LIMIT = 60;
 type BulkExpansionPreference = "expanded" | "collapsed" | "custom";
 
+interface HydrationPathState {
+  generation: string;
+  paths: Set<string>;
+}
+
 export interface AgentsPublishInlineDiffsProps {
   conversationId: string;
   review: AgentWorkspaceReview | null;
@@ -81,6 +87,7 @@ export interface AgentsPublishInlineDiffsProps {
   focusRequest?: AgentPublishFocusRequest | null | undefined;
   defaultMode?: DiffFilterMode | undefined;
   workspaceChangeLabel?: string | undefined;
+  cumulativeModeLabel?: string | undefined;
   liveSummary?: AgentWorkspaceChangeSummary | null | undefined;
   repairMode?: boolean | undefined;
 }
@@ -88,6 +95,7 @@ export interface AgentsPublishInlineDiffsProps {
 function getEmptyDiffStateCopy(
   mode: DiffFilterMode,
   workspaceChangeLabel: string | undefined,
+  cumulativeModeLabel: string | undefined,
 ) {
   if (mode === "unstaged") {
     return {
@@ -108,6 +116,18 @@ function getEmptyDiffStateCopy(
     };
   }
   if (mode === "cumulative") {
+    if (cumulativeModeLabel === "Published changes") {
+      return {
+        title: "No published changes",
+        detail: "No published file changes are available.",
+      };
+    }
+    if (cumulativeModeLabel === "Pull request changes") {
+      return {
+        title: "No pull request changes",
+        detail: "No pull request file changes are available.",
+      };
+    }
     return {
       title: "No committed files",
       detail: "No committed changes found in this workspace.",
@@ -248,13 +268,14 @@ interface AgentsPublishVirtualFileRowProps {
   inlineDiffScrollParent: HTMLElement | null;
   diffPageSummary?: DiffPageSummary | undefined;
   shouldHydrate: boolean;
+  hydrationGeneration: string;
+  onRegisterMountedPath: (path: string, generation: string) => void;
+  onUnregisterMountedPath: (path: string, generation: string) => void;
   annotations: PrDiffAnnotation[];
   hunkAnnotations: WorkspaceReviewHunkAnnotation[];
   isShowAnywayOverridden: boolean;
   onShowAnywayPath: (path: string) => void;
   isFocusTarget: boolean;
-  contentMode: FileDiffContentMode;
-  onLoadCodePath: (path: string) => void;
 }
 
 const AgentsPublishVirtualFileRow = memo(function AgentsPublishVirtualFileRow({
@@ -273,14 +294,27 @@ const AgentsPublishVirtualFileRow = memo(function AgentsPublishVirtualFileRow({
   inlineDiffScrollParent,
   diffPageSummary,
   shouldHydrate,
+  hydrationGeneration,
+  onRegisterMountedPath,
+  onUnregisterMountedPath,
   annotations,
   hunkAnnotations,
   isShowAnywayOverridden,
   onShowAnywayPath,
   isFocusTarget,
-  contentMode,
-  onLoadCodePath,
 }: AgentsPublishVirtualFileRowProps) {
+  useEffect(() => {
+    onRegisterMountedPath(file.path, hydrationGeneration);
+    return () => {
+      onUnregisterMountedPath(file.path, hydrationGeneration);
+    };
+  }, [
+    file.path,
+    hydrationGeneration,
+    onRegisterMountedPath,
+    onUnregisterMountedPath,
+  ]);
+
   const handleToggle = useCallback(() => {
     onTogglePath(file.path);
   }, [file.path, onTogglePath]);
@@ -288,10 +322,6 @@ const AgentsPublishVirtualFileRow = memo(function AgentsPublishVirtualFileRow({
   const handleShowAnyway = useCallback(() => {
     onShowAnywayPath(file.path);
   }, [file.path, onShowAnywayPath]);
-
-  const handleLoadCode = useCallback(() => {
-    onLoadCodePath(file.path);
-  }, [file.path, onLoadCodePath]);
 
   return (
     <AgentsPublishFileDiff
@@ -315,8 +345,6 @@ const AgentsPublishVirtualFileRow = memo(function AgentsPublishVirtualFileRow({
       isShowAnywayOverridden={isShowAnywayOverridden}
       onShowAnyway={handleShowAnyway}
       isFocusTarget={isFocusTarget}
-      contentMode={contentMode}
-      onLoadCode={handleLoadCode}
     />
   );
 });
@@ -333,6 +361,7 @@ export function AgentsPublishInlineDiffs({
   focusRequest,
   defaultMode,
   workspaceChangeLabel,
+  cumulativeModeLabel,
   liveSummary = null,
   repairMode = false,
 }: AgentsPublishInlineDiffsProps) {
@@ -347,14 +376,14 @@ export function AgentsPublishInlineDiffs({
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const [inlineDiffScrollParent, setInlineDiffScrollParent] =
     useState<HTMLElement | null>(null);
-  const [visibleRange, setVisibleRange] = useState<ListRange | null>(null);
-  // Lazy hydration tracks which file paths have entered the virtual range.
-  // Paths are added on first range entry and never removed, so body teardown does not thrash.
-  const [hydratedPaths, setHydratedPaths] = useState<Set<string>>(new Set());
+  const [visibleRangeState, setVisibleRangeState] = useState<{
+    generation: string;
+    range: ListRange;
+  } | null>(null);
   // Show-anyway overrides — paths where the user has dismissed a generated-file placeholder.
   const [userShowAnywayPaths, setUserShowAnywayPaths] = useState<Set<string>>(new Set());
-  const [reviewModeOverride, setReviewModeOverride] = useState<boolean | null>(null);
-  const [codeLoadedPaths, setCodeLoadedPaths] = useState<Set<string>>(new Set());
+  const [isReviewWalkthroughOpen, setIsReviewWalkthroughOpen] = useState(false);
+  const [reviewWalkthroughFindingId, setReviewWalkthroughFindingId] = useState<string | null>(null);
   const [pendingFocusRequest, setPendingFocusRequest] =
     useState<AgentPublishFocusRequest | null>(null);
   const [focusTargetPath, setFocusTargetPath] = useState<string | null>(null);
@@ -378,7 +407,7 @@ export function AgentsPublishInlineDiffs({
     isStagedMode,
     isUnstagedMode,
     refKind,
-    repairChangeSignature,
+    worktreeChangeSignature,
     setMode,
     stagedCount,
     supportsWorktreeModes,
@@ -397,9 +426,9 @@ export function AgentsPublishInlineDiffs({
     review?.headRef.startsWith(PATCH_BACKED_HEAD_REF_PREFIX) === true
       ? undefined
       : refKind;
-  const repairDiffQuerySignature = repairMode
-    ? (repairChangeSignature ?? "repair:none")
-    : undefined;
+  const diffQuerySignature = repairMode
+    ? (worktreeChangeSignature ?? "repair:none")
+    : worktreeChangeSignature;
   const diffPageRefKind = useMemo(
     () =>
       resolveDiffPageRefKind({
@@ -411,9 +440,89 @@ export function AgentsPublishInlineDiffs({
     [isStagedMode, isUnstagedMode, refKind, repairMode],
   );
   const diffPageReloadKey =
-    repairMode && (isStagedMode || isUnstagedMode)
-      ? repairDiffQuerySignature
-      : undefined;
+    isStagedMode || isUnstagedMode ? diffQuerySignature : undefined;
+  const currentFilePathIdentity = useMemo(
+    () => currentFiles.map((file) => file.path).join("\u0000"),
+    [currentFiles],
+  );
+  const hydrationGeneration = useMemo(
+    () =>
+      [
+        conversationId,
+        diffRefKindKey(refKind),
+        diffQuerySignature ?? "stable",
+        currentFilePathIdentity,
+      ].join("\u0001"),
+    [
+      conversationId,
+      currentFilePathIdentity,
+      refKind,
+      diffQuerySignature,
+    ],
+  );
+  const [hydrationState, setHydrationState] = useState<HydrationPathState>(
+    () => ({
+      generation: hydrationGeneration,
+      paths: new Set(),
+    }),
+  );
+  const [mountedState, setMountedState] = useState<HydrationPathState>(() => ({
+    generation: hydrationGeneration,
+    paths: new Set(),
+  }));
+  const hydratedPaths = useMemo(
+    () =>
+      hydrationState.generation === hydrationGeneration
+        ? hydrationState.paths
+        : new Set<string>(),
+    [hydrationGeneration, hydrationState],
+  );
+  const mountedPaths = useMemo(
+    () =>
+      mountedState.generation === hydrationGeneration
+        ? mountedState.paths
+        : new Set<string>(),
+    [hydrationGeneration, mountedState],
+  );
+  const visibleRange =
+    visibleRangeState?.generation === hydrationGeneration
+      ? visibleRangeState.range
+      : null;
+  const registerMountedPath = useCallback(
+    (path: string, generation: string) => {
+      if (generation !== hydrationGeneration) {
+        return;
+      }
+      const register = (current: HydrationPathState): HydrationPathState => {
+        const paths =
+          current.generation === generation ? current.paths : new Set<string>();
+        if (paths.has(path)) {
+          return current.generation === generation
+            ? current
+            : { generation, paths };
+        }
+        const nextPaths = new Set(paths);
+        nextPaths.add(path);
+        return { generation, paths: nextPaths };
+      };
+      setHydrationState(register);
+      setMountedState(register);
+    },
+    [hydrationGeneration],
+  );
+  const unregisterMountedPath = useCallback(
+    (path: string, generation: string) => {
+      setMountedState((current) => {
+        if (current.generation !== generation || !current.paths.has(path)) {
+          return current;
+        }
+        const nextPaths = new Set(current.paths);
+        nextPaths.delete(path);
+        return { generation, paths: nextPaths };
+      });
+    },
+    [],
+  );
   const canRenderPrAnnotations =
     !isConflictedMode && (refKind.kind === "head" || refKind.kind === "cumulative_head");
   const annotationsByPath = useMemo(() => {
@@ -478,8 +587,24 @@ export function AgentsPublishInlineDiffs({
     };
   }, [annotationsByPath, currentFiles, hunkAnnotationsByPath]);
   const hasActiveReviewAnnotations = activeAnnotationSummary.count > 0;
-  const reviewModeEnabled =
-    hasActiveReviewAnnotations && (reviewModeOverride ?? true);
+  const reviewWalkthroughPath = useMemo(() => {
+    if (reviewWalkthroughFindingId === null) return null;
+    const isWorkspaceFinding = reviewWalkthroughFindingId.startsWith("workspace:");
+    const id = reviewWalkthroughFindingId.slice(
+      isWorkspaceFinding ? "workspace:".length : "pr:".length,
+    );
+    if (!id) return null;
+    for (const file of currentFiles) {
+      const candidates =
+        isWorkspaceFinding
+          ? hunkAnnotationsByPath.get(file.path)
+          : annotationsByPath.get(file.path);
+      if (candidates?.some((annotation) => annotation.id === id)) {
+        return file.path;
+      }
+    }
+    return null;
+  }, [annotationsByPath, currentFiles, hunkAnnotationsByPath, reviewWalkthroughFindingId]);
   const firstAnnotatedFilePath = useMemo(() => {
     if (annotationsByPath.size === 0 && hunkAnnotationsByPath.size === 0) {
       return null;
@@ -541,12 +666,11 @@ export function AgentsPublishInlineDiffs({
     hunkAnnotationsByPath,
   ]);
 
-  // ── Conversation/mode changes reset hydrated paths; keep same-list viewport ranges ──
+  // ── Conversation/mode changes reset presentation state. Diff hydration is
+  // generation-scoped so mounted rows can re-register without an effect race. ──
   useEffect(() => {
-    setHydratedPaths(new Set());
-    setCodeLoadedPaths(new Set());
-    setReviewModeOverride(null);
-    setVisibleRange(null);
+    setIsReviewWalkthroughOpen(false);
+    setReviewWalkthroughFindingId(null);
     setFocusTargetPath(null);
     setPendingFileScrollPath(null);
     setPendingAnnotationScrollPath(null);
@@ -554,9 +678,8 @@ export function AgentsPublishInlineDiffs({
   }, [conversationId]);
 
   useEffect(() => {
-    setHydratedPaths(new Set());
-    setCodeLoadedPaths(new Set());
-    setReviewModeOverride(null);
+    setIsReviewWalkthroughOpen(false);
+    setReviewWalkthroughFindingId(null);
     setFocusTargetPath(null);
     setPendingFileScrollPath(null);
     setPendingAnnotationScrollPath(null);
@@ -597,11 +720,18 @@ export function AgentsPublishInlineDiffs({
 
   const hydrateVisibleRange = useCallback(
     (range: ListRange) => {
-      setVisibleRange(range);
-      setHydratedPaths((prev) => {
+      setVisibleRangeState({ generation: hydrationGeneration, range });
+      setHydrationState((current) => {
+        const previousPaths =
+          current.generation === hydrationGeneration
+            ? current.paths
+            : new Set<string>();
         let changed = false;
-        const next = new Set(prev);
-        const start = Math.max(0, range.startIndex - VIRTUAL_RANGE_OVERSCAN_FILES);
+        const next = new Set(previousPaths);
+        const start = Math.max(
+          0,
+          range.startIndex - VIRTUAL_RANGE_OVERSCAN_FILES,
+        );
         const end = Math.min(
           currentFiles.length - 1,
           range.endIndex + VIRTUAL_RANGE_OVERSCAN_FILES,
@@ -609,16 +739,19 @@ export function AgentsPublishInlineDiffs({
 
         for (let index = start; index <= end; index += 1) {
           const path = currentFiles[index]?.path;
-          if (path && !prev.has(path)) {
+          if (path && !previousPaths.has(path)) {
             next.add(path);
             changed = true;
           }
         }
 
-        return changed ? next : prev;
+        if (!changed && current.generation === hydrationGeneration) {
+          return current;
+        }
+        return { generation: hydrationGeneration, paths: next };
       });
     },
-    [currentFiles],
+    [currentFiles, hydrationGeneration],
   );
 
   const handleInlineDiffScrollerRef = useCallback(
@@ -644,33 +777,47 @@ export function AgentsPublishInlineDiffs({
     [currentFiles, effectiveCollapsedPaths],
   );
 
+  const liveFetchEligiblePathSet = useMemo(
+    () => new Set([...mountedPaths, ...bufferedVisiblePathSet]),
+    [bufferedVisiblePathSet, mountedPaths],
+  );
+  const fetchCandidateFiles = useMemo(
+    () =>
+      currentFiles.filter(
+        (file) =>
+          !effectiveCollapsedPaths.has(file.path) ||
+          file.path === reviewWalkthroughPath,
+      ),
+    [currentFiles, effectiveCollapsedPaths, reviewWalkthroughPath],
+  );
+
   const fetchableFiles = useMemo(
     () =>
-      expandedFiles.filter((file) => {
+      fetchCandidateFiles.filter((file) => {
         const isShowAnywayOverridden = userShowAnywayPaths.has(file.path);
-        const shouldLoadCode =
-          !reviewModeEnabled || isConflictedMode || codeLoadedPaths.has(file.path);
+        const isWalkthroughTarget = file.path === reviewWalkthroughPath;
         return (
-          shouldLoadCode &&
-          bufferedVisiblePathSet.has(file.path) &&
-          !canUsePagedInlineDiff({
-            file,
-            isConflictMode: isConflictedMode,
-            conversationId,
-            diffPageRefKind,
-            isShowAnywayOverridden,
-          }) &&
+          (liveFetchEligiblePathSet.has(file.path) || isWalkthroughTarget) &&
+          // The walkthrough needs real hunk lines, so it opts out of paged
+          // rendering — but the generated-file gate still requires explicit intent.
+          (isWalkthroughTarget ||
+            !canUsePagedInlineDiff({
+              file,
+              isConflictMode: isConflictedMode,
+              conversationId,
+              diffPageRefKind,
+              isShowAnywayOverridden,
+            })) &&
           (!requiresExplicitDiffHydration(file) || isShowAnywayOverridden)
         );
       }),
     [
-      bufferedVisiblePathSet,
-      codeLoadedPaths,
       conversationId,
       diffPageRefKind,
-      expandedFiles,
+      fetchCandidateFiles,
       isConflictedMode,
-      reviewModeEnabled,
+      liveFetchEligiblePathSet,
+      reviewWalkthroughPath,
       userShowAnywayPaths,
     ],
   );
@@ -680,10 +827,9 @@ export function AgentsPublishInlineDiffs({
     () =>
       expandedFiles.filter((file) => {
         const isShowAnywayOverridden = userShowAnywayPaths.has(file.path);
-        const shouldLoadCode =
-          !reviewModeEnabled || isConflictedMode || codeLoadedPaths.has(file.path);
         return (
-          shouldLoadCode &&
+          liveFetchEligiblePathSet.has(file.path) &&
+          file.path !== reviewWalkthroughPath &&
           canUsePagedInlineDiff({
             file,
             isConflictMode: isConflictedMode,
@@ -694,12 +840,12 @@ export function AgentsPublishInlineDiffs({
         );
       }),
     [
-      codeLoadedPaths,
       conversationId,
       diffPageRefKind,
       expandedFiles,
       isConflictedMode,
-      reviewModeEnabled,
+      liveFetchEligiblePathSet,
+      reviewWalkthroughPath,
       userShowAnywayPaths,
     ],
   );
@@ -780,7 +926,7 @@ export function AgentsPublishInlineDiffs({
       queryKey: [
         ...agentWorkspaceKeys.diff(conversationId),
         repairMode ? "repair-staged" : "staged",
-        ...(repairDiffQuerySignature !== undefined ? [repairDiffQuerySignature] : []),
+        ...(diffQuerySignature !== undefined ? [diffQuerySignature] : []),
         file.path,
       ],
       queryFn: () =>
@@ -803,7 +949,7 @@ export function AgentsPublishInlineDiffs({
       queryKey: [
         ...agentWorkspaceKeys.diff(conversationId),
         repairMode ? "repair-unstaged" : "unstaged",
-        ...(repairDiffQuerySignature !== undefined ? [repairDiffQuerySignature] : []),
+        ...(diffQuerySignature !== undefined ? [diffQuerySignature] : []),
         file.path,
       ],
       queryFn: () =>
@@ -826,7 +972,7 @@ export function AgentsPublishInlineDiffs({
       queryKey: [
         ...agentWorkspaceKeys.diff(conversationId),
         "repair-conflicted",
-        ...(repairDiffQuerySignature !== undefined ? [repairDiffQuerySignature] : []),
+        ...(diffQuerySignature !== undefined ? [diffQuerySignature] : []),
         file.path,
       ],
       queryFn: () =>
@@ -849,19 +995,34 @@ export function AgentsPublishInlineDiffs({
   });
 
   // ── Map path → DiffState for card props ───────────────────────────────
+  const activeDiffQueries = useMemo(
+    () =>
+      isCommitMode
+        ? commitDiffQueries
+        : isStagedMode
+          ? stagedDiffQueries
+          : isUnstagedMode
+            ? unstagedDiffQueries
+            : isCumulativeMode
+              ? cumulativeDiffQueries
+              : uncommittedDiffQueries,
+    [
+      isCommitMode,
+      isStagedMode,
+      isUnstagedMode,
+      isCumulativeMode,
+      uncommittedDiffQueries,
+      commitDiffQueries,
+      stagedDiffQueries,
+      unstagedDiffQueries,
+      cumulativeDiffQueries,
+    ],
+  );
+
   const diffByPath = useMemo(() => {
     const map = new Map<string, DiffState>();
-    const activeQueries = isCommitMode
-      ? commitDiffQueries
-      : isStagedMode
-        ? stagedDiffQueries
-        : isUnstagedMode
-          ? unstagedDiffQueries
-          : isCumulativeMode
-            ? cumulativeDiffQueries
-            : uncommittedDiffQueries;
     fetchableFiles.forEach((file, idx) => {
-      const q = activeQueries[idx];
+      const q = activeDiffQueries[idx];
       if (!q) return;
       if (q.isPending) {
         map.set(file.path, "loading");
@@ -872,18 +1033,18 @@ export function AgentsPublishInlineDiffs({
       }
     });
     return map;
-  }, [
-    isCommitMode,
-    isStagedMode,
-    isUnstagedMode,
-    isCumulativeMode,
-    uncommittedDiffQueries,
-    commitDiffQueries,
-    stagedDiffQueries,
-    unstagedDiffQueries,
-    cumulativeDiffQueries,
-    fetchableFiles,
-  ]);
+  }, [activeDiffQueries, fetchableFiles]);
+
+  // Retries the failed diff fetch behind the walkthrough's current finding so a
+  // transient error is recoverable without leaving and re-entering the view.
+  const handleRetryWalkthroughHunk = useCallback(
+    (path: string) => {
+      const idx = fetchableFiles.findIndex((file) => file.path === path);
+      if (idx === -1) return;
+      void activeDiffQueries[idx]?.refetch();
+    },
+    [activeDiffQueries, fetchableFiles],
+  );
 
   const conflictDiffByPath = useMemo(() => {
     const map = new Map<string, ConflictDiffState>();
@@ -903,6 +1064,24 @@ export function AgentsPublishInlineDiffs({
     });
     return map;
   }, [conflictDiffQueries, fetchableFiles, isConflictedMode]);
+
+  const reviewWalkthroughFindings = useMemo(
+    () =>
+      buildReviewWalkthroughFindings({
+        files: currentFiles,
+        annotationsByPath,
+        hunkAnnotationsByPath,
+        diffByPath,
+        showAnywayPaths: userShowAnywayPaths,
+      }),
+    [
+      annotationsByPath,
+      currentFiles,
+      diffByPath,
+      hunkAnnotationsByPath,
+      userShowAnywayPaths,
+    ],
+  );
 
   // ── Jump-to-file filtered list ────────────────────────────────────────
   const filteredJumpFiles = useMemo(() => {
@@ -955,26 +1134,6 @@ export function AgentsPublishInlineDiffs({
       }
       return new Set([...prev, path]);
     });
-  }, []);
-
-  const handleLoadCode = useCallback(
-    (path: string) => {
-      setCodeLoadedPaths((prev) => {
-        if (prev.has(path)) {
-          return prev;
-        }
-        return new Set([...prev, path]);
-      });
-      const index = currentFiles.findIndex((file) => file.path === path);
-      if (index >= 0) {
-        hydrateVisibleRange({ startIndex: index, endIndex: index });
-      }
-    },
-    [currentFiles, hydrateVisibleRange],
-  );
-
-  const toggleReviewMode = useCallback(() => {
-    setReviewModeOverride((current) => !(current ?? true));
   }, []);
 
   const collapseAll = useCallback(() => {
@@ -1188,7 +1347,12 @@ export function AgentsPublishInlineDiffs({
           inlineDiffScrollParent={inlineDiffScrollParent}
           diffPageSummary={diffPageSummaryByPath.get(fileChange.path)}
           shouldHydrate={hydratedPaths.has(fileChange.path)}
-          annotations={annotationsByPath.get(fileChange.path) ?? EMPTY_PR_DIFF_ANNOTATIONS}
+          hydrationGeneration={hydrationGeneration}
+          onRegisterMountedPath={registerMountedPath}
+          onUnregisterMountedPath={unregisterMountedPath}
+          annotations={
+            annotationsByPath.get(fileChange.path) ?? EMPTY_PR_DIFF_ANNOTATIONS
+          }
           hunkAnnotations={
             hunkAnnotationsByPath.get(fileChange.path) ??
             EMPTY_WORKSPACE_REVIEW_HUNK_ANNOTATIONS
@@ -1196,48 +1360,48 @@ export function AgentsPublishInlineDiffs({
           isShowAnywayOverridden={userShowAnywayPaths.has(fileChange.path)}
           onShowAnywayPath={handleShowAnyway}
           isFocusTarget={focusTargetPath === fileChange.path}
-          contentMode={
-            reviewModeEnabled &&
-            !isConflictedMode &&
-            !codeLoadedPaths.has(fileChange.path)
-              ? "review-only"
-              : "full"
-          }
-          onLoadCodePath={handleLoadCode}
         />
       </div>
     ),
     [
       annotationsByPath,
-      codeLoadedPaths,
       conversationId,
       currentFiles.length,
       conflictDiffByPath,
       diffByPath,
       effectiveCollapsedPaths,
       handleCopyPath,
-      handleLoadCode,
       handleOpenFullscreen,
       handleShowAnyway,
       handleToggle,
       hunkAnnotationsByPath,
       hydratedPaths,
+      hydrationGeneration,
       inlineDiffScrollParent,
       isConflictedMode,
-      reviewModeEnabled,
       diffPageRefKind,
       diffPageReloadKey,
       diffPageSummaryByPath,
       focusTargetPath,
       rangeRefKind,
+      registerMountedPath,
       repairMode,
+      unregisterMountedPath,
       userShowAnywayPaths,
     ],
   );
 
   const displayError = error ?? currentFilesError;
   const isFileListLoading = isLoading || isCurrentFilesLoading;
-  const emptyStateCopy = getEmptyDiffStateCopy(effectiveMode, workspaceChangeLabel);
+  const emptyStateCopy = getEmptyDiffStateCopy(
+    effectiveMode,
+    workspaceChangeLabel,
+    cumulativeModeLabel,
+  );
+  const errorSubject =
+    effectiveMode === "cumulative" && cumulativeModeLabel
+      ? cumulativeModeLabel.toLowerCase()
+      : "workspace changes";
 
   useEffect(() => {
     if (
@@ -1323,6 +1487,33 @@ export function AgentsPublishInlineDiffs({
     return undefined;
   }, [annotationScrollAttempt, diffByPath, pendingAnnotationScrollPath, visibleRange]);
 
+  // The walkthrough reads its hunks from `diffByPath`/`activeDiffQueries`, which
+  // are empty in conflicted mode (conflicts use `conflictDiffQueries`). Today the
+  // annotation gates already keep findings empty there, but keeping the surface
+  // itself out of conflicted mode means a future gate change cannot produce a
+  // walkthrough whose hunks never load and whose retry silently does nothing.
+  if (isReviewWalkthroughOpen && !isConflictedMode) {
+    return (
+      <div
+        ref={inlineDiffsRootRef}
+        data-testid="agents-publish-inline-diffs"
+        className="flex min-h-0 flex-1 flex-col overflow-x-hidden"
+      >
+        <ReviewWalkthrough
+          findings={reviewWalkthroughFindings}
+          onExit={() => {
+            setIsReviewWalkthroughOpen(false);
+            setReviewWalkthroughFindingId(null);
+          }}
+          onOpenFile={handleOpenFullscreen}
+          onCurrentFindingChange={setReviewWalkthroughFindingId}
+          onRetryHunk={handleRetryWalkthroughHunk}
+          onLoadHunkAnyway={handleShowAnyway}
+        />
+      </div>
+    );
+  }
+
   return (
     <div
       ref={inlineDiffsRootRef}
@@ -1342,6 +1533,7 @@ export function AgentsPublishInlineDiffs({
           mode={effectiveMode}
           workspaceChangeCount={workspaceChangeCount}
           {...(workspaceChangeLabel !== undefined && { workspaceChangeLabel })}
+          {...(cumulativeModeLabel !== undefined && { cumulativeModeLabel })}
           {...(conflictedCount !== undefined && { conflictedCount })}
           {...(stagedCount !== undefined && { stagedCount })}
           {...(unstagedCount !== undefined && { unstagedCount })}
@@ -1381,30 +1573,19 @@ export function AgentsPublishInlineDiffs({
             <>
               <button
                 type="button"
-                data-testid="inline-diffs-reviews-toggle"
-                aria-pressed={reviewModeEnabled}
-                aria-label={
-                  reviewModeEnabled
-                    ? "Show full code diffs"
-                    : "Show review annotations without code"
-                }
-                onClick={toggleReviewMode}
+                data-testid="publish-review-walkthrough-enter"
+                aria-label="Start review walkthrough"
+                onClick={() => setIsReviewWalkthroughOpen(true)}
                 className="rounded border px-2 py-1 text-[0.6875rem] font-semibold transition-colors hover:bg-[var(--bg-hover)]"
                 style={{
-                  backgroundColor: reviewModeEnabled
-                    ? "var(--accent-muted)"
-                    : "transparent",
-                  borderColor: reviewModeEnabled
-                    ? "var(--accent-border)"
-                    : "var(--border-subtle)",
+                  backgroundColor: "transparent",
+                  borderColor: "var(--border-subtle)",
                   borderStyle: "solid",
                   borderWidth: "1px",
-                  color: reviewModeEnabled
-                    ? "var(--accent-primary)"
-                    : "var(--text-secondary)",
+                  color: "var(--text-secondary)",
                 }}
               >
-                Reviews {activeAnnotationSummary.count}
+                ▶ Walkthrough {activeAnnotationSummary.count}
               </button>
               <Popover modal={false}>
                 <PopoverTrigger asChild>
@@ -1628,9 +1809,14 @@ export function AgentsPublishInlineDiffs({
           className="flex flex-col items-center justify-center px-4 py-12 text-center"
           style={{ color: "var(--text-muted)" }}
         >
-          <p className="text-sm">Could not load workspace changes</p>
-          <p className="mt-1 max-w-xl text-xs" style={{ color: "var(--text-muted)" }}>
-            {displayError instanceof Error ? displayError.message : String(displayError)}
+          <p className="text-sm">Could not load {errorSubject}</p>
+          <p
+            className="mt-1 max-w-xl text-xs"
+            style={{ color: "var(--text-muted)" }}
+          >
+            {displayError instanceof Error
+              ? displayError.message
+              : String(displayError)}
           </p>
         </div>
       ) : currentFiles.length === 0 ? (

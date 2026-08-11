@@ -10,13 +10,14 @@ use axum::{
 };
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::Emitter;
 
 use super::*;
 use crate::application::chat_service::freshness_routing::{
     freshness_return_route, FreshnessRouteResult,
 };
-use crate::application::{GitService, TaskTransitionService};
+use crate::application::{
+    task_diff_base::read_task_diff_stats_from_resolved_base, GitService, TaskTransitionService,
+};
 use crate::domain::entities::{task_metadata::MergeFailureSource, InternalStatus, TaskId};
 use crate::domain::state_machine::resolve_merge_branches;
 use crate::domain::state_machine::services::TaskScheduler;
@@ -140,6 +141,7 @@ pub async fn complete_merge(
             None,
         ));
     }
+    reject_legacy_branch_update_merge_endpoint(&task)?;
 
     // 5. Get project for cleanup info and verification
     let project = state
@@ -494,24 +496,23 @@ pub async fn complete_merge(
         }
     }
 
-    // 11. Emit events
-    if let Some(app_handle) = &state.app_state.app_handle {
-        let _ = app_handle.emit(
-            "merge:completed",
-            serde_json::json!({
-                "task_id": task_id.as_str(),
-                "commit_sha": req.commit_sha,
-            }),
-        );
-        let _ = app_handle.emit(
-            "task:status_changed",
-            serde_json::json!({
-                "task_id": task_id.as_str(),
-                "old_status": "merging",
-                "new_status": "merged",
-            }),
-        );
-    }
+    crate::http_server::emit_http_event(
+        &state,
+        "merge:completed",
+        serde_json::json!({
+            "task_id": task_id.as_str(),
+            "commit_sha": req.commit_sha,
+        }),
+    );
+    crate::http_server::emit_http_event(
+        &state,
+        "task:status_changed",
+        serde_json::json!({
+            "task_id": task_id.as_str(),
+            "old_status": "merging",
+            "new_status": "merged",
+        }),
+    );
 
     // 11b. Dual-channel emission: external_events table (SSE/poll) + webhook publisher
     {
@@ -614,6 +615,7 @@ pub async fn report_conflict(
             None,
         ));
     }
+    reject_legacy_branch_update_merge_endpoint(&task)?;
 
     // 2. Store conflict metadata for historical navigation
     // This ensures conflict_files are persisted even when navigating historical tasks
@@ -663,25 +665,24 @@ pub async fn report_conflict(
         .await
         .map_err(|e| json_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None))?;
 
-    // 4. Emit events
-    if let Some(app_handle) = &state.app_state.app_handle {
-        let _ = app_handle.emit(
-            "merge:conflict",
-            serde_json::json!({
-                "task_id": task_id.as_str(),
-                "conflict_files": req.conflict_files,
-                "reason": req.reason,
-            }),
-        );
-        let _ = app_handle.emit(
-            "task:status_changed",
-            serde_json::json!({
-                "task_id": task_id.as_str(),
-                "old_status": "merging",
-                "new_status": "merge_conflict",
-            }),
-        );
-    }
+    crate::http_server::emit_http_event(
+        &state,
+        "merge:conflict",
+        serde_json::json!({
+            "task_id": task_id.as_str(),
+            "conflict_files": req.conflict_files,
+            "reason": req.reason,
+        }),
+    );
+    crate::http_server::emit_http_event(
+        &state,
+        "task:status_changed",
+        serde_json::json!({
+            "task_id": task_id.as_str(),
+            "old_status": "merging",
+            "new_status": "merge_conflict",
+        }),
+    );
 
     // 4b. Dual-channel emission: external_events table (SSE/poll) + webhook publisher
     {
@@ -785,6 +786,7 @@ pub async fn report_incomplete(
             None,
         ));
     }
+    reject_legacy_branch_update_merge_endpoint(&task)?;
 
     // 2. Persist error context to task metadata.
     // Mark as agent-reported so reconciler skips auto-retry (agent made a deliberate decision).
@@ -814,25 +816,24 @@ pub async fn report_incomplete(
         .await
         .map_err(|e| json_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None))?;
 
-    // 4. Emit events
-    if let Some(app_handle) = &state.app_state.app_handle {
-        let _ = app_handle.emit(
-            "merge:incomplete",
-            serde_json::json!({
-                "task_id": task_id.as_str(),
-                "reason": req.reason,
-                "diagnostic_info": req.diagnostic_info,
-            }),
-        );
-        let _ = app_handle.emit(
-            "task:status_changed",
-            serde_json::json!({
-                "task_id": task_id.as_str(),
-                "old_status": "merging",
-                "new_status": "merge_incomplete",
-            }),
-        );
-    }
+    crate::http_server::emit_http_event(
+        &state,
+        "merge:incomplete",
+        serde_json::json!({
+            "task_id": task_id.as_str(),
+            "reason": req.reason,
+            "diagnostic_info": req.diagnostic_info,
+        }),
+    );
+    crate::http_server::emit_http_event(
+        &state,
+        "task:status_changed",
+        serde_json::json!({
+            "task_id": task_id.as_str(),
+            "old_status": "merging",
+            "new_status": "merge_incomplete",
+        }),
+    );
 
     // 5. Notify completion signal then close stdin via IPR
     {
@@ -932,7 +933,7 @@ pub async fn get_task_diff_stats(
         )
     })?;
 
-    // 3. Get project for base branch and working directory
+    // 3. Get project for base resolution and working directory
     let project = state
         .app_state
         .project_repo
@@ -941,19 +942,15 @@ pub async fn get_task_diff_stats(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "Project not found".to_string()))?;
 
-    let base_branch = project.base_branch.as_deref().unwrap_or("main");
-
-    // 4. Determine working path (worktree or main repo)
-    let working_path = task
-        .worktree_path
-        .as_ref()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(&project.working_directory));
-
-    // 5. Get diff stats from GitService
-    let stats = GitService::get_diff_stats(&working_path, base_branch)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    // 4. Get diff stats from the immutable captured base when available.
+    let stats = read_task_diff_stats_from_resolved_base(
+        &state.app_state,
+        &task,
+        &project,
+        "git task diff stats",
+    )
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(Json(DiffStatsResponse {
         files_changed: stats.files_changed,
@@ -1010,6 +1007,34 @@ pub async fn get_merge_target(
 /// JSON error response type for git handlers
 pub type JsonError = (StatusCode, Json<serde_json::Value>);
 
+fn reject_legacy_branch_update_merge_endpoint(
+    task: &crate::domain::entities::Task,
+) -> Result<(), JsonError> {
+    let metadata = task
+        .metadata
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok());
+    let has_evidence = metadata.as_ref().is_some_and(|metadata| {
+        [
+            "branch_freshness_conflict",
+            "plan_update_conflict",
+            "source_update_conflict",
+            "pr_branch_update_conflict",
+            "pr_branch_publication_conflict",
+        ]
+        .iter()
+        .any(|key| metadata.get(*key).and_then(|value| value.as_bool()) == Some(true))
+    });
+    if has_evidence {
+        return Err(json_error(
+            StatusCode::CONFLICT,
+            "Legacy branch-update evidence is not valid merge authority",
+            Some("Run branch-update remediation before using merge completion tools".to_string()),
+        ));
+    }
+    Ok(())
+}
+
 /// Create a JSON error response with an error message and optional details
 #[doc(hidden)]
 pub fn json_error(
@@ -1036,7 +1061,7 @@ pub fn is_valid_git_sha(sha: &str) -> bool {
 /// self-ref) and wiring it into `TaskTransitionService`. All complete_merge
 /// paths (rebase retry, source-update retry, normal Merged, freshness routing)
 /// use the same service instance, avoiding duplicate construction.
-fn build_transition_service(state: &HttpServerState) -> TaskTransitionService<tauri::Wry> {
+fn build_transition_service(state: &HttpServerState) -> TaskTransitionService {
     let scheduler_concrete = std::sync::Arc::new(state.app_state.build_task_scheduler_for_runtime(
         std::sync::Arc::clone(&state.execution_state),
         state.app_state.app_handle.as_ref().cloned(),
@@ -1057,6 +1082,18 @@ fn build_transition_service(state: &HttpServerState) -> TaskTransitionService<ta
 fn build_pr_sync_services(state: &HttpServerState) -> PlanBranchPrSyncServices {
     PlanBranchPrSyncServices {
         task_repo: Some(Arc::clone(&state.app_state.task_repo)),
+        branch_update_repo: Some(Arc::clone(&state.app_state.branch_update_repo)),
+        branch_update_workflow: Some(Arc::new(
+            crate::application::branch_update_workflow::ApplicationBranchUpdateWorkflow::new(
+                Arc::new(
+                    state
+                        .app_state
+                        .build_chat_service_with_execution_state(Arc::clone(
+                            &state.execution_state,
+                        )),
+                ),
+            ),
+        )),
         plan_branch_repo: Some(Arc::clone(&state.app_state.plan_branch_repo)),
         pr_creation_guard: Some(Arc::clone(
             &state.app_state.pr_poller_registry.pr_creation_guard,
@@ -1069,6 +1106,7 @@ fn build_pr_sync_services(state: &HttpServerState) -> PlanBranchPrSyncServices {
                 Arc::clone(&state.app_state.agent_conversation_workspace_repo),
                 Arc::clone(&state.app_state.chat_conversation_repo),
                 Arc::clone(&state.app_state.agent_provider_settings_repo),
+                Arc::new(state.app_state.manual_role_default_service()),
                 state.app_state.agent_clients.clone(),
             ),
         ),

@@ -57,6 +57,13 @@ impl FakeProcessState {
     }
 }
 
+#[test]
+fn coverage_regression_storage_failure_is_not_reported_as_an_occupied_slot() {
+    let error = TryRegisterError::Storage("database unavailable".to_string());
+
+    assert!(error.occupied().is_none());
+}
+
 #[tokio::test]
 async fn test_register_and_get() {
     let registry = MemoryRunningAgentRegistry::new();
@@ -295,7 +302,7 @@ async fn test_try_register_fails_when_occupied() {
         .await;
 
     assert!(result.is_err());
-    let existing = result.unwrap_err();
+    let existing = result.unwrap_err().occupied().cloned().unwrap();
     assert_eq!(existing.pid, 12345);
     assert_eq!(existing.conversation_id, "conv-existing");
 
@@ -305,7 +312,7 @@ async fn test_try_register_fails_when_occupied() {
 }
 
 #[tokio::test]
-async fn test_try_register_then_update_agent_process() {
+async fn test_try_register_then_attach_process() {
     let registry = MemoryRunningAgentRegistry::new();
     let key = RunningAgentKey::new("task_execution", "task-update");
     let token = CancellationToken::new();
@@ -324,11 +331,10 @@ async fn test_try_register_then_update_agent_process() {
 
     // Update with real process details
     registry
-        .update_agent_process(
+        .attach_process(
             &key,
+            "run-1",
             54321,
-            "conv-1",
-            "run-real",
             Some("/tmp/worktree".to_string()),
             Some(token.clone()),
             None,
@@ -339,14 +345,15 @@ async fn test_try_register_then_update_agent_process() {
     // Should now have real PID, agent_run_id, and worktree
     let info = registry.get(&key).await.unwrap();
     assert_eq!(info.pid, 54321);
-    assert_eq!(info.agent_run_id, "run-real");
+    assert_eq!(info.agent_run_id, "run-1");
     assert_eq!(info.worktree_path.as_deref(), Some("/tmp/worktree"));
     assert!(info.cancellation_token.is_some());
 }
 
-/// TOCTOU race: try_register → pruner deletes entry → update_agent_process re-inserts.
+/// A pruner that removes the reservation also removes launch authority. Attachment
+/// must fail closed instead of reviving the deleted claim.
 #[tokio::test]
-async fn test_toctou_pruner_deletes_placeholder_then_update_reinserts() {
+async fn test_attach_process_does_not_revive_deleted_reservation() {
     let registry = MemoryRunningAgentRegistry::new();
     let key = RunningAgentKey::new("task_execution", "task-toctou");
 
@@ -365,14 +372,13 @@ async fn test_toctou_pruner_deletes_placeholder_then_update_reinserts() {
     registry.unregister(&key, "run-toctou").await;
     assert!(!registry.is_running(&key).await);
 
-    // Step 3: update_agent_process should re-insert
+    // Step 3: attachment must report the lost claim and leave the slot empty.
     let token = CancellationToken::new();
-    registry
-        .update_agent_process(
+    let result = registry
+        .attach_process(
             &key,
+            "run-toctou",
             12345,
-            "conv-toctou",
-            "run-real",
             Some("/tmp/worktree".to_string()),
             Some(token.clone()),
             None,
@@ -380,14 +386,54 @@ async fn test_toctou_pruner_deletes_placeholder_then_update_reinserts() {
         .await
         .unwrap();
 
-    // Step 4: Verify re-insertion
-    assert!(registry.is_running(&key).await);
-    let info = registry.get(&key).await.unwrap();
-    assert_eq!(info.pid, 12345);
-    assert_eq!(info.conversation_id, "conv-toctou");
-    assert_eq!(info.agent_run_id, "run-real");
-    assert_eq!(info.worktree_path.as_deref(), Some("/tmp/worktree"));
-    assert!(info.cancellation_token.is_some());
+    assert_eq!(result, AttachProcessResult::ClaimLost);
+    assert!(!registry.is_running(&key).await);
+    assert!(!token.is_cancelled());
+}
+
+#[tokio::test]
+async fn test_stale_owner_cannot_attach_refresh_stop_or_cleanup_replacement() {
+    let state = FakeProcessState::with_alive(&[54321]);
+    let registry = MemoryRunningAgentRegistry::with_process_ops(state.process_ops());
+    let key = RunningAgentKey::new("task_execution", "task-owner-cas");
+    let replacement_token = CancellationToken::new();
+
+    registry
+        .register(
+            key.clone(),
+            54321,
+            "conv-new".to_string(),
+            "run-new".to_string(),
+            None,
+            Some(replacement_token.clone()),
+        )
+        .await;
+
+    let attached = registry
+        .attach_process(&key, "run-old", 12345, None, None, None)
+        .await
+        .unwrap();
+    assert_eq!(attached, AttachProcessResult::ClaimLost);
+    assert!(!registry
+        .renew_reservation(&key, "run-old", chrono::Utc::now())
+        .await
+        .unwrap());
+    assert!(registry
+        .stop_if_owned(&key, "run-old")
+        .await
+        .unwrap()
+        .is_none());
+    assert!(registry
+        .cleanup_stale_entry(&key, "run-old")
+        .await
+        .unwrap()
+        .is_none());
+
+    let current = registry.get(&key).await.unwrap();
+    assert_eq!(current.agent_run_id, "run-new");
+    assert_eq!(current.pid, 54321);
+    assert!(!replacement_token.is_cancelled());
+    assert!(state.kills().is_empty());
 }
 
 #[tokio::test]
@@ -431,7 +477,7 @@ async fn test_try_register_blocks_concurrent_claim() {
         .try_register(key.clone(), "conv-2".to_string(), "run-2".to_string())
         .await;
     assert!(r2.is_err());
-    let existing = r2.unwrap_err();
+    let existing = r2.unwrap_err().occupied().cloned().unwrap();
     assert_eq!(existing.pid, 0); // Still placeholder
     assert_eq!(existing.conversation_id, "conv-1");
 }
@@ -1045,7 +1091,7 @@ async fn test_rapid_restart_dedup_try_register_ideation() {
     );
 
     // Confirm the existing placeholder's conversation_id is preserved (first wins).
-    let existing = r2.unwrap_err();
+    let existing = r2.unwrap_err().occupied().cloned().unwrap();
     assert_eq!(
         existing.conversation_id, "conv-ideation-1",
         "First registration must be preserved; second attempt must not overwrite it"
@@ -1054,4 +1100,45 @@ async fn test_rapid_restart_dedup_try_register_ideation() {
         existing.pid, 0,
         "Slot is still the placeholder (no real process spawned yet)"
     );
+}
+
+#[tokio::test]
+async fn memory_quiesce_retains_exact_owner_until_cleanup_finishes() {
+    let registry = MemoryRunningAgentRegistry::new();
+    let key = RunningAgentKey::new("merge", "task-cleanup");
+    registry
+        .register(
+            key.clone(),
+            999_999,
+            "conversation".to_string(),
+            "run-owned".to_string(),
+            Some("/tmp/worktree".to_string()),
+            None,
+        )
+        .await;
+
+    assert!(registry
+        .quiesce_if_owned(&key, "run-stale")
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(registry.get(&key).await.unwrap().pid, 999_999);
+
+    let owned = registry
+        .quiesce_if_owned(&key, "run-owned")
+        .await
+        .unwrap()
+        .expect("owner should quiesce");
+    assert_eq!(owned.agent_run_id, "run-owned");
+    assert_eq!(registry.get(&key).await.unwrap().pid, 0);
+    assert!(registry
+        .try_register(key.clone(), "replacement".into(), "run-new".into())
+        .await
+        .is_err());
+
+    registry.unregister(&key, "run-owned").await;
+    assert!(registry
+        .try_register(key, "replacement".into(), "run-new".into())
+        .await
+        .is_ok());
 }

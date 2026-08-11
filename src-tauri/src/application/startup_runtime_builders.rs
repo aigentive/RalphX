@@ -4,20 +4,21 @@ use crate::application::runtime_factory::{
     build_chat_service_with_fallback, ChatRuntimeFactoryDeps,
 };
 use crate::application::{
-    AgentClientBundle, ChatResumptionRunner, ChatService, InteractiveProcessRegistry,
-    PrPollerRegistry, ReconciliationRunner, TaskSchedulerService,
+    AgentClientBundle, AppState, ChatResumptionRunner, ChatService, InteractiveProcessRegistry,
+    NotificationService, PrPollerRegistry, ReconciliationRunner, TaskSchedulerService,
 };
 use crate::commands::ExecutionState;
 use crate::domain::repositories::{
     ActivityEventRepository, AgentLaneSettingsRepository, AgentProviderSettingsRepository,
-    AgentRunRepository, ArtifactRepository, ChatAttachmentRepository, ChatConversationRepository,
-    ChatMessageRepository, ExecutionPlanRepository, ExecutionSettingsRepository,
-    IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
-    ReviewRepository, TaskDependencyRepository, TaskRepository,
+    AgentRunRepository, ArtifactRepository, AutomationRunRepository, BranchUpdateRepository,
+    ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
+    ExecutionPlanRepository, ExecutionSettingsRepository, IdeationSessionRepository,
+    MemoryEventRepository, PlanBranchRepository, ProjectRepository, ReviewRepository,
+    TaskDependencyRepository, TaskRepository,
 };
 use crate::domain::services::{GithubServiceTrait, MessageQueue, RunningAgentRegistry};
 use crate::domain::state_machine::services::TaskScheduler;
-use tauri::Runtime;
+use tauri::{Manager, Runtime};
 
 pub(crate) struct StartupSchedulerDeps<R: Runtime = tauri::Wry> {
     pub execution_state: Arc<ExecutionState>,
@@ -41,13 +42,24 @@ pub(crate) struct StartupSchedulerDeps<R: Runtime = tauri::Wry> {
     pub interactive_process_registry: Arc<InteractiveProcessRegistry>,
     pub github_service: Option<Arc<dyn GithubServiceTrait>>,
     pub pr_poller_registry: Arc<PrPollerRegistry>,
-    pub app_handle: tauri::AppHandle<R>,
+    pub _app_handle: tauri::AppHandle<R>,
 }
 
 pub(crate) fn build_startup_task_scheduler<R: Runtime>(
     deps: StartupSchedulerDeps<R>,
 ) -> Arc<dyn TaskScheduler> {
-    let mut scheduler = TaskSchedulerService::<R>::new(
+    build_startup_task_scheduler_concrete(deps) as Arc<dyn TaskScheduler>
+}
+
+fn build_startup_task_scheduler_concrete<R: Runtime>(
+    deps: StartupSchedulerDeps<R>,
+) -> Arc<TaskSchedulerService> {
+    let agent_lane_settings_repo = {
+        let app_state = deps._app_handle.state::<AppState>();
+        Arc::clone(&app_state.agent_lane_settings_repo)
+    };
+
+    let mut scheduler = TaskSchedulerService::new(
         Arc::clone(&deps.execution_state),
         deps.project_repo,
         deps.task_repo,
@@ -62,9 +74,10 @@ pub(crate) fn build_startup_task_scheduler<R: Runtime>(
         deps.message_queue,
         deps.running_agent_registry,
         deps.memory_event_repo,
-        Some(deps.app_handle),
+        None,
     )
     .with_agent_clients(deps.agent_clients)
+    .with_agent_lane_settings_repo(agent_lane_settings_repo)
     .with_agent_provider_settings_repo(deps.agent_provider_settings_repo)
     .with_plan_branch_repo(deps.plan_branch_repo)
     .with_execution_plan_repo(deps.execution_plan_repo)
@@ -94,6 +107,7 @@ pub(crate) fn build_startup_recovery_chat_service(
 
 pub(crate) struct StartupChatResumptionDeps {
     pub agent_run_repo: Arc<dyn AgentRunRepository>,
+    pub automation_run_repo: Arc<dyn AutomationRunRepository>,
     pub task_repo: Arc<dyn TaskRepository>,
     pub execution_state: Arc<ExecutionState>,
     pub chat_runtime_deps: ChatRuntimeFactoryDeps,
@@ -103,13 +117,15 @@ pub(crate) struct StartupChatResumptionDeps {
     pub plan_branch_repo: Arc<dyn PlanBranchRepository>,
     pub interactive_process_registry: Arc<InteractiveProcessRegistry>,
     pub app_handle: tauri::AppHandle,
+    pub managed_team_barrier: Arc<crate::application::managed_team::ManagedTeamStartupBarrier>,
 }
 
 pub(crate) fn build_startup_chat_resumption_runner(
     deps: StartupChatResumptionDeps,
 ) -> ChatResumptionRunner {
-    ChatResumptionRunner::<tauri::Wry>::new(
+    ChatResumptionRunner::new(
         deps.agent_run_repo,
+        deps.automation_run_repo,
         deps.task_repo,
         deps.execution_state,
         deps.chat_runtime_deps,
@@ -120,6 +136,7 @@ pub(crate) fn build_startup_chat_resumption_runner(
     .with_agent_provider_settings_repo(deps.agent_provider_settings_repo)
     .with_plan_branch_repo(deps.plan_branch_repo)
     .with_interactive_process_registry(deps.interactive_process_registry)
+    .with_managed_team_barrier(deps.managed_team_barrier)
 }
 
 pub(crate) struct StartupReconciliationDeps {
@@ -140,9 +157,11 @@ pub(crate) struct StartupReconciliationDeps {
     pub execution_state: Arc<ExecutionState>,
     pub execution_settings_repo: Arc<dyn ExecutionSettingsRepository>,
     pub plan_branch_repo: Arc<dyn PlanBranchRepository>,
+    pub branch_update_repo: Arc<dyn BranchUpdateRepository>,
     pub pr_poller_registry: Arc<PrPollerRegistry>,
     pub interactive_process_registry: Arc<InteractiveProcessRegistry>,
     pub review_repo: Arc<dyn ReviewRepository>,
+    pub notification_service: Arc<NotificationService>,
     pub app_handle: tauri::AppHandle,
 }
 
@@ -167,8 +186,10 @@ pub(crate) fn build_startup_reconciliation_runner(
         deps.execution_state,
         Some(deps.app_handle),
     )
+    .with_notification_service(deps.notification_service)
     .with_execution_settings_repo(deps.execution_settings_repo)
     .with_plan_branch_repo(deps.plan_branch_repo)
+    .with_branch_update_repo(deps.branch_update_repo)
     .with_pr_poller_registry(deps.pr_poller_registry)
     .with_interactive_process_registry(deps.interactive_process_registry)
     .with_review_repo(deps.review_repo)
@@ -179,12 +200,16 @@ mod tests {
     use super::*;
     use crate::application::AppState;
     use crate::domain::entities::{ExecutionPlan, IdeationSession, InternalStatus, Project, Task};
-    use crate::testing::create_mock_app_handle;
+    use tauri::test::{mock_builder, mock_context, noop_assets};
 
     #[tokio::test]
     async fn startup_scheduler_skips_ready_task_from_superseded_execution_plan() {
         let app_state = AppState::new_test();
         let execution_state = Arc::new(ExecutionState::new());
+        let app = mock_builder()
+            .manage(app_state.clone())
+            .build(mock_context(noop_assets()))
+            .expect("mock app");
 
         let project = Project::new(
             "Startup Scheduler Project".into(),
@@ -239,7 +264,7 @@ mod tests {
             interactive_process_registry: Arc::clone(&app_state.interactive_process_registry),
             github_service: None,
             pr_poller_registry: Arc::clone(&app_state.pr_poller_registry),
-            app_handle: create_mock_app_handle(),
+            _app_handle: app.handle().clone(),
         });
 
         scheduler.try_schedule_ready_tasks().await;
@@ -255,5 +280,43 @@ mod tests {
             InternalStatus::Ready,
             "startup-built scheduler must not admit superseded-plan ready tasks"
         );
+    }
+
+    #[test]
+    fn startup_scheduler_carries_lane_and_provider_settings() {
+        let app_state = AppState::new_test();
+        let execution_state = Arc::new(ExecutionState::new());
+        let app = mock_builder()
+            .manage(app_state.clone())
+            .build(mock_context(noop_assets()))
+            .expect("mock app");
+
+        let scheduler = build_startup_task_scheduler_concrete(StartupSchedulerDeps {
+            execution_state,
+            project_repo: Arc::clone(&app_state.project_repo),
+            task_repo: Arc::clone(&app_state.task_repo),
+            task_dependency_repo: Arc::clone(&app_state.task_dependency_repo),
+            artifact_repo: Arc::clone(&app_state.artifact_repo),
+            chat_message_repo: Arc::clone(&app_state.chat_message_repo),
+            chat_attachment_repo: Arc::clone(&app_state.chat_attachment_repo),
+            conversation_repo: Arc::clone(&app_state.chat_conversation_repo),
+            agent_run_repo: Arc::clone(&app_state.agent_run_repo),
+            ideation_session_repo: Arc::clone(&app_state.ideation_session_repo),
+            activity_event_repo: Arc::clone(&app_state.activity_event_repo),
+            message_queue: Arc::clone(&app_state.message_queue),
+            running_agent_registry: Arc::clone(&app_state.running_agent_registry),
+            memory_event_repo: Arc::clone(&app_state.memory_event_repo),
+            agent_clients: app_state.agent_client_bundle(),
+            agent_provider_settings_repo: Arc::clone(&app_state.agent_provider_settings_repo),
+            plan_branch_repo: Arc::clone(&app_state.plan_branch_repo),
+            execution_plan_repo: Arc::clone(&app_state.execution_plan_repo),
+            interactive_process_registry: Arc::clone(&app_state.interactive_process_registry),
+            github_service: None,
+            pr_poller_registry: Arc::clone(&app_state.pr_poller_registry),
+            _app_handle: app.handle().clone(),
+        });
+
+        assert!(scheduler.agent_lane_settings_repo.is_some());
+        assert!(scheduler.agent_provider_settings_repo.is_some());
     }
 }

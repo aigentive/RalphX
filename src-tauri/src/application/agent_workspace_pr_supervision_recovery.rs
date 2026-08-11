@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
+use async_trait::async_trait;
+use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use futures::{stream, StreamExt as _};
 use tauri::{AppHandle, Emitter};
@@ -10,24 +12,39 @@ use tauri::{AppHandle, Emitter};
 use crate::application::agent_conversation_workspace::{
     ensure_linked_plan_branch_agent_worktree, resolve_valid_agent_conversation_workspace_path,
 };
-use crate::application::agent_workspace_publish_recovery::recover_stale_publish_repair_for_workspace_and_reload;
+use crate::application::agent_workspace_pr_autofix_attempt::load_pr_autofix_attempt_decision;
+use crate::application::agent_workspace_publish_recovery::recover_stale_publish_repair_for_workspace_in_state;
+#[cfg(any(test, feature = "test-utils"))]
+use crate::application::agent_workspace_publish_recovery::{
+    recover_stale_publish_repair_for_workspace_with_project_repo_outcome,
+    StalePublishRepairRecoveryOutcome,
+};
+use crate::application::agent_workspace_review::resolve_review_target;
+use crate::application::agent_workspace_review_publish_handoff::{
+    resume_pr_fix_publish_after_passed_workspace_review, PrFixReviewPublishResumeOutcome,
+};
+use crate::application::agent_workspace_terminal_cleanup::{
+    terminalize_agent_workspace_after_pr, TerminalAgentWorkspaceCause,
+};
 use crate::application::chat_service::ChatService;
 use crate::application::git_service::GitService;
-use crate::application::services::pr_merge_poller::cleanup_terminal_agent_workspace_after_pr;
+use crate::application::services::pr_merge_poller::classify_agent_workspace_pr_autofix_issue;
 use crate::application::services::PrPollerRegistry;
 use crate::application::task_transition_service::TaskTransitionService;
+use crate::application::AppState;
 use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus as PlanPrStatus};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
-    ChatConversationId, PlanBranch, PlanBranchStatus, Project, ProjectId,
+    AgentWorkspaceRepairPhase, ChatConversationId, PlanBranch, PlanBranchStatus, Project,
+    ProjectId,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, PlanBranchRepository,
     ProjectRepository,
 };
 use crate::domain::services::{GithubServiceTrait, PrStatus as GithubPrStatus, PrSyncState};
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::git_runtime_config;
 
 const STARTUP_PR_SUPERVISION_RECOVERY_LIMIT: usize = 25;
@@ -38,6 +55,38 @@ const PR_SUPERVISION_RECOVERED_SUMMARY: &str =
 
 static IN_FLIGHT_RECOVERIES: OnceLock<DashMap<String, ()>> = OnceLock::new();
 static RECENT_RECOVERIES: OnceLock<DashMap<String, Instant>> = OnceLock::new();
+
+/// Releases the in-flight claim and stamps the recent map even if the
+/// recovery task panics (for example inside a lazy deps factory); otherwise a
+/// single panic would permanently suppress PR supervision recovery for this
+/// workspace until restart.
+struct InFlightRecoveryClaim {
+    conversation_id: ChatConversationId,
+}
+
+impl Drop for InFlightRecoveryClaim {
+    fn drop(&mut self) {
+        RECENT_RECOVERIES
+            .get_or_init(DashMap::new)
+            .insert(self.conversation_id.as_str(), Instant::now());
+        IN_FLIGHT_RECOVERIES
+            .get_or_init(DashMap::new)
+            .remove(&self.conversation_id.as_str());
+    }
+}
+
+fn is_in_flight_durable_repair_phase(phase: AgentWorkspaceRepairPhase) -> bool {
+    matches!(
+        phase,
+        AgentWorkspaceRepairPhase::Requested
+            | AgentWorkspaceRepairPhase::Dispatching
+            | AgentWorkspaceRepairPhase::Repairing
+            | AgentWorkspaceRepairPhase::Validating
+            | AgentWorkspaceRepairPhase::ContinuationPending
+            | AgentWorkspaceRepairPhase::Continuing
+            | AgentWorkspaceRepairPhase::AwaitingReview
+    )
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AgentWorkspacePrSupervisionRecoveryTrigger {
@@ -63,28 +112,58 @@ pub(crate) struct AgentWorkspacePrSupervisionRecoveryDeps {
     pub plan_branch_repo: Arc<dyn PlanBranchRepository>,
     pub github: Arc<dyn GithubServiceTrait>,
     pub pr_poller_registry: Option<Arc<PrPollerRegistry>>,
-    pub transition_service: Option<Arc<TaskTransitionService<tauri::Wry>>>,
+    pub transition_service: Option<Arc<TaskTransitionService>>,
     pub chat_service: Option<Arc<dyn ChatService>>,
     pub agent_run_repo: Arc<dyn AgentRunRepository>,
     pub app_handle: Option<AppHandle>,
+    pub pr_fix_review_publish_resumer: Option<Arc<dyn AgentWorkspacePrFixReviewPublishResumer>>,
+    /// Production recovery reuses AppState so one canonical durable repair reconciler owns
+    /// legacy import, attempt fencing, and continuation settlement before PR supervision.
+    /// `None` exists only for focused legacy compatibility tests.
+    pub durable_recovery_state: Option<Arc<AppState>>,
+}
+
+pub(crate) fn build_agent_workspace_pr_supervision_recovery_deps(
+    state: &AppState,
+    app_handle: Option<AppHandle>,
+    transition_service: Option<Arc<TaskTransitionService>>,
+    chat_service: Option<Arc<dyn ChatService>>,
+    pr_fix_review_publish_resumer: Option<Arc<dyn AgentWorkspacePrFixReviewPublishResumer>>,
+) -> Option<AgentWorkspacePrSupervisionRecoveryDeps> {
+    let github = state.github_service.as_ref().map(Arc::clone)?;
+    Some(AgentWorkspacePrSupervisionRecoveryDeps {
+        workspace_repo: Arc::clone(&state.agent_conversation_workspace_repo),
+        project_repo: Arc::clone(&state.project_repo),
+        plan_branch_repo: Arc::clone(&state.plan_branch_repo),
+        github,
+        pr_poller_registry: Some(Arc::clone(&state.pr_poller_registry)),
+        transition_service,
+        chat_service,
+        agent_run_repo: Arc::clone(&state.agent_run_repo),
+        app_handle,
+        pr_fix_review_publish_resumer,
+        durable_recovery_state: Some(Arc::new(state.clone())),
+    })
+}
+
+#[async_trait]
+pub(crate) trait AgentWorkspacePrFixReviewPublishResumer: Send + Sync {
+    async fn publish_pr_fix_after_workspace_review(
+        &self,
+        conversation_id: ChatConversationId,
+    ) -> Result<Option<bool>, String>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AgentWorkspacePrSupervisionRecoveryOutcome {
     Skipped(&'static str),
     Recovered { pr_number: i64, head_sha: String },
+    ReviewPublished { pr_number: i64 },
     Terminal { pr_number: i64, pr_status: String },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AgentWorkspacePrSupervisionRecoveryTargetKind {
-    DirectWorkspace,
-    IdeationPlan,
 }
 
 #[derive(Debug, Clone)]
 struct AgentWorkspacePrSupervisionRecoveryTarget {
-    kind: AgentWorkspacePrSupervisionRecoveryTargetKind,
     pr_number: i64,
     pr_url: Option<String>,
     worktree_path: PathBuf,
@@ -92,14 +171,22 @@ struct AgentWorkspacePrSupervisionRecoveryTarget {
     plan_branch: Option<PlanBranch>,
 }
 
-impl AgentWorkspacePrSupervisionRecoveryTarget {
-    fn is_ideation_plan(&self) -> bool {
-        self.kind == AgentWorkspacePrSupervisionRecoveryTargetKind::IdeationPlan
-    }
-}
-
 pub(crate) fn schedule_agent_workspace_pr_supervision_recovery(
     deps: AgentWorkspacePrSupervisionRecoveryDeps,
+    conversation_id: ChatConversationId,
+    trigger: AgentWorkspacePrSupervisionRecoveryTrigger,
+    force: bool,
+) {
+    schedule_agent_workspace_pr_supervision_recovery_with_lazy_deps(
+        move || deps,
+        conversation_id,
+        trigger,
+        force,
+    );
+}
+
+pub(crate) fn schedule_agent_workspace_pr_supervision_recovery_with_lazy_deps(
+    deps_factory: impl FnOnce() -> AgentWorkspacePrSupervisionRecoveryDeps + Send + 'static,
     conversation_id: ChatConversationId,
     trigger: AgentWorkspacePrSupervisionRecoveryTrigger,
     force: bool,
@@ -114,15 +201,16 @@ pub(crate) fn schedule_agent_workspace_pr_supervision_recovery(
     }
 
     tokio::spawn(async move {
+        let _claim = InFlightRecoveryClaim {
+            conversation_id: conversation_id.clone(),
+        };
         let started = Instant::now();
-        let result =
-            recover_agent_workspace_pr_supervision(deps, conversation_id.clone(), trigger).await;
-        RECENT_RECOVERIES
-            .get_or_init(DashMap::new)
-            .insert(conversation_id.as_str(), Instant::now());
-        IN_FLIGHT_RECOVERIES
-            .get_or_init(DashMap::new)
-            .remove(&conversation_id.as_str());
+        let result = recover_agent_workspace_pr_supervision(
+            deps_factory(),
+            conversation_id.clone(),
+            trigger,
+        )
+        .await;
 
         match result {
             Ok(outcome) => tracing::info!(
@@ -158,45 +246,95 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
         ));
     };
 
+    #[cfg(not(any(test, feature = "test-utils")))]
+    if deps.durable_recovery_state.is_none() {
+        tracing::error!(
+            conversation_id = conversation_id.as_str(),
+            "Agent workspace PR supervision recovery: refusing legacy repair authority without durable state"
+        );
+        return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
+            "durable_repair_authority_unavailable",
+        ));
+    }
+
+    if let Some(state) = deps.durable_recovery_state.as_deref() {
+        workspace = recover_stale_publish_repair_for_workspace_in_state(state, workspace).await?;
+        let current_repair_attempt = state
+            .agent_workspace_repair_repo
+            .get_current_repair_attempt(&conversation_id)
+            .await?;
+        if current_repair_attempt
+            .as_ref()
+            .is_some_and(|attempt| is_in_flight_durable_repair_phase(attempt.phase))
+        {
+            return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
+                "durable_repair_active",
+            ));
+        }
+        if current_repair_attempt.as_ref().is_some_and(|attempt| {
+            attempt.is_unsettled() && attempt.operation_snapshot().hold_reason.is_some()
+        }) {
+            return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
+                "durable_repair_held",
+            ));
+        }
+    } else {
+        #[cfg(any(test, feature = "test-utils"))]
+        if workspace.mode == AgentConversationWorkspaceMode::Edit
+            && matches!(
+                (
+                    workspace.publication_push_status.as_deref(),
+                    workspace.pr_supervision_status.as_deref(),
+                ),
+                (Some("needs_agent"), _) | (Some("refreshed"), Some("fixing" | "reviewing"))
+            )
+        {
+            let (recovered_workspace, repair_outcome) =
+                recover_stale_publish_repair_for_workspace_with_project_repo_outcome(
+                    Arc::clone(&deps.workspace_repo),
+                    Arc::clone(&deps.agent_run_repo),
+                    Arc::clone(&deps.project_repo),
+                    workspace,
+                )
+                .await?;
+            workspace = recovered_workspace;
+            match repair_outcome {
+                StalePublishRepairRecoveryOutcome::RetryEligible => {}
+                StalePublishRepairRecoveryOutcome::ActiveReplacement => {
+                    return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
+                        "active_pr_autofix_replacement",
+                    ));
+                }
+                StalePublishRepairRecoveryOutcome::ActiveRepairReconciled => {
+                    return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
+                        "active_agent_run",
+                    ));
+                }
+                StalePublishRepairRecoveryOutcome::HandoffPreserved => {}
+                StalePublishRepairRecoveryOutcome::Manual => {
+                    return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
+                        "stale_repair_manual",
+                    ));
+                }
+                StalePublishRepairRecoveryOutcome::TerminalRecovered => {
+                    return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
+                        "stale_repair_recovered",
+                    ));
+                }
+                StalePublishRepairRecoveryOutcome::Noop => {}
+            }
+        }
+        #[cfg(not(any(test, feature = "test-utils")))]
+        return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
+            "durable_repair_authority_unavailable",
+        ));
+    }
+
+    // The durable repair coordinator is the first recovery authority. Its work may be a base
+    // update with no PR and may intentionally run while legacy Auto Publish/PR-autofix gates are
+    // disabled, so those compatibility gates apply only after it has no current generation.
     if let Some(reason) = pr_supervision_recovery_schedule_skip_reason(&workspace) {
         return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(reason));
-    }
-
-    if deps
-        .agent_run_repo
-        .get_active_for_conversation(&conversation_id)
-        .await?
-        .is_some()
-    {
-        return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
-            "active_agent_run",
-        ));
-    }
-
-    if workspace.mode == AgentConversationWorkspaceMode::Edit
-        && workspace.publication_push_status.as_deref() == Some("needs_agent")
-    {
-        workspace = recover_stale_publish_repair_for_workspace_and_reload(
-            Arc::clone(&deps.workspace_repo),
-            Arc::clone(&deps.agent_run_repo),
-            workspace,
-        )
-        .await?;
-    }
-
-    if let Some(reason) = blocked_pr_supervision_recovery_skip_reason(&workspace) {
-        return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(reason));
-    }
-
-    if deps
-        .agent_run_repo
-        .get_active_for_conversation(&conversation_id)
-        .await?
-        .is_some()
-    {
-        return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
-            "active_agent_run",
-        ));
     }
 
     let Some(project) = deps.project_repo.get_by_id(&workspace.project_id).await? else {
@@ -209,10 +347,121 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
             "project_archived",
         ));
     }
-    if !project.github_pr_enabled {
+    if !project.github_pr_enabled && workspace.publication_pr_number.is_none() {
         return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
             "github_pr_disabled",
         ));
+    }
+
+    if workspace.publication_push_status.as_deref() == Some("refreshed")
+        && workspace.pr_supervision_status.as_deref() == Some("reviewing")
+    {
+        if deps
+            .agent_run_repo
+            .get_active_for_conversation(&conversation_id)
+            .await?
+            .is_some()
+        {
+            return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
+                "active_agent_run",
+            ));
+        }
+        if let Some(outcome) = resume_passed_pr_fix_review_handoff_if_ready(
+            &deps,
+            &conversation_id,
+            &workspace,
+            &project,
+        )
+        .await?
+        {
+            return Ok(outcome);
+        }
+        return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
+            "workspace_review_pending",
+        ));
+    }
+
+    if let Some(reason) = blocked_pr_supervision_recovery_skip_reason(&workspace) {
+        return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(reason));
+    }
+
+    if deps
+        .agent_run_repo
+        .get_active_for_conversation(&conversation_id)
+        .await?
+        .is_some()
+    {
+        if let Ok(target) =
+            resolve_pr_supervision_recovery_target(&deps, &project, &workspace, trigger).await?
+        {
+            let sync_state = match deps
+                .github
+                .check_pr_sync_state(&target.worktree_path, target.pr_number)
+                .await
+            {
+                Ok(sync_state) => sync_state,
+                Err(error) => {
+                    tracing::warn!(
+                        conversation_id = conversation_id.as_str(),
+                        pr_number = target.pr_number,
+                        error = %error,
+                        "Agent workspace PR supervision recovery could not inspect active-run PR state"
+                    );
+                    return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
+                        "active_agent_run",
+                    ));
+                }
+            };
+            if is_terminal_pr_sync_status(&sync_state.status) {
+                let pr_status = publication_status_for_sync_state(&sync_state);
+                update_terminal_pr_recovery_state(
+                    &deps,
+                    &conversation_id,
+                    &workspace,
+                    &target,
+                    pr_status,
+                )
+                .await?;
+                deps.workspace_repo
+                    .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                        conversation_id.clone(),
+                        format!("pr_{pr_status}"),
+                        "succeeded",
+                        terminal_pr_recovery_summary(pr_status),
+                        None,
+                    ))
+                    .await?;
+                emit_workspace_changed(deps.app_handle.as_ref(), &conversation_id);
+                let terminalized = terminalize_agent_workspace_after_pr(
+                    Arc::clone(&deps.workspace_repo),
+                    Arc::clone(&deps.agent_run_repo),
+                    Some(Arc::clone(&deps.plan_branch_repo)),
+                    deps.chat_service.as_ref().map(Arc::clone),
+                    &conversation_id,
+                    &project,
+                    TerminalAgentWorkspaceCause::from_pr_status(pr_status),
+                )
+                .await;
+                terminalized
+                    .require_runtime_shutdown()
+                    .map_err(AppError::Infrastructure)?;
+                return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Terminal {
+                    pr_number: target.pr_number,
+                    pr_status: pr_status.to_string(),
+                });
+            }
+        }
+
+        return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
+            "active_agent_run",
+        ));
+    }
+
+    if let Some(outcome) =
+        resume_passed_pr_fix_review_handoff_if_ready(&deps, &conversation_id, &workspace, &project)
+            .await?
+    {
+        return Ok(outcome);
     }
 
     let target =
@@ -245,17 +494,19 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
             ))
             .await?;
         emit_workspace_changed(deps.app_handle.as_ref(), &conversation_id);
-        if !target.is_ideation_plan() {
-            cleanup_terminal_agent_workspace_after_pr(
-                Arc::clone(&deps.workspace_repo),
-                &conversation_id,
-                &project,
-                matches!(&sync_state.status, GithubPrStatus::Merged { .. })
-                    .then(|| Arc::clone(&deps.github)),
-                pr_status == "merged",
-            )
-            .await;
-        }
+        let terminalized = terminalize_agent_workspace_after_pr(
+            Arc::clone(&deps.workspace_repo),
+            Arc::clone(&deps.agent_run_repo),
+            Some(Arc::clone(&deps.plan_branch_repo)),
+            deps.chat_service.as_ref().map(Arc::clone),
+            &conversation_id,
+            &project,
+            TerminalAgentWorkspaceCause::from_pr_status(pr_status),
+        )
+        .await;
+        terminalized
+            .require_runtime_shutdown()
+            .map_err(AppError::Infrastructure)?;
         return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Terminal {
             pr_number: target.pr_number,
             pr_status: pr_status.to_string(),
@@ -266,6 +517,43 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
         pr_sync_state_recovery_skip_reason(&target.branch_name, &sync_state, &local_head_sha)
     {
         return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(reason));
+    }
+
+    let health = deps
+        .github
+        .fetch_pr_health(&target.worktree_path, target.pr_number)
+        .await?;
+    if let Some(issue) = classify_agent_workspace_pr_autofix_issue(target.pr_number, &health) {
+        let events = deps
+            .workspace_repo
+            .list_publication_events(&conversation_id)
+            .await?;
+        let legacy_event_exists = events
+            .iter()
+            .any(|event| event.classification.as_deref() == Some(issue.classification.as_str()));
+        let decision = load_pr_autofix_attempt_decision(
+            deps.agent_run_repo.as_ref(),
+            &conversation_id,
+            target.pr_number,
+            &issue.classification,
+            legacy_event_exists,
+        )
+        .await?;
+        let summary = decision.manual_summary().unwrap_or(
+            "The same PR issue remains unresolved; RalphX is keeping supervision blocked while polling for an authorized autofix attempt.",
+        );
+        deps.workspace_repo
+            .update_pr_auto_merge_state(
+                &conversation_id,
+                workspace.pr_auto_merge_current,
+                Some("blocked"),
+                Some(summary),
+            )
+            .await?;
+        start_recovered_pr_polling(&deps, &conversation_id, &project, &target);
+        return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
+            "pr_issue_unresolved",
+        ));
     }
 
     let pr_status = publication_status_for_sync_state(&sync_state);
@@ -300,6 +588,64 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
     })
 }
 
+async fn resume_passed_pr_fix_review_handoff_if_ready(
+    deps: &AgentWorkspacePrSupervisionRecoveryDeps,
+    conversation_id: &ChatConversationId,
+    workspace: &AgentConversationWorkspace,
+    project: &Project,
+) -> AppResult<Option<AgentWorkspacePrSupervisionRecoveryOutcome>> {
+    let Some(resumer) = deps.pr_fix_review_publish_resumer.as_ref().map(Arc::clone) else {
+        return Ok(None);
+    };
+    let Some(monitor) = deps
+        .workspace_repo
+        .get_workspace_review_monitor(conversation_id)
+        .await?
+    else {
+        return Ok(None);
+    };
+    let current_target = resolve_review_target(workspace, project).await?;
+    let outcome = resume_pr_fix_publish_after_passed_workspace_review(
+        Arc::clone(&deps.workspace_repo),
+        conversation_id,
+        workspace,
+        &monitor,
+        current_target.as_ref(),
+        move |conversation_id| {
+            let resumer = Arc::clone(&resumer);
+            async move {
+                resumer
+                    .publish_pr_fix_after_workspace_review(conversation_id)
+                    .await
+            }
+        },
+    )
+    .await?;
+    match outcome {
+        PrFixReviewPublishResumeOutcome::Skipped => Ok(None),
+        PrFixReviewPublishResumeOutcome::Published => {
+            let Some(pr_number) = workspace.publication_pr_number else {
+                return Ok(None);
+            };
+            emit_workspace_changed(deps.app_handle.as_ref(), conversation_id);
+            Ok(Some(
+                AgentWorkspacePrSupervisionRecoveryOutcome::ReviewPublished { pr_number },
+            ))
+        }
+        PrFixReviewPublishResumeOutcome::Failed { error } => {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                error = %error,
+                "Agent workspace PR supervision recovery failed to resume passed Workspace Review publish handoff"
+            );
+            emit_workspace_changed(deps.app_handle.as_ref(), conversation_id);
+            Ok(Some(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
+                "pr_fix_review_publish_failed",
+            )))
+        }
+    }
+}
+
 async fn resolve_pr_supervision_recovery_target(
     deps: &AgentWorkspacePrSupervisionRecoveryDeps,
     project: &Project,
@@ -329,7 +675,6 @@ async fn resolve_pr_supervision_recovery_target(
                 }
             };
             Ok(Ok(AgentWorkspacePrSupervisionRecoveryTarget {
-                kind: AgentWorkspacePrSupervisionRecoveryTargetKind::DirectWorkspace,
                 pr_number,
                 pr_url: workspace.publication_pr_url.clone(),
                 worktree_path,
@@ -378,7 +723,6 @@ async fn resolve_pr_supervision_recovery_target(
                 }
             };
             Ok(Ok(AgentWorkspacePrSupervisionRecoveryTarget {
-                kind: AgentWorkspacePrSupervisionRecoveryTargetKind::IdeationPlan,
                 pr_number,
                 pr_url: plan_branch.pr_url.clone(),
                 worktree_path,
@@ -407,6 +751,7 @@ async fn update_terminal_pr_recovery_state(
         deps.plan_branch_repo
             .update_pr_push_status(&plan_branch.id, PrPushStatus::Pushed)
             .await?;
+        clear_terminal_plan_pr_auto_merge_marker(deps, plan_branch, pr_status).await;
         deps.workspace_repo
             .update_pr_auto_merge_state(
                 conversation_id,
@@ -415,7 +760,6 @@ async fn update_terminal_pr_recovery_state(
                 Some(terminal_pr_recovery_summary(pr_status)),
             )
             .await?;
-        return Ok(());
     }
 
     deps.workspace_repo
@@ -460,6 +804,31 @@ async fn update_recovered_pr_state(
         .await
 }
 
+async fn clear_terminal_plan_pr_auto_merge_marker(
+    deps: &AgentWorkspacePrSupervisionRecoveryDeps,
+    plan_branch: &PlanBranch,
+    pr_status: &str,
+) {
+    let (Some(transition_service), Some(task_id)) = (
+        deps.transition_service.as_ref(),
+        plan_branch.merge_task_id.as_ref(),
+    ) else {
+        return;
+    };
+
+    if let Err(error) = transition_service
+        .clear_github_auto_merge_correction_marker_for_terminal_pr(task_id, pr_status)
+        .await
+    {
+        tracing::warn!(
+            task_id = task_id.as_str(),
+            pr_status,
+            error = %error,
+            "Agent workspace PR supervision recovery failed to clear terminal auto-merge correction marker"
+        );
+    }
+}
+
 fn start_recovered_pr_polling(
     deps: &AgentWorkspacePrSupervisionRecoveryDeps,
     conversation_id: &ChatConversationId,
@@ -491,15 +860,36 @@ fn start_recovered_pr_polling(
     let Some(chat_service) = deps.chat_service.as_ref() else {
         return;
     };
-    registry.start_agent_workspace_polling(
-        conversation_id.clone(),
-        target.pr_number,
-        project.clone(),
-        target.worktree_path.clone(),
-        Arc::clone(&deps.workspace_repo),
-        Arc::clone(&deps.agent_run_repo),
-        Arc::clone(chat_service),
-    );
+    if let Some(state) = deps.durable_recovery_state.as_ref() {
+        registry.start_agent_workspace_polling_with_repair_repo_and_recovery_state(
+            conversation_id.clone(),
+            target.pr_number,
+            project.clone(),
+            target.worktree_path.clone(),
+            Arc::clone(&deps.workspace_repo),
+            Arc::clone(&deps.agent_run_repo),
+            Arc::clone(&state.agent_workspace_repair_repo),
+            Arc::clone(chat_service),
+            Some(Arc::clone(state)),
+        );
+    } else {
+        #[cfg(test)]
+        registry.start_agent_workspace_polling(
+            conversation_id.clone(),
+            target.pr_number,
+            project.clone(),
+            target.worktree_path.clone(),
+            Arc::clone(&deps.workspace_repo),
+            Arc::clone(&deps.agent_run_repo),
+            Arc::clone(chat_service),
+        );
+        #[cfg(not(test))]
+        tracing::error!(
+            conversation_id = conversation_id.as_str(),
+            pr_number = target.pr_number,
+            "Agent workspace PR supervision recovery: refusing legacy poller construction without durable repair authority"
+        );
+    }
 }
 
 pub(crate) async fn recover_recent_agent_workspace_pr_supervision_on_startup(
@@ -607,8 +997,12 @@ pub(crate) fn pr_supervision_recovery_schedule_skip_reason(
     }
     let blocked_failed = workspace.publication_push_status.as_deref() == Some("failed")
         && workspace.pr_supervision_status.as_deref() == Some("blocked");
+    let pending_review_handoff = workspace.publication_push_status.as_deref() == Some("refreshed")
+        && workspace.pr_supervision_status.as_deref() == Some("reviewing");
+    let stranded_pr_fix = workspace.publication_push_status.as_deref() == Some("refreshed")
+        && workspace.pr_supervision_status.as_deref() == Some("fixing");
     let stale_candidate = workspace.publication_push_status.as_deref() == Some("needs_agent");
-    if blocked_failed || stale_candidate {
+    if blocked_failed || pending_review_handoff || stranded_pr_fix || stale_candidate {
         None
     } else {
         Some("workspace_push_not_recoverable")
@@ -747,9 +1141,6 @@ fn emit_workspace_changed(app_handle: Option<&AppHandle>, conversation_id: &Chat
 fn claim_recovery(conversation_id: &ChatConversationId, force: bool) -> bool {
     let key = conversation_id.as_str();
     let in_flight = IN_FLIGHT_RECOVERIES.get_or_init(DashMap::new);
-    if in_flight.contains_key(&key) {
-        return false;
-    }
     if !force {
         let ttl = recovery_cache_ttl();
         if !ttl.is_zero() {
@@ -760,8 +1151,14 @@ fn claim_recovery(conversation_id: &ChatConversationId, force: bool) -> bool {
             }
         }
     }
-    in_flight.insert(key, ());
-    true
+
+    match in_flight.entry(key) {
+        Entry::Occupied(_) => false,
+        Entry::Vacant(entry) => {
+            entry.insert(());
+            true
+        }
+    }
 }
 
 fn recovery_cache_ttl() -> Duration {

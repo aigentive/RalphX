@@ -14,14 +14,68 @@ import { typedInvoke } from "@/lib/tauri";
 // Connection status (get_github_connection_status)
 // ============================================================================
 
-/** Read-only reflection of `gh auth status` (Decision 1 — no token storage). */
+/** Read-only typed reflection of the local GitHub CLI connection. */
+export const GitHubConnectionStateSchema = z.enum([
+  "authenticated",
+  "unauthenticated",
+  "credential_rejected",
+  "provider_unavailable",
+  "cli_unavailable",
+  "probe_failed",
+]);
+export type GitHubConnectionState = z.infer<typeof GitHubConnectionStateSchema>;
+
+export const GitHubConnectionDiagnosticSchema = z.enum([
+  "missing_credentials",
+  "credentials_rejected",
+  "http5xx",
+  "network",
+  "timeout",
+  "cli_launch",
+  "malformed_response",
+  "unexpected_response",
+  "service_failure",
+]);
+export type GitHubConnectionDiagnostic = z.infer<
+  typeof GitHubConnectionDiagnosticSchema
+>;
+
 export const GitHubConnectionStatusSchema = z.object({
+  state: GitHubConnectionStateSchema,
+  diagnostic: GitHubConnectionDiagnosticSchema.nullable().optional(),
   ghInstalled: z.boolean(),
   authenticated: z.boolean(),
   host: z.string().nullable().optional(),
   account: z.string().nullable().optional(),
 });
 export type GitHubConnectionStatus = z.infer<typeof GitHubConnectionStatusSchema>;
+
+export function requiresGitHubCredentialRepair(
+  status: GitHubConnectionStatus | null | undefined,
+): boolean {
+  return (
+    status?.state === "unauthenticated" ||
+    status?.state === "credential_rejected"
+  );
+}
+
+export function hasUsableGitHubCredential(
+  status: GitHubConnectionStatus | null | undefined,
+): boolean {
+  return (
+    status?.state === "authenticated" ||
+    status?.state === "provider_unavailable"
+  );
+}
+
+export function isTransientGitHubConnectionState(
+  status: GitHubConnectionStatus | null | undefined,
+): boolean {
+  return (
+    status?.state === "provider_unavailable" ||
+    status?.state === "probe_failed"
+  );
+}
 
 // ============================================================================
 // Branch overview (get_github_branch_overview)
@@ -86,7 +140,9 @@ export const PullRequestDetailStateSchema = z.enum([
   "loaded",
   "noPr",
   "ghUnauthenticated",
+  "fetchUnavailable",
   "repoUnresolvable",
+  "cliUnavailable",
   "fetchTimeout",
   "rateLimited",
 ]);

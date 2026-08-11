@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+
 #[cfg(test)]
 use std::sync::{Mutex, OnceLock};
 
@@ -31,6 +32,63 @@ pub fn app_data_dir() -> PathBuf {
 /// RalphX-owned log directory for backend/runtime logs.
 pub fn app_log_dir() -> PathBuf {
     app_runtime_dir().join("logs")
+}
+
+/// Removes old per-launch RalphX logs, retaining the current file and the
+/// newest `keep_previous` matching files. The directory is caller-supplied
+/// only from the fixed RalphX runtime-root helper.
+pub fn cleanup_previous_launch_logs(
+    log_dir: &std::path::Path,
+    current_filename: &str,
+    keep_previous: usize,
+) -> Vec<std::io::Error> {
+    let entries = match std::fs::read_dir(log_dir) {
+        Ok(entries) => entries,
+        Err(error) => return vec![error],
+    };
+    let mut errors = Vec::new();
+    let mut previous_logs = Vec::new();
+
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                errors.push(error);
+                continue;
+            }
+        };
+        let filename = match entry.file_name().into_string() {
+            Ok(filename) if is_launch_log_filename(&filename) => filename,
+            _ => continue,
+        };
+        if filename == current_filename {
+            continue;
+        }
+        match entry.file_type() {
+            Ok(file_type) if file_type.is_file() => previous_logs.push((filename, entry.path())),
+            Ok(_) => {}
+            Err(error) => errors.push(error),
+        }
+    }
+
+    previous_logs.sort_unstable_by(|left, right| right.0.cmp(&left.0));
+    for (_, path) in previous_logs.into_iter().skip(keep_previous) {
+        // `path` is a regular file enumerated from the fixed RalphX-owned log directory,
+        // and its filename passed the exact ralphx_*.log allowlist above.
+        // codeql[rust/path-injection]
+        if let Err(error) = std::fs::remove_file(path) {
+            errors.push(error);
+        }
+    }
+
+    errors
+}
+
+fn is_launch_log_filename(filename: &str) -> bool {
+    filename
+        .strip_prefix("ralphx_")
+        .and_then(|suffix| suffix.strip_suffix(".log"))
+        .is_some_and(|middle| !middle.is_empty())
 }
 
 /// RalphX-owned directory for generated non-log artifacts.
@@ -275,106 +333,5 @@ fn fixed_timestamp_component(timestamp: &str) -> &str {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn merge_validation_log_dir_hashes_task_id_components() {
-        let path = merge_validation_log_dir("../task/with\\separators");
-        let suffix = path
-            .file_name()
-            .and_then(|value| value.to_str())
-            .expect("log dir suffix");
-
-        assert!(path.starts_with(app_log_dir().join("merge-validation")));
-        assert!(suffix.starts_with("task-"));
-        assert!(!suffix.contains(".."));
-        assert!(!suffix.contains('/'));
-        assert!(!suffix.contains('\\'));
-    }
-
-    #[test]
-    fn codex_prompt_debug_file_maps_unknown_modes_to_fixed_component() {
-        let path = codex_prompt_debug_file("../resume");
-        let filename = path
-            .file_name()
-            .and_then(|value| value.to_str())
-            .expect("prompt debug filename");
-
-        assert!(path.starts_with(codex_prompt_debug_dir()));
-        assert!(filename.contains("-unknown-"));
-        assert!(!filename.contains(".."));
-        assert!(!filename.contains('/'));
-        assert!(!filename.contains('\\'));
-    }
-
-    #[test]
-    fn stream_debug_log_file_hashes_conversation_id() {
-        let path = stream_debug_log_file("../conversation/with\\separators");
-        let filename = path
-            .file_name()
-            .and_then(|value| value.to_str())
-            .expect("stream debug filename");
-
-        assert!(path.starts_with(app_log_dir().join("stream-debug")));
-        assert!(filename.starts_with("conversation-"));
-        assert!(filename.ends_with(".log"));
-        assert!(!filename.contains(".."));
-        assert!(!filename.contains('/'));
-        assert!(!filename.contains('\\'));
-    }
-
-    #[test]
-    fn ensure_mcp_proxy_trace_dir_creates_app_owned_dir() {
-        let dir = ensure_mcp_proxy_trace_dir();
-
-        assert!(dir.starts_with(app_log_dir()));
-        assert_eq!(
-            dir.file_name().and_then(|value| value.to_str()),
-            Some("mcp-proxy")
-        );
-        assert!(dir.is_dir());
-    }
-
-    #[test]
-    fn memory_archive_paths_hash_runtime_components() {
-        let project_dir = memory_archive_project_dir("../project/with\\separators");
-        let project_relative_dir =
-            memory_archive_project_relative_dir("../project/with\\separators");
-        let memory_path = memory_archive_memory_snapshot_file(
-            "../project/with\\separators",
-            "../memory/unsafe.md",
-        );
-        let memory_relative_path = memory_archive_memory_snapshot_relative_file(
-            "../project/with\\separators",
-            "../memory/unsafe.md",
-        );
-        let rule_path = memory_archive_rule_snapshot_file(
-            "../project/with\\separators",
-            "../rules/unsafe.md",
-            "20260516_120000",
-        );
-        let project_path =
-            memory_archive_project_snapshot_file("../project/with\\separators", "../bad");
-        let project_relative_path =
-            memory_archive_project_snapshot_relative_file("../project/with\\separators", "../bad");
-
-        for path in [&project_dir, &memory_path, &rule_path, &project_path] {
-            let rendered = path.to_string_lossy();
-            assert!(path.starts_with(memory_archive_dir()));
-            assert!(!rendered.contains("../project"));
-            assert!(!rendered.contains("../memory"));
-            assert!(!rendered.contains("../rules"));
-            assert!(!rendered.contains("../bad"));
-        }
-
-        assert_eq!(project_dir, memory_archive_dir().join(project_relative_dir));
-        assert_eq!(memory_path, memory_archive_dir().join(memory_relative_path));
-        assert_eq!(
-            project_path,
-            memory_archive_dir().join(project_relative_path)
-        );
-        assert!(rule_path.ends_with("20260516_120000.md"));
-        assert!(project_path.ends_with("unknown-timestamp.md"));
-    }
-}
+#[path = "runtime_log_paths_tests.rs"]
+mod tests;

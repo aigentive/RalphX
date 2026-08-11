@@ -122,7 +122,9 @@ fn make_merge_commit(repo_path: &Path) -> String {
         .current_dir(repo_path)
         .output()
         .unwrap();
-    let _feature_sha = String::from_utf8_lossy(&sha_output.stdout).trim().to_string();
+    let _feature_sha = String::from_utf8_lossy(&sha_output.stdout)
+        .trim()
+        .to_string();
 
     // Switch back to main and merge
     let _ = std::process::Command::new("git")
@@ -130,7 +132,13 @@ fn make_merge_commit(repo_path: &Path) -> String {
         .current_dir(repo_path)
         .output();
     let _ = std::process::Command::new("git")
-        .args(["merge", "feature/test-merge", "--no-ff", "-m", "merge feature"])
+        .args([
+            "merge",
+            "feature/test-merge",
+            "--no-ff",
+            "-m",
+            "merge feature",
+        ])
         .current_dir(repo_path)
         .output();
 
@@ -168,7 +176,7 @@ async fn complete_merge_sets_pending_cleanup_metadata() {
     project.base_branch = Some("main".to_string());
     project.merge_strategy = MergeStrategy::Merge;
 
-    let result = complete_merge_internal::<tauri::Wry>(
+    let result = complete_merge_internal(
         &mut task,
         &project,
         &commit_sha,
@@ -228,7 +236,7 @@ async fn complete_merge_returns_quickly_without_cleanup_blocking() {
     project.merge_strategy = MergeStrategy::Merge;
 
     let start = std::time::Instant::now();
-    let result = complete_merge_internal::<tauri::Wry>(
+    let result = complete_merge_internal(
         &mut task,
         &project,
         &commit_sha,

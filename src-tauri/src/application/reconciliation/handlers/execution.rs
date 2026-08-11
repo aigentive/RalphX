@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use tauri::{Emitter, Runtime};
+use tauri::Emitter;
 use tracing::{error, info, warn};
 
 use crate::application::chat_service::{reconcile_merge_auto_complete, MergeAutoCompleteContext};
@@ -21,14 +21,15 @@ use crate::application::GitService;
 use crate::commands::execution_commands::context_matches_running_status_for_gc;
 use crate::domain::entities::{
     task_metadata::StopRetryingReason, ActivityEvent, ActivityEventType, AgentRunStatus,
-    ChatContextType, ExecutionFailureSource, ExecutionRecoveryEvent, ExecutionRecoveryEventKind,
+    BranchUpdateContinuation, BranchUpdateDirection, BranchUpdatePhase, ChatContextType,
+    ExecutionFailureSource, ExecutionRecoveryEvent, ExecutionRecoveryEventKind,
     ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode, ExecutionRecoverySource,
     ExecutionRecoveryState, InternalStatus, ProjectId, ReviewNote, ReviewOutcome, ReviewerType,
     Task, TaskId,
 };
+use crate::domain::repositories::{BranchUpdateCasOutcome, UnbindBranchUpdateRun};
 use crate::domain::services::RunningAgentKey;
 use crate::domain::state_machine::transition_handler::metadata_builder::MetadataUpdate;
-use crate::domain::state_machine::transition_handler::set_trigger_origin;
 
 use super::super::policy::{
     RecoveryActionKind, RecoveryContext, RecoveryDecision, RecoveryEvidence, UserRecoveryAction,
@@ -39,7 +40,7 @@ use super::super::ReconciliationRunner;
 /// After this many clean-slate re-executions, the task permanently fails.
 const MAX_AUTO_RECOVERIES: u32 = 2;
 
-impl<R: Runtime> ReconciliationRunner<R> {
+impl ReconciliationRunner {
     async fn project_has_execution_capacity(&self, project_id: &ProjectId) -> bool {
         let Some(settings_repo) = &self.execution_settings_repo else {
             return true;
@@ -118,8 +119,8 @@ impl<R: Runtime> ReconciliationRunner<R> {
     ///
     /// The IPR (InteractiveProcessRegistry) stores `ChildStdin` handles keyed by
     /// (context_type, context_id). An entry existing does NOT mean the process is alive —
-    /// the cleanup in `spawn_send_message_background` can be skipped (team mode, panic,
-    /// cancellation), leaving a stale entry that blocks reconciliation forever.
+    /// the cleanup in `spawn_send_message_background` can be skipped (panic, cancellation,
+    /// or interrupted teardown), leaving a stale entry that blocks reconciliation forever.
     ///
     /// This method cross-references the IPR entry against the running_agent_registry PID:
     /// - If IPR has no entry → returns false (no interactive process)
@@ -512,38 +513,13 @@ impl<R: Runtime> ReconciliationRunner<R> {
             Arc::clone(&self.running_agent_registry),
             Arc::clone(&self.agent_run_repo),
             Arc::clone(&self.task_repo),
+            Arc::clone(&self.project_repo),
             self.interactive_process_registry.clone(),
         );
 
         let mut removed = 0u32;
 
         for (key, info) in &entries {
-            // Skip in-flight registrations: try_register inserts pid=0/empty agent_run_id as
-            // placeholder; update_agent_process fills real values ~40ms later.
-            if info.agent_run_id.is_empty() {
-                tracing::debug!(
-                    context_type = key.context_type,
-                    context_id = key.context_id,
-                    "Skipping in-flight registry entry (no agent_run_id yet)"
-                );
-                continue;
-            }
-
-            // Age guard: pid=0 entries younger than 30s are in the try_register →
-            // update_agent_process window. The pruner must not race against the spawn.
-            if info.pid == 0 {
-                let age = chrono::Utc::now() - info.started_at;
-                if age < chrono::Duration::seconds(30) {
-                    tracing::debug!(
-                        context_type = key.context_type,
-                        context_id = key.context_id,
-                        age_secs = age.num_seconds(),
-                        "Skipping young pid=0 registry entry (age < 30s)"
-                    );
-                    continue;
-                }
-            }
-
             // Compute pid liveness once; both the IPR check and staleness evaluation use it.
             let pid_alive = crate::domain::services::is_process_alive(info.pid);
 
@@ -594,6 +570,9 @@ impl<R: Runtime> ReconciliationRunner<R> {
                 self.reconcile_merging_task(task, status).await
             }
             InternalStatus::PendingMerge => self.reconcile_pending_merge_task(task, status).await,
+            InternalStatus::UpdatingPlanBranch | InternalStatus::UpdatingTaskBranch => {
+                self.reconcile_branch_update_task(task, status).await
+            }
             InternalStatus::MergeIncomplete => {
                 self.reconcile_merge_incomplete_task(task, status).await
             }
@@ -606,6 +585,160 @@ impl<R: Runtime> ReconciliationRunner<R> {
             InternalStatus::Failed => self.reconcile_failed_execution_task(task, status).await,
             _ => false,
         }
+    }
+
+    async fn reconcile_branch_update_task(&self, task: &Task, status: InternalStatus) -> bool {
+        let Some(repository) = self.branch_update_repo.as_ref() else {
+            warn!(
+                task_id = task.id.as_str(),
+                "Branch-update reconciliation is unavailable without durable authority"
+            );
+            return false;
+        };
+        let operation = match repository.get_active_operation(&task.id).await {
+            Ok(Some(operation)) => operation,
+            Ok(None) => {
+                warn!(
+                    task_id = task.id.as_str(),
+                    status = status.as_str(),
+                    "Branch-update task has no active operation"
+                );
+                return false;
+            }
+            Err(error) => {
+                warn!(
+                    task_id = task.id.as_str(),
+                    error = %error,
+                    "Failed to load branch-update authority during reconciliation"
+                );
+                return false;
+            }
+        };
+        let expected_status = match operation.direction {
+            BranchUpdateDirection::PlanBranch => InternalStatus::UpdatingPlanBranch,
+            BranchUpdateDirection::TaskBranch => InternalStatus::UpdatingTaskBranch,
+        };
+        if expected_status != status {
+            warn!(
+                task_id = task.id.as_str(),
+                operation_id = operation.id.as_str(),
+                status = status.as_str(),
+                expected_status = expected_status.as_str(),
+                "Branch-update direction/status authority mismatch"
+            );
+            return false;
+        }
+
+        if matches!(
+            operation.phase,
+            BranchUpdatePhase::ContinuationPending | BranchUpdatePhase::ContinuationInProgress
+        ) {
+            let result = if operation.continuation
+                == BranchUpdateContinuation::FinalizePostMergePrPublication
+            {
+                let project = match self.project_repo.get_by_id(&task.project_id).await {
+                    Ok(Some(project)) => project,
+                    Ok(None) => return false,
+                    Err(error) => {
+                        warn!(task_id = task.id.as_str(), error = %error, "Failed to load project for branch publication recovery");
+                        return false;
+                    }
+                };
+                crate::application::branch_update_executor::publish_post_merge_branch_update(
+                    Arc::clone(repository),
+                    std::path::Path::new(&project.working_directory),
+                    &operation,
+                    status,
+                )
+                .await
+            } else {
+                crate::application::branch_update_executor::resume_branch_update_continuation(
+                    Arc::clone(repository),
+                    &operation,
+                    status,
+                )
+                .await
+            };
+            if let Err(error) = result {
+                warn!(
+                    task_id = task.id.as_str(),
+                    operation_id = operation.id.as_str(),
+                    error = %error,
+                    "Branch-update continuation reconciliation deferred"
+                );
+                return false;
+            }
+            return true;
+        }
+
+        if operation.phase == BranchUpdatePhase::Blocked {
+            return false;
+        }
+        if operation.phase == BranchUpdatePhase::Settled {
+            warn!(
+                task_id = task.id.as_str(),
+                operation_id = operation.id.as_str(),
+                "Settled branch-update operation still owns an update status"
+            );
+            return false;
+        }
+
+        if operation.phase == BranchUpdatePhase::Resolving {
+            if self
+                .is_ipr_process_alive(ChatContextType::BranchUpdate, task.id.as_str())
+                .await
+            {
+                return true;
+            }
+            if let (Some(run_id), Some(conversation_id)) = (
+                operation.agent_run_id.as_deref(),
+                operation.conversation_id.as_deref(),
+            ) {
+                let run = self
+                    .agent_run_repo
+                    .get_by_id(&crate::domain::entities::AgentRunId::from_string(run_id))
+                    .await;
+                if matches!(
+                    run.as_ref()
+                        .ok()
+                        .and_then(|run| run.as_ref())
+                        .map(|run| run.status),
+                    Some(AgentRunStatus::Running)
+                ) {
+                    return true;
+                }
+                match repository
+                    .unbind_agent_run(UnbindBranchUpdateRun {
+                        operation_id: operation.id.clone(),
+                        task_id: operation.task_id.clone(),
+                        originating_history_id: operation.originating_history_id.clone(),
+                        update_status: status,
+                        conversation_id: conversation_id.to_string(),
+                        agent_run_id: run_id.to_string(),
+                    })
+                    .await
+                {
+                    Ok(BranchUpdateCasOutcome::Applied) => {}
+                    Ok(outcome) => {
+                        tracing::debug!(
+                            task_id = task.id.as_str(),
+                            ?outcome,
+                            "Branch-update run unbind lost reconciliation race"
+                        );
+                        return false;
+                    }
+                    Err(error) => {
+                        warn!(task_id = task.id.as_str(), error = %error, "Failed to unbind terminal branch-update run");
+                        return false;
+                    }
+                }
+            }
+        }
+
+        self.transition_service
+            .execute_entry_actions(&task.id, task, status)
+            .await;
+        true
     }
 
     #[doc(hidden)]
@@ -1963,7 +2096,37 @@ impl<R: Runtime> ReconciliationRunner<R> {
 
         let registry_running = self.running_agent_registry.is_running(&key).await;
         if registry_running {
-            let _ = self.running_agent_registry.stop(&key).await;
+            let cleanup = match self.running_agent_registry.get(&key).await {
+                Some(info) => {
+                    self.running_agent_registry
+                        .cleanup_stale_entry(&key, &info.agent_run_id)
+                        .await
+                }
+                None => Ok(None),
+            };
+            match cleanup {
+                Ok(Some(_info)) => {
+                    info!(
+                        task_id = task_id.as_str(),
+                        "Cleared stale registry entry before stop recovery"
+                    );
+                }
+                Ok(None) => {
+                    tracing::debug!(
+                        task_id = task_id.as_str(),
+                        "Skipping recovery stop — registry process is still alive"
+                    );
+                    return false;
+                }
+                Err(error) => {
+                    warn!(
+                        task_id = task_id.as_str(),
+                        error = %error,
+                        "Failed to inspect registry entry for stop recovery"
+                    );
+                    return false;
+                }
+            }
         }
 
         let run = self.load_execution_run(&task, task.internal_status).await;
@@ -2289,27 +2452,95 @@ impl<R: Runtime> ReconciliationRunner<R> {
                 }
 
                 if self.running_agent_registry.is_running(&registry_key).await {
-                    tracing::info!(
-                        task_id = task.id.as_str(),
-                        context_type = %chat_context,
-                        "Clearing stale registry entry before recovery re-spawn"
-                    );
-                    let _ = self.running_agent_registry.stop(&registry_key).await;
+                    let cleanup = match self.running_agent_registry.get(&registry_key).await {
+                        Some(info) => {
+                            self.running_agent_registry
+                                .cleanup_stale_entry(&registry_key, &info.agent_run_id)
+                                .await
+                        }
+                        None => Ok(None),
+                    };
+                    match cleanup {
+                        Ok(Some(_)) => {
+                            tracing::info!(
+                                task_id = task.id.as_str(),
+                                context_type = %chat_context,
+                                "Cleared stale registry entry before recovery re-spawn"
+                            );
+                        }
+                        Ok(None) => {
+                            tracing::info!(
+                                task_id = task.id.as_str(),
+                                context_type = %chat_context,
+                                "Skipping recovery re-spawn — registry process is still alive"
+                            );
+                            return false;
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                task_id = task.id.as_str(),
+                                context_type = %chat_context,
+                                error = %e,
+                                "Skipping recovery re-spawn — failed to verify registry staleness"
+                            );
+                            return false;
+                        }
+                    }
                 }
 
-                // Set trigger_origin="recovery" before resuming agent
-                let mut task_mut = task.clone();
-                set_trigger_origin(&mut task_mut, "recovery");
-                if let Err(e) = self.task_repo.update(&task_mut).await {
+                let mut recovery_task = match self.task_repo.get_by_id(&task.id).await {
+                    Ok(Some(fresh_task)) => fresh_task,
+                    Ok(None) => {
+                        tracing::warn!(
+                            task_id = task.id.as_str(),
+                            "Skipping recovery re-spawn — task disappeared before entry actions"
+                        );
+                        return false;
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            task_id = task.id.as_str(),
+                            error = %error,
+                            "Skipping recovery re-spawn — failed to reload task before entry actions"
+                        );
+                        return false;
+                    }
+                };
+                if recovery_task.internal_status != status {
+                    tracing::info!(
+                        task_id = task.id.as_str(),
+                        expected_status = %status,
+                        actual_status = %recovery_task.internal_status,
+                        "Skipping recovery re-spawn — task status changed before entry actions"
+                    );
+                    return false;
+                }
+
+                // Set trigger_origin="recovery" before resuming agent. Merge against the
+                // freshly reloaded task so this write cannot erase retry metadata recorded
+                // immediately before re-entry.
+                let updated_metadata = MetadataUpdate::new()
+                    .with_string("trigger_origin", "recovery")
+                    .merge_into(recovery_task.metadata.as_deref());
+                if let Err(e) = self
+                    .task_repo
+                    .update_metadata(&task.id, Some(updated_metadata))
+                    .await
+                {
                     tracing::error!(
                         task_id = task.id.as_str(),
                         error = %e,
                         "Failed to set trigger_origin=recovery in metadata"
                     );
                 }
+                recovery_task.metadata = Some(
+                    MetadataUpdate::new()
+                        .with_string("trigger_origin", "recovery")
+                        .merge_into(recovery_task.metadata.as_deref()),
+                );
 
                 self.transition_service
-                    .execute_entry_actions(&task.id, task, status)
+                    .execute_entry_actions(&task.id, &recovery_task, status)
                     .await;
                 true
             }

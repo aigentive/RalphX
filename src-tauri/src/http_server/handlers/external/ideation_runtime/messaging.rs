@@ -1,6 +1,6 @@
 use super::*;
 use crate::application::agent_workspace_continuation::{
-    classify_agent_workspace_continuation, AgentWorkspaceContinuationBlock,
+    classify_agent_workspace_continuation_with_plan_branch, AgentWorkspaceContinuationBlock,
 };
 use crate::application::harness_runtime_registry::default_external_mcp_message_queue_cap;
 use crate::domain::services::QueueKey;
@@ -156,7 +156,7 @@ pub async fn ideation_message_http(
             .write_message(&ipr_key, &stream_json_message)
             .await
         {
-            Ok(()) => {
+            Ok(_) => {
                 maybe_transition_to_planning(
                     Arc::clone(&state.app_state.ideation_session_repo),
                     IdeationSessionId::from_string(session_id_str.clone()),
@@ -382,8 +382,13 @@ async fn ensure_linked_agent_workspace_continuable(
             non_resumable_ideation_response(session_id, &workspace, &reason)
         })?;
 
-    if let Some(reason) =
-        classify_agent_workspace_continuation(&project, &workspace).blocked_reason()
+    if let Some(reason) = classify_agent_workspace_continuation_with_plan_branch(
+        &project,
+        &workspace,
+        Some(state.app_state.plan_branch_repo.as_ref()),
+    )
+    .await
+    .blocked_reason()
     {
         return Err(non_resumable_ideation_response(
             session_id, &workspace, reason,

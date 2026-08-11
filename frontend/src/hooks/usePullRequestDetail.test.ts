@@ -106,6 +106,31 @@ describe("usePullRequestDetail", () => {
     ).toHaveLength(1);
     expect(PR_DETAIL_CACHE_MS).toBeGreaterThan(0);
   });
+
+  it("does not refetch fresh cached detail when a deferred consumer enables", async () => {
+    const selector: PullRequestDetailSelector = {
+      projectId: "p1",
+      prNumber: 42,
+    };
+    const detail = loadedDetail();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(prKeys.detail(selector), detail);
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: queryClient }, children);
+    const { result, rerender } = renderHook(
+      ({ enabled }) => usePullRequestDetail(selector, { enabled }),
+      { initialProps: { enabled: false }, wrapper },
+    );
+
+    expect(result.current.data).toEqual(detail);
+    rerender({ enabled: true });
+
+    await waitFor(() => expect(result.current.fetchStatus).toBe("idle"));
+    expect(result.current.data).toEqual(detail);
+    expect(githubApi.getPullRequestDetail).not.toHaveBeenCalled();
+  });
 });
 
 describe("prKeys", () => {

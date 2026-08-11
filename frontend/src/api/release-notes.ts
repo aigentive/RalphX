@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { z } from "zod";
 
+import type { UpdateChannel } from "./update-channel.schemas";
+
 const ReleaseNotesResponseSchema = z.object({
   version: z.string(),
   body: z.string().nullable(),
@@ -10,13 +12,27 @@ const ReleaseNotesResponseSchema = z.object({
 export type ReleaseNotesResponse = z.infer<typeof ReleaseNotesResponseSchema>;
 
 const GITHUB_RELEASES_URL =
-  "https://api.github.com/repos/aigentive/ralphx.app/releases?per_page=100";
+  "https://api.github.com/repos/aigentive/ralphx.app/releases";
+const GITHUB_RELEASE_PAGE_SIZE = 100;
+const MAX_GITHUB_RELEASE_PAGES = 10;
 
 export interface ReleaseMetadata {
   version: string;
   publishedAt: string;
   name: string | null;
   body: string | null;
+  prerelease: boolean;
+}
+
+export type ReleaseMetadataAvailability = "available" | "stale" | "unavailable";
+
+export class ReleaseMetadataSnapshot extends Map<string, ReleaseMetadata> {
+  constructor(
+    entries: Iterable<readonly [string, ReleaseMetadata]> = [],
+    readonly availability: ReleaseMetadataAvailability = "available",
+  ) {
+    super(entries);
+  }
 }
 
 const GitHubReleaseSchema = z.object({
@@ -24,88 +40,154 @@ const GitHubReleaseSchema = z.object({
   published_at: z.string().nullable(),
   name: z.string().nullable(),
   body: z.string().nullable(),
+  draft: z.boolean(),
+  prerelease: z.boolean(),
 });
 
 const CACHE_KEY = "ralphx-release-metadata";
-const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const CACHE_TTL_MS = 15 * 60 * 1000;
+const NUMERIC_VERSION_TAG = /^v?(\d+\.\d+\.\d+)$/;
 
-interface CacheEntry {
+const ReleaseMetadataSchema = z.object({
+  version: z.string(),
+  publishedAt: z.string(),
+  name: z.string().nullable(),
+  body: z.string().nullable(),
+  prerelease: z.boolean(),
+});
+
+const CacheEntrySchema = z.object({
+  fetchedAt: z.number(),
+  releases: z.array(ReleaseMetadataSchema),
+});
+
+interface MemoryCacheEntry {
   fetchedAt: number;
-  releases: Array<{
-    version: string;
-    publishedAt: string;
-    name: string | null;
-    body: string | null;
-  }>;
+  releases: ReleaseMetadataSnapshot;
 }
 
-let memoryCache: Map<string, ReleaseMetadata> | null = null;
+let memoryCache: MemoryCacheEntry | null = null;
 
-function loadFromStorage(): Map<string, ReleaseMetadata> | null {
+function isFresh(fetchedAt: number): boolean {
+  return Date.now() - fetchedAt < CACHE_TTL_MS;
+}
+
+function loadFromStorage(): MemoryCacheEntry | null {
   try {
     const raw = localStorage.getItem(CACHE_KEY);
     if (!raw) return null;
-    const entry = JSON.parse(raw) as CacheEntry;
-    if (Date.now() - entry.fetchedAt > CACHE_TTL_MS) return null;
-    const map = new Map<string, ReleaseMetadata>();
-    for (const r of entry.releases) {
+    const parsed = CacheEntrySchema.safeParse(JSON.parse(raw));
+    if (!parsed.success) {
+      localStorage.removeItem(CACHE_KEY);
+      return null;
+    }
+    const map = new ReleaseMetadataSnapshot();
+    for (const r of parsed.data.releases) {
       map.set(r.version, r);
     }
-    return map;
+    return { fetchedAt: parsed.data.fetchedAt, releases: map };
   } catch {
+    localStorage.removeItem(CACHE_KEY);
     return null;
   }
 }
 
-function saveToStorage(map: Map<string, ReleaseMetadata>): void {
+function saveToStorage(entry: MemoryCacheEntry): void {
   try {
-    const entry: CacheEntry = {
-      fetchedAt: Date.now(),
-      releases: Array.from(map.values()),
-    };
-    localStorage.setItem(CACHE_KEY, JSON.stringify(entry));
+    localStorage.setItem(
+      CACHE_KEY,
+      JSON.stringify({
+        fetchedAt: entry.fetchedAt,
+        releases: Array.from(entry.releases.values()),
+      }),
+    );
   } catch {
     // localStorage full or unavailable
   }
 }
 
-export async function fetchReleaseMetadata(): Promise<
-  Map<string, ReleaseMetadata>
+function releasePageUrl(page: number): string {
+  const url = new URL(GITHUB_RELEASES_URL);
+  url.searchParams.set("per_page", String(GITHUB_RELEASE_PAGE_SIZE));
+  url.searchParams.set("page", String(page));
+  return url.toString();
+}
+
+async function fetchAllGitHubReleases(): Promise<
+  z.infer<typeof GitHubReleaseSchema>[]
 > {
-  if (memoryCache) return memoryCache;
+  const allReleases: z.infer<typeof GitHubReleaseSchema>[] = [];
+  for (let page = 1; page <= MAX_GITHUB_RELEASE_PAGES; page += 1) {
+    const response = await fetch(releasePageUrl(page), {
+      headers: { Accept: "application/vnd.github+json" },
+    });
+    if (!response.ok) {
+      throw new Error(`GitHub releases request failed with ${response.status}`);
+    }
+    const pageReleases = z.array(GitHubReleaseSchema).parse(await response.json());
+    allReleases.push(...pageReleases);
+    if (pageReleases.length < GITHUB_RELEASE_PAGE_SIZE) {
+      return allReleases;
+    }
+  }
+  throw new Error(
+    `GitHub release history exceeded ${MAX_GITHUB_RELEASE_PAGES} pages`,
+  );
+}
+
+function withAvailability(
+  cache: MemoryCacheEntry,
+  availability: ReleaseMetadataAvailability,
+): ReleaseMetadataSnapshot {
+  if (cache.releases.availability === availability) {
+    return cache.releases;
+  }
+  return new ReleaseMetadataSnapshot(cache.releases, availability);
+}
+
+export async function fetchReleaseMetadata(): Promise<ReleaseMetadataSnapshot> {
+  if (memoryCache && isFresh(memoryCache.fetchedAt)) {
+    return memoryCache.releases;
+  }
 
   const stored = loadFromStorage();
-  if (stored) {
-    memoryCache = stored;
-    return stored;
+  const lastKnownGood =
+    memoryCache === null ||
+    (stored !== null && stored.fetchedAt > memoryCache.fetchedAt)
+      ? stored
+      : memoryCache;
+  if (lastKnownGood && isFresh(lastKnownGood.fetchedAt)) {
+    memoryCache = lastKnownGood;
+    return lastKnownGood.releases;
   }
 
   try {
-    const resp = await fetch(GITHUB_RELEASES_URL, {
-      headers: { Accept: "application/vnd.github+json" },
-    });
-    if (!resp.ok) return new Map();
+    const releases = await fetchAllGitHubReleases();
 
-    const json: unknown = await resp.json();
-    const releases = z.array(GitHubReleaseSchema).parse(json);
-
-    const map = new Map<string, ReleaseMetadata>();
+    const map = new ReleaseMetadataSnapshot();
     for (const r of releases) {
-      const version = r.tag_name.replace(/^v/, "");
-      if (r.published_at) {
-        map.set(version, {
-          version,
-          publishedAt: r.published_at,
-          name: r.name,
-          body: r.body,
-        });
-      }
+      const versionMatch = NUMERIC_VERSION_TAG.exec(r.tag_name);
+      if (!versionMatch || !r.published_at || r.draft) continue;
+      const version = versionMatch[1];
+      if (version === undefined) continue;
+      map.set(version, {
+        version,
+        publishedAt: r.published_at,
+        name: r.name,
+        body: r.body,
+        prerelease: r.prerelease,
+      });
     }
-    memoryCache = map;
-    saveToStorage(map);
+    memoryCache = { fetchedAt: Date.now(), releases: map };
+    saveToStorage(memoryCache);
     return map;
   } catch {
-    return new Map();
+    if (lastKnownGood) {
+      memoryCache = lastKnownGood;
+      return withAvailability(lastKnownGood, "stale");
+    }
+    memoryCache = null;
+    return new ReleaseMetadataSnapshot([], "unavailable");
   }
 }
 
@@ -150,10 +232,20 @@ export function compareSemverDesc(a: string, b: string): number {
 export function mergeVersionLists(
   bundledVersions: string[],
   metadata: Map<string, ReleaseMetadata>,
+  channel: UpdateChannel,
 ): string[] {
-  const versionSet = new Set(bundledVersions);
-  for (const version of metadata.keys()) {
-    versionSet.add(version);
+  const versionSet = new Set<string>();
+  if (channel === "stable") {
+    for (const version of bundledVersions) {
+      if (metadata.get(version)?.prerelease !== true) {
+        versionSet.add(version);
+      }
+    }
+  }
+  for (const [version, release] of metadata) {
+    if (release.prerelease === (channel === "nightly")) {
+      versionSet.add(version);
+    }
   }
   return Array.from(versionSet).sort(compareSemverDesc);
 }

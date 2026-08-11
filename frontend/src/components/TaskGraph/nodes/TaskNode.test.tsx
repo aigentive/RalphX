@@ -385,8 +385,8 @@ describe("TaskNode", () => {
     // 5 dots rendered
     expect(footer.querySelectorAll("div[style*='border-radius: 50%']").length)
       .toBe(5);
-    // percent label: (2 + 1) / 5 = 60%
-    expect(container.textContent).toContain("60%");
+    // percent label: completed / (total - skipped) = 2 / 4 = 50%
+    expect(container.textContent).toContain("50%");
   });
 
   it("colors completed step dots with success when in terminal state", () => {

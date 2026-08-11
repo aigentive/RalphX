@@ -6,8 +6,10 @@ use crate::entities::{
 use crate::repositories::StatusTransition;
 
 use super::{
-    build_running_ideation_session, build_running_process, build_running_workspace_session,
+    build_running_ideation_session, build_running_process,
+    build_running_process_with_agent_workspace, build_running_workspace_session,
     elapsed_seconds_for_status, ideation_session_title, workspace_session_title,
+    ExecutionTaskAgentWorkspace,
 };
 
 #[test]
@@ -86,10 +88,32 @@ fn build_running_views_shape_expected_fields() {
     assert_eq!(process.elapsed_seconds, Some(45));
     assert_eq!(process.trigger_origin.as_deref(), Some("scheduler"));
     assert_eq!(process.task_branch.as_deref(), Some("ralphx/proj/task-1"));
+    assert!(process.agent_workspace.is_none());
+
+    let targeted_process = build_running_process_with_agent_workspace(
+        &task,
+        None,
+        Some(12),
+        Some("scheduler".to_string()),
+        Some(ExecutionTaskAgentWorkspace {
+            conversation_id: "conversation-1".to_string(),
+            project_id: "proj-1".to_string(),
+            title: "Workspace title".to_string(),
+        }),
+    );
+    assert_eq!(
+        targeted_process
+            .agent_workspace
+            .as_ref()
+            .map(|workspace| workspace.title.as_str()),
+        Some("Workspace title")
+    );
 
     let mut conversation =
         ChatConversation::new_project(ProjectId::from_string("proj-1".to_string()));
     conversation.title = Some("Workspace run".to_string());
+    conversation.automation_id = Some(crate::entities::AutomationId::from_string("automation-1"));
+    conversation.automation_run_id = Some(crate::entities::AutomationRunId::from_string("run-1"));
     let workspace = build_running_workspace_session(
         &conversation,
         Utc.with_ymd_and_hms(2026, 3, 29, 11, 58, 0).unwrap(),
@@ -98,6 +122,8 @@ fn build_running_views_shape_expected_fields() {
     );
     assert_eq!(workspace.conversation_id, conversation.id.as_str());
     assert_eq!(workspace.project_id, "proj-1");
+    assert_eq!(workspace.automation_id.as_deref(), Some("automation-1"));
+    assert_eq!(workspace.automation_run_id.as_deref(), Some("run-1"));
     assert_eq!(workspace.title, "Workspace run");
     assert_eq!(workspace.elapsed_seconds, Some(120));
     assert_eq!(workspace.model.as_deref(), Some("gpt-5.5"));

@@ -6,7 +6,11 @@
  */
 
 import type { Task, TaskListResponse, CreateTask, UpdateTask, InternalStatus } from "@/types/task";
-import type { TaskStep, StepProgressSummary } from "@/types/task-step";
+import {
+  getStepProgressDisplay,
+  type TaskStep,
+  type StepProgressSummary,
+} from "@/types/task-step";
 import type { CleanupReport, InjectTaskResponse, InjectTaskInput, StateTransition, UnblockTaskResponse } from "@/api/tasks";
 import { AGENT_WORKER } from "@/constants/agents";
 import { createMockTask, generateTestUuid } from "@/test/mock-data";
@@ -38,6 +42,17 @@ function createMockStep(overrides: Partial<TaskStep> & { id: string; taskId: str
 // ============================================================================
 
 export const mockTasksApi = {
+  getSessionHistoryAvailability: async (
+    projectId: string,
+    ideationSessionId: string,
+  ): Promise<{ hasHistory: boolean; taskCount: number }> => {
+    const taskCount = Array.from(getStore().tasks.values()).filter(
+      (task) =>
+        task.projectId === projectId && task.ideationSessionId === ideationSessionId,
+    ).length;
+    return { hasHistory: taskCount > 0, taskCount };
+  },
+
   list: async (params: {
     projectId: string;
     statuses?: string[];
@@ -198,6 +213,27 @@ export const mockTasksApi = {
       throw new Error(`Task not found: ${taskId}`);
     }
     return { ...task, internalStatus: "stopped" as InternalStatus };
+  },
+
+  retryBranchUpdate: async (taskId: string): Promise<Task> => {
+    const store = getStore();
+    const task = store.tasks.get(taskId);
+    if (!task) {
+      throw new Error(`Task not found: ${taskId}`);
+    }
+    const direction = (() => {
+      try {
+        const metadata = task.metadata ? JSON.parse(task.metadata) : {};
+        return metadata?.branch_update?.direction;
+      } catch {
+        return null;
+      }
+    })();
+    return {
+      ...task,
+      internalStatus:
+        direction === "task_branch" ? "updating_task_branch" : "updating_plan_branch",
+    };
   },
 
   getArchivedCount: async (
@@ -370,6 +406,9 @@ export const mockTasksApi = {
       waiting_on_pr: ["ready", "executing", "pending_review", "reviewing", "review_passed", "approved", "pending_merge", "waiting_on_pr"],
       merge_incomplete: ["ready", "executing", "pending_review", "reviewing", "review_passed", "approved", "pending_merge", "merging", "merge_incomplete"],
       merge_conflict: ["ready", "executing", "pending_review", "reviewing", "review_passed", "approved", "pending_merge", "merging", "merge_conflict"],
+      updating_plan_branch: ["ready", "updating_plan_branch"],
+      updating_task_branch: ["ready", "updating_task_branch"],
+      branch_update_blocked: ["ready", "branch_update_blocked"],
       merged: ["ready", "executing", "pending_review", "reviewing", "review_passed", "approved", "pending_merge", "merged"],
       cancelled: ["ready", "cancelled"],
       failed: ["ready", "executing", "failed"],
@@ -471,6 +510,13 @@ export const mockStepsApi = {
     const currentStep = steps.find((s) => s.status === "in_progress") ?? null;
     const nextStep = steps.find((s) => s.status === "pending") ?? null;
 
+    const display = getStepProgressDisplay({
+      total,
+      completed,
+      inProgress,
+      skipped,
+    });
+
     return {
       taskId,
       total,
@@ -481,7 +527,7 @@ export const mockStepsApi = {
       failed,
       currentStep,
       nextStep,
-      percentComplete: total > 0 ? Math.round((completed / total) * 100) : 0,
+      percentComplete: display.completedPercent,
     };
   },
 

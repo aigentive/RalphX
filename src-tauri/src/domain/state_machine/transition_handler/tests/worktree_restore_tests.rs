@@ -22,13 +22,14 @@ use crate::application::chat_service::freshness_routing::{
 };
 use crate::application::AppState;
 use crate::commands::ExecutionState;
-use crate::domain::entities::{InternalStatus, Project, ProjectId, Task};
+use crate::domain::entities::{GitMode, InternalStatus, Project, ProjectId, Task};
 use crate::domain::services::{MemoryRunningAgentRegistry, MessageQueue};
 use crate::domain::state_machine::services::TaskScheduler;
 use crate::domain::state_machine::transition_handler::merge_helpers::{
     compute_task_worktree_path, is_merge_worktree_path, restore_task_worktree,
 };
 use crate::domain::state_machine::{State, TransitionHandler};
+use crate::utils::path_safety::validate_absolute_non_root_path;
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Shared helper: build TaskServices with retained MockChatService
@@ -51,6 +52,38 @@ fn make_services_with_tracked_chat(
     .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
     .with_project_repo(Arc::clone(&project_repo) as Arc<dyn ProjectRepository>);
     (chat_service, services)
+}
+
+fn assert_task_runtime_bootstrap_metadata(
+    metadata: Option<&str>,
+    task_id: &str,
+    task_state: &str,
+    context_type: &str,
+) {
+    let metadata = metadata.expect("bootstrap send must include metadata");
+    let value: serde_json::Value =
+        serde_json::from_str(metadata).expect("bootstrap metadata must be JSON");
+    assert_eq!(value["hidden_from_ui"], true);
+    assert_eq!(value["source"], "task_runtime_bootstrap");
+    assert_eq!(value["task_id"], task_id);
+    assert_eq!(value["task_state"], task_state);
+    assert_eq!(value["context_type"], context_type);
+}
+
+fn git_rev_parse(repo_path: &std::path::Path, ref_name: &str) -> String {
+    let repo_path = validate_absolute_non_root_path(repo_path, "worktree restore test repository")
+        .expect("safe test repo");
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", ref_name])
+        .current_dir(&repo_path)
+        .output()
+        .expect("git rev-parse failed");
+    assert!(
+        output.status.success(),
+        "git rev-parse {ref_name} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -145,9 +178,10 @@ async fn re_review_worktree_restore() {
 // Shared helper: build a TaskTransitionService from AppState (mirrors freshness_return_path tests)
 // ──────────────────────────────────────────────────────────────────────────────
 
+#[rustfmt::skip]
 fn build_transition_service(
     app_state: &AppState,
-) -> crate::application::TaskTransitionService<tauri::Wry> {
+) -> crate::application::TaskTransitionService {
     let execution_state = Arc::new(ExecutionState::new());
     let message_queue = Arc::new(MessageQueue::new());
     let running_registry = Arc::new(MemoryRunningAgentRegistry::new());
@@ -401,7 +435,7 @@ async fn on_enter_reviewing_restores_merge_prefixed_worktree() {
     project.worktree_parent_directory = Some(path.to_string_lossy().to_string());
     project_repo.create(project).await.unwrap();
 
-    let (_, services) =
+    let (chat_service, services) =
         make_services_with_tracked_chat(Arc::clone(&task_repo), Arc::clone(&project_repo));
     let context = crate::domain::state_machine::context::TaskContext::new(
         task_id_str.as_str(),
@@ -414,6 +448,17 @@ async fn on_enter_reviewing_restores_merge_prefixed_worktree() {
     // Call on_enter(Reviewing) — the guard detects the merge-prefix and calls
     // restore_task_worktree before the reviewer spawn attempt.
     let _ = handler.on_enter(&State::Reviewing).await;
+
+    let sent_options = chat_service.get_sent_options().await;
+    assert_eq!(sent_options.len(), 1, "expected exactly one bootstrap send");
+    assert_task_runtime_bootstrap_metadata(
+        sent_options
+            .first()
+            .and_then(|options| options.metadata.as_deref()),
+        &task_id_str,
+        "reviewing",
+        "review",
+    );
 
     // Allow the async path to write the restored path back to the repo.
     let task_repo_poll = Arc::clone(&task_repo);
@@ -475,6 +520,7 @@ async fn on_enter_reviewing_restores_merge_prefixed_worktree() {
 async fn on_enter_reexecuting_restores_execution_worktree_before_spawn() {
     let git_repo = setup_real_git_repo();
     let path = git_repo.path();
+    let base_sha = git_rev_parse(path, "main");
 
     let task_repo = Arc::new(MemoryTaskRepository::new());
     let project_repo = Arc::new(MemoryProjectRepository::new());
@@ -489,6 +535,8 @@ async fn on_enter_reexecuting_restores_execution_worktree_before_spawn() {
     let task_id_str = task_id.as_str().to_string();
     task.internal_status = InternalStatus::ReExecuting;
     task.task_branch = Some(git_repo.task_branch.clone());
+    task.task_branch_base_ref = Some("main".to_string());
+    task.task_branch_base_sha = Some(base_sha);
     task.worktree_path = Some(format!("/nonexistent/merge-{}", task_id_str));
     task_repo.create(task).await.unwrap();
 
@@ -503,6 +551,10 @@ async fn on_enter_reexecuting_restores_execution_worktree_before_spawn() {
 
     let (chat_service, services) =
         make_services_with_tracked_chat(Arc::clone(&task_repo), Arc::clone(&project_repo));
+    let services = with_default_test_branch_update_authority(
+        services,
+        Arc::clone(&task_repo) as Arc<dyn TaskRepository>,
+    );
     let context = crate::domain::state_machine::context::TaskContext::new(
         task_id_str.as_str(),
         "proj-1",
@@ -544,5 +596,297 @@ async fn on_enter_reexecuting_restores_execution_worktree_before_spawn() {
         sent_messages,
         vec![format!("Re-execute task (revision): {}", task_id_str)],
         "ReExecuting should spawn once after worktree restoration"
+    );
+    let sent_options = chat_service.get_sent_options().await;
+    assert_eq!(sent_options.len(), 1, "expected exactly one bootstrap send");
+    assert_task_runtime_bootstrap_metadata(
+        sent_options
+            .first()
+            .and_then(|options| options.metadata.as_deref()),
+        &task_id_str,
+        "re_executing",
+        "task_execution",
+    );
+}
+
+#[tokio::test]
+async fn on_enter_executing_repairs_wrong_existing_worktree_path_before_spawn() {
+    let git_repo = setup_real_git_repo();
+    let path = git_repo.path();
+    let base_sha = git_rev_parse(path, "main");
+
+    let task_repo = Arc::new(MemoryTaskRepository::new());
+    let project_repo = Arc::new(MemoryProjectRepository::new());
+
+    let project_id = ProjectId::from_string("proj-wrong-worktree".to_string());
+    let mut project = Project::new(
+        "wrong-worktree-project".to_string(),
+        path.to_string_lossy().to_string(),
+    );
+    project.id = project_id.clone();
+    project.git_mode = GitMode::Worktree;
+    project.base_branch = Some("main".to_string());
+    project.worktree_parent_directory = Some(path.to_string_lossy().to_string());
+    project_repo.create(project.clone()).await.unwrap();
+
+    let wrong_path = path.join("wrong-existing-worktree");
+    std::fs::create_dir_all(&wrong_path).expect("create wrong existing worktree path");
+    let wrong_path_str = wrong_path.to_string_lossy().to_string();
+
+    let mut task = Task::new(project_id.clone(), "Wrong worktree path".to_string());
+    let task_id = task.id.clone();
+    let task_id_str = task_id.as_str().to_string();
+    task.internal_status = InternalStatus::Executing;
+    task.task_branch = Some(git_repo.task_branch.clone());
+    task.task_branch_base_ref = Some("main".to_string());
+    task.task_branch_base_sha = Some(base_sha);
+    task.worktree_path = Some(wrong_path_str.clone());
+    task_repo.create(task).await.unwrap();
+
+    let (chat_service, services) =
+        make_services_with_tracked_chat(Arc::clone(&task_repo), Arc::clone(&project_repo));
+    let services = with_default_test_branch_update_authority(
+        services,
+        Arc::clone(&task_repo) as Arc<dyn TaskRepository>,
+    );
+    let context = crate::domain::state_machine::context::TaskContext::new(
+        task_id_str.as_str(),
+        project_id.as_str(),
+        services,
+    );
+    let mut machine = crate::domain::state_machine::TaskStateMachine::new(context);
+    let handler = TransitionHandler::new(&mut machine);
+
+    let result = handler.on_enter(&State::Executing).await;
+    assert!(
+        result.is_ok(),
+        "on_enter(Executing) should repair a wrong existing worktree_path before spawn: {:?}",
+        result.err()
+    );
+
+    let updated = task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("Task must still exist");
+    let expected_path = compute_task_worktree_path(&project, &task_id_str);
+    assert_eq!(
+        updated.worktree_path.as_deref(),
+        Some(expected_path.as_str()),
+        "Executing must persist the authoritative task worktree path"
+    );
+    assert!(
+        std::path::Path::new(&expected_path).exists(),
+        "Executing should recreate the authoritative worktree before spawn"
+    );
+    assert_ne!(
+        updated.worktree_path.as_deref(),
+        Some(wrong_path_str.as_str()),
+        "Executing must not spawn from the wrong existing path"
+    );
+
+    let sent_messages = chat_service.get_sent_messages().await;
+    assert_eq!(
+        sent_messages,
+        vec![format!("Execute task: {}", task_id_str)],
+        "Executing should spawn once after worktree path repair"
+    );
+    let sent_options = chat_service.get_sent_options().await;
+    assert_eq!(sent_options.len(), 1, "expected exactly one bootstrap send");
+    assert_task_runtime_bootstrap_metadata(
+        sent_options
+            .first()
+            .and_then(|options| options.metadata.as_deref()),
+        &task_id_str,
+        "executing",
+        "task_execution",
+    );
+}
+
+#[tokio::test]
+async fn pre_execution_setup_blocks_worktree_task_without_worktree_path() {
+    let task_repo = Arc::new(MemoryTaskRepository::new());
+    let project_repo = Arc::new(MemoryProjectRepository::new());
+
+    let project_id = ProjectId::from_string("proj-missing-worktree".to_string());
+    let mut project = Project::new(
+        "missing-worktree-project".to_string(),
+        "/tmp/ralphx-test-main".to_string(),
+    );
+    project.id = project_id.clone();
+    project.git_mode = GitMode::Worktree;
+    project_repo.create(project).await.unwrap();
+
+    let mut task = Task::new(project_id.clone(), "Missing worktree path".to_string());
+    task.internal_status = InternalStatus::Executing;
+    let task_id = task.id.clone();
+    let task_id_str = task_id.as_str().to_string();
+    task_repo.create(task).await.unwrap();
+
+    let (_chat_service, services) =
+        make_services_with_tracked_chat(Arc::clone(&task_repo), Arc::clone(&project_repo));
+    let context = crate::domain::state_machine::context::TaskContext::new(
+        task_id_str.as_str(),
+        project_id.as_str(),
+        services,
+    );
+    let mut machine = crate::domain::state_machine::TaskStateMachine::new(context);
+    let handler = TransitionHandler::new(&mut machine);
+
+    let result = handler
+        .run_and_store_pre_execution_setup(
+            task_id_str.as_str(),
+            project_id.as_str(),
+            "execution",
+            "execution_setup_log",
+        )
+        .await;
+
+    assert!(
+        matches!(
+            result,
+            Err(crate::error::AppError::ExecutionBlocked(ref message))
+                if message.contains("no worktree_path")
+        ),
+        "Worktree execution setup must block without worktree_path; got {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn pre_execution_setup_blocks_worktree_task_with_missing_worktree_path() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let task_repo = Arc::new(MemoryTaskRepository::new());
+    let project_repo = Arc::new(MemoryProjectRepository::new());
+
+    let project_id = ProjectId::from_string("proj-missing-worktree-on-disk".to_string());
+    let mut project = Project::new(
+        "missing-worktree-on-disk-project".to_string(),
+        temp.path().join("main").to_string_lossy().to_string(),
+    );
+    project.id = project_id.clone();
+    project.git_mode = GitMode::Worktree;
+    project_repo.create(project).await.unwrap();
+
+    let mut task = Task::new(
+        project_id.clone(),
+        "Missing worktree path on disk".to_string(),
+    );
+    task.internal_status = InternalStatus::Executing;
+    task.worktree_path = Some(
+        temp.path()
+            .join("missing-execution-worktree")
+            .to_string_lossy()
+            .to_string(),
+    );
+    let task_id = task.id.clone();
+    let task_id_str = task_id.as_str().to_string();
+    task_repo.create(task).await.unwrap();
+
+    let (_chat_service, services) =
+        make_services_with_tracked_chat(Arc::clone(&task_repo), Arc::clone(&project_repo));
+    let context = crate::domain::state_machine::context::TaskContext::new(
+        task_id_str.as_str(),
+        project_id.as_str(),
+        services,
+    );
+    let mut machine = crate::domain::state_machine::TaskStateMachine::new(context);
+    let handler = TransitionHandler::new(&mut machine);
+
+    let result = handler
+        .run_and_store_pre_execution_setup(
+            task_id_str.as_str(),
+            project_id.as_str(),
+            "execution",
+            "execution_setup_log",
+        )
+        .await;
+
+    assert!(
+        matches!(
+            result,
+            Err(crate::error::AppError::ExecutionBlocked(ref message))
+                if message.contains("does not exist before pre-execution setup")
+        ),
+        "Worktree execution setup must block when persisted worktree_path is missing; got {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn on_enter_executing_adopts_existing_authoritative_worktree_path() {
+    let git_repo = setup_real_git_repo();
+    let path = git_repo.path();
+    let base_sha = git_rev_parse(path, "main");
+
+    let task_repo = Arc::new(MemoryTaskRepository::new());
+    let project_repo = Arc::new(MemoryProjectRepository::new());
+
+    let project_id = ProjectId::from_string("proj-existing-authoritative-worktree".to_string());
+    let mut project = Project::new(
+        "existing-authoritative-worktree-project".to_string(),
+        path.to_string_lossy().to_string(),
+    );
+    project.id = project_id.clone();
+    project.git_mode = GitMode::Worktree;
+    project.base_branch = Some("main".to_string());
+    project.worktree_parent_directory = Some(path.to_string_lossy().to_string());
+    project_repo.create(project.clone()).await.unwrap();
+
+    let mut task = Task::new(
+        project_id.clone(),
+        "Adopt expected worktree path".to_string(),
+    );
+    let task_id = task.id.clone();
+    let task_id_str = task_id.as_str().to_string();
+    let stale_missing_path = path.join("stale-missing-worktree");
+    let expected_path = compute_task_worktree_path(&project, &task_id_str);
+    std::fs::create_dir_all(&expected_path).expect("create expected worktree path");
+    task.internal_status = InternalStatus::Executing;
+    task.task_branch = Some(git_repo.task_branch.clone());
+    task.task_branch_base_ref = Some("main".to_string());
+    task.task_branch_base_sha = Some(base_sha);
+    task.worktree_path = Some(stale_missing_path.to_string_lossy().to_string());
+    task_repo.create(task).await.unwrap();
+
+    let (chat_service, services) =
+        make_services_with_tracked_chat(Arc::clone(&task_repo), Arc::clone(&project_repo));
+    let context = crate::domain::state_machine::context::TaskContext::new(
+        task_id_str.as_str(),
+        project_id.as_str(),
+        services,
+    );
+    let mut machine = crate::domain::state_machine::TaskStateMachine::new(context);
+    let handler = TransitionHandler::new(&mut machine);
+
+    let result = handler.on_enter(&State::Executing).await;
+    assert!(
+        result.is_ok(),
+        "on_enter(Executing) should adopt the existing authoritative worktree path: {:?}",
+        result.err()
+    );
+
+    let updated = task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("Task must still exist");
+    assert_eq!(
+        updated.worktree_path.as_deref(),
+        Some(expected_path.as_str()),
+        "Executing must replace the stale missing path with the authoritative existing path"
+    );
+    let sent_messages = chat_service.get_sent_messages().await;
+    assert_eq!(
+        sent_messages,
+        vec![format!("Execute task: {}", task_id_str)]
+    );
+    let sent_options = chat_service.get_sent_options().await;
+    assert_eq!(sent_options.len(), 1, "expected exactly one bootstrap send");
+    assert_task_runtime_bootstrap_metadata(
+        sent_options
+            .first()
+            .and_then(|options| options.metadata.as_deref()),
+        &task_id_str,
+        "executing",
+        "task_execution",
     );
 }

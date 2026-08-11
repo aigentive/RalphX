@@ -6,7 +6,9 @@ import {
   UpdateTaskSchema,
   TaskListSchema,
   TASK_CATEGORIES,
+  RestartResultSchemaRaw,
   transformTask,
+  transformRestartResult,
 } from "./task";
 import { INTERNAL_STATUS_VALUES } from "./status";
 
@@ -114,6 +116,26 @@ describe("TaskSchema", () => {
   it("should reject task missing required fields", () => {
     expect(() => TaskSchema.parse({})).toThrow();
     expect(() => TaskSchema.parse({ id: "test" })).toThrow();
+  });
+});
+
+describe("RestartResultSchemaRaw", () => {
+  it("accepts and transforms the backend lowercase success contract", () => {
+    const raw = RestartResultSchemaRaw.parse({
+      type: "Success",
+      task: {},
+      category: "redirect",
+      resumed_to_status: "pending_review",
+      disposition: "recovered_to_review",
+    });
+
+    expect(transformRestartResult(raw)).toEqual({
+      type: "Success",
+      task: {},
+      category: "redirect",
+      resumedToStatus: "pending_review",
+      disposition: "recovered_to_review",
+    });
   });
 });
 

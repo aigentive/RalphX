@@ -10,10 +10,16 @@ import {
 import { useState, type ReactNode } from "react";
 import { toast } from "sonner";
 
+import {
+  hasUsableGitHubCredential,
+  isTransientGitHubConnectionState,
+  requiresGitHubCredentialRepair,
+  type GitHubConnectionStatus,
+} from "@/api/github";
 import { Button } from "@/components/ui/button";
 import { useConfirmation } from "@/hooks/useConfirmation";
+import { useGitHubConnectionStatus } from "@/hooks/useGitHubConnectionStatus";
 import {
-  useGhAuthStatus,
   useGitAuthDiagnostics,
   useLoginGhWithBrowser,
   useResumeDeferredGitStartup,
@@ -41,7 +47,7 @@ function isGithubHttpsRemote(url: string | null | undefined) {
 
 function hasDeferredStartupBlockingIssue(
   diagnostics: GitAuthDiagnostics | undefined,
-  ghAuthenticated: boolean | undefined,
+  ghStatus: GitHubConnectionStatus | undefined,
   requiresGhAuth: boolean,
   diagnosticsFailed = false,
 ) {
@@ -63,8 +69,11 @@ function hasDeferredStartupBlockingIssue(
   ) {
     return true;
   }
+  if (isTransientGitHubConnectionState(ghStatus)) {
+    return requiresGhAuth || hasGithubHttpsRemote;
+  }
   return Boolean(
-    ghAuthenticated === false &&
+    requiresGitHubCredentialRepair(ghStatus) &&
       (requiresGhAuth ||
         hasGithubHttpsRemote),
   );
@@ -86,7 +95,7 @@ export function GitAuthRepairPanel({
   requiresGhAuth?: boolean;
 }) {
   const diagnosticsQuery = useGitAuthDiagnostics(projectId);
-  const ghAuthQuery = useGhAuthStatus();
+  const ghStatusQuery = useGitHubConnectionStatus();
   const switchToSshMutation = useSwitchGitOriginToSsh();
   const loginGhWithBrowserMutation = useLoginGhWithBrowser();
   const setupGhGitAuthMutation = useSetupGhGitAuth();
@@ -99,9 +108,11 @@ export function GitAuthRepairPanel({
   }
 
   const diagnostics = diagnosticsQuery.data;
-  const isGhAuthed = ghAuthQuery.data === true;
-  const isGhMissing = ghAuthQuery.data === false;
-  const isChecking = diagnosticsQuery.isLoading || ghAuthQuery.isLoading;
+  const ghStatus = ghStatusQuery.data;
+  const needsCredentialRepair = requiresGitHubCredentialRepair(ghStatus);
+  const hasUsableCredential = hasUsableGitHubCredential(ghStatus);
+  const hasTransientGhIssue = isTransientGitHubConnectionState(ghStatus);
+  const isChecking = diagnosticsQuery.isLoading || ghStatusQuery.isLoading;
   const hasHttpsRemote =
     diagnostics?.fetchKind === "HTTPS" || diagnostics?.pushKind === "HTTPS";
   const hasGithubHttpsRemote =
@@ -112,10 +123,11 @@ export function GitAuthRepairPanel({
   const hasOtherHttpsRemote = hasHttpsRemote && !hasGithubHttpsRemote;
   const hasGithubHttpsCredentialIssue =
     hasGithubHttpsRemote &&
-    (!githubHttpsCredentialHelperConfigured || isGhMissing);
+    (!githubHttpsCredentialHelperConfigured || needsCredentialRepair);
   const canSetupGithubHttps =
-    isGhAuthed && hasGithubHttpsRemote && !githubHttpsCredentialHelperConfigured;
-  const canLoginGithubCli = isGhMissing && (requiresGhAuth || hasGithubHttpsRemote);
+    hasUsableCredential && hasGithubHttpsRemote && !githubHttpsCredentialHelperConfigured;
+  const canLoginGithubCli =
+    needsCredentialRepair && (requiresGhAuth || hasGithubHttpsRemote);
   const canCopyGithubLogin = canLoginGithubCli;
   const hasRepairAction =
     Boolean(diagnostics?.canSwitchToSsh) ||
@@ -124,11 +136,12 @@ export function GitAuthRepairPanel({
     canCopyGithubLogin;
   const hasGitTransportIssue =
     diagnosticsQuery.isError ||
-    ghAuthQuery.isError ||
+    ghStatusQuery.isError ||
     diagnostics?.mixedAuthModes ||
     hasOtherHttpsRemote ||
-    hasGithubHttpsCredentialIssue;
-  const hasGhPrIssue = requiresGhAuth && isGhMissing;
+    hasGithubHttpsCredentialIssue ||
+    (hasTransientGhIssue && (requiresGhAuth || hasGithubHttpsRemote));
+  const hasGhPrIssue = requiresGhAuth && needsCredentialRepair;
   const hasVisibleIssue = hasGitTransportIssue || hasGhPrIssue;
   const showPrAccessMode = hasGhPrIssue && !hasGitTransportIssue;
 
@@ -156,7 +169,13 @@ export function GitAuthRepairPanel({
     messages.push(
       "Git SSH access is ready. Sign in to GitHub CLI from RalphX before creating or updating draft PRs.",
     );
-  } else if (isGhMissing && hasGithubHttpsRemote) {
+  } else if (hasTransientGhIssue && (requiresGhAuth || hasGithubHttpsRemote)) {
+    messages.push(
+      ghStatus?.state === "provider_unavailable"
+        ? "GitHub is temporarily unavailable. RalphX is keeping the saved CLI credential state and will not ask you to sign in again."
+        : "RalphX could not verify GitHub access. Recheck before starting a new sign-in.",
+    );
+  } else if (needsCredentialRepair && hasGithubHttpsRemote) {
     messages.push("GitHub CLI is not signed in for this app. Sign in from RalphX, then configure HTTPS credentials or switch origin to SSH.");
   }
   if (canSetupGithubHttps) {
@@ -176,11 +195,11 @@ export function GitAuthRepairPanel({
   const handleRecheck = async () => {
     const [diagnosticsResult, ghAuthResult] = await Promise.all([
       diagnosticsQuery.refetch(),
-      ghAuthQuery.refetch(),
+      ghStatusQuery.refetch(),
     ]);
     return {
       diagnostics: diagnosticsResult.data,
-      ghAuthenticated: ghAuthResult.data,
+      ghStatus: ghAuthResult.data,
       diagnosticsFailed: diagnosticsResult.isError,
     };
   };
@@ -190,7 +209,7 @@ export function GitAuthRepairPanel({
     if (
       hasDeferredStartupBlockingIssue(
         current.diagnostics,
-        current.ghAuthenticated,
+        current.ghStatus,
         requiresGhAuth,
         current.diagnosticsFailed,
       )

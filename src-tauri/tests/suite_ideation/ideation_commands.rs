@@ -1,12 +1,12 @@
 use ralphx_lib::application::AppState;
 use ralphx_lib::commands::ideation_commands::*;
-use ralphx_lib::domain::agents::{AgentHarnessKind, AgentLane, AgentLaneSettings};
 use ralphx_lib::domain::entities::ideation::VerificationStatus;
 use ralphx_lib::domain::entities::{
     ChatMessage, IdeationSession, IdeationSessionId, IdeationSessionStatus, Priority, Project,
     ProjectId, ProposalCategory, TaskProposal, TaskProposalId,
 };
 use ralphx_lib::domain::ideation::IdeationSettings;
+use tauri::Manager;
 
 fn setup_test_state() -> AppState {
     AppState::new_test()
@@ -1260,6 +1260,42 @@ async fn test_system_message_in_session() {
 // ========================================================================
 
 #[tokio::test]
+async fn ipc_contract_ideation_settings_commands_preserve_backend_tasks_state() {
+    let app = tauri::test::mock_builder()
+        .manage(AppState::new_test())
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("ideation settings command app should build");
+
+    let current = get_ideation_settings(app.state::<AppState>())
+        .await
+        .expect("settings command should return defaults");
+    let backend_tasks_enabled = current.tasks_enabled;
+    let backend_tasks_feature_state = current.tasks_feature_state;
+
+    let requested = IdeationSettings {
+        plan_mode: ralphx_lib::domain::ideation::IdeationPlanMode::Required,
+        tasks_enabled: !backend_tasks_enabled,
+        ..current
+    };
+    let updated = update_ideation_settings(requested, app.state::<AppState>())
+        .await
+        .expect("ordinary settings command should persist planning fields");
+
+    assert_eq!(
+        updated.plan_mode,
+        ralphx_lib::domain::ideation::IdeationPlanMode::Required
+    );
+    assert_eq!(
+        updated.tasks_enabled, backend_tasks_enabled,
+        "ordinary settings updates must preserve backend-owned enablement"
+    );
+    assert_eq!(
+        updated.tasks_feature_state, backend_tasks_feature_state,
+        "ordinary settings updates must preserve backend-owned feature state"
+    );
+}
+
+#[tokio::test]
 async fn test_get_ideation_settings_returns_default() {
     let state = setup_test_state();
 
@@ -1285,10 +1321,14 @@ async fn test_update_ideation_settings() {
 
     // Create custom settings
     let custom_settings = IdeationSettings {
+        tasks_enabled: false,
+        tasks_feature_state: Default::default(),
         plan_mode: ralphx_lib::domain::ideation::IdeationPlanMode::Required,
         require_plan_approval: true,
         suggest_plans_for_complex: false,
         auto_link_proposals: false,
+        auto_verify_plans: false,
+        auto_verify_draft_plans: true,
         require_verification_for_accept: false,
         require_verification_for_proposals: false,
         require_accept_for_finalize: false,
@@ -1317,10 +1357,14 @@ async fn test_ideation_settings_persist_across_reads() {
 
     // Update settings
     let custom_settings = IdeationSettings {
+        tasks_enabled: false,
+        tasks_feature_state: Default::default(),
         plan_mode: ralphx_lib::domain::ideation::IdeationPlanMode::Parallel,
         require_plan_approval: false,
         suggest_plans_for_complex: true,
         auto_link_proposals: false,
+        auto_verify_plans: false,
+        auto_verify_draft_plans: true,
         require_verification_for_accept: false,
         require_verification_for_proposals: false,
         require_accept_for_finalize: false,
@@ -1749,7 +1793,12 @@ async fn setup_session_with_proposals(
 ) {
     use ralphx_lib::domain::entities::{Priority, Project, ProposalCategory};
 
-    let project = Project::new("Test Project".to_string(), "/tmp/test".to_string());
+    let repo_dir = setup_git_repo_for_apply_test();
+    let repo_path = repo_dir.keep();
+    let project = Project::new(
+        "Test Project".to_string(),
+        repo_path.to_string_lossy().to_string(),
+    );
     let project = state
         .project_repo
         .create(project)
@@ -1836,6 +1885,104 @@ async fn test_apply_proposals_core_creates_tasks_with_ready_status() {
 }
 
 #[tokio::test]
+async fn test_apply_proposals_core_snapshots_blueprint_lineage_on_created_task() {
+    use ralphx_lib::domain::entities::{Artifact, ArtifactType};
+
+    let state = setup_apply_test_state();
+    let (_project_id, session, proposal_ids) = setup_session_with_proposals(&state, 1).await;
+    let blueprint = state
+        .artifact_repo
+        .create(Artifact::new_inline(
+            "Blueprint",
+            ArtifactType::Specification,
+            "Implementation details",
+            "test",
+        ))
+        .await
+        .expect("blueprint should be created");
+    let proposal_id = TaskProposalId::from_string(proposal_ids[0].clone());
+    let mut proposal = state
+        .task_proposal_repo
+        .get_by_id(&proposal_id)
+        .await
+        .expect("proposal lookup should succeed")
+        .expect("proposal should exist");
+    proposal.blueprint_artifact_id = Some(blueprint.id.clone());
+    proposal.blueprint_version_at_creation = Some(1);
+    state
+        .task_proposal_repo
+        .update(&proposal)
+        .await
+        .expect("proposal blueprint lineage should persist");
+
+    let result = apply_proposals_core(
+        &state,
+        ApplyProposalsInput {
+            session_id: session.id.to_string(),
+            proposal_ids,
+            target_column: "auto".to_string(),
+            base_branch_override: None,
+        },
+    )
+    .await
+    .expect("proposal acceptance should succeed");
+    let task = state
+        .task_repo
+        .get_by_id(&ralphx_lib::domain::entities::TaskId::from_string(
+            result.created_task_ids[0].clone(),
+        ))
+        .await
+        .expect("task lookup should succeed")
+        .expect("task should exist");
+
+    assert_eq!(task.plan_blueprint_artifact_id, Some(blueprint.id));
+}
+
+#[tokio::test]
+async fn test_apply_proposals_core_rejects_incomplete_blueprint_lineage() {
+    let state = setup_apply_test_state();
+    let (_project_id, session, proposal_ids) = setup_session_with_proposals(&state, 1).await;
+    let proposal_id = TaskProposalId::from_string(proposal_ids[0].clone());
+    let mut proposal = state
+        .task_proposal_repo
+        .get_by_id(&proposal_id)
+        .await
+        .expect("proposal lookup should succeed")
+        .expect("proposal should exist");
+    proposal.blueprint_version_at_creation = Some(1);
+    state
+        .task_proposal_repo
+        .update(&proposal)
+        .await
+        .expect("incomplete lineage fixture should persist");
+
+    let error = apply_proposals_core(
+        &state,
+        ApplyProposalsInput {
+            session_id: session.id.to_string(),
+            proposal_ids,
+            target_column: "auto".to_string(),
+            base_branch_override: None,
+        },
+    )
+    .await
+    .expect_err("v2 lineage without a Blueprint ID must fail closed");
+
+    assert!(error
+        .to_string()
+        .contains("blueprint lineage is incomplete"));
+    assert!(
+        state
+            .task_repo
+            .get_by_ideation_session(&session.id)
+            .await
+            .expect("task lookup should succeed")
+            .is_empty(),
+        "failed acceptance must roll back task creation"
+    );
+}
+
+#[tokio::test]
 async fn test_apply_proposals_core_session_converts_to_accepted() {
     let state = setup_apply_test_state();
     let (_project_id, session, proposal_ids) = setup_session_with_proposals(&state, 1).await;
@@ -1864,6 +2011,923 @@ async fn test_apply_proposals_core_session_converts_to_accepted() {
         .expect("repo error")
         .expect("session should exist");
     assert_eq!(updated_session.status, IdeationSessionStatus::Accepted);
+}
+
+#[tokio::test]
+async fn test_restart_ideation_implementation_core_rebuilds_current_attempt_only() {
+    use std::collections::HashSet;
+
+    use ralphx_lib::domain::entities::{ExecutionPlan, ExecutionPlanId, ExecutionPlanStatus, Task};
+
+    let state = setup_apply_test_state();
+    let (project_id, session, proposal_ids) = setup_session_with_proposals(&state, 2).await;
+
+    state
+        .ideation_session_repo
+        .set_dependencies_acknowledged(session.id.as_str())
+        .await
+        .expect("Failed to acknowledge dependencies");
+
+    let apply_result = apply_proposals_core(
+        &state,
+        ApplyProposalsInput {
+            session_id: session.id.as_str().to_string(),
+            proposal_ids: proposal_ids.clone(),
+            target_column: "auto".to_string(),
+            base_branch_override: None,
+        },
+    )
+    .await
+    .expect("apply_proposals_core should accept the session");
+    let old_execution_plan_id = apply_result
+        .execution_plan_id
+        .clone()
+        .expect("accepted session should have an execution plan");
+    let old_execution_plan = ExecutionPlanId::from_string(old_execution_plan_id.clone());
+
+    state
+        .active_plan_repo
+        .set(&project_id, &session.id)
+        .await
+        .expect("accepted session should become active plan");
+    state
+        .active_plan_repo
+        .set_execution_plan_id(&project_id, &old_execution_plan)
+        .await
+        .expect("active plan should track old execution plan");
+
+    let historical_plan = state
+        .execution_plan_repo
+        .create(ExecutionPlan::new(session.id.clone()))
+        .await
+        .expect("historical execution plan should be created");
+    state
+        .execution_plan_repo
+        .mark_superseded(&historical_plan.id)
+        .await
+        .expect("historical execution plan should be superseded");
+    let mut historical_task = Task::new(project_id.clone(), "Historical task".to_string());
+    historical_task.ideation_session_id = Some(session.id.clone());
+    historical_task.execution_plan_id = Some(historical_plan.id.clone());
+    let historical_task = state
+        .task_repo
+        .create(historical_task)
+        .await
+        .expect("historical task should be created");
+
+    let old_attempt_task_count = state
+        .task_repo
+        .count_tasks(&project_id, false, None, Some(old_execution_plan.as_str()))
+        .await
+        .expect("old attempt count should load");
+    assert!(
+        old_attempt_task_count > proposal_ids.len() as u32,
+        "old attempt count should include the merge task"
+    );
+
+    let result = restart_ideation_implementation_core(&state, session.id.as_str().to_string())
+        .await
+        .expect("restart should rebuild implementation attempt");
+
+    assert_eq!(result.old_execution_plan_id, old_execution_plan_id);
+    assert_ne!(result.execution_plan_id, old_execution_plan_id);
+    assert_eq!(
+        result.archived_task_count, old_attempt_task_count as usize,
+        "restart should archive exactly the current active attempt"
+    );
+    assert_eq!(
+        result.created_task_ids.len(),
+        proposal_ids.len(),
+        "restart should recreate one task per local proposal"
+    );
+
+    let old_plan = state
+        .execution_plan_repo
+        .get_by_id(&old_execution_plan)
+        .await
+        .expect("old plan lookup should succeed")
+        .expect("old plan should exist");
+    assert_eq!(old_plan.status, ExecutionPlanStatus::Superseded);
+
+    let new_execution_plan = ExecutionPlanId::from_string(result.execution_plan_id.clone());
+    let new_plan = state
+        .execution_plan_repo
+        .get_by_id(&new_execution_plan)
+        .await
+        .expect("new plan lookup should succeed")
+        .expect("new plan should exist");
+    assert_eq!(new_plan.status, ExecutionPlanStatus::Active);
+
+    let old_attempt_tasks = state
+        .task_repo
+        .list_paginated(
+            &project_id,
+            None,
+            0,
+            old_attempt_task_count,
+            true,
+            None,
+            Some(old_execution_plan.as_str()),
+            None,
+        )
+        .await
+        .expect("old attempt tasks should load");
+    assert!(
+        old_attempt_tasks
+            .iter()
+            .all(|task| task.archived_at.is_some()),
+        "all old active-attempt tasks should be archived"
+    );
+
+    let historical_task_after_restart = state
+        .task_repo
+        .get_by_id(&historical_task.id)
+        .await
+        .expect("historical task lookup should succeed")
+        .expect("historical task should still exist");
+    assert!(
+        historical_task_after_restart.archived_at.is_none(),
+        "restart must not archive superseded historical attempts"
+    );
+
+    for task_id in &result.created_task_ids {
+        let task = state
+            .task_repo
+            .get_by_id(&ralphx_lib::domain::entities::TaskId::from_string(
+                task_id.clone(),
+            ))
+            .await
+            .expect("new task lookup should succeed")
+            .expect("new task should exist");
+        assert_eq!(task.execution_plan_id, Some(new_execution_plan.clone()));
+        assert!(task.archived_at.is_none());
+    }
+
+    let proposal_task_ids: HashSet<String> = state
+        .task_proposal_repo
+        .get_by_session(&session.id)
+        .await
+        .expect("proposals should load")
+        .into_iter()
+        .map(|proposal| {
+            proposal
+                .created_task_id
+                .expect("proposal should point to recreated task")
+                .as_str()
+                .to_string()
+        })
+        .collect();
+    let created_task_ids: HashSet<String> = result.created_task_ids.iter().cloned().collect();
+    assert_eq!(proposal_task_ids, created_task_ids);
+
+    assert_eq!(
+        state
+            .active_plan_repo
+            .get(&project_id)
+            .await
+            .expect("active plan should load"),
+        Some(session.id.clone())
+    );
+    assert_eq!(
+        state
+            .active_plan_repo
+            .get_execution_plan_id(&project_id)
+            .await
+            .expect("active execution plan should load"),
+        Some(new_execution_plan)
+    );
+
+    let updated_session = state
+        .ideation_session_repo
+        .get_by_id(&session.id)
+        .await
+        .expect("session lookup should succeed")
+        .expect("session should exist");
+    assert_eq!(updated_session.status, IdeationSessionStatus::Accepted);
+}
+
+#[tokio::test]
+async fn test_restart_move_worktree_relocates_owned_workspace_before_resetting() {
+    use ralphx_lib::application::agent_conversation_workspace::{
+        prepare_agent_conversation_workspace, resolve_linked_plan_branch_agent_worktree_path,
+        AgentConversationWorkspaceBaseSelection,
+    };
+    use ralphx_lib::application::GitService;
+    use ralphx_lib::domain::entities::{
+        AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus, ChatConversation,
+        IdeationAnalysisBaseRefKind, IdeationAnalysisState, IdeationAnalysisWorkspaceKind,
+        IdeationSession, PlanBranchStatus, Priority, Project, ProposalCategory, TaskProposal,
+    };
+
+    let mut state = setup_apply_test_state();
+    let github = std::sync::Arc::new(crate::support::mock_github_service::MockGithubService::new());
+    github.will_return_status(
+        ralphx_lib::domain::services::github_service::PrStatus::Merged {
+            merge_commit_sha: Some("merged-before-second-restart".to_string()),
+            merged_at: Some("2026-07-18T10:00:00Z".to_string()),
+        },
+    );
+    state.github_service = Some(
+        github
+            as std::sync::Arc<dyn ralphx_lib::domain::services::github_service::GithubServiceTrait>,
+    );
+    let repo_dir = setup_git_repo_for_apply_test();
+    let origin_dir = tempfile::TempDir::new().unwrap();
+    git_ok(
+        repo_dir.path(),
+        &[
+            "init",
+            "--bare",
+            origin_dir
+                .path()
+                .to_str()
+                .expect("origin path should be utf-8"),
+        ],
+    );
+    git_ok(
+        repo_dir.path(),
+        &[
+            "remote",
+            "add",
+            "origin",
+            origin_dir
+                .path()
+                .to_str()
+                .expect("origin path should be utf-8"),
+        ],
+    );
+    git_ok(repo_dir.path(), &["push", "-u", "origin", "main"]);
+    let worktree_parent = tempfile::TempDir::new().unwrap();
+    let mut project = Project::new(
+        "Test Project".to_string(),
+        repo_dir.path().to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    project.worktree_parent_directory = Some(worktree_parent.path().to_string_lossy().to_string());
+    let project = state.project_repo.create(project).await.unwrap();
+
+    let conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project.id.clone()))
+        .await
+        .expect("create project conversation");
+    let mut workspace = prepare_agent_conversation_workspace(
+        &project,
+        &conversation.id,
+        AgentConversationWorkspaceMode::Ideation,
+        AgentConversationWorkspaceBaseSelection {
+            kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+            branch_mode: None,
+            base_ref: Some("main".to_string()),
+            display_name: Some("Project default (main)".to_string()),
+            source_pull_request: None,
+        },
+    )
+    .await
+    .expect("prepare agent conversation workspace");
+
+    let mut session = IdeationSession::new(project.id.clone());
+    session.analysis = IdeationAnalysisState {
+        base_ref_kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+        base_ref: Some("main".to_string()),
+        base_display_name: Some("Project default (main)".to_string()),
+        workspace_kind: IdeationAnalysisWorkspaceKind::IdeationWorktree,
+        workspace_path: Some(workspace.worktree_path.clone()),
+        base_commit: workspace.base_commit.clone(),
+        base_locked_at: Some(chrono::Utc::now()),
+    };
+    let session = state.ideation_session_repo.create(session).await.unwrap();
+    workspace.linked_ideation_session_id = Some(session.id.clone());
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("persist linked workspace");
+
+    let proposal = state
+        .task_proposal_repo
+        .create(TaskProposal::new(
+            session.id.clone(),
+            "Test Proposal",
+            ProposalCategory::Feature,
+            Priority::Medium,
+        ))
+        .await
+        .unwrap();
+
+    let apply_result = apply_proposals_core(
+        &state,
+        ApplyProposalsInput {
+            session_id: session.id.as_str().to_string(),
+            proposal_ids: vec![proposal.id.as_str().to_string()],
+            target_column: "auto".to_string(),
+            base_branch_override: None,
+        },
+    )
+    .await
+    .expect("apply should accept linked workspace session");
+    let old_execution_plan_id = apply_result
+        .execution_plan_id
+        .expect("accepted session should have an execution plan");
+
+    let plan_branch = state
+        .plan_branch_repo
+        .get_by_session_id(&session.id)
+        .await
+        .unwrap()
+        .expect("plan branch should exist");
+    let linked_worktree_path =
+        resolve_linked_plan_branch_agent_worktree_path(&project, &plan_branch)
+            .expect("linked plan branch path should resolve");
+    assert!(
+        std::path::Path::new(&workspace.worktree_path).is_dir(),
+        "the owned conversation worktree should hold the plan branch before restart"
+    );
+    assert_eq!(
+        git_stdout(
+            std::path::Path::new(&workspace.worktree_path),
+            &["rev-parse", "--abbrev-ref", "HEAD"]
+        ),
+        plan_branch.branch_name
+    );
+    git_ok(
+        std::path::Path::new(&workspace.worktree_path),
+        &["checkout", "-b", "restart-branch-mismatch"],
+    );
+    let error = restart_ideation_implementation_core(&state, session.id.as_str().to_string())
+        .await
+        .expect_err("restart should reject an owned workspace on a different branch");
+    assert!(error.to_string().contains("could not safely restore"));
+    assert!(
+        !error.to_string().contains(&workspace.worktree_path),
+        "user-facing restart errors must not expose the workspace path"
+    );
+    assert_eq!(
+        state
+            .execution_plan_repo
+            .get_active_for_session(&session.id)
+            .await
+            .expect("active plan should remain available after rejected restart")
+            .expect("active plan should remain available after rejected restart")
+            .id
+            .as_str(),
+        old_execution_plan_id.as_str(),
+        "restart must reject the mismatched worktree before replacing the active attempt"
+    );
+    assert!(
+        std::path::Path::new(&workspace.worktree_path).is_dir(),
+        "restart must not relocate the conversation worktree when its branch is mismatched"
+    );
+    git_ok(
+        std::path::Path::new(&workspace.worktree_path),
+        &["checkout", plan_branch.branch_name.as_str()],
+    );
+    GitService::delete_worktree(
+        repo_dir.path(),
+        std::path::Path::new(&workspace.worktree_path),
+    )
+    .await
+    .expect("cleanup should remove the direct worktree while preserving its branch");
+    assert!(
+        GitService::branch_exists(repo_dir.path(), &plan_branch.branch_name)
+            .await
+            .expect("branch probe should succeed"),
+        "cleanup variant should preserve the implementation branch"
+    );
+    git_ok(
+        repo_dir.path(),
+        &["commit", "--allow-empty", "-m", "advance origin base"],
+    );
+    git_ok(repo_dir.path(), &["push", "origin", "main"]);
+    let latest_origin_base = git_stdout(repo_dir.path(), &["rev-parse", "origin/main"]);
+
+    let result = restart_ideation_implementation_core(&state, session.id.as_str().to_string())
+        .await
+        .expect("restart should use linked plan branch worktree, not stale conversation path");
+
+    assert_eq!(result.old_execution_plan_id, old_execution_plan_id);
+    assert_ne!(result.execution_plan_id, old_execution_plan_id);
+    assert_eq!(result.created_task_ids.len(), 1);
+
+    let stored_workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation.id)
+        .await
+        .unwrap()
+        .expect("workspace should still exist");
+    assert_eq!(
+        stored_workspace.worktree_path, workspace.worktree_path,
+        "restart should not rewrite the stale conversation worktree path"
+    );
+    assert_eq!(
+        stored_workspace.linked_plan_branch_id.as_ref(),
+        Some(&plan_branch.id)
+    );
+    assert!(
+        !std::path::Path::new(&workspace.worktree_path).is_dir(),
+        "restart should relocate the owned conversation worktree to the linked plan path"
+    );
+    assert!(
+        linked_worktree_path.is_dir(),
+        "restart should preserve the linked plan worktree"
+    );
+    assert_eq!(
+        git_stdout(&linked_worktree_path, &["rev-parse", "HEAD"]),
+        latest_origin_base,
+        "restart should reset the linked branch to the newest origin base revision"
+    );
+
+    GitService::delete_worktree(repo_dir.path(), &linked_worktree_path)
+        .await
+        .expect("merged cleanup should remove the linked worktree");
+    git_ok(
+        repo_dir.path(),
+        &["branch", "-D", plan_branch.branch_name.as_str()],
+    );
+    state
+        .agent_conversation_workspace_repo
+        .update_publication(
+            &conversation.id,
+            Some(90),
+            Some("https://github.com/example/repo/pull/90"),
+            Some("merged"),
+            Some("pushed"),
+        )
+        .await
+        .expect("test should record merged publication state");
+    state
+        .agent_conversation_workspace_repo
+        .mark_local_cleanup_status(&conversation.id, "cleaned", chrono::Utc::now())
+        .await
+        .expect("test should record owned merged cleanup");
+    state
+        .plan_branch_repo
+        .set_merged(&plan_branch.id)
+        .await
+        .expect("test should record the merged plan branch");
+    state
+        .plan_branch_repo
+        .mark_local_cleanup_status(&plan_branch.id, "cleaned", chrono::Utc::now())
+        .await
+        .expect("test should record plan branch cleanup provenance");
+
+    let second_restart =
+        restart_ideation_implementation_core(&state, session.id.as_str().to_string())
+            .await
+            .expect("restart should recreate a branch removed by owned merged cleanup");
+    assert_eq!(
+        second_restart.old_execution_plan_id,
+        result.execution_plan_id
+    );
+    assert!(linked_worktree_path.is_dir());
+    let restored_workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation.id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should remain persisted");
+    assert_eq!(
+        restored_workspace.status,
+        AgentConversationWorkspaceStatus::Active
+    );
+    assert_eq!(
+        state
+            .agent_conversation_workspace_repo
+            .get_local_cleanup_status(&conversation.id)
+            .await
+            .expect("cleanup status should load"),
+        None
+    );
+    let restored_plan_branch = state
+        .plan_branch_repo
+        .get_by_session_id(&session.id)
+        .await
+        .expect("plan branch lookup should succeed")
+        .expect("restarted plan branch should remain persisted");
+    assert_eq!(restored_plan_branch.status, PlanBranchStatus::Active);
+    assert_eq!(
+        restored_plan_branch.merged_at, None,
+        "restart must clear the stale merged timestamp"
+    );
+    assert_eq!(
+        state
+            .plan_branch_repo
+            .get_local_cleanup_status(&plan_branch.id)
+            .await
+            .expect("plan branch cleanup status should load"),
+        None
+    );
+}
+
+#[tokio::test]
+async fn test_restart_ideation_implementation_core_requires_origin_base_before_archiving_tasks() {
+    use ralphx_lib::application::agent_conversation_workspace::{
+        prepare_agent_conversation_workspace, AgentConversationWorkspaceBaseSelection,
+    };
+    use ralphx_lib::domain::entities::{
+        AgentConversationWorkspaceMode, ChatConversation, ExecutionPlanStatus,
+        IdeationAnalysisBaseRefKind, IdeationAnalysisState, IdeationAnalysisWorkspaceKind,
+        IdeationSession, Priority, Project, ProposalCategory, TaskProposal,
+    };
+    use ralphx_lib::error::AppError;
+
+    let state = setup_apply_test_state();
+    let repo_dir = setup_git_repo_for_apply_test();
+    let worktree_parent = tempfile::TempDir::new().unwrap();
+    let mut project = Project::new(
+        "Restart base failure test".to_string(),
+        repo_dir.path().to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    project.worktree_parent_directory = Some(worktree_parent.path().to_string_lossy().to_string());
+    let project = state.project_repo.create(project).await.unwrap();
+    let conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project.id.clone()))
+        .await
+        .expect("create project conversation");
+    let mut workspace = prepare_agent_conversation_workspace(
+        &project,
+        &conversation.id,
+        AgentConversationWorkspaceMode::Ideation,
+        AgentConversationWorkspaceBaseSelection {
+            kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+            branch_mode: None,
+            base_ref: Some("main".to_string()),
+            display_name: Some("Project default (main)".to_string()),
+            source_pull_request: None,
+        },
+    )
+    .await
+    .expect("prepare agent conversation workspace");
+    let mut session = IdeationSession::new(project.id.clone());
+    session.analysis = IdeationAnalysisState {
+        base_ref_kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+        base_ref: Some("main".to_string()),
+        base_display_name: Some("Project default (main)".to_string()),
+        workspace_kind: IdeationAnalysisWorkspaceKind::IdeationWorktree,
+        workspace_path: Some(workspace.worktree_path.clone()),
+        base_commit: workspace.base_commit.clone(),
+        base_locked_at: Some(chrono::Utc::now()),
+    };
+    let session = state.ideation_session_repo.create(session).await.unwrap();
+    workspace.linked_ideation_session_id = Some(session.id.clone());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("persist linked workspace");
+    let proposal = state
+        .task_proposal_repo
+        .create(TaskProposal::new(
+            session.id.clone(),
+            "Restart proposal",
+            ProposalCategory::Feature,
+            Priority::Medium,
+        ))
+        .await
+        .expect("proposal should be created");
+    let apply_result = apply_proposals_core(
+        &state,
+        ApplyProposalsInput {
+            session_id: session.id.as_str().to_string(),
+            proposal_ids: vec![proposal.id.as_str().to_string()],
+            target_column: "auto".to_string(),
+            base_branch_override: None,
+        },
+    )
+    .await
+    .expect("apply should create the original implementation attempt");
+    let old_execution_plan_id = apply_result
+        .execution_plan_id
+        .expect("accepted session should have an execution plan");
+    let old_task_count = state
+        .task_repo
+        .count_tasks(&project.id, false, None, Some(&old_execution_plan_id))
+        .await
+        .expect("old task count should load");
+
+    let error = restart_ideation_implementation_core(&state, session.id.as_str().to_string())
+        .await
+        .expect_err("restart should require an origin base ref");
+
+    assert!(
+        matches!(error, AppError::Validation(_) | AppError::GitOperation(_)),
+        "restart should stop at strict origin-base preflight, got {error:?}"
+    );
+    let old_plan = state
+        .execution_plan_repo
+        .get_by_id(&ralphx_lib::domain::entities::ExecutionPlanId::from_string(
+            old_execution_plan_id.clone(),
+        ))
+        .await
+        .expect("old execution plan should load")
+        .expect("old execution plan should remain");
+    assert_eq!(old_plan.status, ExecutionPlanStatus::Active);
+    assert_eq!(
+        state
+            .task_repo
+            .count_tasks(&project.id, false, None, Some(&old_execution_plan_id))
+            .await
+            .expect("old task count should still load"),
+        old_task_count,
+        "restart must not archive tasks when base preflight fails"
+    );
+}
+
+#[tokio::test]
+async fn test_restart_ideation_implementation_core_rejects_linked_workspace_without_plan_branch() {
+    use ralphx_lib::application::agent_conversation_workspace::{
+        prepare_agent_conversation_workspace, AgentConversationWorkspaceBaseSelection,
+    };
+    use ralphx_lib::domain::entities::{
+        AgentConversationWorkspaceMode, ChatConversation, IdeationAnalysisBaseRefKind,
+        IdeationAnalysisState, IdeationAnalysisWorkspaceKind, IdeationSession, Priority, Project,
+        ProposalCategory, TaskProposal,
+    };
+
+    let state = setup_apply_test_state();
+    let repo_dir = setup_git_repo_for_apply_test();
+    let worktree_parent = tempfile::TempDir::new().unwrap();
+    let mut project = Project::new(
+        "Test Project".to_string(),
+        repo_dir.path().to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    project.worktree_parent_directory = Some(worktree_parent.path().to_string_lossy().to_string());
+    let project = state.project_repo.create(project).await.unwrap();
+
+    let conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project.id.clone()))
+        .await
+        .expect("create project conversation");
+    let mut workspace = prepare_agent_conversation_workspace(
+        &project,
+        &conversation.id,
+        AgentConversationWorkspaceMode::Ideation,
+        AgentConversationWorkspaceBaseSelection {
+            kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+            branch_mode: None,
+            base_ref: Some("main".to_string()),
+            display_name: Some("Project default (main)".to_string()),
+            source_pull_request: None,
+        },
+    )
+    .await
+    .expect("prepare agent conversation workspace");
+
+    let mut session = IdeationSession::new(project.id.clone());
+    session.analysis = IdeationAnalysisState {
+        base_ref_kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+        base_ref: Some("main".to_string()),
+        base_display_name: Some("Project default (main)".to_string()),
+        workspace_kind: IdeationAnalysisWorkspaceKind::IdeationWorktree,
+        workspace_path: Some(workspace.worktree_path.clone()),
+        base_commit: workspace.base_commit.clone(),
+        base_locked_at: Some(chrono::Utc::now()),
+    };
+    let session = state.ideation_session_repo.create(session).await.unwrap();
+    workspace.linked_ideation_session_id = Some(session.id.clone());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("persist linked workspace");
+
+    let proposal = state
+        .task_proposal_repo
+        .create(TaskProposal::new(
+            session.id.clone(),
+            "Test Proposal",
+            ProposalCategory::Feature,
+            Priority::Medium,
+        ))
+        .await
+        .unwrap();
+
+    let apply_result = apply_proposals_core(
+        &state,
+        ApplyProposalsInput {
+            session_id: session.id.as_str().to_string(),
+            proposal_ids: vec![proposal.id.as_str().to_string()],
+            target_column: "auto".to_string(),
+            base_branch_override: None,
+        },
+    )
+    .await
+    .expect("apply should accept linked workspace session");
+    let old_execution_plan_id = ralphx_lib::domain::entities::ExecutionPlanId::from_string(
+        apply_result
+            .execution_plan_id
+            .expect("accepted session should have an execution plan"),
+    );
+
+    state
+        .agent_conversation_workspace_repo
+        .update_links(&conversation.id, Some(&session.id), None)
+        .await
+        .expect("test should remove stale plan branch link");
+
+    let err = restart_ideation_implementation_core(&state, session.id.as_str().to_string())
+        .await
+        .expect_err("restart should require a linked plan branch");
+
+    assert!(
+        err.to_string().contains("linked plan branch"),
+        "error should mention the missing linked plan branch: {}",
+        err
+    );
+    let old_plan = state
+        .execution_plan_repo
+        .get_by_id(&old_execution_plan_id)
+        .await
+        .expect("old plan lookup should succeed")
+        .expect("old plan should remain");
+    assert_eq!(
+        old_plan.status.to_db_string(),
+        "active",
+        "restart should fail before mutating the active execution plan"
+    );
+}
+
+#[tokio::test]
+async fn test_restart_ideation_implementation_core_rejects_missing_linked_plan_branch_row() {
+    use ralphx_lib::application::agent_conversation_workspace::{
+        prepare_agent_conversation_workspace, AgentConversationWorkspaceBaseSelection,
+    };
+    use ralphx_lib::domain::entities::{
+        AgentConversationWorkspaceMode, ChatConversation, IdeationAnalysisBaseRefKind,
+        IdeationAnalysisState, IdeationAnalysisWorkspaceKind, IdeationSession, Priority, Project,
+        ProposalCategory, TaskProposal,
+    };
+
+    let state = setup_apply_test_state();
+    let repo_dir = setup_git_repo_for_apply_test();
+    let worktree_parent = tempfile::TempDir::new().unwrap();
+    let mut project = Project::new(
+        "Test Project".to_string(),
+        repo_dir.path().to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    project.worktree_parent_directory = Some(worktree_parent.path().to_string_lossy().to_string());
+    let project = state.project_repo.create(project).await.unwrap();
+
+    let conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project.id.clone()))
+        .await
+        .expect("create project conversation");
+    let mut workspace = prepare_agent_conversation_workspace(
+        &project,
+        &conversation.id,
+        AgentConversationWorkspaceMode::Ideation,
+        AgentConversationWorkspaceBaseSelection {
+            kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+            branch_mode: None,
+            base_ref: Some("main".to_string()),
+            display_name: Some("Project default (main)".to_string()),
+            source_pull_request: None,
+        },
+    )
+    .await
+    .expect("prepare agent conversation workspace");
+
+    let mut session = IdeationSession::new(project.id.clone());
+    session.analysis = IdeationAnalysisState {
+        base_ref_kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+        base_ref: Some("main".to_string()),
+        base_display_name: Some("Project default (main)".to_string()),
+        workspace_kind: IdeationAnalysisWorkspaceKind::IdeationWorktree,
+        workspace_path: Some(workspace.worktree_path.clone()),
+        base_commit: workspace.base_commit.clone(),
+        base_locked_at: Some(chrono::Utc::now()),
+    };
+    let session = state.ideation_session_repo.create(session).await.unwrap();
+    workspace.linked_ideation_session_id = Some(session.id.clone());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("persist linked workspace");
+
+    let proposal = state
+        .task_proposal_repo
+        .create(TaskProposal::new(
+            session.id.clone(),
+            "Test Proposal",
+            ProposalCategory::Feature,
+            Priority::Medium,
+        ))
+        .await
+        .unwrap();
+
+    let apply_result = apply_proposals_core(
+        &state,
+        ApplyProposalsInput {
+            session_id: session.id.as_str().to_string(),
+            proposal_ids: vec![proposal.id.as_str().to_string()],
+            target_column: "auto".to_string(),
+            base_branch_override: None,
+        },
+    )
+    .await
+    .expect("apply should accept linked workspace session");
+    let old_execution_plan_id = ralphx_lib::domain::entities::ExecutionPlanId::from_string(
+        apply_result
+            .execution_plan_id
+            .expect("accepted session should have an execution plan"),
+    );
+    let plan_branch = state
+        .plan_branch_repo
+        .get_by_session_id(&session.id)
+        .await
+        .unwrap()
+        .expect("plan branch should exist before deletion");
+    state
+        .plan_branch_repo
+        .delete(&plan_branch.id)
+        .await
+        .expect("test should remove linked plan branch row");
+
+    let err = restart_ideation_implementation_core(&state, session.id.as_str().to_string())
+        .await
+        .expect_err("restart should require the linked plan branch row");
+
+    assert!(
+        err.to_string().contains("Linked plan branch not found"),
+        "error should mention the missing linked plan branch row: {}",
+        err
+    );
+    let old_plan = state
+        .execution_plan_repo
+        .get_by_id(&old_execution_plan_id)
+        .await
+        .expect("old plan lookup should succeed")
+        .expect("old plan should remain");
+    assert_eq!(
+        old_plan.status.to_db_string(),
+        "active",
+        "restart should fail before mutating the active execution plan"
+    );
+}
+
+#[tokio::test]
+async fn test_restart_ideation_implementation_core_rejects_active_session() {
+    let state = setup_apply_test_state();
+    let (_project_id, session, _proposal_ids) = setup_session_with_proposals(&state, 1).await;
+
+    let err = restart_ideation_implementation_core(&state, session.id.as_str().to_string())
+        .await
+        .expect_err("restart should reject active sessions");
+
+    assert!(
+        err.to_string().contains("accepted"),
+        "error should require an accepted session: {}",
+        err
+    );
+}
+
+#[tokio::test]
+async fn test_restart_ideation_implementation_core_rejects_accepted_without_active_plan() {
+    let state = setup_apply_test_state();
+    let (_project_id, session, _proposal_ids) = setup_session_with_proposals(&state, 1).await;
+
+    state
+        .ideation_session_repo
+        .update_status(&session.id, IdeationSessionStatus::Accepted)
+        .await
+        .expect("session should become accepted");
+
+    let err = restart_ideation_implementation_core(&state, session.id.as_str().to_string())
+        .await
+        .expect_err("restart should require an active execution plan");
+
+    assert!(
+        err.to_string().contains("active implementation attempt"),
+        "error should mention missing active implementation attempt: {}",
+        err
+    );
+}
+
+#[test]
+fn test_restart_ideation_implementation_core_response_conversion_preserves_public_fields() {
+    let response: RestartImplementationResultResponse = RestartImplementationResult {
+        session_id: "session-1".to_string(),
+        project_id: "project-1".to_string(),
+        old_execution_plan_id: "exec-old".to_string(),
+        execution_plan_id: "exec-new".to_string(),
+        archived_task_count: 2,
+        created_task_ids: vec!["task-1".to_string(), "task-2".to_string()],
+        any_ready_tasks: true,
+    }
+    .into();
+
+    assert_eq!(response.session_id, "session-1");
+    assert_eq!(response.old_execution_plan_id, "exec-old");
+    assert_eq!(response.execution_plan_id, "exec-new");
+    assert_eq!(response.archived_task_count, 2);
+    assert_eq!(response.created_task_ids, ["task-1", "task-2"]);
 }
 
 #[tokio::test]
@@ -2016,7 +3080,7 @@ async fn test_apply_proposals_core_repairs_stale_orphaned_execution_plan() {
 }
 
 #[tokio::test]
-async fn test_apply_proposals_core_blocks_active_verification_when_accept_gate_disabled() {
+async fn test_apply_proposals_core_ignores_retired_active_verification_when_accept_gate_disabled() {
     let state = setup_apply_test_state();
     let (_project_id, session, proposal_ids) = setup_session_with_proposals(&state, 1).await;
 
@@ -2033,35 +3097,24 @@ async fn test_apply_proposals_core_blocks_active_verification_when_accept_gate_d
         base_branch_override: None,
     };
 
-    let err = apply_proposals_core(&state, input)
+    let result = apply_proposals_core(&state, input)
         .await
-        .expect_err("apply_proposals_core should block active verification");
-
-    assert!(
-        matches!(err, ralphx_lib::error::AppError::Validation(_)),
-        "Expected Validation error from verification gate, got: {:?}",
-        err
-    );
+        .expect("retired verifier state must not block advisory acceptance");
+    assert_eq!(result.tasks_created, 1);
 
     let active_plan = state
         .execution_plan_repo
         .get_active_for_session(&session.id)
         .await
         .expect("execution plan lookup should not fail");
-    assert!(
-        active_plan.is_none(),
-        "blocked verification must not create an execution plan"
-    );
+    assert!(active_plan.is_some());
 
     let tasks = state
         .task_repo
         .get_by_ideation_session(&session.id)
         .await
         .expect("task lookup should not fail");
-    assert!(
-        tasks.is_empty(),
-        "blocked verification must not create proposal tasks"
-    );
+    assert!(!tasks.is_empty());
 
     let updated_session = state
         .ideation_session_repo
@@ -2069,7 +3122,225 @@ async fn test_apply_proposals_core_blocks_active_verification_when_accept_gate_d
         .await
         .expect("repo error")
         .expect("session should exist");
-    assert_eq!(updated_session.status, IdeationSessionStatus::Active);
+    assert_eq!(updated_session.status, IdeationSessionStatus::Accepted);
+}
+
+#[tokio::test]
+async fn test_apply_proposals_core_accepts_only_current_exact_verification_proof() {
+    use ralphx_lib::domain::entities::{Artifact, ArtifactType};
+
+    let state = setup_apply_test_state();
+    let (_project_id, session, proposal_ids) = setup_session_with_proposals(&state, 1).await;
+    let overview = state
+        .artifact_repo
+        .create(Artifact::new_inline(
+            "Overview",
+            ArtifactType::Specification,
+            "# Overview",
+            "test",
+        ))
+        .await
+        .expect("overview should be created");
+    let blueprint = state
+        .artifact_repo
+        .create(Artifact::new_inline(
+            "Blueprint",
+            ArtifactType::Specification,
+            "# Blueprint",
+            "test",
+        ))
+        .await
+        .expect("blueprint should be created");
+
+    let session_id = session.id.as_str().to_string();
+    state
+        .db
+        .run(move |conn| {
+            conn.execute(
+                "UPDATE ideation_sessions
+                 SET plan_artifact_id = ?1,
+                     plan_blueprint_artifact_id = ?2,
+                     verified_plan_artifact_id = ?1,
+                     verified_plan_blueprint_artifact_id = ?2
+                 WHERE id = ?3",
+                rusqlite::params![overview.id.as_str(), blueprint.id.as_str(), session_id],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("exact proof should be stored");
+
+    let mut settings = state
+        .ideation_settings_repo
+        .get_settings()
+        .await
+        .expect("settings should load");
+    settings.require_verification_for_accept = true;
+    settings.auto_verify_plans = false;
+    state
+        .ideation_settings_repo
+        .update_settings(&settings)
+        .await
+        .expect("settings should update");
+
+    let result = apply_proposals_core(
+        &state,
+        ApplyProposalsInput {
+            session_id: session.id.as_str().to_string(),
+            proposal_ids,
+            target_column: "auto".to_string(),
+            base_branch_override: None,
+        },
+    )
+    .await
+    .expect("exact proof for the current artifact should permit acceptance");
+
+    assert_eq!(result.tasks_created, 1);
+    assert!(result.session_converted);
+}
+
+#[tokio::test]
+async fn test_apply_proposals_core_blocks_stale_proof_without_creating_kanban_state() {
+    let state = setup_apply_test_state();
+    let (_project_id, session, proposal_ids) = setup_session_with_proposals(&state, 1).await;
+
+    state
+        .ideation_session_repo
+        .update_plan_artifact_id(&session.id, Some("plan-current".to_string()))
+        .await
+        .expect("plan should be linked");
+    let session_id = session.id.as_str().to_string();
+    state
+        .db
+        .run(move |conn| {
+            conn.execute(
+                "UPDATE ideation_sessions
+                 SET verified_plan_artifact_id = 'plan-stale'
+                 WHERE id = ?1",
+                [&session_id],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("stale proof should be stored");
+
+    let mut settings = state
+        .ideation_settings_repo
+        .get_settings()
+        .await
+        .expect("settings should load");
+    settings.require_verification_for_accept = true;
+    settings.auto_verify_plans = false;
+    state
+        .ideation_settings_repo
+        .update_settings(&settings)
+        .await
+        .expect("settings should update");
+
+    let error = apply_proposals_core(
+        &state,
+        ApplyProposalsInput {
+            session_id: session.id.as_str().to_string(),
+            proposal_ids,
+            target_column: "auto".to_string(),
+            base_branch_override: None,
+        },
+    )
+    .await
+    .expect_err("stale proof must block acceptance");
+
+    assert!(error.to_string().contains("must be verified"));
+    assert!(
+        state
+            .execution_plan_repo
+            .get_active_for_session(&session.id)
+            .await
+            .expect("execution plan lookup should succeed")
+            .is_none(),
+        "blocked acceptance must not create an execution plan"
+    );
+    assert!(
+        state
+            .task_repo
+            .get_by_ideation_session(&session.id)
+            .await
+            .expect("task lookup should succeed")
+            .is_empty(),
+        "blocked acceptance must not create tasks"
+    );
+}
+
+#[tokio::test]
+async fn test_apply_proposals_core_blocks_unverified_all_foreign_acceptance() {
+    use ralphx_lib::domain::entities::{
+        IdeationSession, Priority, Project, ProposalCategory, TaskProposal,
+    };
+
+    let state = setup_apply_test_state();
+    let project = state
+        .project_repo
+        .create(Project::new(
+            "Foreign-only source".to_string(),
+            "/tmp/foreign-only-source".to_string(),
+        ))
+        .await
+        .expect("project should be created");
+    let session = state
+        .ideation_session_repo
+        .create(IdeationSession::new(project.id.clone()))
+        .await
+        .expect("session should be created");
+    state
+        .ideation_session_repo
+        .update_plan_artifact_id(&session.id, Some("plan-current".to_string()))
+        .await
+        .expect("plan should be linked");
+    let mut proposal = TaskProposal::new(
+        session.id.clone(),
+        "Foreign proposal".to_string(),
+        ProposalCategory::Feature,
+        Priority::Medium,
+    );
+    proposal.target_project = Some("/tmp/another-project".to_string());
+    let proposal = state
+        .task_proposal_repo
+        .create(proposal)
+        .await
+        .expect("proposal should be created");
+
+    let mut settings = state
+        .ideation_settings_repo
+        .get_settings()
+        .await
+        .expect("settings should load");
+    settings.require_verification_for_accept = true;
+    settings.auto_verify_plans = false;
+    state
+        .ideation_settings_repo
+        .update_settings(&settings)
+        .await
+        .expect("settings should update");
+
+    let error = apply_proposals_core(
+        &state,
+        ApplyProposalsInput {
+            session_id: session.id.as_str().to_string(),
+            proposal_ids: vec![proposal.id.as_str().to_string()],
+            target_column: "auto".to_string(),
+            base_branch_override: None,
+        },
+    )
+    .await
+    .expect_err("required verification must also gate all-foreign acceptance");
+
+    assert!(error.to_string().contains("must be verified"));
+    let persisted = state
+        .ideation_session_repo
+        .get_by_id(&session.id)
+        .await
+        .expect("session read should succeed")
+        .expect("session should exist");
+    assert_eq!(persisted.status, IdeationSessionStatus::Active);
 }
 
 #[tokio::test]
@@ -2311,8 +3582,6 @@ async fn test_create_ideation_session_emits_session_created_event() {
         project_id: project_id.to_string(),
         title: Some("Test Event Session".to_string()),
         seed_task_id: None,
-        team_mode: None,
-        team_config: None,
         analysis_base_ref_kind: None,
         analysis_base_ref: None,
         analysis_base_display_name: None,
@@ -2348,62 +3617,6 @@ async fn test_create_ideation_session_emits_session_created_event() {
 }
 
 #[tokio::test]
-async fn test_create_ideation_session_downgrades_team_mode_to_solo_for_codex() {
-    use ralphx_lib::testing::create_mock_app;
-
-    let app = create_mock_app();
-    let handle = app.handle().clone();
-    let state = setup_apply_test_state();
-    let project_id = ProjectId::new();
-    let mut project = Project::new("Test Project".to_string(), "/tmp/test".to_string());
-    project.id = project_id.clone();
-    state.project_repo.create(project).await.unwrap();
-
-    state
-        .agent_lane_settings_repo
-        .upsert_for_project(
-            project_id.as_str(),
-            AgentLane::IdeationPrimary,
-            &AgentLaneSettings::new(AgentHarnessKind::Codex),
-        )
-        .await
-        .expect("configure codex ideation lane");
-
-    let input = CreateSessionInput {
-        project_id: project_id.to_string(),
-        title: Some("Codex Solo Session".to_string()),
-        seed_task_id: None,
-        team_mode: Some("research".to_string()),
-        team_config: Some(TeamConfigInput {
-            max_teammates: 3,
-            model_ceiling: "sonnet".to_string(),
-            budget_limit: None,
-            composition_mode: "balanced".to_string(),
-        }),
-        analysis_base_ref_kind: None,
-        analysis_base_ref: None,
-        analysis_base_display_name: None,
-    };
-
-    let result = create_ideation_session_impl(&handle, &state, input)
-        .await
-        .expect("create_ideation_session_impl should succeed");
-
-    assert_eq!(result.team_mode.as_deref(), Some("solo"));
-    assert!(result.team_config.is_none());
-
-    let stored = state
-        .ideation_session_repo
-        .get_by_id(&IdeationSessionId::from_string(result.id.clone()))
-        .await
-        .expect("load stored ideation session")
-        .expect("stored ideation session should exist");
-
-    assert_eq!(stored.team_mode.as_deref(), Some("solo"));
-    assert!(stored.team_config_json.is_none());
-}
-
-#[tokio::test]
 async fn test_create_ideation_session_local_branch_provisions_worktree() {
     use ralphx_lib::domain::entities::{
         IdeationAnalysisBaseRefKind, IdeationAnalysisWorkspaceKind,
@@ -2434,8 +3647,6 @@ async fn test_create_ideation_session_local_branch_provisions_worktree() {
             project_id: project.id.to_string(),
             title: Some("Branch Session".to_string()),
             seed_task_id: None,
-            team_mode: None,
-            team_config: None,
             analysis_base_ref_kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
             analysis_base_ref: Some("feature/analysis".to_string()),
             analysis_base_display_name: Some("feature/analysis".to_string()),
@@ -2518,8 +3729,6 @@ async fn test_create_ideation_session_project_default_locks_main_when_current_br
             project_id: project.id.to_string(),
             title: Some("Main Base Session".to_string()),
             seed_task_id: None,
-            team_mode: None,
-            team_config: None,
             analysis_base_ref_kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
             analysis_base_ref: Some("main".to_string()),
             analysis_base_display_name: Some("Project default (main)".to_string()),
@@ -2606,8 +3815,6 @@ async fn test_create_ideation_session_rejects_mislabeled_project_default_ref() {
             project_id: project.id.to_string(),
             title: Some("Mislabeled Base Session".to_string()),
             seed_task_id: None,
-            team_mode: None,
-            team_config: None,
             analysis_base_ref_kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
             analysis_base_ref: Some("pr/366".to_string()),
             analysis_base_display_name: Some("Project default (main)".to_string()),
@@ -2649,8 +3856,6 @@ async fn test_create_ideation_session_project_default_ignores_blank_ref() {
             project_id: project.id.to_string(),
             title: Some("Blank Base Ref Session".to_string()),
             seed_task_id: None,
-            team_mode: None,
-            team_config: None,
             analysis_base_ref_kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
             analysis_base_ref: Some("   ".to_string()),
             analysis_base_display_name: Some("Project default (main)".to_string()),
@@ -2820,7 +4025,7 @@ async fn test_apply_proposals_core_linked_agent_workspace_reuses_conversation_br
         AgentConversationWorkspaceMode::Ideation,
         AgentConversationWorkspaceBaseSelection {
             kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
-                branch_mode: None,
+            branch_mode: None,
             base_ref: Some("main".to_string()),
             display_name: Some("Project default (main)".to_string()),
             source_pull_request: None,

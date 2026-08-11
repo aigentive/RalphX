@@ -1,31 +1,35 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useRef } from "react";
+import { useCallback } from "react";
 
 import {
   chatApi,
   type AgentConversationBaseSelection,
   type AgentConversationWorkspace,
+  type AgentConversationWorkspaceFreshness,
 } from "@/api/chat";
 
+import type { AgentWorkspaceOperationToastKind } from "./agentWorkspaceOperationToast";
+import {
+  reportAgentWorkspaceOperationResult,
+  watchAgentWorkspaceOperation,
+} from "./agentWorkspaceOperationRegistry";
 import {
   agentWorkspaceKeys,
   invalidateWorkspaceQueries,
 } from "./agentWorkspaceQueries";
-import {
-  type AgentWorkspaceOperationToast,
-  type AgentWorkspaceOperationToastKind,
-  type AgentWorkspaceOperationToastResultOptions,
-  agentWorkspaceOperationToastId,
-  startAgentWorkspaceOperationToast,
-} from "./agentWorkspaceOperationToast";
 
 type WorkspaceBaseUpdateToastKind = Extract<
   AgentWorkspaceOperationToastKind,
   "rebase" | "update-from-base"
 >;
 
+export interface RetargetedAgentWorkspaceBaseSelection
+  extends AgentConversationBaseSelection {
+  retargetedFromPullRequest?: number | undefined;
+}
+
 export interface RunAgentWorkspaceBaseUpdateInput {
-  baseSelection?: AgentConversationBaseSelection | null | undefined;
+  baseSelection?: RetargetedAgentWorkspaceBaseSelection | null | undefined;
   conversationId: string;
   detail: string;
   kind: WorkspaceBaseUpdateToastKind;
@@ -39,14 +43,13 @@ export function useAgentWorkspaceBaseUpdate({
   conversationTitle?: string | null | undefined;
 }) {
   const queryClient = useQueryClient();
-  const progressToastRef = useRef<AgentWorkspaceOperationToast | null>(null);
   const toastConversationTitle = conversationTitle?.trim() || null;
   const { isPending, mutateAsync } = useMutation({
     mutationFn: ({
       baseSelection,
       conversationId,
     }: {
-      baseSelection?: AgentConversationBaseSelection | null | undefined;
+      baseSelection?: RetargetedAgentWorkspaceBaseSelection | null | undefined;
       conversationId: string;
     }) =>
       baseSelection
@@ -57,46 +60,19 @@ export function useAgentWorkspaceBaseUpdate({
         : chatApi.updateAgentConversationWorkspaceFromBase(conversationId),
   });
 
-  const settleProgressToast = useCallback(
-    (
-      progressToast: AgentWorkspaceOperationToast,
-      outcome: "error" | "info" | "success",
-      message: string,
-      options?: AgentWorkspaceOperationToastResultOptions,
-    ) => {
-      if (progressToastRef.current === progressToast) {
-        progressToastRef.current = null;
-      }
-      if (outcome === "success") {
-        progressToast.success(message, options);
-      } else if (outcome === "info") {
-        progressToast.info(message, options);
-      } else {
-        progressToast.error(message, options);
-      }
-    },
-    [],
-  );
-
   const runUpdateFromBase = useCallback(
-    ({
-      baseSelection,
-      conversationId,
-      detail,
-      kind,
-      title,
-      workspace,
-    }: RunAgentWorkspaceBaseUpdateInput) => {
+    (input: RunAgentWorkspaceBaseUpdateInput) => {
+      const { baseSelection, conversationId, workspace } = input;
       const requestConversationId = conversationId;
       const requestWorkspace = workspace ?? null;
-      progressToastRef.current?.dismiss();
-      const progressToast = startAgentWorkspaceOperationToast({
+
+      watchAgentWorkspaceOperation({
+        conversationId: requestConversationId,
+        projectId: workspace?.projectId ?? null,
         conversationTitle: toastConversationTitle,
-        detail,
-        id: agentWorkspaceOperationToastId(requestConversationId, kind),
-        title,
+        kind: "base-update",
+        startedAtMs: Date.now(),
       });
-      progressToastRef.current = progressToast;
 
       void mutateAsync({ baseSelection, conversationId: requestConversationId })
         .then(async (result) => {
@@ -104,17 +80,60 @@ export function useAgentWorkspaceBaseUpdate({
             agentWorkspaceKeys.workspace(result.workspace.conversationId),
             result.workspace,
           );
+
+          // Report before the awaited invalidate below yields control — the
+          // driver's poll effect can observe "nothing in flight" and unwatch
+          // this conversation in that window, orphaning the result if it were
+          // reported afterward.
+          if (result.repairStarted) {
+            // A repair took over; if it is still live in workspace state, let
+            // the driver keep rendering its progress instead of announcing a
+            // terminal result over it.
+            if (!result.workspace.maintenanceOperation) {
+              reportAgentWorkspaceOperationResult(requestConversationId, {
+                kind: "repair-started",
+              });
+            }
+          } else if (!result.workspace.maintenanceOperation) {
+            reportAgentWorkspaceOperationResult(requestConversationId, {
+              kind: result.updated ? "base-updated" : "base-already-current",
+              targetRef: result.targetRef,
+            });
+          }
+
           await invalidateWorkspaceQueries(
             queryClient,
             result.workspace.conversationId,
           );
-          settleProgressToast(
-            progressToast,
-            "success",
-            result.updated
-              ? `Updated from ${result.targetRef}`
-              : `Already current with ${result.targetRef}`,
-          );
+
+          if (result.repairStarted || result.workspace.maintenanceOperation) {
+            return;
+          }
+
+          for (const scope of ["full", "local"] as const) {
+            queryClient.setQueryData<AgentConversationWorkspaceFreshness>(
+              agentWorkspaceKeys.scopedFreshness(
+                result.workspace.conversationId,
+                scope,
+              ),
+              (previous) => {
+                if (
+                  !previous ||
+                  previous.conversationId !== result.workspace.conversationId
+                ) {
+                  return previous;
+                }
+                return {
+                  ...previous,
+                  isBaseAhead: false,
+                  capturedBaseCommit: result.baseCommit,
+                  targetBaseCommit: result.baseCommit,
+                  targetRef: result.targetRef,
+                  baseStatus: result.baseStatus,
+                };
+              },
+            );
+          }
         })
         .catch(async (error) => {
           const errorMessage =
@@ -132,19 +151,25 @@ export function useAgentWorkspaceBaseUpdate({
           } catch {
             refreshedWorkspace = null;
           }
+          const repairWorkspace = refreshedWorkspace ?? requestWorkspace;
+          if (repairWorkspace?.maintenanceOperation) {
+            // A repair took over; the driver keeps rendering its live
+            // progress, so no terminal result is announced here.
+            void invalidateWorkspaceQueries(queryClient, requestConversationId);
+            return;
+          }
           const repairStarted =
-            (refreshedWorkspace ?? requestWorkspace)?.publicationPushStatus ===
-            "needs_agent";
-          settleProgressToast(
-            progressToast,
-            repairStarted ? "info" : "error",
-            repairStarted ? "Repair started" : "Failed to update from base",
-            { detail: errorMessage },
+            repairWorkspace?.publicationPushStatus === "needs_agent";
+          reportAgentWorkspaceOperationResult(
+            requestConversationId,
+            repairStarted
+              ? { kind: "repair-started", detail: errorMessage }
+              : { kind: "base-update-failed", detail: errorMessage },
           );
           void invalidateWorkspaceQueries(queryClient, requestConversationId);
         });
     },
-    [mutateAsync, queryClient, settleProgressToast, toastConversationTitle],
+    [mutateAsync, queryClient, toastConversationTitle],
   );
 
   return {

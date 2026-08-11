@@ -7,14 +7,15 @@ use crate::domain::agents::{
     WorkspaceReviewRuntimeSettings, CODEX_DEFAULT_APPROVAL_POLICY, CODEX_DEFAULT_SANDBOX_MODE,
 };
 use crate::domain::entities::{
-    AgentRun, ChatConversation, ChatMessage, IdeationSession, InternalStatus, Priority, Project,
-    ProjectId, ProposalCategory, Task, TaskId, TaskProposal,
+    ChatMessage, IdeationSession, InternalStatus, Priority, Project, ProjectId, ProposalCategory,
+    Task, TaskProposal,
 };
 use crate::infrastructure::{MockAgenticClient, MockCallType};
 use futures::Stream;
 use std::fs;
 use std::path::Path;
 use std::pin::Pin;
+use std::sync::Arc;
 
 struct UnavailableCodexAgentClient {
     capabilities: ClientCapabilities,
@@ -104,6 +105,18 @@ async fn test_new_test_creates_empty_repositories() {
     // Project repo should be empty
     let projects = state.project_repo.get_all().await.unwrap();
     assert!(projects.is_empty());
+}
+
+#[test]
+fn test_workspace_and_repair_repositories_share_the_same_concrete_arc() {
+    let state = AppState::new_test();
+    let workspace_repository = Arc::as_ptr(&state.agent_conversation_workspace_repo) as *const ();
+    let repair_repository = Arc::as_ptr(&state.agent_workspace_repair_repo) as *const ();
+
+    assert_eq!(
+        workspace_repository, repair_repository,
+        "workspace and repair repository traits must share one concrete memory repository"
+    );
 }
 
 #[test]
@@ -392,39 +405,6 @@ async fn test_build_transition_service_with_execution_state_uses_app_codex_clien
 }
 
 #[tokio::test]
-async fn test_resolve_ideation_background_agent_runtime_uses_registered_harness_client() {
-    let default_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
-    let codex_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
-    let state = AppState::new_test()
-        .with_agent_client(default_mock)
-        .with_harness_agent_client(AgentHarnessKind::Codex, codex_mock.clone());
-
-    let project = Project::new("Codex Ideation Project".to_string(), "/tmp".to_string());
-    state.project_repo.create(project.clone()).await.unwrap();
-
-    let mut codex_lane = AgentLaneSettings::new(AgentHarnessKind::Codex);
-    codex_lane.model = Some("gpt-5.4".to_string());
-    codex_lane.effort = Some(LogicalEffort::XHigh);
-    state
-        .agent_lane_settings_repo
-        .upsert_for_project(project.id.as_str(), AgentLane::IdeationPrimary, &codex_lane)
-        .await
-        .unwrap();
-
-    let runtime = state
-        .resolve_ideation_background_agent_runtime(Some(project.id.as_str()))
-        .await
-        .expect("codex runtime should resolve");
-
-    assert!(Arc::ptr_eq(&runtime.client, &codex_mock));
-    assert_eq!(runtime.harness, Some(AgentHarnessKind::Codex));
-    assert_eq!(runtime.model.as_deref(), Some("gpt-5.4"));
-    assert_eq!(runtime.logical_effort, Some(LogicalEffort::XHigh));
-    assert_eq!(runtime.approval_policy.as_deref(), Some("never"));
-    assert_eq!(runtime.sandbox_mode.as_deref(), Some("danger-full-access"));
-}
-
-#[tokio::test]
 #[allow(clippy::await_holding_lock)]
 async fn test_resolve_background_agent_runtime_uses_rx_managed_codex_override() {
     let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
@@ -541,36 +521,34 @@ fi
 }
 
 #[tokio::test]
-async fn test_resolve_ideation_background_agent_runtime_uses_codex_default_harness() {
-    let codex_default: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
-    let mut state = AppState::new_test().with_agent_client(codex_default.clone());
-    state.agent_clients.default_harness = AgentHarnessKind::Codex;
+async fn test_resolve_workspace_reviewer_runtime_uses_provider_default() {
+    let default_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let codex_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let mut state = AppState::new_test()
+        .with_agent_client(default_mock)
+        .with_harness_agent_client(AgentHarnessKind::Codex, codex_mock.clone());
+    let provider_repo = Arc::new(MemoryAgentProviderSettingsRepository::new());
+    let mut codex = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
+    codex.enabled = true;
+    codex.is_default = true;
+    codex.model = Some("gpt-5.6-terra".to_string());
+    codex.effort = Some(LogicalEffort::XHigh);
+    provider_repo.upsert(&codex).await.unwrap();
+    state.agent_provider_settings_repo = provider_repo;
 
-    let project = Project::new(
-        "Default Codex Ideation Project".to_string(),
-        "/tmp".to_string(),
-    );
-    state.project_repo.create(project.clone()).await.unwrap();
-
-    let mut codex_lane = AgentLaneSettings::new(AgentHarnessKind::Codex);
-    codex_lane.model = Some("gpt-5.4".to_string());
-    codex_lane.effort = Some(LogicalEffort::XHigh);
-    codex_lane.approval_policy = Some("on-request".to_string());
-    codex_lane.sandbox_mode = Some("read-only".to_string());
-    state
-        .agent_lane_settings_repo
-        .upsert_for_project(project.id.as_str(), AgentLane::IdeationPrimary, &codex_lane)
-        .await
-        .unwrap();
+    let project_id = ProjectId::new();
 
     let runtime = state
-        .resolve_ideation_background_agent_runtime(Some(project.id.as_str()))
+        .resolve_workspace_reviewer_runtime_for_project(project_id.as_str())
         .await
-        .expect("default codex runtime should resolve");
+        .expect("workspace reviewer should resolve from the effective Reviewer role default");
 
-    assert!(Arc::ptr_eq(&runtime.client, &codex_default));
+    assert!(
+        Arc::ptr_eq(&runtime.client, &codex_mock),
+        "workspace reviewer should use the provider selected by the Reviewer role default"
+    );
     assert_eq!(runtime.harness, Some(AgentHarnessKind::Codex));
-    assert_eq!(runtime.model.as_deref(), Some("gpt-5.4"));
+    assert_eq!(runtime.model.as_deref(), Some("gpt-5.6-terra"));
     assert_eq!(runtime.logical_effort, Some(LogicalEffort::XHigh));
     assert_eq!(
         runtime.approval_policy.as_deref(),
@@ -583,60 +561,39 @@ async fn test_resolve_ideation_background_agent_runtime_uses_codex_default_harne
 }
 
 #[tokio::test]
-async fn test_resolve_ideation_background_agent_runtime_errors_without_registered_harness_client() {
-    let default_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
-    let mut state = AppState::new_test().with_agent_client(default_mock.clone());
-    state.agent_clients.harness_clients.clear();
-
-    let project = Project::new("Fallback Ideation Project".to_string(), "/tmp".to_string());
-    state.project_repo.create(project.clone()).await.unwrap();
-
-    let mut codex_lane = AgentLaneSettings::new(AgentHarnessKind::Codex);
-    codex_lane.model = Some("gpt-5.4".to_string());
-    codex_lane.effort = Some(LogicalEffort::XHigh);
-    state
-        .agent_lane_settings_repo
-        .upsert_for_project(project.id.as_str(), AgentLane::IdeationPrimary, &codex_lane)
+async fn test_resolve_workspace_reviewer_runtime_uses_enabled_default_provider() {
+    let claude_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let codex_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let mut state = AppState::new_test()
+        .with_agent_client(claude_mock)
+        .with_harness_agent_client(AgentHarnessKind::Codex, codex_mock.clone());
+    let provider_repo = Arc::new(MemoryAgentProviderSettingsRepository::new());
+    let mut codex = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
+    codex.enabled = true;
+    codex.is_default = true;
+    codex.model = Some("gpt-provider-default".to_string());
+    codex.approval_policy = Some(CODEX_DEFAULT_APPROVAL_POLICY.to_string());
+    codex.sandbox_mode = Some(CODEX_DEFAULT_SANDBOX_MODE.to_string());
+    codex.service_tier = Some("standard".to_string());
+    provider_repo.upsert(&codex).await.unwrap();
+    provider_repo
+        .upsert(&AgentProviderSettings::disabled_defaults(
+            AgentHarnessKind::Claude,
+        ))
         .await
         .unwrap();
+    state.agent_provider_settings_repo = provider_repo;
 
-    let error = match state
-        .resolve_ideation_background_agent_runtime(Some(project.id.as_str()))
-        .await
-    {
-        Ok(_) => panic!("missing codex runtime should fail instead of falling back"),
-        Err(error) => error,
-    };
-    assert!(
-        error
-            .to_string()
-            .contains("Configured ideation sidecar harness unavailable"),
-        "unexpected error: {error}"
-    );
-}
-
-#[tokio::test]
-async fn test_resolve_session_namer_runtime_uses_codex_default_harness_client() {
-    let codex_default: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
-    let mut state = AppState::new_test().with_agent_client(codex_default.clone());
-    state.agent_clients.default_harness = AgentHarnessKind::Codex;
-
-    let project = Project::new(
-        "Default Codex Conversation Project".to_string(),
-        "/tmp".to_string(),
-    );
-    let mut conversation = ChatConversation::new_project(project.id.clone());
-    conversation.provider_harness = Some(AgentHarnessKind::Codex);
+    let project_id = ProjectId::new();
 
     let runtime = state
-        .resolve_session_namer_runtime_for_conversation(&conversation, Some(project.id.as_str()))
+        .resolve_workspace_reviewer_runtime_for_project(project_id.as_str())
         .await
-        .expect("session namer should resolve through default Codex harness");
+        .expect("workspace reviewer should use the enabled default provider");
 
-    assert!(Arc::ptr_eq(&runtime.client, &codex_default));
+    assert!(Arc::ptr_eq(&runtime.client, &codex_mock));
     assert_eq!(runtime.harness, Some(AgentHarnessKind::Codex));
-    assert_eq!(runtime.model.as_deref(), Some("gpt-5.4-mini"));
-    assert_eq!(runtime.logical_effort, Some(LogicalEffort::Medium));
+    assert_eq!(runtime.model.as_deref(), Some("gpt-provider-default"));
     assert_eq!(
         runtime.approval_policy.as_deref(),
         Some(CODEX_DEFAULT_APPROVAL_POLICY)
@@ -645,298 +602,30 @@ async fn test_resolve_session_namer_runtime_uses_codex_default_harness_client() 
         runtime.sandbox_mode.as_deref(),
         Some(CODEX_DEFAULT_SANDBOX_MODE)
     );
+    assert_eq!(runtime.service_tier.as_deref(), Some("standard"));
 }
 
 #[tokio::test]
-async fn test_resolve_project_analyzer_runtime_uses_project_harness_with_utility_model_lock() {
-    let default_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
-    let codex_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
-    let state = AppState::new_test()
-        .with_agent_client(default_mock)
-        .with_harness_agent_client(AgentHarnessKind::Codex, codex_mock.clone());
-
-    let project = Project::new("Codex Analyzer Project".to_string(), "/tmp".to_string());
-    state.project_repo.create(project.clone()).await.unwrap();
-
-    let mut codex_lane = AgentLaneSettings::new(AgentHarnessKind::Codex);
-    codex_lane.model = Some("gpt-5.4".to_string());
-    codex_lane.effort = Some(LogicalEffort::XHigh);
-    state
-        .agent_lane_settings_repo
-        .upsert_for_project(project.id.as_str(), AgentLane::IdeationPrimary, &codex_lane)
-        .await
-        .unwrap();
-
-    let runtime = state
-        .resolve_project_analyzer_runtime_for_project(Some(project.id.as_str()))
-        .await
-        .expect("project analyzer should resolve from the project ideation harness");
-
-    assert!(
-        Arc::ptr_eq(&runtime.client, &codex_mock),
-        "project analyzer should keep using the owning project harness"
-    );
-    assert_eq!(runtime.harness, Some(AgentHarnessKind::Codex));
-    assert_eq!(runtime.model.as_deref(), Some("gpt-5.4-mini"));
-    assert_eq!(runtime.logical_effort, Some(LogicalEffort::Medium));
-    assert_eq!(runtime.approval_policy.as_deref(), Some("never"));
-    assert_eq!(runtime.sandbox_mode.as_deref(), Some("danger-full-access"));
-}
-
-#[tokio::test]
-async fn test_resolve_session_namer_runtime_uses_project_ideation_harness() {
-    let default_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
-    let codex_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
-    let state = AppState::new_test()
-        .with_agent_client(default_mock)
-        .with_harness_agent_client(AgentHarnessKind::Codex, codex_mock.clone());
-
-    let project = Project::new("Codex Ideation Project".to_string(), "/tmp".to_string());
-    state.project_repo.create(project.clone()).await.unwrap();
-
-    let mut codex_lane = AgentLaneSettings::new(AgentHarnessKind::Codex);
-    codex_lane.model = Some("gpt-5.4".to_string());
-    codex_lane.effort = Some(LogicalEffort::XHigh);
-    state
-        .agent_lane_settings_repo
-        .upsert_for_project(project.id.as_str(), AgentLane::IdeationPrimary, &codex_lane)
-        .await
-        .unwrap();
-
-    let runtime = state
-        .resolve_session_namer_runtime_for_project(Some(project.id.as_str()))
-        .await
-        .expect("session namer should resolve from the project ideation harness");
-
-    assert!(
-        Arc::ptr_eq(&runtime.client, &codex_mock),
-        "session namer should follow the owning project's ideation harness when no conversation provider has been persisted"
-    );
-    assert_eq!(runtime.harness, Some(AgentHarnessKind::Codex));
-    assert_eq!(runtime.model.as_deref(), Some("gpt-5.4-mini"));
-    assert_eq!(runtime.logical_effort, Some(LogicalEffort::Medium));
-    assert_eq!(runtime.approval_policy.as_deref(), Some("never"));
-    assert_eq!(runtime.sandbox_mode.as_deref(), Some("danger-full-access"));
-}
-
-#[tokio::test]
-async fn test_resolve_session_namer_runtime_uses_owning_conversation_harness_when_present() {
-    let default_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
-    let codex_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
-    let state = AppState::new_test()
-        .with_agent_client(default_mock)
-        .with_harness_agent_client(AgentHarnessKind::Codex, codex_mock.clone());
-
-    let project = Project::new("Codex Conversation Project".to_string(), "/tmp".to_string());
-    let mut conversation = ChatConversation::new_project(project.id.clone());
-    conversation.provider_harness = Some(AgentHarnessKind::Codex);
-
-    let runtime = state
-        .resolve_session_namer_runtime_for_conversation(&conversation, Some(project.id.as_str()))
-        .await
-        .expect("session namer should resolve from the owning conversation harness");
-
-    assert!(
-        Arc::ptr_eq(&runtime.client, &codex_mock),
-        "session namer should use the harness that owns the conversation being titled"
-    );
-    assert_eq!(runtime.harness, Some(AgentHarnessKind::Codex));
-    assert_eq!(runtime.model.as_deref(), Some("gpt-5.4-mini"));
-    assert_eq!(runtime.logical_effort, Some(LogicalEffort::Medium));
-    assert_eq!(runtime.approval_policy.as_deref(), Some("never"));
-    assert_eq!(runtime.sandbox_mode.as_deref(), Some("danger-full-access"));
-}
-
-#[tokio::test]
-async fn test_resolve_session_namer_runtime_for_session_prefers_active_conversation_harness() {
-    let default_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
-    let codex_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
-    let state = AppState::new_test()
-        .with_agent_client(default_mock)
-        .with_harness_agent_client(AgentHarnessKind::Codex, codex_mock.clone());
-
-    let project = Project::new(
-        "Codex Session Conversation Project".to_string(),
-        "/tmp".to_string(),
-    );
-    state.project_repo.create(project.clone()).await.unwrap();
-    let session = state
-        .ideation_session_repo
-        .create(IdeationSession::new(project.id.clone()))
-        .await
-        .unwrap();
-    let mut conversation = ChatConversation::new_ideation(session.id.clone());
-    conversation.provider_harness = Some(AgentHarnessKind::Codex);
-    state
-        .chat_conversation_repo
-        .create(conversation)
-        .await
-        .unwrap();
-
-    let runtime = state
-        .resolve_session_namer_runtime_for_session(&session)
-        .await
-        .expect("session namer should prefer the active ideation conversation harness");
-
-    assert!(
-        Arc::ptr_eq(&runtime.client, &codex_mock),
-        "active ideation conversation provider should override the project lane fallback"
-    );
-    assert_eq!(runtime.harness, Some(AgentHarnessKind::Codex));
-    assert_eq!(runtime.model.as_deref(), Some("gpt-5.4-mini"));
-    assert_eq!(runtime.logical_effort, Some(LogicalEffort::Medium));
-    assert_eq!(runtime.approval_policy.as_deref(), Some("never"));
-    assert_eq!(runtime.sandbox_mode.as_deref(), Some("danger-full-access"));
-}
-
-#[tokio::test]
-async fn test_resolve_session_namer_runtime_uses_default_without_provider_or_lane() {
+async fn test_resolve_workspace_reviewer_runtime_uses_default_provider_without_role_override() {
     let default_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
     let codex_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
     let state = AppState::new_test()
         .with_agent_client(default_mock.clone())
         .with_harness_agent_client(AgentHarnessKind::Codex, codex_mock);
 
-    let project = Project::new("Legacy Project".to_string(), "/tmp".to_string());
-    let conversation = ChatConversation::new_project(project.id.clone());
+    let project_id = ProjectId::new();
 
     let runtime = state
-        .resolve_session_namer_runtime_for_conversation(&conversation, Some(project.id.as_str()))
-        .await
-        .expect("legacy session namer runtime should fall back to the default helper client");
-
-    assert!(
-        Arc::ptr_eq(&runtime.client, &default_mock),
-        "legacy session namer should keep using the default helper client without provider or lane metadata"
-    );
-    assert_eq!(runtime.harness, Some(AgentHarnessKind::Claude));
-    assert_eq!(runtime.model.as_deref(), Some("haiku"));
-    assert_eq!(runtime.logical_effort, Some(LogicalEffort::Medium));
-}
-
-#[tokio::test]
-async fn test_resolve_pr_describer_runtime_uses_owning_conversation_harness_when_present() {
-    let default_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
-    let codex_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
-    let state = AppState::new_test()
-        .with_agent_client(default_mock.clone())
-        .with_harness_agent_client(AgentHarnessKind::Codex, codex_mock.clone());
-
-    let project = Project::new("Codex Ideation Project".to_string(), "/tmp".to_string());
-    state.project_repo.create(project.clone()).await.unwrap();
-    let mut conversation = ChatConversation::new_project(project.id.clone());
-    conversation.provider_harness = Some(AgentHarnessKind::Codex);
-
-    let runtime = state
-        .resolve_pr_describer_runtime(&conversation)
-        .await
-        .unwrap();
-
-    assert!(
-        Arc::ptr_eq(&runtime.client, &codex_mock),
-        "PR describer should use the harness that owns the conversation being published"
-    );
-    assert_eq!(runtime.harness, Some(AgentHarnessKind::Codex));
-    assert_eq!(runtime.model.as_deref(), Some("gpt-5.4-mini"));
-    assert_eq!(runtime.logical_effort, Some(LogicalEffort::Medium));
-    assert_eq!(runtime.approval_policy.as_deref(), Some("never"));
-    assert_eq!(runtime.sandbox_mode.as_deref(), Some("danger-full-access"));
-}
-
-#[tokio::test]
-async fn test_resolve_pr_describer_runtime_uses_default_client_without_provider_harness() {
-    let default_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
-    let codex_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
-    let state = AppState::new_test()
-        .with_agent_client(default_mock.clone())
-        .with_harness_agent_client(AgentHarnessKind::Codex, codex_mock);
-
-    let project = Project::new("Legacy Project".to_string(), "/tmp".to_string());
-    let conversation = ChatConversation::new_project(project.id);
-
-    let runtime = state
-        .resolve_pr_describer_runtime(&conversation)
-        .await
-        .unwrap();
-
-    assert!(
-        Arc::ptr_eq(&runtime.client, &default_mock),
-        "conversations without provider_harness should use the enabled default provider client"
-    );
-    assert_eq!(runtime.harness, Some(AgentHarnessKind::Claude));
-    assert_eq!(runtime.model.as_deref(), Some("haiku"));
-    assert_eq!(runtime.logical_effort, Some(LogicalEffort::Medium));
-}
-
-#[tokio::test]
-async fn test_resolve_workspace_reviewer_runtime_uses_latest_run_harness_with_utility_model_lock() {
-    let default_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
-    let codex_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
-    let state = AppState::new_test()
-        .with_agent_client(default_mock)
-        .with_harness_agent_client(AgentHarnessKind::Codex, codex_mock.clone());
-
-    let project = Project::new("Codex Review Project".to_string(), "/tmp".to_string());
-    let project_id = project.id.as_str().to_string();
-    let mut conversation = ChatConversation::new_project(project.id);
-    conversation.provider_harness = Some(AgentHarnessKind::Claude);
-
-    let mut latest_run = AgentRun::new(conversation.id);
-    latest_run.harness = Some(AgentHarnessKind::Codex);
-    latest_run.logical_model = Some("gpt-5.5".to_string());
-    latest_run.logical_effort = Some(LogicalEffort::High);
-    latest_run.approval_policy = Some("on-request".to_string());
-    latest_run.sandbox_mode = Some("workspace-write".to_string());
-
-    let runtime = state
-        .resolve_workspace_reviewer_runtime_for_project(
-            &conversation,
-            Some(&latest_run),
-            project_id.as_str(),
-        )
-        .await
-        .expect("workspace reviewer should resolve from latest run harness");
-
-    assert!(
-        Arc::ptr_eq(&runtime.client, &codex_mock),
-        "workspace reviewer should use the harness that produced the latest conversation run"
-    );
-    assert_eq!(runtime.harness, Some(AgentHarnessKind::Codex));
-    assert_eq!(runtime.model.as_deref(), Some("gpt-5.4-mini"));
-    assert_eq!(runtime.logical_effort, Some(LogicalEffort::Medium));
-    assert_eq!(
-        runtime.approval_policy.as_deref(),
-        Some(CODEX_DEFAULT_APPROVAL_POLICY)
-    );
-    assert_eq!(
-        runtime.sandbox_mode.as_deref(),
-        Some(CODEX_DEFAULT_SANDBOX_MODE)
-    );
-}
-
-#[tokio::test]
-async fn test_resolve_workspace_reviewer_runtime_uses_default_provider_without_run_metadata() {
-    let default_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
-    let codex_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
-    let state = AppState::new_test()
-        .with_agent_client(default_mock.clone())
-        .with_harness_agent_client(AgentHarnessKind::Codex, codex_mock);
-
-    let project = Project::new("Legacy Review Project".to_string(), "/tmp".to_string());
-    let project_id = project.id.as_str().to_string();
-    let conversation = ChatConversation::new_project(project.id);
-
-    let runtime = state
-        .resolve_workspace_reviewer_runtime_for_project(&conversation, None, project_id.as_str())
+        .resolve_workspace_reviewer_runtime_for_project(project_id.as_str())
         .await
         .expect("workspace reviewer should resolve from default provider");
 
     assert!(
         Arc::ptr_eq(&runtime.client, &default_mock),
-        "conversations without run or provider metadata should use the enabled default provider"
+        "Reviewer runtime without a role override should use the enabled default provider"
     );
     assert_eq!(runtime.harness, Some(AgentHarnessKind::Claude));
-    assert_eq!(runtime.model.as_deref(), Some("haiku"));
+    assert_eq!(runtime.model.as_deref(), Some("sonnet"));
     assert_eq!(runtime.logical_effort, Some(LogicalEffort::Medium));
 }
 
@@ -944,9 +633,12 @@ async fn test_resolve_workspace_reviewer_runtime_uses_default_provider_without_r
 async fn test_resolve_workspace_reviewer_runtime_uses_global_provider_review_defaults() {
     let default_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
     let codex_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
-    let state = AppState::new_test()
+    let mut state = AppState::new_test()
         .with_agent_client(default_mock)
         .with_harness_agent_client(AgentHarnessKind::Codex, codex_mock.clone());
+    state.agent_provider_settings_repo = Arc::new(
+        MemoryAgentProviderSettingsRepository::with_all_providers_enabled(AgentHarnessKind::Codex),
+    );
 
     state
         .workspace_review_runtime_settings_repo
@@ -960,13 +652,10 @@ async fn test_resolve_workspace_reviewer_runtime_uses_global_provider_review_def
         .await
         .unwrap();
 
-    let project = Project::new("Codex Review Defaults".to_string(), "/tmp".to_string());
-    let project_id = project.id.as_str().to_string();
-    let mut conversation = ChatConversation::new_project(project.id);
-    conversation.provider_harness = Some(AgentHarnessKind::Codex);
+    let project_id = ProjectId::new();
 
     let runtime = state
-        .resolve_workspace_reviewer_runtime_for_project(&conversation, None, project_id.as_str())
+        .resolve_workspace_reviewer_runtime_for_project(project_id.as_str())
         .await
         .expect("workspace reviewer should resolve from configured review defaults");
 
@@ -977,12 +666,103 @@ async fn test_resolve_workspace_reviewer_runtime_uses_global_provider_review_def
 }
 
 #[tokio::test]
+async fn test_effective_reviewer_role_default_surfaces_legacy_review_settings() {
+    let mut state = AppState::new_test();
+    state.agent_provider_settings_repo = Arc::new(
+        MemoryAgentProviderSettingsRepository::with_all_providers_enabled(AgentHarnessKind::Codex),
+    );
+    state
+        .workspace_review_runtime_settings_repo
+        .upsert_global(
+            AgentHarnessKind::Codex,
+            &WorkspaceReviewRuntimeSettings {
+                model: Some("gpt-legacy-review".to_string()),
+                effort: Some(LogicalEffort::High),
+            },
+        )
+        .await
+        .unwrap();
+
+    let resolved = state
+        .resolve_effective_manual_role_default(
+            None,
+            None,
+            crate::domain::agents::RoutingRole::WorkspaceReviewer,
+        )
+        .await
+        .expect("legacy reviewer settings should be projected into the effective role default");
+
+    assert_eq!(
+        resolved.source,
+        crate::application::manual_role_default_service::ManualDefaultSource::LegacyWorkspaceReview
+    );
+    assert_eq!(resolved.value.harness, AgentHarnessKind::Codex);
+    assert_eq!(resolved.value.model.as_deref(), Some("gpt-legacy-review"));
+    assert_eq!(resolved.value.effort, Some(LogicalEffort::High));
+}
+
+#[tokio::test]
+async fn test_explicit_reviewer_role_default_wins_over_legacy_review_settings() {
+    let state = AppState::new_test();
+    state
+        .workspace_review_runtime_settings_repo
+        .upsert_global(
+            AgentHarnessKind::Claude,
+            &WorkspaceReviewRuntimeSettings {
+                model: Some("legacy-review-model".to_string()),
+                effort: Some(LogicalEffort::Low),
+            },
+        )
+        .await
+        .unwrap();
+    state
+        .manual_role_default_repo
+        .upsert_global(
+            crate::domain::agents::RoutingRole::WorkspaceReviewer,
+            &crate::domain::agents::ManualRoleDefault {
+                harness: AgentHarnessKind::Claude,
+                model: Some("explicit-reviewer-model".to_string()),
+                effort: Some(LogicalEffort::High),
+                service_tier: crate::domain::agents::ManualServiceTier::ProviderDefault,
+                coordination_mode: None,
+                persona_id: None,
+                approval_policy: None,
+                sandbox_mode: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let resolved = state
+        .resolve_effective_manual_role_default(
+            None,
+            None,
+            crate::domain::agents::RoutingRole::WorkspaceReviewer,
+        )
+        .await
+        .expect("explicit Reviewer settings should remain authoritative");
+
+    assert_eq!(
+        resolved.source,
+        crate::application::manual_role_default_service::ManualDefaultSource::GlobalUi
+    );
+    assert_eq!(
+        resolved.value.model.as_deref(),
+        Some("explicit-reviewer-model")
+    );
+    assert_eq!(resolved.value.effort, Some(LogicalEffort::High));
+}
+
+#[tokio::test]
 async fn test_resolve_workspace_reviewer_runtime_uses_project_provider_review_defaults() {
     let default_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
     let codex_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
-    let state = AppState::new_test()
+    let mut state = AppState::new_test()
         .with_agent_client(default_mock)
         .with_harness_agent_client(AgentHarnessKind::Codex, codex_mock.clone());
+    state.agent_provider_settings_repo = Arc::new(
+        MemoryAgentProviderSettingsRepository::with_all_providers_enabled(AgentHarnessKind::Codex),
+    );
 
     state
         .workspace_review_runtime_settings_repo
@@ -996,12 +776,11 @@ async fn test_resolve_workspace_reviewer_runtime_uses_project_provider_review_de
         .await
         .unwrap();
 
-    let project = Project::new("Project Review Defaults".to_string(), "/tmp".to_string());
-    let project_id = project.id.as_str().to_string();
+    let project_id = ProjectId::new();
     state
         .workspace_review_runtime_settings_repo
         .upsert_for_project(
-            &project_id,
+            project_id.as_str(),
             AgentHarnessKind::Codex,
             &WorkspaceReviewRuntimeSettings {
                 model: Some("gpt-5.3-codex".to_string()),
@@ -1010,11 +789,8 @@ async fn test_resolve_workspace_reviewer_runtime_uses_project_provider_review_de
         )
         .await
         .unwrap();
-    let mut conversation = ChatConversation::new_project(project.id);
-    conversation.provider_harness = Some(AgentHarnessKind::Codex);
-
     let runtime = state
-        .resolve_workspace_reviewer_runtime_for_project(&conversation, None, project_id.as_str())
+        .resolve_workspace_reviewer_runtime_for_project(project_id.as_str())
         .await
         .expect("workspace reviewer should resolve from project review defaults");
 
@@ -1032,9 +808,12 @@ async fn test_resolve_workspace_reviewer_runtime_uses_project_provider_review_de
 async fn test_resolve_workspace_reviewer_runtime_uses_explicit_workspace_project_scope() {
     let default_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
     let codex_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
-    let state = AppState::new_test()
+    let mut state = AppState::new_test()
         .with_agent_client(default_mock)
         .with_harness_agent_client(AgentHarnessKind::Codex, codex_mock.clone());
+    state.agent_provider_settings_repo = Arc::new(
+        MemoryAgentProviderSettingsRepository::with_all_providers_enabled(AgentHarnessKind::Codex),
+    );
 
     let project_id = ProjectId::from_string("workspace-review-project".to_string());
     state
@@ -1061,12 +840,8 @@ async fn test_resolve_workspace_reviewer_runtime_uses_explicit_workspace_project
         .await
         .unwrap();
 
-    let mut conversation =
-        ChatConversation::new_task(TaskId::from_string("workspace-owner-task".to_string()));
-    conversation.provider_harness = Some(AgentHarnessKind::Codex);
-
     let runtime = state
-        .resolve_workspace_reviewer_runtime_for_project(&conversation, None, project_id.as_str())
+        .resolve_workspace_reviewer_runtime_for_project(project_id.as_str())
         .await
         .expect("workspace reviewer should resolve from explicit project scope");
 
@@ -1074,25 +849,6 @@ async fn test_resolve_workspace_reviewer_runtime_uses_explicit_workspace_project
     assert_eq!(runtime.harness, Some(AgentHarnessKind::Codex));
     assert_eq!(runtime.model.as_deref(), Some("gpt-project-review"));
     assert_eq!(runtime.logical_effort, Some(LogicalEffort::High));
-}
-
-#[tokio::test]
-async fn test_resolve_pr_describer_runtime_requires_enabled_default_provider() {
-    let mut state = AppState::new_test();
-    state.agent_provider_settings_repo = Arc::new(MemoryAgentProviderSettingsRepository::new());
-
-    let project = Project::new(
-        "Unconfigured Provider Project".to_string(),
-        "/tmp".to_string(),
-    );
-    let conversation = ChatConversation::new_project(project.id);
-
-    let error = match state.resolve_pr_describer_runtime(&conversation).await {
-        Ok(_) => panic!("missing default provider should block helper spawns"),
-        Err(error) => error,
-    };
-
-    assert!(error.to_string().contains("Harness > Providers"));
 }
 
 #[tokio::test]

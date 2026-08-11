@@ -57,6 +57,12 @@ describe("buildStoreKey", () => {
     expect(buildStoreKey("project", "proj-789")).toBe("project:proj-789");
   });
 
+  it("formats standalone keys as standalone:{id}", () => {
+    expect(buildStoreKey("standalone", "conversation-1")).toBe(
+      "standalone:conversation-1",
+    );
+  });
+
   it("formats task_execution keys as task_execution:{id}", () => {
     expect(buildStoreKey("task_execution", "task-456")).toBe("task_execution:task-456");
   });
@@ -244,11 +250,22 @@ describe("isAgentContext", () => {
     expect(isAgentContext("task_execution")).toBe(true);
     expect(isAgentContext("review")).toBe(true);
     expect(isAgentContext("merge")).toBe(true);
+    expect(isAgentContext("branch_update")).toBe(true);
   });
 
   it("returns false for non-agent contexts", () => {
     expect(isAgentContext("ideation")).toBe(false);
     expect(isAgentContext("task")).toBe(false);
     expect(isAgentContext("project")).toBe(false);
+  });
+});
+
+describe("branch update context", () => {
+  it.each([
+    "updating_plan_branch",
+    "updating_task_branch",
+    "branch_update_blocked",
+  ])("maps %s to the dedicated branch-update transcript", (status) => {
+    expect(resolveContextType(status, undefined, "task-1")).toBe("branch_update");
   });
 });

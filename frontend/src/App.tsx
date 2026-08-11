@@ -3,20 +3,23 @@
  * Root component with QueryClientProvider and EventProvider
  */
 
-import { useMemo, useState, useEffect, useCallback, useRef } from "react";
+import { Suspense, useMemo, useState, useEffect, useCallback, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { getQueryClient } from "@/lib/queryClient";
+import { lazyWithRetry } from "@/lib/lazy-with-retry";
 import { EventProvider } from "@/providers/EventProvider";
-import { TaskBoard } from "@/components/tasks/TaskBoard";
-import { ReviewsPanel } from "@/components/reviews/ReviewsPanel";
+import { NotificationCenterPanel } from "@/components/notifications/NotificationCenterPanel";
 import { ExecutionControlBar } from "@/components/execution/ExecutionControlBar";
-import { AppTopBar, KanbanSplitLayout, LeftNavRail } from "@/components/layout";
+import {
+  resolveExecutionTaskAgentWorkspace,
+  type ExecutionBarTaskNavigationTarget,
+} from "@/components/execution/executionTaskNavigation";
+import { requestAutomationRunOpen } from "@/components/automations/automationRunNavigation";
+import { AppTopBar, LeftNavRail } from "@/components/layout";
 import { PermissionDialog } from "@/components/PermissionDialog";
-import { IdeationView, ProposalEditModal, FinalizeConfirmationDialog, VerificationConfirmDialog } from "@/components/Ideation";
-import { ProposalDetailSheet } from "@/components/Ideation/ProposalDetailSheet";
-import type { ProposalDetailEnrichment } from "@/components/Ideation/ProposalDetailSheet";
+import { FinalizeConfirmationDialog } from "@/components/Ideation";
 import { ExtensibilityView } from "@/components/ExtensibilityView";
 import { ActivityView } from "@/components/activity";
 import { GitHubBranchesView, githubBranchOverviewKeys } from "@/components/github";
@@ -28,69 +31,62 @@ import {
 import { TicketingDashboardView } from "@/components/ticketing";
 import SettingsDialog from "@/components/settings/SettingsDialog";
 import { InsightsView } from "@/components/views/InsightsView";
-import { AgentsView, AgentIssueReportDialog } from "@/components/agents";
-import { TeamSplitView } from "@/components/Team";
-import { TaskGraphView } from "@/components/TaskGraph";
+import { AgentIssueReportDialog } from "@/components/agents/AgentIssueReportDialog";
 import { WelcomeScreen } from "@/components/WelcomeScreen";
-import { UpdateChecker } from "@/components/UpdateChecker";
-import { ProviderCliUpdateChecker } from "@/components/ProviderCliUpdateChecker";
-import { PostUpdatePreparingScreen } from "@/components/PostUpdatePreparingScreen";
+import { StartupMaintenance } from "@/components/StartupMaintenance";
 import { ProjectCreationWizard } from "@/components/projects/ProjectCreationWizard";
-import { PlanQuickSwitcherPalette } from "@/components/plan/PlanQuickSwitcherPalette";
 import { useUiStore } from "@/stores/uiStore";
 import { useTaskStore, selectTasksByStatus } from "@/stores/taskStore";
 import { useChatStore } from "@/stores/chatStore";
-import { useIdeationStore, selectActiveSession } from "@/stores/ideationStore";
-import { useProposalStore } from "@/stores/proposalStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { useIntegrationDashboardStore } from "@/stores/integrationDashboardStore";
-import { DEFAULT_PROJECT_VIEW, type ViewType } from "@/types/chat";
+import { DEFAULT_APP_VIEW, type AppView } from "@/types/app-view";
 import { useTicketingStore } from "@/stores/ticketingStore";
-import type { ApplyProposalsInput } from "@/api/ideation.types";
-import type { UpdateProposalInput } from "@/api/ideation";
-import { toTaskProposal, ideationApi } from "@/api/ideation";
 import type { CreateProject } from "@/types/project";
-import { useTasksAwaitingReview } from "@/hooks/useReviews";
-import { useReviewMutations } from "@/hooks/useReviewMutations";
+import { useAttentionItems } from "@/hooks/useAttentionItems";
+import { useUnreadNotificationCount } from "@/hooks/useNotificationHistory";
 import { useExecutionEvents } from "@/hooks/useExecutionEvents";
 import { useExecutionStatus } from "@/hooks/useExecutionControl";
 import { useRunningProcesses } from "@/hooks/useRunningProcesses";
 import { useMergePipeline } from "@/hooks/useMergePipeline";
 import { useProjects, projectKeys } from "@/hooks/useProjects";
-import {
-  useIdeationSession,
-  useIdeationSessions,
-  useArchiveIdeationSession,
-} from "@/hooks/useIdeation";
-import { useProposalMutations } from "@/hooks/useProposals";
-import { useApplyProposals } from "@/hooks/useApplyProposals";
 import { useAppKeyboardShortcuts } from "@/hooks/useAppKeyboardShortcuts";
 import { useFeatureFlags, isViewEnabled } from "@/hooks/useFeatureFlags";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
-import { useNavCompactBreakpoint } from "@/hooks";
-import { usePostUpdatePreparing } from "@/hooks/usePostUpdatePreparing";
 import { useTicketingCacheEvents } from "@/hooks/useTicketingEvents";
-import { extractErrorMessage } from "@/lib/errors";
-import { resolveIdeationSession } from "@/lib/resolveIdeationSession";
+import { useAutomationEvents } from "@/hooks/useAutomations";
+import { cn } from "@/lib/utils";
+import {
+  openTaskInAgents,
+  navigateToIdeationSession,
+} from "@/lib/navigation";
 import { readFreshPostUpdatePreparingMarker } from "@/lib/postUpdatePreparing";
+import type { StartupStatus } from "@/api/startup";
 import { api, getGitBranches, getGitDefaultBranch } from "@/lib/tauri";
 import { executionApi } from "@/api/execution";
+import type { RunningWorkspaceSession } from "@/api/running-processes";
 import { githubApi } from "@/api/github";
 import { granolaApi, type GranolaNoteDetail, type GranolaNoteSummary } from "@/api/granola";
 import { tasksApi } from "@/api/tasks";
 import { ticketingApi, type TicketDeepLink } from "@/api/ticketing";
 import { ticketingKeys } from "@/hooks/useTicketing";
-import type { SelectionSource } from "@/api/plan";
 import type { ProjectSettings } from "@/types/settings";
 import { DEFAULT_PROJECT_SETTINGS } from "@/types/settings";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
 import { ScreenshotGalleryTestPage } from "@/test-pages/ScreenshotGalleryTest";
+import { ChatActivityVisualTestPage } from "@/test-pages/ChatActivityVisualTest";
+import { preloadAutomationsView } from "@/components/automations/preloadAutomationsView";
 
 const queryClient = getQueryClient();
 const ATLASSIAN_AWARENESS_TOAST_KEY = "ralphx.atlassianIntegrationAwareness.v1";
+const LazyAutomationsView = lazyWithRetry(() => preloadAutomationsView());
+const LazyAgentsView = lazyWithRetry(async () => {
+  const { AgentsView } = await import("@/components/agents/AgentsView");
+  return { default: AgentsView };
+});
 
 function ensureCreatedProjectVisibleInAgentFilters(projectId: string) {
   const {
@@ -124,6 +120,10 @@ function getTestPage(): React.ReactElement | null {
       fourColumns: <ScreenshotGalleryTestPage columns={4} />,
     };
     return scenarios[scenario] ?? scenarios.default ?? null;
+  }
+
+  if (testPage === "chat-activity") {
+    return <ChatActivityVisualTestPage />;
   }
 
   return null;
@@ -166,28 +166,73 @@ function FeatureDisabledPlaceholder({
   );
 }
 
-function AppContent() {
+function AutomationsRouteShell() {
+  return (
+    <div
+      className="flex h-full min-h-0 flex-col"
+      style={{ backgroundColor: "var(--app-content-bg)" }}
+      data-testid="automations-view-shell"
+    >
+      <div
+        className="flex items-center justify-between border-b px-6 py-5"
+        style={{
+          backgroundColor: "var(--app-content-bg)",
+          borderBottomColor: "var(--border-default)",
+          borderBottomStyle: "solid",
+          borderBottomWidth: "1px",
+        }}
+      >
+        <div>
+          <div className="h-3 w-24 rounded" style={{ backgroundColor: "var(--bg-surface)" }} />
+          <div className="mt-3 h-6 w-48 rounded" style={{ backgroundColor: "var(--bg-surface)" }} />
+        </div>
+        <div className="h-9 w-36 rounded-md" style={{ backgroundColor: "var(--bg-surface)" }} />
+      </div>
+      <div className="space-y-3 p-6">
+        {[0, 1, 2].map((index) => (
+          <div
+            key={index}
+            className="h-[72px] rounded-md"
+            style={{
+              backgroundColor: "var(--bg-surface)",
+              borderColor: "var(--border-default)",
+              borderStyle: "solid",
+              borderWidth: "1px",
+            }}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AgentsRouteShell() {
+  return (
+    <div
+      className="flex h-full min-h-0 flex-col p-6"
+      data-testid="agents-view-shell"
+      style={{ backgroundColor: "var(--app-content-bg)" }}
+    >
+      <div className="h-4 w-36 rounded" style={{ backgroundColor: "var(--bg-surface)" }} />
+      <div className="mt-4 h-24 rounded-md" style={{ backgroundColor: "var(--bg-surface)" }} />
+    </div>
+  );
+}
+
+function AppContent({ backgroundSettled }: { backgroundSettled: boolean }) {
   // Check for test page first (must happen before any hooks for ESLint compliance)
   const testPage = useMemo(() => getTestPage(), []);
 
-  const reviewsPanelOpen = useUiStore((s) => s.reviewsPanelOpen);
-  const toggleReviewsPanel = useUiStore((s) => s.toggleReviewsPanel);
-  const setReviewsPanelOpen = useUiStore((s) => s.setReviewsPanelOpen);
+  const notificationsPanelOpen = useUiStore((s) => s.notificationsPanelOpen);
+  const toggleNotificationsPanel = useUiStore((s) => s.toggleNotificationsPanel);
+  const setNotificationsPanelOpen = useUiStore((s) => s.setNotificationsPanelOpen);
   const executionStatus = useUiStore((s) => s.executionStatus);
   const setExecutionStatus = useUiStore((s) => s.setExecutionStatus);
   const currentView = useUiStore((s) => s.currentView);
   const setCurrentView = useUiStore((s) => s.setCurrentView);
-  const setSelectedTaskId = useUiStore((s) => s.setSelectedTaskId);
-  const toggleGraphRightPanelUserOpen = useUiStore((s) => s.toggleGraphRightPanel);
-  const toggleGraphRightPanelCompactOpen = useUiStore(
-    (s) => s.toggleGraphRightPanelCompactOpen
-  );
+  const [selectedAutomationId, setSelectedAutomationId] = useState<string | null>(null);
   const activeModal = useUiStore((s) => s.activeModal);
   const openModal = useUiStore((s) => s.openModal);
-  const battleModeActive = useUiStore((s) => s.battleModeActive);
-  const enterBattleMode = useUiStore((s) => s.enterBattleMode);
-  const exitBattleMode = useUiStore((s) => s.exitBattleMode);
-  const { isNavCompact } = useNavCompactBreakpoint();
   const { data: featureFlags } = useFeatureFlags();
 
   // Redirect to the default project view in production when the current view is disabled.
@@ -199,7 +244,7 @@ function AppContent() {
       !import.meta.env.DEV &&
       !isViewEnabled(currentView, featureFlags)
     ) {
-      setCurrentView(DEFAULT_PROJECT_VIEW);
+      setCurrentView(DEFAULT_APP_VIEW);
     }
   }, [currentView, featureFlags, setCurrentView]);
 
@@ -210,9 +255,6 @@ function AppContent() {
   const closeWelcomeOverlay = useUiStore((s) => s.closeWelcomeOverlay);
   // Activity filter state (for context-aware navigation from StatusActivityBadge)
   const activityFilter = useUiStore((s) => s.activityFilter);
-
-  // Chat message management for embedded ideation/agent conversations.
-  const clearMessages = useChatStore((s) => s.clearMessages);
 
   const switchToProject = useUiStore((s) => s.switchToProject);
   const preserveCurrentViewOnNextProjectSwitch = useUiStore(
@@ -239,12 +281,7 @@ function AppContent() {
   );
 
   const prevProjectIdRef = useRef<string | null>(null);
-  const agentsReturnViewRef = useRef<ViewType>(DEFAULT_PROJECT_VIEW);
-  const showsExecutionFooter =
-    currentView === "kanban" ||
-    currentView === "graph" ||
-    (currentView === "ideation" && isViewEnabled("ideation", featureFlags)) ||
-    currentView === "agents";
+  const showsExecutionFooter = currentView === "agents";
   const shouldHydrateAgentHaltState = currentView === "agents";
   const shouldHydrateExecutionStatus =
     showsExecutionFooter || shouldHydrateAgentHaltState;
@@ -256,8 +293,6 @@ function AppContent() {
     currentView === "agents" ? agentFooterProjectId : currentProjectId;
   const executionProjectParam = executionProjectId || undefined;
   const shouldPollExecutionStatus = showsExecutionFooter && Boolean(executionProjectParam);
-  const shouldHydrateIdeationView =
-    currentView === "ideation" && isViewEnabled("ideation", featureFlags);
   const shouldHydrateExecutionSettings = activeModal === "settings";
 
   // Fetch projects from backend
@@ -278,36 +313,6 @@ function AppContent() {
   const [projectCreationError, setProjectCreationError] = useState<string | null>(null);
   const [isAgentIssueReportOpen, setIsAgentIssueReportOpen] = useState(false);
 
-  // Plan quick switcher state
-  const [isPlanQuickSwitcherOpen, setIsPlanQuickSwitcherOpen] = useState(false);
-  const [planQuickSwitcherSource, setPlanQuickSwitcherSource] =
-    useState<SelectionSource>("quick_switcher");
-
-  // Ideation state
-  const activeSession = useIdeationStore(selectActiveSession);
-  const setActiveSession = useIdeationStore((s) => s.setActiveSession);
-  const selectSession = useIdeationStore((s) => s.selectSession);
-  const archiveSessionInStore = useIdeationStore((s) => s.archiveSession);
-  const activeSessionId = activeSession?.id ?? "";
-  // Get raw proposals from store and memoize the filtered/sorted version
-  const allProposals = useProposalStore((s) => s.proposals);
-  const setProposals = useProposalStore((s) => s.setProposals);
-  const proposals = useMemo(() => {
-    if (!activeSessionId) return [];
-    return Object.values(allProposals)
-      .filter((p) => p.sessionId === activeSessionId)
-      .sort((a, b) => a.sortOrder - b.sortOrder);
-  }, [allProposals, activeSessionId]);
-  const [editingProposalId, setEditingProposalId] = useState<string | null>(null);
-  const editingProposal = editingProposalId
-    ? allProposals[editingProposalId] ?? null
-    : null;
-
-  const [viewingProposalId, setViewingProposalId] = useState<string | null>(null);
-  const [viewingEnrichment, setViewingEnrichment] = useState<ProposalDetailEnrichment | undefined>(undefined);
-  const viewingProposal = viewingProposalId
-    ? allProposals[viewingProposalId] ?? null
-    : null;
 
   const [isExecutionLoading, setIsExecutionLoading] = useState(false);
 
@@ -332,11 +337,6 @@ function AppContent() {
     !isLoadingProviderSettings &&
     !isPlaceholderProviderSettings &&
     providerSettings.requiresOnboarding;
-  const postUpdateAppReady =
-    !isLoadingProjects &&
-    !isLoadingProviderSettings &&
-    !isPlaceholderProviderSettings;
-  const isPostUpdatePreparing = usePostUpdatePreparing(postUpdateAppReady);
   const agentIssueReportContext = useMemo(() => {
     if (
       currentView !== "agents" ||
@@ -364,11 +364,29 @@ function AppContent() {
     readFreshPostUpdatePreparingMarker() !== null,
   );
 
-  const { totalCount: pendingReviewCount } = useTasksAwaitingReview(currentProjectId);
+  const attentionItems = useAttentionItems();
+  const attentionCount = attentionItems.data?.length ?? 0;
+  const unreadNotificationCount = useUnreadNotificationCount();
+  const hasUnreadNotificationHistory = (unreadNotificationCount.data ?? 0) > 0;
+  const [notificationPanelWasOpened, setNotificationPanelWasOpened] =
+    useState(false);
+  const shouldRenderNotificationPanel =
+    notificationPanelWasOpened || notificationsPanelOpen;
+
+  useEffect(() => {
+    if (notificationsPanelOpen) {
+      setNotificationPanelWasOpened(true);
+    }
+  }, [notificationsPanelOpen]);
+
+  const closeNotificationsPanel = useCallback(() => {
+    setNotificationsPanelOpen(false);
+  }, [setNotificationsPanelOpen]);
 
   // Real-time execution status updates via Tauri events
   useExecutionEvents(executionProjectParam);
   useTicketingCacheEvents();
+  useAutomationEvents();
   // Fetch initial execution status and poll every 30s as fallback
   // Scope the Agents footer to the selected/focused agent project instead of the app's active project.
   useExecutionStatus(executionProjectParam, {
@@ -377,7 +395,6 @@ function AppContent() {
     refetchOnWindowFocus: shouldPollExecutionStatus,
     staleTime: shouldHydrateAgentHaltState ? 30_000 : 0,
   });
-  const { isApproving, isRequestingChanges } = useReviewMutations();
 
   // Merge pipeline data
   const { data: mergePipelineData } = useMergePipeline(executionProjectParam, {
@@ -399,34 +416,6 @@ function AppContent() {
   // on every call via .filter(), and Zustand's default Object.is sees new !== old.
   const pausedTasks = useTaskStore(useShallow(selectTasksByStatus("paused")));
   const pausedCount = pausedTasks.length;
-
-  // Ideation hooks
-  const { data: sessionData, isLoading: isSessionLoading } = useIdeationSession(
-    activeSession?.id ?? "",
-    { enabled: shouldHydrateIdeationView }
-  );
-  const { data: allSessions = [] } = useIdeationSessions(currentProjectId, {
-    enabled: shouldHydrateIdeationView,
-  });
-  const archiveSession = useArchiveIdeationSession();
-  const { deleteProposal, reorder, updateProposal } = useProposalMutations();
-  const { apply: applyProposalsMutation } = useApplyProposals();
-
-  const resolvedSession = useMemo(() => {
-    return resolveIdeationSession(sessionData?.session, activeSession);
-  }, [sessionData?.session, activeSession]);
-
-  // Mirror PlanningView's isReadOnly: sessions that are not "active" are read-only
-  const isIdeationReadOnly = resolvedSession?.status !== "active";
-
-  // Sync proposals from sessionData to the store
-  useEffect(() => {
-    if (shouldHydrateIdeationView && sessionData?.proposals) {
-      // Convert API response to store type using proper mapping function
-      setProposals(sessionData.proposals.map(toTaskProposal));
-    }
-  }, [sessionData?.proposals, setProposals, shouldHydrateIdeationView]);
-
 
   // Sync fetched projects to store and auto-select first project
   useEffect(() => {
@@ -453,7 +442,7 @@ function AppContent() {
     }
   }, [activeProjectId]);
 
-  // Project switch: save/restore per-project view + ideation session
+  // Project switch: save and restore the per-project app view.
   // Runs AFTER the setActiveProject backend sync effect (order matters in React)
   useEffect(() => {
     const prevId = prevProjectIdRef.current;
@@ -463,23 +452,8 @@ function AppContent() {
       // Atomic view state save/clean/restore
       switchToProject(prevId, activeProjectId);
 
-      // Restore ideation session (separate store, same synchronous tick)
-      const sessionByProject = useUiStore.getState().sessionByProject;
-      const restoredSessionId = sessionByProject[activeProjectId] ?? null;
-
-      if (restoredSessionId) {
-        const sessions = useIdeationStore.getState().sessions;
-        if (sessions[restoredSessionId]) {
-          setActiveSession(restoredSessionId);
-        } else {
-          // Session was deleted/not yet loaded — don't restore stale ID
-          setActiveSession(null);
-        }
-      } else {
-        setActiveSession(null);
-      }
     }
-  }, [activeProjectId, switchToProject, setActiveSession]);
+  }, [activeProjectId, switchToProject]);
 
   // Load execution settings from database when project changes
   useEffect(() => {
@@ -650,7 +624,7 @@ function AppContent() {
     openModal("settings", { section: "integrations" });
   }, [openModal]);
 
-  const handleWarmView = useCallback((view: ViewType) => {
+  const handleWarmView = useCallback((view: AppView) => {
     if (!currentProjectId) {
       return;
     }
@@ -687,7 +661,7 @@ function AppContent() {
 
   const handleNavigateFromTicketAssociation = useCallback((deepLink: TicketDeepLink) => {
     const targetProjectId = deepLink.projectId ?? currentProjectId;
-    const switchProjectForDeepLink = (view: ViewType) => {
+    const switchProjectForDeepLink = (view: AppView) => {
       setCurrentView(view);
       if (targetProjectId && targetProjectId !== activeProjectId) {
         preserveCurrentViewOnNextProjectSwitch();
@@ -695,9 +669,18 @@ function AppContent() {
       }
     };
 
-    if (deepLink.view === "kanban") {
-      setCurrentView("kanban");
-      setSelectedTaskId(deepLink.id);
+    if (deepLink.view === "kanban" || deepLink.view === "graph") {
+      const taskMode = deepLink.view;
+      void openTaskInAgents(deepLink.id, taskMode, {
+        projectId: targetProjectId,
+        ...(deepLink.conversationId
+          ? { conversationId: deepLink.conversationId }
+          : {}),
+      });
+      return;
+    }
+    if (deepLink.view === "ideation") {
+      navigateToIdeationSession(deepLink.id);
       return;
     }
     if (deepLink.view === "github" && targetProjectId) {
@@ -742,7 +725,6 @@ function AppContent() {
     preserveCurrentViewOnNextProjectSwitch,
     selectProject,
     setCurrentView,
-    setSelectedTaskId,
     setFocusedAgentProject,
   ]);
 
@@ -764,8 +746,6 @@ function AppContent() {
 
   useEffect(() => {
     if (
-      !postUpdateAppReady ||
-      isPostUpdatePreparing ||
       !shouldShowAtlassianAwarenessAfterUpdateRef.current ||
       hasNoProjects ||
       providerSetupRequired
@@ -789,132 +769,98 @@ function AppContent() {
   }, [
     handleOpenIntegrationSettings,
     hasNoProjects,
-    isPostUpdatePreparing,
-    postUpdateAppReady,
     providerSetupRequired,
   ]);
 
-  const handleBattleModeToggle = useCallback(() => {
-    if (battleModeActive) {
-      exitBattleMode();
+  const handleNavigateToSession = useCallback((sessionId: string) => {
+    navigateToIdeationSession(sessionId);
+  }, []);
+
+  const handleOpenAutomationDetail = useCallback((automationId: string) => {
+    setSelectedAutomationId(automationId);
+    setCurrentView("automations");
+  }, [setCurrentView]);
+
+  const handleNavigateToWorkspace = useCallback((
+    projectId: string,
+    conversationId: string,
+    session?: RunningWorkspaceSession,
+  ) => {
+    if (session?.automationId && session.automationRunId) {
+      void requestAutomationRunOpen(
+        queryClient,
+        {
+          projectId,
+          automationId: session.automationId,
+          runId: session.automationRunId,
+          conversationId,
+        },
+        {
+          fallback: "detail",
+          onOpenAutomationDetail: handleOpenAutomationDetail,
+        },
+      );
       return;
     }
-    enterBattleMode();
-  }, [battleModeActive, enterBattleMode, exitBattleMode]);
-
-  useEffect(() => {
-    if (currentView !== "graph" && battleModeActive) {
-      exitBattleMode();
-    }
-  }, [battleModeActive, currentView, exitBattleMode]);
-
-  // Ideation handlers
-  const handleNewSession = useCallback(() => {
-    // Clear active session to show StartSessionPanel with mode selector
-    setActiveSession(null);
-  }, [setActiveSession]);
-
-  const handleArchiveSession = useCallback(async (sessionId: string) => {
-    try {
-      await archiveSession.mutateAsync(sessionId);
-      // Clean up stores to free memory
-      archiveSessionInStore(sessionId);
-      clearMessages(`session:${sessionId}`);
-      setActiveSession(null);
-    } catch {
-      toast.error("Failed to archive session");
-    }
-  }, [archiveSession, setActiveSession, archiveSessionInStore, clearMessages]);
-
-  const handleSelectSession = useCallback(async (sessionId: string) => {
-    // Find the session in allSessions and select it atomically
-    const session = allSessions.find((s) => s.id === sessionId);
-    if (session) {
-      selectSession(session);
-      return;
-    }
-
-    // Session not in store (e.g. archived) — fetch from backend
-    try {
-      const fetchedSession = await ideationApi.sessions.get(sessionId);
-      if (fetchedSession) {
-        selectSession(fetchedSession);
-      } else {
-        toast.error("Failed to open session");
-      }
-    } catch {
-      toast.error("Failed to open session");
-    }
-  }, [allSessions, selectSession]);
-
-  const handleNavigateToSession = useCallback(async (sessionId: string) => {
-    setCurrentView("ideation");
-    await handleSelectSession(sessionId);
-  }, [setCurrentView, handleSelectSession]);
-
-  const handleNavigateToWorkspace = useCallback((projectId: string, conversationId: string) => {
     setFocusedAgentProject(projectId);
     useAgentSessionStore.getState().selectConversation(projectId, conversationId);
     useChatStore.getState().setActiveConversation(`project:${projectId}`, conversationId);
     setCurrentView("agents");
-  }, [setCurrentView, setFocusedAgentProject]);
+  }, [handleOpenAutomationDetail, setCurrentView, setFocusedAgentProject]);
 
-  const handleEditProposal = useCallback((proposalId: string) => {
-    setEditingProposalId(proposalId);
-  }, []);
-
-  const handleViewProposal = useCallback((proposalId: string, enrichment: ProposalDetailEnrichment) => {
-    setViewingProposalId(proposalId);
-    setViewingEnrichment(enrichment);
-  }, []);
-
-  const handleNavigateToTaskFromSheet = useCallback((taskId: string) => {
-    setCurrentView("kanban");
-    setSelectedTaskId(taskId);
-  }, [setCurrentView, setSelectedTaskId]);
-
-  const handleSaveProposal = useCallback(
-    async (proposalId: string, data: UpdateProposalInput) => {
-      try {
-        await updateProposal.mutateAsync({ proposalId, changes: data });
-        setEditingProposalId(null);
-        toast.success("Proposal updated");
-      } catch {
-        toast.error("Failed to update proposal");
+  const handleNavigateToExecutionTask = useCallback(
+    (target: ExecutionBarTaskNavigationTarget) => {
+      const agentWorkspace = resolveExecutionTaskAgentWorkspace(target);
+      if (!agentWorkspace) {
+        toast.info("No Agent conversation is linked to this task yet");
+        return;
       }
+      void openTaskInAgents(target.taskId, "graph", {
+        projectId: agentWorkspace.projectId,
+        conversationId: agentWorkspace.conversationId,
+      });
     },
-    [updateProposal]
+    [],
   );
 
-  const handleRemoveProposal = useCallback((proposalId: string) => {
-    deleteProposal.mutate(proposalId);
-  }, [deleteProposal]);
+  const handleNavigateToAutomationRun = useCallback(
+    (target: Parameters<typeof requestAutomationRunOpen>[1]) => {
+      void requestAutomationRunOpen(
+        queryClient,
+        target,
+        {
+          fallback: "detail",
+          onOpenAutomationDetail: handleOpenAutomationDetail,
+        },
+      );
+    },
+    [handleOpenAutomationDetail],
+  );
 
-  const handleReorderProposals = useCallback((proposalIds: string[]) => {
-    if (activeSession) {
-      reorder.mutate({ sessionId: activeSession.id, proposalIds });
+  const handleNewAutomation = useCallback(() => {
+    if (!currentProjectId) {
+      return;
     }
-  }, [activeSession, reorder]);
+    useAgentSessionStore.getState().setStartConversationDraft({
+      projectId: currentProjectId,
+      content: "",
+      mode: "automation",
+      automationAuthoringMode: "trusted_auto_finalize",
+    });
+    clearAgentSelection();
+    setFocusedAgentProject(currentProjectId);
+    useChatStore.getState().setActiveConversation(`project:${currentProjectId}`, null);
+    setCurrentView("agents");
+  }, [
+    clearAgentSelection,
+    currentProjectId,
+    setCurrentView,
+    setFocusedAgentProject,
+  ]);
 
-  const handleApplyProposals = useCallback(async (options: ApplyProposalsInput) => {
-    try {
-      const result = await applyProposalsMutation.mutateAsync(options);
-      if (result.sessionConverted) {
-        const count = result.createdTaskIds.length;
-        toast.success(`Plan accepted — ${count} ${count === 1 ? "task" : "tasks"} created`, {
-          action: {
-            label: "View Work",
-            onClick: () => setCurrentView("graph"),
-          },
-          duration: 6000,
-        });
-      }
-      return result;
-    } catch (error) {
-      toast.error(extractErrorMessage(error, "Failed to apply proposals"));
-      throw error;
-    }
-  }, [applyProposalsMutation, setCurrentView]);
+  useEffect(() => {
+    setSelectedAutomationId(null);
+  }, [currentProjectId]);
 
   // Project wizard handlers
   const handleOpenProjectWizard = useCallback(() => {
@@ -992,20 +938,10 @@ function AppContent() {
     closeWelcomeOverlay();
   }, [welcomeOverlayReturnView, setCurrentView, closeWelcomeOverlay]);
 
-  // Handler for view changes - clears task selection to reset state
-  const handleViewChange = useCallback((view: ViewType) => {
-    // Close any open task detail panel when switching views
-    setSelectedTaskId(null);
-    if (view === "agents") {
-      if (currentView === "agents") {
-        setCurrentView(agentsReturnViewRef.current);
-        return;
-      }
-      agentsReturnViewRef.current =
-        currentView === "task_detail" || currentView === "team" ? "kanban" : currentView;
-    }
+  // Root view changes do not own task selection; Agents does.
+  const handleViewChange = useCallback((view: AppView) => {
     setCurrentView(view);
-  }, [currentView, setSelectedTaskId, setCurrentView]);
+  }, [setCurrentView]);
 
   const handleOpenNewAgent = useCallback(() => {
     const nextProjectId = activeProjectId ?? fetchedProjects?.[0]?.id ?? null;
@@ -1014,9 +950,6 @@ function AppContent() {
     }
     clearAgentSelection();
     if (currentView !== "agents") {
-      agentsReturnViewRef.current =
-        currentView === "task_detail" || currentView === "team" ? "kanban" : currentView;
-      setSelectedTaskId(null);
       setCurrentView("agents");
     }
   }, [
@@ -1025,63 +958,23 @@ function AppContent() {
     currentView,
     fetchedProjects,
     setFocusedAgentProject,
-    setSelectedTaskId,
     setCurrentView,
   ]);
-
-  // Keyboard shortcuts for view switching, reviews toggle, and project creation
-  const handleToggleGraphRightPanel = useCallback(() => {
-    if (isNavCompact) {
-      toggleGraphRightPanelCompactOpen();
-    } else {
-      toggleGraphRightPanelUserOpen();
-    }
-  }, [isNavCompact, toggleGraphRightPanelCompactOpen, toggleGraphRightPanelUserOpen]);
-
-  const handleOpenPlanQuickSwitcher = useCallback(
-    (source: SelectionSource = "quick_switcher") => {
-      setPlanQuickSwitcherSource(source);
-      setIsPlanQuickSwitcherOpen(true);
-    },
-    []
-  );
 
   useAppKeyboardShortcuts({
     currentView,
     setCurrentView: handleViewChange,
-    toggleReviewsPanel,
-    toggleGraphRightPanel: handleToggleGraphRightPanel,
+    toggleNotificationsPanel,
     openProjectWizard: handleOpenProjectWizard,
     hasProjects: !hasNoProjects,
     showWelcomeOverlay,
     openWelcomeOverlay,
     closeWelcomeOverlay,
     welcomeOverlayReturnView,
-    openPlanQuickSwitcher: handleOpenPlanQuickSwitcher,
-    onBattleModeToggle: handleBattleModeToggle,
     openSettings: handleOpenSettings,
     openNewAgent: handleOpenNewAgent,
     featureFlags,
   });
-
-  // Global click handler to close quick switcher when clicking outside
-  useEffect(() => {
-    if (!isPlanQuickSwitcherOpen) return;
-
-    const handleClickOutside = (e: MouseEvent) => {
-      // Check if click is outside the quick switcher panel
-      const target = e.target as HTMLElement;
-      const quickSwitcherPanel = target.closest('[data-quick-switcher-panel]');
-
-      if (!quickSwitcherPanel) {
-        setIsPlanQuickSwitcherOpen(false);
-      }
-    };
-
-    // Use capture phase to handle clicks before they bubble
-    document.addEventListener('click', handleClickOutside, true);
-    return () => document.removeEventListener('click', handleClickOutside, true);
-  }, [isPlanQuickSwitcherOpen]);
 
   // Test page routing - return early if on a test page
   if (testPage) {
@@ -1119,6 +1012,7 @@ function AppContent() {
       onOpenSettings={handleOpenSettings}
       onNavigateToSession={handleNavigateToSession}
       onNavigateToWorkspace={handleNavigateToWorkspace}
+      onNavigateToTask={handleNavigateToExecutionTask}
     />
   ) : null;
 
@@ -1126,32 +1020,21 @@ function AppContent() {
     bottom: showsExecutionFooter ? "92px" : "16px",
     left: "16px",
   };
-  const quickSwitcherAnchorSelector =
-    currentView === "kanban"
-      ? '[data-testid="kanban-split-left"]'
-      : currentView === "graph"
-        ? '[data-testid="graph-split-left"]'
-        : undefined;
-
   return (
     <TooltipProvider delayDuration={300}>
       <main
         className="h-screen flex flex-col overflow-hidden"
         style={{ backgroundColor: "var(--app-content-bg)", color: "var(--text-primary)" }}
       >
-      {/* Update checker - runs on mount, shows toast if update available */}
-      <UpdateChecker />
-      <ProviderCliUpdateChecker />
+      <StartupMaintenance backgroundSettled={backgroundSettled} />
 
-      {isPostUpdatePreparing ? (
-        <PostUpdatePreparingScreen />
-      ) : (
-        <>
           <AppTopBar
             currentView={currentView}
-            pendingReviewCount={pendingReviewCount}
-            reviewsPanelOpen={reviewsPanelOpen}
-            onToggleReviewsPanel={toggleReviewsPanel}
+            attentionCount={attentionCount}
+            unreadNotificationCount={unreadNotificationCount.data ?? 0}
+            attentionCountStale={attentionItems.isError}
+            notificationsPanelOpen={notificationsPanelOpen}
+            onToggleNotificationsPanel={toggleNotificationsPanel}
             onNewProject={handleOpenProjectWizard}
             onProjectSwitchIntent={preserveCurrentViewOnNextProjectSwitch}
             showProjectSelector={
@@ -1192,53 +1075,36 @@ function AppContent() {
           {/* Main view area */}
           <div className="flex-1 flex flex-col overflow-hidden" style={{ backgroundColor: "var(--app-content-bg)" }}>
             <div className="flex-1 overflow-auto h-full" style={{ backgroundColor: "var(--app-content-bg)" }}>
-              {currentView === "kanban" && (
-                <KanbanSplitLayout
-                  projectId={currentProjectId}
-                  footer={executionFooter}
-                >
-                  <TaskBoard
+              {currentView === "agents" && (
+                <Suspense fallback={<AgentsRouteShell />}>
+                  <LazyAgentsView
+                    footer={executionFooter}
                     projectId={currentProjectId}
-                    onOpenPlanQuickSwitcher={handleOpenPlanQuickSwitcher}
+                    onCreateProject={handleOpenProjectWizard}
+                    onOpenAutomation={handleOpenAutomationDetail}
                   />
-                </KanbanSplitLayout>
+                </Suspense>
               )}
-              {currentView === "graph" && (
-                <TaskGraphView
-                  projectId={currentProjectId}
-                  onOpenPlanQuickSwitcher={handleOpenPlanQuickSwitcher}
-                  footer={executionFooter}
-                />
-              )}
-              {currentView === "ideation" && (
-                isViewEnabled("ideation", featureFlags)
+              {currentView === "automations" && (
+                isViewEnabled("automations", featureFlags)
                   ? (
-                    <IdeationView
-                      session={resolvedSession}
-                      proposals={proposals}
-                      isSessionLoading={isSessionLoading}
-                      onNewSession={handleNewSession}
-                      onSelectSession={handleSelectSession}
-                      onArchiveSession={handleArchiveSession}
-                      onEditProposal={handleEditProposal}
-                      onViewProposal={handleViewProposal}
-                      selectedProposalId={viewingProposalId}
-                      onRemoveProposal={handleRemoveProposal}
-                      onReorderProposals={handleReorderProposals}
-                      onApply={handleApplyProposals}
-                      footer={executionFooter}
-                    />
+                    <Suspense fallback={<AutomationsRouteShell />}>
+                      <LazyAutomationsView
+                        projectId={currentProjectId || null}
+                        projectName={activeProject?.name ?? null}
+                        projectOptions={fetchedProjects ?? []}
+                        onProjectChange={selectProject}
+                        selectedAutomationId={selectedAutomationId}
+                        onSelectedAutomationChange={setSelectedAutomationId}
+                        onNewAutomation={handleNewAutomation}
+                        onOpenRunConversation={handleNavigateToWorkspace}
+                        onOpenAutomationRun={handleNavigateToAutomationRun}
+                      />
+                    </Suspense>
                   )
                   : import.meta.env.DEV
-                    ? <FeatureDisabledPlaceholder view="ideation" yamlKey="ideation_page" envVar="RALPHX_UI_IDEATION_PAGE" />
+                    ? <FeatureDisabledPlaceholder view="automations" yamlKey="automations_page" envVar="RALPHX_UI_AUTOMATIONS_PAGE" />
                     : null
-              )}
-              {currentView === "agents" && (
-                <AgentsView
-                  footer={executionFooter}
-                  projectId={currentProjectId}
-                  onCreateProject={handleOpenProjectWizard}
-                />
               )}
               {currentView === "extensibility" && (
                 isViewEnabled("extensibility", featureFlags)
@@ -1283,49 +1149,64 @@ function AppContent() {
                 />
               )}
               {currentView === "insights" && <InsightsView />}
-              {currentView === "team" && <TeamSplitView />}
             </div>
         </div>
 
-          {/* ReviewsPanel - right sidebar surface.
-              bottomOffset 76 when ExecutionControlBar is visible below this
-              panel, 0 elsewhere so the panel fills
-              the viewport instead of leaving a ~84px void. */}
-          {reviewsPanelOpen && (
-            <div
-              className="fixed top-12 right-0 z-50 flex w-[400px] flex-col border-l"
-              data-testid="reviews-panel-shell"
-              style={{
-                bottom: showsExecutionFooter ? "76px" : "0px",
-                backgroundColor: "var(--app-sidebar-bg)",
-                borderLeftColor: "var(--app-sidebar-border)",
-                borderLeftStyle: "solid",
-                borderLeftWidth: "1px",
-              }}
-            >
+          {/* Notification center keeps a visually hidden light frame after first open. */}
+          {shouldRenderNotificationPanel && (
+            <>
+              {notificationsPanelOpen && (
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  aria-label="Close notifications outside panel"
+                  className="fixed inset-x-0 top-12 z-40 cursor-default border-0 bg-transparent p-0"
+                  data-testid="notifications-panel-backdrop"
+                  onClick={closeNotificationsPanel}
+                  style={{
+                    bottom: "0px",
+                  }}
+                />
+              )}
               <div
-                className="flex flex-1 flex-col overflow-hidden"
-                data-testid="reviews-panel-frame"
+                className={cn(
+                  "fixed top-12 right-0 z-50 flex flex-col border-l",
+                  !notificationsPanelOpen && "pointer-events-none invisible",
+                )}
+                data-testid="notifications-panel-shell"
+                aria-hidden={!notificationsPanelOpen}
                 style={{
-                  backgroundColor: "var(--app-sidebar-bg)",
-                  boxShadow: "none",
+                  bottom: "0px",
+                  width: "100vw",
+                  maxWidth: "400px",
+                  backgroundColor: "var(--bg-surface)",
+                  borderLeftColor: "var(--border-subtle)",
+                  borderLeftStyle: "solid",
+                  borderLeftWidth: "1px",
                 }}
               >
-                <ReviewsPanel
-                  projectId={currentProjectId}
-                  onClose={() => setReviewsPanelOpen(false)}
-                  isApproving={isApproving}
-                  isRequestingChanges={isRequestingChanges}
-                />
+                <div
+                  className="flex flex-1 flex-col overflow-hidden"
+                  data-testid="notifications-panel-frame"
+                  style={{
+                    backgroundColor: "var(--bg-surface)",
+                    boxShadow: "none",
+                  }}
+                >
+                  <NotificationCenterPanel
+                    isOpen={notificationsPanelOpen}
+                    onClose={closeNotificationsPanel}
+                    onOpenAutomationDetail={handleOpenAutomationDetail}
+                    hasUnreadHistory={hasUnreadNotificationHistory}
+                  />
+                </div>
               </div>
-            </div>
+            </>
           )}
 
         </div>
       )}
-      </div>
-        </>
-      )}
+        </div>
 
       {/* Project Creation Wizard */}
       <ProjectCreationWizard
@@ -1361,41 +1242,6 @@ function AppContent() {
       {/* Finalize Confirmation Dialog - Agent-initiated plan acceptance gate */}
       <FinalizeConfirmationDialog />
 
-      {/* Verification Confirm Dialog - Agent/user-initiated verification gate with specialist selection */}
-      <VerificationConfirmDialog />
-
-      {/* Proposal Edit Modal - Edit ideation proposals */}
-      <ProposalEditModal
-        proposal={editingProposal}
-        onSave={handleSaveProposal}
-        onCancel={() => setEditingProposalId(null)}
-        isSaving={updateProposal.isPending}
-      />
-
-      {/* Proposal Detail Sheet - Read-only detail view */}
-      <ProposalDetailSheet
-        proposal={viewingProposal}
-        {...(viewingEnrichment !== undefined && { enrichment: viewingEnrichment })}
-        isReadOnly={isIdeationReadOnly}
-        onClose={() => { setViewingProposalId(null); setViewingEnrichment(undefined); }}
-        onEdit={handleEditProposal}
-        onDelete={handleRemoveProposal}
-        onNavigateToTask={handleNavigateToTaskFromSheet}
-      />
-
-      {/* Plan Quick Switcher */}
-      {!hasNoProjects && (
-        <PlanQuickSwitcherPalette
-          projectId={currentProjectId}
-          isOpen={isPlanQuickSwitcherOpen}
-          onClose={() => setIsPlanQuickSwitcherOpen(false)}
-          selectionSource={planQuickSwitcherSource}
-          {...(quickSwitcherAnchorSelector
-            ? { anchorSelector: quickSwitcherAnchorSelector }
-            : {})}
-        />
-      )}
-
       {/* Toast notifications */}
       <Toaster position="bottom-left" offset={toastOffset} />
       </main>
@@ -1403,11 +1249,13 @@ function AppContent() {
   );
 }
 
-function App() {
+function App({ startupStatus }: { startupStatus?: StartupStatus }) {
+  const backgroundSettled = startupStatus?.backgroundComplete ?? true;
+
   return (
     <QueryClientProvider client={queryClient}>
       <EventProvider>
-        <AppContent />
+        <AppContent backgroundSettled={backgroundSettled} />
       </EventProvider>
     </QueryClientProvider>
   );

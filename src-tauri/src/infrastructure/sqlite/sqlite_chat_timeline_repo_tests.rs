@@ -65,6 +65,64 @@ fn text_item(
 }
 
 #[tokio::test]
+async fn upsert_persists_raw_payload_only_for_full_fidelity_tools() {
+    let (db, conversation_repo, timeline_repo) = setup_repos();
+    let conversation_id = create_conversation(&conversation_repo).await;
+    let message_id = ChatMessageId::from_string("assistant-message-raw-policy");
+    insert_parent_message(&db, conversation_id, &message_id);
+
+    let mut bash = ChatTimelineItem::for_message_block(
+        message_id.clone(),
+        conversation_id,
+        0,
+        MessageRole::Orchestrator,
+        ChatTimelineItemKind::ToolUse,
+    );
+    bash.tool_name = Some("bash".to_string());
+    bash.input_json = Some(r#"{"command":"cargo test"}"#.to_string());
+    bash.result_json = Some(r#""ok""#.to_string());
+    bash.raw_block_json = Some(r#"{"type":"tool_use","name":"bash"}"#.to_string());
+    let bash = timeline_repo.upsert_item(bash).await.expect("insert bash");
+
+    let mut edit = ChatTimelineItem::for_message_block(
+        message_id,
+        conversation_id,
+        1,
+        MessageRole::Orchestrator,
+        ChatTimelineItemKind::ToolUse,
+    );
+    edit.tool_name = Some("edit".to_string());
+    edit.input_json = Some(r#"{"file_path":"src/lib.rs"}"#.to_string());
+    edit.raw_block_json = Some(
+        r#"{"type":"tool_use","name":"edit","diff_context":{"file_path":"src/lib.rs"}}"#
+            .to_string(),
+    );
+    let edit = timeline_repo.upsert_item(edit).await.expect("insert edit");
+
+    db.with_connection(|conn| {
+        let bash_payload: (Option<String>, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT input_json, result_json, raw_block_json FROM chat_message_block_payloads WHERE block_id = ?1",
+                [bash.id.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("bash payload");
+        assert_eq!(bash_payload.0.as_deref(), Some(r#"{"command":"cargo test"}"#));
+        assert_eq!(bash_payload.1.as_deref(), Some(r#""ok""#));
+        assert!(bash_payload.2.is_none());
+
+        let edit_raw: Option<String> = conn
+            .query_row(
+                "SELECT raw_block_json FROM chat_message_block_payloads WHERE block_id = ?1",
+                [edit.id.as_str()],
+                |row| row.get(0),
+            )
+            .expect("edit payload");
+        assert!(edit_raw.is_some());
+    });
+}
+
+#[tokio::test]
 async fn upsert_assigns_sequences_and_preserves_existing_sequence_on_update() {
     let (db, conversation_repo, timeline_repo) = setup_repos();
     let conversation_id = create_conversation(&conversation_repo).await;
@@ -336,6 +394,70 @@ async fn page_hydrates_diff_tool_payloads_without_eager_loading_other_tools() {
         .as_deref()
         .expect("edit raw block json")
         .contains("diff_context"));
+}
+
+#[tokio::test]
+async fn page_hydrates_full_delegation_payloads_without_eager_loading_other_tools() {
+    let (db, conversation_repo, timeline_repo) = setup_repos();
+    let conversation_id = create_conversation(&conversation_repo).await;
+    let message_id = ChatMessageId::from_string("assistant-message-delegation");
+    insert_parent_message(&db, conversation_id, &message_id);
+
+    let long_result = json!({
+        "job_id": "job-full-payload",
+        "status": "completed",
+        "content": "x".repeat(2_000),
+        "delegated_status": {
+            "conversation_id": "delegated-conversation",
+            "latest_run": {
+                "agent_run_id": "delegated-run",
+                "logical_model": "gpt-5.4",
+                "logical_effort": "high"
+            }
+        }
+    });
+    let mut delegate = ChatTimelineItem::for_message_block(
+        message_id,
+        conversation_id,
+        0,
+        MessageRole::Orchestrator,
+        ChatTimelineItemKind::ToolUse,
+    );
+    delegate.tool_call_id = Some("call-delegate-wait".to_string());
+    delegate.tool_name = Some("mcp__ralphx__delegate_wait".to_string());
+    delegate.tool_status = Some("completed".to_string());
+    delegate.tool_input_preview = Some(r#"{"job_id":"job-full-payload"}"#.to_string());
+    delegate.input_json = delegate.tool_input_preview.clone();
+    delegate.tool_result_preview = Some("truncated-preview".to_string());
+    delegate.result_json = Some(long_result.to_string());
+
+    timeline_repo
+        .upsert_item(delegate)
+        .await
+        .expect("insert delegation timeline item");
+
+    let page = timeline_repo
+        .get_page(&conversation_id, 10, None)
+        .await
+        .expect("timeline page");
+    let hydrated = page.items.first().expect("delegation item");
+    let hydrated_result: serde_json::Value = serde_json::from_str(
+        hydrated
+            .result_json
+            .as_deref()
+            .expect("delegation result should be fully hydrated"),
+    )
+    .expect("delegation result json");
+
+    assert_eq!(hydrated_result["job_id"], "job-full-payload");
+    assert_eq!(
+        hydrated_result["delegated_status"]["latest_run"]["agent_run_id"],
+        "delegated-run"
+    );
+    assert_eq!(
+        hydrated_result["content"].as_str().map(str::len),
+        Some(2_000)
+    );
 }
 
 #[tokio::test]

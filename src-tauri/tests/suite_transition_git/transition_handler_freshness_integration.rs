@@ -5,7 +5,7 @@
 // orchestration function behaves correctly for the most important scenarios:
 //
 //   1. Fresh task branch passes silently (timestamp updated, no conflict)
-//   2. Stale + conflicting task branch routes to Merging
+//   2. Stale + conflicting task branch routes to a dedicated branch update
 //   3. Config disabled skips all git operations
 //   4. Fresh branch updates last_freshness_check_at timestamp
 //   5. Skip window prevents recheck when called twice within the window
@@ -15,12 +15,12 @@
 // sequential scenarios using mocked and real repos. These integration tests
 // focus on verifiable end-to-end git interaction patterns.
 
+use crate::support::real_git_repo::{setup_real_git_repo, RealGitRepo};
 use ralphx_lib::domain::entities::{Project, ProjectId, Task};
 use ralphx_lib::domain::state_machine::transition_handler::freshness::{
     ensure_branches_fresh, FreshnessAction, FreshnessMetadata,
 };
 use ralphx_lib::infrastructure::agents::claude::ReconciliationConfig;
-use crate::support::real_git_repo::{setup_real_git_repo, RealGitRepo};
 
 // ==================
 // Local helpers
@@ -172,14 +172,14 @@ async fn test_fresh_task_branch_passes_silently() {
 }
 
 // ==================
-// Integration test 2: Stale + conflicting task branch routes to Merging
+// Integration test 2: Stale + conflicting task branch routes to a dedicated branch update
 // ==================
 
 /// When the task branch and main have diverging changes on the same file,
-/// ensure_branches_fresh must return Err(RouteToMerging) with the correct
+/// ensure_branches_fresh must return Err(RouteToBranchUpdate) with the correct
 /// conflict_type and updated freshness metadata.
 #[tokio::test]
-async fn test_stale_task_branch_routes_to_merging() {
+async fn test_stale_task_branch_routes_to_branch_update() {
     let repo = setup_conflicting_git_repo();
     let project = make_project(&repo.path_string());
     let task = make_task_with_branch_and_meta(&repo.task_branch, None);
@@ -200,7 +200,7 @@ async fn test_stale_task_branch_routes_to_merging() {
     .await;
 
     match result {
-        Err(FreshnessAction::RouteToMerging {
+        Err(FreshnessAction::RouteToBranchUpdate {
             conflict_type,
             freshness_metadata,
             ..
@@ -232,7 +232,7 @@ async fn test_stale_task_branch_routes_to_merging() {
             );
         }
         other => panic!(
-            "Expected Err(RouteToMerging(source_update)), got: {:?}",
+            "Expected Err(RouteToBranchUpdate(source_update)), got: {:?}",
             other
         ),
     }

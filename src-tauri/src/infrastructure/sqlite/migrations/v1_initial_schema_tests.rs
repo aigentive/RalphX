@@ -582,6 +582,15 @@ fn test_review_settings_has_defaults() {
         )
         .unwrap();
     assert_eq!(require_workspace_review, 1);
+
+    let autofix_workspace_review_blocking_findings: i64 = conn
+        .query_row(
+            "SELECT autofix_workspace_review_blocking_findings FROM review_settings WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(autofix_workspace_review_blocking_findings, 1);
 }
 
 #[test]

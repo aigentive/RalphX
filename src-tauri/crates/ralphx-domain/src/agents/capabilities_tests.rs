@@ -33,7 +33,18 @@ fn test_claude_code_capabilities() {
     assert!(caps.supports_streaming);
     assert!(caps.supports_mcp);
     assert_eq!(caps.max_context_tokens, 1_000_000);
-    assert_eq!(caps.models.len(), 4);
+    assert_eq!(caps.models.len(), 7);
+    for (model_id, name) in [
+        ("claude-opus-4-7", "Claude Opus 4.7"),
+        ("claude-opus-4-8", "Claude Opus 4.8"),
+        ("claude-opus-5", "Claude Opus 5"),
+    ] {
+        let model = caps
+            .get_model(model_id)
+            .expect("pinned Opus model should be advertised");
+        assert_eq!(model.name, name);
+        assert_eq!(model.max_tokens, 1_000_000);
+    }
 }
 
 #[test]
@@ -55,6 +66,9 @@ fn test_codex_capabilities_include_current_model_family() {
     assert_eq!(caps.client_type, ClientType::Codex);
     assert_eq!(caps.max_context_tokens, 1_000_000);
     assert_eq!(caps.default_model().unwrap().id, "gpt-5.5");
+    assert!(model_ids.contains(&"gpt-5.6-sol"));
+    assert!(model_ids.contains(&"gpt-5.6-terra"));
+    assert!(model_ids.contains(&"gpt-5.6-luna"));
     assert!(model_ids.contains(&"gpt-5.5"));
     assert!(model_ids.contains(&"gpt-5.4"));
     assert!(model_ids.contains(&"gpt-5.4-mini"));
@@ -68,6 +82,9 @@ fn test_has_model_true() {
     assert!(caps.has_model("claude-sonnet-4-6"));
     assert!(caps.has_model("claude-sonnet-5"));
     assert!(caps.has_model("claude-opus-4-5-20251101"));
+    assert!(caps.has_model("claude-opus-4-7"));
+    assert!(caps.has_model("claude-opus-4-8"));
+    assert!(caps.has_model("claude-opus-5"));
 }
 
 #[test]
@@ -111,6 +128,9 @@ fn test_claude_models_have_correct_ids() {
     assert!(model_ids.contains(&"claude-sonnet-4-6"));
     assert!(model_ids.contains(&"claude-sonnet-5"));
     assert!(model_ids.contains(&"claude-opus-4-5-20251101"));
+    assert!(model_ids.contains(&"claude-opus-4-7"));
+    assert!(model_ids.contains(&"claude-opus-4-8"));
+    assert!(model_ids.contains(&"claude-opus-5"));
     assert!(model_ids.contains(&"claude-haiku-4-5-20251001"));
 }
 

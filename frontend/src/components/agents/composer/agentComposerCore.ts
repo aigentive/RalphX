@@ -68,6 +68,7 @@ export interface AgentComposerArtifactReference {
 }
 
 const TOKEN_BOUNDARY_PATTERN = /\s/;
+const ATLASSIAN_URL_PATTERN = /https:\/\/[^\s<>"'`]+/gi;
 
 export function detectAgentComposerTrigger(
   text: string,
@@ -86,54 +87,62 @@ export function detectAgentComposerTrigger(
     };
   }
 
-  const integrationTrigger = detectIntegrationTriggerInLine(
+  const lineIntegrationTrigger = detectIntegrationTriggerInLine(
     linePrefix,
     lineStart,
     safeCursor,
   );
-  if (integrationTrigger) {
-    return integrationTrigger;
+  if (lineIntegrationTrigger) {
+    return lineIntegrationTrigger;
   }
 
   const tokenStart = findCurrentTokenStart(text, safeCursor);
   const token = text.slice(tokenStart, safeCursor);
+  if (token.startsWith("/")) {
+    const query = token.slice(1);
+    if (query.includes("/") || query.includes("@") || query.includes("$")) {
+      return null;
+    }
+    return {
+      kind: "skill",
+      query,
+      rangeStart: tokenStart,
+      rangeEnd: safeCursor,
+    };
+  }
+
   const pathIndex = token.lastIndexOf("@");
-  const skillIndex = token.lastIndexOf("$");
-  const triggerIndex = Math.max(pathIndex, skillIndex);
-  if (triggerIndex < 0) {
+  if (pathIndex < 0) {
     return null;
   }
 
-  const marker = token[triggerIndex];
-  const rangeStart = tokenStart + triggerIndex;
+  const rangeStart = tokenStart + pathIndex;
   const query = text.slice(rangeStart + 1, safeCursor);
   if (query.includes("@") || query.includes("$")) {
     return null;
   }
-  if (marker === "@") {
-    const planTrigger = parsePlanTriggerQuery(query);
-    if (planTrigger) {
-      return {
-        kind: "plan",
-        query: planTrigger.query,
-        rangeStart,
-        rangeEnd: safeCursor,
-      };
-    }
-    const integrationTrigger = parseIntegrationTriggerQuery(query);
-    if (integrationTrigger) {
-      return {
-        kind: "integration",
-        query: integrationTrigger.query,
-        integrationKind: integrationTrigger.kind,
-        rangeStart,
-        rangeEnd: safeCursor,
-      };
-    }
+  const planTrigger = parsePlanTriggerQuery(query);
+  if (planTrigger) {
+    return {
+      kind: "plan",
+      query: planTrigger.query,
+      rangeStart,
+      rangeEnd: safeCursor,
+    };
+  }
+  const integrationTrigger = parseIntegrationTriggerQuery(query);
+  if (integrationTrigger) {
+    return {
+      kind: "integration",
+      query: integrationTrigger.query,
+      integrationKind: integrationTrigger.kind,
+      rangeStart,
+      rangeEnd: safeCursor,
+    };
   }
 
   return {
-    kind: marker === "@" ? "path" : "skill",
+    kind: "path",
     query,
     rangeStart,
     rangeEnd: safeCursor,
@@ -157,9 +166,11 @@ export function replaceAgentComposerTrigger(
   };
 }
 
-export function extractComposerSkillTokens(text: string): string[] {
+export function extractComposerSlashSkillTokens(text: string): string[] {
   const names = new Set<string>();
-  for (const match of text.matchAll(/\$([a-zA-Z0-9][a-zA-Z0-9_:-]*)/g)) {
+  for (const match of text.matchAll(
+    /(?:^|\s)\/([a-zA-Z0-9][a-zA-Z0-9_:-]*)(?=$|[\s),.;:!?])/g,
+  )) {
     const name = match[1];
     if (name) {
       names.add(name);
@@ -249,6 +260,41 @@ export function extractComposerArtifactTokens(
     });
   }
   return [...references.values()];
+}
+
+export function extractPastedAtlassianResourceUrls(text: string): string[] {
+  const urls = new Set<string>();
+  for (const match of text.matchAll(ATLASSIAN_URL_PATTERN)) {
+    const rawUrl = match[0].replace(/[),.;:!?]+$/g, "");
+    let parsed: URL;
+    try {
+      parsed = new URL(rawUrl);
+    } catch {
+      continue;
+    }
+    if (
+      parsed.protocol !== "https:" ||
+      !isPlausibleAtlassianResourcePath(parsed.pathname)
+    ) {
+      continue;
+    }
+    urls.add(rawUrl);
+  }
+  return [...urls];
+}
+
+export function removeResolvedAtlassianResourceUrls(
+  text: string,
+  urls: readonly string[],
+): string {
+  let nextText = text;
+  for (const url of [...urls].sort((a, b) => b.length - a.length)) {
+    if (!url) {
+      continue;
+    }
+    nextText = nextText.split(url).join("");
+  }
+  return nextText.replace(/[ \t]{2,}/g, " ");
 }
 
 export function appendInternalSkillDirectives(
@@ -433,6 +479,15 @@ function isIntegrationReferenceToken(token: string): boolean {
 
 function isPlanReferenceToken(token: string): boolean {
   return /^plan:/i.test(token);
+}
+
+function isPlausibleAtlassianResourcePath(pathname: string): boolean {
+  return (
+    pathname.includes("/browse/") ||
+    pathname.includes("/issues/") ||
+    pathname === "/wiki" ||
+    pathname.startsWith("/wiki/")
+  );
 }
 
 function detectIntegrationTriggerInLine(

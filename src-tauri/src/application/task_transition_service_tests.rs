@@ -1,11 +1,11 @@
-// Tests for TauriEventEmitter enrichment — build_enriched_payload helper.
+// Tests for EnrichedEventEmitter enrichment — build_enriched_payload helper.
 // Acceptance criteria 4 and 5 for the foundation step:
 //   - build_enriched_payload returns Some(...) with all presentation fields when lookups succeed
 //   - build_enriched_payload returns None when task lookup fails
 
 use std::sync::Arc;
 
-use crate::application::task_transition_service::TauriEventEmitter;
+use crate::application::task_transition_service::EnrichedEventEmitter;
 use crate::domain::entities::{IdeationSessionBuilder, IdeationSessionId, Task, TaskId};
 use crate::domain::repositories::{
     ExternalEventsRepository, IdeationSessionRepository, ProjectRepository, TaskRepository,
@@ -19,13 +19,13 @@ mod enrichment_tests {
     use super::*;
     use crate::domain::entities::Project;
 
-    /// Build a TauriEventEmitter backed by the given in-memory repos.
+    /// Build a EnrichedEventEmitter backed by the given in-memory repos.
     fn make_emitter(
         task_repo: Arc<dyn TaskRepository>,
         project_repo: Arc<dyn ProjectRepository>,
         session_repo: Arc<dyn IdeationSessionRepository>,
-    ) -> TauriEventEmitter<tauri::Wry> {
-        TauriEventEmitter::new(None).with_external_events(
+    ) -> EnrichedEventEmitter {
+        EnrichedEventEmitter::new(None).with_external_events(
             Arc::new(MemoryExternalEventsRepository::new()) as Arc<dyn ExternalEventsRepository>,
             task_repo,
             project_repo,
@@ -37,9 +37,8 @@ mod enrichment_tests {
         task_repo: Arc<dyn TaskRepository>,
         project_repo: Arc<dyn ProjectRepository>,
         session_repo: Arc<dyn IdeationSessionRepository>,
-    ) -> TauriEventEmitter<tauri::Wry> {
-        TauriEventEmitter::new(None)
-            .with_enrichment_repos(task_repo, project_repo, session_repo)
+    ) -> EnrichedEventEmitter {
+        EnrichedEventEmitter::new(None).with_enrichment_repos(task_repo, project_repo, session_repo)
     }
 
     #[tokio::test]

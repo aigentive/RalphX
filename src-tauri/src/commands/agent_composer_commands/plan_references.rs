@@ -1,10 +1,10 @@
-use rusqlite::OptionalExtension;
 use tauri::State;
 
 use super::types::{
     AgentComposerPlanReferenceResponse, SearchAgentComposerPlanReferencesInput,
     SearchAgentComposerPlanReferencesResponse,
 };
+use crate::application::agent_plan_context::{lookup_plan_approval, plan_reference_status};
 use crate::application::AppState;
 use crate::domain::entities::{
     ArtifactId, IdeationSession, IdeationSessionFlow, IdeationSessionStatus, ProjectId,
@@ -61,13 +61,32 @@ pub async fn search_agent_composer_plan_references(
         };
 
         let approval = if session.session_flow == IdeationSessionFlow::Planning {
-            lookup_plan_approval(
-                &state,
-                session.id.as_str(),
-                artifact.id.as_str(),
-                artifact.metadata.version,
-            )
-            .await?
+            if let Some(bundle) = session.plan_artifact_bundle() {
+                let blueprint = if let Some(blueprint_id) = bundle.blueprint_id.as_ref() {
+                    let latest_blueprint_id = state
+                        .artifact_repo
+                        .resolve_latest_artifact_id(blueprint_id)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    state
+                        .artifact_repo
+                        .get_by_id(&latest_blueprint_id)
+                        .await
+                        .map_err(|error| error.to_string())?
+                        .ok_or_else(|| {
+                            format!(
+                                "Current plan blueprint artifact not found: {}",
+                                latest_blueprint_id.as_str()
+                            )
+                        })
+                        .map(Some)?
+                } else {
+                    None
+                };
+                lookup_plan_approval(&state, &session.id, &artifact, blueprint.as_ref()).await?
+            } else {
+                None
+            }
         } else {
             None
         };
@@ -132,66 +151,10 @@ struct ScoredPlanReference {
     response: AgentComposerPlanReferenceResponse,
 }
 
-pub(crate) struct PlanApprovalLookup {
-    pub(crate) approved_artifact_id: String,
-    pub(crate) approved_version: i64,
-    pub(crate) approved_at: Option<String>,
-}
-
 pub(crate) fn session_can_reference_plan(session: &IdeationSession) -> bool {
     session.session_purpose != SessionPurpose::Verification
         && session.status != IdeationSessionStatus::Archived
         && (session.plan_artifact_id.is_some() || session.inherited_plan_artifact_id.is_some())
-}
-
-pub(crate) fn plan_reference_status(
-    session: &IdeationSession,
-    approval: Option<&PlanApprovalLookup>,
-) -> String {
-    if session.status == IdeationSessionStatus::Accepted {
-        return "accepted".to_string();
-    }
-    if approval.is_some() {
-        return "approved".to_string();
-    }
-    "draft".to_string()
-}
-
-async fn lookup_plan_approval(
-    state: &AppState,
-    session_id: &str,
-    artifact_id: &str,
-    artifact_version: u32,
-) -> Result<Option<PlanApprovalLookup>, String> {
-    let session_id = session_id.to_string();
-    let artifact_id = artifact_id.to_string();
-    let approval = state
-        .db
-        .run(move |conn| {
-            let row = conn
-                .query_row(
-                    "SELECT artifact_id, artifact_version, approved_at
-                     FROM plan_artifact_approvals
-                     WHERE session_id = ?1 AND status = 'approved'",
-                    [session_id.as_str()],
-                    |row| {
-                        Ok(PlanApprovalLookup {
-                            approved_artifact_id: row.get(0)?,
-                            approved_version: row.get(1)?,
-                            approved_at: row.get(2)?,
-                        })
-                    },
-                )
-                .optional()?;
-            Ok(row)
-        })
-        .await
-        .map_err(|error| error.to_string())?;
-
-    Ok(approval.filter(|row| {
-        row.approved_artifact_id == artifact_id
-            && row.approved_version == i64::from(artifact_version)
-    }))
 }
 
 pub(crate) fn score_reference(

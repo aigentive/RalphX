@@ -6,14 +6,15 @@
 use crate::domain::services::github_service::{PrMergeStateStatus, PrMergeableState, PrStatus};
 use crate::error::AppError;
 use crate::infrastructure::services::gh_cli_github_service::{
-    parse_check_run_annotations_output, parse_check_runs_output,
+    parse_branch_check_conclusions, parse_check_run_annotations_output, parse_check_runs_output,
     parse_code_scanning_alert_annotations_output, parse_gh_auth_status_lines,
-    parse_issue_create_plain_output, parse_pr_annotation_head_sha_output, parse_pr_create_output,
-    parse_pr_create_plain_output, parse_pr_detail_output, parse_pr_health_output,
-    parse_pr_review_comment_annotations_output, parse_pr_review_decision_output,
-    parse_pr_review_feedback_output, parse_pr_review_thread_output, parse_pr_search_output,
-    parse_pr_status_output, parse_pr_sync_state_output, parse_submit_pr_review_output,
-    sanitize_stderr_line, scrub_token_urls, CheckRunAnnotationSource,
+    parse_issue_create_plain_output, parse_pr_annotation_head_sha_output,
+    parse_pr_auto_merge_state_output, parse_pr_create_output, parse_pr_create_plain_output,
+    parse_pr_detail_output, parse_pr_health_output, parse_pr_review_comment_annotations_output,
+    parse_pr_review_decision_output, parse_pr_review_feedback_output,
+    parse_pr_review_thread_output, parse_pr_search_output, parse_pr_status_output,
+    parse_pr_sync_state_output, parse_submit_pr_review_output, sanitize_stderr_line,
+    scrub_token_urls, CheckRunAnnotationSource,
 };
 
 // ── parse_pr_create_output ─────────────────────────────────────────────────
@@ -97,6 +98,8 @@ fn parse_pr_search_output_returns_base_picker_fields() {
             "headRefOid": "abc123",
             "baseRefName": "main",
             "isDraft": true,
+            "state": "MERGED",
+            "mergedAt": "2026-05-21T10:00:00Z",
             "updatedAt": "2026-05-20T10:00:00Z",
             "author": {"login": "dev"},
             "assignees": [{"login": "ops"}, {"login": "qa"}],
@@ -122,12 +125,38 @@ fn parse_pr_search_output_returns_base_picker_fields() {
     assert_eq!(result.head_ref_oid.as_deref(), Some("abc123"));
     assert_eq!(result.base_ref_name, "main");
     assert!(result.is_draft);
+    assert_eq!(result.state.as_deref(), Some("MERGED"));
+    assert_eq!(result.merged_at.as_deref(), Some("2026-05-21T10:00:00Z"));
     assert_eq!(result.author_login.as_deref(), Some("dev"));
     assert_eq!(result.assignee_logins, vec!["ops", "qa"]);
     assert_eq!(result.review_decision.as_deref(), Some("CHANGES_REQUESTED"));
     assert_eq!(result.latest_review_author_logins, vec!["dev", "reviewer"]);
     assert_eq!(result.review_request_logins, vec!["lazabogdan", "platform"]);
     assert!(!result.is_cross_repository);
+}
+
+#[test]
+fn parse_pr_search_output_preserves_all_states_and_absent_state() {
+    let json = r#"[
+        {"number":1,"title":"Open","url":"https://example.test/1","headRefName":"open","baseRefName":"main","state":"OPEN","mergedAt":null},
+        {"number":2,"title":"Merged","url":"https://example.test/2","headRefName":"merged","baseRefName":"main","state":"MERGED","mergedAt":"2026-08-01T10:00:00Z"},
+        {"number":3,"title":"Closed","url":"https://example.test/3","headRefName":"closed","baseRefName":"main","state":"CLOSED","mergedAt":null},
+        {"number":4,"title":"Legacy","url":"https://example.test/4","headRefName":"legacy","baseRefName":"main"}
+    ]"#;
+
+    let results = parse_pr_search_output(json).expect("all PR states should parse");
+
+    assert_eq!(results[0].state.as_deref(), Some("OPEN"));
+    assert_eq!(results[0].merged_at, None);
+    assert_eq!(results[1].state.as_deref(), Some("MERGED"));
+    assert_eq!(
+        results[1].merged_at.as_deref(),
+        Some("2026-08-01T10:00:00Z")
+    );
+    assert_eq!(results[2].state.as_deref(), Some("CLOSED"));
+    assert_eq!(results[2].merged_at, None);
+    assert_eq!(results[3].state, None);
+    assert_eq!(results[3].merged_at, None);
 }
 
 #[test]
@@ -162,7 +191,8 @@ fn parse_pr_status_merged_with_sha() {
     assert_eq!(
         status,
         PrStatus::Merged {
-            merge_commit_sha: Some("abc123def456".to_string())
+            merge_commit_sha: Some("abc123def456".to_string()),
+            merged_at: Some("2024-01-15T12:00:00Z".to_string()),
         }
     );
 }
@@ -174,7 +204,8 @@ fn parse_pr_status_merged_without_sha() {
     assert_eq!(
         status,
         PrStatus::Merged {
-            merge_commit_sha: None
+            merge_commit_sha: None,
+            merged_at: Some("2024-01-15T12:00:00Z".to_string()),
         }
     );
 }
@@ -240,6 +271,7 @@ fn parse_pr_detail_maps_merged_state_with_commit() {
         "isDraft": false,
         "headRefName": "feature",
         "baseRefName": "main",
+        "mergedAt": "2024-02-01T08:30:00Z",
         "mergeCommit": {"oid": "abc123"}
     }"#;
 
@@ -248,7 +280,8 @@ fn parse_pr_detail_maps_merged_state_with_commit() {
     assert_eq!(
         detail.state,
         PrStatus::Merged {
-            merge_commit_sha: Some("abc123".to_string())
+            merge_commit_sha: Some("abc123".to_string()),
+            merged_at: Some("2024-02-01T08:30:00Z".to_string()),
         }
     );
     // Empty body collapses to None; absent author stays None (never panics).
@@ -440,6 +473,37 @@ fn parse_pr_health_collects_rollup_comments_and_auto_merge() {
     );
     assert_eq!(health.issue_comments.len(), 1);
     assert!(health.issue_comments[0].is_codecov);
+}
+
+#[test]
+fn parse_pr_auto_merge_state_reads_only_the_auto_merge_request() {
+    let state = parse_pr_auto_merge_state_output(
+        r#"{
+            "autoMergeRequest": {
+                "mergeMethod": "SQUASH",
+                "enabledBy": {"login": "maintainer"}
+            }
+        }"#,
+    )
+    .expect("auto-merge response should parse");
+
+    assert_eq!(
+        state,
+        Some(
+            crate::domain::services::github_service::PrAutoMergeRequest {
+                enabled_by: Some("maintainer".to_string()),
+                merge_method: Some("squash".to_string()),
+            }
+        )
+    );
+}
+
+#[test]
+fn parse_pr_auto_merge_state_returns_none_for_missing_request() {
+    let state = parse_pr_auto_merge_state_output(r#"{"autoMergeRequest": null}"#)
+        .expect("null auto-merge request should parse");
+
+    assert_eq!(state, None);
 }
 
 #[test]
@@ -932,21 +996,74 @@ fn parse_gh_auth_status_empty_returns_none() {
     assert!(account.is_none());
 }
 
+// ── parse_branch_check_conclusions ─────────────────────────────────────────
+
+#[test]
+fn parse_branch_check_conclusions_keeps_only_the_newest_completed_run_per_check() {
+    // `gh run list` returns newest first, so the first completed entry per name wins and later
+    // rows for the same workflow are historical noise.
+    let json = r#"[
+        {"name": "CI", "status": "completed", "conclusion": "failure", "url": "https://github.com/o/r/actions/runs/2"},
+        {"name": "CI", "status": "completed", "conclusion": "success", "url": "https://github.com/o/r/actions/runs/1"}
+    ]"#;
+
+    let checks = parse_branch_check_conclusions(json);
+
+    assert_eq!(checks.len(), 1);
+    assert_eq!(checks[0].name, "CI");
+    assert_eq!(checks[0].status.as_deref(), Some("completed"));
+    assert_eq!(checks[0].conclusion.as_deref(), Some("failure"));
+    assert_eq!(
+        checks[0].details_url.as_deref(),
+        Some("https://github.com/o/r/actions/runs/2")
+    );
+}
+
+#[test]
+fn parse_branch_check_conclusions_skips_in_progress_and_unnamed_runs() {
+    // An in-progress run proves nothing about the base yet, and a run with no resolvable name
+    // cannot be compared against the PR's checks.
+    let json = r#"[
+        {"name": "Flaky", "status": "in_progress", "conclusion": null},
+        {"name": "   ", "workflowName": "", "status": "completed", "conclusion": "success"},
+        {"workflowName": "Lint", "status": "completed", "conclusion": "success", "url": "https://github.com/o/r/actions/runs/9"}
+    ]"#;
+
+    let checks = parse_branch_check_conclusions(json);
+
+    assert_eq!(checks.len(), 1);
+    assert_eq!(checks[0].name, "Lint");
+    assert_eq!(checks[0].conclusion.as_deref(), Some("success"));
+}
+
+#[test]
+fn parse_branch_check_conclusions_returns_empty_for_unparseable_output() {
+    assert!(parse_branch_check_conclusions("not json").is_empty());
+    // A completed run without a conclusion still reports the check so callers can see it is not
+    // a pass; only unusable output collapses to empty.
+    assert!(parse_branch_check_conclusions("{}").is_empty());
+}
+
 // ── MockGithubService round-trip ───────────────────────────────────────────
 
 mod mock_roundtrip {
+    use std::collections::BTreeMap;
     use std::path::Path;
     use std::sync::{Arc, Mutex};
 
     use async_trait::async_trait;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    use tracing_subscriber::Layer;
 
     use crate::domain::services::github_service::{
-        GithubConnectionStatus, GithubServiceTrait, PrMergeStateStatus, PrMergeableState,
-        PrReviewSubmissionEvent, PrStatus,
+        GithubConnectionDiagnostic, GithubConnectionState, GithubConnectionStatus,
+        GithubServiceTrait, PrMergeStateStatus, PrMergeableState, PrReviewSubmissionEvent,
+        PrStatus,
     };
     use crate::error::AppError;
     use crate::infrastructure::services::gh_cli_github_service::{
-        GhAuthStatusRaw, GhCliCommandRunner, GhCliGithubService,
+        GhCliCommandRunner, GhCliGithubService,
     };
     use crate::tests::mock_github_service::MockGithubService;
     use crate::AppResult;
@@ -956,7 +1073,7 @@ mod mock_roundtrip {
         gh_results: Mutex<Vec<AppResult<Vec<String>>>>,
         gh_calls: Mutex<Vec<Vec<String>>>,
         git_calls: Mutex<Vec<Vec<String>>>,
-        auth_status: Mutex<Option<GhAuthStatusRaw>>,
+        connection_status: Mutex<Option<GithubConnectionStatus>>,
         auth_status_calls: Mutex<u32>,
     }
 
@@ -968,15 +1085,74 @@ mod mock_roundtrip {
             }
         }
 
-        fn with_auth_status(raw: GhAuthStatusRaw) -> Self {
+        fn with_connection_status(status: GithubConnectionStatus) -> Self {
             Self {
-                auth_status: Mutex::new(Some(raw)),
+                connection_status: Mutex::new(Some(status)),
                 ..Default::default()
             }
         }
 
         fn gh_calls(&self) -> Vec<Vec<String>> {
             self.gh_calls.lock().unwrap().clone()
+        }
+
+        fn git_calls(&self) -> Vec<Vec<String>> {
+            self.git_calls.lock().unwrap().clone()
+        }
+    }
+
+    #[derive(Debug, Default, PartialEq, Eq)]
+    struct CapturedPatchLog {
+        fields: BTreeMap<String, String>,
+    }
+
+    struct PatchLogCapture {
+        events: Arc<Mutex<Vec<CapturedPatchLog>>>,
+    }
+
+    impl<S: tracing::Subscriber> Layer<S> for PatchLogCapture {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            struct FieldVisitor(BTreeMap<String, String>);
+
+            impl tracing::field::Visit for FieldVisitor {
+                fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
+                    self.0.insert(field.name().to_string(), value.to_string());
+                }
+
+                fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
+                    self.0.insert(field.name().to_string(), value.to_string());
+                }
+
+                fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                    self.0.insert(field.name().to_string(), value.to_string());
+                }
+
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    self.0.insert(
+                        field.name().to_string(),
+                        format!("{value:?}").trim_matches('"').to_string(),
+                    );
+                }
+            }
+
+            let mut visitor = FieldVisitor(BTreeMap::new());
+            event.record(&mut visitor);
+            if visitor.0.get("message").map(String::as_str)
+                == Some("Patching pull-request metadata")
+            {
+                self.events
+                    .lock()
+                    .unwrap()
+                    .push(CapturedPatchLog { fields: visitor.0 });
+            }
         }
     }
 
@@ -998,25 +1174,21 @@ mod mock_roundtrip {
             Ok(())
         }
 
-        async fn run_gh_auth_status(&self) -> GhAuthStatusRaw {
+        async fn run_gh_connection_probe(&self) -> GithubConnectionStatus {
             *self.auth_status_calls.lock().unwrap() += 1;
-            self.auth_status.lock().unwrap().clone().unwrap_or_default()
+            self.connection_status
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or_else(GithubConnectionStatus::cli_unavailable)
         }
     }
 
     #[tokio::test]
     async fn fetch_github_connection_status_installed_authenticated() {
-        let runner = Arc::new(MockGhCliRunner::with_auth_status(GhAuthStatusRaw {
-            gh_installed: true,
-            output_lines: vec![
-                "github.com".to_string(),
-                "  ✓ Logged in to github.com account adriandemian (keyring)".to_string(),
-                "  - Active account: true".to_string(),
-                "  - Token: gho_************".to_string(),
-                "  ✓ Logged in to github.com account otheruser (keyring)".to_string(),
-                "  - Active account: false".to_string(),
-            ],
-        }));
+        let runner = Arc::new(MockGhCliRunner::with_connection_status(
+            GithubConnectionStatus::authenticated("github.com", "adriandemian"),
+        ));
         let service = GhCliGithubService::with_runner(runner.clone());
 
         let status = service.fetch_github_connection_status().await.unwrap();
@@ -1024,6 +1196,8 @@ mod mock_roundtrip {
         assert_eq!(
             status,
             GithubConnectionStatus {
+                state: GithubConnectionState::Authenticated,
+                diagnostic: None,
                 gh_installed: true,
                 authenticated: true,
                 host: Some("github.com".to_string()),
@@ -1035,13 +1209,9 @@ mod mock_roundtrip {
 
     #[tokio::test]
     async fn fetch_github_connection_status_installed_unauthenticated() {
-        let runner = Arc::new(MockGhCliRunner::with_auth_status(GhAuthStatusRaw {
-            gh_installed: true,
-            output_lines: vec![
-                "You are not logged into any GitHub hosts. Run gh auth login to authenticate."
-                    .to_string(),
-            ],
-        }));
+        let runner = Arc::new(MockGhCliRunner::with_connection_status(
+            GithubConnectionStatus::unauthenticated(),
+        ));
         let service = GhCliGithubService::with_runner(runner.clone());
 
         let status = service.fetch_github_connection_status().await.unwrap();
@@ -1049,6 +1219,8 @@ mod mock_roundtrip {
         assert_eq!(
             status,
             GithubConnectionStatus {
+                state: GithubConnectionState::Unauthenticated,
+                diagnostic: Some(GithubConnectionDiagnostic::MissingCredentials),
                 gh_installed: true,
                 authenticated: false,
                 host: None,
@@ -1059,16 +1231,74 @@ mod mock_roundtrip {
 
     #[tokio::test]
     async fn fetch_github_connection_status_missing_binary() {
-        let runner = Arc::new(MockGhCliRunner::with_auth_status(GhAuthStatusRaw {
-            gh_installed: false,
-            output_lines: Vec::new(),
-        }));
+        let runner = Arc::new(MockGhCliRunner::with_connection_status(
+            GithubConnectionStatus::cli_unavailable(),
+        ));
         let service = GhCliGithubService::with_runner(runner.clone());
 
         let status = service.fetch_github_connection_status().await.unwrap();
 
         assert_eq!(status, GithubConnectionStatus::unavailable());
         assert!(!status.gh_installed);
+        assert_eq!(status.state, GithubConnectionState::CliUnavailable);
+        assert_eq!(
+            status.diagnostic,
+            Some(GithubConnectionDiagnostic::CliLaunch)
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_github_connection_status_preserves_provider_unavailable() {
+        let runner = Arc::new(MockGhCliRunner::with_connection_status(
+            GithubConnectionStatus::provider_unavailable(GithubConnectionDiagnostic::Http5xx),
+        ));
+        let service = GhCliGithubService::with_runner(runner);
+
+        let status = service.fetch_github_connection_status().await.unwrap();
+
+        assert_eq!(status.state, GithubConnectionState::ProviderUnavailable);
+        assert_eq!(status.diagnostic, Some(GithubConnectionDiagnostic::Http5xx));
+        assert!(status.gh_installed);
+        assert!(!status.authenticated);
+    }
+
+    #[test]
+    fn github_connection_status_helpers_separate_repair_from_transient_states() {
+        let cases = [
+            (
+                GithubConnectionStatus::authenticated("github.com", "octo"),
+                false,
+                true,
+            ),
+            (GithubConnectionStatus::unauthenticated(), true, false),
+            (GithubConnectionStatus::credential_rejected(), true, true),
+            (
+                GithubConnectionStatus::provider_unavailable(GithubConnectionDiagnostic::Network),
+                false,
+                true,
+            ),
+            (GithubConnectionStatus::cli_unavailable(), false, false),
+            (
+                GithubConnectionStatus::probe_failed(GithubConnectionDiagnostic::Timeout),
+                false,
+                false,
+            ),
+        ];
+
+        for (status, requires_repair, has_local_credential) in cases {
+            assert_eq!(
+                status.requires_credential_repair(),
+                requires_repair,
+                "{:?} repair classification drifted",
+                status.state
+            );
+            assert_eq!(
+                status.has_local_credential(),
+                has_local_credential,
+                "{:?} local credential classification drifted",
+                status.state
+            );
+        }
     }
 
     #[tokio::test]
@@ -1201,6 +1431,7 @@ mod mock_roundtrip {
         let mock = MockGithubService::new();
         mock.will_return_status(PrStatus::Merged {
             merge_commit_sha: Some("deadbeef".to_string()),
+            merged_at: None,
         });
 
         let status = mock.check_pr_status(Path::new("/tmp"), 42).await.unwrap();
@@ -1208,7 +1439,8 @@ mod mock_roundtrip {
         assert_eq!(
             status,
             PrStatus::Merged {
-                merge_commit_sha: Some("deadbeef".to_string())
+                merge_commit_sha: Some("deadbeef".to_string()),
+                merged_at: None,
             }
         );
         assert_eq!(mock.state().check_pr_status_calls, 1);
@@ -1249,6 +1481,63 @@ mod mock_roundtrip {
         assert_eq!(
             s.last_delete_remote_branch_name.as_deref(),
             Some("feat/foo")
+        );
+    }
+
+    #[tokio::test]
+    async fn exact_force_with_lease_push_uses_a_fully_qualified_ref_and_expected_oid() {
+        let runner = Arc::new(MockGhCliRunner::default());
+        let service = GhCliGithubService::with_runner(runner.clone());
+        let expected_oid = "a".repeat(40);
+
+        service
+            .push_branch_with_expected_remote_oid_lease(
+                Path::new("/tmp"),
+                "refs/heads/ralphx/project/workspace",
+                &expected_oid,
+            )
+            .await
+            .expect("exact lease push should reach git");
+
+        assert_eq!(
+            runner.git_calls(),
+            vec![vec![
+                "push".to_string(),
+                "origin".to_string(),
+                format!("--force-with-lease=refs/heads/ralphx/project/workspace:{expected_oid}"),
+                "refs/heads/ralphx/project/workspace:refs/heads/ralphx/project/workspace"
+                    .to_string(),
+            ]]
+        );
+    }
+
+    #[tokio::test]
+    async fn exact_force_with_lease_push_rejects_non_local_refs_and_invalid_expected_oids() {
+        let runner = Arc::new(MockGhCliRunner::default());
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        let foreign_ref = service
+            .push_branch_with_expected_remote_oid_lease(
+                Path::new("/tmp"),
+                "refs/tags/v1.0.0",
+                &"a".repeat(40),
+            )
+            .await
+            .expect_err("non-branch ref must be rejected before git mutation");
+        assert!(foreign_ref.to_string().contains("local branch ref"));
+
+        let invalid_oid = service
+            .push_branch_with_expected_remote_oid_lease(
+                Path::new("/tmp"),
+                "refs/heads/ralphx/project/workspace",
+                "not-an-oid",
+            )
+            .await
+            .expect_err("invalid expected OID must be rejected before git mutation");
+        assert!(invalid_oid.to_string().contains("expected remote OID"));
+        assert!(
+            runner.git_calls().is_empty(),
+            "invalid exact-lease requests must not invoke git"
         );
     }
 
@@ -1384,6 +1673,185 @@ mod mock_roundtrip {
     }
 
     #[tokio::test]
+    async fn patch_pr_metadata_uses_only_requested_gh_flags() {
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![
+            Ok(Vec::new()),
+            Ok(Vec::new()),
+        ]));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        service
+            .patch_pr_metadata(Path::new("/tmp"), 68, Some("Updated title"), None)
+            .await
+            .unwrap();
+        service
+            .patch_pr_metadata(Path::new("/tmp"), 68, None, Some(Path::new("/tmp/body.md")))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            runner.gh_calls(),
+            vec![
+                vec!["pr", "edit", "68", "--title", "Updated title"],
+                vec!["pr", "edit", "68", "--body-file", "/tmp/body.md"],
+            ]
+            .into_iter()
+            .map(|args| args.into_iter().map(str::to_string).collect::<Vec<_>>())
+            .collect::<Vec<_>>(),
+        );
+    }
+
+    #[tokio::test]
+    async fn patch_pr_metadata_rejects_empty_patch_before_running_gh() {
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(Vec::new()));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        let error = service
+            .patch_pr_metadata(Path::new("/tmp"), 68, None, None)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, AppError::Validation(_)));
+        assert!(runner.gh_calls().is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn patch_pr_metadata_logs_only_sanitized_attempt_boundary_fields() {
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![Err(
+            AppError::Infrastructure("gh stderr: token=super-secret".to_string()),
+        )]));
+        let service = GhCliGithubService::with_runner(runner);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::registry()
+            .with(tracing_subscriber::filter::LevelFilter::DEBUG)
+            .with(PatchLogCapture {
+                events: Arc::clone(&events),
+            });
+        let _guard = subscriber.set_default();
+
+        let error = service
+            .patch_pr_metadata(
+                Path::new("/tmp"),
+                68,
+                Some("Sensitive title"),
+                Some(Path::new("/tmp/secret-body.md")),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, AppError::Infrastructure(_)));
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        for event in events.iter() {
+            assert!(event.fields.keys().all(|field| {
+                matches!(
+                    field.as_str(),
+                    "message" | "pr_number" | "has_title" | "has_body_file" | "result_class"
+                )
+            }));
+            assert_eq!(
+                event.fields.get("pr_number").map(String::as_str),
+                Some("68")
+            );
+            assert_eq!(
+                event.fields.get("has_title").map(String::as_str),
+                Some("true")
+            );
+            assert_eq!(
+                event.fields.get("has_body_file").map(String::as_str),
+                Some("true")
+            );
+            assert!(matches!(
+                event.fields.get("result_class").map(String::as_str),
+                Some("attempt" | "error")
+            ));
+            assert!(!event.fields.values().any(|value| {
+                value.contains("Sensitive title")
+                    || value.contains("secret-body")
+                    || value.contains("super-secret")
+            }));
+        }
+    }
+
+    #[tokio::test]
+    async fn mock_patch_pr_metadata_uses_queued_results_before_single_result_fallback() {
+        let mock = MockGithubService::new();
+        mock.queue_patch_pr_metadata_result(Err(AppError::Infrastructure(
+            "ambiguous patch outcome".to_string(),
+        )));
+        mock.queue_patch_pr_metadata_result(Ok(()));
+        mock.state().patch_pr_metadata_result = Some(Err(AppError::Infrastructure(
+            "fallback patch failure".to_string(),
+        )));
+
+        let first = mock
+            .patch_pr_metadata(Path::new("/tmp"), 68, Some("one"), None)
+            .await
+            .unwrap_err();
+        mock.patch_pr_metadata(Path::new("/tmp"), 68, Some("two"), None)
+            .await
+            .unwrap();
+        let third = mock
+            .patch_pr_metadata(Path::new("/tmp"), 68, Some("three"), None)
+            .await
+            .unwrap_err();
+
+        assert!(first.to_string().contains("ambiguous patch outcome"));
+        assert!(third.to_string().contains("fallback patch failure"));
+        assert_eq!(mock.state().patch_pr_metadata_calls, 3);
+    }
+
+    #[tokio::test]
+    async fn list_branch_check_conclusions_reads_the_branch_tip_run_list() {
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![Ok(vec![r#"[
+            {"name": "CI", "status": "completed", "conclusion": "failure", "url": "https://github.com/o/r/actions/runs/2"}
+        ]"#
+        .to_string()])]));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        let checks = service
+            .list_branch_check_conclusions(Path::new("/tmp"), "  main  ")
+            .await
+            .unwrap()
+            .expect("a readable branch reports its checks");
+
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].name, "CI");
+        assert_eq!(checks[0].conclusion.as_deref(), Some("failure"));
+        assert_eq!(
+            runner.gh_calls(),
+            vec![vec![
+                "run",
+                "list",
+                "--branch",
+                "main",
+                "--limit",
+                "40",
+                "--json",
+                "name,workflowName,status,conclusion,url,headSha",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()]
+        );
+    }
+
+    #[tokio::test]
+    async fn list_branch_check_conclusions_reports_unknown_without_a_branch() {
+        // An empty ref cannot be read, and "unknown" must never be spelled as an empty check list
+        // that a caller could mistake for a healthy base.
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(Vec::new()));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        assert!(service
+            .list_branch_check_conclusions(Path::new("/tmp"), "   ")
+            .await
+            .unwrap()
+            .is_none());
+        assert!(runner.gh_calls().is_empty());
+    }
+
+    #[tokio::test]
     async fn update_pr_base_uses_gh_pr_edit_with_base() {
         let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![Ok(Vec::new())]));
         let service = GhCliGithubService::with_runner(runner.clone());
@@ -1464,6 +1932,39 @@ mod mock_roundtrip {
                 "20",
                 "--json",
                 "number,url,state,isDraft,headRefName,updatedAt",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()]
+        );
+    }
+
+    #[tokio::test]
+    async fn search_pull_requests_uses_all_state_lookup_with_state_fields() {
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![Ok(vec![
+            "[]".to_string()
+        ])]));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        let results = service
+            .search_pull_requests(Path::new("/tmp"), Some(" base picker "), 30)
+            .await
+            .unwrap();
+
+        assert!(results.is_empty());
+        assert_eq!(
+            runner.gh_calls(),
+            vec![vec![
+                "pr",
+                "list",
+                "--state",
+                "all",
+                "--limit",
+                "30",
+                "--json",
+                "number,title,url,headRefName,headRefOid,baseRefName,isDraft,state,mergedAt,updatedAt,author,assignees,reviewDecision,latestReviews,reviewRequests,isCrossRepository",
+                "--search",
+                "base picker",
             ]
             .into_iter()
             .map(str::to_string)
@@ -1687,6 +2188,40 @@ mod mock_roundtrip {
             .into_iter()
             .map(str::to_string)
             .collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_pr_auto_merge_state_uses_narrow_pr_view_request() {
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![Ok(vec![r#"{
+                "autoMergeRequest": {
+                    "mergeMethod": "REBASE",
+                    "enabledBy": {"login": "maintainer"}
+                }
+            }"#
+        .to_string()])]));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        let state = service
+            .fetch_pr_auto_merge_state(Path::new("/tmp"), 68)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            state,
+            Some(
+                crate::domain::services::github_service::PrAutoMergeRequest {
+                    enabled_by: Some("maintainer".to_string()),
+                    merge_method: Some("rebase".to_string()),
+                }
+            )
+        );
+        assert_eq!(
+            runner.gh_calls(),
+            vec![vec!["pr", "view", "68", "--json", "autoMergeRequest"]
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>()]
         );
     }
 

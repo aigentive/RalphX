@@ -1,11 +1,25 @@
 // Tests for update_plan_from_main — ensures plan branches are brought up-to-date
 // from main before task→plan merges to prevent false validation failures.
 
+use super::super::freshness::observe_plan_freshness;
 use super::super::merge_coordination::{
     update_plan_from_main, update_plan_from_main_isolated, PlanUpdateResult,
 };
 use super::helpers::*;
 use crate::domain::entities::Project;
+
+fn resolve_test_ref(repo: &std::path::Path, reference: &str) -> String {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--verify", reference])
+        .current_dir(repo)
+        .output()
+        .expect("run git rev-parse");
+    assert!(output.status.success(), "git rev-parse should succeed");
+    String::from_utf8(output.stdout)
+        .expect("git ref sha should be utf-8")
+        .trim()
+        .to_string()
+}
 
 /// Helper: create a real git repo with main, a plan branch (from main), and then
 /// add a commit to main (simulating fixes committed after plan branch was created).
@@ -93,31 +107,22 @@ async fn update_plan_already_up_to_date() {
 }
 
 #[tokio::test]
-async fn update_plan_behind_main_gets_updated() {
+async fn non_pr_freshness_observation_reports_stale_without_mutating_plan() {
     let (repo, plan_branch) = setup_plan_behind_main();
-    let project = make_test_project(&repo.path_string());
+    let mut project = make_test_project(&repo.path_string());
+    project.github_pr_enabled = false;
 
+    let before = resolve_test_ref(repo.path(), &plan_branch);
     let result =
-        update_plan_from_main(repo.path(), &plan_branch, "main", &project, "task-3", None).await;
+        observe_plan_freshness(repo.path(), &plan_branch, "main", &project, "task-3", None).await;
 
     assert!(
-        matches!(result, PlanUpdateResult::Updated),
-        "Plan branch behind main should be Updated. Got: {:?}",
+        matches!(result, PlanUpdateResult::Conflicts { .. }),
+        "Plan branch behind main should require a dedicated update. Got: {:?}",
         result
     );
-
-    // Verify: main's fix commit should now be on the plan branch
-    let log_output = std::process::Command::new("git")
-        .args(["log", "--oneline", &plan_branch])
-        .current_dir(repo.path())
-        .output()
-        .expect("git log");
-    let log_str = String::from_utf8_lossy(&log_output.stdout);
-    assert!(
-        log_str.contains("clippy"),
-        "Plan branch should now contain the clippy fix commit from main. Log:\n{}",
-        log_str,
-    );
+    let after = resolve_test_ref(repo.path(), &plan_branch);
+    assert_eq!(before, after, "freshness observation must be read-only");
 }
 
 #[tokio::test]

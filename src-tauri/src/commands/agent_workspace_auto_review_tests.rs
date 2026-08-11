@@ -25,8 +25,8 @@ use crate::commands::ExecutionState;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
     AgentRun, AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor,
-    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome, ArtifactId, ChatContextType,
-    ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind, Project,
+    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome, ArtifactId, AutomationRunId,
+    ChatContextType, ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind, Project,
 };
 use crate::domain::review::ReviewSettings;
 use crate::domain::services::running_agent_registry::RunningAgentKey;
@@ -219,6 +219,10 @@ fn skip_reason_codes_are_stable() {
             "no_reviewable_changes",
         ),
         (AutoReviewSkipReason::GateNotRequired, "gate_not_required"),
+        (
+            AutoReviewSkipReason::WorkspaceAutomationOff,
+            "workspace_automation_off",
+        ),
         (AutoReviewSkipReason::AlreadyReviewing, "already_reviewing"),
         (AutoReviewSkipReason::BlockingFindings, "blocking_findings"),
         (AutoReviewSkipReason::ReviewFailed, "review_failed"),
@@ -269,7 +273,7 @@ fn interactive_slot_key_uses_project_context() {
 #[test]
 fn completion_event_listener_ignores_invalid_and_non_project_payloads() {
     let app = test_app(AppState::new_test());
-    install_agent_workspace_auto_review_listeners(&app);
+    install_agent_workspace_auto_review_listeners(app.handle().clone());
 
     app.emit(AGENT_RUN_COMPLETED, "not-json")
         .expect("invalid payload event should emit");
@@ -422,6 +426,52 @@ async fn auto_review_start_action_starts_first_review_for_dirty_workspace_withou
 }
 
 #[tokio::test]
+async fn review_automation_start_honors_enabled_workspace_override_when_globals_are_off() {
+    let (_temp, repo, base_sha) = init_repo();
+    commit_workspace_delta(&repo);
+    let state = AppState::new_test();
+    let execution_state = ExecutionState::new();
+    let project = seed_project(&state, &repo).await;
+    let mut workspace = workspace(&project, &repo, Some(base_sha));
+    workspace.review_automation_override = Some(true);
+    seed_workspace_conversation(&state, &workspace).await;
+    state
+        .review_settings_repo
+        .update_settings(&ReviewSettings {
+            require_workspace_review: false,
+            ..ReviewSettings::default()
+        })
+        .await
+        .expect("review settings should update");
+
+    assert_eq!(
+        resolve_auto_review_start_action(&state, &execution_state, &workspace)
+            .await
+            .expect("auto-review action should resolve"),
+        AutoReviewStartAction::Start
+    );
+}
+
+#[tokio::test]
+async fn review_automation_start_reports_explicit_workspace_opt_out() {
+    let (_temp, repo, base_sha) = init_repo();
+    commit_workspace_delta(&repo);
+    let state = AppState::new_test();
+    let execution_state = ExecutionState::new();
+    let project = seed_project(&state, &repo).await;
+    let mut workspace = workspace(&project, &repo, Some(base_sha));
+    workspace.review_automation_override = Some(false);
+    seed_workspace_conversation(&state, &workspace).await;
+
+    assert_eq!(
+        resolve_auto_review_start_action(&state, &execution_state, &workspace)
+            .await
+            .expect("auto-review action should resolve"),
+        AutoReviewStartAction::Skip(AutoReviewSkipReason::WorkspaceAutomationOff)
+    );
+}
+
+#[tokio::test]
 async fn auto_review_start_action_starts_when_existing_review_is_outdated() {
     let (_temp, repo, base_sha) = init_repo();
     commit_workspace_delta(&repo);
@@ -459,6 +509,70 @@ async fn auto_review_start_action_starts_when_existing_review_is_outdated() {
         .expect("auto-review action should resolve");
 
     assert_eq!(action, AutoReviewStartAction::Start);
+}
+
+#[tokio::test]
+async fn auto_review_skips_plan_workspace_without_spawning_review() {
+    let (_temp, repo, base_sha) = init_repo();
+    add_all_workspace_delta_sources(&repo);
+    let state = AppState::new_test();
+    let execution_state = ExecutionState::new();
+    let project = seed_project(&state, &repo).await;
+    let mut workspace = workspace(&project, &repo, Some(base_sha));
+    workspace.mode = AgentConversationWorkspaceMode::Plan;
+    let mut conversation = ChatConversation::new_project(workspace.project_id.clone());
+    conversation.id = workspace.conversation_id.clone();
+    conversation.agent_mode = Some(AgentConversationWorkspaceMode::Plan);
+    conversation.automation_run_id = Some(AutomationRunId::from_string("run-1"));
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("automation conversation should persist");
+
+    let decision = maybe_start_auto_review(&state, &execution_state, &workspace)
+        .await
+        .expect("auto-review should resolve");
+
+    assert_eq!(
+        decision,
+        AutoReviewDecision::Skipped(AutoReviewSkipReason::NotReviewableMode)
+    );
+    let monitor = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("workspace monitor lookup should succeed");
+    assert!(
+        monitor.is_none(),
+        "PLAN turn completion must not create a review monitor"
+    );
+}
+
+#[tokio::test]
+async fn auto_review_skips_ordinary_plan_workspace_before_conversation_lookup() {
+    let (_temp, repo, base_sha) = init_repo();
+    add_all_workspace_delta_sources(&repo);
+    let state = AppState::new_test();
+    let execution_state = ExecutionState::new();
+    let project = seed_project(&state, &repo).await;
+    let mut workspace = workspace(&project, &repo, Some(base_sha));
+    workspace.mode = AgentConversationWorkspaceMode::Plan;
+
+    let action = resolve_auto_review_start_action(&state, &execution_state, &workspace)
+        .await
+        .expect("PLAN mode should produce a normal skip decision");
+
+    assert_eq!(
+        action,
+        AutoReviewStartAction::Skip(AutoReviewSkipReason::NotReviewableMode)
+    );
+    assert!(state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .is_none());
 }
 
 #[test]

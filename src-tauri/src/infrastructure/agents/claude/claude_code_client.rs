@@ -19,16 +19,16 @@ use tokio::process::Child;
 use tokio::sync::Mutex;
 
 use crate::domain::agents::{
-    AgentConfig, AgentError, AgentHandle, AgentOutput, AgentResponse, AgentResult, AgentRole,
-    AgenticClient, ClientCapabilities, ClientType, ResponseChunk,
+    AgentConfig, AgentError, AgentHandle, AgentOutput, AgentResponse, AgentResult, AgenticClient,
+    ClientCapabilities, ClientType, ResponseChunk,
 };
 
+use super::spawn_args::shared_streaming_cli_args;
 use super::{
     append_claude_permission_args, apply_common_spawn_env,
-    build_spawnable_command_with_mcp_runtime_context_and_profile, claude_runtime_config,
-    create_mcp_config, ensure_claude_spawn_allowed, find_claude_cli, get_allowed_tools,
-    get_effective_settings, get_preapproved_tools, normalize_claude_effort_for_cli_path,
-    sanitize_claude_user_state, validate_claude_model_for_cli_path, SpawnableCommand,
+    build_spawnable_command_with_mcp_runtime_context_and_profile, create_mcp_config,
+    ensure_claude_spawn_allowed, find_claude_cli, get_allowed_tools, get_effective_settings,
+    get_preapproved_tools, validate_claude_model_for_cli_path, SpawnableCommand,
 };
 
 #[cfg(test)]
@@ -80,202 +80,6 @@ pub struct StreamingSpawnResult {
 }
 
 // ============================================================================
-// Teammate Interactive Spawn Types
-// ============================================================================
-
-/// RalphX session/project context propagated from lead agent to teammates.
-///
-/// Carried as env vars (RALPHX_CONTEXT_ID, RALPHX_CONTEXT_TYPE, RALPHX_PROJECT_ID)
-/// so teammates can filter MCP tools and resolve project-scoped resources.
-///
-/// **Not** the same as `parent_session_id` (the lead's Claude Code session ID
-/// for team registry/messaging). Using a separate struct prevents accidentally
-/// passing `context_id` where `parent_session_id` is expected.
-#[derive(Debug, Clone, Default)]
-pub struct TeammateContext {
-    /// RalphX session ID (e.g., ideation session UUID or task ID)
-    pub context_id: String,
-    /// Context type (e.g., "ideation", "task_execution")
-    pub context_type: String,
-    /// Project ID for project-scoped resources
-    pub project_id: Option<String>,
-}
-
-/// Configuration for spawning a team teammate in interactive mode (no `-p` flag).
-///
-/// Unlike `AgentConfig` (print mode), teammates are long-lived interactive sessions
-/// that receive messages via Claude Code's native SendMessage tool. The process stays
-/// alive until a shutdown_request is received.
-///
-/// # Construction
-///
-/// Use `new(name, team_name, prompt)` for required fields, then builder methods:
-/// - `.with_parent_session_id()` — **required** for team messaging
-/// - `.with_context()` — RalphX session context (env vars)
-/// - `.with_model()`, `.with_tools()`, etc. — optional overrides
-#[derive(Debug, Clone)]
-pub struct TeammateSpawnConfig {
-    /// Teammate name (e.g., "transport-researcher")
-    pub name: String,
-    /// Team name (e.g., "ideation-abc123")
-    pub team_name: String,
-    /// Lead agent's Claude Code session ID for team registry/messaging.
-    /// Set via `with_parent_session_id()` — NOT the RalphX context_id.
-    pub parent_session_id: String,
-    /// Lead-generated role prompt (passed via --append-system-prompt)
-    pub prompt: String,
-    /// Model to use (within model ceiling, e.g. "sonnet")
-    pub model: String,
-    /// Approved CLI tools (e.g. ["Read", "Grep", "Glob"])
-    pub tools: Vec<String>,
-    /// Approved MCP tools (short names; will be prefixed with mcp__ralphx__)
-    pub mcp_tools: Vec<String>,
-    /// Agent color for terminal distinction (e.g. "blue", "green")
-    pub color: String,
-    /// Working directory for the teammate process
-    pub working_directory: PathBuf,
-    /// Plugin directory path for MCP server and agent discovery
-    pub plugin_dir: Option<PathBuf>,
-    /// Claude Code agent type controlling built-in tool set (default: "general-purpose")
-    pub agent_type: String,
-    /// MCP agent type for tool filtering (default: "ideation-team-member")
-    pub mcp_agent_type: String,
-    /// Additional environment variables
-    pub env: HashMap<String, String>,
-    /// Optional print-mode prompt. When set, teammate uses `-p <prompt>` (one-shot)
-    /// instead of interactive `--append-system-prompt` mode. Used for auto-spawning
-    /// teammates detected from the lead's stream.
-    pub print_mode_prompt: Option<String>,
-    /// RalphX session/project context (propagated as env vars to teammates)
-    pub context: TeammateContext,
-    /// Effort level override (e.g. "max"). Falls back to global default_effort when None.
-    pub effort: Option<String>,
-}
-
-impl TeammateSpawnConfig {
-    /// Create a new teammate config with team identity and prompt.
-    ///
-    /// Use builder methods for remaining required/optional fields:
-    /// - `.with_parent_session_id()` — lead's Claude Code session ID (required)
-    /// - `.with_context()` — RalphX session/project context
-    pub fn new(
-        name: impl Into<String>,
-        team_name: impl Into<String>,
-        prompt: impl Into<String>,
-    ) -> Self {
-        Self {
-            name: name.into(),
-            team_name: team_name.into(),
-            parent_session_id: String::new(),
-            prompt: prompt.into(),
-            model: "sonnet".to_string(),
-            tools: Vec::new(),
-            mcp_tools: Vec::new(),
-            color: "blue".to_string(),
-            working_directory: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-            plugin_dir: Some(PathBuf::from("./plugins/app")),
-            agent_type: "general-purpose".to_string(),
-            mcp_agent_type: "ideation-team-member".to_string(),
-            env: HashMap::new(),
-            print_mode_prompt: None,
-            context: TeammateContext::default(),
-            effort: None,
-        }
-    }
-
-    /// Set the lead agent's Claude Code session ID for team messaging.
-    ///
-    /// This is the lead's actual Claude Code session ID (from the team config file
-    /// at `~/.claude/teams/{team}/config.json` → `leadSessionId`), NOT the RalphX
-    /// context_id. Teammates need this to join the team registry and receive messages.
-    pub fn with_parent_session_id(mut self, session_id: impl Into<String>) -> Self {
-        self.parent_session_id = session_id.into();
-        self
-    }
-
-    /// Set the RalphX session/project context (propagated as env vars).
-    pub fn with_context(mut self, context: TeammateContext) -> Self {
-        self.context = context;
-        self
-    }
-
-    /// Set the model.
-    pub fn with_model(mut self, model: impl Into<String>) -> Self {
-        self.model = model.into();
-        self
-    }
-
-    /// Set the CLI tools.
-    pub fn with_tools(mut self, tools: Vec<String>) -> Self {
-        self.tools = tools;
-        self
-    }
-
-    /// Set the MCP tools.
-    pub fn with_mcp_tools(mut self, mcp_tools: Vec<String>) -> Self {
-        self.mcp_tools = mcp_tools;
-        self
-    }
-
-    /// Set the agent color.
-    pub fn with_color(mut self, color: impl Into<String>) -> Self {
-        self.color = color.into();
-        self
-    }
-
-    /// Set the working directory.
-    pub fn with_working_dir(mut self, path: impl Into<PathBuf>) -> Self {
-        self.working_directory = path.into();
-        self
-    }
-
-    /// Set the plugin directory.
-    pub fn with_plugin_dir(mut self, path: impl Into<PathBuf>) -> Self {
-        self.plugin_dir = Some(path.into());
-        self
-    }
-
-    /// Set the Claude Code agent type (controls built-in tool set).
-    pub fn with_agent_type(mut self, agent_type: impl Into<String>) -> Self {
-        self.agent_type = agent_type.into();
-        self
-    }
-
-    /// Set the MCP agent type (controls MCP-side tool filtering).
-    pub fn with_mcp_agent_type(mut self, mcp_agent_type: impl Into<String>) -> Self {
-        self.mcp_agent_type = mcp_agent_type.into();
-        self
-    }
-
-    /// Add an environment variable.
-    pub fn with_env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.env.insert(key.into(), value.into());
-        self
-    }
-
-    /// Set print-mode prompt for one-shot `-p` execution (auto-spawn mode).
-    pub fn with_print_mode_prompt(mut self, prompt: impl Into<String>) -> Self {
-        self.print_mode_prompt = Some(prompt.into());
-        self
-    }
-
-    pub fn with_effort(mut self, effort: impl Into<String>) -> Self {
-        self.effort = Some(effort.into());
-        self
-    }
-}
-
-/// Result from spawning a teammate in interactive mode.
-#[derive(Debug)]
-pub struct TeammateSpawnResult {
-    /// Handle to the spawned teammate
-    pub handle: AgentHandle,
-    /// The spawned child process (stdout piped for stream processing)
-    pub child: Child,
-    /// Stdin pipe for sending messages to the teammate
-    pub stdin: tokio::process::ChildStdin,
-}
-
 lazy_static! {
     /// Global tracker for spawned child processes with their start time
     static ref PROCESSES: Mutex<HashMap<String, (Child, Instant)>> = Mutex::new(HashMap::new());
@@ -425,6 +229,7 @@ impl ClaudeCodeClient {
                 &config.prompt,
                 config.agent.as_deref(),
                 None,
+                None,
                 resume_session_id,
                 &config.working_directory,
                 false,
@@ -440,6 +245,7 @@ impl ClaudeCodeClient {
                     plugin_dir,
                     &config.prompt,
                     config.agent.as_deref(),
+                    None,
                     None,
                     resume_session_id,
                     &config.working_directory,
@@ -458,6 +264,7 @@ impl ClaudeCodeClient {
                     &config.prompt,
                     config.agent.as_deref(),
                     None,
+                    None,
                     resume_session_id,
                     &config.working_directory,
                     false,
@@ -471,6 +278,11 @@ impl ClaudeCodeClient {
         if let Some(max_tokens) = config.max_tokens {
             spawnable.arg("--max-tokens");
             spawnable.arg(&max_tokens.to_string());
+        }
+        let disallowed_tools = config.mcp_launch_policy.claude_disallowed_tools();
+        if !disallowed_tools.is_empty() {
+            spawnable.arg("--disallowedTools");
+            spawnable.arg(&disallowed_tools.join(","));
         }
 
         Ok(spawnable)
@@ -641,7 +453,6 @@ impl ClaudeCodeClient {
         resume_session_id: Option<&str>,
         interactive: bool,
     ) -> Result<Vec<String>, String> {
-        sanitize_claude_user_state();
         let cli_path = self.cli_path_for_config(config);
         let mut args = Vec::new();
 
@@ -650,31 +461,17 @@ impl ClaudeCodeClient {
             args.extend(["-p".to_string(), config.prompt.clone()]);
         }
 
-        // Output format for streaming
-        args.extend(["--output-format".to_string(), "stream-json".to_string()]);
-        args.push("--verbose".to_string()); // Required for stream-json with -p
-        if let Some(sources) = &claude_runtime_config().setting_sources {
-            if !sources.is_empty() {
-                args.extend(["--setting-sources".to_string(), sources.join(",")]);
-            }
-        }
-        // Avoid startup parser crashes in slash-command/skills loading path.
-        args.push("--disable-slash-commands".to_string());
+        args.extend(shared_streaming_cli_args(cli_path));
 
         // Plugin directory for agent/skill discovery
         if let Some(plugin_dir) = &config.plugin_dir {
             args.extend(["--plugin-dir".to_string(), plugin_dir.display().to_string()]);
 
-            // Create dynamic MCP config for agent-specific tool filtering
-            // Use --strict-mcp-config to ignore user/global MCP servers that can hang
-            // Hard error on invalid config — MCP is critical infra, fail loud.
+            // Add RalphX's dynamic MCP config without suppressing provider-native
+            // user, project, and local MCP configuration layers.
             if let Some(agent) = &config.agent {
                 let temp_path = create_mcp_config(plugin_dir, agent, false)?;
-                args.extend([
-                    "--mcp-config".to_string(),
-                    temp_path.display().to_string(),
-                    "--strict-mcp-config".to_string(),
-                ]);
+                args.extend(["--mcp-config".to_string(), temp_path.display().to_string()]);
             }
         }
 
@@ -736,6 +533,10 @@ impl ClaudeCodeClient {
                 args.push("--allowedTools".to_string());
                 args.push(preapproved);
             }
+        }
+        let disallowed_tools = config.mcp_launch_policy.claude_disallowed_tools();
+        if !disallowed_tools.is_empty() {
+            args.extend(["--disallowedTools".to_string(), disallowed_tools.join(",")]);
         }
 
         Ok(args)
@@ -919,295 +720,6 @@ impl ClaudeCodeClient {
 }
 
 // ============================================================================
-// Teammate Interactive Spawn Support
-// ============================================================================
-
-impl ClaudeCodeClient {
-    /// Build CLI arguments for an interactive teammate spawn.
-    ///
-    /// Key differences from `build_cli_args`:
-    /// - **No `-p` flag** — teammates are interactive sessions
-    /// - **Team CLI flags** — `--agent-id`, `--agent-name`, `--team-name`, etc.
-    /// - **`--append-system-prompt`** — lead-generated role prompt
-    /// - **`--dangerously-skip-permissions`** — automated teammates skip prompts
-    pub fn build_teammate_cli_args(
-        &self,
-        config: &TeammateSpawnConfig,
-    ) -> Result<Vec<String>, String> {
-        sanitize_claude_user_state();
-        let mut args = Vec::new();
-
-        // Output format for streaming (same as other modes)
-        args.extend(["--output-format".to_string(), "stream-json".to_string()]);
-        args.push("--verbose".to_string());
-
-        // Setting sources from runtime config
-        if let Some(sources) = &claude_runtime_config().setting_sources {
-            if !sources.is_empty() {
-                args.extend(["--setting-sources".to_string(), sources.join(",")]);
-            }
-        }
-
-        // Avoid startup parser crashes in slash-command/skills loading path
-        args.push("--disable-slash-commands".to_string());
-
-        // Plugin directory for agent/skill discovery
-        if let Some(plugin_dir) = &config.plugin_dir {
-            args.extend(["--plugin-dir".to_string(), plugin_dir.display().to_string()]);
-
-            // Create dynamic MCP config with MCP agent type for tool filtering
-            // Uses mcp_agent_type (e.g., "ideation-team-member") not the Claude Code agent_type
-            // Hard error on invalid config — MCP is critical infra, fail loud.
-            let temp_path = create_mcp_config(plugin_dir, &config.mcp_agent_type, false)?;
-            args.extend([
-                "--mcp-config".to_string(),
-                temp_path.display().to_string(),
-                "--strict-mcp-config".to_string(),
-            ]);
-        }
-
-        // --- Team-specific CLI flags ---
-        args.extend([
-            "--agent-id".to_string(),
-            format!("{}@{}", config.name, config.team_name),
-        ]);
-        args.extend(["--agent-name".to_string(), config.name.clone()]);
-        args.extend(["--team-name".to_string(), config.team_name.clone()]);
-        args.extend(["--agent-color".to_string(), config.color.clone()]);
-        args.extend([
-            "--parent-session-id".to_string(),
-            config.parent_session_id.clone(),
-        ]);
-        // Claude Code agent type controls built-in tool set (e.g., "general-purpose")
-        args.extend(["--agent-type".to_string(), config.agent_type.clone()]);
-
-        // Model selection (within model ceiling)
-        append_validated_model_args(&mut args, &self.cli_path, &config.model)?;
-
-        // Effort level — explicitly passed by spawner via .with_effort(), or global default
-        let effort = config
-            .effort
-            .clone()
-            .unwrap_or_else(|| claude_runtime_config().default_effort.clone());
-        let normalized_effort = normalize_claude_effort_for_cli_path(&self.cli_path, &effort);
-        if normalized_effort != effort {
-            tracing::warn!(
-                requested_effort = %effort,
-                effective_effort = %normalized_effort,
-                cli_path = %self.cli_path.display(),
-                "Normalized Claude teammate effort for installed CLI capability"
-            );
-        }
-        args.extend(["--effort".to_string(), normalized_effort]);
-
-        // CLI tools restriction
-        if !config.tools.is_empty() {
-            args.extend(["--tools".to_string(), config.tools.join(",")]);
-        }
-
-        // Pre-approved MCP tools (prefixed with mcp__ralphx__)
-        if !config.mcp_tools.is_empty() {
-            let mcp_server_name = &claude_runtime_config().mcp_server_name;
-            let prefixed: Vec<String> = config
-                .mcp_tools
-                .iter()
-                .map(|t| format!("mcp__{mcp_server_name}__{t}"))
-                .collect();
-            args.extend(["--allowedTools".to_string(), prefixed.join(",")]);
-        }
-
-        // Prompt mode: -p is REQUIRED for --output-format stream-json to produce output.
-        // One-shot: -p <prompt> for single-turn teammates.
-        // Interactive: -p - with --input-format stream-json enables print mode so stdout
-        // emits stream-json events. The initial prompt is sent via stdin to activate stdout
-        // output — without it Claude Code waits for stdin and team inbox messages (SendMessage)
-        // don't generate stdout. Subsequent work arrives via the team inbox.
-        if let Some(ref prompt) = config.print_mode_prompt {
-            // One-shot mode: prompt passed directly via -p
-            args.extend(["-p".to_string(), prompt.clone()]);
-        } else {
-            // Interactive mode: -p - enables print mode (required for stream-json output)
-            args.extend([
-                "-p".to_string(),
-                "-".to_string(),
-                "--input-format".to_string(),
-                "stream-json".to_string(),
-            ]);
-        }
-
-        append_claude_permission_args(&mut args, Some(&config.agent_type), None);
-
-        // Optional settings JSON passed to claude CLI via --settings.
-        // Uses agent_type for profile lookup, same as task agents.
-        if let Some(s) = get_effective_settings(Some(&config.agent_type)) {
-            tracing::debug!(agent_type = %config.agent_type, "Resolved settings profile for teammate");
-            if let Ok(json) = serde_json::to_string(s) {
-                args.extend(["--settings".to_string(), json]);
-            }
-        }
-
-        Ok(args)
-    }
-
-    /// Build environment variables for a teammate spawn.
-    ///
-    /// Returns the team-specific env vars that must be set on the process
-    /// in addition to the common spawn env.
-    pub fn build_teammate_env_vars(config: &TeammateSpawnConfig) -> HashMap<String, String> {
-        let mut env = HashMap::new();
-
-        // Team feature flags (required for agent teams)
-        env.insert("CLAUDECODE".to_string(), "1".to_string());
-        env.insert(
-            "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS".to_string(),
-            "1".to_string(),
-        );
-
-        // MCP agent type for tool filtering (also available as env fallback)
-        env.insert(
-            "RALPHX_AGENT_TYPE".to_string(),
-            config.mcp_agent_type.clone(),
-        );
-
-        // Context/project env vars (propagated from lead to teammates for MCP tool filtering)
-        if !config.context.context_id.is_empty() {
-            env.insert(
-                "RALPHX_CONTEXT_ID".to_string(),
-                config.context.context_id.clone(),
-            );
-        }
-        if !config.context.context_type.is_empty() {
-            env.insert(
-                "RALPHX_CONTEXT_TYPE".to_string(),
-                config.context.context_type.clone(),
-            );
-        }
-        if let Some(ref pid) = config.context.project_id {
-            if !pid.is_empty() {
-                env.insert("RALPHX_PROJECT_ID".to_string(), pid.clone());
-            }
-        }
-
-        // Merge in any custom env vars from config
-        for (key, value) in &config.env {
-            env.insert(key.clone(), value.clone());
-        }
-
-        env
-    }
-
-    /// Spawn a teammate in interactive mode for agent team participation.
-    ///
-    /// Unlike `spawn_agent` (print mode with `-p`), this spawns an interactive session:
-    /// - No `-p` flag — the teammate stays alive for multi-turn messaging
-    /// - stdin is piped for message injection
-    /// - Team env vars (`CLAUDECODE=1`, `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`)
-    /// - Team CLI flags (`--agent-id`, `--agent-name`, `--team-name`, etc.)
-    /// - Role prompt via `--append-system-prompt`
-    ///
-    /// The caller is responsible for:
-    /// 1. Writing messages to the returned stdin pipe
-    /// 2. Processing stdout for stream-json events
-    /// 3. Monitoring the process lifecycle
-    /// 4. Sending shutdown_request when done
-    pub async fn spawn_teammate_interactive(
-        &self,
-        config: TeammateSpawnConfig,
-    ) -> AgentResult<TeammateSpawnResult> {
-        if let Err(err) = ensure_claude_spawn_allowed() {
-            return Err(AgentError::SpawnNotAllowed(err));
-        }
-
-        // Check if CLI is available
-        if !self.cli_path.exists() && which::which(&self.cli_path).is_err() {
-            return Err(AgentError::CliNotAvailable(format!(
-                "claude CLI not found at {:?}",
-                self.cli_path
-            )));
-        }
-
-        let args = self
-            .build_teammate_cli_args(&config)
-            .map_err(|e| AgentError::SpawnFailed(e))?;
-        let team_env = Self::build_teammate_env_vars(&config);
-
-        // Build command
-        let mut cmd = tokio::process::Command::new(&self.cli_path);
-        cmd.args(&args)
-            .current_dir(&config.working_directory)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped()) // Piped and drained in background at call site to capture crash messages
-            .stdin(Stdio::piped()); // Piped for message injection (NOT null)
-
-        // Apply common RalphX spawn env vars
-        apply_common_spawn_env(&mut cmd);
-
-        // Plugin root env var
-        if let Some(plugin_dir) = &config.plugin_dir {
-            cmd.env("CLAUDE_PLUGIN_ROOT", plugin_dir);
-        }
-
-        // Team-specific env vars
-        for (key, value) in &team_env {
-            cmd.env(key, value);
-        }
-
-        // Spawn the process
-        tracing::info!(
-            program = %command_log_program(&cmd),
-            arg_count = command_log_arg_count(&cmd),
-            env_keys = ?command_log_env_keys(&cmd),
-            teammate = %config.name,
-            team = %config.team_name,
-            model = %config.model,
-            agent_type = %config.agent_type,
-            parent_session_id = %config.parent_session_id,
-            "[TEAM_SPAWN] Spawning teammate (interactive) with --parent-session-id"
-        );
-
-        let mut child = cmd
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| AgentError::SpawnFailed(e.to_string()))?;
-
-        // Take stdin pipe before returning
-        let mut stdin = child.stdin.take().ok_or_else(|| {
-            AgentError::SpawnFailed("Failed to capture stdin pipe for teammate".to_string())
-        })?;
-
-        // Write initial prompt to stdin to activate print mode output.
-        // With -p - --input-format stream-json, Claude Code waits for the first stdin
-        // message before producing stream-json on stdout. Team inbox messages (SendMessage)
-        // are processed but don't generate stdout output until the first stdin turn activates it.
-        if !config.prompt.is_empty() && config.print_mode_prompt.is_none() {
-            use tokio::io::AsyncWriteExt;
-            let formatted = super::format_stream_json_input(&config.prompt);
-            stdin.write_all(formatted.as_bytes()).await.map_err(|e| {
-                AgentError::SpawnFailed(format!(
-                    "Failed to write initial prompt to teammate stdin: {e}"
-                ))
-            })?;
-            stdin.write_all(b"\n").await.map_err(|e| {
-                AgentError::SpawnFailed(format!("Failed to write newline to teammate stdin: {e}"))
-            })?;
-            stdin.flush().await.map_err(|e| {
-                AgentError::SpawnFailed(format!("Failed to flush teammate stdin: {e}"))
-            })?;
-        }
-
-        let handle = AgentHandle::new(
-            ClientType::ClaudeCode,
-            AgentRole::Custom(format!("teammate:{}", config.name)),
-        );
-
-        Ok(TeammateSpawnResult {
-            handle,
-            child,
-            stdin,
-        })
-    }
-}
-
 #[cfg(test)]
 #[path = "claude_code_client_tests.rs"]
 mod tests;

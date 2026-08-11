@@ -73,7 +73,7 @@ async fn wait_for_pr_detail_updates(mock_github: &MockGithubService, expected: u
 fn build_reconciler(
     app_state: &AppState,
     execution_state: &Arc<ExecutionState>,
-) -> ReconciliationRunner<tauri::Wry> {
+) -> ReconciliationRunner {
     let transition_service = Arc::new(TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
@@ -136,7 +136,7 @@ fn make_pr_plan_branch(
 fn build_transition_service(
     app_state: &AppState,
     execution_state: &Arc<ExecutionState>,
-) -> Arc<TaskTransitionService<tauri::Wry>> {
+) -> Arc<TaskTransitionService> {
     Arc::new(TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
@@ -160,7 +160,7 @@ fn build_pr_transition_service(
     execution_state: &Arc<ExecutionState>,
     plan_branch_repo: Arc<dyn PlanBranchRepository>,
     pr_registry: Arc<PrPollerRegistry>,
-) -> Arc<TaskTransitionService<tauri::Wry>> {
+) -> Arc<TaskTransitionService> {
     TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
@@ -214,6 +214,16 @@ fn setup_plan_git_repo(branch_name: &str, ahead_of_base: bool) -> tempfile::Temp
         .current_dir(path)
         .output()
         .expect("initial commit");
+    std::process::Command::new("git")
+        .args([
+            "remote",
+            "add",
+            "origin",
+            "git@github.com:ralphx/test-repository.git",
+        ])
+        .current_dir(path)
+        .output()
+        .expect("configure GitHub origin");
 
     std::process::Command::new("git")
         .args(["checkout", "-b", branch_name])
@@ -881,10 +891,11 @@ async fn test_startup_recovery_creates_missing_draft_pr_for_active_plan() {
 
     let branch_name = "ralphx/test/startup-create";
     let working_dir = setup_plan_git_repo(branch_name, true);
-    let project = Project::new(
+    let mut project = Project::new(
         "Startup PR Repair".to_string(),
         working_dir.path().to_string_lossy().into_owned(),
     );
+    project.github_pr_enabled = true;
     let project = project_repo.create(project).await.unwrap();
 
     let mut merge_task = Task::new(project.id.clone(), "Merge active plan".to_string());
@@ -1552,10 +1563,11 @@ async fn test_startup_recovery_recovers_duplicate_pr() {
 
     let branch_name = "ralphx/test/duplicate";
     let working_dir = setup_plan_git_repo(branch_name, true);
-    let project = Project::new(
+    let mut project = Project::new(
         "Startup PR Duplicate".to_string(),
         working_dir.path().to_string_lossy().into_owned(),
     );
+    project.github_pr_enabled = true;
     let project = project_repo.create(project).await.unwrap();
 
     let mut merge_task = Task::new(project.id.clone(), "Duplicate merge task".to_string());

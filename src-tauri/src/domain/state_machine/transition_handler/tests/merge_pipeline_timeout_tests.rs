@@ -30,6 +30,14 @@ fn make_services_with_repos(
         Arc::new(MockReviewStarter::new()) as Arc<dyn ReviewStarter>,
         Arc::new(MockChatService::new()) as Arc<dyn ChatService>,
     )
+    .with_branch_update_repo(
+        crate::testing::memory_branch_update_repository_with_task_repository(
+            Arc::clone(&task_repo) as Arc<dyn TaskRepository>,
+        ),
+    )
+    .with_branch_update_workflow(crate::testing::branch_update_workflow(Arc::new(
+        MockChatService::new(),
+    )))
     .with_task_scheduler(Arc::new(MockTaskScheduler::new()) as Arc<dyn TaskScheduler>)
     .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
     .with_project_repo(Arc::clone(&project_repo) as Arc<dyn ProjectRepository>);
@@ -152,7 +160,8 @@ async fn test_stale_index_lock_doesnt_block_merge() {
     task.internal_status = InternalStatus::PendingMerge;
     task.task_branch = Some(git_repo.task_branch.clone());
     // Simulate a retry so Phase 1 GUARD runs cleanup (including stale lock removal)
-    task.metadata = Some(serde_json::json!({"merge_failure_source": "test_prior_failure"}).to_string());
+    task.metadata =
+        Some(serde_json::json!({"merge_failure_source": "test_prior_failure"}).to_string());
     let task_id = task.id.clone();
     task_repo.create(task).await.unwrap();
 
@@ -290,7 +299,10 @@ async fn test_stale_task_worktree_cleaned_before_merge() {
     let project_repo = Arc::new(MemoryProjectRepository::new());
 
     let project_id = ProjectId::from_string("proj-1".to_string());
-    let mut task = Task::new(project_id.clone(), "Stale worktree cleanup test".to_string());
+    let mut task = Task::new(
+        project_id.clone(),
+        "Stale worktree cleanup test".to_string(),
+    );
     task.internal_status = InternalStatus::PendingMerge;
     task.task_branch = Some(git_repo.task_branch.clone());
     task.worktree_path = Some(task_wt_path.to_string_lossy().to_string());

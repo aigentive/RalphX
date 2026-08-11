@@ -53,8 +53,14 @@ fn parse_codex_version_extracts_semver() {
 
 #[test]
 fn parse_codex_cli_capabilities_detects_core_exec_surface() {
-    let capabilities =
-        parse_codex_cli_capabilities(ROOT_HELP, EXEC_HELP, Some("codex-cli 0.116.0"), None, None);
+    let capabilities = parse_codex_cli_capabilities(
+        ROOT_HELP,
+        EXEC_HELP,
+        Some("codex-cli 0.116.0"),
+        None,
+        None,
+        None,
+    );
 
     assert_eq!(capabilities.version.as_deref(), Some("0.116.0"));
     assert!(capabilities.supports_exec_subcommand);
@@ -77,6 +83,7 @@ fn parse_codex_cli_capabilities_reports_missing_json_feature() {
         None,
         None,
         None,
+        None,
     );
 
     assert!(!capabilities.supports_json_output);
@@ -88,8 +95,14 @@ fn parse_codex_cli_capabilities_reports_missing_json_feature() {
 
 #[test]
 fn build_codex_exec_args_maps_lane_settings_to_flags_and_overrides() {
-    let capabilities =
-        parse_codex_cli_capabilities(ROOT_HELP, EXEC_HELP, Some("codex-cli 0.116.0"), None, None);
+    let capabilities = parse_codex_cli_capabilities(
+        ROOT_HELP,
+        EXEC_HELP,
+        Some("codex-cli 0.116.0"),
+        None,
+        None,
+        None,
+    );
     let config = CodexExecCliConfig {
         model: Some("gpt-5.4".to_string()),
         reasoning_effort: Some(LogicalEffort::XHigh),
@@ -102,6 +115,7 @@ fn build_codex_exec_args_maps_lane_settings_to_flags_and_overrides() {
         skip_git_repo_check: true,
         json_output: true,
         search: true,
+        ultra_mode: false,
     };
 
     let args = build_codex_exec_args(&capabilities, &config).expect("args should build");
@@ -126,6 +140,8 @@ fn build_codex_exec_args_maps_lane_settings_to_flags_and_overrides() {
             "-c",
             "model_reasoning_effort=\"xhigh\"",
             "-c",
+            "model_reasoning_summary=\"concise\"",
+            "-c",
             "approval_policy=\"never\"",
         ]
     );
@@ -137,6 +153,7 @@ fn build_codex_exec_args_rejects_missing_config_override_support() {
         &ROOT_HELP.replace("--config", ""),
         &EXEC_HELP.replace("--config", ""),
         Some("codex-cli 0.116.0"),
+        None,
         None,
         None,
     );
@@ -153,8 +170,14 @@ fn build_codex_exec_args_rejects_missing_config_override_support() {
 
 #[test]
 fn build_codex_exec_resume_args_maps_config_to_resume_surface() {
-    let capabilities =
-        parse_codex_cli_capabilities(ROOT_HELP, EXEC_HELP, Some("codex-cli 0.116.0"), None, None);
+    let capabilities = parse_codex_cli_capabilities(
+        ROOT_HELP,
+        EXEC_HELP,
+        Some("codex-cli 0.116.0"),
+        None,
+        None,
+        None,
+    );
     let config = CodexExecCliConfig {
         model: Some("gpt-5.4".to_string()),
         reasoning_effort: Some(LogicalEffort::XHigh),
@@ -185,6 +208,8 @@ fn build_codex_exec_resume_args_maps_config_to_resume_surface() {
             "-c",
             "model_reasoning_effort=\"xhigh\"",
             "-c",
+            "model_reasoning_summary=\"concise\"",
+            "-c",
             "approval_policy=\"never\"",
             "-c",
             "sandbox_mode=\"danger-full-access\"",
@@ -194,8 +219,14 @@ fn build_codex_exec_resume_args_maps_config_to_resume_surface() {
 
 #[test]
 fn build_spawnable_codex_exec_command_uses_prompt_arg_transport() {
-    let capabilities =
-        parse_codex_cli_capabilities(ROOT_HELP, EXEC_HELP, Some("codex-cli 0.116.0"), None, None);
+    let capabilities = parse_codex_cli_capabilities(
+        ROOT_HELP,
+        EXEC_HELP,
+        Some("codex-cli 0.116.0"),
+        None,
+        None,
+        None,
+    );
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let config = CodexExecCliConfig {
         model: Some("gpt-5.4".to_string()),
@@ -224,6 +255,8 @@ fn build_spawnable_codex_exec_command_uses_prompt_arg_transport() {
             "-C".to_string(),
             cwd,
             "-c".to_string(),
+            "model_reasoning_summary=\"concise\"".to_string(),
+            "-c".to_string(),
             "approval_policy=\"never\"".to_string(),
             "--".to_string(),
             "Plan the refactor".to_string(),
@@ -233,8 +266,14 @@ fn build_spawnable_codex_exec_command_uses_prompt_arg_transport() {
 
 #[test]
 fn build_spawnable_codex_resume_command_uses_resume_subcommand_and_prompt_arg() {
-    let capabilities =
-        parse_codex_cli_capabilities(ROOT_HELP, EXEC_HELP, Some("codex-cli 0.116.0"), None, None);
+    let capabilities = parse_codex_cli_capabilities(
+        ROOT_HELP,
+        EXEC_HELP,
+        Some("codex-cli 0.116.0"),
+        None,
+        None,
+        None,
+    );
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let config = CodexExecCliConfig {
         cwd: Some(temp_dir.path().to_path_buf()),
@@ -259,6 +298,8 @@ fn build_spawnable_codex_resume_command_uses_resume_subcommand_and_prompt_arg() 
             "session-123".to_string(),
             "--json".to_string(),
             "-c".to_string(),
+            "model_reasoning_summary=\"concise\"".to_string(),
+            "-c".to_string(),
             "approval_policy=\"never\"".to_string(),
             "-c".to_string(),
             "sandbox_mode=\"danger-full-access\"".to_string(),
@@ -280,8 +321,14 @@ fn build_spawnable_codex_resume_command_uses_resume_subcommand_and_prompt_arg() 
 
 #[test]
 fn build_spawnable_codex_exec_command_logs_prompt_to_artifact_and_redacts_debug_output() {
-    let capabilities =
-        parse_codex_cli_capabilities(ROOT_HELP, EXEC_HELP, Some("codex-cli 0.116.0"), None, None);
+    let capabilities = parse_codex_cli_capabilities(
+        ROOT_HELP,
+        EXEC_HELP,
+        Some("codex-cli 0.116.0"),
+        None,
+        None,
+        None,
+    );
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let config = CodexExecCliConfig {
         cwd: Some(temp_dir.path().to_path_buf()),
@@ -440,6 +487,15 @@ fn build_codex_cli_diagnostics_response_handles_successful_probe() {
         supports_mcp_subcommand: true,
         supports_fast_mode_feature: false,
         fast_mode_supported_models: Vec::new(),
+        ultra_supported_models: Vec::new(),
+        supported_model_aliases: vec!["gpt-5.5".to_string()],
+        supported_efforts: vec![
+            "low".to_string(),
+            "medium".to_string(),
+            "high".to_string(),
+            "xhigh".to_string(),
+        ],
+        model_supported_efforts: std::collections::BTreeMap::new(),
     };
 
     let diagnostics = build_codex_cli_diagnostics_response(

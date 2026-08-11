@@ -3,11 +3,11 @@ use std::sync::Arc;
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
-use tauri::Emitter;
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::application::harness_runtime_registry::resolve_harness_agent_bootstrap;
 use crate::application::AppState;
-use crate::domain::agents::{AgentConfig, AgentRole, DEFAULT_AGENT_HARNESS};
+use crate::domain::agents::{AgentConfig, AgentRole, RoutingRole, DEFAULT_AGENT_HARNESS};
 use crate::domain::entities::{Artifact, ArtifactContent, IdeationSessionId};
 use crate::error::{AppError, AppResult};
 use crate::http_server::types::{
@@ -41,12 +41,92 @@ pub(crate) fn spawn_plan_complexity_assessor_after_approval(
     });
 }
 
+pub(crate) fn spawn_plan_complexity_assessor_from_app_handle(
+    app_handle: AppHandle,
+    session_id: String,
+    artifact_id: String,
+    artifact_version: u32,
+) {
+    tokio::spawn(async move {
+        let state = app_handle.state::<AppState>();
+        if let Err(error) =
+            run_plan_complexity_assessor(&state, &session_id, &artifact_id, artifact_version).await
+        {
+            tracing::warn!(
+                session_id,
+                artifact_id,
+                artifact_version,
+                "Re-enabled plan complexity assessor failed: {}",
+                error
+            );
+        }
+    });
+}
+
+pub(crate) fn list_missing_plan_complexity_assessments_sync(
+    conn: &Connection,
+    limit: usize,
+) -> AppResult<Vec<(String, String, u32)>> {
+    let limit = i64::try_from(limit)
+        .map_err(|_| AppError::Validation("Assessment reconciliation limit is too large".into()))?;
+    let mut statement = conn.prepare(
+        "SELECT session.id, artifact.id, artifact.version
+         FROM ideation_sessions session
+         INNER JOIN artifacts artifact ON artifact.id = session.plan_artifact_id
+         INNER JOIN plan_artifact_approvals approval
+            ON approval.session_id = session.id
+           AND approval.artifact_id = artifact.id
+           AND approval.artifact_version = artifact.version
+           AND approval.blueprint_artifact_id IS session.plan_blueprint_artifact_id
+           AND approval.status = 'approved'
+         INNER JOIN agent_conversation_workspaces workspace
+            ON workspace.linked_ideation_session_id = session.id
+           AND workspace.status = 'active'
+         LEFT JOIN plan_complexity_assessments assessment
+            ON assessment.session_id = session.id
+           AND assessment.artifact_id = artifact.id
+           AND assessment.artifact_version = artifact.version
+           AND assessment.blueprint_artifact_id IS session.plan_blueprint_artifact_id
+         WHERE session.session_flow = 'planning'
+           AND session.status = 'active'
+           AND workspace.task_pipeline_session_id IS NULL
+           AND assessment.id IS NULL
+         GROUP BY session.id, artifact.id, artifact.version, approval.approved_at
+         ORDER BY approval.approved_at ASC
+         LIMIT ?1",
+    )?;
+    let rows = statement
+        .query_map([limit], |row| {
+            let version = row.get::<_, i64>(2)?;
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, version))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    rows.into_iter()
+        .map(|(session_id, artifact_id, version)| {
+            let version = u32::try_from(version)
+                .map_err(|_| AppError::Database("Invalid artifact version".to_string()))?;
+            Ok((session_id, artifact_id, version))
+        })
+        .collect()
+}
+
 async fn run_plan_complexity_assessor(
     state: &AppState,
     session_id: &str,
     artifact_id: &str,
     artifact_version: u32,
 ) -> AppResult<()> {
+    let tasks_enabled = state
+        .ideation_settings_repo
+        .get_settings()
+        .await
+        .map_err(|error| AppError::Database(error.to_string()))?
+        .tasks_enabled;
+    if !tasks_enabled {
+        return Err(AppError::FeatureDisabled(
+            crate::application::tasks_feature_policy::TASKS_DISABLED_MESSAGE.to_string(),
+        ));
+    }
     let session_id_typed = IdeationSessionId::from_string(session_id.to_string());
     let session = state
         .ideation_session_repo
@@ -54,7 +134,10 @@ async fn run_plan_complexity_assessor(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Planning session not found: {session_id}")))?;
 
-    if session.plan_artifact_id.as_ref().map(|id| id.as_str()) != Some(artifact_id) {
+    let bundle = session.plan_artifact_bundle().ok_or_else(|| {
+        AppError::Conflict("Plan bundle is incomplete before complexity assessment".to_string())
+    })?;
+    if bundle.overview_id.as_str() != artifact_id {
         return Err(AppError::Conflict(
             "Plan changed before complexity assessment could start".to_string(),
         ));
@@ -62,12 +145,7 @@ async fn run_plan_complexity_assessor(
 
     let artifact = state
         .artifact_repo
-        .get_by_id(
-            session
-                .plan_artifact_id
-                .as_ref()
-                .expect("checked plan_artifact_id above"),
-        )
+        .get_by_id(&bundle.overview_id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Plan artifact not found: {artifact_id}")))?;
 
@@ -76,6 +154,22 @@ async fn run_plan_complexity_assessor(
             "Plan version changed before complexity assessment could start".to_string(),
         ));
     }
+    let blueprint = if let Some(blueprint_id) = bundle.blueprint_id.as_ref() {
+        Some(
+            state
+                .artifact_repo
+                .get_by_id(blueprint_id)
+                .await?
+                .ok_or_else(|| {
+                    AppError::NotFound(format!(
+                        "Plan blueprint not found: {}",
+                        blueprint_id.as_str()
+                    ))
+                })?,
+        )
+    } else {
+        None
+    };
 
     let project = state
         .project_repo
@@ -83,7 +177,15 @@ async fn run_plan_complexity_assessor(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Project not found: {}", session.project_id)))?;
     let runtime = state
-        .resolve_plan_complexity_runtime_for_session(&session)
+        .resolve_manual_role_background_agent_runtime(
+            Some(project.id.as_str()),
+            Some(std::path::Path::new(&project.working_directory)),
+            RoutingRole::UtilityLightweight,
+            None,
+            agent_names::AGENT_PLAN_COMPLEXITY_ASSESSOR,
+            "plan complexity assessor",
+            None,
+        )
         .await?;
     let harness = runtime.harness.unwrap_or(DEFAULT_AGENT_HARNESS);
     let bootstrap = resolve_harness_agent_bootstrap(
@@ -91,12 +193,13 @@ async fn run_plan_complexity_assessor(
         agent_names::AGENT_PLAN_COMPLEXITY_ASSESSOR,
         PathBuf::from(&project.working_directory),
     );
-    let prompt = build_plan_complexity_assessor_prompt(
+    let prompt = build_plan_complexity_assessor_bundle_prompt(
         session_id,
         artifact_id,
         artifact_version,
         artifact.name.as_str(),
         &artifact,
+        blueprint.as_ref(),
     );
     let client = Arc::clone(&runtime.client);
     let env = runtime.env_with_overrides(bootstrap.env);
@@ -117,6 +220,7 @@ async fn run_plan_complexity_assessor(
             max_tokens: None,
             timeout_secs: Some(ASSESSOR_TIMEOUT_SECS),
             env,
+            mcp_launch_policy: Default::default(),
         })
         .await
         .map_err(|error| {
@@ -142,11 +246,20 @@ pub(crate) fn upsert_plan_complexity_assessment_sync(
     assessed_by: &str,
 ) -> AppResult<PlanComplexityAssessmentResponse> {
     validate_submit_request(&request)?;
+    if !crate::infrastructure::sqlite::sqlite_ideation_settings_repo::get_settings_sync(conn)?
+        .tasks_enabled
+    {
+        return Err(AppError::FeatureDisabled(
+            crate::application::tasks_feature_policy::TASKS_DISABLED_MESSAGE.to_string(),
+        ));
+    }
     let plan = current_planning_plan_sync(conn, &request.session_id)?
         .ok_or_else(|| AppError::Validation("Planning session has no current plan".to_string()))?;
 
     if plan.artifact_id != request.artifact_id
         || plan.artifact_version != i64::from(request.artifact_version)
+        || plan.blueprint_artifact_id != request.blueprint_artifact_id
+        || plan.blueprint_artifact_version != request.blueprint_artifact_version.map(i64::from)
     {
         return Err(AppError::Conflict(
             "Plan changed before complexity assessment was submitted".to_string(),
@@ -167,11 +280,15 @@ pub(crate) fn upsert_plan_complexity_assessment_sync(
         .query_row(
             "SELECT id, created_at
              FROM plan_complexity_assessments
-             WHERE session_id = ?1 AND artifact_id = ?2 AND artifact_version = ?3",
+             WHERE session_id = ?1 AND artifact_id = ?2 AND artifact_version = ?3
+               AND blueprint_artifact_id IS ?4
+               AND blueprint_artifact_version IS ?5",
             params![
                 request.session_id,
                 request.artifact_id,
                 i64::from(request.artifact_version),
+                request.blueprint_artifact_id,
+                request.blueprint_artifact_version.map(i64::from),
             ],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
@@ -181,11 +298,12 @@ pub(crate) fn upsert_plan_complexity_assessment_sync(
 
     conn.execute(
         "INSERT INTO plan_complexity_assessments (
-            id, session_id, artifact_id, artifact_version, level, score,
+            id, session_id, artifact_id, artifact_version,
+            blueprint_artifact_id, blueprint_artifact_version, level, score,
             recommended_action, confidence, reason_summary, signals_json,
             assessed_by, created_at, updated_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
-         ON CONFLICT(session_id, artifact_id, artifact_version) DO UPDATE SET
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+         ON CONFLICT(id) DO UPDATE SET
             level = excluded.level,
             score = excluded.score,
             recommended_action = excluded.recommended_action,
@@ -199,6 +317,8 @@ pub(crate) fn upsert_plan_complexity_assessment_sync(
             request.session_id,
             request.artifact_id,
             i64::from(request.artifact_version),
+            request.blueprint_artifact_id,
+            request.blueprint_artifact_version.map(i64::from),
             request.level,
             i64::from(request.score),
             request.recommended_action,
@@ -211,11 +331,13 @@ pub(crate) fn upsert_plan_complexity_assessment_sync(
         ],
     )?;
 
-    get_plan_complexity_assessment_by_key_sync(
+    get_plan_complexity_assessment_by_bundle_key_sync(
         conn,
         &request.session_id,
         &request.artifact_id,
         request.artifact_version,
+        request.blueprint_artifact_id.as_deref(),
+        request.blueprint_artifact_version,
     )?
     .ok_or_else(|| AppError::Database("Plan complexity assessment was not saved".to_string()))
 }
@@ -228,12 +350,17 @@ pub(crate) fn get_current_plan_complexity_assessment_sync(
         return Ok(None);
     };
 
-    get_plan_complexity_assessment_by_key_sync(
+    get_plan_complexity_assessment_by_bundle_key_sync(
         conn,
         session_id,
         &plan.artifact_id,
         u32::try_from(plan.artifact_version)
             .map_err(|_| AppError::Database("Invalid artifact version".to_string()))?,
+        plan.blueprint_artifact_id.as_deref(),
+        plan.blueprint_artifact_version
+            .map(u32::try_from)
+            .transpose()
+            .map_err(|_| AppError::Database("Invalid blueprint version".to_string()))?,
     )
 }
 
@@ -288,6 +415,8 @@ fn validate_submit_request(request: &SubmitPlanComplexityAssessmentRequest) -> A
 struct CurrentPlanningPlan {
     artifact_id: String,
     artifact_version: i64,
+    blueprint_artifact_id: Option<String>,
+    blueprint_artifact_version: Option<i64>,
     approved: bool,
 }
 
@@ -295,17 +424,20 @@ fn current_planning_plan_sync(
     conn: &Connection,
     session_id: &str,
 ) -> AppResult<Option<CurrentPlanningPlan>> {
-    let session_row: Option<(String, Option<String>)> = conn
+    let session_row: Option<(String, Option<String>, Option<String>, i64)> = conn
         .query_row(
-            "SELECT session_flow, plan_artifact_id
+            "SELECT session_flow, plan_artifact_id, plan_blueprint_artifact_id,
+                    plan_contract_version
              FROM ideation_sessions
              WHERE id = ?1",
             [session_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .optional()?;
 
-    let Some((session_flow, plan_artifact_id)) = session_row else {
+    let Some((session_flow, plan_artifact_id, blueprint_artifact_id, contract_version)) =
+        session_row
+    else {
         return Err(AppError::NotFound(format!(
             "Planning session not found: {session_id}"
         )));
@@ -324,6 +456,17 @@ fn current_planning_plan_sync(
         [&artifact_id],
         |row| row.get(0),
     )?;
+    if contract_version >= 2 && blueprint_artifact_id.is_none() {
+        return Ok(None);
+    }
+    let blueprint_artifact_version = blueprint_artifact_id
+        .as_ref()
+        .map(|id| {
+            conn.query_row("SELECT version FROM artifacts WHERE id = ?1", [id], |row| {
+                row.get(0)
+            })
+        })
+        .transpose()?;
     let approved = conn
         .query_row(
             "SELECT 1
@@ -331,8 +474,16 @@ fn current_planning_plan_sync(
              WHERE session_id = ?1
                AND artifact_id = ?2
                AND artifact_version = ?3
+               AND blueprint_artifact_id IS ?4
+               AND blueprint_artifact_version IS ?5
                AND status = 'approved'",
-            params![session_id, artifact_id, artifact_version],
+            params![
+                session_id,
+                artifact_id,
+                artifact_version,
+                blueprint_artifact_id,
+                blueprint_artifact_version
+            ],
             |_| Ok(()),
         )
         .optional()?
@@ -341,39 +492,71 @@ fn current_planning_plan_sync(
     Ok(Some(CurrentPlanningPlan {
         artifact_id,
         artifact_version,
+        blueprint_artifact_id,
+        blueprint_artifact_version,
         approved,
     }))
 }
 
+#[cfg(test)]
 pub(crate) fn get_plan_complexity_assessment_by_key_sync(
     conn: &Connection,
     session_id: &str,
     artifact_id: &str,
     artifact_version: u32,
 ) -> AppResult<Option<PlanComplexityAssessmentResponse>> {
+    get_plan_complexity_assessment_by_bundle_key_sync(
+        conn,
+        session_id,
+        artifact_id,
+        artifact_version,
+        None,
+        None,
+    )
+}
+
+fn get_plan_complexity_assessment_by_bundle_key_sync(
+    conn: &Connection,
+    session_id: &str,
+    artifact_id: &str,
+    artifact_version: u32,
+    blueprint_artifact_id: Option<&str>,
+    blueprint_artifact_version: Option<u32>,
+) -> AppResult<Option<PlanComplexityAssessmentResponse>> {
     let row = conn
         .query_row(
-            "SELECT id, session_id, artifact_id, artifact_version, level, score,
+            "SELECT id, session_id, artifact_id, artifact_version,
+                    blueprint_artifact_id, blueprint_artifact_version, level, score,
                     recommended_action, confidence, reason_summary, signals_json,
                     assessed_by, created_at, updated_at
              FROM plan_complexity_assessments
-             WHERE session_id = ?1 AND artifact_id = ?2 AND artifact_version = ?3",
-            params![session_id, artifact_id, i64::from(artifact_version)],
+             WHERE session_id = ?1 AND artifact_id = ?2 AND artifact_version = ?3
+               AND blueprint_artifact_id IS ?4
+               AND blueprint_artifact_version IS ?5",
+            params![
+                session_id,
+                artifact_id,
+                i64::from(artifact_version),
+                blueprint_artifact_id,
+                blueprint_artifact_version.map(i64::from)
+            ],
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, i64>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, i64>(5)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<i64>>(5)?,
                     row.get::<_, String>(6)?,
-                    row.get::<_, f64>(7)?,
+                    row.get::<_, i64>(7)?,
                     row.get::<_, String>(8)?,
-                    row.get::<_, String>(9)?,
+                    row.get::<_, f64>(9)?,
                     row.get::<_, String>(10)?,
                     row.get::<_, String>(11)?,
                     row.get::<_, String>(12)?,
+                    row.get::<_, String>(13)?,
+                    row.get::<_, String>(14)?,
                 ))
             },
         )
@@ -382,26 +565,33 @@ pub(crate) fn get_plan_complexity_assessment_by_key_sync(
     let Some(row) = row else {
         return Ok(None);
     };
-    let signals = serde_json::from_str::<Value>(&row.9).unwrap_or_else(|_| serde_json::json!({}));
+    let signals = serde_json::from_str::<Value>(&row.11).unwrap_or_else(|_| serde_json::json!({}));
     Ok(Some(PlanComplexityAssessmentResponse {
         id: row.0,
         session_id: row.1,
         artifact_id: row.2,
         artifact_version: u32::try_from(row.3)
             .map_err(|_| AppError::Database("Invalid artifact version".to_string()))?,
-        level: row.4,
-        score: u8::try_from(row.5)
+        blueprint_artifact_id: row.4,
+        blueprint_artifact_version: row
+            .5
+            .map(u32::try_from)
+            .transpose()
+            .map_err(|_| AppError::Database("Invalid blueprint version".to_string()))?,
+        level: row.6,
+        score: u8::try_from(row.7)
             .map_err(|_| AppError::Database("Invalid complexity score".to_string()))?,
-        recommended_action: row.6,
-        confidence: row.7,
-        reason_summary: row.8,
+        recommended_action: row.8,
+        confidence: row.9,
+        reason_summary: row.10,
         signals,
-        assessed_by: row.10,
-        created_at: row.11,
-        updated_at: row.12,
+        assessed_by: row.12,
+        created_at: row.13,
+        updated_at: row.14,
     }))
 }
 
+#[cfg(test)]
 pub(crate) fn build_plan_complexity_assessor_prompt(
     session_id: &str,
     artifact_id: &str,
@@ -409,17 +599,50 @@ pub(crate) fn build_plan_complexity_assessor_prompt(
     artifact_name: &str,
     artifact: &Artifact,
 ) -> String {
+    build_plan_complexity_assessor_bundle_prompt(
+        session_id,
+        artifact_id,
+        artifact_version,
+        artifact_name,
+        artifact,
+        None,
+    )
+}
+
+fn build_plan_complexity_assessor_bundle_prompt(
+    session_id: &str,
+    artifact_id: &str,
+    artifact_version: u32,
+    artifact_name: &str,
+    artifact: &Artifact,
+    blueprint: Option<&Artifact>,
+) -> String {
     let content = match &artifact.content {
         ArtifactContent::Inline { text } => text.as_str(),
         ArtifactContent::File { path } => path.as_str(),
     };
     let plan_content = truncate_chars(content, MAX_PLAN_CONTEXT_CHARS);
+    let blueprint_section = blueprint
+        .map(|blueprint| {
+            let content = match &blueprint.content {
+                ArtifactContent::Inline { text } => text.as_str(),
+                ArtifactContent::File { path } => path.as_str(),
+            };
+            format!(
+                "\n<implementation_blueprint artifact_id=\"{}\" artifact_version=\"{}\" title=\"{}\">\n{}\n</implementation_blueprint>",
+                escape_xml_text(blueprint.id.as_str()),
+                blueprint.metadata.version,
+                escape_xml_text(&blueprint.name),
+                escape_xml_text(&truncate_chars(content, MAX_PLAN_CONTEXT_CHARS))
+            )
+        })
+        .unwrap_or_default();
     format!(
         "<task>\n\
-         Grade the approved RalphX Plan-mode artifact complexity and call `{ASSESSOR_SUBMIT_TOOL}` exactly once.\n\
+         Grade the approved RalphX Plan Overview and Implementation Blueprint bundle complexity and call `{ASSESSOR_SUBMIT_TOOL}` exactly once.\n\
          </task>\n\
          <source_of_truth>\n\
-         Use only the supplied plan artifact metadata and content. Do not inspect files, run commands, or infer repository state that is not in the plan.\n\
+         Use only the supplied plan bundle metadata and content. Do not inspect files, run commands, or infer repository state that is not in the bundle.\n\
          </source_of_truth>\n\
          <decision_policy>\n\
          Recommend `implement_directly` for small, linear, low-risk plans that one general agent can execute from the plan.\n\
@@ -428,17 +651,18 @@ pub(crate) fn build_plan_complexity_assessor_prompt(
          Use score 0-100, where higher means more likely to need proposals/task execution.\n\
          </decision_policy>\n\
          <output_contract>\n\
-         Call `{ASSESSOR_SUBMIT_TOOL}` with session_id, artifact_id, artifact_version, level, score, recommended_action, confidence, reason_summary, and a compact signals object.\n\
+         Call `{ASSESSOR_SUBMIT_TOOL}` with session_id, artifact_id, artifact_version, blueprint_artifact_id, blueprint_artifact_version, level, score, recommended_action, confidence, reason_summary, and a compact signals object. Omit blueprint fields only for a legacy overview-only plan.\n\
          Keep reason_summary under {MAX_REASON_SUMMARY_CHARS} characters.\n\
          </output_contract>\n\
          <plan_artifact session_id=\"{}\" artifact_id=\"{}\" artifact_version=\"{}\" title=\"{}\">\n\
          {}\n\
-         </plan_artifact>",
+         </plan_artifact>{}",
         escape_xml_text(session_id),
         escape_xml_text(artifact_id),
         artifact_version,
         escape_xml_text(artifact_name),
-        escape_xml_text(&plan_content)
+        escape_xml_text(&plan_content),
+        blueprint_section,
     )
 }
 

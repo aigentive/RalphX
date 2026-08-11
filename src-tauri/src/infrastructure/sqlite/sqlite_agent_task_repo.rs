@@ -9,12 +9,16 @@ use uuid::Uuid;
 
 use super::DbConnection;
 use crate::domain::entities::{
-    merge_agent_task_metadata, AgentTaskCreate, AgentTaskDetail, AgentTaskId, AgentTaskList,
-    AgentTaskListId, AgentTaskListSummary, AgentTaskMutationResult, AgentTaskPatch, AgentTaskScope,
-    AgentTaskState, AgentTaskStateChange, AgentTaskSummary, ProjectId,
+    merge_agent_task_metadata, AgentRunId, AgentTaskAssignmentId, AgentTaskAssignmentReservation,
+    AgentTaskAssignmentSettlement, AgentTaskAssignmentTerminalStatus, AgentTaskAssignmentView,
+    AgentTaskCreate, AgentTaskDetail, AgentTaskId, AgentTaskList, AgentTaskListId,
+    AgentTaskListSummary, AgentTaskMutationResult, AgentTaskPatch, AgentTaskScope, AgentTaskState,
+    AgentTaskStateChange, AgentTaskSummary, DelegatedSessionId, ProjectId,
 };
 use crate::domain::repositories::{AgentTaskListOptions, AgentTaskRepository};
 use crate::error::{AppError, AppResult};
+
+mod assignments;
 
 #[derive(Clone)]
 struct AgentTaskRow {
@@ -228,6 +232,7 @@ impl AgentTaskRepository for SqliteAgentTaskRepository {
                 let Some(mut row) = find_task(conn, &list.id, &task_ref)? else {
                     return Ok(None);
                 };
+                assignments::ensure_mutation_allowed(conn, &list.id, &row.task_id, &patch)?;
 
                 let mut changed_fields = Vec::new();
                 let mut state_change = None;
@@ -351,6 +356,141 @@ impl AgentTaskRepository for SqliteAgentTaskRepository {
                 }))
             })
             .await
+    }
+
+    async fn reserve_assignment(
+        &self,
+        scope: &AgentTaskScope,
+        task_ref: &str,
+        delegated_session_id: &DelegatedSessionId,
+        caller_agent_run_id: &AgentRunId,
+        delegate_agent_name: &str,
+    ) -> AppResult<Option<AgentTaskAssignmentReservation>> {
+        assignments::reserve(
+            &self.db,
+            scope,
+            task_ref,
+            delegated_session_id,
+            caller_agent_run_id,
+            delegate_agent_name,
+        )
+        .await
+    }
+
+    async fn bind_assignment_run(
+        &self,
+        assignment_id: &AgentTaskAssignmentId,
+        delegated_session_id: &DelegatedSessionId,
+        delegated_agent_run_id: &AgentRunId,
+    ) -> AppResult<Option<AgentTaskAssignmentView>> {
+        assignments::bind_run(
+            &self.db,
+            assignment_id,
+            delegated_session_id,
+            delegated_agent_run_id,
+        )
+        .await
+    }
+
+    async fn plan_assignment_run(
+        &self,
+        assignment_id: &AgentTaskAssignmentId,
+        delegated_session_id: &DelegatedSessionId,
+        delegated_agent_run_id: &AgentRunId,
+    ) -> AppResult<Option<AgentTaskAssignmentView>> {
+        assignments::plan_run(
+            &self.db,
+            assignment_id,
+            delegated_session_id,
+            delegated_agent_run_id,
+        )
+        .await
+    }
+
+    async fn set_assignment_team_identity(
+        &self,
+        assignment_id: &AgentTaskAssignmentId,
+        delegated_session_id: &DelegatedSessionId,
+        team_id: &crate::domain::entities::TeamSessionId,
+        team_member_id: &crate::domain::entities::TeamMemberId,
+        team_member_generation: i64,
+    ) -> AppResult<Option<AgentTaskAssignmentView>> {
+        assignments::set_team_identity(
+            &self.db,
+            assignment_id,
+            delegated_session_id,
+            team_id,
+            team_member_id,
+            team_member_generation,
+        )
+        .await
+    }
+
+    async fn get_unresolved_assignment(
+        &self,
+        delegated_session_id: &DelegatedSessionId,
+    ) -> AppResult<Option<AgentTaskAssignmentView>> {
+        assignments::get_unresolved(&self.db, delegated_session_id).await
+    }
+
+    async fn request_assignment_completion(
+        &self,
+        delegated_session_id: &DelegatedSessionId,
+        delegated_agent_run_id: &AgentRunId,
+        local_scope: &AgentTaskScope,
+        completion_metadata: Option<Value>,
+    ) -> AppResult<Option<AgentTaskAssignmentView>> {
+        assignments::request_completion(
+            &self.db,
+            delegated_session_id,
+            delegated_agent_run_id,
+            local_scope,
+            completion_metadata,
+        )
+        .await
+    }
+
+    async fn request_assignment_release(
+        &self,
+        delegated_session_id: &DelegatedSessionId,
+        delegated_agent_run_id: &AgentRunId,
+        reason: &str,
+    ) -> AppResult<Option<AgentTaskAssignmentView>> {
+        assignments::request_release(
+            &self.db,
+            delegated_session_id,
+            delegated_agent_run_id,
+            reason,
+        )
+        .await
+    }
+
+    async fn settle_assignment_for_run(
+        &self,
+        delegated_agent_run_id: &AgentRunId,
+        terminal_status: AgentTaskAssignmentTerminalStatus,
+        reason: Option<&str>,
+    ) -> AppResult<Option<AgentTaskAssignmentSettlement>> {
+        assignments::settle(&self.db, delegated_agent_run_id, terminal_status, reason).await
+    }
+
+    async fn get_assignment_for_run(
+        &self,
+        delegated_agent_run_id: &AgentRunId,
+    ) -> AppResult<Option<AgentTaskAssignmentView>> {
+        assignments::get_for_run(&self.db, delegated_agent_run_id).await
+    }
+
+    async fn fail_reserved_assignment(
+        &self,
+        delegated_session_id: &DelegatedSessionId,
+        reason: &str,
+    ) -> AppResult<Option<AgentTaskAssignmentSettlement>> {
+        assignments::fail_reserved(&self.db, delegated_session_id, reason).await
+    }
+
+    async fn list_unresolved_assignments(&self) -> AppResult<Vec<AgentTaskAssignmentView>> {
+        assignments::list_unresolved(&self.db).await
     }
 }
 

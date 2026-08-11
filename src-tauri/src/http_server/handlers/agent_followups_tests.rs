@@ -1,6 +1,5 @@
 use super::*;
-use crate::application::{AppState, TeamService, TeamStateTracker};
-use crate::commands::ExecutionState;
+use crate::application::AppState;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
     AgentConversationWorkspaceMode, AgentWorkspaceFollowupProvenance,
@@ -12,15 +11,7 @@ use axum::{extract::State, Json};
 use std::sync::Arc;
 
 fn test_http_state(app_state: Arc<AppState>) -> HttpServerState {
-    let tracker = TeamStateTracker::new();
-    let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
-    HttpServerState {
-        app_state,
-        execution_state: Arc::new(ExecutionState::new()),
-        team_tracker: tracker,
-        team_service,
-        delegation_service: Default::default(),
-    }
+    HttpServerState::new_test(app_state)
 }
 
 fn followup_request(
@@ -271,6 +262,133 @@ async fn create_followup_returns_existing_active_followup_for_same_blocker() {
     assert_eq!(response.conversation.id, followup_conversation.id.as_str());
     assert!(response.workspace.is_some());
     assert!(response.send_result.is_none());
+}
+
+#[tokio::test]
+async fn execution_blocked_followup_reuses_canonical_rails_test_database_blocker() {
+    let app_state = Arc::new(AppState::new_test());
+    let state = test_http_state(Arc::clone(&app_state));
+    let (project_id, origin) = seed_project_conversation(&app_state).await;
+    let task = app_state
+        .task_repo
+        .create(Task::new(project_id.clone(), "Source task".to_string()))
+        .await
+        .unwrap();
+    let source_task_id = task.id.as_str().to_string();
+    let followup_conversation = ChatConversation::new_project(project_id.clone());
+    app_state
+        .chat_conversation_repo
+        .create(followup_conversation.clone())
+        .await
+        .unwrap();
+    app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(test_workspace(&followup_conversation, &project_id))
+        .await
+        .unwrap();
+    let canonical_fingerprint =
+        "v1:setup:project:rails-test-database:schema-unavailable".to_string();
+    app_state
+        .agent_conversation_workspace_repo
+        .save_followup_provenance(
+            &followup_conversation.id,
+            AgentWorkspaceFollowupProvenance {
+                origin_conversation_id: origin.id.clone(),
+                source_task_id: Some(source_task_id.clone()),
+                source_context_type: Some("task_execution".to_string()),
+                source_context_id: Some(source_task_id.clone()),
+                source_agent_name: Some("ralphx-execution-worker".to_string()),
+                spawn_reason: Some("execution_blocked".to_string()),
+                blocker_fingerprint: Some(canonical_fingerprint.clone()),
+            },
+        )
+        .await
+        .unwrap();
+
+    let response = create_followup_agent_conversation_for_request(&state, {
+        let mut req = followup_request(Some(origin.id.as_str()));
+        req.source_task_id = Some(source_task_id);
+        req.source_context_type = Some("task_execution".to_string());
+        req.title = "Fix RSpec test DB setup for Printspeak worktrees".to_string();
+        req.description = Some(
+            "Rails test DB/schema setup is unhealthy and blocks focused RSpec validation."
+                .to_string(),
+        );
+        req.initial_prompt = Some(
+            "db:schema:load fails with PG::UndefinedTable for failed_messages_seq".to_string(),
+        );
+        req.spawn_reason = Some("execution_blocked".to_string());
+        req.blocker_fingerprint = None;
+        req
+    })
+    .await
+    .unwrap();
+
+    assert!(response.reused_existing);
+    assert_eq!(response.conversation.id, followup_conversation.id.as_str());
+    assert_eq!(
+        response.blocker_fingerprint.as_deref(),
+        Some(canonical_fingerprint.as_str())
+    );
+    assert!(response.send_result.is_none());
+}
+
+#[tokio::test]
+async fn execution_blocked_followup_does_not_reuse_a_different_blocker() {
+    let app_state = Arc::new(AppState::new_test());
+    let state = test_http_state(Arc::clone(&app_state));
+    let (project_id, origin) = seed_project_conversation(&app_state).await;
+    let task = app_state
+        .task_repo
+        .create(Task::new(project_id.clone(), "Source task".to_string()))
+        .await
+        .unwrap();
+    let source_task_id = task.id.as_str().to_string();
+    let followup_conversation = ChatConversation::new_project(project_id.clone());
+    app_state
+        .chat_conversation_repo
+        .create(followup_conversation.clone())
+        .await
+        .unwrap();
+    app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(test_workspace(&followup_conversation, &project_id))
+        .await
+        .unwrap();
+    app_state
+        .agent_conversation_workspace_repo
+        .save_followup_provenance(
+            &followup_conversation.id,
+            AgentWorkspaceFollowupProvenance {
+                origin_conversation_id: origin.id.clone(),
+                source_task_id: Some(source_task_id.clone()),
+                source_context_type: Some("task_execution".to_string()),
+                source_context_id: Some(source_task_id.clone()),
+                source_agent_name: Some("ralphx-execution-worker".to_string()),
+                spawn_reason: Some("execution_blocked".to_string()),
+                blocker_fingerprint: Some(
+                    "v1:setup:project:rails-test-database:schema-unavailable".to_string(),
+                ),
+            },
+        )
+        .await
+        .unwrap();
+
+    let error = create_followup_agent_conversation_for_request(&state, {
+        let mut req = followup_request(Some(origin.id.as_str()));
+        req.source_task_id = Some(source_task_id);
+        req.title = "Runtime index prerequisite missing".to_string();
+        req.description =
+            Some("The runtime-index API required by this task is absent.".to_string());
+        req.initial_prompt = None;
+        req.spawn_reason = Some("execution_blocked".to_string());
+        req.blocker_fingerprint = None;
+        req
+    })
+    .await
+    .expect_err("a different blocker must continue to new follow-up creation");
+
+    assert_eq!(error.0, StatusCode::SERVICE_UNAVAILABLE);
 }
 
 #[tokio::test]

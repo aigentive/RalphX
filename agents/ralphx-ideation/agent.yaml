@@ -22,6 +22,7 @@ capabilities:
     - delegate_start
     - delegate_wait
     - delegate_cancel
+    - delegate_park
     - create_agent_task
     - get_agent_task
     - list_agent_tasks
@@ -30,14 +31,12 @@ capabilities:
     - complete_agent_task
     - get_session_messages
     - get_plan_verification
-    - revert_and_skip
-    - stop_verification
+    - complete_plan_verification
     - search_memories
     - get_memory
     - get_memories_for_paths
     - get_acceptance_status
     - get_pending_confirmations
-    - get_verification_confirmation_status
     - list_projects
     - create_cross_project_session
     - cross_project_guide
@@ -67,7 +66,7 @@ harnesses:
 profiles:
   plan:
     role: plan_chat
-    description: "Agent conversation Plan-mode assistant. Clarifies, researches, and maintains a linked planning artifact without starting proposals or task execution."
+    description: "Agent conversation Plan-mode assistant. Clarifies, researches, and maintains a linked Overview and Implementation Blueprint bundle without starting proposals or task execution."
     capabilities:
       mcp_tools:
         - fs_read_file
@@ -81,10 +80,11 @@ profiles:
         - get_session_plan
         - ask_user_question
         - get_plan_verification
-        - stop_verification
+        - complete_plan_verification
         - delegate_start
         - delegate_wait
         - delegate_cancel
+        - delegate_park
         - search_memories
         - get_memory
         - get_memories_for_paths
@@ -115,12 +115,6 @@ delegation:
     - ralphx-ideation-specialist-backend
     - ralphx-ideation-specialist-frontend
     - ralphx-ideation-specialist-infra
-    - ralphx-ideation-specialist-ux
-    - ralphx-ideation-specialist-code-quality
-    - ralphx-ideation-specialist-prompt-quality
-    - ralphx-ideation-specialist-intent
-    - ralphx-ideation-specialist-pipeline-safety
-    - ralphx-ideation-specialist-state-machine
     - ralphx-ideation-advocate
     - ralphx-ideation-critic
     - ralphx-general-explorer

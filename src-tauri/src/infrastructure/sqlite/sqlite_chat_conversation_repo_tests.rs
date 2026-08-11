@@ -1,11 +1,11 @@
 // Tests for SqliteChatConversationRepository (sqlite_chat_conversation_repo.rs)
 // Included via #[cfg(test)] mod in mod.rs
 
-use crate::domain::entities::{
-    AgentConversationWorkspaceMode, AttributionBackfillStatus, ChatContextType, ChatConversation,
-    ChatConversationId,
-};
 use crate::domain::agents::{AgentHarnessKind, ProviderSessionRef};
+use crate::domain::entities::{
+    AgentConversationWorkspaceMode, AttributionBackfillStatus, AutomationId, ChatContextType,
+    ChatConversation, ChatConversationId, CoordinationMode,
+};
 use crate::domain::repositories::ChatConversationRepository;
 use crate::infrastructure::sqlite::SqliteChatConversationRepository;
 use crate::testing::SqliteTestDb;
@@ -29,6 +29,13 @@ fn make_conversation(context_type: ChatContextType, context_id: &str) -> ChatCon
         upstream_provider: None,
         provider_profile: None,
         agent_mode: None,
+        bound_agent_name: None,
+        persona_id: None,
+        builder_draft_id: None,
+        builder_result_persona_id: None,
+        coordination_mode: CoordinationMode::Solo,
+        automation_id: None,
+        automation_run_id: None,
         title: None,
         message_count: 0,
         last_message_at: None,
@@ -43,6 +50,267 @@ fn make_conversation(context_type: ChatContextType, context_id: &str) -> ChatCon
         attribution_backfill_completed_at: None,
         attribution_backfill_error_summary: None,
     }
+}
+
+#[tokio::test]
+async fn create_accepts_valid_standalone_self_key() {
+    let db = setup_test_db();
+    let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
+    let conversation = ChatConversation::new_standalone();
+
+    let created = repo
+        .create(conversation.clone())
+        .await
+        .expect("valid standalone self-key should persist");
+
+    assert_eq!(created.id, conversation.id);
+    assert!(created.is_valid_standalone_self_key());
+}
+
+#[tokio::test]
+async fn create_rejects_invalid_standalone_self_key() {
+    let db = setup_test_db();
+    let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
+    let mut conversation = ChatConversation::new_standalone();
+    conversation.context_id = "not-the-conversation-id".to_string();
+
+    let error = repo
+        .create(conversation.clone())
+        .await
+        .expect_err("mismatched standalone self-key must be rejected");
+
+    assert!(matches!(error, crate::error::AppError::Validation(_)));
+    assert!(repo.get_by_id(&conversation.id).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn update_persona_binding_sets_and_clears() {
+    let db = setup_test_db();
+    let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
+    let conversation = make_conversation(ChatContextType::Project, "project-persona-binding");
+    repo.create(conversation.clone()).await.unwrap();
+
+    repo.update_persona_binding(&conversation.id, Some("persona-1"))
+        .await
+        .unwrap();
+    assert_eq!(
+        repo.get_by_id(&conversation.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .persona_id
+            .as_deref(),
+        Some("persona-1")
+    );
+
+    repo.update_persona_binding(&conversation.id, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        repo.get_by_id(&conversation.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .persona_id,
+        None
+    );
+}
+
+#[tokio::test]
+async fn bound_agent_name_round_trips_and_updates() {
+    let db = setup_test_db();
+    let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
+    let parent = make_conversation(ChatContextType::Project, "project-bound-agent-parent");
+    let parent_id = parent.id.as_str().to_string();
+    repo.create(parent).await.unwrap();
+    let mut conversation = make_conversation(ChatContextType::Project, "project-bound-agent");
+    conversation.parent_conversation_id = Some(parent_id);
+    conversation.bound_agent_name = Some("ralphx-workspace-reviewer".to_string());
+    repo.create(conversation.clone()).await.unwrap();
+
+    let loaded = repo.get_by_id(&conversation.id).await.unwrap().unwrap();
+    assert_eq!(
+        loaded.bound_agent_name.as_deref(),
+        Some("ralphx-workspace-reviewer")
+    );
+
+    repo.update_bound_agent_name(&conversation.id, Some("ralphx-workspace-repair"))
+        .await
+        .unwrap();
+    let updated = repo.get_by_id(&conversation.id).await.unwrap().unwrap();
+    assert_eq!(
+        updated.bound_agent_name.as_deref(),
+        Some("ralphx-workspace-repair")
+    );
+}
+
+#[tokio::test]
+async fn persona_id_round_trips_through_all_select_paths() {
+    let db = setup_test_db();
+    let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
+    db.with_connection(|conn| {
+        conn.execute(
+            "INSERT INTO personas (
+                 id, slug, name, content, status, content_hash, created_at, updated_at
+             ) VALUES (
+                 'draft-select-paths', 'draft-select-paths', 'Draft', 'content', 'draft',
+                 'hash', '2026-07-15T10:00:00Z', '2026-07-15T10:00:00Z'
+             )",
+            [],
+        )
+        .expect("draft fixture");
+    });
+    let mut conversation = make_conversation(ChatContextType::Project, "project-persona-selects");
+    conversation.persona_id = Some("persona-select-paths".to_string());
+    conversation.builder_draft_id = Some("draft-select-paths".to_string());
+    conversation.automation_id = Some(AutomationId::from_string("automation-persona-selects"));
+    conversation.claude_session_id = Some("claude-persona-selects".to_string());
+    repo.create(conversation.clone()).await.unwrap();
+
+    let checks = vec![
+        repo.get_by_id(&conversation.id).await.unwrap().unwrap(),
+        repo.get_by_context(ChatContextType::Project, "project-persona-selects")
+            .await
+            .unwrap()
+            .pop()
+            .unwrap(),
+        repo.get_by_context_filtered(ChatContextType::Project, "project-persona-selects", true)
+            .await
+            .unwrap()
+            .pop()
+            .unwrap(),
+        repo.get_by_context_page_filtered(
+            ChatContextType::Project,
+            "project-persona-selects",
+            true,
+            false,
+            0,
+            10,
+            None,
+        )
+        .await
+        .unwrap()
+        .conversations
+        .pop()
+        .unwrap(),
+        repo.get_active_for_context(ChatContextType::Project, "project-persona-selects")
+            .await
+            .unwrap()
+            .unwrap(),
+        repo.list_by_automation_id(conversation.automation_id.as_ref().unwrap())
+            .await
+            .unwrap()
+            .pop()
+            .unwrap(),
+        repo.list_recent_resumable_by_context_type(ChatContextType::Project, 10)
+            .await
+            .unwrap()
+            .pop()
+            .unwrap(),
+        repo.list_needing_attribution_backfill(10)
+            .await
+            .unwrap()
+            .pop()
+            .unwrap(),
+    ];
+
+    for selected in checks {
+        assert_eq!(selected.persona_id.as_deref(), Some("persona-select-paths"));
+        assert_eq!(
+            selected.builder_draft_id.as_deref(),
+            Some("draft-select-paths")
+        );
+    }
+}
+
+#[tokio::test]
+async fn update_builder_draft_binding_sets_and_clears() {
+    let db = setup_test_db();
+    let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
+    db.with_connection(|conn| {
+        conn.execute(
+            "INSERT INTO personas (
+                 id, slug, name, content, status, content_hash, created_at, updated_at
+             ) VALUES (
+                 'draft-1', 'draft-1', 'Draft', 'content', 'draft', 'hash',
+                 '2026-07-15T10:00:00Z', '2026-07-15T10:00:00Z'
+             )",
+            [],
+        )
+        .expect("draft fixture");
+    });
+    let conversation = make_conversation(ChatContextType::Project, "project-draft-binding");
+    repo.create(conversation.clone()).await.unwrap();
+
+    repo.update_builder_draft_binding(&conversation.id, Some("draft-1"))
+        .await
+        .unwrap();
+    assert_eq!(
+        repo.get_by_id(&conversation.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .builder_draft_id
+            .as_deref(),
+        Some("draft-1")
+    );
+
+    repo.update_builder_draft_binding(&conversation.id, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        repo.get_by_id(&conversation.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .builder_draft_id,
+        None
+    );
+}
+
+#[tokio::test]
+async fn update_agent_mode_preserves_persona_id() {
+    let db = setup_test_db();
+    let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
+    let mut conversation = make_conversation(ChatContextType::Project, "project-persona-mode");
+    conversation.persona_id = Some("persona-mode".to_string());
+    repo.create(conversation.clone()).await.unwrap();
+
+    repo.update_agent_mode(&conversation.id, Some(AgentConversationWorkspaceMode::Chat))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        repo.get_by_id(&conversation.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .persona_id
+            .as_deref(),
+        Some("persona-mode")
+    );
+}
+
+#[tokio::test]
+async fn poisoned_persona_id_column_read_fails_closed() {
+    let db = setup_test_db();
+    let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
+    let conversation = make_conversation(ChatContextType::Project, "project-persona-poison");
+    repo.create(conversation.clone()).await.unwrap();
+    db.with_connection(|conn| {
+        conn.execute(
+            "UPDATE chat_conversations SET persona_id = X'FF' WHERE id = ?1",
+            [conversation.id.as_str()],
+        )
+        .unwrap();
+    });
+
+    let error = repo
+        .get_by_id(&conversation.id)
+        .await
+        .expect_err("BLOB persona IDs must not degrade to None");
+
+    assert!(matches!(error, crate::error::AppError::Database(_)));
 }
 
 // --- create ---
@@ -83,6 +351,13 @@ async fn test_create_preserves_optional_fields() {
         upstream_provider: Some("anthropic".to_string()),
         provider_profile: Some("default".to_string()),
         agent_mode: Some(AgentConversationWorkspaceMode::Chat),
+        bound_agent_name: None,
+        persona_id: None,
+        builder_draft_id: None,
+        builder_result_persona_id: None,
+        coordination_mode: CoordinationMode::RxNativeTeam,
+        automation_id: None,
+        automation_run_id: None,
         title: Some("My Conversation".to_string()),
         message_count: 5,
         last_message_at: Some(now),
@@ -106,12 +381,33 @@ async fn test_create_preserves_optional_fields() {
     assert_eq!(loaded.provider_harness, Some(AgentHarnessKind::Claude));
     assert_eq!(loaded.upstream_provider.as_deref(), Some("anthropic"));
     assert_eq!(loaded.provider_profile.as_deref(), Some("default"));
-    assert_eq!(loaded.agent_mode, Some(AgentConversationWorkspaceMode::Chat));
+    assert_eq!(
+        loaded.agent_mode,
+        Some(AgentConversationWorkspaceMode::Chat)
+    );
+    assert_eq!(loaded.coordination_mode, CoordinationMode::RxNativeTeam);
     assert_eq!(loaded.title, Some("My Conversation".to_string()));
     assert_eq!(loaded.message_count, 5);
     assert!(loaded.last_message_at.is_some());
     assert_eq!(loaded.parent_conversation_id, Some(parent_id_str));
     assert!(matches!(loaded.context_type, ChatContextType::Task));
+}
+
+#[tokio::test]
+async fn test_update_coordination_mode_persists_value() {
+    let db = setup_test_db();
+    let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
+
+    let conv = make_conversation(ChatContextType::Project, "project-1");
+    let conversation_id = conv.id;
+    repo.create(conv).await.unwrap();
+
+    repo.update_coordination_mode(&conversation_id, CoordinationMode::RxNativeTeam)
+        .await
+        .unwrap();
+
+    let loaded = repo.get_by_id(&conversation_id).await.unwrap().unwrap();
+    assert_eq!(loaded.coordination_mode, CoordinationMode::RxNativeTeam);
 }
 
 // --- get_by_id ---
@@ -151,10 +447,18 @@ async fn test_get_by_context_returns_matching() {
     let db = setup_test_db();
     let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
 
-    repo.create(make_conversation(ChatContextType::Task, "task-1")).await.unwrap();
-    repo.create(make_conversation(ChatContextType::Task, "task-1")).await.unwrap();
-    repo.create(make_conversation(ChatContextType::Task, "task-2")).await.unwrap();
-    repo.create(make_conversation(ChatContextType::Ideation, "task-1")).await.unwrap();
+    repo.create(make_conversation(ChatContextType::Task, "task-1"))
+        .await
+        .unwrap();
+    repo.create(make_conversation(ChatContextType::Task, "task-1"))
+        .await
+        .unwrap();
+    repo.create(make_conversation(ChatContextType::Task, "task-2"))
+        .await
+        .unwrap();
+    repo.create(make_conversation(ChatContextType::Ideation, "task-1"))
+        .await
+        .unwrap();
 
     let result = repo
         .get_by_context(ChatContextType::Task, "task-1")
@@ -162,7 +466,9 @@ async fn test_get_by_context_returns_matching() {
         .unwrap();
 
     assert_eq!(result.len(), 2);
-    assert!(result.iter().all(|c| matches!(c.context_type, ChatContextType::Task)));
+    assert!(result
+        .iter()
+        .all(|c| matches!(c.context_type, ChatContextType::Task)));
     assert!(result.iter().all(|c| c.context_id == "task-1"));
 }
 
@@ -277,10 +583,7 @@ async fn test_get_by_context_page_filtered_paginates_and_searches() {
         .unwrap();
 
     assert_eq!(search_page.total_count, 1);
-    assert_eq!(
-        search_page.conversations[0].id.as_str(),
-        middle.id.as_str()
-    );
+    assert_eq!(search_page.conversations[0].id.as_str(), middle.id.as_str());
 
     let archived_search_page = repo
         .get_by_context_page_filtered(
@@ -451,9 +754,12 @@ async fn test_get_attribution_backfill_summary_counts_legacy_rows() {
     repo.create(pending).await.unwrap();
     repo.create(completed).await.unwrap();
     repo.create(parse_failed).await.unwrap();
-    repo.create(make_conversation(ChatContextType::Project, "ctx-non-legacy"))
-        .await
-        .unwrap();
+    repo.create(make_conversation(
+        ChatContextType::Project,
+        "ctx-non-legacy",
+    ))
+    .await
+    .unwrap();
 
     let summary = repo.get_attribution_backfill_summary().await.unwrap();
 
@@ -476,11 +782,16 @@ async fn test_update_claude_session_id() {
     let conv_id = conv.id.clone();
     repo.create(conv).await.unwrap();
 
-    repo.update_claude_session_id(&conv_id, "new-session-id").await.unwrap();
+    repo.update_claude_session_id(&conv_id, "new-session-id")
+        .await
+        .unwrap();
 
     let loaded = repo.get_by_id(&conv_id).await.unwrap().unwrap();
     assert_eq!(loaded.claude_session_id, Some("new-session-id".to_string()));
-    assert_eq!(loaded.provider_session_id, Some("new-session-id".to_string()));
+    assert_eq!(
+        loaded.provider_session_id,
+        Some("new-session-id".to_string())
+    );
     assert_eq!(loaded.provider_harness, Some(AgentHarnessKind::Claude));
 }
 
@@ -512,6 +823,91 @@ async fn test_update_provider_session_ref_for_codex() {
     assert_eq!(loaded.claude_session_id, None);
 }
 
+#[tokio::test]
+async fn test_update_role_default_bindings_updates_mode_persona_and_session_tuple() {
+    let db = setup_test_db();
+    let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
+    let mut conversation = make_conversation(ChatContextType::Project, "project-role-bindings");
+    conversation.persona_id = Some("old-persona".to_string());
+    conversation.claude_session_id = Some("old-claude-session".to_string());
+    conversation.provider_session_id = Some("old-provider-session".to_string());
+    conversation.provider_harness = Some(AgentHarnessKind::Claude);
+    let conversation_id = conversation.id.clone();
+    repo.create(conversation).await.unwrap();
+
+    repo.update_role_default_bindings(
+        &conversation_id,
+        CoordinationMode::RxNativeWorkflow,
+        Some("new-persona"),
+        true,
+    )
+    .await
+    .unwrap();
+
+    let loaded = repo.get_by_id(&conversation_id).await.unwrap().unwrap();
+    assert_eq!(loaded.coordination_mode, CoordinationMode::RxNativeWorkflow);
+    assert_eq!(loaded.persona_id.as_deref(), Some("new-persona"));
+    assert!(loaded.claude_session_id.is_none());
+    assert!(loaded.provider_session_id.is_none());
+    assert!(loaded.provider_harness.is_none());
+}
+
+#[tokio::test]
+async fn test_update_role_default_bindings_preserves_session_tuple_when_requested() {
+    let db = setup_test_db();
+    let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
+    let mut conversation = make_conversation(ChatContextType::Project, "project-role-bindings");
+    conversation.claude_session_id = Some("keep-claude-session".to_string());
+    conversation.provider_session_id = Some("keep-provider-session".to_string());
+    conversation.provider_harness = Some(AgentHarnessKind::Claude);
+    let conversation_id = conversation.id.clone();
+    repo.create(conversation).await.unwrap();
+
+    repo.update_role_default_bindings(&conversation_id, CoordinationMode::Solo, None, false)
+        .await
+        .unwrap();
+
+    let loaded = repo.get_by_id(&conversation_id).await.unwrap().unwrap();
+    assert_eq!(loaded.coordination_mode, CoordinationMode::Solo);
+    assert_eq!(loaded.persona_id, None);
+    assert_eq!(
+        loaded.claude_session_id.as_deref(),
+        Some("keep-claude-session")
+    );
+    assert_eq!(
+        loaded.provider_session_id.as_deref(),
+        Some("keep-provider-session")
+    );
+    assert_eq!(loaded.provider_harness, Some(AgentHarnessKind::Claude));
+}
+
+#[tokio::test]
+async fn test_update_agent_mode_and_role_bindings_persists_one_tuple() {
+    let db = setup_test_db();
+    let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
+    let conversation = make_conversation(ChatContextType::Project, "project-atomic-edit");
+    let conversation_id = conversation.id;
+    repo.create(conversation).await.unwrap();
+
+    repo.update_agent_mode_and_role_default_bindings(
+        &conversation_id,
+        AgentConversationWorkspaceMode::Edit,
+        CoordinationMode::RxNativeWorkflow,
+        Some("persona-edit"),
+        false,
+    )
+    .await
+    .unwrap();
+
+    let loaded = repo.get_by_id(&conversation_id).await.unwrap().unwrap();
+    assert_eq!(
+        loaded.agent_mode,
+        Some(AgentConversationWorkspaceMode::Edit)
+    );
+    assert_eq!(loaded.coordination_mode, CoordinationMode::RxNativeWorkflow);
+    assert_eq!(loaded.persona_id.as_deref(), Some("persona-edit"));
+}
+
 // --- clear_claude_session_id ---
 
 #[tokio::test]
@@ -530,6 +926,13 @@ async fn test_clear_claude_session_id() {
         upstream_provider: None,
         provider_profile: None,
         agent_mode: None,
+        bound_agent_name: None,
+        persona_id: None,
+        builder_draft_id: None,
+        builder_result_persona_id: None,
+        coordination_mode: CoordinationMode::Solo,
+        automation_id: None,
+        automation_run_id: None,
         title: None,
         message_count: 0,
         last_message_at: None,
@@ -653,7 +1056,9 @@ async fn test_update_message_stats() {
     repo.create(conv).await.unwrap();
 
     let last_msg_at = Utc::now();
-    repo.update_message_stats(&conv_id, 42, last_msg_at).await.unwrap();
+    repo.update_message_stats(&conv_id, 42, last_msg_at)
+        .await
+        .unwrap();
 
     let loaded = repo.get_by_id(&conv_id).await.unwrap().unwrap();
     assert_eq!(loaded.message_count, 42);
@@ -752,11 +1157,19 @@ async fn test_delete_by_context_removes_all_matching() {
     let db = setup_test_db();
     let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
 
-    repo.create(make_conversation(ChatContextType::Review, "review-1")).await.unwrap();
-    repo.create(make_conversation(ChatContextType::Review, "review-1")).await.unwrap();
-    repo.create(make_conversation(ChatContextType::Review, "review-2")).await.unwrap();
+    repo.create(make_conversation(ChatContextType::Review, "review-1"))
+        .await
+        .unwrap();
+    repo.create(make_conversation(ChatContextType::Review, "review-1"))
+        .await
+        .unwrap();
+    repo.create(make_conversation(ChatContextType::Review, "review-2"))
+        .await
+        .unwrap();
 
-    repo.delete_by_context(ChatContextType::Review, "review-1").await.unwrap();
+    repo.delete_by_context(ChatContextType::Review, "review-1")
+        .await
+        .unwrap();
 
     let remaining = repo
         .get_by_context(ChatContextType::Review, "review-1")
@@ -833,11 +1246,26 @@ async fn test_all_context_types_round_trip() {
     let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
 
     let types_and_ids: Vec<(ChatConversation, ChatContextType)> = vec![
-        (make_conversation(ChatContextType::Ideation, "ctx"), ChatContextType::Ideation),
-        (make_conversation(ChatContextType::Task, "ctx"), ChatContextType::Task),
-        (make_conversation(ChatContextType::Project, "ctx"), ChatContextType::Project),
-        (make_conversation(ChatContextType::Review, "ctx"), ChatContextType::Review),
-        (make_conversation(ChatContextType::Merge, "ctx"), ChatContextType::Merge),
+        (
+            make_conversation(ChatContextType::Ideation, "ctx"),
+            ChatContextType::Ideation,
+        ),
+        (
+            make_conversation(ChatContextType::Task, "ctx"),
+            ChatContextType::Task,
+        ),
+        (
+            make_conversation(ChatContextType::Project, "ctx"),
+            ChatContextType::Project,
+        ),
+        (
+            make_conversation(ChatContextType::Review, "ctx"),
+            ChatContextType::Review,
+        ),
+        (
+            make_conversation(ChatContextType::Merge, "ctx"),
+            ChatContextType::Merge,
+        ),
     ];
 
     for (conv, _) in &types_and_ids {
@@ -871,4 +1299,49 @@ async fn test_from_shared_connection() {
 
     let found = repo2.get_by_id(&conv_id).await.unwrap();
     assert!(found.is_some());
+}
+
+// --- list_by_automation_id ---
+
+#[tokio::test]
+async fn test_list_by_automation_id_returns_setup_and_run_conversations() {
+    use crate::domain::entities::{AutomationId, AutomationRunId};
+
+    let db = setup_test_db();
+    let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
+
+    let automation_id = AutomationId::from_string("automation-list-1");
+
+    // Setup conversation: automation_id only.
+    let mut setup = make_conversation(ChatContextType::Project, "project-1");
+    setup.automation_id = Some(automation_id.clone());
+    let setup_id = setup.id.clone();
+    repo.create(setup).await.unwrap();
+
+    // Run conversation: both automation_id and automation_run_id.
+    let mut run_conv = make_conversation(ChatContextType::Project, "project-1");
+    run_conv.automation_id = Some(automation_id.clone());
+    run_conv.automation_run_id = Some(AutomationRunId::from_string("run-1"));
+    let run_id = run_conv.id.clone();
+    repo.create(run_conv).await.unwrap();
+
+    // Archived conversation for the same automation is still returned (filtering
+    // happens in the delete flow, not the repo query).
+    let mut archived = make_conversation(ChatContextType::Project, "project-1");
+    archived.automation_id = Some(automation_id.clone());
+    let archived_id = archived.id.clone();
+    repo.create(archived).await.unwrap();
+    repo.archive(&archived_id).await.unwrap();
+
+    // Unrelated conversation for a different automation must be excluded.
+    let mut other = make_conversation(ChatContextType::Project, "project-1");
+    other.automation_id = Some(AutomationId::from_string("automation-other"));
+    repo.create(other).await.unwrap();
+
+    let listed = repo.list_by_automation_id(&automation_id).await.unwrap();
+    let ids: Vec<String> = listed.iter().map(|c| c.id.as_str()).collect();
+    assert_eq!(ids.len(), 3);
+    assert!(ids.contains(&setup_id.as_str()));
+    assert!(ids.contains(&run_id.as_str()));
+    assert!(ids.contains(&archived_id.as_str()));
 }

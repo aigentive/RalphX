@@ -38,6 +38,8 @@ export interface ToolCall {
   name: string;
   /** Arguments passed to the tool (can be any JSON value) */
   arguments: unknown;
+  /** Backend logical content-block position, present on recovered snapshots only. */
+  blockIndex?: number;
   /** Result returned from the tool (can be any JSON value) */
   result?: unknown;
   /** True when result contains only a lightweight preview and full output must be lazy-loaded */
@@ -419,7 +421,13 @@ export interface ParsedSearchResult {
 }
 
 /** Metadata/header lines to skip in search results */
-const SEARCH_METADATA_RE = /^(Found \d+ files?|Showing|Page \d|Results? \d|ROOT:|PATTERN:|FILE_PATTERN:|BASE_PATH:|MATCHES:|INCLUDE_HIDDEN:|RESPECT_GITIGNORE:)/i;
+const SEARCH_METADATA_RE = /^(Found \d+ files?|Showing|Page \d|Results? \d|ROOT:|PATTERN:|FILE_PATTERN:|BASE_PATH:|MATCHES:|OUTPUT_MODE:|INCLUDE_HIDDEN:|RESPECT_GITIGNORE:)/i;
+
+/** Diagnostics emitted alongside otherwise-valid search results */
+const SEARCH_NOTE_RE = /^NOTE:\s*(.+)$/i;
+
+/** Separator between non-contiguous grep context groups */
+const SEARCH_GROUP_SEPARATOR_RE = /^--$/;
 
 /** Explicit no-result markers */
 const SEARCH_EMPTY_RE = /^No (matches|files|results)( found| matched)?\.?$/i;
@@ -439,27 +447,43 @@ export function parseSearchResult(result: unknown): ParsedSearchResult {
   }
 
   const pathSet = new Set<string>();
-  let note: string | undefined;
+  const noteLines: string[] = [];
 
   for (const line of lines) {
     // Skip metadata lines
     if (SEARCH_METADATA_RE.test(line)) continue;
 
+    const noteMatch = line.match(SEARCH_NOTE_RE);
+    if (noteMatch?.[1]) {
+      noteLines.push(noteMatch[1].trim());
+      continue;
+    }
+
+    if (SEARCH_GROUP_SEPARATOR_RE.test(line)) continue;
+
     // Detect no-result markers
     if (SEARCH_EMPTY_RE.test(line)) {
-      return { paths: [], isEmpty: true, note: line };
+      return {
+        paths: [],
+        isEmpty: true,
+        note: [line, ...noteLines].join(" "),
+      };
     }
 
     const errorMatch = line.match(SEARCH_ERROR_RE);
     if (errorMatch?.[1]) {
-      return { paths: [], isEmpty: true, note: `ERROR: ${errorMatch[1].trim()}` };
+      return {
+        paths: [],
+        isEmpty: true,
+        note: [`ERROR: ${errorMatch[1].trim()}`, ...noteLines].join(" "),
+      };
     }
 
     // Extract path from `path:lineNum:content` (grep content mode)
     // or `path:lineNum` (grep count mode)
     // or plain path
     let filePath = line;
-    const colonMatch = line.match(/^(.+?\.\w+):(\d+)/);
+    const colonMatch = line.match(/^(.+?\.\w+)[:-](\d+)/);
     if (colonMatch?.[1]) {
       filePath = colonMatch[1];
     }
@@ -472,7 +496,7 @@ export function parseSearchResult(result: unknown): ParsedSearchResult {
 
   const paths = Array.from(pathSet);
   const parsed: ParsedSearchResult = { paths, isEmpty: paths.length === 0 };
-  if (note !== undefined) parsed.note = note;
+  if (noteLines.length > 0) parsed.note = noteLines.join(" ");
   return parsed;
 }
 

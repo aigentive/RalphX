@@ -30,6 +30,7 @@ fn sample_info() -> PendingQuestionInfo {
         batch_index: None,
         batch_total: None,
         metadata: None,
+        created_at: "2026-07-10T00:00:00+00:00".to_string(),
     }
 }
 
@@ -72,6 +73,7 @@ async fn test_skip_and_batch_metadata_round_trip() {
             "kind": "plan_mode_proposal",
             "conversation_id": "conversation-1",
         })),
+        created_at: "2026-07-10T00:00:00+00:00".to_string(),
     };
     repo.create_pending(&info).await.unwrap();
 
@@ -170,6 +172,7 @@ async fn test_expire_all_pending() {
             batch_index: None,
             batch_total: None,
             metadata: None,
+            created_at: "2026-07-10T00:00:00+00:00".to_string(),
         };
         repo.create_pending(&info).await.unwrap();
     }
@@ -226,6 +229,7 @@ async fn test_expire_all_pending_via_question_state() {
             batch_index: None,
             batch_total: None,
             metadata: None,
+            created_at: "2026-07-10T00:00:00+00:00".to_string(),
         };
         repo.create_pending(&info).await.unwrap();
     }
@@ -297,6 +301,7 @@ async fn test_multi_select_round_trip() {
         batch_index: None,
         batch_total: None,
         metadata: None,
+        created_at: "2026-07-10T00:00:00+00:00".to_string(),
     };
     repo.create_pending(&info).await.unwrap();
 

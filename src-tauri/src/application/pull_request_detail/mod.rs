@@ -35,8 +35,9 @@ use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, PlanBranchRepository, ProjectRepository,
 };
 use crate::domain::services::github_service::{
-    GithubConnectionStatus, GithubServiceTrait, PrDetail, PrHealth, PrHealthCheck,
-    PrIssueCommentSummary, PrReviewFeedback, PrReviewThreadComment, PrStatus,
+    GithubConnectionDiagnostic, GithubConnectionState, GithubConnectionStatus, GithubServiceTrait,
+    PrDetail, PrHealth, PrHealthCheck, PrIssueCommentSummary, PrReviewFeedback,
+    PrReviewThreadComment, PrStatus,
 };
 use crate::error::AppError;
 use crate::utils::path_safety::validate_absolute_non_root_path;
@@ -121,9 +122,20 @@ pub async fn load_pull_request_detail(
     let status = github
         .fetch_github_connection_status()
         .await
-        .unwrap_or_else(|_| GithubConnectionStatus::unavailable());
-    if !status.authenticated {
-        return PullRequestDetail::empty(PullRequestDetailState::GhUnauthenticated);
+        .unwrap_or_else(|_| {
+            GithubConnectionStatus::probe_failed(GithubConnectionDiagnostic::ServiceFailure)
+        });
+    match status.state {
+        GithubConnectionState::Authenticated => {}
+        GithubConnectionState::Unauthenticated | GithubConnectionState::CredentialRejected => {
+            return PullRequestDetail::empty(PullRequestDetailState::GhUnauthenticated);
+        }
+        GithubConnectionState::ProviderUnavailable | GithubConnectionState::ProbeFailed => {
+            return PullRequestDetail::empty(PullRequestDetailState::FetchUnavailable);
+        }
+        GithubConnectionState::CliUnavailable => {
+            return PullRequestDetail::empty(PullRequestDetailState::CliUnavailable);
+        }
     }
 
     // 4. Resolve the PR holder (DB-first; live only for external branches).
@@ -135,7 +147,8 @@ pub async fn load_pull_request_detail(
         request.pr_number,
         request.branch.as_deref(),
     )
-    .await else {
+    .await
+    else {
         return PullRequestDetail::empty(PullRequestDetailState::NoPr);
     };
 
@@ -182,7 +195,9 @@ pub async fn load_pull_request_detail(
         .as_ref()
         .map(|health| health.checks.iter().map(map_check).collect())
         .unwrap_or_default();
-    let review_decision = health.as_ref().and_then(|health| health.review_decision.clone());
+    let review_decision = health
+        .as_ref()
+        .and_then(|health| health.review_decision.clone());
 
     let review_feedback = match feedback_result {
         Ok(feedback) => feedback,
@@ -341,7 +356,10 @@ async fn resolve_pr(
         });
     }
     // External: a single live head-branch lookup.
-    if let Ok(Some(found)) = github.find_latest_pr_by_head_branch(working_dir, branch).await {
+    if let Ok(Some(found)) = github
+        .find_latest_pr_by_head_branch(working_dir, branch)
+        .await
+    {
         return Some(ResolvedPr {
             number: found.number,
             head_ref: Some(branch.to_string()),
@@ -380,13 +398,7 @@ async fn build_issue_comments(
             .collect()
     } else {
         health
-            .map(|health| {
-                health
-                    .issue_comments
-                    .iter()
-                    .map(map_live_comment)
-                    .collect()
-            })
+            .map(|health| health.issue_comments.iter().map(map_live_comment).collect())
             .unwrap_or_default()
     }
 }

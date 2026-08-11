@@ -8,8 +8,6 @@ use super::{
 pub struct ChildSessionDraftInput {
     pub title: Option<String>,
     pub inherit_context: bool,
-    pub team_mode: Option<String>,
-    pub team_config_json: Option<String>,
     pub source_task_id: Option<String>,
     pub source_context_type: Option<String>,
     pub source_context_id: Option<String>,
@@ -56,15 +54,14 @@ pub fn build_child_session(
         builder = builder.title(title);
     }
     if input.inherit_context {
-        if let Some(plan_artifact_id) = parent.plan_artifact_id.clone() {
-            builder = builder.inherited_plan_artifact_id(plan_artifact_id);
+        if let Some(bundle) = parent.plan_artifact_bundle() {
+            builder = builder
+                .inherited_plan_artifact_id(bundle.overview_id)
+                .plan_contract_version(bundle.contract_version);
+            if let Some(blueprint_id) = bundle.blueprint_id {
+                builder = builder.inherited_plan_blueprint_artifact_id(blueprint_id);
+            }
         }
-    }
-    if let Some(team_mode) = input.team_mode {
-        builder = builder.team_mode(team_mode);
-    }
-    if let Some(team_config_json) = input.team_config_json {
-        builder = builder.team_config_json(team_config_json);
     }
     if let Some(source_project_id) = parent.source_project_id.clone() {
         builder = builder.source_project_id(source_project_id);

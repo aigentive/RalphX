@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) fn emit_plan_update_events(
-    app_handle: &tauri::AppHandle,
+    state: &HttpServerState,
     created: &Artifact,
     old_artifact_id_str: &str,
     sessions: &[IdeationSession],
@@ -16,7 +16,7 @@ pub(super) fn emit_plan_update_events(
     if verification_reset {
         if let Some(session) = sessions.first() {
             emit_verification_status_changed(
-                app_handle,
+                state.app_state.events.as_ref(),
                 session.id.as_str(),
                 VerificationStatus::Unverified,
                 false,
@@ -27,7 +27,8 @@ pub(super) fn emit_plan_update_events(
         }
     }
 
-    let _ = app_handle.emit(
+    crate::http_server::emit_http_event(
+        state,
         "plan_artifact:updated",
         serde_json::json!({
             "artifactId": created.id.as_str(),
@@ -51,6 +52,10 @@ pub(super) fn emit_plan_update_events(
             session_id: sessions.first().map(|s| s.id.to_string()),
             proposals_relinked: true,
         };
-        let _ = app_handle.emit("plan:proposals_may_need_update", payload);
+        crate::http_server::emit_serialized_http_event(
+            state,
+            "plan:proposals_may_need_update",
+            &payload,
+        );
     }
 }

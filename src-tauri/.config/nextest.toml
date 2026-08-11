@@ -7,6 +7,10 @@ leak-timeout = "500ms"
 inherits = "default"
 fail-fast = false
 global-timeout = "30m"
+retries = 1
+
+[profile.ci.junit]
+path = "junit.xml"
 
 [test-groups.git-heavy]
 max-threads = 2

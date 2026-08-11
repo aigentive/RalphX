@@ -98,12 +98,12 @@ function createMockUpdate(): Update {
   };
 }
 
-export async function check(): Promise<Update | null> {
+export async function check(options?: { target?: string }): Promise<Update | null> {
   if (!shouldReturnMockUpdate()) {
-    console.debug("[mock] updater.check called - returning null (no update)");
+    console.debug("[mock] updater.check called - returning null (no update)", options);
     return null;
   }
 
-  console.debug("[mock] updater.check called - returning mock update");
+  console.debug("[mock] updater.check called - returning mock update", options);
   return createMockUpdate();
 }

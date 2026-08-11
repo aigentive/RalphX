@@ -1,508 +1,128 @@
-import { expect, test, type Locator } from "@playwright/test";
-import {
-  setupIdeationChatScenario,
-  setupTaskChatScenario,
-} from "../../../fixtures/chat.fixtures";
-import { IDEATION_REPLAY_CONTEXTS } from "@/api-mock/chat-scenarios";
+import { expect, test, type Page } from "@playwright/test";
 
-async function expandWidget(widget: Locator) {
-  await widget.locator('[role="button"]').first().click();
-}
+const SUMMARY =
+  "Agent called 5 tools, created 1 file, edited 2 files, and delegated 2 agents.";
 
-function collapsedToolCallGroupToggles(root: Locator) {
-  return root.getByRole("button", { name: /^Agent called \d+ tools?$/ });
-}
-
-async function expandToolCallGroups(root: Locator) {
-  await expect(collapsedToolCallGroupToggles(root).first()).toBeVisible({ timeout: 10000 });
-
-  for (let index = 0; index < 20; index += 1) {
-    const toggles = collapsedToolCallGroupToggles(root);
-    const collapsedCount = await toggles.count();
-    if (collapsedCount === 0) {
-      return;
-    }
-    await toggles.first().click();
-    await expect
-      .poll(async () => collapsedToolCallGroupToggles(root).count())
-      .toBeLessThan(collapsedCount);
-  }
-}
-
-async function expectAndAttachScreenshot(
-  widget: Locator,
-  snapshotName: string,
-  _attachmentName: string,
-  _attach: (name: string, options: { body: Buffer; contentType: string }) => Promise<void>,
+async function openChatActivityPage(
+  page: Page,
+  options: { theme: "dark" | "light"; width: number },
 ) {
-  // Tolerate minor cross-platform font/anti-aliasing rendering differences
-  // (Apple Silicon dev vs CI runner). Empirically these widget cards drift
-  // up to ~3% pixels even with no source change; 4% gives headroom while
-  // still catching meaningful visual regressions.
-  await expect(widget).toHaveScreenshot(snapshotName, { maxDiffPixelRatio: 0.04 });
+  await page.setViewportSize({ width: options.width, height: 900 });
+  await page.goto(`/?test=chat-activity&theme=${options.theme}`);
+  await page.waitForLoadState("networkidle");
+  await expect(page.getByTestId("chat-activity-visual-test-page")).toBeVisible();
 }
 
-async function expectAndAttachViewportClipScreenshot(
-  widget: Locator,
-  snapshotName: string,
-  attachmentName: string,
-  attach: (name: string, options: { body: Buffer; contentType: string }) => Promise<void>,
-  clipSize?: { width: number; height: number },
-) {
-  await expect(widget).toBeVisible();
-  const clip = await widget.evaluate((element, size) => {
-    const rect = element.getBoundingClientRect();
-    const x = Math.max(0, Math.floor(rect.x));
-    const y = Math.max(0, Math.floor(rect.y));
-    return {
-      x,
-      y,
-      width: size?.width ?? Math.ceil(rect.right - x),
-      height: size?.height ?? Math.ceil(rect.bottom - y),
-    };
-  }, clipSize);
-  const screenshot = await widget.page().screenshot({
-    animations: "disabled",
-    clip,
+test.describe("shared chat activity presentation", () => {
+  test("renders provider-neutral collapsed summaries and promoted delegation cards", async ({ page }) => {
+    await openChatActivityPage(page, { theme: "dark", width: 1180 });
+
+    await expect(page.getByText(SUMMARY)).toHaveCount(2);
+    await expect(page.getByTestId("task-tool-call-card")).toHaveCount(4);
+    await expect(page.getByTestId("streaming-tool-indicator")).toHaveCount(0);
+    const providerFixtures = page.getByTestId(/chat-activity-(?:claude|codex)/);
+    await expect(providerFixtures.getByTestId("thinking-group-toggle")).toHaveCount(2);
+    await expect(page).toHaveScreenshot("chat-activity-provider-parity-dark.png", {
+      animations: "disabled",
+      fullPage: true,
+    });
   });
-  await attach(attachmentName, { body: screenshot, contentType: "image/png" });
-  expect(screenshot).toMatchSnapshot(snapshotName, { maxDiffPixelRatio: 0.04 });
-}
 
-type ChildSessionStatusOverride = {
-  response?: unknown;
-  error?: string;
-  delayMs?: number;
-};
+  test("renders thinking expanded by default and preserves manual toggling", async ({ page }) => {
+    await openChatActivityPage(page, { theme: "dark", width: 760 });
+    const fixture = page.getByTestId("chat-activity-claude");
+    const toggle = fixture.getByTestId("thinking-group-toggle");
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await expect(toggle).toHaveText("Agent thought for 2s");
+    await expect(fixture.getByTestId("thinking-scroll-body")).toBeVisible();
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await expect(fixture.getByTestId("thinking-scroll-body")).toHaveCount(0);
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await expect(fixture.getByTestId("thinking-scroll-body")).toBeVisible();
+    await expect(page).toHaveScreenshot("chat-thinking-expanded-dark-narrow.png", {
+      animations: "disabled",
+      fullPage: true,
+    });
+  });
 
-async function focusIdeationWidgetBlocks(
-  page: Parameters<typeof setupIdeationChatScenario>[0],
-  blockIds: string[],
-  childSessionOverrides?: Record<string, ChildSessionStatusOverride>,
-) {
-  await page.evaluate(async ({ conversationId, selectedBlockIds, overrides }) => {
-    const mockChatApi = (window as Window).__mockChatApi;
-    const queryClient = (window as Window).__queryClient;
+  test("renders streaming, token-progress, and settled thinking states", async ({ page }, testInfo) => {
+    await openChatActivityPage(page, { theme: "dark", width: 1180 });
 
-    if (!mockChatApi || !queryClient) {
-      throw new Error("Expected mock chat API and query client to be available");
+    const states = [
+      {
+        testId: "thinking-state-streaming",
+        accessibleName: "Agent thinking… Expand thinking details.",
+        attachmentName: "thinking-streaming",
+        snapshotName: "chat-thinking-streaming-pill-dark.png",
+      },
+      {
+        testId: "thinking-state-token-progress",
+        accessibleName: "Agent thinking… · ~2,000 tokens Expand thinking details.",
+        attachmentName: "thinking-token-progress",
+        snapshotName: "chat-thinking-token-progress-pill-dark.png",
+      },
+      {
+        testId: "thinking-state-settled",
+        accessibleName: "Agent thought for 2s Expand thinking details.",
+        attachmentName: "thinking-settled",
+        snapshotName: "chat-thinking-settled-pill-dark.png",
+      },
+      {
+        testId: "thinking-state-grouped",
+        accessibleName: "Agent thought for 6s · 3 steps Expand thinking details.",
+        attachmentName: "thinking-grouped",
+        snapshotName: "chat-thinking-grouped-pill-dark.png",
+      },
+    ] as const;
+
+    for (const state of states) {
+      const fixture = page.getByTestId(state.testId);
+      await expect(fixture.getByRole("button", { name: state.accessibleName })).toHaveAttribute(
+        "aria-expanded",
+        "false",
+      );
+      const screenshot = await fixture.screenshot({ animations: "disabled" });
+      await testInfo.attach(state.attachmentName, {
+        body: screenshot,
+        contentType: "image/png",
+      });
+      await expect(fixture).toHaveScreenshot(state.snapshotName, {
+        animations: "disabled",
+      });
     }
+  });
 
-    mockChatApi.seedScenario("ideation_widget_matrix");
-    for (const [sessionId, override] of Object.entries(overrides ?? {})) {
-      mockChatApi.setChildSessionStatusOverride(sessionId, override);
-    }
+  test("keeps the activity sentence stable when details expand", async ({ page }) => {
+    await openChatActivityPage(page, { theme: "light", width: 760 });
 
-    const payload = await mockChatApi.getConversation(conversationId);
-    const selected = new Set(selectedBlockIds);
-    const messages = payload.messages.map((message) => {
-      if (message.id !== "msg-ideation-widget-assistant-1") {
-        return message;
-      }
-      return {
-        ...message,
-        contentBlocks:
-          message.contentBlocks?.filter((block) => {
-            if (!block || typeof block !== "object" || block.type !== "tool_use") {
-              return true;
-            }
-            return typeof block.id === "string" && selected.has(block.id);
-          }) ?? null,
-      };
+    const claudeFixture = page.getByTestId("chat-activity-claude");
+    const toggle = claudeFixture.getByTestId("tool-call-group-toggle");
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await expect(claudeFixture.getByText(SUMMARY)).toBeVisible();
+    await expect(claudeFixture.getByTestId("diff-tool-call-view")).toHaveCount(2);
+
+    await expect(page).toHaveScreenshot("chat-activity-expanded-light-narrow.png", {
+      animations: "disabled",
+      fullPage: true,
     });
+  });
 
-    mockChatApi.replaceMessages(conversationId, messages);
-    const focusedPayload = await mockChatApi.getConversation(conversationId);
-    queryClient.setQueryData(["chat", "conversations", conversationId], focusedPayload);
-    queryClient.setQueryData(["chat", "conversations", conversationId, "history"], {
-      pages: [
-        {
-          conversation: focusedPayload.conversation,
-          messages: focusedPayload.messages,
-          limit: 40,
-          offset: 0,
-          totalMessageCount: focusedPayload.messages.length,
-          hasOlder: false,
-        },
-      ],
-      pageParams: [0],
+  test("shows provider-correct processed and cached-input usage", async ({ page }) => {
+    await openChatActivityPage(page, { theme: "dark", width: 1180 });
+
+    await page.getByRole("button", { name: "Conversation stats" }).click();
+    await expect(page.getByText("9.1m")).toHaveCount(2);
+    await expect(page.getByText("Cached input", { exact: true })).toBeVisible();
+    await expect(page.getByText(/already included in Codex Input/)).toBeVisible();
+    await expect(page.getByText("1 provider-fallback sample(s)")).toBeVisible();
+
+    await expect(page).toHaveScreenshot("chat-usage-provider-correct-dark.png", {
+      animations: "disabled",
+      fullPage: true,
     });
-    queryClient.setQueryData(["chat", "conversations", conversationId, "timeline"], {
-      pages: [await mockChatApi.getConversationTimelinePage(conversationId, 40, null)],
-      pageParams: [null],
-    });
-  }, {
-    conversationId: IDEATION_REPLAY_CONTEXTS.ideation_widget_matrix.conversationId,
-    selectedBlockIds: blockIds,
-    overrides: childSessionOverrides ?? {},
-  });
-}
-
-const CHILD_SESSION_VISUAL_OVERRIDES = {
-  "child-session-loading-1": { delayMs: 120_000 },
-  "child-session-error-1": {
-    error: "Unable to load child session in visual test",
-  },
-};
-
-test.describe("Chat Widget Matrix", () => {
-  test("proposal widget states", async ({ page }, testInfo) => {
-    await setupIdeationChatScenario(page, "ideation_widget_matrix");
-    await focusIdeationWidgetBlocks(page, [
-      "proposal-create-1",
-      "proposal-update-1",
-      "proposal-delete-1",
-    ]);
-    await expandToolCallGroups(page.locator("body"));
-
-    const createWidget = page.locator('[data-testid="proposal-widget-created"]');
-    const updateWidget = page.locator('[data-testid="proposal-widget-updated"]');
-    const deleteWidget = page.locator('[data-testid="proposal-widget-deleted"]');
-
-    await expect(createWidget).toBeVisible();
-    await expect(updateWidget).toBeVisible();
-    await expect(deleteWidget).toBeVisible();
-
-    await expectAndAttachScreenshot(
-      createWidget,
-      "proposal-widget-created.png",
-      "proposal-widget-created",
-      testInfo.attach.bind(testInfo),
-    );
-    await expectAndAttachScreenshot(
-      updateWidget,
-      "proposal-widget-updated.png",
-      "proposal-widget-updated",
-      testInfo.attach.bind(testInfo),
-    );
-    await expectAndAttachScreenshot(
-      deleteWidget,
-      "proposal-widget-deleted.png",
-      "proposal-widget-deleted",
-      testInfo.attach.bind(testInfo),
-    );
-  });
-
-  test("verification widget states", async ({ page }, testInfo) => {
-    await setupIdeationChatScenario(page, "ideation_widget_matrix");
-    await focusIdeationWidgetBlocks(page, [
-      "verification-update-1",
-      "verification-get-1",
-      "verification-pending-1",
-    ]);
-    await expandToolCallGroups(page.locator("body"));
-
-    const roundReportWidget = page.locator('[data-testid="verification-widget-round-report"]');
-    const getWidget = page.locator('[data-testid="verification-widget-get"]');
-    const pendingWidget = page.locator('[data-testid="verification-widget-pending"]');
-
-    await expect(roundReportWidget).toBeVisible();
-    await expect(getWidget).toBeVisible();
-    await expect(pendingWidget).toBeVisible();
-
-    await expectAndAttachScreenshot(
-      roundReportWidget,
-      "verification-widget-round-report.png",
-      "verification-widget-round-report",
-      testInfo.attach.bind(testInfo),
-    );
-    await expectAndAttachScreenshot(
-      getWidget,
-      "verification-widget-get.png",
-      "verification-widget-get",
-      testInfo.attach.bind(testInfo),
-    );
-    await expectAndAttachScreenshot(
-      pendingWidget,
-      "verification-widget-pending.png",
-      "verification-widget-pending",
-      testInfo.attach.bind(testInfo),
-    );
-  });
-
-  test("send message and ideation widget states", async ({ page }, testInfo) => {
-    await setupIdeationChatScenario(page, "ideation_widget_matrix");
-    await focusIdeationWidgetBlocks(page, [
-      "send-message-broadcast-1",
-      "ask-question-1",
-      "plan-create-1",
-      "plan-update-1",
-    ]);
-    await expandToolCallGroups(page.locator("body"));
-
-    const sendMessageWidget = page.locator('[data-testid="send-message-widget-broadcast"]');
-    const askQuestionWidget = page.locator('[data-testid="ideation-widget-ask-question"]');
-    const createPlanWidget = page.locator('[data-testid="ideation-widget-create-plan"]');
-    const updatePlanWidget = page.locator('[data-testid="ideation-widget-update-plan"]');
-
-    await expect(sendMessageWidget).toBeVisible();
-    await expect(askQuestionWidget).toBeVisible();
-    await expect(createPlanWidget).toBeVisible();
-    await expect(updatePlanWidget).toBeVisible();
-
-    await expectAndAttachScreenshot(
-      askQuestionWidget,
-      "ideation-widget-ask-question.png",
-      "ideation-widget-ask-question",
-      testInfo.attach.bind(testInfo),
-    );
-    await expectAndAttachScreenshot(
-      createPlanWidget,
-      "ideation-widget-create-plan.png",
-      "ideation-widget-create-plan",
-      testInfo.attach.bind(testInfo),
-    );
-    await expectAndAttachScreenshot(
-      updatePlanWidget,
-      "ideation-widget-update-plan.png",
-      "ideation-widget-update-plan",
-      testInfo.attach.bind(testInfo),
-    );
-
-    await sendMessageWidget.getByRole("button").click();
-    await expectAndAttachScreenshot(
-      sendMessageWidget,
-      "send-message-widget-broadcast.png",
-      "send-message-widget-broadcast",
-      testInfo.attach.bind(testInfo),
-    );
-  });
-
-  test("active child session widget state", async ({ page }, testInfo) => {
-    await setupIdeationChatScenario(page, "ideation_widget_matrix", {
-      childSessionOverrides: CHILD_SESSION_VISUAL_OVERRIDES,
-    });
-
-    await focusIdeationWidgetBlocks(page, ["child-session-active-1"]);
-    await expandToolCallGroups(page.locator("body"));
-    const activeWidget = page.locator('[data-testid="child-session-widget-active"]').first();
-    await expect(activeWidget).toBeVisible();
-    await expandWidget(activeWidget);
-    await expectAndAttachScreenshot(
-      activeWidget,
-      "child-session-widget-active.png",
-      "child-session-widget-active",
-      testInfo.attach.bind(testInfo),
-    );
-  });
-
-  test("pending child session widget state", async ({ page }, testInfo) => {
-    await setupIdeationChatScenario(page, "ideation_widget_matrix", {
-      childSessionOverrides: CHILD_SESSION_VISUAL_OVERRIDES,
-    });
-
-    await focusIdeationWidgetBlocks(page, ["child-session-pending-1"]);
-    await expandToolCallGroups(page.locator("body"));
-    const pendingWidget = page.locator('[data-testid="child-session-widget-pending"]').first();
-    await expect(pendingWidget).toBeVisible();
-    await expectAndAttachScreenshot(
-      pendingWidget,
-      "child-session-widget-pending.png",
-      "child-session-widget-pending",
-      testInfo.attach.bind(testInfo),
-    );
-  });
-
-  test("loading child session widget state", async ({ page }, testInfo) => {
-    await setupIdeationChatScenario(page, "ideation_widget_matrix", {
-      childSessionOverrides: CHILD_SESSION_VISUAL_OVERRIDES,
-    });
-
-    await focusIdeationWidgetBlocks(page, ["child-session-loading-1"], CHILD_SESSION_VISUAL_OVERRIDES);
-    await expandToolCallGroups(page.locator("body"));
-    const loadingWidget = page.locator('[data-testid="child-session-widget-loading"]').first();
-    await expect(loadingWidget).toBeVisible();
-    await expandWidget(loadingWidget);
-    await expectAndAttachScreenshot(
-      loadingWidget,
-      "child-session-widget-loading.png",
-      "child-session-widget-loading",
-      testInfo.attach.bind(testInfo),
-    );
-  });
-
-  test("error child session widget state", async ({ page }, testInfo) => {
-    await setupIdeationChatScenario(page, "ideation_widget_matrix", {
-      childSessionOverrides: CHILD_SESSION_VISUAL_OVERRIDES,
-    });
-
-    await focusIdeationWidgetBlocks(page, ["child-session-error-1"], CHILD_SESSION_VISUAL_OVERRIDES);
-    await expandToolCallGroups(page.locator("body"));
-    const errorWidget = page.locator('[data-testid="child-session-widget-error"]').first();
-    await expect(errorWidget).toBeVisible();
-    await expandWidget(errorWidget);
-    await expectAndAttachScreenshot(
-      errorWidget,
-      "child-session-widget-error.png",
-      "child-session-widget-error",
-      testInfo.attach.bind(testInfo),
-    );
-  });
-
-  test("native delegation task card states", async ({ page }, testInfo) => {
-    await setupIdeationChatScenario(page, "ideation_widget_matrix");
-
-    await focusIdeationWidgetBlocks(page, ["delegate-wait-1"]);
-    await expandToolCallGroups(page.locator("body"));
-    const completedDelegationCard = page
-      .locator('[data-testid="task-tool-call-card"]')
-      .filter({ hasText: "ralphx-execution-reviewer" })
-      .first();
-    await expect(completedDelegationCard).toBeVisible();
-    await expectAndAttachScreenshot(
-      completedDelegationCard,
-      "delegation-widget-collapsed.png",
-      "delegation-widget-collapsed",
-      testInfo.attach.bind(testInfo),
-    );
-    await completedDelegationCard.getByRole("button").click();
-    await expectAndAttachScreenshot(
-      completedDelegationCard,
-      "delegation-widget-expanded.png",
-      "delegation-widget-expanded",
-      testInfo.attach.bind(testInfo),
-    );
-
-    await focusIdeationWidgetBlocks(page, ["delegate-start-failed-1"]);
-    const failedDelegationCard = page
-      .locator('[data-testid="task-tool-call-card"]')
-      .filter({ hasText: "ralphx-execution-fixer" })
-      .first();
-    await expect(failedDelegationCard).toBeVisible();
-    await expectAndAttachScreenshot(
-      failedDelegationCard,
-      "delegation-widget-failed.png",
-      "delegation-widget-failed",
-      testInfo.attach.bind(testInfo),
-    );
-
-    await focusIdeationWidgetBlocks(page, ["delegate-start-cancelled-1"]);
-    const cancelledDelegationCard = page
-      .locator('[data-testid="task-tool-call-card"]')
-      .filter({ hasText: "ralphx-merge-auditor" })
-      .first();
-    await expect(cancelledDelegationCard).toBeVisible();
-    await expectAndAttachScreenshot(
-      cancelledDelegationCard,
-      "delegation-widget-cancelled.png",
-      "delegation-widget-cancelled",
-      testInfo.attach.bind(testInfo),
-    );
-
-    await focusIdeationWidgetBlocks(page, ["agent-card-1"]);
-    const agentCard = page
-      .locator('[data-testid="task-tool-call-card"]')
-      .filter({ hasText: "frontend-researcher" })
-      .first();
-    await expect(agentCard).toBeVisible();
-    await expectAndAttachScreenshot(
-      agentCard,
-      "agent-widget-collapsed.png",
-      "agent-widget-collapsed",
-      testInfo.attach.bind(testInfo),
-    );
-    await agentCard.getByRole("button").click();
-    await expectAndAttachScreenshot(
-      agentCard,
-      "agent-widget-expanded.png",
-      "agent-widget-expanded",
-      testInfo.attach.bind(testInfo),
-    );
-
-    await focusIdeationWidgetBlocks(page, ["task-card-1"]);
-    const taskCard = page
-      .locator('[data-testid="task-tool-call-card"]')
-      .filter({ hasText: "Run repository smoke checks" })
-      .first();
-
-    await expect(taskCard).toBeVisible();
-    await expectAndAttachScreenshot(
-      taskCard,
-      "task-widget-collapsed.png",
-      "task-widget-collapsed",
-      testInfo.attach.bind(testInfo),
-    );
-    await taskCard.getByRole("button").click();
-    await expectAndAttachScreenshot(
-      taskCard,
-      "task-widget-expanded.png",
-      "task-widget-expanded",
-      testInfo.attach.bind(testInfo),
-    );
-  });
-
-  test("review widget states", async ({ page }, testInfo) => {
-    await setupTaskChatScenario(page, "review_widget_matrix");
-    await expandToolCallGroups(page.locator("body"));
-
-    const completeWidget = page.locator('[data-testid="review-widget-complete"]');
-    const notesWidget = page.locator('[data-testid="review-widget-notes"]');
-
-    await expect(completeWidget).toBeVisible();
-    await expect(notesWidget).toBeVisible();
-
-    await completeWidget.click();
-    await notesWidget.getByRole("button").click();
-
-    await expectAndAttachScreenshot(
-      completeWidget,
-      "review-widget-complete.png",
-      "review-widget-complete",
-      testInfo.attach.bind(testInfo),
-    );
-    await expectAndAttachScreenshot(
-      notesWidget,
-      "review-widget-notes.png",
-      "review-widget-notes",
-      testInfo.attach.bind(testInfo),
-    );
-  });
-
-  test("merge widget states", async ({ page }, testInfo) => {
-    await page.setViewportSize({ width: 1280, height: 800 });
-    await setupTaskChatScenario(page, "merge_widget_matrix");
-    await expandToolCallGroups(page.locator("body"));
-
-    const targetWidget = page.locator('[data-testid="merge-widget-target"]');
-    const conflictWidget = page.locator('[data-testid="merge-widget-conflict"]');
-    const incompleteWidget = page.locator('[data-testid="merge-widget-incomplete"]');
-    const completeWidget = page.locator('[data-testid="merge-widget-complete"]');
-
-    await expect(targetWidget).toBeVisible();
-    await expect(conflictWidget).toBeVisible();
-    await expect(incompleteWidget).toBeVisible();
-    await expect(completeWidget).toBeVisible();
-
-    await conflictWidget.getByRole("button").click({ force: true });
-    await incompleteWidget.getByRole("button").click({ force: true });
-
-    await expectAndAttachViewportClipScreenshot(
-      targetWidget,
-      "merge-widget-target.png",
-      "merge-widget-target",
-      testInfo.attach.bind(testInfo),
-      { width: 553, height: 34 },
-    );
-    await expectAndAttachViewportClipScreenshot(
-      conflictWidget,
-      "merge-widget-conflict.png",
-      "merge-widget-conflict",
-      testInfo.attach.bind(testInfo),
-      { width: 553, height: 95 },
-    );
-    await expectAndAttachViewportClipScreenshot(
-      incompleteWidget,
-      "merge-widget-incomplete.png",
-      "merge-widget-incomplete",
-      testInfo.attach.bind(testInfo),
-      { width: 553, height: 101 },
-    );
-    await expectAndAttachViewportClipScreenshot(
-      completeWidget,
-      "merge-widget-complete.png",
-      "merge-widget-complete",
-      testInfo.attach.bind(testInfo),
-      { width: 553, height: 60 },
-    );
   });
 });

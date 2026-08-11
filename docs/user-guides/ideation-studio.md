@@ -1,5 +1,25 @@
 # Ideation Studio User Guide
 
+## Agent conversation planning
+
+Use **Plan** for supervised native planning. After approving the exact current
+draft, choose **Create Proposals** to enter **Tasks** and review decomposition.
+No execution begins until you choose **Start Tasks**.
+
+The **Tasks** artifact stays attached to the same conversation, branch, and pull request. After
+execution unlocks you can return to it, and you can request a small follow-up on
+the same open PR without creating another plan. Closed or merged work starts
+again in Plan.
+
+**Autopilot** is an optional Agent capability in Settings. It allows native
+conversations to plan and start orchestration with minimal supervision. It is
+hidden and rejected by native APIs by default; external MCP integrations retain
+their existing autonomous flow.
+
+Ideation is embedded in the Agents workspace. Plan, proposal, and task
+artifacts stay attached to the conversation that created them; there is no
+separate Ideation root route.
+
 The Ideation Studio is where every feature in RalphX begins. You describe what you want to build, and a team of AI agents researches your codebase, designs an implementation plan, and creates a set of ready-to-execute tasks. Those tasks then flow automatically through execution, review, and the merge pipeline — turning an idea into merged code with minimal manual intervention.
 
 ---
@@ -8,14 +28,14 @@ The Ideation Studio is where every feature in RalphX begins. You describe what y
 
 | Question | Answer |
 |----------|--------|
-| How do I start? | Open the Ideation view, click **New Session**, describe what you want to build. |
+| How do I start? | Open **Agents**, start a conversation, and choose **Plan** to describe what you want to build. |
 | Which mode should I choose? | **Solo** for quick fixes and simple features. **Research Team** for anything touching 2+ layers. **Debate Team** for architecture decisions. |
-| What happens after I approve the plan? | RalphX creates tasks automatically and sets the plan as your Active Plan — tasks appear on Kanban and Graph immediately. |
-| Can I edit a proposal before tasks are created? | Yes — proposals are shown in the CONFIRM phase. Reject the plan or ask for changes before approving. |
+| What happens after I approve the plan? | RalphX creates proposals for review in the conversation's **Tasks** artifact; execution begins only after you choose **Start Tasks**. |
+| Can I edit a proposal before tasks are created? | Yes — review and revise proposals in **Tasks** after **Create Proposals**, before choosing **Start Tasks**. |
 | Can I message individual team members? | Yes — use the Team Activity panel to send a message to the lead or any specialist directly. |
-| What is an Active Plan? | A focused filter. Selecting an accepted ideation session as your Active Plan makes Kanban and Graph show only tasks from that plan. |
-| Where do tasks go after the plan is accepted? | Into the execution pipeline: Pending → Executing → QA → Review → Approved → PendingMerge → Merged. |
-| What's the full journey? | Ideation → Plan → Tasks → Execution → Review → **Merge Pipeline** → Done. |
+| What is an Active Plan? | A focused filter. Selecting an accepted plan makes the embedded task views show only tasks from that plan. |
+| Where do tasks go after I choose **Start Tasks**? | Into the execution pipeline: Pending → Executing → QA → Review → Approved → PendingMerge → Merged. |
+| What's the full journey? | Agents → Plan → Tasks → Start Tasks → Execution → Review → **Merge Pipeline** → Done. |
 
 ---
 
@@ -23,15 +43,9 @@ The Ideation Studio is where every feature in RalphX begins. You describe what y
 
 1. [Overview](#overview)
 2. [Starting an Ideation Session](#starting-an-ideation-session)
-   - [Session Modes](#session-modes)
-   - [Team Configuration](#team-configuration)
 3. [The Orchestrator Workflow](#the-orchestrator-workflow)
-4. [Working with the Team Activity Panel](#working-with-the-team-activity-panel)
-   - [Messaging Teammates](#messaging-teammates)
-   - [Token Cost Breakdown](#token-cost-breakdown)
-5. [The Plan Artifact](#the-plan-artifact)
+4. [The Plan Artifact](#the-plan-artifact)
    - [Reviewing the Plan](#reviewing-the-plan)
-   - [Debate Summary (Debate Team Mode)](#debate-summary-debate-team-mode)
 6. [Proposals and the CONFIRM Gate](#proposals-and-the-confirm-gate)
 7. [Accepting the Plan and Creating Tasks](#accepting-the-plan-and-creating-tasks)
 8. [Active Plan: Tracking Your Work](#active-plan-tracking-your-work)
@@ -53,20 +67,20 @@ RalphX structures feature development as a gated pipeline. The Ideation Studio i
 You describe a feature
         |
         v
-  Ideation Studio
-  (plan + proposals)
+  Agents workspace
         |
         v
-  Active Plan selected
+  Plan artifact
         |
         v
-  Tasks on Kanban / Graph
+  Tasks artifact
+  (Active Plan; Kanban / Graph modes)
         |
         v
   Execution  →  Review  →  Merge Pipeline  →  Merged Code
 ```
 
-The AI orchestrator (or a team of agents in team mode) does the research and planning work. You stay in control through two hard checkpoints: the **CONFIRM gate** (approve the plan before proposals are created) and the **Review gate** (approve code before it merges).
+The AI orchestrator does the research and planning work, using bounded exploration delegates when useful. You stay in control through two hard checkpoints: the **CONFIRM gate** (approve the plan before proposals are created) and the **Review gate** (approve code before it merges).
 
 ---
 
@@ -74,44 +88,13 @@ The AI orchestrator (or a team of agents in team mode) does the research and pla
 
 ### How to Start
 
-1. Open the **Ideation** view in the left sidebar
-2. Click **New Session**
-3. Type what you want to build in the text area
-4. Choose an **Ideation Mode** (see below)
-5. Click **Start Session**
+1. Open **Agents** in the left sidebar
+2. Start a new conversation and choose **Plan**
+3. Describe what you want to build in the composer
+4. Review the generated plan in the conversation's **Plan** artifact
+5. Approve the current plan, choose **Create Proposals**, and review the decomposition in its **Tasks** artifact
 
 The orchestrator begins immediately. You will see the session's chat panel fill with activity as it researches your codebase.
-
-### Session Modes
-
-| Mode | Who runs the research | Best for | Est. token cost |
-|------|-----------------------|----------|-----------------|
-| **Solo** | 1 orchestrator + up to 3 parallel Explore subagents | Simple features, bug fix ideation, quick tasks | ~100K (~$0.80) |
-| **Research Team** ★ | 1 team lead (Opus) + up to 5 dynamic specialist teammates | Complex features touching 2+ layers (frontend + backend + DB) | ~350–400K (~$2.50–3.50) |
-| **Debate Team** ★ | 1 team lead (Opus) + up to 5 dynamic advocate teammates (including a devil's advocate) | Architecture decisions, new subsystems, high-stakes design | ~500–600K (~$4.00–5.00) |
-
-**★ = Recommended for complex work.** For a project like RalphX, using more compute on non-trivial features reduces integration failures and missed edge cases.
-
-### Team Configuration
-
-When you select Research Team or Debate Team, additional options appear:
-
-| Option | Description | Default |
-|--------|-------------|---------|
-| **Max teammates** | How many specialist agents the lead can spawn | 5 |
-| **Model ceiling** | Maximum model any teammate can use | Sonnet |
-| **Budget limit** | Optional USD cap for the session | Off |
-| **Composition mode** | Dynamic (lead decides roles) or Constrained (lead picks from predefined templates) | Dynamic |
-
-**Dynamic mode** (default): The lead analyzes your request and decides what specialist roles to create. A frontend-heavy feature might get 2 UI specialists and 1 state management specialist. An infrastructure feature might get a DB specialist and a migration specialist.
-
-**Constrained mode**: The lead can only spawn teammates from the predefined templates in `ralphx.yaml`. When this mode is selected, the session creation UI shows the available preset roles (frontend-specialist, backend-specialist, infra-specialist, advocate, critic) so you know exactly what the lead can work with. Use this for security-sensitive workflows.
-
-**Current harness note:** Team mode is currently a Claude-only capability. If the ideation lane is configured to use Codex, RalphX treats the session as solo mode even if older metadata or defaults referenced team behavior. This is expected and not treated as a degraded fallback.
-
-**Recommended Codex usage today:** Codex is best introduced on solo ideation and ideation verification first. Keep team ideation on Claude unless you explicitly want solo-only behavior for that lane.
-
----
 
 ## The Orchestrator Workflow
 
@@ -123,22 +106,19 @@ On session start (or resume), the orchestrator loads existing session state: pri
 
 ### Phase 1: UNDERSTAND
 
-The orchestrator parses your intent and determines complexity. In Team mode, this phase also includes **dynamic team composition decision** — the lead determines what specialist roles are needed based on your request and will spawn the corresponding teammates.
+The orchestrator parses your intent, determines complexity, and chooses any useful reasoning lenses.
 
 ### Phase 2: EXPLORE
 
-The orchestrator (or team lead) launches parallel research agents to explore your codebase:
-
-- **Solo mode**: Up to 3 parallel Explore subagents (read-only), each investigating a different aspect of the codebase
-- **Team mode**: Dynamic specialist teammates that share their findings with each other via the Claude-native messaging system — enabling cross-domain insights that sequential subagents cannot produce. This is currently available only when the effective harness is Claude.
+The orchestrator can launch bounded read-only exploration delegates to investigate independent parts of the codebase in parallel.
 
 Research agents have read-only access (no file writes). They use Read, Grep, Glob, Bash, WebFetch, and WebSearch.
 
-You can watch research progress in real time in the session chat panel and (in team mode) in the Team Activity panel.
+You can watch research progress in real time in the session chat panel.
 
 ### Phase 3: PLAN
 
-The orchestrator (or team lead) synthesizes all research findings into a structured implementation plan and publishes it as a **plan artifact**. In Team mode, the lead synthesizes across all teammate findings and may include a Team Research Summary table showing each specialist's key discovery.
+The orchestrator synthesizes all research findings into a structured implementation plan and publishes it as a **plan artifact**.
 
 The plan artifact is a versioned document — if you reject the plan and ask for changes, a new version is created while prior versions are preserved.
 
@@ -167,70 +147,6 @@ The orchestrator performs dependency analysis, determines the critical path, and
 
 ---
 
-## Working with the Team Activity Panel
-
-When using Research Team or Debate Team mode, a **Team Activity panel** appears alongside the main chat panel.
-
-```
-┌─────────────────────────────────────────────────────┐
-│  Team Activity                              [3/3 ●] │
-├─────────────────────────────────────────────────────┤
-│                                                      │
-│  🟢 realtime-transport-researcher [Exploring...]     │
-│  ├─ Read src/hooks/useWebSocket.ts                   │
-│  └─ Finding: "No existing WebSocket infra, SSE..."   │
-│  [💬 Message]                                        │
-│                                                      │
-│  🔵 react-state-sync-researcher  [Exploring...]      │
-│  ├─ Read src/stores/taskStore.ts                     │
-│  └─ Finding: "Zustand stores use immer, could..."    │
-│  [💬 Message]                                        │
-│                                                      │
-│  🟡 event-system-researcher      [Idle]              │
-│  └─ Completed: "DB has no trigger system, MCP..."    │
-│  [💬 Message]                                        │
-│                                                      │
-│  ─────────────────────────────────────────────────   │
-│  Team Messages (4)                                   │
-│  ├─ transport → state-sync: "WebSocket needs..."     │
-│  ├─ YOU → transport: "What about HTTP/2 SSE?"        │
-│                                                      │
-│  ┌──────────────────────────────────────────┐        │
-│  │ Message: [input] Send to: [dropdown ▾]  │        │
-│  └──────────────────────────────────────────┘        │
-└─────────────────────────────────────────────────────┘
-```
-
-Teammate names are **dynamic** — they are assigned by the lead based on the task. The [3/3 ●] badge shows active teammate count.
-
-### Messaging Teammates
-
-You can message the lead or any individual teammate at any point during the session:
-
-1. Click **💬 Message** on a teammate card, or use the bottom input area
-2. Type your message and select the recipient from the dropdown
-3. Your message appears in the **Team Messages** feed
-4. The lead routes your message to the appropriate teammate and relays the response back
-
-Use this to steer research direction, ask about a specific finding, or provide additional context that the agent may not have.
-
-### Token Cost Breakdown
-
-Team sessions show a per-teammate cost breakdown so you can see which roles provided the most value:
-
-```
-Session: "Add real-time collaboration"
-Mode: Research Team (3 specialists)
-Total: ~450K tokens  |  Est. Cost: $3.20
-
-  Lead (Opus):                    ~120K  $1.20
-  realtime-transport-researcher:  ~110K  $0.65
-  react-state-sync-researcher:    ~130K  $0.80
-  event-system-researcher:         ~90K  $0.55
-```
-
----
-
 ## The Plan Artifact
 
 The plan artifact is the structured output of the PLAN phase. It is a versioned document stored in the database and linked to all proposals that stem from it.
@@ -242,34 +158,6 @@ The plan is presented in the session chat panel at the CONFIRM phase. It include
 - **Implementation approach** — the strategy chosen and why
 - **Task breakdown** — how the work is split across proposals
 - **Dependencies** — sequencing requirements between tasks
-- **Team Research Summary** (team mode only) — a table of each specialist's key finding
-
-In team mode, the plan is tagged `team_ideated: true` so you can correlate plan quality with team usage over time.
-
-### Debate Summary (Debate Team Mode)
-
-When using Debate Team mode, the plan includes a side-by-side debate summary showing each advocate's case:
-
-```
-┌─────────────────────────┬─────────────────────────┬─────────────────────────┐
-│ WebSockets (Advocate A) │ SSE (Advocate B)         │ Sync Layer (Advocate C) │
-├─────────────────────────┼─────────────────────────┼─────────────────────────┤
-│ Strengths               │ Strengths                │ Strengths               │
-│ - Real-time, bidir.     │ - Simple, HTTP-based     │ - Abstractable          │
-├─────────────────────────┼─────────────────────────┼─────────────────────────┤
-│ Weaknesses              │ Weaknesses               │ Weaknesses              │
-│ - State mgmt complex    │ - One-directional        │ - Over-engineering risk │
-├─────────────────────────┼─────────────────────────┼─────────────────────────┤
-│ Critic Challenge        │ Critic Challenge         │ Critic Challenge        │
-│ "Reconnect handling?"   │ "Server→client only?"    │ "Premature abstraction" │
-└─────────────────────────┴─────────────────────────┴─────────────────────────┘
-
-★ Winner: WebSockets — Lead justification: bidirectional needed for collab editing.
-```
-
-As part of the responsive layout, on narrow viewports (typically under 768px wide) this table collapses into vertically stacked collapsible cards for easier use on smaller screens.
-
----
 
 ## Proposals and the CONFIRM Gate
 
@@ -294,27 +182,27 @@ If you close the app or navigate away during the CONFIRM phase, the session rema
 
 ## Accepting the Plan and Creating Tasks
 
-When you are satisfied with the proposals, click **Accept** to convert the ideation session into live tasks.
+When you are satisfied with the proposals in **Tasks**, choose **Start Tasks** to convert the plan into live tasks and begin scheduling.
 
-What happens on accept:
+What happens on Start Tasks:
 1. Each proposal becomes a **Task** in the database
 2. Dependency edges from the proposal graph are preserved as task dependencies
 3. The session status changes to `accepted`
 4. The session is **automatically set as the Active Plan** for the project
-5. Tasks appear immediately on the Kanban board and Graph view
+5. Tasks appear immediately in the conversation's **Tasks** artifact; switch between its **Kanban** and **Graph** modes
 6. Ready tasks (no unmet dependencies) are scheduled for execution
 
 ---
 
 ## Active Plan: Tracking Your Work
 
-After acceptance, the ideation session becomes your **Active Plan** — a focused filter that makes Kanban and Graph show only the tasks from that plan.
+After **Start Tasks**, the ideation session becomes your **Active Plan** — a focused filter that makes the **Tasks** artifact's Kanban and Graph modes show only the tasks from that plan.
 
 ### Switching Plans
 
 | Method | How |
 |--------|-----|
-| **Inline selector** | Click the plan selector in the Kanban toolbar or Graph controls |
+| **Inline selector** | Click the plan selector in the Tasks artifact's Kanban toolbar or Graph controls |
 | **Quick switcher** | Press `Cmd+Shift+P` (Mac) / `Ctrl+Shift+P` (Windows/Linux) |
 
 Plans are ranked by your interaction frequency, active task count, and recency — plans you actively work on appear at the top automatically.
@@ -323,10 +211,10 @@ Plans are ranked by your interaction frequency, active task count, and recency �
 
 | Event | Effect on Active Plan |
 |-------|----------------------|
-| Accept ideation session | Auto-set as active plan |
-| Reopen accepted session (re-ideate) | Active plan is cleared; Graph/Kanban show empty state |
+| Start Tasks (session accepted) | Auto-set as active plan |
+| Reopen accepted session (re-ideate) | Active plan is cleared; the conversation's Tasks artifact shows an empty state |
 | Manually switch to another plan | New plan becomes active; old plan loses filter |
-| Clear selection | No active plan; both views show empty state |
+| Clear selection | No active plan; the Tasks artifact's views show empty state |
 
 ---
 
@@ -387,9 +275,9 @@ You describe a feature
          │
          v
   ┌──────────────────────────────────────────────┐
-  │             Ideation Studio                  │
+  │              Agents workspace                │
   │  ┌─────────────────────────────────────────┐ │
-  │  │  UNDERSTAND → EXPLORE → PLAN            │ │
+  │  │  Plan: UNDERSTAND → EXPLORE → PLAN      │ │
   │  │  (orchestrator or team lead + teammates)│ │
   │  └─────────────────────────────────────────┘ │
   │                    │                         │
@@ -403,10 +291,11 @@ You describe a feature
   │  └─────────────────────────────────────────┘ │
   └──────────────────────────────────────────────┘
          │
-         v  (you click Accept)
+         v  (you choose Create Proposals)
   ┌──────────────────────────────────────────────┐
-  │              Tasks Created                   │
-  │  Active Plan set → Kanban + Graph filtered   │
+  │              Tasks artifact                  │
+  │  Review → Start Tasks                        │
+  │  Kanban + Graph are embedded modes           │
   └──────────────────────────────────────────────┘
          │
          v
@@ -439,7 +328,7 @@ main
         └── ralphx/project/task-ghi789   ← Task branch
 ```
 
-Each task merges into the plan branch. When all tasks in the plan are merged, RalphX automatically creates a final **plan-merge task** that appears on your Kanban board and merges the plan branch into `main` once all sibling tasks reach Merged or Cancelled. This approach prevents partial feature merges and allows the full plan to be validated as a unit before touching `main`.
+Each task merges into the plan branch. When all tasks in the plan are merged, RalphX automatically creates a final **plan-merge task** that appears in the Tasks artifact's **Kanban** mode and merges the plan branch into `main` once all sibling tasks reach Merged or Cancelled. This approach prevents partial feature merges and allows the full plan to be validated as a unit before touching `main`.
 
 ---
 
@@ -452,7 +341,7 @@ Each task merges into the plan branch. When all tasks in the plan are merged, Ra
 **What to do:**
 1. Check the session chat for error messages from the orchestrator
 2. You can message the orchestrator to ask for a status update
-3. In team mode, check the Team Activity panel — a stalled teammate status indicator will show
+3. In RX-native Team mode, check the delegated task cards and activity stream for stalled work
 
 ### Orchestrator asked a question but I didn't answer
 
@@ -474,11 +363,11 @@ Each task merges into the plan branch. When all tasks in the plan are merged, Ra
 **What it means:** You accepted the session and tasks were created, but you now want a different approach.
 
 **What to do:**
-1. Open the Ideation view and find the accepted session
-2. Click **Reopen** to return it to active status
-3. The active plan is automatically cleared — Kanban and Graph show empty state
+1. Open **Agents** and select the conversation that owns the accepted plan
+2. Open the plan artifact and choose **Reopen**
+3. The active plan is automatically cleared — the Tasks artifact reflects the empty state
 4. Chat with the orchestrator to revise the plan; the existing task proposals are preserved for reference
-5. Accept again when ready — new tasks are created
+5. Choose **Start Tasks** again when ready — new tasks are created
 
 > **Note:** Reopening a session does not automatically cancel tasks that were already created. Cancel unwanted tasks manually from the Kanban board.
 
@@ -496,50 +385,7 @@ If the app closes during an ideation session, it recovers automatically when you
 **What to do:**
 1. Press `Cmd+Shift+P` to open the quick switcher
 2. Type the plan name and select it
-3. Kanban and Graph will filter to that plan immediately
-
-### Team mode: teammate appears stuck
-
-**What it means:** A specialist agent stopped sending heartbeats or is running longer than expected.
-
-**What to do:**
-1. Check the Team Activity panel — the teammate status badge shows `[Exploring...]`, `[Idle]`, or `[Stalled]`
-2. Send a direct message to the stalled teammate (click **💬 Message**) to ask for a status update
-3. The lead monitors teammate health and will reassign work if a teammate fails to respond
-
----
-
-## Configuration Reference
-
-### Session-Level Settings (per session)
-
-| Setting | Description | Options | Default |
-|---------|-------------|---------|---------|
-| `teamMode` | Ideation mode for this session | `solo`, `research`, `debate` | `solo` |
-| `maxTeammates` | Maximum teammates the lead can spawn | 2–8 | 5 |
-| `modelCeiling` | Maximum model any teammate can use | `haiku`, `sonnet`, `opus` | `sonnet` |
-| `budgetLimit` | Optional USD cap for the team session | Any amount or disabled | Disabled |
-| `compositionMode` | How the lead selects teammate roles | `dynamic`, `constrained` | `dynamic` |
-
-### Team Constraints (ralphx.yaml)
-
-The `team_constraints.ideation` section in `ralphx.yaml` defines the ceiling for all ideation teammates — these are enforced by the backend regardless of what the lead requests:
-
-```yaml
-team_constraints:
-  ideation:
-    max_teammates: 5
-    model_ceiling: sonnet
-    tool_ceiling:
-      allowed: [Read, Grep, Glob, WebFetch, WebSearch, Task]
-      denied: [Write, Edit]       # All ideation teammates are read-only
-    mcp_tool_ceiling:
-      - get_session_plan
-      - list_session_proposals
-      - create_team_artifact
-      - get_team_artifacts
-    bash_allowed: true
-```
+3. The Tasks artifact's Kanban and Graph modes will filter to that plan immediately
 
 ### Validation Commands (Project Settings)
 

@@ -109,9 +109,7 @@ export function ProposalsTabContent({
       lastScrollSessionIdRef.current = currentSessionId;
       lastScrollProposalAddedAtRef.current = null;
       lastScrollProposalUpdatedAtRef.current = null;
-      if (proposalsScrollRef.current) {
-        proposalsScrollRef.current.scrollTo({ top: 0, behavior: "auto" });
-      }
+      proposalsScrollRef.current?.scrollTo?.({ top: 0, behavior: "auto" });
       return;
     }
 
@@ -119,7 +117,7 @@ export function ProposalsTabContent({
       return;
     }
 
-    if (proposalsScrollRef.current) {
+    if (proposalsScrollRef.current?.scrollTo) {
       proposalsScrollRef.current.scrollTo({
         top: proposalsScrollRef.current.scrollHeight,
         behavior: "smooth",
@@ -180,7 +178,6 @@ export function ProposalsTabContent({
           isReadOnly={isReadOnly}
           onClearAll={onClearAll}
           onAcceptPlan={onAcceptPlan}
-          session={session}
           isPendingAcceptance={session.acceptanceStatus === "pending"}
         />
       )}

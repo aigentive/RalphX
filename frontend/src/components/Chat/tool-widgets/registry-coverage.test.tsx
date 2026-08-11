@@ -8,21 +8,16 @@ import { ArtifactWidget } from "./ArtifactWidget";
 import {
   SearchMemoriesWidget,
   SessionContextWidget,
-  TeamPlanWidget,
-  TeamSessionStateWidget,
 } from "./McpContextWidgets";
 import { MergeWidget } from "./MergeWidget";
 import { ReviewWidget } from "./ReviewWidget";
-import { SendMessageWidget } from "./SendMessageWidget";
 import { StepIndicator } from "./StepIndicator";
 import { StepsManifestWidget } from "./StepsManifestWidget";
 import {
   TaskCreateWidget,
   TaskListWidget,
   TaskUpdateWidget,
-  TeamCreateWidget,
-  TeamDeleteWidget,
-} from "./TeamTaskWidgets";
+} from "./TaskWidgets";
 import { ContextWidget } from "./ContextWidget";
 import { IssuesSummaryWidget } from "./IssuesSummaryWidget";
 import { TOOL_CALL_WIDGETS, getToolCallWidget } from "./registry";
@@ -151,17 +146,6 @@ describe("tool widget registry coverage", () => {
       expectedText: "Merge completed",
     },
     {
-      label: "send message widget",
-      toolCall: makeToolCall("sendmessage", {
-        arguments: {
-          type: "message",
-          recipient: "reviewer",
-          content: "Please re-check the provider lineage handling.",
-        },
-      }),
-      expectedText: "to reviewer",
-    },
-    {
       label: "step indicator",
       toolCall: makeToolCall("mcp__ralphx__start_step", {
         arguments: { title: "Verify chat lineage" },
@@ -184,6 +168,20 @@ describe("tool widget registry coverage", () => {
         arguments: { subject: "Add widget coverage", description: "Cover missing chat widgets." },
       }),
       expectedText: "Create Task",
+    },
+    {
+      label: "task update widget",
+      toolCall: makeToolCall("taskupdate", {
+        arguments: { taskId: "42", status: "in_progress", subject: "Audit registry" },
+      }),
+      expectedText: "Update Task #42",
+    },
+    {
+      label: "task list widget",
+      toolCall: makeToolCall("tasklist", {
+        result: "#1: Audit widgets (status: pending)",
+      }),
+      expectedText: "Task List",
     },
     {
       label: "agent task widget",
@@ -220,17 +218,6 @@ describe("tool widget registry coverage", () => {
         result: { status: "completed" },
       }),
       expectedText: "file.txt",
-    },
-    {
-      label: "mcp context widget",
-      toolCall: makeToolCall("mcp__ralphx__request_team_plan", {
-        arguments: {
-          process: "review",
-          teammates: [{ role: "critic", model: "sonnet", prompt_summary: "Audit edge cases" }],
-        },
-        result: { plan_id: "plan-1", teammates_spawned: [{ id: "critic-1" }] },
-      }),
-      expectedText: "Team Plan",
     },
   ])("routes $label through a specialized widget", async ({ toolCall, expectedText }) => {
     render(<ToolCallIndicator toolCall={toolCall} />);
@@ -619,19 +606,9 @@ describe("chat widget families without prior direct coverage", () => {
     expect(screen.getAllByRole("button", { name: /Open/i }).length).toBeGreaterThan(0);
   });
 
-  it("renders SendMessageWidget plus step widgets", () => {
+  it("renders step widgets", () => {
     render(
       <>
-        <SendMessageWidget
-          toolCall={makeToolCall("sendmessage", {
-            arguments: {
-              type: "plan_approval_response",
-              recipient: "lead",
-              content: "Plan approved. Proceed with execution.",
-              approve: true,
-            },
-          })}
-        />
         <StepIndicator
           toolCall={makeToolCall("complete_step", {
             arguments: { title: "Audit widget registry", note: "Added missing coverage map." },
@@ -639,7 +616,15 @@ describe("chat widget families without prior direct coverage", () => {
         />
         <StepIndicator
           toolCall={makeToolCall("get_step_progress", {
-            result: { total: 4, completed: 2, skipped: 0, pending: 2, percent_complete: 50 },
+            result: {
+              total: 5,
+              completed: 1,
+              in_progress: 1,
+              skipped: 2,
+              pending: 1,
+              failed: 0,
+              percent_complete: 60,
+            },
           })}
         />
         <StepsManifestWidget
@@ -653,15 +638,45 @@ describe("chat widget families without prior direct coverage", () => {
       </>,
     );
 
-    expect(screen.getByText("to lead")).toBeInTheDocument();
-    expect(screen.getByText("Approved")).toBeInTheDocument();
     expect(screen.getByText("Audit widget registry")).toBeInTheDocument();
     expect(screen.getByText("completed")).toBeInTheDocument();
-    expect(screen.getByText("2/4 steps")).toBeInTheDocument();
+    expect(screen.getByText("1/3 steps")).toBeInTheDocument();
+    expect(screen.queryByText("3/5 steps")).not.toBeInTheDocument();
+    expect(screen.getByText("33%")).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "Step progress" })).toHaveAttribute(
+      "aria-valuenow",
+      "33",
+    );
     expect(screen.getByTestId("steps-manifest-widget")).toBeInTheDocument();
   });
 
-  it("renders TeamTaskWidgets and MCP context widgets", async () => {
+  it("renders skipped-only step progress without a zero denominator", () => {
+    render(
+      <StepIndicator
+        toolCall={makeToolCall("get_step_progress", {
+          result: {
+            total: 2,
+            completed: 0,
+            in_progress: 0,
+            skipped: 2,
+            pending: 0,
+            failed: 0,
+            percent_complete: 0,
+          },
+        })}
+      />,
+    );
+
+    expect(screen.getByText("No steps to complete")).toBeInTheDocument();
+    expect(screen.queryByText("0/0 steps")).not.toBeInTheDocument();
+    expect(screen.queryByText("0%")).not.toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "Step progress" })).toHaveAttribute(
+      "aria-valuetext",
+      "No steps to complete",
+    );
+  });
+
+  it("renders task widgets and current MCP context widgets", async () => {
     const user = userEvent.setup();
     render(
       <>
@@ -680,27 +695,11 @@ describe("chat widget families without prior direct coverage", () => {
             result: "#1: Audit widgets (status: pending)\n#2: Add coverage (status: completed)",
           })}
         />
-        <TeamCreateWidget
-          toolCall={makeToolCall("teamcreate", {
-            arguments: { team_name: "critics", description: "Parallel review specialists" },
-          })}
-        />
-        <TeamDeleteWidget toolCall={makeToolCall("teamdelete")} />
         <SessionContextWidget toolCall={makeToolCall("mcp__ralphx__get_parent_session_context", { result: { ok: true } })} />
-        <TeamSessionStateWidget toolCall={makeToolCall("mcp__ralphx__get_team_session_state", { result: { ok: true } })} />
         <SearchMemoriesWidget
           toolCall={makeToolCall("mcp__ralphx__search_memories", {
             arguments: { query: "provider lineage" },
             result: [{ type: "text", text: "entry-1\nentry-2" }],
-          })}
-        />
-        <TeamPlanWidget
-          toolCall={makeToolCall("mcp__ralphx__request_team_plan", {
-            arguments: {
-              process: "debate",
-              teammates: [{ role: "architect", model: "opus", prompt_summary: "Challenge assumptions" }],
-            },
-            result: { plan_id: "plan-77", teammates_spawned: [{ id: "architect-1" }] },
           })}
         />
       </>,
@@ -710,14 +709,8 @@ describe("chat widget families without prior direct coverage", () => {
     expect(screen.getByText(/Update Task #42/i)).toBeInTheDocument();
     await user.click(screen.getByText("Task List"));
     expect(screen.getByText("Audit widgets")).toBeInTheDocument();
-    expect(screen.getByText(/Create Team/i)).toBeInTheDocument();
-    expect(screen.getByText("Team Deleted")).toBeInTheDocument();
     expect(screen.getByText("Session Context")).toBeInTheDocument();
-    expect(screen.getByText("Team State")).toBeInTheDocument();
     expect(screen.getByText("Search Memories")).toBeInTheDocument();
     expect(screen.getByText("2 results")).toBeInTheDocument();
-    expect(screen.getByText(/Team Plan/i)).toBeInTheDocument();
-    await user.click(screen.getByText(/Team Plan/i));
-    expect(screen.getByText("architect")).toBeInTheDocument();
   });
 });

@@ -186,50 +186,68 @@ pub(crate) async fn auto_commit_on_execution_done(ctx: &ExitContext) {
         }
     }
 
-    let working_path = resolve_working_directory(&task, &project);
+    let working_path = resolve_automatic_commit_target(&task, &project);
 
-    match GitService::has_uncommitted_changes(&working_path).await {
-        Ok(true) => {
-            let prefix = "feat: ";
-            let message = format!("{}{}", prefix, task.title);
+    match working_path {
+        Some(working_path) => match GitService::has_uncommitted_changes(&working_path).await {
+            Ok(true) => {
+                let prefix = "feat: ";
+                let message = format!("{}{}", prefix, task.title);
 
-            match GitService::commit_all(&working_path, &message).await {
-                Ok(Some(sha)) => {
-                    tracing::info!(
-                        task_id = %ctx.task_id,
-                        commit_sha = %sha,
-                        message = %message,
-                        "Auto-committed changes on execution completion"
-                    );
-                }
-                Ok(None) => {
-                    tracing::debug!(
-                        task_id = %ctx.task_id,
-                        "Auto-commit: no staged changes to commit"
-                    );
-                }
-                Err(e) => {
+                if super::automatic_commit_policy::protects_primary_checkout(
+                    &project,
+                    &working_path,
+                ) {
                     tracing::warn!(
                         task_id = %ctx.task_id,
-                        error = %e,
-                        "Auto-commit failed (non-fatal)"
+                        reason = "pr_mode_primary_checkout_protected",
+                        "Skipping auto-commit because the target no longer resolves to an isolated worktree"
                     );
+                } else {
+                    match GitService::commit_all(&working_path, &message).await {
+                        Ok(Some(sha)) => {
+                            tracing::info!(
+                                task_id = %ctx.task_id,
+                                commit_sha = %sha,
+                                message = %message,
+                                "Auto-committed changes on execution completion"
+                            );
+                        }
+                        Ok(None) => {
+                            tracing::debug!(
+                                task_id = %ctx.task_id,
+                                "Auto-commit: no staged changes to commit"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                task_id = %ctx.task_id,
+                                error = %e,
+                                "Auto-commit failed (non-fatal)"
+                            );
+                        }
+                    }
                 }
             }
-        }
-        Ok(false) => {
-            tracing::debug!(
-                task_id = %ctx.task_id,
-                "No uncommitted changes to auto-commit"
-            );
-        }
-        Err(e) => {
-            tracing::warn!(
-                task_id = %ctx.task_id,
-                error = %e,
-                "Failed to check uncommitted changes (non-fatal)"
-            );
-        }
+            Ok(false) => {
+                tracing::debug!(
+                    task_id = %ctx.task_id,
+                    "No uncommitted changes to auto-commit"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    task_id = %ctx.task_id,
+                    error = %e,
+                    "Failed to check uncommitted changes (non-fatal)"
+                );
+            }
+        },
+        None => tracing::info!(
+            task_id = %ctx.task_id,
+            reason = "pr_mode_primary_checkout_protected",
+            "Skipping auto-commit because PR mode has no verified isolated task worktree"
+        ),
     }
 
     // GAP H11: Update execution_recovery.last_state to Succeeded when the task exits
@@ -244,12 +262,22 @@ pub(crate) async fn auto_commit_on_execution_done(ctx: &ExitContext) {
             task.metadata.as_deref(),
         )
     {
-        let last_event_is_failure = recovery.events.last().map(|e| {
-            matches!(e.kind, crate::domain::entities::ExecutionRecoveryEventKind::Failed)
-        }).unwrap_or(false);
+        let last_event_is_failure = recovery
+            .events
+            .last()
+            .map(|e| {
+                matches!(
+                    e.kind,
+                    crate::domain::entities::ExecutionRecoveryEventKind::Failed
+                )
+            })
+            .unwrap_or(false);
         // Also skip if stop_retrying=true — the E7/wall-clock pre-write sets last_state=Failed
         // intentionally; overwriting it with Succeeded would make the task look retryable.
-        if !last_event_is_failure && !recovery.stop_retrying && recovery.last_state != crate::domain::entities::ExecutionRecoveryState::Succeeded {
+        if !last_event_is_failure
+            && !recovery.stop_retrying
+            && recovery.last_state != crate::domain::entities::ExecutionRecoveryState::Succeeded
+        {
             recovery.last_state = crate::domain::entities::ExecutionRecoveryState::Succeeded;
             match recovery.update_task_metadata(task.metadata.as_deref()) {
                 Ok(new_metadata) => {
@@ -285,15 +313,20 @@ pub(crate) async fn auto_commit_on_execution_done(ctx: &ExitContext) {
 #[path = "exit_actions_tests.rs"]
 mod tests;
 
-/// Resolve the working directory for a task.
-///
-/// Returns task's worktree path if available, else project's working directory.
-fn resolve_working_directory(
+/// Resolve an automatic commit target, rejecting a PR-mode primary checkout.
+fn resolve_automatic_commit_target(
     task: &crate::domain::entities::Task,
     project: &crate::domain::entities::Project,
-) -> std::path::PathBuf {
-    task.worktree_path
+) -> Option<std::path::PathBuf> {
+    let candidate = task
+        .worktree_path
         .as_ref()
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::PathBuf::from(&project.working_directory))
+        .unwrap_or_else(|| std::path::PathBuf::from(&project.working_directory));
+
+    if super::automatic_commit_policy::protects_primary_checkout(project, &candidate) {
+        None
+    } else {
+        Some(candidate)
+    }
 }

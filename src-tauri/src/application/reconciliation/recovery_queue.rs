@@ -13,17 +13,25 @@
 //   2. Spawn RecoveryQueueProcessor::run() as tokio task
 //   3. Call startup_scan() (which submits items)
 
+use ralphx_events::EventSink;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
 use crate::application::chat_service::{ChatService, SendMessageOptions};
-use crate::application::interactive_process_registry::{InteractiveProcessKey, InteractiveProcessRegistry};
-use crate::domain::entities::{ChatContextType, IdeationSessionId, IdeationSessionStatus, VerificationStatus};
+use crate::application::interactive_process_registry::{
+    InteractiveProcessKey, InteractiveProcessRegistry,
+};
+use crate::application::verification_event_emitters::{
+    emit_verification_status_changed, event_sink_from_app_handle,
+};
+use crate::domain::entities::{
+    ChatContextType, IdeationSessionId, IdeationSessionStatus, VerificationStatus,
+};
 use crate::domain::repositories::IdeationSessionRepository;
 use crate::domain::services::{
-    clear_verification_snapshot, emit_verification_status_changed,
-    load_current_verification_snapshot_or_default, RunningAgentRegistry,
+    clear_verification_snapshot, load_current_verification_snapshot_or_default,
+    RunningAgentRegistry,
 };
 
 /// Configuration for the recovery queue processor.
@@ -200,7 +208,15 @@ impl RecoveryQueueProcessor {
         use crate::domain::services::RunningAgentKey;
         let context_type_str = format!("{}", item.context_type);
         let key = RunningAgentKey::new(context_type_str, item.context_id.clone());
-        match self.running_agent_registry.cleanup_stale_entry(&key).await {
+        let cleanup = match self.running_agent_registry.get(&key).await {
+            Some(info) => {
+                self.running_agent_registry
+                    .cleanup_stale_entry(&key, &info.agent_run_id)
+                    .await
+            }
+            None => Ok(None),
+        };
+        match cleanup {
             Ok(Some(info)) => {
                 tracing::info!(
                     context_id = %item.context_id,
@@ -417,18 +433,31 @@ impl RecoveryQueueProcessor {
                         .ok();
 
                     // Emit verification status change so VerificationBadge shows Unverified
-                    emit_verification_status_changed(
-                        handle,
+                    let event_sink = event_sink_from_app_handle(handle);
+                    emit_recovery_failed_verification_status(
+                        event_sink.as_deref(),
                         parent_session_id,
-                        VerificationStatus::Unverified,
-                        false,
-                        None,
-                        Some("recovery_failed"),
-                        None, // generation not available without re-reading from DB
                     );
                 }
             }
         }
+    }
+}
+
+fn emit_recovery_failed_verification_status(
+    event_sink: Option<&dyn EventSink>,
+    parent_session_id: &str,
+) {
+    if let Some(event_sink) = event_sink {
+        emit_verification_status_changed(
+            event_sink,
+            parent_session_id,
+            VerificationStatus::Unverified,
+            false,
+            None,
+            Some("recovery_failed"),
+            None, // generation not available without re-reading from DB
+        );
     }
 }
 
@@ -505,6 +534,7 @@ pub fn create_recovery_queue(
 mod tests {
     use super::*;
     use crate::domain::entities::ChatContextType;
+    use ralphx_events::RecordingEventSink;
 
     fn make_item(priority: u8, kind: RecoveryKind) -> RecoveryItem {
         RecoveryItem {
@@ -554,7 +584,10 @@ mod tests {
         assert_eq!(config.delay_between_spawns, Duration::from_secs(3));
         assert_eq!(config.max_concurrent_recoveries, 2);
         assert_eq!(config.recovery_timeout, Duration::from_secs(30));
-        assert_eq!(config.max_retries, 0, "max_retries must be 0 per Constraint 8");
+        assert_eq!(
+            config.max_retries, 0,
+            "max_retries must be 0 per Constraint 8"
+        );
     }
 
     #[tokio::test]
@@ -571,7 +604,10 @@ mod tests {
             .expect("submit should succeed on open channel");
         let received = rx.recv().await.expect("channel should deliver item");
         assert_eq!(received.priority, 10);
-        assert!(matches!(received.recovery_kind, RecoveryKind::IdeationAgent));
+        assert!(matches!(
+            received.recovery_kind,
+            RecoveryKind::IdeationAgent
+        ));
     }
 
     #[tokio::test]
@@ -618,12 +654,8 @@ mod tests {
 
     #[test]
     fn test_build_verification_recovery_metadata() {
-        let metadata = build_verification_recovery_metadata(
-            "parent-session-123",
-            3,
-            2,
-            Some("artifact-456"),
-        );
+        let metadata =
+            build_verification_recovery_metadata("parent-session-123", 3, 2, Some("artifact-456"));
         let parsed: serde_json::Value =
             serde_json::from_str(&metadata).expect("metadata must be valid JSON");
         assert_eq!(parsed["recovery_type"], "verification_agent");
@@ -635,13 +667,33 @@ mod tests {
 
     #[test]
     fn test_build_verification_recovery_metadata_no_artifact() {
-        let metadata =
-            build_verification_recovery_metadata("parent-123", 1, 1, None);
+        let metadata = build_verification_recovery_metadata("parent-123", 1, 1, None);
         let parsed: serde_json::Value =
             serde_json::from_str(&metadata).expect("metadata must be valid JSON");
         assert!(
             parsed["plan_artifact_id"].is_null(),
             "plan_artifact_id should be null when not provided"
         );
+    }
+
+    #[test]
+    fn test_emit_recovery_failed_verification_status_emits_unverified_payload() {
+        let sink = RecordingEventSink::new();
+
+        emit_recovery_failed_verification_status(Some(&sink), "parent-session");
+
+        let events = sink.events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event, "plan_verification:status_changed");
+        assert_eq!(events[0].payload["session_id"], "parent-session");
+        assert_eq!(events[0].payload["status"], "unverified");
+        assert_eq!(events[0].payload["in_progress"], false);
+        assert_eq!(events[0].payload["convergence_reason"], "recovery_failed");
+        assert!(events[0].payload["generation"].is_null());
+    }
+
+    #[test]
+    fn test_emit_recovery_failed_verification_status_skips_without_sink() {
+        emit_recovery_failed_verification_status(None, "parent-session");
     }
 }

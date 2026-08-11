@@ -24,10 +24,22 @@ fn parse_version_from_filename_rejects_invalid_names() {
 
 #[test]
 fn compare_semver_desc_sorts_correctly() {
-    assert_eq!(compare_semver_desc("0.28.0", "0.1.0"), std::cmp::Ordering::Less);
-    assert_eq!(compare_semver_desc("0.1.0", "0.28.0"), std::cmp::Ordering::Greater);
-    assert_eq!(compare_semver_desc("0.9.0", "0.9.0"), std::cmp::Ordering::Equal);
-    assert_eq!(compare_semver_desc("0.9.0", "0.10.0"), std::cmp::Ordering::Greater);
+    assert_eq!(
+        compare_semver_desc("0.28.0", "0.1.0"),
+        std::cmp::Ordering::Less
+    );
+    assert_eq!(
+        compare_semver_desc("0.1.0", "0.28.0"),
+        std::cmp::Ordering::Greater
+    );
+    assert_eq!(
+        compare_semver_desc("0.9.0", "0.9.0"),
+        std::cmp::Ordering::Equal
+    );
+    assert_eq!(
+        compare_semver_desc("0.9.0", "0.10.0"),
+        std::cmp::Ordering::Greater
+    );
 }
 
 #[test]
@@ -148,10 +160,7 @@ fn returns_missing_response_when_no_candidate_reads() {
 #[test]
 fn read_release_notes_from_candidates_reads_real_file() {
     let dir = tempfile::tempdir().unwrap();
-    let notes_path = dir
-        .path()
-        .join(RELEASE_NOTES_DIR)
-        .join("v0.9.0.md");
+    let notes_path = dir.path().join(RELEASE_NOTES_DIR).join("v0.9.0.md");
     std::fs::create_dir_all(notes_path.parent().unwrap()).unwrap();
     std::fs::write(&notes_path, "## v0.9.0\n\nReal file content").unwrap();
 

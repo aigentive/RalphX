@@ -1,4 +1,6 @@
 use super::*;
+use crate::commands::execution_task_navigation::resolve_agent_workspace_target_for_task;
+use std::collections::HashMap;
 
 /// Get current execution status
 /// Phase 82: Optional project_id for per-project scoping.
@@ -222,6 +224,12 @@ pub async fn get_running_processes(
     let mut seen_task_ids = std::collections::HashSet::new();
     let mut seen_session_ids = std::collections::HashSet::new();
     let mut seen_conversation_ids = std::collections::HashSet::new();
+    let mut plan_branch_cache: HashMap<String, Vec<crate::domain::entities::PlanBranch>> =
+        HashMap::new();
+    let mut agent_workspace_cache: HashMap<
+        String,
+        Vec<crate::domain::entities::AgentConversationWorkspace>,
+    > = HashMap::new();
     let registry_entries = state.running_agent_registry.list_all().await;
     let now = chrono::Utc::now();
 
@@ -343,12 +351,41 @@ pub async fn get_running_processes(
 
         // Get trigger origin
         let trigger_origin = get_trigger_origin(&task);
+        let project_key = task.project_id.as_str().to_string();
+        if !plan_branch_cache.contains_key(&project_key) {
+            let plan_branches = state
+                .plan_branch_repo
+                .get_by_project_id(&task.project_id)
+                .await
+                .map_err(|e| e.to_string())?;
+            plan_branch_cache.insert(project_key.clone(), plan_branches);
+        }
+        if !agent_workspace_cache.contains_key(&project_key) {
+            let workspaces = state
+                .agent_conversation_workspace_repo
+                .get_by_project_id(&task.project_id)
+                .await
+                .map_err(|e| e.to_string())?;
+            agent_workspace_cache.insert(project_key.clone(), workspaces);
+        }
+        let plan_branches = plan_branch_cache
+            .get(&project_key)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let agent_workspaces = agent_workspace_cache
+            .get(&project_key)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let agent_workspace =
+            resolve_agent_workspace_target_for_task(&state, &task, plan_branches, agent_workspaces)
+                .await?;
 
-        processes.push(build_running_process(
+        processes.push(build_running_process_with_agent_workspace(
             &task,
             step_progress,
             elapsed_seconds,
             trigger_origin,
+            agent_workspace,
         ));
     }
 

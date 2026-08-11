@@ -112,6 +112,7 @@ pub fn create_task_from_proposal(
     // Copy traceability references for worker context access
     task.source_proposal_id = Some(proposal.id.clone());
     task.plan_artifact_id = proposal.plan_artifact_id.clone();
+    task.plan_blueprint_artifact_id = proposal.blueprint_artifact_id.clone();
 
     task
 }

@@ -48,7 +48,7 @@ export function ChatSessionChips({
   showProviderModel = true,
   showStats = true,
 }: ChatSessionChipsProps) {
-  const statsFallbackConversation = useMemo(() => {
+  const statsFallbackConversation = useMemo<ChatConversation | null>(() => {
     if (fallbackConversation) {
       return fallbackConversation;
     }
@@ -71,6 +71,7 @@ export function ChatSessionChips({
         providerHarness === "claude" ? (providerSessionId ?? null) : null,
       providerSessionId: providerSessionId ?? null,
       providerHarness: providerHarness ?? null,
+      coordinationMode: "solo",
       upstreamProvider: upstreamProvider ?? null,
       providerProfile: providerProfile ?? null,
       title: null,

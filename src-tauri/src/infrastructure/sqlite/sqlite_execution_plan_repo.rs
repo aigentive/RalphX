@@ -7,7 +7,9 @@ use async_trait::async_trait;
 use rusqlite::Connection;
 
 use super::DbConnection;
-use crate::domain::entities::{ExecutionPlan, ExecutionPlanId, ExecutionPlanStatus, IdeationSessionId};
+use crate::domain::entities::{
+    ExecutionPlan, ExecutionPlanHaltMode, ExecutionPlanId, ExecutionPlanStatus, IdeationSessionId,
+};
 use crate::domain::repositories::ExecutionPlanRepository;
 use crate::error::{AppError, AppResult};
 
@@ -35,16 +37,19 @@ impl ExecutionPlanRepository for SqliteExecutionPlanRepository {
         self.db
             .run(move |conn| {
                 conn.execute(
-                    "INSERT INTO execution_plans (id, session_id, status, created_at)
-                     VALUES (?1, ?2, ?3, ?4)",
+                    "INSERT INTO execution_plans (id, session_id, status, halt_mode, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
                     rusqlite::params![
                         plan.id.as_str(),
                         plan.session_id.as_str(),
                         plan.status.to_db_string(),
+                        plan.halt_mode.to_db_string(),
                         plan.created_at.to_rfc3339(),
                     ],
                 )
-                .map_err(|e| AppError::Database(format!("Failed to create execution plan: {}", e)))?;
+                .map_err(|e| {
+                    AppError::Database(format!("Failed to create execution plan: {}", e))
+                })?;
                 Ok(plan)
             })
             .await
@@ -109,13 +114,50 @@ impl ExecutionPlanRepository for SqliteExecutionPlanRepository {
                 let rows = conn
                     .execute(
                         "UPDATE execution_plans SET status = ?1 WHERE id = ?2",
-                        rusqlite::params![ExecutionPlanStatus::Superseded.to_db_string(), id.as_str()],
+                        rusqlite::params![
+                            ExecutionPlanStatus::Superseded.to_db_string(),
+                            id.as_str()
+                        ],
                     )
                     .map_err(|e| {
-                        AppError::Database(format!("Failed to mark execution plan as superseded: {}", e))
+                        AppError::Database(format!(
+                            "Failed to mark execution plan as superseded: {}",
+                            e
+                        ))
                     })?;
                 if rows == 0 {
-                    return Err(AppError::NotFound(format!("Execution plan not found: {}", id_display)));
+                    return Err(AppError::NotFound(format!(
+                        "Execution plan not found: {}",
+                        id_display
+                    )));
+                }
+                Ok(())
+            })
+            .await
+    }
+
+    async fn set_halt_mode(
+        &self,
+        id: &ExecutionPlanId,
+        halt_mode: ExecutionPlanHaltMode,
+    ) -> AppResult<()> {
+        let id = id.as_str().to_string();
+        let id_display = id.clone();
+        self.db
+            .run(move |conn| {
+                let rows = conn
+                    .execute(
+                        "UPDATE execution_plans SET halt_mode = ?1 WHERE id = ?2",
+                        rusqlite::params![halt_mode.to_db_string(), id.as_str()],
+                    )
+                    .map_err(|e| {
+                        AppError::Database(format!("Failed to set execution plan halt mode: {}", e))
+                    })?;
+                if rows == 0 {
+                    return Err(AppError::NotFound(format!(
+                        "Execution plan not found: {}",
+                        id_display
+                    )));
                 }
                 Ok(())
             })
@@ -132,9 +174,14 @@ impl ExecutionPlanRepository for SqliteExecutionPlanRepository {
                         "DELETE FROM execution_plans WHERE id = ?1",
                         rusqlite::params![id.as_str()],
                     )
-                    .map_err(|e| AppError::Database(format!("Failed to delete execution plan: {}", e)))?;
+                    .map_err(|e| {
+                        AppError::Database(format!("Failed to delete execution plan: {}", e))
+                    })?;
                 if rows == 0 {
-                    return Err(AppError::NotFound(format!("Execution plan not found: {}", id_display)));
+                    return Err(AppError::NotFound(format!(
+                        "Execution plan not found: {}",
+                        id_display
+                    )));
                 }
                 Ok(())
             })

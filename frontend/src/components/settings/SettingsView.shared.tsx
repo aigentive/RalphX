@@ -1,12 +1,4 @@
-/**
- * Shared components and utilities for SettingsView
- *
- * Extracted from SettingsView.tsx to reduce file size and improve reusability.
- * Contains setting row components and section card.
- *
- * Note: Constants are in SettingsView.constants.ts to satisfy
- * react-refresh/only-export-components lint rule.
- */
+/** Shared SettingsView components; constants live in SettingsView.constants.ts. */
 
 import { useCallback, useRef, useState } from "react";
 import { Separator } from "@/components/ui/separator";
@@ -23,17 +15,16 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import {
-  AlertCircle,
   CheckCircle2,
   Loader2,
   Trash2,
-  X,
   XCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 // Re-export constants from dedicated file
 export { MODEL_OPTIONS } from "./SettingsView.constants";
+export { ErrorBanner } from "./SettingsErrorBanner";
 
 // ============================================================================
 // Saving Indicator Component
@@ -292,30 +283,23 @@ export function SelectSettingRow<T extends string>({
 }
 
 // ============================================================================
-// Section Card Component
+// Section Container
 // ============================================================================
 
-export interface SectionCardProps {
-  icon: React.ReactNode;
-  title: string;
-  description: string;
+export interface SettingsSectionProps {
   children: React.ReactNode;
 }
 
-export function SectionCard({ icon, title, description, children }: SectionCardProps) {
+/**
+ * Row container for one settings section. Deliberately chrome-free: the page
+ * title and subtitle come from `SettingsNavPage` (nav/leaf registry) and the
+ * leaf tab bar names the section, so a per-section card header would repeat
+ * both. Kept as a component so section panels share the row spacing and
+ * first-row divider reset.
+ */
+export function SettingsSection({ children }: SettingsSectionProps) {
   return (
     <div className="settings-section">
-      <div className="settings-pane-head">
-        <div className="settings-pane-head__icon p-2 rounded-lg shrink-0 [&>svg]:text-[var(--card-icon-color)]">
-          {icon}
-        </div>
-        <div>
-          <h3 className="settings-pane-head__title">
-            {title}
-          </h3>
-          <p className="settings-pane-head__sub">{description}</p>
-        </div>
-      </div>
       <div className="settings-section__content">{children}</div>
     </div>
   );
@@ -354,32 +338,6 @@ export function SettingsSkeleton() {
           </div>
         </div>
       ))}
-    </div>
-  );
-}
-
-// ============================================================================
-// Error Banner Component
-// ============================================================================
-
-export interface ErrorBannerProps {
-  error: string;
-  onDismiss: () => void;
-}
-
-export function ErrorBanner({ error, onDismiss }: ErrorBannerProps) {
-  return (
-    <div className="mx-6 mt-4 p-3 rounded-lg bg-[var(--status-error-muted)] border border-[var(--status-error-border)] flex items-center gap-3">
-      <AlertCircle className="w-4 h-4 text-[var(--status-error)] shrink-0" />
-      <p className="text-sm text-[var(--status-error)] flex-1">{error}</p>
-      <Button
-        variant="ghost"
-        size="icon"
-        onClick={onDismiss}
-        className="h-6 w-6 hover:bg-[var(--status-error-border)]"
-      >
-        <X className="w-4 h-4 text-[var(--status-error)]" />
-      </Button>
     </div>
   );
 }

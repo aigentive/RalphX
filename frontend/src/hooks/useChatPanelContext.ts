@@ -9,11 +9,8 @@
  */
 
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
-import { toast } from "sonner";
 import { useQueryClient } from "@tanstack/react-query";
 import { useChatStore, getContextKey } from "@/stores/chatStore";
-import { useTeamStore } from "@/stores/teamStore";
-import { useIdeationStore } from "@/stores/ideationStore";
 import { buildStoreKey } from "@/lib/chat-context-registry";
 import { chatKeys } from "@/hooks/useChat";
 import type { ChatContext } from "@/types/chat";
@@ -22,7 +19,9 @@ import type { ToolCall } from "@/components/Chat/ToolCallIndicator";
 import type { StreamingTask, StreamingContentBlock } from "@/types/streaming-task";
 
 interface UseChatPanelContextProps {
-  projectId: string;
+  projectId: string | null;
+  contextTypeOverride?: ContextType | undefined;
+  contextIdOverride?: string | undefined;
   ideationSessionId: string | undefined;
   selectedTaskId: string | undefined;
   isExecutionMode: boolean;
@@ -30,7 +29,7 @@ interface UseChatPanelContextProps {
   isMergeMode: boolean;
   isHistoryMode: boolean;
   /** Override conversation ID for history mode - forces selection of specific conversation */
-  overrideConversationId?: string | undefined;
+  overrideConversationId?: string | null | undefined;
   /** Override the store key used for queue/running state. */
   storeContextKeyOverride?: string | undefined;
   /** Override agent run ID for history mode - used for scroll positioning */
@@ -52,6 +51,8 @@ interface ConversationsQueryResult {
 
 export function useChatPanelContext({
   projectId,
+  contextTypeOverride,
+  contextIdOverride,
   ideationSessionId,
   selectedTaskId,
   isExecutionMode,
@@ -82,25 +83,33 @@ export function useChatPanelContext({
 
   // Build chat context based on selected task or ideation session
   const chatContext: ChatContext = useMemo(() => {
+    if (contextTypeOverride && contextIdOverride) {
+      return {
+        view: "agents",
+        projectId: projectId ?? contextIdOverride,
+        contextTypeOverride,
+        contextIdOverride,
+      };
+    }
     if (ideationSessionId) {
       return {
         view: "ideation",
-        projectId,
+        projectId: projectId!,
         ideationSessionId,
       };
     }
     if (selectedTaskId) {
       return {
         view: "task_detail",
-        projectId,
+        projectId: projectId!,
         selectedTaskId,
       };
     }
     return {
       view: "kanban",
-      projectId,
+      projectId: projectId!,
     };
-  }, [selectedTaskId, projectId, ideationSessionId]);
+  }, [contextIdOverride, contextTypeOverride, selectedTaskId, projectId, ideationSessionId]);
 
   // Compute store context key for queue/agent state operations
   // Uses context-aware keys via registry: "task_execution:id", "review:id", "merge:id", or standard keys
@@ -131,14 +140,17 @@ export function useChatPanelContext({
   // caller owns a specific conversation, the override is authoritative on the
   // first render instead of waiting for the store sync effect.
   const storedActiveConversationId = useChatStore((s) => s.activeConversationIds[storeContextKey] ?? null);
-  const activeConversationId = overrideConversationId ?? storedActiveConversationId;
+  const activeConversationId =
+    overrideConversationId !== undefined
+      ? overrideConversationId
+      : storedActiveConversationId;
 
   // Context key for tracking changes
   const contextKey = ideationSessionId
     ? `ideation:${ideationSessionId}`
     : selectedTaskId
       ? `${isMergeMode ? "merge" : isExecutionMode ? "execution" : isReviewMode ? "review" : "task"}:${selectedTaskId}`
-      : (storeContextKeyOverride ?? `project:${projectId}`);
+      : (storeContextKeyOverride ?? `${contextTypeOverride ?? "project"}:${contextIdOverride ?? projectId}`);
 
   // Initialize with empty string to ensure cleanup runs on first mount
   const prevContextKeyRef = useRef("");
@@ -154,7 +166,7 @@ export function useChatPanelContext({
 
   // Cleanup on unmount: clear isSending for the current context key
   // agentStatus is intentionally NOT cleared here — it is owned by useGlobalAgentLifecycle
-  // and must survive unmount/remount cycles (e.g., PlanningView key={session.id} switches).
+  // and must survive unmount/remount cycles when Agents changes artifact/session scope.
   useEffect(() => {
     return () => {
       setSending(storeContextKeyRef.current, false);
@@ -170,12 +182,13 @@ export function useChatPanelContext({
 
   // Determine current context type and ID for validation
   // Declared here (before visibility effect) to avoid temporal dead zone when used in deps array
-  const currentContextType: ContextType = ideationSessionId
+  const currentContextType: ContextType = contextTypeOverride ?? (ideationSessionId
     ? "ideation"
     : selectedTaskId
       ? (isMergeMode ? "merge" : isExecutionMode ? "task_execution" : isReviewMode ? "review" : "task")
-      : "project";
-  const currentContextId = ideationSessionId || selectedTaskId || projectId;
+      : "project");
+  const currentContextId =
+    contextIdOverride ?? ideationSessionId ?? selectedTaskId ?? projectId ?? "";
 
   // Re-trigger autoSelectConversation when panel becomes visible again, and invalidate
   // the conversation list so new conversations created while hidden are discovered.
@@ -248,25 +261,6 @@ export function useChatPanelContext({
       if (prevStoreContextKeyRef.current) {
         setSending(prevStoreContextKeyRef.current, false);
 
-        // Read pending plan BEFORE clearing — used for toast notification below
-        const oldPendingPlan = useTeamStore.getState().pendingPlans[prevStoreContextKeyRef.current];
-
-        // Notify user if they're switching away from a session with a pending team plan approval
-        if (oldPendingPlan) {
-          const sessionId = oldPendingPlan.originContextId;
-          toast("Team plan approval still pending — switch back to approve", {
-            duration: 5000,
-            action: {
-              label: "Go back",
-              onClick: () => { useIdeationStore.getState().setActiveSession(sessionId); },
-            },
-          });
-        }
-
-        // Clear frontend pending plan state only — backend plan survives for re-discovery
-        // when user returns to this session (via useTeamEvents Effect 3 hydration).
-        // Backend TTL (14 min) is the safety net for true abandonment.
-        useTeamStore.getState().clearPendingPlan(prevStoreContextKeyRef.current);
       }
 
       // Reset auto-select flag when context changes
@@ -275,26 +269,28 @@ export function useChatPanelContext({
       // Update refs with NEW context AFTER cleanup
       prevContextKeyRef.current = contextKey;
       prevStoreContextKeyRef.current = storeContextKey;
-      const newContextType = ideationSessionId
+      const newContextType = contextTypeOverride ?? (ideationSessionId
         ? "ideation"
         : selectedTaskId
           ? (isMergeMode ? "merge" : isExecutionMode ? "task_execution" : isReviewMode ? "review" : "task")
-          : "project";
-      const newContextId = ideationSessionId || selectedTaskId || projectId;
+          : "project");
+      const newContextId =
+        contextIdOverride ?? ideationSessionId ?? selectedTaskId ?? projectId ?? "";
       prevContextTypeRef.current = { type: newContextType, id: newContextId };
     }
-  }, [contextKey, storeContextKey, setActiveConversation, queryClient, clearMessages, setSending, ideationSessionId, selectedTaskId, projectId, isMergeMode, isExecutionMode, isReviewMode]);
+  }, [contextIdOverride, contextKey, contextTypeOverride, storeContextKey, setActiveConversation, queryClient, clearMessages, setSending, ideationSessionId, selectedTaskId, projectId, isMergeMode, isExecutionMode, isReviewMode]);
 
   // Track previous override conversation ID to detect changes
-  const prevOverrideConversationIdRef = useRef<string | undefined>(undefined);
+  const prevOverrideConversationIdRef = useRef<string | null | undefined>(undefined);
 
   // Handle override conversation selection (for history mode)
   useEffect(() => {
     if (overrideConversationId !== prevOverrideConversationIdRef.current) {
       prevOverrideConversationIdRef.current = overrideConversationId;
 
-      if (overrideConversationId) {
-        // In history mode with a specific conversation - select it
+      if (overrideConversationId !== undefined) {
+        // In history mode with a specific conversation - select it; null
+        // explicitly clears stale conversations for no-transcript stages.
         setActiveConversation(storeContextKey, overrideConversationId);
         hasAutoSelectedRef.current = true; // Prevent auto-select from overriding
       }
@@ -324,7 +320,7 @@ export function useChatPanelContext({
 
     // Explicit conversation owners such as history and Agents archived/session
     // lists must not be replaced by the active-list auto-selection path.
-    if (overrideConversationId) {
+    if (overrideConversationId !== undefined) {
       return;
     }
 

@@ -228,6 +228,23 @@ html[data-theme="high-contrast"] main {
   --sidebar-ring:               #FF6A35;
 }
 
+[data-theme="high-contrast"] [data-sonner-toaster] {
+  --normal-text: #FFFFFF;
+}
+
+[data-theme="high-contrast"] [data-sonner-toast][data-styled="true"] {
+  color: #FFFFFF !important;
+}
+
+[data-theme="high-contrast"] [data-sonner-toast][data-styled="true"] [data-description] {
+  color: #BFBFBF !important;
+}
+
+[data-theme="high-contrast"] [data-sonner-toast][data-styled="true"] [data-title],
+[data-theme="high-contrast"] [data-sonner-toast][data-styled="true"] [data-content] {
+  color: #FFFFFF !important;
+}
+
 [data-theme="high-contrast"] [data-testid="kanban-toolbar"] {
   border-bottom-color: #555555 !important;
 }
@@ -251,12 +268,12 @@ html[data-theme="high-contrast"] main {
   border-right-color: #555555 !important;
 }
 
-[data-theme="high-contrast"] [data-testid="reviews-panel-shell"] {
+[data-theme="high-contrast"] [data-testid="notifications-panel-shell"] {
   background-color: #0A0A0A !important;
   border-left-color: #555555 !important;
 }
 
-[data-theme="high-contrast"] [data-testid="reviews-panel-frame"] {
+[data-theme="high-contrast"] [data-testid="notifications-panel-frame"] {
   background-color: #0A0A0A !important;
 }
 
@@ -318,7 +335,18 @@ html[data-theme="high-contrast"] main {
   --dialog-control-border-hover: #999999;
   --dialog-nav-active-bg: #2A2A2A;
   --dialog-nav-active-border: #999999;
+  --dialog-nav-hover-bg: #1A1A1A;
+  --dialog-hover-bg: #2A2A2A;
+  /* HC keeps stroke-led separation: the tab bar reads as a bordered group
+     and the selected chip lifts to a clearly lighter fill. */
+  --dialog-tab-bg: #000000;
+  --dialog-tab-active-bg: #3A3A3A;
+  --dialog-tab-active-text: #FFFFFF;
+  --dialog-search-results-bg: #000000;
+  --dialog-text-muted: #BFBFBF;
+  --dialog-text-subtle: #999999;
   --dialog-toggle-off-bg: #999999;
+  --dialog-toggle-knob-bg: #FFFFFF;
   --dialog-warn: #FFD93D;
   --dialog-warn-bg: rgba(255,217,61,.18);
   --dialog-warn-card-bg: rgba(255,217,61,.10);
@@ -429,7 +457,7 @@ html[data-theme="high-contrast"] main {
   border-radius: 0;
 }
 
-/* Execution Agents tab list — TabsList has an explicit border on the
+/* Agents tab list — TabsList has an explicit border on the
    wrapper that makes "Global Defaults / Project Overrides" read as a
    pill inside the flat-section context. Drop the wrapper border and
    bg so only the active trigger's accent fill signals selection. */
@@ -438,19 +466,19 @@ html[data-theme="high-contrast"] main {
   background: transparent !important;
 }
 
-/* Execution Agents collapsible rows — the toggle button sits at the
-   top of each lane block. Our global HC button-border rule (Phase 1)
+/* Agents disclosure rows — the toggle button sits at the top of each
+   family or role block. Our global HC button-border rule (Phase 1)
    strokes it as if it were a button, which reads as double-borders
    inside the bordered lane block. Strip the stroke for aria-controls
    headers (collapsible-section buttons). Exclude comboboxes and other
    buttons that legitimately show aria-expanded (Radix SelectTrigger). */
-[data-theme="high-contrast"] [data-testid="settings-dialog"] button[aria-controls^="harness-body"],
+[data-theme="high-contrast"] [data-testid="settings-dialog"] .agents-family__summary,
 [data-theme="high-contrast"] [data-testid="settings-dialog"] button[aria-expanded][aria-controls]:not([role="combobox"]) {
   border: none !important;
   cursor: pointer;
 }
 
-/* Execution Agents tabs — once the tablist wrapper chrome is stripped
+/* Agents tabs — once the tablist wrapper chrome is stripped
    (above), "Global Defaults" and "Project Overrides" butt up against
    each other with no visible gap. Add 8px between them so each tab
    reads as its own target on HC. Scoped to the dialog so the default
@@ -488,17 +516,6 @@ html[data-theme="high-contrast"] main {
 }
 [data-theme="high-contrast"] [data-testid="modal-overlay"] {
   background-color: rgba(0,0,0,.60) !important;
-}
-
-/* HC sidebar / list-row separation — on pure-black rails the default hover
-   tint (15% white) is subtle. Add a bottom divider between adjacent rows so
-   the list reads as discrete items even at rest. PlanItem tags itself with
-   `data-testid="plan-item-<id>"`. */
-[data-theme="high-contrast"] [data-testid="plan-browser"] [data-testid^="plan-item-"] {
-  border-bottom: 1px solid var(--border-subtle);
-}
-[data-theme="high-contrast"] [data-testid="plan-browser"] [data-testid^="plan-item-"]:last-child {
-  border-bottom: none;
 }
 
 /* Inside the light-scoped settings modal, the consolidated button-border

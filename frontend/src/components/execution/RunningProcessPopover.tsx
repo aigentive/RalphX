@@ -2,7 +2,7 @@
  * RunningProcessPopover - Compact running processes list with tabbed view
  *
  * Dense row-based layout matching macOS Activity Monitor style.
- * Tabs: Execution (processes + team groups) | Ideation (ideation sessions)
+ * Tabs: Execution (processes) | Ideation (ideation sessions)
  * Controlled mode: uses PopoverAnchor (not PopoverTrigger) for external open control.
  */
 
@@ -14,7 +14,6 @@ import {
 } from "@/components/ui/popover";
 import { Loader2, MessageSquare, Settings } from "lucide-react";
 import { ProcessCard } from "./ProcessCard";
-import { TeamProcessGroup } from "./TeamProcessGroup";
 import { IdeationSessionCard } from "./IdeationSessionCard";
 import type {
   ExecutionCapacitySummary,
@@ -24,11 +23,14 @@ import type {
   RunningIdeationSession,
   RunningWorkspaceSession,
 } from "@/api/running-processes";
-import { useUiStore } from "@/stores/uiStore";
 import { cn } from "@/lib/utils";
 import { useElapsedTimer } from "@/hooks/useElapsedTimer";
 import { formatElapsedTime } from "@/lib/formatters";
 import { shouldPreserveExecutionPopoverForTarget } from "./executionPopoverDismissal";
+import {
+  runningProcessTaskTarget,
+  type ExecutionBarTaskNavigationTarget,
+} from "./executionTaskNavigation";
 
 type TabType = "running" | "workspaces" | "execution" | "ideation";
 
@@ -62,7 +64,13 @@ interface RunningProcessPopoverProps {
   /** Called when an ideation session is clicked to navigate to it */
   onNavigateToSession?: (sessionId: string) => void;
   /** Called when a workspace session is clicked to navigate to its agent conversation */
-  onNavigateToWorkspace?: (projectId: string, conversationId: string) => void;
+  onNavigateToWorkspace?: (
+    projectId: string,
+    conversationId: string,
+    session?: RunningWorkspaceSession
+  ) => void;
+  /** Called when a task row should open its Agent conversation task detail */
+  onNavigateToTask?: (target: ExecutionBarTaskNavigationTarget) => void;
   /** Children (anchor element — NOT a trigger, controlled externally) */
   children: React.ReactNode;
   /** Optional horizontal alignment offset for popover content */
@@ -71,10 +79,6 @@ interface RunningProcessPopoverProps {
   initialTab?: TabType;
   /** Whether to show the Ideation tab (false hides it entirely when ideationMax=0) */
   showIdeation?: boolean;
-  /** Whether execution team-specific UI should be shown. */
-  showExecutionTeamUi?: boolean;
-  /** Whether ideation team-specific UI should be shown. */
-  showIdeationTeamUi?: boolean;
 }
 
 const LANE_LABELS: Record<ExecutionLaneName, string> = {
@@ -180,15 +184,13 @@ export function RunningProcessPopover({
   onOpenSettings,
   onNavigateToSession,
   onNavigateToWorkspace,
+  onNavigateToTask,
   children,
   alignOffset = -24,
   initialTab = "execution",
   showIdeation = false,
-  showExecutionTeamUi = true,
-  showIdeationTeamUi = true,
 }: RunningProcessPopoverProps) {
   const [activeTab, setActiveTab] = useState<TabType>(initialTab);
-  const navigateToTask = useUiStore((s) => s.navigateToTask);
 
   // Sync tab whenever initialTab changes — handles external switching while popover is open
   useEffect(() => {
@@ -205,8 +207,11 @@ export function RunningProcessPopover({
   const effectiveMaxConcurrent = capacity?.globalMaxConcurrent ?? maxConcurrent;
 
   const handleNavigate = (taskId: string) => {
+    const process = processes.find((item) => item.taskId === taskId);
     onOpenChange(false);
-    navigateToTask(taskId);
+    if (process) {
+      onNavigateToTask?.(runningProcessTaskTarget(process));
+    }
   };
 
   const handleNavigateToSession = (sessionId: string) => {
@@ -216,7 +221,7 @@ export function RunningProcessPopover({
 
   const handleNavigateToWorkspace = (session: RunningWorkspaceSession) => {
     onOpenChange(false);
-    onNavigateToWorkspace?.(session.projectId, session.conversationId);
+    onNavigateToWorkspace?.(session.projectId, session.conversationId, session);
   };
 
   // Tab-aware header title
@@ -254,25 +259,15 @@ export function RunningProcessPopover({
       </div>
     ) : (
       <>
-        {processes.map((process) =>
-          process.teamName && showExecutionTeamUi ? (
-            <TeamProcessGroup
-              key={process.taskId}
-              process={process}
-              onPause={onPauseProcess}
-              onStop={onStopProcess}
-              onNavigate={handleNavigate}
-            />
-          ) : (
-            <ProcessCard
-              key={process.taskId}
-              process={process}
-              onPause={onPauseProcess}
-              onStop={onStopProcess}
-              onNavigate={handleNavigate}
-            />
-          )
-        )}
+        {processes.map((process) => (
+          <ProcessCard
+            key={process.taskId}
+            process={process}
+            onPause={onPauseProcess}
+            onStop={onStopProcess}
+            onNavigate={handleNavigate}
+          />
+        ))}
       </>
     );
 
@@ -360,7 +355,6 @@ export function RunningProcessPopover({
             key={session.sessionId}
             session={session}
             onClick={() => handleNavigateToSession(session.sessionId)}
-            showTeamModeBadge={showIdeationTeamUi}
           />
         ))}
       </>

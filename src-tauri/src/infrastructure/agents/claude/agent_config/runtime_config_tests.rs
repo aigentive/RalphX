@@ -13,15 +13,38 @@ fn test_all_defaults_are_sensible() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
     assert_eq!(cfg.stream.merge_line_read_secs, 600);
     assert_eq!(cfg.stream.completion_grace_secs, 30);
+    assert_eq!(cfg.stream.launch_reservation_lease_secs, 30);
     assert_eq!(cfg.stream.execution_attempt_start_tolerance_secs, 1);
+    assert_eq!(cfg.stream.notification_retention_read_days, 30);
+    assert_eq!(cfg.stream.notification_retention_max_rows, 1000);
+    assert!(cfg.stream.chat_payload_retention_enabled);
+    assert_eq!(cfg.stream.chat_payload_retention_days, 90);
+    assert_eq!(cfg.stream.chat_payload_retention_archived_days, 7);
+    assert_eq!(cfg.stream.chat_payload_retention_batch_rows, 2000);
+    assert_eq!(cfg.stream.db_lock_wait_warn_ms, 100);
+    assert_eq!(cfg.stream.db_lock_hold_warn_ms, 250);
+    assert!(cfg.database_maintenance.db_auto_compact_enabled);
+    assert_eq!(
+        cfg.database_maintenance.db_auto_compact_max_db_bytes,
+        2_147_483_648
+    );
+    assert_eq!(
+        cfg.database_maintenance
+            .db_auto_compact_min_freelist_percent,
+        20
+    );
     assert_eq!(cfg.reconciliation.merger_timeout_secs, 1200);
     assert_eq!(cfg.reconciliation.validation_deadline_secs, 1200);
     assert_eq!(cfg.reconciliation.branch_freshness_timeout_secs, 60);
     assert_eq!(cfg.git.cmd_timeout_secs, 60);
+    assert_eq!(cfg.git.startup_auth_preflight_timeout_secs, 10);
     assert_eq!(cfg.git.retry_backoff_secs, vec![1, 2, 4]);
+    assert_eq!(cfg.git.provider_probe_cache_ttl_secs, 300);
     assert_eq!(cfg.git.workspace_freshness_cache_ttl_ms, 2_000);
     assert_eq!(cfg.git.workspace_review_cache_ttl_ms, 2_000);
     assert_eq!(cfg.git.workspace_pr_description_cache_ttl_ms, 300_000);
@@ -31,7 +54,26 @@ fn test_all_defaults_are_sensible() {
         cfg.git.agent_workspace_pr_reconciliation_cache_ttl_ms,
         30_000
     );
+    assert_eq!(cfg.git.agent_workspace_publish_lease_stale_secs, 300);
+    assert_eq!(
+        cfg.git
+            .agent_workspace_publish_lease_heartbeat_interval_secs,
+        30
+    );
+    assert_eq!(cfg.git.agent_workspace_publish_recovery_interval_secs, 120);
+    assert_eq!(default_agent_workspace_publish_lease_stale_secs(), 300);
+    assert_eq!(
+        default_agent_workspace_publish_lease_heartbeat_interval_secs(),
+        30
+    );
+    assert_eq!(
+        default_agent_workspace_publish_recovery_interval_secs(),
+        120
+    );
+    assert_eq!(cfg.git.terminal_pr_local_cleanup_interval_secs, 900);
+    assert_eq!(cfg.git.terminal_pr_local_cleanup_retry_secs, 3_600);
     assert_eq!(cfg.git.orphan_worktree_cleanup_marker_retry_secs, 86_400);
+    assert_eq!(cfg.git.orphan_worktree_cleanup_interval_secs, 900);
     assert_eq!(cfg.scheduler.watchdog_interval_secs, 60);
     assert_eq!(cfg.supervisor.time_threshold_secs, 600);
     assert_eq!(cfg.limits.max_resume_attempts, 5);
@@ -88,6 +130,8 @@ fn test_merge_speed_env_overrides() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -121,21 +165,45 @@ fn test_env_overrides_apply() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
         "RALPHX_STREAM_MERGE_LINE_READ_SECS" => Some("999".to_string()),
         "RALPHX_STREAM_COMPLETION_GRACE_SECS" => Some("45".to_string()),
+        "RALPHX_STREAM_LAUNCH_RESERVATION_LEASE_SECS" => Some("60".to_string()),
+        "RALPHX_STREAM_NOTIFICATION_RETENTION_READ_DAYS" => Some("14".to_string()),
+        "RALPHX_STREAM_NOTIFICATION_RETENTION_MAX_ROWS" => Some("250".to_string()),
+        "RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_ENABLED" => Some("false".to_string()),
+        "RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_DAYS" => Some("21".to_string()),
+        "RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_ARCHIVED_DAYS" => Some("3".to_string()),
+        "RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_BATCH_ROWS" => Some("17".to_string()),
+        "RALPHX_STREAM_DB_LOCK_WAIT_WARN_MS" => Some("25".to_string()),
+        "RALPHX_STREAM_DB_LOCK_HOLD_WARN_MS" => Some("75".to_string()),
+        "RALPHX_DB_AUTO_COMPACT_ENABLED" => Some("false".to_string()),
+        "RALPHX_DB_AUTO_COMPACT_MAX_DB_BYTES" => Some("1048576".to_string()),
+        "RALPHX_DB_AUTO_COMPACT_MIN_FREELIST_PERCENT" => Some("35".to_string()),
         "RALPHX_RECONCILIATION_MERGER_TIMEOUT_SECS" => Some("2400".to_string()),
         "RALPHX_GIT_CMD_TIMEOUT_SECS" => Some("120".to_string()),
+        "RALPHX_GIT_STARTUP_AUTH_PREFLIGHT_TIMEOUT_SECS" => Some("9".to_string()),
         "RALPHX_GIT_RETRY_BACKOFF_SECS" => Some("2,4,8,16".to_string()),
+        "RALPHX_GIT_PROVIDER_PROBE_CACHE_TTL_SECS" => Some("120".to_string()),
         "RALPHX_GIT_WORKSPACE_FRESHNESS_CACHE_TTL_MS" => Some("750".to_string()),
         "RALPHX_GIT_WORKSPACE_REVIEW_CACHE_TTL_MS" => Some("900".to_string()),
         "RALPHX_GIT_WORKSPACE_PR_DESCRIPTION_CACHE_TTL_MS" => Some("1200".to_string()),
         "RALPHX_GIT_WORKSPACE_PR_ANNOTATIONS_CACHE_TTL_MS" => Some("45000".to_string()),
         "RALPHX_GIT_WORKSPACE_PR_ANNOTATIONS_CHECK_RUN_FETCH_LIMIT" => Some("7".to_string()),
         "RALPHX_GIT_AGENT_WORKSPACE_PR_RECONCILIATION_CACHE_TTL_MS" => Some("45000".to_string()),
+        "RALPHX_GIT_AGENT_WORKSPACE_PUBLISH_LEASE_STALE_SECS" => Some("600".to_string()),
+        "RALPHX_GIT_AGENT_WORKSPACE_PUBLISH_LEASE_HEARTBEAT_INTERVAL_SECS" => {
+            Some("45".to_string())
+        }
+        "RALPHX_GIT_AGENT_WORKSPACE_PUBLISH_RECOVERY_INTERVAL_SECS" => Some("180".to_string()),
+        "RALPHX_GIT_TERMINAL_PR_LOCAL_CLEANUP_INTERVAL_SECS" => Some("300".to_string()),
+        "RALPHX_GIT_TERMINAL_PR_LOCAL_CLEANUP_RETRY_SECS" => Some("1800".to_string()),
         "RALPHX_GIT_ORPHAN_WORKTREE_CLEANUP_MARKER_RETRY_SECS" => Some("3600".to_string()),
+        "RALPHX_GIT_ORPHAN_WORKTREE_CLEANUP_INTERVAL_SECS" => Some("600".to_string()),
         "RALPHX_SCHEDULER_READY_SETTLE_MS" => Some("500".to_string()),
         "RALPHX_SUPERVISOR_MAX_TOKENS" => Some("200000".to_string()),
         "RALPHX_LIMITS_MAX_RESUME_ATTEMPTS" => Some("10".to_string()),
@@ -144,11 +212,32 @@ fn test_env_overrides_apply() {
 
     assert_eq!(cfg.stream.merge_line_read_secs, 999);
     assert_eq!(cfg.stream.completion_grace_secs, 45);
+    assert_eq!(cfg.stream.launch_reservation_lease_secs, 60);
+    assert_eq!(cfg.stream.notification_retention_read_days, 14);
+    assert_eq!(cfg.stream.notification_retention_max_rows, 250);
+    assert!(!cfg.stream.chat_payload_retention_enabled);
+    assert_eq!(cfg.stream.chat_payload_retention_days, 21);
+    assert_eq!(cfg.stream.chat_payload_retention_archived_days, 3);
+    assert_eq!(cfg.stream.chat_payload_retention_batch_rows, 17);
+    assert_eq!(cfg.stream.db_lock_wait_warn_ms, 25);
+    assert_eq!(cfg.stream.db_lock_hold_warn_ms, 75);
+    assert!(!cfg.database_maintenance.db_auto_compact_enabled);
+    assert_eq!(
+        cfg.database_maintenance.db_auto_compact_max_db_bytes,
+        1_048_576
+    );
+    assert_eq!(
+        cfg.database_maintenance
+            .db_auto_compact_min_freelist_percent,
+        35
+    );
     assert_eq!(cfg.reconciliation.merger_timeout_secs, 2400);
     // validation_deadline_secs not overridden — should keep default
     assert_eq!(cfg.reconciliation.validation_deadline_secs, 1200);
     assert_eq!(cfg.git.cmd_timeout_secs, 120);
+    assert_eq!(cfg.git.startup_auth_preflight_timeout_secs, 9);
     assert_eq!(cfg.git.retry_backoff_secs, vec![2, 4, 8, 16]);
+    assert_eq!(cfg.git.provider_probe_cache_ttl_secs, 120);
     assert_eq!(cfg.git.workspace_freshness_cache_ttl_ms, 750);
     assert_eq!(cfg.git.workspace_review_cache_ttl_ms, 900);
     assert_eq!(cfg.git.workspace_pr_description_cache_ttl_ms, 1200);
@@ -158,7 +247,17 @@ fn test_env_overrides_apply() {
         cfg.git.agent_workspace_pr_reconciliation_cache_ttl_ms,
         45_000
     );
+    assert_eq!(cfg.git.agent_workspace_publish_lease_stale_secs, 600);
+    assert_eq!(
+        cfg.git
+            .agent_workspace_publish_lease_heartbeat_interval_secs,
+        45
+    );
+    assert_eq!(cfg.git.agent_workspace_publish_recovery_interval_secs, 180);
+    assert_eq!(cfg.git.terminal_pr_local_cleanup_interval_secs, 300);
+    assert_eq!(cfg.git.terminal_pr_local_cleanup_retry_secs, 1800);
     assert_eq!(cfg.git.orphan_worktree_cleanup_marker_retry_secs, 3600);
+    assert_eq!(cfg.git.orphan_worktree_cleanup_interval_secs, 600);
     assert_eq!(cfg.scheduler.ready_settle_ms, 500);
     assert_eq!(cfg.supervisor.max_tokens, 200000);
     assert_eq!(cfg.limits.max_resume_attempts, 10);
@@ -177,6 +276,8 @@ fn test_backward_compat_merger_timeout_env() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
 
     // Old key only
@@ -200,6 +301,8 @@ fn test_new_key_takes_precedence_over_old() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
 
     // Both keys set — new one should win (applied second)
@@ -224,6 +327,8 @@ fn test_invalid_env_values_ignored() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -250,6 +355,8 @@ fn test_validation_deadline_env_override() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -282,13 +389,12 @@ review_line_read_secs: 600
 review_parse_stall_secs: 120
 default_line_read_secs: 600
 default_parse_stall_secs: 180
-team_line_read_secs: 3600
-team_parse_stall_secs: 3600
 "#;
     let cfg: StreamTimeoutsConfig = serde_yaml::from_str(yaml).unwrap();
     assert_eq!(cfg.merge_line_read_secs, 900);
     assert_eq!(cfg.merge_parse_stall_secs, 180);
     assert_eq!(cfg.completion_grace_secs, 30);
+    assert_eq!(cfg.launch_reservation_lease_secs, 30);
     assert_eq!(cfg.execution_attempt_start_tolerance_secs, 1);
 }
 
@@ -305,6 +411,8 @@ fn test_branch_freshness_timeout_env_override() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -371,6 +479,8 @@ fn test_execution_failed_max_retries_env_override() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -396,6 +506,8 @@ fn test_execution_failed_retry_base_secs_env_override() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -419,6 +531,8 @@ fn test_execution_failed_retry_max_secs_env_override() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -444,6 +558,8 @@ fn test_execution_failed_all_three_env_overrides_applied_together() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -484,6 +600,8 @@ fn test_circuit_breaker_env_overrides() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -509,6 +627,8 @@ fn test_execution_failed_invalid_env_values_keep_defaults() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -532,9 +652,52 @@ fn test_external_mcp_config_defaults() {
     assert_eq!(cfg.host, "127.0.0.1");
     assert_eq!(cfg.max_restart_attempts, 3);
     assert_eq!(cfg.restart_delay_ms, 2000);
+    assert_eq!(cfg.shutdown_grace_ms, 2000);
+    assert_eq!(cfg.startup_timeout_secs, 30);
     assert_eq!(cfg.human_wait_timeout_secs, 285);
     assert!(cfg.auth_token.is_none());
     assert!(cfg.node_path.is_none());
+}
+
+#[test]
+fn test_external_mcp_env_override_shutdown_grace() {
+    let mut cfg = AllRuntimeConfig {
+        stream: StreamTimeoutsConfig::default(),
+        reconciliation: ReconciliationConfig::default(),
+        git: GitRuntimeConfig::default(),
+        scheduler: SchedulerConfig::default(),
+        supervisor: SupervisorRuntimeConfig::default(),
+        limits: LimitsConfig::default(),
+        verification: VerificationConfig::default(),
+        external_mcp: ExternalMcpConfig::default(),
+        child_session_activity_threshold_secs: None,
+        ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
+    };
+
+    apply_env_overrides_with(&mut cfg, &|name| match name {
+        "RALPHX_EXTERNAL_MCP_SHUTDOWN_GRACE_MS" => Some("750".to_string()),
+        _ => None,
+    });
+
+    assert_eq!(cfg.external_mcp.shutdown_grace_ms, 750);
+}
+
+#[test]
+fn shutdown_watchdog_config_defaults_and_accepts_env_override() {
+    let mut config = ShutdownConfig::default();
+    assert_eq!(config.watchdog_deadline_secs, 20);
+
+    apply_shutdown_env_overrides_with_lookup(&mut config, &|name| match name {
+        "RALPHX_SHUTDOWN_WATCHDOG_DEADLINE_SECS" => Some("35".to_string()),
+        _ => None,
+    });
+
+    assert_eq!(config.watchdog_deadline_secs, 35);
+    assert_eq!(bounded_shutdown_watchdog_deadline_secs(0), 20);
+    assert_eq!(bounded_shutdown_watchdog_deadline_secs(u64::MAX), 300);
+    assert_eq!(bounded_external_mcp_shutdown_grace_ms(u64::MAX), 30_000);
 }
 
 #[test]
@@ -550,6 +713,8 @@ fn test_external_mcp_env_overrides_enabled_true() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -572,6 +737,8 @@ fn test_external_mcp_env_overrides_enabled_one() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -597,6 +764,8 @@ fn test_external_mcp_env_overrides_enabled_false() {
         },
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -619,6 +788,8 @@ fn test_external_mcp_env_overrides_port_and_host() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -643,6 +814,8 @@ fn test_external_mcp_env_override_node_path() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -668,6 +841,8 @@ fn test_external_mcp_env_override_human_wait_timeout() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -675,6 +850,42 @@ fn test_external_mcp_env_override_human_wait_timeout() {
         _ => None,
     });
     assert_eq!(cfg.external_mcp.human_wait_timeout_secs, 240);
+}
+
+#[test]
+fn test_external_mcp_env_override_startup_timeout() {
+    let mut cfg = AllRuntimeConfig {
+        stream: StreamTimeoutsConfig::default(),
+        reconciliation: ReconciliationConfig::default(),
+        git: GitRuntimeConfig::default(),
+        scheduler: SchedulerConfig::default(),
+        supervisor: SupervisorRuntimeConfig::default(),
+        limits: LimitsConfig::default(),
+        verification: VerificationConfig::default(),
+        external_mcp: ExternalMcpConfig::default(),
+        child_session_activity_threshold_secs: None,
+        ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
+    };
+
+    apply_env_overrides_with(&mut cfg, &|name| match name {
+        "RALPHX_EXTERNAL_MCP_STARTUP_TIMEOUT_SECS" => Some("45".to_string()),
+        _ => None,
+    });
+    assert_eq!(cfg.external_mcp.startup_timeout_secs, 45);
+}
+
+#[test]
+fn external_mcp_rejects_zero_startup_timeout() {
+    let cfg = ExternalMcpConfig {
+        startup_timeout_secs: 0,
+        ..ExternalMcpConfig::default()
+    };
+
+    assert!(validate_external_mcp_config(&cfg)
+        .expect_err("zero startup timeout")
+        .contains("startup_timeout_secs"));
 }
 
 #[test]
@@ -690,6 +901,8 @@ fn test_external_mcp_invalid_port_env_keeps_default() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -827,6 +1040,8 @@ fn test_git_isolation_env_overrides() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -880,12 +1095,79 @@ fn ticketing_dashboard_after_env(value: Option<&str>) -> bool {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
     apply_env_overrides_with(&mut cfg, &|name| match name {
         "RALPHX_UI_TICKETING_DASHBOARD" => value.map(str::to_string),
         _ => None,
     });
     cfg.ui_feature_flags.ticketing_dashboard
+}
+
+fn agent_personas_after_env(value: Option<&str>) -> bool {
+    let mut cfg = AllRuntimeConfig {
+        stream: StreamTimeoutsConfig::default(),
+        reconciliation: ReconciliationConfig::default(),
+        git: GitRuntimeConfig::default(),
+        scheduler: SchedulerConfig::default(),
+        supervisor: SupervisorRuntimeConfig::default(),
+        limits: LimitsConfig::default(),
+        verification: VerificationConfig::default(),
+        external_mcp: ExternalMcpConfig::default(),
+        child_session_activity_threshold_secs: None,
+        ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
+    };
+    apply_env_overrides_with(&mut cfg, &|name| match name {
+        "RALPHX_UI_AGENT_PERSONAS" => value.map(str::to_string),
+        _ => None,
+    });
+    cfg.ui_feature_flags.agent_personas
+}
+
+#[test]
+fn runtime_config_env_override_agent_personas_true_and_false() {
+    assert!(agent_personas_after_env(Some("true")));
+    assert!(agent_personas_after_env(Some("1")));
+    assert!(!agent_personas_after_env(Some("false")));
+    assert!(!agent_personas_after_env(None));
+}
+
+#[test]
+fn runtime_config_env_override_persona_switch_fresh_session_fallback() {
+    let mut cfg = AllRuntimeConfig {
+        stream: StreamTimeoutsConfig::default(),
+        reconciliation: ReconciliationConfig::default(),
+        git: GitRuntimeConfig::default(),
+        scheduler: SchedulerConfig::default(),
+        supervisor: SupervisorRuntimeConfig::default(),
+        limits: LimitsConfig::default(),
+        verification: VerificationConfig::default(),
+        external_mcp: ExternalMcpConfig::default(),
+        child_session_activity_threshold_secs: None,
+        ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
+    };
+    apply_env_overrides_with(&mut cfg, &|name| match name {
+        "RALPHX_UI_PERSONA_SWITCH_FORCES_FRESH_PROVIDER_SESSION" => Some("true".to_string()),
+        _ => None,
+    });
+    assert!(
+        cfg.ui_feature_flags
+            .persona_switch_forces_fresh_provider_session
+    );
+
+    apply_env_overrides_with(&mut cfg, &|name| match name {
+        "RALPHX_UI_PERSONA_SWITCH_FORCES_FRESH_PROVIDER_SESSION" => Some("false".to_string()),
+        _ => None,
+    });
+    assert!(
+        !cfg.ui_feature_flags
+            .persona_switch_forces_fresh_provider_session
+    );
 }
 
 #[test]

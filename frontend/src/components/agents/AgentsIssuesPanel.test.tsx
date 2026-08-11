@@ -61,6 +61,33 @@ function issue(overrides: Partial<AgentConversationIssue> = {}): AgentConversati
     evidence: "src/unrelated.rs changed",
     recommendation: "Create a separate follow-up.",
     blockerFingerprint: "scope:task-1",
+    canonicalFingerprint: "v1:scope-drift:task:task-1:files:abc123",
+    canonicalScopeKind: "task",
+    canonicalScopeSubject: "task-1",
+    canonicalFamily: "scope-drift",
+    supersededByIssueId: null,
+    occurrenceCount: 1,
+    occurrences: [
+      {
+        id: "occurrence-1",
+        issueId: "issue-1",
+        sourceTaskId: "task-1",
+        sourceContextType: "review",
+        sourceContextId: "review-1",
+        sourceAgentName: "ralphx-execution-reviewer",
+        issueKind: "plan_drift",
+        severity: "critical",
+        blockingScope: "followup_only",
+        title: "Unrelated drift",
+        summary: "The task found unrelated work.",
+        evidence: "src/unrelated.rs changed",
+        recommendation: "Create a separate follow-up.",
+        rawBlockerFingerprint: "scope:task-1",
+        canonicalFingerprint: "v1:scope-drift:task:task-1:files:abc123",
+        dedupeDecision: "created",
+        createdAt: "2026-06-25T12:01:00Z",
+      },
+    ],
     followupTitle: "Investigate unrelated drift",
     followupPrompt: "Plan the unrelated work separately.",
     autoFollowupEligible: true,
@@ -104,7 +131,20 @@ describe("AgentsIssuesPanel", () => {
 
   it("renders issues and dispatches follow-up and status mutations", async () => {
     const user = userEvent.setup();
-    const openIssue = issue();
+    const baseOccurrence = issue().occurrences[0];
+    const openIssue = issue({
+      occurrenceCount: 2,
+      occurrences: [
+        baseOccurrence,
+        {
+          ...baseOccurrence,
+          id: "occurrence-2",
+          sourceAgentName: "ralphx-execution-worker",
+          summary: "Worker found the same blocker.",
+          createdAt: "2026-06-25T12:02:00Z",
+        },
+      ],
+    });
     const linkedIssue = issue({
       id: "issue-2",
       severity: "low",
@@ -113,6 +153,12 @@ describe("AgentsIssuesPanel", () => {
       sourceTaskId: null,
       sourceAgentName: null,
       blockerFingerprint: null,
+      canonicalFingerprint: null,
+      canonicalScopeKind: null,
+      canonicalScopeSubject: null,
+      canonicalFamily: null,
+      occurrenceCount: null,
+      occurrences: [],
       evidence: null,
       recommendation: null,
       updatedAt: "not-a-date",
@@ -131,6 +177,10 @@ describe("AgentsIssuesPanel", () => {
     expect(screen.getByText("Decision needed")).toBeInTheDocument();
     expect(screen.getByText("Critical")).toBeInTheDocument();
     expect(screen.getAllByText("Followup Only")).toHaveLength(2);
+    expect(screen.getByText("2 reports")).toBeInTheDocument();
+    expect(screen.getByText("Reports")).toBeInTheDocument();
+    expect(screen.getByText("Worker found the same blocker.")).toBeInTheDocument();
+    expect(screen.getByText("v1:scope-drift:task:task-1:files:abc123")).toBeInTheDocument();
     expect(screen.getByText("src/unrelated.rs changed")).toBeInTheDocument();
     expect(screen.getByText("Create a separate follow-up.")).toBeInTheDocument();
     expect(screen.getByText("not-a-date")).toBeInTheDocument();

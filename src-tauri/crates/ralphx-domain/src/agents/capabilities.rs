@@ -1,7 +1,11 @@
 // Client capabilities
 // Information about what features an agentic client supports
 
-use super::{harness::AgentHarnessKind, model_registry::built_in_agent_models, types::ClientType};
+use super::{
+    harness::AgentHarnessKind,
+    model_registry::{built_in_agent_models, default_model_for_provider},
+    types::ClientType,
+};
 
 /// Information about a model available to a client
 #[derive(Debug, Clone)]
@@ -58,6 +62,9 @@ impl ClientCapabilities {
                 ModelInfo::new("claude-sonnet-4-6", "Claude Sonnet 4.6", 128_000),
                 ModelInfo::new("claude-sonnet-5", "Claude Sonnet 5", 128_000),
                 ModelInfo::new("claude-opus-4-5-20251101", "Claude Opus 4.5", 32_000),
+                ModelInfo::new("claude-opus-4-7", "Claude Opus 4.7", 1_000_000),
+                ModelInfo::new("claude-opus-4-8", "Claude Opus 4.8", 1_000_000),
+                ModelInfo::new("claude-opus-5", "Claude Opus 5", 1_000_000),
                 ModelInfo::new("claude-haiku-4-5-20251001", "Claude Haiku 4.5", 32_000),
             ],
         }
@@ -98,8 +105,16 @@ impl ClientCapabilities {
         self.models.iter().any(|m| m.id == model_id)
     }
 
-    /// Get the default model (first in list)
+    /// Get the default model.
     pub fn default_model(&self) -> Option<&ModelInfo> {
+        if self.client_type == ClientType::Codex {
+            let model_id = default_model_for_provider(AgentHarnessKind::Codex);
+            return self
+                .models
+                .iter()
+                .find(|model| model.id == model_id)
+                .or_else(|| self.models.first());
+        }
         self.models.first()
     }
 

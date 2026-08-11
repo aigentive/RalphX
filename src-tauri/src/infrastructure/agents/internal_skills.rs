@@ -3,6 +3,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
+use ralphx_domain::personas::skill_markdown::{
+    split_frontmatter, trusted_slug as trusted_skill_name,
+};
+
 use crate::infrastructure::agents::harness_agent_catalog::{
     load_canonical_agent_definition, load_canonical_agent_definition_for_profile,
 };
@@ -273,17 +277,6 @@ fn validate_allowed_skill_reference(
     Ok(())
 }
 
-fn trusted_skill_name(skill_name: &str) -> Option<&str> {
-    let valid = !skill_name.is_empty()
-        && !skill_name.contains("..")
-        && !skill_name.contains('/')
-        && !skill_name.contains('\\')
-        && skill_name
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-');
-    valid.then_some(skill_name)
-}
-
 fn load_internal_skill(project_root: &Path, skill_name: &str) -> Result<InternalSkill, String> {
     let trusted_name = trusted_skill_name(skill_name)
         .ok_or_else(|| format!("Invalid skill name `{skill_name}`"))?;
@@ -346,20 +339,6 @@ fn read_internal_skill_file(skill_name: &str, skill_file: &Path) -> Result<Inter
         body: body.trim().to_string(),
         file_path: skill_file.to_path_buf(),
     })
-}
-
-fn split_frontmatter(raw: &str) -> Option<(&str, &str)> {
-    let rest = raw
-        .strip_prefix("---\n")
-        .or_else(|| raw.strip_prefix("---\r\n"))?;
-    let end = rest.find("\n---").or_else(|| rest.find("\r\n---"))?;
-    let frontmatter = &rest[..end];
-    let closing = &rest[end + 1..];
-    let body = closing
-        .strip_prefix("---\r\n")
-        .or_else(|| closing.strip_prefix("---\n"))
-        .or_else(|| closing.strip_prefix("---"))?;
-    Some((frontmatter, body))
 }
 
 fn extract_internal_skill_directives(text: &str) -> Vec<String> {
@@ -667,20 +646,27 @@ description: Workspace bridge instructions
     #[test]
     fn live_general_workspace_agents_do_not_load_workspace_bridge_skill() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
-        for agent_name in ["ralphx-general-worker", "ralphx-general-explorer"] {
-            let injected = inject_internal_skills_into_system_prompt(
-                &root,
-                agent_name,
-                "Base prompt",
-                "<!-- ralphx_internal_skill=ralphx-agent-workspace-swe -->",
-            )
-            .unwrap_or_else(|error| panic!("{agent_name} injection failed: {error}"));
-            assert!(
-                injected.injected_skill_names.is_empty(),
-                "{agent_name} must not load agent workspace bridge skills"
-            );
-            assert_eq!(injected.system_prompt, "Base prompt");
-        }
+        let directive = "<!-- ralphx_internal_skill=ralphx-agent-workspace-swe -->";
+
+        let worker_error = inject_internal_skills_into_system_prompt(
+            &root,
+            "ralphx-general-worker",
+            "Base prompt",
+            directive,
+        )
+        .expect_err("worker must reject a disallowed workspace bridge directive");
+        assert!(worker_error.contains("ralphx-agent-workspace-swe"));
+        assert!(worker_error.contains("not listed in allowed"));
+
+        let explorer = inject_internal_skills_into_system_prompt(
+            &root,
+            "ralphx-general-explorer",
+            "Base prompt",
+            directive,
+        )
+        .expect("explorer without internal skills should leave the prompt unchanged");
+        assert!(explorer.injected_skill_names.is_empty());
+        assert_eq!(explorer.system_prompt, "Base prompt");
     }
 
     #[test]
@@ -724,7 +710,10 @@ Alpha body.
             list_internal_skill_summaries_for_agent(root, "test-agent").expect("summaries");
 
         assert_eq!(
-            summaries.iter().map(|summary| summary.name.as_str()).collect::<Vec<_>>(),
+            summaries
+                .iter()
+                .map(|summary| summary.name.as_str())
+                .collect::<Vec<_>>(),
             vec!["alpha-skill", "zebra-skill"]
         );
         assert_eq!(
@@ -822,7 +811,10 @@ Body.
         );
 
         assert_eq!(directives, vec!["workspace-swe"]);
-        assert!(is_manual_invocation("Please run /workspace-swe.", "workspace-swe"));
+        assert!(is_manual_invocation(
+            "Please run /workspace-swe.",
+            "workspace-swe"
+        ));
         assert_eq!(
             split_match_terms("Workspace bridge, code-quality."),
             vec!["workspace", "bridge", "code-quality"]

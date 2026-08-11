@@ -22,3 +22,4 @@ export { MergingTaskDetail } from "./MergingTaskDetail";
 export { MergeConflictTaskDetail } from "./MergeConflictTaskDetail";
 export { MergeIncompleteTaskDetail } from "./MergeIncompleteTaskDetail";
 export { MergedTaskDetail } from "./MergedTaskDetail";
+export { BranchUpdateTaskDetail } from "@/components/tasks/detail-views/BranchUpdateTaskDetail";

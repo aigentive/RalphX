@@ -1,11 +1,22 @@
 use async_trait::async_trait;
+use ralphx_lib::application::builder_attachment_materializer::materialize_builder_attachment;
 use ralphx_lib::application::chat_service::{
-    build_command, build_initial_prompt, build_resume_command, build_resume_command_for_harness,
-    build_resume_initial_prompt, create_assistant_message, finalize_assistant_message_for_test,
+    build_command, build_command_for_harness, build_command_with_app_data_dir,
+    build_initial_prompt, build_launch_plan_for_harness_with_persona_for_test,
+    build_resume_command, build_resume_command_for_harness, build_resume_initial_prompt,
+    create_assistant_message, finalize_assistant_message_for_test,
     finalize_structured_assistant_message_for_test, format_attachments_for_agent,
     format_session_history, get_entity_status_for_resume, is_text_file,
-    provider_resume_mode_for_session_under, resolve_working_directory, ProviderResumeMode,
+    provider_resume_mode_for_session_under, resolve_conversation_spawn_context,
+    resolve_mcp_filesystem_read_roots, resolve_working_directory, ProviderResumeMode,
+    ResolvedChatHarnessLaunch,
 };
+use ralphx_lib::application::conversation_folder_reference_service::ConversationFolderReferenceService;
+use ralphx_lib::application::persona_ingest::{
+    persona_ingest_conversation_path, persona_ingest_storage_path,
+};
+use ralphx_lib::application::persona_resolver::{resolve_persona_for_send, PersonaResolveFlags};
+use ralphx_lib::application::standalone_workspace::create_workspace;
 use ralphx_lib::application::AppState;
 use ralphx_lib::domain::agents::{AgentHarnessKind, ProviderSessionRef};
 use ralphx_lib::domain::entities::{self, *};
@@ -63,6 +74,1209 @@ fn write_file(path: &Path, contents: &str) {
     fs::write(path, contents).expect("write test file");
 }
 
+fn env_value(envs: &[(std::ffi::OsString, std::ffi::OsString)], key: &str) -> Option<String> {
+    envs.iter()
+        .find(|(env_key, _)| env_key == key)
+        .map(|(_, value)| value.to_string_lossy().into_owned())
+}
+
+fn spawnable_prompt(
+    spawnable: &ralphx_lib::infrastructure::agents::claude::SpawnableCommand,
+) -> String {
+    spawnable
+        .get_stdin_prompt_for_test()
+        .map(str::to_string)
+        .unwrap_or_else(|| spawnable.get_args_for_test().join("\n"))
+}
+
+fn final_spawnable_command(
+    spawnable: &ralphx_lib::infrastructure::agents::claude::SpawnableCommand,
+) -> String {
+    let args = spawnable.get_args_for_test();
+    let mut rendered = args.join("\n");
+    for window in args.windows(2) {
+        if window[0] == "--append-system-prompt-file" {
+            rendered.push('\n');
+            rendered
+                .push_str(&fs::read_to_string(&window[1]).expect("read appended system prompt"));
+        }
+    }
+    rendered
+}
+
+fn mcp_runtime_args(
+    spawnable: &ralphx_lib::infrastructure::agents::claude::SpawnableCommand,
+) -> Vec<String> {
+    let command_args = spawnable.get_args_for_test();
+    if let Some(config_path) = command_args
+        .iter()
+        .position(|arg| arg == "--mcp-config")
+        .and_then(|index| command_args.get(index + 1))
+    {
+        let config = if config_path.trim_start().starts_with('{') {
+            config_path.clone()
+        } else {
+            fs::read_to_string(config_path).unwrap_or_default()
+        };
+        let json: serde_json::Value = serde_json::from_str(&config).expect("valid MCP config");
+        return json
+            .get("mcpServers")
+            .and_then(|servers| servers.as_object())
+            .into_iter()
+            .flat_map(|servers| servers.values())
+            .filter_map(|server| server.get("args").and_then(|args| args.as_array()))
+            .flatten()
+            .filter_map(|arg| arg.as_str().map(str::to_string))
+            .collect();
+    }
+
+    command_args
+        .iter()
+        .filter_map(|arg| arg.split_once(".args="))
+        .filter_map(|(_, encoded)| serde_json::from_str::<Vec<String>>(encoded).ok())
+        .find(|args| args.iter().any(|arg| arg == "--conversation-id"))
+        .unwrap_or_default()
+}
+
+async fn persona_read_root_fixture() -> (
+    TempDir,
+    Arc<MemoryProjectRepository>,
+    ProjectId,
+    PathBuf,
+    PathBuf,
+) {
+    let root = tempfile::tempdir_in(std::env::current_dir().expect("current workspace"))
+        .expect("persona read-root fixture");
+    let project_directory = root.path().join("project");
+    let working_directory = root.path().join("agent-workspace");
+    fs::create_dir_all(&project_directory).expect("create project directory");
+    fs::create_dir_all(&working_directory).expect("create working directory");
+
+    let project_repo = Arc::new(MemoryProjectRepository::new());
+    let project_id = ProjectId::from_string("persona-read-root-project".to_string());
+    let mut project = Project::new(
+        "Persona read roots".to_string(),
+        project_directory.to_string_lossy().to_string(),
+    );
+    project.id = project_id.clone();
+    project_repo
+        .create(project)
+        .await
+        .expect("seed project read root");
+
+    (
+        root,
+        project_repo,
+        project_id,
+        project_directory,
+        working_directory,
+    )
+}
+
+#[tokio::test]
+async fn persona_builder_read_roots_resolve_to_ingest_store_only() {
+    let (root, project_repo, project_id, project_directory, working_directory) =
+        persona_read_root_fixture().await;
+    let mut conversation = ChatConversation::new_project(project_id.clone());
+    conversation.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
+    let app_data_dir = root.path().join("app-data");
+    let ingest_root = persona_ingest_conversation_path(
+        &persona_ingest_storage_path(&app_data_dir),
+        &conversation.id.as_str(),
+    );
+    write_file(&ingest_root.join("content"), "approved ingest text");
+    let workspace = create_workspace(&app_data_dir, &conversation.id.as_str())
+        .expect("legacy builder workspace");
+
+    let roots = resolve_mcp_filesystem_read_roots(
+        ChatContextType::Project,
+        Some(project_id.as_str()),
+        Arc::clone(&project_repo) as Arc<dyn ProjectRepository>,
+        &working_directory,
+        conversation.agent_mode,
+        Some(&conversation.id.as_str()),
+        Some(app_data_dir.as_path()),
+    )
+    .await;
+
+    assert_eq!(roots, vec![ingest_root.clone(), workspace.clone()]);
+    assert!(
+        !roots.contains(&project_directory),
+        "PersonaBuilder must not expose the project working directory"
+    );
+
+    let command = with_claude_spawn_allowed_in_tests(|| async {
+        build_command(
+            Path::new("/fake/claude"),
+            &repo_plugin_dir(),
+            &conversation,
+            "read ingest context",
+            None,
+            &working_directory,
+            None,
+            Some(project_id.as_str()),
+            &roots,
+            Arc::new(MemoryChatAttachmentRepository::new()),
+            Arc::new(MemoryArtifactRepository::new()),
+            None,
+            None,
+            None,
+            &[],
+            0,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+    })
+    .await
+    .expect("PersonaBuilder command should build");
+
+    // Read roots travel as --filesystem-read-root args inside the generated
+    // MCP config (mcp_runtime_context), not as a command env var. The config
+    // may be inline or a temp-file path, so resolve the JSON either way.
+    let command_args = {
+        let raw = final_spawnable_command(&command);
+        let args = command.get_args_for_test();
+        let mcp_config = args
+            .iter()
+            .position(|arg| arg == "--mcp-config")
+            .and_then(|i| args.get(i + 1))
+            .map(|value| {
+                if value.trim_start().starts_with('{') {
+                    value.clone()
+                } else {
+                    std::fs::read_to_string(value).unwrap_or_default()
+                }
+            })
+            .unwrap_or_default();
+        format!("{raw}\n{mcp_config}")
+    };
+    assert!(
+        command_args.contains("--filesystem-read-root"),
+        "MCP config must carry a filesystem read root"
+    );
+    assert!(
+        command_args.contains(ingest_root.to_string_lossy().as_ref()),
+        "MCP read roots must include the ingest store"
+    );
+    assert!(
+        !command_args.contains(project_directory.to_string_lossy().as_ref()),
+        "MCP read roots must exclude the project working directory"
+    );
+    assert!(
+        command_args.contains("--filesystem-enforced") && command_args.contains("\"1\""),
+        "fresh PersonaBuilder MCP config must enable filesystem enforcement: {command_args}"
+    );
+    assert!(
+        mcp_runtime_args(&command)
+            .windows(2)
+            .any(|pair| pair == ["--conversation-id".to_string(), conversation.id.as_str()]),
+        "fresh PersonaBuilder MCP config must carry the conversation row id: {command_args}"
+    );
+    assert!(
+        !command_args.contains("RALPHX_FILESYSTEM_ENFORCED")
+            && env_value(&command.get_envs_for_test(), "RALPHX_FILESYSTEM_ENFORCED").is_none(),
+        "filesystem enforcement must not use process env"
+    );
+}
+
+#[tokio::test]
+async fn persona_builder_attachment_uses_real_app_data_when_project_path_contains_workspace_name() {
+    let root = tempfile::tempdir_in(std::env::current_dir().expect("current workspace"))
+        .expect("builder attachment fixture");
+    let app_data_dir = root.path().join("actual-app-data");
+    let attachment_storage = root.path().join("attachment-storage");
+    let project_directory = root.path().join("standalone_workspaces").join("project");
+    fs::create_dir_all(&app_data_dir).expect("create app data");
+    fs::create_dir_all(&attachment_storage).expect("create attachment storage");
+    fs::create_dir_all(&project_directory).expect("create project path collision");
+
+    let project_id = ProjectId::from_string("workspace-name-collision".to_string());
+    let mut conversation = ChatConversation::new_project(project_id.clone());
+    conversation.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
+    let source = attachment_storage.join("source.txt");
+    write_file(&source, "builder context marker");
+    let attachment = ChatAttachment::new(
+        conversation.id,
+        "source.txt",
+        source.to_string_lossy(),
+        22,
+        Some("text/plain".to_string()),
+    );
+    materialize_builder_attachment(&app_data_dir, &attachment_storage, &attachment)
+        .expect("materialize attachment under the real app data root");
+    let attachment_repo = Arc::new(MemoryChatAttachmentRepository::new());
+    attachment_repo
+        .create(attachment)
+        .await
+        .expect("seed pending attachment");
+
+    let command = with_claude_spawn_allowed_in_tests(|| async {
+        build_command_with_app_data_dir(
+            Path::new("/fake/claude"),
+            &repo_plugin_dir(),
+            &conversation,
+            "use attached builder context",
+            None,
+            &project_directory,
+            None,
+            Some(project_id.as_str()),
+            std::slice::from_ref(&project_directory),
+            Some(&app_data_dir),
+            attachment_repo,
+            Arc::new(MemoryArtifactRepository::new()),
+            None,
+            None,
+            None,
+            &[],
+            0,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+    })
+    .await
+    .expect("builder command must use the real app data root, not infer it from project names");
+
+    let prompt = spawnable_prompt(&command);
+    assert!(prompt.contains("<file_path>"));
+    assert!(prompt.contains(app_data_dir.to_string_lossy().as_ref()));
+    assert!(!prompt.contains("builder context marker"));
+}
+
+#[tokio::test]
+async fn persona_builder_without_ingest_session_resolves_zero_roots() {
+    let (root, project_repo, project_id, project_directory, working_directory) =
+        persona_read_root_fixture().await;
+    let app_data_dir = root.path().join("app-data");
+
+    let roots = resolve_mcp_filesystem_read_roots(
+        ChatContextType::Project,
+        Some(project_id.as_str()),
+        Arc::clone(&project_repo) as Arc<dyn ProjectRepository>,
+        &working_directory,
+        Some(AgentConversationWorkspaceMode::PersonaBuilder),
+        Some("persona-builder-no-ingest"),
+        Some(app_data_dir.as_path()),
+    )
+    .await;
+
+    assert!(
+        roots.is_empty(),
+        "missing PersonaBuilder ingest destination must provide no MCP read roots"
+    );
+
+    let empty_ingest_root = persona_ingest_conversation_path(
+        &persona_ingest_storage_path(&app_data_dir),
+        "persona-builder-no-ingest",
+    );
+    fs::create_dir_all(&empty_ingest_root).expect("create empty ingest destination");
+    let workspace = create_workspace(&app_data_dir, "persona-builder-no-ingest")
+        .expect("new-pipeline builder workspace");
+    let roots = resolve_mcp_filesystem_read_roots(
+        ChatContextType::Project,
+        Some(project_id.as_str()),
+        project_repo as Arc<dyn ProjectRepository>,
+        &working_directory,
+        Some(AgentConversationWorkspaceMode::PersonaBuilder),
+        Some("persona-builder-no-ingest"),
+        Some(app_data_dir.as_path()),
+    )
+    .await;
+
+    assert_eq!(roots, vec![project_directory, workspace]);
+}
+
+#[tokio::test]
+async fn resolved_spawn_context_keeps_builder_roots_and_folder_prompt_in_lockstep() {
+    let (root, project_repo, project_id, project_directory, _working_directory) =
+        persona_read_root_fixture().await;
+    let app_data_dir = root.path().join("app-data");
+    let folder_reference_app_data_dir = root.path().join("folder-reference-app-data");
+    fs::create_dir_all(&folder_reference_app_data_dir).expect("create folder-reference app data");
+    let folder = root.path().join("live-folder-ref");
+    fs::create_dir_all(&folder).expect("create folder ref");
+    let folder_repo = Arc::new(MemoryConversationFolderReferenceRepository::new());
+
+    let project_builder = ChatConversation::new_project(project_id.clone());
+    let effective_builder_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
+    let project_workspace = create_workspace(&app_data_dir, &project_builder.id.as_str())
+        .expect("project builder workspace");
+    ConversationFolderReferenceService::new(
+        Arc::clone(&folder_repo) as Arc<dyn ConversationFolderReferenceRepository>,
+        folder_reference_app_data_dir.clone(),
+        5,
+    )
+    .add(project_builder.id, &folder, "Live folder".to_string())
+    .await
+    .expect("add project builder folder");
+    let project_context = resolve_conversation_spawn_context(
+        &project_builder,
+        effective_builder_mode,
+        Some(project_id.as_str()),
+        Arc::clone(&project_repo) as Arc<dyn ProjectRepository>,
+        &project_directory,
+        Some(&app_data_dir),
+        Some(&folder_reference_app_data_dir),
+        Some(Arc::clone(&folder_repo) as Arc<dyn ConversationFolderReferenceRepository>),
+    )
+    .await
+    .expect("resolve Project builder context");
+    assert_eq!(
+        project_context.folder_roots,
+        vec![project_directory.clone(), project_workspace, folder.clone()],
+        "enforced Project builders must retain the project root even when it equals CWD"
+    );
+    let project_block = project_context
+        .folder_refs_block
+        .expect("reachable folder root must render a prompt hint");
+    assert!(project_block.contains(folder.to_string_lossy().as_ref()));
+    assert!(project_context.enforce_filesystem_roots);
+
+    let ingest_root = persona_ingest_conversation_path(
+        &persona_ingest_storage_path(&app_data_dir),
+        &project_builder.id.as_str(),
+    );
+    write_file(&ingest_root.join("legacy.txt"), "legacy ingest context");
+    let legacy_context = resolve_conversation_spawn_context(
+        &project_builder,
+        effective_builder_mode,
+        Some(project_id.as_str()),
+        Arc::clone(&project_repo) as Arc<dyn ProjectRepository>,
+        &project_directory,
+        Some(&app_data_dir),
+        Some(&folder_reference_app_data_dir),
+        Some(Arc::clone(&folder_repo) as Arc<dyn ConversationFolderReferenceRepository>),
+    )
+    .await
+    .expect("resolve legacy ingest builder context");
+    assert_eq!(
+        legacy_context.folder_roots,
+        vec![
+            ingest_root,
+            create_workspace(&app_data_dir, &project_builder.id.as_str())
+                .expect("resolve project builder workspace"),
+            folder.clone(),
+        ]
+    );
+    assert!(legacy_context
+        .folder_refs_block
+        .expect("legacy folder hint")
+        .contains(folder.to_string_lossy().as_ref()));
+
+    let mut standalone_builder = ChatConversation::new_standalone();
+    standalone_builder.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
+    let standalone_workspace = create_workspace(&app_data_dir, &standalone_builder.id.as_str())
+        .expect("standalone builder workspace");
+    ConversationFolderReferenceService::new(
+        Arc::clone(&folder_repo) as Arc<dyn ConversationFolderReferenceRepository>,
+        folder_reference_app_data_dir.clone(),
+        5,
+    )
+    .add(standalone_builder.id, &folder, "Live folder".to_string())
+    .await
+    .expect("add standalone builder folder");
+    let standalone_context = resolve_conversation_spawn_context(
+        &standalone_builder,
+        standalone_builder.agent_mode,
+        None,
+        Arc::new(MemoryProjectRepository::new()),
+        &standalone_workspace,
+        Some(&app_data_dir),
+        Some(&folder_reference_app_data_dir),
+        Some(Arc::clone(&folder_repo) as Arc<dyn ConversationFolderReferenceRepository>),
+    )
+    .await
+    .expect("resolve Standalone builder context");
+    assert_eq!(
+        standalone_context.folder_roots,
+        vec![standalone_workspace, folder.clone()]
+    );
+    assert!(standalone_context
+        .folder_refs_block
+        .expect("standalone folder hint")
+        .contains(folder.to_string_lossy().as_ref()));
+
+    let mut workspace_less = ChatConversation::new_project(project_id.clone());
+    workspace_less.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
+    ConversationFolderReferenceService::new(
+        Arc::clone(&folder_repo) as Arc<dyn ConversationFolderReferenceRepository>,
+        folder_reference_app_data_dir.clone(),
+        5,
+    )
+    .add(workspace_less.id, &folder, "Unreachable folder".to_string())
+    .await
+    .expect("store legacy folder ref");
+    let workspace_less_context = resolve_conversation_spawn_context(
+        &workspace_less,
+        workspace_less.agent_mode,
+        Some(project_id.as_str()),
+        project_repo as Arc<dyn ProjectRepository>,
+        &project_directory,
+        Some(&app_data_dir),
+        Some(&folder_reference_app_data_dir),
+        Some(folder_repo as Arc<dyn ConversationFolderReferenceRepository>),
+    )
+    .await
+    .expect("resolve workspace-less legacy builder");
+    assert!(workspace_less_context.folder_roots.is_empty());
+    assert!(
+        workspace_less_context.folder_refs_block.is_none(),
+        "a folder hint must never render when its enforced root is absent"
+    );
+}
+
+#[tokio::test]
+async fn persona_builder_read_roots_fail_closed_without_owned_identity() {
+    let (root, project_repo, project_id, project_directory, working_directory) =
+        persona_read_root_fixture().await;
+    let app_data_dir = root.path().join("app-data");
+
+    let without_app_data = resolve_mcp_filesystem_read_roots(
+        ChatContextType::Project,
+        Some(project_id.as_str()),
+        Arc::clone(&project_repo) as Arc<dyn ProjectRepository>,
+        &working_directory,
+        Some(AgentConversationWorkspaceMode::PersonaBuilder),
+        Some("persona-builder-no-app-data"),
+        None,
+    )
+    .await;
+    let without_conversation = resolve_mcp_filesystem_read_roots(
+        ChatContextType::Project,
+        Some(project_id.as_str()),
+        Arc::clone(&project_repo) as Arc<dyn ProjectRepository>,
+        &working_directory,
+        Some(AgentConversationWorkspaceMode::PersonaBuilder),
+        None,
+        Some(app_data_dir.as_path()),
+    )
+    .await;
+    let with_relative_app_data = resolve_mcp_filesystem_read_roots(
+        ChatContextType::Project,
+        Some(project_id.as_str()),
+        project_repo as Arc<dyn ProjectRepository>,
+        &working_directory,
+        Some(AgentConversationWorkspaceMode::PersonaBuilder),
+        Some("persona-builder-relative-app-data"),
+        Some(Path::new("relative-app-data")),
+    )
+    .await;
+
+    for roots in [
+        without_app_data,
+        without_conversation,
+        with_relative_app_data,
+    ] {
+        assert!(
+            roots.is_empty(),
+            "PersonaBuilder must fail closed without a safe ingest root"
+        );
+        assert!(
+            !roots.contains(&project_directory),
+            "PersonaBuilder must never fall back to the project directory"
+        );
+    }
+}
+
+#[tokio::test]
+async fn non_persona_modes_keep_project_read_root_behavior() {
+    let (root, project_repo, project_id, project_directory, working_directory) =
+        persona_read_root_fixture().await;
+
+    let roots = resolve_mcp_filesystem_read_roots(
+        ChatContextType::Project,
+        Some(project_id.as_str()),
+        project_repo as Arc<dyn ProjectRepository>,
+        &working_directory,
+        Some(AgentConversationWorkspaceMode::Chat),
+        Some("non-persona-conversation"),
+        Some(root.path().join("app-data").as_path()),
+    )
+    .await;
+
+    assert_eq!(roots, vec![project_directory]);
+}
+
+#[tokio::test]
+async fn non_persona_modes_preserve_unenforced_mcp_spawn_shape() {
+    let temp = tempfile::tempdir().expect("working directory");
+    let project_id = ProjectId::from_string("unenforced-mode-project".to_string());
+    let modes = [
+        AgentConversationWorkspaceMode::Chat,
+        AgentConversationWorkspaceMode::Edit,
+        AgentConversationWorkspaceMode::Plan,
+        AgentConversationWorkspaceMode::Ideation,
+        AgentConversationWorkspaceMode::ReviewPr,
+    ];
+
+    for mode in modes {
+        let mut conversation = ChatConversation::new_project(project_id.clone());
+        conversation.agent_mode = Some(mode);
+        let command = with_claude_spawn_allowed_in_tests(|| async {
+            build_command(
+                Path::new("/fake/claude"),
+                &repo_plugin_dir(),
+                &conversation,
+                "preserve the unenforced config",
+                None,
+                temp.path(),
+                None,
+                Some(project_id.as_str()),
+                &[],
+                Arc::new(MemoryChatAttachmentRepository::new()),
+                Arc::new(MemoryArtifactRepository::new()),
+                None,
+                None,
+                None,
+                &[],
+                0,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+        })
+        .await
+        .expect("non-builder command should build");
+        let args = mcp_runtime_args(&command);
+        assert!(
+            !args.iter().any(|arg| arg == "--filesystem-enforced"),
+            "{mode} must preserve the pre-change unenforced MCP args: {args:?}"
+        );
+        assert!(
+            env_value(&command.get_envs_for_test(), "RALPHX_FILESYSTEM_ENFORCED").is_none(),
+            "{mode} must not receive enforcement through process env"
+        );
+    }
+}
+
+#[tokio::test]
+async fn queued_flush_uses_persona_builder_read_roots() {
+    let (root, project_repo, project_id, project_directory, working_directory) =
+        persona_read_root_fixture().await;
+    let conversation_id = ChatConversationId::from_string("queued-persona-builder".to_string());
+    let app_data_dir = root.path().join("app-data");
+    let ingest_root = persona_ingest_conversation_path(
+        &persona_ingest_storage_path(&app_data_dir),
+        &conversation_id.as_str(),
+    );
+    write_file(&ingest_root.join("content"), "queued ingest text");
+
+    let roots = resolve_mcp_filesystem_read_roots(
+        ChatContextType::Project,
+        Some(project_id.as_str()),
+        project_repo as Arc<dyn ProjectRepository>,
+        &working_directory,
+        Some(AgentConversationWorkspaceMode::PersonaBuilder),
+        Some(&conversation_id.as_str()),
+        Some(app_data_dir.as_path()),
+    )
+    .await;
+    let command = with_claude_spawn_allowed_in_tests(|| async {
+        build_resume_command(
+            Path::new("/fake/claude"),
+            &repo_plugin_dir(),
+            ChatContextType::Project,
+            project_id.as_str(),
+            CoordinationMode::Solo,
+            &conversation_id.as_str(),
+            Some(AgentConversationWorkspaceMode::PersonaBuilder),
+            None,
+            "queued ingest follow-up",
+            Some("ralphx-persona-extractor"),
+            None,
+            None,
+            &working_directory,
+            "queued-persona-session",
+            Some(project_id.as_str()),
+            &roots,
+            Some(conversation_id.as_str().to_string()),
+            Arc::new(MemoryChatAttachmentRepository::new()),
+            Arc::new(MemoryArtifactRepository::new()),
+            None,
+            None,
+            None,
+            Arc::new(MemoryIdeationSessionRepository::new()),
+            empty_delegated_session_repo(),
+            Arc::new(MemoryTaskRepository::new()),
+            &[],
+            0,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+    })
+    .await
+    .expect("queued PersonaBuilder resume command should build");
+
+    // Same transport as the fresh path: --filesystem-read-root args in the
+    // generated MCP config. The resume builder may pass the config inline or
+    // as a temp-file path, so resolve the JSON either way.
+    let command_args = {
+        let raw = final_spawnable_command(&command);
+        let args = command.get_args_for_test();
+        let mcp_config = args
+            .iter()
+            .position(|arg| arg == "--mcp-config")
+            .and_then(|i| args.get(i + 1))
+            .map(|value| {
+                if value.trim_start().starts_with('{') {
+                    value.clone()
+                } else {
+                    std::fs::read_to_string(value).unwrap_or_default()
+                }
+            })
+            .unwrap_or_default();
+        format!("{raw}\n{mcp_config}")
+    };
+    assert!(
+        command_args.contains("--filesystem-read-root"),
+        "queued MCP config must carry a filesystem read root"
+    );
+    assert!(
+        command_args.contains(ingest_root.to_string_lossy().as_ref()),
+        "queued MCP read roots must include the ingest store"
+    );
+    assert!(
+        !command_args.contains(project_directory.to_string_lossy().as_ref()),
+        "queued MCP read roots must exclude the project working directory"
+    );
+    assert!(
+        command_args.contains("--filesystem-enforced") && command_args.contains("\"1\""),
+        "queued PersonaBuilder MCP config must enable filesystem enforcement: {command_args}"
+    );
+    assert!(
+        mcp_runtime_args(&command)
+            .windows(2)
+            .any(|pair| pair == ["--conversation-id".to_string(), conversation_id.as_str()])
+            && !mcp_runtime_args(&command)
+                .windows(2)
+                .any(|pair| pair == ["--conversation-id", project_id.as_str()]),
+        "queued MCP identity must be the conversation row id, not the project id: {command_args}"
+    );
+    assert!(
+        env_value(&command.get_envs_for_test(), "RALPHX_FILESYSTEM_ENFORCED").is_none(),
+        "queued filesystem enforcement must not use process env"
+    );
+}
+
+fn repo_plugin_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("repository root")
+        .join("plugins/app")
+}
+
+/// The fresh-spawn build path resolves the chat harness CLI and requires the
+/// path to exist on disk, so persona shape tests need a real stub file.
+fn stub_claude_cli(dir: &Path) -> std::path::PathBuf {
+    let cli_path = dir.join("claude");
+    write_file(&cli_path, "#!/bin/sh\nexit 0\n");
+    cli_path
+}
+
+async fn bound_project_persona() -> (
+    ChatConversation,
+    ralphx_lib::application::persona_prompt::ResolvedPersona,
+) {
+    let repo = Arc::new(MemoryPersonaRepository::new());
+    let now = chrono::Utc::now();
+    let persona = Persona {
+        id: PersonaId::from("persona-bound-project"),
+        artifact_id: None,
+
+        project_id: None,
+        slug: "bound-project".to_string(),
+        name: "Bound Project".to_string(),
+        description: "test persona".to_string(),
+        content: "Use the bound project voice.".to_string(),
+        status: PersonaStatus::Active,
+        version: 1,
+        content_hash: "bound-project-hash".to_string(),
+        source_session_id: None,
+        source_persona_id: None,
+        source_content_hash: None,
+        source_json: "{}".to_string(),
+        created_at: now,
+        updated_at: now,
+    };
+    repo.create(persona.clone())
+        .await
+        .expect("seed active persona");
+
+    let mut conversation =
+        ChatConversation::new_project(ProjectId::from_string("persona-project".to_string()));
+    conversation.persona_id = Some(persona.id.to_string());
+    let resolved = resolve_persona_for_send(
+        &conversation,
+        &PersonaDirective::Inherit,
+        PersonaResolveFlags {
+            feature_enabled: true,
+            is_external_mcp: false,
+            agent_name_override_set: false,
+            agent_conversation_mode: None,
+            is_verification: false,
+        },
+        repo,
+    )
+    .await
+    .expect("bound persona resolution")
+    .expect("bound persona is injected");
+    (conversation, resolved)
+}
+
+async fn assert_suppressed_persona_has_no_final_command_block(
+    context_type: ChatContextType,
+    flags: PersonaResolveFlags,
+) {
+    let (mut conversation, _) = bound_project_persona().await;
+    conversation.context_type = context_type;
+    let resolved = resolve_persona_for_send(
+        &conversation,
+        &PersonaDirective::Inherit,
+        flags,
+        Arc::new(MemoryPersonaRepository::new()),
+    )
+    .await
+    .expect("excluded spawn family must suppress before a persona repository read");
+    assert!(
+        resolved.is_none(),
+        "excluded spawn family must suppress personas"
+    );
+
+    let working_dir = tempfile::tempdir().expect("working directory");
+    let stub_cli = stub_claude_cli(working_dir.path());
+    let command = with_claude_spawn_allowed_in_tests(|| async {
+        build_command_for_harness(
+            AgentHarnessKind::Claude,
+            &stub_cli,
+            &repo_plugin_dir(),
+            &conversation,
+            "excluded-family persona absence",
+            resolved,
+            working_dir.path(),
+            None,
+            Some(conversation.context_id.as_str()),
+            &[],
+            Arc::new(MemoryChatAttachmentRepository::new()),
+            Arc::new(MemoryArtifactRepository::new()),
+            None,
+            None,
+            None,
+            &[],
+            0,
+            None,
+            None,
+            false,
+            None,
+            None,
+        )
+        .await
+    })
+    .await
+    .expect("excluded-family command should build");
+
+    assert!(
+        !final_spawnable_command(&command.spawnable).contains("<ralphx_agent_persona>"),
+        "the final command for an excluded spawn family must not contain a persona block"
+    );
+}
+
+#[tokio::test]
+async fn fresh_spawn_prompt_includes_bound_persona_block() {
+    let (conversation, persona) = bound_project_persona().await;
+    let working_dir = tempfile::tempdir().expect("working directory");
+    let stub_cli = stub_claude_cli(working_dir.path());
+    let command = with_claude_spawn_allowed_in_tests(|| async {
+        build_command_for_harness(
+            AgentHarnessKind::Claude,
+            &stub_cli,
+            &repo_plugin_dir(),
+            &conversation,
+            "fresh persona send",
+            Some(persona),
+            working_dir.path(),
+            None,
+            Some(conversation.context_id.as_str()),
+            &[],
+            Arc::new(MemoryChatAttachmentRepository::new()),
+            Arc::new(MemoryArtifactRepository::new()),
+            None,
+            None,
+            None,
+            &[],
+            0,
+            None,
+            None,
+            false,
+            None,
+            None,
+        )
+        .await
+    })
+    .await
+    .expect("fresh command should build");
+
+    assert!(
+        final_spawnable_command(&command.spawnable).contains("<ralphx_agent_persona>"),
+        "the final fresh-spawn command must include the bound persona block"
+    );
+}
+
+#[tokio::test]
+async fn codex_fresh_persona_builder_spawn_uses_conversation_identity_and_cli_enforcement() {
+    let temp = tempfile::tempdir().expect("working directory");
+    let cli_path = make_fake_codex_cli(&temp);
+    let project_id = ProjectId::from_string("codex-builder-project".to_string());
+    let mut conversation = ChatConversation::new_project(project_id.clone());
+    conversation.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
+
+    let command = build_command_for_harness(
+        AgentHarnessKind::Codex,
+        &cli_path,
+        &repo_plugin_dir(),
+        &conversation,
+        "fresh builder send",
+        None,
+        temp.path(),
+        None,
+        Some(project_id.as_str()),
+        &[],
+        Arc::new(MemoryChatAttachmentRepository::new()),
+        Arc::new(MemoryArtifactRepository::new()),
+        None,
+        None,
+        None,
+        &[],
+        0,
+        None,
+        None,
+        false,
+        None,
+        None,
+    )
+    .await
+    .expect("Codex PersonaBuilder command should build");
+
+    let args = mcp_runtime_args(&command.spawnable);
+    assert!(
+        args.windows(2)
+            .any(|pair| pair == ["--filesystem-enforced", "1"]),
+        "fresh Codex builder MCP args must enable filesystem enforcement: {args:?}"
+    );
+    assert!(
+        args.windows(2)
+            .any(|pair| pair == ["--conversation-id".to_string(), conversation.id.as_str()])
+            && !args
+                .windows(2)
+                .any(|pair| pair == ["--conversation-id", project_id.as_str()]),
+        "fresh Codex MCP identity must be the conversation row id: {args:?}"
+    );
+    assert!(
+        env_value(
+            &command.spawnable.get_envs_for_test(),
+            "RALPHX_FILESYSTEM_ENFORCED"
+        )
+        .is_none(),
+        "Codex filesystem enforcement must not use process env"
+    );
+}
+
+#[tokio::test]
+async fn legacy_refine_builder_without_ingest_spawns_deny_all_with_draft_tools() {
+    let (root, project_repo, project_id, _project_directory, working_directory) =
+        persona_read_root_fixture().await;
+    let cli_path = make_fake_codex_cli(&root);
+    let app_data_dir = root.path().join("app-data");
+    let mut conversation = ChatConversation::new_project(project_id.clone());
+    conversation.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
+    conversation.builder_draft_id = Some("legacy-bound-refine-draft".to_string());
+    let roots = resolve_mcp_filesystem_read_roots(
+        ChatContextType::Project,
+        Some(project_id.as_str()),
+        project_repo as Arc<dyn ProjectRepository>,
+        &working_directory,
+        conversation.agent_mode,
+        Some(&conversation.id.as_str()),
+        Some(&app_data_dir),
+    )
+    .await;
+    assert!(
+        roots.is_empty(),
+        "no ingest store must produce deny-all roots"
+    );
+
+    let agent_name =
+        ralphx_lib::infrastructure::agents::claude::agent_names::AGENT_PERSONA_EXTRACTOR;
+    let resolved_spawn_settings =
+        ralphx_lib::application::agent_lane_resolution::resolve_agent_spawn_settings(
+            agent_name,
+            Some(project_id.as_str()),
+            ChatContextType::Project,
+            None,
+            Some(AgentHarnessKind::Codex),
+            None,
+            None,
+        )
+        .await;
+    let launch = build_launch_plan_for_harness_with_persona_for_test(
+        AgentHarnessKind::Codex,
+        &cli_path,
+        &repo_plugin_dir(),
+        &conversation,
+        "refine this legacy persona",
+        None,
+        Some(agent_name),
+        None,
+        conversation.context_type,
+        conversation.context_id.as_str(),
+        Some(conversation.id.as_str()),
+        None,
+        &working_directory,
+        None,
+        Some(project_id.as_str()),
+        &roots,
+        Arc::new(MemoryChatAttachmentRepository::new()),
+        Arc::new(MemoryArtifactRepository::new()),
+        Arc::new(MemoryIdeationSessionRepository::new()),
+        Arc::new(MemoryDelegatedSessionRepository::new()),
+        Arc::new(MemoryTaskRepository::new()),
+        &[],
+        0,
+        false,
+        None,
+        &resolved_spawn_settings,
+        None,
+        None,
+    )
+    .await
+    .expect("legacy refine builder should reach the production launch path");
+    let command = match launch {
+        ResolvedChatHarnessLaunch::Background { spawnable, .. } => spawnable,
+        ResolvedChatHarnessLaunch::Interactive { .. } => {
+            panic!("Codex legacy refine launch must remain background")
+        }
+    };
+
+    let args = mcp_runtime_args(&command);
+    assert!(
+        args.windows(2)
+            .any(|pair| pair == ["--filesystem-enforced", "1"]),
+        "legacy refine must keep filesystem enforcement enabled: {args:?}"
+    );
+    assert!(
+        !args.iter().any(|arg| arg == "--filesystem-read-root"),
+        "empty roots must remain deny-all: {args:?}"
+    );
+    assert!(
+        args.windows(2)
+            .any(|pair| pair == ["--conversation-id".to_string(), conversation.id.as_str()]),
+        "MCP identity must remain conversation-owned: {args:?}"
+    );
+    let rendered = final_spawnable_command(&command);
+    for tool in [
+        "ask_user_question",
+        "save_persona_draft",
+        "get_persona_draft",
+    ] {
+        assert!(
+            rendered.contains(tool),
+            "legacy refine must retain interview/draft tool guidance for {tool}: {rendered}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn resume_command_prompt_includes_bound_persona_block() {
+    let (conversation, persona) = bound_project_persona().await;
+    let working_dir = tempfile::tempdir().expect("working directory");
+    let stub_cli = stub_claude_cli(working_dir.path());
+    let command = with_claude_spawn_allowed_in_tests(|| async {
+        build_resume_command_for_harness(
+            AgentHarnessKind::Claude,
+            &stub_cli,
+            &repo_plugin_dir(),
+            ChatContextType::Project,
+            conversation.context_id.as_str(),
+            CoordinationMode::Solo,
+            &conversation.id.as_str(),
+            conversation.agent_mode,
+            None,
+            "resume persona send",
+            Some(persona),
+            None,
+            None,
+            working_dir.path(),
+            "persona-resume-session",
+            Some(conversation.context_id.as_str()),
+            &[],
+            Some(conversation.id.to_string()),
+            Arc::new(MemoryChatAttachmentRepository::new()),
+            Arc::new(MemoryArtifactRepository::new()),
+            None,
+            None,
+            None,
+            Arc::new(MockIdeationRepo::empty()),
+            empty_delegated_session_repo(),
+            Arc::new(MockTaskRepo),
+            &[],
+            0,
+            None,
+            None,
+            false,
+            None,
+            None,
+        )
+        .await
+    })
+    .await
+    .expect("resume command should build");
+
+    assert!(
+        final_spawnable_command(&command.spawnable).contains("<ralphx_agent_persona>"),
+        "the final resume command must include the bound persona block"
+    );
+}
+
+#[tokio::test]
+async fn recovery_command_prompt_includes_bound_persona_block() {
+    let (conversation, persona) = bound_project_persona().await;
+    let working_dir = tempfile::tempdir().expect("working directory");
+    let stub_cli = stub_claude_cli(working_dir.path());
+    let command = with_claude_spawn_allowed_in_tests(|| async {
+        build_command_for_harness(
+            AgentHarnessKind::Claude,
+            &stub_cli,
+            &repo_plugin_dir(),
+            &conversation,
+            "recovery persona bootstrap",
+            Some(persona),
+            working_dir.path(),
+            None,
+            Some(conversation.context_id.as_str()),
+            &[],
+            Arc::new(MemoryChatAttachmentRepository::new()),
+            Arc::new(MemoryArtifactRepository::new()),
+            None,
+            None,
+            None,
+            &[],
+            0,
+            None,
+            None,
+            false,
+            None,
+            None,
+        )
+        .await
+    })
+    .await
+    .expect("recovery command should build");
+
+    assert!(
+        final_spawnable_command(&command.spawnable).contains("<ralphx_agent_persona>"),
+        "the final recovery command must include the bound persona block"
+    );
+}
+
+#[tokio::test]
+async fn automation_override_send_has_no_persona_block() {
+    assert_suppressed_persona_has_no_final_command_block(
+        ChatContextType::Project,
+        PersonaResolveFlags {
+            feature_enabled: true,
+            is_external_mcp: false,
+            agent_name_override_set: true,
+            agent_conversation_mode: None,
+            is_verification: false,
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn automation_setup_conversation_send_has_no_persona_block() {
+    assert_suppressed_persona_has_no_final_command_block(
+        ChatContextType::Project,
+        PersonaResolveFlags {
+            feature_enabled: true,
+            is_external_mcp: false,
+            agent_name_override_set: false,
+            agent_conversation_mode: Some(AgentConversationWorkspaceMode::Automation),
+            is_verification: false,
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn persona_builder_final_command_has_no_persona_block() {
+    assert_suppressed_persona_has_no_final_command_block(
+        ChatContextType::Project,
+        PersonaResolveFlags {
+            feature_enabled: true,
+            is_external_mcp: false,
+            agent_name_override_set: false,
+            agent_conversation_mode: Some(AgentConversationWorkspaceMode::PersonaBuilder),
+            is_verification: false,
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn ideation_context_send_has_no_persona_block() {
+    assert_suppressed_persona_has_no_final_command_block(
+        ChatContextType::Ideation,
+        PersonaResolveFlags {
+            feature_enabled: true,
+            is_external_mcp: false,
+            agent_name_override_set: false,
+            agent_conversation_mode: None,
+            is_verification: false,
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn task_chat_send_has_no_persona_block() {
+    assert_suppressed_persona_has_no_final_command_block(
+        ChatContextType::Task,
+        PersonaResolveFlags {
+            feature_enabled: true,
+            is_external_mcp: false,
+            agent_name_override_set: false,
+            agent_conversation_mode: None,
+            is_verification: false,
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn merge_chat_send_has_no_persona_block() {
+    assert_suppressed_persona_has_no_final_command_block(
+        ChatContextType::Merge,
+        PersonaResolveFlags {
+            feature_enabled: true,
+            is_external_mcp: false,
+            agent_name_override_set: false,
+            agent_conversation_mode: None,
+            is_verification: false,
+        },
+    )
+    .await;
+}
+
 fn empty_delegated_session_repo() -> Arc<dyn DelegatedSessionRepository> {
     Arc::new(MemoryDelegatedSessionRepository::new())
 }
@@ -117,6 +1331,212 @@ exit 0
     permissions.set_mode(0o755);
     fs::set_permissions(&script_path, permissions).expect("chmod script");
     script_path
+}
+
+fn codex_command_fixture() -> (TempDir, TempDir, PathBuf, PathBuf, PathBuf) {
+    let home = tempfile::tempdir().expect("tempdir");
+    let cli_temp = tempfile::tempdir().expect("tempdir");
+    let cli_path = make_fake_codex_cli(&cli_temp);
+    let plugin_dir = cli_temp.path().join("plugins").join("app");
+    fs::create_dir_all(&plugin_dir).expect("create plugin dir");
+    write_file(
+        &plugin_dir.join("ralphx-mcp-server/build/index.js"),
+        "// fake mcp server",
+    );
+    write_file(
+        &cli_temp
+            .path()
+            .join("agents/ralphx-plan-verifier/agent.yaml"),
+        "name: ralphx-plan-verifier\nrole: plan_verifier\n",
+    );
+    write_file(
+        &cli_temp
+            .path()
+            .join("agents/ralphx-plan-verifier/codex/agent.yaml"),
+        "runtime_features:\n  shell_tool: false\n",
+    );
+    write_file(
+        &cli_temp
+            .path()
+            .join("agents/ralphx-chat-project/agent.yaml"),
+        "name: ralphx-chat-project\nrole: project_chat\n",
+    );
+    write_file(
+        &cli_temp
+            .path()
+            .join("agents/ralphx-chat-project/codex/prompt.md"),
+        "You are the RalphX project chat agent.",
+    );
+    let working_dir = cli_temp.path().to_path_buf();
+    (home, cli_temp, cli_path, plugin_dir, working_dir)
+}
+
+#[tokio::test]
+async fn codex_fresh_command_forwards_a_resolved_persona_block() {
+    let (conversation, persona) = bound_project_persona().await;
+    let (home, _cli_temp, cli_path, plugin_dir, working_dir) = codex_command_fixture();
+
+    let command = with_provider_state_home_override(home.path(), || async {
+        build_command_for_harness(
+            AgentHarnessKind::Codex,
+            &cli_path,
+            &plugin_dir,
+            &conversation,
+            "fresh codex persona send",
+            Some(persona),
+            &working_dir,
+            None,
+            Some(conversation.context_id.as_str()),
+            &[],
+            Arc::new(MemoryChatAttachmentRepository::new()),
+            Arc::new(MemoryArtifactRepository::new()),
+            None,
+            None,
+            None,
+            &[],
+            0,
+            None,
+            None,
+            false,
+            None,
+            None,
+        )
+        .await
+    })
+    .await
+    .expect("codex fresh command should build");
+
+    assert!(
+        spawnable_prompt(&command.spawnable).contains("<ralphx_agent_persona>"),
+        "the Codex fresh prompt must retain the resolved persona block"
+    );
+    assert!(command.persona_injected());
+    assert_eq!(command.persona_injection_skipped_reason(), None);
+}
+
+#[tokio::test]
+async fn persona_codex_command_reports_reasoned_skip_when_agent_prompt_is_missing() {
+    let (conversation, persona) = bound_project_persona().await;
+    let home = tempfile::tempdir().expect("provider home");
+    let cli_temp = tempfile::tempdir().expect("codex cli tempdir");
+    let cli_path = make_fake_codex_cli(&cli_temp);
+    let plugin_dir = cli_temp.path().join("plugins").join("app");
+    fs::create_dir_all(plugin_dir.join("ralphx-mcp-server/build")).expect("create plugin dir");
+    write_file(
+        &plugin_dir.join("ralphx-mcp-server/build/index.js"),
+        "// fake mcp server",
+    );
+
+    let command = with_provider_state_home_override(home.path(), || async {
+        build_command_for_harness(
+            AgentHarnessKind::Codex,
+            &cli_path,
+            &plugin_dir,
+            &conversation,
+            "fresh codex persona fallback",
+            Some(persona),
+            cli_temp.path(),
+            None,
+            Some(conversation.context_id.as_str()),
+            &[],
+            Arc::new(MemoryChatAttachmentRepository::new()),
+            Arc::new(MemoryArtifactRepository::new()),
+            None,
+            None,
+            None,
+            &[],
+            0,
+            None,
+            None,
+            false,
+            None,
+            None,
+        )
+        .await
+    })
+    .await
+    .expect("codex fallback command should build");
+
+    assert!(!command.persona_injected());
+    assert_eq!(
+        command.persona_injection_skipped_reason(),
+        Some("codex_agent_prompt_unavailable")
+    );
+    assert!(!spawnable_prompt(&command.spawnable).contains("<ralphx_agent_persona>"));
+}
+
+#[tokio::test]
+async fn codex_launch_plans_preserve_personas_for_fresh_and_recovery_modes() {
+    let (conversation, persona) = bound_project_persona().await;
+    let (home, _cli_temp, cli_path, plugin_dir, working_directory) = codex_command_fixture();
+    let spawn_settings =
+        ralphx_lib::application::agent_lane_resolution::resolve_agent_spawn_settings(
+            "ralphx-chat-project",
+            Some(conversation.context_id.as_str()),
+            ChatContextType::Project,
+            None,
+            Some(AgentHarnessKind::Codex),
+            None,
+            None,
+        )
+        .await;
+
+    for (stored_session_id, expected_subcommand) in
+        [(None, "exec"), (Some("missing-session"), "exec")]
+    {
+        let launch = with_provider_state_home_override(home.path(), || async {
+            build_launch_plan_for_harness_with_persona_for_test(
+                AgentHarnessKind::Codex,
+                &cli_path,
+                &plugin_dir,
+                &conversation,
+                "launch with the bound persona",
+                Some(persona.clone()),
+                None,
+                None,
+                ChatContextType::Project,
+                conversation.context_id.as_str(),
+                Some(conversation.id.to_string()),
+                None,
+                &working_directory,
+                None,
+                Some(conversation.context_id.as_str()),
+                &[],
+                Arc::new(MemoryChatAttachmentRepository::new()),
+                Arc::new(MemoryArtifactRepository::new()),
+                Arc::new(MockIdeationRepo::empty()),
+                empty_delegated_session_repo(),
+                Arc::new(MockTaskRepo),
+                &[],
+                0,
+                false,
+                stored_session_id,
+                &spawn_settings,
+                None,
+                None,
+            )
+            .await
+        })
+        .await
+        .expect("Codex launch plan should build");
+
+        let spawnable = match launch {
+            ResolvedChatHarnessLaunch::Background { spawnable, .. } => spawnable,
+            ResolvedChatHarnessLaunch::Interactive { .. } => {
+                panic!("Codex launch plans must remain background commands")
+            }
+        };
+        let args = spawnable.get_args_for_test();
+        assert_eq!(args.first().map(String::as_str), Some(expected_subcommand));
+        assert!(
+            !args.iter().any(|arg| arg == "resume"),
+            "missing Codex provider state must use recovery exec: {args:?}"
+        );
+        assert!(
+            spawnable_prompt(&spawnable).contains("<ralphx_agent_persona>"),
+            "fresh and recovery launch prompts must retain the resolved persona"
+        );
+    }
 }
 
 fn make_codex_home_with_session(session_id: &str) -> TempDir {
@@ -389,6 +1809,7 @@ async fn finalize_structured_assistant_message_splits_verification_transcript_se
         &tool_calls,
         &content_blocks,
         true,
+        None,
     )
     .await;
 
@@ -440,7 +1861,8 @@ async fn finalize_structured_assistant_message_splits_verification_transcript_se
 #[tokio::test]
 async fn test_format_attachments_empty() {
     let attachments: Vec<ChatAttachment> = vec![];
-    let result = format_attachments_for_agent(&attachments).await;
+    let result =
+        format_attachments_for_agent(&attachments, ChatContextType::Project, None, None).await;
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), "");
 }
@@ -456,7 +1878,8 @@ async fn test_format_attachments_binary_file() {
         Some("image/png".to_string()),
     );
 
-    let result = format_attachments_for_agent(&[attachment]).await;
+    let result =
+        format_attachments_for_agent(&[attachment], ChatContextType::Project, None, None).await;
     assert!(result.is_ok());
 
     let formatted = result.unwrap();
@@ -487,7 +1910,8 @@ async fn test_format_attachments_text_file() {
         Some("text/plain".to_string()),
     );
 
-    let result = format_attachments_for_agent(&[attachment]).await;
+    let result =
+        format_attachments_for_agent(&[attachment], ChatContextType::Project, None, None).await;
     assert!(result.is_ok());
 
     let formatted = result.unwrap();
@@ -530,7 +1954,13 @@ async fn test_format_attachments_multiple_files() {
         Some("image/png".to_string()),
     );
 
-    let result = format_attachments_for_agent(&[text_attachment, binary_attachment]).await;
+    let result = format_attachments_for_agent(
+        &[text_attachment, binary_attachment],
+        ChatContextType::Project,
+        None,
+        None,
+    )
+    .await;
     assert!(result.is_ok());
 
     let formatted = result.unwrap();
@@ -557,7 +1987,8 @@ async fn test_format_attachments_file_read_error() {
         Some("text/plain".to_string()),
     );
 
-    let result = format_attachments_for_agent(&[attachment]).await;
+    let result =
+        format_attachments_for_agent(&[attachment], ChatContextType::Project, None, None).await;
     assert!(result.is_ok());
 
     let formatted = result.unwrap();
@@ -1010,8 +2441,8 @@ impl TaskRepository for MockTaskRepo {
         _from: entities::InternalStatus,
         _to: entities::InternalStatus,
         _trigger: &str,
-    ) -> AppResult<()> {
-        Ok(())
+    ) -> AppResult<String> {
+        Ok(uuid::Uuid::new_v4().to_string())
     }
 
     async fn get_status_history(&self, _id: &TaskId) -> AppResult<Vec<StatusTransition>> {
@@ -1225,96 +2656,20 @@ async fn test_get_entity_status_for_resume_project_context() {
     assert_eq!(status, None);
 }
 
-#[tokio::test]
-async fn test_build_command_with_team_mode_true() {
-    // Test that build_command accepts team_mode=true parameter
-    // (function will return error in test env due to missing CLI, but that's expected)
-    let cli_path = std::path::PathBuf::from("/usr/bin/claude");
-    let plugin_dir = std::path::PathBuf::from("/tmp/plugin");
-    let working_dir = std::path::PathBuf::from("/tmp");
-
-    let session_id = IdeationSessionId::from_string("test-session-id");
-    let conversation = ChatConversation::new_ideation(session_id);
-
-    let chat_attachment_repo = Arc::new(MemoryChatAttachmentRepository::new());
-
-    // Should not panic with team_mode=true
-    // The function will error in test env, but we're just testing the signature works
-    let artifact_repo = Arc::new(MemoryArtifactRepository::new());
-    let _result = build_command(
-        &cli_path,
-        &plugin_dir,
-        &conversation,
-        "test message",
-        &working_dir,
-        None,
-        None,
-        &[],
-        true, // team_mode=true
-        chat_attachment_repo,
-        artifact_repo,
-        None,
-        None,
-        None,
-        &[],
-        0,
-        None, // effort_override
-        None, // model_override
-        None, // attachment_context_override
-    )
-    .await;
-
-    // Test passes if no panic occurred (Err result is expected in test env)
-}
-
-#[tokio::test]
-async fn test_build_command_with_team_mode_false() {
-    // Test that build_command accepts team_mode=false parameter
-    let cli_path = std::path::PathBuf::from("/usr/bin/claude");
-    let plugin_dir = std::path::PathBuf::from("/tmp/plugin");
-    let working_dir = std::path::PathBuf::from("/tmp");
-
-    let session_id = IdeationSessionId::from_string("test-session-id");
-    let conversation = ChatConversation::new_ideation(session_id);
-
-    let chat_attachment_repo = Arc::new(MemoryChatAttachmentRepository::new());
-
-    // Should not panic with team_mode=false
-    let artifact_repo = Arc::new(MemoryArtifactRepository::new());
-    let _result = build_command(
-        &cli_path,
-        &plugin_dir,
-        &conversation,
-        "test message",
-        &working_dir,
-        None,
-        None,
-        &[],
-        false, // team_mode=false
-        chat_attachment_repo,
-        artifact_repo,
-        None,
-        None,
-        None,
-        &[],
-        0,
-        None, // effort_override
-        None, // model_override
-        None, // attachment_context_override
-    )
-    .await;
-
-    // Test passes if no panic occurred
-}
-
 // Tests for build_resume_initial_prompt
 
 #[test]
 fn test_build_resume_initial_prompt_ideation_includes_context_id_no_recovery_note() {
     let context_id = "test-session-123";
     let user_message = "hello";
-    let result =
-        build_resume_initial_prompt(ChatContextType::Ideation, context_id, user_message, &[], 0);
+    let result = build_resume_initial_prompt(
+        ChatContextType::Ideation,
+        context_id,
+        user_message,
+        &[],
+        0,
+        None,
+    );
     assert!(result.contains(&format!("<context_id>{}</context_id>", context_id)));
     assert!(!result.contains("<recovery_note>"));
     assert!(!result.contains("get_session_messages"));
@@ -1326,8 +2681,14 @@ fn test_build_resume_initial_prompt_ideation_includes_context_id_no_recovery_not
 fn test_build_resume_initial_prompt_task_includes_context_id_no_recovery_note() {
     let context_id = "task-abc";
     let user_message = "hello";
-    let result =
-        build_resume_initial_prompt(ChatContextType::Task, context_id, user_message, &[], 0);
+    let result = build_resume_initial_prompt(
+        ChatContextType::Task,
+        context_id,
+        user_message,
+        &[],
+        0,
+        None,
+    );
     assert!(result.contains(&format!("<task_id>{}</task_id>", context_id)));
     assert!(!result.contains("<recovery_note>"));
     assert!(result.contains(&format!("<user_message>{}</user_message>", user_message)));
@@ -1337,8 +2698,14 @@ fn test_build_resume_initial_prompt_task_includes_context_id_no_recovery_note() 
 fn test_build_resume_initial_prompt_project_includes_context_id_no_recovery_note() {
     let context_id = "project-xyz";
     let user_message = "hello";
-    let result =
-        build_resume_initial_prompt(ChatContextType::Project, context_id, user_message, &[], 0);
+    let result = build_resume_initial_prompt(
+        ChatContextType::Project,
+        context_id,
+        user_message,
+        &[],
+        0,
+        None,
+    );
     assert!(result.contains(&format!("<project_id>{}</project_id>", context_id)));
     assert!(!result.contains("<recovery_note>"));
 }
@@ -1353,6 +2720,7 @@ fn test_build_resume_initial_prompt_task_execution_delegates_to_initial_prompt()
         user_message,
         &[],
         0,
+        None,
     );
     let initial = build_initial_prompt(
         ChatContextType::TaskExecution,
@@ -1411,106 +2779,9 @@ fn provider_resume_mode_for_claude_requires_local_transcript() {
 }
 
 #[tokio::test]
-async fn test_build_resume_command_with_team_mode() {
-    // Test that build_resume_command accepts team_mode parameter
-    let cli_path = std::path::PathBuf::from("/usr/bin/claude");
-    let plugin_dir = std::path::PathBuf::from("/tmp/plugin");
-    let working_dir = std::path::PathBuf::from("/tmp");
-
-    let chat_attachment_repo = Arc::new(MemoryChatAttachmentRepository::new());
-    let artifact_repo = Arc::new(MemoryArtifactRepository::new());
-    let ideation_repo = Arc::new(MockIdeationRepo::empty());
-    let task_repo = Arc::new(MockTaskRepo);
-
-    // Test with team_mode=true
-    let _result = build_resume_command(
-        &cli_path,
-        &plugin_dir,
-        ChatContextType::Ideation,
-        "test-session-id",
-        "test message",
-        None,
-        None,
-        &working_dir,
-        "session-123",
-        None,
-        &[],
-        None,
-        true, // team_mode=true
-        chat_attachment_repo.clone(),
-        artifact_repo.clone(),
-        None,
-        None,
-        None,
-        ideation_repo.clone(),
-        empty_delegated_session_repo(),
-        task_repo.clone(),
-        &[],
-        0,
-        None, // effort_override
-        None, // model_override
-        None, // attachment_context_override
-    )
-    .await;
-
-    // Test with team_mode=false
-    let _result = build_resume_command(
-        &cli_path,
-        &plugin_dir,
-        ChatContextType::Ideation,
-        "test-session-id",
-        "test message",
-        None,
-        None,
-        &working_dir,
-        "session-123",
-        None,
-        &[],
-        None,
-        false, // team_mode=false
-        chat_attachment_repo,
-        artifact_repo,
-        None,
-        None,
-        None,
-        ideation_repo,
-        empty_delegated_session_repo(),
-        task_repo,
-        &[],
-        0,
-        None, // effort_override
-        None, // model_override
-        None, // attachment_context_override
-    )
-    .await;
-
-    // Test passes if no panics occurred
-}
-
-#[tokio::test]
-async fn codex_resume_command_falls_back_to_exec_when_session_is_missing() {
-    let home = tempfile::tempdir().expect("tempdir");
-    let cli_temp = tempfile::tempdir().expect("tempdir");
-    let cli_path = make_fake_codex_cli(&cli_temp);
-    let plugin_dir = cli_temp.path().join("plugins").join("app");
-    fs::create_dir_all(&plugin_dir).expect("create plugin dir");
-    write_file(
-        &plugin_dir.join("ralphx-mcp-server/build/index.js"),
-        "// fake mcp server",
-    );
-    write_file(
-        &cli_temp
-            .path()
-            .join("agents/ralphx-plan-verifier/agent.yaml"),
-        "name: ralphx-plan-verifier\nrole: plan_verifier\n",
-    );
-    write_file(
-        &cli_temp
-            .path()
-            .join("agents/ralphx-plan-verifier/codex/agent.yaml"),
-        "runtime_features:\n  shell_tool: false\n",
-    );
-    let working_dir = cli_temp.path().to_path_buf();
+async fn codex_recovery_resume_command_forwards_a_resolved_persona_block() {
+    let (conversation, persona) = bound_project_persona().await;
+    let (home, _cli_temp, cli_path, plugin_dir, working_dir) = codex_command_fixture();
 
     let result = with_provider_state_home_override(home.path(), || async {
         build_resume_command_for_harness(
@@ -1518,16 +2789,20 @@ async fn codex_resume_command_falls_back_to_exec_when_session_is_missing() {
             &cli_path,
             &plugin_dir,
             ChatContextType::Project,
-            "project-1",
+            conversation.context_id.as_str(),
+            CoordinationMode::Solo,
+            &conversation.id.as_str(),
+            conversation.agent_mode,
+            None,
             "continue",
+            Some(persona),
             None,
             None,
             &working_dir,
             "missing-session",
-            None,
+            Some(conversation.context_id.as_str()),
             &[],
-            None,
-            false,
+            Some(conversation.id.to_string()),
             Arc::new(MemoryChatAttachmentRepository::new()),
             Arc::new(MemoryArtifactRepository::new()),
             None,
@@ -1542,6 +2817,7 @@ async fn codex_resume_command_falls_back_to_exec_when_session_is_missing() {
             None,
             false,
             None,
+            None,
         )
         .await
     })
@@ -1554,10 +2830,17 @@ async fn codex_resume_command_falls_back_to_exec_when_session_is_missing() {
         !args.iter().any(|arg| arg == "resume"),
         "missing Codex session should force recovery, not exec resume: {args:?}"
     );
+    assert!(
+        spawnable_prompt(&result.spawnable).contains("<ralphx_agent_persona>"),
+        "the Codex recovery prompt must retain the resolved persona block"
+    );
+    assert!(result.persona_injected());
+    assert_eq!(result.persona_injection_skipped_reason(), None);
 }
 
 #[tokio::test]
-async fn codex_resume_command_uses_resume_subcommand_when_session_exists() {
+async fn persona_codex_resume_command_uses_resume_subcommand_and_reports_injection() {
+    let (_, persona) = bound_project_persona().await;
     let home = make_codex_home_with_session("session-123");
     let cli_temp = tempfile::tempdir().expect("tempdir");
     let cli_path = make_fake_codex_cli(&cli_temp);
@@ -1579,6 +2862,18 @@ async fn codex_resume_command_uses_resume_subcommand_when_session_exists() {
             .join("agents/ralphx-plan-verifier/codex/agent.yaml"),
         "runtime_features:\n  shell_tool: false\n",
     );
+    write_file(
+        &cli_temp
+            .path()
+            .join("agents/ralphx-chat-project/agent.yaml"),
+        "name: ralphx-chat-project\nrole: project_chat\n",
+    );
+    write_file(
+        &cli_temp
+            .path()
+            .join("agents/ralphx-chat-project/codex/prompt.md"),
+        "You are the RalphX project chat agent.",
+    );
     let working_dir = cli_temp.path().to_path_buf();
 
     let result = with_provider_state_home_override(home.path(), || async {
@@ -1588,7 +2883,12 @@ async fn codex_resume_command_uses_resume_subcommand_when_session_exists() {
             &plugin_dir,
             ChatContextType::Project,
             "project-1",
+            CoordinationMode::Solo,
+            "codex-project-resume-conversation",
+            None,
+            None,
             "continue",
+            Some(persona),
             None,
             None,
             &working_dir,
@@ -1596,7 +2896,6 @@ async fn codex_resume_command_uses_resume_subcommand_when_session_exists() {
             None,
             &[],
             None,
-            false,
             Arc::new(MemoryChatAttachmentRepository::new()),
             Arc::new(MemoryArtifactRepository::new()),
             None,
@@ -1611,6 +2910,7 @@ async fn codex_resume_command_uses_resume_subcommand_when_session_exists() {
             None,
             false,
             None,
+            None,
         )
         .await
     })
@@ -1623,10 +2923,16 @@ async fn codex_resume_command_uses_resume_subcommand_when_session_exists() {
             .any(|window| window == ["exec", "resume", "session-123"]),
         "existing Codex session should use exec resume: {args:?}"
     );
+    assert!(
+        spawnable_prompt(&result.spawnable).contains("<ralphx_agent_persona>"),
+        "the queued Codex resume prompt must retain the resolved persona block"
+    );
+    assert!(result.persona_injected());
+    assert_eq!(result.persona_injection_skipped_reason(), None);
 }
 
 #[tokio::test]
-async fn codex_verifier_command_disables_shell_tool() {
+async fn codex_legacy_verification_session_uses_active_ideation_features() {
     let home = tempfile::tempdir().expect("tempdir");
     let cli_temp = tempfile::tempdir().expect("tempdir");
     let cli_path = make_fake_codex_cli(&cli_temp);
@@ -1648,6 +2954,16 @@ async fn codex_verifier_command_disables_shell_tool() {
             .join("agents/ralphx-plan-verifier/codex/agent.yaml"),
         "runtime_features:\n  shell_tool: false\n",
     );
+    write_file(
+        &cli_temp.path().join("agents/ralphx-ideation/agent.yaml"),
+        "name: ralphx-ideation\nrole: ideation_orchestrator\n",
+    );
+    write_file(
+        &cli_temp
+            .path()
+            .join("agents/ralphx-ideation/codex/agent.yaml"),
+        "runtime_features:\n  shell_tool: true\n",
+    );
     let working_dir = cli_temp.path().to_path_buf();
     let parent_id = IdeationSessionId::new();
     let child_id = IdeationSessionId::new();
@@ -1665,7 +2981,12 @@ async fn codex_verifier_command_disables_shell_tool() {
             &plugin_dir,
             ChatContextType::Ideation,
             child_id.as_str(),
+            CoordinationMode::Solo,
+            "codex-ideation-recovery-conversation",
+            None,
+            None,
             "continue",
+            None,
             None,
             None,
             &working_dir,
@@ -1673,7 +2994,6 @@ async fn codex_verifier_command_disables_shell_tool() {
             None,
             &[],
             None,
-            false,
             Arc::new(MemoryChatAttachmentRepository::new()),
             Arc::new(MemoryArtifactRepository::new()),
             None,
@@ -1688,16 +3008,30 @@ async fn codex_verifier_command_disables_shell_tool() {
             None,
             false,
             None,
+            None,
         )
         .await
     })
     .await
-    .expect("codex verifier command should build");
+    .expect("codex ideation command should build");
 
     let args = result.spawnable.get_args_for_test();
     assert!(
-        args.iter().any(|arg| arg == "features.shell_tool=false"),
-        "verifier Codex command must disable shell_tool: {args:?}"
+        args.iter().any(|arg| arg == "features.shell_tool=true"),
+        "verification must use the active ideation agent's Codex features: {args:?}"
+    );
+    assert!(
+        !args.iter().any(|arg| arg == "features.shell_tool=false"),
+        "legacy verifier features must not override the active ideation agent: {args:?}"
+    );
+    let rendered_args = args.join("\n");
+    assert!(
+        rendered_args.contains("--agent-type") && rendered_args.contains("ralphx-ideation"),
+        "verification must launch the active ideation agent: {args:?}"
+    );
+    assert!(
+        !rendered_args.contains("ralphx-plan-verifier"),
+        "verification must not resurrect the removed fixed verifier: {args:?}"
     );
 
     let envs = result.spawnable.get_envs_for_test();
@@ -1709,6 +3043,199 @@ async fn codex_verifier_command_disables_shell_tool() {
         working_dir_env.as_deref(),
         Some(working_dir.to_string_lossy().as_ref()),
         "spawn env must carry canonical working directory for MCP filesystem tools"
+    );
+}
+
+#[tokio::test]
+async fn task_execution_launch_injects_compact_runtime_context_and_state_env() {
+    let task_id = TaskId::from_string("task-runtime-exec".to_string());
+    let conversation = ChatConversation::new_task_execution(task_id.clone());
+    let working_dir = tempfile::tempdir().expect("working dir");
+
+    let command = with_claude_spawn_allowed_in_tests(|| async {
+        build_command(
+            std::path::Path::new("/fake/claude"),
+            std::path::Path::new("/fake/plugin"),
+            &conversation,
+            "Execute task: task-runtime-exec",
+            None,
+            working_dir.path(),
+            Some("executing"),
+            Some("project-runtime"),
+            &[],
+            Arc::new(MemoryChatAttachmentRepository::new()),
+            Arc::new(MemoryArtifactRepository::new()),
+            None,
+            None,
+            None,
+            &[],
+            0,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+    })
+    .await
+    .expect("task execution command should build");
+
+    let prompt = spawnable_prompt(&command);
+    assert!(prompt.contains("<task_runtime_context>"));
+    assert!(prompt.contains("<task_id>task-runtime-exec</task_id>"));
+    assert!(prompt.contains("<project_id>project-runtime</project_id>"));
+    assert!(prompt.contains("<context_type>task_execution</context_type>"));
+    assert!(prompt.contains("<task_state>executing</task_state>"));
+    assert!(prompt.contains(&format!(
+        "<working_directory>{}</working_directory>",
+        working_dir.path().to_string_lossy()
+    )));
+    assert!(
+        !prompt.contains("<source_proposal") && !prompt.contains("<plan_artifact"),
+        "bootstrap runtime context must stay compact and avoid full plan/proposal payloads: {prompt}"
+    );
+
+    let envs = command.get_envs_for_test();
+    assert_eq!(
+        env_value(&envs, "RALPHX_TASK_ID").as_deref(),
+        Some(task_id.as_str())
+    );
+    assert_eq!(
+        env_value(&envs, "RALPHX_CONTEXT_ID").as_deref(),
+        Some(task_id.as_str())
+    );
+    assert_eq!(
+        env_value(&envs, "RALPHX_TASK_STATE").as_deref(),
+        Some("executing")
+    );
+}
+
+#[tokio::test]
+async fn task_execution_launch_fails_closed_without_project_identity() {
+    let task_id = TaskId::from_string("task-runtime-missing-project".to_string());
+    let conversation = ChatConversation::new_task_execution(task_id);
+    let working_dir = tempfile::tempdir().expect("working dir");
+
+    let result = with_claude_spawn_allowed_in_tests(|| async {
+        build_command(
+            std::path::Path::new("/fake/claude"),
+            std::path::Path::new("/fake/plugin"),
+            &conversation,
+            "Execute task: task-runtime-missing-project",
+            None,
+            working_dir.path(),
+            Some("executing"),
+            None,
+            &[],
+            Arc::new(MemoryChatAttachmentRepository::new()),
+            Arc::new(MemoryArtifactRepository::new()),
+            None,
+            None,
+            None,
+            &[],
+            0,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+    })
+    .await;
+
+    let error = result.expect_err("task runtime context must fail without project id");
+    assert!(
+        error.contains("missing project identity"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn task_reexecution_launch_injects_reexecuting_state() {
+    let task_id = TaskId::from_string("task-runtime-reexec".to_string());
+    let conversation = ChatConversation::new_task_execution(task_id.clone());
+    let working_dir = tempfile::tempdir().expect("working dir");
+
+    let command = with_claude_spawn_allowed_in_tests(|| async {
+        build_command(
+            std::path::Path::new("/fake/claude"),
+            std::path::Path::new("/fake/plugin"),
+            &conversation,
+            "Re-execute task (revision): task-runtime-reexec",
+            None,
+            working_dir.path(),
+            Some("re_executing"),
+            Some("project-runtime"),
+            &[],
+            Arc::new(MemoryChatAttachmentRepository::new()),
+            Arc::new(MemoryArtifactRepository::new()),
+            None,
+            None,
+            None,
+            &[],
+            0,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+    })
+    .await
+    .expect("re-execution command should build");
+
+    let prompt = spawnable_prompt(&command);
+    assert!(prompt.contains("<task_runtime_context>"));
+    assert!(prompt.contains("<task_state>re_executing</task_state>"));
+    assert!(prompt.contains("<context_type>task_execution</context_type>"));
+    assert_eq!(
+        env_value(&command.get_envs_for_test(), "RALPHX_TASK_STATE").as_deref(),
+        Some("re_executing")
+    );
+}
+
+#[tokio::test]
+async fn review_launch_injects_reviewing_runtime_context_and_state_env() {
+    let task_id = TaskId::from_string("task-runtime-review".to_string());
+    let conversation = ChatConversation::new_review(task_id.clone());
+    let working_dir = tempfile::tempdir().expect("working dir");
+
+    let command = with_claude_spawn_allowed_in_tests(|| async {
+        build_command(
+            std::path::Path::new("/fake/claude"),
+            std::path::Path::new("/fake/plugin"),
+            &conversation,
+            "Review task: task-runtime-review",
+            None,
+            working_dir.path(),
+            Some("reviewing"),
+            Some("project-runtime"),
+            &[],
+            Arc::new(MemoryChatAttachmentRepository::new()),
+            Arc::new(MemoryArtifactRepository::new()),
+            None,
+            None,
+            None,
+            &[],
+            0,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+    })
+    .await
+    .expect("review command should build");
+
+    let prompt = spawnable_prompt(&command);
+    assert!(prompt.contains("<task_runtime_context>"));
+    assert!(prompt.contains("<task_id>task-runtime-review</task_id>"));
+    assert!(prompt.contains("<context_type>review</context_type>"));
+    assert!(prompt.contains("<task_state>reviewing</task_state>"));
+    assert_eq!(
+        env_value(&command.get_envs_for_test(), "RALPHX_TASK_STATE").as_deref(),
+        Some("reviewing")
     );
 }
 
@@ -2148,6 +3675,7 @@ fn integration_ideation_resume_prompt_marks_provider_resume_bootstrap_mode() {
         "continue the same plan",
         &[],
         0,
+        None,
     );
 
     assert!(
@@ -2264,6 +3792,7 @@ async fn resolve_working_directory_merge_context_accepts_rebase_prefix() {
         Arc::new(MockIdeationRepo::empty()) as Arc<dyn IdeationSessionRepository>,
         empty_delegated_session_repo(),
         std::path::Path::new("/tmp/default"),
+        None,
     )
     .await;
 
@@ -2316,6 +3845,7 @@ async fn resolve_working_directory_merge_context_accepts_merge_prefix() {
         Arc::new(MockIdeationRepo::empty()) as Arc<dyn IdeationSessionRepository>,
         empty_delegated_session_repo(),
         std::path::Path::new("/tmp/default"),
+        None,
     )
     .await;
 
@@ -2369,6 +3899,7 @@ async fn resolve_working_directory_merge_context_rejects_task_prefix() {
         Arc::new(MockIdeationRepo::empty()) as Arc<dyn IdeationSessionRepository>,
         empty_delegated_session_repo(),
         std::path::Path::new("/tmp/default"),
+        None,
     )
     .await;
 
@@ -2408,6 +3939,7 @@ async fn resolve_working_directory_review_rejects_missing_worktree_path() {
         Arc::new(MockIdeationRepo::empty()) as Arc<dyn IdeationSessionRepository>,
         empty_delegated_session_repo(),
         std::path::Path::new("/tmp/default"),
+        None,
     )
     .await;
 
@@ -2453,6 +3985,7 @@ async fn resolve_working_directory_task_execution_rejects_missing_worktree_dir()
         Arc::new(MockIdeationRepo::empty()) as Arc<dyn IdeationSessionRepository>,
         empty_delegated_session_repo(),
         std::path::Path::new("/tmp/default"),
+        None,
     )
     .await;
 
@@ -2496,6 +4029,7 @@ async fn resolve_working_directory_review_rejects_merge_worktree_path() {
         Arc::new(MockIdeationRepo::empty()) as Arc<dyn IdeationSessionRepository>,
         empty_delegated_session_repo(),
         std::path::Path::new("/tmp/default"),
+        None,
     )
     .await;
 
@@ -2537,6 +4071,7 @@ async fn resolve_working_directory_ideation_uses_session_workspace() {
         ideation_repo,
         empty_delegated_session_repo(),
         std::path::Path::new("/tmp/default"),
+        None,
     )
     .await
     .expect("ideation workspace should resolve");
@@ -2580,6 +4115,7 @@ async fn resolve_working_directory_ideation_rejects_missing_session_workspace() 
         ideation_repo,
         empty_delegated_session_repo(),
         std::path::Path::new("/tmp/default"),
+        None,
     )
     .await;
 
@@ -2617,11 +4153,11 @@ async fn test_plan_verifier_sets_subagent_cap_env_var() {
             std::path::Path::new("/fake/plugin"),
             &conv,
             "continue",
+            None,
             std::path::Path::new("/tmp"),
             Some("verification"),
             Some("proj-1"),
             &[],
-            false,
             attachment_repo,
             artifact_repo,
             None,
@@ -2629,6 +4165,7 @@ async fn test_plan_verifier_sets_subagent_cap_env_var() {
             Some(settings_repo),
             &[],
             0,
+            None,
             None,
             None,
             None,
@@ -2671,11 +4208,11 @@ async fn test_plan_verifier_subagent_cap_uses_haiku_default_when_no_db_rows() {
             std::path::Path::new("/fake/plugin"),
             &conv,
             "continue",
+            None,
             std::path::Path::new("/tmp"),
             Some("verification"),
             None, // no project_id → no project row
             &[],
-            false,
             attachment_repo,
             artifact_repo,
             None,
@@ -2683,6 +4220,7 @@ async fn test_plan_verifier_subagent_cap_uses_haiku_default_when_no_db_rows() {
             Some(settings_repo),
             &[],
             0,
+            None,
             None,
             None,
             None,
@@ -2755,11 +4293,11 @@ async fn test_non_verifier_ideation_agent_subagent_cap_is_agent_own_model() {
             std::path::Path::new("/fake/plugin"),
             &conv,
             "continue",
+            None,
             std::path::Path::new("/tmp"),
             None, // no entity_status → ralphx-ideation
             Some("proj-1"),
             &[],
-            false,
             attachment_repo,
             artifact_repo,
             Some(lane_repo_arc),
@@ -2767,6 +4305,7 @@ async fn test_non_verifier_ideation_agent_subagent_cap_is_agent_own_model() {
             None,
             &[],
             0,
+            None,
             None,
             None,
             None,
@@ -2847,11 +4386,11 @@ async fn test_orchestrator_ideation_uses_ideation_subagent_cap() {
             std::path::Path::new("/fake/plugin"),
             &conv,
             "continue",
+            None,
             std::path::Path::new("/tmp"),
             None, // no entity_status → ralphx-ideation
             Some("proj-1"),
             &[],
-            false,
             attachment_repo,
             artifact_repo,
             Some(lane_repo_arc),
@@ -2861,6 +4400,7 @@ async fn test_orchestrator_ideation_uses_ideation_subagent_cap() {
             0,
             None,
             None, // model_override=None; primary model is "opus" from lane row
+            None, // agent_runtime_context
             None, // attachment_context_override
         )
         .await
@@ -2923,11 +4463,11 @@ async fn test_both_build_and_resume_use_ideation_subagent_cap() {
             std::path::Path::new("/fake/plugin"),
             &conv,
             "continue",
+            None,
             std::path::Path::new("/tmp"),
             None,
             Some("proj-1"),
             &[],
-            false,
             Arc::new(MemoryChatAttachmentRepository::new()),
             Arc::new(MemoryArtifactRepository::new()),
             Some(Arc::clone(&lane_repo_arc)),
@@ -2935,6 +4475,7 @@ async fn test_both_build_and_resume_use_ideation_subagent_cap() {
             None,
             &[],
             0,
+            None,
             None,
             None,
             None,
@@ -2967,7 +4508,12 @@ async fn test_both_build_and_resume_use_ideation_subagent_cap() {
             std::path::Path::new("/fake/plugin"),
             ChatContextType::Ideation,
             session_id.as_str(),
+            CoordinationMode::Solo,
+            "ideation-conversation-resume",
+            None,
+            None,
             "continue",
+            None,
             None,
             None,
             std::path::Path::new("/tmp"),
@@ -2975,7 +4521,6 @@ async fn test_both_build_and_resume_use_ideation_subagent_cap() {
             Some("proj-1"),
             &[],
             None,
-            false,
             Arc::new(MemoryChatAttachmentRepository::new()),
             Arc::new(MemoryArtifactRepository::new()),
             Some(Arc::clone(&lane_repo_arc)),
@@ -2986,6 +4531,7 @@ async fn test_both_build_and_resume_use_ideation_subagent_cap() {
             Arc::new(MemoryTaskRepository::new()),
             &[],
             0,
+            None,
             None,
             None,
             None,
@@ -3029,11 +4575,11 @@ async fn test_build_command_resumes_from_provider_session_ref_without_legacy_ali
                 std::path::Path::new("/fake/plugin"),
                 &conversation,
                 "continue",
+                None,
                 std::path::Path::new("/tmp"),
                 None,
                 None,
                 &[],
-                false,
                 Arc::new(MemoryChatAttachmentRepository::new()),
                 Arc::new(MemoryArtifactRepository::new()),
                 None,
@@ -3043,7 +4589,8 @@ async fn test_build_command_resumes_from_provider_session_ref_without_legacy_ali
                 0,
                 None,
                 None,
-            None,
+                None,
+                None,
             )
             .await
         })

@@ -3,14 +3,19 @@ paths:
   - "src-tauri/src/http_server/handlers/reviews/**/*.rs"
   - "src-tauri/src/http_server/handlers/session_linking/*.rs"
   - "src-tauri/src/http_server/helpers.rs"
+  - "src-tauri/src/http_server/handlers/agent_issues.rs"
   - "src-tauri/src/infrastructure/sqlite/sqlite_ideation_session_repo.rs"
+  - "src-tauri/src/infrastructure/sqlite/sqlite_agent_conversation_issue_repo.rs"
   - "src-tauri/src/infrastructure/sqlite/migrations/v20260328*_ideation_followup_provenance*.rs"
   - "src-tauri/src/infrastructure/sqlite/migrations/v20260329113000_ideation_blocker_fingerprint*.rs"
+  - "src-tauri/src/infrastructure/sqlite/migrations/*agent_conversation_issue*.rs"
+  - "src-tauri/crates/ralphx-domain/src/entities/agent_conversation_issue.rs"
   - "src-tauri/crates/ralphx-domain/src/entities/task_context.rs"
   - "src-tauri/crates/ralphx-domain/src/entities/ideation/mod.rs"
   - "agents/ralphx-execution-worker/**"
   - "agents/ralphx-execution-reviewer/**"
   - "plugins/app/ralphx-mcp-server/src/index.ts"
+  - "plugins/app/ralphx-mcp-server/src/ideation-tools.ts"
   - "plugins/app/ralphx-mcp-server/src/tools.ts"
 ---
 
@@ -18,7 +23,7 @@ paths:
 
 > **Maintainer note:** This file optimizes for LLM context efficiency. Rules: (1) Tables > prose (2) One example max per concept (3) No redundant explanations (4) Use symbols: → = leads to, | = or, ❌/✅ = wrong/right (5) Before adding content, ask: "Can this be a single line?" If yes, make it one line.
 
-**Required Context:** task-execution-agents.md | ralphx-ideation-workflows.md | agent-mcp-tools.md
+**Required Context:** task-execution-agents.md | orchestrator-ideation-workflows.md | agent-mcp-tools.md
 
 ---
 
@@ -40,6 +45,18 @@ Prevent autonomous worker/reviewer flows from spawning duplicate follow-up ideat
 | Tool resolution | `create_followup_session(source_task_id=...)` resolves both the local parent ideation session and the current out-of-scope blocker fingerprint automatically |
 | Backend idempotency | `create_child_session` reuses an existing active child when `parent_session_id + source_task_id + blocker_fingerprint` match |
 | Review reuse | Review exhausted-drift auto-follow-up reuses by `blocker_fingerprint` first; old `spawn_reason` matching is fallback-only when no fingerprint exists |
+
+---
+
+## Agent Conversation Issues
+
+| Rule | Detail |
+|---|---|
+| Backend owns canonical identity | `register_agent_issue` computes `canonical_fingerprint`; agents provide evidence and optional legacy `blocker_fingerprint` |
+| Occurrences preserve repeats | Duplicate reports append `agent_conversation_issue_occurrences`; do not overwrite the only evidence trail |
+| Known issue classes | frontend dependency/PATH setup, MCP package-lock drift, Rails test-database setup, clippy baseline, runtime-index prerequisite, merge hook environment, task-scoped scope drift |
+| Unknown fallback | Use raw `blocker_fingerprint` when present; avoid title-only semantic merging |
+| Ambiguous candidates | Tool returns `needs_issue_disambiguation`; retry with `attach_to_issue_id` or `confirm_new + new_issue_reason + issue_check_token` |
 
 ---
 
@@ -88,8 +105,6 @@ So:
 Add another blocker fingerprint type only when a real duplicate pattern appears in production or tests.
 
 Examples that do not automatically have first-class fingerprints yet:
-- generic pre-existing failing test outside scope but not expressed as scope drift
-- missing dependency / broken repo setup blocker
 - cross-project blocker discovered during execution
 - research blocker that should spawn more research
 - merge/conflict blocker that should spin out separate work
@@ -122,8 +137,11 @@ When a new blocker class needs dedupe:
 |---|---|
 | Task context fingerprint + existing follow-ups | `src-tauri/src/http_server/helpers.rs` |
 | Review exhausted-drift auto-follow-up | `src-tauri/src/http_server/handlers/reviews/complete.rs` |
+| Agent conversation issue registration | `src-tauri/src/http_server/handlers/agent_issues.rs` |
+| Agent issue identity + occurrences | `src-tauri/crates/ralphx-domain/src/entities/agent_conversation_issue.rs` |
+| Agent issue persistence | `src-tauri/src/infrastructure/sqlite/sqlite_agent_conversation_issue_repo.rs` |
 | Child-session idempotent reuse | `src-tauri/src/http_server/handlers/session_linking/create.rs` |
 | Follow-up provenance + fingerprint fields | `src-tauri/crates/ralphx-domain/src/entities/ideation/mod.rs` |
 | Follow-up persistence | `src-tauri/src/infrastructure/sqlite/sqlite_ideation_session_repo.rs` |
 | Worker/reviewer guidance | `agents/ralphx-execution-worker/claude/prompt.md` | `agents/ralphx-execution-reviewer/claude/prompt.md` |
-| MCP follow-up tool | `plugins/app/ralphx-mcp-server/src/index.ts` | `plugins/app/ralphx-mcp-server/src/tools.ts` |
+| MCP follow-up/issue tools | `plugins/app/ralphx-mcp-server/src/index.ts`, `plugins/app/ralphx-mcp-server/src/tools.ts`, `plugins/app/ralphx-mcp-server/src/ideation-tools.ts` |

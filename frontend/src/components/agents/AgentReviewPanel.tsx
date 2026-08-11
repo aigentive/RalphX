@@ -2,17 +2,39 @@ import {
   AlertCircle,
   CheckCircle2,
   GitPullRequestArrow,
+  Info,
   Loader2,
   MoreVertical,
   RefreshCw,
+  Wrench,
 } from "lucide-react";
-import { lazy, Suspense, useEffect, useMemo, useState, type ElementType } from "react";
+import {
+  Suspense,
+  useEffect,
+  useMemo,
+  useState,
+  type ElementType,
+} from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import type {
+  AgentWorkspacePrReviewMonitor,
   AgentWorkspaceReviewContext,
   StartAgentWorkspaceReviewResult,
 } from "@/api/chat";
+import { chatApi } from "@/api/chat";
+import { lazyWithRetry } from "@/lib/lazy-with-retry";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -25,11 +47,28 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { withAlpha } from "@/lib/theme-colors";
+import { useConfirmation } from "@/hooks/useConfirmation";
+import { useReviewSettings } from "@/hooks/useReviewSettings";
 import type { Artifact } from "@/types/artifact";
 
 import { EmptyArtifactState } from "./AgentsArtifactEmptyState";
+import type { AgentPublishReviewEvidence } from "./AgentsPublishPanel";
+import type { AgentWorkspaceReviewActionBlocker } from "./agentWorkspacePublishState";
+import {
+  hasWorkspaceReviewPublishAuthorization,
+  isWorkspaceReviewApprovedAnyway,
+} from "./workspaceReviewAuthorization";
+import {
+  agentWorkspaceKeys,
+  invalidateWorkspaceQueries,
+} from "./agentWorkspaceQueries";
+import { WORKSPACE_REVIEW_AUTOMATION_COPY } from "./workspaceReviewAutomationCopy";
+import {
+  ReviewArtifactTabs,
+  type ReviewArtifactBodyMode,
+} from "./ReviewArtifactTabs";
 
-const LazyPlanDisplay = lazy(() =>
+const LazyPlanDisplay = lazyWithRetry(() =>
   import("@/components/Ideation/PlanDisplay").then((module) => ({
     default: module.PlanDisplay,
   })),
@@ -37,13 +76,25 @@ const LazyPlanDisplay = lazy(() =>
 
 type ReviewDisplayContext = Pick<
   AgentWorkspaceReviewContext,
-  "target" | "monitor" | "isCurrent" | "isOutdated" | "shouldShowTab"
+  | "workspace"
+  | "target"
+  | "monitor"
+  | "reviewArtifactIsCurrent"
+  | "reviewArtifactIsOutdated"
+  | "shouldShowTab"
 >;
 
 type ReviewAction = {
   label: string;
-  force: boolean;
-};
+} & (
+  | {
+      kind: "review";
+      force: boolean;
+    }
+  | {
+      kind: "fix";
+    }
+);
 
 type ReviewStatus = {
   label: string;
@@ -55,24 +106,51 @@ type ReviewStatus = {
 
 interface AgentReviewPanelProps {
   reviewArtifact: Artifact | null;
+  reviewRequestedChangesArtifact?: Artifact | null;
   reviewContext: AgentWorkspaceReviewContext | null;
   reviewStartResult: StartAgentWorkspaceReviewResult | null;
   reviewStartError: Error | null;
   isReviewLoading: boolean;
+  isReviewContextLoading: boolean;
+  reviewContextError: Error | null;
+  publishReviewEvidence: AgentPublishReviewEvidence;
   isReviewActionPending: boolean;
+  isFixIssuesActionPending?: boolean;
+  isApproveAnywayActionPending?: boolean;
   isWorkspaceRuntimeGenerating?: boolean;
   isPublishingWorkspace?: boolean;
+  reviewActionBlocker?: AgentWorkspaceReviewActionBlocker | null;
+  embedded?: boolean;
   onOpenPublish?: () => void;
+  onViewTranscript?: () => void;
   onStartReview: (force: boolean) => void;
+  onStartReviewIntent?: () => void;
+  onRetryReviewContext?: () => void;
+  onFixIssues: () => void;
+  onApproveAnyway?: () => Promise<void>;
+  isReviewPrWorkspace?: boolean;
+  autoApproveEnabled?: boolean;
+  isAutoApproveSaving?: boolean;
+  onAutoApproveChange?: (enabled: boolean) => void;
+  prReviewMonitor?: AgentWorkspacePrReviewMonitor | null;
+  isPrReviewMonitorSaving?: boolean;
+  onPrReviewMonitorChange?: (
+    enabled: boolean,
+    activeReviewPolicy?: "finish_current" | "cancel_current",
+  ) => Promise<void>;
 }
 
-function reviewTargetLabel(context: ReviewDisplayContext | null): string | null {
+function reviewTargetLabel(
+  context: ReviewDisplayContext | null,
+): string | null {
   const target = context?.target;
   if (!target) return null;
   if (target.sourcePullRequestNumber) {
     return `PR #${target.sourcePullRequestNumber} source changes`;
   }
-  return target.scope === "workspace_delta" ? "Workspace changes" : "Selected source changes";
+  return target.scope === "workspace_delta"
+    ? "Workspace changes"
+    : "Selected source changes";
 }
 
 function reviewErrorMessage(
@@ -92,12 +170,55 @@ function reviewErrorMessage(
   return null;
 }
 
-function hasPassedWorkspaceReview(context: ReviewDisplayContext | null): boolean {
-  const gateStatus = context?.monitor.reviewGateStatus ?? null;
-  if (gateStatus) {
-    return gateStatus === "passed";
+function isWorkspaceReviewFixerActive(
+  status: string | null | undefined,
+): boolean {
+  return status === "routing" || status === "queued" || status === "running";
+}
+
+function reviewFixerCycleCapDetail(cycleCount: number): string {
+  if (cycleCount === 0) {
+    return "Automatic fixes are disabled by the cycle limit. Fix Issues manually to continue.";
   }
-  return Boolean(context?.isCurrent && context.monitor.reviewOutcome === "passed");
+  return `This workspace has recorded ${cycleCount} fixer ${cycleCount === 1 ? "cycle" : "cycles"}. Automatic fixing is paused; Fix Issues manually to continue.`;
+}
+
+function canFixBlockingReview(
+  context: ReviewDisplayContext | null,
+  isRunning: boolean,
+): boolean {
+  if (
+    !context?.target ||
+    isRunning ||
+    !context.reviewArtifactIsCurrent ||
+    context.reviewArtifactIsOutdated
+  ) {
+    return false;
+  }
+  if (isWorkspaceReviewApprovedAnyway(context)) return false;
+  return (
+    context.monitor.reviewGateStatus === "blocking" ||
+    context.monitor.reviewOutcome === "blocking"
+  );
+}
+
+function canApproveBlockingReview(
+  context: ReviewDisplayContext | null,
+  isRunning: boolean,
+  isFixerActive: boolean,
+): boolean {
+  return Boolean(
+    context?.target &&
+      !isRunning &&
+      !isFixerActive &&
+      context.reviewArtifactIsCurrent &&
+      !context.reviewArtifactIsOutdated &&
+      context.monitor.status === "ready" &&
+      context.monitor.reviewOutcome === "blocking" &&
+      context.monitor.reviewGateStatus === "blocking" &&
+      context.monitor.reviewArtifactId &&
+      context.monitor.reviewArtifactVersion,
+  );
 }
 
 function reviewActionForState({
@@ -105,31 +226,51 @@ function reviewActionForState({
   hasArtifact,
   isRunFailed,
   isRunning,
+  isFixerActive,
 }: {
   context: ReviewDisplayContext | null;
   hasArtifact: boolean;
   isRunFailed: boolean;
   isRunning: boolean;
+  isFixerActive: boolean;
 }): ReviewAction | null {
   if (!context?.target || isRunning) return null;
-  if (isRunFailed) return { label: "Retry review", force: true };
-  if (!hasArtifact) return { label: "Run review", force: false };
-  if (context.isOutdated) return { label: "Update review", force: true };
-  if (context.isCurrent) return { label: "Run again", force: true };
-  return { label: "Run review", force: true };
+  if (canFixBlockingReview(context, isRunning)) {
+    if (isFixerActive) return null;
+    return { label: "Fix Issues", kind: "fix" };
+  }
+  if (isRunFailed)
+    return { label: "Retry review", kind: "review", force: true };
+  if (!hasArtifact)
+    return { label: "Run review", kind: "review", force: false };
+  if (context.reviewArtifactIsOutdated)
+    return { label: "Update review", kind: "review", force: true };
+  if (context.reviewArtifactIsCurrent)
+    return { label: "Run again", kind: "review", force: true };
+  return { label: "Run review", kind: "review", force: true };
 }
 
 function reviewActionDisabledReason({
   isReviewActionPending,
+  isFixIssuesActionPending,
+  isApproveAnywayActionPending,
   isWorkspaceRuntimeGenerating,
   isPublishingWorkspace,
 }: {
   isReviewActionPending: boolean;
+  isFixIssuesActionPending: boolean;
+  isApproveAnywayActionPending: boolean;
   isWorkspaceRuntimeGenerating: boolean;
   isPublishingWorkspace: boolean;
 }): string | null {
   if (isReviewActionPending) {
     return "Review is starting. Wait for this request to finish.";
+  }
+  if (isFixIssuesActionPending) {
+    return "Fixer is starting. Wait for this request to finish.";
+  }
+  if (isApproveAnywayActionPending) {
+    return "Approval is being recorded. Wait for this request to finish.";
   }
   if (isWorkspaceRuntimeGenerating) {
     return "Review is available after the current agent run finishes.";
@@ -143,11 +284,17 @@ function reviewActionDisabledReason({
 function reviewStatusForState({
   context,
   hasArtifact,
+  isReviewContextLoading,
+  reviewContextError,
+  publishReviewEvidence,
   isRunFailed,
   isRunning,
 }: {
   context: ReviewDisplayContext | null;
   hasArtifact: boolean;
+  isReviewContextLoading: boolean;
+  reviewContextError: Error | null;
+  publishReviewEvidence: AgentPublishReviewEvidence;
   isRunFailed: boolean;
   isRunning: boolean;
 }): ReviewStatus {
@@ -155,7 +302,8 @@ function reviewStatusForState({
   if (isRunning) {
     return {
       label: "Reviewing",
-      detail: "The reviewer is checking the current changes. The Review will appear here when it finishes.",
+      detail:
+        "The reviewer is checking the current changes. The Review will appear here when it finishes.",
       color: "var(--accent-primary)",
       icon: Loader2,
       iconClassName: "animate-spin",
@@ -169,6 +317,97 @@ function reviewStatusForState({
       icon: AlertCircle,
     };
   }
+  if (!context?.target) {
+    if (isReviewContextLoading) {
+      return {
+        label: "Checking reviewable changes…",
+        detail: "Resolving the current Workspace Review target.",
+        color: "var(--accent-primary)",
+        icon: Loader2,
+        iconClassName: "animate-spin",
+      };
+    }
+    if (reviewContextError) {
+      return {
+        label: "Workspace Review unavailable",
+        detail:
+          reviewContextError.message ||
+          "The current Workspace Review target could not be resolved.",
+        color: "var(--status-error)",
+        icon: AlertCircle,
+      };
+    }
+    if (publishReviewEvidence.status === "unavailable") {
+      return {
+        label: hasArtifact ? "Review available" : "No reviewable changes",
+        detail: hasArtifact
+          ? "The latest Review is available below."
+          : "No reviewable changes were found for this workspace.",
+        color: "var(--text-muted)",
+        icon: AlertCircle,
+      };
+    }
+    if (publishReviewEvidence.status === "loading") {
+      return {
+        label: "Checking reviewable changes…",
+        detail: "Checking the cumulative workspace changes.",
+        color: "var(--accent-primary)",
+        icon: Loader2,
+        iconClassName: "animate-spin",
+      };
+    }
+    if (publishReviewEvidence.status === "error") {
+      return {
+        label: "Workspace Review unavailable",
+        detail:
+          publishReviewEvidence.error.message ||
+          "The cumulative workspace changes could not be checked.",
+        color: "var(--status-error)",
+        icon: AlertCircle,
+      };
+    }
+    if (publishReviewEvidence.changeCount > 0) {
+      const fileLabel =
+        publishReviewEvidence.changeCount === 1 ? "changed file" : "changed files";
+      return {
+        label: "Review target unavailable",
+        detail: `Changes found ${publishReviewEvidence.changeCount} ${fileLabel}, but Workspace Review could not resolve the current target. Retry.`,
+        color: "var(--status-warning)",
+        icon: AlertCircle,
+      };
+    }
+    return {
+      label: hasArtifact ? "Review available" : "No reviewable changes",
+      detail: hasArtifact
+        ? "The latest Review is available below."
+        : "No reviewable changes were found for this workspace.",
+      color: "var(--text-muted)",
+      icon: AlertCircle,
+    };
+  }
+  if (isWorkspaceReviewApprovedAnyway(context)) {
+    return {
+      label: "Review approved anyway",
+      detail:
+        context?.monitor.reviewBlockingSummary ??
+        "The original blocking findings remain visible below. Publishing is allowed for this exact Review and change set.",
+      color: "var(--status-warning)",
+      icon: AlertCircle,
+    };
+  }
+  if (context?.monitor.reviewFixerStatus === "cycle_capped") {
+    return {
+      label: "Automatic fix cycle limit reached",
+      detail: [
+        context.monitor.reviewBlockingSummary,
+        reviewFixerCycleCapDetail(context.monitor.reviewFixerCycleCount),
+      ]
+        .filter(Boolean)
+        .join(" "),
+      color: "var(--status-warning)",
+      icon: AlertCircle,
+    };
+  }
   if (gateStatus === "blocking") {
     return {
       label: "Review blocking",
@@ -179,15 +418,16 @@ function reviewStatusForState({
       icon: AlertCircle,
     };
   }
-  if (context?.isOutdated) {
+  if (context?.reviewArtifactIsOutdated) {
     return {
       label: "Review is outdated",
-      detail: "This Review was generated for earlier changes. Update it when you want a fresh reviewer pass.",
+      detail:
+        "This Review was generated for earlier changes. Update it when you want a fresh reviewer pass.",
       color: "var(--status-warning)",
       icon: AlertCircle,
     };
   }
-  if (hasPassedWorkspaceReview(context)) {
+  if (hasWorkspaceReviewPublishAuthorization(context)) {
     return {
       label: "Review passed",
       detail: "This Review passed for the current review target.",
@@ -198,7 +438,8 @@ function reviewStatusForState({
   if (context?.target && !hasArtifact) {
     return {
       label: "Review not run",
-      detail: "Reviewable changes are available. Run review when you want a reviewer pass.",
+      detail:
+        "Reviewable changes are available. Run review when you want a reviewer pass.",
       color: "var(--text-muted)",
       icon: AlertCircle,
     };
@@ -212,10 +453,8 @@ function reviewStatusForState({
     };
   }
   return {
-    label: hasArtifact ? "Review available" : "No reviewable changes",
-    detail: hasArtifact
-      ? "The latest Review is available below."
-      : "No reviewable changes were found for this workspace.",
+    label: "Review pending",
+    detail: "Reviewable changes are available.",
     color: "var(--text-muted)",
     icon: AlertCircle,
   };
@@ -223,64 +462,217 @@ function reviewStatusForState({
 
 export function AgentReviewPanel({
   reviewArtifact,
+  reviewRequestedChangesArtifact = null,
   reviewContext,
   reviewStartResult,
   reviewStartError,
   isReviewLoading,
+  isReviewContextLoading,
+  reviewContextError,
+  publishReviewEvidence,
   isReviewActionPending,
+  isFixIssuesActionPending = false,
+  isApproveAnywayActionPending = false,
   isWorkspaceRuntimeGenerating = false,
   isPublishingWorkspace = false,
+  reviewActionBlocker = null,
+  embedded = false,
   onOpenPublish,
+  onViewTranscript,
   onStartReview,
+  onStartReviewIntent,
+  onRetryReviewContext,
+  onFixIssues,
+  onApproveAnyway,
+  isReviewPrWorkspace = false,
+  autoApproveEnabled = true,
+  isAutoApproveSaving = false,
+  onAutoApproveChange,
+  prReviewMonitor = null,
+  isPrReviewMonitorSaving = false,
+  onPrReviewMonitorChange,
 }: AgentReviewPanelProps) {
   const [isReviewExpanded, setIsReviewExpanded] = useState(true);
+  const [reviewBodyMode, setReviewBodyMode] =
+    useState<ReviewArtifactBodyMode>("overview");
+  const [isStopMonitoringDialogOpen, setIsStopMonitoringDialogOpen] =
+    useState(false);
+  const { confirm, confirmationDialogProps, ConfirmationDialog } =
+    useConfirmation();
+  const queryClient = useQueryClient();
+  const reviewSettingsQuery = useReviewSettings();
 
   useEffect(() => {
     setIsReviewExpanded(true);
-  }, [reviewArtifact?.id, reviewArtifact?.metadata.version]);
+    setReviewBodyMode("overview");
+  }, [
+    reviewArtifact?.id,
+    reviewArtifact?.metadata.version,
+    reviewRequestedChangesArtifact?.id,
+    reviewRequestedChangesArtifact?.metadata.version,
+  ]);
 
   const displayContext = (
-    isReviewActionPending
-      ? reviewStartResult ?? reviewContext
-      : reviewContext ?? reviewStartResult
+    isReviewPrWorkspace
+      ? null
+      : isReviewActionPending
+        ? (reviewStartResult ?? reviewContext)
+        : (reviewContext ?? reviewStartResult)
   ) as ReviewDisplayContext | null;
   const isRunning =
     isReviewActionPending || displayContext?.monitor.status === "reviewing";
+  const isFixerActive =
+    isFixIssuesActionPending ||
+    isWorkspaceReviewFixerActive(displayContext?.monitor.reviewFixerStatus);
+  const reviewAutomationWorkspace = displayContext?.workspace ?? null;
+  const reviewAutomationOverride =
+    reviewAutomationWorkspace?.reviewAutomationOverride ?? null;
+  const reviewAutomationEnabled = reviewAutomationWorkspace
+    ? (reviewAutomationOverride ??
+      Boolean(
+        reviewSettingsQuery.data?.require_workspace_review &&
+          reviewSettingsQuery.data?.autofix_workspace_review_blocking_findings,
+      ))
+    : false;
+  const reviewAutomationMutation = useMutation({
+    mutationFn: ({
+      conversationId,
+      enabled,
+    }: {
+      conversationId: string;
+      enabled: boolean;
+    }) =>
+      chatApi.setAgentConversationWorkspaceReviewAutomation(conversationId, {
+        enabled,
+      }),
+    onSuccess: (updatedWorkspace) => {
+      queryClient.setQueryData(
+        agentWorkspaceKeys.workspace(updatedWorkspace.conversationId),
+        updatedWorkspace,
+      );
+      queryClient.setQueryData(
+        agentWorkspaceKeys.workspaceReview(updatedWorkspace.conversationId),
+        (previous: AgentWorkspaceReviewContext | undefined) =>
+          previous ? { ...previous, workspace: updatedWorkspace } : previous,
+      );
+      void invalidateWorkspaceQueries(queryClient, updatedWorkspace.conversationId);
+    },
+  });
+  const isReviewAutomationSaving =
+    reviewAutomationMutation.isPending &&
+    reviewAutomationMutation.variables?.conversationId ===
+      reviewAutomationWorkspace?.conversationId;
+  const reviewAutomationStatus = (() => {
+    if (!displayContext) return null;
+    if (displayContext.monitor.reviewFixerStatus === "cycle_capped") {
+      return "Turn Auto Review & Fix off, then on to re-arm the loop with a fresh cycle budget.";
+    }
+    if (isFixerActive) {
+      return `Auto Review & Fix · cycle ${displayContext.monitor.reviewFixerCycleCount} — fixing…`;
+    }
+    if (displayContext.monitor.reviewOutcome === "passed") {
+      return "Auto Review & Fix will run again when new changes need review.";
+    }
+    return `Auto Review & Fix · cycle ${displayContext.monitor.reviewFixerCycleCount}`;
+  })();
+  const canApproveAnyway =
+    !isReviewPrWorkspace &&
+    Boolean(onApproveAnyway) &&
+    canApproveBlockingReview(displayContext, isRunning, isFixerActive);
   const errorMessage = reviewErrorMessage(displayContext, reviewStartError);
   const isRunFailed = Boolean(errorMessage) && !isRunning;
+  const hasReviewArtifact = Boolean(
+    reviewArtifact || reviewRequestedChangesArtifact,
+  );
+  const retainedArtifactFailureDetail =
+    isRunFailed && hasReviewArtifact
+      ? "Review failed; output was saved but not finalized."
+      : null;
   const status = reviewStatusForState({
     context: displayContext,
-    hasArtifact: Boolean(reviewArtifact),
+    hasArtifact: hasReviewArtifact,
+    isReviewContextLoading,
+    reviewContextError,
+    publishReviewEvidence,
     isRunFailed,
     isRunning,
   });
   const action = reviewActionForState({
     context: displayContext,
-    hasArtifact: Boolean(reviewArtifact),
+    hasArtifact: hasReviewArtifact,
     isRunFailed,
     isRunning,
+    isFixerActive,
   });
   const targetLabel = reviewTargetLabel(displayContext);
+  const canViewTranscript = !isReviewPrWorkspace && Boolean(onViewTranscript);
+  const autoMergeGuardDetail = (() => {
+    switch (displayContext?.monitor.autoMergeGuardStatus) {
+      case "paused_for_review":
+        return "GitHub auto-merge is paused until this Review is resolved.";
+      case "awaiting_publish":
+        return "GitHub auto-merge will resume after these reviewed changes are published.";
+      case "restore_failed":
+        return displayContext.monitor.autoMergeGuardLastError ?? "GitHub auto-merge is still paused and restoration will retry.";
+      case "pausing":
+      case "restoring":
+        return "Updating GitHub auto-merge…";
+      default:
+        return null;
+    }
+  })();
   const skippedReason = reviewStartResult?.skippedReason ?? null;
-  const versionLabel = displayContext?.monitor.reviewArtifactVersion
-    ? `v${displayContext.monitor.reviewArtifactVersion}`
+  const selectedReviewVersion =
+    reviewBodyMode === "requested_changes"
+      ? displayContext?.monitor.reviewRequestedChangesArtifactVersion
+      : displayContext?.monitor.reviewArtifactVersion;
+  const versionLabel = selectedReviewVersion
+    ? `v${selectedReviewVersion}`
     : null;
   const StatusIcon = status.icon;
-  const actionIconClassName = isReviewActionPending ? "animate-spin" : "";
-  const ActionIcon = isReviewActionPending ? Loader2 : RefreshCw;
-  const reviewUpdatedAt = displayContext?.monitor.reviewArtifactUpdatedAt
-    ? new Date(displayContext.monitor.reviewArtifactUpdatedAt).toLocaleString()
+  const isAnyActionPending =
+    isReviewActionPending ||
+    isFixIssuesActionPending ||
+    isApproveAnywayActionPending;
+  const actionIconClassName = isAnyActionPending ? "animate-spin" : "";
+  const ActionIcon = isAnyActionPending
+    ? Loader2
+    : action?.kind === "fix"
+      ? Wrench
+      : RefreshCw;
+  const selectedReviewUpdatedAt =
+    reviewBodyMode === "requested_changes"
+      ? displayContext?.monitor.reviewRequestedChangesArtifactUpdatedAt
+      : displayContext?.monitor.reviewArtifactUpdatedAt;
+  const reviewUpdatedAt = selectedReviewUpdatedAt
+    ? new Date(selectedReviewUpdatedAt).toLocaleString()
     : null;
   const actionDisabledReason = action
-    ? reviewActionDisabledReason({
+    ? (reviewActionBlocker?.message ?? reviewActionDisabledReason({
         isReviewActionPending,
+        isFixIssuesActionPending,
+        isApproveAnywayActionPending,
         isWorkspaceRuntimeGenerating,
         isPublishingWorkspace,
-      })
+      }))
     : null;
-  const actionDisabledReasonId = actionDisabledReason
-    ? "agents-review-action-disabled-reason"
-    : undefined;
+  const shouldShowConversationActiveSkippedReason =
+    skippedReason === "conversation_active" && !actionDisabledReason;
+  const isPrReviewMonitorActive = ["reviewing", "submitting"].includes(
+    prReviewMonitor?.status ?? "",
+  );
+  const updatePrReviewMonitoring = async (
+    enabled: boolean,
+    activeReviewPolicy?: "finish_current" | "cancel_current",
+  ) => {
+    if (!onPrReviewMonitorChange) return;
+    try {
+      await onPrReviewMonitorChange(enabled, activeReviewPolicy);
+      setIsStopMonitoringDialogOpen(false);
+    } catch {
+      // The parent reports the failed mutation and leaves the dialog open to retry.
+    }
+  };
   const actionButton = useMemo(() => {
     if (isRunning && !action) {
       return (
@@ -296,14 +688,30 @@ export function AgentReviewPanel({
         </Button>
       );
     }
+    if (isFixerActive && !action) {
+      return (
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          disabled
+          className="h-8 gap-1.5"
+          data-testid="agents-review-fixing"
+        >
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Fixing...
+        </Button>
+      );
+    }
     if (!action) return null;
     const isActionDisabled = actionDisabledReason !== null;
     const shouldPromotePublish =
+      !embedded &&
       action.label === "Run again" &&
       Boolean(onOpenPublish) &&
-      Boolean(displayContext?.isCurrent) &&
-      !displayContext?.isOutdated &&
-      hasPassedWorkspaceReview(displayContext);
+      Boolean(displayContext?.reviewArtifactIsCurrent) &&
+      !displayContext?.reviewArtifactIsOutdated &&
+      hasWorkspaceReviewPublishAuthorization(displayContext);
     if (shouldPromotePublish) {
       return (
         <div className="flex items-center gap-1.5">
@@ -333,9 +741,6 @@ export function AgentReviewPanel({
                       size="sm"
                       className="h-8 w-7 border-0 bg-transparent p-0 hover:bg-[var(--bg-hover)]"
                       disabled={isActionDisabled}
-                      {...(actionDisabledReasonId !== undefined && {
-                        "aria-describedby": actionDisabledReasonId,
-                      })}
                       aria-label="Review actions"
                       data-testid="agents-review-actions-menu"
                     >
@@ -355,14 +760,15 @@ export function AgentReviewPanel({
             <DropdownMenuContent align="end" className="min-w-[160px]">
               <DropdownMenuItem
                 data-testid="agents-review-rerun"
+                onPointerEnter={onStartReviewIntent}
+                onFocus={onStartReviewIntent}
                 onSelect={(event) => {
                   event.preventDefault();
-                  onStartReview(action.force);
+                  if (action.kind === "review") {
+                    onStartReview(action.force);
+                  }
                 }}
                 disabled={isActionDisabled}
-                {...(actionDisabledReasonId !== undefined && {
-                  "aria-describedby": actionDisabledReasonId,
-                })}
               >
                 <RefreshCw className="h-3.5 w-3.5" />
                 Run again
@@ -372,16 +778,92 @@ export function AgentReviewPanel({
         </div>
       );
     }
+    if (action.kind === "fix" && canApproveAnyway) {
+      return (
+        <div className="flex items-center gap-1.5">
+          <Button
+            type="button"
+            size="sm"
+            onClick={onFixIssues}
+            disabled={isActionDisabled}
+            className="h-8 gap-1.5 bg-[var(--accent-primary)] text-white hover:bg-[var(--accent-hover)]"
+          >
+            <Wrench className="h-4 w-4" />
+            Fix Issues
+          </Button>
+          <DropdownMenu>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="inline-flex">
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 w-7 border-0 bg-transparent p-0 hover:bg-[var(--bg-hover)]"
+                      disabled={isActionDisabled}
+                      aria-label="Review actions"
+                      data-testid="agents-review-actions-menu"
+                    >
+                      {isApproveAnywayActionPending ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <MoreVertical className="h-3.5 w-3.5" />
+                      )}
+                    </Button>
+                  </DropdownMenuTrigger>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="top">
+                {actionDisabledReason ?? "Review actions"}
+              </TooltipContent>
+            </Tooltip>
+            <DropdownMenuContent align="end" className="min-w-[190px]">
+              <DropdownMenuItem
+                data-testid="agents-review-approve-anyway"
+                disabled={isActionDisabled}
+                onSelect={(event) => {
+                  event.preventDefault();
+                  void confirm({
+                    title: "Approve this blocking Review anyway?",
+                    description:
+                      "This human override allows publishing only for this exact Review artifact and current change set. The blocking findings remain recorded and visible.",
+                    confirmText: "Approve anyway",
+                    pendingText: "Approving...",
+                    onConfirm: async () => onApproveAnyway?.(),
+                  });
+                }}
+              >
+                <CheckCircle2 className="h-3.5 w-3.5" />
+                Approve anyway
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      );
+    }
+    const isEmbeddedRerun =
+      embedded && action.kind === "review" && action.label === "Run again";
     const button = (
       <Button
         type="button"
+        variant={isEmbeddedRerun ? "outline" : "default"}
         size="sm"
-        onClick={() => onStartReview(action.force)}
+        onClick={() =>
+          action.kind === "fix" ? onFixIssues() : onStartReview(action.force)
+        }
+        {...(action.kind === "review" && onStartReviewIntent
+          ? {
+              onPointerEnter: onStartReviewIntent,
+              onFocus: onStartReviewIntent,
+            }
+          : {})}
         disabled={isActionDisabled}
-        {...(actionDisabledReasonId !== undefined && {
-          "aria-describedby": actionDisabledReasonId,
-        })}
-        className="h-8 gap-1.5 bg-[var(--accent-primary)] text-white hover:bg-[var(--accent-hover)]"
+        className={
+          isEmbeddedRerun
+            ? "h-8 gap-1.5"
+            : "h-8 gap-1.5 bg-[var(--accent-primary)] text-white hover:bg-[var(--accent-hover)]"
+        }
       >
         <ActionIcon className={`h-4 w-4 ${actionIconClassName}`} />
         {action.label}
@@ -402,26 +884,63 @@ export function AgentReviewPanel({
     ActionIcon,
     action,
     actionDisabledReason,
-    actionDisabledReasonId,
     actionIconClassName,
+    canApproveAnyway,
+    confirm,
     displayContext,
+    embedded,
+    isApproveAnywayActionPending,
+    isFixerActive,
     isReviewActionPending,
     isPublishingWorkspace,
     isRunning,
     onOpenPublish,
+    onApproveAnyway,
+    onFixIssues,
     onStartReview,
+    onStartReviewIntent,
   ]);
+  const shouldShowReviewContextRetry =
+    !isReviewPrWorkspace &&
+    !isRunning &&
+    !displayContext?.target &&
+    Boolean(onRetryReviewContext) &&
+    (Boolean(reviewContextError) ||
+      (publishReviewEvidence.status === "ready" &&
+        publishReviewEvidence.changeCount > 0));
+  const statusActionButton = shouldShowReviewContextRetry ? (
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      className="h-8 gap-1.5"
+      onClick={onRetryReviewContext}
+    >
+      <RefreshCw className="h-4 w-4" />
+      Retry
+    </Button>
+  ) : (
+    actionButton
+  );
 
-  if (isReviewLoading) {
-    return <EmptyArtifactState title="Loading review..." />;
-  }
-
-  if (!displayContext && reviewArtifact) {
-    return (
-      <div className="min-h-full px-4 pb-4 pt-4">
+  const selectedReviewArtifact =
+    !isReviewPrWorkspace && reviewBodyMode === "requested_changes"
+      ? reviewRequestedChangesArtifact
+      : reviewArtifact;
+  const reviewDocuments = hasReviewArtifact ? (
+    <>
+      {!isReviewPrWorkspace ? (
+        <div className="mb-3">
+          <ReviewArtifactTabs
+            value={reviewBodyMode}
+            onValueChange={setReviewBodyMode}
+          />
+        </div>
+      ) : null}
+      {selectedReviewArtifact ? (
         <Suspense fallback={<EmptyArtifactState title="Loading review..." />}>
           <LazyPlanDisplay
-            plan={reviewArtifact}
+            plan={selectedReviewArtifact}
             artifactLabel="Review"
             linkedProposalsCount={0}
             isExpanded={isReviewExpanded}
@@ -429,12 +948,42 @@ export function AgentReviewPanel({
             chromeless
           />
         </Suspense>
+      ) : (
+        <EmptyArtifactState
+          title="Requested Changes not available"
+          detail="This Review predates the Requested Changes blueprint. Run Workspace Review again to generate both documents."
+        />
+      )}
+    </>
+  ) : isReviewLoading ? (
+    <EmptyArtifactState title="Loading review..." />
+  ) : null;
+
+  const hasUnsettledReviewEvidence =
+    isReviewContextLoading ||
+    Boolean(reviewContextError) ||
+    publishReviewEvidence.status !== "ready" ||
+    publishReviewEvidence.changeCount > 0;
+
+  if (
+    !displayContext &&
+    hasReviewArtifact &&
+    !isReviewPrWorkspace &&
+    !hasUnsettledReviewEvidence
+  ) {
+    return (
+      <div className={embedded ? "min-h-full" : "min-h-full px-4 pb-4 pt-4"}>
+        {reviewDocuments}
       </div>
     );
   }
 
   return (
-    <div className="min-h-full px-4 pb-4 pt-4">
+    <div
+      className={embedded ? "min-h-full" : "min-h-full px-4 pb-4 pt-4"}
+      data-embedded={embedded ? "true" : undefined}
+      data-testid="agents-review-panel"
+    >
       <div
         className="mb-4 rounded-md p-4"
         style={{
@@ -478,38 +1027,51 @@ export function AgentReviewPanel({
                   </span>
                 )}
               </div>
-              <p className="mt-1 text-xs" style={{ color: "var(--text-muted)" }}>
-                {errorMessage ?? status.detail}
+              <p
+                className="mt-1 text-xs"
+                style={{ color: "var(--text-muted)" }}
+              >
+                {retainedArtifactFailureDetail ??
+                  errorMessage ??
+                  reviewActionBlocker?.message ??
+                  autoMergeGuardDetail ??
+                  status.detail}
               </p>
-              {(targetLabel || reviewUpdatedAt) && (
-                <p className="mt-2 text-[0.6875rem]" style={{ color: "var(--text-subtle)" }}>
-                  {[targetLabel, reviewUpdatedAt].filter(Boolean).join(" · ")}
-                </p>
+              {(targetLabel || canViewTranscript || reviewUpdatedAt) && (
+                <div
+                  className="mt-2 flex flex-wrap items-center gap-x-1 gap-y-1 text-[0.6875rem]"
+                  style={{ color: "var(--text-subtle)" }}
+                >
+                  {targetLabel && <span>{targetLabel}</span>}
+                  {canViewTranscript && (
+                    <span className="inline-flex items-center gap-1">
+                      {targetLabel && <span aria-hidden="true">·</span>}
+                      <Button
+                        type="button"
+                        variant="link"
+                        onClick={onViewTranscript}
+                        className="h-auto p-0 text-[0.6875rem] font-medium text-[var(--text-secondary)] underline-offset-2 hover:text-[var(--text-primary)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+                      >
+                        View transcript
+                      </Button>
+                    </span>
+                  )}
+                  {reviewUpdatedAt && (
+                    <span className="inline-flex items-center gap-1">
+                      {(targetLabel || canViewTranscript) && (
+                        <span aria-hidden="true">·</span>
+                      )}
+                      <span>{reviewUpdatedAt}</span>
+                    </span>
+                  )}
+                </div>
               )}
             </div>
           </div>
-          <div className="shrink-0">{actionButton}</div>
+          <div className="shrink-0">{statusActionButton}</div>
         </div>
 
-        {actionDisabledReason && (
-          <div
-            id={actionDisabledReasonId}
-            className="mt-3 rounded-md px-3 py-2 text-xs"
-            data-testid="agents-review-action-disabled-reason"
-            role="status"
-            style={{
-              backgroundColor: "var(--bg-sunken)",
-              borderColor: "var(--border-subtle)",
-              borderWidth: 1,
-              borderStyle: "solid",
-              color: "var(--text-secondary)",
-            }}
-          >
-            {actionDisabledReason}
-          </div>
-        )}
-
-        {skippedReason === "conversation_active" && (
+        {shouldShowConversationActiveSkippedReason && (
           <div
             className="mt-3 rounded-md px-3 py-2 text-xs"
             role="status"
@@ -524,9 +1086,179 @@ export function AgentReviewPanel({
             Review will be available after the current agent run.
           </div>
         )}
+
+        {!isReviewPrWorkspace &&
+          reviewAutomationWorkspace &&
+          reviewAutomationStatus && (
+            <div
+              className="mt-3 border-t pt-3"
+              style={{ borderColor: "var(--border-subtle)" }}
+              data-testid="agents-review-auto-review-fix"
+            >
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+                <label className="flex min-h-8 items-center gap-2 text-[var(--text-secondary)]">
+                  <Switch
+                    checked={reviewAutomationEnabled}
+                    disabled={isReviewAutomationSaving}
+                    onCheckedChange={(enabled) =>
+                      reviewAutomationMutation.mutate({
+                        conversationId: reviewAutomationWorkspace.conversationId,
+                        enabled,
+                      })
+                    }
+                    aria-label="Auto Review & Fix"
+                    data-testid="agents-review-auto-review-fix-switch"
+                  />
+                  <span>Auto Review &amp; Fix</span>
+                </label>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      aria-label="About Auto Review & Fix"
+                      className="inline-flex h-5 w-5 items-center justify-center rounded-full text-[var(--text-muted)] hover:text-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+                    >
+                      <Info className="h-3.5 w-3.5" aria-hidden="true" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" className="max-w-[320px] text-xs leading-relaxed">
+                    {WORKSPACE_REVIEW_AUTOMATION_COPY}
+                  </TooltipContent>
+                </Tooltip>
+                {isReviewAutomationSaving && (
+                  <span className="text-[var(--text-muted)]">Saving…</span>
+                )}
+              </div>
+              <p className="mt-1 text-xs text-[var(--text-muted)]">
+                {reviewAutomationStatus}
+              </p>
+            </div>
+          )}
+
+        {isReviewPrWorkspace && (
+          <div className="mt-3 space-y-3 border-t pt-3">
+            <div
+              className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs"
+              style={{ color: "var(--text-secondary)" }}
+              data-testid="agents-review-pr-auto-approve"
+            >
+              <label className="flex min-h-8 items-center gap-2">
+                <Switch
+                  checked={autoApproveEnabled}
+                  disabled={isAutoApproveSaving || !onAutoApproveChange}
+                  {...(onAutoApproveChange
+                    ? { onCheckedChange: onAutoApproveChange }
+                    : {})}
+                  aria-label="Auto Approve"
+                  data-testid="agents-review-pr-auto-approve-switch"
+                />
+                <span>Auto Approve</span>
+              </label>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    aria-label="About Auto Approve"
+                    className="inline-flex h-5 w-5 items-center justify-center rounded-full text-[var(--text-muted)] hover:text-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+                  >
+                    <Info className="h-3.5 w-3.5" aria-hidden="true" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="max-w-[320px] text-xs leading-relaxed">
+                  After you decide the first review, RalphX automatically approves
+                  later re-reviews when the reviewer passes the new PR changes.
+                  Comments and requested changes still wait for you.
+                </TooltipContent>
+              </Tooltip>
+              {isAutoApproveSaving && (
+                <span style={{ color: "var(--text-muted)" }}>Saving…</span>
+              )}
+            </div>
+            {prReviewMonitor && prReviewMonitor.status !== "terminal" ? (
+              <div
+                className="flex flex-wrap items-center justify-between gap-2 text-xs"
+                data-testid="agents-review-pr-monitoring"
+              >
+                <span style={{ color: "var(--text-secondary)" }}>
+                  {prReviewMonitor.monitorEnabled
+                    ? "Monitoring new PR heads"
+                    : "New-head reviews paused · PR lifecycle still monitored"}
+                </span>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={
+                    isPrReviewMonitorSaving || !onPrReviewMonitorChange
+                  }
+                  onClick={() => {
+                    if (
+                      prReviewMonitor.monitorEnabled &&
+                      isPrReviewMonitorActive
+                    ) {
+                      setIsStopMonitoringDialogOpen(true);
+                      return;
+                    }
+                    void updatePrReviewMonitoring(
+                      !prReviewMonitor.monitorEnabled,
+                    );
+                  }}
+                >
+                  {isPrReviewMonitorSaving
+                    ? "Saving…"
+                    : prReviewMonitor.monitorEnabled
+                      ? "Stop Monitoring"
+                      : "Restart Monitoring"}
+                </Button>
+              </div>
+            ) : null}
+          </div>
+        )}
       </div>
 
-      {reviewArtifact && displayContext?.isOutdated && (
+      <AlertDialog
+        open={isStopMonitoringDialogOpen}
+        onOpenChange={setIsStopMonitoringDialogOpen}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Stop PR review monitoring?</AlertDialogTitle>
+            <AlertDialogDescription>
+              A review is still running. You can keep its result, cancel it, or
+              leave monitoring on.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isPrReviewMonitorSaving}>
+              Keep Monitoring
+            </AlertDialogCancel>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={isPrReviewMonitorSaving}
+              onClick={() =>
+                void updatePrReviewMonitoring(false, "finish_current")
+              }
+            >
+              Stop After Review
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={isPrReviewMonitorSaving}
+              onClick={() =>
+                void updatePrReviewMonitoring(false, "cancel_current")
+              }
+            >
+              Stop and Cancel Review
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <ConfirmationDialog {...confirmationDialogProps} />
+
+      {reviewArtifact && displayContext?.reviewArtifactIsOutdated && (
         <div
           className="mb-4 rounded-md px-3 py-2 text-xs"
           style={{
@@ -537,22 +1269,12 @@ export function AgentReviewPanel({
             color: "var(--text-secondary)",
           }}
         >
-          Outdated for current changes. The Review below is still available for reference.
+          Previous Review covers earlier changes. Run Review to refresh it. The
+          Review below remains available for reference.
         </div>
       )}
 
-      {reviewArtifact && (
-        <Suspense fallback={<EmptyArtifactState title="Loading review..." />}>
-          <LazyPlanDisplay
-            plan={reviewArtifact}
-            artifactLabel="Review"
-            linkedProposalsCount={0}
-            isExpanded={isReviewExpanded}
-            onExpandedChange={setIsReviewExpanded}
-            chromeless
-          />
-        </Suspense>
-      )}
+      {reviewDocuments}
     </div>
   );
 }

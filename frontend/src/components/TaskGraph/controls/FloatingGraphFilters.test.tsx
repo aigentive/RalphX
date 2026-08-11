@@ -16,7 +16,7 @@ import type {
   GroupingState,
   LayoutDirection,
   NodeMode,
-} from "./GraphControls";
+} from "./graph-controls";
 
 interface RenderOpts {
   filters?: Partial<GraphFilters>;

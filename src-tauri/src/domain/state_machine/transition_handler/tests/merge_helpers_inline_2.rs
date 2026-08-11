@@ -108,7 +108,16 @@ async fn test_resolve_task_base_branch_merged_branch_returns_fallback() {
     let plan_branch_repo_opt: Option<Arc<dyn PlanBranchRepository>> =
         Some(plan_branch_repo.clone() as Arc<dyn PlanBranchRepository>);
 
-    let result = resolve_task_base_branch(&task, &project, &plan_branch_repo_opt, &None, &None, &None, &None).await;
+    let result = resolve_task_base_branch(
+        &task,
+        &project,
+        &plan_branch_repo_opt,
+        &None,
+        &None,
+        &None,
+        &None,
+    )
+    .await;
 
     // Fix D: merged branches now fall back to project base (no resurrection)
     assert_eq!(
@@ -159,7 +168,16 @@ async fn test_resolve_task_base_branch_merged_branch_exists_in_git_returns_fallb
     let plan_branch_repo_opt: Option<Arc<dyn PlanBranchRepository>> =
         Some(plan_branch_repo.clone() as Arc<dyn PlanBranchRepository>);
 
-    let result = resolve_task_base_branch(&task, &project, &plan_branch_repo_opt, &None, &None, &None, &None).await;
+    let result = resolve_task_base_branch(
+        &task,
+        &project,
+        &plan_branch_repo_opt,
+        &None,
+        &None,
+        &None,
+        &None,
+    )
+    .await;
 
     // Fix D: merged branches now fall back to project base (no resurrection)
     assert_eq!(
@@ -204,7 +222,16 @@ async fn test_resolve_task_base_branch_active_status_unchanged() {
     let plan_branch_repo_opt: Option<Arc<dyn PlanBranchRepository>> =
         Some(plan_branch_repo.clone() as Arc<dyn PlanBranchRepository>);
 
-    let result = resolve_task_base_branch(&task, &project, &plan_branch_repo_opt, &None, &None, &None, &None).await;
+    let result = resolve_task_base_branch(
+        &task,
+        &project,
+        &plan_branch_repo_opt,
+        &None,
+        &None,
+        &None,
+        &None,
+    )
+    .await;
 
     assert_eq!(
         result, plan_branch_name,
@@ -220,7 +247,16 @@ async fn test_resolve_task_base_branch_no_session_id_returns_default() {
 
     let plan_branch_repo_opt: Option<Arc<dyn PlanBranchRepository>> = None;
 
-    let result = resolve_task_base_branch(&task, &project, &plan_branch_repo_opt, &None, &None, &None, &None).await;
+    let result = resolve_task_base_branch(
+        &task,
+        &project,
+        &plan_branch_repo_opt,
+        &None,
+        &None,
+        &None,
+        &None,
+    )
+    .await;
 
     assert_eq!(result, "main", "No session_id should fall back to default");
 }

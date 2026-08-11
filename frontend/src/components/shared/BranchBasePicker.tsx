@@ -134,7 +134,9 @@ export function BranchBasePicker({
       ? "Default-branch starts always create a new RalphX branch."
       : selectedOption?.selection.kind === "current_branch"
         ? "Current-branch starts always create a new RalphX branch because the selected branch is already checked out in the project root."
-        : "Creates a new RalphX branch from the selected base and opens a new PR into it. Leave off to work directly on the selected branch or PR.";
+        : isolatedBranchDisabled
+          ? "This start mode requires branch isolation, creating a separate RalphX branch and worktree from the selected base."
+          : "Starts isolated by default, creating a separate RalphX branch and worktree from the selected base. Turn this off to work directly on the selected branch or PR.";
 
   const handleOpenChange = (open: boolean) => {
     onOpenChange?.(open);

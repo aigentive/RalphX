@@ -4,6 +4,7 @@ use ralphx_lib::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentWorkspaceReviewTargetScope,
     ChatConversationId, IdeationAnalysisBaseRefKind, Project,
 };
+use ralphx_lib::error::AppError;
 use std::path::Path;
 use std::process::Command;
 
@@ -21,6 +22,29 @@ fn git(repo: &Path, args: &[&str]) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+#[tokio::test]
+async fn review_pr_workspace_rejects_workspace_review_context() {
+    let workspace = AgentConversationWorkspace::new(
+        ChatConversationId::from_string("review-pr-workspace-review".to_string()),
+        ralphx_lib::domain::entities::ProjectId::from_string("project-review-pr".to_string()),
+        AgentConversationWorkspaceMode::ReviewPr,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("main".to_string()),
+        None,
+        "ralphx/review-pr".to_string(),
+        "/tmp/ralphx-review-pr".to_string(),
+    );
+
+    let error = load_agent_workspace_review_context(&AppState::new_test(), &workspace)
+        .await
+        .expect_err("Review PR workspaces must not expose Workspace Review");
+
+    assert!(
+        matches!(error, AppError::Validation(message) if message.contains("unavailable in Review PR mode"))
+    );
 }
 
 #[tokio::test]

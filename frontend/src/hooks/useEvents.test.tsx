@@ -73,7 +73,7 @@ describe("useTaskEvents", () => {
     );
 
     // Reset the task store
-    useTaskStore.setState({ tasks: {}, selectedTaskId: null });
+    useTaskStore.setState({ tasks: {} });
   });
 
   afterEach(() => {
@@ -564,6 +564,9 @@ describe("useReviewEvents", () => {
 
     expect(mockInvalidateQueries).toHaveBeenCalledWith({
       queryKey: ["reviews", "pending"],
+    });
+    expect(mockInvalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["reviews", "tasksAwaiting"],
     });
   });
 

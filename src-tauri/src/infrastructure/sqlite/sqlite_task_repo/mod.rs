@@ -11,11 +11,13 @@ use tokio::sync::Mutex;
 
 use async_trait::async_trait;
 use chrono::Utc;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 use crate::domain::entities::{
     ExecutionPlanId, IdeationSessionId, InternalStatus, ProjectId, Task, TaskCategory, TaskId,
+    TaskStepId,
 };
+use crate::domain::ideation::TasksFeatureAction;
 use crate::domain::repositories::{StateHistoryMetadata, StatusTransition, TaskRepository};
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::sqlite::DbConnection;
@@ -24,6 +26,7 @@ use crate::infrastructure::sqlite::DbConnection;
 /// Uses a mutex-protected connection for thread-safe access
 pub struct SqliteTaskRepository {
     db: DbConnection,
+    enforce_tasks_feature_policy: bool,
 }
 
 impl SqliteTaskRepository {
@@ -31,6 +34,7 @@ impl SqliteTaskRepository {
     pub fn new(conn: Connection) -> Self {
         Self {
             db: DbConnection::new(conn),
+            enforce_tasks_feature_policy: false,
         }
     }
 
@@ -38,18 +42,98 @@ impl SqliteTaskRepository {
     pub fn from_shared(conn: Arc<Mutex<Connection>>) -> Self {
         Self {
             db: DbConnection::from_shared(conn),
+            enforce_tasks_feature_policy: false,
         }
     }
+
+    /// Enforce the global Tasks policy atomically with task insertion.
+    pub(crate) fn with_tasks_feature_policy(mut self) -> Self {
+        self.enforce_tasks_feature_policy = true;
+        self
+    }
+}
+
+fn authorize_task_action_sync(
+    conn: &Connection,
+    task_id: &TaskId,
+    action: TasksFeatureAction,
+) -> AppResult<()> {
+    let session_id = conn
+        .query_row(
+            "SELECT ideation_session_id FROM tasks WHERE id = ?1",
+            [task_id.as_str()],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .ok_or_else(|| AppError::TaskNotFound(task_id.as_str().to_string()))?;
+    crate::infrastructure::sqlite::sqlite_ideation_settings_repo::authorize_tasks_session_sync(
+        conn,
+        session_id.as_deref(),
+        action,
+    )
+}
+
+fn update_with_expected_status_sync(
+    conn: &Connection,
+    task: &Task,
+    expected_status: InternalStatus,
+) -> AppResult<bool> {
+    let rows_affected = conn.execute(
+        "UPDATE tasks SET project_id = ?2, category = ?3, title = ?4, description = ?5, priority = ?6, internal_status = ?7, source_proposal_id = ?8, plan_artifact_id = ?9, plan_blueprint_artifact_id = ?10, ideation_session_id = ?11, execution_plan_id = ?12, updated_at = ?13, started_at = ?14, completed_at = ?15, blocked_reason = ?16, task_branch = ?17, task_branch_base_ref = ?18, task_branch_base_sha = ?19, worktree_path = ?20, merge_commit_sha = ?21, metadata = ?22, merge_pipeline_active = ?23
+         WHERE id = ?1 AND internal_status = ?24 AND (
+            internal_status = ?7 OR NOT EXISTS (
+                SELECT 1 FROM branch_update_operations
+                WHERE task_id = ?1 AND settled_at IS NULL
+            )
+         )",
+        rusqlite::params![
+            task.id.as_str(),
+            task.project_id.as_str(),
+            task.category.to_string(),
+            task.title,
+            task.description,
+            task.priority,
+            task.internal_status.as_str(),
+            task.source_proposal_id.as_ref().map(|id| id.as_str()),
+            task.plan_artifact_id.as_ref().map(|id| id.as_str()),
+            task.plan_blueprint_artifact_id
+                .as_ref()
+                .map(|id| id.as_str()),
+            task.ideation_session_id.as_ref().map(|id| id.as_str()),
+            task.execution_plan_id.as_ref().map(|id| id.as_str()),
+            task.updated_at.to_rfc3339(),
+            task.started_at.map(|dt| dt.to_rfc3339()),
+            task.completed_at.map(|dt| dt.to_rfc3339()),
+            task.blocked_reason,
+            task.task_branch,
+            task.task_branch_base_ref,
+            task.task_branch_base_sha,
+            task.worktree_path,
+            task.merge_commit_sha,
+            task.metadata,
+            task.merge_pipeline_active,
+            expected_status.as_str(),
+        ],
+    )?;
+    Ok(rows_affected > 0)
 }
 
 #[async_trait]
 impl TaskRepository for SqliteTaskRepository {
     async fn create(&self, task: Task) -> AppResult<Task> {
+        let enforce_tasks_feature_policy = self.enforce_tasks_feature_policy;
         self.db
             .run(move |conn| {
+                if enforce_tasks_feature_policy {
+                    crate::infrastructure::sqlite::sqlite_ideation_settings_repo::authorize_tasks_session_sync(
+                        conn,
+                        task.ideation_session_id.as_ref().map(|id| id.as_str()),
+                        TasksFeatureAction::Progress,
+                    )?;
+                }
                 conn.execute(
-                    "INSERT INTO tasks (id, project_id, category, title, description, priority, internal_status, needs_review_point, source_proposal_id, plan_artifact_id, ideation_session_id, execution_plan_id, created_at, updated_at, started_at, completed_at, archived_at, blocked_reason, task_branch, worktree_path, merge_commit_sha, metadata, merge_pipeline_active)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
+                    "INSERT INTO tasks (id, project_id, category, title, description, priority, internal_status, needs_review_point, source_proposal_id, plan_artifact_id, plan_blueprint_artifact_id, ideation_session_id, execution_plan_id, created_at, updated_at, started_at, completed_at, archived_at, blocked_reason, task_branch, task_branch_base_ref, task_branch_base_sha, worktree_path, merge_commit_sha, metadata, merge_pipeline_active)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)",
                     rusqlite::params![
                         task.id.as_str(),
                         task.project_id.as_str(),
@@ -61,6 +145,9 @@ impl TaskRepository for SqliteTaskRepository {
                         task.needs_review_point,
                         task.source_proposal_id.as_ref().map(|id| id.as_str()),
                         task.plan_artifact_id.as_ref().map(|id| id.as_str()),
+                        task.plan_blueprint_artifact_id
+                            .as_ref()
+                            .map(|id| id.as_str()),
                         task.ideation_session_id.as_ref().map(|id| id.as_str()),
                         task.execution_plan_id.as_ref().map(|id| id.as_str()),
                         task.created_at.to_rfc3339(),
@@ -70,6 +157,8 @@ impl TaskRepository for SqliteTaskRepository {
                         task.archived_at.map(|dt| dt.to_rfc3339()),
                         task.blocked_reason,
                         task.task_branch,
+                        task.task_branch_base_ref,
+                        task.task_branch_base_sha,
                         task.worktree_path,
                         task.merge_commit_sha,
                         task.metadata,
@@ -147,11 +236,24 @@ impl TaskRepository for SqliteTaskRepository {
 
     async fn update(&self, task: &Task) -> AppResult<()> {
         let task = task.clone();
+        let enforce_tasks_feature_policy = self.enforce_tasks_feature_policy;
         self.db
             .run(move |conn| {
-                conn.execute(
-                    "UPDATE tasks SET project_id = ?2, category = ?3, title = ?4, description = ?5, priority = ?6, internal_status = ?7, source_proposal_id = ?8, plan_artifact_id = ?9, ideation_session_id = ?10, execution_plan_id = ?11, updated_at = ?12, started_at = ?13, completed_at = ?14, blocked_reason = ?15, task_branch = ?16, worktree_path = ?17, merge_commit_sha = ?18, metadata = ?19, merge_pipeline_active = ?20
-                     WHERE id = ?1",
+                if enforce_tasks_feature_policy {
+                    authorize_task_action_sync(
+                        conn,
+                        &task.id,
+                        TasksFeatureAction::HistoryMutation,
+                    )?;
+                }
+                let rows_affected = conn.execute(
+                    "UPDATE tasks SET project_id = ?2, category = ?3, title = ?4, description = ?5, priority = ?6, internal_status = ?7, source_proposal_id = ?8, plan_artifact_id = ?9, plan_blueprint_artifact_id = ?10, ideation_session_id = ?11, execution_plan_id = ?12, updated_at = ?13, started_at = ?14, completed_at = ?15, blocked_reason = ?16, task_branch = ?17, task_branch_base_ref = ?18, task_branch_base_sha = ?19, worktree_path = ?20, merge_commit_sha = ?21, metadata = ?22, merge_pipeline_active = ?23
+                     WHERE id = ?1 AND (
+                        internal_status = ?7 OR NOT EXISTS (
+                            SELECT 1 FROM branch_update_operations
+                            WHERE task_id = ?1 AND settled_at IS NULL
+                        )
+                     )",
                     rusqlite::params![
                         task.id.as_str(),
                         task.project_id.as_str(),
@@ -162,6 +264,9 @@ impl TaskRepository for SqliteTaskRepository {
                         task.internal_status.as_str(),
                         task.source_proposal_id.as_ref().map(|id| id.as_str()),
                         task.plan_artifact_id.as_ref().map(|id| id.as_str()),
+                        task.plan_blueprint_artifact_id
+                            .as_ref()
+                            .map(|id| id.as_str()),
                         task.ideation_session_id.as_ref().map(|id| id.as_str()),
                         task.execution_plan_id.as_ref().map(|id| id.as_str()),
                         task.updated_at.to_rfc3339(),
@@ -169,12 +274,20 @@ impl TaskRepository for SqliteTaskRepository {
                         task.completed_at.map(|dt| dt.to_rfc3339()),
                         task.blocked_reason,
                         task.task_branch,
+                        task.task_branch_base_ref,
+                        task.task_branch_base_sha,
                         task.worktree_path,
                         task.merge_commit_sha,
                         task.metadata,
                         task.merge_pipeline_active,
                     ],
                 )?;
+                if rows_affected == 0 {
+                    return Err(AppError::Validation(format!(
+                        "task {} status is owned by an active branch update",
+                        task.id.as_str()
+                    )));
+                }
                 Ok(())
             })
             .await
@@ -185,45 +298,126 @@ impl TaskRepository for SqliteTaskRepository {
         task: &Task,
         expected_status: InternalStatus,
     ) -> AppResult<bool> {
+        self.update_with_expected_status_for_action(
+            task,
+            expected_status,
+            TasksFeatureAction::Progress,
+        )
+        .await
+    }
+
+    async fn update_with_expected_status_for_action(
+        &self,
+        task: &Task,
+        expected_status: InternalStatus,
+        action: TasksFeatureAction,
+    ) -> AppResult<bool> {
         let task = task.clone();
+        let enforce_tasks_feature_policy = self.enforce_tasks_feature_policy;
         self.db
             .run(move |conn| {
-                let rows_affected = conn.execute(
-                    "UPDATE tasks SET project_id = ?2, category = ?3, title = ?4, description = ?5, priority = ?6, internal_status = ?7, source_proposal_id = ?8, plan_artifact_id = ?9, ideation_session_id = ?10, execution_plan_id = ?11, updated_at = ?12, started_at = ?13, completed_at = ?14, blocked_reason = ?15, task_branch = ?16, worktree_path = ?17, merge_commit_sha = ?18, metadata = ?19, merge_pipeline_active = ?20
-                     WHERE id = ?1 AND internal_status = ?21",
-                    rusqlite::params![
-                        task.id.as_str(),
-                        task.project_id.as_str(),
-                        task.category.to_string(),
-                        task.title,
-                        task.description,
-                        task.priority,
-                        task.internal_status.as_str(),
-                        task.source_proposal_id.as_ref().map(|id| id.as_str()),
-                        task.plan_artifact_id.as_ref().map(|id| id.as_str()),
-                        task.ideation_session_id.as_ref().map(|id| id.as_str()),
-                        task.execution_plan_id.as_ref().map(|id| id.as_str()),
-                        task.updated_at.to_rfc3339(),
-                        task.started_at.map(|dt| dt.to_rfc3339()),
-                        task.completed_at.map(|dt| dt.to_rfc3339()),
-                        task.blocked_reason,
-                        task.task_branch,
-                        task.worktree_path,
-                        task.merge_commit_sha,
-                        task.metadata,
-                        task.merge_pipeline_active,
-                        expected_status.as_str(),
-                    ],
+                if enforce_tasks_feature_policy {
+                    authorize_task_action_sync(conn, &task.id, action)?;
+                }
+                update_with_expected_status_sync(conn, &task, expected_status)
+            })
+            .await
+    }
+
+    async fn update_with_expected_status_and_history_for_action(
+        &self,
+        task: &Task,
+        expected_status: InternalStatus,
+        trigger: &str,
+        action: TasksFeatureAction,
+    ) -> AppResult<Option<String>> {
+        let task = task.clone();
+        let trigger = trigger.to_string();
+        let enforce_tasks_feature_policy = self.enforce_tasks_feature_policy;
+        self.db
+            .run_transaction(move |conn| {
+                if enforce_tasks_feature_policy {
+                    authorize_task_action_sync(conn, &task.id, action)?;
+                }
+                if !update_with_expected_status_sync(conn, &task, expected_status)? {
+                    return Ok(None);
+                }
+                helpers::insert_status_history(
+                    conn,
+                    &task.id,
+                    expected_status,
+                    task.internal_status,
+                    &trigger,
+                    task.updated_at,
+                )
+                .map(Some)
+            })
+            .await
+    }
+
+    async fn restart_terminal_task_to_ready_with_history_for_action(
+        &self,
+        task: &Task,
+        expected_status: InternalStatus,
+        failed_step_ids: &[TaskStepId],
+        trigger: &str,
+        action: TasksFeatureAction,
+    ) -> AppResult<Option<(String, u32)>> {
+        let task = task.clone();
+        let failed_step_ids = failed_step_ids.to_vec();
+        let trigger = trigger.to_string();
+        let enforce_tasks_feature_policy = self.enforce_tasks_feature_policy;
+        self.db
+            .run_transaction(move |conn| {
+                if enforce_tasks_feature_policy {
+                    authorize_task_action_sync(conn, &task.id, action)?;
+                }
+                if !update_with_expected_status_sync(conn, &task, expected_status)? {
+                    return Ok(None);
+                }
+                let mut reset_count = 0u32;
+                for step_id in failed_step_ids {
+                    let changed = conn.execute(
+                        "UPDATE task_steps
+                         SET status = 'pending', started_at = NULL, completed_at = NULL,
+                             completion_note = NULL, updated_at = ?1
+                         WHERE id = ?2 AND task_id = ?3 AND status = 'failed'",
+                        rusqlite::params![
+                            task.updated_at.to_rfc3339(),
+                            step_id.as_str(),
+                            task.id.as_str(),
+                        ],
+                    )?;
+                    if changed != 1 {
+                        return Err(AppError::Validation(format!(
+                            "Failed step {} changed during terminal restart for task {}",
+                            step_id.as_str(),
+                            task.id.as_str()
+                        )));
+                    }
+                    reset_count += 1;
+                }
+                let history_id = helpers::insert_status_history(
+                    conn,
+                    &task.id,
+                    expected_status,
+                    task.internal_status,
+                    &trigger,
+                    task.updated_at,
                 )?;
-                Ok(rows_affected > 0)
+                Ok(Some((history_id, reset_count)))
             })
             .await
     }
 
     async fn update_metadata(&self, id: &TaskId, metadata: Option<String>) -> AppResult<()> {
-        let id = id.as_str().to_string();
+        let id = id.clone();
+        let enforce_tasks_feature_policy = self.enforce_tasks_feature_policy;
         self.db
             .run(move |conn| {
+                if enforce_tasks_feature_policy {
+                    authorize_task_action_sync(conn, &id, TasksFeatureAction::HistoryMutation)?;
+                }
                 let now = Utc::now();
                 conn.execute(
                     "UPDATE tasks SET metadata = ?1, updated_at = ?2 WHERE id = ?3",
@@ -235,9 +429,13 @@ impl TaskRepository for SqliteTaskRepository {
     }
 
     async fn delete(&self, id: &TaskId) -> AppResult<()> {
-        let id = id.as_str().to_string();
+        let id = id.clone();
+        let enforce_tasks_feature_policy = self.enforce_tasks_feature_policy;
         self.db
             .run(move |conn| {
+                if enforce_tasks_feature_policy {
+                    authorize_task_action_sync(conn, &id, TasksFeatureAction::HistoryMutation)?;
+                }
                 conn.execute(queries::DELETE_TASK, [id.as_str()])?;
                 Ok(())
             })
@@ -252,11 +450,12 @@ impl TaskRepository for SqliteTaskRepository {
         let project_id = project_id.as_str().to_string();
         self.db
             .run(move |conn| {
-                let mut stmt = conn.prepare(
-                    "SELECT id, project_id, category, title, description, priority, internal_status, needs_review_point, source_proposal_id, plan_artifact_id, ideation_session_id, execution_plan_id, created_at, updated_at, started_at, completed_at, archived_at, blocked_reason, task_branch, worktree_path, merge_commit_sha, metadata, merge_pipeline_active
-                     FROM tasks WHERE project_id = ?1 AND internal_status = ?2 AND archived_at IS NULL
+                let sql = format!(
+                    "SELECT {} FROM tasks WHERE project_id = ?1 AND internal_status = ?2 AND archived_at IS NULL
                      ORDER BY priority DESC, created_at ASC",
-                )?;
+                    queries::TASK_COLUMNS
+                );
+                let mut stmt = conn.prepare(&sql)?;
                 let tasks = stmt
                     .query_map(
                         rusqlite::params![project_id.as_str(), status.as_str()],
@@ -278,9 +477,8 @@ impl TaskRepository for SqliteTaskRepository {
         let metadata_path = format!("$.{}", metadata_key);
         self.db
             .run(move |conn| {
-                let mut stmt = conn.prepare(
-                    "SELECT id, project_id, category, title, description, priority, internal_status, needs_review_point, source_proposal_id, plan_artifact_id, ideation_session_id, execution_plan_id, created_at, updated_at, started_at, completed_at, archived_at, blocked_reason, task_branch, worktree_path, merge_commit_sha, metadata, merge_pipeline_active
-                     FROM tasks
+                let sql = format!(
+                    "SELECT {} FROM tasks
                      WHERE project_id = ?1
                        AND internal_status = ?2
                        AND archived_at IS NULL
@@ -288,7 +486,9 @@ impl TaskRepository for SqliteTaskRepository {
                        AND json_valid(metadata)
                        AND json_extract(metadata, ?3) = 1
                      ORDER BY priority DESC, created_at ASC",
-                )?;
+                    queries::TASK_COLUMNS
+                );
+                let mut stmt = conn.prepare(&sql)?;
                 let tasks = stmt
                     .query_map(
                         rusqlite::params![project_id.as_str(), status.as_str(), metadata_path],
@@ -375,11 +575,27 @@ impl TaskRepository for SqliteTaskRepository {
         from: InternalStatus,
         to: InternalStatus,
         trigger: &str,
-    ) -> AppResult<()> {
+    ) -> AppResult<String> {
+        self.persist_status_change_for_action(id, from, to, trigger, TasksFeatureAction::Progress)
+            .await
+    }
+
+    async fn persist_status_change_for_action(
+        &self,
+        id: &TaskId,
+        from: InternalStatus,
+        to: InternalStatus,
+        trigger: &str,
+        action: TasksFeatureAction,
+    ) -> AppResult<String> {
         let id = id.clone();
         let trigger = trigger.to_string();
+        let enforce_tasks_feature_policy = self.enforce_tasks_feature_policy;
         self.db
             .run_transaction(move |conn| {
+                if enforce_tasks_feature_policy {
+                    authorize_task_action_sync(conn, &id, action)?;
+                }
                 let now = Utc::now();
                 helpers::persist_status_change(conn, &id, from, to, &trigger, now)
             })
@@ -564,8 +780,13 @@ impl TaskRepository for SqliteTaskRepository {
         let project_id = project_id.as_str().to_string();
         self.db
             .query_optional(move |conn| {
-                conn.query_row(
-                    "SELECT t.id, t.project_id, t.category, t.title, t.description, t.priority, t.internal_status, t.needs_review_point, t.source_proposal_id, t.plan_artifact_id, t.ideation_session_id, t.execution_plan_id, t.created_at, t.updated_at, t.started_at, t.completed_at, t.archived_at, t.blocked_reason, t.task_branch, t.worktree_path, t.merge_commit_sha, t.metadata, t.merge_pipeline_active
+                let task_columns = queries::TASK_COLUMNS
+                    .split(", ")
+                    .map(|column| format!("t.{column}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let sql = format!(
+                    "SELECT {task_columns}
                      FROM tasks t
                      WHERE t.project_id = ?1
                        AND t.internal_status = 'ready'
@@ -576,7 +797,10 @@ impl TaskRepository for SqliteTaskRepository {
                            AND blocker.internal_status NOT IN ('merged', 'cancelled', 'merge_incomplete')
                        )
                      ORDER BY t.priority DESC, t.created_at ASC
-                     LIMIT 1",
+                     LIMIT 1"
+                );
+                conn.query_row(
+                    &sql,
                     [project_id.as_str()],
                     |row| Task::from_row(row),
                 )
@@ -603,44 +827,48 @@ impl TaskRepository for SqliteTaskRepository {
     }
 
     async fn archive(&self, task_id: &TaskId) -> AppResult<Task> {
-        let task_id = task_id.as_str().to_string();
+        let task_id = task_id.clone();
+        let enforce_tasks_feature_policy = self.enforce_tasks_feature_policy;
         self.db
             .run(move |conn| {
+                if enforce_tasks_feature_policy {
+                    authorize_task_action_sync(
+                        conn,
+                        &task_id,
+                        TasksFeatureAction::HistoryMutation,
+                    )?;
+                }
                 let now = Utc::now();
                 conn.execute(
                     "UPDATE tasks SET archived_at = ?2, updated_at = ?3 WHERE id = ?1",
-                    rusqlite::params![
-                        task_id.as_str(),
-                        now.to_rfc3339(),
-                        now.to_rfc3339()
-                    ],
+                    rusqlite::params![task_id.as_str(), now.to_rfc3339(), now.to_rfc3339()],
                 )?;
-                let task = conn.query_row(
-                    "SELECT id, project_id, category, title, description, priority, internal_status, needs_review_point, source_proposal_id, plan_artifact_id, ideation_session_id, execution_plan_id, created_at, updated_at, started_at, completed_at, archived_at, blocked_reason, task_branch, worktree_path, merge_commit_sha, metadata, merge_pipeline_active
-                     FROM tasks WHERE id = ?1",
-                    [task_id.as_str()],
-                    |row| Task::from_row(row),
-                )?;
+                let sql = format!("SELECT {} FROM tasks WHERE id = ?1", queries::TASK_COLUMNS);
+                let task = conn.query_row(&sql, [task_id.as_str()], |row| Task::from_row(row))?;
                 Ok(task)
             })
             .await
     }
 
     async fn restore(&self, task_id: &TaskId) -> AppResult<Task> {
-        let task_id = task_id.as_str().to_string();
+        let task_id = task_id.clone();
+        let enforce_tasks_feature_policy = self.enforce_tasks_feature_policy;
         self.db
             .run(move |conn| {
+                if enforce_tasks_feature_policy {
+                    authorize_task_action_sync(
+                        conn,
+                        &task_id,
+                        TasksFeatureAction::HistoryMutation,
+                    )?;
+                }
                 let now = Utc::now();
                 conn.execute(
                     "UPDATE tasks SET archived_at = NULL, updated_at = ?2 WHERE id = ?1",
                     rusqlite::params![task_id.as_str(), now.to_rfc3339()],
                 )?;
-                let task = conn.query_row(
-                    "SELECT id, project_id, category, title, description, priority, internal_status, needs_review_point, source_proposal_id, plan_artifact_id, ideation_session_id, execution_plan_id, created_at, updated_at, started_at, completed_at, archived_at, blocked_reason, task_branch, worktree_path, merge_commit_sha, metadata, merge_pipeline_active
-                     FROM tasks WHERE id = ?1",
-                    [task_id.as_str()],
-                    |row| Task::from_row(row),
-                )?;
+                let sql = format!("SELECT {} FROM tasks WHERE id = ?1", queries::TASK_COLUMNS);
+                let task = conn.query_row(&sql, [task_id.as_str()], |row| Task::from_row(row))?;
                 Ok(task)
             })
             .await
@@ -854,8 +1082,16 @@ impl TaskRepository for SqliteTaskRepository {
     ) -> AppResult<()> {
         let task_id = task_id.clone();
         let metadata = metadata.clone();
+        let enforce_tasks_feature_policy = self.enforce_tasks_feature_policy;
         self.db
             .run(move |conn| {
+                if enforce_tasks_feature_policy {
+                    authorize_task_action_sync(
+                        conn,
+                        &task_id,
+                        TasksFeatureAction::HistoryMutation,
+                    )?;
+                }
                 helpers::update_latest_state_history_metadata_sync(conn, &task_id, &metadata)
             })
             .await

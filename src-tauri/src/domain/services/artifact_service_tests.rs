@@ -199,6 +199,8 @@ impl ArtifactRepository for MockArtifactRepository {
                 version: artifact.metadata.version,
                 name: artifact.name.clone(),
                 created_at: artifact.metadata.created_at,
+                created_by: artifact.metadata.created_by.clone(),
+                metadata: artifact.metadata.custom_metadata.clone(),
             }])
         } else {
             Ok(vec![])

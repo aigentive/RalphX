@@ -1,7 +1,8 @@
 use async_trait::async_trait;
 
 use crate::domain::entities::{
-    AgentConversationIssue, ChatConversationId, AGENT_CONVERSATION_ISSUE_STATUS_OPEN,
+    AgentConversationIssue, AgentConversationIssueOccurrence, ChatConversationId,
+    AGENT_CONVERSATION_ISSUE_STATUS_OPEN,
 };
 use crate::error::AppResult;
 
@@ -24,6 +25,32 @@ pub trait AgentConversationIssueRepository: Send + Sync {
         issue_kind: &str,
         blocker_fingerprint: &str,
     ) -> AppResult<Option<AgentConversationIssue>>;
+
+    async fn find_open_by_canonical_fingerprint(
+        &self,
+        conversation_id: &ChatConversationId,
+        canonical_fingerprint: &str,
+    ) -> AppResult<Option<AgentConversationIssue>>;
+
+    async fn list_open_candidates_by_identity(
+        &self,
+        conversation_id: &ChatConversationId,
+        canonical_scope_kind: &str,
+        canonical_scope_subject: &str,
+        canonical_family: &str,
+        exclude_canonical_fingerprint: &str,
+        limit: usize,
+    ) -> AppResult<Vec<AgentConversationIssue>>;
+
+    async fn append_occurrence(
+        &self,
+        occurrence: &AgentConversationIssueOccurrence,
+    ) -> AppResult<AgentConversationIssueOccurrence>;
+
+    async fn list_occurrences_by_issue(
+        &self,
+        issue_id: &str,
+    ) -> AppResult<Vec<AgentConversationIssueOccurrence>>;
 
     async fn update_status(
         &self,

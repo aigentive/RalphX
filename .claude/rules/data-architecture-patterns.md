@@ -1,10 +1,10 @@
 ---
 paths:
-  - "src/hooks/**"
-  - "src/stores/**"
-  - "src/api/**"
+  - "frontend/src/hooks/**"
+  - "frontend/src/stores/**"
+  - "frontend/src/api/**"
   - "src-tauri/src/commands/**"
-  - "src-tauri/src/application/**/repository.rs"
+  - "src-tauri/src/infrastructure/**/*_repo.rs"
 ---
 
 > **Maintainer note:** This file optimizes for LLM context efficiency. Rules: (1) Tables > prose (2) One example max per concept (3) No redundant explanations (4) Use symbols: → = leads to, | = or, ❌/✅ = wrong/right (5) Before adding content, ask: "Can this be a single line?" If yes, make it one line.
@@ -50,7 +50,7 @@ Complex hooks managing multiple interdependent effects should use **separate eff
 
 **Key pattern:** Session = plan scope; use for wholesale resets. Within same session, respect user choices.
 
-**Example:** `useColumnCollapse` (`src/components/tasks/TaskBoard/useColumnCollapse.ts`)
+**Example:** `useColumnCollapse` (`frontend/src/components/tasks/TaskBoard/useColumnCollapse.ts`)
 - Effect 1 (`ideationSessionId`): Detect plan changes; auto-collapse empty on init/plan-change; preserve user-expanded within plan
 - Effect 2 (`taskCounts`): Detect 0→N; auto-expand unless user-collapsed
 - Callbacks: `toggleCollapse`, `expandColumn` track intent via refs
@@ -83,4 +83,4 @@ return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 
 **Benefits:** Immediate reactivity to cache mutations (e.g., optimistic updates); no polling; prevents unnecessary parent re-renders via ref memoization.
 
-**Example:** `useColumnTaskCounts` (`src/components/tasks/TaskBoard/useColumnTaskCounts.ts`) subscribes to queryClient cache, returns stable Map reference via ref-based equality.
+**Example:** `useColumnTaskCounts` (`frontend/src/components/tasks/TaskBoard/useColumnTaskCounts.ts`) subscribes to queryClient cache, returns stable Map reference via ref-based equality.

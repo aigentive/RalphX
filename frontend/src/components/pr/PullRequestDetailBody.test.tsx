@@ -8,6 +8,7 @@ import type { PullRequestDetail } from "@/api/github";
 import { diffApi } from "@/api/diff";
 import { usePullRequestDetail } from "@/hooks/usePullRequestDetail";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { openExternalTicketUrl } from "@/components/ticketing/ticketing-open-external";
 
 import { PullRequestDetailBody } from "./PullRequestDetailBody";
 
@@ -19,6 +20,10 @@ vi.mock("@/api/diff", () => ({
   diffApi: {
     getAgentConversationWorkspacePrAnnotations: vi.fn(),
   },
+}));
+
+vi.mock("@/components/ticketing/ticketing-open-external", () => ({
+  openExternalTicketUrl: vi.fn(),
 }));
 
 vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
@@ -107,7 +112,10 @@ function loadedDetail(overrides: Partial<PullRequestDetail> = {}): PullRequestDe
 function renderBody(
   detail: PullRequestDetail | null = null,
   shellOverrides: Partial<NonNullable<Parameters<typeof PullRequestDetailBody>[0]["shell"]>> = {},
-  bodyOverrides: { showRxConversation?: boolean } = {},
+  bodyOverrides: {
+    showRxConversation?: boolean;
+    presentation?: "default" | "agentsWorkspace";
+  } = {},
 ) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -206,6 +214,75 @@ describe("PullRequestDetailBody", () => {
     expect(await screen.findByTestId("rx-chat-panel")).toHaveTextContent("conversation-1");
   });
 
+  it("adds an accessible check-details disclosure only when a URL exists", async () => {
+    const user = userEvent.setup();
+    renderBody(
+      loadedDetail({
+        checks: [
+          {
+            name: "lint",
+            status: "completed",
+            conclusion: "failure",
+            detailsUrl: "https://github.com/acme/app/actions/runs/1",
+          },
+          {
+            name: "types",
+            status: "completed",
+            conclusion: "failure",
+            detailsUrl: null,
+          },
+        ],
+      }),
+      {},
+      { showRxConversation: false },
+    );
+
+    const detailsButton = screen.getByRole("button", {
+      name: "Open lint check details",
+    });
+    expect(
+      screen.queryByRole("button", { name: "Open types check details" }),
+    ).not.toBeInTheDocument();
+
+    await user.click(detailsButton);
+
+    expect(openExternalTicketUrl).toHaveBeenCalledWith(
+      "https://github.com/acme/app/actions/runs/1",
+    );
+  });
+
+  it("renders GitHub details blocks in the pull request description", () => {
+    const detail = loadedDetail();
+    const { container } = renderBody(
+      {
+        ...detail,
+        description: {
+          ...detail.description!,
+          body: [
+            "## Summary",
+            "Ready for review.",
+            "",
+            "<details>",
+            "<summary>View full plan</summary>",
+            "",
+            "### Implementation",
+            "- Keep markdown formatting",
+            "</details>",
+          ].join("\n"),
+        },
+      },
+      {},
+      { showRxConversation: false },
+    );
+
+    const details = screen.getByTestId("pr-markdown-details");
+    expect(details).toHaveTextContent("View full plan");
+    expect(screen.getByRole("heading", { name: "Implementation" })).toBeInTheDocument();
+    expect(screen.getByText("Keep markdown formatting")).toBeInTheDocument();
+    expect(container.textContent).not.toContain("<details>");
+    expect(container.textContent).not.toContain("<summary>");
+  });
+
   it("orders the sections description -> review -> checks -> comments", () => {
     renderBody(loadedDetail(), {}, { showRxConversation: false });
 
@@ -230,6 +307,41 @@ describe("PullRequestDetailBody", () => {
     await waitFor(() =>
       expect(screen.queryByTestId("rx-chat-panel")).not.toBeInTheDocument(),
     );
+  });
+
+  it("removes duplicated workspace chrome only in the Agents presentation", () => {
+    renderBody(
+      loadedDetail(),
+      {},
+      {
+        presentation: "agentsWorkspace",
+        showRxConversation: false,
+      },
+    );
+
+    expect(
+      screen.getByRole("heading", { name: "Add PR detail" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Open")).not.toBeInTheDocument();
+    expect(screen.queryByText("#42")).not.toBeInTheDocument();
+    expect(screen.queryByText("head feat/pr-detail")).not.toBeInTheDocument();
+    expect(screen.queryByText("feat/pr-detail")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Open pull request in GitHub" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId("pr-status-strip")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Description" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /Review/ })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /Checks/ })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: /Comments/ }),
+    ).toBeInTheDocument();
+    expect(usePullRequestDetail).toHaveBeenCalled();
+    for (const [, options] of vi.mocked(usePullRequestDetail).mock.calls) {
+      expect(options).not.toHaveProperty("preferCachedData");
+    }
   });
 
   it("does not claim an unknown shell-only pull request is open", () => {

@@ -4,9 +4,10 @@ export const VALIDATION_TOOLS: Tool[] = [
   {
     name: "run_task_validation",
     description:
-      "Run or reuse backend-owned validation commands for the assigned task. " +
-      "Use this instead of untracked validation shell commands so results are cached and available to later review/re-execution agents. " +
-      "Execution/re-execution agents choose targeted commands and explain why each command covers the task changes.",
+      "Run or reuse backend-owned validation commands for the assigned task as the authoritative post-change validation evidence path. " +
+      "Use this instead of untracked validation shell commands so final, wave-gate, re-execution, and merge validation results are cached and reviewable. " +
+      "Use purpose=baseline only for explicit diagnostics, dry runs, or precondition checks; it is informational and not the normal first step. " +
+      "Agents choose targeted commands and explain why each command covers the task changes.",
     inputSchema: {
       type: "object",
       properties: {
@@ -17,7 +18,8 @@ export const VALIDATION_TOOLS: Tool[] = [
         purpose: {
           type: "string",
           enum: ["baseline", "wave_gate", "final", "re_execution", "other"],
-          description: "Why validation is being requested.",
+          description:
+            "Why validation is being requested. Baseline is for explicit diagnostics, dry runs, or precondition checks only; use final, wave_gate, re_execution, or other post-change purposes for reviewable task evidence.",
         },
         mode: {
           type: "string",

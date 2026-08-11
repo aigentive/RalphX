@@ -285,8 +285,8 @@ The execution harness screen exposes the same controls for the runtime lanes tha
 
 | Topic | Current behavior |
 |-------|------------------|
-| Team mode | Claude-only |
-| Codex team sessions | Not supported; Codex is treated as solo-only |
+| RX-native Team | Provider-neutral; availability follows workflow and harness capabilities |
+| Legacy Claude Team mode | Removed; supported coordination now uses RX-native Team |
 | Codex execution/review/merge | Supported when those lanes are configured to Codex |
 | Legacy session data | Still supported through provider-neutral compatibility fields |
 

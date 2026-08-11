@@ -20,6 +20,8 @@ paths:
 | 2 | **Mock parity** — component must render in web mode (`cd frontend && npm run dev:web`). Missing mock data → add to `frontend/src/api-mock/`. ❌ Log "blocked" and skip. |
 | 3 | **Baseline required** — always `--update-snapshots` for new specs. |
 | 4 | **Orphan detection** — grep for component imports + JSX usage before writing tests. ❌ Testing orphaned components. |
+| 5 | **Playwright first** — prefer automated visual tests over manual/native visual QA; agents may start/stop only the scoped dev servers required by those tests. |
+| 6 | **Computer Use requires an explicit request** — Native Tauri QA through Computer Use is prohibited unless the user explicitly requests it in the current request. Never infer permission from UI/theme scope, a test plan, or another rule. |
 
 ## Mock Parity (MUST FIX)
 
@@ -35,7 +37,7 @@ Component doesn't render in web mode?
 
 | Type | Pattern | Location | Example |
 |------|---------|----------|---------|
-| Spec | `{feature}.spec.ts` | `frontend/tests/visual/{views\|modals\|states\|components}/{feature}/` | `kanban.spec.ts` |
+| Spec | `{feature}.spec.ts` | `frontend/tests/visual/{views\|modals\|states\|components\|polish\|theme-audit}/... (feature subdirs apply to views/modals/states/components; cross-cutting audits like polish/ and theme-audit/ place specs directly in the category dir)` | `kanban.spec.ts` |
 | Spec subset | `{feature}-{subset}.spec.ts` | same | `kanban-cards.spec.ts` |
 | Page object | `{feature}.page.ts` | `frontend/tests/pages/` | `kanban.page.ts` |
 | Page sub-objects | `{feature}.page.ts` | `frontend/tests/pages/{views\|modals\|components}/` | `task-graph.page.ts` |

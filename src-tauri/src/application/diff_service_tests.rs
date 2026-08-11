@@ -5,6 +5,58 @@ use std::path::PathBuf;
 use tempfile::TempDir;
 
 #[test]
+fn file_diff_paging_flattens_hunks_and_enforces_page_bounds() {
+    let diff = FileDiff {
+        file_path: "src/lib.rs".to_string(),
+        language: "rust".to_string(),
+        hunks: vec![DiffHunk {
+            old_start: 1,
+            old_lines: 1,
+            new_start: 1,
+            new_lines: 2,
+            header: "@@ -1 +1,2 @@".to_string(),
+            lines: vec![
+                DiffLine {
+                    kind: DiffLineKind::Deletion,
+                    content: "old".to_string(),
+                    old_line_num: Some(1),
+                    new_line_num: None,
+                },
+                DiffLine {
+                    kind: DiffLineKind::Addition,
+                    content: "new".to_string(),
+                    old_line_num: None,
+                    new_line_num: Some(1),
+                },
+            ],
+        }],
+        old_total_lines: 1,
+        new_total_lines: 2,
+        is_binary: false,
+    };
+
+    let first = DiffService::page_file_diff(diff.clone(), 0, 2).expect("first page");
+    assert_eq!(first.rows.len(), 2);
+    assert_eq!(first.next_offset, Some(2));
+    let final_page = DiffService::page_file_diff(diff, 2, 2).expect("final page");
+    assert_eq!(final_page.rows.len(), 1);
+    assert_eq!(final_page.next_offset, None);
+    assert!(DiffService::page_file_diff(final_page_to_diff(), 0, 0).is_err());
+    assert!(DiffService::page_file_diff(final_page_to_diff(), 0, MAX_DIFF_PAGE_LIMIT + 1).is_err());
+}
+
+fn final_page_to_diff() -> FileDiff {
+    FileDiff {
+        file_path: "empty.txt".to_string(),
+        language: "plaintext".to_string(),
+        hunks: Vec::new(),
+        old_total_lines: 0,
+        new_total_lines: 0,
+        is_binary: false,
+    }
+}
+
+#[test]
 fn test_get_language_from_path() {
     assert_eq!(get_language_from_path("src/app.ts"), "typescript");
     assert_eq!(get_language_from_path("src/app.tsx"), "typescript");
@@ -1213,6 +1265,50 @@ fn unstaged_file_diff_rejects_empty_file_path() {
     let err = svc.get_unstaged_file_diff("", &repo_str).unwrap_err();
 
     assert!(err.to_string().contains("empty"));
+}
+
+#[test]
+fn externally_reachable_file_diff_sources_reject_unsafe_paths_before_git_reads() {
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    let repo_str = repo.to_string_lossy().to_string();
+    let head = git_stdout(&repo, &["rev-parse", "HEAD"]);
+    let svc = DiffService::new();
+
+    for unsafe_path in ["", "/etc/passwd", "../secret", "src/../../secret"] {
+        assert!(svc.get_staged_file_diff(unsafe_path, &repo_str).is_err());
+        assert!(svc.get_unstaged_file_diff(unsafe_path, &repo_str).is_err());
+        assert!(svc
+            .get_file_diff_between_refs(unsafe_path, &repo_str, &head, "HEAD")
+            .is_err());
+    }
+}
+
+#[test]
+fn externally_reachable_file_diffs_ignore_failing_external_diff_driver() {
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    let repo_str = repo.to_string_lossy().to_string();
+    let initial_head = git_stdout(&repo, &["rev-parse", "HEAD"]);
+    let svc = DiffService::new();
+
+    fs::write(repo.join("base.txt"), "base\nstaged\n").unwrap();
+    git_cmd(&repo, &["add", "base.txt"]);
+    git_cmd(&repo, &["config", "diff.external", "false"]);
+    let staged = svc
+        .get_staged_file_diff("base.txt", &repo_str)
+        .expect("staged diff should use the built-in diff engine");
+    assert!(!staged.hunks.is_empty());
+
+    fs::write(repo.join("base.txt"), "base\nstaged\nunstaged\n").unwrap();
+    let unstaged = svc
+        .get_unstaged_file_diff("base.txt", &repo_str)
+        .expect("unstaged diff should use the built-in diff engine");
+    assert!(!unstaged.hunks.is_empty());
+
+    git_cmd(&repo, &["commit", "-m", "staged change"]);
+    let committed = svc
+        .get_file_diff_between_refs("base.txt", &repo_str, &initial_head, "HEAD")
+        .expect("between-ref diff should use the built-in diff engine");
+    assert!(!committed.hunks.is_empty());
 }
 
 #[test]

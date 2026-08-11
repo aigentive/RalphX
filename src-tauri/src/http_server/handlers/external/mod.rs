@@ -14,7 +14,6 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tauri::Emitter;
 use tracing::error;
 
 use crate::application::chat_service::{ChatService, SendMessageOptions};
@@ -25,7 +24,6 @@ use crate::domain::entities::{
     IdeationSessionId, InternalStatus, SessionOrigin, TaskId,
 };
 use crate::domain::services::text_similarity::{jaccard_similarity, tokenize_for_similarity};
-use crate::domain::services::{emit_verification_started, emit_verification_status_changed};
 use crate::http_server::project_scope::{ProjectScope, ProjectScopeGuard};
 use ralphx_domain::entities::EventType;
 

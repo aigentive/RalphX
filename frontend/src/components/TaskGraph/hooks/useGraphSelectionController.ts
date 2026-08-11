@@ -3,7 +3,7 @@ import { useStore, type Edge, type Node } from "@xyflow/react";
 import type { GraphSelection } from "@/stores/uiStore";
 import { useUiStore } from "@/stores/uiStore";
 import type { PlanGroupInfo } from "@/api/task-graph.types";
-import type { GroupingState } from "../controls/GraphControls";
+import type { GroupingState } from "../controls/graph-controls";
 import {
   getPlanGroupNodeId,
   getTierGroupNodeId,
@@ -50,7 +50,12 @@ interface GraphSelectionControllerParams {
   graphReady: boolean;
   graphError: Error | null;
   isLoading: boolean;
-  /** Disable keyboard navigation/shortcuts (used while battle overlay is active) */
+  /** Effective project/session scope for the retained graph host. */
+  selectionScope: {
+    projectId: string;
+    ideationSessionId: string | null;
+  };
+  /** Disable keyboard navigation/shortcuts when the host temporarily owns focus. */
   keyboardNavigationEnabled?: boolean;
 }
 
@@ -236,10 +241,11 @@ export function useGraphSelectionController({
   graphReady,
   graphError,
   isLoading,
+  selectionScope,
   keyboardNavigationEnabled = true,
 }: GraphSelectionControllerParams): GraphSelectionControllerResult {
-  const selectedTaskId = useUiStore((s) => s.selectedTaskId);
-  const setSelectedTaskId = useUiStore((s) => s.setSelectedTaskId);
+  const selectionScopeProjectId = selectionScope.projectId;
+  const selectionScopeIdeationSessionId = selectionScope.ideationSessionId;
   const graphSelection = useUiStore((s) => s.graphSelection);
   const setGraphSelection = useUiStore((s) => s.setGraphSelection);
   const clearGraphSelection = useUiStore((s) => s.clearGraphSelection);
@@ -251,6 +257,45 @@ export function useGraphSelectionController({
   const highlightTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const groupClickTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const previousSelectionScopeRef = useRef(selectionScope);
+  const previousGraphSelectionRef = useRef(graphSelection);
+
+  useEffect(() => {
+    const previousScope = previousSelectionScopeRef.current;
+    const scopeChanged =
+      previousScope.projectId !== selectionScopeProjectId ||
+      previousScope.ideationSessionId !== selectionScopeIdeationSessionId;
+
+    if (!scopeChanged) {
+      previousGraphSelectionRef.current = graphSelection;
+      return;
+    }
+
+    previousSelectionScopeRef.current = {
+      projectId: selectionScopeProjectId,
+      ideationSessionId: selectionScopeIdeationSessionId,
+    };
+    const selectionToClear = previousGraphSelectionRef.current;
+    previousGraphSelectionRef.current = graphSelection;
+
+    // Scope changes can share a commit with a new selection (for example,
+    // retained Agents graph positioning). Only clear the selection that was
+    // still present for the previous scope; preserve a newer one.
+    if (useUiStore.getState().graphSelection !== selectionToClear) return;
+
+    if (highlightTimeoutRef.current) {
+      clearTimeout(highlightTimeoutRef.current);
+      highlightTimeoutRef.current = null;
+    }
+    setHighlightedTaskId(null);
+    setFocusedNodeId(null);
+    clearGraphSelection();
+  }, [
+    clearGraphSelection,
+    graphSelection,
+    selectionScopeIdeationSessionId,
+    selectionScopeProjectId,
+  ]);
 
   const openTaskDetails = useCallback(
     (taskId: string) => {
@@ -258,9 +303,8 @@ export function useGraphSelectionController({
         onTaskSelect(taskId);
         return;
       }
-      setSelectedTaskId(taskId);
     },
-    [onTaskSelect, setSelectedTaskId]
+    [onTaskSelect]
   );
 
   const planGroupsById = useMemo(() => {
@@ -612,8 +656,8 @@ export function useGraphSelectionController({
             (isNavigableGraphSelection(graphSelection) ? graphSelection : null) ??
             (focusedNodeId
               ? { kind: "task" as const, id: focusedNodeId }
-              : selectedTaskId
-                ? { kind: "task" as const, id: selectedTaskId }
+              : graphSelection?.kind === "task"
+                ? { kind: "task" as const, id: graphSelection.id }
                 : null);
           if (activeSelection) {
             focusSelectionInView(activeSelection);
@@ -665,8 +709,8 @@ export function useGraphSelectionController({
           (isNavigableGraphSelection(graphSelection) ? graphSelection : null) ??
           (focusedNodeId
             ? { kind: "task" as const, id: focusedNodeId }
-            : selectedTaskId
-              ? { kind: "task" as const, id: selectedTaskId }
+            : graphSelection?.kind === "task"
+              ? { kind: "task" as const, id: graphSelection.id }
               : null);
 
         let recenterPlanId: string | null = null;
@@ -678,7 +722,6 @@ export function useGraphSelectionController({
           recenterPlanId = taskToPlanMap.get(selectionForEscape.id) ?? null;
         }
 
-        setSelectedTaskId(null);
         setFocusedNodeId(null);
         setHighlightedTaskId(null);
         clearGraphSelection();
@@ -700,8 +743,8 @@ export function useGraphSelectionController({
         (isNavigableGraphSelection(graphSelection) ? graphSelection : null) ??
         (focusedNodeId
           ? { kind: "task" as const, id: focusedNodeId }
-          : selectedTaskId
-            ? { kind: "task" as const, id: selectedTaskId }
+          : graphSelection?.kind === "task"
+            ? { kind: "task" as const, id: graphSelection.id }
             : null);
 
       if (key === "Backspace") {
@@ -950,9 +993,7 @@ export function useGraphSelectionController({
       openTaskDetails,
       planGroupNodes,
       planGroupNodesSorted,
-      selectedTaskId,
       setGraphSelection,
-      setSelectedTaskId,
       taskToPlanMap,
       taskToTierMap,
       tierGroupNodes,

@@ -3,6 +3,26 @@ use crate::infrastructure::sqlite::connection::open_connection;
 use tempfile::tempdir;
 use tokio::sync::Mutex;
 
+#[test]
+fn db_lock_slow_threshold_covers_wait_and_hold_directions() {
+    let thresholds = DbLockTelemetryThresholds {
+        wait_warn_ms: 100,
+        hold_warn_ms: 250,
+    };
+
+    assert!(!db_lock_observation_is_slow(99, 249, thresholds));
+    assert!(db_lock_observation_is_slow(100, 1, thresholds));
+    assert!(db_lock_observation_is_slow(1, 250, thresholds));
+}
+
+#[test]
+fn db_caller_metadata_uses_only_the_file_stem() {
+    assert_eq!(
+        db_caller_module("/Users/example/private/project/sqlite_task_repo.rs"),
+        "sqlite_task_repo"
+    );
+}
+
 #[tokio::test]
 async fn test_run_transaction_commits_on_success() {
     let dir = tempdir().unwrap();
@@ -279,16 +299,19 @@ async fn test_pooled_transactions_reserve_writer_lock_before_reads() {
 
     let tx2 = tokio::spawn(async move {
         let _ = started_rx.await;
-        db2
-            .run_transaction(|conn| {
-                conn.execute("INSERT INTO items VALUES (2, 'tx2')", [])?;
-                Ok(())
-            })
-            .await
+        db2.run_transaction(|conn| {
+            conn.execute("INSERT INTO items VALUES (2, 'tx2')", [])?;
+            Ok(())
+        })
+        .await
     });
 
-    tx1.await.unwrap().expect("first transaction should succeed");
-    tx2.await.unwrap().expect("second transaction should succeed");
+    tx1.await
+        .unwrap()
+        .expect("first transaction should succeed");
+    tx2.await
+        .unwrap()
+        .expect("second transaction should succeed");
 
     let db_verify = DbConnection::new(open_connection(&db_path).unwrap());
     let count: i64 = db_verify
@@ -296,7 +319,10 @@ async fn test_pooled_transactions_reserve_writer_lock_before_reads() {
         .await
         .unwrap();
 
-    assert_eq!(count, 2, "Both pooled transactions must commit successfully");
+    assert_eq!(
+        count, 2,
+        "Both pooled transactions must commit successfully"
+    );
 }
 
 #[tokio::test]

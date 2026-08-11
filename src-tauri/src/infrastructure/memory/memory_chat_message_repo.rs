@@ -10,10 +10,10 @@ use async_trait::async_trait;
 use crate::domain::agents::ProviderSessionRef;
 use crate::domain::entities::{
     AgentRunUsage, ChatConversationId, ChatMessage, ChatMessageAttribution, ChatMessageId,
-    IdeationSessionId, MessageRole, ProjectId, TaskId,
+    IdeationSessionId, MessageRole, ProjectId, TaskId, UsageCapture,
 };
 use crate::domain::repositories::ChatMessageRepository;
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 
 /// In-memory implementation of ChatMessageRepository for testing
 pub struct MemoryChatMessageRepository {
@@ -246,6 +246,19 @@ impl ChatMessageRepository for MemoryChatMessageRepository {
         Ok(())
     }
 
+    async fn replace_usage_capture(
+        &self,
+        id: &ChatMessageId,
+        capture: &UsageCapture,
+    ) -> AppResult<()> {
+        let mut messages = self.messages.write().unwrap();
+        let message = messages
+            .get_mut(&id.to_string())
+            .ok_or_else(|| AppError::NotFound(format!("Chat message not found: {id}")))?;
+        message.replace_usage_capture(capture);
+        Ok(())
+    }
+
     async fn update_attribution(
         &self,
         id: &ChatMessageId,
@@ -326,6 +339,14 @@ impl ChatMessageRepository for MemoryChatMessageRepository {
                         "project" => {
                             m.project_id.as_ref().map(|s| s.as_str()) == Some(context_id)
                                 && m.session_id.is_none()
+                        }
+                        "standalone" => {
+                            // Standalone conversations are self-keyed
+                            // (context_id == conversation_id); they never set
+                            // session_id, so the generic fallback arm below would
+                            // silently return None forever.
+                            m.conversation_id.as_ref().map(|c| c.as_str())
+                                == Some(context_id.to_string())
                         }
                         _ => m.session_id.as_ref().map(|s| s.as_str()) == Some(context_id),
                     }

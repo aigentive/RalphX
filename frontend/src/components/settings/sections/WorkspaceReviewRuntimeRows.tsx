@@ -378,10 +378,10 @@ export function WorkspaceReviewScopeRows({
     <div>
       <p className="mb-3 text-xs text-[var(--text-muted)]">
         {isGlobal
-          ? "Default model and effort for Workspace Review after it inherits the active chat provider."
+          ? "Legacy fallback used only while Settings → Agents → Feedback Loops → Reviewer follows provider defaults."
           : projectId !== null
-            ? `Overrides for ${projectName ?? "the active project"}. Leave blank to inherit global defaults.`
-            : "Select a project to override Workspace Review defaults for a specific project."}
+            ? `Legacy fallback overrides for ${projectName ?? "the active project"}. Leave blank to inherit the global fallback.`
+            : "Select a project to override its legacy Workspace Review fallback."}
       </p>
       {showError && saveError && (
         <ErrorBanner

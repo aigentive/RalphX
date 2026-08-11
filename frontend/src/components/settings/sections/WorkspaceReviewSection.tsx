@@ -1,15 +1,19 @@
 import { useState } from "react";
-import { ChevronRight, ShieldCheck, TriangleAlert } from "lucide-react";
+import { ChevronRight, TriangleAlert } from "lucide-react";
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAgentModels } from "@/hooks/useAgentModels";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
-import { useReviewSettings, useUpdateReviewSettings } from "@/hooks/useReviewSettings";
+import {
+  useReviewSettings,
+  useUpdateReviewSettings,
+} from "@/hooks/useReviewSettings";
 import { useWorkspaceReviewRuntimeSettings } from "@/hooks/useWorkspaceReviewSettings";
 import { selectActiveProject, useProjectStore } from "@/stores/projectStore";
 import { useUiStore } from "@/stores/uiStore";
 import {
-  SectionCard,
+  NumberSettingRow,
+  SettingsSection,
   ToggleSettingRow,
 } from "../SettingsView.shared";
 import { WorkspaceReviewScopeRows } from "./WorkspaceReviewRuntimeRows";
@@ -33,7 +37,7 @@ function InlineNotice({
   );
 }
 
-export default function WorkspaceReviewSection() {
+export default function WorkspaceReviewSection({ embedded = false }: { embedded?: boolean }) {
   const activeProject = useProjectStore(selectActiveProject);
   const projectId = activeProject?.id ?? null;
   const projectName = activeProject?.name ?? null;
@@ -52,34 +56,65 @@ export default function WorkspaceReviewSection() {
 
   const enabledProviders = providerSettings.providers.filter(
     (provider) =>
-      isKnownHarness(provider.provider) && provider.enabled && provider.available,
+      isKnownHarness(provider.provider) &&
+      provider.enabled &&
+      provider.available,
   );
   const requiresProviderSetup =
     !isProviderPlaceholderData &&
     (providerSettings.requiresOnboarding || enabledProviders.length === 0);
-  const disabledPublishGate = isReviewLoading || isReviewUpdating || !reviewSettings;
+  const disabledPublishGate =
+    isReviewLoading || isReviewUpdating || !reviewSettings;
 
-  return (
-    <SectionCard
-      icon={
-        <ShieldCheck className="h-[18px] w-[18px] text-[var(--card-icon-color)]" />
-      }
-      title="Workspace Review"
-      description="Configure Workspace Review publish gating and inherited-provider runtime defaults."
-    >
+  const content = (
+    <>
+      <p className="mb-3 text-xs text-[var(--text-muted)]">
+        Legacy runtime fallbacks apply only when the Reviewer role in Agents follows provider defaults.
+      </p>
       {reviewSettings && (
-        <ToggleSettingRow
-          id="workspace-review-require-before-publish"
-          label="Require Workspace Review before publishing"
-          description="Block Commit & Publish until the workspace Review passes"
-          checked={reviewSettings.require_workspace_review}
-          disabled={disabledPublishGate}
-          onChange={() =>
-            updateReviewSettings({
-              requireWorkspaceReview: !reviewSettings.require_workspace_review,
-            })
-          }
-        />
+        <>
+          <ToggleSettingRow
+            id="workspace-review-require-before-publish"
+            label="Require Workspace Review before publishing"
+            description="Block Commit & Publish until the workspace Review passes"
+            checked={reviewSettings.require_workspace_review}
+            disabled={disabledPublishGate}
+            onChange={() =>
+              updateReviewSettings({
+                requireWorkspaceReview: !reviewSettings.require_workspace_review,
+              })
+            }
+          />
+          <ToggleSettingRow
+            id="workspace-review-autofix-blocking-findings"
+            label="Autofix Blocking Review Findings"
+            description="Spawn the workspace repair agent when a Workspace Review returns blocking findings."
+            checked={reviewSettings.autofix_workspace_review_blocking_findings}
+            disabled={disabledPublishGate}
+            onChange={() =>
+              updateReviewSettings({
+                autofixWorkspaceReviewBlockingFindings:
+                  !reviewSettings.autofix_workspace_review_blocking_findings,
+              })
+            }
+          />
+          <NumberSettingRow
+            id="workspace-review-fixer-cycle-cap"
+            label="Maximum automatic fixer cycles"
+            description="Maximum times RalphX automatically starts a Workspace Review fixer. Set 0 to turn off automatic fixing; manual fixes remain available."
+            value={reviewSettings.workspace_review_fixer_cycle_cap}
+            min={0}
+            max={Number.MAX_SAFE_INTEGER}
+            step={1}
+            unit=""
+            disabled={disabledPublishGate}
+            onChange={(value) =>
+              updateReviewSettings({
+                workspaceReviewFixerCycleCap: Math.max(0, value),
+              })
+            }
+          />
+        </>
       )}
       {isProviderPlaceholderData && (
         <InlineNotice title="Loading Providers">
@@ -90,8 +125,7 @@ export default function WorkspaceReviewSection() {
         <InlineNotice title="Provider Setup Required">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <span>
-              Enable and validate at least one provider before configuring
-              Workspace Review defaults.
+              Enable and validate at least one provider before configuring legacy Workspace Review fallbacks.
             </span>
             <button
               type="button"
@@ -111,41 +145,26 @@ export default function WorkspaceReviewSection() {
           className="w-full"
         >
           <TabsList className="inline-flex h-9 items-center rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-1 text-[var(--text-secondary)]">
-            <TabsTrigger
-              value="global"
-              className="rounded-sm px-3 py-1 text-xs font-medium data-[state=active]:bg-[var(--bg-elevated)] data-[state=active]:text-[var(--text-primary)] data-[state=active]:shadow-sm"
-            >
+            <TabsTrigger value="global" className="rounded-sm px-3 py-1 text-xs font-medium data-[state=active]:bg-[var(--bg-elevated)] data-[state=active]:text-[var(--text-primary)] data-[state=active]:shadow-sm">
               Global Defaults
             </TabsTrigger>
-            <TabsTrigger
-              value="project"
-              className="rounded-sm px-3 py-1 text-xs font-medium data-[state=active]:bg-[var(--bg-elevated)] data-[state=active]:text-[var(--text-primary)] data-[state=active]:shadow-sm"
-            >
+            <TabsTrigger value="project" className="rounded-sm px-3 py-1 text-xs font-medium data-[state=active]:bg-[var(--bg-elevated)] data-[state=active]:text-[var(--text-primary)] data-[state=active]:shadow-sm">
               Project Overrides
             </TabsTrigger>
           </TabsList>
           <TabsContent value="global" className="mt-4">
-            <WorkspaceReviewScopeRows
-              projectId={null}
-              projectName={null}
-              isGlobal={true}
-              providers={enabledProviders}
-              modelRegistry={modelRegistry}
-              globalRows={globalRows}
-            />
+            <WorkspaceReviewScopeRows projectId={null} projectName={null} isGlobal={true} providers={enabledProviders} modelRegistry={modelRegistry} globalRows={globalRows} />
           </TabsContent>
           <TabsContent value="project" className="mt-4">
-            <WorkspaceReviewScopeRows
-              projectId={projectId}
-              projectName={projectName}
-              isGlobal={false}
-              providers={enabledProviders}
-              modelRegistry={modelRegistry}
-              globalRows={globalRows}
-            />
+            <WorkspaceReviewScopeRows projectId={projectId} projectName={projectName} isGlobal={false} providers={enabledProviders} modelRegistry={modelRegistry} globalRows={globalRows} />
           </TabsContent>
         </Tabs>
       )}
-    </SectionCard>
+    </>
+  );
+  return embedded ? content : (
+    <SettingsSection>
+      {content}
+    </SettingsSection>
   );
 }

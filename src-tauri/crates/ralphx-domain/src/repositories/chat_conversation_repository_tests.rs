@@ -2,7 +2,7 @@ use super::*;
 use crate::agents::ProviderSessionRef;
 use crate::domain::entities::{
     AgentConversationWorkspaceMode, ChatContextType, ChatConversation,
-    ConversationAttributionBackfillState, ConversationAttributionBackfillSummary,
+    ConversationAttributionBackfillState, ConversationAttributionBackfillSummary, CoordinationMode,
     IdeationSessionId,
 };
 use std::sync::Arc;
@@ -57,6 +57,18 @@ impl ChatConversationRepository for MockChatConversationRepository {
                     && c.context_id == context_id
                     && (include_archived || c.archived_at.is_none())
             })
+            .cloned()
+            .collect())
+    }
+
+    async fn list_by_automation_id(
+        &self,
+        automation_id: &crate::entities::AutomationId,
+    ) -> AppResult<Vec<ChatConversation>> {
+        Ok(self
+            .conversations
+            .iter()
+            .filter(|c| c.automation_id.as_ref() == Some(automation_id))
             .cloned()
             .collect())
     }
@@ -180,6 +192,59 @@ impl ChatConversationRepository for MockChatConversationRepository {
         &self,
         _id: &ChatConversationId,
         _mode: Option<AgentConversationWorkspaceMode>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn update_bound_agent_name(
+        &self,
+        _id: &ChatConversationId,
+        _bound_agent_name: Option<&str>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn update_persona_binding(
+        &self,
+        _id: &ChatConversationId,
+        _persona_id: Option<&str>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn update_builder_draft_binding(
+        &self,
+        _id: &ChatConversationId,
+        _builder_draft_id: Option<&str>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn update_coordination_mode(
+        &self,
+        _id: &ChatConversationId,
+        _mode: CoordinationMode,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn update_role_default_bindings(
+        &self,
+        _id: &ChatConversationId,
+        _mode: CoordinationMode,
+        _persona_id: Option<&str>,
+        _clear_provider_session: bool,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn update_agent_mode_and_role_default_bindings(
+        &self,
+        _id: &ChatConversationId,
+        _agent_mode: AgentConversationWorkspaceMode,
+        _coordination_mode: CoordinationMode,
+        _persona_id: Option<&str>,
+        _clear_provider_session: bool,
     ) -> AppResult<()> {
         Ok(())
     }

@@ -23,66 +23,136 @@ import { chatApi } from "@/api/chat";
 import { useChatStore } from "@/stores/chatStore";
 import { useIdeationStore } from "@/stores/ideationStore";
 import { useUiStore } from "@/stores/uiStore";
+import type {
+  StreamingContentBlock,
+  StreamingTask,
+} from "@/types/streaming-task";
+import type {
+  AskUserQuestionPayload,
+  AskUserQuestionResponse,
+} from "@/types/ask-user-question";
+import type { SubmitQuestionAnswerResult } from "@/hooks/useAskUserQuestion";
+import type { UseQuestionInputParams } from "@/hooks/useQuestionInput";
 
-vi.mock("@/hooks/useTeamModeAvailability", () => ({
-  useTeamModeAvailability: () => ({
-    ideationTeamModeAvailable: true,
-    executionTeamModeAvailable: true,
-    isAvailableForContext: () => true,
-  }),
-}));
+type MockQuestionState = {
+  activeQuestion: AskUserQuestionPayload | null;
+  answeredQuestion: string | undefined;
+  submitAnswer: (
+    response: AskUserQuestionResponse,
+  ) => Promise<SubmitQuestionAnswerResult>;
+  dismissQuestion: () => void;
+  clearAnswered: () => void;
+  isLoading: boolean;
+};
 
 // ============================================================================
 // Hoisted mutable state for useChat mock (vi.hoisted runs before vi.mock)
 // ============================================================================
 
-const { useChatMockState, useChatCalls, historyWindowCalls } = vi.hoisted(() => {
-  const useChatMockState = {
-    messages: [] as Array<{ id: string; role: string; content: string; createdAt: string; toolCalls: null; contentBlocks: null }>,
-    conversation: null as { contextType: string; contextId: string } | null,
-    conversations: [] as Array<{ id: string }>,
-    historyData: undefined as {
-      conversation: {
-        id: string;
-        contextType: string;
-        contextId: string;
-        providerHarness: string | null;
-        providerSessionId: string | null;
-        upstreamProvider?: string | null;
-        providerProfile?: string | null;
-      };
-      messages: Array<{ id: string; role: string; content: string; createdAt: string; toolCalls: null; contentBlocks: null }>;
-      loadedStartIndex?: number;
-    } | undefined,
-    timelineData: undefined as {
-      conversation: {
-        id: string;
-        contextType: string;
-        contextId: string;
-        providerHarness: string | null;
-        providerSessionId: string | null;
-        upstreamProvider?: string | null;
-        providerProfile?: string | null;
-      };
-      messages: Array<{
-        id: string;
-        role: string;
-        content: string;
-        createdAt: string;
-        toolCalls: null;
-        contentBlocks: null;
-        parentMessageId?: string | null;
-        timelineStatus?: string;
-        timelineSequence?: number;
-      }>;
-      loadedStartIndex?: number;
-    } | undefined,
-    timelineHasOlderMessages: false,
+const { useChatMockState, useChatCalls, historyWindowCalls } = vi.hoisted(
+  () => {
+    type TestMessage = {
+      id: string;
+      role: string;
+      content: string;
+      createdAt: string;
+      metadata?: string | null;
+      toolCalls: null;
+      contentBlocks: null;
+    };
+    const useChatMockState = {
+      messages: [] as TestMessage[],
+      conversation: null as { contextType: string; contextId: string } | null,
+      conversations: [] as Array<{ id: string }>,
+      conversationsLoading: false,
+      historyData: undefined as
+        | {
+            conversation: {
+              id: string;
+              contextType: string;
+              contextId: string;
+              providerHarness: string | null;
+              providerSessionId: string | null;
+              upstreamProvider?: string | null;
+              providerProfile?: string | null;
+            };
+            messages: TestMessage[];
+            loadedStartIndex?: number;
+          }
+        | undefined,
+      timelineData: undefined as
+        | {
+            conversation: {
+              id: string;
+              contextType: string;
+              contextId: string;
+              providerHarness: string | null;
+              providerSessionId: string | null;
+              upstreamProvider?: string | null;
+              providerProfile?: string | null;
+            };
+            messages: Array<{
+              id: string;
+              role: string;
+              content: string;
+              createdAt: string;
+              metadata?: string | null;
+              toolCalls: null;
+              contentBlocks: null;
+              parentMessageId?: string | null;
+              timelineStatus?: string;
+              timelineSequence?: number;
+            }>;
+            loadedStartIndex?: number;
+          }
+        | undefined,
+      timelineHasOlderMessages: false,
+    };
+    return {
+      useChatMockState,
+      useChatCalls: [] as unknown[][],
+      historyWindowCalls: [] as unknown[][],
+    };
+  },
+);
+const { mockFeatureFlags } = vi.hoisted(() => ({
+  mockFeatureFlags: { agentPersonas: false, activityPage: false },
+}));
+const { mockChatActions, mockSwitchConversationPersona } = vi.hoisted(() => ({
+  mockChatActions: {
+    lastOptions: null as { onPersonaUnavailable?: (message: string) => void } | null,
+    handleSend: vi.fn().mockResolvedValue(undefined),
+    handleEditLastQueued: vi.fn(),
+  },
+  mockSwitchConversationPersona: vi.fn().mockResolvedValue(undefined),
+}));
+const {
+  mockQuestionStates,
+  mockQuestionInputParams,
+  useAskUserQuestionMock,
+} = vi.hoisted(() => {
+  const defaultQuestionState: MockQuestionState = {
+    activeQuestion: null,
+    answeredQuestion: undefined,
+    submitAnswer: vi.fn().mockResolvedValue({
+      success: true,
+      deliveredToWaitingAgent: true,
+    }),
+    dismissQuestion: vi.fn(),
+    clearAnswered: vi.fn(),
+    isLoading: false,
   };
+  const mockQuestionStates = new Map<string, MockQuestionState>();
+  const useAskUserQuestionMock = vi.fn((sessionId: string | undefined) =>
+    (sessionId ? mockQuestionStates.get(sessionId) : undefined) ??
+    defaultQuestionState,
+  );
+  const mockQuestionInputParams: UseQuestionInputParams[] = [];
+
   return {
-    useChatMockState,
-    useChatCalls: [] as unknown[][],
-    historyWindowCalls: [] as unknown[][],
+    mockQuestionStates,
+    mockQuestionInputParams,
+    useAskUserQuestionMock,
   };
 });
 
@@ -90,10 +160,63 @@ const { useChatMockState, useChatCalls, historyWindowCalls } = vi.hoisted(() => 
 // Mocks
 // ============================================================================
 
+// Spy on ChatMessageList's props while delegating to the real implementation,
+// so prop-forwarding tests can assert without breaking transcript-content tests.
+const { chatMessageListPropsCalls } = vi.hoisted(() => ({
+  chatMessageListPropsCalls: [] as Array<Record<string, unknown>>,
+}));
+
+vi.mock("./ChatMessageList", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./ChatMessageList")>();
+  const React = await import("react");
+  const ChatMessageList = React.forwardRef<unknown, Record<string, unknown>>(
+    function ChatMessageListSpy(props, ref) {
+      chatMessageListPropsCalls.push(props);
+      return React.createElement(actual.ChatMessageList, { ...props, ref });
+    },
+  );
+  return { ...actual, ChatMessageList };
+});
+
 // Mock Tauri event system (already in setup.ts but ensure coverage)
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(() => Promise.resolve(() => {})),
   emit: vi.fn(),
+}));
+
+vi.mock("@/hooks/useFeatureFlags", () => ({
+  useFeatureFlags: () => ({ data: mockFeatureFlags }),
+}));
+
+vi.mock("@/hooks/usePersonas", () => ({
+  usePersonas: () => ({ data: [] }),
+  useSwitchConversationPersona: () => ({
+    mutateAsync: mockSwitchConversationPersona,
+    isPending: false,
+  }),
+}));
+
+vi.mock("./PersonaChip", () => ({
+  PersonaChip: ({
+    conversationId,
+    lastRunPersonaSlug,
+    lastRunPersonaInjected,
+    lastRunPersonaSkippedReason,
+  }: {
+    conversationId: string;
+    lastRunPersonaSlug?: string | null;
+    lastRunPersonaInjected?: boolean | null;
+    lastRunPersonaSkippedReason?: string | null;
+  }) => (
+    <div
+      data-testid="persona-chip"
+      data-conversation-id={conversationId}
+      data-skipped-reason={lastRunPersonaSkippedReason ?? undefined}
+    >
+      {lastRunPersonaSlug ?? "No persona"}
+      {lastRunPersonaInjected === false ? " not applied" : ""}
+    </div>
+  ),
 }));
 
 // Mock the event bus provider
@@ -111,55 +234,79 @@ vi.mock("@/hooks/useChat", () => ({
   useChat: (...args: unknown[]) => {
     useChatCalls.push(args);
     return {
-    messages: {
-      data: { messages: useChatMockState.messages, conversation: useChatMockState.conversation },
-      isLoading: false,
-    },
-    sendMessage: { mutateAsync: vi.fn(), isPending: false },
-    conversations: { data: useChatMockState.conversations, isLoading: false },
-    switchConversation: vi.fn(),
-    createConversation: vi.fn(),
+      messages: {
+        data: {
+          messages: useChatMockState.messages,
+          conversation: useChatMockState.conversation,
+        },
+        isLoading: false,
+      },
+      sendMessage: { mutateAsync: vi.fn(), isPending: false },
+      conversations: {
+        data: useChatMockState.conversations,
+        isLoading: useChatMockState.conversationsLoading,
+      },
+      switchConversation: vi.fn(),
+      createConversation: vi.fn(),
     };
   },
   useConversation: (...args: unknown[]) => {
     historyWindowCalls.push(["useConversation", ...args]);
     return {
-    data: undefined,
-    isLoading: false,
-    error: null,
+      data: undefined,
+      isLoading: false,
+      error: null,
     };
   },
   useConversationHistoryWindow: (...args: unknown[]) => {
     historyWindowCalls.push(args);
     return {
-    data: useChatMockState.historyData,
-    isLoading: false,
-    isFetchingOlderMessages: false,
-    hasOlderMessages: false,
-    loadedStartIndex: useChatMockState.historyData?.loadedStartIndex ?? 0,
-    fetchOlderMessages: vi.fn(),
+      data: useChatMockState.historyData,
+      isLoading: false,
+      isFetchingOlderMessages: false,
+      hasOlderMessages: false,
+      loadedStartIndex: useChatMockState.historyData?.loadedStartIndex ?? 0,
+      fetchOlderMessages: vi.fn(),
     };
   },
   useConversationTimelineWindow: (...args: unknown[]) => {
     historyWindowCalls.push(args);
     return {
-    data: useChatMockState.timelineData ?? useChatMockState.historyData,
-    isLoading: false,
-    isFetchingOlderMessages: false,
-    hasOlderMessages: useChatMockState.timelineHasOlderMessages,
-    loadedStartIndex:
-      (useChatMockState.timelineData ?? useChatMockState.historyData)?.loadedStartIndex ?? 0,
-    fetchOlderMessages: vi.fn(),
+      data: useChatMockState.timelineData ?? useChatMockState.historyData,
+      isLoading: false,
+      isFetchingOlderMessages: false,
+      hasOlderMessages: useChatMockState.timelineHasOlderMessages,
+      loadedStartIndex:
+        (useChatMockState.timelineData ?? useChatMockState.historyData)
+          ?.loadedStartIndex ?? 0,
+      fetchOlderMessages: vi.fn(),
     };
   },
+  isOptimisticConversationId: (conversationId: string | null | undefined) =>
+    Boolean(conversationId?.startsWith("optimistic-conversation:")),
   getCachedConversationMessages: () =>
     useChatMockState.historyData?.messages ?? useChatMockState.messages,
   chatKeys: {
     all: ["chat"],
-    conversationList: (type: string, id: string) => ["chat", "conversations", type, id],
+    conversationList: (type: string, id: string) => [
+      "chat",
+      "conversations",
+      type,
+      id,
+    ],
     conversation: (id: string) => ["chat", "conversation", id],
-    conversationHistory: (id: string) => ["chat", "conversation", id, "history"],
-    conversationTimeline: (id: string) => ["chat", "conversation", id, "timeline"],
+    conversationHistory: (id: string) => [
+      "chat",
+      "conversation",
+      id,
+      "history",
+    ],
+    conversationTimeline: (id: string) => [
+      "chat",
+      "conversation",
+      id,
+      "timeline",
+    ],
     agentRun: (id: string) => ["chat", "agentRun", id],
   },
 }));
@@ -183,7 +330,7 @@ const mockChatPanelContext = {
   activeConversationId: null as string | null,
   streamingToolCalls: [] as unknown[],
   setStreamingToolCalls: vi.fn(),
-  streamingContentBlocks: [] as Array<{ type: "text"; text: string }>,
+  streamingContentBlocks: [] as StreamingContentBlock[],
   setStreamingContentBlocks: vi.fn(),
   streamingTasks: new Map(),
   setStreamingTasks: vi.fn(),
@@ -200,13 +347,16 @@ vi.mock("@/hooks/useChatPanelContext", () => ({
 
 // Mock useChatActions (replaces useIntegratedChatHandlers)
 vi.mock("@/hooks/useChatActions", () => ({
-  useChatActions: () => ({
-    handleSend: vi.fn(),
-    handleEditLastQueued: vi.fn(),
+  useChatActions: (options: { onPersonaUnavailable?: (message: string) => void }) => {
+    mockChatActions.lastOptions = options;
+    return {
+    handleSend: mockChatActions.handleSend,
+    handleEditLastQueued: mockChatActions.handleEditLastQueued,
     handleDeleteQueuedMessage: vi.fn(),
     handleEditQueuedMessage: vi.fn(),
     handleStopAgent: vi.fn(),
-  }),
+    };
+  },
 }));
 
 // Mock useChatEvents (replaces useIntegratedChatEvents)
@@ -226,26 +376,24 @@ vi.mock("@/hooks/useAgentEvents", () => ({
 
 // Mock useAskUserQuestion
 vi.mock("@/hooks/useAskUserQuestion", () => ({
-  useAskUserQuestion: () => ({
-    activeQuestion: null,
-    answeredQuestion: undefined,
-    submitAnswer: vi.fn().mockResolvedValue(true),
-    dismissQuestion: vi.fn(),
-    clearAnswered: vi.fn(),
-    isLoading: false,
-  }),
+  useAskUserQuestion: useAskUserQuestionMock,
 }));
 
 // Mock useQuestionInput
 vi.mock("@/hooks/useQuestionInput", () => ({
-  useQuestionInput: () => ({
-    selectedOptions: new Set(),
-    questionInputValue: "",
-    setQuestionInputValue: vi.fn(),
-    handleChipClick: vi.fn(),
-    handleMatchedOptions: vi.fn(),
-    handleQuestionSend: vi.fn(),
-  }),
+  useQuestionInput: (params: UseQuestionInputParams) => {
+    mockQuestionInputParams.push(params);
+    return {
+      selectedOptions: new Set(),
+      questionInputValue: "",
+      setQuestionInputValue: vi.fn(),
+      handleChipClick: vi.fn(),
+      handleMatchedOptions: vi.fn(),
+      handleQuestionSend: vi.fn(),
+      handleQuestionSkip: vi.fn(),
+      handleQuestionOptionSubmit: vi.fn(),
+    };
+  },
 }));
 
 // Mock useChatAttachments
@@ -307,16 +455,27 @@ function TestWrapper({ children }: { children: React.ReactNode }) {
 describe("IntegratedChatPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockChatActions.lastOptions = null;
+    mockChatActions.handleSend.mockResolvedValue(undefined);
+    mockChatActions.handleEditLastQueued.mockReset();
+    mockSwitchConversationPersona.mockResolvedValue(undefined);
+    mockFeatureFlags.agentPersonas = false;
+    mockFeatureFlags.activityPage = false;
     mockTasks = [];
+    vi.mocked(chatApi.getAgentRunStatus).mockResolvedValue(null);
     // Reset useChat mock state to defaults (empty messages, no conversation context)
     useChatMockState.messages = [];
     useChatMockState.conversation = null;
     useChatMockState.conversations = [];
+    useChatMockState.conversationsLoading = false;
     useChatMockState.historyData = undefined;
     useChatMockState.timelineData = undefined;
     useChatMockState.timelineHasOlderMessages = false;
     useChatCalls.length = 0;
     historyWindowCalls.length = 0;
+    mockQuestionStates.clear();
+    mockQuestionInputParams.length = 0;
+    chatMessageListPropsCalls.length = 0;
 
     // Reset stores
     act(() => {
@@ -332,7 +491,7 @@ describe("IntegratedChatPanel", () => {
         isSending: {},
         activeConversationIds: {},
         activeAgentRunIds: {},
-        isTeamActive: {},
+        activeAgentRunHarnesses: {},
         lastAgentEventTimestamp: {},
         toolCallStartTimes: {},
         lastToolCallCompletionTimestamp: {},
@@ -360,84 +519,815 @@ describe("IntegratedChatPanel", () => {
     mockChatPanelContext.isFinalizing = false;
   });
 
+  it("pins the below-transcript chrome inside a constant-height viewport", () => {
+    render(
+      <TestWrapper>
+        <IntegratedChatPanel projectId="project-1" />
+      </TestWrapper>,
+    );
+
+    const chrome = screen.getByTestId("chat-below-transcript-chrome");
+    expect(chrome).toHaveClass("absolute", "inset-x-0", "bottom-0", "z-20");
+    expect(chrome).not.toHaveClass("shrink-0");
+    expect(chrome).not.toHaveClass("justify-end");
+    expect(chrome.parentElement).toHaveClass("relative", "flex-1", "min-h-0");
+  });
+
+  it("does not draw a divider between the transcript and composer chrome", () => {
+    render(
+      <TestWrapper>
+        <IntegratedChatPanel projectId="project-1" />
+      </TestWrapper>,
+    );
+
+    const chromeBackdrop = screen.getByTestId(
+      "chat-below-transcript-chrome",
+    ).firstElementChild;
+    const inputContainer = screen.getByTestId("chat-input-container");
+
+    expect(chromeBackdrop).not.toHaveStyle({ borderTopWidth: "1px" });
+    expect(inputContainer).not.toHaveStyle({ borderTopWidth: "1px" });
+  });
+
+  it("reserves the measured composer inset in the empty transcript branch", () => {
+    render(
+      <TestWrapper>
+        <IntegratedChatPanel projectId="project-1" />
+      </TestWrapper>,
+    );
+
+    expect(screen.getByTestId("integrated-chat-messages")).toHaveStyle({
+      paddingBottom: "var(--chat-bottom-inset, 0px)",
+    });
+  });
+
+  it("reserves the measured composer inset in the loading transcript branch", () => {
+    useChatMockState.conversationsLoading = true;
+
+    render(
+      <TestWrapper>
+        <IntegratedChatPanel projectId="project-1" />
+      </TestWrapper>,
+    );
+
+    expect(screen.getByTestId("integrated-chat-messages")).toHaveStyle({
+      paddingBottom: "var(--chat-bottom-inset, 0px)",
+    });
+  });
+
+  it("collapses composer padding when a read-only host renders no composer", () => {
+    render(
+      <TestWrapper>
+        <IntegratedChatPanel
+          projectId="project-1"
+          renderComposer={() => null}
+        />
+      </TestWrapper>,
+    );
+
+    const inputShell = screen.getByTestId("integrated-chat-input-shell");
+    expect(inputShell.lastElementChild).toHaveClass("empty:p-0");
+    expect(inputShell.lastElementChild).toBeEmptyDOMElement();
+  });
+
+  it("deduplicates question bridges and prioritizes the conversation question", () => {
+    const questionState = (
+      requestId: string,
+      sessionId: string,
+      question: string,
+    ): MockQuestionState => ({
+      activeQuestion: {
+        requestId,
+        sessionId,
+        question,
+        options: [],
+        multiSelect: false,
+      },
+      answeredQuestion: undefined,
+      submitAnswer: vi.fn().mockResolvedValue({
+        success: true,
+        deliveredToWaitingAgent: true,
+      }),
+      dismissQuestion: vi.fn(),
+      clearAnswered: vi.fn(),
+      isLoading: false,
+    });
+    mockQuestionStates.set(
+      "conversation-1",
+      questionState(
+        "conversation-question",
+        "conversation-1",
+        "Conversation question",
+      ),
+    );
+    mockQuestionStates.set(
+      "planning-session-1",
+      questionState(
+        "planning-question",
+        "planning-session-1",
+        "Planning question",
+      ),
+    );
+
+    render(
+      <TestWrapper>
+        <IntegratedChatPanel
+          projectId="project-1"
+          additionalQuestionSessionIds={[
+            "conversation-1",
+            "conversation-1",
+            "planning-session-1",
+            "ignored-session",
+          ]}
+        />
+      </TestWrapper>,
+    );
+
+    expect(useAskUserQuestionMock.mock.calls.slice(-3)).toEqual([
+      ["task-1"],
+      ["conversation-1"],
+      ["planning-session-1"],
+    ]);
+    expect(screen.getByTestId("question-input-banner")).toHaveTextContent(
+      "Conversation question",
+    );
+    expect(screen.queryByText("Planning question")).not.toBeInTheDocument();
+  });
+
+  it("keeps both bridge hook slots subscribed when only a conversation question is available", () => {
+    mockQuestionStates.set("conversation-1", {
+      activeQuestion: {
+        requestId: "conversation-question",
+        sessionId: "conversation-1",
+        question: "Conversation-only question",
+        options: [],
+        multiSelect: false,
+      },
+      answeredQuestion: undefined,
+      submitAnswer: vi.fn().mockResolvedValue({
+        success: true,
+        deliveredToWaitingAgent: true,
+      }),
+      dismissQuestion: vi.fn(),
+      clearAnswered: vi.fn(),
+      isLoading: false,
+    });
+
+    render(
+      <TestWrapper>
+        <IntegratedChatPanel
+          projectId="project-1"
+          additionalQuestionSessionIds={["conversation-1"]}
+        />
+      </TestWrapper>,
+    );
+
+    expect(useAskUserQuestionMock.mock.calls.slice(-3)).toEqual([
+      ["task-1"],
+      ["conversation-1"],
+      [undefined],
+    ]);
+    expect(screen.getByTestId("question-input-banner")).toHaveTextContent(
+      "Conversation-only question",
+    );
+  });
+
+  it("shows an active planning question over an answered primary and routes its answer", async () => {
+    const primarySubmitAnswer = vi.fn().mockResolvedValue({
+      success: true,
+      deliveredToWaitingAgent: true,
+    });
+    const planningSubmitAnswer = vi.fn().mockResolvedValue({
+      success: true,
+      deliveredToWaitingAgent: true,
+    });
+    mockQuestionStates.set("task-1", {
+      activeQuestion: null,
+      answeredQuestion: "Previous answer",
+      submitAnswer: primarySubmitAnswer,
+      dismissQuestion: vi.fn(),
+      clearAnswered: vi.fn(),
+      isLoading: false,
+    });
+    mockQuestionStates.set("planning-session-1", {
+      activeQuestion: {
+        requestId: "planning-question",
+        sessionId: "planning-session-1",
+        question: "Planning-only question",
+        options: [{ label: "A", value: "a" }],
+        multiSelect: false,
+      },
+      answeredQuestion: undefined,
+      submitAnswer: planningSubmitAnswer,
+      dismissQuestion: vi.fn(),
+      clearAnswered: vi.fn(),
+      isLoading: false,
+    });
+
+    render(
+      <TestWrapper>
+        <IntegratedChatPanel
+          projectId="project-1"
+          additionalQuestionSessionIds={[
+            "conversation-1",
+            "planning-session-1",
+          ]}
+        />
+      </TestWrapper>,
+    );
+
+    expect(screen.getByTestId("question-input-banner")).toHaveTextContent(
+      "Planning-only question",
+    );
+    const response: AskUserQuestionResponse = {
+      requestId: "planning-question",
+      selectedOptions: ["a"],
+    };
+    await mockQuestionInputParams.at(-1)!.submitAnswer(response);
+
+    expect(planningSubmitAnswer).toHaveBeenCalledWith(response);
+    expect(primarySubmitAnswer).not.toHaveBeenCalled();
+  });
+
+  it("hides optimistic Claude queues, restores Codex queues, and rejects an old clear", () => {
+    const queuedMessage = {
+      id: "queued-1",
+      content: "Follow up",
+      createdAt: "2026-07-23T00:00:00Z",
+      isEditing: false,
+      attachmentIds: [],
+      source: "optimistic" as const,
+    };
+    const hostComposer = (props: IntegratedChatComposerRenderProps) => (
+      <div
+        data-testid="queue-aware-host-composer"
+        data-has-queued={String(props.hasQueuedMessages)}
+      />
+    );
+
+    act(() => {
+      useChatStore.setState({
+        queuedMessages: { "task:task-1": [queuedMessage] },
+        agentStatus: { "task:task-1": "generating" },
+        activeAgentRunIds: { "task:task-1": "run-claude" },
+        activeAgentRunHarnesses: { "task:task-1": "claude" },
+      });
+    });
+
+    render(
+      <TestWrapper>
+        <IntegratedChatPanel
+          projectId="project-1"
+          renderComposer={hostComposer}
+        />
+      </TestWrapper>,
+    );
+
+    expect(screen.queryByTestId("queued-message-list")).not.toBeInTheDocument();
+    expect(screen.getByTestId("queue-aware-host-composer")).toHaveAttribute(
+      "data-has-queued",
+      "false",
+    );
+
+    act(() => {
+      useChatStore.getState().setActiveAgentRun(
+        "task:task-1",
+        "run-codex",
+        "codex",
+      );
+    });
+
+    expect(screen.getByTestId("queued-message-list")).toBeInTheDocument();
+    expect(screen.getByTestId("queue-aware-host-composer")).toHaveAttribute(
+      "data-has-queued",
+      "true",
+    );
+
+    act(() => {
+      useChatStore.getState().clearActiveAgentRun("task:task-1", "run-claude");
+    });
+
+    expect(screen.getByTestId("queued-message-list")).toBeInTheDocument();
+    expect(screen.getByTestId("queue-aware-host-composer")).toHaveAttribute(
+      "data-has-queued",
+      "true",
+    );
+  });
+
+  it("keeps backend-confirmed queued messages visible for an interactive running run", () => {
+    const hostComposer = (props: IntegratedChatComposerRenderProps) => (
+      <div
+        data-testid="queue-aware-host-composer"
+        data-has-queued={String(props.hasQueuedMessages)}
+      />
+    );
+
+    act(() => {
+      useChatStore.setState({
+        queuedMessages: {
+          "task:task-1": [{
+            id: "queued-backend-1",
+            content: "Backend-confirmed follow up",
+            createdAt: "2026-07-31T10:00:00Z",
+            isEditing: false,
+            attachmentIds: [],
+            source: "backend",
+          }],
+        },
+        agentStatus: { "task:task-1": "generating" },
+        activeAgentRunIds: { "task:task-1": "run-claude" },
+        activeAgentRunHarnesses: { "task:task-1": "claude" },
+      });
+    });
+
+    render(
+      <TestWrapper>
+        <IntegratedChatPanel projectId="project-1" renderComposer={hostComposer} />
+      </TestWrapper>,
+    );
+
+    expect(screen.getByTestId("queued-message-list")).toBeInTheDocument();
+    expect(screen.getByTestId("queue-aware-host-composer")).toHaveAttribute(
+      "data-has-queued",
+      "true",
+    );
+  });
+
+  it.each([
+    ["idle Claude", "run-claude", "claude", "idle"],
+    ["a null harness", "run-unknown", null, "generating"],
+    ["a future harness", "run-future", "future-harness", "generating"],
+  ] as const)(
+    "keeps queued messages visible for %s",
+    (_caseName, runId, harness, status) => {
+      const hostComposer = (props: IntegratedChatComposerRenderProps) => (
+        <div data-testid="queue-aware-host-composer" data-has-queued={String(props.hasQueuedMessages)} />
+      );
+
+      act(() => {
+        useChatStore.setState({
+          queuedMessages: {
+            "task:task-1": [{
+              id: "queued-1",
+              content: "Follow up",
+              createdAt: "2026-07-23T00:00:00Z",
+              isEditing: false,
+              attachmentIds: [],
+            }],
+          },
+          activeAgentRunIds: runId ? { "task:task-1": runId } : {},
+          activeAgentRunHarnesses: runId ? { "task:task-1": harness } : {},
+          agentStatus: status === "idle" ? {} : { "task:task-1": status },
+        });
+      });
+
+      render(
+        <TestWrapper>
+          <IntegratedChatPanel projectId="project-1" renderComposer={hostComposer} />
+        </TestWrapper>,
+      );
+
+      expect(screen.getByTestId("queued-message-list")).toBeInTheDocument();
+      expect(screen.getByTestId("queue-aware-host-composer")).toHaveAttribute(
+        "data-has-queued",
+        "true",
+      );
+    },
+  );
+
+  it("hides recovery-only Claude queues from current conversation metadata", async () => {
+    mockChatPanelContext.activeConversationId = "conv-1";
+    useChatMockState.conversations = [{
+      id: "conv-1",
+      contextType: "task",
+      contextId: "task-1",
+      providerHarness: "claude",
+    }] as unknown as typeof useChatMockState.conversations;
+    vi.mocked(chatApi.getAgentRunStatus).mockResolvedValue({
+      id: "run-recovery",
+      status: "running",
+    } as never);
+    const hostComposer = (props: IntegratedChatComposerRenderProps) => (
+      <div data-testid="queue-aware-host-composer" data-has-queued={String(props.hasQueuedMessages)} />
+    );
+
+    act(() => {
+      useChatStore.setState({
+        queuedMessages: {
+          "task:task-1": [{
+            id: "queued-1",
+            content: "Follow up",
+            createdAt: "2026-07-23T00:00:00Z",
+            isEditing: false,
+            attachmentIds: [],
+          }],
+        },
+      });
+    });
+
+    render(
+      <TestWrapper>
+        <IntegratedChatPanel projectId="project-1" renderComposer={hostComposer} />
+      </TestWrapper>,
+    );
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("queued-message-list")).not.toBeInTheDocument();
+      expect(screen.getByTestId("queue-aware-host-composer")).toHaveAttribute(
+        "data-has-queued",
+        "false",
+      );
+    });
+  });
+
+  it("does not suppress from a Claude transcript when current metadata is not Claude", async () => {
+    mockChatPanelContext.activeConversationId = "conv-1";
+    useChatMockState.conversations = [{
+      id: "conv-1",
+      contextType: "task",
+      contextId: "task-1",
+      providerHarness: "codex",
+    }] as unknown as typeof useChatMockState.conversations;
+    useChatMockState.timelineData = {
+      conversation: {
+        id: "conv-1",
+        contextType: "task",
+        contextId: "task-1",
+        providerHarness: "claude",
+        providerSessionId: "claude-history-only",
+      },
+      messages: [],
+    };
+    vi.mocked(chatApi.getAgentRunStatus).mockResolvedValue({
+      id: "run-recovery",
+      status: "running",
+    } as never);
+    const hostComposer = (props: IntegratedChatComposerRenderProps) => (
+      <div data-testid="queue-aware-host-composer" data-has-queued={String(props.hasQueuedMessages)} />
+    );
+
+    act(() => {
+      useChatStore.setState({
+        queuedMessages: {
+          "task:task-1": [{
+            id: "queued-1",
+            content: "Follow up",
+            createdAt: "2026-07-23T00:00:00Z",
+            isEditing: false,
+            attachmentIds: [],
+          }],
+        },
+      });
+    });
+
+    render(
+      <TestWrapper>
+        <IntegratedChatPanel projectId="project-1" renderComposer={hostComposer} />
+      </TestWrapper>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("queued-message-list")).toBeInTheDocument();
+      expect(screen.getByTestId("queue-aware-host-composer")).toHaveAttribute(
+        "data-has-queued",
+        "true",
+      );
+    });
+  });
+
+  it("uses the same hidden queue projection for the default helper and ArrowUp edit", () => {
+    act(() => {
+      useChatStore.setState({
+        queuedMessages: {
+          "task:task-1": [
+            {
+              id: "queued-1",
+              content: "Follow up",
+              createdAt: "2026-07-23T00:00:00Z",
+              isEditing: false,
+              attachmentIds: [],
+            },
+          ],
+        },
+        agentStatus: { "task:task-1": "generating" },
+        activeAgentRunIds: { "task:task-1": "run-claude" },
+        activeAgentRunHarnesses: { "task:task-1": "claude" },
+      });
+    });
+
+    render(
+      <TestWrapper>
+        <IntegratedChatPanel projectId="project-1" showHelperTextAlways />
+      </TestWrapper>,
+    );
+
+    expect(screen.queryByTestId("queued-message-list")).not.toBeInTheDocument();
+    expect(screen.queryByText(/edit queued/)).not.toBeInTheDocument();
+    fireEvent.keyDown(screen.getByTestId("chat-input-textarea"), {
+      key: "ArrowUp",
+    });
+    expect(mockChatActions.handleEditLastQueued).not.toHaveBeenCalled();
+  });
+
+  it("renders the persona chip only for flagged project conversations outside persona-builder mode", () => {
+    mockFeatureFlags.agentPersonas = true;
+    mockChatPanelContext.storeContextKey = "project:project-1";
+    mockChatPanelContext.currentContextType = "project";
+    mockChatPanelContext.currentContextId = "project-1";
+    mockChatPanelContext.activeConversationId = "conv-1";
+    useChatMockState.conversation = {
+      id: "conv-1",
+      contextType: "project",
+      contextId: "project-1",
+      agentMode: "chat",
+      providerHarness: null,
+      providerSessionId: null,
+    } as typeof useChatMockState.conversation;
+
+    const projectPanel = render(
+      <TestWrapper>
+        <IntegratedChatPanel projectId="project-1" selectedTaskIdOverride={null} />
+      </TestWrapper>,
+    );
+    const projectPersonaChips = screen.getAllByTestId("persona-chip");
+    expect(projectPersonaChips).toHaveLength(2);
+    for (const chip of projectPersonaChips) {
+      expect(chip).toHaveAttribute("data-conversation-id", "conv-1");
+      expect(chip).toHaveTextContent("No persona");
+    }
+    projectPanel.unmount();
+
+    for (const contextType of ["ideation", "task", "merge", "review"] as const) {
+      mockChatPanelContext.currentContextType = contextType;
+      mockChatPanelContext.currentContextId = `${contextType}-1`;
+      mockChatPanelContext.storeContextKey = `${contextType}:${contextType}-1`;
+      mockChatPanelContext.activeConversationId = "conv-1";
+      useChatMockState.conversation = {
+        id: "conv-1",
+        contextType,
+        contextId: `${contextType}-1`,
+        providerHarness: null,
+        providerSessionId: null,
+      } as typeof useChatMockState.conversation;
+      const panel = render(
+        <TestWrapper>
+          <IntegratedChatPanel projectId="project-1" selectedTaskIdOverride={null} />
+        </TestWrapper>,
+      );
+      expect(screen.queryByTestId("persona-chip")).not.toBeInTheDocument();
+      panel.unmount();
+    }
+
+    mockChatPanelContext.currentContextType = "project";
+    mockChatPanelContext.currentContextId = "project-1";
+    mockChatPanelContext.storeContextKey = "project:project-1";
+    useChatMockState.conversation = {
+      id: "conv-1",
+      contextType: "project",
+      contextId: "project-1",
+      agentMode: "persona_builder",
+      providerHarness: null,
+      providerSessionId: null,
+    } as typeof useChatMockState.conversation;
+    const personaBuilderPanel = render(
+      <TestWrapper>
+        <IntegratedChatPanel projectId="project-1" selectedTaskIdOverride={null} />
+      </TestWrapper>,
+    );
+    expect(screen.queryByTestId("persona-chip")).not.toBeInTheDocument();
+    personaBuilderPanel.unmount();
+
+    mockFeatureFlags.agentPersonas = false;
+    useChatMockState.conversation = {
+      id: "conv-1",
+      contextType: "project",
+      contextId: "project-1",
+      agentMode: "chat",
+      providerHarness: null,
+      providerSessionId: null,
+    } as typeof useChatMockState.conversation;
+    render(
+      <TestWrapper>
+        <IntegratedChatPanel projectId="project-1" selectedTaskIdOverride={null} />
+      </TestWrapper>,
+    );
+    expect(screen.queryByTestId("persona-chip")).not.toBeInTheDocument();
+  });
+
+  it("keeps the header and composer persona confirmations on the same attribution", () => {
+    mockFeatureFlags.agentPersonas = true;
+    mockChatPanelContext.storeContextKey = "project:project-1";
+    mockChatPanelContext.currentContextType = "project";
+    mockChatPanelContext.currentContextId = "project-1";
+    mockChatPanelContext.activeConversationId = "conv-1";
+    useChatMockState.conversation = {
+      id: "conv-1",
+      contextType: "project",
+      contextId: "project-1",
+      agentMode: "chat",
+      personaId: "persona-1",
+      lastRunPersonaRunId: "run-1",
+      lastRunPersonaId: "persona-1",
+      lastRunPersonaSlug: "design-voice",
+      lastRunPersonaVersion: 1,
+      lastRunPersonaInjected: true,
+      providerHarness: null,
+      providerSessionId: null,
+    } as typeof useChatMockState.conversation;
+
+    render(
+      <TestWrapper>
+        <IntegratedChatPanel projectId="project-1" selectedTaskIdOverride={null} />
+      </TestWrapper>,
+    );
+
+    const chips = screen.getAllByTestId("persona-chip");
+    expect(chips).toHaveLength(2);
+    expect(chips[0]).toHaveTextContent("design-voice");
+    expect(chips[1]).toHaveTextContent("design-voice");
+  });
+
+  it("supplies the native persona runtime field to a host-owned Agent composer", () => {
+    mockFeatureFlags.agentPersonas = true;
+    mockChatPanelContext.storeContextKey = "project:project-1";
+    mockChatPanelContext.currentContextType = "project";
+    mockChatPanelContext.currentContextId = "project-1";
+    mockChatPanelContext.activeConversationId = "conv-1";
+    useChatMockState.conversation = {
+      id: "conv-1",
+      contextType: "project",
+      contextId: "project-1",
+      agentMode: "chat",
+      providerHarness: null,
+      providerSessionId: null,
+    } as typeof useChatMockState.conversation;
+
+    let receivedPersona: IntegratedChatComposerRenderProps["persona"];
+    const hostComposer = (props: IntegratedChatComposerRenderProps) => {
+      receivedPersona = props.persona;
+      return (
+        <div data-testid="host-composer" data-persona={props.persona?.value} />
+      );
+    };
+
+    const panel = render(
+      <TestWrapper>
+        <IntegratedChatPanel
+          projectId="project-1"
+          selectedTaskIdOverride={null}
+          hideSessionToolbar
+          renderComposer={hostComposer}
+        />
+      </TestWrapper>,
+    );
+
+    expect(receivedPersona).toBeDefined();
+    expect(receivedPersona?.testId).toBe("agent-composer-persona");
+    const host = screen.getByTestId("host-composer");
+    expect(host).toHaveAttribute("data-persona", "__no_persona__");
+    panel.unmount();
+  });
+
+  it("passes a skipped last-run attribution to the composer confirmation", () => {
+    mockFeatureFlags.agentPersonas = true;
+    mockChatPanelContext.storeContextKey = "project:project-1";
+    mockChatPanelContext.currentContextType = "project";
+    mockChatPanelContext.currentContextId = "project-1";
+    mockChatPanelContext.activeConversationId = "conv-1";
+    useChatMockState.conversation = {
+      id: "conv-1",
+      contextType: "project",
+      contextId: "project-1",
+      agentMode: "chat",
+      personaId: "persona-1",
+      lastRunPersonaRunId: "run-1",
+      lastRunPersonaId: "persona-1",
+      lastRunPersonaSlug: "design-voice",
+      lastRunPersonaVersion: 1,
+      lastRunPersonaInjected: false,
+      lastRunPersonaSkippedReason: "native_agent_flag",
+      providerHarness: null,
+      providerSessionId: null,
+    } as typeof useChatMockState.conversation;
+
+    render(
+      <TestWrapper>
+        <IntegratedChatPanel projectId="project-1" selectedTaskIdOverride={null} />
+      </TestWrapper>,
+    );
+
+    const composerChip = screen
+      .getByTestId("chat-input-persona-control")
+      .querySelector('[data-testid="persona-chip"]');
+    expect(composerChip).toHaveTextContent("design-voice not applied");
+    expect(composerChip).toHaveAttribute(
+      "data-skipped-reason",
+      "native_agent_flag",
+    );
+  });
+
+  it("shows a persona-unavailable composer notice and clears the binding before one retry", async () => {
+    mockChatPanelContext.storeContextKey = "project:project-1";
+    mockChatPanelContext.currentContextType = "project";
+    mockChatPanelContext.currentContextId = "project-1";
+    mockChatPanelContext.activeConversationId = "conv-1";
+    useChatMockState.conversation = {
+      id: "conv-1",
+      contextType: "project",
+      contextId: "project-1",
+      providerHarness: null,
+      providerSessionId: null,
+    } as typeof useChatMockState.conversation;
+
+    render(
+      <TestWrapper>
+        <IntegratedChatPanel
+          projectId="project-1"
+          selectedTaskIdOverride={null}
+          renderComposer={({ onSend }) => (
+            <button type="button" onClick={() => void onSend("retry this")}>Send</button>
+          )}
+        />
+      </TestWrapper>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => {
+      expect(mockChatActions.handleSend).toHaveBeenCalledWith(
+        "retry this",
+        undefined,
+        undefined,
+      );
+    });
+
+    act(() => {
+      mockChatActions.lastOptions?.onPersonaUnavailable?.(
+        "[Persona unavailable: Reviewer Voice was archived]",
+      );
+    });
+
+    expect(screen.getByTestId("persona-unavailable-notice")).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Remove persona and retry" }),
+    );
+
+    await waitFor(() => {
+      expect(mockSwitchConversationPersona).toHaveBeenCalledWith({
+        conversationId: "conv-1",
+        personaId: null,
+      });
+      expect(mockChatActions.handleSend).toHaveBeenCalledTimes(2);
+    });
+  });
+
   describe("task selection override", () => {
-    it("can ignore the global selected task when host surfaces keep chat pinned to project context", () => {
+    it("omits task context when the host keeps chat pinned to project context", () => {
       render(
         <TestWrapper>
           <IntegratedChatPanel
             projectId="project-1"
             selectedTaskIdOverride={null}
           />
-        </TestWrapper>
+        </TestWrapper>,
       );
 
       expect(mockUseChatPanelContext).toHaveBeenCalledWith(
         expect.objectContaining({
           projectId: "project-1",
           selectedTaskId: undefined,
-        })
+        }),
       );
     });
 
-    it("observes all chrome below the transcript so any sibling height change can update transcript layout", async () => {
-      const observedTargets: Element[] = [];
-      const resizeCallbacks: ResizeObserverCallback[] = [];
-      const originalResizeObserver = globalThis.ResizeObserver;
-
-      class MockResizeObserver implements ResizeObserver {
-        constructor(callback: ResizeObserverCallback) {
-          resizeCallbacks.push(callback);
-        }
-
-        disconnect = vi.fn();
-        observe = vi.fn((target: Element) => {
-          observedTargets.push(target);
+    it("does not borrow a parent conversation override for history stages without transcripts", () => {
+      act(() => {
+        useUiStore.setState({
+          taskHistoryState: {
+            status: "reviewing",
+            timestamp: "2026-07-07T10:30:00Z",
+            contextType: "review",
+            hasConversation: false,
+          },
         });
-        unobserve = vi.fn();
-      }
-
-      Object.defineProperty(globalThis, "ResizeObserver", {
-        value: MockResizeObserver,
-        configurable: true,
-        writable: true,
       });
 
-      try {
-        render(
-          <TestWrapper>
-            <IntegratedChatPanel
-              projectId="project-1"
-              renderComposer={() => (
-                <div data-testid="custom-composer">Composer with CTA chrome</div>
-              )}
-            />
-          </TestWrapper>
-        );
+      render(
+        <TestWrapper>
+          <IntegratedChatPanel
+            projectId="project-1"
+            conversationIdOverride="workspace-conversation"
+          />
+        </TestWrapper>
+      );
 
-        const belowTranscriptChrome = screen.getByTestId("chat-below-transcript-chrome");
-        const inputContainer = screen.getByTestId("chat-input-container");
-        expect(belowTranscriptChrome).toContainElement(inputContainer);
-        await waitFor(() => expect(observedTargets).toContain(belowTranscriptChrome));
-        expect(resizeCallbacks).toHaveLength(1);
-
-        act(() => {
-          resizeCallbacks[0]?.(
-            [{ contentRect: { height: 0 } as DOMRectReadOnly } as ResizeObserverEntry],
-            {} as ResizeObserver,
-          );
-        });
-      } finally {
-        if (originalResizeObserver === undefined) {
-          Reflect.deleteProperty(globalThis, "ResizeObserver");
-        } else {
-          Object.defineProperty(globalThis, "ResizeObserver", {
-            value: originalResizeObserver,
-            configurable: true,
-            writable: true,
-          });
-        }
-      }
+      expect(mockUseChatPanelContext).toHaveBeenCalledWith(
+        expect.objectContaining({
+          isHistoryMode: true,
+          overrideConversationId: null,
+        }),
+      );
     });
+
   });
 
   describe("transcript pagination", () => {
@@ -477,11 +1367,11 @@ describe("IntegratedChatPanel", () => {
             selectedTaskIdOverride={null}
             storeContextKeyOverride="project:project-1"
           />
-        </TestWrapper>
+        </TestWrapper>,
       );
 
       expect(useChatCalls.at(-1)?.[1]).toEqual(
-        expect.objectContaining({ skipActiveConversationQuery: true })
+        expect.objectContaining({ skipActiveConversationQuery: true }),
       );
       expect(historyWindowCalls).toEqual(
         expect.arrayContaining([
@@ -492,9 +1382,11 @@ describe("IntegratedChatPanel", () => {
               pageSize: 40,
             }),
           ],
-        ])
+        ]),
       );
-      expect(await screen.findByText("Latest loaded message")).toBeInTheDocument();
+      expect(
+        await screen.findByText("Latest loaded message"),
+      ).toBeInTheDocument();
     });
 
     it("keeps live client stream visible when a persisted timeline row is still streaming", async () => {
@@ -550,13 +1442,92 @@ describe("IntegratedChatPanel", () => {
             selectedTaskIdOverride={null}
             storeContextKeyOverride="project:project-1"
           />
-        </TestWrapper>
+        </TestWrapper>,
       );
 
-      expect(await screen.findByText("Live chunk from client events")).toBeInTheDocument();
+      expect(
+        await screen.findByText("Live chunk from client events"),
+      ).toBeInTheDocument();
     });
 
-    it("keeps logical transcript visible when the timeline query only has a tail window", async () => {
+    it("keeps live transcript mounted when only a hidden bootstrap row is persisted", async () => {
+      const liveTask: StreamingTask = {
+        toolUseId: "toolu-bootstrap-task",
+        toolName: "Task",
+        description: "Inspect hidden bootstrap handoff",
+        subagentType: "Explore",
+        model: "sonnet",
+        status: "running",
+        startedAt: Date.now(),
+        childToolCalls: [],
+      };
+      mockChatPanelContext.storeContextKey = "project:project-1";
+      mockChatPanelContext.currentContextType = "project";
+      mockChatPanelContext.currentContextId = "project-1";
+      mockChatPanelContext.activeConversationId = "conv-1";
+      mockChatPanelContext.streamingContentBlocks = [
+        { type: "text", text: "Live bootstrap streaming chunk" },
+        { type: "task", toolUseId: liveTask.toolUseId },
+      ];
+      mockChatPanelContext.streamingTasks = new Map([
+        [liveTask.toolUseId, liveTask],
+      ]);
+      useChatMockState.conversations = [{ id: "conv-1" }];
+      useChatMockState.timelineData = {
+        conversation: {
+          id: "conv-1",
+          contextType: "project",
+          contextId: "project-1",
+          providerHarness: "codex",
+          providerSessionId: "thread-1",
+          upstreamProvider: null,
+          providerProfile: null,
+        },
+        messages: [
+          {
+            id: "block:msg-bootstrap:0",
+            parentMessageId: "msg-bootstrap",
+            role: "user",
+            content: "Execute task: task-hidden",
+            metadata: JSON.stringify({
+              hidden_from_ui: true,
+              source: "task_runtime_bootstrap",
+            }),
+            createdAt: "2026-04-23T09:00:00Z",
+            toolCalls: null,
+            contentBlocks: null,
+            timelineStatus: "finalized",
+            timelineSequence: 1,
+          },
+        ],
+        loadedStartIndex: 0,
+      };
+      act(() => {
+        useChatStore.getState().setAgentRunning("project:project-1", true);
+      });
+
+      render(
+        <TestWrapper>
+          <IntegratedChatPanel
+            projectId="project-1"
+            selectedTaskIdOverride={null}
+            storeContextKeyOverride="project:project-1"
+          />
+        </TestWrapper>,
+      );
+
+      expect(
+        await screen.findByText("Live bootstrap streaming chunk"),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText("Inspect hidden bootstrap handoff"),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByText("Execute task: task-hidden"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("uses the timeline tail window even when older timeline blocks exist", async () => {
       mockChatPanelContext.storeContextKey = "project:project-1";
       mockChatPanelContext.currentContextType = "project";
       mockChatPanelContext.currentContextId = "project-1";
@@ -631,15 +1602,99 @@ describe("IntegratedChatPanel", () => {
             selectedTaskIdOverride={null}
             storeContextKeyOverride="project:project-1"
           />
-        </TestWrapper>
+        </TestWrapper>,
       );
 
-      expect(await screen.findByText("Initial user message")).toBeInTheDocument();
-      expect(screen.getByText("Full persisted assistant transcript")).toBeInTheDocument();
-      expect(screen.queryByText("Tail-only timeline block")).not.toBeInTheDocument();
+      expect(
+        await screen.findByText("Tail-only timeline block"),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByText("Full persisted assistant transcript"),
+      ).not.toBeInTheDocument();
     });
 
-    it("does not paint a tail-only timeline window before logical history arrives", async () => {
+    it("hides hidden bootstrap rows from the modern timeline window", async () => {
+      mockChatPanelContext.storeContextKey = "project:project-1";
+      mockChatPanelContext.currentContextType = "project";
+      mockChatPanelContext.currentContextId = "project-1";
+      mockChatPanelContext.activeConversationId = "conv-1";
+      useChatMockState.conversations = [{ id: "conv-1" }];
+      useChatMockState.conversation = {
+        contextType: "project",
+        contextId: "project-1",
+      };
+      useChatMockState.timelineData = {
+        conversation: {
+          id: "conv-1",
+          contextType: "project",
+          contextId: "project-1",
+          providerHarness: "codex",
+          providerSessionId: "thread-1",
+          upstreamProvider: null,
+          providerProfile: null,
+        },
+        messages: [
+          {
+            id: "block:msg-bootstrap:0",
+            parentMessageId: "msg-bootstrap",
+            role: "user",
+            content: "Execute task: task-hidden",
+            metadata: JSON.stringify({
+              hidden_from_ui: true,
+              source: "task_runtime_bootstrap",
+            }),
+            createdAt: "2026-04-23T09:00:00Z",
+            toolCalls: null,
+            contentBlocks: null,
+            timelineStatus: "finalized",
+            timelineSequence: 1,
+          },
+          {
+            id: "block:msg-user:0",
+            parentMessageId: "msg-user",
+            role: "user",
+            content: "Visible follow-up request",
+            createdAt: "2026-04-23T09:00:01Z",
+            toolCalls: null,
+            contentBlocks: null,
+            timelineStatus: "finalized",
+            timelineSequence: 2,
+          },
+          {
+            id: "block:msg-assistant:0",
+            parentMessageId: "msg-assistant",
+            role: "assistant",
+            content: "Visible assistant response",
+            createdAt: "2026-04-23T09:00:02Z",
+            toolCalls: null,
+            contentBlocks: null,
+            timelineStatus: "finalized",
+            timelineSequence: 3,
+          },
+        ],
+        loadedStartIndex: 0,
+      };
+
+      render(
+        <TestWrapper>
+          <IntegratedChatPanel
+            projectId="project-1"
+            selectedTaskIdOverride={null}
+            storeContextKeyOverride="project:project-1"
+          />
+        </TestWrapper>,
+      );
+
+      expect(
+        await screen.findByText("Visible follow-up request"),
+      ).toBeInTheDocument();
+      expect(
+        await screen.findByText("Visible assistant response"),
+      ).toBeInTheDocument();
+      expect(screen.queryByText("Execute task: task-hidden")).not.toBeInTheDocument();
+    });
+
+    it("paints the timeline tail window before legacy history arrives", async () => {
       mockChatPanelContext.storeContextKey = "project:project-1";
       mockChatPanelContext.currentContextType = "project";
       mockChatPanelContext.currentContextId = "project-1";
@@ -685,11 +1740,15 @@ describe("IntegratedChatPanel", () => {
             selectedTaskIdOverride={null}
             storeContextKeyOverride="project:project-1"
           />
-        </TestWrapper>
+        </TestWrapper>,
       );
 
-      expect(await screen.findByTestId("chat-panel-loading")).toBeInTheDocument();
-      expect(screen.queryByText("Tail-only timeline block")).not.toBeInTheDocument();
+      expect(
+        await screen.findByText("Tail-only timeline block"),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByTestId("chat-panel-loading"),
+      ).not.toBeInTheDocument();
     });
   });
 
@@ -722,10 +1781,12 @@ describe("IntegratedChatPanel", () => {
             projectId="project-1"
             contentWidthClassName="max-w-[980px]"
           />
-        </TestWrapper>
+        </TestWrapper>,
       );
 
-      expect(screen.getByTestId("integrated-chat-input-shell")).toHaveClass("max-w-[980px]");
+      expect(screen.getByTestId("integrated-chat-input-shell")).toHaveClass(
+        "max-w-[980px]",
+      );
     });
   });
 
@@ -794,8 +1855,11 @@ describe("IntegratedChatPanel", () => {
 
       render(
         <TestWrapper>
-          <IntegratedChatPanel projectId="project-1" />
-        </TestWrapper>
+          <IntegratedChatPanel
+            projectId="project-1"
+            selectedTaskIdOverride="task-1"
+          />
+        </TestWrapper>,
       );
 
       expect(screen.getByTestId("chat-input-stop")).toBeInTheDocument();
@@ -808,8 +1872,11 @@ describe("IntegratedChatPanel", () => {
       // After fix: isAgentRunning prop uses live run state only, not isExecutionMode
       render(
         <TestWrapper>
-          <IntegratedChatPanel projectId="project-1" />
-        </TestWrapper>
+          <IntegratedChatPanel
+            projectId="project-1"
+            selectedTaskIdOverride="task-1"
+          />
+        </TestWrapper>,
       );
 
       // Stop button should NOT show without a live agent run
@@ -819,8 +1886,11 @@ describe("IntegratedChatPanel", () => {
     it("hides Stop button when agent is not running and not in execution mode", () => {
       render(
         <TestWrapper>
-          <IntegratedChatPanel projectId="project-1" />
-        </TestWrapper>
+          <IntegratedChatPanel
+            projectId="project-1"
+            selectedTaskIdOverride="task-1"
+          />
+        </TestWrapper>,
       );
 
       expect(screen.queryByTestId("chat-input-stop")).not.toBeInTheDocument();
@@ -847,8 +1917,11 @@ describe("IntegratedChatPanel", () => {
 
       render(
         <TestWrapper>
-          <IntegratedChatPanel projectId="project-1" />
-        </TestWrapper>
+          <IntegratedChatPanel
+            projectId="project-1"
+            selectedTaskIdOverride="task-1"
+          />
+        </TestWrapper>,
       );
 
       // History mode makes input read-only, so stop button should be hidden
@@ -880,6 +1953,7 @@ describe("IntegratedChatPanel", () => {
           outputTokens: 40,
           cacheCreationTokens: 5,
           cacheReadTokens: 8,
+          processedTokens: 160,
           estimatedUsd: 0.42,
         },
         runUsageTotals: {
@@ -887,6 +1961,7 @@ describe("IntegratedChatPanel", () => {
           outputTokens: 40,
           cacheCreationTokens: 5,
           cacheReadTokens: 8,
+          processedTokens: 160,
           estimatedUsd: 0.42,
         },
         effectiveUsageTotals: {
@@ -894,6 +1969,7 @@ describe("IntegratedChatPanel", () => {
           outputTokens: 40,
           cacheCreationTokens: 5,
           cacheReadTokens: 8,
+          processedTokens: 160,
           estimatedUsd: 0.42,
         },
         usageCoverage: {
@@ -901,6 +1977,11 @@ describe("IntegratedChatPanel", () => {
           providerMessagesWithUsage: 1,
           runCount: 1,
           runsWithUsage: 1,
+          effectiveRunConversationCount: 0,
+          effectiveMessageConversationCount: 1,
+          legacyEstimatedSampleCount: 0,
+          fallbackEstimatedSampleCount: 0,
+          uncountedSampleCount: 0,
           effectiveTotalsSource: "messages",
         },
         attributionCoverage: {
@@ -909,23 +1990,81 @@ describe("IntegratedChatPanel", () => {
           runCount: 1,
           runsWithAttribution: 1,
         },
-        byHarness: [{ key: "codex", count: 1, usage: { inputTokens: 120, outputTokens: 40, cacheCreationTokens: 5, cacheReadTokens: 8, estimatedUsd: 0.42 } }],
-        byUpstreamProvider: [{ key: "openai", count: 1, usage: { inputTokens: 120, outputTokens: 40, cacheCreationTokens: 5, cacheReadTokens: 8, estimatedUsd: 0.42 } }],
-        byModel: [{ key: "gpt-5.4", count: 1, usage: { inputTokens: 120, outputTokens: 40, cacheCreationTokens: 5, cacheReadTokens: 8, estimatedUsd: 0.42 } }],
-        byEffort: [{ key: "high", count: 1, usage: { inputTokens: 120, outputTokens: 40, cacheCreationTokens: 5, cacheReadTokens: 8, estimatedUsd: 0.42 } }],
+        byHarness: [
+          {
+            key: "codex",
+            count: 1,
+            usage: {
+              inputTokens: 120,
+              outputTokens: 40,
+              cacheCreationTokens: 5,
+              cacheReadTokens: 8,
+              processedTokens: 160,
+              estimatedUsd: 0.42,
+            },
+          },
+        ],
+        byUpstreamProvider: [
+          {
+            key: "openai",
+            count: 1,
+            usage: {
+              inputTokens: 120,
+              outputTokens: 40,
+              cacheCreationTokens: 5,
+              cacheReadTokens: 8,
+              processedTokens: 160,
+              estimatedUsd: 0.42,
+            },
+          },
+        ],
+        byModel: [
+          {
+            key: "gpt-5.4",
+            count: 1,
+            usage: {
+              inputTokens: 120,
+              outputTokens: 40,
+              cacheCreationTokens: 5,
+              cacheReadTokens: 8,
+              processedTokens: 160,
+              estimatedUsd: 0.42,
+            },
+          },
+        ],
+        byEffort: [
+          {
+            key: "high",
+            count: 1,
+            usage: {
+              inputTokens: 120,
+              outputTokens: 40,
+              cacheCreationTokens: 5,
+              cacheReadTokens: 8,
+              processedTokens: 160,
+              estimatedUsd: 0.42,
+            },
+          },
+        ],
       });
       useChatStore.setState((state) => ({
         ...state,
         effectiveModel: {
           ...state.effectiveModel,
-          [mockChatPanelContext.storeContextKey]: { id: "gpt-5.4", label: "gpt-5.4" },
+          [mockChatPanelContext.storeContextKey]: {
+            id: "gpt-5.4",
+            label: "gpt-5.4",
+          },
         },
       }));
 
       render(
         <TestWrapper>
-          <IntegratedChatPanel projectId="project-1" />
-        </TestWrapper>
+          <IntegratedChatPanel
+            projectId="project-1"
+            selectedTaskIdOverride="task-1"
+          />
+        </TestWrapper>,
       );
 
       await waitFor(() => {
@@ -942,8 +2081,12 @@ describe("IntegratedChatPanel", () => {
       await waitFor(() => {
         expect(screen.getByText("High")).toBeInTheDocument();
       });
-      expect(screen.getByTestId("chat-session-stats-button")).toBeInTheDocument();
-      expect(screen.queryByText(/Continuing stored Codex session/)).not.toBeInTheDocument();
+      expect(
+        screen.getByTestId("chat-session-stats-button"),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByText(/Continuing stored Codex session/),
+      ).not.toBeInTheDocument();
     });
 
     it("shows fallback conversation stats when the dedicated stats query returns null", async () => {
@@ -991,15 +2134,22 @@ describe("IntegratedChatPanel", () => {
 
       render(
         <TestWrapper>
-          <IntegratedChatPanel projectId="project-1" />
-        </TestWrapper>
+          <IntegratedChatPanel
+            projectId="project-1"
+            selectedTaskIdOverride="task-1"
+          />
+        </TestWrapper>,
       );
 
-      const statsButton = await screen.findByTestId("chat-session-stats-button");
+      const statsButton = await screen.findByTestId(
+        "chat-session-stats-button",
+      );
       fireEvent.click(statsButton);
 
       expect(await screen.findByText("Conversation stats")).toBeInTheDocument();
-      expect(screen.queryByText("Stats are not available for this conversation.")).not.toBeInTheDocument();
+      expect(
+        screen.queryByText("Stats are not available for this conversation."),
+      ).not.toBeInTheDocument();
       await waitFor(() => {
         expect(screen.getByText("120")).toBeInTheDocument();
         expect(screen.getByText("40")).toBeInTheDocument();
@@ -1012,8 +2162,11 @@ describe("IntegratedChatPanel", () => {
     it("does not show active agent badge when no agent is running", () => {
       render(
         <TestWrapper>
-          <IntegratedChatPanel projectId="project-1" />
-        </TestWrapper>
+          <IntegratedChatPanel
+            projectId="project-1"
+            selectedTaskIdOverride="task-1"
+          />
+        </TestWrapper>,
       );
 
       // "Agent responding..." should NOT appear
@@ -1029,8 +2182,11 @@ describe("IntegratedChatPanel", () => {
 
       render(
         <TestWrapper>
-          <IntegratedChatPanel projectId="project-1" />
-        </TestWrapper>
+          <IntegratedChatPanel
+            projectId="project-1"
+            selectedTaskIdOverride="task-1"
+          />
+        </TestWrapper>,
       );
 
       expect(screen.getByText("Agent responding...")).toBeInTheDocument();
@@ -1043,8 +2199,11 @@ describe("IntegratedChatPanel", () => {
 
       render(
         <TestWrapper>
-          <IntegratedChatPanel projectId="project-1" />
-        </TestWrapper>
+          <IntegratedChatPanel
+            projectId="project-1"
+            selectedTaskIdOverride="task-1"
+          />
+        </TestWrapper>,
       );
 
       expect(screen.getByText("Agent responding...")).toBeInTheDocument();
@@ -1065,8 +2224,11 @@ describe("IntegratedChatPanel", () => {
 
       render(
         <TestWrapper>
-          <IntegratedChatPanel projectId="project-1" />
-        </TestWrapper>
+          <IntegratedChatPanel
+            projectId="project-1"
+            selectedTaskIdOverride="task-1"
+          />
+        </TestWrapper>,
       );
 
       // History mode disables agent activity
@@ -1082,7 +2244,7 @@ describe("IntegratedChatPanel", () => {
       render(
         <TestWrapper>
           <IntegratedChatPanel projectId="project-1" />
-        </TestWrapper>
+        </TestWrapper>,
       );
 
       // After fix: isAgentActive only uses isSending || isAgentRunning (live run state)
@@ -1096,7 +2258,7 @@ describe("IntegratedChatPanel", () => {
       render(
         <TestWrapper>
           <IntegratedChatPanel projectId="project-1" />
-        </TestWrapper>
+        </TestWrapper>,
       );
 
       expect(screen.getByTestId("integrated-chat-panel")).toBeInTheDocument();
@@ -1106,18 +2268,46 @@ describe("IntegratedChatPanel", () => {
       render(
         <TestWrapper>
           <IntegratedChatPanel projectId="project-1" />
-        </TestWrapper>
+        </TestWrapper>,
       );
 
       expect(screen.getByTestId("chat-input")).toBeInTheDocument();
     });
 
-    it("renders a custom composer when provided", async () => {
+    it("renders pending tool activity in the transcript without the deprecated working panel", () => {
       mockChatPanelContext.activeConversationId = "conv-1";
-      const renderComposer = vi.fn(({ enableAttachments, onLayoutChange }) => (
-        <button type="button" data-testid="custom-composer" onClick={onLayoutChange}>
+      mockChatPanelContext.streamingToolCalls = [{
+        id: "tool-1",
+        name: "Read",
+        arguments: { file_path: "src/app.ts" },
+      }];
+      act(() => {
+        useChatStore.setState({
+          isSending: { "task:task-1": true },
+          activeConversationIds: { "task:task-1": "conv-1" },
+        });
+      });
+
+      render(
+        <TestWrapper>
+          <IntegratedChatPanel projectId="project-1" />
+        </TestWrapper>,
+      );
+
+      expect(screen.queryByTestId("streaming-tool-indicator")).not.toBeInTheDocument();
+      expect(screen.getByRole("button", {
+        name: "Agent called 1 tool. Expand tool details.",
+      })).toBeInTheDocument();
+    });
+
+    it("renders a custom composer with its attachment contract", () => {
+      mockChatPanelContext.activeConversationId = "conv-1";
+      const renderComposer = vi.fn(({ enableAttachments }) => (
+        <button
+          type="button"
+          data-testid="custom-composer"
+        >
           {enableAttachments ? "attachments-enabled" : "attachments-disabled"}
-          {typeof onLayoutChange === "function" ? "-layout-callback" : ""}
         </button>
       ));
 
@@ -1127,22 +2317,22 @@ describe("IntegratedChatPanel", () => {
             projectId="project-1"
             renderComposer={renderComposer}
           />
-        </TestWrapper>
+        </TestWrapper>,
       );
 
-      expect(screen.getByTestId("custom-composer")).toHaveTextContent("attachments-enabled-layout-callback");
+      expect(screen.getByTestId("custom-composer")).toHaveTextContent(
+        "attachments-enabled",
+      );
       expect(screen.queryByTestId("chat-input")).not.toBeInTheDocument();
-
-      const renderCount = renderComposer.mock.calls.length;
-      fireEvent.click(screen.getByTestId("custom-composer"));
-
-      await waitFor(() => expect(renderComposer).toHaveBeenCalledTimes(renderCount + 1));
     });
 
     it("mounts the scrollable transcript instead of blocking on placeholder hydration", async () => {
       mockChatPanelContext.activeConversationId = "conv-1";
       useChatMockState.conversations = [{ id: "conv-1" }];
-      useChatMockState.conversation = { contextType: "task", contextId: "task-1" };
+      useChatMockState.conversation = {
+        contextType: "task",
+        contextId: "task-1",
+      };
       useChatMockState.messages = [
         {
           id: "msg-1",
@@ -1157,19 +2347,60 @@ describe("IntegratedChatPanel", () => {
       render(
         <TestWrapper>
           <IntegratedChatPanel projectId="project-1" />
-        </TestWrapper>
+        </TestWrapper>,
       );
 
       const transcript = screen.getByTestId("integrated-chat-messages");
       expect(transcript).toBeInTheDocument();
       expect(transcript).toHaveClass("overflow-hidden");
-      expect(screen.getByText("Existing conversation content")).toBeInTheDocument();
-      expect(screen.getByTestId("chat-transcript-settling-placeholders")).toBeInTheDocument();
+      expect(
+        screen.getByText("Existing conversation content"),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByTestId("chat-transcript-settling-placeholders"),
+      ).toBeInTheDocument();
 
       await waitFor(() =>
-        expect(screen.queryByTestId("chat-transcript-settling-placeholders")).not.toBeInTheDocument()
+        expect(
+          screen.queryByTestId("chat-transcript-settling-placeholders"),
+        ).not.toBeInTheDocument(),
       );
-      expect(screen.getByText("Existing conversation content")).toBeInTheDocument();
+      expect(
+        screen.getByText("Existing conversation content"),
+      ).toBeInTheDocument();
+    });
+
+    it("forwards storeContextKey to ChatMessageList as contextKey", async () => {
+      mockChatPanelContext.storeContextKey = "project:conv-1";
+      mockChatPanelContext.currentContextType = "project";
+      mockChatPanelContext.currentContextId = "conv-1";
+      mockChatPanelContext.activeConversationId = "conv-1";
+      useChatMockState.conversations = [{ id: "conv-1" }];
+      useChatMockState.conversation = {
+        contextType: "project",
+        contextId: "conv-1",
+      };
+      useChatMockState.messages = [
+        {
+          id: "msg-1",
+          role: "user",
+          content: "Existing conversation content",
+          createdAt: "2026-04-23T09:00:00Z",
+          toolCalls: null,
+          contentBlocks: null,
+        },
+      ];
+
+      render(
+        <TestWrapper>
+          <IntegratedChatPanel projectId="project-1" />
+        </TestWrapper>,
+      );
+
+      await waitFor(() => expect(chatMessageListPropsCalls.length).toBeGreaterThan(0));
+      const lastCall =
+        chatMessageListPropsCalls[chatMessageListPropsCalls.length - 1];
+      expect(lastCall?.contextKey).toBe(mockChatPanelContext.storeContextKey);
     });
   });
 
@@ -1189,7 +2420,7 @@ describe("IntegratedChatPanel", () => {
       render(
         <TestWrapper>
           <IntegratedChatPanel projectId="project-1" />
-        </TestWrapper>
+        </TestWrapper>,
       );
 
       // ChatInput should be rendered with attachment props
@@ -1215,7 +2446,7 @@ describe("IntegratedChatPanel", () => {
       render(
         <TestWrapper>
           <IntegratedChatPanel projectId="project-1" />
-        </TestWrapper>
+        </TestWrapper>,
       );
 
       // ChatInput should be in read-only mode, attachments disabled
@@ -1229,7 +2460,7 @@ describe("IntegratedChatPanel", () => {
       render(
         <TestWrapper>
           <IntegratedChatPanel projectId="project-1" />
-        </TestWrapper>
+        </TestWrapper>,
       );
 
       // ChatInput should be rendered but attachments disabled
@@ -1253,7 +2484,7 @@ describe("IntegratedChatPanel", () => {
       render(
         <TestWrapper>
           <IntegratedChatPanel projectId="project-1" />
-        </TestWrapper>
+        </TestWrapper>,
       );
 
       // ChatInput should be rendered with attachments
@@ -1279,7 +2510,7 @@ describe("IntegratedChatPanel", () => {
       render(
         <TestWrapper>
           <IntegratedChatPanel projectId="project-1" />
-        </TestWrapper>
+        </TestWrapper>,
       );
 
       // Note: We can't directly trigger send from this test as the ChatInput
@@ -1308,7 +2539,7 @@ describe("IntegratedChatPanel", () => {
       render(
         <TestWrapper>
           <IntegratedChatPanel projectId="project-1" />
-        </TestWrapper>
+        </TestWrapper>,
       );
 
       // Attachments should still be available in question mode
@@ -1336,8 +2567,11 @@ describe("IntegratedChatPanel", () => {
 
       render(
         <TestWrapper>
-          <IntegratedChatPanel projectId="project-1" />
-        </TestWrapper>
+          <IntegratedChatPanel
+            projectId="project-1"
+            selectedTaskIdOverride="task-1"
+          />
+        </TestWrapper>,
       );
 
       // isExecutionMode = true via agent override → agentType = AGENT_WORKER
@@ -1358,8 +2592,11 @@ describe("IntegratedChatPanel", () => {
 
       render(
         <TestWrapper>
-          <IntegratedChatPanel projectId="project-1" />
-        </TestWrapper>
+          <IntegratedChatPanel
+            projectId="project-1"
+            selectedTaskIdOverride="task-1"
+          />
+        </TestWrapper>,
       );
 
       // isExecutionMode = false (execution agent gone) → falls back to status routing
@@ -1388,7 +2625,7 @@ describe("IntegratedChatPanel", () => {
       render(
         <TestWrapper>
           <IntegratedChatPanel projectId="project-1" />
-        </TestWrapper>
+        </TestWrapper>,
       );
 
       // isHistoryMode = true → isAgentActive = false → no activity badge text
@@ -1408,8 +2645,11 @@ describe("IntegratedChatPanel", () => {
 
       render(
         <TestWrapper>
-          <IntegratedChatPanel projectId="project-1" />
-        </TestWrapper>
+          <IntegratedChatPanel
+            projectId="project-1"
+            selectedTaskIdOverride="task-1"
+          />
+        </TestWrapper>,
       );
 
       // isReviewMode = true via agent override → agentType = AGENT_REVIEWER
@@ -1428,7 +2668,7 @@ describe("IntegratedChatPanel", () => {
       render(
         <TestWrapper>
           <IntegratedChatPanel projectId="project-1" />
-        </TestWrapper>
+        </TestWrapper>,
       );
 
       // isReviewMode = false → agentType falls through to "agent"
@@ -1445,7 +2685,10 @@ describe("IntegratedChatPanel", () => {
       // Enable active conversation with proper context so messagesData is populated
       mockChatPanelContext.activeConversationId = "conv-1";
       // Inject conversation context so isConversationInCurrentContext = true
-      useChatMockState.conversation = { contextType: "task", contextId: "task-1" };
+      useChatMockState.conversation = {
+        contextType: "task",
+        contextId: "task-1",
+      };
       // Provide at least one conversation so hasNoConversations = false
       useChatMockState.conversations = [{ id: "conv-1" }];
     });
@@ -1453,8 +2696,22 @@ describe("IntegratedChatPanel", () => {
     it("sorts messages by timestamp even when isAgentRunning is true", async () => {
       // msg-b has LATER timestamp but appears first in array (simulates out-of-order DB response)
       useChatMockState.messages = [
-        { id: "msg-b", role: "user", content: "Second message", createdAt: new Date(2026, 0, 1, 12, 1).toISOString(), toolCalls: null, contentBlocks: null },
-        { id: "msg-a", role: "user", content: "First message", createdAt: new Date(2026, 0, 1, 12, 0).toISOString(), toolCalls: null, contentBlocks: null },
+        {
+          id: "msg-b",
+          role: "user",
+          content: "Second message",
+          createdAt: new Date(2026, 0, 1, 12, 1).toISOString(),
+          toolCalls: null,
+          contentBlocks: null,
+        },
+        {
+          id: "msg-a",
+          role: "user",
+          content: "First message",
+          createdAt: new Date(2026, 0, 1, 12, 0).toISOString(),
+          toolCalls: null,
+          contentBlocks: null,
+        },
       ];
 
       // Agent is running — old code would skip sort, new code always sorts
@@ -1465,7 +2722,7 @@ describe("IntegratedChatPanel", () => {
       const { container } = render(
         <TestWrapper>
           <IntegratedChatPanel projectId="project-1" />
-        </TestWrapper>
+        </TestWrapper>,
       );
 
       // "First message" (earlier timestamp) must appear before "Second message" in DOM
@@ -1473,14 +2730,30 @@ describe("IntegratedChatPanel", () => {
         const html = container.innerHTML;
         expect(html.indexOf("First message")).toBeGreaterThanOrEqual(0);
         expect(html.indexOf("Second message")).toBeGreaterThanOrEqual(0);
-        expect(html.indexOf("First message")).toBeLessThan(html.indexOf("Second message"));
+        expect(html.indexOf("First message")).toBeLessThan(
+          html.indexOf("Second message"),
+        );
       });
     });
 
     it("sorts messages by timestamp when isSending is true", async () => {
       useChatMockState.messages = [
-        { id: "msg-b", role: "user", content: "Second message", createdAt: new Date(2026, 0, 1, 12, 1).toISOString(), toolCalls: null, contentBlocks: null },
-        { id: "msg-a", role: "user", content: "First message", createdAt: new Date(2026, 0, 1, 12, 0).toISOString(), toolCalls: null, contentBlocks: null },
+        {
+          id: "msg-b",
+          role: "user",
+          content: "Second message",
+          createdAt: new Date(2026, 0, 1, 12, 1).toISOString(),
+          toolCalls: null,
+          contentBlocks: null,
+        },
+        {
+          id: "msg-a",
+          role: "user",
+          content: "First message",
+          createdAt: new Date(2026, 0, 1, 12, 0).toISOString(),
+          toolCalls: null,
+          contentBlocks: null,
+        },
       ];
 
       act(() => {
@@ -1490,14 +2763,16 @@ describe("IntegratedChatPanel", () => {
       const { container } = render(
         <TestWrapper>
           <IntegratedChatPanel projectId="project-1" />
-        </TestWrapper>
+        </TestWrapper>,
       );
 
       await waitFor(() => {
         const html = container.innerHTML;
         expect(html.indexOf("First message")).toBeGreaterThanOrEqual(0);
         expect(html.indexOf("Second message")).toBeGreaterThanOrEqual(0);
-        expect(html.indexOf("First message")).toBeLessThan(html.indexOf("Second message"));
+        expect(html.indexOf("First message")).toBeLessThan(
+          html.indexOf("Second message"),
+        );
       });
     });
 
@@ -1505,14 +2780,28 @@ describe("IntegratedChatPanel", () => {
       const sameTime = new Date(2026, 0, 1, 12, 0).toISOString();
       // "msg-z" sorts after "msg-a" lexically — it should appear SECOND in sorted output
       useChatMockState.messages = [
-        { id: "msg-z", role: "user", content: "Zzz response", createdAt: sameTime, toolCalls: null, contentBlocks: null },
-        { id: "msg-a", role: "user", content: "Aaa response", createdAt: sameTime, toolCalls: null, contentBlocks: null },
+        {
+          id: "msg-z",
+          role: "user",
+          content: "Zzz response",
+          createdAt: sameTime,
+          toolCalls: null,
+          contentBlocks: null,
+        },
+        {
+          id: "msg-a",
+          role: "user",
+          content: "Aaa response",
+          createdAt: sameTime,
+          toolCalls: null,
+          contentBlocks: null,
+        },
       ];
 
       const { container } = render(
         <TestWrapper>
           <IntegratedChatPanel projectId="project-1" />
-        </TestWrapper>
+        </TestWrapper>,
       );
 
       // "msg-a" < "msg-z" lexically → "Aaa response" should appear first
@@ -1520,8 +2809,58 @@ describe("IntegratedChatPanel", () => {
         const html = container.innerHTML;
         expect(html.indexOf("Aaa response")).toBeGreaterThanOrEqual(0);
         expect(html.indexOf("Zzz response")).toBeGreaterThanOrEqual(0);
-        expect(html.indexOf("Aaa response")).toBeLessThan(html.indexOf("Zzz response"));
+        expect(html.indexOf("Aaa response")).toBeLessThan(
+          html.indexOf("Zzz response"),
+        );
       });
+    });
+
+    it("hides hydrated messages marked hidden_from_ui while keeping normal messages", async () => {
+      const createdAt = new Date(2026, 0, 1, 12, 0).toISOString();
+      useChatMockState.messages = [
+        {
+          id: "msg-normal",
+          role: "user",
+          content: "Visible user request",
+          createdAt,
+          toolCalls: null,
+          contentBlocks: null,
+        },
+        {
+          id: "msg-hidden-review",
+          role: "user",
+          content: "Synthetic workspace review prompt",
+          metadata: JSON.stringify({ hidden_from_ui: true }),
+          createdAt,
+          toolCalls: null,
+          contentBlocks: null,
+        },
+        {
+          id: "msg-hidden-recovery",
+          role: "user",
+          content: "Synthetic recovery prompt",
+          metadata: JSON.stringify({ recovery_context: true }),
+          createdAt,
+          toolCalls: null,
+          contentBlocks: null,
+        },
+      ];
+
+      render(
+        <TestWrapper>
+          <IntegratedChatPanel projectId="project-1" />
+        </TestWrapper>,
+      );
+
+      expect(
+        await screen.findByText("Visible user request"),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByText("Synthetic workspace review prompt"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByText("Synthetic recovery prompt"),
+      ).not.toBeInTheDocument();
     });
   });
 });
@@ -1533,45 +2872,86 @@ describe("IntegratedChatPanel", () => {
 describe("PreviousRunBanner", () => {
   describe("status label text", () => {
     it("shows 'completed' label when agentRunStatus is 'completed'", () => {
-      render(<PreviousRunBanner agentRunStatus="completed" contextType="execution" />);
-      expect(screen.getByTestId("previous-run-banner")).toHaveTextContent("completed");
+      render(
+        <PreviousRunBanner
+          agentRunStatus="completed"
+          contextType="execution"
+        />,
+      );
+      expect(screen.getByTestId("previous-run-banner")).toHaveTextContent(
+        "completed",
+      );
     });
 
     it("shows 'failed' label when agentRunStatus is 'failed'", () => {
-      render(<PreviousRunBanner agentRunStatus="failed" contextType="execution" />);
-      expect(screen.getByTestId("previous-run-banner")).toHaveTextContent("failed");
+      render(
+        <PreviousRunBanner agentRunStatus="failed" contextType="execution" />,
+      );
+      expect(screen.getByTestId("previous-run-banner")).toHaveTextContent(
+        "failed",
+      );
     });
 
     it("shows 'cancelled' label when agentRunStatus is 'cancelled'", () => {
-      render(<PreviousRunBanner agentRunStatus="cancelled" contextType="execution" />);
-      expect(screen.getByTestId("previous-run-banner")).toHaveTextContent("cancelled");
+      render(
+        <PreviousRunBanner
+          agentRunStatus="cancelled"
+          contextType="execution"
+        />,
+      );
+      expect(screen.getByTestId("previous-run-banner")).toHaveTextContent(
+        "cancelled",
+      );
     });
 
     it("shows 'in progress' label when agentRunStatus is 'running' (safety fallback)", () => {
-      render(<PreviousRunBanner agentRunStatus="running" contextType="execution" />);
-      expect(screen.getByTestId("previous-run-banner")).toHaveTextContent("in progress");
+      render(
+        <PreviousRunBanner agentRunStatus="running" contextType="execution" />,
+      );
+      expect(screen.getByTestId("previous-run-banner")).toHaveTextContent(
+        "in progress",
+      );
     });
 
     it("shows 'completed' label when agentRunStatus is null", () => {
-      render(<PreviousRunBanner agentRunStatus={null} contextType="execution" />);
-      expect(screen.getByTestId("previous-run-banner")).toHaveTextContent("completed");
+      render(
+        <PreviousRunBanner agentRunStatus={null} contextType="execution" />,
+      );
+      expect(screen.getByTestId("previous-run-banner")).toHaveTextContent(
+        "completed",
+      );
     });
   });
 
   describe("context type label", () => {
     it("shows 'worker' for contextType 'execution'", () => {
-      render(<PreviousRunBanner agentRunStatus="completed" contextType="execution" />);
-      expect(screen.getByTestId("previous-run-banner")).toHaveTextContent("worker");
+      render(
+        <PreviousRunBanner
+          agentRunStatus="completed"
+          contextType="execution"
+        />,
+      );
+      expect(screen.getByTestId("previous-run-banner")).toHaveTextContent(
+        "worker",
+      );
     });
 
     it("shows 'reviewer' for contextType 'review'", () => {
-      render(<PreviousRunBanner agentRunStatus="completed" contextType="review" />);
-      expect(screen.getByTestId("previous-run-banner")).toHaveTextContent("reviewer");
+      render(
+        <PreviousRunBanner agentRunStatus="completed" contextType="review" />,
+      );
+      expect(screen.getByTestId("previous-run-banner")).toHaveTextContent(
+        "reviewer",
+      );
     });
 
     it("shows 'merge agent' for contextType 'merge'", () => {
-      render(<PreviousRunBanner agentRunStatus="completed" contextType="merge" />);
-      expect(screen.getByTestId("previous-run-banner")).toHaveTextContent("merge agent");
+      render(
+        <PreviousRunBanner agentRunStatus="completed" contextType="merge" />,
+      );
+      expect(screen.getByTestId("previous-run-banner")).toHaveTextContent(
+        "merge agent",
+      );
     });
   });
 });
@@ -1598,7 +2978,10 @@ describe("PreviousRunBanner visibility in IntegratedChatPanel", () => {
     // Provide messages so sortedMessages.length > 0
     useChatMockState.messages = [agentRunMessage];
     // task_execution contextType satisfies the "task" + "task_execution" special case in isConversationInCurrentContext
-    useChatMockState.conversation = { contextType: "task_execution", contextId: "task-1" };
+    useChatMockState.conversation = {
+      contextType: "task_execution",
+      contextId: "task-1",
+    };
     useChatMockState.conversations = [{ id: "conv-1" }];
     // Reset agentRunStatus mock to null (no status) for each test
     vi.mocked(chatApi.getAgentRunStatus).mockResolvedValue(null);
@@ -1609,65 +2992,103 @@ describe("PreviousRunBanner visibility in IntegratedChatPanel", () => {
   });
 
   it("does NOT show banner when backend agentRunStatus is 'running' (agentStatus idle)", async () => {
-    vi.mocked(chatApi.getAgentRunStatus).mockResolvedValue({ id: "run-1", status: "running", errorMessage: null });
+    vi.mocked(chatApi.getAgentRunStatus).mockResolvedValue({
+      id: "run-1",
+      status: "running",
+      errorMessage: null,
+    });
 
     render(
       <TestWrapper>
-        <IntegratedChatPanel projectId="project-1" />
-      </TestWrapper>
+        <IntegratedChatPanel
+          projectId="project-1"
+          selectedTaskIdOverride="task-1"
+        />
+      </TestWrapper>,
     );
 
     // Wait for query to resolve and banner to be removed (initially shows because data=undefined)
     await waitFor(() => {
-      expect(screen.queryByTestId("previous-run-banner")).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId("previous-run-banner"),
+      ).not.toBeInTheDocument();
     });
   });
 
   it("shows banner with 'completed' label when backend agentRunStatus is 'completed' (agentStatus idle)", async () => {
-    vi.mocked(chatApi.getAgentRunStatus).mockResolvedValue({ id: "run-1", status: "completed", errorMessage: null });
+    vi.mocked(chatApi.getAgentRunStatus).mockResolvedValue({
+      id: "run-1",
+      status: "completed",
+      errorMessage: null,
+    });
 
     render(
       <TestWrapper>
-        <IntegratedChatPanel projectId="project-1" />
-      </TestWrapper>
+        <IntegratedChatPanel
+          projectId="project-1"
+          selectedTaskIdOverride="task-1"
+        />
+      </TestWrapper>,
     );
 
     // Wait for query to resolve and banner to show correct label
     await waitFor(() => {
-      expect(vi.mocked(chatApi.getAgentRunStatus)).toHaveBeenCalledWith("conv-1");
+      expect(vi.mocked(chatApi.getAgentRunStatus)).toHaveBeenCalledWith(
+        "conv-1",
+      );
     });
 
     expect(screen.getByTestId("previous-run-banner")).toBeInTheDocument();
-    expect(screen.getByTestId("previous-run-banner")).toHaveTextContent("completed");
+    expect(screen.getByTestId("previous-run-banner")).toHaveTextContent(
+      "completed",
+    );
   });
 
   it("shows banner with 'failed' label when backend agentRunStatus is 'failed'", async () => {
-    vi.mocked(chatApi.getAgentRunStatus).mockResolvedValue({ id: "run-1", status: "failed", errorMessage: "execution error" });
+    vi.mocked(chatApi.getAgentRunStatus).mockResolvedValue({
+      id: "run-1",
+      status: "failed",
+      errorMessage: "execution error",
+    });
 
     render(
       <TestWrapper>
-        <IntegratedChatPanel projectId="project-1" />
-      </TestWrapper>
+        <IntegratedChatPanel
+          projectId="project-1"
+          selectedTaskIdOverride="task-1"
+        />
+      </TestWrapper>,
     );
 
     // Wait for query to resolve and label to update from default "completed" to "failed"
     await waitFor(() => {
-      expect(screen.getByTestId("previous-run-banner")).toHaveTextContent("failed");
+      expect(screen.getByTestId("previous-run-banner")).toHaveTextContent(
+        "failed",
+      );
     });
   });
 
   it("shows banner with 'cancelled' label when backend agentRunStatus is 'cancelled'", async () => {
-    vi.mocked(chatApi.getAgentRunStatus).mockResolvedValue({ id: "run-1", status: "cancelled", errorMessage: null });
+    vi.mocked(chatApi.getAgentRunStatus).mockResolvedValue({
+      id: "run-1",
+      status: "cancelled",
+      errorMessage: null,
+    });
 
     render(
       <TestWrapper>
-        <IntegratedChatPanel projectId="project-1" />
-      </TestWrapper>
+        <IntegratedChatPanel
+          projectId="project-1"
+          selectedTaskIdOverride="task-1"
+        />
+      </TestWrapper>,
     );
 
     // Wait for query to resolve and label to update from default "completed" to "cancelled"
     await waitFor(() => {
-      expect(screen.getByTestId("previous-run-banner")).toHaveTextContent("cancelled");
+      expect(screen.getByTestId("previous-run-banner")).toHaveTextContent(
+        "cancelled",
+      );
     });
   });
 
@@ -1710,8 +3131,6 @@ describe("PreviousRunBanner visibility in IntegratedChatPanel", () => {
               updatedAt: "2026-01-01T00:00:00Z",
               archivedAt: null,
               convertedAt: null,
-              teamMode: null,
-              teamConfig: null,
               verificationStatus: "unverified",
               verificationInProgress: false,
               gapScore: null,
@@ -1723,14 +3142,21 @@ describe("PreviousRunBanner visibility in IntegratedChatPanel", () => {
 
       render(
         <TestWrapper>
-          <IntegratedChatPanel projectId="project-1" ideationSessionId={SESSION_ID} />
-        </TestWrapper>
+          <IntegratedChatPanel
+            projectId="project-1"
+            ideationSessionId={SESSION_ID}
+          />
+        </TestWrapper>,
       );
 
       // Wait for the hydration useEffect to run
       await waitFor(() => {
-        const effectiveModel = useChatStore.getState().effectiveModel[STORE_KEY];
-        expect(effectiveModel).toEqual({ id: "claude-sonnet-4-6", label: "Sonnet 4.6" });
+        const effectiveModel =
+          useChatStore.getState().effectiveModel[STORE_KEY];
+        expect(effectiveModel).toEqual({
+          id: "claude-sonnet-4-6",
+          label: "Sonnet 4.6",
+        });
       });
     });
 
@@ -1751,8 +3177,6 @@ describe("PreviousRunBanner visibility in IntegratedChatPanel", () => {
               updatedAt: "2026-01-01T00:00:00Z",
               archivedAt: null,
               convertedAt: null,
-              teamMode: null,
-              teamConfig: null,
               verificationStatus: "unverified",
               verificationInProgress: false,
               gapScore: null,
@@ -1764,8 +3188,11 @@ describe("PreviousRunBanner visibility in IntegratedChatPanel", () => {
 
       render(
         <TestWrapper>
-          <IntegratedChatPanel projectId="project-1" ideationSessionId={SESSION_ID} />
-        </TestWrapper>
+          <IntegratedChatPanel
+            projectId="project-1"
+            ideationSessionId={SESSION_ID}
+          />
+        </TestWrapper>,
       );
 
       // Give React time to run effects
@@ -1814,12 +3241,19 @@ describe("PreviousRunBanner visibility in IntegratedChatPanel", () => {
 
       render(
         <TestWrapper>
-          <IntegratedChatPanel projectId="project-1" ideationSessionId={sessionId} />
-        </TestWrapper>
+          <IntegratedChatPanel
+            projectId="project-1"
+            ideationSessionId={sessionId}
+          />
+        </TestWrapper>,
       );
 
-      expect(await screen.findByText("latest ideation message")).toBeInTheDocument();
-      expect(screen.queryByText("Start the conversation")).not.toBeInTheDocument();
+      expect(
+        await screen.findByText("latest ideation message"),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByText("Start the conversation"),
+      ).not.toBeInTheDocument();
     });
   });
 });

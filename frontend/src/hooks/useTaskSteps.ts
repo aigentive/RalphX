@@ -58,10 +58,11 @@ export function useTaskSteps(taskId: string) {
  *
  * if (isLoading) return <Loading />;
  * if (!progress) return null;
+ * const display = getStepProgressDisplay(progress);
  * return (
  *   <div>
- *     Progress: {progress.completed}/{progress.total} steps
- *     ({progress.percentComplete.toFixed(0)}%)
+ *     Progress: {display.completed}/{display.total} steps
+ *     ({display.completedPercent.toFixed(0)}%)
  *   </div>
  * );
  * ```

@@ -7,8 +7,6 @@ import { z } from "zod";
 // Verification
 // ============================================================================
 
-export const AUTO_VERIFICATION_KEY = "auto_verification";
-export const VERIFICATION_RESULT_KEY = "verification_result";
 
 export const VERIFICATION_STATUS_VALUES = [
   "unverified",
@@ -21,32 +19,6 @@ export const VERIFICATION_STATUS_VALUES = [
 
 export const VerificationStatusSchema = z.enum(VERIFICATION_STATUS_VALUES);
 export type VerificationStatus = z.infer<typeof VerificationStatusSchema>;
-
-export const VerificationGapSchema = z.object({
-  severity: z.enum(["critical", "high", "medium", "low"]),
-  category: z.string(),
-  description: z.string(),
-  whyItMatters: z.string().optional(),
-});
-
-export type VerificationGap = z.infer<typeof VerificationGapSchema>;
-
-export const RoundSummarySchema = z.object({
-  round: z.number(),
-  gapScore: z.number(),
-  gapCount: z.number(),
-});
-
-export type RoundSummary = z.infer<typeof RoundSummarySchema>;
-
-export const VerificationRoundDetailSchema = z.object({
-  round: z.number(),
-  gapScore: z.number(),
-  gapCount: z.number(),
-  gaps: z.array(VerificationGapSchema),
-});
-
-export type VerificationRoundDetail = z.infer<typeof VerificationRoundDetailSchema>;
 
 // ============================================================================
 // Ideation Session
@@ -81,13 +53,6 @@ export const IdeationSessionSchema = z.object({
   updatedAt: z.string().datetime(),
   archivedAt: z.string().datetime().nullable(),
   convertedAt: z.string().datetime().nullable(),
-  teamMode: z.enum(["solo", "research", "debate"]).nullable().optional(),
-  teamConfig: z.object({
-    maxTeammates: z.number().min(2).max(8),
-    modelCeiling: z.string(),
-    budgetLimit: z.number().nullable().optional(),
-    compositionMode: z.enum(["dynamic", "constrained"]),
-  }).nullable().optional(),
   verificationStatus: VerificationStatusSchema.optional().default("unverified"),
   verificationInProgress: z.boolean().optional().default(false),
   gapScore: z.number().int().nullable().optional(),
@@ -448,27 +413,6 @@ export type TaskProposalList = z.infer<typeof TaskProposalListSchema>;
 
 export const ChatMessageListSchema = z.array(ChatMessageSchema);
 export type ChatMessageList = z.infer<typeof ChatMessageListSchema>;
-
-// ============================================================================
-// Team Mode (for agent team ideation sessions)
-// ============================================================================
-
-export const TEAM_MODE_VALUES = ["solo", "research", "debate"] as const;
-export const TeamModeSchema = z.enum(TEAM_MODE_VALUES);
-export type TeamMode = z.infer<typeof TeamModeSchema>;
-
-export const COMPOSITION_MODE_VALUES = ["dynamic", "constrained"] as const;
-export const CompositionModeSchema = z.enum(COMPOSITION_MODE_VALUES);
-export type CompositionMode = z.infer<typeof CompositionModeSchema>;
-
-export const TeamConfigSchema = z.object({
-  maxTeammates: z.number().min(2).max(8).default(5),
-  modelCeiling: z.string().default("sonnet"),
-  budgetLimit: z.number().optional(),
-  compositionMode: CompositionModeSchema.default("dynamic"),
-});
-
-export type TeamConfig = z.infer<typeof TeamConfigSchema>;
 
 // ============================================================================
 // Paginated Session Group Types (server-side grouping and pagination)

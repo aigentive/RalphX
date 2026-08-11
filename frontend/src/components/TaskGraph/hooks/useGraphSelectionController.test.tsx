@@ -28,6 +28,10 @@ interface TestHarnessProps {
   planGroups?: PlanGroupInfo[];
   keyboardNavigationEnabled?: boolean;
   fitNode?: (node: Node, options?: { duration?: number; padding?: number; maxZoom?: number }) => void;
+  selectionScope?: {
+    projectId: string;
+    ideationSessionId: string | null;
+  };
 }
 
 function TestHarness({
@@ -61,6 +65,7 @@ function TestHarness({
   ],
   keyboardNavigationEnabled = true,
   fitNode = noop,
+  selectionScope = { projectId: "project-1", ideationSessionId: null },
 }: TestHarnessProps) {
   const { containerRef, onKeyDown } = useGraphSelectionController({
     nodes: layoutNodes,
@@ -85,6 +90,7 @@ function TestHarness({
     graphError: null,
     isLoading: false,
     keyboardNavigationEnabled,
+    selectionScope,
   });
 
   return (
@@ -97,6 +103,82 @@ function TestHarness({
 }
 
 describe("useGraphSelectionController", () => {
+  it("preserves the initial selection while establishing the graph scope", () => {
+    const initialSelection = { kind: "task" as const, id: "task-1" };
+    useUiStore.getState().setGraphSelection(initialSelection);
+
+    render(
+      <ReactFlowProvider>
+        <TestHarness />
+      </ReactFlowProvider>,
+    );
+
+    expect(useUiStore.getState().graphSelection).toEqual(initialSelection);
+    useUiStore.getState().clearGraphSelection();
+  });
+
+  it("clears graph selection when the project scope changes", () => {
+    const { rerender } = render(
+      <ReactFlowProvider>
+        <TestHarness />
+      </ReactFlowProvider>,
+    );
+    act(() => {
+      useUiStore.getState().setGraphSelection({ kind: "task", id: "task-1" });
+    });
+    act(() => {
+      rerender(
+        <ReactFlowProvider>
+          <TestHarness selectionScope={{ projectId: "project-2", ideationSessionId: null }} />
+        </ReactFlowProvider>,
+      );
+    });
+
+    expect(useUiStore.getState().graphSelection).toBeNull();
+  });
+
+  it("clears graph selection when the ideation session scope changes", () => {
+    const { rerender } = render(
+      <ReactFlowProvider>
+        <TestHarness selectionScope={{ projectId: "project-1", ideationSessionId: "session-1" }} />
+      </ReactFlowProvider>,
+    );
+    act(() => {
+      useUiStore.getState().setGraphSelection({ kind: "task", id: "task-1" });
+    });
+    act(() => {
+      rerender(
+        <ReactFlowProvider>
+          <TestHarness selectionScope={{ projectId: "project-1", ideationSessionId: "session-2" }} />
+        </ReactFlowProvider>,
+      );
+    });
+
+    expect(useUiStore.getState().graphSelection).toBeNull();
+  });
+
+  it("does not clear a selection made during a scope transition", () => {
+    const { rerender } = render(
+      <ReactFlowProvider>
+        <TestHarness />
+      </ReactFlowProvider>,
+    );
+    const nextSelection = { kind: "task" as const, id: "task-2" };
+    useUiStore.getState().setGraphSelection({ kind: "task", id: "task-1" });
+
+    act(() => {
+      rerender(
+        <ReactFlowProvider>
+          <TestHarness selectionScope={{ projectId: "project-2", ideationSessionId: null }} />
+        </ReactFlowProvider>,
+      );
+      useUiStore.getState().setGraphSelection(nextSelection);
+    });
+
+    expect(useUiStore.getState().graphSelection).toEqual(nextSelection);
+    useUiStore.getState().clearGraphSelection();
+  });
+
   it("selects first plan group on ArrowDown", () => {
     useUiStore.getState().clearGraphSelection();
     const { container } = render(

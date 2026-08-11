@@ -51,7 +51,7 @@ for (const theme of THEMES) {
     });
     await page.mouse.move(0, 0);
 
-    await page.getByTestId("nav-kanban").hover();
+    await page.getByTestId("nav-automations").hover();
     await rail.screenshot({ path: path.join(OUT_DIR, `${theme}-rail-inactive-hover.png`) });
     await page.mouse.move(0, 0);
 

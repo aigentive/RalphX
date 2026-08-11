@@ -8,7 +8,13 @@
  * - Compact sizing for application UI
  */
 
-import { useState, useRef, useCallback, useEffect } from "react";
+import {
+  useState,
+  useRef,
+  useCallback,
+  useEffect,
+  type ReactNode,
+} from "react";
 import { useChatAttachmentDrop } from "@/hooks/useChatAttachmentDrop";
 import { ChatAttachmentPicker } from "./ChatAttachmentPicker";
 import { ChatAttachmentDropOverlay } from "./ChatAttachmentDropOverlay";
@@ -65,6 +71,8 @@ export interface ChatInputProps {
   onFilesSelected?: (files: File[]) => void;
   /** Callback when attachment is removed */
   onRemoveAttachment?: (id: string) => void;
+  /** Optional conversation persona confirmation rendered in the footer */
+  personaControl?: ReactNode;
 }
 
 // ============================================================================
@@ -135,6 +143,7 @@ export function ChatInput({
   attachments,
   onFilesSelected,
   onRemoveAttachment,
+  personaControl,
 }: ChatInputProps) {
   // Derive agent state from tri-state when available, fall back to boolean
   const effectiveStatus: AgentStatus = agentStatusProp ?? (isAgentRunning ? "generating" : "idle");
@@ -421,8 +430,32 @@ export function ChatInput({
         </div>
       )}
 
-      {/* Helper Text - macOS Tahoe muted styling */}
-      {showHelperText && (
+      {/* Footer - keyboard help and optional conversation persona confirmation */}
+      {personaControl ? (
+        <div
+          data-testid="chat-input-footer"
+          className="mt-1.5 flex min-w-0 items-center justify-between gap-2"
+        >
+          {showHelperText && (
+            <p
+              className="min-w-0 text-[0.625rem]"
+              style={{ color: "var(--text-muted)" }}
+            >
+              {questionMode
+                ? "Enter to send · Type option number or custom text"
+                : hasQueuedMessages
+                  ? "Enter to send · Shift+Enter for new line · ↑ to edit queued"
+                  : "Enter to send · Shift+Enter for new line"}
+            </p>
+          )}
+          <div
+            data-testid="chat-input-persona-control"
+            className="ml-auto min-w-0 shrink-0"
+          >
+            {personaControl}
+          </div>
+        </div>
+      ) : showHelperText ? (
         <p
           className="text-[0.625rem] mt-1.5"
           style={{ color: "var(--text-muted)" }}
@@ -433,7 +466,7 @@ export function ChatInput({
               ? "Enter to send · Shift+Enter for new line · ↑ to edit queued"
               : "Enter to send · Shift+Enter for new line"}
         </p>
-      )}
+      ) : null}
 
       {isAttachmentDragging && <ChatAttachmentDropOverlay roundedClassName="rounded-lg" />}
     </div>

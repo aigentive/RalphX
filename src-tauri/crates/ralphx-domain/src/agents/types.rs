@@ -99,6 +99,8 @@ pub struct AgentConfig {
     pub timeout_secs: Option<u64>,
     /// Additional environment variables
     pub env: HashMap<String, String>,
+    /// Resolved deny-only MCP policy for this concrete launch.
+    pub mcp_launch_policy: super::McpLaunchPolicy,
 }
 
 impl Default for AgentConfig {
@@ -119,6 +121,7 @@ impl Default for AgentConfig {
             max_tokens: None,
             timeout_secs: None,
             env: HashMap::new(),
+            mcp_launch_policy: super::McpLaunchPolicy::default(),
         }
     }
 }

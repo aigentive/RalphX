@@ -9,7 +9,8 @@ use ralphx_lib::domain::entities::{
     Task, TaskCategory,
 };
 use ralphx_lib::domain::services::{
-    MemoryRunningAgentRegistry, RunningAgentInfo, RunningAgentKey, RunningAgentRegistry,
+    AttachProcessResult, MemoryRunningAgentRegistry, RunningAgentInfo, RunningAgentKey,
+    RunningAgentRegistry, TryRegisterError,
 };
 
 #[tokio::test]
@@ -688,6 +689,22 @@ impl RunningAgentRegistry for AlwaysErrStopRegistry {
         Err("simulated stop error".to_string())
     }
 
+    async fn stop_if_owned(
+        &self,
+        _key: &RunningAgentKey,
+        _agent_run_id: &str,
+    ) -> Result<Option<RunningAgentInfo>, String> {
+        Err("simulated stop error".to_string())
+    }
+
+    async fn quiesce_if_owned(
+        &self,
+        _key: &RunningAgentKey,
+        _agent_run_id: &str,
+    ) -> Result<Option<RunningAgentInfo>, String> {
+        Err("simulated stop error".to_string())
+    }
+
     async fn list_all(&self) -> Vec<(RunningAgentKey, RunningAgentInfo)> {
         self.0.list_all().await
     }
@@ -706,9 +723,10 @@ impl RunningAgentRegistry for AlwaysErrStopRegistry {
     async fn update_heartbeat(
         &self,
         key: &RunningAgentKey,
+        agent_run_id: &str,
         at: chrono::DateTime<chrono::Utc>,
-    ) {
-        self.0.update_heartbeat(key, at).await;
+    ) -> Result<bool, String> {
+        self.0.update_heartbeat(key, agent_run_id, at).await
     }
 
     async fn try_register(
@@ -716,26 +734,33 @@ impl RunningAgentRegistry for AlwaysErrStopRegistry {
         key: RunningAgentKey,
         conversation_id: String,
         agent_run_id: String,
-    ) -> Result<(), RunningAgentInfo> {
+    ) -> Result<(), TryRegisterError> {
         self.0.try_register(key, conversation_id, agent_run_id).await
     }
 
-    async fn update_agent_process(
+    async fn renew_reservation(
         &self,
         key: &RunningAgentKey,
-        pid: u32,
-        conversation_id: &str,
         agent_run_id: &str,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool, String> {
+        self.0.renew_reservation(key, agent_run_id, at).await
+    }
+
+    async fn attach_process(
+        &self,
+        key: &RunningAgentKey,
+        expected_agent_run_id: &str,
+        pid: u32,
         worktree_path: Option<String>,
         cancellation_token: Option<tokio_util::sync::CancellationToken>,
         model: Option<String>,
-    ) -> Result<(), String> {
+    ) -> Result<AttachProcessResult, String> {
         self.0
-            .update_agent_process(
+            .attach_process(
                 key,
+                expected_agent_run_id,
                 pid,
-                conversation_id,
-                agent_run_id,
                 worktree_path,
                 cancellation_token,
                 model,
@@ -745,9 +770,10 @@ impl RunningAgentRegistry for AlwaysErrStopRegistry {
 
     async fn cleanup_stale_entry(
         &self,
-        _key: &RunningAgentKey,
+        key: &RunningAgentKey,
+        expected_agent_run_id: &str,
     ) -> Result<Option<RunningAgentInfo>, String> {
-        Ok(None)
+        self.0.cleanup_stale_entry(key, expected_agent_run_id).await
     }
 
     async fn list_by_context_type(

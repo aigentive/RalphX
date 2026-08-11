@@ -70,6 +70,23 @@ pub async fn get_or_create_conversation(
         ChatContextType::Merge => {
             ChatConversation::new_merge(TaskId::from_string(context_id.to_string()))
         }
+        ChatContextType::BranchUpdate => {
+            ChatConversation::new_branch_update(TaskId::from_string(context_id.to_string()))
+        }
+        ChatContextType::Standalone => {
+            // Standalone conversations are always explicitly created (via
+            // `create_agent_conversation` or `AgentConversationStartService::start()`,
+            // both using `ChatConversation::new_standalone()`), never lazily
+            // auto-vivified from a bare context_id: a standalone conversation's
+            // context_id IS its own conversation id, so if `get_active_for_context`
+            // above didn't find an active row for it, the id is stale/archived/
+            // unknown — fabricating a new conversation here would silently diverge
+            // from the conversation the caller actually meant.
+            return Err(ChatServiceError::ContextNotFound(format!(
+                "Standalone conversation {context_id} is not active; standalone conversations \
+                 cannot be lazily created from a bare context_id"
+            )));
+        }
     };
 
     conv.parent_conversation_id = parent_conversation_id;

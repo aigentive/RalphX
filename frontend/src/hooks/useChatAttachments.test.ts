@@ -44,7 +44,6 @@ describe("useChatAttachments", () => {
       agentStatus: {},
       agentActivityLabels: {},
       isSending: {},
-      isTeamActive: {},
       lastAgentEventTimestamp: {},
       toolCallStartTimes: {},
       lastToolCallCompletionTimestamp: {},
@@ -89,6 +88,41 @@ describe("useChatAttachments", () => {
           mimeType: "text/plain",
         },
       });
+    });
+
+    it("should upload markdown files as normal chat attachments", async () => {
+      const mockAttachment: ChatAttachment = {
+        id: "att-plan",
+        conversationId,
+        fileName: "dropped-plan.md",
+        filePath: "/path/to/dropped-plan.md",
+        mimeType: "text/markdown",
+        fileSize: 12,
+        createdAt: "2026-02-14T00:00:00Z",
+      };
+
+      mockInvoke.mockResolvedValueOnce(mockAttachment);
+
+      const { result } = renderHook(() => useChatAttachments(conversationId));
+      const file = createMockFile("# Plan", "dropped-plan.md", "text/markdown");
+
+      await act(async () => {
+        await result.current.uploadFiles([file]);
+      });
+
+      expect(result.current.attachments).toEqual([mockAttachment]);
+      expect(mockInvoke).toHaveBeenCalledWith("upload_chat_attachment", {
+        input: {
+          conversationId,
+          fileName: "dropped-plan.md",
+          fileData: expect.any(Array),
+          mimeType: "text/markdown",
+        },
+      });
+      expect(mockInvoke).not.toHaveBeenCalledWith(
+        "import_agent_conversation_plan",
+        expect.anything(),
+      );
     });
 
     it("should upload multiple files successfully", async () => {

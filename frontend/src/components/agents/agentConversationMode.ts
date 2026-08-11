@@ -4,18 +4,82 @@ import type {
 } from "@/api/chat";
 
 import type { AgentConversation } from "./agentConversations";
+import { AGENT_START_MODE_OPTIONS } from "./agentStartModeOptions";
 
 export const AGENT_CONVERSATION_MODE_OPTIONS: Array<{
   id: AgentConversationWorkspaceMode;
   label: string;
   description: string;
-}> = [
-  { id: "chat", label: "Chat", description: "Ask read-only questions about the project." },
-  { id: "edit", label: "Agent", description: "Build, change, and review code in a branch." },
-  { id: "plan", label: "Plan", description: "Draft and refine a plan before execution." },
-  { id: "ideation", label: "Ideation", description: "Plan work before creating tasks." },
-  { id: "review_pr", label: "Review PR", description: "Review a linked pull request." },
-];
+  disabled?: boolean;
+  disabledReason?: string;
+}> = AGENT_START_MODE_OPTIONS.map(({ id, label, description }) => ({
+  id,
+  label,
+  description,
+  ...(id === "persona_builder"
+    ? {
+        disabled: true,
+        disabledReason: "Persona mode is fixed when the conversation starts.",
+      }
+    : {}),
+}));
+
+const TASKS_MODE_OPTION = {
+  id: "tasks" as const,
+  label: "Tasks",
+  description: "Review proposals and supervise the attached task pipeline.",
+};
+
+const AUTOPILOT_MODE_OPTION = {
+  id: "autopilot" as const,
+  label: "Autopilot",
+  description: "Plan, create tasks, and start execution with minimal supervision.",
+};
+
+const IDEATION_MODE_OPTION = {
+  id: "ideation" as const,
+  label: "Ideation",
+  description: "Continue the linked planning conversation.",
+};
+
+export function buildAgentConversationModeOptions({
+  currentMode,
+  taskPipelineAvailable,
+  autopilotEnabled,
+}: {
+  currentMode: AgentConversationWorkspaceMode;
+  taskPipelineAvailable: boolean;
+  autopilotEnabled: boolean;
+}) {
+  const options = [...AGENT_CONVERSATION_MODE_OPTIONS];
+  if (currentMode === "tasks" || taskPipelineAvailable) {
+    options.splice(4, 0, TASKS_MODE_OPTION);
+  }
+  if (autopilotEnabled || currentMode === "autopilot") {
+    const personaIndex = options.findIndex(
+      (option) => option.id === "persona_builder",
+    );
+    options.splice(personaIndex, 0, {
+      ...AUTOPILOT_MODE_OPTION,
+      ...(autopilotEnabled
+        ? {}
+        : {
+            disabled: true,
+            disabledReason: "Enable Autopilot in Agent capabilities to re-enter.",
+          }),
+    });
+  }
+  if (currentMode === "ideation") {
+    options.push(IDEATION_MODE_OPTION);
+  }
+
+  const currentIndex = options.findIndex((option) => option.id === currentMode);
+  if (currentIndex <= 0) {
+    return options;
+  }
+  const [currentOption] = options.splice(currentIndex, 1);
+  return currentOption ? [currentOption, ...options] : options;
+}
 
 export function resolveConversationAgentMode(
   conversation: AgentConversation,
@@ -24,7 +88,31 @@ export function resolveConversationAgentMode(
   return conversation.agentMode ?? workspace?.mode ?? "chat";
 }
 
-export function isWorkspaceModeLocked(workspace: AgentConversationWorkspace | null): boolean {
+export function buildConversationModeOptions(
+  conversation: AgentConversation,
+  workspace: AgentConversationWorkspace | null,
+) {
+  if (!isConversationModeLocked(conversation, workspace)) {
+    return AGENT_CONVERSATION_MODE_OPTIONS;
+  }
+  const lockReason =
+    workspace?.modeSwitchLockReason ??
+    "This conversation's mode is locked.";
+  return AGENT_CONVERSATION_MODE_OPTIONS.map((option) => ({
+    ...option,
+    disabled: true,
+    disabledReason: lockReason,
+  }));
+}
+
+export function isConversationModeLocked(
+  conversation: AgentConversation,
+  workspace: AgentConversationWorkspace | null,
+): boolean {
+  const mode = resolveConversationAgentMode(conversation, workspace);
+  if (mode === "automation" || mode === "persona_builder") {
+    return true;
+  }
   if (!workspace) {
     return false;
   }

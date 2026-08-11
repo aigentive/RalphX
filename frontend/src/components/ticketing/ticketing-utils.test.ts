@@ -6,7 +6,6 @@ import {
   categoryToken,
   formatTicketDate,
   providerLabel,
-  ticketCanonicalBranchName,
   ticketButtonLabel,
   ticketKey,
 } from "./ticketing-utils";
@@ -48,20 +47,6 @@ describe("ticketButtonLabel", () => {
   it("uses the id when no key is available", () => {
     const ticket = makeSummary({ ref: makeRef({ id: "issue-9", key: null }), title: "No key" });
     expect(ticketButtonLabel(ticket)).toBe("issue-9 No key");
-  });
-});
-
-describe("ticketCanonicalBranchName", () => {
-  it("matches the backend ticket branch convention for keyed tickets", () => {
-    expect(ticketCanonicalBranchName(makeRef({ provider: "linear", key: "WISE-24" }))).toBe(
-      "ralphx/ticket/linear-wise-24",
-    );
-  });
-
-  it("falls back to the provider id and strips unsafe branch characters", () => {
-    expect(ticketCanonicalBranchName(makeRef({ provider: "clickup", id: "CU/42 ++" }))).toBe(
-      "ralphx/ticket/clickup-cu-42",
-    );
   });
 });
 

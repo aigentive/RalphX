@@ -31,13 +31,14 @@ interface QuestionPrompt {
 }
 
 export interface AskUserQuestionArgs {
-  session_id: string;
+  session_id?: string;
   question?: string;
   header?: string;
   options?: QuestionOption[];
   multi_select?: boolean;
   allow_skip?: boolean;
   questions?: QuestionPrompt[];
+  metadata?: Record<string, unknown>;
 }
 
 interface QuestionAnswer {
@@ -289,7 +290,17 @@ async function askSingleQuestion(
 export async function handleAskUserQuestion(
   args: AskUserQuestionArgs
 ): Promise<ToolTextResult> {
-  safeError(`[RalphX MCP] ask_user_question for session: ${args.session_id}`);
+  let sessionId: string;
+  try {
+    sessionId = currentWorkspaceConversationId({
+      conversation_id: args.session_id,
+    });
+  } catch {
+    return errorResponse(
+      "ask_user_question requires session_id because RalphX did not provide the current conversation id to the MCP runtime context."
+    );
+  }
+  safeError(`[RalphX MCP] ask_user_question for session: ${sessionId}`);
 
   const normalized = normalizeQuestionPrompts(args);
   if ("error" in normalized) {
@@ -302,10 +313,11 @@ export async function handleAskUserQuestion(
   for (const [index, prompt] of prompts.entries()) {
     try {
       const result = await askSingleQuestion(
-        args.session_id,
+        sessionId,
         prompt,
         isBatch ? index + 1 : undefined,
-        isBatch ? prompts.length : undefined
+        isBatch ? prompts.length : undefined,
+        args.metadata
       );
 
       if (!result.ok) {

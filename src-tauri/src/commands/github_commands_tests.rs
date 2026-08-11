@@ -14,7 +14,8 @@ use crate::domain::entities::{
     ChatConversation, IdeationAnalysisBaseRefKind, Project,
 };
 use crate::domain::services::github_service::{
-    GithubConnectionStatus, GithubServiceTrait, PrBranchMatch, PrSearchResult, PrStatus,
+    GithubConnectionDiagnostic, GithubConnectionState, GithubConnectionStatus, GithubServiceTrait,
+    PrBranchMatch, PrSearchResult, PrStatus,
 };
 use crate::infrastructure::tool_paths::resolve_git_cli_path;
 use crate::tests::mock_github_service::MockGithubService;
@@ -30,6 +31,8 @@ fn test_app(state: AppState) -> tauri::App<tauri::test::MockRuntime> {
 #[test]
 fn github_connection_status_response_preserves_public_fields() {
     let response = GithubConnectionStatusResponse::from(GithubConnectionStatus {
+        state: GithubConnectionState::Authenticated,
+        diagnostic: None,
         gh_installed: true,
         authenticated: true,
         host: Some("github.com".to_string()),
@@ -38,6 +41,8 @@ fn github_connection_status_response_preserves_public_fields() {
 
     assert!(response.gh_installed);
     assert!(response.authenticated);
+    assert_eq!(response.state, GithubConnectionState::Authenticated);
+    assert!(response.diagnostic.is_none());
     assert_eq!(response.host.as_deref(), Some("github.com"));
     assert_eq!(response.account.as_deref(), Some("reefagent"));
 }
@@ -52,6 +57,11 @@ async fn get_github_connection_status_returns_unavailable_without_service() {
 
     assert!(!response.gh_installed);
     assert!(!response.authenticated);
+    assert_eq!(response.state, GithubConnectionState::CliUnavailable);
+    assert_eq!(
+        response.diagnostic,
+        Some(GithubConnectionDiagnostic::CliLaunch)
+    );
     assert!(response.host.is_none());
     assert!(response.account.is_none());
 }
@@ -85,8 +95,13 @@ async fn get_github_connection_status_uses_service_and_falls_back_on_error() {
         .await
         .expect("command should collapse service errors");
 
-    assert!(!unavailable.gh_installed);
+    assert!(unavailable.gh_installed);
     assert!(!unavailable.authenticated);
+    assert_eq!(unavailable.state, GithubConnectionState::ProbeFailed);
+    assert_eq!(
+        unavailable.diagnostic,
+        Some(GithubConnectionDiagnostic::ServiceFailure)
+    );
     assert_eq!(github.state().fetch_github_connection_status_calls, 2);
 }
 
@@ -174,6 +189,11 @@ async fn get_github_branch_overview_lists_pr_rx_and_ticket_indicators() {
         .current_dir(&repo)
         .output()
         .expect("git clickup ticket branch should run");
+    Command::new(resolve_git_cli_path())
+        .args(["branch", "ralphx/demo/agent-jira-PROJ-123-conversa"])
+        .current_dir(&repo)
+        .output()
+        .expect("git jira agent ticket branch should run");
 
     let github = Arc::new(MockGithubService::new());
     github.will_return_pull_request_search(vec![
@@ -185,6 +205,8 @@ async fn get_github_branch_overview_lists_pr_rx_and_ticket_indicators() {
             head_ref_oid: None,
             base_ref_name: "main".to_string(),
             is_draft: false,
+            state: Some("OPEN".to_string()),
+            merged_at: None,
             updated_at: Some("2026-06-28T08:00:00Z".to_string()),
             author_login: Some("reefagent".to_string()),
             assignee_logins: vec!["lazabogdan".to_string()],
@@ -195,12 +217,32 @@ async fn get_github_branch_overview_lists_pr_rx_and_ticket_indicators() {
         },
         PrSearchResult {
             number: 10,
-            title: "Remote-only PR".to_string(),
+            title: "Closed remote-only PR".to_string(),
             url: "https://github.com/aigentive/ralphx.app/pull/10".to_string(),
             head_ref_name: "feature/pr-only".to_string(),
             head_ref_oid: None,
             base_ref_name: "main".to_string(),
             is_draft: true,
+            state: Some("CLOSED".to_string()),
+            merged_at: None,
+            updated_at: None,
+            author_login: None,
+            assignee_logins: Vec::new(),
+            review_decision: None,
+            latest_review_author_logins: Vec::new(),
+            review_request_logins: Vec::new(),
+            is_cross_repository: false,
+        },
+        PrSearchResult {
+            number: 11,
+            title: "Merged remote-only PR".to_string(),
+            url: "https://github.com/aigentive/ralphx.app/pull/11".to_string(),
+            head_ref_name: "feature/merged-pr-only".to_string(),
+            head_ref_oid: None,
+            base_ref_name: "main".to_string(),
+            is_draft: false,
+            state: Some("MERGED".to_string()),
+            merged_at: Some("2026-06-27T08:00:00Z".to_string()),
             updated_at: None,
             author_login: None,
             assignee_logins: Vec::new(),
@@ -225,6 +267,7 @@ async fn get_github_branch_overview_lists_pr_rx_and_ticket_indicators() {
             url: "https://github.com/aigentive/ralphx.app/pull/11".to_string(),
             status: PrStatus::Merged {
                 merge_commit_sha: Some("abc123".to_string()),
+                merged_at: None,
             },
             is_draft: false,
             head_ref_name: "feature/merged".to_string(),
@@ -372,24 +415,9 @@ async fn get_github_branch_overview_lists_pr_rx_and_ticket_indicators() {
         Some("https://example.atlassian.net/browse/RX-77")
     );
 
-    let pr_only = overview
-        .branches
-        .iter()
-        .find(|branch| branch.branch_name == "feature/pr-only")
-        .expect("GitHub-only PR branch row should exist");
-    assert!(!pr_only.is_current);
-    assert_eq!(pr_only.pr_number, Some(10));
-    assert_eq!(pr_only.pr_status.as_deref(), Some("draft"));
-    assert!(pr_only.pr_is_draft);
-    assert_eq!(
-        pr_only.pr_url.as_deref(),
-        Some("https://github.com/aigentive/ralphx.app/pull/10")
-    );
-    assert_eq!(pr_only.pr_updated_at, None);
-    assert_eq!(pr_only.pr_author_login, None);
-    assert_eq!(pr_only.pr_base_ref_name.as_deref(), Some("main"));
-    assert_eq!(pr_only.rx_conversation_count, 0);
-    assert_eq!(pr_only.ticket_count, 0);
+    assert!(overview.branches.iter().all(|branch| {
+        branch.branch_name != "feature/pr-only" && branch.branch_name != "feature/merged-pr-only"
+    }));
 
     let merged = overview
         .branches
@@ -433,6 +461,17 @@ async fn get_github_branch_overview_lists_pr_rx_and_ticket_indicators() {
     assert_eq!(clickup.ticket_links[0].provider, "clickup");
     assert_eq!(clickup.ticket_links[0].title, None);
     assert!(clickup.ticket_links[0].url.is_none());
+
+    let jira_agent_branch = overview
+        .branches
+        .iter()
+        .find(|branch| branch.branch_name == "ralphx/demo/agent-jira-PROJ-123-conversa")
+        .expect("Jira agent ticket branch row should exist");
+    assert_eq!(jira_agent_branch.ticket_count, 1);
+    assert_eq!(jira_agent_branch.ticket_labels, vec!["Jira PROJ-123"]);
+    assert_eq!(jira_agent_branch.ticket_links[0].provider, "jira");
+    assert_eq!(jira_agent_branch.ticket_links[0].label, "PROJ-123");
+    assert!(jira_agent_branch.ticket_links[0].url.is_none());
 
     assert_eq!(
         github.state().last_search_pull_requests_args,

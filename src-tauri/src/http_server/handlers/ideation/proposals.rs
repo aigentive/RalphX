@@ -6,7 +6,6 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use tauri::Emitter;
 use tracing::error;
 
 use crate::application::agent_planning_session_titles::sync_linked_planning_session_title_from_conversation;
@@ -247,60 +246,55 @@ pub async fn finalize_proposals(
             tracing::warn!(error = %e, "Failed to persist ideation:session_accepted event");
         }
 
-        if let Some(app_handle) = &state.app_state.app_handle {
-            // Notify frontend: session moved to Accepted → PlanBrowser refreshes
-            if let Err(e) = app_handle.emit(
-                "ideation:session_accepted",
-                serde_json::json!({
-                    "sessionId": req.session_id,
-                    "projectId": response.project_id,
-                }),
-            ) {
-                tracing::warn!("Failed to emit ideation:session_accepted event: {}", e);
-            }
+        crate::http_server::emit_http_event(
+            &state,
+            "ideation:session_accepted",
+            serde_json::json!({
+                "sessionId": req.session_id,
+                "projectId": response.project_id,
+            }),
+        );
 
-            // Notify task scheduler: newly created tasks may be Ready
-            let project_id =
-                crate::domain::entities::ProjectId::from_string(response.project_id.clone());
-            let queued_count = match state
-                .app_state
-                .task_repo
-                .get_by_status(&project_id, crate::domain::entities::InternalStatus::Ready)
-                .await
-            {
-                Ok(tasks) => tasks.len(),
-                Err(e) => {
-                    tracing::warn!("Failed to count Ready tasks for queue_changed event: {}", e);
-                    0
-                }
-            };
-            let queued_message_count = match crate::commands::task_commands::helpers::count_slot_consuming_queued_messages_for_project(
-                &state.app_state,
-                &project_id,
-            )
+        // Notify task scheduler: newly created tasks may be Ready
+        let project_id =
+            crate::domain::entities::ProjectId::from_string(response.project_id.clone());
+        let queued_count = match state
+            .app_state
+            .task_repo
+            .get_by_status(&project_id, crate::domain::entities::InternalStatus::Ready)
             .await
-            {
-                Ok(count) => count,
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to count queued agent messages for queue_changed event: {}",
-                        e
-                    );
-                    0
-                }
-            };
-            if let Err(e) = app_handle.emit(
-                "execution:queue_changed",
-                serde_json::json!({
-                    "queuedCount": queued_count,
-                    "queuedMessageCount": queued_message_count,
-                    "projectId": response.project_id,
-                    "timestamp": chrono::Utc::now().to_rfc3339(),
-                }),
-            ) {
-                tracing::warn!("Failed to emit execution:queue_changed event: {}", e);
+        {
+            Ok(tasks) => tasks.len(),
+            Err(e) => {
+                tracing::warn!("Failed to count Ready tasks for queue_changed event: {}", e);
+                0
             }
-        }
+        };
+        let queued_message_count = match crate::commands::task_commands::helpers::count_slot_consuming_queued_messages_for_project(
+            &state.app_state,
+            &project_id,
+        )
+        .await
+        {
+            Ok(count) => count,
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to count queued agent messages for queue_changed event: {}",
+                    e
+                );
+                0
+            }
+        };
+        crate::http_server::emit_http_event(
+            &state,
+            "execution:queue_changed",
+            serde_json::json!({
+                "queuedCount": queued_count,
+                "queuedMessageCount": queued_message_count,
+                "projectId": response.project_id,
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+            }),
+        );
 
         // Async agent cleanup — unlike apply.rs (external HTTP accept where the caller is NOT
         // the agent), here the caller IS the ideation agent via the MCP tool path. Stopping
@@ -491,15 +485,14 @@ pub async fn update_session_title(
                     StatusCode::INTERNAL_SERVER_ERROR
                 })?;
 
-            if let Some(app_handle) = &state.app_state.app_handle {
-                let _ = app_handle.emit(
-                    "ideation:session_title_updated",
-                    serde_json::json!({
-                        "sessionId": session_id.as_str(),
-                        "title": title,
-                    }),
-                );
-            }
+            crate::http_server::emit_http_event(
+                &state,
+                "ideation:session_title_updated",
+                serde_json::json!({
+                    "sessionId": session_id.as_str(),
+                    "title": title,
+                }),
+            );
 
             Ok(Json(SuccessResponse {
                 success: true,
@@ -546,26 +539,26 @@ pub async fn update_session_title(
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
 
-            if let Some(app_handle) = &state.app_state.app_handle {
-                if let Some(session_id) = synced_planning_session_id {
-                    let _ = app_handle.emit(
-                        "ideation:session_title_updated",
-                        serde_json::json!({
-                            "sessionId": session_id.as_str(),
-                            "title": updated_title,
-                        }),
-                    );
-                }
-                let _ = app_handle.emit(
-                    "agent:conversation_title_updated",
+            if let Some(session_id) = synced_planning_session_id {
+                crate::http_server::emit_http_event(
+                    &state,
+                    "ideation:session_title_updated",
                     serde_json::json!({
-                        "conversationId": conversation.id.as_str(),
-                        "contextType": conversation.context_type.to_string(),
-                        "contextId": conversation.context_id,
+                        "sessionId": session_id.as_str(),
                         "title": updated_title,
                     }),
                 );
             }
+            crate::http_server::emit_http_event(
+                &state,
+                "agent:conversation_title_updated",
+                serde_json::json!({
+                    "conversationId": conversation.id.as_str(),
+                    "contextType": conversation.context_type.to_string(),
+                    "contextId": conversation.context_id,
+                    "title": updated_title,
+                }),
+            );
 
             Ok(Json(SuccessResponse {
                 success: true,

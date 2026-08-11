@@ -13,14 +13,6 @@ vi.mock("@/hooks/useTaskSteps", () => ({
   useTaskSteps: vi.fn(),
 }));
 
-let mockExecutionTeamModeAvailable = true;
-vi.mock("@/hooks/useTeamModeAvailability", () => ({
-  useTeamModeAvailability: () => ({
-    ideationTeamModeAvailable: true,
-    executionTeamModeAvailable: mockExecutionTeamModeAvailable,
-  }),
-}));
-
 const mockConfirmation = {
   confirm: vi.fn(async () => true),
   confirmationDialogProps: {},
@@ -68,7 +60,13 @@ vi.mock("@/lib/tauri", () => ({
     },
     tasks: {
       move: vi.fn(async () => ({})),
-      restart: vi.fn(async () => ({ type: "Success", task: {} })),
+      restart: vi.fn(async () => ({
+        type: "Success",
+        task: {},
+        category: "direct",
+        resumedToStatus: "ready",
+        disposition: "restarted_to_ready",
+      })),
       unblock: vi.fn(async () => ({})),
     },
   },
@@ -166,7 +164,13 @@ describe("BasicTaskDetail", () => {
       success: true,
       status: runningExecutionStatus,
     });
-    mockApiTasksRestart.mockResolvedValue({ type: "Success", task: {} });
+    mockApiTasksRestart.mockResolvedValue({
+      type: "Success",
+      task: {},
+      category: "direct",
+      resumedToStatus: "ready",
+      disposition: "restarted_to_ready",
+    });
     mockUseTaskSteps.mockReturnValue({
       data: [],
       isLoading: false,
@@ -528,7 +532,7 @@ describe("BasicTaskDetail", () => {
       expect(screen.queryByTestId("restart-button")).not.toBeInTheDocument();
     });
 
-    it("calls api.tasks.move with correct parameters on button click", async () => {
+    it("routes failed restart through the backend recover-or-restart authority", async () => {
       const user = userEvent.setup();
       const task = createTestTask({ internalStatus: "failed" });
       mockConfirmation.confirm = vi.fn(async () => true);
@@ -539,9 +543,63 @@ describe("BasicTaskDetail", () => {
       await user.click(button);
 
       await waitFor(() => {
-        expect(mockApiTasksMove).toHaveBeenCalledWith(task.id, "ready", undefined, undefined);
+        expect(mockApiTasksRestart).toHaveBeenCalledWith(
+          task.id,
+          false,
+          undefined
+        );
       });
+      expect(mockApiTasksMove).not.toHaveBeenCalled();
     });
+
+    it("moves cancelled tasks to ready without a legacy agent variant", async () => {
+      const user = userEvent.setup();
+      const task = createTestTask({ internalStatus: "cancelled" });
+
+      render(<BasicTaskDetail task={task} />, { wrapper: TestWrapper });
+
+      await user.click(screen.getByTestId("restart-button"));
+
+      await waitFor(() => {
+        expect(mockApiTasksMove).toHaveBeenCalledWith(task.id, "ready", undefined);
+      });
+      expect(mockApiTasksRestart).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["force-resume-button", "merging"],
+      ["go-to-ready-button", "ready"],
+    ])(
+      "uses the current move contract for the %s validation choice",
+      async (buttonTestId, expectedStatus) => {
+        const user = userEvent.setup();
+        const metadata = JSON.stringify({
+          stop_metadata: JSON.stringify({
+            stopped_from_status: "merging",
+            stopped_at: "2026-07-21T00:00:00Z",
+            stop_reason: "User requested",
+          }),
+        });
+        const task = createTestTask({ internalStatus: "stopped", metadata });
+
+        render(<BasicTaskDetail task={task} />, { wrapper: TestWrapper });
+
+        await user.type(screen.getByTestId("restart-note-textarea"), "Review new changes");
+        await user.click(screen.getByTestId("restart-button"));
+        expect(screen.getByTestId("resume-validation-dialog")).toBeInTheDocument();
+
+        await user.click(screen.getByTestId(buttonTestId));
+
+        await waitFor(() => {
+          expect(mockApiTasksMove).toHaveBeenCalledWith(
+            task.id,
+            expectedStatus,
+            "Review new changes"
+          );
+        });
+        expect(mockApiTasksRestart).not.toHaveBeenCalled();
+      }
+    );
 
     it("resumes execution after restart when the project is globally stopped", async () => {
       const user = userEvent.setup();
@@ -554,7 +612,11 @@ describe("BasicTaskDetail", () => {
       await user.click(screen.getByTestId("restart-button"));
 
       await waitFor(() => {
-        expect(mockApiTasksMove).toHaveBeenCalledWith(task.id, "ready", undefined, undefined);
+        expect(mockApiTasksRestart).toHaveBeenCalledWith(
+          task.id,
+          false,
+          undefined
+        );
         expect(mockApiExecutionResume).toHaveBeenCalledWith(task.projectId);
       });
     });
@@ -606,7 +668,7 @@ describe("BasicTaskDetail", () => {
       expect(screen.queryByTestId("restart-note-textarea")).not.toBeInTheDocument();
     });
 
-    it("passes note to api.tasks.move when restarting failed task", async () => {
+    it("passes note to api.tasks.restart when restarting failed task", async () => {
       const user = userEvent.setup();
       const task = createTestTask({ internalStatus: "failed" });
 
@@ -619,13 +681,45 @@ describe("BasicTaskDetail", () => {
       await user.click(button);
 
       await waitFor(() => {
-        expect(mockApiTasksMove).toHaveBeenCalledWith(
+        expect(mockApiTasksRestart).toHaveBeenCalledWith(
           task.id,
-          "ready",
-          undefined,
+          false,
           "Fix the broken import"
         );
       });
+      expect(mockApiTasksMove).not.toHaveBeenCalled();
+      expect(mockConfirmation.confirm).toHaveBeenCalledWith(
+        expect.objectContaining({
+          description: expect.stringContaining(
+            "recover the existing completed work and continue to review"
+          ),
+        })
+      );
+      expect(await screen.findByTestId("restart-outcome")).toHaveTextContent(
+        "A fresh execution attempt was started."
+      );
+    });
+
+    it("shows a backend recovery block without moving or clearing the failed task", async () => {
+      mockApiTasksRestart.mockResolvedValueOnce({
+        type: "Blocked",
+        warnings: [
+          {
+            code: "dirty_worktree",
+            message: "The preserved worktree has uncommitted changes",
+          },
+        ],
+      });
+      const user = userEvent.setup();
+      const task = createTestTask({ internalStatus: "failed" });
+      render(<BasicTaskDetail task={task} />, { wrapper: TestWrapper });
+
+      await user.click(screen.getByTestId("restart-button"));
+
+      expect(
+        await screen.findByText("The preserved worktree has uncommitted changes")
+      ).toBeInTheDocument();
+      expect(mockApiTasksMove).not.toHaveBeenCalled();
     });
 
     it("passes undefined note when textarea is empty", async () => {
@@ -638,10 +732,9 @@ describe("BasicTaskDetail", () => {
       await user.click(button);
 
       await waitFor(() => {
-        expect(mockApiTasksMove).toHaveBeenCalledWith(
+        expect(mockApiTasksRestart).toHaveBeenCalledWith(
           task.id,
-          "ready",
-          undefined,
+          false,
           undefined
         );
       });
@@ -685,97 +778,6 @@ describe("BasicTaskDetail", () => {
       expect(screen.getByText("Stopped from")).toBeInTheDocument();
       expect(screen.getByText(/Manual halt during pipeline/i)).toBeInTheDocument();
       expect(screen.getByText("Reason")).toBeInTheDocument();
-    });
-  });
-
-  describe("execution mode selector", () => {
-    beforeEach(() => {
-      vi.clearAllMocks();
-      mockExecutionTeamModeAvailable = true;
-      mockUseTaskSteps.mockReturnValue({
-        data: [],
-        isLoading: false,
-        isError: false,
-      } as ReturnType<typeof useTaskSteps>);
-      mockConfirmation.confirm = vi.fn(async () => true);
-    });
-
-    it("renders ExecutionModeSelector for ready state", () => {
-      const task = createTestTask({ internalStatus: "ready" });
-      render(<BasicTaskDetail task={task} />, { wrapper: TestWrapper });
-
-      expect(screen.getByTestId("execution-mode-selector")).toBeInTheDocument();
-      expect(screen.getByTestId("mode-solo")).toBeInTheDocument();
-      expect(screen.getByTestId("mode-team")).toBeInTheDocument();
-    });
-
-    it("renders ExecutionModeSelector for failed state", () => {
-      const task = createTestTask({ internalStatus: "failed" });
-      render(<BasicTaskDetail task={task} />, { wrapper: TestWrapper });
-
-      expect(screen.getByTestId("execution-mode-selector")).toBeInTheDocument();
-    });
-
-    it("defaults to solo mode", () => {
-      const task = createTestTask({ internalStatus: "ready" });
-      render(<BasicTaskDetail task={task} />, { wrapper: TestWrapper });
-
-      const soloBtn = screen.getByTestId("mode-solo");
-      // Solo button should have non-transparent background (selected state)
-      expect(soloBtn).toHaveStyle({ backgroundColor: "var(--overlay-moderate)" });
-    });
-
-    it("switches to team mode with orange styling on click", async () => {
-      const user = userEvent.setup();
-      const task = createTestTask({ internalStatus: "ready" });
-      render(<BasicTaskDetail task={task} />, { wrapper: TestWrapper });
-
-      const teamBtn = screen.getByTestId("mode-team");
-      await user.click(teamBtn);
-
-      // Team button should have warm orange background when selected
-      expect(teamBtn).toHaveStyle({ backgroundColor: "var(--accent-muted)" });
-    });
-
-    it("passes 'team' agentVariant to API when team mode selected", async () => {
-      const user = userEvent.setup();
-      const task = createTestTask({ internalStatus: "ready" });
-      render(<BasicTaskDetail task={task} />, { wrapper: TestWrapper });
-
-      // Select team mode
-      await user.click(screen.getByTestId("mode-team"));
-      // Click start
-      await user.click(screen.getByTestId("start-button"));
-
-      await waitFor(() => {
-        expect(mockApiTasksMove).toHaveBeenCalledWith(task.id, "ready", "team", undefined);
-      });
-    });
-
-    it("confirmation dialog includes mode note for team mode", async () => {
-      const user = userEvent.setup();
-      const task = createTestTask({ internalStatus: "ready" });
-      render(<BasicTaskDetail task={task} />, { wrapper: TestWrapper });
-
-      await user.click(screen.getByTestId("mode-team"));
-      await user.click(screen.getByTestId("start-button"));
-
-      await waitFor(() => {
-        expect(mockConfirmation.confirm).toHaveBeenCalledWith(
-          expect.objectContaining({
-            description: expect.stringContaining("in team mode"),
-          }),
-        );
-      });
-    });
-
-    it("hides the execution mode selector when team mode is unavailable", () => {
-      mockExecutionTeamModeAvailable = false;
-      const task = createTestTask({ internalStatus: "ready" });
-      render(<BasicTaskDetail task={task} />, { wrapper: TestWrapper });
-
-      expect(screen.queryByTestId("execution-mode-selector")).not.toBeInTheDocument();
-      expect(screen.queryByTestId("mode-team")).not.toBeInTheDocument();
     });
   });
 

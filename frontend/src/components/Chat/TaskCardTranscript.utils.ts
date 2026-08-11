@@ -1,7 +1,8 @@
 import type { ChatMessageResponse } from "@/api/chat";
 import type { StreamingTask } from "@/types/streaming-task";
 import type { ToolCall } from "./ToolCallIndicator";
-import { normalizeToolCallTranscriptPayload } from "./verification-tool-calls";
+import { normalizeToolCallTranscriptPayload } from "./tool-call-transcript";
+import { parseToolResultId } from "./delegation-tool-calls";
 
 export type TaskCardTranscriptBlock =
   | { type: "text"; text: string }
@@ -61,7 +62,7 @@ export function buildTaskCardTranscriptEntryFromStreamingTask(
   task: StreamingTask,
 ): TaskCardTranscriptEntry {
   const blocks: TaskCardTranscriptBlock[] = task.childToolCalls
-    .filter((toolCall) => !toolCall.name.startsWith("result:toolu"))
+    .filter((toolCall) => parseToolResultId(toolCall.name) == null)
     .map((toolCall) => ({
       type: "tool_call" as const,
       toolCall,
