@@ -486,7 +486,7 @@ async fn test_guard_no_repos_pending_merge_does_not_block_other_tasks() {
 /// should not affect the execution concurrency counter.
 #[tokio::test]
 async fn test_blocking_isolation_execution_state_unaffected_by_pending_merge() {
-    use crate::commands::ExecutionState;
+    use crate::application::execution_state::ExecutionState;
 
     let execution_state = Arc::new(ExecutionState::new());
     // Simulate one task running

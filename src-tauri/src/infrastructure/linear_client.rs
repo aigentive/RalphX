@@ -9,11 +9,10 @@ use serde_json::Value;
 use tokio::time::Duration;
 use tokio_util::bytes::Bytes;
 
-use crate::application::{
-    LinearApiClient, LinearAuthContext, LinearComment, LinearIssueContent, LinearIssueSummary,
-    LinearLabel, LinearProject, LinearUser, LinearWorkflowState,
+use crate::domain::integrations::{
+    LinearApiClient, LinearAttachment, LinearAuthContext, LinearComment, LinearIssueContent,
+    LinearIssueSummary, LinearLabel, LinearProject, LinearUser, LinearWorkflowState,
 };
-use crate::application::linear_integration_service::LinearAttachment;
 use crate::domain::services::ComposerIntegrationReference;
 
 const LINEAR_GRAPHQL_ENDPOINT: &str = "https://api.linear.app/graphql";

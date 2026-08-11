@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use hyper::Method;
 use serde_json::{json, Value};
 
-use crate::application::{
+use crate::domain::integrations::{
     AtlassianApiClient, AtlassianApiError, AtlassianAuthContext, AtlassianCredential,
 };
 use crate::domain::services::ComposerIntegrationReference;
@@ -824,7 +824,7 @@ async fn the_requester_seam_preserves_the_numeric_status_of_a_failed_call() {
             Method::GET,
             HyperAtlassianApiClient::resource_url(
                 &auth,
-                crate::application::AtlassianResourceKind::Jira,
+                crate::domain::integrations::AtlassianResourceKind::Jira,
                 "/rest/api/3/issue/PROJ-1",
             ),
             RequestAuth::None,
@@ -841,7 +841,7 @@ async fn the_requester_seam_preserves_the_numeric_status_of_a_failed_call() {
             Method::GET,
             HyperAtlassianApiClient::resource_url(
                 &auth,
-                crate::application::AtlassianResourceKind::Jira,
+                crate::domain::integrations::AtlassianResourceKind::Jira,
                 "/rest/api/3/issue/PROJ-404",
             ),
             RequestAuth::None,

@@ -1,4 +1,4 @@
-use crate::application::AtlassianApiError;
+use super::AtlassianApiError;
 
 #[test]
 fn rate_limiting_is_classified_by_status_not_message_text() {

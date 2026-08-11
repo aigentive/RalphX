@@ -6,7 +6,7 @@ use crate::application::{
     AgentClientBundle, ChatResumptionRunner, ChatService, InteractiveProcessRegistry,
     NotificationService, PrPollerRegistry, ReconciliationRunner, TaskSchedulerService,
 };
-use crate::commands::ExecutionState;
+use crate::application::execution_state::ExecutionState;
 use crate::domain::repositories::{
     ActivityEventRepository, AgentLaneSettingsRepository, AgentProviderSettingsRepository,
     AgentRunRepository, ArtifactRepository, AutomationRunRepository, BranchUpdateRepository,

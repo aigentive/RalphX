@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use hyper::Method;
 use serde_json::{json, Value};
 
-use crate::application::{
+use crate::domain::integrations::{
     AtlassianApiError, AtlassianRawMethod, ConfluencePageCreateRequest,
     ConfluencePageUpdateRequest, JiraIssueCreateRequest, JiraIssueUpdateRequest,
 };
@@ -14,7 +14,7 @@ use super::atlassian_client::{
     AtlassianAuthContext, AtlassianCredential, AtlassianJsonRequester, AtlassianResourceKind,
     RequestAuth,
 };
-use crate::application::validate_atlassian_raw_path as validate_raw_path;
+use crate::domain::integrations::validate_atlassian_raw_path as validate_raw_path;
 
 use super::atlassian_mcp_client::{
     confluence_create_page, confluence_get_page, confluence_update_page, create_jira_issue,

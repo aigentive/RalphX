@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::application::MockChatService;
-use crate::commands::ExecutionState;
+use crate::application::execution_state::ExecutionState;
 use crate::domain::entities::{GitMode, InternalStatus, Project, ProjectId, Task};
 use crate::domain::state_machine::context::{TaskContext, TaskServices};
 use crate::domain::state_machine::machine::{State, TaskStateMachine};

@@ -4,6 +4,7 @@
 pub mod agent_client_bundle;
 pub mod delegation_park;
 pub mod agent_conversation_archive;
+pub mod agents;
 #[cfg(test)]
 mod agent_conversation_archive_tests;
 pub mod agent_conversation_fork;
@@ -106,19 +107,12 @@ mod agent_workspace_review_unfinished_git_tests;
 pub mod app_paths;
 #[cfg(test)]
 mod app_paths_tests;
-pub mod app_setup;
-#[cfg(test)]
-mod app_setup_tests;
 pub mod app_state;
 pub mod apply_service;
-pub mod atlassian_api_error;
-#[cfg(test)]
-mod atlassian_api_error_tests;
 pub mod atlassian_integration_service;
 pub mod atlassian_mcp_access;
 #[cfg(test)]
 mod atlassian_mcp_access_tests;
-pub mod atlassian_mcp_ops;
 pub mod atlassian_mcp_service;
 pub mod attention_service;
 pub mod automation;
@@ -133,6 +127,7 @@ pub(crate) mod conversation_reference_inheritance;
 mod conversation_reference_inheritance_tests;
 pub mod chat_attachment_storage;
 pub mod chat_resumption;
+pub mod completion_correlation;
 pub mod chat_service;
 pub mod clickup_git_association;
 pub mod clickup_integration_service;
@@ -145,11 +140,10 @@ mod data_retention_service_tests;
 pub mod dependency_service;
 #[cfg(target_os = "macos")]
 pub(crate) mod desktop_notification;
-#[cfg(all(dev, target_os = "macos"))]
-pub(crate) mod dev_dock_icon;
 pub mod diff_service;
 pub mod event_cleanup_service;
 pub mod execution_settings_bootstrap;
+pub mod execution_state;
 pub mod external_issue_link_service;
 pub(crate) mod git_artifact_cleanup;
 pub mod git_mutation_recovery;
@@ -163,6 +157,7 @@ pub mod harness_runtime_registry;
 pub mod http_shutdown;
 #[cfg(test)]
 mod http_shutdown_tests;
+pub mod ideation_apply_service;
 pub mod ideation_effort_bootstrap;
 pub mod ideation_harness_availability;
 pub mod ideation_model_bootstrap;
@@ -175,7 +170,6 @@ mod interactive_notification_producer_tests;
 pub mod interactive_process_registry;
 #[cfg(test)]
 mod interactive_process_registry_tests;
-mod jira_agile_types;
 pub mod linear_integration_service;
 pub mod linear_webhook_reconciliation_service;
 pub(crate) mod managed_provider_cli;
@@ -183,7 +177,6 @@ pub mod managed_team;
 pub mod memory_archive_service;
 pub mod memory_orchestration;
 pub(crate) mod merge_pipeline_visibility;
-pub(crate) mod native_menu;
 pub mod notification_context_resolver;
 pub mod notification_service;
 #[cfg(test)]
@@ -233,44 +226,22 @@ pub mod resume_validator;
 pub mod review_issue_service;
 pub mod review_service;
 pub mod runtime_factory;
-pub mod runtime_wiring;
 pub mod seeded_agent_conversation_abort;
-pub mod server_boot;
-#[cfg(test)]
-mod server_boot_tests;
 pub mod services;
 pub mod session_export_service;
 pub(crate) mod session_namer_agent;
 pub mod session_namer_prompt;
 pub mod session_reopen_service;
-pub mod setup_settings;
-#[cfg(test)]
-mod setup_settings_tests;
-pub mod shutdown;
-#[cfg(test)]
-mod shutdown_tests;
 pub mod standalone_workspace;
 #[cfg(test)]
 mod standalone_workspace_path_safety_tests;
 #[cfg(test)]
 mod standalone_workspace_tests;
 pub mod startup_background;
-pub mod startup_bootstrap;
-#[cfg(test)]
-mod startup_bootstrap_tests;
-pub mod startup_cleanup;
 pub mod startup_failure_classification;
 pub mod startup_git_auth_preflight;
 pub mod startup_jobs;
-pub mod startup_pipeline;
-pub mod startup_pipeline_launch;
-#[cfg(test)]
-mod startup_pipeline_tests;
-pub mod startup_runtime_builders;
-#[cfg(test)]
-mod startup_runtime_builders_tests;
 pub mod startup_status;
-pub mod startup_transition_factory;
 pub mod supervisor_service;
 pub mod task_cleanup_service;
 pub mod task_context_service;
@@ -301,6 +272,7 @@ pub mod ticketing_service;
 pub mod ticketing_status_catalog_service;
 pub(crate) mod validation_events;
 pub mod validation_service;
+pub mod verification_child_lifecycle;
 pub mod verification_event_emitters;
 pub mod webhook_service;
 pub(crate) mod workspace_capacity;
@@ -323,12 +295,12 @@ pub use app_state::AppState;
 pub use apply_service::{
     ApplyProposalsOptions, ApplyProposalsResult, ApplyService, SelectionValidation, TargetColumn,
 };
-pub use atlassian_api_error::AtlassianApiError;
+pub use crate::domain::integrations::atlassian_api_error::AtlassianApiError;
 pub use atlassian_mcp_access::{
     atlassian_mcp_tools_for_resumed_run, atlassian_mcp_tools_for_spawn,
     effective_atlassian_mcp_access,
 };
-pub use atlassian_mcp_ops::{
+pub use crate::domain::integrations::atlassian_mcp_ops::{
     validate_atlassian_raw_path, AtlassianRawMethod, AtlassianRawResponse, ConfluencePageContent, ConfluencePageCreateRequest,
     ConfluencePageUpdateRequest, JiraIssueCreateRequest, JiraIssueCreated, JiraIssueUpdateRequest,
     ATLASSIAN_RAW_PATH_PREFIXES, ATLASSIAN_RAW_RESPONSE_MAX_BYTES,
@@ -379,7 +351,7 @@ pub use ideation_service::{
     UpdateSource,
 };
 pub use interactive_process_registry::{InteractiveProcessKey, InteractiveProcessRegistry};
-pub use jira_agile_types::{
+pub use crate::domain::integrations::jira_agile_types::{
     JiraBoardColumn, JiraBoardConfiguration, JiraBoardSummary, JiraSprintSummary,
 };
 pub use linear_integration_service::{
@@ -541,8 +513,6 @@ mod publish_resilience_tests;
 mod pull_request_detail_tests;
 #[cfg(test)]
 mod recovery_queue_tests;
-#[cfg(test)]
-mod runtime_wiring_tests;
 #[cfg(test)]
 mod session_export_service_tests;
 #[cfg(test)]

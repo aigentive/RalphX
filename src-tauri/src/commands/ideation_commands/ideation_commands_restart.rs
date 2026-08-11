@@ -33,7 +33,7 @@ use crate::domain::state_machine::transition_handler::{
 };
 use crate::error::{AppError, AppResult};
 
-use super::ideation_commands_apply::{
+use crate::application::ideation_apply_service::{
     inspect_plan_branch_pr_eligibility, load_linked_agent_conversation_workspace,
     phase_insert_dependencies, phase_insert_execution_plan, phase_insert_merge_task,
     phase_insert_tasks_and_steps, phase_update_proposals, phase_upsert_plan_branch,

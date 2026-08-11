@@ -10,9 +10,9 @@
 
 use serde_json::Value;
 
-use super::atlassian_api_error::AtlassianApiError;
 use super::atlassian_integration_service::{AtlassianIntegrationService, AtlassianResourceKind};
-use super::atlassian_mcp_ops::{
+use crate::domain::integrations::atlassian_api_error::AtlassianApiError;
+use crate::domain::integrations::atlassian_mcp_ops::{
     AtlassianRawMethod, ConfluencePageContent, ConfluencePageCreateRequest,
     ConfluencePageUpdateRequest, JiraIssueCreateRequest, JiraIssueCreated, JiraIssueUpdateRequest,
 };
@@ -117,7 +117,7 @@ impl AtlassianIntegrationService {
     ) -> Result<Value, AtlassianApiError> {
         // Reject unsafe paths before touching credentials so a containment
         // failure can never be masked by a credential failure.
-        super::atlassian_mcp_ops::validate_atlassian_raw_path(path)
+        crate::domain::integrations::atlassian_mcp_ops::validate_atlassian_raw_path(path)
             .map_err(AtlassianApiError::transport)?;
         let auth = self.mcp_auth().await?;
         self.client()

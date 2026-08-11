@@ -29,7 +29,7 @@ use crate::application::task_notification_producer::TaskPipelineNotificationProd
 use crate::application::task_scheduler_service::TaskSchedulerService;
 use crate::application::task_transition_service::TaskTransitionService;
 use crate::application::InteractiveProcessRegistry;
-use crate::commands::{execution_commands::AGENT_ACTIVE_STATUSES, ExecutionState};
+use crate::application::execution_state::{ExecutionState, AGENT_ACTIVE_STATUSES};
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
     app_state::ExecutionHaltMode, AgentRunId, AgentRunStatus, ChatContextType, ChatConversation,

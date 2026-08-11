@@ -9,7 +9,7 @@
 use hyper::Method;
 use serde_json::Value;
 
-use crate::application::{
+use crate::domain::integrations::{
     validate_atlassian_raw_path, AtlassianApiError, AtlassianRawMethod, ConfluencePageContent,
     ConfluencePageCreateRequest, ConfluencePageUpdateRequest, JiraIssueCreateRequest,
     JiraIssueCreated, JiraIssueUpdateRequest, ATLASSIAN_RAW_RESPONSE_MAX_BYTES,

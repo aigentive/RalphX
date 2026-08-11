@@ -4,12 +4,21 @@
     {
       "forbidden": [
         "crate::application",
-        "crate::commands",
         "crate::infrastructure",
         "crate::http_server"
       ],
       "id": "root_domain_no_upward_imports",
       "mode": "baseline",
+      "paths": [
+        "src-tauri/src/domain/**/*.rs"
+      ]
+    },
+    {
+      "forbidden": [
+        "crate::commands"
+      ],
+      "id": "root_domain_no_commands_imports",
+      "mode": "hard-zero",
       "paths": [
         "src-tauri/src/domain/**/*.rs"
       ]
@@ -26,11 +35,36 @@
     },
     {
       "forbidden": [
+        "crate::shell"
+      ],
+      "id": "root_no_imports_from_shell",
+      "mode": "hard-zero",
+      "paths": [
+        "src-tauri/src/domain/**/*.rs",
+        "src-tauri/src/application/**/*.rs",
+        "src-tauri/src/infrastructure/**/*.rs",
+        "src-tauri/src/http_server/**/*.rs",
+        "src-tauri/src/commands/**/*.rs"
+      ]
+    },
+    {
+      "forbidden": [
+        "rusqlite::",
+        "crate::infrastructure::sqlite::"
+      ],
+      "id": "root_shell_no_direct_sqlite",
+      "mode": "baseline",
+      "paths": [
+        "src-tauri/src/shell/**/*.rs"
+      ]
+    },
+    {
+      "forbidden": [
         "crate::commands",
         "crate::http_server"
       ],
       "id": "root_application_no_commands_or_http_imports",
-      "mode": "baseline",
+      "mode": "hard-zero",
       "paths": [
         "src-tauri/src/application/**/*.rs"
       ]
@@ -42,7 +76,7 @@
         "crate::http_server"
       ],
       "id": "root_infrastructure_no_upper_layer_imports",
-      "mode": "baseline",
+      "mode": "hard-zero",
       "paths": [
         "src-tauri/src/infrastructure/**/*.rs"
       ]
@@ -109,7 +143,7 @@
         "src-tauri/src/application/agent_conversation_start_service/project_setup.rs",
         "src-tauri/src/application/agent_conversation_start_service/helpers/spawn_glue.rs",
         "src-tauri/src/application/startup_background.rs",
-        "src-tauri/src/application/startup_runtime_builders.rs",
+        "src-tauri/src/shell/startup_runtime_builders.rs",
         "src-tauri/src/application/chat_resumption.rs",
         "src-tauri/src/application/task_cleanup_service.rs"
       ]
@@ -135,7 +169,7 @@
         "src-tauri/src/application/agent_conversation_start_service/finish_flow.rs",
         "src-tauri/src/application/agent_conversation_start_service/project_setup.rs",
         "src-tauri/src/application/startup_background.rs",
-        "src-tauri/src/application/startup_runtime_builders.rs"
+        "src-tauri/src/shell/startup_runtime_builders.rs"
       ]
     },
     {
@@ -190,258 +224,7 @@
     "bounded_chat_start_runtime_no_app_handle": [],
     "bounded_chat_start_runtime_no_tauri_generics": [],
     "bounded_completion_producers_no_direct_tauri_emit": [],
-    "root_application_no_commands_or_http_imports": [
-      {
-        "path": "src-tauri/src/application/app_setup.rs",
-        "target": "crate::commands",
-        "text": "crate::commands::agent_workspace_auto_publish::"
-      },
-      {
-        "path": "src-tauri/src/application/app_setup.rs",
-        "target": "crate::commands",
-        "text": "crate::commands::agent_workspace_completion_dispatch::"
-      },
-      {
-        "path": "src-tauri/src/application/app_setup.rs",
-        "target": "crate::commands",
-        "text": "crate::commands::workspace_open_commands::warm_workspace_open_target_cache();"
-      },
-      {
-        "path": "src-tauri/src/application/app_setup.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::{ActiveProjectState, ExecutionState};"
-      },
-      {
-        "path": "src-tauri/src/application/app_state.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
-        "path": "src-tauri/src/application/app_state_tests.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
-        "path": "src-tauri/src/application/chat_resumption.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::execution_commands::{ExecutionState, AGENT_ACTIVE_STATUSES};"
-      },
-      {
-        "path": "src-tauri/src/application/chat_service/chat_service_handlers.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::{execution_commands::AGENT_ACTIVE_STATUSES, ExecutionState};"
-      },
-      {
-        "path": "src-tauri/src/application/chat_service/chat_service_merge.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
-        "path": "src-tauri/src/application/chat_service/chat_service_merge_tests.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
-        "path": "src-tauri/src/application/chat_service/chat_service_queue.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
-        "path": "src-tauri/src/application/chat_service/chat_service_send_background.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
-        "path": "src-tauri/src/application/chat_service/chat_service_send_background_tests.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
-        "path": "src-tauri/src/application/chat_service/chat_service_streaming.rs",
-        "target": "crate::commands",
-        "text": "_execution_state: Option<Arc<crate::commands::ExecutionState>>,"
-      },
-      {
-        "path": "src-tauri/src/application/chat_service/chat_service_streaming.rs",
-        "target": "crate::commands",
-        "text": "execution_state: Option<Arc<crate::commands::ExecutionState>>,"
-      },
-      {
-        "path": "src-tauri/src/application/chat_service/freshness_routing_tests.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
-        "path": "src-tauri/src/application/chat_service/mod.rs",
-        "target": "crate::commands",
-        "text": "execution_state: Option<&Arc<crate::commands::ExecutionState>>,"
-      },
-      {
-        "path": "src-tauri/src/application/chat_service/mod.rs",
-        "target": "crate::commands",
-        "text": "execution_state: Option<Arc<crate::commands::ExecutionState>>,"
-      },
-      {
-        "path": "src-tauri/src/application/chat_service/mod.rs",
-        "target": "crate::commands",
-        "text": "pub fn with_execution_state(mut self, state: Arc<crate::commands::ExecutionState>) -> Self {"
-      },
-      {
-        "path": "src-tauri/src/application/chat_service/mod.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
-        "path": "src-tauri/src/application/chat_service/mod.rs",
-        "target": "crate::commands",
-        "text": "|| !crate::commands::execution_commands::context_matches_running_status_for_gc("
-      },
-      {
-        "path": "src-tauri/src/application/pending_session_drain.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
-        "path": "src-tauri/src/application/pending_session_drain_tests.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
-        "path": "src-tauri/src/application/plan_complexity_assessment.rs",
-        "target": "crate::http_server",
-        "text": "use crate::http_server::types::{"
-      },
-      {
-        "path": "src-tauri/src/application/plan_complexity_assessment_tests.rs",
-        "target": "crate::http_server",
-        "text": "use crate::http_server::types::SubmitPlanComplexityAssessmentRequest;"
-      },
-      {
-        "path": "src-tauri/src/application/pr_startup_recovery.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
-        "path": "src-tauri/src/application/prune_engine_tests.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::execution_commands::ExecutionState;"
-      },
-      {
-        "path": "src-tauri/src/application/ready_task_scheduler.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
-        "path": "src-tauri/src/application/reconciliation.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::execution_commands::ExecutionState;"
-      },
-      {
-        "path": "src-tauri/src/application/reconciliation/handlers/execution.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::execution_commands::context_matches_running_status_for_gc;"
-      },
-      {
-        "path": "src-tauri/src/application/reconciliation/handlers/execution_tests.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
-        "path": "src-tauri/src/application/runtime_factory.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
-        "path": "src-tauri/src/application/server_boot.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
-        "path": "src-tauri/src/application/server_boot.rs",
-        "target": "crate::http_server",
-        "text": "use crate::http_server;"
-      },
-      {
-        "path": "src-tauri/src/application/session_reopen_service.rs",
-        "target": "crate::http_server",
-        "text": "use crate::http_server::handlers::ideation::{stop_and_archive_children, ChildFilter};"
-      },
-      {
-        "path": "src-tauri/src/application/setup_settings.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
-        "path": "src-tauri/src/application/shutdown.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands;"
-      },
-      {
-        "path": "src-tauri/src/application/startup_background.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
-        "path": "src-tauri/src/application/startup_jobs.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::execution_commands::{"
-      },
-      {
-        "path": "src-tauri/src/application/startup_jobs_tests.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::execution_commands::{ActiveProjectState, ExecutionState};"
-      },
-      {
-        "path": "src-tauri/src/application/startup_pipeline.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::{ActiveProjectState, ExecutionState};"
-      },
-      {
-        "path": "src-tauri/src/application/startup_pipeline_launch.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::{ActiveProjectState, ExecutionState};"
-      },
-      {
-        "path": "src-tauri/src/application/startup_runtime_builders.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
-        "path": "src-tauri/src/application/startup_transition_factory.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
-        "path": "src-tauri/src/application/task_cleanup_service.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::execution_commands::AGENT_ACTIVE_STATUSES;"
-      },
-      {
-        "path": "src-tauri/src/application/task_scheduler_service/helpers_tests.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
-        "path": "src-tauri/src/application/task_scheduler_service/mod.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
-        "path": "src-tauri/src/application/task_scheduler_service/mod.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::execution_commands::context_matches_running_status_for_gc;"
-      },
-      {
-        "path": "src-tauri/src/application/task_transition_service.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
-        "path": "src-tauri/src/application/validation_service.rs",
-        "target": "crate::http_server",
-        "text": "let (validation_hint, hint_message) = crate::http_server::helpers::compute_validation_hint("
-      }
-    ],
+    "root_application_no_commands_or_http_imports": [],
     "root_commands_no_http_imports": [
       {
         "path": "src-tauri/src/commands/ideation_commands/ideation_commands_apply.rs",
@@ -449,43 +232,14 @@
         "text": "/// External HTTP callers use [`crate::http_server::handlers::external_apply_proposals`]"
       },
       {
-        "path": "src-tauri/src/commands/ideation_commands/ideation_commands_apply.rs",
-        "target": "crate::http_server",
-        "text": "use crate::http_server::handlers::ideation::stop_verification_children;"
-      },
-      {
         "path": "src-tauri/src/commands/ideation_commands/ideation_commands_proposals.rs",
         "target": "crate::http_server",
         "text": "use crate::http_server::helpers::{"
       }
     ],
+    "root_domain_no_commands_imports": [],
     "root_domain_no_tauri_usage": [],
     "root_domain_no_upward_imports": [
-      {
-        "path": "src-tauri/src/domain/repositories/permission_repository.rs",
-        "target": "crate::application",
-        "text": "// Types imported from crate::application::permission_state."
-      },
-      {
-        "path": "src-tauri/src/domain/repositories/permission_repository.rs",
-        "target": "crate::application",
-        "text": "use crate::application::permission_state::{PendingPermissionInfo, PermissionDecision};"
-      },
-      {
-        "path": "src-tauri/src/domain/repositories/question_repository.rs",
-        "target": "crate::application",
-        "text": "// Types imported from crate::application::question_state."
-      },
-      {
-        "path": "src-tauri/src/domain/repositories/question_repository.rs",
-        "target": "crate::application",
-        "text": "use crate::application::question_state::{PendingQuestionInfo, QuestionAnswer};"
-      },
-      {
-        "path": "src-tauri/src/domain/repositories/question_repository_tests.rs",
-        "target": "crate::application",
-        "text": "use crate::application::question_state::QuestionOption;"
-      },
       {
         "path": "src-tauri/src/domain/services/api_key_service_tests.rs",
         "target": "crate::infrastructure",
@@ -533,8 +287,8 @@
       },
       {
         "path": "src-tauri/src/domain/state_machine/context.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
+        "target": "crate::application",
+        "text": "use crate::application::execution_state::ExecutionState;"
       },
       {
         "path": "src-tauri/src/domain/state_machine/transition_handler/checkout_free_strategy.rs",
@@ -747,11 +501,6 @@
         "text": "use crate::infrastructure::tool_paths::{"
       },
       {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/mod.rs",
-        "target": "crate::commands",
-        "text": "crate::commands::metrics_commands::invalidate_project_stats_cache("
-      },
-      {
         "path": "src-tauri/src/domain/state_machine/transition_handler/on_enter_states/mod.rs",
         "target": "crate::application",
         "text": "use crate::application::GitService;"
@@ -803,8 +552,8 @@
       },
       {
         "path": "src-tauri/src/domain/state_machine/transition_handler/tests/cascade_poller_cleanup_tests.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
+        "target": "crate::application",
+        "text": "use crate::application::execution_state::ExecutionState;"
       },
       {
         "path": "src-tauri/src/domain/state_machine/transition_handler/tests/cascade_poller_cleanup_tests.rs",
@@ -818,8 +567,8 @@
       },
       {
         "path": "src-tauri/src/domain/state_machine/transition_handler/tests/execution_state.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
+        "target": "crate::application",
+        "text": "use crate::application::execution_state::ExecutionState;"
       },
       {
         "path": "src-tauri/src/domain/state_machine/transition_handler/tests/freshness_merge_worktree_tests.rs",
@@ -838,8 +587,8 @@
       },
       {
         "path": "src-tauri/src/domain/state_machine/transition_handler/tests/freshness_return_path_integration_tests.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
+        "target": "crate::application",
+        "text": "use crate::application::execution_state::ExecutionState;"
       },
       {
         "path": "src-tauri/src/domain/state_machine/transition_handler/tests/helpers.rs",
@@ -914,22 +663,22 @@
       {
         "path": "src-tauri/src/domain/state_machine/transition_handler/tests/merge_outcome_transient_retry_tests.rs",
         "target": "crate::application",
-        "text": "use crate::application::{AppState, TaskTransitionService};"
+        "text": "use crate::application::execution_state::ExecutionState;"
       },
       {
         "path": "src-tauri/src/domain/state_machine/transition_handler/tests/merge_outcome_transient_retry_tests.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
+        "target": "crate::application",
+        "text": "use crate::application::{AppState, TaskTransitionService};"
       },
       {
         "path": "src-tauri/src/domain/state_machine/transition_handler/tests/merge_pipeline_failure_scenarios.rs",
-        "target": "crate::commands",
-        "text": "execution_state: Arc<crate::commands::ExecutionState>,"
+        "target": "crate::application",
+        "text": "execution_state: Arc<crate::application::execution_state::ExecutionState>,"
       },
       {
         "path": "src-tauri/src/domain/state_machine/transition_handler/tests/merge_pipeline_failure_scenarios.rs",
-        "target": "crate::commands",
-        "text": "let execution_state = Arc::new(crate::commands::ExecutionState::new());"
+        "target": "crate::application",
+        "text": "let execution_state = Arc::new(crate::application::execution_state::ExecutionState::new());"
       },
       {
         "path": "src-tauri/src/domain/state_machine/transition_handler/tests/merge_pipeline_gaps.rs",
@@ -948,8 +697,8 @@
       },
       {
         "path": "src-tauri/src/domain/state_machine/transition_handler/tests/merge_retry.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
+        "target": "crate::application",
+        "text": "use crate::application::execution_state::ExecutionState;"
       },
       {
         "path": "src-tauri/src/domain/state_machine/transition_handler/tests/merge_target_resolution.rs",
@@ -968,8 +717,8 @@
       },
       {
         "path": "src-tauri/src/domain/state_machine/transition_handler/tests/merge_workflow.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
+        "target": "crate::application",
+        "text": "use crate::application::execution_state::ExecutionState;"
       },
       {
         "path": "src-tauri/src/domain/state_machine/transition_handler/tests/merged_branch_guard_integration.rs",
@@ -1058,8 +807,8 @@
       },
       {
         "path": "src-tauri/src/domain/state_machine/transition_handler/tests/rc_pipeline_integration_tests.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
+        "target": "crate::application",
+        "text": "use crate::application::execution_state::ExecutionState;"
       },
       {
         "path": "src-tauri/src/domain/state_machine/transition_handler/tests/real_git_integration.rs",
@@ -1198,8 +947,8 @@
       },
       {
         "path": "src-tauri/src/domain/state_machine/transition_handler/tests/worktree_restore_tests.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
+        "target": "crate::application",
+        "text": "use crate::application::execution_state::ExecutionState;"
       }
     ],
     "root_http_no_commands_imports": [
@@ -1254,24 +1003,9 @@
         "text": "use crate::commands::unified_chat_commands::{"
       },
       {
-        "path": "src-tauri/src/http_server/handlers/agent_workspaces/tests.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
         "path": "src-tauri/src/http_server/handlers/external/ideation_runtime/append.rs",
         "target": "crate::commands",
         "text": "use crate::commands::ideation_commands::{"
-      },
-      {
-        "path": "src-tauri/src/http_server/handlers/external/mod.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ideation_commands::{apply_proposals_core, ApplyProposalsInput};"
-      },
-      {
-        "path": "src-tauri/src/http_server/handlers/external/webhooks.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
       },
       {
         "path": "src-tauri/src/http_server/handlers/git.rs",
@@ -1299,34 +1033,9 @@
         "text": "use crate::commands::review_commands_types::{IssueProgressResponse, ReviewIssueResponse};"
       },
       {
-        "path": "src-tauri/src/http_server/handlers/permissions_tests.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
         "path": "src-tauri/src/http_server/handlers/projects.rs",
         "target": "crate::commands",
         "text": "crate::commands::project_commands::spawn_project_analyzer("
-      },
-      {
-        "path": "src-tauri/src/http_server/helpers.rs",
-        "target": "crate::commands",
-        "text": ") -> AppResult<crate::commands::ideation_commands::ApplyProposalsResult> {"
-      },
-      {
-        "path": "src-tauri/src/http_server/helpers.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ideation_commands::{"
-      },
-      {
-        "path": "src-tauri/src/http_server/mod.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
-        "path": "src-tauri/src/http_server/types.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
       },
       {
         "path": "src-tauri/src/http_server/types.rs",
@@ -1334,231 +1043,48 @@
         "text": "use crate::commands::unified_chat_commands::{"
       }
     ],
-    "root_infrastructure_no_upper_layer_imports": [
+    "root_infrastructure_no_upper_layer_imports": [],
+    "root_no_imports_from_shell": [],
+    "root_shell_no_direct_sqlite": [
       {
-        "path": "src-tauri/src/infrastructure/agents/spawner.rs",
-        "target": "crate::application",
-        "text": "crate::application::ensure_provider_spawn_enabled("
+        "path": "src-tauri/src/shell/app_setup.rs",
+        "target": "crate::infrastructure::sqlite::",
+        "text": "Ok(Ok(crate::infrastructure::sqlite::database_maintenance::CompactionOutcome::Compacted { reclaimed_bytes })) => {"
       },
       {
-        "path": "src-tauri/src/infrastructure/agents/spawner.rs",
-        "target": "crate::application",
-        "text": "crate::application::managed_provider_cli::checked_managed_provider_cli_launch_path("
+        "path": "src-tauri/src/shell/app_setup.rs",
+        "target": "crate::infrastructure::sqlite::",
+        "text": "Ok(Ok(crate::infrastructure::sqlite::database_maintenance::CompactionOutcome::NotRequested)) => {}"
       },
       {
-        "path": "src-tauri/src/infrastructure/agents/spawner.rs",
-        "target": "crate::application",
-        "text": "crate::application::provider_env_file::load_provider_custom_env_file(settings)?;"
+        "path": "src-tauri/src/shell/app_setup.rs",
+        "target": "crate::infrastructure::sqlite::",
+        "text": "Ok(Ok(crate::infrastructure::sqlite::database_maintenance::CompactionOutcome::Skipped(reason))) => {"
       },
       {
-        "path": "src-tauri/src/infrastructure/agents/spawner.rs",
-        "target": "crate::application",
-        "text": "use crate::application::agent_lane_resolution::resolve_agent_spawn_settings;"
+        "path": "src-tauri/src/shell/app_setup.rs",
+        "target": "crate::infrastructure::sqlite::",
+        "text": "crate::infrastructure::sqlite::database_maintenance::CompactionConfig {"
       },
       {
-        "path": "src-tauri/src/infrastructure/agents/spawner.rs",
-        "target": "crate::application",
-        "text": "use crate::application::chat_service::uses_execution_slot;"
+        "path": "src-tauri/src/shell/app_setup.rs",
+        "target": "crate::infrastructure::sqlite::",
+        "text": "crate::infrastructure::sqlite::database_maintenance::DatabaseMaintenanceError::Integrity("
       },
       {
-        "path": "src-tauri/src/infrastructure/agents/spawner.rs",
-        "target": "crate::application",
-        "text": "use crate::application::harness_runtime_registry::resolve_harness_plugin_dir;"
+        "path": "src-tauri/src/shell/app_setup.rs",
+        "target": "crate::infrastructure::sqlite::",
+        "text": "crate::infrastructure::sqlite::database_maintenance::compact_before_pool_opens_at("
       },
       {
-        "path": "src-tauri/src/infrastructure/agents/spawner.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
+        "path": "src-tauri/src/shell/app_setup.rs",
+        "target": "crate::infrastructure::sqlite::",
+        "text": "crate::infrastructure::sqlite::database_maintenance::compaction_will_execute("
       },
       {
-        "path": "src-tauri/src/infrastructure/agents/spawner.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::execution_commands::context_matches_running_status_for_gc;"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/agents/spawner_tests.rs",
-        "target": "crate::application",
-        "text": "crate::application::managed_provider_cli::override_managed_codex_binary_path_for_tests("
-      },
-      {
-        "path": "src-tauri/src/infrastructure/agents/spawner_tests.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/atlassian_client.rs",
-        "target": "crate::application",
-        "text": "use crate::application::{"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/atlassian_client_tests.rs",
-        "target": "crate::application",
-        "text": "crate::application::AtlassianResourceKind::Jira,"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/atlassian_client_tests.rs",
-        "target": "crate::application",
-        "text": "use crate::application::{"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/atlassian_client_unit_tests.rs",
-        "target": "crate::application",
-        "text": "use crate::application::AtlassianApiError;"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/atlassian_jira_fields_tests.rs",
-        "target": "crate::application",
-        "text": "use crate::application::AtlassianApiError;"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/atlassian_mcp_client.rs",
-        "target": "crate::application",
-        "text": "use crate::application::{"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/atlassian_mcp_client_tests.rs",
-        "target": "crate::application",
-        "text": "use crate::application::validate_atlassian_raw_path as validate_raw_path;"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/atlassian_mcp_client_tests.rs",
-        "target": "crate::application",
-        "text": "use crate::application::{"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/clickup_client.rs",
-        "target": "crate::application",
-        "text": "use crate::application::clickup_integration_service::{"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/clickup_client.rs",
-        "target": "crate::application",
-        "text": "use crate::application::{"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/clickup_client_tests.rs",
-        "target": "crate::application",
-        "text": "use crate::application::clickup_integration_service::ClickUpTaskListOptions;"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/clickup_client_tests.rs",
-        "target": "crate::application",
-        "text": "use crate::application::{ClickUpApiClient, ClickUpAuthContext};"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/granola_client.rs",
-        "target": "crate::application",
-        "text": "use crate::application::granola_integration_service::is_valid_granola_note_id;"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/granola_client.rs",
-        "target": "crate::application",
-        "text": "use crate::application::{"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/granola_client_tests.rs",
-        "target": "crate::application",
-        "text": "use crate::application::{GranolaApiClient, GranolaApiError, GranolaAuthContext};"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/jira_agile_client_tests.rs",
-        "target": "crate::application",
-        "text": "use crate::application::AtlassianApiError;"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/linear_client.rs",
-        "target": "crate::application",
-        "text": "use crate::application::linear_integration_service::LinearAttachment;"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/linear_client.rs",
-        "target": "crate::application",
-        "text": "use crate::application::{"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/memory/memory_chat_message_repo.rs",
-        "target": "crate::application",
-        "text": "crate::application::reconciliation::verification_handoff::VERIFICATION_RESULT_MARKER,"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/memory/memory_chat_message_repo.rs",
-        "target": "crate::application",
-        "text": "metadata.contains(crate::application::reconciliation::verification_handoff::VERIFICATION_RESULT_METADATA_KEY)"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/memory/memory_linear_integration_settings_repo.rs",
-        "target": "crate::application",
-        "text": "use crate::application::{LinearIntegrationSettings, LinearIntegrationSettingsRepository};"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/memory/memory_permission_repo.rs",
-        "target": "crate::application",
-        "text": "use crate::application::permission_state::{PendingPermissionInfo, PermissionDecision};"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/memory/memory_question_repo.rs",
-        "target": "crate::application",
-        "text": "use crate::application::question_state::{PendingQuestionInfo, QuestionAnswer};"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/memory/memory_question_repo_tests.rs",
-        "target": "crate::application",
-        "text": "use crate::application::question_state::QuestionOption;"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/sqlite/sqlite_chat_message_repo.rs",
-        "target": "crate::application",
-        "text": "crate::application::reconciliation::verification_handoff::VERIFICATION_RESULT_MARKER"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/sqlite/sqlite_chat_message_repo.rs",
-        "target": "crate::application",
-        "text": "crate::application::reconciliation::verification_handoff::VERIFICATION_RESULT_METADATA_KEY"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/sqlite/sqlite_ideation_session_repo.rs",
-        "target": "crate::application",
-        "text": "use crate::application::harness_runtime_registry::default_verification_max_rounds;"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/sqlite/sqlite_linear_integration_settings_repo.rs",
-        "target": "crate::application",
-        "text": "use crate::application::{LinearIntegrationSettings, LinearIntegrationSettingsRepository};"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/sqlite/sqlite_linear_integration_settings_repo_tests.rs",
-        "target": "crate::application",
-        "text": "use crate::application::{LinearIntegrationSettings, LinearIntegrationSettingsRepository};"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/sqlite/sqlite_linear_webhook_store.rs",
-        "target": "crate::application",
-        "text": "use crate::application::linear_webhook_reconciliation_service::{"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/sqlite/sqlite_linear_webhook_store_tests.rs",
-        "target": "crate::application",
-        "text": "use crate::application::linear_webhook_reconciliation_service::{"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/sqlite/sqlite_permission_repo.rs",
-        "target": "crate::application",
-        "text": "use crate::application::permission_state::{PendingPermissionInfo, PermissionDecision};"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/sqlite/sqlite_permission_repo_tests.rs",
-        "target": "crate::application",
-        "text": "use crate::application::permission_state::PermissionState;"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/sqlite/sqlite_question_repo.rs",
-        "target": "crate::application",
-        "text": "use crate::application::question_state::{PendingQuestionInfo, QuestionAnswer, QuestionOption};"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/sqlite/sqlite_question_repo_tests.rs",
-        "target": "crate::application",
-        "text": "use crate::application::question_state::QuestionState;"
+        "path": "src-tauri/src/shell/shutdown.rs",
+        "target": "crate::infrastructure::sqlite::",
+        "text": "use crate::infrastructure::sqlite::DbConnection;"
       }
     ],
     "workspace_domain_no_root_layer_refs": [],

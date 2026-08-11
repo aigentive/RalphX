@@ -190,9 +190,9 @@ fn center_traffic_lights_macos<R: tauri::Runtime>(window: &tauri::WebviewWindow<
     }
 }
 
-pub fn build_http_app_state(
+pub fn build_http_app_state<R: tauri::Runtime>(
     app_state: &AppState,
-    app_handle: tauri::AppHandle,
+    app_handle: tauri::AppHandle<R>,
 ) -> crate::AppResult<Arc<AppState>> {
     let shared_db_conn = Arc::clone(app_state.db.inner());
     let shared_question_state = Arc::clone(&app_state.question_state);

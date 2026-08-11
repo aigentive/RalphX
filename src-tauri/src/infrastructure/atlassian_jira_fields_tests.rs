@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use hyper::Method;
 use serde_json::{json, Value};
 
-use crate::application::AtlassianApiError;
+use crate::domain::integrations::AtlassianApiError;
 
 use super::atlassian_client::{
     AtlassianAuthContext, AtlassianCredential, AtlassianJsonRequester, RequestAuth,

@@ -3,7 +3,7 @@ use hyper::Method;
 use serde_json::Value;
 use std::sync::Mutex;
 
-use crate::application::AtlassianApiError;
+use crate::domain::integrations::AtlassianApiError;
 
 use super::atlassian_client::*;
 

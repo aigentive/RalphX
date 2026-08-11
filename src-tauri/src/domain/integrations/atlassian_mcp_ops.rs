@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Allowed relative-path prefixes for [`raw_api_request`](super::AtlassianApiClient::raw_api_request).
+/// Allowed relative-path prefixes for [`raw_api_request`](super::atlassian_resources::AtlassianApiClient::raw_api_request).
 pub const ATLASSIAN_RAW_PATH_PREFIXES: &[&str] = &[
     "/rest/api/",
     "/rest/agile/",

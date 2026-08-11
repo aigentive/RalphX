@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use ralphx_events::emit_serialized;
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Manager};
 
@@ -11,10 +12,46 @@ use crate::application::AppState;
 use crate::domain::agents::{AgentConfig, AgentRole, RoutingRole, DEFAULT_AGENT_HARNESS};
 use crate::domain::entities::{Artifact, ArtifactContent, IdeationSessionId};
 use crate::error::{AppError, AppResult};
-use crate::http_server::types::{
-    PlanComplexityAssessmentResponse, SubmitPlanComplexityAssessmentRequest,
-};
 use crate::infrastructure::agents::claude::agent_names;
+
+#[derive(Debug, Deserialize)]
+pub struct SubmitPlanComplexityAssessmentRequest {
+    pub session_id: String,
+    pub artifact_id: String,
+    pub artifact_version: u32,
+    #[serde(default)]
+    pub blueprint_artifact_id: Option<String>,
+    #[serde(default)]
+    pub blueprint_artifact_version: Option<u32>,
+    pub level: String,
+    pub score: u8,
+    pub recommended_action: String,
+    pub confidence: f64,
+    pub reason_summary: String,
+    #[serde(default)]
+    pub signals: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PlanComplexityAssessmentResponse {
+    pub id: String,
+    pub session_id: String,
+    pub artifact_id: String,
+    pub artifact_version: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blueprint_artifact_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blueprint_artifact_version: Option<u32>,
+    pub level: String,
+    pub score: u8,
+    pub recommended_action: String,
+    pub confidence: f64,
+    pub reason_summary: String,
+    pub signals: Value,
+    pub assessed_by: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
 
 const ASSESSOR_SUBMIT_TOOL: &str = "submit_plan_complexity_assessment";
 const ASSESSOR_TIMEOUT_SECS: u64 = 90;

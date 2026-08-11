@@ -531,7 +531,7 @@ pub fn uses_execution_slot(context_type: ChatContextType) -> bool {
 
 fn claude_launches_paused(
     context_type: ChatContextType,
-    execution_state: Option<&Arc<crate::commands::ExecutionState>>,
+    execution_state: Option<&Arc<crate::application::execution_state::ExecutionState>>,
 ) -> bool {
     matches!(
         context_type,
@@ -1710,7 +1710,7 @@ pub struct AppChatService {
     plan_verification_completion: Option<Arc<PlanVerificationCompletionAdapter>>,
     runtime_factory_deps: Option<crate::application::runtime_factory::ChatRuntimeFactoryDeps>,
     external_mcp_supervisor: Option<Arc<crate::infrastructure::ExternalMcpSupervisor>>,
-    execution_state: Option<Arc<crate::commands::ExecutionState>>,
+    execution_state: Option<Arc<crate::application::execution_state::ExecutionState>>,
     question_state: Option<Arc<QuestionState>>,
     plan_branch_repo: std::sync::Mutex<Option<Arc<dyn PlanBranchRepository>>>,
     branch_update_repo: std::sync::Mutex<Option<Arc<dyn BranchUpdateRepository>>>,
@@ -1895,7 +1895,7 @@ impl AppChatService {
         }
     }
 
-    pub fn with_execution_state(mut self, state: Arc<crate::commands::ExecutionState>) -> Self {
+    pub fn with_execution_state(mut self, state: Arc<crate::application::execution_state::ExecutionState>) -> Self {
         self.execution_state = Some(state);
         self
     }
@@ -3468,7 +3468,7 @@ impl AppChatService {
             };
 
             if task.project_id != *project_id
-                || !crate::commands::execution_commands::context_matches_running_status_for_gc(
+                || !crate::application::execution_state::context_matches_running_status_for_gc(
                     context_type,
                     task.internal_status,
                 )
@@ -8788,7 +8788,7 @@ mod stale_registry_gate_tests {
         runtime_context_id_for_send, AgentRunStatus, ChatContextType, ChatConversationId,
         RegistryCleanupCaller, RunningAgentInfo,
     };
-    use crate::commands::ExecutionState;
+    use crate::application::execution_state::ExecutionState;
     use std::sync::Arc;
     use std::time::Instant;
 
@@ -9214,7 +9214,7 @@ fi
 mod provider_spawn_gate_tests {
     use super::{AppChatService, ChatService, SendMessageOptions};
     use crate::application::AppState;
-    use crate::commands::ExecutionState;
+    use crate::application::execution_state::ExecutionState;
     use crate::domain::entities::{ChatContextType, InternalStatus, Project, Task};
     use std::sync::Arc;
 
@@ -9350,7 +9350,7 @@ mod agent_workspace_send_tests {
         InteractiveProcessKey, InteractiveProcessMetadata,
     };
     use crate::application::AppState;
-    use crate::commands::ExecutionState;
+    use crate::application::execution_state::ExecutionState;
     use crate::domain::agents::{AgentHarnessKind, LogicalEffort, ProviderSessionRef};
     use crate::domain::entities::{
         AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunStatus,
@@ -10148,7 +10148,7 @@ mod agent_workspace_send_tests {
 mod bulk_running_state_tests {
     use super::{AgentRuntimeStatus, ChatContextType, ChatService};
     use crate::application::AppState;
-    use crate::commands::ExecutionState;
+    use crate::application::execution_state::ExecutionState;
     use crate::domain::entities::{
         AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, ChatConversation,
         ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSession, Project,

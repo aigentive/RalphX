@@ -10,18 +10,16 @@ use serde_json::Value;
 use tokio::time::Duration;
 use tokio_util::bytes::Bytes;
 
-use crate::application::{
+use crate::domain::integrations::{
     AtlassianApiClient, AtlassianApiError, AtlassianAuthContext as ApplicationAtlassianAuthContext,
     AtlassianConnectivity, AtlassianCredential as ApplicationAtlassianCredential,
     AtlassianJiraAttachment, AtlassianJiraComment, AtlassianJiraTransition, AtlassianOAuthResource,
-    AtlassianOAuthTokenResponse, AtlassianResourceContent,
+    AtlassianOAuthTokenResponse, AtlassianRawMethod, AtlassianResourceContent,
     AtlassianResourceKind as ApplicationAtlassianResourceKind, AtlassianResourceSummary,
-    JiraIssueDetail, JiraProjectSummary, JiraStatusSummary,
-};
-use crate::application::{
-    AtlassianRawMethod, ConfluencePageContent, ConfluencePageCreateRequest,
-    ConfluencePageUpdateRequest, JiraBoardColumn, JiraBoardConfiguration, JiraBoardSummary,
-    JiraIssueCreateRequest, JiraIssueCreated, JiraIssueUpdateRequest, JiraSprintSummary,
+    ConfluencePageContent, ConfluencePageCreateRequest, ConfluencePageUpdateRequest,
+    JiraBoardColumn, JiraBoardConfiguration, JiraBoardSummary, JiraIssueCreateRequest,
+    JiraIssueCreated, JiraIssueDetail, JiraIssueUpdateRequest, JiraProjectSummary,
+    JiraSprintSummary, JiraStatusSummary,
 };
 use crate::domain::services::ComposerIntegrationReference;
 
